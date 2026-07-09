@@ -423,12 +423,10 @@ def observe_wrapper(route: PlatformCapabilityRoute) -> WrapperEvidence:
     )
 
 
-def observe_wrappers(routes: list[PlatformCapabilityRoute]) -> list[WrapperEvidence]:
-    wrappers: dict[str, WrapperEvidence] = {}
-    for route in routes:
-        wrapper = observe_wrapper(route)
-        wrappers.setdefault(wrapper.path, wrapper)
-    return [wrappers[path] for path in sorted(wrappers)]
+def observe_route_wrappers(
+    routes: list[PlatformCapabilityRoute],
+) -> dict[str, WrapperEvidence]:
+    return {route.route_id: observe_wrapper(route) for route in routes}
 
 
 def wrapper_reason_label(wrapper: WrapperEvidence) -> str:
@@ -499,14 +497,16 @@ def build_receipt(
 ) -> PlatformCapabilityReceipt:
     primary_route = routes[0]
     cli = observe_cli(platform, timeout=timeout)
-    wrappers = observe_wrappers(routes)
-    wrapper = wrappers[0] if wrappers else observe_wrapper(primary_route)
+    route_wrappers = observe_route_wrappers(routes)
+    wrappers = {wrapper.path: wrapper for wrapper in route_wrappers.values()}
+    wrapper_list = [wrappers[path] for path in sorted(wrappers)]
+    wrapper = route_wrappers.get(primary_route.route_id) or observe_wrapper(primary_route)
     route_ids = sorted(route.route_id for route in routes)
     receipt_id = f"{platform}-{observed_at.strftime('%Y%m%dT%H%M%SZ')}"
     capability_reasons: list[str] = []
     capability_refs: list[str] = []
     unusable_wrappers = [
-        item for item in wrappers if not (item.exists and item.executable and item.sha256)
+        item for item in wrapper_list if not (item.exists and item.executable and item.sha256)
     ]
     wrapper_usable = not unusable_wrappers
     if cli.available:
@@ -514,7 +514,9 @@ def build_receipt(
     else:
         capability_reasons.append("cli_missing_or_unusable")
     capability_refs.extend(
-        f"local:{item.path}:sha256:{item.sha256}" for item in wrappers if item.sha256
+        f"local:{item.path}:sha256:{item.sha256}"
+        for item in wrapper_list
+        if item.exists and item.executable and item.sha256
     )
     if not wrapper_usable:
         non_executable = [
@@ -526,13 +528,15 @@ def build_receipt(
             item for item in unusable_wrappers if not item.exists or not item.sha256
         ]
         if non_executable:
-            capability_reasons.append("sanctioned_wrapper_not_executable")
+            if len(route_ids) == 1:
+                capability_reasons.append("sanctioned_wrapper_not_executable")
             capability_reasons.extend(
                 f"sanctioned_wrapper_not_executable:{wrapper_reason_label(item)}"
                 for item in non_executable
             )
         if missing_or_unreadable:
-            capability_reasons.append("sanctioned_wrapper_missing_or_unreadable")
+            if len(route_ids) == 1:
+                capability_reasons.append("sanctioned_wrapper_missing_or_unreadable")
             capability_reasons.extend(
                 f"sanctioned_wrapper_missing_or_unreadable:{wrapper_reason_label(item)}"
                 for item in missing_or_unreadable
@@ -558,7 +562,7 @@ def build_receipt(
         resource_reasons = ["wrapper_missing"]
     resource_refs = [
         ref
-        for item in wrappers
+        for item in wrapper_list
         for ref in (
             f"local:{item.path}:exists:{str(item.exists).lower()}",
             f"local:{item.path}:executable:{str(item.executable).lower()}",
@@ -584,6 +588,7 @@ def build_receipt(
         stale_after=stale_after,
         cli=cli,
         wrapper=wrapper,
+        route_wrappers=route_wrappers,
         config_refs=config_refs(platform),
         tool_state=tool_state(routes),
         mcp_status=sorted({mcp for route in routes for mcp in route.tool_access.mcp}),

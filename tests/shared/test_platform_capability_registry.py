@@ -500,6 +500,7 @@ def _make_receipt(
     observed_at: datetime,
     stale_after: str = "24h",
     routes: list[str] | None = None,
+    route_wrappers: dict[str, WrapperEvidence] | None = None,
 ) -> PlatformCapabilityReceipt:
     return PlatformCapabilityReceipt(
         receipt_id="test-receipt",
@@ -509,6 +510,7 @@ def _make_receipt(
         stale_after=stale_after,
         cli=CliEvidence(binary="claude", available=True, version="2.1.0"),
         wrapper=WrapperEvidence(path="/dev/null", exists=True, executable=True, sha256="abc123"),
+        route_wrappers=route_wrappers or {},
         capability=SurfaceEvidence(
             status=EvidenceStatus.OBSERVED,
             source="test",
@@ -1299,6 +1301,53 @@ def test_claude_review_receipt_with_fresh_live_admission_clears_route_quota(
     assert route.blocked_reasons == []
     assert CLAUDE_ADMISSION_EVIDENCE_REF in route.freshness.evidence.quota.evidence_refs
     assert result.ok is True
+
+
+def test_claude_review_route_not_blocked_by_unrelated_headless_wrapper(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_dir = tmp_path / "receipts"
+    receipt_dir.mkdir()
+    live_ledger = tmp_path / "quota-spend-ledger-live.json"
+    _write_claude_live_quota_ledger(live_ledger, route_id="claude.review.opus")
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
+    receipt_time = datetime(2026, 7, 8, 14, 1, tzinfo=UTC)
+    bad_headless = WrapperEvidence(
+        path="~/.local/bin/hapax-claude-headless",
+        exists=True,
+        executable=False,
+        sha256="bad-headless-sha",
+    )
+    good_review = WrapperEvidence(
+        path="scripts/hapax-claude-reviewer",
+        exists=True,
+        executable=True,
+        sha256="good-review-sha",
+    )
+    (receipt_dir / "claude.json").write_text(
+        _make_receipt(
+            observed_at=receipt_time,
+            routes=["claude.headless.full", "claude.review.opus"],
+            route_wrappers={
+                "claude.headless.full": bad_headless,
+                "claude.review.opus": good_review,
+            },
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+
+    registry = load_platform_capability_registry(
+        receipt_dir=receipt_dir,
+        now=CLAUDE_NOW,
+    )
+    review_route = registry.require("claude.review.opus")
+    headless_route = registry.require("claude.headless.full")
+
+    assert review_route.route_state is RouteState.ACTIVE
+    assert review_route.blocked_reasons == []
+    assert "wrapper_not_executable" in headless_route.blocked_reasons
+    assert "sanctioned_wrapper_not_executable" in headless_route.blocked_reasons
 
 
 def test_agy_has_no_route_specific_quota_admission_without_live_ledger(

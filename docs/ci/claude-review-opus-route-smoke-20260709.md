@@ -6,16 +6,18 @@ surface and hashes only. It does not persist prompt text, response text, secret
 values, account identifiers, billing identifiers, or lane/session presence as
 quota evidence.
 
-- Observed at: `2026-07-09T13:36:12Z`
+- Observed at: `2026-07-09T15:43:41Z`
 - Worktree: `~/projects/hapax-council--cx-mondlc`
 - Claude CLI version: `2.1.205 (Claude Code)`
 - Wrapper: `scripts/hapax-claude-reviewer`
-- Wrapper sha256: `f725efc83ddc3765ca92f818af13642f2121d100888c1b09cda6929ace2c7992`
+- Wrapper sha256: `c88080149b9c7fcfe7435133420330c645efeae25852f159bc4af7ee3914af54`
 - Command surface: `timeout 180 scripts/hapax-claude-reviewer`
 - Wrapper flags exercised: `--model opus`, empty `--tools`, empty
   `--allowedTools`, explicit `--disallowedTools`, `--permission-mode manual`,
   `--safe-mode`, `--disable-slash-commands`, `--no-session-persistence`,
-  empty strict MCP config, strict fenced-YAML system prompt.
+  empty strict MCP config, strict fenced-YAML system prompt, bounded internal
+  wrapper timeout (`--timeout-seconds`, default/max `1140s`) with process-group
+  cleanup on timeout or SIGTERM/SIGINT.
 - Exit code: `0`
 - Stderr bytes: `0`
 - Stdout bytes: `55`
@@ -24,6 +26,9 @@ quota evidence.
   ```` ```yaml ```` and ending with ```` ``` ````.
 - No-tools probe: passed with prompt asking for no shell/tool use; stdout
   contained no `tool_use` marker and no `bash` text.
+- Automation caveat: the default unit suite proves wrapper argv with a stub;
+  real Claude CLI no-tools behavior is proven by this receipt and by the
+  opt-in smoke tests gated on `HAPAX_RUN_CLAUDE_REVIEWER_REAL_SMOKE=1`.
 - Prompt/output persistence: prompt omitted, output body omitted, hash only.
 - Admission receipt minted from the account-live observation:
   `~/.cache/hapax/relay/receipts/claude-subscription-quota-admission-review-opus-20260709t132643z.yaml`
@@ -70,7 +75,7 @@ wc -c /tmp/hapax-claude-reviewer-no-tools.out /tmp/hapax-claude-reviewer-no-tool
 Expected current values:
 
 - `sha256sum scripts/hapax-claude-reviewer`:
-  `f725efc83ddc3765ca92f818af13642f2121d100888c1b09cda6929ace2c7992`
+  `c88080149b9c7fcfe7435133420330c645efeae25852f159bc4af7ee3914af54`
 - `sha256sum /tmp/hapax-claude-reviewer-no-tools.out`:
   `72021ce75e5a4b7f43e9a4053c86a3cfc527a0ea0a9f8b519f27f165bab416ff`
 - stdout/stderr byte counts: `55` / `0`.
@@ -88,3 +93,9 @@ scripts/hapax-claude-subscription-quota-admission --route-id claude.review.opus 
 scripts/hapax-quota-telemetry-writer --json
 scripts/hapax-platform-capability-freshness --route claude.review.opus --json
 ```
+
+If the route remains wedged because the live ledger is unreadable or the
+admission receipt cannot be refreshed, do not bypass with raw `claude -p`.
+Either repair the ledger/receipt path above, or route-block/degrade the Claude
+family through the governed review-team route-block mechanism and rereview once
+fresh route evidence exists.

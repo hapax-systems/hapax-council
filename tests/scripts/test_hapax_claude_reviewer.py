@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -98,6 +100,36 @@ def test_claude_reviewer_pins_opus_and_disables_tools(tmp_path: Path) -> None:
     assert "Do all reasoning silently" in system_prompt
 
 
+def test_claude_reviewer_prefers_hapax_claude_bin_over_legacy_env(tmp_path: Path) -> None:
+    preferred = tmp_path / "preferred-claude"
+    legacy = tmp_path / "legacy-claude"
+    argv_path = tmp_path / "argv.json"
+    stdin_path = tmp_path / "stdin.txt"
+    _fake_claude(preferred)
+    legacy.write_text("#!/usr/bin/env bash\nexit 99\n", encoding="utf-8")
+    legacy.chmod(0o700)
+
+    env = {
+        **os.environ,
+        "HAPAX_CLAUDE_BIN": str(preferred),
+        "CLAUDE_BIN": str(legacy),
+        "HAPAX_FAKE_CLAUDE_ARGV": str(argv_path),
+        "HAPAX_FAKE_CLAUDE_STDIN": str(stdin_path),
+    }
+    result = subprocess.run(
+        [sys.executable, str(WRAPPER)],
+        input="review packet",
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=REPO_ROOT,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert argv_path.exists()
+    assert stdin_path.read_text(encoding="utf-8") == "review packet"
+
+
 def test_claude_reviewer_rejects_model_override(tmp_path: Path) -> None:
     fake = tmp_path / "claude"
     _fake_claude(fake)
@@ -184,9 +216,10 @@ def test_claude_reviewer_omits_child_stdout_on_nonzero_exit(tmp_path: Path) -> N
     assert result.returncode == 42
     assert result.stdout == ""
     assert "rate limited" in result.stderr
-    assert "claude stdout diagnostic for classifier" in result.stderr
+    assert "claude single-line stdout omitted from classifier" in result.stderr
+    assert "quota wall text that must not become review stdout" not in result.stderr
     assert "stdout omitted" in result.stderr
-    assert "single-line stdout is copied only as the classifier diagnostic" in result.stderr
+    assert "single-line stdout is represented only by a wrapper-authored" in result.stderr
 
 
 def test_claude_reviewer_preserves_stdout_only_quota_wall_for_classifier(
@@ -212,8 +245,8 @@ def test_claude_reviewer_preserves_stdout_only_quota_wall_for_classifier(
 
     assert result.returncode == 75
     assert result.stdout == ""
-    assert "claude stdout diagnostic for classifier" in result.stderr
-    assert "weekly limit" in result.stderr
+    assert "claude stdout quota-wall diagnostic observed" in result.stderr
+    assert "weekly limit" not in result.stderr
     assert "stdout omitted" in result.stderr
 
 
@@ -242,8 +275,141 @@ def test_claude_reviewer_preserves_single_line_stdout_diagnostic_with_child_stde
     assert result.returncode == 75
     assert result.stdout == ""
     assert "non-quota stderr noise" in result.stderr
-    assert "claude stdout diagnostic for classifier" in result.stderr
-    assert "weekly limit" in result.stderr
+    assert "claude stdout quota-wall diagnostic observed" in result.stderr
+    assert "weekly limit" not in result.stderr
+
+
+def test_claude_reviewer_timeout_terminates_child_process_group(tmp_path: Path) -> None:
+    fake = tmp_path / "claude"
+    marker = tmp_path / "process-group.txt"
+    fake.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        "Path(os.environ['HAPAX_FAKE_CLAUDE_PROCESS_GROUP']).write_text(\n"
+        "    f'{os.getpgrp()}\\n{os.getpid()}\\n{child.pid}\\n', encoding='utf-8'\n"
+        ")\n"
+        "time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o700)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(WRAPPER),
+            "--claude-bin",
+            str(fake),
+            "--timeout-seconds",
+            "0.2",
+        ],
+        input="review packet",
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HAPAX_FAKE_CLAUDE_PROCESS_GROUP": str(marker)},
+        cwd=REPO_ROOT,
+        timeout=10,
+    )
+
+    assert result.returncode == 124
+    assert result.stdout == ""
+    assert "process group terminated" in result.stderr
+    pgid = int(marker.read_text(encoding="utf-8").splitlines()[0])
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        live = subprocess.run(
+            ["ps", "-o", "pid=,stat=,cmd=", "-g", str(pgid)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        pytest.fail(f"Claude reviewer left live process-group members:\n{live.stdout}")
+
+
+def test_claude_reviewer_sigterm_terminates_child_process_group(tmp_path: Path) -> None:
+    fake = tmp_path / "claude"
+    marker = tmp_path / "process-group.txt"
+    fake.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        "Path(os.environ['HAPAX_FAKE_CLAUDE_PROCESS_GROUP']).write_text(\n"
+        "    f'{os.getpgrp()}\\n{os.getpid()}\\n{child.pid}\\n', encoding='utf-8'\n"
+        ")\n"
+        "time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o700)
+
+    proc = subprocess.Popen(
+        [sys.executable, str(WRAPPER), "--claude-bin", str(fake)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={**os.environ, "HAPAX_FAKE_CLAUDE_PROCESS_GROUP": str(marker)},
+        cwd=REPO_ROOT,
+    )
+    assert proc.stdin is not None
+    proc.stdin.write("review packet")
+    proc.stdin.close()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not marker.exists():
+        time.sleep(0.05)
+    assert marker.exists()
+    pgid = int(marker.read_text(encoding="utf-8").splitlines()[0])
+
+    proc.send_signal(signal.SIGTERM)
+    proc.wait(timeout=10)
+    assert proc.returncode == 128 + signal.SIGTERM
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        live = subprocess.run(
+            ["ps", "-o", "pid=,stat=,cmd=", "-g", str(pgid)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        pytest.fail(f"Claude reviewer left live process-group members:\n{live.stdout}")
+
+
+def test_claude_reviewer_invalid_timeout_env_is_legible(tmp_path: Path) -> None:
+    fake = tmp_path / "claude"
+    _fake_claude(fake)
+    argv_path = tmp_path / "argv.json"
+    stdin_path = tmp_path / "stdin.txt"
+
+    result = subprocess.run(
+        [sys.executable, str(WRAPPER), "--claude-bin", str(fake)],
+        input="review packet",
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "HAPAX_CLAUDE_REVIEWER_TIMEOUT_SECONDS": "20m",
+            "HAPAX_FAKE_CLAUDE_ARGV": str(argv_path),
+            "HAPAX_FAKE_CLAUDE_STDIN": str(stdin_path),
+        },
+        cwd=REPO_ROOT,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "invalid HAPAX_CLAUDE_REVIEWER_TIMEOUT_SECONDS" in result.stderr
+    assert "using default 1140s" in result.stderr
 
 
 @pytest.mark.skipif(

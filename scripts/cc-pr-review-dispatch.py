@@ -80,6 +80,12 @@ MAX_DIFF_CHARS = 80_000
 MAX_TASK_NOTE_CHARS = 60_000
 MAX_REVIEW_REPLY_EXCERPT_CHARS = 4_000
 MAX_REVIEW_RUNNER_STDERR_CHARS = 1_000
+CLAUDE_REVIEWER_TIMEOUT_MARGIN_SECONDS = 60.0
+ROUTE_ADMISSION_OBSERVED_AT_RE = re.compile(
+    r"observed_at:(?P<observed_at>"
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?"
+    r")"
+)
 REVIEWER_DIAGNOSTIC_SECRETISH_RE = re.compile(
     r"(?P<auth_prefix>\bauthorization\b\s*[:=]\s*(?:bearer\s+)?)"
     r"(?P<auth_value>[^\r\n]+)|"
@@ -543,6 +549,86 @@ def _outage_started_at(existing: Any, now_iso: str) -> str:
     return now_iso
 
 
+def _parse_aware_datetime(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _route_admission_observed_at(ref: str) -> datetime | None:
+    match = ROUTE_ADMISSION_OBSERVED_AT_RE.search(ref)
+    if match is None:
+        return None
+    return _parse_aware_datetime(match.group("observed_at"))
+
+
+def _route_has_post_outage_admission_witness(
+    route_id: str,
+    outage_observed_at: str,
+    *,
+    now_iso: str | None = None,
+) -> bool:
+    ok, reason = _route_post_outage_admission_witness_result(
+        route_id,
+        outage_observed_at,
+        now_iso=now_iso,
+    )
+    if not ok:
+        LOG.warning(
+            "route recovery witness absent for %s after outage %s: %s",
+            route_id,
+            outage_observed_at,
+            reason,
+        )
+    return ok
+
+
+def _route_post_outage_admission_witness_result(
+    route_id: str,
+    outage_observed_at: str,
+    *,
+    now_iso: str | None = None,
+) -> tuple[bool, str]:
+    outage_at = _parse_aware_datetime(outage_observed_at)
+    if outage_at is None:
+        return False, "outage_observed_at_unparseable"
+    now = _parse_aware_datetime(now_iso or "") or datetime.now(UTC)
+    try:
+        resolved = review_team.load_quota_spend_ledger_resolved()
+    except (OSError, ValueError, review_team.QuotaSpendLedgerError) as exc:
+        return False, f"quota_spend_ledger_read_error:{type(exc).__name__}"
+    if resolved.source != "live":
+        return False, f"quota_spend_ledger_not_live:{resolved.source}"
+    try:
+        state, evidence_refs = review_team.subscription_quota_state_for_route(
+            resolved.ledger,
+            route_id,
+            now=now,
+        )
+    except (TypeError, ValueError, review_team.QuotaSpendLedgerError) as exc:
+        return False, f"subscription_quota_state_error:{type(exc).__name__}"
+    if getattr(state, "value", str(state)) != "fresh":
+        return False, f"subscription_quota_state_not_fresh:{getattr(state, 'value', state)}"
+    observed_refs = tuple(_route_admission_observed_at(ref) for ref in evidence_refs)
+    parsed_observed_refs = tuple(
+        observed_at for observed_at in observed_refs if observed_at is not None
+    )
+    if not parsed_observed_refs:
+        return False, "post_outage_observed_at_absent"
+    if any(observed_at > outage_at for observed_at in parsed_observed_refs):
+        return True, "post_outage_admission_witness_observed"
+    return False, "post_outage_observed_at_not_after_outage"
+
+
 def load_family_outage_witness(now_iso: str, state_path: Path | None = None) -> dict[str, str]:
     """TTL-live outage witness timestamps by family."""
 
@@ -646,6 +732,7 @@ def clear_route_recovered_family_outage(
     *,
     registry: dict[str, Any],
     route_blocked_families: dict[str, tuple[str, ...]],
+    now_iso: str | None = None,
     state_path: Path | None = None,
 ) -> dict[str, str]:
     """Clear outage latches for route-backed families whose route is admitted.
@@ -674,10 +761,15 @@ def clear_route_recovered_family_outage(
     }
     recovered = sorted(
         family
-        for family in outage_witness
+        for family, observed_at in outage_witness.items()
         if family in structured_outage_families
         and family in route_ids
         and family not in route_blocked_families
+        and _route_has_post_outage_admission_witness(
+            route_ids[family],
+            observed_at,
+            now_iso=now_iso,
+        )
     )
     if not recovered:
         return dict(outage_witness)
@@ -1354,6 +1446,17 @@ class ReviewerProcessError(RuntimeError):
 CLAUDE_REVIEWER_STDOUT_DIAGNOSTIC_PREFIX = (
     "hapax-claude-reviewer: claude stdout diagnostic for classifier: "
 )
+CLAUDE_REVIEWER_STDOUT_QUOTA_WALL_DIAGNOSTIC = (
+    "hapax-claude-reviewer: claude stdout quota-wall diagnostic observed"
+)
+CLAUDE_REVIEWER_CANONICAL_QUOTA_WALL = "HTTP 429 Too Many Requests"
+CLAUDE_REVIEWER_WRAPPER_DIAGNOSTIC_PREFIXES = (
+    CLAUDE_REVIEWER_STDOUT_DIAGNOSTIC_PREFIX,
+    CLAUDE_REVIEWER_STDOUT_QUOTA_WALL_DIAGNOSTIC,
+    "hapax-claude-reviewer: claude stdout omitted from classifier ",
+    "hapax-claude-reviewer: claude single-line stdout omitted from classifier ",
+    "hapax-claude-reviewer: claude exited nonzero; ",
+)
 
 
 def reviewer_stdout_classifier_diagnostic(stderr: str) -> str:
@@ -1361,6 +1464,21 @@ def reviewer_stdout_classifier_diagnostic(stderr: str) -> str:
         if line.startswith(CLAUDE_REVIEWER_STDOUT_DIAGNOSTIC_PREFIX):
             return line.removeprefix(CLAUDE_REVIEWER_STDOUT_DIAGNOSTIC_PREFIX).strip()
     return ""
+
+
+def reviewer_stdout_quota_wall_diagnostic(stderr: str) -> bool:
+    return any(
+        line.strip() == CLAUDE_REVIEWER_STDOUT_QUOTA_WALL_DIAGNOSTIC
+        for line in (stderr or "").splitlines()
+    )
+
+
+def stderr_without_reviewer_stdout_diagnostics(stderr: str) -> str:
+    return "\n".join(
+        line
+        for line in (stderr or "").splitlines()
+        if not line.startswith(CLAUDE_REVIEWER_WRAPPER_DIAGNOSTIC_PREFIXES)
+    )
 
 
 @dataclass(frozen=True)
@@ -1434,6 +1552,39 @@ def reviewer_diagnostic_fields(excerpt: str) -> dict[str, Any]:
     }
 
 
+def _is_hapax_claude_reviewer_command(cmd: list[str]) -> bool:
+    return bool(cmd) and Path(cmd[0]).name == "hapax-claude-reviewer"
+
+
+def _inner_claude_reviewer_timeout_seconds(outer_timeout: int) -> float:
+    if outer_timeout > CLAUDE_REVIEWER_TIMEOUT_MARGIN_SECONDS + 1:
+        return float(outer_timeout) - CLAUDE_REVIEWER_TIMEOUT_MARGIN_SECONDS
+    return max(0.1, float(outer_timeout) * 0.8)
+
+
+def _with_controlled_claude_reviewer_timeout(
+    cmd: list[str],
+    *,
+    outer_timeout: int,
+) -> tuple[list[str], str | None]:
+    if not _is_hapax_claude_reviewer_command(cmd):
+        return cmd, None
+    inner_timeout = _inner_claude_reviewer_timeout_seconds(outer_timeout)
+    controlled: list[str] = []
+    skip_next = False
+    for part in cmd:
+        if skip_next:
+            skip_next = False
+            continue
+        if part == "--timeout-seconds":
+            skip_next = True
+            continue
+        controlled.append(part)
+    timeout_value = f"{inner_timeout:g}"
+    controlled.extend(["--timeout-seconds", timeout_value])
+    return controlled, timeout_value
+
+
 def default_reviewer_runner(
     seat: review_team.Seat, family_cfg: dict[str, Any], prompt: str
 ) -> ReviewerRunnerResult:
@@ -1441,11 +1592,17 @@ def default_reviewer_runner(
 
     cmd = [str(part) for part in family_cfg["reviewer_command"]]
     timeout = int(family_cfg.get("timeout_seconds", 1200))
+    cmd, controlled_claude_timeout = _with_controlled_claude_reviewer_timeout(
+        cmd,
+        outer_timeout=timeout,
+    )
     env = {
         **os.environ,
         "HAPAX_REVIEW_SEAT_ID": seat.id,
         "HAPAX_REVIEW_FAMILY": seat.family,
     }
+    if controlled_claude_timeout is not None:
+        env["HAPAX_CLAUDE_REVIEWER_TIMEOUT_SECONDS"] = controlled_claude_timeout
     for env_name in (
         public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV,
         "HAPAX_GLMCP_REVIEW_TASK_ID",
@@ -1576,15 +1733,23 @@ def dispatch_reviews(
             process_output = f"reviewer process failed rc={exc.returncode}; output omitted"
             runner_stderr_excerpt = process_output
             if exc.stderr.strip():
+                wrapper_stdout_quota_wall = reviewer_stdout_quota_wall_diagnostic(exc.stderr)
                 wrapper_stdout_diagnostic = reviewer_stdout_classifier_diagnostic(exc.stderr)
-                if wrapper_stdout_diagnostic:
-                    quota_wall_output = ""
-                    quota_wall_stdout = wrapper_stdout_diagnostic
-                    diagnostic_stdout = wrapper_stdout_diagnostic
+                if wrapper_stdout_quota_wall:
+                    stripped_stderr = stderr_without_reviewer_stdout_diagnostics(exc.stderr)
+                    quota_wall_output = CLAUDE_REVIEWER_CANONICAL_QUOTA_WALL
+                    diagnostic_output = stripped_stderr
+                elif wrapper_stdout_diagnostic:
+                    stripped_stderr = stderr_without_reviewer_stdout_diagnostics(exc.stderr)
+                    quota_wall_output = stripped_stderr
+                    diagnostic_output = stripped_stderr
+                    if not stripped_stderr:
+                        quota_wall_stdout = wrapper_stdout_diagnostic
+                        diagnostic_stdout = wrapper_stdout_diagnostic
                 else:
                     quota_wall_output = exc.stderr
                     quota_wall_stdout = exc.stdout
-                diagnostic_output = exc.stderr
+                    diagnostic_output = exc.stderr
             else:
                 stdout = exc.stdout.strip()
                 quota_wall_output = stdout if stdout and "\n" not in stdout else ""
@@ -2452,6 +2617,7 @@ def review_pr(
             outage_witness,
             registry=registry,
             route_blocked_families=effective_route_blocked_families,
+            now_iso=now_iso,
         )
     outage_families = frozenset(outage_witness)
 

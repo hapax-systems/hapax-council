@@ -152,9 +152,13 @@ def _route_id(value: str) -> str:
     return normalized
 
 
-def _receipt_name(args: argparse.Namespace, *, observed_at: datetime) -> str:
+def _route_slug(route_id: str) -> str:
+    return route_id.replace(".", "-")
+
+
+def _receipt_name(args: argparse.Namespace, *, route_id: str, observed_at: datetime) -> str:
     stamp = observed_at.strftime("%Y%m%dT%H%M%SZ").lower()
-    default = f"claude-subscription-quota-admission-{stamp}.yaml"
+    default = f"claude-subscription-quota-admission-{_route_slug(route_id)}-{stamp}.yaml"
     name = args.receipt_name or default
     if SAFE_RECEIPT_NAME_RE.fullmatch(name) is None or SECRETISH_RE.search(name) is not None:
         raise ValueError("unsafe receipt name")
@@ -235,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
         observation = _observation(args.observation)
         route_id = _route_id(args.route_id)
         evidence_ref = _safe_reference(args.evidence_ref, label="evidence-ref")
-        receipt_name = _receipt_name(args, observed_at=observed_at)
+        receipt_name = _receipt_name(args, route_id=route_id, observed_at=observed_at)
         path = args.receipt_dir / receipt_name
         fields: list[tuple[str, object]] = [
             ("schema", ADMISSION_SCHEMA),

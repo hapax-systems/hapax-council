@@ -1165,7 +1165,7 @@ def test_agy_receipt_records_live_review_route_without_unblocking_quota(
     assert "route_specific_quota_receipt_absent" in route.blocked_reasons
 
 
-def test_claude_receipt_blocks_when_any_distinct_wrapper_is_unusable(tmp_path: Path) -> None:
+def test_claude_receipt_records_unusable_wrapper_per_route(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _fake_binary(bin_dir, "claude", "claude-cli 2.1.143")
@@ -1182,7 +1182,9 @@ def test_claude_receipt_blocks_when_any_distinct_wrapper_is_unusable(tmp_path: P
         route["sanctioned_wrapper"] = (
             str(bad_wrapper) if route["route_id"] == "claude.review.opus" else str(good_wrapper)
         )
-    registry_path = tmp_path / "platform-capability-registry.json"
+    registry_dir = tmp_path / "registry"
+    registry_dir.mkdir()
+    registry_path = registry_dir / "platform-capability-registry.json"
     registry_path.write_text(json.dumps(registry_payload), encoding="utf-8")
 
     result = _run_receipts(
@@ -1194,15 +1196,34 @@ def test_claude_receipt_blocks_when_any_distinct_wrapper_is_unusable(tmp_path: P
 
     assert result.returncode == 0, result.stderr
     receipt = json.loads((tmp_path / "claude.json").read_text(encoding="utf-8"))
+    assert receipt["wrapper"]["path"] == str(good_wrapper)
     assert receipt["capability"]["status"] == "blocked"
-    assert "sanctioned_wrapper_not_executable" in receipt["capability"]["reason_codes"]
+    assert "sanctioned_wrapper_not_executable" not in receipt["capability"]["reason_codes"]
     assert (
         "sanctioned_wrapper_not_executable:hapax-claude-reviewer"
         in receipt["capability"]["reason_codes"]
     )
+    assert not any(
+        ref.endswith(f"{bad_wrapper}:sha256") or str(bad_wrapper) in ref
+        for ref in receipt["capability"]["evidence_refs"]
+    )
+    assert receipt["route_wrappers"]["claude.review.opus"]["executable"] is False
+    assert receipt["route_wrappers"]["claude.review.opus"]["sha256"] is not None
     assert receipt["resource"]["status"] == "blocked"
     assert "wrapper_not_executable" in receipt["resource"]["reason_codes"]
     assert any(ref.endswith("executable:false") for ref in receipt["resource"]["evidence_refs"])
+
+    registry = load_platform_capability_registry(
+        registry_path,
+        receipt_dir=tmp_path,
+        now=datetime(2026, 5, 17, 20, 0, tzinfo=UTC),
+    )
+    review_route = registry.require("claude.review.opus")
+    headless_route = registry.require("claude.headless.full")
+    assert "sanctioned_wrapper_not_executable" in review_route.blocked_reasons
+    assert "wrapper_not_executable" in review_route.blocked_reasons
+    assert "sanctioned_wrapper_not_executable" not in headless_route.blocked_reasons
+    assert "wrapper_not_executable" not in headless_route.blocked_reasons
 
 
 def test_agy_receipt_requires_executable_review_wrapper(tmp_path: Path) -> None:

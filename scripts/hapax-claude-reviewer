@@ -5,11 +5,39 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
+import signal
 import subprocess
 import sys
 
 PINNED_REVIEW_MODEL = "opus"
 EMPTY_MCP_CONFIG = '{"mcpServers":{}}'
+DEFAULT_TIMEOUT_SECONDS = 1140.0
+MAX_TIMEOUT_SECONDS = 1140.0
+STDOUT_QUOTA_WALL_DIAGNOSTIC = "hapax-claude-reviewer: claude stdout quota-wall diagnostic observed"
+STDOUT_NON_WALL_OMITTED = (
+    "hapax-claude-reviewer: claude single-line stdout omitted from classifier "
+    "because it was not a recognized provider wall"
+)
+_RESET_TIME_SHAPE = (
+    r"(?:(?:[A-Z][a-z]{2}\s+\d{1,2},\s+)?"
+    r"\d{1,2}(?::\d{2})?\s*(?:am|pm)"
+    r"(?:\s+(?:\([A-Z][A-Za-z0-9._+-]*(?:/[A-Z][A-Za-z0-9._+-]*)+\)"
+    r"|[A-Z][A-Za-z0-9._+-]*(?:/[A-Z][A-Za-z0-9._+-]*)+|[A-Z]{2,5}))?)"
+)
+STDOUT_QUOTA_WALL_RE = re.compile(
+    r"\A("
+    r"You('ve| have) hit your (weekly|usage|session|5-hour) limit"
+    rf"(?:\s+(?:-|·)\s+resets\s+{_RESET_TIME_SHAPE})?"
+    r"|HTTP 429 Too Many Requests"
+    r"|Too Many Requests"
+    r"|RESOURCE_EXHAUSTED(?::\s+Quota (?:exceeded|exhausted))?"
+    r"|rate.?limit\s+(?:reached|exceeded|hit)(?:\s+for\s+\w+)?"
+    r"|usage limit\s+(?:reached|exceeded|hit)"
+    r"|quota\s+(?:reached|exceeded|exhausted|hit)"
+    r")\Z",
+    re.IGNORECASE,
+)
 # Defense in depth: the empty allowlist and strict empty MCP config are the
 # fail-closed controls, while this list makes known mutating/read/network tools
 # explicit in current Claude CLI builds.
@@ -53,6 +81,32 @@ prose.
 """
 
 
+def _bounded_timeout_seconds(raw: str) -> float:
+    try:
+        timeout = float(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive number of seconds") from exc
+    if timeout <= 0:
+        raise argparse.ArgumentTypeError("must be a positive number of seconds")
+    return min(timeout, MAX_TIMEOUT_SECONDS)
+
+
+def _default_timeout_seconds() -> float:
+    raw = os.environ.get(
+        "HAPAX_CLAUDE_REVIEWER_TIMEOUT_SECONDS",
+        f"{DEFAULT_TIMEOUT_SECONDS:g}",
+    )
+    try:
+        return _bounded_timeout_seconds(raw)
+    except argparse.ArgumentTypeError:
+        print(
+            "hapax-claude-reviewer: invalid HAPAX_CLAUDE_REVIEWER_TIMEOUT_SECONDS; "
+            f"using default {DEFAULT_TIMEOUT_SECONDS:g}s",
+            file=sys.stderr,
+        )
+        return DEFAULT_TIMEOUT_SECONDS
+
+
 def _default_claude_bin() -> str:
     return os.environ.get("HAPAX_CLAUDE_BIN") or os.environ.get("CLAUDE_BIN") or "claude"
 
@@ -61,6 +115,11 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--claude-bin", default=_default_claude_bin())
     parser.add_argument("--model", default=PINNED_REVIEW_MODEL)
+    parser.add_argument(
+        "--timeout-seconds",
+        type=_bounded_timeout_seconds,
+        default=_default_timeout_seconds(),
+    )
     return parser
 
 
@@ -74,6 +133,71 @@ def _review_env() -> dict[str, str]:
         }
     )
     return env
+
+
+def _stdout_is_quota_wall(stdout: str) -> bool:
+    return bool(STDOUT_QUOTA_WALL_RE.fullmatch(stdout.strip()))
+
+
+def _terminate_process_group(proc: subprocess.Popen[str]) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except OSError:
+        proc.terminate()
+    try:
+        proc.wait(timeout=5)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    except OSError:
+        proc.kill()
+    proc.wait(timeout=5)
+
+
+def _run_claude(
+    cmd: list[str],
+    *,
+    prompt: str,
+    timeout_seconds: float,
+) -> subprocess.CompletedProcess[str]:
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=_review_env(),
+        start_new_session=True,
+    )
+    prior_handlers: dict[int, signal.Handlers] = {}
+
+    def terminate_from_signal(signum: int, _frame: object) -> None:
+        _terminate_process_group(proc)
+        raise SystemExit(128 + signum)
+
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        prior_handlers[signum] = signal.getsignal(signum)
+        signal.signal(signum, terminate_from_signal)
+    try:
+        stdout, stderr = proc.communicate(prompt, timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        _terminate_process_group(proc)
+        return subprocess.CompletedProcess(
+            cmd,
+            124,
+            "",
+            "hapax-claude-reviewer: claude child timed out; process group terminated\n",
+        )
+    finally:
+        for signum, handler in prior_handlers.items():
+            signal.signal(signum, handler)
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -110,13 +234,10 @@ def main(argv: list[str] | None = None) -> int:
         STRICT_REVIEW_SYSTEM_PROMPT,
     ]
     try:
-        result = subprocess.run(
+        result = _run_claude(
             cmd,
-            input=prompt,
-            text=True,
-            capture_output=True,
-            check=False,
-            env=_review_env(),
+            prompt=prompt,
+            timeout_seconds=args.timeout_seconds,
         )
     except OSError as exc:
         print(
@@ -131,10 +252,10 @@ def main(argv: list[str] | None = None) -> int:
     if result.returncode != 0:
         stdout = result.stdout.strip()
         if stdout and "\n" not in stdout:
-            print(
-                f"hapax-claude-reviewer: claude stdout diagnostic for classifier: {stdout}",
-                file=sys.stderr,
-            )
+            if _stdout_is_quota_wall(stdout):
+                print(STDOUT_QUOTA_WALL_DIAGNOSTIC, file=sys.stderr)
+            else:
+                print(STDOUT_NON_WALL_OMITTED, file=sys.stderr)
         elif result.stdout:
             print(
                 "hapax-claude-reviewer: claude stdout omitted from classifier "
@@ -145,11 +266,11 @@ def main(argv: list[str] | None = None) -> int:
             "hapax-claude-reviewer: claude exited nonzero; stdout omitted from "
             "review output so quota walls cannot be laundered into an invalid "
             "review; stderr above is preserved when emitted, single-line stdout "
-            "is copied only as the classifier diagnostic line above, and multiline "
-            "stdout is intentionally not preserved by this process; next action: "
-            "inspect preserved stderr and any classifier diagnostic line, then "
-            "refresh the route-specific Claude admission receipt if account-live "
-            "quota is observed",
+            "is represented only by a wrapper-authored classifier diagnostic "
+            "line above, and multiline stdout is intentionally not preserved by "
+            "this process; next action: inspect preserved stderr and any "
+            "classifier diagnostic line, then refresh the route-specific Claude "
+            "admission receipt if account-live quota is observed",
             file=sys.stderr,
         )
         return result.returncode
