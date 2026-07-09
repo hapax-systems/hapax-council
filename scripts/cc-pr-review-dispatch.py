@@ -1351,6 +1351,18 @@ class ReviewerProcessError(RuntimeError):
         self.returncode = returncode
 
 
+CLAUDE_REVIEWER_STDOUT_DIAGNOSTIC_PREFIX = (
+    "hapax-claude-reviewer: claude stdout diagnostic for classifier: "
+)
+
+
+def reviewer_stdout_classifier_diagnostic(stderr: str) -> str:
+    for line in (stderr or "").splitlines():
+        if line.startswith(CLAUDE_REVIEWER_STDOUT_DIAGNOSTIC_PREFIX):
+            return line.removeprefix(CLAUDE_REVIEWER_STDOUT_DIAGNOSTIC_PREFIX).strip()
+    return ""
+
+
 @dataclass(frozen=True)
 class ReviewerRunnerResult:
     stdout: str
@@ -1564,7 +1576,7 @@ def dispatch_reviews(
             process_output = f"reviewer process failed rc={exc.returncode}; output omitted"
             runner_stderr_excerpt = process_output
             if exc.stderr.strip():
-                quota_wall_output = exc.stderr
+                quota_wall_output = reviewer_stdout_classifier_diagnostic(exc.stderr) or exc.stderr
                 quota_wall_stdout = exc.stdout
                 diagnostic_output = exc.stderr
                 diagnostic_stdout = exc.stdout

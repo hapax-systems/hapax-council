@@ -1196,6 +1196,10 @@ def test_claude_receipt_blocks_when_any_distinct_wrapper_is_unusable(tmp_path: P
     receipt = json.loads((tmp_path / "claude.json").read_text(encoding="utf-8"))
     assert receipt["capability"]["status"] == "blocked"
     assert "sanctioned_wrapper_not_executable" in receipt["capability"]["reason_codes"]
+    assert (
+        "sanctioned_wrapper_not_executable:hapax-claude-reviewer"
+        in receipt["capability"]["reason_codes"]
+    )
     assert receipt["resource"]["status"] == "blocked"
     assert "wrapper_not_executable" in receipt["resource"]["reason_codes"]
     assert any(ref.endswith("executable:false") for ref in receipt["resource"]["evidence_refs"])

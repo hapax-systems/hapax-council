@@ -2787,6 +2787,29 @@ class TestFamilyOutageDegradation:
         assert claude_seats, "harness must seat a claude reviewer at t2"
         assert all(r["verdict"] == "quota-wall" for r in claude_seats)
 
+    def test_wrapper_stdout_diagnostic_classifies_as_quota_wall(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        self._isolate_state(monkeypatch, tmp_path)
+        diagnostic = f"hapax-claude-reviewer: claude stdout diagnostic for classifier: {self.WALL}"
+
+        class WrapperDiagnosticRunner(RecordingReviewers):
+            def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+                self.invocations.append((seat.id, seat.family, prompt))
+                if seat.family == "claude":
+                    raise dispatch.ReviewerProcessError(diagnostic, returncode=75, stdout="")
+                return GOOD_REPLY
+
+        result, _, _, _ = _review(
+            tmp_path,
+            reviewers=WrapperDiagnosticRunner(),
+            task_kwargs={"assigned_to": "cx-gold"},
+        )
+        dossier = result["dossier"]
+        claude_seats = [r for r in dossier["reviewers"] if r["family"] == "claude"]
+        assert claude_seats, "harness must seat a claude reviewer at t2"
+        assert all(r["verdict"] == "quota-wall" for r in claude_seats)
+
     def test_quota_wall_precedes_route_unavailable_when_both_match(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:

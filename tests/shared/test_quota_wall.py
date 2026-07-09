@@ -207,10 +207,31 @@ def test_write_quota_wall_receipt(tmp_path: Path, monkeypatch: object) -> None:
     assert path.exists()
     content = path.read_text(encoding="utf-8")
     assert "role: beta" in content
+    assert "route_id: claude.headless.full" in content
     assert "status: quota_blocked" in content
     assert "signal_kind: rate_limit_event" in content
     assert "rate_limit_type: seven_day" in content
     assert "is_overage: True" in content
+
+
+def test_write_quota_wall_receipt_keeps_unknown_role_route_less(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    import shared.quota_wall as qw
+
+    monkeypatch.setattr(qw, "RELAY_RECEIPT_DIR", tmp_path / "receipts")
+
+    signal = QuotaWallSignal(
+        kind="rate_limit_event",
+        resets_at=None,
+        rate_limit_type="daily",
+        is_overage=False,
+    )
+    path = write_quota_wall_receipt("cx-glmcp-review-glm52", signal)
+
+    content = path.read_text(encoding="utf-8")
+    assert "role: cx-glmcp-review-glm52" in content
+    assert "route_id:" not in content
 
 
 def test_clear_receipt(tmp_path: Path, monkeypatch: object) -> None:

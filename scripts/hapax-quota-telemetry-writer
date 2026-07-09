@@ -828,8 +828,9 @@ def active_quota_walls(
         failure_class = fields.get("failure_class") or "unknown"
         rate_limit_type = fields.get("rate_limit_type") or "unknown"
         route_id = fields.get("route_id") or None
-        if route_id in CLAUDE_SUBSCRIPTION_ROUTES:
-            platform = "claude"
+        if platform == "claude":
+            if route_id and route_id not in CLAUDE_SUBSCRIPTION_ROUTES:
+                route_id = None
         elif route_id and route_id != SUBSCRIPTION_ROUTES.get(platform):
             route_id = None
         route_ref = f":route_id:{route_id}" if route_id else ""

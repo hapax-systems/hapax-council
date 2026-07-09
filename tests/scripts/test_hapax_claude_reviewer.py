@@ -135,4 +135,33 @@ def test_claude_reviewer_omits_child_stdout_on_nonzero_exit(tmp_path: Path) -> N
     assert result.returncode == 42
     assert result.stdout == ""
     assert "rate limited" in result.stderr
+    assert "stdout omitted from classifier" in result.stderr
+    assert "stdout omitted" in result.stderr
+
+
+def test_claude_reviewer_preserves_stdout_only_quota_wall_for_classifier(
+    tmp_path: Path,
+) -> None:
+    fake = tmp_path / "claude"
+    fake.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        'print("You\'ve hit your weekly limit - resets 5pm (America/Chicago)")\n'
+        "sys.exit(75)\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o700)
+
+    result = subprocess.run(
+        [sys.executable, str(WRAPPER), "--claude-bin", str(fake)],
+        input="review packet",
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+
+    assert result.returncode == 75
+    assert result.stdout == ""
+    assert "claude stdout diagnostic for classifier" in result.stderr
+    assert "weekly limit" in result.stderr
     assert "stdout omitted" in result.stderr

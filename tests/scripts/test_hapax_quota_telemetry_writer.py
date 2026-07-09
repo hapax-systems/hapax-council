@@ -929,6 +929,30 @@ def test_route_scoped_claude_quota_wall_only_exhausts_matching_route(tmp_path: P
     )
 
 
+def test_quota_wall_route_id_cannot_move_wall_to_another_platform(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _wall_receipt(
+        relay,
+        "agy-review",
+        "2026-06-10T06:00:00Z",
+        route_id="claude.review.opus",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    states = {
+        snapshot["route_id"]: snapshot["subscription_quota_state"]
+        for snapshot in payload["quota_snapshots"]
+    }
+    assert states["agy.review.direct"] == "unknown"
+    assert states["claude.review.opus"] == "unknown"
+    summary = json.loads(result.stdout)
+    assert summary["quota_walls"] == {"agy": 1}
+
+
 def test_retired_gemini_quota_wall_receipts_warn_and_do_not_seed_routes(tmp_path: Path) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()

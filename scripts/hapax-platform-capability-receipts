@@ -431,6 +431,11 @@ def observe_wrappers(routes: list[PlatformCapabilityRoute]) -> list[WrapperEvide
     return [wrappers[path] for path in sorted(wrappers)]
 
 
+def wrapper_reason_label(wrapper: WrapperEvidence) -> str:
+    label = Path(wrapper.path).name or wrapper.path
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", label).strip("-") or "unknown-wrapper"
+
+
 def config_refs(platform: str) -> list[ConfigEvidence]:
     refs: list[ConfigEvidence] = []
     for path_ref in CONFIG_REFS_BY_PLATFORM[platform]:
@@ -512,10 +517,26 @@ def build_receipt(
         f"local:{item.path}:sha256:{item.sha256}" for item in wrappers if item.sha256
     )
     if not wrapper_usable:
-        if any(item.exists and item.sha256 and not item.executable for item in unusable_wrappers):
+        non_executable = [
+            item
+            for item in unusable_wrappers
+            if item.exists and item.sha256 and not item.executable
+        ]
+        missing_or_unreadable = [
+            item for item in unusable_wrappers if not item.exists or not item.sha256
+        ]
+        if non_executable:
             capability_reasons.append("sanctioned_wrapper_not_executable")
-        if any(not item.exists or not item.sha256 for item in unusable_wrappers):
+            capability_reasons.extend(
+                f"sanctioned_wrapper_not_executable:{wrapper_reason_label(item)}"
+                for item in non_executable
+            )
+        if missing_or_unreadable:
             capability_reasons.append("sanctioned_wrapper_missing_or_unreadable")
+            capability_reasons.extend(
+                f"sanctioned_wrapper_missing_or_unreadable:{wrapper_reason_label(item)}"
+                for item in missing_or_unreadable
+            )
     if platform == "codex":
         exec_auth_refs, exec_auth_reasons = observe_codex_exec_auth(
             enabled=codex_exec_auth_probe,

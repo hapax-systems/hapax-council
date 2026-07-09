@@ -28,6 +28,12 @@ CLAUDE_ADMISSION_EVIDENCE_REF = (
 )
 CLAUDE_ADMISSION_REMEDIATION_COMMAND = (
     "scripts/hapax-claude-subscription-quota-admission "
+    "--route-id claude.headless.full "
+    "--evidence-ref claude-subscription-headroom-observed-$(date -u +%Y%m%dt%H%M%Sz) --json"
+)
+CLAUDE_REVIEW_ADMISSION_REMEDIATION_COMMAND = (
+    "scripts/hapax-claude-subscription-quota-admission "
+    "--route-id claude.review.opus "
     "--evidence-ref claude-subscription-headroom-observed-$(date -u +%Y%m%dt%H%M%Sz) --json"
 )
 
@@ -1227,6 +1233,23 @@ def test_subscription_route_uses_registered_strategy_not_absent() -> None:
     reasons = guarantor.availability_dispatch_reason_codes(receipt)
     assert "refresh_strategy_absent:subscription" not in reasons
     assert f"refresh_remediation:{CLAUDE_ADMISSION_REMEDIATION_COMMAND}" in reasons
+
+
+def test_subscription_strategy_names_review_route_in_remediation() -> None:
+    registry = load_platform_capability_registry()
+    route = registry.require("claude.review.opus")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    receipt = guarantor.evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=guarantor.default_refresh_strategy_registry(),
+        now=NOW,
+    )
+
+    reasons = guarantor.availability_dispatch_reason_codes(receipt)
+    assert f"refresh_remediation:{CLAUDE_REVIEW_ADMISSION_REMEDIATION_COMMAND}" in reasons
+    assert f"refresh_remediation:{CLAUDE_ADMISSION_REMEDIATION_COMMAND}" not in reasons
 
 
 def test_subscription_strategy_does_not_emit_claude_remediation_for_other_routes() -> None:

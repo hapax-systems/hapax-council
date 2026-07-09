@@ -407,6 +407,7 @@ class SubscriptionRefreshStrategy:
 
         admission_command = (
             "scripts/hapax-claude-subscription-quota-admission "
+            f"--route-id {route.route_id} "
             "--evidence-ref claude-subscription-headroom-observed-$(date -u +%Y%m%dt%H%M%Sz) "
             "--json"
         )

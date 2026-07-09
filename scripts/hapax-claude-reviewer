@@ -10,6 +10,9 @@ import sys
 
 PINNED_REVIEW_MODEL = "opus"
 EMPTY_MCP_CONFIG = '{"mcpServers":{}}'
+# Defense in depth: the empty allowlist and strict empty MCP config are the
+# fail-closed controls, while this list makes known mutating/read/network tools
+# explicit in current Claude CLI builds.
 DISALLOWED_REVIEW_TOOLS = ",".join(
     [
         "Agent",
@@ -117,16 +120,32 @@ def main(argv: list[str] | None = None) -> int:
         )
     except OSError as exc:
         print(
-            f"hapax-claude-reviewer: failed to launch {args.claude_bin}: {exc}",
+            f"hapax-claude-reviewer: failed to launch {args.claude_bin}: {exc}; "
+            "next action: set HAPAX_CLAUDE_BIN or CLAUDE_BIN to the sanctioned "
+            "Claude CLI and rerun the review dispatch",
             file=sys.stderr,
         )
         return 2
 
     sys.stderr.write(result.stderr)
     if result.returncode != 0:
+        stdout = result.stdout.strip()
+        if not result.stderr.strip() and stdout and "\n" not in stdout:
+            print(
+                f"hapax-claude-reviewer: claude stdout diagnostic for classifier: {stdout}",
+                file=sys.stderr,
+            )
+        elif result.stdout:
+            print(
+                "hapax-claude-reviewer: claude stdout omitted from classifier "
+                "because child stderr was present or stdout was multiline",
+                file=sys.stderr,
+            )
         print(
             "hapax-claude-reviewer: claude exited nonzero; stdout omitted so quota "
-            "walls cannot be laundered into an invalid review",
+            "walls cannot be laundered into an invalid review; next action: inspect "
+            "preserved stderr/stdout diagnostics, then refresh the route-specific "
+            "Claude admission receipt if account-live quota is observed",
             file=sys.stderr,
         )
         return result.returncode
