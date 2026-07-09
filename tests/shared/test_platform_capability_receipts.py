@@ -542,34 +542,50 @@ def test_codex_receipt_exec_auth_timeout_fails_closed(tmp_path: Path) -> None:
 def test_codex_exec_auth_timeout_env_malformed_falls_back_to_default(
     tmp_path: Path,
 ) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_codex_exec_failure(bin_dir, "login required")
+
     result = _run_receipts(
         tmp_path,
-        env={"PATH": "", "HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS": "not-a-float"},
+        env={
+            "PATH": "",
+            "HAPAX_CODEX_BIN_PATH": str(bin_dir / "codex"),
+            "HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS": "not-a-float",
+        },
         codex_access_token=False,
     )
 
     assert result.returncode == 0, result.stderr
     assert "invalid HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS" in result.stderr
     receipt = json.loads((tmp_path / "codex.json").read_text(encoding="utf-8"))
+    assert receipt["cli"]["available"] is True
     assert receipt["capability"]["status"] == "blocked"
-    assert "cli_missing_or_unusable" in receipt["capability"]["reason_codes"]
     assert "codex_exec_auth_failed" in receipt["capability"]["reason_codes"]
 
 
 def test_codex_exec_auth_timeout_env_nonpositive_falls_back_to_default(
     tmp_path: Path,
 ) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_codex_exec_failure(bin_dir, "login required")
+
     result = _run_receipts(
         tmp_path,
-        env={"PATH": "", "HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS": "0"},
+        env={
+            "PATH": "",
+            "HAPAX_CODEX_BIN_PATH": str(bin_dir / "codex"),
+            "HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS": "0",
+        },
         codex_access_token=False,
     )
 
     assert result.returncode == 0, result.stderr
     assert "nonpositive HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS" in result.stderr
     receipt = json.loads((tmp_path / "codex.json").read_text(encoding="utf-8"))
+    assert receipt["cli"]["available"] is True
     assert receipt["capability"]["status"] == "blocked"
-    assert "cli_missing_or_unusable" in receipt["capability"]["reason_codes"]
     assert "codex_exec_auth_failed" in receipt["capability"]["reason_codes"]
 
 
