@@ -921,6 +921,49 @@ def test_subscription_quota_nonblocking_uses_receipt_stale_after_without_clearin
     assert "account_live_quota_receipt_absent" in result.routes[0].blocked_reasons
 
 
+def test_claude_observed_platform_quota_receipt_does_not_clear_live_admission_blocker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    payload = _payload()
+    route = _route_payload(payload, "claude.headless.full")
+    route["blocked_reasons"] = [
+        "account_live_quota_receipt_absent",
+        "quota_telemetry_unknown",
+    ]
+    route["freshness"]["evidence"]["quota"]["blocked_reasons"] = [
+        "account_live_quota_receipt_absent",
+        "quota_telemetry_unknown",
+    ]
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(tmp_path / "missing-live.json"))
+
+    observed_at = datetime(2026, 5, 9, 20, 0, tzinfo=UTC)
+    receipt = _make_receipt(observed_at=observed_at).model_copy(
+        update={
+            "quota": SurfaceEvidence(
+                status=EvidenceStatus.OBSERVED,
+                source="test",
+                observed_at=observed_at,
+                stale_after="15m",
+                evidence_refs=["test:claude:observed-platform-quota"],
+                reason_codes=[],
+            )
+        }
+    )
+
+    _apply_receipt_to_route_payload(route, receipt, now=datetime(2026, 5, 9, 20, 1, tzinfo=UTC))
+
+    assert route["route_state"] == "blocked"
+    assert route["blocked_reasons"] == ["account_live_quota_receipt_absent"]
+    assert route["freshness"]["evidence"]["quota"]["blocked_reasons"] == [
+        "account_live_quota_receipt_absent"
+    ]
+    assert (
+        "test:claude:observed-platform-quota"
+        in route["freshness"]["evidence"]["quota"]["evidence_refs"]
+    )
+
+
 def test_loader_applies_route_authority_receipts_after_platform_receipts(tmp_path: Path) -> None:
     """Platform freshness projections must mirror dispatch route authority."""
 

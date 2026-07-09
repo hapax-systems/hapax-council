@@ -14,6 +14,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-quota-telemetry-writer"
+CLAUDE_ADMISSION_SCRIPT = REPO_ROOT / "scripts" / "hapax-claude-subscription-quota-admission"
 FIXTURES = REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json"
 NOW = "2026-06-10T00:00:00Z"
 PAYG_NOW = "2026-07-06T14:05:00Z"
@@ -395,6 +396,27 @@ def test_glmcp_quota_wall_beats_fresh_admission_receipt(tmp_path: Path) -> None:
     assert summary["quota_walls"] == {"glmcp": 1}
     assert summary["glmcp_admissions"] == 1
     assert summary["glmcp_payg_spend_receipts"] == 0
+
+
+def test_claude_quota_wall_beats_fresh_admission_receipt(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _wall_receipt(relay, "theta", "2026-06-10T06:00:00Z")
+    _claude_admission(relay, observed_at="2026-06-09T23:55:00Z")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
+    assert snapshot["subscription_quota_state"] == "exhausted"
+    assert "quota wall" in snapshot["operator_visible_reason"]
+    assert any("theta-quota-wall.yaml" in ref for ref in snapshot["evidence_refs"])
+    assert not any(
+        "claude-subscription-quota-admission.yaml" in ref for ref in snapshot["evidence_refs"]
+    )
+    summary = json.loads(result.stdout)
+    assert summary["quota_walls"] == {"claude": 1}
+    assert summary["claude_admissions"] == 1
 
 
 def test_glmcp_payg_spend_receipt_counts_against_budget_gate(tmp_path: Path) -> None:
@@ -868,6 +890,41 @@ def test_fresh_claude_admission_receipt_marks_claude_fresh(tmp_path: Path) -> No
     assert "witness:claude-subscription-headroom-observed-20260609t2355z" in ref
     assert "observation:subscription_quota_headroom_observed" in ref
     assert "receipt-bounded" in snapshot["operator_visible_reason"]
+    assert json.loads(result.stdout)["claude_admissions"] == 1
+
+
+def test_claude_admission_writer_output_marks_claude_fresh(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    admission_result = subprocess.run(
+        [
+            sys.executable,
+            str(CLAUDE_ADMISSION_SCRIPT),
+            "--receipt-dir",
+            str(relay),
+            "--now",
+            "2026-06-09T23:55:00Z",
+            "--evidence-ref",
+            "claude-subscription-headroom-observed-20260609t2355z",
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+    assert admission_result.returncode == 0, admission_result.stderr
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
+    assert snapshot["subscription_quota_state"] == "fresh"
+    assert snapshot["fresh_until"] == "2026-06-10T00:10:00Z"
+    assert any(
+        ref.endswith(":account-live-quota:observed")
+        and "claude-subscription-headroom-observed-20260609t2355z" in ref
+        for ref in snapshot["evidence_refs"]
+    )
     assert json.loads(result.stdout)["claude_admissions"] == 1
 
 

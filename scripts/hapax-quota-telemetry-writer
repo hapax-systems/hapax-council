@@ -43,17 +43,22 @@ Each tick does two writes:
      stderr warnings; malformed, stale, mismatched, or unbounded receipts are
      ignored loudly.
      Recheck Claude and agy reviewer admission evidence with
-     ``find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '*claude-subscription-quota-admission*.yaml' -o -name '*agy-quota-admission*.yaml' -print``
+     ``find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '*claude-subscription-quota-admission*.yaml' -print``
+     and
+     ``find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '*agy-quota-admission*.yaml' -print``
      and create fresh short-lived Claude admission receipts only after a genuine
      account-live subscription observation, or agy admission receipts only after
      a sanctioned ``scripts/hapax-agy-reviewer`` smoke succeeds.
      Admission receipts with ``stale_after_seconds`` above 3600 seconds are
      intentionally ignored; write a fresh short-lived witness instead.
      The emergency false-negative recovery path is to create a fresh
-     short-lived admission receipt with schema, status, provider, capacity_pool,
-     route_id, supported_tool, endpoint, model, observed_at, stale_after_seconds,
-     evidence_ref, and explicit no-secret/no-content/billing fields, then rerun
-     this writer so the live ledger is refreshed.
+     short-lived admission receipt. Claude receipts must include schema, status,
+     provider, capacity_pool, route_id, auth_surface, observation, observed_at,
+     stale_after_seconds, evidence_ref, account_live_quota_observed,
+     lane_presence_used_as_quota_evidence, and explicit
+     no-secret/no-content/billing fields. GLMCP/agy receipts additionally bind
+     the reviewer tool/model/endpoint or smoke witness fields required by their
+     scanners. Then rerun this writer so the live ledger is refreshed.
      That receipt-plane refresh is the canonical emergency procedure for a
      false negative.
      There is intentionally no environment-variable bypass for stale/unknown

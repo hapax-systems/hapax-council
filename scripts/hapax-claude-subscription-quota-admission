@@ -2,10 +2,10 @@
 """Write Claude subscription-quota admission receipts from an account-live observation.
 
 The command records a short-lived, sanitized observation that ``claude.headless.full`` has fresh
-account-live subscription quota. It is
-patterned after ``scripts/hapax-agy-quota-admission`` / ``scripts/hapax-glmcp-quota-admission``:
-positive receipts are consumed by ``scripts/hapax-quota-telemetry-writer`` before the Claude
-``claude.headless.full`` route is treated as quota-fresh.
+account-live subscription quota. It is patterned after
+``scripts/hapax-agy-quota-admission`` / ``scripts/hapax-glmcp-quota-admission``: positive receipts
+are consumed by ``scripts/hapax-quota-telemetry-writer`` before ``claude.headless.full`` is treated
+as quota-fresh.
 
 Account-live subscription quota is NOT mechanically observable yet (Claude Code OTel usage/cost
 integration is incomplete — CASE-CAPACITY-ROUTING-001 R2, "use receipts and manual refresh until

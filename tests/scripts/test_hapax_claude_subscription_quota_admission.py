@@ -149,6 +149,62 @@ def test_rejects_out_of_bounds_stale_after(tmp_path: Path) -> None:
     assert not any(tmp_path.glob("*.yaml"))
 
 
+def test_rejects_invalid_now(tmp_path: Path, capsys) -> None:  # noqa: ANN001
+    rc = _run(
+        [
+            "--receipt-dir",
+            str(tmp_path),
+            "--now",
+            "not-a-date",
+            "--evidence-ref",
+            "claude-subscription-headroom-observed-20260708t1400z",
+        ]
+    )
+
+    assert rc == 2
+    assert "invalid --now" in capsys.readouterr().err
+    assert not any(tmp_path.glob("*.yaml"))
+
+
+def test_rejects_unsafe_receipt_name(tmp_path: Path, capsys) -> None:  # noqa: ANN001
+    rc = _run(
+        [
+            "--receipt-dir",
+            str(tmp_path),
+            "--receipt-name",
+            "bad#claude-subscription-quota-admission.yaml",
+            "--evidence-ref",
+            "claude-subscription-headroom-observed-20260708t1400z",
+        ]
+    )
+
+    assert rc == 2
+    assert "unsafe receipt name" in capsys.readouterr().err
+    assert not any(tmp_path.glob("*.yaml"))
+
+
+def test_rejects_receipt_name_without_claude_admission_label(
+    tmp_path: Path,
+    capsys,
+) -> None:  # noqa: ANN001
+    rc = _run(
+        [
+            "--receipt-dir",
+            str(tmp_path),
+            "--receipt-name",
+            "safe-but-wrong.yaml",
+            "--evidence-ref",
+            "claude-subscription-headroom-observed-20260708t1400z",
+        ]
+    )
+
+    assert rc == 2
+    assert "receipt name must contain 'claude-subscription-quota-admission'" in (
+        capsys.readouterr().err
+    )
+    assert not any(tmp_path.glob("*.yaml"))
+
+
 def test_write_oserror_returns_one(tmp_path: Path, monkeypatch, capsys) -> None:  # noqa: ANN001
     module = _load_module()
 
