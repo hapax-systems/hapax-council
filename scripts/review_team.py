@@ -24,6 +24,7 @@ from __future__ import annotations
 import ast
 import fnmatch
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -42,6 +43,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from shared import operator_attribution_scan as attribution_scan  # noqa: E402
+from shared import public_gate_receipts  # noqa: E402
 from shared.failure_classification import (  # noqa: E402
     STRUCTURED_PROVIDER_OUTAGE_ACTIONS,
     STRUCTURED_PROVIDER_OUTAGE_ERROR_CLASSES,
@@ -1348,6 +1350,19 @@ def verify_literal_defect_critical(finding: Mapping[str, Any], repo_root: Path) 
 
 _OPERATOR_RATIFICATIONS_RELPATH = Path("config/governance/operator-ratifications.yaml")
 _SUPPORTED_RATIFICATION_SAFETY_POLICIES = frozenset({"operator_privacy_residual"})
+_DECISION_RECORD_SIGNATURE_FIELDS = (
+    "id",
+    "ratified",
+    "authority",
+    "decision_record",
+    "decision_record_path",
+    "decision_record_sha256",
+    "class",
+    "lenses",
+    "topics",
+    "files",
+    "files_sha256",
+)
 
 
 def _decision_record_pin_holds(repo_root: Path, entry: Mapping[str, Any]) -> bool:
@@ -1368,6 +1383,29 @@ def _decision_record_pin_holds(repo_root: Path, entry: Mapping[str, Any]) -> boo
     except OSError:
         return False
     return actual == expected
+
+
+def _decision_record_authority_payload(entry: Mapping[str, Any]) -> dict[str, Any]:
+    payload = {key: entry[key] for key in _DECISION_RECORD_SIGNATURE_FIELDS if key in entry}
+    payload["authority_issuer"] = entry.get("decision_record_authority_issuer")
+    return payload
+
+
+def _decision_record_authority_signature_holds(entry: Mapping[str, Any]) -> bool:
+    issuer = entry.get("decision_record_authority_issuer")
+    signature = entry.get("decision_record_authority_signature")
+    if not isinstance(issuer, str) or not issuer.strip():
+        return False
+    if not isinstance(signature, str) or not signature.strip():
+        return False
+    secret = os.environ.get(public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, "").strip()
+    if not secret:
+        return False
+    expected = public_gate_receipts.public_gate_authority_signature(
+        _decision_record_authority_payload(entry),
+        secret,
+    )
+    return hmac.compare_digest(signature, expected)
 
 
 def _ratification_classes(payload: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
@@ -1442,6 +1480,7 @@ def _operator_ratifications(repo_root: Path) -> list[dict[str, Any]]:
             or not isinstance(entry.get("decision_record_sha256"), str)
             or not re.fullmatch(r"[0-9a-f]{64}", str(entry.get("decision_record_sha256")))
             or not _decision_record_pin_holds(repo_root, entry)
+            or not _decision_record_authority_signature_holds(entry)
             or not isinstance(lenses, list)
             or not lenses
             or not all(isinstance(item, str) and item.strip() for item in lenses)

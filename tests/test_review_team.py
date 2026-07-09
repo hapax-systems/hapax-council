@@ -3009,6 +3009,8 @@ class TestOperatorRatificationGate:
     active entry are waived with a receipt; everything else blocks. Fail-closed on
     malformed ledgers and unproven checkouts (go-gate binding rule)."""
 
+    AUTHORITY_ISSUER = "claim-verification-council"
+    AUTHORITY_SECRET = "test-public-gate-authority-secret"
     LEDGER = """ratifications_schema: 1
 ratification_classes:
   operator-privacy-residual:
@@ -3033,12 +3035,40 @@ ratifications:
     @pytest.fixture(autouse=True)
     def _synthetic_head_bound_worktrees_are_clean(self, monkeypatch) -> None:
         rt = _load_review_team_module()
+        monkeypatch.setenv(
+            rt.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV,
+            self.AUTHORITY_SECRET,
+        )
         monkeypatch.setattr(rt, "_repo_worktree_clean", lambda root: True)
 
-    def _ledger(self, root: Path, text: str | None = None) -> None:
+    def _signed_ledger_text(self, text: str) -> str:
+        rt = _load_review_team_module()
+        try:
+            payload = yaml.safe_load(text)
+        except yaml.YAMLError:
+            return text
+        if not isinstance(payload, dict):
+            return text
+        entries = payload.get("ratifications")
+        if not isinstance(entries, list):
+            return text
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            entry.setdefault("decision_record_authority_issuer", self.AUTHORITY_ISSUER)
+            entry["decision_record_authority_signature"] = (
+                rt.public_gate_receipts.public_gate_authority_signature(
+                    rt._decision_record_authority_payload(entry),
+                    self.AUTHORITY_SECRET,
+                )
+            )
+        return yaml.safe_dump(payload, sort_keys=False)
+
+    def _ledger(self, root: Path, text: str | None = None, *, sign: bool = True) -> None:
         path = root / "config" / "governance" / "operator-ratifications.yaml"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text if text is not None else self.LEDGER, encoding="utf-8")
+        raw = text if text is not None else self.LEDGER
+        path.write_text(self._signed_ledger_text(raw) if sign else raw, encoding="utf-8")
         (root / "decision-record.md").write_text("test decision record\n", encoding="utf-8")
 
     def _critical(self, lens: str = "consent-provenance", file: str = "docs/research/x.md") -> dict:
@@ -3290,6 +3320,66 @@ ratifications:
                 "0000000000000000000000000000000000000000000000000000000000000000\n",
             ),
         )
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1
+
+    def test_ledger_without_decision_record_authority_signature_waives_nothing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path, self.LEDGER, sign=False)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1
+
+    def test_ledger_without_decision_record_authority_issuer_waives_nothing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        payload = yaml.safe_load(self._signed_ledger_text(self.LEDGER))
+        del payload["ratifications"][0]["decision_record_authority_issuer"]
+        self._ledger(tmp_path, yaml.safe_dump(payload, sort_keys=False), sign=False)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1
+
+    def test_forged_decision_record_authority_signature_waives_nothing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        signed = self._signed_ledger_text(self.LEDGER)
+        self._ledger(
+            tmp_path,
+            signed.replace("hmac-sha256:", "hmac-sha256:0000", 1),
+            sign=False,
+        )
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1
+
+    def test_signed_ledger_without_authority_secret_waives_nothing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        monkeypatch.delenv(rt.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, raising=False)
         doc = tmp_path / "docs" / "research" / "x.md"
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Clean generic research text.\n", encoding="utf-8")
@@ -3754,6 +3844,28 @@ class TestHeadBoundRepoRoot:
         decision_record.write_text("test", encoding="utf-8")
         led = pr_tree / "config" / "governance" / "operator-ratifications.yaml"
         led.parent.mkdir(parents=True)
+        secret = "test-public-gate-authority-secret"
+        monkeypatch.setenv(rt.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, secret)
+        entry = {
+            "id": "RAT-TEST-1",
+            "ratified": "2026-07-09",
+            "authority": "operator",
+            "decision_record": "test",
+            "decision_record_path": "decision-record.md",
+            "decision_record_sha256": hashlib.sha256(b"test").hexdigest(),
+            "class": "operator-privacy-residual",
+            "lenses": ["consent-provenance"],
+            "topics": ["residual"],
+            "files": ["docs/research/x.md"],
+            "files_sha256": {"docs/research/x.md": hashlib.sha256(doc.read_bytes()).hexdigest()},
+            "decision_record_authority_issuer": "claim-verification-council",
+        }
+        entry["decision_record_authority_signature"] = (
+            rt.public_gate_receipts.public_gate_authority_signature(
+                rt._decision_record_authority_payload(entry),
+                secret,
+            )
+        )
         led.write_text(
             yaml.safe_dump(
                 {
@@ -3764,23 +3876,7 @@ class TestHeadBoundRepoRoot:
                             "safety_policy": "operator_privacy_residual",
                         }
                     },
-                    "ratifications": [
-                        {
-                            "id": "RAT-TEST-1",
-                            "ratified": "2026-07-09",
-                            "authority": "operator",
-                            "decision_record": "test",
-                            "decision_record_path": "decision-record.md",
-                            "decision_record_sha256": hashlib.sha256(b"test").hexdigest(),
-                            "class": "operator-privacy-residual",
-                            "lenses": ["consent-provenance"],
-                            "topics": ["residual"],
-                            "files": ["docs/research/x.md"],
-                            "files_sha256": {
-                                "docs/research/x.md": hashlib.sha256(doc.read_bytes()).hexdigest()
-                            },
-                        }
-                    ],
+                    "ratifications": [entry],
                 }
             ),
             encoding="utf-8",

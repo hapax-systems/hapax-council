@@ -1,15 +1,17 @@
-"""Operator-attribution scan — the ENFORCED privacy class, importable.
+"""Operator-attributed diagnosis-token scan — the ENFORCED privacy subset, importable.
 
 Single source for the two-tier diagnostic-attribution patterns, used by BOTH the
 durable test guard (tests/test_operator_attribution_redaction.py) and the review
 plane's ratification gate (scripts/review_team.py): the data-owner ledger may waive
 review findings ONLY on files that are clean under this scan — the ledger can never
-waive the enforced class itself.
+waive the enforced diagnosis-token subset itself.
 
 Tier 1: same-sentence attribution (never allowlisted) — unbounded in distance, spanning
 hard-wrapped prose but never bridging a table row, list item, or blank line. Tier 2:
 paragraph-context co-occurrence (~300 chars crossing single newlines), allowlistable per
 reviewed span via the hash-pinned ledger in tests/operator_attribution_reviewed_generic.txt.
+Attributed first-person affect quotes are guarded separately by ``file_waiver_safe``;
+they are not diagnosis-token scan hits.
 """
 
 from __future__ import annotations
@@ -33,11 +35,17 @@ _DIRECT_DIAGNOSIS = (
 #: bullet/fence, or a new string literal; a sentence never bridges table cells or
 #: adjacent list items.
 _SOFT_WRAP = "\\n(?![ \t]*(?:\\n|[|#>`\"'*+\\]\\}\\)\\-]))"
-#: A same-sentence run: ANY distance (no short window), terminated by .!? or by anything
-#: `_SOFT_WRAP` refuses to cross. It spans hard-wrapped prose deliberately; otherwise a
-#: wrapped sentence demotes from tier 1 (never allowlisted) to tier 2 (pinnable), failing
-#: open on the enforced class. Lazy: `search` stops at the first diagnosis term.
-_SAME_SENTENCE = rf"(?:(?![.!?])(?:[^\n]|{_SOFT_WRAP}))*?"
+#: A same-sentence run: ANY distance (no short window), terminated by sentence-final
+#: punctuation or by anything `_SOFT_WRAP` refuses to cross. Common abbreviation and
+#: decimal periods do not terminate the sentence; otherwise an attribution containing
+#: "e.g." or "i.e." demotes from tier 1 (never allowlisted) to tier 2 (pinnable).
+#: Code/member-access periods still stop scans so snippets do not bridge unrelated lines.
+_SENTENCE_END = (
+    r"(?:(?<!e)(?<!i)(?<!U)(?<!\d)\.(?=[A-Za-z_])|"
+    r"(?<!e\.g)(?<!i\.e)(?<!Dr)(?<!Mr)(?<!Ms)(?<!Mrs)(?<!vs)(?<!cf)(?<!U\.S)"
+    r"(?<!\d)[.!?](?=\s|$))"
+)
+_SAME_SENTENCE = rf"(?:(?!{_SENTENCE_END})(?:[^\n]|{_SOFT_WRAP}))*?"
 SENTENCE_PATTERNS = (
     re.compile(
         rf"operator\s+(?:has|with|is)\s+(?:an?\s+|the\s+)?{_DIRECT_DIAGNOSIS}",

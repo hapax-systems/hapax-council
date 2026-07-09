@@ -139,6 +139,22 @@ systemctl --user is-active hapax-cc-pr-merge-watcher.timer
 inactive
 systemctl --user is-active hapax-cc-pr-merge-watcher.service
 inactive
+
+review recheck, executed 2026-07-09 11:22 CDT:
+systemctl --user mask --runtime --now hapax-cc-pr-merge-watcher.timer
+Created symlink '/run/user/1000/systemd/user/hapax-cc-pr-merge-watcher.timer' -> '/dev/null'.
+systemctl --user mask --force --now hapax-cc-pr-merge-watcher.timer
+Failed to mask unit: File '~/.config/systemd/user/hapax-cc-pr-merge-watcher.timer' already exists
+mv ~/.config/systemd/user/hapax-cc-pr-merge-watcher.timer ~/.config/systemd/user/hapax-cc-pr-merge-watcher.timer.unmasked-20260709T1622Z
+ln -s /dev/null ~/.config/systemd/user/hapax-cc-pr-merge-watcher.timer
+systemctl --user daemon-reload
+systemctl --user is-enabled hapax-cc-pr-merge-watcher.timer
+masked
+systemctl --user is-active hapax-cc-pr-merge-watcher.timer
+inactive
+systemctl --user status hapax-cc-pr-merge-watcher.timer --no-pager --lines=8
+Loaded: masked (Reason: Unit hapax-cc-pr-merge-watcher.timer is masked.)
+Active: inactive (dead)
 ```
 
 Interpretation:
@@ -148,7 +164,7 @@ Interpretation:
 - No `cc-close` command was invoked.
 - The fixture note remained `status: pr_open`.
 - The live timer's configured execution path is the source-activation worktree.
-- The live timer is now disabled and inactive, and the service is inactive, so
+- The live timer is now masked and inactive, and the service is inactive, so
   the old deployed watcher cannot process PR #4472 during the merge-to-deploy
   window.
 
@@ -156,4 +172,7 @@ Post-merge obligation: after #4472 merges, run `systemctl --user start
 hapax-post-merge-deploy.service`, verify the source-activation worktree contains
 the merged head and `grep -c close_on_pr_merge
 ~/.cache/hapax/source-activation/worktree/scripts/cc-pr-merge-watcher.py` returns
-nonzero, then re-enable and start `hapax-cc-pr-merge-watcher.timer`.
+nonzero, then restore
+`~/.config/systemd/user/hapax-cc-pr-merge-watcher.timer.unmasked-20260709T1622Z`
+to `~/.config/systemd/user/hapax-cc-pr-merge-watcher.timer`, reload systemd,
+and re-enable/start `hapax-cc-pr-merge-watcher.timer`.

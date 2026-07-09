@@ -1,10 +1,10 @@
-"""Durable scan: operator-attributed diagnostic text stays off public surfaces.
+"""Durable scan: operator-attributed diagnosis-token text stays off public surfaces.
 
 The 2026-07-09 privacy redaction removed operator-attributed diagnostic phrasing from
-docs, code constants, prompts, profiles, and fixtures. This scan pins the CLASS at two
-tiers (patterns live in shared/operator_attribution_scan.py — the SAME module the
-review plane's ratification gate uses, so the ledger can never waive what this scan
-enforces):
+docs, code constants, prompts, profiles, and fixtures. This scan pins the enforced
+diagnosis-token subset at two tiers (patterns live in shared/operator_attribution_scan.py
+— the SAME module the review plane's ratification gate uses, so the ledger can never
+waive what this scan enforces):
 
 - Tier 1 (same-sentence attribution): a diagnosis/neurotype term and "operator" in one
   sentence. Never allowlisted — any hit is a regression.
@@ -27,6 +27,10 @@ literature without that constituting an operator diagnosis claim, provided no
 tier-1/tier-2 attribution exists. Section- or document-level "linkage" beyond these
 tiers is intentionally OUT of the enforced class by the privacy owner's own decision;
 the hash-pinned ledger is the standing mechanism if the owner later narrows it.
+
+Regression fixtures below explicitly cover hard-wrapped same-sentence positives,
+structural-boundary negatives, abbreviation-period positives, and file_waiver_safe
+False on synthetic tier-1 content.
 """
 
 from __future__ import annotations
@@ -199,6 +203,18 @@ def test_same_sentence_guard_matches_hard_wrapped_expanded_diagnostic_terms(
     doc.parent.mkdir(parents=True, exist_ok=True)
     doc.write_text(
         "The operator has a long-term\nexecutive dysfunction pattern.\n", encoding="utf-8"
+    )
+
+    assert not file_enforced_class_clean(tmp_path, rel)
+
+
+def test_same_sentence_guard_spans_abbreviation_periods(tmp_path: Path) -> None:
+    rel = "docs/research/x.md"
+    doc = tmp_path / rel
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(
+        "The operator, e.g. during late sessions, has " + "AD" + "HD.\n",
+        encoding="utf-8",
     )
 
     assert not file_enforced_class_clean(tmp_path, rel)
