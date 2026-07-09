@@ -914,11 +914,7 @@ def codex_auth_blocker_from_receipt(receipt: Any) -> CodexAuthBlocker | None:
     auth_reasons = [
         reason
         for reason in reason_codes
-        if reason in CODEX_EXEC_AUTH_HOLD_REASONS
-        or (
-            reason.startswith("codex_exec_auth_")
-            and reason != "codex_exec_auth_probe_not_requested"
-        )
+        if reason in CODEX_EXEC_AUTH_HOLD_REASONS or reason.startswith("codex_exec_auth_")
     ]
     if not auth_reasons:
         return None

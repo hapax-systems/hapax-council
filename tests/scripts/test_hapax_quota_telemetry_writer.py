@@ -141,11 +141,19 @@ def _codex_platform_receipt(
     receipt_dir: Path,
     *,
     reason_code: str | None = None,
+    include_failed_reason: bool = True,
     observed_at: str = "2026-06-09T23:59:00Z",
 ) -> None:
     receipt_dir.mkdir(parents=True, exist_ok=True)
     status = "blocked" if reason_code is not None else "observed"
-    reason_codes = ["codex_exec_auth_failed", reason_code] if reason_code is not None else []
+    reason_codes = (
+        [
+            *(["codex_exec_auth_failed"] if include_failed_reason else []),
+            reason_code,
+        ]
+        if reason_code is not None
+        else []
+    )
     evidence_refs = (
         [] if reason_code is not None else ["host:local:codex:exec:auth:saved-login:observed"]
     )
@@ -482,6 +490,36 @@ def test_codex_snapshot_unknown_when_exec_auth_receipt_reports_refresh_token_inv
     assert (
         "codex-auth-blocker:codex_exec_auth_refresh_token_invalidated"
         in codex_snapshot["evidence_refs"]
+    )
+
+
+def test_codex_snapshot_unknown_when_exec_auth_probe_not_requested(
+    tmp_path: Path,
+) -> None:
+    platform_receipts = tmp_path / "platform-receipts"
+    _codex_platform_receipt(
+        platform_receipts,
+        reason_code="codex_exec_auth_probe_not_requested",
+        include_failed_reason=False,
+    )
+
+    result, out = _run_writer(
+        tmp_path,
+        "--platform-capability-receipt-dir",
+        str(platform_receipts),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    codex_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "codex.headless.full"
+    )
+    assert codex_snapshot["subscription_quota_state"] == "unknown"
+    assert "codex_exec_auth_probe_not_requested" in codex_snapshot["operator_visible_reason"]
+    assert (
+        "codex-auth-blocker:codex_exec_auth_probe_not_requested" in codex_snapshot["evidence_refs"]
     )
 
 
