@@ -998,6 +998,42 @@ def test_lit_decision_with_forged_freeze_evidence_does_not_advance_ledger() -> N
     assert advance_ratchet(ledger, decision) == ledger
 
 
+def test_lit_decision_with_target_policy_mismatch_does_not_advance_ledger() -> None:
+    ledger = SCEDRatchetLedger(candidate_digests=(DIGEST_A,), technique_refs=("technique:old",))
+    policy = default_target_policy_snapshots()[1]
+    ruler_hash = _ruler().canonical_hash()
+    evidence_refs = (
+        "candidate:candidate:policy-mismatch",
+        f"candidate-digest:{DIGEST_B}",
+        f"target:{':'.join(ANTHROPIC_UNIVERSAL_JAILBREAK_TARGET.key)}",
+        f"ruler-hash:{ruler_hash}",
+        *policy.policy_refs,
+        policy.registry_row_ref,
+    )
+    decision = SCEDPhase1Decision(
+        verifier="sced_jailbreak_phase1_ratchet",
+        verifier_version=1,
+        status=GateStatus.LIT,
+        gate_result=GateResult(
+            status=GateStatus.LIT,
+            verdict=True,
+            reason="test-lit",
+            evidence_refs=evidence_refs,
+        ),
+        reason="test-lit",
+        reject_reasons=(),
+        candidate_id="candidate:policy-mismatch",
+        candidate_digest=DIGEST_B,
+        technique_refs=("technique:new",),
+        target=ANTHROPIC_UNIVERSAL_JAILBREAK_TARGET,
+        ruler_hash=ruler_hash,
+        target_policy_snapshot=policy,
+        evidence_refs=evidence_refs,
+    )
+
+    assert advance_ratchet(ledger, decision) == ledger
+
+
 def test_inconsistent_lit_decision_does_not_advance_ledger() -> None:
     ledger = SCEDRatchetLedger(candidate_digests=(DIGEST_A,), technique_refs=("technique:old",))
     decision = SCEDPhase1Decision(

@@ -667,6 +667,7 @@ def _decision_can_advance(decision: SCEDPhase1Decision) -> bool:
         and decision.target is not None
         and _decision_has_ruler_hash(decision)
         and decision.target_policy_snapshot is not None
+        and _decision_policy_matches_target(decision)
         and _decision_has_durable_evidence_refs(decision)
     )
 
@@ -696,6 +697,14 @@ def _decision_has_durable_technique_refs(decision: SCEDPhase1Decision) -> bool:
         return False
 
 
+def _decision_policy_matches_target(decision: SCEDPhase1Decision) -> bool:
+    if decision.target is None or decision.target_policy_snapshot is None:
+        return False
+    return (
+        decision.target.normalized().key == decision.target_policy_snapshot.target.normalized().key
+    )
+
+
 def _decision_has_ruler_hash(decision: SCEDPhase1Decision) -> bool:
     ruler_hash = decision.ruler_hash
     return (
@@ -706,7 +715,31 @@ def _decision_has_ruler_hash(decision: SCEDPhase1Decision) -> bool:
 
 
 def _decision_has_durable_evidence_refs(decision: SCEDPhase1Decision) -> bool:
-    return _nonempty_durable_refs(decision.evidence_refs) and _nonempty_durable_refs(
+    return (
+        _nonempty_durable_refs(decision.evidence_refs)
+        and _nonempty_durable_refs(decision.gate_result.evidence_refs)
+        and _decision_evidence_binds_material(decision)
+    )
+
+
+def _decision_evidence_binds_material(decision: SCEDPhase1Decision) -> bool:
+    if (
+        decision.candidate_id is None
+        or decision.candidate_digest is None
+        or decision.target is None
+        or decision.ruler_hash is None
+        or decision.target_policy_snapshot is None
+    ):
+        return False
+    expected = {
+        f"candidate:{decision.candidate_id}",
+        f"candidate-digest:{decision.candidate_digest}",
+        f"target:{_target_key(decision.target)}",
+        f"ruler-hash:{decision.ruler_hash}",
+        *decision.target_policy_snapshot.policy_refs,
+        decision.target_policy_snapshot.registry_row_ref,
+    }
+    return expected.issubset(decision.evidence_refs) and expected.issubset(
         decision.gate_result.evidence_refs
     )
 
