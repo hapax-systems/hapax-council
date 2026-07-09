@@ -56,6 +56,7 @@ are not the source of truth.
 
 | Reader | What to inspect | Tangible value |
 |---|---|---|
+| Skeptical technical readers | dispatch gates, route receipts, public-surface checks, refusal records | Concrete machinery that can be inspected and argued with; where evidence is missing, the surfaces say so instead of rendering green. |
 | Technical leaders | `scripts/hapax-methodology-dispatch`, `scripts/cc-claim`, route receipts, PR gates | See how AI-agent work can be bounded by task authority, route capability, and evidence before write access matters. |
 | Harness and agent-system builders | capability registry, review routes, lane state, Reins integrations | Compare orchestration mechanics against a system that treats admission, refusals, and stale evidence as first-class concerns. |
 | Researchers | claim gates, refusal records, publication bus, research ledgers | Study agentic claim authority and correction behavior in a live, privacy-constrained environment. |
@@ -68,12 +69,12 @@ are not the source of truth.
 | Technical item | Reader benefit | Current claim ceiling |
 |---|---|---|
 | cc-task and methodology dispatch | Work is attached to an authority case, parent spec, lane, and declared mutation surface. | Shows the live Hapax control pattern; not a packaged enterprise workflow product. |
-| Capability and route receipts | Model, tool, quota, and route choices can be reviewed as evidence rather than inferred from logs. | Evidence-bound routing surface; not a universal benchmark or provider certification. |
+| Capability Frontier (capability and route receipts) | Model, tool, quota, and route choices can be reviewed as evidence rather than inferred from logs. | Evidence-bound routing surface with registry-asserted scores today (measured calibration planned); not a universal benchmark or provider certification. |
 | Review and merge gates | PRs can carry tests, review dossiers, stale-state blockers, and queue/readback evidence. | Current SDLC apparatus; not a guarantee that every historical PR is complete or exemplary. |
-| Claim and public-surface gates | Public statements are checked against source, freshness, and publication eligibility. | Claim discipline mechanism; not proof of truth by itself. |
+| Claim Verification Council (claim and public-surface gates) | Public statements are checked against source, freshness, and publication eligibility. | Claim discipline mechanism; not proof of truth by itself. |
 | Publication bus | Weblog, RSS, archive, support, and other public fanout paths are treated as governed egress surfaces. | Egress control and receipts; events do not themselves prove a claim is publishable. |
 | Refusal and boundary records | Unsupported, unsafe, stale, or out-of-scope requests can become explicit refusal artifacts. | Research material and operational control; not a general moral authority system. |
-| Reins coupling | The cockpit can read estate state and preview commands without making the UI the authority source. | Read/preview and selected control paths only; mutating claims need current Reins receipts. |
+| Reins coupling | The cockpit can read estate state and preview commands without making the UI the authority source. | Read/preview surface only; mutating claims need current Reins receipts. |
 | Extracted packages | Some reusable pieces are separated into narrower repos or packages. | Repo-local license and support boundaries apply; this repository does not grant broader rights. |
 
 ## Portfolio Boundaries
