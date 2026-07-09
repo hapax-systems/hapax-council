@@ -506,6 +506,38 @@ def test_codex_snapshot_unknown_when_platform_receipt_is_invalid(
     )
 
 
+def test_codex_snapshot_unknown_when_platform_receipt_is_stale(
+    tmp_path: Path,
+) -> None:
+    platform_receipts = tmp_path / "platform-receipts-stale"
+    _codex_platform_receipt(
+        platform_receipts,
+        reason_code="codex_exec_auth_refresh_token_invalidated",
+        observed_at="2026-06-09T23:00:00Z",
+    )
+
+    result, out = _run_writer(
+        tmp_path,
+        "--platform-capability-receipt-dir",
+        str(platform_receipts),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    codex_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "codex.headless.full"
+    )
+    assert codex_snapshot["subscription_quota_state"] == "unknown"
+    assert "codex_platform_capability_receipt_stale" in codex_snapshot["operator_visible_reason"]
+    assert "codex_exec_auth_refresh_token_invalidated" in codex_snapshot["operator_visible_reason"]
+    assert (
+        "codex-auth-blocker:codex_platform_capability_receipt_stale"
+        in codex_snapshot["evidence_refs"]
+    )
+
+
 def test_governance_records_carry_over_unchanged(tmp_path: Path) -> None:
     result, out = _run_writer(tmp_path)
 

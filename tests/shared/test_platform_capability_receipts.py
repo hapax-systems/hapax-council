@@ -491,6 +491,7 @@ def test_codex_exec_auth_sentinel_parser_accepts_complete_output_shapes() -> Non
         )
         is True
     )
+    assert observed('{"message":"HAPAX_CODEX_EXEC_AUTH_OK"}\n') is True
     assert (
         observed('{"type":"response.output_text.delta","text":"HAPAX_CODEX_EXEC_AUTH_OK"}\n')
         is False

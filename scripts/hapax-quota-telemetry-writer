@@ -77,9 +77,9 @@ Each tick does two writes:
 The output is validated through ``QuotaSpendLedger.model_validate`` before an
 atomic replace, so a bad tick can never clobber a good live ledger with junk.
 No secrets are persisted. Capability receipt refresh performs bounded live route
-probes where the route requires them: GLMCP invokes ``hapax-glmcp-reviewer
-    --check`` and Codex invokes a saved-login ``codex exec`` sentinel on the
-    effective dispatch host with inherited Codex auth env stripped. Both
+probes where the route requires them: GLMCP invokes
+``hapax-glmcp-reviewer --check`` and Codex invokes a saved-login ``codex exec``
+sentinel on the effective dispatch host with inherited Codex auth env stripped. Both
 record redacted availability metadata only; local resource probes remain local
 files and nvidia-smi. If the Codex sentinel reports an invalidated saved login,
 the dispatch host login must be repaired through the documented operator
@@ -112,7 +112,9 @@ from shared.platform_capability_receipts import (  # noqa: E402
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
     PlatformCapabilityReceiptError,
+    load_platform_capability_receipt,
     load_platform_capability_receipts,
+    receipt_is_fresh,
     receipt_reference,
 )
 from shared.quota_spend_ledger import (  # noqa: E402
@@ -853,7 +855,48 @@ def codex_saved_login_blocker(
             ],
         )
     if receipt is None:
+        return stale_codex_platform_receipt_blocker(receipt_dir, now=now)
+    return codex_auth_blocker_from_receipt(receipt)
+
+
+def stale_codex_platform_receipt_blocker(
+    receipt_dir: Path,
+    *,
+    now: datetime,
+) -> CodexAuthBlocker | None:
+    """Return a fail-closed blocker when the newest Codex receipt aged out."""
+
+    if not receipt_dir.exists():
         return None
+    codex_receipts = []
+    for path in sorted(receipt_dir.glob("*.json")):
+        receipt = load_platform_capability_receipt(path)
+        if receipt.platform == "codex":
+            codex_receipts.append(receipt)
+    if not codex_receipts:
+        return None
+    latest = max(codex_receipts, key=lambda item: item.observed_at)
+    if receipt_is_fresh(latest, now=now):
+        return None
+    blocker = codex_auth_blocker_from_receipt(latest)
+    reason_codes = ["codex_platform_capability_receipt_stale"]
+    if blocker is not None:
+        reason_codes.extend(blocker.reason_codes)
+    return CodexAuthBlocker(
+        reason_codes=list(dict.fromkeys(reason_codes)),
+        evidence_refs=[
+            f"platform-capability-receipt:codex:stale:{_reason_code(latest.receipt_id)}",
+            receipt_reference(latest),
+            *(
+                blocker.evidence_refs
+                if blocker is not None
+                else [*latest.capability.evidence_refs, *latest.resource.evidence_refs]
+            ),
+        ],
+    )
+
+
+def codex_auth_blocker_from_receipt(receipt: Any) -> CodexAuthBlocker | None:
     reason_codes = list(
         dict.fromkeys(
             [
