@@ -591,6 +591,21 @@ def test_phase1_blocks_invalid_ratchet_ledger_shape() -> None:
     assert decision.reject_reasons == (SCEDPhase1RejectReason.INVALID_LEDGER,)
 
 
+def test_phase1_blocks_invalid_ratchet_ledger_type() -> None:
+    freeze = _freeze()
+    decision = evaluate_phase1_candidate(
+        _candidate(),
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=_held_out(),
+        similarity_observations=_similarities(),
+        ledger="not-a-ledger",  # type: ignore[arg-type]
+    )
+
+    assert decision.status is GateStatus.DARK
+    assert decision.reject_reasons == (SCEDPhase1RejectReason.INVALID_LEDGER,)
+
+
 def test_phase1_blocks_missing_target_policy_snapshot() -> None:
     freeze = _freeze()
     decision = evaluate_phase1_candidate(
@@ -882,6 +897,34 @@ def test_lit_decision_with_prose_candidate_id_does_not_advance_ledger() -> None:
         technique_refs=("technique:new",),
         target=ANTHROPIC_UNIVERSAL_JAILBREAK_TARGET,
         ruler_hash=_ruler().canonical_hash(),
+        target_policy_snapshot=policy,
+        evidence_refs=evidence_refs,
+    )
+
+    assert advance_ratchet(ledger, decision) == ledger
+
+
+def test_lit_decision_with_forged_freeze_evidence_does_not_advance_ledger() -> None:
+    ledger = SCEDRatchetLedger(candidate_digests=(DIGEST_A,), technique_refs=("technique:old",))
+    policy = default_target_policy_snapshots()[0]
+    evidence_refs = ("x",)
+    decision = SCEDPhase1Decision(
+        verifier="sced_jailbreak_phase1_ratchet",
+        verifier_version=1,
+        status=GateStatus.LIT,
+        gate_result=GateResult(
+            status=GateStatus.LIT,
+            verdict=True,
+            reason="test-lit",
+            evidence_refs=evidence_refs,
+        ),
+        reason="test-lit",
+        reject_reasons=(),
+        candidate_id="candidate:forged-freeze",
+        candidate_digest=DIGEST_B,
+        technique_refs=("technique:new",),
+        target=ANTHROPIC_UNIVERSAL_JAILBREAK_TARGET,
+        ruler_hash="",
         target_policy_snapshot=policy,
         evidence_refs=evidence_refs,
     )

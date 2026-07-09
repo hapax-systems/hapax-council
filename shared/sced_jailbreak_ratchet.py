@@ -666,10 +666,9 @@ def _decision_can_advance(decision: SCEDPhase1Decision) -> bool:
         and bool(decision.candidate_digest)
         and bool(decision.technique_refs)
         and decision.target is not None
-        and decision.ruler_hash is not None
+        and _decision_has_ruler_hash(decision)
         and decision.target_policy_snapshot is not None
-        and bool(decision.evidence_refs)
-        and bool(decision.gate_result.evidence_refs)
+        and _decision_has_durable_evidence_refs(decision)
     )
 
 
@@ -681,6 +680,28 @@ def _decision_has_durable_candidate_id(decision: SCEDPhase1Decision) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _decision_has_ruler_hash(decision: SCEDPhase1Decision) -> bool:
+    ruler_hash = decision.ruler_hash
+    return (
+        isinstance(ruler_hash, str)
+        and len(ruler_hash) == 64
+        and all(char in "0123456789abcdef" for char in ruler_hash)
+    )
+
+
+def _decision_has_durable_evidence_refs(decision: SCEDPhase1Decision) -> bool:
+    return _nonempty_durable_refs(decision.evidence_refs) and _nonempty_durable_refs(
+        decision.gate_result.evidence_refs
+    )
+
+
+def _nonempty_durable_refs(values: Sequence[str]) -> bool:
+    try:
+        return bool(_durable_ref_tuple(values, field="evidence_refs"))
+    except ValueError:
+        return False
 
 
 def _witnesses_match_candidate(
