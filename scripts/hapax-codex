@@ -1237,6 +1237,8 @@ if [ "$explicit_codex_command" -eq 0 ]; then
     fi
     REMOTE_EXEC_AUTH_PREFLIGHT_PROVEN=1
   else
+    # Local Codex launches must prove saved-login exec auth before cc-claim,
+    # bootstrap creation, or worker exec can expose a stale/missing login.
     prove_local_codex_exec_auth "$CODEX_BIN"
   fi
 fi
