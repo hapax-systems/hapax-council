@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import re
 import subprocess
 import sys
@@ -64,8 +65,10 @@ def _make_vault(tmp_path: Path) -> Path:
     return vault
 
 
-def _write_note(vault: Path, *, task_id: str, pr: int | None) -> Path:
+def _write_note(vault: Path, *, task_id: str, pr: int | None, extra_frontmatter: str = "") -> Path:
     pr_line = f"pr: {pr}" if pr is not None else "pr: null"
+    if extra_frontmatter:
+        pr_line = f"{pr_line}\n{extra_frontmatter}"
     note = vault / "active" / f"{task_id}-test.md"
     note.write_text(
         f"""---
@@ -505,6 +508,113 @@ class TestRunWatcher:
 
 
 # ---------------------------------------------------------------------------
+# close_on_pr_merge: false — multi-PR lane opt-out
+# ---------------------------------------------------------------------------
+
+
+class TestCloseOnPrMergeOptOut:
+    def test_opt_out_note_is_not_closed(self, tmp_path: Path, caplog: Any) -> None:
+        """A note declaring close_on_pr_merge: false is skipped with an info log."""
+        vault = _make_vault(tmp_path)
+        _write_note(vault, task_id="task-A", pr=100, extra_frontmatter="close_on_pr_merge: false")
+        cursor = tmp_path / "cursor.txt"
+        watcher.write_cursor(cursor, datetime(2026, 4, 26, 0, tzinfo=UTC))
+        _make_cc_close(tmp_path)
+
+        runner = _FakeRunner()
+        runner.gh_payload = [
+            {"number": 100, "mergedAt": "2026-04-26T12:00:00Z", "headRefName": "feat/a"},
+        ]
+
+        with caplog.at_level(logging.INFO, logger="cc-pr-merge-watcher"):
+            counters = watcher.run_watcher(
+                cursor_path=cursor,
+                vault_root=vault,
+                repo_root=tmp_path,
+                runner=runner,
+            )
+        assert counters["linked"] == 0
+        assert counters["closed"] == 0
+        assert counters["failed"] == 0
+        assert not runner.cc_close_invocations
+        assert (
+            "task task-A declares close_on_pr_merge: false — lane owner closes explicitly"
+            in caplog.text
+        )
+        # The skip is intentional, not a failure: the cursor still advances.
+        assert watcher.read_cursor(cursor) == datetime(2026, 4, 26, 12, tzinfo=UTC)
+
+    def test_note_with_other_value_still_closes(self, tmp_path: Path) -> None:
+        """Any value other than false (or absence) keeps the auto-close default."""
+        vault = _make_vault(tmp_path)
+        _write_note(vault, task_id="task-A", pr=100, extra_frontmatter="close_on_pr_merge: true")
+        cursor = tmp_path / "cursor.txt"
+        watcher.write_cursor(cursor, datetime(2026, 4, 26, 0, tzinfo=UTC))
+        _make_cc_close(tmp_path)
+
+        runner = _FakeRunner()
+        runner.gh_payload = [
+            {"number": 100, "mergedAt": "2026-04-26T12:00:00Z", "headRefName": "feat/a"},
+        ]
+
+        counters = watcher.run_watcher(
+            cursor_path=cursor,
+            vault_root=vault,
+            repo_root=tmp_path,
+            runner=runner,
+        )
+        assert counters == {"merged": 1, "linked": 1, "closed": 1, "failed": 0, "skipped": 0}
+        assert any(
+            cmd[-3:] == ["--pr", "100", "--retroactive"] for cmd in runner.cc_close_invocations
+        ), runner.cc_close_invocations
+
+    def test_mixed_lane_only_non_opt_out_note_closes(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        _write_note(vault, task_id="task-A", pr=100, extra_frontmatter="close_on_pr_merge: false")
+        _write_note(vault, task_id="task-B", pr=100)
+        cursor = tmp_path / "cursor.txt"
+        watcher.write_cursor(cursor, datetime(2026, 4, 26, 0, tzinfo=UTC))
+        _make_cc_close(tmp_path)
+
+        runner = _FakeRunner()
+        runner.gh_payload = [
+            {"number": 100, "mergedAt": "2026-04-26T12:00:00Z", "headRefName": "feat/a"},
+        ]
+
+        counters = watcher.run_watcher(
+            cursor_path=cursor,
+            vault_root=vault,
+            repo_root=tmp_path,
+            runner=runner,
+        )
+        assert counters["closed"] == 1
+        assert [cmd[1] for cmd in runner.cc_close_invocations] == ["task-B"]
+
+    def test_reconcile_skips_opt_out_note(self, tmp_path: Path, caplog: Any) -> None:
+        """The stale-state reconciler honors the opt-out too (same class of close)."""
+        vault = _make_vault(tmp_path)
+        note = _write_reconcile_note(
+            vault, task_id="task-A", pr=100, extra_frontmatter="close_on_pr_merge: false"
+        )
+        _make_cc_close(tmp_path)
+        runner = _ReconcileRunner()
+        runner.pr_states = {"100": "MERGED"}
+
+        with caplog.at_level(logging.INFO, logger="cc-pr-merge-watcher"):
+            counters = watcher.reconcile_stale_pr_states(
+                vault_root=vault, repo_root=tmp_path, runner=runner
+            )
+
+        assert counters["closed"] == 0
+        assert not runner.cc_close_invocations
+        assert (
+            "task task-A declares close_on_pr_merge: false — lane owner closes explicitly"
+            in caplog.text
+        )
+        assert "status: pr_open" in note.read_text()
+
+
+# ---------------------------------------------------------------------------
 # reconcile_stale_pr_states: cursor-window-INDEPENDENT self-heal
 #
 # The cursor loop (run_watcher) only sees PRs merged after the cursor. A task
@@ -523,8 +633,11 @@ def _write_reconcile_note(
     status: str = "pr_open",
     pr: int | None = None,
     branch: str | None = None,
+    extra_frontmatter: str = "",
 ) -> Path:
     pr_line = f"pr: {pr}" if pr is not None else "pr: null"
+    if extra_frontmatter:
+        pr_line = f"{pr_line}\n{extra_frontmatter}"
     branch_line = f"branch: {branch}" if branch is not None else "branch: null"
     note = vault / "active" / f"{task_id}-test.md"
     note.write_text(

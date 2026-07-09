@@ -8,6 +8,14 @@ invokes `scripts/cc-close <task_id> --pr N` for each.
 Cursor advances only on success; a failure on one PR does not block
 others, and does not lose them on the next run.
 
+Multi-PR lanes opt out per note: a task whose frontmatter carries
+``close_on_pr_merge: false`` is never auto-closed by this watcher — neither by
+the merged-PR cursor loop nor by the stale-state reconciler — because a lane
+spanning several PRs shares one task note, and auto-closing on the first
+merged PR has killed such lanes mid-flight. The lane owner closes explicitly
+via ``cc-close``. Any other value, or the field's absence, keeps the fail-safe
+default (auto-close on linked-PR merge) unchanged.
+
 Killswitch: ``HAPAX_CC_HYGIENE_OFF=1`` skips entirely (shared with
 PR1 sweeper + H8 hook).
 
@@ -205,6 +213,18 @@ class LinkedTask:
     pr_number: int
 
 
+# Multi-PR lane opt-out: `close_on_pr_merge: false` in the note frontmatter
+# means the lane owner closes explicitly; the watcher must never auto-close.
+_CLOSE_ON_PR_MERGE_FALSE_RE = re.compile(
+    r"^close_on_pr_merge:\s*(?i:false)\s*$", flags=re.MULTILINE
+)
+
+
+def declines_close_on_pr_merge(text: str) -> bool:
+    """True when the note frontmatter opts out of merge-triggered auto-close."""
+    return bool(_CLOSE_ON_PR_MERGE_FALSE_RE.search(text))
+
+
 def read_cursor(cursor_path: Path) -> datetime:
     """Read last-scan timestamp; default to 24h ago when missing."""
     if not cursor_path.is_file():
@@ -282,7 +302,11 @@ def fetch_merged_prs(
 
 
 def find_linked_tasks(pr_number: int, *, vault_root: Path = DEFAULT_VAULT_ROOT) -> list[LinkedTask]:
-    """Locate vault cc-task notes (in ``active/``) whose ``pr: N`` matches."""
+    """Locate vault cc-task notes (in ``active/``) whose ``pr: N`` matches.
+
+    Notes declaring ``close_on_pr_merge: false`` are excluded (multi-PR lane
+    opt-out): the lane owner closes them explicitly, never this watcher.
+    """
     active = vault_root / "active"
     if not active.is_dir():
         return []
@@ -299,7 +323,14 @@ def find_linked_tasks(pr_number: int, *, vault_root: Path = DEFAULT_VAULT_ROOT) 
         m = task_id_pattern.search(text)
         if not m:
             continue
-        tasks.append(LinkedTask(task_id=m.group(1).strip(), note_path=note, pr_number=pr_number))
+        task_id = m.group(1).strip()
+        if declines_close_on_pr_merge(text):
+            LOG.info(
+                "task %s declares close_on_pr_merge: false — lane owner closes explicitly",
+                task_id,
+            )
+            continue
+        tasks.append(LinkedTask(task_id=task_id, note_path=note, pr_number=pr_number))
     return tasks
 
 
@@ -567,6 +598,12 @@ def _close_merged_note(
 ) -> bool:
     """cc-close a task whose PR is merged (the cursor loop missed it). True on close."""
     task_id = _task_id_from_note(note, text)
+    if declines_close_on_pr_merge(text):
+        LOG.info(
+            "task %s declares close_on_pr_merge: false — lane owner closes explicitly",
+            task_id,
+        )
+        return False
     if dry_run:
         LOG.info("[dry-run] would cc-close task %s (PR #%s merged)", task_id, pr_num)
         return True

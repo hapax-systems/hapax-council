@@ -1,4 +1,4 @@
-"""Tests for scripts/check-value-prop-registry.py (v1 structural checks)."""
+"""Tests for scripts/check-value-prop-registry.py (v1 structural + v2 claim-lint checks)."""
 
 from __future__ import annotations
 
@@ -140,3 +140,163 @@ def test_missing_registry_file_exits_2(tmp_path: Path) -> None:
     result = _run_checker("--registry", str(tmp_path / "missing.yaml"))
     assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
     assert "value-prop registry not found" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# v2 checks: C4 embargo lint, C5 required pairings, C7 comparative-claim pins,
+# C9 pinned counts, C10 PII screen
+# ---------------------------------------------------------------------------
+
+
+def test_embargo_term_without_exception_fails_c4(tmp_path: Path) -> None:
+    registry = _base_registry()
+    registry["registry"][0]["tangible_benefit"] = "This surface structurally cannot leak claims"
+    registry_path = _write_registry(tmp_path / "registry.yaml", registry)
+    result = _run_checker("--registry", str(registry_path))
+    assert result.returncode == 1, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "Hapax.ValuePropRegistry.C4" in result.stdout
+    assert "structurally cannot" in result.stdout
+    assert "Next action:" in result.stdout
+
+
+def test_embargo_term_with_reasoned_exception_passes_c4(tmp_path: Path) -> None:
+    registry = _base_registry()
+    registry["registry"][0]["tangible_benefit"] = "This surface structurally cannot leak claims"
+    registry["registry"][0]["embargo_exceptions"] = [
+        {"term": "structurally cannot", "reason": "mention-not-use: fixture quotes the ban"}
+    ]
+    registry_path = _write_registry(tmp_path / "registry.yaml", registry)
+    result = _run_checker("--registry", str(registry_path))
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+
+
+def test_absolute_phrase_without_paired_disclosure_fails_c5(tmp_path: Path) -> None:
+    registry = _base_registry()
+    registry["constraints"] = [
+        {
+            "id": "required-pairings",
+            "pairings": {"no false green": "merge-gate scoping disclosure"},
+        }
+    ]
+    registry["registry"][0]["tangible_benefit"] = "Delivers no-false-green merges"
+    registry_path = _write_registry(tmp_path / "registry.yaml", registry)
+    result = _run_checker("--registry", str(registry_path))
+    assert result.returncode == 1, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "Hapax.ValuePropRegistry.C5" in result.stdout
+    assert "no false green" in result.stdout
+    assert "merge-gate scoping disclosure" in result.stdout
+
+
+def test_absolute_phrase_with_paired_disclosure_passes_c5(tmp_path: Path) -> None:
+    registry = _base_registry()
+    registry["constraints"] = [
+        {
+            "id": "required-pairings",
+            "pairings": {"no false green": "merge-gate scoping disclosure"},
+        }
+    ]
+    registry["registry"][0]["tangible_benefit"] = "Delivers no-false-green merges"
+    registry["registry"][0]["required_pairings"] = [
+        "'no false green' ships with merge-gate scoping disclosure (scoped, fail-closed)"
+    ]
+    registry_path = _write_registry(tmp_path / "registry.yaml", registry)
+    result = _run_checker("--registry", str(registry_path))
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+
+
+def test_comparative_claim_missing_scout_date_fails_c7(tmp_path: Path) -> None:
+    registry = _base_registry()
+    registry["registry"][0]["comparative_claims"] = [
+        {
+            "claim": "no comparator ships this mechanism",
+            "evidence_level": "DS",
+            "comparator": "spec-kit v0.9.2",
+        }
+    ]
+    registry_path = _write_registry(tmp_path / "registry.yaml", registry)
+    result = _run_checker("--registry", str(registry_path))
+    assert result.returncode == 1, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "Hapax.ValuePropRegistry.C7" in result.stdout
+    assert "scout_date" in result.stdout
+
+
+def test_stale_comparative_claim_fails_c7_with_refresh_hint(tmp_path: Path) -> None:
+    registry = _base_registry()
+    registry["registry"][0]["comparative_claims"] = [
+        {
+            "claim": "no comparator ships this mechanism",
+            "evidence_level": "DC",
+            "scout_date": "2026-01-01",  # far beyond the 45-day default TTL
+            "comparator": "spec-kit v0.9.2",
+        }
+    ]
+    registry_path = _write_registry(tmp_path / "registry.yaml", registry)
+    result = _run_checker("--registry", str(registry_path))
+    assert result.returncode == 1, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "Hapax.ValuePropRegistry.C7" in result.stdout
+    assert "refresh the comparator scout" in result.stdout
+    assert "docs_internal" in result.stdout
+
+
+def test_unpinned_comparative_claim_needs_docs_internal_c7(tmp_path: Path) -> None:
+    registry = _base_registry()
+    claim = {
+        "claim": "no comparator ships this mechanism",
+        "evidence_level": "DS",
+        "scout_date": "2026-01-01",  # stale AND unpinned
+    }
+    registry["registry"][0]["comparative_claims"] = [claim]
+    registry_path = _write_registry(tmp_path / "registry.yaml", registry)
+    result = _run_checker("--registry", str(registry_path))
+    assert result.returncode == 1, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "pinned comparator" in result.stdout
+    # The registry's own comparative-claim-hygiene escape: docs_internal quiets
+    # both the missing pin and the stale scout (not quotable publicly anyway).
+    claim["status"] = "docs_internal"
+    registry_path = _write_registry(tmp_path / "registry.yaml", registry)
+    result = _run_checker("--registry", str(registry_path))
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+
+
+def test_unpinned_numeric_fails_c9(tmp_path: Path) -> None:
+    registry = _base_registry()
+    registry["registry"][0]["tangible_benefit"] = "Ships 47 hooks across the estate"
+    registry_path = _write_registry(tmp_path / "registry.yaml", registry)
+    result = _run_checker("--registry", str(registry_path))
+    assert result.returncode == 1, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "Hapax.ValuePropRegistry.C9" in result.stdout
+    assert "'47'" in result.stdout
+    assert "Next action:" in result.stdout
+
+
+def test_pinned_numeric_and_excluded_tokens_pass_c9(tmp_path: Path) -> None:
+    registry = _base_registry()
+    registry["registry"][0]["tangible_benefit"] = (
+        "Since 2025 (v1.2.0, Gate-13, #4331, scouted 2026-07-01) ships 47 hooks"
+    )
+    registry["registry"][0]["pinned_counts"] = {"47": "tests/test_hook_registry.py count pin"}
+    registry_path = _write_registry(tmp_path / "registry.yaml", registry)
+    result = _run_checker("--registry", str(registry_path))
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+
+
+def test_axiom_registry_ref_without_pii_receipt_fails_c10(tmp_path: Path) -> None:
+    registry = _base_registry()
+    registry["registry"][0]["technical_items"] = ["axioms/registry.yaml single_user axiom"]
+    registry_path = _write_registry(tmp_path / "registry.yaml", registry)
+    result = _run_checker("--registry", str(registry_path))
+    assert result.returncode == 1, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "Hapax.ValuePropRegistry.C10" in result.stdout
+    assert "pii_screen_receipt" in result.stdout
+    assert "medical" in result.stdout
+
+
+def test_axiom_registry_ref_with_pii_receipt_passes_c10(tmp_path: Path) -> None:
+    registry = _base_registry()
+    registry["registry"][0]["technical_items"] = ["axioms/registry.yaml single_user axiom"]
+    registry["registry"][0]["pii_screen_receipt"] = (
+        "2026-07-09 fixture screen: mechanics only, no axiom prose quoted"
+    )
+    registry_path = _write_registry(tmp_path / "registry.yaml", registry)
+    result = _run_checker("--registry", str(registry_path))
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
