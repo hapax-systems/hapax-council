@@ -4,10 +4,8 @@ The 2026-07-09 privacy redaction removed operator-attributed diagnostic
 phrasing from docs, code constants, prompts, and profiles. This scan pins the
 CLASS: tracked files must not reattribute a diagnosis to the operator.
 
-Two files are excluded pending the operator-hands edit (axioms/** is
-permission-denied for automation by design; replacement text is recorded in
-constitution PR #84): axioms/registry.yaml and axioms/README.md. Tighten this
-exclusion list to empty once that edit lands.
+The exclusion list is EMPTY: the operator-hands axioms edit landed 2026-07-09,
+so every tracked surface — including axioms/** — is in scope.
 """
 
 from __future__ import annotations
@@ -27,11 +25,9 @@ ATTRIBUTION_PATTERNS = (
     re.compile(r"(?:ADHD|autism)[/\s-]*(?:and\s+autism\s+)?operator", re.IGNORECASE),
 )
 
-# Pending operator-hands edit (registry-guard protected; see PR #84 body).
-PENDING_OPERATOR_EDIT = {
-    "axioms/registry.yaml",
-    "axioms/README.md",
-}
+# Empty since the 2026-07-09 operator-hands axioms edit; add a path here ONLY for a
+# guard-protected file with a routed, pending human edit.
+PENDING_OPERATOR_EDIT: set[str] = set()
 
 TEXT_SUFFIXES = {".py", ".md", ".yaml", ".yml", ".json", ".ts", ".txt", ".j2", ".sh"}
 
