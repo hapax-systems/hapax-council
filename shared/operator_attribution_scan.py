@@ -6,9 +6,10 @@ plane's ratification gate (scripts/review_team.py): the data-owner ledger may wa
 review findings ONLY on files that are clean under this scan — the ledger can never
 waive the enforced class itself.
 
-Tier 1: same-sentence attribution (never allowlisted). Tier 2: paragraph-context
-co-occurrence (~300 chars crossing single newlines), allowlistable per reviewed span
-via the hash-pinned ledger in tests/operator_attribution_reviewed_generic.txt.
+Tier 1: same-sentence attribution (never allowlisted) — unbounded in distance, spanning
+hard-wrapped prose but never bridging a table row, list item, or blank line. Tier 2:
+paragraph-context co-occurrence (~300 chars crossing single newlines), allowlistable per
+reviewed span via the hash-pinned ledger in tests/operator_attribution_reviewed_generic.txt.
 """
 
 from __future__ import annotations
@@ -21,11 +22,21 @@ _DIAGNOSIS = (
     r"(?:\bADHD\b|\bAuDHD\b|\bautis\w*|\bneurodiverg\w*|\bRSD\b|rejection[- ]sensitiv\w*"
     r"|\bdysphor\w*|identity\s+diffusion)"
 )
+#: A newline that continues one wrapped prose sentence, rather than starting a new
+#: structural element. Blocked by: a blank line, a markdown table row/heading/quote/list
+#: bullet/fence, or a new string literal — so a sentence never bridges table cells or
+#: adjacent list items.
+_SOFT_WRAP = "\\n(?![ \t]*(?:\\n|[|#>`\"'*+\\]\\}\\)\\-]))"
+#: A same-sentence run: ANY distance (no short window), terminated by .!? or by anything
+#: `_SOFT_WRAP` refuses to cross. It spans hard-wrapped prose deliberately; otherwise a
+#: wrapped sentence demotes from tier 1 (never allowlisted) to tier 2 (pinnable), failing
+#: open on the enforced class. Lazy: `search` stops at the first diagnosis term.
+_SAME_SENTENCE = rf"(?:(?![.!?])(?:[^\n]|{_SOFT_WRAP}))*?"
 SENTENCE_PATTERNS = (
     re.compile(rf"operator\s+(?:has|with|is)\s+{_DIAGNOSIS}", re.IGNORECASE),
     re.compile(rf"operator'?s\s+(?:specific\s+)?{_DIAGNOSIS}", re.IGNORECASE),
-    re.compile(rf"{_DIAGNOSIS}[^.\n]{{0,60}}\boperator\b", re.IGNORECASE),
-    re.compile(rf"\boperator\b[^.\n]{{0,60}}{_DIAGNOSIS}", re.IGNORECASE),
+    re.compile(rf"{_DIAGNOSIS}{_SAME_SENTENCE}\boperator(?:'s)?\b", re.IGNORECASE),
+    re.compile(rf"\boperator(?:'s)?\b{_SAME_SENTENCE}{_DIAGNOSIS}", re.IGNORECASE),
 )
 _PARA = r"(?:[^\n]|\n(?!\s*\n)){0,300}?"
 PARAGRAPH_PATTERNS = (
@@ -68,8 +79,12 @@ def load_reviewed_generic(repo_root: Path) -> set[tuple[str, str]]:
         return pins
     for line in pins_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
-        if line and not line.startswith("#"):
-            path, _, digest = line.partition(" ")
+        if not line or line.startswith("#"):
+            continue
+        # digest is the LAST field, so a path containing spaces still parses.
+        # A line with no digest pins nothing (fail-closed: the span stays unreviewed).
+        path, sep, digest = line.rpartition(" ")
+        if sep:
             pins.add((path, digest))
     return pins
 

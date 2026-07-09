@@ -38,6 +38,7 @@ import yaml
 from shared.operator_attribution_scan import (
     PARAGRAPH_PATTERNS,
     SENTENCE_PATTERNS,
+    file_enforced_class_clean,
     file_waiver_safe,
     load_reviewed_generic,
     span_digest,
@@ -125,6 +126,43 @@ def test_no_operator_attributed_diagnostic_text_on_tracked_surfaces() -> None:
     )
 
 
+def test_same_sentence_diagnostic_guard_has_no_short_window(tmp_path: Path) -> None:
+    rel = "docs/research/x.md"
+    doc = tmp_path / rel
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(
+        "The operator " + ("with a long intervening clause " * 20) + "has " + "AD" + "HD.\n",
+        encoding="utf-8",
+    )
+
+    assert not file_enforced_class_clean(tmp_path, rel)
+
+
+def test_same_sentence_guard_spans_hard_wrapped_prose(tmp_path: Path) -> None:
+    """A wrapped sentence stays TIER 1. Prose is always hard-wrapped, so a newline-bounded
+    tier 1 would demote it into the pinnable tier-2 window; a fail-open on the class."""
+    rel = "docs/research/x.md"
+    doc = tmp_path / rel
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("The operator is a person\nwho has " + "AD" + "HD.\n", encoding="utf-8")
+
+    assert not file_enforced_class_clean(tmp_path, rel)
+
+
+def test_same_sentence_guard_does_not_bridge_structural_lines(tmp_path: Path) -> None:
+    """A sentence never spans markdown table rows or adjacent list items; separate
+    elements, whose unrelated co-occurrence must not read as same-sentence attribution."""
+    text = (
+        "| the operator's expectations | calibrated |\n"
+        "| detachment | identity" + " diffusion |\n"
+        "- operator config notes\n"
+        "- " + "AD" + "HD research references\n"
+    )
+
+    for pattern in SENTENCE_PATTERNS:
+        assert not pattern.search(text), pattern.pattern
+
+
 def test_waiver_safety_blocks_operator_mental_state_content(tmp_path: Path) -> None:
     rel = "docs/research/x.md"
     doc = tmp_path / rel
@@ -146,6 +184,25 @@ def test_waiver_safety_allows_non_operator_affect_discussion(tmp_path: Path) -> 
     )
 
     assert file_waiver_safe(tmp_path, rel)
+
+
+def test_reviewed_generic_pins_parse_paths_containing_spaces(tmp_path: Path) -> None:
+    """The digest is the LAST field, so a path with spaces still pins correctly."""
+    pins_file = tmp_path / "tests" / "operator_attribution_reviewed_generic.txt"
+    pins_file.parent.mkdir(parents=True, exist_ok=True)
+    digest = "a" * 12
+    pins_file.write_text(
+        f"# comment\ndocs/a b.md {digest}\ndocs/plain.md {digest}\nmalformed-no-digest\n",
+        encoding="utf-8",
+    )
+
+    pins = load_reviewed_generic(tmp_path)
+
+    assert ("docs/a b.md", digest) in pins
+    assert ("docs/plain.md", digest) in pins
+    # A line with no digest pins nothing; fail-closed, the span stays unreviewed.
+    assert not any(path == "malformed-no-digest" for path, _ in pins)
+    assert len(pins) == 2
 
 
 def test_operator_ratification_ledger_files_are_waiver_safe() -> None:

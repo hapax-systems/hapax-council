@@ -26,8 +26,8 @@ D4 marker convergence):
                            claim-copy text (tangible_benefit, claim_ceiling,
                            maturity_note, notes, competitive_position,
                            comparative_claims text). A hit errors unless the row
-                           carries the term in embargo_exceptions with a reason
-                           (mention-not-use quoting of the ban itself).
+                           carries the term in embargo_exceptions with a
+                           mention-not-use reason that quotes the ban itself.
   C5  required_pairings  — the constraints required-pairings map (absolute phrase
                            -> required disclosure substring): a row whose claim
                            copy uses the phrase must carry the paired disclosure
@@ -289,25 +289,35 @@ def _row_copy_strings(row: Mapping[str, Any]) -> list[tuple[str, str]]:
     return out
 
 
+MENTION_NOT_USE_MARKER = "mention not use"
+
+
+def _is_embargo_exception_reason(reason: Any) -> bool:
+    """True only for the ONE declared escape: mention-not-use quoting of the ban itself.
+
+    Free prose grants no exception; otherwise any reason string silently disarms C4.
+    """
+    return isinstance(reason, str) and MENTION_NOT_USE_MARKER in _normalize_copy_text(reason)
+
+
 def _embargo_exception_terms(row: Mapping[str, Any]) -> set[str]:
-    """Normalized terms the row excepts via embargo_exceptions WITH a reason.
+    """Normalized terms the row excepts via embargo_exceptions.
 
     Accepts a list of {term, reason} mappings (the registry shape) or a
-    {term: reason} mapping. A missing/empty reason grants no exception.
+    {term: reason} mapping. Only a mention-not-use reason grants an exception.
     """
     raw = row.get("embargo_exceptions")
     out: set[str] = set()
     if isinstance(raw, Mapping):
         for term, reason in raw.items():
-            if isinstance(term, str) and isinstance(reason, str) and reason.strip():
+            if isinstance(term, str) and _is_embargo_exception_reason(reason):
                 out.add(_normalize_copy_text(term))
     elif isinstance(raw, list):
         for item in raw:
             if not isinstance(item, Mapping):
                 continue
             term = item.get("term")
-            reason = item.get("reason")
-            if isinstance(term, str) and isinstance(reason, str) and reason.strip():
+            if isinstance(term, str) and _is_embargo_exception_reason(item.get("reason")):
                 out.add(_normalize_copy_text(term))
     return out
 
@@ -338,8 +348,8 @@ def check_c4_embargo_lint(
                         message=(
                             f"{label}.{field} contains embargoed term {term!r}. "
                             "Next action: reword to ceiling-honest phrasing, or carry "
-                            "the term in the row's embargo_exceptions with a reason "
-                            "(mention-not-use quoting of the ban itself)."
+                            "the term in the row's embargo_exceptions with a "
+                            "mention-not-use reason that quotes the ban itself."
                         ),
                     )
                 )

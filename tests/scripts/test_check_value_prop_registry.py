@@ -159,7 +159,7 @@ def test_embargo_term_without_exception_fails_c4(tmp_path: Path) -> None:
     assert "Next action:" in result.stdout
 
 
-def test_embargo_term_with_reasoned_exception_passes_c4(tmp_path: Path) -> None:
+def test_embargo_term_with_mention_not_use_exception_passes_c4(tmp_path: Path) -> None:
     registry = _base_registry()
     registry["registry"][0]["tangible_benefit"] = "This surface structurally cannot leak claims"
     registry["registry"][0]["embargo_exceptions"] = [
@@ -168,6 +168,19 @@ def test_embargo_term_with_reasoned_exception_passes_c4(tmp_path: Path) -> None:
     registry_path = _write_registry(tmp_path / "registry.yaml", registry)
     result = _run_checker("--registry", str(registry_path))
     assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+
+
+def test_embargo_exception_with_arbitrary_reason_still_fails_c4(tmp_path: Path) -> None:
+    """Free prose must not disarm C4; only the declared mention-not-use escape does."""
+    registry = _base_registry()
+    registry["registry"][0]["tangible_benefit"] = "This surface structurally cannot leak claims"
+    registry["registry"][0]["embargo_exceptions"] = [
+        {"term": "structurally cannot", "reason": "we discussed this and it is fine"}
+    ]
+    registry_path = _write_registry(tmp_path / "registry.yaml", registry)
+    result = _run_checker("--registry", str(registry_path))
+    assert result.returncode == 1, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "Hapax.ValuePropRegistry.C4" in result.stdout
 
 
 def test_absolute_phrase_without_paired_disclosure_fails_c5(tmp_path: Path) -> None:
