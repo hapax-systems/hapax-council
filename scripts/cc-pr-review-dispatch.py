@@ -953,7 +953,6 @@ def fetch_pr_diff(pr_info: PRInfo, *, repo: str, repo_root: Path, runner: Any) -
 def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -> str:
     """Build a pinned local PR diff when GitHub diff endpoints are unavailable."""
     base_ref = pr_info.base_ref or "main"
-    remote_base = f"origin/{base_ref}"
     if not pr_info.base_sha:
         raise RuntimeError(
             f"PR #{pr_info.number} base SHA is unavailable; local git diff fallback cannot "
@@ -966,12 +965,12 @@ def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -
             "prove the current PR head. Next action: restore GitHub PR metadata access or "
             "fetch PR metadata with headRefOid/head.sha before review dispatch."
         )
-    _ensure_local_ref_at_sha(
-        remote_base,
-        expected_sha=pr_info.base_sha,
+    _ensure_local_commit_object(
+        pr_info.base_sha,
         fetch_ref=base_ref,
         repo_root=repo_root,
         runner=runner,
+        object_label=f"PR #{pr_info.number} base",
     )
 
     head = pr_info.head_sha
@@ -1010,18 +1009,9 @@ def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -
     if not diff.strip():
         raise RuntimeError(
             f"local git diff for PR #{pr_info.number} was empty between "
-            f"{remote_base} and {head[:12]}; next action: fetch PR head/base and retry"
+            f"{pr_info.base_sha[:12]} and {head[:12]}; next action: fetch PR head/base and retry"
         )
     return diff
-
-
-def _resolve_local_ref(ref: str, *, repo_root: Path, runner: Any) -> str | None:
-    try:
-        return _run_gh(
-            ["git", "rev-parse", "--verify", ref], repo_root=repo_root, runner=runner
-        ).strip()
-    except RuntimeError:
-        return None
 
 
 def _local_commit_object_exists(ref: str, *, repo_root: Path, runner: Any) -> bool:
@@ -1036,31 +1026,28 @@ def _local_commit_object_exists(ref: str, *, repo_root: Path, runner: Any) -> bo
     return True
 
 
-def _ensure_local_ref_at_sha(
-    ref: str,
+def _ensure_local_commit_object(
+    commit_sha: str,
     *,
-    expected_sha: str,
     fetch_ref: str,
     repo_root: Path,
     runner: Any,
+    object_label: str,
 ) -> None:
-    actual_sha = _resolve_local_ref(ref, repo_root=repo_root, runner=runner)
-    if actual_sha == expected_sha:
+    if _local_commit_object_exists(commit_sha, repo_root=repo_root, runner=runner):
         return
 
     _run_gh(
-        ["git", "fetch", "--quiet", "origin", f"{fetch_ref}:refs/remotes/origin/{fetch_ref}"],
+        ["git", "fetch", "--quiet", "origin", fetch_ref],
         repo_root=repo_root,
         runner=runner,
         timeout=180,
     )
-    actual_sha = _resolve_local_ref(ref, repo_root=repo_root, runner=runner)
-    if actual_sha != expected_sha:
-        actual_label = (actual_sha or "missing")[:12]
+    if not _local_commit_object_exists(commit_sha, repo_root=repo_root, runner=runner):
         raise RuntimeError(
-            f"local ref {ref} resolved to {actual_label}, expected PR base "
-            f"{expected_sha[:12]}; next action: fetch the PR base ref from origin and "
-            "retry review dispatch after the local base matches the PR metadata."
+            f"{object_label} object {commit_sha[:12]} is unavailable locally after "
+            f"fetching {fetch_ref}. Next action: restore GitHub diff access or fetch "
+            f"{fetch_ref} before review dispatch."
         )
 
 
