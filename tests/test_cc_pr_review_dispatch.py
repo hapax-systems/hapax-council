@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import logging
+import os
 import subprocess
 import sys
 from datetime import date
@@ -29,7 +30,7 @@ if str(REPO_ROOT) not in sys.path:
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
-from shared.quota_spend_ledger import SubscriptionQuotaState  # noqa: E402
+from shared.quota_spend_ledger import QuotaSpendLedger, SubscriptionQuotaState  # noqa: E402
 from shared.route_metadata_schema import stable_payload_hash  # noqa: E402
 
 
@@ -2696,6 +2697,44 @@ class TestFamilyOutageDegradation:
         monkeypatch.setattr(dispatch, "DEGRADED_MERGES_LEDGER", ledger)
         return state, ledger
 
+    @staticmethod
+    def _telemetry_writer_ledger(
+        tmp_path: Path,
+        *,
+        receipt_name: str,
+        receipt_body: str,
+        now: str = "2026-06-11T21:00:00Z",
+    ) -> QuotaSpendLedger:
+        relay = tmp_path / "relay-receipts"
+        relay.mkdir(exist_ok=True)
+        (relay / receipt_name).write_text(receipt_body, encoding="utf-8")
+        nvidia_smi = tmp_path / "fake-nvidia-smi"
+        nvidia_smi.write_text("#!/bin/sh\necho '1000, 32000'\n", encoding="utf-8")
+        nvidia_smi.chmod(0o755)
+        out = tmp_path / "quota-spend-ledger-live.json"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(_SCRIPTS / "hapax-quota-telemetry-writer"),
+                "--skip-receipts",
+                "--now",
+                now,
+                "--out",
+                str(out),
+                "--relay-receipt-dir",
+                str(relay),
+                "--nvidia-smi",
+                str(nvidia_smi),
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=REPO_ROOT,
+            env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        )
+        assert result.returncode == 0, result.stderr
+        return QuotaSpendLedger.model_validate(json.loads(out.read_text(encoding="utf-8")))
+
     def test_wall_on_stderr_classifies_as_quota_wall(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
@@ -2786,6 +2825,123 @@ class TestFamilyOutageDegradation:
         claude_seats = [r for r in dossier["reviewers"] if r["family"] == "claude"]
         assert claude_seats, "harness must seat a claude reviewer at t2"
         assert all(r["verdict"] == "quota-wall" for r in claude_seats)
+
+    def test_wrapper_stdout_diagnostic_classifies_as_quota_wall(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        self._isolate_state(monkeypatch, tmp_path)
+        diagnostic = f"hapax-claude-reviewer: claude stdout diagnostic for classifier: {self.WALL}"
+        wrapper_status = (
+            "hapax-claude-reviewer: claude exited nonzero; stdout omitted from review output"
+        )
+        stderr = f"{diagnostic}\n{wrapper_status}"
+
+        class WrapperDiagnosticRunner(RecordingReviewers):
+            def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+                self.invocations.append((seat.id, seat.family, prompt))
+                if seat.family == "claude":
+                    raise dispatch.ReviewerProcessError(stderr, returncode=75, stdout="")
+                return GOOD_REPLY
+
+        result, _, _, _ = _review(
+            tmp_path,
+            reviewers=WrapperDiagnosticRunner(),
+            task_kwargs={"assigned_to": "cx-gold"},
+        )
+        dossier = result["dossier"]
+        claude_seats = [r for r in dossier["reviewers"] if r["family"] == "claude"]
+        assert claude_seats, "harness must seat a claude reviewer at t2"
+        assert all(r["verdict"] == "quota-wall" for r in claude_seats)
+
+    def test_wrapper_stdout_wall_diagnostic_survives_unrelated_stderr(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        self._isolate_state(monkeypatch, tmp_path)
+        diagnostic = "hapax-claude-reviewer: claude stdout quota-wall diagnostic observed"
+        stderr = "\n".join(
+            [
+                "debug: transient child warning",
+                diagnostic,
+                "hapax-claude-reviewer: claude exited nonzero; stdout omitted from review output",
+            ]
+        )
+
+        class WrapperDiagnosticRunner(RecordingReviewers):
+            def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+                self.invocations.append((seat.id, seat.family, prompt))
+                if seat.family == "claude":
+                    raise dispatch.ReviewerProcessError(stderr, returncode=75, stdout="")
+                return GOOD_REPLY
+
+        result, _, _, _ = _review(
+            tmp_path,
+            reviewers=WrapperDiagnosticRunner(),
+            task_kwargs={"assigned_to": "cx-gold"},
+        )
+        dossier = result["dossier"]
+        claude_seats = [r for r in dossier["reviewers"] if r["family"] == "claude"]
+        assert claude_seats, "harness must seat a claude reviewer at t2"
+        assert all(r["verdict"] == "quota-wall" for r in claude_seats)
+
+    def test_wrapper_stdout_diagnostic_preserves_child_stderr_quota_wall(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        self._isolate_state(monkeypatch, tmp_path)
+        diagnostic = (
+            "hapax-claude-reviewer: claude stdout diagnostic for classifier: "
+            "partial non-wall stdout"
+        )
+        wrapper_status = (
+            "hapax-claude-reviewer: claude exited nonzero; stdout omitted from review output"
+        )
+        stderr = f"{self.WALL}\n{diagnostic}\n{wrapper_status}"
+
+        class WrapperDiagnosticRunner(RecordingReviewers):
+            def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+                self.invocations.append((seat.id, seat.family, prompt))
+                if seat.family == "claude":
+                    raise dispatch.ReviewerProcessError(stderr, returncode=75, stdout="")
+                return GOOD_REPLY
+
+        result, _, _, _ = _review(
+            tmp_path,
+            reviewers=WrapperDiagnosticRunner(),
+            task_kwargs={"assigned_to": "cx-gold"},
+        )
+        dossier = result["dossier"]
+        claude_seats = [r for r in dossier["reviewers"] if r["family"] == "claude"]
+        assert claude_seats, "harness must seat a claude reviewer at t2"
+        assert all(r["verdict"] == "quota-wall" for r in claude_seats)
+
+    def test_wrapper_stdout_diagnostic_preserves_child_stderr_provider_outage(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        self._isolate_state(monkeypatch, tmp_path)
+        diagnostic = (
+            "hapax-claude-reviewer: claude stdout diagnostic for classifier: "
+            "partial non-outage stdout"
+        )
+        wrapper_status = (
+            "hapax-claude-reviewer: claude exited nonzero; stdout omitted from review output"
+        )
+        stderr = f"HTTP 502 Bad Gateway\n{diagnostic}\n{wrapper_status}"
+
+        class WrapperDiagnosticRunner(RecordingReviewers):
+            def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+                self.invocations.append((seat.id, seat.family, prompt))
+                if seat.family == "claude":
+                    raise dispatch.ReviewerProcessError(stderr, returncode=75, stdout="")
+                return GOOD_REPLY
+
+        result, _, _, _ = _review(
+            tmp_path,
+            reviewers=WrapperDiagnosticRunner(),
+            task_kwargs={"assigned_to": "cx-gold"},
+        )
+        dossier = result["dossier"]
+        claude_seats = [r for r in dossier["reviewers"] if r["family"] == "claude"]
+        assert claude_seats, "harness must seat a claude reviewer at t2"
+        assert all(r["verdict"] == "provider-outage" for r in claude_seats)
 
     def test_quota_wall_precedes_route_unavailable_when_both_match(
         self, monkeypatch: Any, tmp_path: Path
@@ -3084,6 +3240,11 @@ class TestFamilyOutageDegradation:
             ),
             encoding="utf-8",
         )
+        monkeypatch.setattr(
+            dispatch,
+            "_route_has_post_outage_admission_witness",
+            lambda *_args, **_kwargs: True,
+        )
         reviewers = RecordingReviewers()
 
         _review(
@@ -3095,6 +3256,355 @@ class TestFamilyOutageDegradation:
 
         assert any(family == "glm" for _, family, _ in reviewers.invocations)
         assert json.loads(state.read_text(encoding="utf-8")) == {}
+
+    def test_route_admission_does_not_clear_legacy_string_outage_latch(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        observed = "2026-06-11T20:55:00+00:00"
+        state.write_text(json.dumps({"glm": observed}), encoding="utf-8")
+
+        witness = dispatch.clear_route_recovered_family_outage(
+            {"glm": observed},
+            registry=dispatch.review_team.load_lens_registry(),
+            route_blocked_families={},
+            state_path=state,
+        )
+
+        assert witness == {"glm": observed}
+        assert json.loads(state.read_text(encoding="utf-8")) == {"glm": observed}
+
+    def test_route_admission_does_not_clear_unreadable_outage_latch(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        observed = "2026-06-11T20:55:00+00:00"
+        state.write_text("{not-json", encoding="utf-8")
+
+        witness = dispatch.clear_route_recovered_family_outage(
+            {"glm": observed},
+            registry=dispatch.review_team.load_lens_registry(),
+            route_blocked_families={},
+            state_path=state,
+        )
+
+        assert witness == {"glm": observed}
+        assert state.read_text(encoding="utf-8") == "{not-json"
+
+    def test_route_admission_before_outage_does_not_clear_structured_latch(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        observed = "2026-06-11T20:55:00+00:00"
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": observed,
+                        "outage_started_at": "2026-06-11T20:55:00+00:00",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        class Resolved:
+            source = "live"
+            live_error = None
+            ledger = object()
+
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "load_quota_spend_ledger_resolved",
+            lambda: Resolved(),
+        )
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "subscription_quota_state_for_route",
+            lambda _ledger, _route_id, *, now: (
+                SubscriptionQuotaState.FRESH,
+                (
+                    "relay-receipt:claude-subscription-quota-admission.yaml:"
+                    "observed_at:2026-06-11T20:54:00Z:"
+                    "fresh_until:2026-06-11T21:09:00Z",
+                ),
+            ),
+        )
+
+        witness = dispatch.clear_route_recovered_family_outage(
+            {"claude": observed},
+            registry=dispatch.review_team.load_lens_registry(),
+            route_blocked_families={},
+            now_iso="2026-06-11T21:00:00+00:00",
+            state_path=state,
+        )
+
+        assert witness == {"claude": observed}
+        assert "claude" in json.loads(state.read_text(encoding="utf-8"))
+
+    def test_route_admission_after_outage_clears_structured_latch(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        observed = "2026-06-11T20:55:00+00:00"
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": observed,
+                        "outage_started_at": "2026-06-11T20:55:00+00:00",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        class Resolved:
+            source = "live"
+            live_error = None
+            ledger = object()
+
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "load_quota_spend_ledger_resolved",
+            lambda: Resolved(),
+        )
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "subscription_quota_state_for_route",
+            lambda _ledger, _route_id, *, now: (
+                SubscriptionQuotaState.FRESH,
+                (
+                    "relay-receipt:claude-subscription-quota-admission.yaml:"
+                    "observed_at:2026-06-11T20:56:00Z:"
+                    "fresh_until:2026-06-11T21:11:00Z",
+                ),
+            ),
+        )
+
+        witness = dispatch.clear_route_recovered_family_outage(
+            {"claude": observed},
+            registry=dispatch.review_team.load_lens_registry(),
+            route_blocked_families={},
+            now_iso="2026-06-11T21:00:00+00:00",
+            state_path=state,
+        )
+
+        assert witness == {}
+        assert json.loads(state.read_text(encoding="utf-8")) == {}
+
+    @pytest.mark.parametrize(
+        ("family", "route_id", "evidence_ref"),
+        [
+            (
+                "gemini",
+                "agy.review.direct",
+                "relay-receipt:agy-quota-admission.yaml:"
+                "observed_at:2026-06-11T20:56:00Z:"
+                "fresh_until:2026-06-11T21:11:00Z",
+            ),
+            (
+                "glm",
+                "glmcp.review.direct",
+                "relay-receipt:glmcp-quota-admission-payg.yaml:"
+                "model:glm-5.2:observed_at:2026-06-11T20:56:00Z:"
+                "fresh_until:2026-06-11T21:11:00Z",
+            ),
+        ],
+    )
+    def test_non_claude_route_admission_after_outage_clears_structured_latch(
+        self,
+        monkeypatch: Any,
+        tmp_path: Path,
+        family: str,
+        route_id: str,
+        evidence_ref: str,
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        observed = "2026-06-11T20:55:00+00:00"
+        state.write_text(
+            json.dumps(
+                {
+                    family: {
+                        "observed_at": observed,
+                        "outage_started_at": "2026-06-11T20:55:00+00:00",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        class Resolved:
+            source = "live"
+            live_error = None
+            ledger = object()
+
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "load_quota_spend_ledger_resolved",
+            lambda: Resolved(),
+        )
+
+        def fake_quota_state(_ledger: object, checked_route_id: str, *, now: Any) -> tuple:
+            assert checked_route_id == route_id
+            return SubscriptionQuotaState.FRESH, (evidence_ref,)
+
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "subscription_quota_state_for_route",
+            fake_quota_state,
+        )
+
+        witness = dispatch.clear_route_recovered_family_outage(
+            {family: observed},
+            registry=dispatch.review_team.load_lens_registry(),
+            route_blocked_families={},
+            now_iso="2026-06-11T21:00:00+00:00",
+            state_path=state,
+        )
+
+        assert witness == {}
+        assert json.loads(state.read_text(encoding="utf-8")) == {}
+
+    @pytest.mark.parametrize(
+        ("family", "route_id", "receipt_name", "receipt_body"),
+        [
+            (
+                "gemini",
+                "agy.review.direct",
+                "agy-quota-admission.yaml",
+                """schema: hapax.agy_quota_admission.v1
+status: quota_available
+provider: google-antigravity-cli-agy
+capacity_pool: subscription_quota
+route_id: agy.review.direct
+supported_tool: hapax-agy-reviewer
+model: gemini-3.1-pro-preview
+observed_at: 2026-06-11T20:56:00Z
+stale_after_seconds: 900
+evidence_ref: agy-gemini31pro-smoke-witness
+secret_source: agy:operator-session
+secret_value_persisted: false
+prompt_or_output_persisted: false
+billing_mode: operator_session_subscription
+smoke_command: scripts/hapax-agy-reviewer
+smoke_returncode: 0
+smoke_stdout_validated: true
+positive_admission: true
+""",
+            ),
+            (
+                "glm",
+                "glmcp.review.direct",
+                "glmcp-quota-admission.yaml",
+                """schema: hapax.glmcp_quota_admission.v1
+status: quota_available
+provider: z_ai-glm-coding-plan
+capacity_pool: subscription_quota
+route_id: glmcp.review.direct
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5.2
+observed_at: 2026-06-11T20:56:00Z
+stale_after_seconds: 900
+evidence_ref: supported-tool-usage-witness
+secret_source: pass:glmcp/api-key
+secret_value_persisted: false
+prompt_or_output_persisted: false
+billing_mode: coding_plan_subscription
+payg_fallback: false
+""",
+            ),
+        ],
+    )
+    def test_non_claude_route_recovery_accepts_telemetry_writer_evidence(
+        self,
+        monkeypatch: Any,
+        tmp_path: Path,
+        family: str,
+        route_id: str,
+        receipt_name: str,
+        receipt_body: str,
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        observed = "2026-06-11T20:55:00+00:00"
+        state.write_text(
+            json.dumps(
+                {
+                    family: {
+                        "observed_at": observed,
+                        "outage_started_at": "2026-06-11T20:55:00+00:00",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        ledger = self._telemetry_writer_ledger(
+            tmp_path,
+            receipt_name=receipt_name,
+            receipt_body=receipt_body,
+        )
+
+        class Resolved:
+            source = "live"
+            live_error = None
+
+            def __init__(self, ledger: QuotaSpendLedger) -> None:
+                self.ledger = ledger
+
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "load_quota_spend_ledger_resolved",
+            lambda: Resolved(ledger),
+        )
+
+        ok, reason = dispatch._route_post_outage_admission_witness_result(
+            route_id,
+            observed,
+            now_iso="2026-06-11T21:00:00+00:00",
+        )
+        assert ok is True
+        assert reason == "post_outage_admission_witness_observed"
+        witness = dispatch.clear_route_recovered_family_outage(
+            {family: observed},
+            registry=dispatch.review_team.load_lens_registry(),
+            route_blocked_families={},
+            now_iso="2026-06-11T21:00:00+00:00",
+            state_path=state,
+        )
+
+        assert witness == {}
+        assert json.loads(state.read_text(encoding="utf-8")) == {}
+
+    def test_route_admission_refusal_logs_named_reason(
+        self,
+        monkeypatch: Any,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        self._isolate_state(monkeypatch, tmp_path)
+
+        class Resolved:
+            source = "fixture"
+            live_error = None
+            ledger = object()
+
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "load_quota_spend_ledger_resolved",
+            lambda: Resolved(),
+        )
+        caplog.set_level(logging.WARNING, logger="cc-pr-review-dispatch")
+
+        assert (
+            dispatch._route_has_post_outage_admission_witness(
+                "glmcp.review.direct",
+                "2026-06-11T20:55:00+00:00",
+                now_iso="2026-06-11T21:00:00+00:00",
+            )
+            is False
+        )
+        assert "quota_spend_ledger_not_live:fixture" in caplog.text
 
     def test_route_admission_invalidates_existing_degraded_dossier_before_skip(
         self, monkeypatch: Any, tmp_path: Path
@@ -3142,6 +3652,11 @@ class TestFamilyOutageDegradation:
         )
         assert first_dossier["degraded_family_outage"] == ["glm"]
 
+        monkeypatch.setattr(
+            dispatch,
+            "_route_has_post_outage_admission_witness",
+            lambda *_args, **_kwargs: True,
+        )
         monkeypatch.setattr(dispatch, "clear_route_recovered_family_outage", real_clear)
         second_reviewers = RecordingReviewers()
         second = dispatch.review_pr(
@@ -3176,6 +3691,12 @@ class TestFamilyOutageDegradation:
                 }
             ),
             encoding="utf-8",
+        )
+
+        monkeypatch.setattr(
+            dispatch,
+            "_route_has_post_outage_admission_witness",
+            lambda *_args, **_kwargs: True,
         )
 
         def fail_replace(_tmp: Path, _state: Path) -> None:
@@ -3441,6 +3962,48 @@ class TestFamilyOutageDegradation:
             f"{'sha256:' + ('a' * 64)}|"
             f"{'sha256:' + ('a' * 64)}|glm-1|glm|"
         )
+
+    def test_default_runner_pins_claude_wrapper_timeout_below_outer_timeout(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        fake = tmp_path / "hapax-claude-reviewer"
+        marker = tmp_path / "claude-wrapper-env.json"
+        fake.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            "Path(os.environ['HAPAX_FAKE_CLAUDE_MARKER']).write_text(\n"
+            "    json.dumps({\n"
+            "        'argv': sys.argv[1:],\n"
+            "        'timeout_env': os.environ.get('HAPAX_CLAUDE_REVIEWER_TIMEOUT_SECONDS'),\n"
+            "    }),\n"
+            "    encoding='utf-8',\n"
+            ")\n"
+            "print('```yaml')\n"
+            "print('verdict: accept')\n"
+            "print('findings: []')\n"
+            "print('checklist: {}')\n"
+            "print('```')\n",
+            encoding="utf-8",
+        )
+        fake.chmod(0o755)
+        monkeypatch.setenv("HAPAX_CLAUDE_REVIEWER_TIMEOUT_SECONDS", "9999")
+        monkeypatch.setenv("HAPAX_FAKE_CLAUDE_MARKER", str(marker))
+        family_cfg = {
+            "family": "claude",
+            "reviewer_command": [str(fake), "--timeout-seconds", "9999"],
+            "timeout_seconds": 30,
+        }
+        seat = dispatch.review_team.Seat(id="claude-1", family="claude")
+
+        result = dispatch.default_reviewer_runner(seat, family_cfg, "prompt")
+
+        assert "verdict: accept" in result.stdout
+        captured = json.loads(marker.read_text(encoding="utf-8"))
+        assert captured == {
+            "argv": ["--timeout-seconds", "24"],
+            "timeout_env": "24",
+        }
 
     def test_default_runner_rejects_malformed_review_task_hash(self) -> None:
         family_cfg = {

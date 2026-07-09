@@ -27,6 +27,7 @@ from shared.platform_capability_receipts import (
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
     EvidenceStatus,
     PlatformCapabilityReceipt,
+    WrapperEvidence,
     load_platform_capability_receipts,
     receipt_reference,
 )
@@ -63,6 +64,7 @@ REQUIRED_ROUTE_IDS = frozenset(
         "claude.headless.haiku",
         "claude.headless.opus",
         "claude.headless.sonnet",
+        "claude.review.opus",
         "claude.interactive.full",
         "codex.headless.full",
         "codex.headless.spark",
@@ -80,6 +82,9 @@ AGY_ROUTE_SPECIFIC_QUOTA_BLOCKER = "route_specific_quota_receipt_absent"
 GLMCP_REVIEW_ROUTE_ID = "glmcp.review.direct"
 GLMCP_REVIEW_ADMISSION_BLOCKER = "glmcp_review_seat_receipt_admission_required"
 CLAUDE_HEADLESS_ROUTE_ID = "claude.headless.full"
+CLAUDE_REVIEW_ROUTE_ID = "claude.review.opus"
+CLAUDE_REVIEW_ADMISSION_BLOCKER = "claude_review_seat_receipt_admission_required"
+CLAUDE_REVIEW_ROUTE_SPECIFIC_QUOTA_BLOCKER = "claude_review_route_specific_quota_receipt_absent"
 CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER = "account_live_quota_receipt_absent"
 ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS = {
     AGY_REVIEW_ROUTE_ID: AGY_ROUTE_SPECIFIC_QUOTA_BLOCKER,
@@ -89,8 +94,14 @@ ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS = {
     # attests. Without a live ledger, _route_specific_quota_admission_fresh returns (False, ()) and
     # the route stays held — lane/session presence never clears this.
     CLAUDE_HEADLESS_ROUTE_ID: CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER,
+    CLAUDE_REVIEW_ROUTE_ID: CLAUDE_REVIEW_ROUTE_SPECIFIC_QUOTA_BLOCKER,
 }
 _DURATION_RE = re.compile(r"^(?P<count>[1-9][0-9]*)(?P<unit>s|m|h|d)$")
+_WRAPPER_CAPABILITY_REASON_PREFIXES = (
+    "sanctioned_wrapper_not_executable",
+    "sanctioned_wrapper_missing_or_unreadable",
+)
+_WRAPPER_RESOURCE_REASONS = frozenset({"wrapper_not_executable", "wrapper_missing"})
 
 
 def _ref_tokens(ref: str) -> tuple[str, ...]:
@@ -1462,6 +1473,97 @@ def apply_platform_capability_receipts(
     return PlatformCapabilityRegistry.model_validate(payload)
 
 
+def _wrapper_reason_label(wrapper: WrapperEvidence) -> str:
+    label = Path(wrapper.path).name or wrapper.path
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", label).strip("-") or "unknown-wrapper"
+
+
+def _wrapper_capability_reason(reason: str) -> bool:
+    return any(
+        reason == prefix or reason.startswith(f"{prefix}:")
+        for prefix in _WRAPPER_CAPABILITY_REASON_PREFIXES
+    )
+
+
+def _route_wrapper_for_receipt(
+    route_payload: dict[str, Any],
+    receipt: PlatformCapabilityReceipt,
+) -> WrapperEvidence:
+    return receipt.route_wrappers.get(str(route_payload.get("route_id") or "")) or receipt.wrapper
+
+
+def _wrapper_capability_reason_codes(wrapper: WrapperEvidence) -> list[str]:
+    if wrapper.exists and wrapper.executable and wrapper.sha256:
+        return []
+    if wrapper.exists and wrapper.sha256 and not wrapper.executable:
+        return [
+            "sanctioned_wrapper_not_executable",
+            f"sanctioned_wrapper_not_executable:{_wrapper_reason_label(wrapper)}",
+        ]
+    return [
+        "sanctioned_wrapper_missing_or_unreadable",
+        f"sanctioned_wrapper_missing_or_unreadable:{_wrapper_reason_label(wrapper)}",
+    ]
+
+
+def _wrapper_resource_reason_codes(wrapper: WrapperEvidence) -> list[str]:
+    if wrapper.exists and wrapper.executable and wrapper.sha256:
+        return []
+    if wrapper.exists and not wrapper.executable:
+        return ["wrapper_not_executable"]
+    return ["wrapper_missing"]
+
+
+def _wrapper_resource_refs(wrapper: WrapperEvidence) -> list[str]:
+    return [
+        f"local:{wrapper.path}:exists:{str(wrapper.exists).lower()}",
+        f"local:{wrapper.path}:executable:{str(wrapper.executable).lower()}",
+    ]
+
+
+def _wrapper_capability_refs(wrapper: WrapperEvidence) -> list[str]:
+    if not (wrapper.exists and wrapper.executable and wrapper.sha256):
+        return []
+    return [f"local:{wrapper.path}:sha256:{wrapper.sha256}"]
+
+
+def _route_receipt_capability_reason_codes(
+    receipt: PlatformCapabilityReceipt,
+    wrapper: WrapperEvidence,
+) -> list[str]:
+    if not receipt.route_wrappers:
+        return receipt.capability.reason_codes
+    receipt_reasons = receipt.capability.reason_codes
+    receipt_reasons = [
+        reason for reason in receipt_reasons if not _wrapper_capability_reason(reason)
+    ]
+    return list(dict.fromkeys([*receipt_reasons, *_wrapper_capability_reason_codes(wrapper)]))
+
+
+def _route_receipt_resource_reason_codes(
+    receipt: PlatformCapabilityReceipt,
+    wrapper: WrapperEvidence,
+) -> list[str]:
+    if not receipt.route_wrappers:
+        return receipt.resource.reason_codes
+    receipt_reasons = receipt.resource.reason_codes
+    receipt_reasons = [
+        reason for reason in receipt_reasons if reason not in _WRAPPER_RESOURCE_REASONS
+    ]
+    return list(dict.fromkeys([*receipt_reasons, *_wrapper_resource_reason_codes(wrapper)]))
+
+
+def _surface_status_from_reasons(
+    default_status: EvidenceStatus,
+    reason_codes: list[str],
+) -> EvidenceStatus:
+    if not reason_codes:
+        return EvidenceStatus.OBSERVED
+    if default_status is EvidenceStatus.MISSING:
+        return EvidenceStatus.MISSING
+    return EvidenceStatus.BLOCKED
+
+
 def _apply_receipt_to_route_payload(
     route_payload: dict[str, Any],
     receipt: PlatformCapabilityReceipt,
@@ -1473,9 +1575,33 @@ def _apply_receipt_to_route_payload(
     observed_at = receipt.observed_at.isoformat().replace("+00:00", "Z")
     provider_docs_at = receipt.provider_docs.fetched_at.isoformat().replace("+00:00", "Z")
     top_blockers = list(route_payload.get("blocked_reasons") or [])
+    route_wrapper = _route_wrapper_for_receipt(route_payload, receipt)
+    capability_reason_codes = _route_receipt_capability_reason_codes(receipt, route_wrapper)
+    resource_reason_codes = _route_receipt_resource_reason_codes(receipt, route_wrapper)
+    capability_status = _surface_status_from_reasons(
+        receipt.capability.status,
+        capability_reason_codes,
+    )
+    resource_status = _surface_status_from_reasons(receipt.resource.status, resource_reason_codes)
+    capability_refs = list(
+        dict.fromkeys(
+            [
+                *receipt.capability.evidence_refs,
+                *_wrapper_capability_refs(route_wrapper),
+                receipt_ref,
+            ]
+        )
+    )
+    resource_refs = list(
+        dict.fromkeys(
+            [*receipt.resource.evidence_refs, *_wrapper_resource_refs(route_wrapper), receipt_ref]
+        )
+    )
     quota_unobservable_nonblocking = _quota_unobservable_nonblocking(
         route_payload,
         receipt,
+        capability_status=capability_status,
+        resource_status=resource_status,
     )
     quota_reason_codes = [] if quota_unobservable_nonblocking else receipt.quota.reason_codes
 
@@ -1484,10 +1610,10 @@ def _apply_receipt_to_route_payload(
         "capability",
         checked_at=observed_at,
         stale_after=receipt.capability.stale_after,
-        evidence_refs=[*receipt.capability.evidence_refs, receipt_ref],
-        reason_codes=receipt.capability.reason_codes,
+        evidence_refs=capability_refs,
+        reason_codes=capability_reason_codes,
         removable_reasons=_capability_receipt_removable_reasons(route_payload)
-        if receipt.capability.status is EvidenceStatus.OBSERVED
+        if capability_status is EvidenceStatus.OBSERVED
         else set(),
     )
     _apply_surface(
@@ -1495,10 +1621,10 @@ def _apply_receipt_to_route_payload(
         "resource",
         checked_at=observed_at,
         stale_after=receipt.resource.stale_after,
-        evidence_refs=[*receipt.resource.evidence_refs, receipt_ref],
-        reason_codes=receipt.resource.reason_codes,
+        evidence_refs=resource_refs,
+        reason_codes=resource_reason_codes,
         removable_reasons=_resource_receipt_removable_reasons(route_payload)
-        if receipt.resource.status is EvidenceStatus.OBSERVED
+        if resource_status is EvidenceStatus.OBSERVED
         else set(),
     )
     quota_stale_after = (
@@ -1530,7 +1656,11 @@ def _apply_receipt_to_route_payload(
     for tool in route_payload.get("tool_state", []):
         tool["observed_at"] = observed_at
         tool["evidence_ref"] = receipt_ref
-    if _receipt_measures_capability_scores(route_payload, receipt):
+    if _receipt_measures_capability_scores(
+        route_payload,
+        receipt,
+        capability_status=capability_status,
+    ):
         for score in route_payload.get("capability_scores", {}).values():
             score["observed_at"] = observed_at
             score["evidence_refs"] = list(
@@ -1539,17 +1669,17 @@ def _apply_receipt_to_route_payload(
     if receipt.quota.status is EvidenceStatus.OBSERVED:
         route_payload.setdefault("telemetry", {})["quota_source"] = QuotaSource.MANUAL.value
 
-    if receipt.capability.status is not EvidenceStatus.OBSERVED:
-        top_blockers.extend(receipt.capability.reason_codes)
-    if receipt.resource.status is not EvidenceStatus.OBSERVED:
-        top_blockers.extend(receipt.resource.reason_codes)
+    if capability_status is not EvidenceStatus.OBSERVED:
+        top_blockers.extend(capability_reason_codes)
+    if resource_status is not EvidenceStatus.OBSERVED:
+        top_blockers.extend(resource_reason_codes)
     if receipt.quota.status is not EvidenceStatus.OBSERVED and not quota_unobservable_nonblocking:
         top_blockers.extend(receipt.quota.reason_codes)
 
     removable_top_blockers = {"provider_docs_evidence_absent"}
-    if receipt.capability.status is EvidenceStatus.OBSERVED:
+    if capability_status is EvidenceStatus.OBSERVED:
         removable_top_blockers.update(_capability_receipt_removable_reasons(route_payload))
-    if receipt.resource.status is EvidenceStatus.OBSERVED:
+    if resource_status is EvidenceStatus.OBSERVED:
         removable_top_blockers.update(_resource_receipt_removable_reasons(route_payload))
     if quota_unobservable_nonblocking:
         removable_top_blockers.update(_quota_unobservable_removable_reasons(route_payload))
@@ -1639,8 +1769,10 @@ def _quota_spend_live_path_from_env() -> Path | None:
 def _receipt_measures_capability_scores(
     route_payload: dict[str, Any],
     receipt: PlatformCapabilityReceipt,
+    *,
+    capability_status: EvidenceStatus | None = None,
 ) -> bool:
-    if receipt.capability.status is not EvidenceStatus.OBSERVED:
+    if (capability_status or receipt.capability.status) is not EvidenceStatus.OBSERVED:
         return False
     capability_blockers = set(
         route_payload.get("freshness", {})
@@ -1659,6 +1791,9 @@ def _receipt_measures_capability_scores(
 def _quota_unobservable_nonblocking(
     route_payload: dict[str, Any],
     receipt: PlatformCapabilityReceipt,
+    *,
+    capability_status: EvidenceStatus | None = None,
+    resource_status: EvidenceStatus | None = None,
 ) -> bool:
     """Treat expected local quota unobservability as evidence, not a hold.
 
@@ -1676,9 +1811,11 @@ def _quota_unobservable_nonblocking(
         "quota_telemetry_unknown",
     }:
         return False
+    effective_capability_status = capability_status or receipt.capability.status
+    effective_resource_status = resource_status or receipt.resource.status
     if (
-        receipt.capability.status is not EvidenceStatus.OBSERVED
-        or receipt.resource.status is not EvidenceStatus.OBSERVED
+        effective_capability_status is not EvidenceStatus.OBSERVED
+        or effective_resource_status is not EvidenceStatus.OBSERVED
     ):
         return False
     capacity_pool = route_payload.get("capacity_pool")
@@ -1698,6 +1835,8 @@ def _capability_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[
     reasons = {"fresh_capability_evidence_absent"}
     if route_payload.get("route_id") == "agy.review.direct":
         reasons.add("agy_review_seat_receipt_admission_required")
+    if route_payload.get("route_id") == CLAUDE_REVIEW_ROUTE_ID:
+        reasons.add(CLAUDE_REVIEW_ADMISSION_BLOCKER)
     if route_payload.get("route_id") == "api.headless.provider_gateway":
         reasons.add("provider_gateway_evidence_absent")
     return reasons
@@ -1726,8 +1865,8 @@ def _quota_unobservable_removable_reasons(route_payload: dict[str, Any]) -> set[
 
 
 def _quota_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[str]:
-    if route_payload.get("route_id") == "agy.review.direct":
-        # Platform receipts can prove local agy CLI/wrapper availability only.
+    if route_payload.get("route_id") in {"agy.review.direct", CLAUDE_REVIEW_ROUTE_ID}:
+        # Platform receipts can prove local reviewer wrapper availability only.
         # Route-specific quota admission is consumed from the live quota ledger,
         # not from a platform-capability quota receipt.
         return set()

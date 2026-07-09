@@ -106,6 +106,7 @@ class PlatformCapabilityReceipt(StrictReceiptModel):
     stale_after: str
     cli: CliEvidence
     wrapper: WrapperEvidence
+    route_wrappers: dict[str, WrapperEvidence] = Field(default_factory=dict)
     config_refs: list[ConfigEvidence] = Field(default_factory=list)
     tool_state: list[ToolEvidence] = Field(default_factory=list)
     mcp_status: list[str] = Field(default_factory=list)

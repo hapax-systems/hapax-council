@@ -33,6 +33,9 @@ from shared.platform_capability_registry import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CLAUDE_SUBSCRIPTION_ADMISSION_ROUTE_ID = "claude.headless.full"
+CLAUDE_SUBSCRIPTION_ADMISSION_ROUTE_IDS = frozenset(
+    {CLAUDE_SUBSCRIPTION_ADMISSION_ROUTE_ID, "claude.review.opus"}
+)
 NEGATIVE_REF_TOKENS = {
     "absent",
     "blocked",
@@ -354,7 +357,7 @@ class SubscriptionRefreshStrategy:
     call mints headroom, and
     account-live subscription telemetry (OTel usage/cost) is not yet wired
     (CASE-CAPACITY-ROUTING-001 R2, "use receipts and manual refresh until observable"). Account-live
-    quota for ``claude.headless.full`` is proven ONLY by a short-lived, sanitized admission receipt
+    quota for the Claude receipt-bounded routes is proven ONLY by a short-lived, sanitized admission receipt
     (``scripts/hapax-claude-subscription-quota-admission`` folded into the quota-spend ledger by
     ``scripts/hapax-quota-telemetry-writer``), NEVER inferred from a running lane's tmux/session
     presence. Other subscription routes must register their own provider/route-specific admission
@@ -378,7 +381,7 @@ class SubscriptionRefreshStrategy:
         *,
         now: datetime,
     ) -> RefreshOutcome:
-        if route.route_id != CLAUDE_SUBSCRIPTION_ADMISSION_ROUTE_ID:
+        if route.route_id not in CLAUDE_SUBSCRIPTION_ADMISSION_ROUTE_IDS:
             return RefreshOutcome(
                 status=RefreshStatus.DEFERRED,
                 strategy_id=self.strategy_id,
@@ -404,6 +407,7 @@ class SubscriptionRefreshStrategy:
 
         admission_command = (
             "scripts/hapax-claude-subscription-quota-admission "
+            f"--route-id {route.route_id} "
             "--evidence-ref claude-subscription-headroom-observed-$(date -u +%Y%m%dt%H%M%Sz) "
             "--json"
         )
@@ -632,7 +636,7 @@ def _account_live_quota_observed_ref(ref: str, *, route_id: str | None = None) -
     if any(token in NEGATIVE_REF_TOKENS for token in tokens):
         return False
     allowed_suffixes = [("account", "live", "quota", "observed")]
-    if normalize_route_id(route_id or "") != CLAUDE_SUBSCRIPTION_ADMISSION_ROUTE_ID:
+    if normalize_route_id(route_id or "") not in CLAUDE_SUBSCRIPTION_ADMISSION_ROUTE_IDS:
         allowed_suffixes.append(("quota", "status", "observed"))
     return any(tokens[-len(suffix) :] == suffix for suffix in allowed_suffixes)
 

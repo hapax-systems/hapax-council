@@ -34,13 +34,17 @@ DEFAULT_QUOTA_SPEND_LEDGER_LIVE = (
 )
 
 PAID_CAPACITY_POOLS = frozenset({"api_paid_spend", "bootstrap_budget", "incident_override"})
+CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset(
+    {"claude.headless.full", "claude.review.opus"}
+)
 RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset(
-    {"agy.review.direct", "glmcp.review.direct", "claude.headless.full"}
+    {"agy.review.direct", "glmcp.review.direct", *CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES}
 )
 RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS = {
     "agy.review.direct": "google-antigravity-cli-agy",
     "glmcp.review.direct": "z_ai-glm-coding-plan",
     "claude.headless.full": "anthropic-claude-subscription",
+    "claude.review.opus": "anthropic-claude-subscription",
 }
 GLMCP_QUOTA_TELEMETRY_WRITER_REF = "scripts/hapax-quota-telemetry-writer"
 AGY_ADMISSION_SUPPORTED_TOOL = "hapax-agy-reviewer"
@@ -1433,7 +1437,7 @@ def _subscription_quota_missing_required_admission_evidence(
         return not any(_is_glmcp_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
     if normalized_route_id == "agy.review.direct":
         return not any(_is_agy_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
-    if normalized_route_id == "claude.headless.full":
+    if normalized_route_id in CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES:
         return not any(_is_claude_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
     return True
 
@@ -1444,7 +1448,7 @@ def _subscription_quota_untrusted_admission_evidence_reason(snapshot: QuotaSnaps
         return "untrusted_glmcp_admission_evidence"
     if normalized_route_id == "agy.review.direct":
         return "untrusted_agy_admission_evidence"
-    if normalized_route_id == "claude.headless.full":
+    if normalized_route_id in CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES:
         return "untrusted_claude_admission_evidence"
     return "untrusted_route_admission_evidence"
 
@@ -1792,7 +1796,10 @@ def _redact_quota_evidence_ref(route_id: str, ref: str) -> str:
     redacted = _redact_secretish_quota_evidence_ref(ref)
     if redacted != ref:
         return redacted
-    if route_id == "claude.headless.full" and _is_untrusted_claude_admission_ref_for_evidence(ref):
+    if (
+        route_id in CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
+        and _is_untrusted_claude_admission_ref_for_evidence(ref)
+    ):
         digest = hashlib.sha256(ref.encode("utf-8", errors="replace")).hexdigest()[:16]
         return f"quota-evidence-ref:redacted-untrusted-claude-admission-sha256:{digest}"
     return ref

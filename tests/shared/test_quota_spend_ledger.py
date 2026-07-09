@@ -1553,6 +1553,7 @@ def _claude_snapshot(
     evidence_ref: str,
     *,
     snapshot_id: str = "quota-claude-headless-full-fresh",
+    route_id: str = "claude.headless.full",
     provider: str = "anthropic-claude-subscription",
     reason: str = "fixture claude admission",
 ) -> dict[str, Any]:
@@ -1561,7 +1562,7 @@ def _claude_snapshot(
         "snapshot_id": snapshot_id,
         "captured_at": "2026-07-08T13:59:00Z",
         "fresh_until": "2026-07-08T14:15:00Z",
-        "route_id": "claude.headless.full",
+        "route_id": route_id,
         "provider": provider,
         "capacity_pool": "subscription_quota",
         "subscription_quota_state": "fresh",
@@ -1574,6 +1575,7 @@ def _claude_ledger(
     evidence_ref: str,
     *,
     snapshot_id: str = "quota-claude-headless-full-fresh",
+    route_id: str = "claude.headless.full",
     provider: str = "anthropic-claude-subscription",
     reason: str = "fixture claude admission",
     with_telemetry_writer: bool = True,
@@ -1584,20 +1586,29 @@ def _claude_ledger(
     # Isolate the claude snapshot under test: the base fixture carries an EXHAUSTED operator
     # dry-run snapshot for claude.headless.full that would otherwise dominate the aggregate.
     payload["quota_snapshots"] = [
-        snapshot
-        for snapshot in payload["quota_snapshots"]
-        if snapshot.get("route_id") != "claude.headless.full"
+        snapshot for snapshot in payload["quota_snapshots"] if snapshot.get("route_id") != route_id
     ]
     payload["quota_snapshots"].append(
-        _claude_snapshot(evidence_ref, snapshot_id=snapshot_id, provider=provider, reason=reason)
+        _claude_snapshot(
+            evidence_ref,
+            snapshot_id=snapshot_id,
+            route_id=route_id,
+            provider=provider,
+            reason=reason,
+        )
     )
     return QuotaSpendLedger.model_validate(payload)
 
 
 def test_claude_receipt_bounded_route_has_guarded_provider_mapping() -> None:
     assert "claude.headless.full" in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
+    assert "claude.review.opus" in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
     assert (
         RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS["claude.headless.full"]
+        == "anthropic-claude-subscription"
+    )
+    assert (
+        RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS["claude.review.opus"]
         == "anthropic-claude-subscription"
     )
 
@@ -1611,6 +1622,19 @@ def test_receipt_bounded_route_accepts_claude_admission_evidence() -> None:
     assert refs == (CLAUDE_ADMISSION_EVIDENCE_REF,)
     # cross-layer contract: this exact ref is what the availability guarantor attests on.
     assert CLAUDE_ADMISSION_EVIDENCE_REF.endswith(":account-live-quota:observed")
+
+
+def test_claude_review_receipt_bounded_route_accepts_claude_admission_evidence() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_ADMISSION_EVIDENCE_REF,
+        snapshot_id="quota-claude-review-opus-fresh",
+        route_id="claude.review.opus",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.review.opus", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.FRESH
+    assert refs == (CLAUDE_ADMISSION_EVIDENCE_REF,)
 
 
 def test_receipt_bounded_route_rejects_secretish_claude_witness() -> None:

@@ -274,16 +274,17 @@ class TestLensRegistry:
     def test_claude_family_forces_bare_fence_output(self) -> None:
         """Claude (a reasoning model) must be given a bare-fence output directive,
         or it prepends prose and the strict dossier parser discards its verdict as
-        invalid-output (a lost vote — PR #4119 rounds 6-8). It carries the same
-        no-prose contract gemini gets, delivered via --append-system-prompt."""
+        invalid-output (a lost vote). The wrapper owns the no-prose contract,
+        model pin, and tool denial so the registry does not carry a raw CLI."""
         roster = _registry()["families"]
         claude = next(entry for entry in roster if entry["family"] == "claude")
         cmd = claude["reviewer_command"]
-        assert "--append-system-prompt" in cmd, "claude needs a system-prompt directive"
-        command = " ".join(str(part) for part in cmd)
-        # the directive must demand a single bare yaml fence with no prose
-        assert "one fenced yaml code block" in command
-        assert "invalid-output" in command  # states the consequence
+        assert cmd == ["scripts/hapax-claude-reviewer"]
+        wrapper = (REPO_ROOT / "scripts" / "hapax-claude-reviewer").read_text(encoding="utf-8")
+        assert 'PINNED_REVIEW_MODEL = "opus"' in wrapper
+        assert '"--allowedTools"' in wrapper
+        assert "exactly one fenced yaml" in wrapper
+        assert "invalid-output" in wrapper
 
     def test_surface_rows_cover_spec_table(self) -> None:
         reg = _registry()
@@ -604,9 +605,54 @@ class TestConstitution:
             entry["family"] for entry in reg["families"]
         ]
         assert rt.review_family_route_ids(reg) == {
+            "claude": "claude.review.opus",
             "gemini": "agy.review.direct",
             "glm": "glmcp.review.direct",
         }
+
+    def test_route_backed_reviewer_commands_resolve_to_executable_wrappers(self) -> None:
+        rt = _load_review_team_module()
+        entries = rt.review_family_entries(_registry())
+
+        for entry in entries:
+            if not entry.get("route_id"):
+                continue
+            command = entry.get("reviewer_command") or []
+            assert command, entry
+            wrapper = REPO_ROOT / command[0]
+            assert wrapper.is_file(), entry
+            assert os.access(wrapper, os.X_OK), entry
+
+    def test_claude_review_route_blocks_claude_until_receipts_are_fresh(self) -> None:
+        rt = _load_review_team_module()
+        reg = _registry()
+        platform_registry = rt.PlatformCapabilityRegistry.model_validate(
+            _platform_registry_payload()
+        )
+
+        blocked = rt.review_route_blocked_families(reg, platform_registry=platform_registry)
+
+        assert "claude" in blocked
+        assert any(
+            "claude_review_seat_receipt_admission_required" in reason
+            for reason in blocked["claude"]
+        )
+        assert any(
+            "claude_review_route_specific_quota_receipt_absent" in reason
+            for reason in blocked["claude"]
+        )
+
+    def test_admitted_claude_review_route_keeps_claude_family_available(self) -> None:
+        rt = _load_review_team_module()
+        reg = _registry()
+        payload = _platform_registry_payload()
+        route = next(row for row in payload["routes"] if row["route_id"] == "claude.review.opus")
+        _mark_route_fresh(route)
+        platform_registry = rt.PlatformCapabilityRegistry.model_validate(payload)
+
+        blocked = rt.review_route_blocked_families(reg, platform_registry=platform_registry)
+
+        assert "claude" not in blocked
 
     def test_t2_team_can_seat_glm_as_independent_family(self) -> None:
         rt = _load_review_team_module()

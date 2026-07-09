@@ -152,21 +152,22 @@ def test_review_seats_registered_as_fail_closed_read_only_routes() -> None:
     from shared.quota_spend_ledger import RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
 
     assert "glmcp.review.direct" in REQUIRED_ROUTE_IDS
-    route = load_platform_capability_registry().require("glmcp.review.direct")
-    assert (route.platform.value, route.mode.value, route.profile.value) == (
-        "glmcp",
-        "review",
-        "direct",
-    )
-    assert route.authority_ceiling == AuthorityCeiling.READ_ONLY
-    assert route.worker_tier.value == "read_only_sidecar"
-    assert route.route_state == RouteState.BLOCKED  # receipt-bounded admission, fail-closed
-    assert not route.mutability.any_mutation()
+    assert "claude.review.opus" in REQUIRED_ROUTE_IDS
+    registry = load_platform_capability_registry()
+    for route_id in ("glmcp.review.direct", "claude.review.opus"):
+        route = registry.require(route_id)
+        assert route.mode.value == "review"
+        assert route.authority_ceiling == AuthorityCeiling.READ_ONLY
+        assert route.worker_tier.value == "read_only_sidecar"
+        assert route.route_state == RouteState.BLOCKED  # receipt-bounded admission, fail-closed
+        assert not route.mutability.any_mutation()
     # the receipt-bounded subscription-quota machinery already keys this route id
     assert "agy.review.direct" in ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED
     assert "agy.review.direct" in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
     assert "glmcp.review.direct" in ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED
     assert "glmcp.review.direct" in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
+    assert "claude.review.opus" in ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED
+    assert "claude.review.opus" in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
 
 
 def test_seed_registry_uses_explicit_surface_blockers_and_fails_closed() -> None:
@@ -494,15 +495,22 @@ def test_stale_capability_score_field_fails_closed() -> None:
     )
 
 
-def _make_receipt(*, observed_at: datetime, stale_after: str = "24h") -> PlatformCapabilityReceipt:
+def _make_receipt(
+    *,
+    observed_at: datetime,
+    stale_after: str = "24h",
+    routes: list[str] | None = None,
+    route_wrappers: dict[str, WrapperEvidence] | None = None,
+) -> PlatformCapabilityReceipt:
     return PlatformCapabilityReceipt(
         receipt_id="test-receipt",
         platform="claude",
-        routes=["claude.headless.full"],
+        routes=routes or ["claude.headless.full"],
         observed_at=observed_at,
         stale_after=stale_after,
         cli=CliEvidence(binary="claude", available=True, version="2.1.0"),
         wrapper=WrapperEvidence(path="/dev/null", exists=True, executable=True, sha256="abc123"),
+        route_wrappers=route_wrappers or {},
         capability=SurfaceEvidence(
             status=EvidenceStatus.OBSERVED,
             source="test",
@@ -744,7 +752,11 @@ CLAUDE_ADMISSION_EVIDENCE_REF = (
 CLAUDE_NOW = datetime(2026, 7, 8, 14, 5, tzinfo=UTC)
 
 
-def _write_claude_live_quota_ledger(path: Path) -> None:
+def _write_claude_live_quota_ledger(
+    path: Path,
+    *,
+    route_id: str = "claude.headless.full",
+) -> None:
     payload = deepcopy(json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8")))
     payload["ledger_id"] = "quota-spend-ledger-test-claude-live"
     payload["captured_at"] = "2026-07-08T13:59:30Z"
@@ -753,17 +765,15 @@ def _write_claude_live_quota_ledger(path: Path) -> None:
     )
     # Drop the base EXHAUSTED operator dry-run claude snapshot so the fresh admission is isolated.
     payload["quota_snapshots"] = [
-        snapshot
-        for snapshot in payload["quota_snapshots"]
-        if snapshot.get("route_id") != "claude.headless.full"
+        snapshot for snapshot in payload["quota_snapshots"] if snapshot.get("route_id") != route_id
     ]
     payload["quota_snapshots"].append(
         {
             "quota_snapshot_schema": 1,
-            "snapshot_id": "quota-claude-headless-full-fresh",
+            "snapshot_id": f"quota-{route_id.replace('.', '-')}-fresh",
             "captured_at": "2026-07-08T13:59:00Z",
             "fresh_until": "2026-07-08T14:15:00Z",
-            "route_id": "claude.headless.full",
+            "route_id": route_id,
             "provider": "anthropic-claude-subscription",
             "capacity_pool": "subscription_quota",
             "subscription_quota_state": "fresh",
@@ -778,11 +788,12 @@ def _write_stale_claude_live_quota_ledger(
     path: Path,
     *,
     evidence_ref: str = CLAUDE_ADMISSION_EVIDENCE_REF,
+    route_id: str = "claude.headless.full",
 ) -> None:
-    _write_claude_live_quota_ledger(path)
+    _write_claude_live_quota_ledger(path, route_id=route_id)
     payload = json.loads(path.read_text(encoding="utf-8"))
     for snapshot in payload["quota_snapshots"]:
-        if snapshot.get("route_id") == "claude.headless.full":
+        if snapshot.get("route_id") == route_id:
             snapshot["fresh_until"] = "2026-07-08T14:01:00Z"
             snapshot["evidence_refs"] = [evidence_ref]
             break
@@ -899,10 +910,11 @@ def _write_glmcp_live_quota_ledger(path: Path) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def test_subscription_quota_nonblocking_uses_receipt_stale_after_without_clearing_admission() -> (
-    None
-):
+def test_subscription_quota_nonblocking_uses_receipt_stale_after_without_clearing_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Regression: unobservable subscription quota extends freshness but does not admit Claude."""
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", "none")
     payload = _payload()
     route = _route_payload(payload, "claude.headless.full")
     assert route["capacity_pool"] == "subscription_quota"
@@ -1218,6 +1230,124 @@ def test_agy_quota_receipt_removable_reasons_preserve_route_specific_blocker() -
     assert "quota_telemetry_unknown" not in removable
     assert "route_specific_quota_receipt_absent" not in removable
     assert "agy_review_seat_receipt_admission_required" not in removable
+
+
+def test_claude_review_quota_receipt_removable_reasons_preserve_route_specific_blocker() -> None:
+    payload = _payload()
+    route = _route_payload(payload, "claude.review.opus")
+
+    removable = _quota_receipt_removable_reasons(route)
+
+    assert removable == set()
+    assert "claude_review_route_specific_quota_receipt_absent" not in removable
+    assert "claude_review_seat_receipt_admission_required" not in removable
+
+
+def test_claude_review_platform_receipt_alone_keeps_quota_gate_blocked(
+    tmp_path: Path,
+) -> None:
+    receipt_dir = tmp_path / "receipts"
+    receipt_dir.mkdir()
+    receipt_time = datetime(2026, 7, 8, 14, 1, tzinfo=UTC)
+    (receipt_dir / "claude.json").write_text(
+        _make_receipt(
+            observed_at=receipt_time,
+            routes=["claude.review.opus"],
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+
+    registry = load_platform_capability_registry(
+        receipt_dir=receipt_dir,
+        now=CLAUDE_NOW,
+    )
+    route = registry.require("claude.review.opus")
+
+    assert route.route_state is RouteState.BLOCKED
+    assert "claude_review_seat_receipt_admission_required" not in route.blocked_reasons
+    assert "claude_review_route_specific_quota_receipt_absent" in route.blocked_reasons
+
+
+def test_claude_review_receipt_with_fresh_live_admission_clears_route_quota(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_dir = tmp_path / "receipts"
+    receipt_dir.mkdir()
+    live_ledger = tmp_path / "quota-spend-ledger-live.json"
+    _write_claude_live_quota_ledger(live_ledger, route_id="claude.review.opus")
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
+    receipt_time = datetime(2026, 7, 8, 14, 1, tzinfo=UTC)
+    (receipt_dir / "claude.json").write_text(
+        _make_receipt(
+            observed_at=receipt_time,
+            routes=["claude.review.opus"],
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+
+    registry = load_platform_capability_registry(
+        receipt_dir=receipt_dir,
+        now=CLAUDE_NOW,
+    )
+    route = registry.require("claude.review.opus")
+    result = check_registry_freshness(
+        registry,
+        route_ids=["claude.review.opus"],
+        now=CLAUDE_NOW,
+    )
+
+    assert route.route_state is RouteState.ACTIVE
+    assert route.blocked_reasons == []
+    assert CLAUDE_ADMISSION_EVIDENCE_REF in route.freshness.evidence.quota.evidence_refs
+    assert result.ok is True
+
+
+def test_claude_review_route_not_blocked_by_unrelated_headless_wrapper(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_dir = tmp_path / "receipts"
+    receipt_dir.mkdir()
+    live_ledger = tmp_path / "quota-spend-ledger-live.json"
+    _write_claude_live_quota_ledger(live_ledger, route_id="claude.review.opus")
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
+    receipt_time = datetime(2026, 7, 8, 14, 1, tzinfo=UTC)
+    bad_headless = WrapperEvidence(
+        path="~/.local/bin/hapax-claude-headless",
+        exists=True,
+        executable=False,
+        sha256="bad-headless-sha",
+    )
+    good_review = WrapperEvidence(
+        path="scripts/hapax-claude-reviewer",
+        exists=True,
+        executable=True,
+        sha256="good-review-sha",
+    )
+    (receipt_dir / "claude.json").write_text(
+        _make_receipt(
+            observed_at=receipt_time,
+            routes=["claude.headless.full", "claude.review.opus"],
+            route_wrappers={
+                "claude.headless.full": bad_headless,
+                "claude.review.opus": good_review,
+            },
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+
+    registry = load_platform_capability_registry(
+        receipt_dir=receipt_dir,
+        now=CLAUDE_NOW,
+    )
+    review_route = registry.require("claude.review.opus")
+    headless_route = registry.require("claude.headless.full")
+
+    assert review_route.route_state is RouteState.ACTIVE
+    assert review_route.blocked_reasons == []
+    assert "wrapper_not_executable" in headless_route.blocked_reasons
+    assert "sanctioned_wrapper_not_executable" in headless_route.blocked_reasons
 
 
 def test_agy_has_no_route_specific_quota_admission_without_live_ledger(

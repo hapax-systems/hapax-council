@@ -57,6 +57,7 @@ def test_writes_short_lived_safe_account_live_receipt(tmp_path: Path, capsys) ->
 
     path = Path(summary["path"])
     assert "claude-subscription-quota-admission" in path.name
+    assert "claude-headless-full" in path.name
     receipt = path.read_text(encoding="utf-8")
     assert "schema: hapax.claude_quota_admission.v1" in receipt
     assert "status: quota_available" in receipt
@@ -88,6 +89,29 @@ def test_never_persists_secret_or_content(tmp_path: Path) -> None:
     body = receipt.read_text(encoding="utf-8")
     assert "secret_value_persisted: false" in body
     assert "prompt_or_output_persisted: false" in body
+
+
+def test_default_receipt_names_are_route_distinct_for_same_second(tmp_path: Path) -> None:
+    receipt_dir = tmp_path / "receipts"
+    base_args = [
+        "--receipt-dir",
+        str(receipt_dir),
+        "--now",
+        "2026-07-08T14:00:00Z",
+        "--evidence-ref",
+        "claude-subscription-headroom-observed-20260708t1400z",
+    ]
+
+    headless_rc = _run([*base_args, "--route-id", "claude.headless.full"])
+    review_rc = _run([*base_args, "--route-id", "claude.review.opus"])
+
+    assert headless_rc == 0
+    assert review_rc == 0
+    names = {path.name for path in receipt_dir.glob("*.yaml")}
+    assert names == {
+        "claude-subscription-quota-admission-claude-headless-full-20260708t140000z.yaml",
+        "claude-subscription-quota-admission-claude-review-opus-20260708t140000z.yaml",
+    }
 
 
 def test_rejects_secretish_evidence_ref_fails_closed(tmp_path: Path, capsys) -> None:  # noqa: ANN001
