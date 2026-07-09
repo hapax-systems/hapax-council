@@ -70,7 +70,7 @@ run_root() {
 preflight_root() {
     if [ -n "$SUDO" ] && [ "$INSTALL" -eq 1 ]; then
         "$SUDO" -n true 2>/dev/null || {
-            echo "sudo non-interactive access is required for apcupsd power-alert install; next action: run scripts/install-apcupsd-power-alerts --install --verify-live interactively or grant the post-merge deploy user NOPASSWD for install/systemctl" >&2
+            echo "sudo non-interactive access is required for apcupsd power-alert install; next action: run sudo -v, grant the post-merge deploy user NOPASSWD for install/systemctl, or run as root with HAPAX_APCUPSD_INSTALL_SUDO= scripts/install-apcupsd-power-alerts --install --verify-live" >&2
             return "$ROOT_REQUIRED_RC"
         }
     fi

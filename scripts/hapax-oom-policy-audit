@@ -241,9 +241,11 @@ def audit_tmux_scopes() -> list[Check]:
             for key in ("MemoryHigh", "MemoryMax", "MemorySwapMax")
             if values.get(key) == "infinity"
         ]
-        status = "gap" if unbounded else "pass"
+        status = "warn" if unbounded else "pass"
         detail = (
-            f"unbounded properties: {', '.join(unbounded)}; {NEXT_OOM_INSTALL}" if unbounded else ""
+            f"unbounded new tmux scope properties: {', '.join(unbounded)}; {NEXT_OOM_INSTALL}"
+            if unbounded
+            else ""
         )
         actual = ",".join(
             f"{key}={values.get(key, '')}" for key in ("MemoryHigh", "MemoryMax", "MemorySwapMax")

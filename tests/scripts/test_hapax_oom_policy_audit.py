@@ -154,15 +154,15 @@ def test_audit_fails_when_protected_user_unit_loses_oom_score(tmp_path: Path) ->
     assert "install-p0-oom-containment" in check["detail"]
 
 
-def test_audit_fails_when_tmux_scope_is_unbounded(tmp_path: Path) -> None:
+def test_audit_warns_when_new_tmux_scope_is_unbounded(tmp_path: Path) -> None:
     result = _run(tmp_path, tmux_bounded=False)
 
-    assert result.returncode == 1
+    assert result.returncode == 0
     payload = json.loads(result.stdout)
     check = next(
         item for item in payload["checks"] if item["name"] == "tmux_scope_tmux-spawn-a.scope"
     )
-    assert check["status"] == "gap"
+    assert check["status"] == "warn"
     assert "MemoryMax" in check["detail"]
 
 

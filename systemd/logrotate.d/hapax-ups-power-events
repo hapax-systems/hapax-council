@@ -5,5 +5,4 @@
     compress
     missingok
     notifempty
-    create 0640 root root
 }

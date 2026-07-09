@@ -2,7 +2,6 @@
 # Hapax-Install-Scope: system
 Description=Reapply live Hapax OOM scores
 Documentation=file:/home/hapax/.cache/hapax/source-activation/worktree/systemd/README.md
-ConditionPathExists=/usr/local/sbin/hapax-oom-score-enforce
 
 [Timer]
 OnBootSec=30s

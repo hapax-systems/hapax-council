@@ -367,4 +367,5 @@ def test_root_oom_score_enforcer_continues_after_per_unit_write_failure(
 
     assert result.returncode == 0, result.stderr
     assert "failed to set oom_score_adj for pipewire-pulse.service" in result.stderr
+    assert "next action: run scripts/hapax-oom-policy-audit --json" in result.stderr
     assert (proc_root / "912" / "oom_score_adj").read_text(encoding="utf-8").strip() == "-900"

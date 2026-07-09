@@ -93,7 +93,8 @@ def post_ntfy(url: str, title: str, message: str, priority: str, timeout_s: floa
 
 def append_jsonl(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as fh:
+    fd = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o640)
+    with os.fdopen(fd, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(payload, sort_keys=True) + "\n")
 
 
@@ -133,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
         "apcaccess_error": apc_error,
         "pid": os.getpid(),
     }
+    intent_audit_error = ""
     try:
         append_jsonl(
             Path(args.audit_log),
@@ -144,13 +146,13 @@ def main(argv: list[str] | None = None) -> int:
             },
         )
     except OSError as exc:
+        intent_audit_error = f"{type(exc).__name__}: {exc}"
         print(
             "hapax-power-event: failed to append intent audit log: "
-            f"{exc}; next action: check /var/log/hapax permissions and rerun "
+            f"{exc}; provenance degraded, continuing UPS notification; next action: check /var/log/hapax permissions and rerun "
             "scripts/install-apcupsd-power-alerts --install --verify-live",
             file=sys.stderr,
         )
-        return 1
     delivery = post_ntfy(
         "" if args.no_ntfy else args.ntfy_url,
         text["title"],
@@ -163,6 +165,8 @@ def main(argv: list[str] | None = None) -> int:
         "phase": "delivery",
         "recorded_at": utc_now(),
         "delivery": asdict(delivery),
+        "provenance_degraded": bool(intent_audit_error),
+        "intent_audit_error": intent_audit_error,
         "monotonic_s": time.monotonic(),
     }
     try:

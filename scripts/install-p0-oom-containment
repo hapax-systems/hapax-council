@@ -88,7 +88,7 @@ run_root() {
 preflight_root() {
     if [ -n "$SUDO" ] && [ "$INSTALL" -eq 1 ]; then
         "$SUDO" -n true 2>/dev/null || {
-            echo "sudo non-interactive access is required for OOM containment install; next action: grant NOPASSWD for install/systemctl/tee or run scripts/install-p0-oom-containment --install --verify-live interactively" >&2
+            echo "sudo non-interactive access is required for OOM containment install; next action: run sudo -v, grant NOPASSWD for install/systemctl/tee, or run as root with HAPAX_OOM_INSTALL_SUDO= scripts/install-p0-oom-containment --install --verify-live" >&2
             return "$ROOT_REQUIRED_RC"
         }
     fi
@@ -252,7 +252,7 @@ write_oom_score_or_warn() {
     if write_oom_score "$pid" "$score"; then
         return 0
     fi
-    echo "warning: failed to set oom_score_adj for $label pid=$pid" >&2
+    echo "warning: failed to set oom_score_adj for $label pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
     return 0
 }
 
@@ -322,7 +322,7 @@ apply_user_process_oom_floor() {
         if write_oom_score "$pid" 100; then
             fixed=$((fixed + 1))
         else
-            echo "warning: failed to set oom_score_adj for user process name=$name pid=$pid" >&2
+            echo "warning: failed to set oom_score_adj for user process name=$name pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         fi
     done
     if [ "$fixed" -gt 0 ]; then

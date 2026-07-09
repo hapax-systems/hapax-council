@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -63,8 +65,10 @@ def test_power_event_helper_records_jsonl_without_ntfy(tmp_path: Path) -> None:
     assert records[0]["schema"] == "hapax.ups_power_event.v1"
     assert records[0]["event"] == "onbattery"
     assert "delivery" not in records[0]
+    assert records[1]["provenance_degraded"] is False
     assert records[1]["delivery"]["attempted"] is False
     assert records[1]["apcaccess"]["STATUS"] == "ONLINE"
+    assert audit.stat().st_mode & 0o777 == 0o640
 
 
 def test_power_event_helper_records_offbattery_delivery_failure(tmp_path: Path) -> None:
@@ -105,9 +109,24 @@ def test_power_event_helper_records_offbattery_delivery_failure(tmp_path: Path) 
     assert records[1]["delivery"]["error"]
 
 
-def test_power_event_helper_does_not_notify_when_intent_audit_fails(tmp_path: Path) -> None:
+def test_power_event_helper_notifies_when_intent_audit_fails(tmp_path: Path) -> None:
     audit_dir = tmp_path / "audit-dir"
     audit_dir.mkdir()
+    seen: list[dict[str, str]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            seen.append({"title": self.headers.get("Title", ""), "body": body.decode()})
+            self.send_response(204)
+            self.end_headers()
+
+        def log_message(self, fmt: str, *args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
     fake_apcaccess = tmp_path / "apcaccess"
     fake_apcaccess.write_text(
         "#!/bin/sh\nprintf 'STATUS   : ONLINE\\nTONBATT  : 0 Seconds\\n'\n",
@@ -124,7 +143,7 @@ def test_power_event_helper_does_not_notify_when_intent_audit_fails(tmp_path: Pa
             "--apcaccess",
             str(fake_apcaccess),
             "--ntfy-url",
-            "http://127.0.0.1:9/hapax-alerts",
+            f"http://127.0.0.1:{server.server_port}/hapax-alerts",
             "--timeout",
             "0.2",
         ],
@@ -132,9 +151,17 @@ def test_power_event_helper_does_not_notify_when_intent_audit_fails(tmp_path: Pa
         capture_output=True,
         check=False,
     )
+    server.shutdown()
+    thread.join(timeout=2)
 
-    assert result.returncode == 1
+    assert result.returncode == 0
     assert "failed to append intent audit log" in result.stderr
+    assert seen == [
+        {
+            "title": "UPS ON BATTERY - podium",
+            "body": "SRT3000XLA on battery. apcupsd shuts down at 20%/5min remaining.",
+        }
+    ]
 
 
 def test_installer_source_check_exercises_config_hooks_and_helper() -> None:

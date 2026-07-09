@@ -162,6 +162,11 @@ remove_decommissioned_unit() {
     [ "$removed" -eq 1 ]
 }
 
+system_install_scope_unit() {
+    grep -Eq '^[#;][[:space:]]*Hapax-Install-Scope:[[:space:]]*system[[:space:]]*$' "$1" || return 1
+    return 0
+}
+
 timer_enable_only() {
     local timer_file="$1"
     grep -Eiq '^[#;][[:space:]]*Hapax-Timer-Enable-Only:[[:space:]]*(true|yes|1)[[:space:]]*$' "$timer_file" || return 1
@@ -183,6 +188,10 @@ for unit in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.target "$REP
     dest="$DEST_DIR/$name"
     if is_decommissioned_unit "$name"; then
         echo "skipped decommissioned unit: $name"
+        continue
+    fi
+    if system_install_scope_unit "$unit"; then
+        echo "skipped system-scope unit: $name"
         continue
     fi
     # Already a correct symlink — skip

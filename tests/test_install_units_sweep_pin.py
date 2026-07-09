@@ -266,6 +266,50 @@ class TestServiceDropInInstall:
             assert dest.read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
             assert f"dropin-copied: {relative}" in result.stdout
 
+    def test_system_install_scope_units_are_not_linked_into_user_dir(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        calls = tmp_path / "systemctl-calls.txt"
+        systemctl = bin_dir / "systemctl"
+        systemctl.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                printf '%s\n' "$*" >> "{calls}"
+                exit 0
+                """
+            ),
+            encoding="utf-8",
+        )
+        systemctl.chmod(0o755)
+        uv = bin_dir / "uv"
+        uv.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        uv.chmod(0o755)
+
+        env = os.environ.copy()
+        env["ALLOW_NONSTANDARD_REPO"] = "1"
+        env["HOME"] = str(tmp_path / "home")
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+
+        result = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert result.returncode == 0, result.stderr
+        user_dir = Path(env["HOME"]) / ".config" / "systemd" / "user"
+        system_units = [
+            "hapax-root-failure-intake@.service",
+            "hapax-oom-score-enforce.service",
+            "hapax-oom-score-enforce.timer",
+        ]
+        for unit in system_units:
+            assert not (user_dir / unit).exists()
+            assert f"skipped system-scope unit: {unit}" in result.stdout
+
     def test_script_reloads_daemon_when_dropins_change(self) -> None:
         body = INSTALL_SCRIPT.read_text(encoding="utf-8")
         assert "dropin_changed" in body

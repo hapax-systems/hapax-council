@@ -46,6 +46,21 @@ write_oom_score() {
     }
 }
 
+pid_matches_unit() {
+    local pid="$1" unit="$2" cgroup="$PROC_ROOT/$pid/cgroup"
+    [ -r "$cgroup" ] || return 0
+    grep -Fq "$unit" "$cgroup"
+}
+
+write_oom_score_for_unit() {
+    local pid="$1" score="$2" unit="$3"
+    if ! pid_matches_unit "$pid" "$unit"; then
+        echo "warn: refusing oom_score_adj write for $unit pid=$pid because /proc cgroup no longer matches; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 0
+    fi
+    write_oom_score "$pid" "$score"
+}
+
 system_main_pid() {
     local unit="$1" pid
     pid="$("$SYSTEMCTL" show "$unit" -p MainPID --value 2>/dev/null || true)"
@@ -68,19 +83,19 @@ apply_unit_score() {
     local unit="$1" score="$2" pid
     pid="$(user_main_pid "$unit")"
     [ -n "$pid" ] || return 0
-    if write_oom_score "$pid" "$score"; then
+    if write_oom_score_for_unit "$pid" "$score" "$unit"; then
         echo "user-unit $unit pid=$pid oom_score_adj=$score"
     else
-        echo "warn: failed to set oom_score_adj for $unit pid=$pid" >&2
+        echo "warn: failed to set oom_score_adj for $unit pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
     fi
 }
 
 user_pid="$(system_main_pid "user@$TARGET_UID.service")"
 if [ -n "$user_pid" ]; then
-    if write_oom_score "$user_pid" 100; then
+    if write_oom_score_for_unit "$user_pid" 100 "user@$TARGET_UID.service"; then
         echo "system user@$TARGET_UID.service pid=$user_pid oom_score_adj=100"
     else
-        echo "warn: failed to set oom_score_adj for user@$TARGET_UID.service pid=$user_pid" >&2
+        echo "warn: failed to set oom_score_adj for user@$TARGET_UID.service pid=$user_pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
     fi
 fi
 
