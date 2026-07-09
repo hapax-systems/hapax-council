@@ -206,11 +206,11 @@ Lisa Feldman Barrett's **Embodied Predictive Interoception Coding (EPIC)** model
 
 Hapax already has a "mood" concept (the visual layer state machine), but it's currently driven by signal thresholds rather than anything phenomenologically grounded. A Stimmung-inspired redesign would mean:
 
-- The system's "mood" is not a classification of the operator's emotional state but a **global prior that shapes all perception**. When the system is in a "deep work" attunement, *everything* is perceived through the lens of "does this disrupt or support deep work?" When in "transition" attunement, everything is perceived through "what comes next?"
+- The system's "mood" is not a readout of anyone's emotional state but a **global prior that shapes all perception**. When the system is in a "deep work" attunement, *everything* is perceived through the lens of "does this disrupt or support deep work?" When in "transition" attunement, everything is perceived through "what comes next?"
 
 - Mood transitions should be **gradual and pervasive**, not discrete state changes. A shift from "active" to "winding down" should progressively alter the salience weightings across all sensor channels, not flip a switch.
 
-- The system's mood should be **bidirectionally coupled** with the operator's: operator state shapes system mood, but system mood (via display state, audio, information selection) shapes operator experience. This is the Stimmung feedback loop.
+- The system's attunement should be **bidirectionally coupled** with its context: sensed context shapes the global prior, and that global prior (via display state, audio, information selection) shapes the human experience at the interface. This is the Stimmung feedback loop.
 
 **Key gap**: Nobody has implemented mood-as-world-disclosure computationally. All "affective computing" treats emotion as content (what the person is feeling) rather than as form (how the world is disclosed). The precision-weighting interpretation from active inference is the most promising computational handle, but it hasn't been applied to ambient computing.
 

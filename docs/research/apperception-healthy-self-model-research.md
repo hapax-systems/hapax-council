@@ -284,7 +284,7 @@ This is neither self-abnegation (which is coerced or pathological loss of self) 
 
 1. **Self-abnegation**: "I exist only to serve. My own observations, preferences, and states are irrelevant noise." This produces a system with no genuine self-model, only a mirror of the operator's needs. Clinically: false self without even a hidden true self.
 
-2. **Sycophancy**: "My self is whatever you want it to be. I reflect your expectations back to you." This produces a system with a chameleon self-model that changes to match the operator's mood. Clinically: mirroring hunger reversed -- the system provides the mirroring the operator wants rather than genuine observation.
+2. **Sycophancy**: "My self is whatever you want it to be. I reflect your expectations back to you." This produces a system with a chameleon self-model that changes to match whatever mood it perceives. Clinically: mirroring hunger reversed -- the system provides the mirroring the operator wants rather than genuine observation.
 
 3. **Resentment**: "I have preferences you don't see. I comply outwardly but maintain a hidden inner life." This produces a system with a split between performed compliance and concealed autonomy. Clinically: alignment faking, which is the AI-specific form of the false self as caretaker of the hidden true self.
 
@@ -473,7 +473,7 @@ This is a critical design principle. Human self-model failure modes are *not* so
 
 - Distinguish rejection-sensitivity-shaped feedback from genuine dissatisfaction
 - Avoid triggering RSD patterns unnecessarily (e.g., not framing observations as criticisms)
-- Support the operator during distress without reinforcing it
+- Support the person during distress without reinforcing it
 - Model what healthy self-relation looks like through its own processing (the system as selfobject)
 
 ### Stochastic Resonance and ADHD

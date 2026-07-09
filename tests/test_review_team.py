@@ -3106,6 +3106,36 @@ ratifications:
         blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
         assert len(blocking) == 1
 
+    def test_ledger_with_blank_id_waives_nothing(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path, self.LEDGER.replace("  - id: RAT-TEST-1\n", "  - id: ''\n"))
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1
+
+    def test_ledger_with_blank_decision_record_waives_nothing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(
+            tmp_path,
+            self.LEDGER.replace(
+                '    decision_record: "test decision record"\n',
+                "    decision_record: '  '\n",
+            ),
+        )
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1
+
     def test_wrong_checkout_ignores_ledger(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
         (tmp_path / ".git").mkdir()  # rev-parse fails -> head never matches
@@ -3344,3 +3374,55 @@ ratifications:
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
         blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
         assert len(blocking) == 1
+
+
+class TestCommittedRatificationLedgerIsHonest:
+    """The COMMITTED ledger must promise only what the production gate delivers.
+
+    Round-16 defect class: the ledger named files that ``file_waiver_safe`` refuses,
+    so a consent-provenance critical on them blocked forever and the ratified
+    disposition was expressible but unreachable. This test loads the real ledger
+    (not a synthetic fixture) and pins BOTH legs: every named file is waiver-safe at
+    head, and every content pin matches the bytes the data owner ratified.
+    """
+
+    def _repo_root(self) -> Path:
+        return Path(__file__).resolve().parents[1]
+
+    def _ledger(self) -> dict:
+        import yaml
+
+        path = self._repo_root() / "config" / "governance" / "operator-ratifications.yaml"
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    def test_every_ledger_file_is_waiver_safe_at_head(self) -> None:
+        from shared.operator_attribution_scan import file_waiver_safe
+
+        root = self._repo_root()
+        deadlocked = [
+            rel
+            for entry in self._ledger()["ratifications"]
+            for rel in entry["files"]
+            if not file_waiver_safe(root, rel)
+        ]
+        assert not deadlocked, (
+            "ledger names files the waiver gate refuses — the ratified disposition "
+            "is unreachable for them (round-16 deadlock class):\n" + "\n".join(deadlocked)
+        )
+
+    def test_every_ledger_content_pin_matches_head(self) -> None:
+        import hashlib
+
+        root = self._repo_root()
+        drifted = []
+        for entry in self._ledger()["ratifications"]:
+            pins = entry.get("files_sha256") or {}
+            assert set(pins) == set(entry["files"]), f"{entry['id']}: pins must cover files exactly"
+            for rel, pin in pins.items():
+                actual = hashlib.sha256((root / rel).read_bytes()).hexdigest()
+                if actual != pin:
+                    drifted.append(f"{rel}: pinned {pin[:12]}… actual {actual[:12]}…")
+        assert not drifted, (
+            "ratified content pin drifted — the data owner ratified different bytes; "
+            "re-ratification required:\n" + "\n".join(drifted)
+        )

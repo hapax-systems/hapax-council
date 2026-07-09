@@ -1375,10 +1375,12 @@ def _operator_ratifications(repo_root: Path) -> list[dict[str, Any]]:
         pins = entry.get("files_sha256")
         if (
             not isinstance(entry.get("id"), str)
+            or not str(entry.get("id")).strip()
             or not isinstance(entry.get("ratified"), str)
             or not str(entry.get("ratified")).strip()
             or entry.get("authority") != "operator"
             or not isinstance(entry.get("decision_record"), str)
+            or not str(entry.get("decision_record")).strip()
             or entry.get("class") != "operator-privacy-residual"
             or not isinstance(lenses, list)
             or not lenses

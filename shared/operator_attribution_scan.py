@@ -17,8 +17,6 @@ import hashlib
 import re
 from pathlib import Path
 
-from shared.governance.mental_state_redaction import operator_mental_state_present
-
 _DIAGNOSIS = (
     r"(?:\bADHD\b|\bAuDHD\b|\bautis\w*|\bneurodiverg\w*|\bRSD\b|rejection[- ]sensitiv\w*"
     r"|\bdysphor\w*|identity\s+diffusion)"
@@ -96,19 +94,62 @@ def file_enforced_class_clean(repo_root: Path, rel_path: str) -> bool:
     return True
 
 
+#: Sentence/segment split for attribution-scoped affect detection. Quotation marks are
+#: boundaries too: quoted speech (the SYSTEM saying "I …") is never operator attribution,
+#: and must not bleed into an adjacent sentence that happens to name the operator.
+_SEGMENT_RE = re.compile(r"(?<=[.!?])\s+|\n|[\"“”]")
+
+
+def operator_affect_asserted(text: str) -> bool:
+    """True iff some segment ATTRIBUTES an affective/mental state TO THE OPERATOR.
+
+    Reuses the repo's own detector (``mental_state_redaction.operator_mental_state_present``
+    via ``publication_allowlist.cross_boundary_pii_blockers``) — no new lexicon is authored
+    here — but scopes it to segments that name the operator in the third person.
+
+    Why the scoping is required, not cosmetic: the bare detector deliberately keys on
+    first-person markers so operator affect is caught when written as "I"/"my". In research
+    documents ABOUT self-models and affect, those markers appear in quoted SYSTEM speech
+    ("My self is whatever you want it to be") and rhetorical examples ("Am I doing well?").
+    Applying the bare detector to a whole such file always fires, which would deadlock the
+    data-owner ratification by construction — a ledger-named file could never be waived,
+    so a consent-provenance critical on it would block forever with no path through.
+    Segment-scoping keeps every genuine operator-attributed disclosure ("The operator is
+    anxious about the release window") blocking, while not vetoing a document merely for
+    discussing affect.
+    """
+    from shared.governance.mental_state_redaction import operator_mental_state_present
+
+    for segment in _SEGMENT_RE.split(text):
+        if "operator" in segment.lower() and operator_mental_state_present(segment):
+            return True
+    return False
+
+
 def file_waiver_safe(repo_root: Path, rel_path: str) -> bool:
-    """True iff a data-owner waiver may apply to findings citing ``rel_path``: the file
-    is clean under the enforced attribution class AND contains no detectable
-    non-residual PII datum or operator mental-state content. This decides the waiver on
-    FILE CONTENT, not finding prose: if the alleged datum (address, phone, ...) were
+    """True iff a data-owner waiver may apply to findings citing ``rel_path``: the file is
+    clean under the enforced attribution class, asserts no operator affect, and contains no
+    pattern-detectable non-residual PII DATUM (email/phone/SSN/address/DOB/user-homed path).
+
+    This decides the waiver on FILE CONTENT, not finding prose: if the alleged datum were
     actually present, this returns False and the finding blocks; if it is absent, the
-    allegation has no referent in the file. Fail-closed: unreadable = not safe."""
+    allegation has no referent in the file. Fail-closed: unreadable = not safe.
+
+    The mental-state class is guarded on four legs, none of which this relaxes:
+      1. content, here — ``operator_affect_asserted`` (attribution-scoped, see above);
+      2. prose — a finding ALLEGING a mental/emotional/cognitive/psychological/affective
+         (or medical) datum is non-waivable by rule (``_NON_WAIVABLE_ALLEGATION_RE``);
+      3. egress — ``operator_mental_state_present`` remains enforced unscoped on the
+         publication path, which is what actually stops such content leaving the estate;
+      4. pins — the ledger's ``files_sha256`` binds each waiver to the exact bytes the data
+         owner inspected; any edit voids the pin and forces re-ratification.
+    """
     if not file_enforced_class_clean(repo_root, rel_path):
         return False
     try:
         text = (repo_root / rel_path).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return False
-    if operator_mental_state_present(text):
+    if operator_affect_asserted(text):
         return False
     return not any(pattern.search(text) for pattern in NON_RESIDUAL_PII_PATTERNS)
