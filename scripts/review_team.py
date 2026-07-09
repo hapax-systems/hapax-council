@@ -1462,7 +1462,10 @@ def _ratified_content_pin_holds(repo_root: Path, entry: Mapping[str, Any], rel_p
 #: routes to operator disposition (i.e. blocks) instead of auto-waiving, even when its
 #: prose also mentions a ratified topic term.
 _NON_WAIVABLE_ALLEGATION_RE = re.compile(
-    r"legal\s+name|real\s+name|full\s+name|surname|family\s+name|maiden\s+name"
+    r"\bPII\b|personally\s+identifiable|personal\s+information|personal\s+data"
+    r"|private\s+information|sensitive\s+information|identity\s+details?"
+    r"|identifying\s+(?:detail|details|information)|personal\s+identifier"
+    r"|legal\s+name|real\s+name|full\s+name|surname|family\s+name|maiden\s+name"
     r"|\baddress(?:es)?\b|home\s+address(?:es)?|street\s+address(?:es)?"
     r"|mailing\s+address(?:es)?|phone\s+number"
     r"|e-?mail\s+address|employer|workplace|third[- ]part(?:y|ies)"

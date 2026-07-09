@@ -3405,6 +3405,36 @@ ratifications:
         blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
         assert len(blocking) == 1
 
+    @pytest.mark.parametrize(
+        ("title", "detail"),
+        [
+            ("PII remains in the residual section", "the finding can stay generic"),
+            (
+                "personal information remains in the residual section",
+                "reviewers need not repeat the private value",
+            ),
+            (
+                "identity details remain in the residual section",
+                "the alleged datum class is non-waivable",
+            ),
+        ],
+    )
+    def test_generic_privacy_allegation_never_waives_even_on_clean_file(
+        self, tmp_path: Path, monkeypatch, title: str, detail: str
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Generic research on residual linkage only.\n", encoding="utf-8")
+        finding = self._critical()
+        finding["title"] = title
+        finding["detail"] = detail
+        reviews = [_review("codex-1", "codex", "block", findings=[finding])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1
+
     def test_path_alleging_finding_never_waives(self, tmp_path: Path, monkeypatch) -> None:
         # round-13: the local-path/username privacy class is enumerable — a finding
         # alleging a private-path leak routes to operator disposition, never auto-waives.
