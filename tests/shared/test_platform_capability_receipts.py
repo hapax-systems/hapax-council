@@ -589,6 +589,55 @@ def test_codex_exec_auth_timeout_env_nonpositive_falls_back_to_default(
     assert "codex_exec_auth_failed" in receipt["capability"]["reason_codes"]
 
 
+def test_codex_exec_auth_timeout_env_nonfinite_falls_back_to_default(
+    tmp_path: Path,
+) -> None:
+    for raw in ("nan", "inf"):
+        case_dir = tmp_path / raw
+        bin_dir = case_dir / "bin"
+        bin_dir.mkdir(parents=True)
+        _fake_codex_exec_failure(bin_dir, "login required")
+
+        result = _run_receipts(
+            case_dir,
+            env={
+                "PATH": "",
+                "HAPAX_CODEX_BIN_PATH": str(bin_dir / "codex"),
+                "HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS": raw,
+            },
+            codex_access_token=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "invalid HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS" in result.stderr
+        receipt = json.loads((case_dir / "codex.json").read_text(encoding="utf-8"))
+        assert receipt["cli"]["available"] is True
+        assert receipt["capability"]["status"] == "blocked"
+        assert "codex_exec_auth_failed" in receipt["capability"]["reason_codes"]
+
+
+def test_codex_exec_auth_timeout_cli_invalid_fails_closed(tmp_path: Path) -> None:
+    for raw in ("0", "nan", "inf"):
+        case_dir = tmp_path / raw
+        bin_dir = case_dir / "bin"
+        bin_dir.mkdir(parents=True)
+        marker = case_dir / "codex-marker.txt"
+        _fake_codex_exec_success(bin_dir / "codex", marker)
+
+        result = _run_receipts(
+            case_dir,
+            env={"PATH": str(bin_dir)},
+            codex_exec_auth_timeout=float(raw),
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert not marker.exists()
+        receipt = json.loads((case_dir / "codex.json").read_text(encoding="utf-8"))
+        assert receipt["cli"]["available"] is True
+        assert receipt["capability"]["status"] == "blocked"
+        assert "codex_exec_auth_invalid_timeout" in receipt["capability"]["reason_codes"]
+
+
 def test_codex_receipt_exec_auth_timeout_is_separate_from_cli_timeout(
     tmp_path: Path,
 ) -> None:

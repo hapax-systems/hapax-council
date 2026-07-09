@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -362,6 +363,8 @@ def remote_codex_exec_auth_command(*, cwd: Path) -> str:
 def observe_codex_exec_auth(*, enabled: bool, timeout: float) -> tuple[list[str], list[str]]:
     if not enabled:
         return [], ["codex_exec_auth_probe_not_requested"]
+    if not math.isfinite(timeout) or timeout <= 0:
+        return [], ["codex_exec_auth_invalid_timeout"]
     target_host = codex_exec_auth_host()
     normalized_target = normalize_host(target_host)
     try:
@@ -641,6 +644,12 @@ def positive_float_env_default(name: str, default: float) -> float:
     try:
         value = float(raw)
     except (TypeError, ValueError):
+        print(
+            f"hapax-platform-capability-receipts: invalid {name}={raw!r}; using {default:g}s",
+            file=sys.stderr,
+        )
+        return default
+    if not math.isfinite(value):
         print(
             f"hapax-platform-capability-receipts: invalid {name}={raw!r}; using {default:g}s",
             file=sys.stderr,
