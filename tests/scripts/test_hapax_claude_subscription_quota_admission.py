@@ -190,6 +190,23 @@ def test_rejects_unsafe_receipt_name(tmp_path: Path, capsys) -> None:  # noqa: A
     assert not any(tmp_path.glob("*.yaml"))
 
 
+def test_rejects_lane_presence_receipt_name(tmp_path: Path, capsys) -> None:  # noqa: ANN001
+    rc = _run(
+        [
+            "--receipt-dir",
+            str(tmp_path),
+            "--receipt-name",
+            "eta-claude-subscription-quota-admission.yaml",
+            "--evidence-ref",
+            "claude-subscription-headroom-observed-20260708t1400z",
+        ]
+    )
+
+    assert rc == 2
+    assert "receipt name" in capsys.readouterr().err
+    assert not any(tmp_path.glob("*.yaml"))
+
+
 def test_rejects_receipt_name_without_claude_admission_label(
     tmp_path: Path,
     capsys,

@@ -128,6 +128,8 @@ def _receipt_name(args: argparse.Namespace, *, observed_at: datetime) -> str:
     name = args.receipt_name or default
     if SAFE_RECEIPT_NAME_RE.fullmatch(name) is None or SECRETISH_RE.search(name) is not None:
         raise ValueError("unsafe receipt name")
+    if LANE_PRESENCE_RE.search(name.removesuffix(".yaml")) is not None:
+        raise ValueError("unsafe receipt name; lane/tmux/session presence must not be persisted")
     if "claude-subscription-quota-admission" not in name:
         raise ValueError("receipt name must contain 'claude-subscription-quota-admission'")
     return name

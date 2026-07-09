@@ -1033,6 +1033,13 @@ def test_claude_admission_rejects_secret_persistence(tmp_path: Path) -> None:
             },
             "unsafe-receipt-name",
         ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "eta-claude-subscription-quota-admission.yaml",
+            },
+            "receipt-name-names-lane-session-presence",
+        ),
     ],
 )
 def test_claude_admission_fail_closed_validation_cases(
