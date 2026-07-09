@@ -93,7 +93,7 @@ LOCAL_DEV_TARGET = "appendix"
 # create fresh short-lived route-specific quota/admission evidence and rerun
 # telemetry. There is no environment kill switch for stale/unknown subscription quota.
 ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED = frozenset(
-    {"agy.review.direct", "claude.headless.full", "glmcp.review.direct"}
+    {"agy.review.direct", "claude.headless.full", "claude.review.opus", "glmcp.review.direct"}
 )
 
 

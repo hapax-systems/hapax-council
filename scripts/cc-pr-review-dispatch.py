@@ -655,21 +655,33 @@ def clear_route_recovered_family_outage(
     receipt is a recovery witness for that backing route; if the route is still
     blocked, the outage latch stays intact. The route_blocked_families input is
     the operational killswitch for a bad recovery detector: route-block the
-    family and this helper will not clear its outage latch.
+    family and this helper will not clear its outage latch. Legacy one-line
+    outage entries remain explicit family outages and are not route-cleared.
     """
 
     if not outage_witness:
         return {}
     route_ids = review_team.review_family_route_ids(registry)
+    state_path = state_path or FAMILY_OUTAGE_STATE
+    try:
+        raw_state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raw_state = {}
+    if not isinstance(raw_state, dict):
+        raw_state = {}
+    structured_outage_families = {
+        family for family in outage_witness if isinstance(raw_state.get(family), dict)
+    }
     recovered = sorted(
         family
         for family in outage_witness
-        if family in route_ids and family not in route_blocked_families
+        if family in structured_outage_families
+        and family in route_ids
+        and family not in route_blocked_families
     )
     if not recovered:
         return dict(outage_witness)
 
-    state_path = state_path or FAMILY_OUTAGE_STATE
     durable_clear = False
     try:
         state_path.parent.mkdir(parents=True, exist_ok=True)

@@ -146,6 +146,7 @@ SUBSCRIPTION_ROUTES = {
     "codex": "codex.headless.full",
     "glmcp": "glmcp.review.direct",
 }
+CLAUDE_SUBSCRIPTION_ROUTES = ("claude.headless.full", "claude.review.opus")
 
 SUBSCRIPTION_PROVIDERS = {
     "agy": "google-antigravity-cli-agy",
@@ -490,6 +491,7 @@ class AgyAdmissionScan:
 
 @dataclass(frozen=True)
 class ClaudeAdmission:
+    route_id: str
     evidence_ref: str
     fresh_until: datetime
 
@@ -1173,7 +1175,6 @@ def active_claude_admission_receipts(
             "schema": CLAUDE_ADMISSION_SCHEMA,
             "status": "quota_available",
             "provider": CLAUDE_ADMISSION_PROVIDER,
-            "route_id": SUBSCRIPTION_ROUTES["claude"],
             "capacity_pool": CLAUDE_ADMISSION_CAPACITY_POOL,
             "auth_surface": CLAUDE_ADMISSION_AUTH_SURFACE,
             "secret_source": CLAUDE_ADMISSION_SECRET_SOURCE,
@@ -1191,6 +1192,14 @@ def active_claude_admission_receipts(
                 failed = True
                 break
         if failed:
+            continue
+        route_id = fields.get("route_id", "").strip()
+        if route_id not in CLAUDE_SUBSCRIPTION_ROUTES:
+            reject(
+                path,
+                "route_id missing or unsupported; expected one of "
+                + ", ".join(CLAUDE_SUBSCRIPTION_ROUTES),
+            )
             continue
         observation = fields.get("observation", "").strip()
         if observation not in CLAUDE_ADMISSION_OBSERVATIONS:
@@ -1247,6 +1256,7 @@ def active_claude_admission_receipts(
             continue
         refs.append(
             ClaudeAdmission(
+                route_id=route_id,
                 evidence_ref=(
                     "relay-receipt:"
                     f"{_receipt_label(path)}:witness:{receipt_evidence_ref}:"
@@ -1869,6 +1879,24 @@ def build_live_ledger(
                 f"{platform} subscription lane hit an unexpired quota wall; "
                 "state from quota-wall relay receipt(s)"
             )
+            if platform == "claude":
+                for claude_route_id in CLAUDE_SUBSCRIPTION_ROUTES:
+                    snapshots.append(
+                        {
+                            "quota_snapshot_schema": 1,
+                            "snapshot_id": (
+                                f"quota-{claude_route_id.replace('.', '-')}-live-{snapshot_stamp}"
+                            ),
+                            "captured_at": now.isoformat().replace("+00:00", "Z"),
+                            "route_id": claude_route_id,
+                            "provider": SUBSCRIPTION_PROVIDERS["claude"],
+                            "capacity_pool": "subscription_quota",
+                            "subscription_quota_state": state,
+                            "evidence_refs": evidence,
+                            "operator_visible_reason": reason,
+                        }
+                    )
+                continue
         elif platform == "glmcp":
             if glmcp_coding_plan_admissions:
                 state = "fresh"
@@ -1921,30 +1949,57 @@ def build_live_ledger(
                     )
                 fresh_until = None
         elif platform == "claude":
-            if claude_platform_admissions:
-                state = "fresh"
-                evidence = [
-                    *(admission.evidence_ref for admission in claude_platform_admissions),
-                    writer_ref,
+            for claude_route_id in CLAUDE_SUBSCRIPTION_ROUTES:
+                route_admissions = [
+                    admission
+                    for admission in claude_platform_admissions
+                    if admission.route_id == claude_route_id
                 ]
-                fresh_until = max(admission.fresh_until for admission in claude_platform_admissions)
-                reason = (
-                    "fresh claude subscription-quota admission receipt present; "
-                    "claude.headless.full account-live quota is receipt-bounded, "
-                    "not lane/session presence"
-                )
-            else:
-                state = "unknown"
-                evidence = (
-                    [*claude_ignored_receipts, writer_ref]
-                    if claude_ignored_receipts
-                    else ["relay-receipt:claude:quota-admission:absent", writer_ref]
-                )
-                fresh_until = None
-                reason = (
-                    "no fresh claude subscription-quota admission receipt; claude.headless.full "
-                    "must hold rather than infer availability from lane/session presence"
-                )
+                if route_admissions:
+                    state = "fresh"
+                    evidence = [
+                        *(admission.evidence_ref for admission in route_admissions),
+                        writer_ref,
+                    ]
+                    fresh_until = max(admission.fresh_until for admission in route_admissions)
+                    reason = (
+                        "fresh claude subscription-quota admission receipt present; "
+                        f"{claude_route_id} account-live quota is receipt-bounded, "
+                        "not lane/session presence"
+                    )
+                else:
+                    state = "unknown"
+                    evidence = (
+                        [*claude_ignored_receipts, writer_ref]
+                        if claude_ignored_receipts
+                        else [
+                            f"relay-receipt:claude:quota-admission:{claude_route_id}:absent",
+                            writer_ref,
+                        ]
+                    )
+                    fresh_until = None
+                    reason = (
+                        "no fresh claude subscription-quota admission receipt; "
+                        f"{claude_route_id} must hold rather than infer availability from "
+                        "lane/session presence"
+                    )
+                snapshot = {
+                    "quota_snapshot_schema": 1,
+                    "snapshot_id": (
+                        f"quota-{claude_route_id.replace('.', '-')}-live-{snapshot_stamp}"
+                    ),
+                    "captured_at": now.isoformat().replace("+00:00", "Z"),
+                    "route_id": claude_route_id,
+                    "provider": SUBSCRIPTION_PROVIDERS["claude"],
+                    "capacity_pool": "subscription_quota",
+                    "subscription_quota_state": state,
+                    "evidence_refs": evidence,
+                    "operator_visible_reason": reason,
+                }
+                if fresh_until is not None:
+                    snapshot["fresh_until"] = _iso_z_seconds(fresh_until)
+                snapshots.append(snapshot)
+            continue
         elif platform == "codex" and codex_auth_blocker is not None:
             state = "unknown"
             evidence = [

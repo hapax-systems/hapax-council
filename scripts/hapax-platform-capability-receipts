@@ -423,6 +423,14 @@ def observe_wrapper(route: PlatformCapabilityRoute) -> WrapperEvidence:
     )
 
 
+def observe_wrappers(routes: list[PlatformCapabilityRoute]) -> list[WrapperEvidence]:
+    wrappers: dict[str, WrapperEvidence] = {}
+    for route in routes:
+        wrapper = observe_wrapper(route)
+        wrappers.setdefault(wrapper.path, wrapper)
+    return [wrappers[path] for path in sorted(wrappers)]
+
+
 def config_refs(platform: str) -> list[ConfigEvidence]:
     refs: list[ConfigEvidence] = []
     for path_ref in CONFIG_REFS_BY_PLATFORM[platform]:
@@ -486,22 +494,28 @@ def build_receipt(
 ) -> PlatformCapabilityReceipt:
     primary_route = routes[0]
     cli = observe_cli(platform, timeout=timeout)
-    wrapper = observe_wrapper(primary_route)
+    wrappers = observe_wrappers(routes)
+    wrapper = wrappers[0] if wrappers else observe_wrapper(primary_route)
     route_ids = sorted(route.route_id for route in routes)
     receipt_id = f"{platform}-{observed_at.strftime('%Y%m%dT%H%M%SZ')}"
     capability_reasons: list[str] = []
     capability_refs: list[str] = []
-    wrapper_usable = wrapper.exists and wrapper.executable and bool(wrapper.sha256)
+    unusable_wrappers = [
+        item for item in wrappers if not (item.exists and item.executable and item.sha256)
+    ]
+    wrapper_usable = not unusable_wrappers
     if cli.available:
         capability_refs.append(f"local:{platform}:cli-version:{cli.version or 'available'}")
     else:
         capability_reasons.append("cli_missing_or_unusable")
-    if wrapper_usable:
-        capability_refs.append(f"local:{wrapper.path}:sha256:{wrapper.sha256}")
-    elif wrapper.exists and wrapper.sha256 and not wrapper.executable:
-        capability_reasons.append("sanctioned_wrapper_not_executable")
-    else:
-        capability_reasons.append("sanctioned_wrapper_missing_or_unreadable")
+    capability_refs.extend(
+        f"local:{item.path}:sha256:{item.sha256}" for item in wrappers if item.sha256
+    )
+    if not wrapper_usable:
+        if any(item.exists and item.sha256 and not item.executable for item in unusable_wrappers):
+            capability_reasons.append("sanctioned_wrapper_not_executable")
+        if any(not item.exists or not item.sha256 for item in unusable_wrappers):
+            capability_reasons.append("sanctioned_wrapper_missing_or_unreadable")
     if platform == "codex":
         exec_auth_refs, exec_auth_reasons = observe_codex_exec_auth(
             enabled=codex_exec_auth_probe,
@@ -515,15 +529,19 @@ def build_receipt(
     if wrapper_usable:
         resource_status = EvidenceStatus.OBSERVED
         resource_reasons: list[str] = []
-    elif wrapper.exists and not wrapper.executable:
+    elif any(item.exists and not item.executable for item in unusable_wrappers):
         resource_status = EvidenceStatus.BLOCKED
         resource_reasons = ["wrapper_not_executable"]
     else:
         resource_status = EvidenceStatus.MISSING
         resource_reasons = ["wrapper_missing"]
     resource_refs = [
-        f"local:{wrapper.path}:exists:{str(wrapper.exists).lower()}",
-        f"local:{wrapper.path}:executable:{str(wrapper.executable).lower()}",
+        ref
+        for item in wrappers
+        for ref in (
+            f"local:{item.path}:exists:{str(item.exists).lower()}",
+            f"local:{item.path}:executable:{str(item.executable).lower()}",
+        )
     ]
     quota_reason = "account_live_quota_receipt_absent"
     quota = surface_evidence(

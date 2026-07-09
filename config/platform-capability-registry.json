@@ -19,6 +19,7 @@
     "claude.headless.haiku",
     "claude.headless.opus",
     "claude.headless.sonnet",
+    "claude.review.opus",
     "claude.interactive.full",
     "codex.headless.full",
     "codex.headless.spark",
@@ -2086,6 +2087,252 @@
       "approval_posture": "default_deny_enable_latch",
       "capability_tier": "frontier_full",
       "worker_tier": "full_worker"
+    },
+    {
+      "registry_schema": 1,
+      "route_id": "claude.review.opus",
+      "platform": "claude",
+      "mode": "review",
+      "profile": "opus",
+      "launcher": "scripts/hapax-claude-reviewer (review seat: blind-review prompt on stdin -> claude -p --model opus --allowedTools \"\" YAML verdict on stdout)",
+      "summary": "Claude Opus no-tools review seat",
+      "notes": "Read-only Claude review route. The wrapper pins Opus, disables tools, and preserves strict fenced-YAML output for review-team dossiers.",
+      "route_state": "blocked",
+      "blocked_reasons": [
+        "claude_review_seat_receipt_admission_required",
+        "route_specific_quota_receipt_absent"
+      ],
+      "model_or_engine": "claude-opus",
+      "execution_descriptor": {
+        "model_id": "claude-opus-4-8",
+        "effort": "xhigh",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "none"
+      },
+      "descriptor_variants": [],
+      "auth_surface": "subscription",
+      "capacity_pool": "subscription_quota",
+      "mutability": {
+        "vault_docs": false,
+        "source": false,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "read_only",
+      "tool_access": {
+        "filesystem": "read_only",
+        "shell": "none",
+        "browser": false,
+        "mcp": []
+      },
+      "privacy_posture": "provider_private",
+      "quality_envelope": {
+        "eligible_quality_floors": [
+          "frontier_review_required"
+        ],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "source_mutation",
+          "runtime_mutation",
+          "provider_spend",
+          "governance_authority_case",
+          "privacy_secret_sensitive",
+          "public_release_without_gate"
+        ]
+      },
+      "context_limits": {
+        "max_context_class": "very_large"
+      },
+      "telemetry": {
+        "quota_source": "unknown",
+        "cost_source": "none",
+        "resource_source": "local_probe"
+      },
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": null,
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-05-17T08:14:11Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "claude_review_seat_receipt_admission_required"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "route_specific_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "fresh_resource_evidence_absent"
+            ]
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "official:https://code.claude.com/docs/en/cli-usage"
+            ],
+            "blocked_reasons": []
+          }
+        }
+      },
+      "known_unknowns": [
+        "Account-live subscription quota remains receipt-bounded; lane/session presence is not admission evidence."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 5,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.review.opus:dimensional-score:grounding"
+          ],
+          "observed_at": "2026-07-09T12:15:30Z",
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 5,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.review.opus:dimensional-score:governance_reasoning"
+          ],
+          "observed_at": "2026-07-09T12:15:30Z",
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 1,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.review.opus:dimensional-score:source_editing"
+          ],
+          "observed_at": "2026-07-09T12:15:30Z",
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 5,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.review.opus:dimensional-score:architecture"
+          ],
+          "observed_at": "2026-07-09T12:15:30Z",
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 5,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.review.opus:dimensional-score:ambiguity_resolution"
+          ],
+          "observed_at": "2026-07-09T12:15:30Z",
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 5,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.review.opus:dimensional-score:long_context"
+          ],
+          "observed_at": "2026-07-09T12:15:30Z",
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 4,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.review.opus:dimensional-score:current_docs_grounding"
+          ],
+          "observed_at": "2026-07-09T12:15:30Z",
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 1,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.review.opus:dimensional-score:multimodal_verification"
+          ],
+          "observed_at": "2026-07-09T12:15:30Z",
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 1,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.review.opus:dimensional-score:runtime_debugging"
+          ],
+          "observed_at": "2026-07-09T12:15:30Z",
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 3,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.review.opus:dimensional-score:test_authoring"
+          ],
+          "observed_at": "2026-07-09T12:15:30Z",
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 4,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.review.opus:dimensional-score:coordination_reliability"
+          ],
+          "observed_at": "2026-07-09T12:15:30Z",
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 5,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.review.opus:dimensional-score:privacy_safety"
+          ],
+          "observed_at": "2026-07-09T12:15:30Z",
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 5,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.review.opus:dimensional-score:public_claim_safety"
+          ],
+          "observed_at": "2026-07-09T12:15:30Z",
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 4,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.review.opus:dimensional-score:local_calibration"
+          ],
+          "observed_at": "2026-07-09T12:15:30Z",
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [
+        {
+          "tool_id": "claude-reviewer-wrapper",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-07-09T12:15:30Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.review.opus:tool_access.wrapper"
+        }
+      ],
+      "sanctioned_wrapper": "scripts/hapax-claude-reviewer",
+      "approval_posture": "plan_mode_read_only",
+      "capability_tier": "read_only_support",
+      "worker_tier": "read_only_sidecar"
     },
     {
       "registry_schema": 1,

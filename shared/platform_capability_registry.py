@@ -63,6 +63,7 @@ REQUIRED_ROUTE_IDS = frozenset(
         "claude.headless.haiku",
         "claude.headless.opus",
         "claude.headless.sonnet",
+        "claude.review.opus",
         "claude.interactive.full",
         "codex.headless.full",
         "codex.headless.spark",
@@ -80,6 +81,8 @@ AGY_ROUTE_SPECIFIC_QUOTA_BLOCKER = "route_specific_quota_receipt_absent"
 GLMCP_REVIEW_ROUTE_ID = "glmcp.review.direct"
 GLMCP_REVIEW_ADMISSION_BLOCKER = "glmcp_review_seat_receipt_admission_required"
 CLAUDE_HEADLESS_ROUTE_ID = "claude.headless.full"
+CLAUDE_REVIEW_ROUTE_ID = "claude.review.opus"
+CLAUDE_REVIEW_ADMISSION_BLOCKER = "claude_review_seat_receipt_admission_required"
 CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER = "account_live_quota_receipt_absent"
 ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS = {
     AGY_REVIEW_ROUTE_ID: AGY_ROUTE_SPECIFIC_QUOTA_BLOCKER,
@@ -89,6 +92,7 @@ ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS = {
     # attests. Without a live ledger, _route_specific_quota_admission_fresh returns (False, ()) and
     # the route stays held — lane/session presence never clears this.
     CLAUDE_HEADLESS_ROUTE_ID: CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER,
+    CLAUDE_REVIEW_ROUTE_ID: AGY_ROUTE_SPECIFIC_QUOTA_BLOCKER,
 }
 _DURATION_RE = re.compile(r"^(?P<count>[1-9][0-9]*)(?P<unit>s|m|h|d)$")
 
@@ -1698,6 +1702,8 @@ def _capability_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[
     reasons = {"fresh_capability_evidence_absent"}
     if route_payload.get("route_id") == "agy.review.direct":
         reasons.add("agy_review_seat_receipt_admission_required")
+    if route_payload.get("route_id") == CLAUDE_REVIEW_ROUTE_ID:
+        reasons.add(CLAUDE_REVIEW_ADMISSION_BLOCKER)
     if route_payload.get("route_id") == "api.headless.provider_gateway":
         reasons.add("provider_gateway_evidence_absent")
     return reasons
@@ -1726,8 +1732,8 @@ def _quota_unobservable_removable_reasons(route_payload: dict[str, Any]) -> set[
 
 
 def _quota_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[str]:
-    if route_payload.get("route_id") == "agy.review.direct":
-        # Platform receipts can prove local agy CLI/wrapper availability only.
+    if route_payload.get("route_id") in {"agy.review.direct", CLAUDE_REVIEW_ROUTE_ID}:
+        # Platform receipts can prove local reviewer wrapper availability only.
         # Route-specific quota admission is consumed from the live quota ledger,
         # not from a platform-capability quota receipt.
         return set()

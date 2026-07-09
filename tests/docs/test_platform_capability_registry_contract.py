@@ -281,9 +281,13 @@ def test_seed_registry_excises_antigrav_live_route_but_records_deprecated_shape(
     shapes = {shape["shape_id"]: shape for shape in registry["omitted_capability_shapes"]}
 
     assert "agy.review.direct" in registry["required_route_ids"]
+    assert "claude.review.opus" in registry["required_route_ids"]
     assert routes["agy.review.direct"]["platform"] == "agy"
     assert routes["agy.review.direct"]["mode"] == "review"
     assert routes["agy.review.direct"]["authority_ceiling"] == "read_only"
+    assert routes["claude.review.opus"]["platform"] == "claude"
+    assert routes["claude.review.opus"]["mode"] == "review"
+    assert routes["claude.review.opus"]["authority_ceiling"] == "read_only"
     assert "antigrav.interactive.full" not in registry["required_route_ids"]
     assert "antigrav.interactive.full" not in routes
     assert shapes["antigrav.interactive.full"]["shape_state"] == "deprecated"
@@ -333,6 +337,37 @@ def test_seed_registry_records_agy_review_route_as_blocked_review_supply() -> No
     assert variants["agy@gemini-3.5-flash-high"]["blocked_reasons"] == [
         "engine_exact_token_smoke_failed"
     ]
+
+
+def test_seed_registry_records_claude_review_route_as_blocked_review_supply() -> None:
+    registry = _json(REGISTRY)
+    route = {route["route_id"]: route for route in registry["routes"]}["claude.review.opus"]
+
+    assert route["sanctioned_wrapper"] == "scripts/hapax-claude-reviewer"
+    assert (REPO_ROOT / route["sanctioned_wrapper"]).is_file()
+    assert route["route_state"] == "blocked"
+    assert route["blocked_reasons"] == [
+        "claude_review_seat_receipt_admission_required",
+        "route_specific_quota_receipt_absent",
+    ]
+    assert route["mutability"] == {
+        "vault_docs": False,
+        "source": False,
+        "runtime": False,
+        "public": False,
+        "provider_spend": False,
+    }
+    assert route["tool_access"] == {
+        "filesystem": "read_only",
+        "shell": "none",
+        "browser": False,
+        "mcp": [],
+    }
+    assert route["execution_descriptor"]["model_id"] == "claude-opus-4-8"
+    assert (
+        "route_specific_quota_receipt_absent"
+        in route["freshness"]["evidence"]["quota"]["blocked_reasons"]
+    )
 
 
 def test_surface_delta_for_omitted_shape_holds_until_measurement() -> None:

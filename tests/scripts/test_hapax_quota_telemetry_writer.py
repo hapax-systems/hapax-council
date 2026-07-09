@@ -474,6 +474,7 @@ def test_writes_valid_live_ledger_with_fresh_captured_at(tmp_path: Path) -> None
     # claude.headless.full is now receipt-bounded (like agy): unknown without a fresh admission
     # receipt — account-live quota is never inferred from lane/session presence or wall-absence.
     assert states["claude.headless.full"] == "unknown"
+    assert states["claude.review.opus"] == "unknown"
     assert states["codex.headless.full"] == "fresh"
     assert states["agy.review.direct"] == "unknown"
     assert "gemini.headless.full" not in states
@@ -887,6 +888,7 @@ def test_unexpired_quota_wall_marks_platform_exhausted(tmp_path: Path) -> None:
         for snapshot in payload["quota_snapshots"]
     }
     assert states["claude.headless.full"] == "exhausted"
+    assert states["claude.review.opus"] == "exhausted"
     assert states["codex.headless.full"] == "fresh"
     summary = json.loads(result.stdout)
     assert summary["quota_walls"] == {"claude": 1}
@@ -1375,6 +1377,7 @@ def _claude_admission(
     relay: Path,
     *,
     observed_at: str,
+    route_id: str = "claude.headless.full",
     stale_after_seconds: str = "900",
     evidence_ref: str = "claude-subscription-headroom-observed-20260609t2355z",
     observation: str = "subscription_quota_headroom_observed",
@@ -1386,7 +1389,7 @@ def _claude_admission(
         "schema: hapax.claude_quota_admission.v1\n"
         "status: quota_available\n"
         "provider: anthropic-claude-subscription\n"
-        "route_id: claude.headless.full\n"
+        f"route_id: {route_id}\n"
         "capacity_pool: subscription_quota\n"
         "auth_surface: subscription\n"
         f"observation: {observation}\n"
@@ -1404,11 +1407,9 @@ def _claude_admission(
     )
 
 
-def _claude_snapshot(payload: dict) -> dict:
+def _claude_snapshot(payload: dict, route_id: str = "claude.headless.full") -> dict:
     return next(
-        snapshot
-        for snapshot in payload["quota_snapshots"]
-        if snapshot["route_id"] == "claude.headless.full"
+        snapshot for snapshot in payload["quota_snapshots"] if snapshot["route_id"] == route_id
     )
 
 
@@ -1484,6 +1485,28 @@ def test_fresh_claude_admission_receipt_marks_claude_fresh(tmp_path: Path) -> No
     assert json.loads(result.stdout)["claude_admissions"] == 1
 
 
+def test_fresh_claude_review_admission_marks_only_review_route_fresh(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _claude_admission(
+        relay,
+        observed_at="2026-06-09T23:55:00Z",
+        route_id="claude.review.opus",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    review_snapshot = _claude_snapshot(payload, "claude.review.opus")
+    headless_snapshot = _claude_snapshot(payload, "claude.headless.full")
+    assert review_snapshot["subscription_quota_state"] == "fresh"
+    assert review_snapshot["fresh_until"] == "2026-06-10T00:10:00Z"
+    assert headless_snapshot["subscription_quota_state"] == "unknown"
+    assert "claude.review.opus" in review_snapshot["operator_visible_reason"]
+    assert json.loads(result.stdout)["claude_admissions"] == 1
+
+
 def test_claude_admission_writer_output_marks_claude_fresh(tmp_path: Path) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
@@ -1517,6 +1540,40 @@ def test_claude_admission_writer_output_marks_claude_fresh(tmp_path: Path) -> No
         for ref in snapshot["evidence_refs"]
     )
     assert json.loads(result.stdout)["claude_admissions"] == 1
+
+
+def test_claude_admission_writer_can_target_review_route(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    admission_result = subprocess.run(
+        [
+            sys.executable,
+            str(CLAUDE_ADMISSION_SCRIPT),
+            "--receipt-dir",
+            str(relay),
+            "--now",
+            "2026-06-09T23:55:00Z",
+            "--evidence-ref",
+            "claude-subscription-headroom-observed-20260609t2355z",
+            "--route-id",
+            "claude.review.opus",
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+    assert admission_result.returncode == 0, admission_result.stderr
+    assert json.loads(admission_result.stdout)["route_id"] == "claude.review.opus"
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert _claude_snapshot(payload, "claude.review.opus")["subscription_quota_state"] == "fresh"
+    assert (
+        _claude_snapshot(payload, "claude.headless.full")["subscription_quota_state"] == "unknown"
+    )
 
 
 def test_fresh_claude_admission_ref_passes_ledger_validator(tmp_path: Path) -> None:

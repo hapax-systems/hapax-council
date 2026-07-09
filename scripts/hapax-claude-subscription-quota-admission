@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Write Claude subscription-quota admission receipts from an account-live observation.
 
-The command records a short-lived, sanitized observation that ``claude.headless.full`` has fresh
-account-live subscription quota. It is patterned after
+The command records a short-lived, sanitized observation that a Claude receipt-bounded route has
+fresh account-live subscription quota. It is patterned after
 ``scripts/hapax-agy-quota-admission`` / ``scripts/hapax-glmcp-quota-admission``: positive receipts
-are consumed by ``scripts/hapax-quota-telemetry-writer`` before ``claude.headless.full`` is treated
-as quota-fresh.
+are consumed by ``scripts/hapax-quota-telemetry-writer`` before that route is treated as
+quota-fresh.
 
 Account-live subscription quota is NOT mechanically observable yet (Claude Code OTel usage/cost
 integration is incomplete — CASE-CAPACITY-ROUTING-001 R2, "use receipts and manual refresh until
@@ -36,7 +36,8 @@ DEFAULT_RECEIPT_DIR = Path(
 
 ADMISSION_SCHEMA = "hapax.claude_quota_admission.v1"
 PROVIDER = "anthropic-claude-subscription"
-ROUTE_ID = "claude.headless.full"
+DEFAULT_ROUTE_ID = "claude.headless.full"
+ALLOWED_ROUTE_IDS = ("claude.headless.full", "claude.review.opus")
 CAPACITY_POOL = "subscription_quota"
 AUTH_SURFACE = "subscription"
 BILLING_MODE = "operator_session_subscription"
@@ -144,6 +145,13 @@ def _observation(value: str) -> str:
     return normalized
 
 
+def _route_id(value: str) -> str:
+    normalized = " ".join(value.strip().split())
+    if normalized not in ALLOWED_ROUTE_IDS:
+        raise ValueError("invalid --route-id; expected one of: " + ", ".join(ALLOWED_ROUTE_IDS))
+    return normalized
+
+
 def _receipt_name(args: argparse.Namespace, *, observed_at: datetime) -> str:
     stamp = observed_at.strftime("%Y%m%dT%H%M%SZ").lower()
     default = f"claude-subscription-quota-admission-{stamp}.yaml"
@@ -202,6 +210,11 @@ def _parser() -> argparse.ArgumentParser:
         help="Account-live observation kind: " + ", ".join(ALLOWED_OBSERVATIONS),
     )
     parser.add_argument(
+        "--route-id",
+        default=DEFAULT_ROUTE_ID,
+        help="Claude receipt-bounded route id: " + ", ".join(ALLOWED_ROUTE_IDS),
+    )
+    parser.add_argument(
         "--stale-after-seconds",
         type=int,
         default=DEFAULT_STALE_AFTER_SECONDS,
@@ -220,6 +233,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"{MAX_STALE_AFTER_SECONDS}"
             )
         observation = _observation(args.observation)
+        route_id = _route_id(args.route_id)
         evidence_ref = _safe_reference(args.evidence_ref, label="evidence-ref")
         receipt_name = _receipt_name(args, observed_at=observed_at)
         path = args.receipt_dir / receipt_name
@@ -227,7 +241,7 @@ def main(argv: list[str] | None = None) -> int:
             ("schema", ADMISSION_SCHEMA),
             ("status", "quota_available"),
             ("provider", PROVIDER),
-            ("route_id", ROUTE_ID),
+            ("route_id", route_id),
             ("capacity_pool", CAPACITY_POOL),
             ("auth_surface", AUTH_SURFACE),
             ("observation", observation),
@@ -261,7 +275,7 @@ def main(argv: list[str] | None = None) -> int:
     summary = {
         "receipt_kind": "admission",
         "path": str(path),
-        "route_id": ROUTE_ID,
+        "route_id": route_id,
         "capacity_pool": CAPACITY_POOL,
         "auth_surface": AUTH_SURFACE,
         "observation": observation,
