@@ -150,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
             "scripts/install-apcupsd-power-alerts --install --verify-live",
             file=sys.stderr,
         )
+        return 1
     delivery = post_ntfy(
         "" if args.no_ntfy else args.ntfy_url,
         text["title"],

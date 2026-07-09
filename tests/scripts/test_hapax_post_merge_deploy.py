@@ -534,11 +534,11 @@ def test_p0_oom_containment_deploy_uses_installer_without_restarting_app_slice(
             "[Service]\nOOMScoreAdjust=-900\n"
         ),
         "systemd/system/sshd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-1000\n",
-        "systemd/system/hapax-oom-score-enforce.service": (
-            "[Service]\nType=oneshot\nExecStart=/usr/local/sbin/hapax-oom-score-enforce --apply\n"
+        "systemd/units/hapax-oom-score-enforce.service": (
+            "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\nExecStart=/usr/local/sbin/hapax-oom-score-enforce --apply\n"
         ),
-        "systemd/system/hapax-oom-score-enforce.timer": (
-            "[Timer]\nOnBootSec=30s\nOnUnitActiveSec=30s\n"
+        "systemd/units/hapax-oom-score-enforce.timer": (
+            "[Unit]\n# Hapax-Install-Scope: system\n[Timer]\nOnBootSec=30s\nOnUnitActiveSec=30s\n"
         ),
         "systemd/units/app.slice.d/oom-containment.conf": (
             "[Slice]\nMemoryHigh=80G\nMemoryMax=104G\nMemorySwapMax=8G\n"
@@ -600,11 +600,11 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
             "[Service]\nOOMScoreAdjust=-900\n"
         ),
         "systemd/system/sshd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-1000\n",
-        "systemd/system/hapax-oom-score-enforce.service": (
-            "[Service]\nType=oneshot\nExecStart=/usr/local/sbin/hapax-oom-score-enforce --apply\n"
+        "systemd/units/hapax-oom-score-enforce.service": (
+            "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\nExecStart=/usr/local/sbin/hapax-oom-score-enforce --apply\n"
         ),
-        "systemd/system/hapax-oom-score-enforce.timer": (
-            "[Timer]\nOnBootSec=30s\nOnUnitActiveSec=30s\n"
+        "systemd/units/hapax-oom-score-enforce.timer": (
+            "[Unit]\n# Hapax-Install-Scope: system\n[Timer]\nOnBootSec=30s\nOnUnitActiveSec=30s\n"
         ),
         "systemd/units/app.slice.d/oom-containment.conf": (
             "[Slice]\nMemoryHigh=80G\nMemoryMax=104G\nMemorySwapMax=8G\n"
@@ -655,6 +655,59 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
     assert audit_result.returncode == 1
     assert "root-required post-merge deploy deferrals pending" in audit_result.stderr
     assert "--install --verify-live" in audit_result.stderr
+
+
+def test_root_required_audit_detects_oom_enforcer_drift(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    source_script = source_root / "scripts" / "hapax-oom-score-enforce"
+    source_script.parent.mkdir(parents=True)
+    source_script.write_text("#!/usr/bin/env bash\necho source\n", encoding="utf-8")
+    live_script = tmp_path / "sbin" / "hapax-oom-score-enforce"
+    live_script.parent.mkdir()
+    live_script.write_text("#!/usr/bin/env bash\necho stale\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_ROOT_REQUIRED_SOURCE_ROOT": str(source_root),
+            "HAPAX_OOM_ENFORCER_DEST": str(live_script),
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(tmp_path / "no-deferrals"),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "root-required OOM enforcer install drift" in result.stderr
+    assert "install-p0-oom-containment --install --verify-live" in result.stderr
+
+
+def test_root_required_audit_passes_when_oom_enforcer_matches(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    source_script = source_root / "scripts" / "hapax-oom-score-enforce"
+    source_script.parent.mkdir(parents=True)
+    source_script.write_text("#!/usr/bin/env bash\necho source\n", encoding="utf-8")
+    live_script = tmp_path / "sbin" / "hapax-oom-score-enforce"
+    live_script.parent.mkdir()
+    live_script.write_text(source_script.read_text(encoding="utf-8"), encoding="utf-8")
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_ROOT_REQUIRED_SOURCE_ROOT": str(source_root),
+            "HAPAX_OOM_ENFORCER_DEST": str(live_script),
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(tmp_path / "no-deferrals"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "root-required post-merge deploy deferrals: none" in result.stdout
 
 
 def test_apcupsd_power_alert_deploy_uses_dedicated_installer(tmp_path: Path) -> None:

@@ -214,7 +214,7 @@ class TestServiceDropInInstall:
             "drop-in loop must link each .conf individually, not the parent dir"
         )
 
-    def test_app_slice_oom_dropin_is_copied_not_symlinked(self, tmp_path: Path) -> None:
+    def test_p0_oom_dropins_are_copied_not_symlinked(self, tmp_path: Path) -> None:
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         calls = tmp_path / "systemctl-calls.txt"
@@ -248,20 +248,23 @@ class TestServiceDropInInstall:
         )
 
         assert result.returncode == 0, result.stderr
-        dest = (
-            Path(env["HOME"])
-            / ".config"
-            / "systemd"
-            / "user"
-            / "app.slice.d"
-            / "oom-containment.conf"
-        )
-        assert dest.is_file()
-        assert not dest.is_symlink()
-        assert dest.read_text(encoding="utf-8") == (
-            REPO_ROOT / "systemd" / "units" / "app.slice.d" / "oom-containment.conf"
-        ).read_text(encoding="utf-8")
-        assert "dropin-copied: app.slice.d/oom-containment.conf" in result.stdout
+        p0_dropins = [
+            "app.slice.d/oom-containment.conf",
+            "pipewire.service.d/oom-protect.conf",
+            "pipewire-pulse.service.d/oom-protect.conf",
+            "wireplumber.service.d/oom-protect.conf",
+            "hapax-daimonion.service.d/oom-protect.conf",
+            "studio-compositor.service.d/oom-protect.conf",
+            "hapax-imagination.service.d/oom-protect.conf",
+        ]
+        user_dir = Path(env["HOME"]) / ".config" / "systemd" / "user"
+        for relative in p0_dropins:
+            dest = user_dir / relative
+            source = REPO_ROOT / "systemd" / "units" / relative
+            assert dest.is_file()
+            assert not dest.is_symlink()
+            assert dest.read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
+            assert f"dropin-copied: {relative}" in result.stdout
 
     def test_script_reloads_daemon_when_dropins_change(self) -> None:
         body = INSTALL_SCRIPT.read_text(encoding="utf-8")

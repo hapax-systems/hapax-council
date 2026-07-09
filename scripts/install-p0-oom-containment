@@ -26,7 +26,7 @@ usage: scripts/install-p0-oom-containment [--source DIR] [--check] [--install] [
 Installs the P0 podium OOM containment package:
   systemd/system/user@1000.service.d/oom.conf       -> /etc/systemd/system/user@1000.service.d/oom.conf
   systemd/system/*.service.d/oom-protect.conf       -> /etc/systemd/system/*.service.d/oom-protect.conf
-  systemd/system/hapax-oom-score-enforce.{service,timer} -> /etc/systemd/system/
+  systemd/units/hapax-oom-score-enforce.{service,timer} -> /etc/systemd/system/
   scripts/hapax-oom-score-enforce                   -> /usr/local/sbin/hapax-oom-score-enforce
   systemd/units/*.service.d/oom-protect.conf        -> ~/.config/systemd/user/*.service.d/oom-protect.conf
   systemd/units/app.slice.d/oom-containment.conf    -> ~/.config/systemd/user/app.slice.d/oom-containment.conf
@@ -104,8 +104,8 @@ system_dropins=(
     systemd/system/sshd.service.d/oom-protect.conf
 )
 system_units=(
-    systemd/system/hapax-oom-score-enforce.service
-    systemd/system/hapax-oom-score-enforce.timer
+    systemd/units/hapax-oom-score-enforce.service
+    systemd/units/hapax-oom-score-enforce.timer
 )
 user_dropin="systemd/units/app.slice.d/oom-containment.conf"
 user_protection_dropins=(
@@ -142,7 +142,10 @@ src_path() {
 
 system_dest() {
     local rel="$1"
-    printf '%s/%s\n' "$SYSTEMD_SYSTEM_DIR" "${rel#systemd/system/}"
+    case "$rel" in
+        systemd/system/*) printf '%s/%s\n' "$SYSTEMD_SYSTEM_DIR" "${rel#systemd/system/}" ;;
+        systemd/units/*) printf '%s/%s\n' "$SYSTEMD_SYSTEM_DIR" "${rel#systemd/units/}" ;;
+    esac
 }
 
 check_source() {

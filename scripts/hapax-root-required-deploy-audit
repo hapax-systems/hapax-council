@@ -3,14 +3,41 @@
 set -euo pipefail
 
 ROOT_DEFER_DIR="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$HOME/.cache/hapax/post-merge-root-required}"
+SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_SOURCE_ROOT:-$HOME/.cache/hapax/source-activation/worktree}"
+OOM_ENFORCER_DEST="${HAPAX_OOM_ENFORCER_DEST:-/usr/local/sbin/hapax-oom-score-enforce}"
+
+rc=0
+
+audit_oom_enforcer_drift() {
+    local source="$SOURCE_ROOT/scripts/hapax-oom-score-enforce"
+    [ -f "$source" ] || return 0
+    if [ ! -f "$OOM_ENFORCER_DEST" ]; then
+        echo "root-required OOM enforcer install missing: $OOM_ENFORCER_DEST" >&2
+        echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    if ! cmp -s "$source" "$OOM_ENFORCER_DEST"; then
+        echo "root-required OOM enforcer install drift: $OOM_ENFORCER_DEST differs from $source" >&2
+        echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+}
+
+audit_oom_enforcer_drift || rc=1
 
 if [ ! -d "$ROOT_DEFER_DIR" ]; then
+    if [ "$rc" -ne 0 ]; then
+        exit "$rc"
+    fi
     echo "root-required post-merge deploy deferrals: none"
     exit 0
 fi
 
 mapfile -t runbooks < <(find "$ROOT_DEFER_DIR" -mindepth 3 -maxdepth 3 -name RUNBOOK.txt -type f | sort)
 if [ "${#runbooks[@]}" -eq 0 ]; then
+    if [ "$rc" -ne 0 ]; then
+        exit "$rc"
+    fi
     echo "root-required post-merge deploy deferrals: none"
     exit 0
 fi

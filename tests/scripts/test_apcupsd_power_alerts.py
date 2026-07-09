@@ -105,6 +105,38 @@ def test_power_event_helper_records_offbattery_delivery_failure(tmp_path: Path) 
     assert records[1]["delivery"]["error"]
 
 
+def test_power_event_helper_does_not_notify_when_intent_audit_fails(tmp_path: Path) -> None:
+    audit_dir = tmp_path / "audit-dir"
+    audit_dir.mkdir()
+    fake_apcaccess = tmp_path / "apcaccess"
+    fake_apcaccess.write_text(
+        "#!/bin/sh\nprintf 'STATUS   : ONLINE\\nTONBATT  : 0 Seconds\\n'\n",
+        encoding="utf-8",
+    )
+    fake_apcaccess.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            str(HELPER),
+            "onbattery",
+            "--audit-log",
+            str(audit_dir),
+            "--apcaccess",
+            str(fake_apcaccess),
+            "--ntfy-url",
+            "http://127.0.0.1:9/hapax-alerts",
+            "--timeout",
+            "0.2",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "failed to append intent audit log" in result.stderr
+
+
 def test_installer_source_check_exercises_config_hooks_and_helper() -> None:
     result = subprocess.run(
         [str(INSTALLER), "--check"],

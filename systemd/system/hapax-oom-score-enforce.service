@@ -1,8 +1,0 @@
-[Unit]
-Description=Apply live Hapax OOM scores that require root authority
-Documentation=file:/home/hapax/projects/hapax-council/systemd/README.md
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/hapax-oom-score-enforce --apply
-SyslogIdentifier=hapax-oom-score-enforce
