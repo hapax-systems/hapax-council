@@ -551,17 +551,17 @@ def run_watcher(
     first_failure_at: datetime | None = None
     for pr in sorted(merged, key=lambda p: p.merged_at):
         tasks = find_linked_tasks(pr.number, vault_root=vault_root)
+        pr_opted_out = count_linked_opt_out_tasks(pr.number, vault_root=vault_root)
+        if pr_opted_out:
+            opted_out += pr_opted_out
+            LOG.info(
+                "PR #%d (%s) has %d linked cc-task(s) opted out of auto-close; skipping",
+                pr.number,
+                pr.head_branch,
+                pr_opted_out,
+            )
         if not tasks:
-            pr_opted_out = count_linked_opt_out_tasks(pr.number, vault_root=vault_root)
-            if pr_opted_out:
-                opted_out += pr_opted_out
-                LOG.info(
-                    "PR #%d (%s) has %d linked cc-task(s) opted out of auto-close; skipping",
-                    pr.number,
-                    pr.head_branch,
-                    pr_opted_out,
-                )
-            else:
+            if not pr_opted_out:
                 LOG.info("PR #%d (%s) has no linked cc-task; skipping", pr.number, pr.head_branch)
             # Still advance cursor for the success prefix — no work to lose.
             if first_failure_at is None and pr.merged_at > newest_seen:

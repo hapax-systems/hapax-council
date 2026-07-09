@@ -13,9 +13,10 @@ enforces):
   research/corpus paragraphs are pinned in REVIEWED_GENERIC by content hash — editing a
   pinned paragraph re-triggers review fail-closed; new co-occurrences fail closed.
 
-The policy exclusion list is empty: the operator-hands axioms edit landed 2026-07-09,
-so every tracked text surface in TEXT_SUFFIXES — including axioms/** — is in scope.
-SELF_PATHS exempts only the guard machinery that necessarily names the class.
+The self-exemption list is guard-only: the operator-hands axioms edit landed 2026-07-09,
+so every tracked UTF-8 text surface that is not a known binary/asset suffix, including
+axioms/**, is in scope. SELF_PATHS exempts only the guard machinery that necessarily
+names the class.
 
 SCOPE OF THE REDACTION CLASS (operator-ratified 2026-07-09, decision-memo item 27,
 disposition accept-residual): the class this guard enforces is diagnostic ATTRIBUTION
@@ -46,17 +47,22 @@ from shared.operator_attribution_scan import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-TEXT_SUFFIXES = {
-    ".py",
-    ".md",
-    ".yaml",
-    ".yml",
-    ".json",
-    ".jsonl",
-    ".ts",
-    ".txt",
-    ".j2",
-    ".sh",
+BINARY_OR_ASSET_SUFFIXES = {
+    ".apkg",
+    ".bsp",
+    ".dat",
+    ".jpg",
+    ".jpeg",
+    ".ogg",
+    ".png",
+    ".prt",
+    ".qc",
+    ".rnd",
+    ".syx",
+    ".ttf",
+    ".wad",
+    ".wav",
+    ".woff2",
 }
 #: Guard machinery that mentions the terms by necessity: the shared pattern module,
 #: this test module, the pins file, and the operator-ratification ledger.
@@ -79,6 +85,10 @@ def _tracked_files() -> list[str]:
     return out.stdout.splitlines()
 
 
+def _is_scannable_text_path(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() not in BINARY_OR_ASSET_SUFFIXES
+
+
 def _line_of(text: str, pos: int) -> int:
     return text[:pos].count("\n") + 1
 
@@ -91,7 +101,7 @@ def test_no_operator_attributed_diagnostic_text_on_tracked_surfaces() -> None:
         if rel in SELF_PATHS:
             continue
         path = REPO_ROOT / rel
-        if path.suffix not in TEXT_SUFFIXES:
+        if not _is_scannable_text_path(path):
             continue
         try:
             text = path.read_text(encoding="utf-8")
@@ -138,6 +148,13 @@ def test_same_sentence_diagnostic_guard_has_no_short_window(tmp_path: Path) -> N
     assert not file_enforced_class_clean(tmp_path, rel)
 
 
+def test_scannable_text_paths_include_uncommon_tracked_text_extensions(tmp_path: Path) -> None:
+    for suffix in (".tsx", ".rs", ".conf", ".toml", ".env", ".html", ".wgsl", ".frag"):
+        path = tmp_path / f"surface{suffix}"
+        path.write_text("text\n", encoding="utf-8")
+        assert _is_scannable_text_path(path), suffix
+
+
 def test_same_sentence_guard_spans_hard_wrapped_prose(tmp_path: Path) -> None:
     """A wrapped sentence stays TIER 1. Prose is always hard-wrapped, so a newline-bounded
     tier 1 would demote it into the pinnable tier-2 window; a fail-open on the class."""
@@ -169,6 +186,20 @@ def test_waiver_safety_blocks_operator_mental_state_content(tmp_path: Path) -> N
     doc.parent.mkdir(parents=True, exist_ok=True)
     doc.write_text(
         "The " + "operator" + " is " + "anx" + "ious about the release window.\n",
+        encoding="utf-8",
+    )
+
+    assert not file_waiver_safe(tmp_path, rel)
+
+
+def test_waiver_safety_blocks_hard_wrapped_operator_mental_state_content(
+    tmp_path: Path,
+) -> None:
+    rel = "docs/research/x.md"
+    doc = tmp_path / rel
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(
+        "The " + "operator" + " is\n" + "anx" + "ious about the release window.\n",
         encoding="utf-8",
     )
 

@@ -667,7 +667,7 @@ class TestCloseOnPrMergeOptOut:
             cmd[-3:] == ["--pr", "100", "--retroactive"] for cmd in runner.cc_close_invocations
         ), runner.cc_close_invocations
 
-    def test_mixed_lane_only_non_opt_out_note_closes(self, tmp_path: Path) -> None:
+    def test_mixed_lane_only_non_opt_out_note_closes(self, tmp_path: Path, caplog: Any) -> None:
         vault = _make_vault(tmp_path)
         _write_note(vault, task_id="task-A", pr=100, extra_frontmatter="close_on_pr_merge: false")
         _write_note(vault, task_id="task-B", pr=100)
@@ -680,14 +680,17 @@ class TestCloseOnPrMergeOptOut:
             {"number": 100, "mergedAt": "2026-04-26T12:00:00Z", "headRefName": "feat/a"},
         ]
 
-        counters = watcher.run_watcher(
-            cursor_path=cursor,
-            vault_root=vault,
-            repo_root=tmp_path,
-            runner=runner,
-        )
+        with caplog.at_level(logging.INFO, logger="cc-pr-merge-watcher"):
+            counters = watcher.run_watcher(
+                cursor_path=cursor,
+                vault_root=vault,
+                repo_root=tmp_path,
+                runner=runner,
+            )
         assert counters["closed"] == 1
+        assert counters["opted_out"] == 1
         assert [cmd[1] for cmd in runner.cc_close_invocations] == ["task-B"]
+        assert "has 1 linked cc-task(s) opted out of auto-close" in caplog.text
 
     def test_reconcile_skips_opt_out_note(self, tmp_path: Path, caplog: Any) -> None:
         """The stale-state reconciler honors the opt-out too (same class of close)."""

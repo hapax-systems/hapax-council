@@ -99,7 +99,7 @@ with tempfile.TemporaryDirectory(prefix="cc-pr-merge-watcher-witness-") as td:
     print("stubbed_pr_state", "MERGED")
     print("dry_run", True)
     print("counters", json.dumps(counters, sort_keys=True))
-    print("gh_calls", len([call for call in runner.calls if call[:2] == ["gh", "api"]))
+    print("gh_calls", len([call for call in runner.calls if call[:2] == ["gh", "api"]]))
     print("cc_close_invocations", len(runner.cc_close_invocations))
     print("note_still_active_contains_pr_open", "status: pr_open" in note.read_text())
 PY
@@ -108,7 +108,7 @@ PY
 Observed output:
 
 ```text
-INFO:cc-pr-merge-watcher:task cc-task-sdlc-wave3d-20260709 declares close_on_pr_merge: false - lane owner closes explicitly
+INFO:cc-pr-merge-watcher:task cc-task-sdlc-wave3d-20260709 declares close_on_pr_merge: false — lane owner closes explicitly
 fixture_frontmatter_pr 4472
 fixture_frontmatter_close_on_pr_merge false
 stubbed_pr_state MERGED

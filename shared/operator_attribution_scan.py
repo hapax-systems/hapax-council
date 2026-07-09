@@ -109,10 +109,12 @@ def file_enforced_class_clean(repo_root: Path, rel_path: str) -> bool:
     return True
 
 
-#: Sentence/segment split for attribution-scoped affect detection. Quotation marks are
-#: boundaries too: quoted speech (the SYSTEM saying "I …") is never operator attribution,
-#: and must not bleed into an adjacent sentence that happens to name the operator.
-_SEGMENT_RE = re.compile(r"(?<=[.!?])\s+|\n|[\"“”]")
+#: Sentence/segment split for attribution-scoped affect detection. Hard-wrapped prose is
+#: still one segment; structural Markdown breaks and quotation marks remain boundaries.
+#: Quoted speech (the SYSTEM saying "I ...") is never operator attribution, and must not
+#: bleed into an adjacent sentence that happens to name the operator.
+_STRUCTURAL_SEGMENT_BREAK = r"\n(?=[ \t]*(?:\n|[|#>`\"'*+\]\}\)\-]))"
+_SEGMENT_RE = re.compile(rf"(?<=[.!?])\s+|{_STRUCTURAL_SEGMENT_BREAK}|[\"“”]")
 
 
 def operator_affect_asserted(text: str) -> bool:
