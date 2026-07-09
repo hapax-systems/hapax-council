@@ -67,7 +67,7 @@ def _write_codex_receipt(receipt_dir: Path, *, observed_at: datetime) -> Path:
             stale_after="24h",
             evidence_refs=[
                 "test:codex:capability",
-                "host:local:codex:exec:auth:saved-login:observed",
+                "host:hapax-appendix:codex:exec:auth:saved-login:observed",
             ],
         ),
         resource=SurfaceEvidence(

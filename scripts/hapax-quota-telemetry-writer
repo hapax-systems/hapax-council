@@ -95,7 +95,6 @@ import hashlib
 import json
 import os
 import re
-import socket
 import subprocess
 import sys
 import tempfile
@@ -975,12 +974,7 @@ def expected_codex_exec_auth_hosts() -> frozenset[tuple[str, ...]]:
     ).strip()
     if dispatch_host:
         return host_token_variants(dispatch_host)
-    current = socket.gethostname().split(".", 1)[0]
-    return (
-        host_token_variants("local")
-        | host_token_variants(current)
-        | host_token_variants("appendix")
-    )
+    return host_token_variants("appendix")
 
 
 def host_token_variants(host: str) -> frozenset[tuple[str, ...]]:

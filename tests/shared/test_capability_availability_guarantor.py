@@ -113,6 +113,12 @@ def _mark_current_codex_session_usable(route: dict) -> None:
 
 def _mark_codex_exec_auth_observed(route: dict) -> None:
     route["freshness"]["evidence"]["capability"]["evidence_refs"].append(
+        "host:hapax-appendix:codex:exec:auth:saved-login:observed"
+    )
+
+
+def _mark_local_codex_exec_auth_observed(route: dict) -> None:
+    route["freshness"]["evidence"]["capability"]["evidence_refs"].append(
         "host:local:codex:exec:auth:saved-login:observed"
     )
 
@@ -183,6 +189,35 @@ def test_codex_oauth_subscription_route_accepts_current_session_and_exec_auth_wi
     assert receipt.reason_codes == ()
 
 
+def test_codex_oauth_subscription_route_accepts_explicit_local_exec_auth_witness(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("HAPAX_CODEX_EXEC_AUTH_HOST", "local")
+    payload = _payload()
+    route_payload = _route_payload(payload, "codex.headless.full")
+    _mark_fresh(route_payload)
+    _mark_current_codex_session_usable(route_payload)
+    _mark_local_codex_exec_auth_observed(route_payload)
+    route_payload["freshness"]["evidence"]["quota"]["evidence_refs"] = [
+        "local:codex:quota-probe:unobservable",
+        "platform-capability-receipt:codex:test-codex-receipt",
+    ]
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    route = registry.require("codex.headless.full")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    receipt = guarantor.evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=guarantor.RefreshStrategyRegistry(()),
+        now=NOW,
+    )
+
+    assert receipt.available is True
+    assert receipt.predicate.exec_auth_attested is True
+    assert receipt.reason_codes == ()
+
+
 def test_codex_oauth_subscription_route_accepts_remote_exec_auth_witness(monkeypatch) -> None:
     monkeypatch.setenv("HAPAX_DISPATCH_HOST", "appendix")
     payload = _payload()
@@ -239,6 +274,37 @@ def test_codex_oauth_subscription_route_accepts_default_appendix_exec_auth_witne
     assert receipt.available is True
     assert receipt.predicate.exec_auth_attested is True
     assert receipt.reason_codes == ()
+
+
+def test_codex_oauth_subscription_route_rejects_local_exec_auth_witness_without_dispatch_host(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("HAPAX_CODEX_EXEC_AUTH_HOST", raising=False)
+    monkeypatch.delenv("HAPAX_DISPATCH_HOST", raising=False)
+    monkeypatch.delenv("HAPAX_DEFAULT_DISPATCH_HOST", raising=False)
+    payload = _payload()
+    route_payload = _route_payload(payload, "codex.headless.full")
+    _mark_fresh(route_payload)
+    _mark_current_codex_session_usable(route_payload)
+    _mark_local_codex_exec_auth_observed(route_payload)
+    route_payload["freshness"]["evidence"]["quota"]["evidence_refs"] = [
+        "local:codex:quota-probe:unobservable",
+        "platform-capability-receipt:codex:test-codex-receipt",
+    ]
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    route = registry.require("codex.headless.full")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    receipt = guarantor.evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=guarantor.RefreshStrategyRegistry(()),
+        now=NOW,
+    )
+
+    assert receipt.available is False
+    assert receipt.predicate.exec_auth_attested is False
+    assert "codex_exec_auth_witness_absent" in receipt.reason_codes
 
 
 def test_codex_oauth_subscription_route_rejects_mismatched_remote_exec_auth_witness(
@@ -1060,7 +1126,7 @@ def test_reason_token_matching_does_not_overmatch_authority_or_quotable_text() -
         ),
         evidence_refs=(
             "test:codex:account-live-quota:observed",
-            "host:local:codex:exec:auth:saved-login:observed",
+            "host:hapax-appendix:codex:exec:auth:saved-login:observed",
         ),
     )
 

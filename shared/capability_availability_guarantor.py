@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import socket
 import subprocess
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -702,12 +701,7 @@ def _expected_exec_auth_hosts() -> frozenset[tuple[str, ...]]:
     ).strip()
     if dispatch_host:
         return _host_token_variants(dispatch_host)
-    current = socket.gethostname().split(".", 1)[0]
-    return (
-        _host_token_variants("local")
-        | _host_token_variants(current)
-        | _host_token_variants("appendix")
-    )
+    return _host_token_variants("appendix")
 
 
 def _host_token_variants(host: str) -> frozenset[tuple[str, ...]]:

@@ -58,6 +58,9 @@ def _run_receipts(
     codex_exec_auth_timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     merged_env = {**os.environ, **(env or {})}
+    # These receipt unit tests use fake local Codex binaries. Make that host
+    # selection explicit so the helper does not accidentally exercise the
+    # production no-env default of appendix.
     if platform == "codex" and (env is None or "HAPAX_CODEX_EXEC_AUTH_HOST" not in env):
         merged_env["HAPAX_CODEX_EXEC_AUTH_HOST"] = "local"
     if platform == "codex" and (env is None or "HAPAX_CODEX_BIN" not in env):
@@ -983,37 +986,42 @@ def test_fresh_subscription_receipt_allows_local_dispatch_without_account_live_q
     bin_dir.mkdir()
     _fake_codex_exec_success(bin_dir / "codex", tmp_path / "codex-used")
 
-    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
+    result = _run_receipts(
+        tmp_path,
+        env={"PATH": str(bin_dir), "HAPAX_CODEX_EXEC_AUTH_HOST": "local"},
+        now=_current_iso_z(),
+    )
     assert result.returncode == 0, result.stderr
 
-    sources = load_dispatch_policy_sources(registry_path=REGISTRY, receipt_dir=tmp_path)
-    task_fields = {
-        "status": "claimed",
-        "assigned_to": "cx-green",
-        "authority_case": "CASE-CAPACITY-ROUTING-001",
-        "authority_item": "PLATFORM-RECEIPT-TEST",
-        "priority": "p0",
-        "wsjf": 12,
-        "route_metadata_schema": 1,
-        "quality_floor": "frontier_required",
-        "authority_level": "authoritative",
-        "mutation_surface": "source",
-        "mutation_scope_refs": ["shared/platform_capability_registry.py"],
-    }
-    request = build_dispatch_request(
-        task_id="platform-receipt-present",
-        lane="cx-green",
-        platform="codex",
-        mode="headless",
-        profile="full",
-        task_fields=task_fields,
-        registry=sources.registry,
-        registry_error=sources.registry_error,
-        quota_ledger=sources.quota_ledger,
-        quota_error=sources.quota_error,
-    )
+    with patch.dict(os.environ, {"HAPAX_CODEX_EXEC_AUTH_HOST": "local"}):
+        sources = load_dispatch_policy_sources(registry_path=REGISTRY, receipt_dir=tmp_path)
+        task_fields = {
+            "status": "claimed",
+            "assigned_to": "cx-green",
+            "authority_case": "CASE-CAPACITY-ROUTING-001",
+            "authority_item": "PLATFORM-RECEIPT-TEST",
+            "priority": "p0",
+            "wsjf": 12,
+            "route_metadata_schema": 1,
+            "quality_floor": "frontier_required",
+            "authority_level": "authoritative",
+            "mutation_surface": "source",
+            "mutation_scope_refs": ["shared/platform_capability_registry.py"],
+        }
+        request = build_dispatch_request(
+            task_id="platform-receipt-present",
+            lane="cx-green",
+            platform="codex",
+            mode="headless",
+            profile="full",
+            task_fields=task_fields,
+            registry=sources.registry,
+            registry_error=sources.registry_error,
+            quota_ledger=sources.quota_ledger,
+            quota_error=sources.quota_error,
+        )
 
-    decision = evaluate_dispatch_policy(request)
+        decision = evaluate_dispatch_policy(request)
 
     assert decision.action is DispatchAction.LAUNCH
     assert decision.route_policy_green is True
@@ -1504,7 +1512,11 @@ def test_runtime_actuation_receipt_allows_task_bound_runtime_dispatch(
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _fake_codex_exec_success(bin_dir / "codex", tmp_path / "codex-used")
-    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
+    result = _run_receipts(
+        tmp_path,
+        env={"PATH": str(bin_dir), "HAPAX_CODEX_EXEC_AUTH_HOST": "local"},
+        now=_current_iso_z(),
+    )
     assert result.returncode == 0, result.stderr
     _mark_platform_receipt_account_live_quota_observed(tmp_path)
     _write_route_authority_receipt(
@@ -1516,11 +1528,12 @@ def test_runtime_actuation_receipt_allows_task_bound_runtime_dispatch(
         mutation_surfaces=["runtime"],
     )
 
-    sources = load_dispatch_policy_sources(registry_path=REGISTRY, receipt_dir=tmp_path)
-    request = _runtime_dispatch_request(
-        sources, task_id="appendix-podium-minio-old-root-cleanup-20260605"
-    )
-    decision = evaluate_dispatch_policy(request)
+    with patch.dict(os.environ, {"HAPAX_CODEX_EXEC_AUTH_HOST": "local"}):
+        sources = load_dispatch_policy_sources(registry_path=REGISTRY, receipt_dir=tmp_path)
+        request = _runtime_dispatch_request(
+            sources, task_id="appendix-podium-minio-old-root-cleanup-20260605"
+        )
+        decision = evaluate_dispatch_policy(request)
 
     assert decision.action is DispatchAction.LAUNCH
     assert decision.route_policy_green is True
@@ -1534,7 +1547,11 @@ def test_runtime_actuation_receipt_wrong_task_fails_closed(tmp_path: Path) -> No
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
-    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
+    result = _run_receipts(
+        tmp_path,
+        env={"PATH": str(bin_dir), "HAPAX_CODEX_EXEC_AUTH_HOST": "local"},
+        now=_current_iso_z(),
+    )
     assert result.returncode == 0, result.stderr
     _mark_platform_receipt_account_live_quota_observed(tmp_path)
     _write_route_authority_receipt(
@@ -1560,7 +1577,11 @@ def test_runtime_actuation_receipt_wrong_route_fails_closed(tmp_path: Path) -> N
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
-    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
+    result = _run_receipts(
+        tmp_path,
+        env={"PATH": str(bin_dir), "HAPAX_CODEX_EXEC_AUTH_HOST": "local"},
+        now=_current_iso_z(),
+    )
     assert result.returncode == 0, result.stderr
     _mark_platform_receipt_account_live_quota_observed(tmp_path)
     _write_route_authority_receipt(
@@ -1586,7 +1607,11 @@ def test_runtime_actuation_receipt_wrong_surface_fails_closed(tmp_path: Path) ->
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
-    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
+    result = _run_receipts(
+        tmp_path,
+        env={"PATH": str(bin_dir), "HAPAX_CODEX_EXEC_AUTH_HOST": "local"},
+        now=_current_iso_z(),
+    )
     assert result.returncode == 0, result.stderr
     _mark_platform_receipt_account_live_quota_observed(tmp_path)
     _write_route_authority_receipt(
@@ -1683,7 +1708,11 @@ def test_runtime_actuation_receipt_allows_dimensional_runtime_candidate(
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _fake_codex_exec_success(bin_dir / "codex", tmp_path / "codex-used")
-    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
+    result = _run_receipts(
+        tmp_path,
+        env={"PATH": str(bin_dir), "HAPAX_CODEX_EXEC_AUTH_HOST": "local"},
+        now=_current_iso_z(),
+    )
     assert result.returncode == 0, result.stderr
     _mark_platform_receipt_account_live_quota_observed(tmp_path)
     _write_route_authority_receipt(
@@ -1695,11 +1724,12 @@ def test_runtime_actuation_receipt_allows_dimensional_runtime_candidate(
         mutation_surfaces=["runtime"],
     )
 
-    sources = load_dispatch_policy_sources(registry_path=REGISTRY, receipt_dir=tmp_path)
-    request = _runtime_dispatch_request(
-        sources, task_id="appendix-podium-minio-old-root-cleanup-20260605"
-    )
-    decision = evaluate_dispatch_policy(request, candidate_requests=(request,))
+    with patch.dict(os.environ, {"HAPAX_CODEX_EXEC_AUTH_HOST": "local"}):
+        sources = load_dispatch_policy_sources(registry_path=REGISTRY, receipt_dir=tmp_path)
+        request = _runtime_dispatch_request(
+            sources, task_id="appendix-podium-minio-old-root-cleanup-20260605"
+        )
+        decision = evaluate_dispatch_policy(request, candidate_requests=(request,))
 
     assert decision.action is DispatchAction.LAUNCH
     assert decision.dimensional_receipt is not None

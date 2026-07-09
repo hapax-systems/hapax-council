@@ -85,8 +85,10 @@ fresh while the current fresh Codex platform capability receipt reports
 `codex_exec_auth_failed`, `codex_exec_auth_token_invalidated`, or
 `codex_exec_auth_refresh_token_invalidated`; it records the subscription snapshot
 as `unknown` until a repaired receipt is observed. When no dispatch-host
-environment is set, telemetry accepts the platform receipt probe's default
-appendix witness as the remote Codex dispatch-host proof. If receipt refresh
+environment is set, telemetry and availability admission bind to the platform
+receipt probe's default appendix witness. Local/current-host witnesses are only
+accepted when `HAPAX_CODEX_EXEC_AUTH_HOST`, `HAPAX_DISPATCH_HOST`, or
+`HAPAX_DEFAULT_DISPATCH_HOST` explicitly selects that host. If receipt refresh
 itself is stale or skipped, dispatch launchers still run their saved-login
 preflight and must fail closed before starting Codex work.
 

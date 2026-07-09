@@ -36,9 +36,14 @@ def _dispatcher_module() -> ModuleType:
     return module
 
 
-def _fresh_registry(tmp_path: Path) -> Path:
+def _fresh_registry(tmp_path: Path, *, codex_exec_auth_host: str = "appendix") -> Path:
     payload = json.loads(REGISTRY.read_text(encoding="utf-8"))
     checked_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    codex_host = (
+        "hapax-appendix"
+        if codex_exec_auth_host in {"appendix", "hapax-appendix"}
+        else codex_exec_auth_host
+    )
     for route in payload["routes"]:
         quota_refs = [f"test:{route['route_id']}:quota"]
         if route.get("capacity_pool") == "subscription_quota":
@@ -69,7 +74,7 @@ def _fresh_registry(tmp_path: Path) -> Path:
         }
         if route.get("platform") == "codex" and route.get("auth_surface") == "oauth":
             route["freshness"]["evidence"]["capability"]["evidence_refs"].append(
-                "host:local:codex:exec:auth:saved-login:observed"
+                f"host:{codex_host}:codex:exec:auth:saved-login:observed"
             )
         for score in route["capability_scores"].values():
             score["observed_at"] = checked_at
@@ -802,7 +807,6 @@ def _run(
     env["HAPAX_CC_TASK_ROOT"] = str(tmp_path / "tasks")
     env["HAPAX_DISPATCH_WORKTREE"] = str(tmp_path / "worktree")
     env["HAPAX_ORCHESTRATION_LEDGER_DIR"] = str(tmp_path / "ledger")
-    env["HAPAX_PLATFORM_CAPABILITY_REGISTRY"] = str(_fresh_registry(tmp_path))
     env["HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR"] = str(tmp_path / "platform-receipts")
     env["HAPAX_QUOTA_SPEND_LEDGER"] = str(_fresh_claude_subscription_quota_ledger(tmp_path))
     env["HAPAX_COORD_LEDGER_DB"] = str(tmp_path / "coord" / "ledger.db")
@@ -818,6 +822,16 @@ def _run(
         env["HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID"] = "missing-message-id"
     if extra_env:
         env.update(extra_env)
+    codex_exec_auth_host = (
+        env.get("HAPAX_CODEX_EXEC_AUTH_HOST")
+        or env.get("HAPAX_DISPATCH_HOST")
+        or env.get("HAPAX_DEFAULT_DISPATCH_HOST")
+        or "appendix"
+    )
+    env.setdefault(
+        "HAPAX_PLATFORM_CAPABILITY_REGISTRY",
+        str(_fresh_registry(tmp_path, codex_exec_auth_host=codex_exec_auth_host)),
+    )
     return subprocess.run(
         [str(SCRIPT), *args],
         env=env,
