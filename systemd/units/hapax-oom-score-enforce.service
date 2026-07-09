@@ -3,7 +3,7 @@
 Description=Apply live Hapax OOM scores that require root authority
 Documentation=file:/home/hapax/.cache/hapax/source-activation/worktree/systemd/README.md
 ConditionPathExists=/usr/local/sbin/hapax-oom-score-enforce
-OnFailure=notify-failure@%n.service
+OnFailure=hapax-root-failure-intake@%n.service
 
 [Service]
 Type=oneshot

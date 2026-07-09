@@ -146,7 +146,7 @@ write `/dev/shm/hapax-compositor/broadcast-mode.json` through
   - `--prefer`: `cargo|rustc|ld.lld|chrome|electron|node|claude|next-server|ffmpeg|bwrap` (expendable targets for OOM)
   - `--avoid`: `Hyprland|pipewire|wireplumber|dockerd|containerd|bluetoothd|systemd|foot|waybar|hapax-logos|hapax-imagination|hapax-daimonion|studio-compositor|logos-api|officium-api` (stack protection)
   - `--ignore`: `apcupsd|systemd-logind|systemd-resolved|systemd-timesyncd|systemd-userdbd|dbus-broker|dbus-daemon|NetworkManager|sshd|sshd-session|getty|agetty` (operator recovery and UPS telemetry must not be earlyoom victims)
-- **P0 OOM containment package** (`scripts/install-p0-oom-containment`): installs source-controlled recovery policy into `/etc/default/earlyoom`, `/etc/systemd/system/*.service.d/oom-protect.conf`, `/etc/systemd/system/user@1000.service.d/oom.conf`, `~/.config/systemd/user/app.slice.d/oom-containment.conf`, and the root-side `hapax-oom-score-enforce` service/timer.
+- **P0 OOM containment package** (`scripts/install-p0-oom-containment`): installs source-controlled recovery policy into `/etc/default/earlyoom`, `/etc/systemd/system/*.service.d/oom-protect.conf`, `/etc/systemd/system/user@1000.service.d/oom.conf`, `~/.config/systemd/user/app.slice.d/oom-containment.conf`, and the root-side `hapax-oom-score-enforce` service/timer plus `hapax-root-failure-intake@.service`.
   - `user@1000.service`: `OOMScoreAdjust=100`, restoring the packaged kill ordering so the whole user manager does not shield every interactive workload.
   - Recovery daemons: apcupsd (`-900`), systemd-logind/resolved/timesyncd/NetworkManager (`-800`), D-Bus (`-900`), and sshd (`-1000`); the installer writes the running main PIDs without restarting login/network.
   - Broadcast-critical user services: pipewire/pipewire-pulse/wireplumber (`-900`), hapax-daimonion (`-500`), studio-compositor (`-800`), and hapax-imagination (`-800`) carry source-controlled user drop-ins as desired policy. Because the user manager is deliberately killable (`OOMScoreAdjust=100`), an unprivileged user service cannot lower live child scores after boot; `hapax-oom-score-enforce.timer` runs as root every 30 seconds and writes `/proc/<pid>/oom_score_adj` for the user manager and protected user-service main PIDs.
@@ -186,7 +186,7 @@ changes, daemon reloads, unit installation, or service restarts.
 ## Installation
 
 ```bash
-# Symlink all units from this directory (idempotent)
+# Install/symlink all user units and drop-ins from this directory (idempotent)
 systemd/scripts/install-units.sh
 
 # Or manually link a single unit
@@ -194,7 +194,15 @@ ln -sf "$PWD/systemd/units/my-service.service" ~/.config/systemd/user/
 systemctl --user daemon-reload
 ```
 
-**Units are symlinked, not copied.** Edits to `systemd/units/` take effect on `daemon-reload` without re-running the install script. The script covers `.service`, `.timer`, `.target`, and `.path` files.
+Top-level user `.service`, `.timer`, `.target`, `.path`, and `.slice`
+units are normally symlinked, so edits to `systemd/units/` take effect on
+`daemon-reload` without re-running the install script. `install-units.sh`
+also installs drop-ins under `.service.d`, `.timer.d`, `.slice.d`, and
+`.scope.d`; ordinary drop-ins are symlinked, while P0 host-safety OOM
+drop-ins are copied as regular files so recovery policy does not depend on
+the mutable primary worktree path. System-scoped units marked
+`# Hapax-Install-Scope: system` require their dedicated installer or a
+root-required post-merge deploy path.
 
 `install-units.sh` also removes and masks retired units listed in its
 `DECOMMISSIONED_UNITS` array if stale copies are present under

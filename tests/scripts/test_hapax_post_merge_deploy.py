@@ -534,6 +534,9 @@ def test_p0_oom_containment_deploy_uses_installer_without_restarting_app_slice(
             "[Service]\nOOMScoreAdjust=-900\n"
         ),
         "systemd/system/sshd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-1000\n",
+        "systemd/units/hapax-root-failure-intake@.service": (
+            "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\n"
+        ),
         "systemd/units/hapax-oom-score-enforce.service": (
             "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\nExecStart=/usr/local/sbin/hapax-oom-score-enforce --apply\n"
         ),
@@ -600,6 +603,9 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
             "[Service]\nOOMScoreAdjust=-900\n"
         ),
         "systemd/system/sshd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-1000\n",
+        "systemd/units/hapax-root-failure-intake@.service": (
+            "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\n"
+        ),
         "systemd/units/hapax-oom-score-enforce.service": (
             "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\nExecStart=/usr/local/sbin/hapax-oom-score-enforce --apply\n"
         ),

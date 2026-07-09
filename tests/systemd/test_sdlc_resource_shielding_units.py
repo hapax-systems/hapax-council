@@ -139,6 +139,16 @@ def test_root_required_deploy_audit_timer_is_source_controlled() -> None:
     assert "scripts/hapax-root-required-deploy-audit" in service
 
 
+def test_root_oom_enforcer_uses_system_scoped_failure_intake() -> None:
+    enforcer = (UNITS_DIR / "hapax-oom-score-enforce.service").read_text()
+    intake = (UNITS_DIR / "hapax-root-failure-intake@.service").read_text()
+    assert "# Hapax-Install-Scope: system" in enforcer
+    assert "OnFailure=hapax-root-failure-intake@%n.service" in enforcer
+    assert "# Hapax-Install-Scope: system" in intake
+    assert "User=hapax" in intake
+    assert "scripts/hapax-p0-incident-intake service-failed %i" in intake
+
+
 # ── L2: the audio-core cpuset fence ──────────────────────────────────────────
 
 

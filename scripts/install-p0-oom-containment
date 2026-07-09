@@ -26,6 +26,7 @@ usage: scripts/install-p0-oom-containment [--source DIR] [--check] [--install] [
 Installs the P0 podium OOM containment package:
   systemd/system/user@1000.service.d/oom.conf       -> /etc/systemd/system/user@1000.service.d/oom.conf
   systemd/system/*.service.d/oom-protect.conf       -> /etc/systemd/system/*.service.d/oom-protect.conf
+  systemd/units/hapax-root-failure-intake@.service  -> /etc/systemd/system/
   systemd/units/hapax-oom-score-enforce.{service,timer} -> /etc/systemd/system/
   scripts/hapax-oom-score-enforce                   -> /usr/local/sbin/hapax-oom-score-enforce
   systemd/units/*.service.d/oom-protect.conf        -> ~/.config/systemd/user/*.service.d/oom-protect.conf
@@ -104,6 +105,7 @@ system_dropins=(
     systemd/system/sshd.service.d/oom-protect.conf
 )
 system_units=(
+    systemd/units/hapax-root-failure-intake@.service
     systemd/units/hapax-oom-score-enforce.service
     systemd/units/hapax-oom-score-enforce.timer
 )
