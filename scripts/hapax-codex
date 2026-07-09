@@ -1233,10 +1233,21 @@ if [ "${#CODEX_EXTRA[@]}" -gt 0 ] && is_codex_subcommand "${CODEX_EXTRA[0]}"; th
   explicit_codex_command=1
 fi
 
+codex_exec_auth_preflight_required=0
+if [ "$explicit_codex_command" -eq 0 ]; then
+  codex_exec_auth_preflight_required=1
+elif [ "${#CODEX_EXTRA[@]}" -gt 0 ]; then
+  case "${CODEX_EXTRA[0]}" in
+    exec|e)
+      codex_exec_auth_preflight_required=1
+      ;;
+  esac
+fi
+
 strip_inherited_codex_access_token
 
 LOCAL_CODEX_EXEC_AUTH_PROVEN=0
-if [ "$explicit_codex_command" -eq 0 ]; then
+if [ "$codex_exec_auth_preflight_required" -eq 1 ]; then
   if [ -n "$DISPATCH_HOST" ]; then
     REMOTE_EXEC_PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64)"
     REMOTE_EXEC_PREFLIGHT_COMMAND="$(remote_python_command "$REMOTE_EXEC_PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
@@ -1272,7 +1283,7 @@ fi
 SPAWN_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/codex-spawns"
 mkdir -p "$SPAWN_DIR"
 
-if [ "$explicit_codex_command" -eq 0 ] && [ -z "$DISPATCH_HOST" ] && [ "${LOCAL_CODEX_EXEC_AUTH_PROVEN:-0}" != "1" ]; then
+if [ "$codex_exec_auth_preflight_required" -eq 1 ] && [ -z "$DISPATCH_HOST" ] && [ "${LOCAL_CODEX_EXEC_AUTH_PROVEN:-0}" != "1" ]; then
   # Fallback guard: normal local task launches prove saved-login auth before
   # cc-claim above. If a future refactor skips that path, refuse to bootstrap or
   # exec Codex until the same sentinel proof succeeds.

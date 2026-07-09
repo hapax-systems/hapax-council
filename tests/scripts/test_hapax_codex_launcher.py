@@ -1569,6 +1569,127 @@ exit 99
     assert not claim_log.exists()
 
 
+def test_explicit_exec_task_claim_requires_local_saved_login_witness(tmp_path: Path) -> None:
+    env, args_file, _env_file = _env_with_fake_codex(tmp_path)
+    _write_active_task(env, "demo-task")
+    workdir = tmp_path / "target-worktree"
+    claim_log = tmp_path / "target-claim.log"
+    auth_log = tmp_path / "codex-auth-witness.log"
+    (workdir / "scripts").mkdir(parents=True)
+    claim_script = workdir / "scripts" / "cc-claim"
+    claim_script.write_text(
+        f"""#!/usr/bin/env bash
+test -f {auth_log} || exit 71
+printf '%s %s\\n' "$0" "$*" > {claim_log}
+exit 0
+""",
+        encoding="utf-8",
+    )
+    claim_script.chmod(0o755)
+    fake_codex = Path(env["PATH"].split(":", 1)[0]) / "codex"
+    fake_codex.write_text(
+        f"""#!/usr/bin/env bash
+case "$*" in
+  *"Reply exactly: HAPAX_CODEX_EXEC_AUTH_OK"*)
+    printf '%s\\n' auth > {auth_log}
+    printf '%s\\n' '{{"message":"HAPAX_CODEX_EXEC_AUTH_OK"}}'
+    exit 0
+    ;;
+esac
+printf '%s\\n' "$*" > {args_file}
+exit 0
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-green",
+            "--slot",
+            "delta",
+            "--cd",
+            str(workdir),
+            "--task",
+            "demo-task",
+            "--",
+            "exec",
+            "Do explicit work",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert auth_log.read_text(encoding="utf-8").strip() == "auth"
+    assert claim_log.read_text(encoding="utf-8").strip() == f"{claim_script} demo-task"
+    launched_args = args_file.read_text(encoding="utf-8")
+    assert "exec Do explicit work" in launched_args
+
+
+def test_explicit_exec_task_claim_refuses_failed_local_saved_login_witness(
+    tmp_path: Path,
+) -> None:
+    env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
+    _write_active_task(env, "demo-task")
+    workdir = tmp_path / "target-worktree"
+    claim_log = tmp_path / "target-claim.log"
+    (workdir / "scripts").mkdir(parents=True)
+    claim_script = workdir / "scripts" / "cc-claim"
+    claim_script.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s %s\\n' "$0" "$*" > {claim_log}
+exit 0
+""",
+        encoding="utf-8",
+    )
+    claim_script.chmod(0o755)
+    fake_codex = Path(env["PATH"].split(":", 1)[0]) / "codex"
+    fake_codex.write_text(
+        """#!/usr/bin/env bash
+case "$*" in
+  *"Reply exactly: HAPAX_CODEX_EXEC_AUTH_OK"*)
+    echo "login required" >&2
+    exit 42
+    ;;
+esac
+echo "worker should not launch after auth preflight failure" >&2
+exit 99
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-green",
+            "--slot",
+            "delta",
+            "--cd",
+            str(workdir),
+            "--task",
+            "demo-task",
+            "--",
+            "exec",
+            "Do explicit work",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 78
+    assert "codex_saved_auth_login_required" in result.stderr
+    assert not claim_log.exists()
+
+
 def test_task_launch_appends_safe_operator_dossier_context(tmp_path: Path) -> None:
     env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
     env["HAPAX_CODEX_OPERATOR_DOSSIER"] = str(FIXTURE_ROOT / "operator-dossier-safe.md")
