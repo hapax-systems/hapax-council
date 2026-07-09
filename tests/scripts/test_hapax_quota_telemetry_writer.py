@@ -144,6 +144,7 @@ def _codex_platform_receipt(
     include_failed_reason: bool = True,
     saved_login_witness: bool = True,
     legacy_exec_auth_witness: bool = False,
+    evidence_refs_override: list[str] | None = None,
     observed_at: str = "2026-06-09T23:59:00Z",
 ) -> None:
     receipt_dir.mkdir(parents=True, exist_ok=True)
@@ -156,7 +157,7 @@ def _codex_platform_receipt(
         if reason_code is not None
         else []
     )
-    evidence_refs = (
+    evidence_refs = evidence_refs_override or (
         []
         if reason_code is not None
         else [
@@ -566,6 +567,35 @@ def test_codex_snapshot_unknown_when_observed_receipt_has_only_legacy_exec_auth_
         platform_receipts,
         saved_login_witness=False,
         legacy_exec_auth_witness=True,
+    )
+
+    result, out = _run_writer(
+        tmp_path,
+        "--platform-capability-receipt-dir",
+        str(platform_receipts),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    codex_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "codex.headless.full"
+    )
+    assert codex_snapshot["subscription_quota_state"] == "unknown"
+    assert "codex_exec_auth_witness_absent" in codex_snapshot["operator_visible_reason"]
+    assert "codex-auth-blocker:codex_exec_auth_witness_absent" in codex_snapshot["evidence_refs"]
+
+
+@pytest.mark.parametrize("negative_token", ["absent", "not", "unobserved", "timeout"])
+def test_codex_snapshot_unknown_when_saved_login_witness_ref_is_negated(
+    tmp_path: Path,
+    negative_token: str,
+) -> None:
+    platform_receipts = tmp_path / "platform-receipts"
+    _codex_platform_receipt(
+        platform_receipts,
+        evidence_refs_override=[f"host:{negative_token}:codex:exec:auth:saved-login:observed"],
     )
 
     result, out = _run_writer(
