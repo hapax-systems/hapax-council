@@ -12,6 +12,7 @@ OOM_ENFORCER_DEST="${HAPAX_OOM_ENFORCER_DEST:-/usr/local/sbin/hapax-oom-score-en
 ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapax-root-failure-intake}"
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
 SUDO="${HAPAX_OOM_INSTALL_SUDO-sudo}"
+ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$HOME/.cache/hapax/post-merge-root-required/current-source}"
 PROC_ROOT="${HAPAX_OOM_PROC_ROOT:-/proc}"
 if [ -n "${HAPAX_OOM_CGROUP_ROOT:-}" ]; then
     CGROUP_ROOT="$HAPAX_OOM_CGROUP_ROOT"
@@ -101,6 +102,25 @@ preflight_root() {
             return "$ROOT_REQUIRED_RC"
         }
     fi
+}
+
+drain_root_required_deferral() {
+    local drain="${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}"
+    [ -n "$drain" ] || return 0
+    case "$drain" in
+        /|"")
+            echo "refusing unsafe root-required drain dir: $drain" >&2
+            return 1
+            ;;
+    esac
+    [ -f "$drain/RUNBOOK.txt" ] || {
+        echo "root-required drain dir missing RUNBOOK.txt: $drain" >&2
+        return 1
+    }
+    mkdir -p "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"
+    cp -a "$SOURCE"/. "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"/
+    rm -rf "$drain"
+    echo "root-required deferral drained: $drain"
 }
 
 system_dropins=(
@@ -586,4 +606,5 @@ verify_user_process_oom_floor() {
 [ "$CHECK" -eq 0 ] || check_source
 [ "$INSTALL" -eq 0 ] || install_live
 [ "$VERIFY_LIVE" -eq 0 ] || verify_live
+[ "$INSTALL" -eq 0 ] || drain_root_required_deferral
 echo "p0 oom containment install/check complete"

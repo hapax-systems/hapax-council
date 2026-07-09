@@ -7,9 +7,11 @@ SOURCE="$ROOT"
 SRC="$SOURCE/config/apcupsd"
 DEST="${HAPAX_APCUPSD_DEST:-/etc/apcupsd}"
 AUDIT_DIR="${HAPAX_APCUPSD_AUDIT_DIR:-/var/log/hapax}"
+AUDIT_GROUP="${HAPAX_APCUPSD_AUDIT_GROUP:-hapax}"
 LOGROTATE_DEST="${HAPAX_APCUPSD_LOGROTATE_DEST:-/etc/logrotate.d/hapax-ups-power-events}"
 SYSTEMCTL="${HAPAX_APCUPSD_SYSTEMCTL:-systemctl}"
 SUDO="${HAPAX_APCUPSD_INSTALL_SUDO-sudo}"
+ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$HOME/.cache/hapax/post-merge-root-required/current-source}"
 ROOT_REQUIRED_RC=77
 RESTART=1
 INSTALL=0
@@ -76,6 +78,33 @@ preflight_root() {
     fi
 }
 
+install_audit_dir() {
+    if [ -n "$AUDIT_GROUP" ] && getent group "$AUDIT_GROUP" >/dev/null 2>&1 && { [ -n "$SUDO" ] || [ "$(id -u)" = "0" ]; }; then
+        run_root install -d -m 2775 -g "$AUDIT_GROUP" "$AUDIT_DIR"
+    else
+        run_root install -d -m 0775 "$AUDIT_DIR"
+    fi
+}
+
+drain_root_required_deferral() {
+    local drain="${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}"
+    [ -n "$drain" ] || return 0
+    case "$drain" in
+        /|"")
+            echo "refusing unsafe root-required drain dir: $drain" >&2
+            return 1
+            ;;
+    esac
+    [ -f "$drain/RUNBOOK.txt" ] || {
+        echo "root-required drain dir missing RUNBOOK.txt: $drain" >&2
+        return 1
+    }
+    mkdir -p "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"
+    cp -a "$SOURCE"/. "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"/
+    rm -rf "$drain"
+    echo "root-required deferral drained: $drain"
+}
+
 check_source() {
     expect_header "$SRC/apcupsd.conf"
     [ -x "$SRC/hapax-power-event.py" ] || {
@@ -105,7 +134,7 @@ install_live() {
     done
     cmp -s "$SOURCE/systemd/logrotate.d/hapax-ups-power-events" "$LOGROTATE_DEST" 2>/dev/null || changed=1
     run_root install -d -m 0755 "$DEST"
-    run_root install -d -m 0750 "$AUDIT_DIR"
+    install_audit_dir
     run_root install -m 0644 "$SRC/apcupsd.conf" "$DEST/apcupsd.conf"
     run_root install -m 0755 "$SRC/hapax-power-event.py" "$DEST/hapax-power-event.py"
     run_root install -m 0755 "$SRC/onbattery" "$DEST/onbattery"
@@ -160,4 +189,5 @@ verify_live() {
 [ "$CHECK" -eq 0 ] || check_source
 [ "$INSTALL" -eq 0 ] || install_live
 [ "$VERIFY_LIVE" -eq 0 ] || verify_live
+[ "$INSTALL" -eq 0 ] || drain_root_required_deferral
 echo "apcupsd power alert install/check complete"

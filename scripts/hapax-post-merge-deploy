@@ -1331,13 +1331,13 @@ Run from this host after this root-authority preparation:
 
 Default sudo path after sudo -v:
 
-  $dest/$installer --source $dest --install --verify-live
+  HAPAX_ROOT_REQUIRED_DRAIN_DIR=$dest HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT $dest/$installer --source $dest --install --verify-live
 
 Post-merge deploy continued after this deferral so unrelated user-scope deploy
 groups for the same merge were not skipped.
 EOF
     echo "root-required $label install deferred to $dest"
-    echo "next action: run $dest/$installer --source $dest --install --verify-live with root authority"
+    echo "next action: run HAPAX_ROOT_REQUIRED_DRAIN_DIR=$dest HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT $dest/$installer --source $dest --install --verify-live with root authority"
 }
 
 record_root_required_source() {

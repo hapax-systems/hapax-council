@@ -735,6 +735,8 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
     assert "sudo -v" in runbook
     assert "root shell" not in runbook
     assert "HAPAX_OOM_INSTALL_SUDO=" not in runbook
+    assert "HAPAX_ROOT_REQUIRED_DRAIN_DIR=" in runbook
+    assert "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=" in runbook
     assert (home / ".config" / "systemd" / "user" / "hapax-demo.service").is_file()
     assert "root-required oom-containment install deferred" in result.stdout
 

@@ -67,6 +67,8 @@ def test_power_event_helper_records_jsonl_without_ntfy(tmp_path: Path) -> None:
     assert "delivery" not in records[0]
     assert records[1]["provenance_degraded"] is False
     assert records[1]["delivery"]["attempted"] is False
+    assert records[1]["delivery"]["ok"] is False
+    assert records[1]["delivery"]["error"] == "ntfy disabled"
     assert records[1]["apcaccess"]["STATUS"] == "ONLINE"
     assert "observed_at=" in records[0]["message"]
     assert "STATUS=ONLINE" in records[0]["message"]
@@ -210,6 +212,7 @@ def test_installer_install_and_verify_live_against_temp_destinations(tmp_path: P
     assert (dest / "hapax-power-event.py").is_file()
     assert (dest / "onbattery").stat().st_mode & 0o100
     assert audit_dir.is_dir()
+    assert audit_dir.stat().st_mode & 0o777 == 0o775
     assert logrotate_dest.is_file()
     assert "restart apcupsd" in systemctl_calls.read_text(encoding="utf-8")
     systemctl_calls.write_text("", encoding="utf-8")
@@ -256,3 +259,39 @@ def test_installer_install_and_verify_live_against_temp_destinations(tmp_path: P
     ]
     assert records[0]["event"] == "onbattery"
     assert records[1]["delivery"]["attempted"] is False
+    assert records[1]["delivery"]["ok"] is False
+
+
+def test_installer_drains_root_required_deferral_after_success(tmp_path: Path) -> None:
+    dest = tmp_path / "apcupsd"
+    audit_dir = tmp_path / "hapax-log"
+    logrotate_dest = tmp_path / "logrotate.d" / "hapax-ups-power-events"
+    drain_dir = tmp_path / "root-required" / "sha" / "apcupsd-power-alerts"
+    installed_source = tmp_path / "current-source"
+    drain_dir.mkdir(parents=True)
+    (drain_dir / "RUNBOOK.txt").write_text("run installer\n", encoding="utf-8")
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--install", "--verify-live"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_DEST": str(dest),
+            "HAPAX_APCUPSD_AUDIT_DIR": str(audit_dir),
+            "HAPAX_APCUPSD_LOGROTATE_DEST": str(logrotate_dest),
+            "HAPAX_APCUPSD_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+            "HAPAX_ROOT_REQUIRED_DRAIN_DIR": str(drain_dir),
+            "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not drain_dir.exists()
+    assert (installed_source / "config" / "apcupsd" / "hapax-power-event.py").is_file()
+    assert "root-required deferral drained" in result.stdout

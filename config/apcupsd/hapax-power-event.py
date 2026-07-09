@@ -79,7 +79,7 @@ def format_ntfy_message(base_message: str, apc: dict[str, str], recorded_at: str
 
 def post_ntfy(url: str, title: str, message: str, priority: str, timeout_s: float) -> Delivery:
     if not url:
-        return Delivery(attempted=False, ok=True, error="ntfy disabled")
+        return Delivery(attempted=False, ok=False, error="ntfy disabled")
     req = urllib.request.Request(
         url,
         data=message.encode("utf-8"),
