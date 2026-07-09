@@ -261,6 +261,13 @@
           "default": null,
           "title": "Registry Assets Policy"
         },
+        "registry_expected_detection_by_repo": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Registry Expected Detection By Repo",
+          "type": "object"
+        },
         "registry_license_by_repo": {
           "additionalProperties": {
             "type": "string"
