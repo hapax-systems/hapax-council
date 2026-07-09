@@ -1000,6 +1000,8 @@ def test_phase1_decision_truthiness_is_undefined_and_accepted_decision_advances_
     ledger = advance_ratchet(
         SCEDRatchetLedger(),
         decision,
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
         held_out_evaluation=held_out,
         similarity_observations=similarities,
     )
@@ -1018,6 +1020,7 @@ def test_lit_decision_without_phase1_witness_objects_does_not_advance_ledger() -
 def test_stale_lit_decision_with_duplicate_digest_does_not_advance_ledger() -> None:
     candidate = _candidate(candidate_digest=DIGEST_B)
     decision = _admit(candidate)
+    freeze = _freeze(target=candidate.target)
     held_out = _held_out(
         candidate_id=candidate.candidate_id,
         candidate_digest=candidate.candidate_digest,
@@ -1035,6 +1038,8 @@ def test_stale_lit_decision_with_duplicate_digest_does_not_advance_ledger() -> N
         advance_ratchet(
             ledger,
             decision,
+            freeze=freeze,
+            ruler_hash_commit=freeze.ruler.canonical_hash(),
             held_out_evaluation=held_out,
             similarity_observations=similarities,
         )
@@ -1045,6 +1050,7 @@ def test_stale_lit_decision_with_duplicate_digest_does_not_advance_ledger() -> N
 def test_stale_lit_decision_with_duplicate_technique_ref_does_not_advance_ledger() -> None:
     candidate = _candidate(candidate_digest=DIGEST_B, technique_refs=("technique:old",))
     decision = _admit(candidate)
+    freeze = _freeze(target=candidate.target)
     held_out = _held_out(
         candidate_id=candidate.candidate_id,
         candidate_digest=candidate.candidate_digest,
@@ -1062,6 +1068,8 @@ def test_stale_lit_decision_with_duplicate_technique_ref_does_not_advance_ledger
         advance_ratchet(
             ledger,
             decision,
+            freeze=freeze,
+            ruler_hash_commit=freeze.ruler.canonical_hash(),
             held_out_evaluation=held_out,
             similarity_observations=similarities,
         )
@@ -1328,6 +1336,89 @@ def test_lit_decision_with_forged_phase1_witness_refs_does_not_advance_ledger() 
         "phase1-evaluator-attestation:sha256:" + "0" * 64,
     )
     assert advance_ratchet(ledger, decision) == ledger
+
+
+def test_lit_decision_with_failing_witness_objects_does_not_advance_ledger() -> None:
+    ledger = SCEDRatchetLedger()
+    policy = default_target_policy_snapshots()[0]
+    freeze = _freeze()
+    ruler_hash = freeze.ruler.canonical_hash()
+    candidate_id = "candidate:failing-witnesses"
+    held_out = _held_out(
+        candidate_id=candidate_id,
+        candidate_digest=DIGEST_B,
+        set_id="held-out:other",
+        failed_prompt_refs=("refusal-ref:001",),
+        evidence_refs=("held-out-witness:failing",),
+    )
+    similarities = (
+        SimilarityObservation(
+            candidate_id=candidate_id,
+            candidate_digest=DIGEST_B,
+            against_ref="known:dan",
+            similarity=1.0,
+            method_ref="similarity-method:minhash-v0",
+            observed_at=NOW,
+            evidence_refs=("similarity-witness:failing-high",),
+        ),
+        SimilarityObservation(
+            candidate_id=candidate_id,
+            candidate_digest=DIGEST_B,
+            against_ref="known:crescendo",
+            similarity=0.2,
+            method_ref="similarity-method:minhash-v0",
+            observed_at=NOW,
+            evidence_refs=("similarity-witness:failing-low",),
+        ),
+    )
+    similarity_refs = tuple(
+        dict.fromkeys(ref for observation in similarities for ref in observation.evidence_refs)
+    )
+    evidence_refs = (
+        f"candidate:{candidate_id}",
+        f"candidate-digest:{DIGEST_B}",
+        f"target:{':'.join(ANTHROPIC_UNIVERSAL_JAILBREAK_TARGET.key)}",
+        f"ruler-hash:{ruler_hash}",
+        *policy.policy_refs,
+        policy.registry_row_ref,
+        "candidate-witness:failing-witnesses",
+        *held_out.evidence_refs,
+        *similarity_refs,
+    )
+    decision = SCEDPhase1Decision(
+        verifier="sced_jailbreak_phase1_ratchet",
+        verifier_version=1,
+        status=GateStatus.LIT,
+        gate_result=GateResult(
+            status=GateStatus.LIT,
+            verdict=True,
+            reason="test-lit",
+            evidence_refs=evidence_refs,
+        ),
+        reason="test-lit",
+        reject_reasons=(),
+        candidate_id=candidate_id,
+        candidate_digest=DIGEST_B,
+        technique_refs=("technique:new",),
+        target=ANTHROPIC_UNIVERSAL_JAILBREAK_TARGET,
+        ruler_hash=ruler_hash,
+        target_policy_snapshot=policy,
+        held_out_evidence_refs=held_out.evidence_refs,
+        similarity_evidence_refs=similarity_refs,
+        evidence_refs=evidence_refs,
+    )
+
+    assert (
+        advance_ratchet(
+            ledger,
+            decision,
+            freeze=freeze,
+            ruler_hash_commit=freeze.ruler.canonical_hash(),
+            held_out_evaluation=held_out,
+            similarity_observations=similarities,
+        )
+        == ledger
+    )
 
 
 def test_lit_decision_with_target_policy_mismatch_does_not_advance_ledger() -> None:

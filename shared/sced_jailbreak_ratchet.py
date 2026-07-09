@@ -652,13 +652,22 @@ def advance_ratchet(
     ledger: SCEDRatchetLedger | Mapping[str, Any],
     decision: SCEDPhase1Decision,
     *,
+    freeze: SCEDRulerFreeze | Mapping[str, Any] | None = None,
+    ruler_hash_commit: str | None = None,
     held_out_evaluation: HeldOutEvaluation | Mapping[str, Any] | None = None,
     similarity_observations: Sequence[SimilarityObservation | Mapping[str, Any]] = (),
 ) -> SCEDRatchetLedger:
     """Advance the offline ledger only for a LIT decision with matching witnesses."""
 
     ledger_obj = _coerce_ledger(ledger)
-    if not _decision_can_advance(decision, held_out_evaluation, similarity_observations):
+    if not _decision_can_advance(
+        decision,
+        held_out_evaluation,
+        similarity_observations,
+        freeze,
+        ruler_hash_commit,
+        ledger_obj,
+    ):
         return ledger_obj
     if not _decision_is_new_to_ledger(ledger_obj, decision):
         return ledger_obj
@@ -678,6 +687,9 @@ def _decision_can_advance(
     decision: SCEDPhase1Decision,
     held_out_evaluation: HeldOutEvaluation | Mapping[str, Any] | None,
     similarity_observations: Sequence[SimilarityObservation | Mapping[str, Any]],
+    freeze: SCEDRulerFreeze | Mapping[str, Any] | None,
+    ruler_hash_commit: str | None,
+    ledger: SCEDRatchetLedger,
 ) -> bool:
     return (
         decision.verifier == SCED_PHASE1_RATCHET_NAME
@@ -698,6 +710,9 @@ def _decision_can_advance(
             decision,
             held_out_evaluation,
             similarity_observations,
+            freeze,
+            ruler_hash_commit,
+            ledger,
         )
     )
 
@@ -814,13 +829,25 @@ def _decision_has_matching_phase1_witnesses(
     decision: SCEDPhase1Decision,
     held_out_evaluation: HeldOutEvaluation | Mapping[str, Any] | None,
     similarity_observations: Sequence[SimilarityObservation | Mapping[str, Any]],
+    freeze: SCEDRulerFreeze | Mapping[str, Any] | None,
+    ruler_hash_commit: str | None,
+    ledger: SCEDRatchetLedger,
 ) -> bool:
-    if held_out_evaluation is None:
+    if held_out_evaluation is None or freeze is None:
         return False
     try:
+        collection = verify_collection_admission(freeze, ruler_hash_commit=ruler_hash_commit)
+        freeze_target = _freeze_budget_target(freeze)
         held_out = _coerce_held_out(held_out_evaluation)
         similarities = _coerce_similarities(similarity_observations)
     except _Phase1InputError:
+        return False
+    if collection.status is not GateStatus.LIT or collection.ruler is None:
+        return False
+    ruler = collection.ruler
+    if (collection.ruler_hash or ruler.canonical_hash()) != decision.ruler_hash:
+        return False
+    if decision.target is None or freeze_target.key != decision.target.normalized().key:
         return False
     if not similarities:
         return False
@@ -836,6 +863,28 @@ def _decision_has_matching_phase1_witnesses(
         and observation.candidate_digest == decision.candidate_digest
         for observation in similarities
     ):
+        return False
+    known_techniques = set(ledger.technique_refs) | set(
+        ruler.novelty_criterion.known_technique_refs
+    )
+    if known_techniques.intersection(decision.technique_refs):
+        return False
+    observed_similarity_refs = {observation.against_ref for observation in similarities}
+    if known_techniques and not known_techniques.issubset(observed_similarity_refs):
+        return False
+    if any(
+        observation.similarity >= ruler.novelty_criterion.max_duplicate_similarity
+        for observation in similarities
+    ):
+        return False
+    if held_out.set_id != ruler.held_out_refusal_set.set_id:
+        return False
+    if held_out.failed_prompt_refs:
+        return False
+    cleared = set(held_out.cleared_categories).intersection(
+        ruler.policy_category_threshold.categories
+    )
+    if len(cleared) < ruler.policy_category_threshold.min_categories_cleared:
         return False
     similarity_refs = tuple(
         dict.fromkeys(ref for observation in similarities for ref in observation.evidence_refs)
