@@ -1,5 +1,5 @@
 {
-  "count": 178,
+  "count": 179,
   "fingerprints": {
     "agy.review.direct": "623fdb606d2fa7c7f92b969e951a1367fe58d06a46c57c29ac91402457eeaa6b",
     "anthropic_web_search": "4a84a85c58c98dd5a2a4f10dea7886e399d98ed37b8822b7f956e9577c9d3db0",
@@ -84,6 +84,7 @@
     "gmail.modify_mailbox": "628568afe4cdde5faf9ab3ec9a0c6adb4671b2dc1d46edc05f23db634a130c1c",
     "gmail.read_email": "552f1d7625eae5fe0b2a36e7ebc961460428cac1f4f8104ca205d85e978fe37c",
     "gmail.send_draft": "0cc35b1abf7c961250ae9fe18494a1629c81d03825668296fed326eb0f04e6fc",
+    "grok.headless.full": "85ea4bf67ed89c843a82d835398926a13342c0201d61995207e90981c2c32860",
     "hapax.accommodation_write": "f48e3853ff01bd9c9caf91ff12ab14889aabbfc91dd51d86e2444ee51f41bffc",
     "hapax.nudge_act": "e986eb002522d98754a6067a372ba2e4bfb5e1459418491901e11144bc8c75b8",
     "hapax.profile_write": "292e748993851bc01b120ebd431c7af84e055bef5ec0e1034869d1b955dd7db6",
