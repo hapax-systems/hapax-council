@@ -2960,6 +2960,14 @@ printf '%s\\n' "$@" > {launcher_args}
 def test_codex_external_worktree_dispatch_exports_redemption_binding(
     tmp_path: Path, monkeypatch
 ) -> None:
+    # SCOPE: this verifies methodology-dispatch EXPORTS the redemption binding to the
+    # launcher for an external Codex worktree (the dispatch->launcher handoff). Proof
+    # that the launcher then REDEEMS that binding against the fixed governor before any
+    # local bearer load OR remote SSH exec — for both local and remote dispatch — lives
+    # in tests/scripts/test_hapax_codex_headless.py
+    # (test_codex_headless_external_no_claim_requires_live_redemption_authority and
+    # test_codex_headless_remote_external_launch_requires_redemption). A fake launcher is
+    # used here on purpose; a real redeem needs the fixed /run/hapax governor socket.
     module = _dispatcher_module()
     home = tmp_path / "home"
     reins_worktree = home / "projects" / "reins"

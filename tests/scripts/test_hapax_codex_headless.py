@@ -284,11 +284,9 @@ def test_codex_headless_scrubs_dispatch_redemption_binding_after_redeem() -> Non
     text = SCRIPT.read_text(encoding="utf-8")
 
     assert "scrub_dispatch_redemption_binding_env()" in text
-    # redeem then scrub the binding — the pair is now nested in the local-dispatch
-    # branch (redemption runs before the codex bearer loader), hence 4-space indent.
-    assert (
-        "validate_dispatch_redemption_authority\n    scrub_dispatch_redemption_binding_env" in text
-    )
+    # redeem then scrub the binding — redemption now gates every external launch
+    # (local or remote) before any bearer loader / remote SSH preflight.
+    assert "validate_dispatch_redemption_authority\n  scrub_dispatch_redemption_binding_env" in text
     for name in (
         "HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN",
         "HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID",
@@ -422,8 +420,11 @@ def test_codex_headless_remote_no_claim_without_epoch_fails_closed(tmp_path: Pat
     cache.mkdir(parents=True)
     (cache / "cc-active-task-cx-amber").write_text("task-x\n", encoding="utf-8")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    # Council workdir: redemption is skipped for a council worktree, so this test
+    # exercises the remote preflight/epoch flow. Remote EXTERNAL launches redeem
+    # first — see test_codex_headless_remote_external_launch_requires_redemption.
+    workdir = home / "projects" / "hapax-council--cx-amber"
+    workdir.mkdir(parents=True)
 
     bin_dir = tmp_path / "bin"
     args_file = tmp_path / "codex-args.txt"
@@ -473,8 +474,11 @@ def test_codex_headless_remote_no_claim_with_orphan_epoch_fails_closed(
     cache.mkdir(parents=True)
     (cache / "cc-claim-epoch-cx-amber").write_text("1234567890 task-x\n", encoding="utf-8")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    # Council workdir: redemption is skipped for a council worktree, so this test
+    # exercises the remote preflight/epoch flow. Remote EXTERNAL launches redeem
+    # first — see test_codex_headless_remote_external_launch_requires_redemption.
+    workdir = home / "projects" / "hapax-council--cx-amber"
+    workdir.mkdir(parents=True)
 
     bin_dir = tmp_path / "bin"
     args_file = tmp_path / "codex-args.txt"
@@ -1086,6 +1090,46 @@ exit 0
     assert not codex_called.exists()
 
 
+def test_codex_headless_remote_external_launch_requires_redemption(tmp_path: Path) -> None:
+    # A REMOTE external-worktree launch must redeem the governed grant against the
+    # fixed LOCAL governor BEFORE any SSH preflight/exec. An ungoverned remote
+    # Reins-style launch must fail closed with no grant_redeemed and never reach the
+    # dispatch host (regression pin for the remote-redemption-bypass finding).
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"  # external worktree, not under hapax-council
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    ssh_called = tmp_path / "ssh-called"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(bin_dir / "ssh", f': > "{ssh_called}"\nexit 0\n')
+    _write_executable(bin_dir / "codex", f': > "{codex_called}"\nexit 0\n')
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"  # remote dispatch
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 17
+    assert "requires live methodology dispatch redemption" in result.stderr
+    assert not ssh_called.exists(), "remote SSH must not run before redemption"
+    assert not codex_called.exists()
+
+
 def test_codex_headless_outside_projects_workdir_fails_closed_without_redemption_binding(
     tmp_path: Path,
 ) -> None:
@@ -1655,8 +1699,11 @@ def test_codex_headless_remote_token_preflight_refuses_after_claim(tmp_path: Pat
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    # Council workdir: redemption is skipped for a council worktree, so this test
+    # exercises the remote preflight/epoch flow. Remote EXTERNAL launches redeem
+    # first — see test_codex_headless_remote_external_launch_requires_redemption.
+    workdir = home / "projects" / "hapax-council--cx-amber"
+    workdir.mkdir(parents=True)
 
     bin_dir = tmp_path / "bin"
     ssh_log = tmp_path / "ssh.log"
@@ -1705,8 +1752,11 @@ def test_codex_headless_remote_token_preflight_rejects_unaccepted_bearer_after_c
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    # Council workdir: redemption is skipped for a council worktree, so this test
+    # exercises the remote preflight/epoch flow. Remote EXTERNAL launches redeem
+    # first — see test_codex_headless_remote_external_launch_requires_redemption.
+    workdir = home / "projects" / "hapax-council--cx-amber"
+    workdir.mkdir(parents=True)
 
     bin_dir = tmp_path / "bin"
     ssh_log = tmp_path / "ssh.log"

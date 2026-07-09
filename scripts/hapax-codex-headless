@@ -1028,16 +1028,19 @@ if [[ -n "$DISPATCH_HOST_REQUESTED" ]] && dispatch_host_is_local "$DISPATCH_HOST
   DISPATCH_HOST_REQUESTED=""
 fi
 
+# Redemption gates EVERY external worktree launch (local OR remote) against the
+# FIXED LOCAL governor BEFORE any credential loader or remote SSH preflight/exec.
+# An external worktree has no local cc-claim lifecycle, so admission is the governed
+# one-time grant: a governed dispatch carries a valid binding and redeems here; an
+# ungoverned external launch fails closed whether it would run locally or remotely
+# (a remote SSH exec must never proceed without a grant_redeemed from the governor).
+if workdir_requires_dispatch_redemption; then
+  validate_dispatch_redemption_authority
+  scrub_dispatch_redemption_binding_env
+fi
+
 if [[ -z "$DISPATCH_HOST_REQUESTED" ]]; then
-  # Local dispatch: an external worktree must redeem its governed one-time grant
-  # against the FIXED LOCAL governor BEFORE we load the local codex bearer, so a
-  # redemption-refused launch fails closed without touching OAuth. Remote dispatch
-  # (below) is admitted by the remote preflight/epoch flow, not local redemption —
-  # a local redemption refusal must never short-circuit the remote path.
-  if workdir_requires_dispatch_redemption; then
-    validate_dispatch_redemption_authority
-    scrub_dispatch_redemption_binding_env
-  fi
+  # Local dispatch: load the local codex bearer AFTER redemption has admitted the launch.
   load_local_codex_access_token
 fi
 
