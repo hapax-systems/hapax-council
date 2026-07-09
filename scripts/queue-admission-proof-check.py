@@ -24,6 +24,30 @@ from typing import Any
 AUTOQUEUE_ADMISSION_CONTEXT = "hapax/autoqueue-admission"
 DEFAULT_TTL_SECONDS = 30 * 60
 QUEUE_ACTIONS = {"enqueued", "auto_merge_enabled"}
+_GRAPHQL_PROOF_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      headRefOid
+      commits(last: 1) {
+        nodes {
+          commit {
+            oid
+            status {
+              contexts {
+                context
+                state
+                description
+                createdAt
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
 
 
 @dataclass(frozen=True)
@@ -58,6 +82,13 @@ def _gh_json(cmd: list[str], *, runner: Any = None) -> Any:
         return json.loads(proc.stdout or "null")
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"gh emitted non-JSON for {cmd}: {exc}") from exc
+
+
+def _split_repo(repo: str) -> tuple[str, str]:
+    owner, sep, name = repo.partition("/")
+    if not sep or not owner or not name:
+        raise RuntimeError(f"repo must be owner/name, got {repo!r}")
+    return owner, name
 
 
 def pr_numbers_from_ref(*refs: str | None) -> list[int]:
@@ -122,6 +153,72 @@ def fetch_head_sha(repo: str, pr: int, *, runner: Any = None) -> str:
 
 
 def fetch_latest_proof(repo: str, pr: int, *, runner: Any = None) -> Proof:
+    try:
+        return fetch_latest_proof_graphql(repo, pr, runner=runner)
+    except RuntimeError:
+        # Keep the old REST path as a fallback for older GitHub Enterprise
+        # shapes, but prefer GraphQL because Actions REST reads are the
+        # pressure point during merge-queue churn.
+        pass
+    return fetch_latest_proof_rest(repo, pr, runner=runner)
+
+
+def fetch_latest_proof_graphql(repo: str, pr: int, *, runner: Any = None) -> Proof:
+    owner, name = _split_repo(repo)
+    payload = _gh_json(
+        [
+            "gh",
+            "api",
+            "graphql",
+            "-f",
+            f"query={_GRAPHQL_PROOF_QUERY}",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"name={name}",
+            "-F",
+            f"number={pr}",
+        ],
+        runner=runner,
+    )
+    repository = (
+        ((payload.get("data") or {}).get("repository") or {}) if isinstance(payload, dict) else {}
+    )
+    pull_request = repository.get("pullRequest") or {}
+    head_sha = str(pull_request.get("headRefOid") or "")
+    commit_nodes = ((pull_request.get("commits") or {}).get("nodes")) or []
+    commit = {}
+    if commit_nodes and isinstance(commit_nodes[0], dict):
+        commit = commit_nodes[0].get("commit") or {}
+    if not head_sha:
+        head_sha = str(commit.get("oid") or "")
+    if not head_sha:
+        raise RuntimeError(f"PR #{pr} head SHA unavailable")
+    contexts = ((commit.get("status") or {}).get("contexts")) or []
+    matching = [
+        item
+        for item in contexts
+        if isinstance(item, dict) and item.get("context") == AUTOQUEUE_ADMISSION_CONTEXT
+    ]
+    if not matching:
+        return Proof(pr=pr, head_sha=head_sha, state="missing", created_at=None, description="")
+    matching.sort(
+        key=lambda item: (
+            _parse_time(str(item.get("createdAt") or "")) or datetime.min.replace(tzinfo=UTC)
+        ),
+        reverse=True,
+    )
+    latest = matching[0]
+    return Proof(
+        pr=pr,
+        head_sha=head_sha,
+        state=str(latest.get("state") or "").lower(),
+        created_at=_parse_time(str(latest.get("createdAt") or "")),
+        description=str(latest.get("description") or ""),
+    )
+
+
+def fetch_latest_proof_rest(repo: str, pr: int, *, runner: Any = None) -> Proof:
     head_sha = fetch_head_sha(repo, pr, runner=runner)
     statuses = _gh_json(
         ["gh", "api", f"repos/{repo}/commits/{head_sha}/statuses?per_page=100"],

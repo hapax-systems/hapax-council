@@ -32,12 +32,45 @@ proof = _load_module()
 
 
 class _FakeRunner:
-    def __init__(self, statuses: list[dict[str, Any]]) -> None:
+    def __init__(self, statuses: list[dict[str, Any]], *, graphql_fails: bool = False) -> None:
         self.statuses = statuses
+        self.graphql_fails = graphql_fails
         self.calls: list[list[str]] = []
 
     def __call__(self, cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
         self.calls.append(list(cmd))
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            if self.graphql_fails:
+                return subprocess.CompletedProcess(cmd, 1, "", "graphql unavailable")
+            contexts = [
+                {
+                    "context": item.get("context"),
+                    "state": str(item.get("state") or "").upper(),
+                    "createdAt": item.get("created_at") or item.get("createdAt"),
+                    "description": item.get("description", ""),
+                }
+                for item in self.statuses
+            ]
+            payload = {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "headRefOid": "abc123",
+                            "commits": {
+                                "nodes": [
+                                    {
+                                        "commit": {
+                                            "oid": "abc123",
+                                            "status": {"contexts": contexts},
+                                        }
+                                    }
+                                ]
+                            },
+                        }
+                    }
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
         if cmd[:3] == ["gh", "api", "repos/owner/repo/pulls/42"]:
             return subprocess.CompletedProcess(cmd, 0, json.dumps({"head": {"sha": "abc123"}}), "")
         if cmd[:3] == ["gh", "api", "repos/owner/repo/commits/abc123/statuses?per_page=100"]:
@@ -89,6 +122,34 @@ def test_fresh_success_status_passes() -> None:
     )
 
     assert failures == []
+    assert runner.calls[0][:3] == ["gh", "api", "graphql"]
+    assert not any("repos/owner/repo/pulls/42" in call for cmd in runner.calls for call in cmd)
+
+
+def test_graphql_failure_falls_back_to_rest() -> None:
+    now = datetime(2026, 5, 21, 2, 0, tzinfo=UTC)
+    runner = _FakeRunner(
+        [
+            {
+                "context": proof.AUTOQUEUE_ADMISSION_CONTEXT,
+                "state": "success",
+                "created_at": "2026-05-21T01:55:00Z",
+                "description": "cc-pr-autoqueue admitted: already_queued",
+            }
+        ],
+        graphql_fails=True,
+    )
+
+    failures = proof.validate_proofs(
+        repo="owner/repo",
+        prs=[42],
+        ttl_seconds=600,
+        now=now,
+        runner=runner,
+    )
+
+    assert failures == []
+    assert any(cmd[:3] == ["gh", "api", "repos/owner/repo/pulls/42"] for cmd in runner.calls)
 
 
 def test_missing_status_fails() -> None:
