@@ -41,7 +41,7 @@ import os
 import re
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -71,6 +71,12 @@ LOG = logging.getLogger("cc-pr-merge-watcher")
 DEFAULT_VAULT_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
 DEFAULT_CURSOR_PATH = Path.home() / ".cache" / "hapax" / "cc-pr-merge-watcher-cursor.txt"
 KILLSWITCH_ENV = "HAPAX_CC_HYGIENE_OFF"
+DEFAULT_SOURCE_ACTIVATION_WORKTREE = (
+    Path.home() / ".cache" / "hapax" / "source-activation" / "worktree"
+)
+DEFAULT_SOURCE_ACTIVATION_CURRENT = (
+    Path.home() / ".cache" / "hapax" / "source-activation" / "current.json"
+)
 
 # Reform ENGINE auto-advance (CASE-SDLC-REFORM-001): after a close, nudge the
 # RTE manifest-drain dispatcher so a freshly-unblocked unit gets picked up
@@ -87,14 +93,150 @@ DEFAULT_REPO = os.environ.get("HAPAX_CC_PR_REPO", "hapax-systems/hapax-council")
 REQUIRED_QUEUE_CHECKS = ("lint", "test", "typecheck", "web-build", "vscode-build")
 
 
+class SourceActivationFreshnessError(RuntimeError):
+    """The deployed source-activation worktree is not fresh enough to mutate cc-task state."""
+
+
+def _resolve_path(path: Path) -> Path:
+    return path.expanduser().resolve(strict=False)
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return _resolve_path(left) == _resolve_path(right)
+
+
 def default_repo_root() -> Path:
     """Resolve cc-task tooling from activated source unless explicitly overridden."""
     raw = (
         os.environ.get("HAPAX_CC_TASK_TOOL_REPO_ROOT")
         or os.environ.get("HAPAX_SOURCE_ACTIVATE_WORKTREE")
-        or str(Path.home() / ".cache" / "hapax" / "source-activation" / "worktree")
+        or str(DEFAULT_SOURCE_ACTIVATION_WORKTREE)
     )
     return Path(raw).expanduser()
+
+
+def _source_activation_current_path() -> Path:
+    return Path(
+        os.environ.get("HAPAX_SOURCE_ACTIVATION_CURRENT") or DEFAULT_SOURCE_ACTIVATION_CURRENT
+    ).expanduser()
+
+
+def _read_source_activation_current(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _activation_worktree_paths(payload: Mapping[str, Any] | None) -> tuple[Path, ...]:
+    paths: list[Path] = [DEFAULT_SOURCE_ACTIVATION_WORKTREE]
+    env_path = os.environ.get("HAPAX_SOURCE_ACTIVATE_WORKTREE")
+    if env_path:
+        paths.append(Path(env_path).expanduser())
+    if isinstance(payload, Mapping):
+        active_path = payload.get("active_source_path")
+        if isinstance(active_path, str) and active_path.strip():
+            paths.append(Path(active_path).expanduser())
+    out: list[Path] = []
+    seen: set[Path] = set()
+    for path in paths:
+        resolved = _resolve_path(path)
+        if resolved not in seen:
+            out.append(path)
+            seen.add(resolved)
+    return tuple(out)
+
+
+def _repo_is_source_activation_worktree(
+    repo_root: Path,
+    payload: Mapping[str, Any] | None,
+) -> bool:
+    return any(_same_path(repo_root, path) for path in _activation_worktree_paths(payload))
+
+
+def _git_rev_parse(repo_root: Path, ref: str) -> str | None:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--verify", "--quiet", ref],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    value = proc.stdout.strip()
+    return value if value else None
+
+
+def _same_sha(left: str | None, right: str | None) -> bool:
+    lhs = str(left or "").strip().lower()
+    rhs = str(right or "").strip().lower()
+    return bool(lhs and rhs) and (lhs == rhs or lhs.startswith(rhs) or rhs.startswith(lhs))
+
+
+def assert_source_activation_fresh(repo_root: Path) -> None:
+    """Fail closed before task mutation when the deployed watcher checkout is stale.
+
+    The systemd watcher runs from the source-activation worktree. If that checkout lags
+    the local ``origin/main`` ref after a PR merges, a stale watcher can close task notes
+    using pre-merge logic before post-merge deploy catches up. Development and test
+    checkouts are intentionally outside this guard; only the activation worktree is bound
+    to the activation receipt and ``origin/main``.
+    """
+
+    current_path = _source_activation_current_path()
+    payload = _read_source_activation_current(current_path)
+    if not _repo_is_source_activation_worktree(repo_root, payload):
+        return
+    if payload is None:
+        raise SourceActivationFreshnessError(
+            f"missing or unreadable source activation receipt at {current_path}"
+        )
+
+    active_path = payload.get("active_source_path")
+    if (
+        isinstance(active_path, str)
+        and active_path.strip()
+        and not _same_path(repo_root, Path(active_path))
+    ):
+        raise SourceActivationFreshnessError(
+            f"repo root {repo_root} is not the active source path {active_path}"
+        )
+
+    active_head = str(payload.get("active_source_head") or "").strip()
+    if not active_head:
+        raise SourceActivationFreshnessError(
+            f"source activation receipt {current_path} lacks active_source_head"
+        )
+
+    repo_head = _git_rev_parse(repo_root, "HEAD")
+    if not _same_sha(repo_head, active_head):
+        raise SourceActivationFreshnessError(
+            f"activation HEAD {repo_head or '<missing>'} does not match active_source_head "
+            f"{active_head}"
+        )
+
+    origin_main = _git_rev_parse(repo_root, "origin/main")
+    if not origin_main:
+        raise SourceActivationFreshnessError(
+            f"source activation worktree {repo_root} cannot resolve origin/main"
+        )
+    if not _same_sha(origin_main, active_head):
+        raise SourceActivationFreshnessError(
+            f"active_source_head {active_head} lags origin/main {origin_main}; "
+            "run source activation/post-merge deploy before auto-closing cc-tasks"
+        )
+
+    receipt_origin_main = str(payload.get("origin_main_sha") or "").strip()
+    if receipt_origin_main and not _same_sha(receipt_origin_main, origin_main):
+        raise SourceActivationFreshnessError(
+            f"source activation receipt origin_main_sha {receipt_origin_main} does not "
+            f"match local origin/main {origin_main}"
+        )
 
 
 @dataclass
@@ -537,6 +679,7 @@ def run_watcher(
         }
 
     repo_root = repo_root or default_repo_root()
+    assert_source_activation_fresh(repo_root)
     cursor = read_cursor(cursor_path)
     LOG.info("scanning merged PRs since %s", cursor.isoformat())
 
@@ -832,6 +975,7 @@ def reconcile_stale_pr_states(
     """
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
+    assert_source_activation_fresh(repo_root)
     active = vault_root / "active"
     counts = {"scanned": 0, "stale": 0, "closed": 0, "repaired": 0}
     if not active.is_dir():
@@ -1068,26 +1212,33 @@ def main(argv: list[str] | None = None) -> int:
         stream=sys.stderr,
     )
 
-    counters = run_watcher(
-        cursor_path=args.cursor_path,
-        vault_root=args.vault_root,
-        repo_root=args.repo_root,
-        dry_run=args.dry_run,
-    )
-    LOG.info("watcher cycle done: %s", counters)
+    try:
+        counters = run_watcher(
+            cursor_path=args.cursor_path,
+            vault_root=args.vault_root,
+            repo_root=args.repo_root,
+            dry_run=args.dry_run,
+        )
+        LOG.info("watcher cycle done: %s", counters)
 
-    # Event-driven complement to the RTE 270s poll: a close may have flipped a
-    # reform dep to MERGED, so nudge the manifest-drain dispatcher to pick up the
-    # next ready unit without waiting for the next poll. Fail-open.
-    if not args.dry_run and counters.get("closed", 0) > 0:
-        if trigger_reform_dispatch(repo_root=args.repo_root):
-            LOG.info("nudged reform auto-advance dispatcher after %d close(s)", counters["closed"])
+        # Event-driven complement to the RTE 270s poll: a close may have flipped a
+        # reform dep to MERGED, so nudge the manifest-drain dispatcher to pick up the
+        # next ready unit without waiting for the next poll. Fail-open.
+        if not args.dry_run and counters.get("closed", 0) > 0:
+            if trigger_reform_dispatch(repo_root=args.repo_root):
+                LOG.info(
+                    "nudged reform auto-advance dispatcher after %d close(s)",
+                    counters["closed"],
+                )
 
-    stale_counters = reconcile_stale_pr_states(
-        vault_root=args.vault_root,
-        repo_root=args.repo_root,
-        dry_run=args.dry_run,
-    )
+        stale_counters = reconcile_stale_pr_states(
+            vault_root=args.vault_root,
+            repo_root=args.repo_root,
+            dry_run=args.dry_run,
+        )
+    except SourceActivationFreshnessError as exc:
+        LOG.error("source-activation freshness guard blocked merge watcher: %s", exc)
+        return 2
     if stale_counters["stale"]:
         LOG.info("stale PR drain: %s", stale_counters)
 

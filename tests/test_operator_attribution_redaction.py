@@ -220,7 +220,15 @@ def test_same_sentence_guard_spans_abbreviation_periods(tmp_path: Path) -> None:
     assert not file_enforced_class_clean(tmp_path, rel)
 
 
-@pytest.mark.parametrize("continuation", ['"ADHD" per the note.', "-ADHD support."])
+@pytest.mark.parametrize(
+    "continuation",
+    [
+        '"ADHD" per the note.',
+        "-ADHD support.",
+        '  "ADHD" per the note.',
+        "  -ADHD support.",
+    ],
+)
 def test_same_sentence_guard_spans_wrapped_quote_or_hyphen_continuation(
     tmp_path: Path, continuation: str
 ) -> None:
@@ -233,6 +241,13 @@ def test_same_sentence_guard_spans_wrapped_quote_or_hyphen_continuation(
     )
 
     assert not file_enforced_class_clean(tmp_path, rel)
+
+
+def test_same_sentence_guard_does_not_bridge_source_string_literal_lines() -> None:
+    text = '"ADHD research",\n    "operator background",\n'
+
+    for pattern in SENTENCE_PATTERNS:
+        assert not pattern.search(text), pattern.pattern
 
 
 def test_same_sentence_guard_does_not_bridge_structural_lines(tmp_path: Path) -> None:

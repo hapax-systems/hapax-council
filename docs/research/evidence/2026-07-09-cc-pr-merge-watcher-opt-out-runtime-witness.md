@@ -5,11 +5,14 @@ Date: 2026-07-09
 Scope: PR #4472 / `cc-task-sdlc-wave3d-20260709`
 
 Purpose: provide a durable live-runtime-composition witness for the merge-watcher
-`close_on_pr_merge: false` path. The production reconciliation function was invoked
-against an isolated temporary vault fixture containing the reviewed task frontmatter
-shape. The GitHub runner was stubbed to report PR #4472 as `MERGED`; the run used
-`dry_run=True` and a temporary repo root, so it could not mutate the real vault or execute the real
-`scripts/cc-close`.
+`close_on_pr_merge: false` path and the source-activation freshness guard. The
+production reconciliation function was invoked against an isolated temporary
+vault fixture containing the reviewed task frontmatter shape. The GitHub runner
+was stubbed to report PR #4472 as `MERGED`; the run used `dry_run=True` and a
+temporary repo root, so it could not mutate the real vault or execute the real
+`scripts/cc-close`. PR-head code now also fails closed before any merge-watcher
+task mutation when the deployed source-activation worktree is stale relative to
+the activation receipt and local `origin/main`.
 
 Recheck command:
 
@@ -119,6 +122,33 @@ cc_close_invocations 0
 note_still_active_contains_pr_open True
 ```
 
+Source-freshness guard evidence:
+
+```bash
+uv run pytest tests/test_cc_pr_merge_watcher.py::TestSourceActivationFreshness -q
+```
+
+Observed output:
+
+```text
+..                                                                       [100%]
+2 passed in 3.98s
+```
+
+Guard contract at PR head:
+
+- Applies only when `--repo-root` resolves to the source-activation worktree
+  named by `HAPAX_SOURCE_ACTIVATE_WORKTREE`, the default activation path, or
+  `current.json`'s `active_source_path`.
+- Requires `current.json` to name `active_source_head`.
+- Requires git `HEAD` in the activation worktree to match `active_source_head`.
+- Requires git `origin/main` in the activation worktree to match
+  `active_source_head`; if local main advances after activation, the watcher
+  exits nonzero before merged-PR cursor processing or stale-state reconciliation
+  can invoke `cc-close`.
+- Requires `current.json`'s `origin_main_sha`, when present, to match the local
+  `origin/main` ref.
+
 Live timer composition observation:
 
 ```text
@@ -164,15 +194,20 @@ Interpretation:
 - No `cc-close` command was invoked.
 - The fixture note remained `status: pr_open`.
 - The live timer's configured execution path is the source-activation worktree.
-- The live timer is now masked and inactive, and the service is inactive, so
-  the old deployed watcher cannot process PR #4472 during the merge-to-deploy
-  window.
+- The live timer is now masked and inactive, and the service is inactive. This
+  prevents the old deployed watcher from processing PR #4472 during the
+  merge-to-deploy window.
+- After this PR head is deployed, the code-level source freshness guard remains
+  in force even when the timer is restored: a stale activation checkout cannot
+  close task notes because the watcher exits before mutation.
 
 Post-merge obligation: after #4472 merges, run `systemctl --user start
 hapax-post-merge-deploy.service`, verify the source-activation worktree contains
-the merged head and `grep -c close_on_pr_merge
+the merged head, `grep -c close_on_pr_merge
 ~/.cache/hapax/source-activation/worktree/scripts/cc-pr-merge-watcher.py` returns
-nonzero, then restore
+nonzero, and `grep -c assert_source_activation_fresh
+~/.cache/hapax/source-activation/worktree/scripts/cc-pr-merge-watcher.py` returns
+nonzero. Then restore
 `~/.config/systemd/user/hapax-cc-pr-merge-watcher.timer.unmasked-20260709T1622Z`
 to `~/.config/systemd/user/hapax-cc-pr-merge-watcher.timer`, reload systemd,
 and re-enable/start `hapax-cc-pr-merge-watcher.timer`.

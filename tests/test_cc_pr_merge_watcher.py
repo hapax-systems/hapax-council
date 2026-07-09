@@ -18,6 +18,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import pytest
+
 # Ensure scripts/ is importable in tests.
 _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 if str(_SCRIPTS) not in sys.path:
@@ -86,6 +88,46 @@ status: pr_open
 """
     )
     return note
+
+
+def _git(repo: Path, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return proc.stdout.strip()
+
+
+def _init_activation_repo(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "source-activation" / "worktree"
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "cc-pr-merge-watcher@example.invalid")
+    _git(repo, "config", "user.name", "cc pr merge watcher tests")
+    (repo / "README.md").write_text("release one\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "release one")
+    sha = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "update-ref", "refs/remotes/origin/main", sha)
+    return repo, sha
+
+
+def _write_activation_current(current_path: Path, repo: Path, active_head: str) -> None:
+    current_path.parent.mkdir(parents=True, exist_ok=True)
+    current_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "active_source_head": active_head,
+                "active_source_path": str(repo),
+                "origin_main_sha": active_head,
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 class _FakeRunner:
@@ -243,6 +285,60 @@ class TestDefaultRepoRoot:
         monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", str(active))
 
         assert watcher.default_repo_root() == active
+
+
+class TestSourceActivationFreshness:
+    def test_source_activation_current_head_matches_origin_main(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        repo, active_head = _init_activation_repo(tmp_path)
+        current = tmp_path / "source-activation" / "current.json"
+        _write_activation_current(current, repo, active_head)
+        monkeypatch.setenv("HAPAX_SOURCE_ACTIVATION_CURRENT", str(current))
+        monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", str(repo))
+
+        watcher.assert_source_activation_fresh(repo)
+
+    def test_source_activation_stale_origin_main_blocks_before_close(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        repo, active_head = _init_activation_repo(tmp_path)
+        (repo / "README.md").write_text("release two\n", encoding="utf-8")
+        _git(repo, "add", "README.md")
+        _git(repo, "commit", "-m", "release two")
+        origin_main = _git(repo, "rev-parse", "HEAD")
+        _git(repo, "update-ref", "refs/remotes/origin/main", origin_main)
+        _git(repo, "checkout", "--detach", active_head)
+        current = tmp_path / "source-activation" / "current.json"
+        _write_activation_current(current, repo, active_head)
+        monkeypatch.setenv("HAPAX_SOURCE_ACTIVATION_CURRENT", str(current))
+        monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", str(repo))
+
+        vault = _make_vault(tmp_path)
+        _write_note(vault, task_id="task-A", pr=100)
+        cursor = tmp_path / "cursor.txt"
+        cursor_start = datetime(2026, 4, 26, 0, tzinfo=UTC)
+        watcher.write_cursor(cursor, cursor_start)
+        cc_close = repo / "scripts" / "cc-close"
+        cc_close.parent.mkdir(parents=True, exist_ok=True)
+        cc_close.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        cc_close.chmod(0o755)
+        runner = _FakeRunner()
+        runner.gh_payload = [
+            {"number": 100, "mergedAt": "2026-04-26T12:00:00Z", "headRefName": "feat/a"},
+        ]
+
+        with pytest.raises(watcher.SourceActivationFreshnessError, match="lags origin/main"):
+            watcher.run_watcher(
+                cursor_path=cursor,
+                vault_root=vault,
+                repo_root=repo,
+                runner=runner,
+            )
+
+        assert not runner.calls
+        assert not runner.cc_close_invocations
+        assert watcher.read_cursor(cursor) == cursor_start
 
 
 # ---------------------------------------------------------------------------

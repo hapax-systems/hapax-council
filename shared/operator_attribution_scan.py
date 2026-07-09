@@ -33,10 +33,14 @@ _DIRECT_DIAGNOSIS = (
 #: A newline that continues one wrapped prose sentence, rather than starting a new
 #: structural element. Blocked by: a blank line, a markdown table row/heading/quote,
 #: fence, a real list bullet (`- `, `* `, `+ `, numbered item), or an indented source
-#: string literal; a sentence never bridges table cells, adjacent list items, or code
-#: string-list elements. Unindented line-leading quote marks, brackets, and hyphenated
-#: word continuations remain ordinary prose continuation points.
-_SOFT_WRAP = r"\n(?![ \t]*(?:\n|[|#>`]|[-*+]\s|\d+[.)]\s)|[ \t]{2,}[\"'])"
+#: string literal line; a sentence never bridges table cells, adjacent list items, or
+#: code string-list elements. Indented quoted prose remains ordinary prose unless the
+#: whole continuation line has source-string shape: quote-delimited content followed
+#: only by whitespace, an optional comma, and an optional source comment.
+_SOURCE_STRING_LITERAL_LINE = (
+    r"[ \t]{2,}(?:[rRuUbBfF]{0,3})?[\"'][^\n]*[\"']\s*,?\s*(?:#.*)?(?=\n|$)"
+)
+_SOFT_WRAP = rf"\n(?![ \t]*(?:\n|[|#>`]|[-*+]\s|\d+[.)]\s)|{_SOURCE_STRING_LITERAL_LINE})"
 #: A same-sentence run: ANY distance (no short window), terminated by sentence-final
 #: punctuation or by anything `_SOFT_WRAP` refuses to cross. Common abbreviation and
 #: decimal periods do not terminate the sentence; otherwise an attribution containing
