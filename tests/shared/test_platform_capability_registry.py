@@ -774,12 +774,17 @@ def _write_claude_live_quota_ledger(path: Path) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def _write_stale_claude_live_quota_ledger(path: Path) -> None:
+def _write_stale_claude_live_quota_ledger(
+    path: Path,
+    *,
+    evidence_ref: str = CLAUDE_ADMISSION_EVIDENCE_REF,
+) -> None:
     _write_claude_live_quota_ledger(path)
     payload = json.loads(path.read_text(encoding="utf-8"))
     for snapshot in payload["quota_snapshots"]:
         if snapshot.get("route_id") == "claude.headless.full":
             snapshot["fresh_until"] = "2026-07-08T14:01:00Z"
+            snapshot["evidence_refs"] = [evidence_ref]
             break
     path.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -1284,6 +1289,28 @@ def test_claude_stale_live_admission_does_not_inject_account_live_quota_evidence
         CLAUDE_ADMISSION_EVIDENCE_REF
         not in route["freshness"]["evidence"]["quota"]["evidence_refs"]
     )
+
+
+def test_claude_stale_live_admission_strips_tokenized_account_live_quota_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    live_ledger = tmp_path / "quota-spend-ledger-live.json"
+    stale_ref = "probe:account_live_quota_observed"
+    _write_stale_claude_live_quota_ledger(live_ledger, evidence_ref=stale_ref)
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
+    route = _route_payload(_payload(), "claude.headless.full")
+
+    _apply_receipt_to_route_payload(
+        route,
+        _make_receipt(observed_at=datetime(2026, 7, 8, 14, 2, tzinfo=UTC)),
+        now=CLAUDE_NOW,
+    )
+
+    refs = route["freshness"]["evidence"]["quota"]["evidence_refs"]
+    assert route["route_state"] == "blocked"
+    assert route["blocked_reasons"] == ["account_live_quota_receipt_absent"]
+    assert stale_ref not in refs
 
 
 def test_claude_has_no_route_specific_quota_admission_without_live_ledger(

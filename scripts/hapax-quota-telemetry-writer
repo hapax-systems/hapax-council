@@ -546,6 +546,10 @@ def _parse_utc(value: str) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
+def _iso_z_seconds(value: datetime) -> str:
+    return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
 def _reason_code(reason: str) -> str:
     code = re.sub(r"[^a-z0-9]+", "-", reason.lower()).strip("-")
     return code[:80] or "ignored"
@@ -1017,8 +1021,8 @@ def active_claude_admission_receipts(
                     "relay-receipt:"
                     f"{_receipt_label(path)}:witness:{receipt_evidence_ref}:"
                     f"observation:{observation}:"
-                    f"observed_at:{observed_at.isoformat().replace('+00:00', 'Z')}:"
-                    f"fresh_until:{fresh_until.isoformat().replace('+00:00', 'Z')}:"
+                    f"observed_at:{_iso_z_seconds(observed_at)}:"
+                    f"fresh_until:{_iso_z_seconds(fresh_until)}:"
                     f"{CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX}"
                 ),
                 fresh_until=fresh_until,
@@ -1730,7 +1734,7 @@ def build_live_ledger(
             "operator_visible_reason": reason,
         }
         if fresh_until is not None:
-            snapshot["fresh_until"] = fresh_until.isoformat().replace("+00:00", "Z")
+            snapshot["fresh_until"] = _iso_z_seconds(fresh_until)
         snapshots.append(snapshot)
 
     snapshots.append(

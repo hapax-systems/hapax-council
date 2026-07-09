@@ -93,6 +93,19 @@ ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS = {
 _DURATION_RE = re.compile(r"^(?P<count>[1-9][0-9]*)(?P<unit>s|m|h|d)$")
 
 
+def _ref_tokens(ref: str) -> tuple[str, ...]:
+    normalized = re.sub(r"[\s_:]+", "-", ref.strip().lower())
+    if not normalized:
+        return ()
+    return tuple(token for token in normalized.split("-") if token)
+
+
+def _ref_has_token_suffix(ref: str, suffix: str) -> bool:
+    ref_tokens = _ref_tokens(ref)
+    suffix_tokens = _ref_tokens(suffix)
+    return bool(suffix_tokens) and ref_tokens[-len(suffix_tokens) :] == suffix_tokens
+
+
 class PlatformCapabilityRegistryError(ValueError):
     """Raised when the platform capability registry fails closed."""
 
@@ -1551,7 +1564,7 @@ def _apply_receipt_to_route_payload(
         quota_admission_refs_to_inject = tuple(
             ref
             for ref in quota_admission_refs
-            if not ref.endswith(CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX)
+            if not _ref_has_token_suffix(ref, CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX)
         )
     if quota_admission_refs_to_inject:
         freshness["evidence"]["quota"]["evidence_refs"] = list(

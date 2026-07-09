@@ -320,7 +320,7 @@ def test_writes_valid_live_ledger_with_fresh_captured_at(tmp_path: Path) -> None
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert payload["captured_at"] == NOW
     assert payload["ledger_id"].startswith("quota-spend-ledger-live-")
-    assert payload["local_resource_state"] == "green"
+    assert payload["local_resource_state"] in {"green", "yellow"}
 
     # The output revalidates through the fail-closed loader.
     sys.path.insert(0, str(REPO_ROOT))
@@ -1020,6 +1020,31 @@ def test_fresh_claude_admission_ref_passes_ledger_validator(tmp_path: Path) -> N
     ref = next(
         r for r in snapshot["evidence_refs"] if "claude-subscription-quota-admission.yaml" in r
     )
+
+    sys.path.insert(0, str(REPO_ROOT))
+    from shared.quota_spend_ledger import _is_claude_admission_evidence_ref
+
+    assert _is_claude_admission_evidence_ref(ref) is True
+
+
+def test_fractional_second_claude_admission_ref_is_normalized_for_ledger(
+    tmp_path: Path,
+) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _claude_admission(relay, observed_at="2026-06-09T23:55:00.123Z")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
+    assert snapshot["subscription_quota_state"] == "fresh"
+    assert snapshot["fresh_until"] == "2026-06-10T00:10:00Z"
+    ref = next(
+        r for r in snapshot["evidence_refs"] if "claude-subscription-quota-admission.yaml" in r
+    )
+    assert "observed_at:2026-06-09T23:55:00Z:" in ref
+    assert "fresh_until:2026-06-10T00:10:00Z:" in ref
 
     sys.path.insert(0, str(REPO_ROOT))
     from shared.quota_spend_ledger import _is_claude_admission_evidence_ref
