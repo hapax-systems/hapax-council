@@ -77,6 +77,10 @@ DEFAULT_SOURCE_ACTIVATION_WORKTREE = (
 DEFAULT_SOURCE_ACTIVATION_CURRENT = (
     Path.home() / ".cache" / "hapax" / "source-activation" / "current.json"
 )
+DEFAULT_SOURCE_FRESHNESS_ALERT_PATH = (
+    Path.home() / ".cache" / "hapax" / "cc-pr-merge-watcher-source-freshness-alert.json"
+)
+SOURCE_FRESHNESS_ALERT_INTERVAL = timedelta(minutes=15)
 
 # Reform ENGINE auto-advance (CASE-SDLC-REFORM-001): after a close, nudge the
 # RTE manifest-drain dispatcher so a freshly-unblocked unit gets picked up
@@ -237,6 +241,67 @@ def assert_source_activation_fresh(repo_root: Path) -> None:
             f"source activation receipt origin_main_sha {receipt_origin_main} does not "
             f"match local origin/main {origin_main}"
         )
+
+
+def alert_source_activation_freshness_blocked(
+    error: SourceActivationFreshnessError,
+    *,
+    repo_root: Path,
+    alert_path: Path = DEFAULT_SOURCE_FRESHNESS_ALERT_PATH,
+    now: datetime | None = None,
+) -> bool:
+    """Send a rate-limited operator alert when the source guard blocks a watcher tick."""
+
+    checked_now = now or datetime.now(UTC)
+    reason = str(error)
+    try:
+        payload = json.loads(alert_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+    if isinstance(payload, dict) and payload.get("reason") == reason:
+        try:
+            alerted_at = datetime.fromisoformat(
+                str(payload.get("alerted_at")).replace("Z", "+00:00")
+            )
+        except ValueError:
+            alerted_at = None
+        if alerted_at and checked_now - alerted_at <= SOURCE_FRESHNESS_ALERT_INTERVAL:
+            return False
+
+    message = (
+        "cc-pr-merge-watcher refused to close tasks because its source-activation "
+        f"checkout is stale: {reason}\n"
+        "Next action: run `systemctl --user start hapax-post-merge-deploy.service`, "
+        "verify `~/.cache/hapax/source-activation/current.json` names the merged "
+        "origin/main head, and only then restore/start hapax-cc-pr-merge-watcher.timer "
+        "if it is masked."
+    )
+    try:
+        from shared.notify import send_notification
+
+        send_notification(
+            title="cc-pr-merge-watcher source stale",
+            message=message,
+            priority="high",
+            tags=["rotating_light"],
+        )
+    except Exception as exc:  # noqa: BLE001 - alert failure must not hide the guard.
+        LOG.warning("source-freshness alert failed: %s", exc)
+        return False
+    alert_path.parent.mkdir(parents=True, exist_ok=True)
+    alert_path.write_text(
+        json.dumps(
+            {
+                "alerted_at": checked_now.isoformat().replace("+00:00", "Z"),
+                "reason": reason,
+                "repo_root": str(repo_root),
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return True
 
 
 @dataclass
@@ -1238,6 +1303,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     except SourceActivationFreshnessError as exc:
         LOG.error("source-activation freshness guard blocked merge watcher: %s", exc)
+        alert_source_activation_freshness_blocked(exc, repo_root=args.repo_root)
         return 2
     if stale_counters["stale"]:
         LOG.info("stale PR drain: %s", stale_counters)

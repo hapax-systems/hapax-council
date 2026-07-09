@@ -340,6 +340,41 @@ class TestSourceActivationFreshness:
         assert not runner.cc_close_invocations
         assert watcher.read_cursor(cursor) == cursor_start
 
+    def test_source_activation_freshness_block_alert_is_rate_limited(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        sent: list[dict[str, Any]] = []
+
+        def fake_send_notification(**kwargs: Any) -> None:
+            sent.append(kwargs)
+
+        monkeypatch.setattr("shared.notify.send_notification", fake_send_notification)
+        error = watcher.SourceActivationFreshnessError(
+            "active_source_head abc lags origin/main def"
+        )
+        alert_path = tmp_path / "alert.json"
+        now = datetime(2026, 7, 9, 17, 30, tzinfo=UTC)
+
+        first = watcher.alert_source_activation_freshness_blocked(
+            error,
+            repo_root=tmp_path,
+            alert_path=alert_path,
+            now=now,
+        )
+        second = watcher.alert_source_activation_freshness_blocked(
+            error,
+            repo_root=tmp_path,
+            alert_path=alert_path,
+            now=now + timedelta(minutes=1),
+        )
+
+        assert first is True
+        assert second is False
+        assert len(sent) == 1
+        assert sent[0]["title"] == "cc-pr-merge-watcher source stale"
+        assert "hapax-post-merge-deploy.service" in sent[0]["message"]
+        assert "hapax-cc-pr-merge-watcher.timer" in sent[0]["message"]
+
 
 # ---------------------------------------------------------------------------
 # fetch_merged_prs

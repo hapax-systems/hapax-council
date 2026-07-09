@@ -226,6 +226,7 @@ def test_same_sentence_guard_spans_abbreviation_periods(tmp_path: Path) -> None:
         '"ADHD" per the note.',
         "-ADHD support.",
         '  "ADHD" per the note.',
+        '  "ADHD",',
         "  -ADHD support.",
     ],
 )
@@ -243,9 +244,33 @@ def test_same_sentence_guard_spans_wrapped_quote_or_hyphen_continuation(
     assert not file_enforced_class_clean(tmp_path, rel)
 
 
-def test_same_sentence_guard_does_not_bridge_source_string_literal_lines() -> None:
-    text = '"ADHD research",\n    "operator background",\n'
+@pytest.mark.parametrize(
+    "text",
+    [
+        '"ADHD research",\n    "operator background",\n',
+        '"operator background",\n    "ADHD research",\n',
+    ],
+)
+def test_same_sentence_guard_does_not_bridge_source_string_literal_lines(text: str) -> None:
+    for pattern in SENTENCE_PATTERNS:
+        assert not pattern.search(text), pattern.pattern
 
+
+def test_same_sentence_guard_spans_filename_extension_periods(tmp_path: Path) -> None:
+    rel = "docs/research/x.md"
+    doc = tmp_path / rel
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    text = (
+        "The operator's constraints are encoded in shared/operator.py as " + "AD" + "HD context.\n"
+    )
+    doc.write_text(text, encoding="utf-8")
+
+    assert any(pattern.search(text) for pattern in SENTENCE_PATTERNS)
+    assert not file_enforced_class_clean(tmp_path, rel)
+
+
+def test_same_sentence_guard_keeps_member_access_period_boundary() -> None:
+    text = "The operator object calls operator.profile then ADHD appears elsewhere."
     for pattern in SENTENCE_PATTERNS:
         assert not pattern.search(text), pattern.pattern
 

@@ -119,6 +119,11 @@ class PlatformCapabilityReceipt(StrictReceiptModel):
     @model_validator(mode="after")
     def _duration_is_valid(self) -> Self:
         parse_duration_spec(self.stale_after)
+        unknown_route_wrappers = sorted(set(self.route_wrappers) - set(self.routes))
+        if unknown_route_wrappers:
+            raise ValueError(
+                f"route_wrappers keys must be declared routes: {unknown_route_wrappers}"
+            )
         return self
 
 

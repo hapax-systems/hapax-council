@@ -33,21 +33,30 @@ _DIRECT_DIAGNOSIS = (
 #: A newline that continues one wrapped prose sentence, rather than starting a new
 #: structural element. Blocked by: a blank line, a markdown table row/heading/quote,
 #: fence, a real list bullet (`- `, `* `, `+ `, numbered item), or an indented source
-#: string literal line; a sentence never bridges table cells, adjacent list items, or
-#: code string-list elements. Indented quoted prose remains ordinary prose unless the
-#: whole continuation line has source-string shape: quote-delimited content followed
-#: only by whitespace, an optional comma, and an optional source comment.
+#: string literal line that follows another source-like string line; a sentence never
+#: bridges table cells, adjacent list items, or code string-list elements. Indented
+#: quoted prose remains ordinary prose even when the wrapped continuation is a bare
+#: quoted token, while adjacent string-list elements whose prior line ends in a quote
+#: or comma remain structural boundaries.
+_STRUCTURAL_AFTER_NEWLINE = r"[ \t]*(?:\n|[|#>`]|[-*+]\s|\d+[.)]\s)"
 _SOURCE_STRING_LITERAL_LINE = (
     r"[ \t]{2,}(?:[rRuUbBfF]{0,3})?[\"'][^\n]*[\"']\s*,?\s*(?:#.*)?(?=\n|$)"
 )
-_SOFT_WRAP = rf"\n(?![ \t]*(?:\n|[|#>`]|[-*+]\s|\d+[.)]\s)|{_SOURCE_STRING_LITERAL_LINE})"
+_SOFT_WRAP = (
+    rf"(?:(?<![,\"'])\n(?!{_STRUCTURAL_AFTER_NEWLINE})|"
+    rf"(?<=[,\"'])\n(?!{_STRUCTURAL_AFTER_NEWLINE}|{_SOURCE_STRING_LITERAL_LINE}))"
+)
 #: A same-sentence run: ANY distance (no short window), terminated by sentence-final
 #: punctuation or by anything `_SOFT_WRAP` refuses to cross. Common abbreviation and
 #: decimal periods do not terminate the sentence; otherwise an attribution containing
 #: "e.g." or "i.e." demotes from tier 1 (never allowlisted) to tier 2 (pinnable).
 #: Code/member-access periods still stop scans so snippets do not bridge unrelated lines.
+_TEXT_FILE_EXT = (
+    r"(?:pyi?|md|markdown|ya?ml|jsonl?|toml|tsx?|jsx?|sh|bash|rs|html?|css|txt|conf|ini|cfg"
+    r"|lock|ttl|trig)\b"
+)
 _SENTENCE_END = (
-    r"(?:(?<!e)(?<!i)(?<!U)(?<!\d)\.(?=[A-Za-z_])|"
+    rf"(?:(?<!e)(?<!i)(?<!U)(?<!\d)\.(?!{_TEXT_FILE_EXT})(?=[A-Za-z_])|"
     r"(?<!e\.g)(?<!i\.e)(?<!Dr)(?<!Mr)(?<!Ms)(?<!Mrs)(?<!vs)(?<!cf)(?<!U\.S)"
     r"(?<!\d)[.!?](?=\s|$))"
 )

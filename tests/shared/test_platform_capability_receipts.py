@@ -14,6 +14,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from shared.dispatcher_policy import (
     DispatchAction,
     RouteAuthorityReceipt,
@@ -41,9 +43,8 @@ API_NOW_DT = datetime.fromisoformat(API_NOW.replace("Z", "+00:00"))
 SECRET = "sk-live-secret-value"
 
 
-def test_load_receipt_accepts_route_specific_wrapper_evidence(tmp_path: Path) -> None:
-    path = tmp_path / "agy.json"
-    payload = {
+def _route_wrapper_receipt_payload() -> dict:
+    return {
         "receipt_schema": 1,
         "receipt_id": "agy-test",
         "platform": "agy",
@@ -105,11 +106,31 @@ def test_load_receipt_accepts_route_specific_wrapper_evidence(tmp_path: Path) ->
         },
         "known_unknowns": [],
     }
+
+
+def test_load_receipt_accepts_route_specific_wrapper_evidence(tmp_path: Path) -> None:
+    path = tmp_path / "agy.json"
+    payload = _route_wrapper_receipt_payload()
     path.write_text(json.dumps(payload), encoding="utf-8")
 
     receipt = load_platform_capability_receipt(path)
 
     assert receipt.route_wrappers["agy.review.direct"].sha256 == "route123"
+
+
+def test_load_receipt_rejects_route_wrapper_for_undeclared_route(tmp_path: Path) -> None:
+    path = tmp_path / "agy.json"
+    payload = _route_wrapper_receipt_payload()
+    payload["route_wrappers"]["agy.review.other"] = {
+        "path": "~/projects/hapax-council/scripts/hapax-agy-reviewer-other",
+        "exists": True,
+        "executable": True,
+        "sha256": "other123",
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="route_wrappers keys must be declared routes"):
+        load_platform_capability_receipt(path)
 
 
 def _run_receipts(

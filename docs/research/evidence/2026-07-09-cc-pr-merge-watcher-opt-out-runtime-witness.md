@@ -148,6 +148,11 @@ Guard contract at PR head:
   can invoke `cc-close`.
 - Requires `current.json`'s `origin_main_sha`, when present, to match the local
   `origin/main` ref.
+- When the guard blocks a watcher tick, the CLI emits a high-priority,
+  rate-limited notification titled `cc-pr-merge-watcher source stale` with the
+  next action: run `hapax-post-merge-deploy.service`, verify source activation
+  now names merged `origin/main`, and restore/start the timer only after that
+  verification.
 
 Live timer composition observation:
 
