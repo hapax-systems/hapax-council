@@ -80,6 +80,9 @@ def test_claude_reviewer_pins_opus_and_disables_tools(tmp_path: Path) -> None:
     disallowed = argv[argv.index("--disallowedTools") + 1]
     assert "Bash" in disallowed
     assert "Read" in disallowed
+    assert "LS" not in disallowed
+    assert "MultiEdit" not in disallowed
+    assert "NotebookRead" not in disallowed
     assert argv[argv.index("--permission-mode") + 1] == "manual"
     assert "--safe-mode" in argv
     assert "--disable-slash-commands" in argv
