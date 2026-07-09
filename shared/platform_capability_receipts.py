@@ -182,13 +182,15 @@ def load_platform_capability_receipts(
 ) -> dict[str, PlatformCapabilityReceipt]:
     """Load the newest fresh receipt per platform from a directory.
 
-    Per-file isolation: a single malformed receipt is quarantined (logged and
-    skipped), never allowed to abort the whole load. Before this guard, one bad
-    file raised ``PlatformCapabilityReceiptError`` out of the loop, collapsing the
-    entire capability registry to ``None`` -> every route HOLDs
-    ``capability_registry_unavailable`` -> the whole fleet goes un-dispatchable
-    (the fleet-blind class). Mirrors the per-record fail-closed isolation in
-    ``worktree_registry._read_record``.
+    Per-file isolation: a malformed platform-capability receipt is quarantined
+    (logged and skipped), never allowed to abort this receipt load. Before this
+    guard, one bad top-level platform receipt raised
+    ``PlatformCapabilityReceiptError`` out of the loop and could make
+    ``load_platform_capability_registry`` fail closed with
+    ``capability_registry_unavailable`` for every route. This is file-level
+    quarantine for this receipt store: the bad receipt is absent from the overlay,
+    so the inert registry state remains conservative. Sibling receipt stores, such
+    as route-authority receipts, require their own isolation.
     """
 
     if not receipt_dir.exists():
@@ -198,7 +200,14 @@ def load_platform_capability_receipts(
         try:
             receipt = load_platform_capability_receipt(path)
         except PlatformCapabilityReceiptError as exc:
-            LOG.warning("quarantining malformed platform-capability receipt %s: %s", path, exc)
+            LOG.warning(
+                "quarantining malformed platform-capability receipt %s: %s; "
+                "next action: remove or regenerate this receipt with "
+                "scripts/hapax-platform-capability-receipts, then rerun "
+                "scripts/hapax-platform-capability-freshness",
+                path,
+                exc,
+            )
             continue
         if not receipt_is_fresh(receipt, now=now):
             continue

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import runpy
 import stat
@@ -1938,14 +1939,16 @@ def test_live_read_path_defaults_receipt_dir_to_env_for_opus(tmp_path: Path) -> 
     assert "policy_launch" in decision.reason_codes
 
 
-def test_loader_quarantines_malformed_receipt_and_keeps_valid_ones(tmp_path: Path) -> None:
-    """One malformed receipt must NOT collapse the whole load (the fleet-blind class).
+def test_loader_quarantines_malformed_receipt_and_keeps_valid_ones(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """One malformed platform receipt must not collapse the platform-receipt overlay.
 
     Regression for the S0 fail-hard hole: ``load_platform_capability_receipts`` looped
     the per-file loader with no try/except, so a single bad file raised
     ``PlatformCapabilityReceiptError`` out of the loop and dropped every valid receipt
     -> registry ``None`` -> every route HOLDs. Per-file isolation quarantines the bad
-    file and keeps the good ones.
+    top-level platform receipt files and keeps the good ones.
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -1961,9 +1964,14 @@ def test_loader_quarantines_malformed_receipt_and_keeps_valid_ones(tmp_path: Pat
     (tmp_path / "zzz-broken.json").write_text("{ not valid json", encoding="utf-8")
     (tmp_path / "zzz-schema.json").write_text('{"platform": "codex"}', encoding="utf-8")
 
-    loaded = load_platform_capability_receipts(
-        tmp_path, now=datetime.fromisoformat(now.replace("Z", "+00:00"))
-    )
+    with caplog.at_level(logging.WARNING, logger="shared.platform_capability_receipts"):
+        loaded = load_platform_capability_receipts(
+            tmp_path, now=datetime.fromisoformat(now.replace("Z", "+00:00"))
+        )
 
+    assert len(loaded) == 1
     assert "codex" in loaded
     assert loaded["codex"].platform == "codex"
+    assert "zzz-broken.json" in caplog.text
+    assert "zzz-schema.json" in caplog.text
+    assert "next action: remove or regenerate this receipt" in caplog.text
