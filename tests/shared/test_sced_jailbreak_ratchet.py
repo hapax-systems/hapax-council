@@ -187,6 +187,11 @@ def test_phase1_admits_offline_candidate_with_valid_freeze_target_policy_and_cle
     payload = decision.to_dict()
     assert payload["target_policy_dates"]["policy_reviewed_on"] == "2026-06-30"
     assert "candidate-digest:sha256:" + HASH_A in payload["evidence_refs"]
+    assert payload["held_out_evidence_refs"] == ["held-out-witness:001"]
+    assert payload["similarity_evidence_refs"] == [
+        "similarity-witness:low-000",
+        "similarity-witness:low-001",
+    ]
     assert (
         "url:https://support.claude.com/en/articles/12119250-model-safety-bug-bounty-program"
         in payload["target_policy_refs"]
