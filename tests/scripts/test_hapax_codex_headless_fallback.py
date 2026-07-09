@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import socket
 import subprocess
 import time
 from pathlib import Path
@@ -54,6 +55,11 @@ def _write_claim_epoch(cache: Path, role: str, task_id: str) -> None:
     )
 
 
+def _remote_dispatch_host() -> str:
+    current_host = socket.gethostname().split(".", 1)[0]
+    return "podium" if current_host == "hapax-appendix" else "appendix"
+
+
 def test_codex_headless_takes_explicit_local_fallback_after_appendix_preflight_failure(
     tmp_path: Path,
 ) -> None:
@@ -92,7 +98,8 @@ exit 0
     env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
-    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    remote_host = _remote_dispatch_host()
+    env["HAPAX_DISPATCH_HOST"] = remote_host
     env["HAPAX_DISPATCH_HOST_FALLBACK"] = "local"
     env["HAPAX_DISPATCH_PROOF_DIR"] = str(tmp_path / "proofs")
     env["CODEX_ACCESS_TOKEN"] = "ambient-token-must-not-reach-worker"
@@ -115,7 +122,7 @@ exit 0
     )
     launched_env = env_file.read_text(encoding="utf-8")
     assert "LOGOS_BASE_URL=http://localhost:8051/api" in launched_env
-    assert "HAPAX_DISPATCH_HOST=appendix" in launched_env
+    assert f"HAPAX_DISPATCH_HOST={remote_host}" in launched_env
     assert "CODEX_ACCESS_TOKEN_PRESENT=yes" not in launched_env
     assert "CODEX_HOME_PRESENT=yes" not in launched_env
     assert "CODEX_API_KEY_PRESENT=yes" not in launched_env
@@ -124,8 +131,8 @@ exit 0
     assert len(proofs) == 1
     proof = json.loads(proofs[0].read_text(encoding="utf-8"))
     assert proof["fallback"] is True
-    assert proof["fallback_reason"] == "dispatch_host_unready:appendix"
-    assert proof["requested_host"] == "appendix"
+    assert proof["fallback_reason"] == f"dispatch_host_unready:{remote_host}"
+    assert proof["requested_host"] == remote_host
 
 
 def test_codex_headless_validates_local_fallback_saved_auth_before_claim(tmp_path: Path) -> None:
@@ -185,7 +192,7 @@ exit 0
     env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
-    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_DISPATCH_HOST"] = _remote_dispatch_host()
     env["HAPAX_DISPATCH_HOST_FALLBACK"] = "local"
 
     result = subprocess.run(
@@ -244,7 +251,7 @@ exit 0
     env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
-    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_DISPATCH_HOST"] = _remote_dispatch_host()
     env["HAPAX_DISPATCH_HOST_FALLBACK"] = "local"
 
     result = subprocess.run(
