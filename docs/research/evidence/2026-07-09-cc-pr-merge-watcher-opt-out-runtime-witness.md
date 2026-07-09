@@ -123,13 +123,22 @@ Live timer composition observation:
 
 ```text
 systemctl --user status hapax-cc-pr-merge-watcher.timer hapax-cc-pr-merge-watcher.service --no-pager
-timer: active (waiting), enabled; next trigger was scheduled for 2026-07-09 08:15:29 CDT
-service: inactive (dead), last run completed successfully at 2026-07-09 08:06:24 CDT
+pre-guard observation: timer was active (waiting), enabled; service executed from source activation
 
 systemctl --user cat hapax-cc-pr-merge-watcher.service hapax-cc-pr-merge-watcher.timer --no-pager
 ExecStart=$HOME/.local/bin/uv --directory $HOME/.cache/hapax/source-activation/worktree run python scripts/cc-pr-merge-watcher.py --repo-root $HOME/.cache/hapax/source-activation/worktree
 WorkingDirectory=$HOME/.cache/hapax/source-activation/worktree
 timer: OnBootSec=3min; OnUnitActiveSec=9min; RandomizedDelaySec=45s; AccuracySec=30s
+
+pre-merge deployment-race guard, executed 2026-07-09 09:08 CDT:
+systemctl --user disable --now hapax-cc-pr-merge-watcher.timer
+systemctl --user stop hapax-cc-pr-merge-watcher.service
+systemctl --user is-enabled hapax-cc-pr-merge-watcher.timer
+disabled
+systemctl --user is-active hapax-cc-pr-merge-watcher.timer
+inactive
+systemctl --user is-active hapax-cc-pr-merge-watcher.service
+inactive
 ```
 
 Interpretation:
@@ -138,6 +147,13 @@ Interpretation:
 - The task note's `close_on_pr_merge: false` frontmatter declined the close.
 - No `cc-close` command was invoked.
 - The fixture note remained `status: pr_open`.
-- The live timer is enabled and executes the source-activation worktree.
+- The live timer's configured execution path is the source-activation worktree.
+- The live timer is now disabled and inactive, and the service is inactive, so
+  the old deployed watcher cannot process PR #4472 during the merge-to-deploy
+  window.
 
-Limit: the opt-out probe is isolated and dry-run because PR #4472 is not merged. The live timer observation proves the production composition route and cadence, not that the currently activated source already contains the PR branch. Release sequencing must deploy source activation after merge before relying on the timer for this opt-out.
+Post-merge obligation: after #4472 merges, run `systemctl --user start
+hapax-post-merge-deploy.service`, verify the source-activation worktree contains
+the merged head and `grep -c close_on_pr_merge
+~/.cache/hapax/source-activation/worktree/scripts/cc-pr-merge-watcher.py` returns
+nonzero, then re-enable and start `hapax-cc-pr-merge-watcher.timer`.
