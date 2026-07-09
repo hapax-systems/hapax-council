@@ -13,8 +13,11 @@ Multi-PR lanes opt out per note: a task whose frontmatter carries
 the merged-PR cursor loop nor by the stale-state reconciler — because a lane
 spanning several PRs shares one task note, and auto-closing on the first
 merged PR has killed such lanes mid-flight. The lane owner closes explicitly
-via ``cc-close``. Any other value, or the field's absence, keeps the fail-safe
-default (auto-close on linked-PR merge) unchanged.
+via ``cc-close``. Three-way semantics: an explicit true-ish value (or the
+field's absence) keeps the auto-close default; a false-ish value (false/no/off,
+optionally quoted, optional trailing comment) opts out; any OTHER value on the
+field is an attempted opt-out the watcher cannot read, so it fails closed
+toward NOT closing and warns.
 
 Killswitch: ``HAPAX_CC_HYGIENE_OFF=1`` skips entirely (shared with
 PR1 sweeper + H8 hook).

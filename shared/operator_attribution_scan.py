@@ -35,6 +35,22 @@ PARAGRAPH_PATTERNS = (
 
 REVIEWED_GENERIC_RELPATH = Path("tests/operator_attribution_reviewed_generic.txt")
 
+#: NON-residual PII classes — generic, content-level detectors for datum classes the
+#: ratification ledger may NEVER waive (the residual class is diagnosis/neurotype
+#: LINKAGE only). Used by the review plane's waiver-safety check: a ratified file
+#: containing any of these is not waiver-safe, so a finding alleging such a leak stays
+#: blocking. Estate-specific literals (names, places) remain pii-guard's write-time
+#: job — they cannot appear as patterns in public source without themselves leaking.
+NON_RESIDUAL_PII_PATTERNS = (
+    re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),  # email
+    re.compile(r"(?:\+?\d{1,2}[\s.-])?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}\b"),  # phone
+    re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),  # SSN-shaped
+    re.compile(
+        r"\b\d{1,5}\s+[A-Z][a-z]+\s+(?:St|Street|Ave|Avenue|Blvd|Road|Rd|Drive|Dr|Lane|Ln|Court|Ct|Way)\b"
+    ),  # street address
+    re.compile(r"\bDOB\b|\bdate\s+of\s+birth\b|\bborn\s+(?:on\s+)?\d", re.IGNORECASE),
+)
+
 
 def span_digest(span: str) -> str:
     normalized = " ".join(span.split()).lower()
@@ -73,3 +89,19 @@ def file_enforced_class_clean(repo_root: Path, rel_path: str) -> bool:
             if (rel_path, span_digest(match.group(0))) not in pins:
                 return False
     return True
+
+
+def file_waiver_safe(repo_root: Path, rel_path: str) -> bool:
+    """True iff a data-owner waiver may apply to findings citing ``rel_path``: the file
+    is clean under the enforced attribution class AND contains no detectable
+    non-residual PII datum. This decides the waiver on FILE CONTENT, not finding
+    prose: if the alleged datum (address, phone, ...) were actually present, this
+    returns False and the finding blocks; if it is absent, the allegation has no
+    referent in the file. Fail-closed: unreadable = not safe."""
+    if not file_enforced_class_clean(repo_root, rel_path):
+        return False
+    try:
+        text = (repo_root / rel_path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return not any(pattern.search(text) for pattern in NON_RESIDUAL_PII_PATTERNS)

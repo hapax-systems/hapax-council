@@ -1436,14 +1436,18 @@ def _blocking_criticals(
             if ratification_id is None:
                 kept.append((reviewer_id, finding))
                 continue
-            # The ledger can never waive the ENFORCED class: if the cited file is not
-            # clean under the shared attribution scan AT HEAD, the finding may be
-            # reporting a real tier-1/tier-2 regression — keep it blocking.
-            if not attribution_scan.file_enforced_class_clean(root, str(finding.get("file", ""))):
+            # The ledger can never waive the ENFORCED class or any non-residual PII
+            # datum. Waiver safety is decided on FILE CONTENT at head, never on
+            # finding prose: if the cited file carries a tier-1/tier-2 regression OR
+            # any detectable non-residual PII (address, phone, email, ...), the
+            # finding may be reporting exactly that — keep it blocking. A topical-
+            # sounding allegation whose datum is absent from the file has no
+            # referent; waiving it is correct.
+            if not attribution_scan.file_waiver_safe(root, str(finding.get("file", ""))):
                 print(
                     f"ratification-gate: NOT waiving {str(finding.get('title'))!r} — "
-                    f"{finding.get('file')} is not clean under the enforced-class scan "
-                    "at head (possible regression); ledger cannot waive the enforced class",
+                    f"{finding.get('file')} is not waiver-safe at head (enforced-class "
+                    "or non-residual PII content present); ledger cannot waive it",
                     file=sys.stderr,
                 )
                 kept.append((reviewer_id, finding))
@@ -1451,8 +1455,8 @@ def _blocking_criticals(
             print(
                 f"ratification-gate: waived critical {str(finding.get('title'))!r} "
                 f"({finding.get('file')}) under {ratification_id} — data-owner "
-                "disposition, receipted; cited file verified clean under the "
-                "enforced-class scan at head",
+                "disposition, receipted; cited file verified waiver-safe at head "
+                "(no enforced-class attribution, no non-residual PII datum)",
                 file=sys.stderr,
             )
         criticals = kept

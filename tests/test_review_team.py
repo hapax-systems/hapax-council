@@ -3136,6 +3136,46 @@ ratifications:
         blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
         assert blocking == []
 
+    def test_topical_finding_with_actual_other_pii_in_file_blocks(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # THE collision path: the finding SOUNDS topical ("address disclosed in the
+        # ADHD section") and lens/file/topic all match — but the file really does
+        # contain an address. Waiver safety is decided on file CONTENT: blocked.
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text(
+            "Generic research on residual linkage.\nContact: 123 Maple Street\n",
+            encoding="utf-8",
+        )
+        finding = self._critical()
+        finding["title"] = "address disclosed in the residual section"
+        finding["detail"] = "a street address appears alongside residual research context"
+        reviews = [_review("codex-1", "codex", "block", findings=[finding])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1
+
+    def test_topical_finding_with_no_such_datum_in_file_waives(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # Companion: same topical-sounding allegation, but the file contains NO
+        # address/phone/email/etc. — the allegation has no referent in the file, so
+        # waiving under the data-owner ratification is correct.
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Generic research on residual linkage only.\n", encoding="utf-8")
+        finding = self._critical()
+        finding["title"] = "address disclosed in the residual section"
+        reviews = [_review("codex-1", "codex", "block", findings=[finding])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert blocking == []
+
     def test_killswitch_disables_ratification_gate(self, tmp_path: Path, monkeypatch) -> None:
         rt = _load_review_team_module()
         monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
