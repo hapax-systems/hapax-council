@@ -35,15 +35,11 @@ ratifications:
       - perceptual profile
     files:
       - docs/research/content-scheduling-research.md
-      - docs/research/apperception-healthy-self-model-research.md
-      - docs/research/phenomenology-ai-perception-research.md
       - docs/research/hapax-ontology-and-visual-fitment.md
       - agents/demo_pipeline/domain_corpus/neurodivergent-technology-design.md
       - agents/demo_pipeline/domain_corpus/cognitive-load-theory.md
     files_sha256:
       docs/research/content-scheduling-research.md: 9e84812fc89af4a4871d60d4d920a292d1ad70af99ab3f7665bff8e12420c524
-      docs/research/apperception-healthy-self-model-research.md: f90018b7a3ded2adbe05141551696d5785913b8801576689bf299423b87c9758
-      docs/research/phenomenology-ai-perception-research.md: 275c290626217a419a451e73c1caa33184519ca21862018902da216f9cb69c9a
       docs/research/hapax-ontology-and-visual-fitment.md: d411a2e6edc63188e628f2995fc120bde067cf4af6d35b4684f0bae189cd04e8
       agents/demo_pipeline/domain_corpus/neurodivergent-technology-design.md: 18832d58633f962c3ff7ea1eb92ab5813450b5ae6bdf236af60cf5302759a42d
       agents/demo_pipeline/domain_corpus/cognitive-load-theory.md: 912e76ef694fce2836dad9e3e5b41fb1318d7fc6bd7fc6bf4fc1a2c02cae709a

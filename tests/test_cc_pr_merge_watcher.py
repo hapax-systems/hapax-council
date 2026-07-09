@@ -932,6 +932,32 @@ class TestReconcilePrNullRepair:
             cmd[-3:] == ["--pr", "207", "--retroactive"] for cmd in runner.cc_close_invocations
         ), runner.cc_close_invocations
 
+    def test_pr_null_dry_run_respects_opt_out(self, tmp_path: Path, caplog: Any) -> None:
+        vault = _make_vault(tmp_path)
+        note = _write_reconcile_note(
+            vault,
+            task_id="task-A",
+            pr=None,
+            branch="epsilon/foo",
+            extra_frontmatter="close_on_pr_merge: false",
+        )
+        runner = _ReconcileRunner()
+        runner.head_prs = {"epsilon/foo": [{"number": 207, "state": "MERGED"}]}
+
+        with caplog.at_level(logging.INFO, logger="cc-pr-merge-watcher"):
+            counters = watcher.reconcile_stale_pr_states(
+                vault_root=vault,
+                repo_root=tmp_path,
+                dry_run=True,
+                runner=runner,
+            )
+
+        assert counters["repaired"] == 1
+        assert counters["closed"] == 0
+        assert "pr: null" in note.read_text()
+        assert "declares close_on_pr_merge: false" in caplog.text
+        assert not runner.cc_close_invocations
+
     def test_pr_null_with_branch_no_pr_blocks(self, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)
         note = _write_reconcile_note(vault, task_id="task-A", pr=None, branch="epsilon/foo")

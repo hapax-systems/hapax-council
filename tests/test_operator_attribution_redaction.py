@@ -33,6 +33,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import yaml
+
 from shared.operator_attribution_scan import (
     PARAGRAPH_PATTERNS,
     SENTENCE_PATTERNS,
@@ -144,3 +146,15 @@ def test_waiver_safety_allows_non_operator_affect_discussion(tmp_path: Path) -> 
     )
 
     assert file_waiver_safe(tmp_path, rel)
+
+
+def test_operator_ratification_ledger_files_are_waiver_safe() -> None:
+    ledger_path = REPO_ROOT / "config" / "governance" / "operator-ratifications.yaml"
+    payload = yaml.safe_load(ledger_path.read_text(encoding="utf-8"))
+    offenders: list[str] = []
+    for entry in payload.get("ratifications") or []:
+        for rel in entry.get("files") or []:
+            if not file_waiver_safe(REPO_ROOT, str(rel)):
+                offenders.append(str(rel))
+
+    assert offenders == []

@@ -1375,19 +1375,27 @@ def _operator_ratifications(repo_root: Path) -> list[dict[str, Any]]:
         pins = entry.get("files_sha256")
         if (
             not isinstance(entry.get("id"), str)
+            or not isinstance(entry.get("ratified"), str)
+            or not str(entry.get("ratified")).strip()
+            or entry.get("authority") != "operator"
             or not isinstance(entry.get("decision_record"), str)
+            or entry.get("class") != "operator-privacy-residual"
             or not isinstance(lenses, list)
-            or not all(isinstance(item, str) for item in lenses)
+            or not lenses
+            or not all(isinstance(item, str) and item.strip() for item in lenses)
             or not isinstance(files, list)
-            or not all(isinstance(item, str) for item in files)
+            or not files
+            or not all(isinstance(item, str) and item.strip() for item in files)
             or not isinstance(topics, list)
             or not topics
-            or not all(isinstance(item, str) for item in topics)
+            or not all(isinstance(item, str) and item.strip() for item in topics)
             # content pins are REQUIRED and must cover exactly the files list: the
             # ratification applies to the reviewed bytes, never to future content
             or not isinstance(pins, Mapping)
             or set(pins.keys()) != set(files)
-            or not all(isinstance(v, str) and len(v) == 64 for v in pins.values())
+            or not all(
+                isinstance(v, str) and re.fullmatch(r"[0-9a-f]{64}", v) for v in pins.values()
+            )
         ):
             return []
         valid.append(dict(entry))

@@ -784,8 +784,16 @@ def _repair_pr_null_note(
         LOG.info(
             "[dry-run] would re-derive PR #%s for %s (branch %s)", pr_number, note.stem, branch
         )
-        if pr_state == "MERGED":
-            counts["closed"] += 1
+        _apply_pr_state(
+            note,
+            text,
+            pr_number,
+            pr_state,
+            repo_root=repo_root,
+            dry_run=dry_run,
+            runner=runner,
+            counts=counts,
+        )
         return
     new_text = re.sub(r"^pr:\s*null\s*$", f"pr: {pr_number}", text, count=1, flags=re.MULTILINE)
     note.write_text(new_text, encoding="utf-8")
