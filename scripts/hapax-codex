@@ -1101,6 +1101,8 @@ DISPATCH_PROOF_BASENAME="$(date -u +%Y%m%dT%H%M%SZ)-$(slugify "$SESSION")-$(slug
 DISPATCH_PROOF_FILE="$DISPATCH_PROOF_DIR/$DISPATCH_PROOF_BASENAME-remote.json"
 DISPATCH_LOCAL_PROOF_FILE="$DISPATCH_PROOF_DIR/$DISPATCH_PROOF_BASENAME-local.json"
 
+strip_inherited_codex_access_token
+
 if [ -n "$DISPATCH_HOST_REQUESTED" ]; then
   if dispatch_host_is_local "$DISPATCH_HOST_REQUESTED"; then
     DISPATCH_HOST_REQUESTED=""
@@ -1235,8 +1237,6 @@ elif [ "${#CODEX_EXTRA[@]}" -gt 0 ]; then
       ;;
   esac
 fi
-
-strip_inherited_codex_access_token
 
 LOCAL_CODEX_EXEC_AUTH_PROVEN=0
 if [ "$codex_exec_auth_preflight_required" -eq 1 ]; then

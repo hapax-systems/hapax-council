@@ -188,6 +188,15 @@ remote_cmd="${@: -1}"
 if [ -n "${HAPAX_FAKE_SSH_REMOTE_CMDS:-}" ]; then
   printf '%s\\n' "$remote_cmd" >> "$HAPAX_FAKE_SSH_REMOTE_CMDS"
 fi
+if [ -n "${HAPAX_FAKE_SSH_ENV_LOG:-}" ]; then
+  {
+    printf 'CODEX_ACCESS_TOKEN=%s\\n' "${CODEX_ACCESS_TOKEN:-}"
+    printf 'CODEX_HOME=%s\\n' "${CODEX_HOME:-}"
+    printf 'CODEX_API_KEY=%s\\n' "${CODEX_API_KEY:-}"
+    printf 'OPENAI_API_KEY=%s\\n' "${OPENAI_API_KEY:-}"
+    printf '%s\\n' '---'
+  } >> "$HAPAX_FAKE_SSH_ENV_LOG"
+fi
 case "$remote_cmd" in
   HAPAX_REMOTE_PAYLOAD=*)
     echo 'fish: Expected a variable name after this $' >&2
@@ -1055,6 +1064,57 @@ exit 77
     assert "codex_saved_auth_refresh_token_invalidated" in result.stderr
     assert "dispatch_host_unready" in result.stderr
     assert not args_file.exists()
+
+
+def test_appendix_codex_remote_preflight_strips_auth_env_before_first_ssh(
+    tmp_path: Path,
+) -> None:
+    env, args_file, env_file = _env_with_fake_codex(tmp_path)
+    (Path(env["HOME"]) / "projects" / "hapax-mcp").mkdir(parents=True)
+    _write_fake_ssh_eval(tmp_path / "bin")
+    ssh_env_log = tmp_path / "ssh-env.txt"
+    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_FAKE_SSH_ENV_LOG"] = str(ssh_env_log)
+    env["CODEX_ACCESS_TOKEN"] = "token-secret"
+    env["CODEX_HOME"] = "/tmp/codex-home-secret"
+    env["CODEX_API_KEY"] = "codex-api-secret"
+    env["OPENAI_API_KEY"] = "openai-api-secret"
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-red",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--",
+            "mcp",
+            "list",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    ssh_env_text = ssh_env_log.read_text(encoding="utf-8")
+    assert "token-secret" not in ssh_env_text
+    assert "codex-home-secret" not in ssh_env_text
+    assert "codex-api-secret" not in ssh_env_text
+    assert "openai-api-secret" not in ssh_env_text
+    assert "CODEX_ACCESS_TOKEN=\n" in ssh_env_text
+    assert "CODEX_HOME=\n" in ssh_env_text
+    assert "CODEX_API_KEY=\n" in ssh_env_text
+    assert "OPENAI_API_KEY=\n" in ssh_env_text
+    assert "mcp list" in args_file.read_text(encoding="utf-8")
+    launched_env = env_file.read_text(encoding="utf-8")
+    assert "CODEX_ACCESS_TOKEN_PRESENT=\n" in launched_env
+    assert "CODEX_HOME_PRESENT=\n" in launched_env
+    assert "CODEX_API_KEY_PRESENT=\n" in launched_env
+    assert "OPENAI_API_KEY_PRESENT=\n" in launched_env
 
 
 def test_appendix_codex_remote_preflight_does_not_leave_handoff_before_relay_guard(

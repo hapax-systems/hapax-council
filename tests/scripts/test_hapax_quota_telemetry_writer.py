@@ -32,6 +32,7 @@ def _run_writer(
     *extra_args: str,
     nvidia_body: str = "echo '1000, 32000'",
     now: str = NOW,
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     out = tmp_path / "out" / "quota-spend-ledger-live.json"
     relay = tmp_path / "relay-receipts"
@@ -41,6 +42,15 @@ def _run_writer(
         platform_receipts.mkdir(exist_ok=True)
         _codex_platform_receipt(platform_receipts)
     stub = _fake_nvidia_smi(tmp_path, nvidia_body)
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(REPO_ROOT),
+        "HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR": str(platform_receipts),
+        "HAPAX_DISPATCH_HOST": "",
+        "HAPAX_DEFAULT_DISPATCH_HOST": "",
+    }
+    if extra_env:
+        env.update(extra_env)
     result = subprocess.run(
         [
             sys.executable,
@@ -62,11 +72,7 @@ def _run_writer(
         capture_output=True,
         text=True,
         cwd=REPO_ROOT,
-        env={
-            **os.environ,
-            "PYTHONPATH": str(REPO_ROOT),
-            "HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR": str(platform_receipts),
-        },
+        env=env,
     )
     return result, out
 
@@ -602,6 +608,34 @@ def test_codex_snapshot_unknown_when_saved_login_witness_ref_is_negated(
         tmp_path,
         "--platform-capability-receipt-dir",
         str(platform_receipts),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    codex_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "codex.headless.full"
+    )
+    assert codex_snapshot["subscription_quota_state"] == "unknown"
+    assert "codex_exec_auth_witness_absent" in codex_snapshot["operator_visible_reason"]
+    assert "codex-auth-blocker:codex_exec_auth_witness_absent" in codex_snapshot["evidence_refs"]
+
+
+def test_codex_snapshot_unknown_when_saved_login_witness_host_mismatches_dispatch_host(
+    tmp_path: Path,
+) -> None:
+    platform_receipts = tmp_path / "platform-receipts"
+    _codex_platform_receipt(
+        platform_receipts,
+        evidence_refs_override=["host:podium:codex:exec:auth:saved-login:observed"],
+    )
+
+    result, out = _run_writer(
+        tmp_path,
+        "--platform-capability-receipt-dir",
+        str(platform_receipts),
+        extra_env={"HAPAX_DISPATCH_HOST": "appendix"},
     )
 
     assert result.returncode == 0, result.stderr
