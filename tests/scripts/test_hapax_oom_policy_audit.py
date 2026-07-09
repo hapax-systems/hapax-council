@@ -8,13 +8,44 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-oom-policy-audit"
+PROTECTED_USER_UNIT_SCORES = {
+    "pipewire.service": -900,
+    "pipewire-pulse.service": -900,
+    "wireplumber.service": -900,
+    "hapax-daimonion.service": -500,
+    "studio-compositor.service": -800,
+    "hapax-imagination.service": -800,
+}
 
 
-def _fake_systemctl(tmp_path: Path, *, user_oom: int = 100, app_bounded: bool = True) -> Path:
+def _protected_user_unit_cases(*, wrong_unit_score: bool = False) -> str:
+    cases = []
+    for unit, score in PROTECTED_USER_UNIT_SCORES.items():
+        actual = 100 if wrong_unit_score and unit == "studio-compositor.service" else score
+        cases.append(
+            f'  *"--user show {unit} --no-pager -p OOMScoreAdjust -p MainPID"*) '
+            f"printf 'OOMScoreAdjust={actual}\\nMainPID=0\\n' ;;"
+        )
+    return "\n".join(cases)
+
+
+def _fake_systemctl(
+    tmp_path: Path,
+    *,
+    user_oom: int = 100,
+    app_bounded: bool = True,
+    tmux_bounded: bool = True,
+    wrong_unit_score: bool = False,
+) -> Path:
     path = tmp_path / "systemctl"
     app_values = (
         "MemoryHigh=85899345920\nMemoryMax=111669149696\nMemorySwapMax=8589934592\n"
         if app_bounded
+        else "MemoryHigh=infinity\nMemoryMax=infinity\nMemorySwapMax=infinity\n"
+    )
+    tmux_values = (
+        "MemoryHigh=12884901888\nMemoryMax=19327352832\nMemorySwapMax=3221225472\n"
+        if tmux_bounded
         else "MemoryHigh=infinity\nMemoryMax=infinity\nMemorySwapMax=infinity\n"
     )
     path.write_text(
@@ -23,8 +54,9 @@ set -euo pipefail
 case "$*" in
   *"show user@1000.service"*) printf 'OOMScoreAdjust={user_oom}\\nDropInPaths=/etc/systemd/system/user@1000.service.d/oom.conf\\n' ;;
   *"show app.slice"*) printf '{app_values}' ;;
+{_protected_user_unit_cases(wrong_unit_score=wrong_unit_score)}
   *"list-units --type=scope"*) printf 'tmux-spawn-a.scope loaded active running tmux child pane\\n' ;;
-  *"show tmux-spawn-a.scope"*) printf 'MemoryHigh=12884901888\\nMemoryMax=19327352832\\nMemorySwapMax=3221225472\\n' ;;
+  *"show tmux-spawn-a.scope"*) printf '{tmux_values}' ;;
   *) echo "unexpected args: $*" >&2; exit 9 ;;
 esac
 """,
@@ -48,6 +80,8 @@ def _run(
     *,
     user_oom: int = 100,
     app_bounded: bool = True,
+    tmux_bounded: bool = True,
+    wrong_unit_score: bool = False,
     proc_root: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     if proc_root is None:
@@ -56,7 +90,13 @@ def _run(
     env = {
         **os.environ,
         "HAPAX_SYSTEMCTL": str(
-            _fake_systemctl(tmp_path, user_oom=user_oom, app_bounded=app_bounded)
+            _fake_systemctl(
+                tmp_path,
+                user_oom=user_oom,
+                app_bounded=app_bounded,
+                tmux_bounded=tmux_bounded,
+                wrong_unit_score=wrong_unit_score,
+            )
         ),
         "HAPAX_OOM_AUDIT_PROC_ROOT": str(proc_root),
     }
@@ -96,6 +136,32 @@ def test_audit_fails_when_app_slice_backstop_is_unbounded(tmp_path: Path) -> Non
     app_checks = [item for item in payload["checks"] if item["name"].startswith("app_slice_")]
     assert app_checks
     assert all(item["status"] == "gap" for item in app_checks)
+
+
+def test_audit_fails_when_protected_user_unit_loses_oom_score(tmp_path: Path) -> None:
+    result = _run(tmp_path, wrong_unit_score=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item
+        for item in payload["checks"]
+        if item["name"] == "user_unit_studio-compositor.service_OOMScoreAdjust"
+    )
+    assert check["status"] == "gap"
+    assert "install-p0-oom-containment" in check["detail"]
+
+
+def test_audit_fails_when_tmux_scope_is_unbounded(tmp_path: Path) -> None:
+    result = _run(tmp_path, tmux_bounded=False)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item for item in payload["checks"] if item["name"] == "tmux_scope_tmux-spawn-a.scope"
+    )
+    assert check["status"] == "gap"
+    assert "MemoryMax" in check["detail"]
 
 
 def test_audit_fails_when_user_process_retains_inherited_protection(tmp_path: Path) -> None:

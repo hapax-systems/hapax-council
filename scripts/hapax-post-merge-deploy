@@ -45,6 +45,7 @@
 #   config/earlyoom/default,
 #   systemd/system/user@1000.service.d/oom.conf,
 #   systemd/system/*.service.d/oom-protect.conf,
+#   systemd/units/{pipewire,pipewire-pulse,wireplumber,hapax-daimonion,studio-compositor,hapax-imagination}.service.d/oom-protect.conf,
 #   systemd/units/app.slice.d/oom-containment.conf
 #                                  → install P0 OOM containment policy into
 #                                    /etc/default, /etc/systemd/system, and
@@ -957,7 +958,7 @@ while IFS= read -r f; do
             fi
             ;;
         systemd/*.service|systemd/*.timer|systemd/*.path) SYSTEMD+=("$f") ;;
-        scripts/install-p0-oom-containment|config/earlyoom/default|systemd/system/user@1000.service.d/oom.conf|systemd/system/apcupsd.service.d/oom-protect.conf|systemd/system/systemd-logind.service.d/oom-protect.conf|systemd/system/systemd-resolved.service.d/oom-protect.conf|systemd/system/systemd-timesyncd.service.d/oom-protect.conf|systemd/system/NetworkManager.service.d/oom-protect.conf|systemd/system/dbus-broker.service.d/oom-protect.conf|systemd/system/sshd.service.d/oom-protect.conf|systemd/units/app.slice.d/oom-containment.conf)
+        scripts/install-p0-oom-containment|config/earlyoom/default|systemd/system/user@1000.service.d/oom.conf|systemd/system/apcupsd.service.d/oom-protect.conf|systemd/system/systemd-logind.service.d/oom-protect.conf|systemd/system/systemd-resolved.service.d/oom-protect.conf|systemd/system/systemd-timesyncd.service.d/oom-protect.conf|systemd/system/NetworkManager.service.d/oom-protect.conf|systemd/system/dbus-broker.service.d/oom-protect.conf|systemd/system/sshd.service.d/oom-protect.conf|systemd/units/app.slice.d/oom-containment.conf|systemd/units/pipewire.service.d/oom-protect.conf|systemd/units/pipewire-pulse.service.d/oom-protect.conf|systemd/units/wireplumber.service.d/oom-protect.conf|systemd/units/hapax-daimonion.service.d/oom-protect.conf|systemd/units/studio-compositor.service.d/oom-protect.conf|systemd/units/hapax-imagination.service.d/oom-protect.conf)
             OOM_CONTAINMENT+=("$f") ;;
         scripts/install-apcupsd-power-alerts|config/apcupsd/*)
             APCUPSD_POWER_ALERTS+=("$f") ;;
@@ -1281,6 +1282,12 @@ stage_oom_containment_installer() {
         systemd/system/dbus-broker.service.d/oom-protect.conf
         systemd/system/sshd.service.d/oom-protect.conf
         systemd/units/app.slice.d/oom-containment.conf
+        systemd/units/pipewire.service.d/oom-protect.conf
+        systemd/units/pipewire-pulse.service.d/oom-protect.conf
+        systemd/units/wireplumber.service.d/oom-protect.conf
+        systemd/units/hapax-daimonion.service.d/oom-protect.conf
+        systemd/units/studio-compositor.service.d/oom-protect.conf
+        systemd/units/hapax-imagination.service.d/oom-protect.conf
     )
     for rel in "${required[@]}"; do
         if ! git cat-file -e "$SHA:$rel" 2>/dev/null; then

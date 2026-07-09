@@ -10,12 +10,27 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-post-merge-deploy"
+ROOT_REQUIRED_AUDIT = REPO_ROOT / "scripts" / "hapax-root-required-deploy-audit"
 RECOVERY_BUNDLE_SOURCE_FILES = {
     "scripts/hapax-p0-incident-intake": "#!/usr/bin/env bash\necho intake\n",
     "scripts/hapax-coord-deploy": "#!/usr/bin/env bash\necho coord deploy\n",
     "shared/__init__.py": "",
     "shared/jsonl_append.py": "def append_jsonl(*_args, **_kwargs):\n    pass\n",
     "shared/p0_incident_intake.py": "def main():\n    return 0\n",
+}
+P0_USER_OOM_DROPINS = {
+    "systemd/units/pipewire.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-900\n",
+    "systemd/units/pipewire-pulse.service.d/oom-protect.conf": ("[Service]\nOOMScoreAdjust=-900\n"),
+    "systemd/units/wireplumber.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-900\n",
+    "systemd/units/hapax-daimonion.service.d/oom-protect.conf": (
+        "[Service]\nOOMScoreAdjust=-500\n"
+    ),
+    "systemd/units/studio-compositor.service.d/oom-protect.conf": (
+        "[Service]\nOOMScoreAdjust=-800\n"
+    ),
+    "systemd/units/hapax-imagination.service.d/oom-protect.conf": (
+        "[Service]\nOOMScoreAdjust=-800\n"
+    ),
 }
 
 
@@ -520,6 +535,7 @@ def test_p0_oom_containment_deploy_uses_installer_without_restarting_app_slice(
         "systemd/units/app.slice.d/oom-containment.conf": (
             "[Slice]\nMemoryHigh=80G\nMemoryMax=104G\nMemorySwapMax=8G\n"
         ),
+        **P0_USER_OOM_DROPINS,
     }
     repo, sha = _repo_with_linear_commit(tmp_path, files)
     home = tmp_path / "home"
@@ -578,6 +594,7 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
         "systemd/units/app.slice.d/oom-containment.conf": (
             "[Slice]\nMemoryHigh=80G\nMemoryMax=104G\nMemorySwapMax=8G\n"
         ),
+        **P0_USER_OOM_DROPINS,
         "systemd/units/hapax-demo.service": (
             "[Unit]\nDescription=Demo\n\n[Service]\nType=oneshot\nExecStart=/bin/true\n"
         ),
@@ -611,6 +628,18 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
     assert (deferred / "scripts" / "install-p0-oom-containment").is_file()
     assert (home / ".config" / "systemd" / "user" / "hapax-demo.service").is_file()
     assert "root-required oom-containment install deferred" in result.stdout
+
+    audit_result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_dir)},
+    )
+
+    assert audit_result.returncode == 1
+    assert "root-required post-merge deploy deferrals pending" in audit_result.stderr
+    assert "--install --verify-live" in audit_result.stderr
 
 
 def test_apcupsd_power_alert_deploy_uses_dedicated_installer(tmp_path: Path) -> None:

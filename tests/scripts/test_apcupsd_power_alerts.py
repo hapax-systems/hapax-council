@@ -18,12 +18,12 @@ def test_apcupsd_config_uses_current_header() -> None:
 
 
 def test_apcupsd_hooks_delegate_to_provenance_helper() -> None:
-    assert "hapax-power-event.py onbattery" in (CONFIG_DIR / "onbattery").read_text(
-        encoding="utf-8"
-    )
-    assert "hapax-power-event.py offbattery" in (CONFIG_DIR / "offbattery").read_text(
-        encoding="utf-8"
-    )
+    onbattery = (CONFIG_DIR / "onbattery").read_text(encoding="utf-8")
+    offbattery = (CONFIG_DIR / "offbattery").read_text(encoding="utf-8")
+    assert "HAPAX_APCUPSD_HELPER" in onbattery
+    assert 'exec "$HELPER" onbattery "$@"' in onbattery
+    assert "HAPAX_APCUPSD_HELPER" in offbattery
+    assert 'exec "$HELPER" offbattery "$@"' in offbattery
 
 
 def test_power_event_helper_records_jsonl_without_ntfy(tmp_path: Path) -> None:
@@ -143,3 +143,27 @@ def test_installer_install_and_verify_live_against_temp_destinations(tmp_path: P
     assert (dest / "onbattery").stat().st_mode & 0o100
     assert audit_dir.is_dir()
     assert "restart apcupsd" in systemctl_calls.read_text(encoding="utf-8")
+
+    hook_audit = tmp_path / "hook.jsonl"
+    hook_result = subprocess.run(
+        [str(dest / "onbattery"), "UPSNAME"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_HELPER": str(dest / "hapax-power-event.py"),
+            "HAPAX_UPS_AUDIT_LOG": str(hook_audit),
+            "HAPAX_UPS_APCACCESS": "",
+            "HAPAX_UPS_NTFY_URL": "",
+        },
+    )
+
+    assert hook_result.returncode == 0, hook_result.stderr
+    records = [
+        json.loads(line)
+        for line in hook_audit.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert records[0]["event"] == "onbattery"
+    assert records[1]["delivery"]["attempted"] is False

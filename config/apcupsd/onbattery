@@ -1,2 +1,3 @@
 #!/bin/sh
-exec /etc/apcupsd/hapax-power-event.py onbattery "$@"
+HELPER="${HAPAX_APCUPSD_HELPER:-/etc/apcupsd/hapax-power-event.py}"
+exec "$HELPER" onbattery "$@"

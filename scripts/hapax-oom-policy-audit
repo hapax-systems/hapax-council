@@ -14,6 +14,16 @@ from pathlib import Path
 BYTES_80G = 80 * 1024**3
 BYTES_104G = 104 * 1024**3
 BYTES_8G = 8 * 1024**3
+NEXT_OOM_INSTALL = "next action: scripts/install-p0-oom-containment --install --verify-live"
+PROC_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_PROC_ROOT", "/proc"))
+PROTECTED_USER_UNITS = {
+    "pipewire.service": -900,
+    "pipewire-pulse.service": -900,
+    "wireplumber.service": -900,
+    "hapax-daimonion.service": -500,
+    "studio-compositor.service": -800,
+    "hapax-imagination.service": -800,
+}
 
 
 @dataclass
@@ -68,18 +78,30 @@ def audit_user_manager(uid: int) -> Check:
     unit = f"user@{uid}.service"
     values = _show(unit, ["OOMScoreAdjust", "DropInPaths"])
     if "_error" in values:
-        return Check("user_manager_oom_score_adjust", "error", ">=0", "N/A", values["_error"])
+        return Check(
+            "user_manager_oom_score_adjust",
+            "error",
+            ">=0",
+            "N/A",
+            f"{values['_error']}; {NEXT_OOM_INSTALL}",
+        )
     actual = values.get("OOMScoreAdjust", "")
     parsed = _int_value(actual)
     if parsed is None:
-        return Check("user_manager_oom_score_adjust", "error", ">=0", actual, "unparseable")
+        return Check(
+            "user_manager_oom_score_adjust",
+            "error",
+            ">=0",
+            actual,
+            f"unparseable; {NEXT_OOM_INSTALL}",
+        )
     if parsed < 0:
         return Check(
             "user_manager_oom_score_adjust",
             "gap",
             ">=0",
             actual,
-            "user@ must not protect every descendant workload over login/network daemons",
+            f"user@ must not protect every descendant workload over login/network daemons; {NEXT_OOM_INSTALL}",
         )
     return Check("user_manager_oom_score_adjust", "pass", ">=0", actual)
 
@@ -92,14 +114,75 @@ def audit_app_slice() -> list[Check]:
     }
     values = _show("app.slice", list(expected), user=True)
     if "_error" in values:
-        return [Check("app_slice", "error", "bounded", "N/A", values["_error"])]
+        return [
+            Check("app_slice", "error", "bounded", "N/A", f"{values['_error']}; {NEXT_OOM_INSTALL}")
+        ]
     checks: list[Check] = []
     for key, target in expected.items():
         actual = values.get(key, "")
         parsed = _int_value(actual)
         status = "pass" if parsed == target else "gap"
-        detail = "" if status == "pass" else "app.slice aggregate RAM/swap backstop drifted"
+        detail = (
+            ""
+            if status == "pass"
+            else f"app.slice aggregate RAM/swap backstop drifted; {NEXT_OOM_INSTALL}"
+        )
         checks.append(Check(f"app_slice_{key}", status, str(target), actual, detail))
+    return checks
+
+
+def _proc_oom_score(pid: str) -> int | None:
+    try:
+        return int((PROC_ROOT / pid / "oom_score_adj").read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def audit_protected_user_units() -> list[Check]:
+    checks: list[Check] = []
+    for unit, expected in PROTECTED_USER_UNITS.items():
+        values = _show(unit, ["OOMScoreAdjust", "MainPID"], user=True)
+        if "_error" in values:
+            checks.append(
+                Check(
+                    f"user_unit_{unit}_OOMScoreAdjust",
+                    "gap",
+                    str(expected),
+                    "N/A",
+                    f"{values['_error']}; {NEXT_OOM_INSTALL}",
+                )
+            )
+            continue
+        actual = values.get("OOMScoreAdjust", "")
+        parsed = _int_value(actual)
+        status = "pass" if parsed == expected else "gap"
+        detail = (
+            ""
+            if status == "pass"
+            else f"broadcast-critical user unit OOM policy drifted; {NEXT_OOM_INSTALL}"
+        )
+        checks.append(
+            Check(f"user_unit_{unit}_OOMScoreAdjust", status, str(expected), actual, detail)
+        )
+        pid = values.get("MainPID", "0")
+        if pid and pid != "0":
+            live = _proc_oom_score(pid)
+            live_actual = "N/A" if live is None else str(live)
+            live_status = "pass" if live == expected else "gap"
+            live_detail = (
+                ""
+                if live_status == "pass"
+                else f"live broadcast-critical user unit OOM score drifted; {NEXT_OOM_INSTALL}"
+            )
+            checks.append(
+                Check(
+                    f"user_unit_{unit}_live_oom_score_adj",
+                    live_status,
+                    str(expected),
+                    live_actual,
+                    live_detail,
+                )
+            )
     return checks
 
 
@@ -131,8 +214,10 @@ def audit_tmux_scopes() -> list[Check]:
             for key in ("MemoryHigh", "MemoryMax", "MemorySwapMax")
             if values.get(key) == "infinity"
         ]
-        status = "warn" if unbounded else "pass"
-        detail = f"unbounded properties: {', '.join(unbounded)}" if unbounded else ""
+        status = "gap" if unbounded else "pass"
+        detail = (
+            f"unbounded properties: {', '.join(unbounded)}; {NEXT_OOM_INSTALL}" if unbounded else ""
+        )
         actual = ",".join(
             f"{key}={values.get(key, '')}" for key in ("MemoryHigh", "MemoryMax", "MemorySwapMax")
         )
@@ -144,6 +229,7 @@ def audit_tmux_scopes() -> list[Check]:
 
 _ALLOWED_USER_PROTECTED_NAMES = {
     "pipewire",
+    "pipewire-pulse",
     "wireplumber",
     "dbus-broker",
     "dbus-daemon",
@@ -153,6 +239,7 @@ _ALLOWED_USER_PROTECTED_NAMES = {
     "studio-composit",
     "hapax-imagination",
     "hapax-imaginat",
+    "hapax-imaginati",
     "systemd",
 }
 
@@ -169,9 +256,15 @@ def _status_field(status: Path, key: str) -> str:
 
 
 def audit_residual_user_process_protection(uid: int) -> Check:
-    proc_root = Path(os.environ.get("HAPAX_OOM_AUDIT_PROC_ROOT", "/proc"))
+    proc_root = PROC_ROOT
     if not proc_root.is_dir():
         return Check("user_process_residual_oom_protection", "warn", "observable", "N/A")
+    protected_pids = {
+        values.get("MainPID", "0")
+        for unit in PROTECTED_USER_UNITS
+        for values in [_show(unit, ["MainPID"], user=True)]
+        if values.get("MainPID") not in {None, "", "0"}
+    }
     offenders: list[str] = []
     for adj in proc_root.glob("[0-9]*/oom_score_adj"):
         pid_dir = adj.parent
@@ -183,6 +276,8 @@ def audit_residual_user_process_protection(uid: int) -> Check:
         except (OSError, ValueError):
             continue
         if score > -800:
+            continue
+        if pid_dir.name in protected_pids:
             continue
         name = _status_field(status, "Name")
         if name in _ALLOWED_USER_PROTECTED_NAMES:
@@ -196,7 +291,7 @@ def audit_residual_user_process_protection(uid: int) -> Check:
             "gap",
             "no uid processes <= -800 outside allowlist",
             shown + extra,
-            "stale inherited OOMScoreAdjust; next action: scripts/install-p0-oom-containment --install --verify-live",
+            f"stale inherited OOMScoreAdjust; {NEXT_OOM_INSTALL}",
         )
     return Check(
         "user_process_residual_oom_protection",
@@ -225,6 +320,7 @@ def main(argv: list[str] | None = None) -> int:
     checks = [
         audit_user_manager(args.uid),
         *audit_app_slice(),
+        *audit_protected_user_units(),
         audit_residual_user_process_protection(args.uid),
         *audit_tmux_scopes(),
     ]

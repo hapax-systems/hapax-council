@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Fail when post-merge root-required deploy actions were deferred and not drained.
+set -euo pipefail
+
+ROOT_DEFER_DIR="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$HOME/.cache/hapax/post-merge-root-required}"
+
+if [ ! -d "$ROOT_DEFER_DIR" ]; then
+    echo "root-required post-merge deploy deferrals: none"
+    exit 0
+fi
+
+mapfile -t runbooks < <(find "$ROOT_DEFER_DIR" -mindepth 3 -maxdepth 3 -name RUNBOOK.txt -type f | sort)
+if [ "${#runbooks[@]}" -eq 0 ]; then
+    echo "root-required post-merge deploy deferrals: none"
+    exit 0
+fi
+
+echo "root-required post-merge deploy deferrals pending (${#runbooks[@]}):" >&2
+for runbook in "${runbooks[@]}"; do
+    dir="$(dirname "$runbook")"
+    command="$(awk '/^  .*--install --verify-live$/ {sub(/^  /, ""); print; exit}' "$runbook")"
+    echo "  $dir" >&2
+    if [ -n "$command" ]; then
+        echo "    next action: $command" >&2
+    else
+        echo "    next action: inspect $runbook and run the root-required installer" >&2
+    fi
+done
+exit 1

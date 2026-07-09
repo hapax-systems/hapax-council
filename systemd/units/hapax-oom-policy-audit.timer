@@ -1,0 +1,11 @@
+# Hapax-Auto-Enable: true
+[Unit]
+Description=Run Hapax OOM containment policy audit
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=hapax-oom-policy-audit.service
+
+[Install]
+WantedBy=timers.target

@@ -109,6 +109,36 @@ def test_recovery_daemon_oom_dropins_are_source_controlled() -> None:
         assert _directive(text, "OOMScoreAdjust") == score
 
 
+def test_broadcast_critical_user_oom_dropins_are_source_controlled() -> None:
+    expected = {
+        "pipewire.service.d/oom-protect.conf": "-900",
+        "pipewire-pulse.service.d/oom-protect.conf": "-900",
+        "wireplumber.service.d/oom-protect.conf": "-900",
+        "hapax-daimonion.service.d/oom-protect.conf": "-500",
+        "studio-compositor.service.d/oom-protect.conf": "-800",
+        "hapax-imagination.service.d/oom-protect.conf": "-800",
+    }
+    for rel, score in expected.items():
+        text = (UNITS_DIR / rel).read_text()
+        assert _directive(text, "OOMScoreAdjust") == score
+
+
+def test_oom_policy_audit_timer_is_source_controlled() -> None:
+    timer = (UNITS_DIR / "hapax-oom-policy-audit.timer").read_text()
+    service = (UNITS_DIR / "hapax-oom-policy-audit.service").read_text()
+    assert "Hapax-Auto-Enable: true" in timer
+    assert "OnUnitActiveSec=5min" in timer
+    assert "scripts/hapax-oom-policy-audit --json" in service
+
+
+def test_root_required_deploy_audit_timer_is_source_controlled() -> None:
+    timer = (UNITS_DIR / "hapax-root-required-deploy-audit.timer").read_text()
+    service = (UNITS_DIR / "hapax-root-required-deploy-audit.service").read_text()
+    assert "Hapax-Auto-Enable: true" in timer
+    assert "OnUnitActiveSec=10min" in timer
+    assert "scripts/hapax-root-required-deploy-audit" in service
+
+
 # ── L2: the audio-core cpuset fence ──────────────────────────────────────────
 
 
@@ -172,7 +202,9 @@ def test_installer_links_slice_units() -> None:
 def test_installer_links_service_dropins() -> None:
     body = INSTALLER.read_text()
     assert '"$REPO_DIR"/*.service.d' in body
+    assert '"$REPO_DIR"/*.timer.d' in body
     assert '"$REPO_DIR"/*.slice.d' in body
+    assert '"$REPO_DIR"/*.scope.d' in body
 
 
 def test_p0_oom_containment_has_dedicated_installer() -> None:

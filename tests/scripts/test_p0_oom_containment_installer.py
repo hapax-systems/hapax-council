@@ -6,6 +6,29 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALLER = REPO_ROOT / "scripts" / "install-p0-oom-containment"
+PROTECTED_USER_UNIT_SCORES = {
+    "pipewire.service": -900,
+    "pipewire-pulse.service": -900,
+    "wireplumber.service": -900,
+    "hapax-daimonion.service": -500,
+    "studio-compositor.service": -800,
+    "hapax-imagination.service": -800,
+}
+
+
+def _systemctl_user_unit_cases(unit_pids: dict[str, int] | None = None) -> str:
+    unit_pids = unit_pids or {}
+    cases = []
+    for unit, score in PROTECTED_USER_UNIT_SCORES.items():
+        cases.append(
+            f"  *--user\\ show\\ {unit}\\ -p\\ OOMScoreAdjust\\ --value*) "
+            f"printf '%s\\n' '{score}' ;;"
+        )
+        cases.append(
+            f"  *--user\\ show\\ {unit}\\ -p\\ MainPID\\ --value*) "
+            f"printf '%s\\n' '{unit_pids.get(unit, 0)}' ;;"
+        )
+    return "\n".join(cases)
 
 
 def test_p0_oom_containment_source_check_passes() -> None:
@@ -36,9 +59,16 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
     systemctl_calls = tmp_path / "systemctl-calls.txt"
+    systemctl_calls.write_text("", encoding="utf-8")
+    systemctl_calls.chmod(0o666)
     fake_systemctl = tmp_path / "systemctl"
     fake_systemctl.write_text(
-        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> {systemctl_calls!s}\nexit 0\n",
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' \"$*\" >> {systemctl_calls!s}\n"
+        'case "$*" in\n'
+        f"{_systemctl_user_unit_cases()}\n"
+        "esac\n"
+        "exit 0\n",
         encoding="utf-8",
     )
     fake_systemctl.chmod(0o755)
@@ -104,6 +134,12 @@ def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_use
         "dbus-broker.service": 205,
         "sshd.service": 206,
         "user@1000.service": 900,
+        "pipewire.service": 910,
+        "pipewire-pulse.service": 911,
+        "wireplumber.service": 912,
+        "hapax-daimonion.service": 913,
+        "studio-compositor.service": 914,
+        "hapax-imagination.service": 915,
     }
     for unit, pid in unit_pids.items():
         _write_proc(proc_root, pid, name=unit.split(".")[0], uid=0, oom_score=0)
@@ -113,16 +149,22 @@ def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_use
 
     systemctl_calls = tmp_path / "systemctl-calls.txt"
     systemctl_calls.write_text("", encoding="utf-8")
+    systemctl_calls.chmod(0o666)
     fake_systemctl = tmp_path / "systemctl"
     cases = "\n".join(
         f'  *"show {unit} -p MainPID --value"*) printf "{pid}\\n" ;;'
         for unit, pid in unit_pids.items()
+        if not unit.startswith(("pipewire", "wireplumber", "hapax-", "studio-"))
+    )
+    user_cases = _systemctl_user_unit_cases(
+        {unit: pid for unit, pid in unit_pids.items() if unit in PROTECTED_USER_UNIT_SCORES}
     )
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
         f"printf '%s\\n' \"$*\" >> {systemctl_calls!s}\n"
         'case "$*" in\n'
         f"{cases}\n"
+        f"{user_cases}\n"
         '  *"is-active --quiet earlyoom.service"*) exit 3 ;;\n'
         "esac\n"
         "exit 0\n",
@@ -160,6 +202,12 @@ def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_use
         900: 100,
         901: 100,
         902: -900,
+        910: -900,
+        911: -900,
+        912: -900,
+        913: -500,
+        914: -800,
+        915: -800,
     }
     for pid, score in expected_scores.items():
         assert (proc_root / str(pid) / "oom_score_adj").read_text(encoding="utf-8").strip() == str(

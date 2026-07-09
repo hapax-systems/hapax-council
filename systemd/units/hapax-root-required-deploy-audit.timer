@@ -1,0 +1,11 @@
+# Hapax-Auto-Enable: true
+[Unit]
+Description=Run deferred root-required deploy audit
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+Unit=hapax-root-required-deploy-audit.service
+
+[Install]
+WantedBy=timers.target

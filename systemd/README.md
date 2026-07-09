@@ -149,8 +149,10 @@ write `/dev/shm/hapax-compositor/broadcast-mode.json` through
 - **P0 OOM containment package** (`scripts/install-p0-oom-containment`): installs source-controlled recovery policy into `/etc/default/earlyoom`, `/etc/systemd/system/*.service.d/oom-protect.conf`, `/etc/systemd/system/user@1000.service.d/oom.conf`, and `~/.config/systemd/user/app.slice.d/oom-containment.conf`.
   - `user@1000.service`: `OOMScoreAdjust=100`, restoring the packaged kill ordering so the whole user manager does not shield every interactive workload.
   - Recovery daemons: apcupsd (`-900`), systemd-logind/resolved/timesyncd/NetworkManager (`-800`), D-Bus (`-900`), and sshd (`-1000`); the installer writes the running main PIDs without restarting login/network.
+  - Broadcast-critical user services: pipewire/pipewire-pulse/wireplumber (`-900`), hapax-daimonion (`-500`), studio-compositor (`-800`), and hapax-imagination (`-800`) carry source-controlled user drop-ins so protection survives reboot after `user@1000.service` is made killable.
   - `app.slice`: `MemoryHigh=80G`, `MemoryMax=104G`, `MemorySwapMax=8G` as an aggregate user-app RAM/swap backstop; live activation uses `systemctl --user set-property --runtime` and must not restart the slice.
-  - Recheck: `scripts/install-p0-oom-containment --check`, `scripts/install-p0-oom-containment --verify-live`, and `scripts/hapax-oom-policy-audit --json`.
+  - Recheck: `scripts/install-p0-oom-containment --check`, `scripts/install-p0-oom-containment --verify-live`, and `scripts/hapax-oom-policy-audit --json`. `hapax-oom-policy-audit.timer` runs the drift check every five minutes after merge.
+  - Root-required post-merge installers return rc `77` when non-interactive sudo is unavailable; `hapax-post-merge-deploy` stages those packages under `~/.cache/hapax/post-merge-root-required/<sha>/`, and `hapax-root-required-deploy-audit.timer` fails while any staged package remains undrained.
 - **Other system-level OOM overrides**: docker (-900), pipewire/wireplumber (-900), and hardware/service-specific drop-ins documented beside their installers.
 
 **Runtime application / receipt path:** source changes in this directory are

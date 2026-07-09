@@ -25,6 +25,7 @@ usage: scripts/install-p0-oom-containment [--source DIR] [--check] [--install] [
 Installs the P0 podium OOM containment package:
   systemd/system/user@1000.service.d/oom.conf       -> /etc/systemd/system/user@1000.service.d/oom.conf
   systemd/system/*.service.d/oom-protect.conf       -> /etc/systemd/system/*.service.d/oom-protect.conf
+  systemd/units/*.service.d/oom-protect.conf        -> ~/.config/systemd/user/*.service.d/oom-protect.conf
   systemd/units/app.slice.d/oom-containment.conf    -> ~/.config/systemd/user/app.slice.d/oom-containment.conf
   config/earlyoom/default                           -> /etc/default/earlyoom
 
@@ -100,6 +101,14 @@ system_dropins=(
     systemd/system/sshd.service.d/oom-protect.conf
 )
 user_dropin="systemd/units/app.slice.d/oom-containment.conf"
+user_protection_dropins=(
+    systemd/units/pipewire.service.d/oom-protect.conf
+    systemd/units/pipewire-pulse.service.d/oom-protect.conf
+    systemd/units/wireplumber.service.d/oom-protect.conf
+    systemd/units/hapax-daimonion.service.d/oom-protect.conf
+    systemd/units/studio-compositor.service.d/oom-protect.conf
+    systemd/units/hapax-imagination.service.d/oom-protect.conf
+)
 earlyoom_source="config/earlyoom/default"
 recovery_unit_scores=(
     apcupsd.service:-900
@@ -109,6 +118,14 @@ recovery_unit_scores=(
     NetworkManager.service:-800
     dbus-broker.service:-900
     sshd.service:-1000
+)
+protected_user_unit_scores=(
+    pipewire.service:-900
+    pipewire-pulse.service:-900
+    wireplumber.service:-900
+    hapax-daimonion.service:-500
+    studio-compositor.service:-800
+    hapax-imagination.service:-800
 )
 
 src_path() {
@@ -122,7 +139,7 @@ system_dest() {
 
 check_source() {
     local rel
-    for rel in "${system_dropins[@]}" "$user_dropin" "$earlyoom_source"; do
+    for rel in "${system_dropins[@]}" "$user_dropin" "${user_protection_dropins[@]}" "$earlyoom_source"; do
         [ -f "$(src_path "$rel")" ] || {
             echo "missing source file: $(src_path "$rel"); next action: restore the source tree or rerun from the PR/activation worktree" >&2
             return 1
@@ -173,6 +190,14 @@ main_pid_for_unit() {
     fi
 }
 
+main_pid_for_user_unit() {
+    local unit="$1" pid
+    pid="$("$SYSTEMCTL" --user show "$unit" -p MainPID --value 2>/dev/null || true)"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ]; then
+        printf '%s\n' "$pid"
+    fi
+}
+
 apply_recovery_unit_oom_scores() {
     local spec unit score pid
     for spec in "${recovery_unit_scores[@]}"; do
@@ -184,12 +209,33 @@ apply_recovery_unit_oom_scores() {
     done
 }
 
+apply_protected_user_unit_oom_scores() {
+    local spec unit score pid
+    for spec in "${protected_user_unit_scores[@]}"; do
+        unit="${spec%%:*}"
+        score="${spec##*:}"
+        pid="$(main_pid_for_user_unit "$unit")"
+        [ -n "$pid" ] || continue
+        write_oom_score "$pid" "$score"
+    done
+}
+
 allowed_user_protected_process() {
     case "$1" in
-        pipewire|wireplumber|dbus-broker|dbus-daemon|hapax-daimonion|hapax-daimonio|studio-compositor|studio-composit|hapax-imagination|hapax-imaginat|systemd)
+        pipewire|pipewire-pulse|wireplumber|dbus-broker|dbus-daemon|hapax-daimonion|hapax-daimonio|studio-compositor|studio-composit|hapax-imagination|hapax-imaginat|hapax-imaginati|systemd)
             return 0
             ;;
     esac
+    return 1
+}
+
+protected_user_unit_pid() {
+    local candidate="$1" spec unit pid
+    for spec in "${protected_user_unit_scores[@]}"; do
+        unit="${spec%%:*}"
+        pid="$(main_pid_for_user_unit "$unit")"
+        [ -n "$pid" ] && [ "$candidate" = "$pid" ] && return 0
+    done
     return 1
 }
 
@@ -213,6 +259,7 @@ apply_user_process_oom_floor() {
         score="$(cat "$adj" 2>/dev/null || true)"
         [[ "$score" =~ ^-?[0-9]+$ ]] || continue
         [ "$score" -le -800 ] || continue
+        protected_user_unit_pid "$pid" && continue
         allowed_user_protected_process "$name" && continue
         write_oom_score "$pid" 100
         fixed=$((fixed + 1))
@@ -244,6 +291,13 @@ install_live() {
     install -m 0644 "$(src_path "$user_dropin")" "$dest"
     echo "  '$user_dropin' -> '$dest' (copy)"
 
+    for rel in "${user_protection_dropins[@]}"; do
+        dest="$SYSTEMD_USER_DIR/${rel#systemd/units/}"
+        install -d -m 0755 "$(dirname "$dest")"
+        install -m 0644 "$(src_path "$rel")" "$dest"
+        echo "  '$rel' -> '$dest' (copy)"
+    done
+
     control_dropin_dir="$SYSTEMD_USER_CONTROL_DIR/app.slice.d"
     if [ -d "$control_dropin_dir" ]; then
         rm -f \
@@ -261,6 +315,7 @@ install_live() {
             run_root "$SYSTEMCTL" restart earlyoom.service
         fi
         apply_recovery_unit_oom_scores
+        apply_protected_user_unit_oom_scores
         user_pid="$("$SYSTEMCTL" show user@1000.service -p MainPID --value 2>/dev/null || true)"
         if [[ "$user_pid" =~ ^[0-9]+$ ]] && [ "$user_pid" -gt 0 ]; then
             write_oom_score "$user_pid" 100 || true
@@ -293,7 +348,11 @@ verify_live() {
         return 1
     fi
     verify_pair "$(src_path "$user_dropin")" "$dest"
+    for rel in "${user_protection_dropins[@]}"; do
+        verify_pair "$(src_path "$rel")" "$SYSTEMD_USER_DIR/${rel#systemd/units/}"
+    done
     verify_recovery_unit_oom_scores
+    verify_protected_user_unit_oom_scores
     verify_user_process_oom_floor
 }
 
@@ -307,6 +366,27 @@ verify_recovery_unit_oom_scores() {
         actual="$(cat "$PROC_ROOT/$pid/oom_score_adj" 2>/dev/null || true)"
         if [ "$actual" != "$score" ]; then
             echo "live OOM score drift for $unit pid $pid: actual=$actual expected=$score; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+            failed=1
+        fi
+    done
+    [ "$failed" -eq 0 ]
+}
+
+verify_protected_user_unit_oom_scores() {
+    local spec unit score pid actual configured failed=0
+    for spec in "${protected_user_unit_scores[@]}"; do
+        unit="${spec%%:*}"
+        score="${spec##*:}"
+        configured="$("$SYSTEMCTL" --user show "$unit" -p OOMScoreAdjust --value 2>/dev/null || true)"
+        if [ "$configured" != "$score" ]; then
+            echo "user unit OOM policy drift for $unit: configured=$configured expected=$score; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+            failed=1
+        fi
+        pid="$(main_pid_for_user_unit "$unit")"
+        [ -n "$pid" ] || continue
+        actual="$(cat "$PROC_ROOT/$pid/oom_score_adj" 2>/dev/null || true)"
+        if [ "$actual" != "$score" ]; then
+            echo "live user unit OOM score drift for $unit pid $pid: actual=$actual expected=$score; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
             failed=1
         fi
     done
@@ -328,6 +408,7 @@ verify_user_process_oom_floor() {
         score="$(cat "$adj" 2>/dev/null || true)"
         [[ "$score" =~ ^-?[0-9]+$ ]] || continue
         [ "$score" -le -800 ] || continue
+        protected_user_unit_pid "$pid" && continue
         allowed_user_protected_process "$name" && continue
         echo "residual inherited OOM protection: pid=$pid name=$name oom_score_adj=$score; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
         failed=1
