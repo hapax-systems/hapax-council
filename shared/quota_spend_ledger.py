@@ -61,7 +61,6 @@ AGY_ADMISSION_WITNESS_REF_RE = re.compile(r":witness:([^:]+):supported_tool:")
 # hapax-quota-telemetry-writer). The composite ledger evidence ref MUST end in the account-live
 # suffix so the availability guarantor's _account_live_quota_observed_ref attests; lane/session
 # presence never produces this ref (the writer refuses lane/tmux witnesses).
-CLAUDE_ADMISSION_PROVIDER = "anthropic-claude-subscription"
 CLAUDE_ADMISSION_OBSERVATIONS = frozenset(
     {
         "subscription_quota_headroom_observed",
@@ -69,6 +68,9 @@ CLAUDE_ADMISSION_OBSERVATIONS = frozenset(
     }
 )
 CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX = ":account-live-quota:observed"
+CLAUDE_ADMISSION_OBSERVATION_PATTERN = "|".join(
+    re.escape(observation) for observation in sorted(CLAUDE_ADMISSION_OBSERVATIONS)
+)
 CLAUDE_ADMISSION_RECEIPT_LABEL_RE = re.compile(
     r"\Arelay-receipt:"
     r"(?P<label>[a-z0-9_.+-]*claude-subscription-quota-admission[a-z0-9_.+-]*\.yaml)"
@@ -78,12 +80,10 @@ CLAUDE_ADMISSION_COMPOSITE_REF_RE = re.compile(
     r"\Arelay-receipt:"
     r"(?P<label>[a-z0-9_.+-]*claude-subscription-quota-admission[a-z0-9_.+-]*\.yaml):"
     r"witness:(?P<witness>[a-z0-9][a-z0-9_.+-]{2,239}):"
-    r"observation:(?P<observation>"
-    r"subscription_quota_headroom_observed|operator_confirmed_subscription_headroom"
-    r"):"
+    rf"observation:(?P<observation>{CLAUDE_ADMISSION_OBSERVATION_PATTERN}):"
     r"observed_at:(?P<observed_at>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z):"
-    r"fresh_until:(?P<fresh_until>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z):"
-    r"account-live-quota:observed\Z"
+    r"fresh_until:(?P<fresh_until>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)"
+    rf"{re.escape(CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX)}\Z"
 )
 CLAUDE_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
 CLAUDE_ADMISSION_SECRETISH_RE = re.compile(
