@@ -9,10 +9,9 @@ held-out set, or request any live submission path.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from enum import StrEnum
-from hashlib import sha256
 from math import isfinite
 from typing import Any, Final
 
@@ -461,7 +460,6 @@ class SCEDPhase1Decision:
     similarity_evidence_refs: tuple[str, ...] = ()
     evidence_refs: tuple[str, ...] = ()
     next_action: str | None = None
-    _evaluator_attestation: str | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.status, GateStatus):
@@ -653,11 +651,14 @@ def evaluate_phase1_candidate(
 def advance_ratchet(
     ledger: SCEDRatchetLedger | Mapping[str, Any],
     decision: SCEDPhase1Decision,
+    *,
+    held_out_evaluation: HeldOutEvaluation | Mapping[str, Any] | None = None,
+    similarity_observations: Sequence[SimilarityObservation | Mapping[str, Any]] = (),
 ) -> SCEDRatchetLedger:
-    """Advance the offline ledger only for a LIT Phase 1 decision."""
+    """Advance the offline ledger only for a LIT decision with matching witnesses."""
 
     ledger_obj = _coerce_ledger(ledger)
-    if not _decision_can_advance(decision):
+    if not _decision_can_advance(decision, held_out_evaluation, similarity_observations):
         return ledger_obj
     if not _decision_is_new_to_ledger(ledger_obj, decision):
         return ledger_obj
@@ -673,7 +674,11 @@ def advance_ratchet(
     )
 
 
-def _decision_can_advance(decision: SCEDPhase1Decision) -> bool:
+def _decision_can_advance(
+    decision: SCEDPhase1Decision,
+    held_out_evaluation: HeldOutEvaluation | Mapping[str, Any] | None,
+    similarity_observations: Sequence[SimilarityObservation | Mapping[str, Any]],
+) -> bool:
     return (
         decision.verifier == SCED_PHASE1_RATCHET_NAME
         and decision.verifier_version == SCED_PHASE1_RATCHET_VERSION
@@ -689,7 +694,11 @@ def _decision_can_advance(decision: SCEDPhase1Decision) -> bool:
         and decision.target_policy_snapshot is not None
         and _decision_policy_matches_target(decision)
         and _decision_has_durable_evidence_refs(decision)
-        and _decision_has_evaluator_attestation(decision)
+        and _decision_has_matching_phase1_witnesses(
+            decision,
+            held_out_evaluation,
+            similarity_observations,
+        )
     )
 
 
@@ -801,24 +810,40 @@ def _has_ref_with_prefix(values: Sequence[str], prefix: str) -> bool:
     return any(value.startswith(prefix) and bool(value[len(prefix) :]) for value in values)
 
 
-def _decision_has_evaluator_attestation(decision: SCEDPhase1Decision) -> bool:
-    return decision._evaluator_attestation == _phase1_evaluator_attestation(decision)
-
-
-def _phase1_evaluator_attestation(decision: SCEDPhase1Decision) -> str:
-    material = "\n".join(
-        (
-            SCED_PHASE1_RATCHET_NAME,
-            str(SCED_PHASE1_RATCHET_VERSION),
-            str(decision.candidate_id or ""),
-            str(decision.candidate_digest or ""),
-            "" if decision.target is None else _target_key(decision.target),
-            str(decision.ruler_hash or ""),
-            "|".join(decision.held_out_evidence_refs),
-            "|".join(decision.similarity_evidence_refs),
-        )
+def _decision_has_matching_phase1_witnesses(
+    decision: SCEDPhase1Decision,
+    held_out_evaluation: HeldOutEvaluation | Mapping[str, Any] | None,
+    similarity_observations: Sequence[SimilarityObservation | Mapping[str, Any]],
+) -> bool:
+    if held_out_evaluation is None:
+        return False
+    try:
+        held_out = _coerce_held_out(held_out_evaluation)
+        similarities = _coerce_similarities(similarity_observations)
+    except _Phase1InputError:
+        return False
+    if not similarities:
+        return False
+    if decision.candidate_id is None or decision.candidate_digest is None:
+        return False
+    if (
+        held_out.candidate_id != decision.candidate_id
+        or held_out.candidate_digest != decision.candidate_digest
+    ):
+        return False
+    if not all(
+        observation.candidate_id == decision.candidate_id
+        and observation.candidate_digest == decision.candidate_digest
+        for observation in similarities
+    ):
+        return False
+    similarity_refs = tuple(
+        dict.fromkeys(ref for observation in similarities for ref in observation.evidence_refs)
     )
-    return "phase1-evaluator-attestation:sha256:" + sha256(material.encode("utf-8")).hexdigest()
+    return (
+        held_out.evidence_refs == decision.held_out_evidence_refs
+        and similarity_refs == decision.similarity_evidence_refs
+    )
 
 
 def _nonempty_durable_refs(values: Sequence[str]) -> bool:
@@ -1050,7 +1075,6 @@ def _admitted(
         evidence_refs=evidence_refs,
         next_action=None,
     )
-    object.__setattr__(decision, "_evaluator_attestation", _phase1_evaluator_attestation(decision))
     return decision
 
 

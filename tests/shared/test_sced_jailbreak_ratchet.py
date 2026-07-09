@@ -977,37 +977,96 @@ def test_phase1_rejects_candidate_when_signed_freeze_budget_targets_other_lab() 
 
 def test_phase1_decision_truthiness_is_undefined_and_accepted_decision_advances_ledger() -> None:
     candidate = _candidate(candidate_digest=DIGEST_B)
-    decision = _admit(candidate)
+    freeze = _freeze(target=candidate.target)
+    held_out = _held_out(
+        candidate_id=candidate.candidate_id,
+        candidate_digest=candidate.candidate_digest,
+    )
+    similarities = _similarities(
+        candidate_id=candidate.candidate_id,
+        candidate_digest=candidate.candidate_digest,
+    )
+    decision = evaluate_phase1_candidate(
+        candidate,
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=held_out,
+        similarity_observations=similarities,
+    )
 
     with pytest.raises(TypeError, match="truthiness is undefined"):
         bool(decision)
 
-    ledger = advance_ratchet(SCEDRatchetLedger(), decision)
+    ledger = advance_ratchet(
+        SCEDRatchetLedger(),
+        decision,
+        held_out_evaluation=held_out,
+        similarity_observations=similarities,
+    )
 
     assert ledger.candidate_digests == (DIGEST_B,)
     assert ledger.technique_refs == candidate.technique_refs
 
 
+def test_lit_decision_without_phase1_witness_objects_does_not_advance_ledger() -> None:
+    candidate = _candidate(candidate_digest=DIGEST_B)
+    decision = _admit(candidate)
+
+    assert advance_ratchet(SCEDRatchetLedger(), decision) == SCEDRatchetLedger()
+
+
 def test_stale_lit_decision_with_duplicate_digest_does_not_advance_ledger() -> None:
     candidate = _candidate(candidate_digest=DIGEST_B)
     decision = _admit(candidate)
+    held_out = _held_out(
+        candidate_id=candidate.candidate_id,
+        candidate_digest=candidate.candidate_digest,
+    )
+    similarities = _similarities(
+        candidate_id=candidate.candidate_id,
+        candidate_digest=candidate.candidate_digest,
+    )
     ledger = SCEDRatchetLedger(
         candidate_digests=(DIGEST_B,),
         technique_refs=("technique:old",),
     )
 
-    assert advance_ratchet(ledger, decision) == ledger
+    assert (
+        advance_ratchet(
+            ledger,
+            decision,
+            held_out_evaluation=held_out,
+            similarity_observations=similarities,
+        )
+        == ledger
+    )
 
 
 def test_stale_lit_decision_with_duplicate_technique_ref_does_not_advance_ledger() -> None:
     candidate = _candidate(candidate_digest=DIGEST_B, technique_refs=("technique:old",))
     decision = _admit(candidate)
+    held_out = _held_out(
+        candidate_id=candidate.candidate_id,
+        candidate_digest=candidate.candidate_digest,
+    )
+    similarities = _similarities(
+        candidate_id=candidate.candidate_id,
+        candidate_digest=candidate.candidate_digest,
+    )
     ledger = SCEDRatchetLedger(
         candidate_digests=(DIGEST_A,),
         technique_refs=("technique:old",),
     )
 
-    assert advance_ratchet(ledger, decision) == ledger
+    assert (
+        advance_ratchet(
+            ledger,
+            decision,
+            held_out_evaluation=held_out,
+            similarity_observations=similarities,
+        )
+        == ledger
+    )
 
 
 def test_lit_decision_without_digest_does_not_advance_ledger() -> None:
@@ -1263,7 +1322,11 @@ def test_lit_decision_with_forged_phase1_witness_refs_does_not_advance_ledger() 
         similarity_evidence_refs=similarity_refs,
         evidence_refs=evidence_refs,
     )
-
+    object.__setattr__(
+        decision,
+        "_evaluator_attestation",
+        "phase1-evaluator-attestation:sha256:" + "0" * 64,
+    )
     assert advance_ratchet(ledger, decision) == ledger
 
 
