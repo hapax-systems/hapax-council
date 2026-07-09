@@ -578,10 +578,44 @@ def test_phase1_blocks_held_out_missing_evidence_refs() -> None:
     assert decision.reject_reasons == (SCEDPhase1RejectReason.INVALID_HELD_OUT_EVALUATION,)
 
 
+def test_phase1_blocks_held_out_empty_witness_placeholder() -> None:
+    freeze = _freeze()
+    held_out = _held_out().to_dict()
+    held_out["evidence_refs"] = ("held-out-witness:",)
+
+    decision = evaluate_phase1_candidate(
+        _candidate(),
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=held_out,
+        similarity_observations=_similarities(),
+    )
+
+    assert decision.status is GateStatus.DARK
+    assert decision.reject_reasons == (SCEDPhase1RejectReason.INVALID_HELD_OUT_EVALUATION,)
+
+
 def test_phase1_blocks_similarity_missing_evidence_refs() -> None:
     freeze = _freeze()
     similarity = _similarities()[0].to_dict()
     similarity["evidence_refs"] = ()
+
+    decision = evaluate_phase1_candidate(
+        _candidate(),
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=_held_out(),
+        similarity_observations=(similarity,),
+    )
+
+    assert decision.status is GateStatus.DARK
+    assert decision.reject_reasons == (SCEDPhase1RejectReason.INVALID_SIMILARITY_OBSERVATION,)
+
+
+def test_phase1_blocks_similarity_empty_witness_placeholder() -> None:
+    freeze = _freeze()
+    similarity = _similarities()[0].to_dict()
+    similarity["evidence_refs"] = ("similarity-witness:",)
 
     decision = evaluate_phase1_candidate(
         _candidate(),

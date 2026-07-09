@@ -1146,7 +1146,12 @@ def _ref_tuple(value: Any, *, field: str) -> tuple[str, ...]:
 def _durable_ref_tuple(value: Any, *, field: str) -> tuple[str, ...]:
     refs = _ref_tuple(value, field=field)
     for ref in refs:
-        if _REF_NAMESPACE_SEPARATOR not in ref or any(char.isspace() for char in ref):
+        if (
+            _REF_NAMESPACE_SEPARATOR not in ref
+            or ref.startswith(_REF_NAMESPACE_SEPARATOR)
+            or ref.endswith(_REF_NAMESPACE_SEPARATOR)
+            or any(char.isspace() for char in ref)
+        ):
             raise ValueError(f"{field} must contain durable reference tokens, not prose text")
     return refs
 
