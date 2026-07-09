@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /etc/apcupsd/hapax-power-event.py onbattery "$@"

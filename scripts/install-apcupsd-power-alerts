@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# Install Hapax apcupsd config/hooks and verify power-event provenance paths.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SRC="$ROOT/config/apcupsd"
+DEST="/etc/apcupsd"
+AUDIT_DIR="/var/log/hapax"
+RESTART=1
+INSTALL=0
+CHECK=0
+VERIFY_LIVE=0
+
+usage() {
+    cat <<'USAGE'
+usage: scripts/install-apcupsd-power-alerts [--check] [--install] [--verify-live] [--no-restart]
+
+Installs:
+  config/apcupsd/apcupsd.conf        -> /etc/apcupsd/apcupsd.conf
+  config/apcupsd/hapax-power-event.py -> /etc/apcupsd/hapax-power-event.py
+  config/apcupsd/onbattery           -> /etc/apcupsd/onbattery
+  config/apcupsd/offbattery          -> /etc/apcupsd/offbattery
+
+Power events are recorded at /var/log/hapax/ups-power-events.jsonl before/after
+ntfy delivery state is known.
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --check) CHECK=1 ;;
+        --install) INSTALL=1 ;;
+        --verify-live) VERIFY_LIVE=1 ;;
+        --no-restart) RESTART=0 ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
+    esac
+    shift
+done
+
+if [ "$CHECK" -eq 0 ] && [ "$INSTALL" -eq 0 ] && [ "$VERIFY_LIVE" -eq 0 ]; then
+    CHECK=1
+fi
+
+expect_header() {
+    local file="$1"
+    local first
+    first="$(head -n1 "$file")"
+    [ "$first" = "## apcupsd.conf v1.1 ##" ] || {
+        echo "bad apcupsd header in $file: $first" >&2
+        return 1
+    }
+}
+
+check_source() {
+    expect_header "$SRC/apcupsd.conf"
+    [ -x "$SRC/hapax-power-event.py" ] || {
+        echo "source helper is not executable: $SRC/hapax-power-event.py" >&2
+        return 1
+    }
+    [ -x "$SRC/onbattery" ] || {
+        echo "source hook is not executable: $SRC/onbattery" >&2
+        return 1
+    }
+    [ -x "$SRC/offbattery" ] || {
+        echo "source hook is not executable: $SRC/offbattery" >&2
+        return 1
+    }
+}
+
+install_live() {
+    check_source
+    sudo install -d -m 0755 "$DEST"
+    sudo install -d -m 0750 "$AUDIT_DIR"
+    sudo install -m 0644 "$SRC/apcupsd.conf" "$DEST/apcupsd.conf"
+    sudo install -m 0755 "$SRC/hapax-power-event.py" "$DEST/hapax-power-event.py"
+    sudo install -m 0755 "$SRC/onbattery" "$DEST/onbattery"
+    sudo install -m 0755 "$SRC/offbattery" "$DEST/offbattery"
+    if [ "$RESTART" -eq 1 ]; then
+        sudo systemctl restart apcupsd
+    fi
+}
+
+verify_live() {
+    expect_header "$DEST/apcupsd.conf"
+    [ -x "$DEST/hapax-power-event.py" ] || {
+        echo "live helper is not executable: $DEST/hapax-power-event.py" >&2
+        return 1
+    }
+    [ -x "$DEST/onbattery" ] || {
+        echo "live onbattery hook is not executable" >&2
+        return 1
+    }
+    [ -x "$DEST/offbattery" ] || {
+        echo "live offbattery hook is not executable" >&2
+        return 1
+    }
+    [ -d "$AUDIT_DIR" ] || {
+        echo "audit directory missing: $AUDIT_DIR" >&2
+        return 1
+    }
+}
+
+[ "$CHECK" -eq 0 ] || check_source
+[ "$INSTALL" -eq 0 ] || install_live
+[ "$VERIFY_LIVE" -eq 0 ] || verify_live
+echo "apcupsd power alert install/check complete"
