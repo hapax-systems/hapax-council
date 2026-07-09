@@ -113,7 +113,7 @@ def _mark_current_codex_session_usable(route: dict) -> None:
 
 def _mark_codex_exec_auth_observed(route: dict) -> None:
     route["freshness"]["evidence"]["capability"]["evidence_refs"].append(
-        "local:codex:exec:auth:observed"
+        "host:local:codex:exec:auth:saved-login:observed"
     )
 
 
@@ -235,6 +235,39 @@ def test_codex_oauth_subscription_route_degrades_without_exec_auth_witness() -> 
     assert receipt.predicate.exec_auth_attested is False
     assert "codex_exec_auth_witness_absent" in receipt.reason_codes
     assert "auth_surface_not_fresh" in receipt.reason_codes
+
+
+def test_codex_oauth_subscription_route_rejects_legacy_exec_auth_witness_without_host_saved_login() -> (
+    None
+):
+    payload = _payload()
+    route_payload = _route_payload(payload, "codex.headless.full")
+    _mark_fresh(route_payload)
+    _mark_current_codex_session_usable(route_payload)
+    route_payload["freshness"]["evidence"]["quota"]["evidence_refs"] = [
+        "local:codex:quota-probe:unobservable",
+        "platform-capability-receipt:codex:test-codex-receipt",
+    ]
+    route_payload["freshness"]["evidence"]["capability"]["evidence_refs"].extend(
+        [
+            "local:codex:exec:auth:observed",
+            "remote:hapax-appendix:codex:exec:auth:observed",
+        ]
+    )
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    route = registry.require("codex.headless.full")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    receipt = guarantor.evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=guarantor.RefreshStrategyRegistry(()),
+        now=NOW,
+    )
+
+    assert receipt.available is False
+    assert receipt.predicate.exec_auth_attested is False
+    assert "codex_exec_auth_witness_absent" in receipt.reason_codes
 
 
 def test_codex_oauth_subscription_route_rejects_suffixed_exec_auth_witness() -> None:
@@ -928,7 +961,7 @@ def test_reason_token_matching_does_not_overmatch_authority_or_quotable_text() -
         ),
         evidence_refs=(
             "test:codex:account-live-quota:observed",
-            "local:codex:exec:auth:observed",
+            "host:local:codex:exec:auth:saved-login:observed",
         ),
     )
 

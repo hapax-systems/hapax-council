@@ -69,7 +69,7 @@ def _fresh_registry(tmp_path: Path) -> Path:
         }
         if route.get("platform") == "codex" and route.get("auth_surface") == "oauth":
             route["freshness"]["evidence"]["capability"]["evidence_refs"].append(
-                "local:codex:exec:auth:observed"
+                "host:local:codex:exec:auth:saved-login:observed"
             )
         for score in route["capability_scores"].values():
             score["observed_at"] = checked_at

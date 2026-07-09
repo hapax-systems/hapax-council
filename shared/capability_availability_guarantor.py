@@ -673,10 +673,6 @@ def _exec_auth_attested(
 def _exec_auth_ref_attested(ref: tuple[str, ...]) -> bool:
     if any(token in NEGATIVE_REF_TOKENS for token in ref):
         return False
-    if ref == ("local", "codex", "exec", "auth", "observed"):
-        return True
-    if len(ref) >= 6 and ref[0] == "remote" and ref[-4:] == ("codex", "exec", "auth", "observed"):
-        return True
     return (
         len(ref) >= 8
         and ref[0] == "host"
