@@ -13,6 +13,17 @@ tiers:
 
 The exclusion list is EMPTY: the operator-hands axioms edit landed 2026-07-09, so every
 tracked surface — including axioms/** — is in scope.
+
+SCOPE OF THE REDACTION CLASS (operator-ratified 2026-07-09, decision-memo item 27,
+disposition accept-residual): the class this guard enforces is diagnostic ATTRIBUTION
+to the operator at the two tiers above. Profile-grounded design research (documents
+whose thesis is designing for a cognitive profile — e.g. content-scheduling,
+apperception, phenomenology, the demo domain corpus) is an operator-accepted residual:
+the privacy owner ratified that such research may ground design in neurotype
+literature without that constituting an operator diagnosis claim, provided no
+tier-1/tier-2 attribution exists. Section- or document-level "linkage" beyond these
+tiers is intentionally OUT of the enforced class by the privacy owner's own decision;
+the hash-pinned ledger below is the standing mechanism if the owner later narrows it.
 """
 
 from __future__ import annotations
