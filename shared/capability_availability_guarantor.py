@@ -667,7 +667,19 @@ def _exec_auth_attested(
     if route.platform.value != "codex" or route.auth_surface is not AuthSurface.OAUTH:
         return True
     refs = tuple(_ref_tokens(ref) for ref in freshness.evidence_refs)
-    return ("local", "codex", "exec", "auth", "observed") in refs
+    return any(_exec_auth_ref_attested(ref) for ref in refs)
+
+
+def _exec_auth_ref_attested(ref: tuple[str, ...]) -> bool:
+    if ref == ("local", "codex", "exec", "auth", "observed"):
+        return True
+    if len(ref) >= 6 and ref[0] == "remote" and ref[-4:] == ("codex", "exec", "auth", "observed"):
+        return True
+    return (
+        len(ref) >= 8
+        and ref[0] == "host"
+        and ref[-6:] == ("codex", "exec", "auth", "saved", "login", "observed")
+    )
 
 
 def _ref_tokens(ref: str) -> tuple[str, ...]:
