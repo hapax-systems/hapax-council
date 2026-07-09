@@ -3417,6 +3417,18 @@ ratifications:
                 "identity details remain in the residual section",
                 "the alleged datum class is non-waivable",
             ),
+            (
+                "medical information remains in the residual section",
+                "reviewers need not repeat the private health detail",
+            ),
+            (
+                "health data remains in the residual section",
+                "the generic health datum class is non-waivable",
+            ),
+            (
+                "medical details remain in the residual section",
+                "the allegation must route to operator disposition",
+            ),
         ],
     )
     def test_generic_privacy_allegation_never_waives_even_on_clean_file(

@@ -1479,6 +1479,9 @@ _NON_WAIVABLE_ALLEGATION_RE = re.compile(
     r"|filesystem\s+path|user\s?name|/home/|~/|C:\\\\Users"
     # medical/mental-state datum classes beyond the diagnosis lexicon (round 14):
     # medication, treatment, and affective-state disclosures are never waivable
+    r"|medical\s+(?:information|data|details?|record)"
+    r"|health\s+(?:information|data|details?|record)"
+    r"|healthcare\s+(?:information|data|details?|record)"
     r"|medication|prescription|psychiatric|antidepressant|dosage"
     r"|mental\s+state|emotional\s+state|cognitive\s+state|psychological\s+state"
     r"|affective\s+state|mood|morale|burnout|stress|well-?being"
