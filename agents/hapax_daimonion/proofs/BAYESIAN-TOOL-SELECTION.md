@@ -13,7 +13,7 @@ during a conversation about cognitive load and context switching:
 This connects three threads: the tool-call-as-epistemic-act research
 (TOOL-CALLS.md), alpha's Bayesian integration map (5 probabilistic
 systems underutilized by the voice pipeline), and the operator's
-lived experience of ADHD mode-switching difficulty.
+lived experience of mode-switching difficulty.
 
 ## Core Idea
 

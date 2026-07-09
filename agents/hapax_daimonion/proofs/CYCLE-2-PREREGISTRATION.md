@@ -83,7 +83,7 @@ Minimum 10 sessions per phase. Transition when minimum reached AND last 3 sessio
 ## 3. Participant and Setting
 
 ### 3.1 Participant
-Single operator, sole user of the system. Daily voice AI user. ADHD diagnosis (relevant: pacing, dysfluency tolerance, and executive function support are part of the system's design rationale).
+Single operator, sole user of the system. Daily voice AI user. Pacing, dysfluency tolerance, and executive function support are part of the system's design rationale.
 
 ### 3.2 Setting
 Home office, 24/7 research livestream (the constitutive LRR-epic principle: the stream IS the research instrument; there are no offline / non-stream-context sessions). CachyOS (Arch-based), RTX 5060 Ti (compositor + imagination) + RTX 3090 (TabbyAPI local inference), Hyprland (Wayland). Blue Yeti microphone (operator voice), PreSonus Studio 24c audio interface (Cortado MKIII contact mic + monitor outputs). Studio compositor at `/dev/video42` → OBS V4L2 + native GStreamer RTMP → MediaMTX local relay on `:1935` → YouTube public endpoint.

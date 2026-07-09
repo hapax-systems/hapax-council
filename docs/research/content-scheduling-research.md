@@ -2,7 +2,7 @@
 
 Research into how an ambient display agent should decide what content to show, when,
 for how long, and how often -- given 10 injection source categories and an operator
-with ADHD/autism who explicitly rejects visual emptiness.
+who explicitly rejects visual emptiness.
 
 ---
 
@@ -495,7 +495,7 @@ facts" -- these adjust base weights directly.
 3. **Five notification levels** (Matthews): Most content is change-blind or
    make-aware. Interrupt is rare and earned.
 
-4. **Never empty**: The ADHD optimal stimulation model confirms the operator's
+4. **Never empty**: The optimal stimulation model confirms the operator's
    instinct. Visual emptiness = understimulation = discomfort. The shader base
    layer is always active.
 

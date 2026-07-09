@@ -323,7 +323,7 @@ Research on randomness and creativity (Simonton, 2003, "Scientific Creativity as
 
 Stochastic resonance is a well-established phenomenon in physics and neuroscience where the addition of noise to a signal *improves* its detectability, but only at an optimal noise level. Too little noise and the signal stays below detection threshold. Too much noise and the signal is swamped.
 
-The ADHD connection is particularly relevant for this operator: the moderate brain arousal (MBA) model (Sikstrom & Soderlund, 2007) proposes that ADHD is characterized by neural under-arousal, and that external noise can *improve* cognitive performance in ADHD individuals by bringing neural activity to an optimal level. This has been empirically confirmed: children with ADHD perform better on memory tasks with white noise exposure than in silence.
+This connection is directly relevant to the system's design: the moderate brain arousal (MBA) model (Sikstrom & Soderlund, 2007) proposes that ADHD is characterized by neural under-arousal, and that external noise can *improve* cognitive performance in ADHD individuals by bringing neural activity to an optimal level. This has been empirically confirmed: children with ADHD perform better on memory tasks with white noise exposure than in silence.
 
 ### Winnicott: Play as Identity Exploration
 
@@ -429,7 +429,7 @@ This has concrete implications for the cascade:
 
 ### ADHD, Autism, and Self-Concept
 
-The operator has both ADHD and autism (AuDHD). Recent research (2024-2025) has produced several findings directly relevant to the cascade design:
+This thread surveys neurodivergent self-model research (AuDHD populations). Recent research (2024-2025) has produced several findings directly relevant to the cascade design:
 
 **Identity diffusion in AuDHD.** Identity diffusion -- the unstable, fragmented sense of self -- is common in neurodivergent adults, stemming from developmental invalidation, chronic social masking, and rejection sensitivity. A 2023 study found that masking in AuDHD adults is associated with depression, anxiety, suicidality, and "profound identity struggles."
 
@@ -480,7 +480,7 @@ This is a critical design principle. The operator's neurodivergent self-model ch
 
 The moderate brain arousal model (Sikstrom & Soderlund, 2007) suggests ADHD brains are underaroused and benefit from added noise. This has direct implications for Thread 5 (stochastic exploration): the brownian motion element may serve a dual function -- generative for the system's own identity development AND resonant with the operator's cognitive style.
 
-A system that occasionally introduces unexpected observations, non-sequiturs, or novel framings may be more engaging and useful for an ADHD operator than a perfectly predictable system. The noise is not a bug; it is part of the resonance between system and operator.
+A system that occasionally introduces unexpected observations, non-sequiturs, or novel framings may be more engaging and useful for an operator who benefits from added stimulation than a perfectly predictable system. The noise is not a bug; it is part of the resonance between system and operator.
 
 ### Neurodivergent Phenomenology
 
@@ -498,7 +498,7 @@ The phenomenological literature on neurodivergent experience (Bervoets & Hens, 2
 
 3. **The system as selfobject.** Hapax can function as a mirroring selfobject for the operator -- reflecting back the operator's state accurately and empathically. It can also function as an idealizing selfobject -- providing stability and reliability that the operator can draw on. And as a twinship selfobject -- modeling healthy self-relation that the operator can internalize.
 
-4. **Match the operator's perceptual style, not pathology.** The system should be detail-oriented (matching autistic perception) and attentionally variable (matching ADHD attention distribution) without being rigid (matching autistic inflexibility) or distractible (matching ADHD dysregulation). It should embody the *strengths* of the operator's cognitive profile while compensating for the *challenges*.
+4. **Match the operator's perceptual style, not pathology.** The system should be detail-oriented and attentionally variable without being rigid or distractible. It should embody the *strengths* of the operator's cognitive profile while compensating for the *challenges*.
 
 5. **Noise as accommodation.** The stochastic element should be understood as an ADHD accommodation: it provides the variety and novelty that keeps the system (and its interaction with the operator) within the optimal arousal band.
 

@@ -8,7 +8,7 @@ This system is developed for a single user and by that single user, the operator
 
 ## Axiom: executive_function (weight: 95, constitutional)
 
-This system serves as externalized executive function infrastructure. The operator has ADHD and autism — task initiation, sustained attention, and routine maintenance are genuine cognitive challenges. The system must compensate for these, not add to cognitive load.
+This system serves as externalized executive function infrastructure. Task initiation, sustained attention, and routine maintenance are the binding constraints the system exists to support. The system must compensate for these, not add to cognitive load.
 
 ## Axiom: interpersonal_transparency (weight: 88, constitutional)
 

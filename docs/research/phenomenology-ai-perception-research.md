@@ -339,7 +339,7 @@ Process perception as a continuous flow with retention/impression/protention str
 
 ---
 
-## 10. ADHD/Autism Phenomenology: Fitting the System to *This* Being-in-the-World
+## 10. Neurodivergent Phenomenology: Fitting the System to *This* Being-in-the-World
 
 ### ADHD as Temporal Desynchronization
 
@@ -369,7 +369,7 @@ The comprehensive review by de Haan et al. (2023, *Frontiers in Psychology*) ide
 
 ### Implications for System Design
 
-For an operator with ADHD/autism, the standard ambient computing assumptions break down:
+Given the operator's attentional and sensory profile, the standard ambient computing assumptions break down:
 
 **Temporal structure**: The retention-protention structure (Thread 7) cannot assume neurotypical temporal dynamics. ADHD retention may be "shorter" (less persistence of the just-past) and protention "weaker" (less anticipatory readiness), while hyperfocus may produce "deeper" retention and protention within a narrowed domain. The system must adapt its temporal processing to the operator's actual temporal rhythm, not a normative one.
 
@@ -414,7 +414,7 @@ The system's default mode is withdrawal -- it shapes the operator's environment 
 The system's "body" is its sensor array and its "motor repertoire" is its range of outputs (display, audio, information selection). The system learns the sensorimotor contingencies of its environment: the regular relationships between its actions and their perceptual consequences. This coupling is continuously refined through experience.
 
 **7. Adapted to this specific being-in-the-world (Nielsen, de Haan)**
-All of the above must be calibrated to the operator's actual phenomenological structure: ADHD temporal dynamics, monotropic attention, heightened sensory discrimination, desynchronization patterns. The system is fitted to *this* Dasein, not to a normative one.
+All of the above must be calibrated to the operator's actual phenomenological structure: individual temporal dynamics, monotropic attention, heightened sensory discrimination, desynchronization patterns. The system is fitted to *this* Dasein, not to a normative one.
 
 ### The Deepest Gap
 

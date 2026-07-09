@@ -132,7 +132,7 @@ The system is governed by five axioms, weighted by priority, enforced at multipl
 | Axiom | Weight | Scope | Type | Core Constraint |
 |-------|--------|-------|------|-----------------|
 | `single_user` | 100 | constitutional | hardcoded | One operator. No auth, roles, or collaboration. |
-| `executive_function` | 95 | constitutional | hardcoded | System compensates for ADHD/autism, never adds cognitive load. |
+| `executive_function` | 95 | constitutional | hardcoded | System compensates for executive-function constraints, never adds cognitive load. |
 | `corporate_boundary` | 90 | domain:infra | softcoded | Work data stays in employer systems. |
 | `interpersonal_transparency` | 88 | constitutional | hardcoded | No persistent state about non-operator persons without consent contract. |
 | `management_governance` | 85 | domain:mgmt | softcoded | LLMs prepare, humans deliver. No generated feedback about individuals. |
@@ -394,7 +394,7 @@ Sovereignty is architectural, not contractual. The data physically resides on in
 
 ### 7.2 Neurodivergent Accommodation as Governance
 
-The `executive_function` axiom (weight 95) treats ADHD and autism accommodation not as UX features but as constitutional requirements:
+The `executive_function` axiom (weight 95) treats neurodivergent accommodation not as a UX feature but as a constitutional requirement:
 
 - Zero-config agents (no setup steps that require sustained attention)
 - Errors include specific next actions (compensate for task initiation difficulty)
