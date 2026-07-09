@@ -61,6 +61,10 @@ VALIDATION_RECOVERY_HINT = (
 )
 
 SAFE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
+WITNESS_ALLOWLIST_RE = re.compile(
+    r"\Aclaude-(?:subscription-headroom-observed|operator-confirmed-subscription-headroom)-"
+    r"\d{8}t\d{4}(?:\d{2})?z\Z"
+)
 SAFE_RECEIPT_NAME_RE = re.compile(r"\A[a-z0-9_.+-]+\.yaml\Z")
 SECRETISH_RE = re.compile(
     r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
@@ -68,10 +72,10 @@ SECRETISH_RE = re.compile(
 )
 BILLINGISH_RE = re.compile(
     r"(?:"
-    r"(?:^|[-_.+])(?:billing|customer|account|invoice|payment)[a-z0-9]*(?:$|[-_.+])|"
-    r"(?:^|[-_.+])subscription[-_.+]?id[a-z0-9]*(?:$|[-_.+])|"
-    r"(?:^|[-_.+])(?:cus|sub|acct|in|ch)[0-9][a-z0-9]*(?:$|[-_.+])|"
-    r"(?:^|[-_.+])(?:cus|sub|acct|in|ch)[-_.+][a-z0-9]+(?:$|[-_.+])"
+    r"(?:^|[-_.+:])(?:billing|customer|account|invoice|payment)[a-z0-9]*(?:$|[-_.+:])|"
+    r"(?:^|[-_.+:])subscription[-_.+:]?id[a-z0-9]*(?:$|[-_.+:])|"
+    r"(?:^|[-_.+:])(?:cus|sub|acct|in|ch)[0-9][a-z0-9]*(?:$|[-_.+:])|"
+    r"(?:^|[-_.+:])(?:cus|sub|acct|in|ch)[-_.+:][a-z0-9]+(?:$|[-_.+:])"
     r")",
     re.IGNORECASE,
 )
@@ -123,6 +127,10 @@ def _safe_reference(value: str, *, label: str) -> str:
     if LANE_PRESENCE_RE.search(normalized) is not None:
         raise ValueError(
             f"unsafe {label}; lane/tmux/session presence must not be used as quota evidence"
+        )
+    if WITNESS_ALLOWLIST_RE.fullmatch(normalized) is None:
+        raise ValueError(
+            f"unsafe {label}; expected a claude subscription headroom witness reference"
         )
     return normalized
 

@@ -299,6 +299,20 @@ def test_claude_billingish_regex_is_consistent_across_receipt_layers() -> None:
     )
 
 
+def test_claude_witness_allowlist_regex_is_consistent_across_receipt_layers() -> None:
+    telemetry_namespace = runpy.run_path(str(SCRIPT))
+    admission_namespace = runpy.run_path(str(CLAUDE_ADMISSION_SCRIPT))
+
+    sys.path.insert(0, str(REPO_ROOT))
+    from shared.quota_spend_ledger import CLAUDE_ADMISSION_WITNESS_ALLOWLIST_RE
+
+    assert (
+        telemetry_namespace["CLAUDE_ADMISSION_WITNESS_ALLOWLIST_RE"].pattern
+        == admission_namespace["WITNESS_ALLOWLIST_RE"].pattern
+        == CLAUDE_ADMISSION_WITNESS_ALLOWLIST_RE.pattern
+    )
+
+
 def test_claude_secretish_regex_is_consistent_across_receipt_layers() -> None:
     telemetry_namespace = runpy.run_path(str(SCRIPT))
     admission_namespace = runpy.run_path(str(CLAUDE_ADMISSION_SCRIPT))
@@ -1229,6 +1243,13 @@ def test_claude_admission_rejects_secret_persistence(tmp_path: Path) -> None:
         (
             {
                 "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-billing:cus_123-headroom-20260609",
+            },
+            "evidence-ref-unsafe-expected-sanitized-account-live-observation-reference",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
                 "evidence_ref": "claude-subscription-sub_123-headroom-20260609",
             },
             "evidence-ref-names-billing-or-account-identifier",
@@ -1323,6 +1344,13 @@ def test_claude_admission_rejects_secret_persistence(tmp_path: Path) -> None:
                 "evidence_ref": "sk-live-secret-token-000000000000000000000000",
             },
             "evidence-ref-unsafe-expected-sanitized-account-live-observation-reference",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-si-1abc-headroom",
+            },
+            "evidence-ref-unsupported-expected-claude-subscription-headroom-witness-reference",
         ),
         (
             {

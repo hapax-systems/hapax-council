@@ -71,6 +71,11 @@ CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX = ":account-live-quota:observed"
 CLAUDE_ADMISSION_OBSERVATION_PATTERN = "|".join(
     re.escape(observation) for observation in sorted(CLAUDE_ADMISSION_OBSERVATIONS)
 )
+CLAUDE_ADMISSION_WITNESS_PATTERN = (
+    r"claude-(?:subscription-headroom-observed|operator-confirmed-subscription-headroom)-"
+    r"\d{8}t\d{4}(?:\d{2})?z"
+)
+CLAUDE_ADMISSION_WITNESS_ALLOWLIST_RE = re.compile(rf"\A{CLAUDE_ADMISSION_WITNESS_PATTERN}\Z")
 CLAUDE_ADMISSION_RECEIPT_LABEL_RE = re.compile(
     r"\Arelay-receipt:"
     r"(?P<label>[a-z0-9_.+-]*claude-subscription-quota-admission[a-z0-9_.+-]*\.yaml)"
@@ -79,7 +84,7 @@ CLAUDE_ADMISSION_RECEIPT_LABEL_RE = re.compile(
 CLAUDE_ADMISSION_COMPOSITE_REF_RE = re.compile(
     r"\Arelay-receipt:"
     r"(?P<label>[a-z0-9_.+-]*claude-subscription-quota-admission[a-z0-9_.+-]*\.yaml):"
-    r"witness:(?P<witness>[a-z0-9][a-z0-9_.+-]{2,239}):"
+    rf"witness:(?P<witness>{CLAUDE_ADMISSION_WITNESS_PATTERN}):"
     rf"observation:(?P<observation>{CLAUDE_ADMISSION_OBSERVATION_PATTERN}):"
     r"observed_at:(?P<observed_at>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z):"
     r"fresh_until:(?P<fresh_until>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)"
@@ -92,10 +97,10 @@ CLAUDE_ADMISSION_SECRETISH_RE = re.compile(
 )
 CLAUDE_ADMISSION_BILLINGISH_RE = re.compile(
     r"(?:"
-    r"(?:^|[-_.+])(?:billing|customer|account|invoice|payment)[a-z0-9]*(?:$|[-_.+])|"
-    r"(?:^|[-_.+])subscription[-_.+]?id[a-z0-9]*(?:$|[-_.+])|"
-    r"(?:^|[-_.+])(?:cus|sub|acct|in|ch)[0-9][a-z0-9]*(?:$|[-_.+])|"
-    r"(?:^|[-_.+])(?:cus|sub|acct|in|ch)[-_.+][a-z0-9]+(?:$|[-_.+])"
+    r"(?:^|[-_.+:])(?:billing|customer|account|invoice|payment)[a-z0-9]*(?:$|[-_.+:])|"
+    r"(?:^|[-_.+:])subscription[-_.+:]?id[a-z0-9]*(?:$|[-_.+:])|"
+    r"(?:^|[-_.+:])(?:cus|sub|acct|in|ch)[0-9][a-z0-9]*(?:$|[-_.+:])|"
+    r"(?:^|[-_.+:])(?:cus|sub|acct|in|ch)[-_.+:][a-z0-9]+(?:$|[-_.+:])"
     r")",
     re.IGNORECASE,
 )
@@ -1769,6 +1774,7 @@ def _has_safe_claude_admission_witness(ref: str) -> bool:
     witness = witness_matches[0]
     return (
         CLAUDE_ADMISSION_EVIDENCE_REF_RE.fullmatch(witness) is not None
+        and CLAUDE_ADMISSION_WITNESS_ALLOWLIST_RE.fullmatch(witness) is not None
         and CLAUDE_ADMISSION_SECRETISH_RE.search(witness) is None
         and CLAUDE_ADMISSION_BILLINGISH_RE.search(witness) is None
         and CLAUDE_ADMISSION_LANE_PRESENCE_RE.search(witness) is None

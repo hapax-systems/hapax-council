@@ -134,6 +134,21 @@ def test_rejects_billing_identifier_evidence_ref(tmp_path: Path, capsys) -> None
     assert not any(tmp_path.glob("*.yaml"))
 
 
+def test_rejects_unsupported_evidence_ref_shape(tmp_path: Path, capsys) -> None:  # noqa: ANN001
+    rc = _run(
+        [
+            "--receipt-dir",
+            str(tmp_path),
+            "--evidence-ref",
+            "claude-si-1abc-headroom",
+        ]
+    )
+
+    assert rc == 2
+    assert "expected a claude subscription headroom witness reference" in capsys.readouterr().err
+    assert not any(tmp_path.glob("*.yaml"))
+
+
 def test_rejects_lane_presence_evidence_ref(tmp_path: Path, capsys) -> None:  # noqa: ANN001
     # lane/tmux/session presence must never be laundered into quota evidence.
     for ref in (

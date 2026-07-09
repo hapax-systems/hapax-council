@@ -22,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
 RECEIPT_SCRIPT = REPO_ROOT / "scripts" / "hapax-platform-capability-receipts"
 REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
-CLAUDE_DISPATCH_ADMISSION_WITNESS = "claude-subscription-headroom-observed-dispatch-test"
+CLAUDE_DISPATCH_ADMISSION_WITNESS = "claude-subscription-headroom-observed-20260709t0710z"
 
 
 def _dispatcher_module() -> ModuleType:
