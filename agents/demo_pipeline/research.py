@@ -384,7 +384,7 @@ def _gather_profile_facts_rich(scope: str, audience: str = "") -> str:
         # technical audiences need workflow/design facts
         if audience == "family":
             queries = [
-                "ADHD autism executive function accommodation why built this system",
+                "executive function accommodation neurodivergent design why built this system",
                 "personal relationships family spouse goals aspirations life balance",
                 "communication style identity neurocognitive profile energy",
                 f"what the {scope} does daily life practical impact",

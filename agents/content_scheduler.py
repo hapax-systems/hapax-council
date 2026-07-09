@@ -10,7 +10,7 @@ Architecture:
   Scheduler scores all content sources, applies softmax temperature selection,
   and returns a SchedulerDecision (or None if no injection this tick).
 
-Design: ADHD/autism operator — display is functional stochastic resonance.
+Design: the display is functional stochastic resonance.
 Emptiness is hostile. Stimulation through variation, not distraction.
 """
 

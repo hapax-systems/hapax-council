@@ -8,8 +8,9 @@ Architecture:
   → Studio Compositor (reads JSON, renders Cairo overlay)
 
 Five display states, seven signal categories, opacity-driven transitions.
-Designed for ADHD/autism operator: muted palette, ≥500ms transitions,
-max 5 simultaneous info chunks, flow-state-gated escalation.
+Designed for sensory-safe, low-cognitive-load operation: muted palette,
+≥500ms transitions, max 5 simultaneous info chunks, flow-state-gated
+escalation.
 """
 
 from __future__ import annotations
