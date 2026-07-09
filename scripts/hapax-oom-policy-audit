@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""Audit Hapax host OOM policy drift."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from dataclasses import asdict, dataclass
+
+BYTES_80G = 80 * 1024**3
+BYTES_104G = 104 * 1024**3
+BYTES_8G = 8 * 1024**3
+
+
+@dataclass
+class Check:
+    name: str
+    status: str
+    target: str
+    actual: str
+    detail: str = ""
+
+
+def _systemctl() -> str:
+    return os.environ.get("HAPAX_SYSTEMCTL", "systemctl")
+
+
+def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=10, check=False)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess(args=args, returncode=127, stdout="", stderr=str(exc))
+
+
+def _show(unit: str, properties: list[str], *, user: bool = False) -> dict[str, str]:
+    args = [_systemctl()]
+    if user:
+        args.append("--user")
+    args.extend(["show", unit, "--no-pager"])
+    for prop in properties:
+        args.extend(["-p", prop])
+    proc = _run(args)
+    if proc.returncode != 0:
+        return {"_error": (proc.stderr or proc.stdout).strip() or f"rc={proc.returncode}"}
+    values: dict[str, str] = {}
+    for line in proc.stdout.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key] = value
+    return values
+
+
+def _int_value(value: str | None) -> int | None:
+    if value is None or value == "" or value == "infinity":
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def audit_user_manager(uid: int) -> Check:
+    unit = f"user@{uid}.service"
+    values = _show(unit, ["OOMScoreAdjust", "DropInPaths"])
+    if "_error" in values:
+        return Check("user_manager_oom_score_adjust", "error", ">=0", "N/A", values["_error"])
+    actual = values.get("OOMScoreAdjust", "")
+    parsed = _int_value(actual)
+    if parsed is None:
+        return Check("user_manager_oom_score_adjust", "error", ">=0", actual, "unparseable")
+    if parsed < 0:
+        return Check(
+            "user_manager_oom_score_adjust",
+            "gap",
+            ">=0",
+            actual,
+            "user@ must not protect every descendant workload over login/network daemons",
+        )
+    return Check("user_manager_oom_score_adjust", "pass", ">=0", actual)
+
+
+def audit_app_slice() -> list[Check]:
+    expected = {
+        "MemoryHigh": BYTES_80G,
+        "MemoryMax": BYTES_104G,
+        "MemorySwapMax": BYTES_8G,
+    }
+    values = _show("app.slice", list(expected), user=True)
+    if "_error" in values:
+        return [Check("app_slice", "error", "bounded", "N/A", values["_error"])]
+    checks: list[Check] = []
+    for key, target in expected.items():
+        actual = values.get(key, "")
+        parsed = _int_value(actual)
+        status = "pass" if parsed == target else "gap"
+        detail = "" if status == "pass" else "app.slice aggregate RAM/swap backstop drifted"
+        checks.append(Check(f"app_slice_{key}", status, str(target), actual, detail))
+    return checks
+
+
+def audit_tmux_scopes() -> list[Check]:
+    proc = _run([_systemctl(), "--user", "list-units", "--type=scope", "--all", "--no-legend"])
+    if proc.returncode != 0:
+        return [
+            Check(
+                "tmux_scope_scan", "warn", "observable", "N/A", (proc.stderr or proc.stdout).strip()
+            )
+        ]
+    scopes = [line.split()[0] for line in proc.stdout.splitlines() if "tmux-spawn-" in line]
+    checks: list[Check] = [Check("tmux_scope_count", "pass", ">=0", str(len(scopes)))]
+    for scope in scopes:
+        values = _show(scope, ["MemoryHigh", "MemoryMax", "MemorySwapMax"], user=True)
+        if "_error" in values:
+            checks.append(
+                Check(
+                    f"tmux_scope_{scope}",
+                    "warn",
+                    "bounded-or-app-slice-backed",
+                    "N/A",
+                    values["_error"],
+                )
+            )
+            continue
+        unbounded = [
+            key
+            for key in ("MemoryHigh", "MemoryMax", "MemorySwapMax")
+            if values.get(key) == "infinity"
+        ]
+        status = "warn" if unbounded else "pass"
+        detail = f"unbounded properties: {', '.join(unbounded)}" if unbounded else ""
+        actual = ",".join(
+            f"{key}={values.get(key, '')}" for key in ("MemoryHigh", "MemoryMax", "MemorySwapMax")
+        )
+        checks.append(
+            Check(f"tmux_scope_{scope}", status, "bounded-or-app-slice-backed", actual, detail)
+        )
+    return checks
+
+
+def format_human(checks: list[Check]) -> str:
+    lines = []
+    for check in checks:
+        suffix = f" ({check.detail})" if check.detail else ""
+        lines.append(
+            f"{check.status.upper():5} {check.name}: actual={check.actual} target={check.target}{suffix}"
+        )
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    parser.add_argument("--uid", type=int, default=os.getuid(), help="user manager UID to audit")
+    args = parser.parse_args(argv)
+
+    checks = [audit_user_manager(args.uid), *audit_app_slice(), *audit_tmux_scopes()]
+    if args.json:
+        print(json.dumps({"checks": [asdict(check) for check in checks]}, indent=2, sort_keys=True))
+    else:
+        print(format_human(checks))
+    return 1 if any(check.status in {"gap", "error"} for check in checks) else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

@@ -4,6 +4,8 @@ Documentation=https://github.com/ryanklee/hapax-council/blob/main/agents/live_cu
 After=network-online.target hapax-secrets.service
 Wants=network-online.target
 PartOf=hapax.target
+StartLimitIntervalSec=10min
+StartLimitBurst=3
 
 [Service]
 Type=notify

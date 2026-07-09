@@ -66,6 +66,18 @@ def test_sdlc_slice_throttles_memory_without_killing() -> None:
     assert _directive(text, "Delegate") == "yes"
 
 
+def test_app_slice_has_aggregate_oom_backstop() -> None:
+    text = (UNITS_DIR / "app.slice.d" / "oom-containment.conf").read_text()
+    assert _directive(text, "MemoryHigh") == "80G"
+    assert _directive(text, "MemoryMax") == "104G"
+    assert _directive(text, "MemorySwapMax") == "8G"
+
+
+def test_user_manager_does_not_protect_every_interactive_workload() -> None:
+    text = (REPO_ROOT / "systemd" / "system" / "user@1000.service.d" / "oom.conf").read_text()
+    assert _directive(text, "OOMScoreAdjust") == "100"
+
+
 # ── L2: the audio-core cpuset fence ──────────────────────────────────────────
 
 
@@ -129,3 +141,4 @@ def test_installer_links_slice_units() -> None:
 def test_installer_links_service_dropins() -> None:
     body = INSTALLER.read_text()
     assert '"$REPO_DIR"/*.service.d' in body
+    assert '"$REPO_DIR"/*.slice.d' in body

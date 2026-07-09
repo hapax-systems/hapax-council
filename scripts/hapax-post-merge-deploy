@@ -934,7 +934,7 @@ while IFS= read -r f; do
             fi
             ;;
         systemd/*.service|systemd/*.timer|systemd/*.path) SYSTEMD+=("$f") ;;
-        systemd/units/*.service.d/*.conf|systemd/units/*.timer.d/*.conf) SYSTEMD_DROPINS+=("$f") ;;
+        systemd/units/*.service.d/*.conf|systemd/units/*.timer.d/*.conf|systemd/units/*.slice.d/*.conf|systemd/units/*.scope.d/*.conf) SYSTEMD_DROPINS+=("$f") ;;
         systemd/user-preset.d/*.preset)   USER_PRESETS+=("$f") ;;
         systemd/watchdogs/*)              WATCHDOGS+=("$f") ;;
         systemd/scripts/*)                ;; # installer helpers; run manually when needed

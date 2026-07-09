@@ -470,6 +470,8 @@ def test_systemd_coverage_includes_dropins_presets_and_source_overrides() -> Non
             "systemd/hapax-rebuild-logos.timer",
             "systemd/hapax-build-reload.path",
             "systemd/units/pipewire.service.d/cpu-affinity.conf",
+            "systemd/units/app.slice.d/oom-containment.conf",
+            "systemd/system/user@1000.service.d/oom.conf",
             "systemd/user-preset.d/hapax.preset",
             "systemd/scripts/install-units.sh",
             "systemd/overrides/audio-stability/README.md",

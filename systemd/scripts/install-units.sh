@@ -348,13 +348,17 @@ fi
 # partition reconciliation to take effect. Handling this class of
 # file now fixes both the new drop-ins and the latent existing ones.
 #
+# 2026-07-09 P0 follow-up: the same install contract now covers slice/scope
+# drop-ins as well. app.slice containment is a host-safety backstop, and it
+# must not be skipped merely because it is not a service unit.
+#
 # Destination layout: ``~/.config/systemd/user/<service>.service.d/``
 # is a REAL directory (not a symlink). Individual ``.conf`` files
 # inside it are symlinks back to the repo. This matches the existing
 # manually-placed ``tabbyapi.service.d/gpu-pin.conf`` file that has
 # been on disk since Sprint 5b Phase 2a.
 dropin_changed=0
-for dropin_dir in "$REPO_DIR"/*.service.d; do
+for dropin_dir in "$REPO_DIR"/*.service.d "$REPO_DIR"/*.timer.d "$REPO_DIR"/*.slice.d "$REPO_DIR"/*.scope.d; do
     [ -d "$dropin_dir" ] || continue
     svc_name="$(basename "$dropin_dir")"
     dest_dropin_dir="$DEST_DIR/$svc_name"
