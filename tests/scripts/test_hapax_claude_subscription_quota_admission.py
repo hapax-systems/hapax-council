@@ -108,7 +108,14 @@ def test_rejects_secretish_evidence_ref_fails_closed(tmp_path: Path, capsys) -> 
 
 def test_rejects_lane_presence_evidence_ref(tmp_path: Path, capsys) -> None:  # noqa: ANN001
     # lane/tmux/session presence must never be laundered into quota evidence.
-    for ref in ("tmux-claude-headroom-20260708", "hapax-claude-eta-present-20260708"):
+    for ref in (
+        "tmux-claude-headroom-20260708",
+        "hapax-claude-eta-present-20260708",
+        "eta",
+        "theta",
+        "cx-eta",
+        "cx-theta",
+    ):
         rc = _run(["--receipt-dir", str(tmp_path), "--evidence-ref", ref])
         assert rc == 2
         assert "lane/tmux/session presence must not be used as quota evidence" in (

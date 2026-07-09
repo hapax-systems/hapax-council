@@ -1012,6 +1012,14 @@ def test_claude_admission_rejects_secret_persistence(tmp_path: Path) -> None:
             "observation-missing-or-unsupported",
         ),
         (
+            {"observed_at": "2026-06-09T23:55:00Z", "evidence_ref": "eta"},
+            "evidence-ref-names-lane-session-presence-not-account-live-quota-evidence",
+        ),
+        (
+            {"observed_at": "2026-06-09T23:55:00Z", "evidence_ref": "cx-theta"},
+            "evidence-ref-names-lane-session-presence-not-account-live-quota-evidence",
+        ),
+        (
             {
                 "observed_at": "2026-06-09T23:55:00Z",
                 "evidence_ref": "sk-live-secret-token-000000000000000000000000",

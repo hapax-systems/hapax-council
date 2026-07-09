@@ -120,6 +120,10 @@ CLAUDE_LANE_PRESENCE_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replac
     "witness:claude-subscription-headroom-observed-20260708t1400z:",
     "witness:hapax-claude-eta-present-20260708:",
 )
+CLAUDE_BARE_LANE_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:eta:",
+)
 CLAUDE_NOW = datetime(2026, 7, 8, 14, 5, tzinfo=UTC)
 
 
@@ -1546,6 +1550,22 @@ def test_receipt_bounded_route_rejects_lane_presence_claude_witness() -> None:
     assert state is SubscriptionQuotaState.UNKNOWN
     assert (
         "quota-snapshot:quota-claude-headless-full-lane-presence-witness:"
+        "untrusted_claude_admission_evidence"
+    ) in refs
+
+
+def test_receipt_bounded_route_rejects_bare_lane_claude_witness() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_BARE_LANE_WITNESS_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-bare-lane-witness",
+        reason="fixture claude bare-lane witness",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert (
+        "quota-snapshot:quota-claude-headless-full-bare-lane-witness:"
         "untrusted_claude_admission_evidence"
     ) in refs
 

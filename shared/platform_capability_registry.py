@@ -1545,12 +1545,17 @@ def _apply_receipt_to_route_payload(
         route_payload,
         now=now,
     )
-    if quota_admission_refs:
+    quota_admission_refs_to_inject = quota_admission_refs
+    if not quota_admission_fresh and route_payload.get("route_id") == CLAUDE_HEADLESS_ROUTE_ID:
+        quota_admission_refs_to_inject = tuple(
+            ref for ref in quota_admission_refs if not ref.endswith(":account-live-quota:observed")
+        )
+    if quota_admission_refs_to_inject:
         freshness["evidence"]["quota"]["evidence_refs"] = list(
             dict.fromkeys(
                 [
                     *freshness["evidence"]["quota"].get("evidence_refs", []),
-                    *quota_admission_refs,
+                    *quota_admission_refs_to_inject,
                 ]
             )
         )
