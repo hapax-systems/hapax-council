@@ -65,19 +65,33 @@ scored non-`quality_floor` dims) at the task level.
   overstates it as live) owned by `cc-task-ccef-reins-substrate-unification` (retire-vs-write is
   theirs to decide). This slice emits fit_score observability solely via `append_gate_event`.
 
-## Tests (34 across 4 files)
+## Tests (49 across 5 files)
 
-Scorer (15): valid-full / valid-partial / None / empty / bool-rejected / non-int-rejected /
+Scorer (18): valid-full / valid-partial / unknown-dim / out-of-range / only-unknown-is-dark /
+None / empty / bool-rejected / non-int-rejected /
 all-zero-is-neutral / quality_floor-excluded / blend=0 byte-identical / blend>0 reorders /
-negative-blend arithmetic / NaN-safety / …
+negative-blend arithmetic / bounded-score / focused-hot-outranks-diffuse / zero-dim-inactive /
+hostile-mapping safety.
 Composite + planner integration (5): both dispatch sites use composite; blend=0 byte-identical
 across RV shapes; positive blend lets high-fit overtake lower-WSJF; repair honors fit_blend.
-Demand plumb (9): requirement_vector/routing_class/mutation_surface/authority_level parse into
-Task/QueueTask; strict-int; honest-DARK on absent/invalid.
+Demand plumb (12): requirement_vector/routing_class/mutation_surface/authority_level parse into
+Task/QueueTask; strict-int; honest-DARK on absent/invalid; partial/zero/unknown/out-of-range
+coverage.
 Convergence (5): GateEvent.fit_score round-trip / emit flag-off writes nothing / emit flag-on
 writes reqvec+routing_class+fit_score / emit fail-open on unwritable path.
 Env-gate clamp (this iter-3 file): negative→0.0 / unset→0.0 / 0.25 passthrough / 0.5 + oversize
 → nextafter(0.5,0.0) / NaN→0.0.
+
+Recheck the count with:
+
+```
+uv run pytest --collect-only -q \
+  tests/shared/test_intake_fit_scorer.py \
+  tests/test_intake_fit_blend_integration.py \
+  tests/test_intake_demand_plumb.py \
+  tests/test_admission_gate_event_emit.py \
+  tests/test_intake_fit_blend_clamp.py
+```
 
 ## Out of scope (follow-on PRs)
 

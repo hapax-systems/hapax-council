@@ -16,12 +16,42 @@ Light up the loop's OUTCOME half: wire the first WITNESSED caller of
 `shared/gate_outcome_producer.emit_outcome_gate_event` so a real accept|reject verdict at a
 dispatched task's resolution seam appends a LEARNING `GateEvent` that, once
 `SdlcRouter.ingest_gate_events` drains the log, moves the Thompson posterior for
-`(routing_class, route)`. Today the admission half is live (`agents/coordinator/core.py:633-660`,
-`scripts/hapax-methodology-dispatch:_emit_gate_event`) but every emitted event is
+`(routing_class, route)`. Today the admission half is live (`agents/coordinator/core.py:664-689`,
+`scripts/hapax-methodology-dispatch:1815-1838` `_emit_gate_event`) but every emitted event is
 `gate_type="none"` / `provenance!="witnessed"` / `thompson_update_allowed=False`, so
-`record_gate_event` drops all of them and no posterior has ever moved. The registry's 168
-capability scores remain 100% self-referential and asserted; `historical_performance.class_posteriors`
-is empty for all 12 routes. This slice converts the first of those scores from asserted to measured.
+`record_gate_event` drops all of them and no posterior has ever moved. The registry/posterior gap is
+observable: capability scores can exist without witnessed `observed_at` values, and
+`historical_performance.class_posteriors` / router state can still be empty. This slice converts the
+first of those route-quality claims from asserted to measured.
+
+Recheck the registry/posterior gap with:
+
+```
+python - <<'PY'
+import json
+from pathlib import Path
+
+registry = json.loads(Path("config/platform-capability-registry.json").read_text())
+scores = [
+    score
+    for route in registry.get("routes", [])
+    for score in route.get("capability_scores", {}).values()
+]
+unwitnessed_scores = sum(
+    isinstance(score, dict) and score.get("observed_at") is None for score in scores
+)
+router_state = Path("~/.cache/hapax/sdlc-routing/router-state.json").expanduser()
+state = json.loads(router_state.read_text()) if router_state.exists() else {}
+class_posteriors = [
+    route.get("historical_performance", {}).get("class_posteriors", {})
+    for route in registry.get("routes", [])
+]
+print("capability_scores", len(scores))
+print("unwitnessed_scores", unwitnessed_scores)
+print("routes_with_registry_class_posteriors", sum(bool(p) for p in class_posteriors))
+print("router_state_class_posteriors", bool(state.get("class_posteriors")))
+PY
+```
 
 The mechanism is already PROVEN end-to-end in tests
 (`tests/shared/test_gate_outcome_producer.py::test_emit_then_ingest_closes_the_loop` writes to the
@@ -32,10 +62,10 @@ asserts fixtures poison nothing). Only the LIVE caller is missing.
 
 | Loop side | Site | Status |
 |---|---|---|
-| WRITE admission | `agents/coordinator/core.py:644-658` `_emit_admission_gate_event` | LIVE — stamps `provenance="admission"`, `gate_type="none"` |
-| WRITE admission | `scripts/hapax-methodology-dispatch:1655-1678` `_emit_gate_event` | LIVE — leaves `provenance` at the `GateEvent` default `"unknown"` |
-| WRITE outcome | `shared/gate_outcome_producer.py:130` `emit_outcome_gate_event` | **ZERO non-test callers** (whitelisted at `scripts/vulture_whitelist.py:4239-4249`) |
-| READ/UPDATE | `shared/sdlc_router.py:465` `ingest_gate_events` | **ZERO non-test callers** (whitelisted at `vulture_whitelist.py:4322`); every `SdlcRouter` reference in coordinator/dispatch/intake_fit_scorer is a comment |
+| WRITE admission | `agents/coordinator/core.py:664-689` `_emit_admission_gate_event` | LIVE — stamps `provenance="admission"`, `gate_type="none"` |
+| WRITE admission | `scripts/hapax-methodology-dispatch:1815-1838` `_emit_gate_event` | LIVE — leaves `provenance` at the `GateEvent` default `"unknown"` |
+| WRITE outcome | `shared/gate_outcome_producer.py:130` `emit_outcome_gate_event` | **ZERO non-test callers** (whitelisted at `scripts/vulture_whitelist.py:4261-4269`) |
+| READ/UPDATE | `shared/sdlc_router.py:465` `ingest_gate_events` | **ZERO non-test callers** (whitelisted at `vulture_whitelist.py:4332-4356`); every `SdlcRouter` reference in coordinator/dispatch/intake_fit_scorer is a comment |
 | Beta move | `shared/sdlc_router.py:457-461` `record_gate_event` → `posterior.record_success/record_failure` | reachable, never reached live |
 
 `record_gate_event` (`shared/sdlc_router.py:435`) drops an event unless ALL hold:
