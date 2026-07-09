@@ -118,8 +118,18 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = build_parser()
+    args, extra_args = parser.parse_known_args(argv)
+    unknown_options = [arg for arg in extra_args if arg.startswith("-")]
+    if unknown_options:
+        parser.error(f"unrecognized arguments: {' '.join(unknown_options)}")
+    args.apcupsd_args.extend(extra_args)
+    return args
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    args = parse_args(argv)
     text = EVENT_TEXT[args.event]
     apc, apc_error = read_apcaccess(args.apcaccess)
     base_record = {
