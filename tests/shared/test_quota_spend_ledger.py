@@ -160,6 +160,13 @@ CLAUDE_HASHED_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace
     "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
     "relay-receipt:unsafe-receipt-name-sha256:0123456789abcdef:",
 )
+CLAUDE_SAFE_HASHED_IGNORED_EVIDENCE_REF = (
+    "relay-receipt:unsafe-receipt-name-sha256:0123456789abcdef:"
+    "ignored:receipt-name-names-billing-or-account-identifier"
+)
+CLAUDE_UNSAFE_HASHED_IGNORED_EVIDENCE_REF = (
+    "relay-receipt:unsafe-receipt-name-sha256:0123456789abcdef:ignored:customer-cus_123"
+)
 CLAUDE_UNSAFE_OBSERVED_AT_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
     "observed_at:2026-07-08T14:00:00Z:",
     "observed_at:cus_123:",
@@ -1785,6 +1792,40 @@ def test_receipt_bounded_route_rejects_hashed_unsafe_claude_receipt_label() -> N
     )
     assert (
         "quota-snapshot:quota-claude-headless-full-hashed-label:untrusted_claude_admission_evidence"
+    ) in refs
+
+
+def test_receipt_bounded_route_allows_sanitized_hashed_ignored_claude_reason() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_SAFE_HASHED_IGNORED_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-safe-ignored-reason",
+        reason="fixture claude sanitized ignored reason",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert CLAUDE_SAFE_HASHED_IGNORED_EVIDENCE_REF in refs
+
+
+def test_receipt_bounded_route_redacts_unsafe_hashed_ignored_claude_reason() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_UNSAFE_HASHED_IGNORED_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-unsafe-ignored-reason",
+        reason="fixture claude unsafe ignored reason",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert CLAUDE_UNSAFE_HASHED_IGNORED_EVIDENCE_REF not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert (
+        "quota-snapshot:quota-claude-headless-full-unsafe-ignored-reason:"
+        "untrusted_claude_admission_evidence"
     ) in refs
 
 

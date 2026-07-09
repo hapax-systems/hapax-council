@@ -110,6 +110,19 @@ CLAUDE_ADMISSION_LANE_PRESENCE_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+CLAUDE_ADMISSION_IGNORED_REASON_RE = re.compile(r"\A[a-z0-9][a-z0-9-]{0,119}\Z")
+CLAUDE_ADMISSION_IGNORED_UNSAFE_DETAIL_RE = re.compile(
+    r"(?:"
+    r"(?:^|-)(?:cus|sub|acct|in|ch)-[a-z0-9]+(?:$|-)|"
+    r"(?:^|-)subscription-id-[a-z0-9]+(?:$|-)|"
+    r"(?:^|-)(?:customer|account|invoice|payment|billing)-[a-z0-9]*[0-9][a-z0-9]*(?:$|-)|"
+    r"(?:^|-)(?:tmux|sessions?|lanes?|dev)[0-9]+(?:$|-)|"
+    r"(?:^|-)(?:alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|"
+    r"lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega)[0-9]*(?:$|-)|"
+    r"(?:^|-)(?:cx-[a-z0-9-]+|vbe-[0-9]+|hapax-claude-[a-z0-9-]+)(?:$|-)"
+    r")",
+    re.IGNORECASE,
+)
 CLAUDE_ADMISSION_WITNESS_REF_RE = re.compile(r":witness:([^:]+):observation:")
 GLMCP_ADMISSION_CODING_PLAN_ENDPOINT = "https://api.z.ai/api/coding/paas/v4"
 GLMCP_ADMISSION_PAYG_ENDPOINT = "https://api.z.ai/api/paas/v4"
@@ -1527,6 +1540,9 @@ def _is_safe_claude_ignored_evidence_ref(ref: str) -> bool:
     label = _claude_evidence_receipt_label(ref)
     if label is None:
         return False
+    ignored_reason = ref.split(":ignored:", maxsplit=1)[1]
+    if not _is_safe_claude_ignored_reason(ignored_reason):
+        return False
     if re.fullmatch(r"unsafe-receipt-name-sha256:[0-9a-f]{16}", label) is not None:
         return True
     label_stem = label.removesuffix(".yaml")
@@ -1535,6 +1551,14 @@ def _is_safe_claude_ignored_evidence_ref(ref: str) -> bool:
         and CLAUDE_ADMISSION_SECRETISH_RE.search(label_stem) is None
         and CLAUDE_ADMISSION_BILLINGISH_RE.search(label_stem) is None
         and CLAUDE_ADMISSION_LANE_PRESENCE_RE.search(label_stem) is None
+    )
+
+
+def _is_safe_claude_ignored_reason(reason: str) -> bool:
+    return (
+        CLAUDE_ADMISSION_IGNORED_REASON_RE.fullmatch(reason) is not None
+        and CLAUDE_ADMISSION_SECRETISH_RE.search(reason) is None
+        and CLAUDE_ADMISSION_IGNORED_UNSAFE_DETAIL_RE.search(reason) is None
     )
 
 
