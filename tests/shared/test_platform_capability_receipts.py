@@ -838,6 +838,58 @@ def test_codex_receipt_remote_exec_auth_strips_access_token_without_local_binary
     assert kwargs["timeout"] == 12.0
 
 
+def test_codex_receipt_current_host_alias_emits_current_host_witness(
+    tmp_path: Path,
+) -> None:
+    module = runpy.run_path(str(SCRIPT), run_name="__test__")
+    configured = tmp_path / "configured-codex"
+    marker = tmp_path / "configured-codex-used"
+    _fake_codex_exec_success(configured, marker)
+
+    module["observe_codex_exec_auth"].__globals__["current_host"] = lambda: "hapax-appendix"
+    module["observe_codex_exec_auth"].__globals__["resolve_platform_binary"] = lambda _platform: (
+        None,
+        str(configured),
+        None,
+    )
+    with patch.dict(
+        os.environ,
+        {
+            "HAPAX_CODEX_EXEC_AUTH_HOST": "appendix",
+            "HAPAX_CODEX_BIN_PATH": str(configured),
+        },
+    ):
+        refs, reasons = module["observe_codex_exec_auth"](enabled=True, timeout=7.0)
+
+    assert reasons == []
+    assert refs == [
+        "local:codex:exec:auth:observed",
+        "host:hapax-appendix:codex:exec:auth:saved-login:observed",
+    ]
+    assert marker.read_text(encoding="utf-8").strip() == "exec"
+
+
+def test_codex_default_exec_auth_host_matches_admission_predicates(monkeypatch) -> None:
+    monkeypatch.delenv("HAPAX_CODEX_EXEC_AUTH_HOST", raising=False)
+    monkeypatch.delenv("HAPAX_DISPATCH_HOST", raising=False)
+    monkeypatch.delenv("HAPAX_DEFAULT_DISPATCH_HOST", raising=False)
+    receipts = runpy.run_path(str(SCRIPT), run_name="__test__")
+    telemetry = runpy.run_path(
+        str(REPO_ROOT / "scripts" / "hapax-quota-telemetry-writer"),
+        run_name="__test__",
+    )
+    import shared.capability_availability_guarantor as guarantor
+
+    default_host = receipts["codex_exec_auth_host"]()
+
+    assert default_host == "appendix"
+    assert receipts["normalize_host"](default_host) == "hapax-appendix"
+    assert telemetry["expected_codex_exec_auth_hosts"]() == telemetry["host_token_variants"](
+        default_host
+    )
+    assert guarantor._expected_exec_auth_hosts() == guarantor._host_token_variants(default_host)
+
+
 def test_codex_receipt_exec_auth_probe_strips_codex_auth_env(
     tmp_path: Path,
 ) -> None:

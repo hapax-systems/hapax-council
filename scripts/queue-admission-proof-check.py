@@ -52,6 +52,10 @@ _GRAPHQL_FAIL_CLOSED_HINT = (
     "next action: inspect the gh api graphql error payload and rerun this "
     "queue-admission-proof check; semantic GraphQL errors must not fall back to REST"
 )
+_GRAPHQL_MALFORMED_HINT = (
+    "next action: inspect the gh api graphql payload and rerun this "
+    "queue-admission-proof check; malformed GraphQL proof payloads must fail closed"
+)
 
 
 @dataclass(frozen=True)
@@ -170,11 +174,17 @@ def fetch_head_sha(repo: str, pr: int, *, runner: Any = None) -> str:
 def fetch_latest_proof(repo: str, pr: int, *, runner: Any = None) -> Proof:
     try:
         return fetch_latest_proof_graphql(repo, pr, runner=runner)
-    except GhJsonError:
+    except GhJsonError as exc:
         # Keep the old REST path as a fallback for older GitHub Enterprise
         # shapes, but prefer GraphQL because Actions REST reads are the
         # pressure point during merge-queue churn.
-        pass
+        print(
+            "queue-admission-proof-check: WARNING GraphQL proof read failed "
+            f"for PR #{pr}; falling back to REST; next action if REST also "
+            f"fails: inspect the gh api graphql transport error and rerun "
+            f"queue-admission-proof-check ({exc})",
+            file=sys.stderr,
+        )
     return fetch_latest_proof_rest(repo, pr, runner=runner)
 
 
@@ -205,10 +215,14 @@ def fetch_latest_proof_graphql(repo: str, pr: int, *, runner: Any = None) -> Pro
             f"GraphQL response contained errors for PR #{pr}; {_GRAPHQL_FAIL_CLOSED_HINT}"
         )
     if not repository:
-        raise RuntimeError(f"GraphQL repository payload unavailable for PR #{pr}")
+        raise RuntimeError(
+            f"GraphQL repository payload unavailable for PR #{pr}; {_GRAPHQL_MALFORMED_HINT}"
+        )
     pull_request = repository.get("pullRequest") or {}
     if not pull_request:
-        raise RuntimeError(f"GraphQL pullRequest payload unavailable for PR #{pr}")
+        raise RuntimeError(
+            f"GraphQL pullRequest payload unavailable for PR #{pr}; {_GRAPHQL_MALFORMED_HINT}"
+        )
     head_sha = str(pull_request.get("headRefOid") or "")
     commit_nodes = ((pull_request.get("commits") or {}).get("nodes")) or []
     commit = {}
@@ -217,7 +231,7 @@ def fetch_latest_proof_graphql(repo: str, pr: int, *, runner: Any = None) -> Pro
     if not head_sha:
         head_sha = str(commit.get("oid") or "")
     if not head_sha:
-        raise RuntimeError(f"PR #{pr} head SHA unavailable")
+        raise RuntimeError(f"PR #{pr} head SHA unavailable; {_GRAPHQL_MALFORMED_HINT}")
     contexts = ((commit.get("status") or {}).get("contexts")) or []
     matching = [
         item
