@@ -695,9 +695,18 @@ def _payg_admission_has_validated_spend_receipt(
 
 def _receipt_label(path: Path) -> str:
     name = path.name
+    if CLAUDE_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(name) is not None:
+        name_stem = name.removesuffix(".yaml")
+        if (
+            CLAUDE_ADMISSION_SECRETISH_RE.search(name_stem) is None
+            and CLAUDE_ADMISSION_BILLINGISH_RE.search(name_stem) is None
+            and CLAUDE_ADMISSION_LANE_PRESENCE_RE.search(name_stem) is None
+        ):
+            return name
+        digest = hashlib.sha256(name.encode("utf-8", errors="replace")).hexdigest()[:16]
+        return f"unsafe-receipt-name-sha256:{digest}"
     if (
         AGY_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(name)
-        or CLAUDE_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(name)
         or GLMCP_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(name)
         or GLMCP_PAYG_SPEND_SAFE_RECEIPT_NAME_RE.fullmatch(name)
     ) and GLMCP_ADMISSION_SECRETISH_RE.search(name) is None:

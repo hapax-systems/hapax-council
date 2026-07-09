@@ -899,6 +899,39 @@ def _assert_claude_admission_ignored(tmp_path: Path, expected_reason: str) -> No
     assert "ignoring claude admission receipt: validation failed" in result.stderr
 
 
+@pytest.mark.parametrize(
+    ("name", "expected_reason"),
+    [
+        (
+            "claude-subscription-quota-admission-cus_123.yaml",
+            "receipt-name-names-billing-or-account-identifier",
+        ),
+        (
+            "claude-subscription-quota-admission-lane2.yaml",
+            "receipt-name-names-lane-session-presence",
+        ),
+    ],
+)
+def test_rejected_claude_receipt_name_is_hashed_in_ignored_evidence(
+    tmp_path: Path,
+    name: str,
+    expected_reason: str,
+) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _claude_admission(relay, observed_at="2026-06-09T23:55:00Z", name=name)
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
+    evidence_refs = "\n".join(snapshot["evidence_refs"])
+    assert snapshot["subscription_quota_state"] == "unknown"
+    assert name not in evidence_refs
+    assert f":ignored:{expected_reason}" in evidence_refs
+    assert "relay-receipt:unsafe-receipt-name-sha256:" in evidence_refs
+
+
 def test_fresh_claude_admission_receipt_marks_claude_fresh(tmp_path: Path) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
