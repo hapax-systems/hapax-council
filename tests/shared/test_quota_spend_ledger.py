@@ -132,13 +132,29 @@ CLAUDE_BILLING_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
     "witness:claude-subscription-headroom-observed-20260708t1400z:",
     "witness:claude-billing-cus_123-headroom-20260708:",
 )
+CLAUDE_SUBSCRIPTION_ID_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:claude-subscription-id-123-headroom-20260708:",
+)
+CLAUDE_GREEK_LANE_DIGIT_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:claude-headroom-eta2-observed:",
+)
 CLAUDE_BILLING_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
     "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
     "relay-receipt:claude-subscription-quota-admission-cus_123.yaml:",
 )
+CLAUDE_SUBSCRIPTION_ID_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:claude-subscription-quota-admission-subscription-id-123.yaml:",
+)
 CLAUDE_LANE_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
     "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
     "relay-receipt:claude-subscription-quota-admission-lane2.yaml:",
+)
+CLAUDE_GREEK_LANE_DIGIT_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:claude-subscription-quota-admission-eta2.yaml:",
 )
 CLAUDE_HASHED_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
     "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
@@ -1645,6 +1661,39 @@ def test_receipt_bounded_route_rejects_billing_identifier_claude_witness() -> No
     ) in refs
 
 
+@pytest.mark.parametrize(
+    ("evidence_ref", "snapshot_id", "reason"),
+    [
+        (
+            CLAUDE_SUBSCRIPTION_ID_WITNESS_EVIDENCE_REF,
+            "quota-claude-headless-full-subscription-id-witness",
+            "fixture claude subscription-id witness",
+        ),
+        (
+            CLAUDE_GREEK_LANE_DIGIT_WITNESS_EVIDENCE_REF,
+            "quota-claude-headless-full-greek-lane-digit-witness",
+            "fixture claude digit-tailed greek lane witness",
+        ),
+    ],
+)
+def test_receipt_bounded_route_rejects_newly_unsafe_claude_witness_shapes(
+    evidence_ref: str,
+    snapshot_id: str,
+    reason: str,
+) -> None:
+    ledger = _claude_ledger(evidence_ref, snapshot_id=snapshot_id, reason=reason)
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert evidence_ref not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert f"quota-snapshot:{snapshot_id}:untrusted_claude_admission_evidence" in refs
+
+
 def test_receipt_bounded_route_rejects_billing_identifier_claude_receipt_label() -> None:
     ledger = _claude_ledger(
         CLAUDE_BILLING_RECEIPT_LABEL_EVIDENCE_REF,
@@ -1664,6 +1713,39 @@ def test_receipt_bounded_route_rejects_billing_identifier_claude_receipt_label()
         "quota-snapshot:quota-claude-headless-full-billing-label:"
         "untrusted_claude_admission_evidence"
     ) in refs
+
+
+@pytest.mark.parametrize(
+    ("evidence_ref", "snapshot_id", "reason"),
+    [
+        (
+            CLAUDE_SUBSCRIPTION_ID_RECEIPT_LABEL_EVIDENCE_REF,
+            "quota-claude-headless-full-subscription-id-label",
+            "fixture claude subscription-id receipt label",
+        ),
+        (
+            CLAUDE_GREEK_LANE_DIGIT_RECEIPT_LABEL_EVIDENCE_REF,
+            "quota-claude-headless-full-greek-lane-digit-label",
+            "fixture claude digit-tailed greek lane receipt label",
+        ),
+    ],
+)
+def test_receipt_bounded_route_rejects_newly_unsafe_claude_receipt_label_shapes(
+    evidence_ref: str,
+    snapshot_id: str,
+    reason: str,
+) -> None:
+    ledger = _claude_ledger(evidence_ref, snapshot_id=snapshot_id, reason=reason)
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert evidence_ref not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert f"quota-snapshot:{snapshot_id}:untrusted_claude_admission_evidence" in refs
 
 
 def test_receipt_bounded_route_rejects_lane_presence_claude_receipt_label() -> None:

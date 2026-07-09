@@ -110,6 +110,8 @@ def test_rejects_billing_identifier_evidence_ref(tmp_path: Path, capsys) -> None
     for ref in (
         "claude-billing-cus_123-headroom-20260708",
         "claude-subscription-sub_123-headroom-20260708",
+        "claude-subscription-id-123-headroom-20260708",
+        "claude-subscription_id_123_headroom-20260708",
         "claude-account-acct_123-headroom-20260708",
         "claude-invoice7-headroom-20260708",
         "claude-billingcus123-headroom-20260708",
@@ -137,6 +139,8 @@ def test_rejects_lane_presence_evidence_ref(tmp_path: Path, capsys) -> None:  # 
         "claude-lanes-observed-20260708t1400z",
         "claude-session2-observed-20260708t1400z",
         "claude-lane2-observed-20260708t1400z",
+        "claude-headroom-eta2-observed",
+        "eta2",
         "tmux2-headroom",
         "vbe-3-headroom",
         "mu-headroom",
@@ -218,6 +222,8 @@ def test_rejects_unsafe_receipt_name(tmp_path: Path, capsys) -> None:  # noqa: A
 def test_rejects_billing_identifier_receipt_name(tmp_path: Path, capsys) -> None:  # noqa: ANN001
     for name in (
         "claude-subscription-quota-admission-cus_123.yaml",
+        "claude-subscription-quota-admission-subscription-id-123.yaml",
+        "claude-subscription-quota-admission-subscription_id_123.yaml",
         "claude-subscription-quota-admission-invoice7.yaml",
         "claude-subscription-quota-admission-billingcus123.yaml",
         "claude-subscription-quota-admission-ch_123.yaml",
@@ -241,6 +247,7 @@ def test_rejects_billing_identifier_receipt_name(tmp_path: Path, capsys) -> None
 def test_rejects_lane_presence_receipt_name(tmp_path: Path, capsys) -> None:  # noqa: ANN001
     for name in (
         "eta-claude-subscription-quota-admission.yaml",
+        "claude-subscription-quota-admission-eta2.yaml",
         "claude-subscription-quota-admission-session2.yaml",
         "claude-subscription-quota-admission-lane2.yaml",
     ):

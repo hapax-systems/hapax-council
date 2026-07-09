@@ -1139,6 +1139,17 @@ def test_claude_admission_rejects_secret_persistence(tmp_path: Path) -> None:
             "evidence-ref-names-lane-session-presence-not-account-live-quota-evidence",
         ),
         (
+            {"observed_at": "2026-06-09T23:55:00Z", "evidence_ref": "eta2"},
+            "evidence-ref-names-lane-session-presence-not-account-live-quota-evidence",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-headroom-eta2-observed",
+            },
+            "evidence-ref-names-lane-session-presence-not-account-live-quota-evidence",
+        ),
+        (
             {
                 "observed_at": "2026-06-09T23:55:00Z",
                 "evidence_ref": "claude-billing-cus_123-headroom-20260609",
@@ -1149,6 +1160,20 @@ def test_claude_admission_rejects_secret_persistence(tmp_path: Path) -> None:
             {
                 "observed_at": "2026-06-09T23:55:00Z",
                 "evidence_ref": "claude-subscription-sub_123-headroom-20260609",
+            },
+            "evidence-ref-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-subscription-id-123-headroom-20260609",
+            },
+            "evidence-ref-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-subscription_id_123_headroom-20260609",
             },
             "evidence-ref-names-billing-or-account-identifier",
         ),
@@ -1197,6 +1222,13 @@ def test_claude_admission_rejects_secret_persistence(tmp_path: Path) -> None:
         (
             {
                 "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-eta2.yaml",
+            },
+            "receipt-name-names-lane-session-presence",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
                 "name": "claude-subscription-quota-admission-token.yaml",
             },
             "receipt-name-names-secretish-value",
@@ -1205,6 +1237,20 @@ def test_claude_admission_rejects_secret_persistence(tmp_path: Path) -> None:
             {
                 "observed_at": "2026-06-09T23:55:00Z",
                 "name": "claude-subscription-quota-admission-cus_123.yaml",
+            },
+            "receipt-name-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-subscription-id-123.yaml",
+            },
+            "receipt-name-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-subscription_id_123.yaml",
             },
             "receipt-name-names-billing-or-account-identifier",
         ),
