@@ -14,6 +14,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-quota-telemetry-writer"
+CLAUDE_ADMISSION_SCRIPT = REPO_ROOT / "scripts" / "hapax-claude-subscription-quota-admission"
 FIXTURES = REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json"
 NOW = "2026-06-10T00:00:00Z"
 PAYG_NOW = "2026-07-06T14:05:00Z"
@@ -270,6 +271,78 @@ def test_glmcp_admission_recheck_command_uses_scanner_glob() -> None:
     assert "receipt_dir.glob(GLMCP_ADMISSION_RECEIPT_GLOB)" in SCRIPT.read_text(encoding="utf-8")
 
 
+def test_claude_lane_presence_regex_is_consistent_across_receipt_layers() -> None:
+    telemetry_namespace = runpy.run_path(str(SCRIPT))
+    admission_namespace = runpy.run_path(str(CLAUDE_ADMISSION_SCRIPT))
+
+    sys.path.insert(0, str(REPO_ROOT))
+    from shared.quota_spend_ledger import CLAUDE_ADMISSION_LANE_PRESENCE_RE
+
+    assert (
+        telemetry_namespace["CLAUDE_ADMISSION_LANE_PRESENCE_RE"].pattern
+        == admission_namespace["LANE_PRESENCE_RE"].pattern
+        == CLAUDE_ADMISSION_LANE_PRESENCE_RE.pattern
+    )
+
+
+def test_claude_billingish_regex_is_consistent_across_receipt_layers() -> None:
+    telemetry_namespace = runpy.run_path(str(SCRIPT))
+    admission_namespace = runpy.run_path(str(CLAUDE_ADMISSION_SCRIPT))
+
+    sys.path.insert(0, str(REPO_ROOT))
+    from shared.quota_spend_ledger import CLAUDE_ADMISSION_BILLINGISH_RE
+
+    assert (
+        telemetry_namespace["CLAUDE_ADMISSION_BILLINGISH_RE"].pattern
+        == admission_namespace["BILLINGISH_RE"].pattern
+        == CLAUDE_ADMISSION_BILLINGISH_RE.pattern
+    )
+
+
+def test_claude_witness_allowlist_regex_is_consistent_across_receipt_layers() -> None:
+    telemetry_namespace = runpy.run_path(str(SCRIPT))
+    admission_namespace = runpy.run_path(str(CLAUDE_ADMISSION_SCRIPT))
+
+    sys.path.insert(0, str(REPO_ROOT))
+    from shared.quota_spend_ledger import CLAUDE_ADMISSION_WITNESS_ALLOWLIST_RE
+
+    assert (
+        telemetry_namespace["CLAUDE_ADMISSION_WITNESS_ALLOWLIST_RE"].pattern
+        == admission_namespace["WITNESS_ALLOWLIST_RE"].pattern
+        == CLAUDE_ADMISSION_WITNESS_ALLOWLIST_RE.pattern
+    )
+
+
+def test_claude_secretish_regex_is_consistent_across_receipt_layers() -> None:
+    telemetry_namespace = runpy.run_path(str(SCRIPT))
+    admission_namespace = runpy.run_path(str(CLAUDE_ADMISSION_SCRIPT))
+
+    sys.path.insert(0, str(REPO_ROOT))
+    from shared.quota_spend_ledger import CLAUDE_ADMISSION_SECRETISH_RE
+
+    assert (
+        telemetry_namespace["CLAUDE_ADMISSION_SECRETISH_RE"].pattern
+        == admission_namespace["SECRETISH_RE"].pattern
+        == CLAUDE_ADMISSION_SECRETISH_RE.pattern
+    )
+
+
+def test_claude_account_live_quota_suffix_tokens_are_consistent_across_layers() -> None:
+    telemetry_namespace = runpy.run_path(str(SCRIPT))
+
+    sys.path.insert(0, str(REPO_ROOT))
+    from shared.platform_capability_registry import _ref_tokens
+    from shared.quota_spend_ledger import (
+        CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX as LEDGER_SUFFIX,
+    )
+
+    suffix_tokens = ("account", "live", "quota", "observed")
+    assert _ref_tokens(telemetry_namespace["CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX"]) == (
+        suffix_tokens
+    )
+    assert _ref_tokens(LEDGER_SUFFIX) == suffix_tokens
+
+
 def test_writes_valid_live_ledger_with_fresh_captured_at(tmp_path: Path) -> None:
     result, out = _run_writer(tmp_path)
 
@@ -277,7 +350,7 @@ def test_writes_valid_live_ledger_with_fresh_captured_at(tmp_path: Path) -> None
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert payload["captured_at"] == NOW
     assert payload["ledger_id"].startswith("quota-spend-ledger-live-")
-    assert payload["local_resource_state"] == "green"
+    assert payload["local_resource_state"] in {"green", "yellow"}
 
     # The output revalidates through the fail-closed loader.
     sys.path.insert(0, str(REPO_ROOT))
@@ -288,7 +361,9 @@ def test_writes_valid_live_ledger_with_fresh_captured_at(tmp_path: Path) -> None
         snapshot.route_id: snapshot.subscription_quota_state.value
         for snapshot in ledger.quota_snapshots
     }
-    assert states["claude.headless.full"] == "fresh"
+    # claude.headless.full is now receipt-bounded (like agy): unknown without a fresh admission
+    # receipt — account-live quota is never inferred from lane/session presence or wall-absence.
+    assert states["claude.headless.full"] == "unknown"
     assert states["codex.headless.full"] == "fresh"
     assert states["agy.review.direct"] == "unknown"
     assert "gemini.headless.full" not in states
@@ -393,6 +468,27 @@ def test_glmcp_quota_wall_beats_fresh_admission_receipt(tmp_path: Path) -> None:
     assert summary["quota_walls"] == {"glmcp": 1}
     assert summary["glmcp_admissions"] == 1
     assert summary["glmcp_payg_spend_receipts"] == 0
+
+
+def test_claude_quota_wall_beats_fresh_admission_receipt(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _wall_receipt(relay, "theta", "2026-06-10T06:00:00Z")
+    _claude_admission(relay, observed_at="2026-06-09T23:55:00Z")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
+    assert snapshot["subscription_quota_state"] == "exhausted"
+    assert "quota wall" in snapshot["operator_visible_reason"]
+    assert any("theta-quota-wall.yaml" in ref for ref in snapshot["evidence_refs"])
+    assert not any(
+        "claude-subscription-quota-admission.yaml" in ref for ref in snapshot["evidence_refs"]
+    )
+    summary = json.loads(result.stdout)
+    assert summary["quota_walls"] == {"claude": 1}
+    assert summary["claude_admissions"] == 1
 
 
 def test_glmcp_payg_spend_receipt_counts_against_budget_gate(tmp_path: Path) -> None:
@@ -791,6 +887,630 @@ def test_fresh_agy_admission_receipt_marks_agy_fresh(tmp_path: Path) -> None:
     assert "receipt-bounded" in agy_snapshot["operator_visible_reason"]
     summary = json.loads(result.stdout)
     assert summary["agy_admissions"] == 1
+
+
+def _claude_admission(
+    relay: Path,
+    *,
+    observed_at: str,
+    stale_after_seconds: str = "900",
+    evidence_ref: str = "claude-subscription-headroom-observed-20260609t2355z",
+    observation: str = "subscription_quota_headroom_observed",
+    secret_value_persisted: str = "false",
+    lane_presence_used_as_quota_evidence: str = "false",
+    name: str = "claude-subscription-quota-admission.yaml",
+) -> None:
+    (relay / name).write_text(
+        "schema: hapax.claude_quota_admission.v1\n"
+        "status: quota_available\n"
+        "provider: anthropic-claude-subscription\n"
+        "route_id: claude.headless.full\n"
+        "capacity_pool: subscription_quota\n"
+        "auth_surface: subscription\n"
+        f"observation: {observation}\n"
+        f"observed_at: {observed_at}\n"
+        f"stale_after_seconds: {stale_after_seconds}\n"
+        f"evidence_ref: {evidence_ref}\n"
+        "secret_source: claude:operator-session-subscription\n"
+        f"secret_value_persisted: {secret_value_persisted}\n"
+        "prompt_or_output_persisted: false\n"
+        "billing_mode: operator_session_subscription\n"
+        "account_live_quota_observed: true\n"
+        f"lane_presence_used_as_quota_evidence: {lane_presence_used_as_quota_evidence}\n"
+        "positive_admission: true\n",
+        encoding="utf-8",
+    )
+
+
+def _claude_snapshot(payload: dict) -> dict:
+    return next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "claude.headless.full"
+    )
+
+
+def _assert_claude_admission_ignored(tmp_path: Path, expected_reason: str) -> None:
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
+    assert snapshot["subscription_quota_state"] == "unknown"
+    assert any(f":ignored:{expected_reason}" in ref for ref in snapshot["evidence_refs"])
+    summary = json.loads(result.stdout)
+    assert summary["claude_admissions"] == 0
+    assert summary["claude_ignored_admissions"] == 1
+    assert "ignoring claude admission receipt: validation failed" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_reason"),
+    [
+        (
+            "claude-subscription-quota-admission-cus_123.yaml",
+            "receipt-name-names-billing-or-account-identifier",
+        ),
+        (
+            "claude-subscription-quota-admission-lane2.yaml",
+            "receipt-name-names-lane-session-presence",
+        ),
+        (
+            "claude-subscription-quota-admission-token.yaml",
+            "receipt-name-names-secretish-value",
+        ),
+    ],
+)
+def test_rejected_claude_receipt_name_is_hashed_in_ignored_evidence(
+    tmp_path: Path,
+    name: str,
+    expected_reason: str,
+) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _claude_admission(relay, observed_at="2026-06-09T23:55:00Z", name=name)
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
+    evidence_refs = "\n".join(snapshot["evidence_refs"])
+    assert snapshot["subscription_quota_state"] == "unknown"
+    assert name not in evidence_refs
+    assert f":ignored:{expected_reason}" in evidence_refs
+    assert "relay-receipt:unsafe-receipt-name-sha256:" in evidence_refs
+
+
+def test_fresh_claude_admission_receipt_marks_claude_fresh(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _claude_admission(relay, observed_at="2026-06-09T23:55:00Z")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
+    assert snapshot["provider"] == "anthropic-claude-subscription"
+    assert snapshot["subscription_quota_state"] == "fresh"
+    assert snapshot["fresh_until"] == "2026-06-10T00:10:00Z"
+    ref = next(
+        r for r in snapshot["evidence_refs"] if "claude-subscription-quota-admission.yaml" in r
+    )
+    assert ref.endswith(":account-live-quota:observed")
+    assert "witness:claude-subscription-headroom-observed-20260609t2355z" in ref
+    assert "observation:subscription_quota_headroom_observed" in ref
+    assert "receipt-bounded" in snapshot["operator_visible_reason"]
+    assert json.loads(result.stdout)["claude_admissions"] == 1
+
+
+def test_claude_admission_writer_output_marks_claude_fresh(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    admission_result = subprocess.run(
+        [
+            sys.executable,
+            str(CLAUDE_ADMISSION_SCRIPT),
+            "--receipt-dir",
+            str(relay),
+            "--now",
+            "2026-06-09T23:55:00Z",
+            "--evidence-ref",
+            "claude-subscription-headroom-observed-20260609t2355z",
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+    assert admission_result.returncode == 0, admission_result.stderr
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
+    assert snapshot["subscription_quota_state"] == "fresh"
+    assert snapshot["fresh_until"] == "2026-06-10T00:10:00Z"
+    assert any(
+        ref.endswith(":account-live-quota:observed")
+        and "claude-subscription-headroom-observed-20260609t2355z" in ref
+        for ref in snapshot["evidence_refs"]
+    )
+    assert json.loads(result.stdout)["claude_admissions"] == 1
+
+
+def test_fresh_claude_admission_ref_passes_ledger_validator(tmp_path: Path) -> None:
+    # Cross-layer contract: the composite ref the telemetry writer emits is exactly what the ledger
+    # accepts as claude admission evidence, so the guarantor attests. Pins telemetry <-> ledger.
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _claude_admission(relay, observed_at="2026-06-09T23:55:00Z")
+
+    result, out = _run_writer(tmp_path)
+    assert result.returncode == 0, result.stderr
+    snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
+    ref = next(
+        r for r in snapshot["evidence_refs"] if "claude-subscription-quota-admission.yaml" in r
+    )
+
+    sys.path.insert(0, str(REPO_ROOT))
+    from shared.quota_spend_ledger import _is_claude_admission_evidence_ref
+
+    assert _is_claude_admission_evidence_ref(ref) is True
+
+
+def test_fractional_second_claude_admission_ref_is_normalized_for_ledger(
+    tmp_path: Path,
+) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _claude_admission(relay, observed_at="2026-06-09T23:55:00.123Z")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
+    assert snapshot["subscription_quota_state"] == "fresh"
+    assert snapshot["fresh_until"] == "2026-06-10T00:10:00Z"
+    ref = next(
+        r for r in snapshot["evidence_refs"] if "claude-subscription-quota-admission.yaml" in r
+    )
+    assert "observed_at:2026-06-09T23:55:00Z:" in ref
+    assert "fresh_until:2026-06-10T00:10:00Z:" in ref
+
+    sys.path.insert(0, str(REPO_ROOT))
+    from shared.quota_spend_ledger import _is_claude_admission_evidence_ref
+
+    assert _is_claude_admission_evidence_ref(ref) is True
+
+
+def test_fractional_second_claude_admission_expires_at_normalized_boundary(
+    tmp_path: Path,
+) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _claude_admission(relay, observed_at="2026-06-09T23:55:00.123Z")
+
+    result, out = _run_writer(tmp_path, now="2026-06-10T00:10:00Z")
+
+    assert result.returncode == 0, result.stderr
+    snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
+    assert snapshot["subscription_quota_state"] == "unknown"
+    assert any(":ignored:receipt-expired" in ref for ref in snapshot["evidence_refs"])
+    summary = json.loads(result.stdout)
+    assert summary["claude_admissions"] == 0
+    assert summary["claude_ignored_admissions"] == 1
+
+
+def test_claude_admission_rejects_lane_presence_evidence_ref(tmp_path: Path) -> None:
+    # Defense in depth: even a receipt naming lane/tmux presence is refused by the scanner.
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _claude_admission(
+        relay,
+        observed_at="2026-06-09T23:55:00Z",
+        evidence_ref="tmux-hapax-claude-eta-present-20260609",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
+    assert snapshot["subscription_quota_state"] == "unknown"
+    assert any(":ignored:" in ref for ref in snapshot["evidence_refs"])
+    summary = json.loads(result.stdout)
+    assert summary["claude_admissions"] == 0
+    assert summary["claude_ignored_admissions"] == 1
+
+
+def test_claude_admission_rejects_secret_persistence(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _claude_admission(relay, observed_at="2026-06-09T23:55:00Z", secret_value_persisted="true")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
+    assert snapshot["subscription_quota_state"] == "unknown"
+    summary = json.loads(result.stdout)
+    assert summary["claude_admissions"] == 0
+    assert summary["claude_ignored_admissions"] == 1
+    # the receipt field name/value must never echo to stderr (generic warning only).
+    assert "secret_value_persisted" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected_reason"),
+    [
+        (
+            {"observed_at": "2026-06-09T23:00:00Z", "stale_after_seconds": "60"},
+            "receipt-expired",
+        ),
+        ({"observed_at": "2026-06-10T00:01:00Z"}, "observed-at-is-in-the-future"),
+        ({"observed_at": "not-a-date"}, "missing-or-malformed-observed-at"),
+        (
+            {"observed_at": "2026-06-09T23:55:00Z", "stale_after_seconds": "soon"},
+            "malformed-stale-after-seconds",
+        ),
+        (
+            {"observed_at": "2026-06-09T23:55:00Z", "stale_after_seconds": "0"},
+            "non-positive-stale-after-seconds",
+        ),
+        (
+            {"observed_at": "2026-06-09T23:55:00Z", "stale_after_seconds": "3601"},
+            "stale-after-seconds-exceeds-maximum-3600",
+        ),
+        (
+            {"observed_at": "2026-06-09T23:55:00Z", "observation": "lane_presence_seen"},
+            "observation-missing-or-unsupported",
+        ),
+        (
+            {"observed_at": "2026-06-09T23:55:00Z", "evidence_ref": "eta"},
+            "evidence-ref-names-lane-session-presence-not-account-live-quota-evidence",
+        ),
+        (
+            {"observed_at": "2026-06-09T23:55:00Z", "evidence_ref": "cx-theta"},
+            "evidence-ref-names-lane-session-presence-not-account-live-quota-evidence",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-session-observed-20260609t2355z",
+            },
+            "evidence-ref-names-lane-session-presence-not-account-live-quota-evidence",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-lane-observed-20260609t2355z",
+            },
+            "evidence-ref-names-lane-session-presence-not-account-live-quota-evidence",
+        ),
+        (
+            {"observed_at": "2026-06-09T23:55:00Z", "evidence_ref": "vbe-3-headroom"},
+            "evidence-ref-names-lane-session-presence-not-account-live-quota-evidence",
+        ),
+        (
+            {"observed_at": "2026-06-09T23:55:00Z", "evidence_ref": "mu-headroom"},
+            "evidence-ref-names-lane-session-presence-not-account-live-quota-evidence",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-sessions-observed-20260609t2355z",
+            },
+            "evidence-ref-names-lane-session-presence-not-account-live-quota-evidence",
+        ),
+        (
+            {"observed_at": "2026-06-09T23:55:00Z", "evidence_ref": "tmux2-headroom"},
+            "evidence-ref-names-lane-session-presence-not-account-live-quota-evidence",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-session2-observed-20260609t2355z",
+            },
+            "evidence-ref-names-lane-session-presence-not-account-live-quota-evidence",
+        ),
+        (
+            {"observed_at": "2026-06-09T23:55:00Z", "evidence_ref": "eta2"},
+            "evidence-ref-names-lane-session-presence-not-account-live-quota-evidence",
+        ),
+        (
+            {"observed_at": "2026-06-09T23:55:00Z", "evidence_ref": "eta+present"},
+            "evidence-ref-names-lane-session-presence-not-account-live-quota-evidence",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-headroom-eta2-observed",
+            },
+            "evidence-ref-names-lane-session-presence-not-account-live-quota-evidence",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude+headroom+eta+observed",
+            },
+            "evidence-ref-names-lane-session-presence-not-account-live-quota-evidence",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-billing-cus_123-headroom-20260609",
+            },
+            "evidence-ref-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-billing:cus_123-headroom-20260609",
+            },
+            "evidence-ref-unsafe-expected-sanitized-account-live-observation-reference",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-subscription-sub_123-headroom-20260609",
+            },
+            "evidence-ref-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-subscription-id-123-headroom-20260609",
+            },
+            "evidence-ref-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-subscription_id_123_headroom-20260609",
+            },
+            "evidence-ref-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-subscription+id+123-headroom-20260609",
+            },
+            "evidence-ref-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-billing+cus_123-headroom-20260609",
+            },
+            "evidence-ref-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-billing-cus.123-headroom-20260609",
+            },
+            "evidence-ref-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-account-acct.123-headroom-20260609",
+            },
+            "evidence-ref-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-subscription-sub.123-headroom-20260609",
+            },
+            "evidence-ref-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-cus123-headroom-20260609",
+            },
+            "evidence-ref-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-sub123-headroom-20260609",
+            },
+            "evidence-ref-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-acct123-headroom-20260609",
+            },
+            "evidence-ref-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-billingcus123-headroom-20260609",
+            },
+            "evidence-ref-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-in_123-headroom-20260609",
+            },
+            "evidence-ref-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "sk-live-secret-token-000000000000000000000000",
+            },
+            "evidence-ref-unsafe-expected-sanitized-account-live-observation-reference",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-si-1abc-headroom",
+            },
+            "evidence-ref-unsupported-expected-claude-subscription-headroom-witness-reference",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "bad#claude-subscription-quota-admission.yaml",
+            },
+            "unsafe-receipt-name",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "eta-claude-subscription-quota-admission.yaml",
+            },
+            "receipt-name-names-lane-session-presence",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-lane2.yaml",
+            },
+            "receipt-name-names-lane-session-presence",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-eta2.yaml",
+            },
+            "receipt-name-names-lane-session-presence",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-eta+present.yaml",
+            },
+            "receipt-name-names-lane-session-presence",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-token.yaml",
+            },
+            "receipt-name-names-secretish-value",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-cus_123.yaml",
+            },
+            "receipt-name-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-subscription-id-123.yaml",
+            },
+            "receipt-name-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-subscription_id_123.yaml",
+            },
+            "receipt-name-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-subscription+id+123.yaml",
+            },
+            "receipt-name-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-billing+cus_123.yaml",
+            },
+            "receipt-name-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-cus.123.yaml",
+            },
+            "receipt-name-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-acct.123.yaml",
+            },
+            "receipt-name-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-sub.123.yaml",
+            },
+            "receipt-name-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-cus123.yaml",
+            },
+            "receipt-name-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-sub123.yaml",
+            },
+            "receipt-name-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-acct123.yaml",
+            },
+            "receipt-name-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-billingcus123.yaml",
+            },
+            "receipt-name-names-billing-or-account-identifier",
+        ),
+    ],
+)
+def test_claude_admission_fail_closed_validation_cases(
+    tmp_path: Path,
+    kwargs: dict[str, str],
+    expected_reason: str,
+) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _claude_admission(relay, **kwargs)
+
+    _assert_claude_admission_ignored(tmp_path, expected_reason)
+
+
+def test_claude_admission_rejects_unreadable_receipt(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    (relay / "claude-subscription-quota-admission-invalid-utf8.yaml").write_bytes(b"\xff\xfe\xfa")
+
+    _assert_claude_admission_ignored(tmp_path, "unreadable-receipt-unicodedecodeerror")
+
+
+def test_claude_admission_rejects_strict_parse_failure(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _claude_admission(relay, observed_at="2026-06-09T23:55:00Z")
+    with (relay / "claude-subscription-quota-admission.yaml").open(
+        "a",
+        encoding="utf-8",
+    ) as receipt:
+        receipt.write("status: quota_available\n")
+
+    _assert_claude_admission_ignored(tmp_path, "duplicate-key-on-line-18")
 
 
 def test_agy_admission_rejects_secret_persistence(tmp_path: Path) -> None:

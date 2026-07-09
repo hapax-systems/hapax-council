@@ -28,9 +28,12 @@ Each tick does two writes:
    - subscription ``quota_snapshots``: per-platform state from the quota-wall
      relay receipts (``~/.cache/hapax/relay/receipts/<role>-quota-wall.yaml``,
      written by ``shared.quota_wall`` on observed 429/quota-exhaustion). An
-     unexpired wall marks the platform ``exhausted``; otherwise the established
-     Claude/Codex subscription routes are ``fresh``. GLMCP and agy are stricter:
-     they are ``unknown`` unless a fresh, short-lived admission receipt exists.
+     unexpired wall marks the platform ``exhausted`` on the subscription-wall
+     path; Claude and GLMCP routes are ``unknown`` unless a fresh, short-lived
+     route-specific admission receipt exists. Agy reviewer admission remains
+     bounded to its sanctioned smoke receipt path. Other established subscription
+     platforms remain wall-absence fresh until their route policy requires a
+     receipt-bounded admission plane.
      Coding Plan quota walls block Coding Plan receipts, but a fresh
      endpoint-matched PAYG admission can supersede that subscription wall only
      when it is bound to the active Coding Plan quota-wall witness and a
@@ -41,17 +44,24 @@ Each tick does two writes:
      If a receipt exists but GLMCP remains ``unknown``, read this writer's
      stderr warnings; malformed, stale, mismatched, or unbounded receipts are
      ignored loudly.
-     Recheck agy reviewer admission evidence with
+     Recheck Claude and agy reviewer admission evidence with
+     ``find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '*claude-subscription-quota-admission*.yaml' -print``
+     and
      ``find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '*agy-quota-admission*.yaml' -print``
-     and create fresh short-lived agy admission receipts only after a sanctioned
-     ``scripts/hapax-agy-reviewer`` smoke succeeds.
+     and create fresh short-lived Claude admission receipts only after a genuine
+     account-live subscription observation, or agy admission receipts only after
+     a sanctioned ``scripts/hapax-agy-reviewer`` smoke succeeds.
      Admission receipts with ``stale_after_seconds`` above 3600 seconds are
      intentionally ignored; write a fresh short-lived witness instead.
      The emergency false-negative recovery path is to create a fresh
-     short-lived admission receipt with schema, status, provider, capacity_pool,
-     route_id, supported_tool, endpoint, model, observed_at, stale_after_seconds,
-     evidence_ref, and explicit no-secret/no-content/billing fields, then rerun
-     this writer so the live ledger is refreshed.
+     short-lived admission receipt. Claude receipts must include schema, status,
+     provider, capacity_pool, route_id, auth_surface, observation, observed_at,
+     stale_after_seconds, evidence_ref, secret_source, secret_value_persisted,
+     prompt_or_output_persisted, billing_mode, account_live_quota_observed,
+     lane_presence_used_as_quota_evidence, and positive_admission. GLMCP/agy
+     receipts additionally bind the reviewer tool/model/endpoint or smoke
+     witness fields required by their scanners. Then rerun this writer so the
+     live ledger is refreshed.
      That receipt-plane refresh is the canonical emergency procedure for a
      false negative.
      There is intentionally no environment-variable bypass for stale/unknown
@@ -125,6 +135,7 @@ SUBSCRIPTION_ROUTES = {
 
 SUBSCRIPTION_PROVIDERS = {
     "agy": "google-antigravity-cli-agy",
+    "claude": "anthropic-claude-subscription",
     "glmcp": "z_ai-glm-coding-plan",
 }
 
@@ -172,6 +183,83 @@ AGY_ADMISSION_FIELDS = frozenset(
         "smoke_command",
         "smoke_returncode",
         "smoke_stdout_validated",
+        "positive_admission",
+    }
+)
+
+CLAUDE_ADMISSION_SCHEMA = "hapax.claude_quota_admission.v1"
+CLAUDE_ADMISSION_PROVIDER = SUBSCRIPTION_PROVIDERS["claude"]
+CLAUDE_ADMISSION_CAPACITY_POOL = "subscription_quota"
+CLAUDE_ADMISSION_AUTH_SURFACE = "subscription"
+CLAUDE_ADMISSION_SECRET_SOURCE = "claude:operator-session-subscription"
+CLAUDE_ADMISSION_BILLING_MODE = "operator_session_subscription"
+CLAUDE_ADMISSION_OBSERVATIONS = frozenset(
+    {"subscription_quota_headroom_observed", "operator_confirmed_subscription_headroom"}
+)
+CLAUDE_ADMISSION_MAX_STALE_AFTER_SECONDS = 3600
+# The composite ledger evidence ref MUST end with this suffix so the availability guarantor's
+# _account_live_quota_observed_ref attests. Lane/session presence never produces it.
+CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX = "account-live-quota:observed"
+CLAUDE_ADMISSION_RECEIPT_GLOB = "*claude-subscription-quota-admission*.yaml"
+CLAUDE_ADMISSION_SAFE_RECEIPT_NAME_RE = re.compile(
+    r"\A[a-z0-9_.+-]*claude-subscription-quota-admission[a-z0-9_.+-]*\.yaml\Z"
+)
+CLAUDE_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
+CLAUDE_ADMISSION_WITNESS_ALLOWLIST_RE = re.compile(
+    r"\Aclaude-(?:subscription-headroom-observed|operator-confirmed-subscription-headroom)-"
+    r"\d{8}t\d{4}(?:\d{2})?z\Z"
+)
+CLAUDE_ADMISSION_SECRETISH_RE = re.compile(
+    r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
+    re.IGNORECASE,
+)
+CLAUDE_ADMISSION_BILLINGISH_RE = re.compile(
+    r"(?:"
+    r"(?:^|[-_.+:])(?:billing|customer|account|invoice|payment)[a-z0-9]*(?:$|[-_.+:])|"
+    r"(?:^|[-_.+:])subscription[-_.+:]?id[a-z0-9]*(?:$|[-_.+:])|"
+    r"(?:^|[-_.+:])(?:cus|sub|acct|in|ch)[0-9][a-z0-9]*(?:$|[-_.+:])|"
+    r"(?:^|[-_.+:])(?:cus|sub|acct|in|ch)[-_.+:][a-z0-9]+(?:$|[-_.+:])"
+    r")",
+    re.IGNORECASE,
+)
+CLAUDE_ADMISSION_LANE_PRESENCE_RE = re.compile(
+    r"(?:"
+    r"hapax-claude-[a-z0-9-]+|session-present|lane-present|lane-exists|"
+    r"(?:^|[-_.+])"
+    r"(?:(?:tmux|sessions?|lanes?|dev)[0-9]*|"
+    r"(?:alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|"
+    r"lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega)[0-9]*|"
+    r"cx-[a-z0-9-]+|vbe-[0-9]+)"
+    r"(?:$|[-_.+])"
+    r")",
+    re.IGNORECASE,
+)
+CLAUDE_ADMISSION_RECHECK_COMMAND = (
+    f"find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '{CLAUDE_ADMISSION_RECEIPT_GLOB}' -print"
+)
+CLAUDE_ADMISSION_RECOVERY_HINT = (
+    "false-negative recovery: create a fresh short-lived admission receipt with "
+    "scripts/hapax-claude-subscription-quota-admission after a genuine account-live subscription "
+    "observation (never lane/session presence)"
+)
+CLAUDE_ADMISSION_FIELDS = frozenset(
+    {
+        "schema",
+        "status",
+        "provider",
+        "route_id",
+        "capacity_pool",
+        "auth_surface",
+        "observation",
+        "observed_at",
+        "stale_after_seconds",
+        "evidence_ref",
+        "secret_source",
+        "secret_value_persisted",
+        "prompt_or_output_persisted",
+        "billing_mode",
+        "account_live_quota_observed",
+        "lane_presence_used_as_quota_evidence",
         "positive_admission",
     }
 )
@@ -348,6 +436,18 @@ class AgyAdmissionScan:
 
 
 @dataclass(frozen=True)
+class ClaudeAdmission:
+    evidence_ref: str
+    fresh_until: datetime
+
+
+@dataclass(frozen=True)
+class ClaudeAdmissionScan:
+    admissions: list[ClaudeAdmission]
+    ignored_evidence_refs: list[str]
+
+
+@dataclass(frozen=True)
 class GlmcpPaygSpendScan:
     receipts: list[SpendReceipt]
     ignored_evidence_refs: list[str]
@@ -449,6 +549,14 @@ def _parse_utc(value: str) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _utc_seconds(value: datetime) -> datetime:
+    return value.astimezone(UTC).replace(microsecond=0)
+
+
+def _iso_z_seconds(value: datetime) -> str:
+    return _utc_seconds(value).isoformat().replace("+00:00", "Z")
 
 
 def _reason_code(reason: str) -> str:
@@ -604,6 +712,16 @@ def _payg_admission_has_validated_spend_receipt(
 
 def _receipt_label(path: Path) -> str:
     name = path.name
+    if CLAUDE_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(name) is not None:
+        name_stem = name.removesuffix(".yaml")
+        if (
+            CLAUDE_ADMISSION_SECRETISH_RE.search(name_stem) is None
+            and CLAUDE_ADMISSION_BILLINGISH_RE.search(name_stem) is None
+            and CLAUDE_ADMISSION_LANE_PRESENCE_RE.search(name_stem) is None
+        ):
+            return name
+        digest = hashlib.sha256(name.encode("utf-8", errors="replace")).hexdigest()[:16]
+        return f"unsafe-receipt-name-sha256:{digest}"
     if (
         AGY_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(name)
         or GLMCP_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(name)
@@ -668,6 +786,19 @@ def _warn_ignored_agy_admission(path: Path, reason: str) -> str:
         "hapax-quota-telemetry-writer: ignoring agy admission receipt: "
         f"validation failed; recheck: {AGY_ADMISSION_RECHECK_COMMAND}; "
         f"{AGY_ADMISSION_RECOVERY_HINT}",
+        file=sys.stderr,
+    )
+    return f"relay-receipt:{receipt_label}:ignored:{_reason_code(reason)}"
+
+
+def _warn_ignored_claude_admission(path: Path, reason: str) -> str:
+    # Generic stderr (like agy) so a rejected receipt's field names/values never echo; the specific
+    # reason survives only as a slugified code in the returned ignored evidence ref.
+    receipt_label = _receipt_label(path)
+    print(
+        "hapax-quota-telemetry-writer: ignoring claude admission receipt: "
+        f"validation failed; recheck: {CLAUDE_ADMISSION_RECHECK_COMMAND}; "
+        f"{CLAUDE_ADMISSION_RECOVERY_HINT}",
         file=sys.stderr,
     )
     return f"relay-receipt:{receipt_label}:ignored:{_reason_code(reason)}"
@@ -777,6 +908,145 @@ def active_agy_admission_receipts(
     return AgyAdmissionScan(admissions=refs, ignored_evidence_refs=ignored_refs)
 
 
+def active_claude_admission_receipts(
+    receipt_dir: Path,
+    *,
+    now: datetime,
+) -> ClaudeAdmissionScan:
+    """Return fresh positive claude subscription-quota admission evidence refs.
+
+    Account-live subscription quota is proven ONLY by a short-lived sanitized admission receipt
+    (scripts/hapax-claude-subscription-quota-admission), NEVER by lane/tmux/session presence. Each
+    fresh receipt yields a composite evidence ref ending in :account-live-quota:observed so the
+    availability guarantor attests; a secretish or lane/session-shaped witness is refused.
+    """
+
+    if not receipt_dir.is_dir():
+        return ClaudeAdmissionScan(admissions=[], ignored_evidence_refs=[])
+    refs: list[ClaudeAdmission] = []
+    ignored_refs: list[str] = []
+
+    def reject(path: Path, reason: str) -> None:
+        ignored_refs.append(_warn_ignored_claude_admission(path, reason))
+
+    for path in sorted(receipt_dir.glob(CLAUDE_ADMISSION_RECEIPT_GLOB)):
+        if CLAUDE_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(path.name) is None:
+            reject(path, "unsafe receipt name")
+            continue
+        receipt_name_stem = path.name.removesuffix(".yaml")
+        if CLAUDE_ADMISSION_SECRETISH_RE.search(receipt_name_stem) is not None:
+            reject(path, "receipt name names secretish value")
+            continue
+        if CLAUDE_ADMISSION_BILLINGISH_RE.search(receipt_name_stem) is not None:
+            reject(path, "receipt name names billing or account identifier")
+            continue
+        if CLAUDE_ADMISSION_LANE_PRESENCE_RE.search(receipt_name_stem) is not None:
+            reject(path, "receipt name names lane/session presence")
+            continue
+        try:
+            raw_receipt = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            reject(path, f"unreadable receipt {type(exc).__name__}")
+            continue
+        fields, parse_error = _parse_flat_yaml_strict(
+            raw_receipt,
+            allowed_fields=CLAUDE_ADMISSION_FIELDS,
+        )
+        if parse_error is not None:
+            reject(path, parse_error)
+            continue
+        expected = {
+            "schema": CLAUDE_ADMISSION_SCHEMA,
+            "status": "quota_available",
+            "provider": CLAUDE_ADMISSION_PROVIDER,
+            "route_id": SUBSCRIPTION_ROUTES["claude"],
+            "capacity_pool": CLAUDE_ADMISSION_CAPACITY_POOL,
+            "auth_surface": CLAUDE_ADMISSION_AUTH_SURFACE,
+            "secret_source": CLAUDE_ADMISSION_SECRET_SOURCE,
+            "secret_value_persisted": "false",
+            "prompt_or_output_persisted": "false",
+            "billing_mode": CLAUDE_ADMISSION_BILLING_MODE,
+            "account_live_quota_observed": "true",
+            "lane_presence_used_as_quota_evidence": "false",
+            "positive_admission": "true",
+        }
+        failed = False
+        for key, value in expected.items():
+            if fields.get(key, "") != value:
+                reject(path, f"{key} missing or unsupported; expected {value}")
+                failed = True
+                break
+        if failed:
+            continue
+        observation = fields.get("observation", "").strip()
+        if observation not in CLAUDE_ADMISSION_OBSERVATIONS:
+            reject(path, "observation missing or unsupported")
+            continue
+        receipt_evidence_ref = " ".join(fields.get("evidence_ref", "").strip().split())
+        if (
+            CLAUDE_ADMISSION_EVIDENCE_REF_RE.fullmatch(receipt_evidence_ref) is None
+            or CLAUDE_ADMISSION_SECRETISH_RE.search(receipt_evidence_ref) is not None
+        ):
+            reject(
+                path, "evidence_ref unsafe; expected sanitized account-live observation reference"
+            )
+            continue
+        if CLAUDE_ADMISSION_BILLINGISH_RE.search(receipt_evidence_ref) is not None:
+            reject(path, "evidence_ref names billing or account identifier")
+            continue
+        if CLAUDE_ADMISSION_LANE_PRESENCE_RE.search(receipt_evidence_ref) is not None:
+            reject(
+                path, "evidence_ref names lane/session presence; not account-live quota evidence"
+            )
+            continue
+        if CLAUDE_ADMISSION_WITNESS_ALLOWLIST_RE.fullmatch(receipt_evidence_ref) is None:
+            reject(
+                path,
+                "evidence_ref unsupported; expected claude subscription headroom witness reference",
+            )
+            continue
+        observed_at = _parse_utc(fields.get("observed_at", "").strip())
+        if observed_at is None:
+            reject(path, "missing or malformed observed_at")
+            continue
+        if observed_at > now:
+            reject(path, "observed_at is in the future")
+            continue
+        observed_at = _utc_seconds(observed_at)
+        try:
+            stale_after_seconds = int(fields.get("stale_after_seconds", "").strip())
+        except ValueError:
+            reject(path, "malformed stale_after_seconds")
+            continue
+        if stale_after_seconds <= 0:
+            reject(path, "non-positive stale_after_seconds")
+            continue
+        if stale_after_seconds > CLAUDE_ADMISSION_MAX_STALE_AFTER_SECONDS:
+            reject(
+                path,
+                f"stale_after_seconds exceeds maximum {CLAUDE_ADMISSION_MAX_STALE_AFTER_SECONDS}",
+            )
+            continue
+        fresh_until = observed_at + timedelta(seconds=stale_after_seconds)
+        if now >= fresh_until:
+            reject(path, "receipt expired")
+            continue
+        refs.append(
+            ClaudeAdmission(
+                evidence_ref=(
+                    "relay-receipt:"
+                    f"{_receipt_label(path)}:witness:{receipt_evidence_ref}:"
+                    f"observation:{observation}:"
+                    f"observed_at:{_iso_z_seconds(observed_at)}:"
+                    f"fresh_until:{_iso_z_seconds(fresh_until)}:"
+                    f"{CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX}"
+                ),
+                fresh_until=fresh_until,
+            )
+        )
+    return ClaudeAdmissionScan(admissions=refs, ignored_evidence_refs=ignored_refs)
+
+
 def active_glmcp_admission_receipts(
     receipt_dir: Path,
     *,
@@ -784,8 +1054,8 @@ def active_glmcp_admission_receipts(
 ) -> GlmcpAdmissionScan:
     """Return fresh positive GLMCP quota/admission receipt evidence refs.
 
-    GLM Coding Plan Max is finite quota. Unlike the older Claude/Codex/Gemini
-    subscription snapshots, absence of a wall is not enough to call GLMCP fresh:
+    GLM Coding Plan Max is finite quota. Unlike wall-absence-fresh subscription
+    snapshots, absence of a wall is not enough to call GLMCP fresh:
     a bakeoff or dispatcher must leave an explicit, time-bounded admission
     witness first. This keeps GLMCP fail-closed until a supported-tool witness
     exists, without making provider calls from this writer.
@@ -1232,6 +1502,8 @@ def build_live_ledger(
     walls: dict[str, list[QuotaWall]],
     agy_admissions: list[AgyAdmission],
     agy_ignored_receipts: list[str],
+    claude_admissions: list[ClaudeAdmission],
+    claude_ignored_receipts: list[str],
     glmcp_admissions: list[GlmcpAdmission],
     glmcp_ignored_receipts: list[str],
     glmcp_payg_spend_receipts: list[SpendReceipt],
@@ -1252,6 +1524,9 @@ def build_live_ledger(
         platform_walls = walls.get(platform, [])
         platform_wall_evidence = [wall.evidence_ref for wall in platform_walls]
         agy_platform_admissions = [admission for admission in agy_admissions if platform == "agy"]
+        claude_platform_admissions = [
+            admission for admission in claude_admissions if platform == "claude"
+        ]
         glmcp_payg_admissions = [
             admission
             for admission in glmcp_admissions
@@ -1430,6 +1705,31 @@ def build_live_ledger(
                         "and unknown quota must hold/backoff rather than dispatch blind"
                     )
                 fresh_until = None
+        elif platform == "claude":
+            if claude_platform_admissions:
+                state = "fresh"
+                evidence = [
+                    *(admission.evidence_ref for admission in claude_platform_admissions),
+                    writer_ref,
+                ]
+                fresh_until = max(admission.fresh_until for admission in claude_platform_admissions)
+                reason = (
+                    "fresh claude subscription-quota admission receipt present; "
+                    "claude.headless.full account-live quota is receipt-bounded, "
+                    "not lane/session presence"
+                )
+            else:
+                state = "unknown"
+                evidence = (
+                    [*claude_ignored_receipts, writer_ref]
+                    if claude_ignored_receipts
+                    else ["relay-receipt:claude:quota-admission:absent", writer_ref]
+                )
+                fresh_until = None
+                reason = (
+                    "no fresh claude subscription-quota admission receipt; claude.headless.full "
+                    "must hold rather than infer availability from lane/session presence"
+                )
         else:
             state = "fresh"
             evidence = [f"relay-receipt:{platform}:quota-wall:absent", writer_ref]
@@ -1450,7 +1750,7 @@ def build_live_ledger(
             "operator_visible_reason": reason,
         }
         if fresh_until is not None:
-            snapshot["fresh_until"] = fresh_until.isoformat().replace("+00:00", "Z")
+            snapshot["fresh_until"] = _iso_z_seconds(fresh_until)
         snapshots.append(snapshot)
 
     snapshots.append(
@@ -1606,6 +1906,7 @@ def main(argv: list[str] | None = None) -> int:
     with quota_spend_live_lock(out_path):
         walls = active_quota_walls(args.relay_receipt_dir, now=now)
         agy_scan = active_agy_admission_receipts(args.relay_receipt_dir, now=now)
+        claude_scan = active_claude_admission_receipts(args.relay_receipt_dir, now=now)
         glmcp_scan = active_glmcp_admission_receipts(args.relay_receipt_dir, now=now)
         glmcp_payg_spend_scan = active_glmcp_payg_spend_receipts(
             args.relay_receipt_dir,
@@ -1620,6 +1921,8 @@ def main(argv: list[str] | None = None) -> int:
                 walls=walls,
                 agy_admissions=agy_scan.admissions,
                 agy_ignored_receipts=agy_scan.ignored_evidence_refs,
+                claude_admissions=claude_scan.admissions,
+                claude_ignored_receipts=claude_scan.ignored_evidence_refs,
                 glmcp_admissions=glmcp_scan.admissions,
                 glmcp_ignored_receipts=glmcp_scan.ignored_evidence_refs,
                 glmcp_payg_spend_receipts=glmcp_payg_spend_scan.receipts,
@@ -1640,6 +1943,8 @@ def main(argv: list[str] | None = None) -> int:
         "local_resource_state": resource_state,
         "agy_admissions": len(agy_scan.admissions),
         "agy_ignored_admissions": len(agy_scan.ignored_evidence_refs),
+        "claude_admissions": len(claude_scan.admissions),
+        "claude_ignored_admissions": len(claude_scan.ignored_evidence_refs),
         "glmcp_admissions": len(glmcp_scan.admissions),
         "glmcp_ignored_admissions": len(glmcp_scan.ignored_evidence_refs),
         "glmcp_payg_spend_receipts": len(glmcp_payg_spend_scan.receipts),
