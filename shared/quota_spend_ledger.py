@@ -80,11 +80,18 @@ CLAUDE_ADMISSION_SECRETISH_RE = re.compile(
     r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
     re.IGNORECASE,
 )
+CLAUDE_ADMISSION_BILLINGISH_RE = re.compile(
+    r"(?:"
+    r"(?:^|[-_.])(?:billing|customer|account|invoice|payment)(?:$|[-_.])|"
+    r"(?:^|[-_.])(?:cus|sub|acct)[_-][a-z0-9]+(?:$|[-_.])"
+    r")",
+    re.IGNORECASE,
+)
 CLAUDE_ADMISSION_LANE_PRESENCE_RE = re.compile(
     r"(?:"
     r"hapax-claude-[a-z0-9-]+|session-present|lane-present|lane-exists|"
     r"(?:^|[-_.])"
-    r"(?:tmux|session|lane|alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|"
+    r"(?:tmux[0-9]*|sessions?|lanes?|alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|"
     r"lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega|"
     r"dev[0-9]*|cx-[a-z0-9-]+|vbe-[0-9]+)"
     r"(?:$|[-_.])"
@@ -1666,6 +1673,7 @@ def _has_safe_claude_admission_witness(ref: str) -> bool:
     return (
         CLAUDE_ADMISSION_EVIDENCE_REF_RE.fullmatch(witness) is not None
         and CLAUDE_ADMISSION_SECRETISH_RE.search(witness) is None
+        and CLAUDE_ADMISSION_BILLINGISH_RE.search(witness) is None
         and CLAUDE_ADMISSION_LANE_PRESENCE_RE.search(witness) is None
     )
 

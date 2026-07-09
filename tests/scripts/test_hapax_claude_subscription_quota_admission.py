@@ -106,6 +106,18 @@ def test_rejects_secretish_evidence_ref_fails_closed(tmp_path: Path, capsys) -> 
     assert not receipt_dir.exists() or not any(receipt_dir.iterdir())
 
 
+def test_rejects_billing_identifier_evidence_ref(tmp_path: Path, capsys) -> None:  # noqa: ANN001
+    for ref in (
+        "claude-billing-cus_123-headroom-20260708",
+        "claude-subscription-sub_123-headroom-20260708",
+        "claude-account-acct_123-headroom-20260708",
+    ):
+        rc = _run(["--receipt-dir", str(tmp_path), "--evidence-ref", ref])
+        assert rc == 2
+        assert "billing/account identifiers must not be persisted" in capsys.readouterr().err
+    assert not any(tmp_path.glob("*.yaml"))
+
+
 def test_rejects_lane_presence_evidence_ref(tmp_path: Path, capsys) -> None:  # noqa: ANN001
     # lane/tmux/session presence must never be laundered into quota evidence.
     for ref in (
@@ -117,6 +129,9 @@ def test_rejects_lane_presence_evidence_ref(tmp_path: Path, capsys) -> None:  # 
         "cx-theta",
         "claude-session-observed-20260708t1400z",
         "claude-lane-observed-20260708t1400z",
+        "claude-sessions-observed-20260708t1400z",
+        "claude-lanes-observed-20260708t1400z",
+        "tmux2-headroom",
         "vbe-3-headroom",
         "mu-headroom",
     ):

@@ -66,13 +66,20 @@ SECRETISH_RE = re.compile(
     r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
     re.IGNORECASE,
 )
+BILLINGISH_RE = re.compile(
+    r"(?:"
+    r"(?:^|[-_.])(?:billing|customer|account|invoice|payment)(?:$|[-_.])|"
+    r"(?:^|[-_.])(?:cus|sub|acct)[_-][a-z0-9]+(?:$|[-_.])"
+    r")",
+    re.IGNORECASE,
+)
 # Guard against laundering lane/session presence into quota evidence (the exact anti-pattern this
 # task closes): an evidence ref that names a tmux/session/lane is refused.
 LANE_PRESENCE_RE = re.compile(
     r"(?:"
     r"hapax-claude-[a-z0-9-]+|session-present|lane-present|lane-exists|"
     r"(?:^|[-_.])"
-    r"(?:tmux|session|lane|alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|"
+    r"(?:tmux[0-9]*|sessions?|lanes?|alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|"
     r"lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega|"
     r"dev[0-9]*|cx-[a-z0-9-]+|vbe-[0-9]+)"
     r"(?:$|[-_.])"
@@ -108,6 +115,8 @@ def _safe_reference(value: str, *, label: str) -> str:
     normalized = " ".join(value.strip().split())
     if SAFE_REF_RE.fullmatch(normalized) is None or SECRETISH_RE.search(normalized) is not None:
         raise ValueError(f"unsafe {label}; expected a 3-240 character sanitized reference")
+    if BILLINGISH_RE.search(normalized) is not None:
+        raise ValueError(f"unsafe {label}; billing/account identifiers must not be persisted")
     if LANE_PRESENCE_RE.search(normalized) is not None:
         raise ValueError(
             f"unsafe {label}; lane/tmux/session presence must not be used as quota evidence"
