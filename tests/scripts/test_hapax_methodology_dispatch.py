@@ -351,6 +351,11 @@ def _governed_source_frontmatter(
     *,
     extra: str = "",
     mutation_scope_refs: str = "[]",
+    preferred_platforms: str = "[]",
+    allowed_platforms: str = "[]",
+    prohibited_platforms: str = "[]",
+    required_mode: str = "null",
+    required_profile: str = "null",
 ) -> str:
     return f"""
     kind: build
@@ -380,11 +385,11 @@ def _governed_source_frontmatter(
       runtime_observation: []
       operator_only: false
     route_constraints:
-      preferred_platforms: []
-      allowed_platforms: []
-      prohibited_platforms: []
-      required_mode: null
-      required_profile: null
+      preferred_platforms: {preferred_platforms}
+      allowed_platforms: {allowed_platforms}
+      prohibited_platforms: {prohibited_platforms}
+      required_mode: {required_mode}
+      required_profile: {required_profile}
     review_requirement:
       support_artifact_allowed: false
       independent_review_required: false
@@ -798,7 +803,7 @@ def _run(
     env["HAPAX_DISPATCH_WORKTREE"] = str(tmp_path / "worktree")
     env["HAPAX_ORCHESTRATION_LEDGER_DIR"] = str(tmp_path / "ledger")
     env["HAPAX_PLATFORM_CAPABILITY_REGISTRY"] = str(_fresh_registry(tmp_path))
-    env["HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR"] = str(tmp_path / "receipts-empty")
+    env["HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR"] = str(tmp_path / "platform-receipts")
     env["HAPAX_QUOTA_SPEND_LEDGER"] = str(_fresh_claude_subscription_quota_ledger(tmp_path))
     env["HAPAX_COORD_LEDGER_DB"] = str(tmp_path / "coord" / "ledger.db")
     env["HAPAX_COORD_JSONL_MIRROR"] = str(tmp_path / "coord" / "ledger.jsonl")
@@ -1270,6 +1275,7 @@ def test_dispatch_main_uses_adapter_admit_for_route_decision(
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
     _task(tmp_path / "tasks", "governed-build", _codex_only_build_frontmatter(spec))
+    (tmp_path / "home" / ".cache" / "hapax" / "stage0-durable-sink").mkdir(parents=True)
     seen_platforms: list[str] = []
     seen_requests: list[object] = []
     seen_candidate_requests: list[object] = []
@@ -1306,7 +1312,7 @@ def test_dispatch_main_uses_adapter_admit_for_route_decision(
     monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
     monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
     monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_fresh_registry(tmp_path)))
-    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", str(tmp_path / "receipts-empty"))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", str(tmp_path / "platform-receipts"))
     monkeypatch.setenv(
         "HAPAX_QUOTA_SPEND_LEDGER", str(_fresh_claude_subscription_quota_ledger(tmp_path))
     )
@@ -1565,12 +1571,15 @@ def test_launch_authority_violation_writes_blocked_receipt(
     _task(
         tmp_path / "tasks",
         "governed-build",
-        f"""
-        kind: build
-        authority_case: CASE-TEST-001
-        parent_spec: {spec}
-        """,
+        _governed_source_frontmatter(
+            spec,
+            allowed_platforms="[codex]",
+            required_mode="headless",
+            required_profile="full",
+        ),
+        route_metadata_defaults=False,
     )
+    (tmp_path / "home" / ".cache" / "hapax" / "stage0-durable-sink").mkdir(parents=True)
     args = (
         "--task",
         "governed-build",
@@ -1590,7 +1599,7 @@ def test_launch_authority_violation_writes_blocked_receipt(
     monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
     monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
     monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_fresh_registry(tmp_path)))
-    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", str(tmp_path / "receipts-empty"))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", str(tmp_path / "platform-receipts"))
     monkeypatch.setenv(
         "HAPAX_QUOTA_SPEND_LEDGER", str(_fresh_claude_subscription_quota_ledger(tmp_path))
     )
@@ -1633,6 +1642,7 @@ def test_dispatch_main_launches_through_worker_adapter(
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
     _task(tmp_path / "tasks", "governed-build", _codex_only_build_frontmatter(spec))
+    (tmp_path / "home" / ".cache" / "hapax" / "stage0-durable-sink").mkdir(parents=True)
     args = (
         "--task",
         "governed-build",
@@ -1673,7 +1683,7 @@ printf '%s\\n' "$@" > {launcher_args}
     monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
     monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
     monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_fresh_registry(tmp_path)))
-    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", str(tmp_path / "receipts-empty"))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", str(tmp_path / "platform-receipts"))
     monkeypatch.setenv(
         "HAPAX_QUOTA_SPEND_LEDGER", str(_fresh_claude_subscription_quota_ledger(tmp_path))
     )
@@ -2938,6 +2948,7 @@ def test_governed_relay_reactivation_passes_force_to_headless_launcher(tmp_path:
     home = tmp_path / "home"
     relay = home / ".cache" / "hapax" / "relay"
     relay.mkdir(parents=True)
+    (home / ".cache" / "hapax" / "stage0-durable-sink").mkdir(parents=True)
     (relay / "cx-fugu.yaml").write_text("status: wind_down_idle\n", encoding="utf-8")
     launcher_env = tmp_path / "launcher-env.txt"
     launcher_args = tmp_path / "launcher-args.txt"
@@ -3004,6 +3015,10 @@ def test_codex_p0_incident_drain_lane_force_preserves_live_pid_guard(tmp_path: P
     _write(
         bin_dir / "codex",
         f"""#!/usr/bin/env bash
+if [ "${{1:-}}" = "exec" ] && [[ "$*" == *HAPAX_CODEX_EXEC_AUTH_OK* ]]; then
+  printf '%s\\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":"HAPAX_CODEX_EXEC_AUTH_OK"}}}}'
+  exit 0
+fi
 if [ "${{1:-}}" = "debug" ] && [ "${{2:-}}" = "models" ]; then
   printf '%s\\n' '{{"models":[{{"slug":"gpt-5.5"}}]}}'
   exit 0
@@ -3075,6 +3090,7 @@ def test_governed_codex_dispatch_reactivates_clean_retired_relay(tmp_path: Path)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     relay = home / ".cache" / "hapax" / "relay"
     relay.mkdir(parents=True)
+    (home / ".cache" / "hapax" / "stage0-durable-sink").mkdir(parents=True)
     (relay / "cx-fugu.yaml").write_text("status: wind_down_idle\n", encoding="utf-8")
     pid_dir = tmp_path / "pids"
     pid_dir.mkdir()
@@ -3083,6 +3099,10 @@ def test_governed_codex_dispatch_reactivates_clean_retired_relay(tmp_path: Path)
     _write(
         bin_dir / "codex",
         f"""#!/usr/bin/env bash
+if [ "${{1:-}}" = "exec" ] && [[ "$*" == *HAPAX_CODEX_EXEC_AUTH_OK* ]]; then
+  printf '%s\\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":"HAPAX_CODEX_EXEC_AUTH_OK"}}}}'
+  exit 0
+fi
 if [ "${{1:-}}" = "debug" ] && [ "${{2:-}}" = "models" ]; then
   printf '%s\\n' '{{"models":[{{"slug":"gpt-5.5"}}]}}'
   exit 0
