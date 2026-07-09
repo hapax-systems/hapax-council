@@ -770,7 +770,7 @@ def _decision_evidence_binds_phase1_witnesses(decision: SCEDPhase1Decision) -> b
 
 
 def _has_ref_with_prefix(values: Sequence[str], prefix: str) -> bool:
-    return any(value.startswith(prefix) for value in values)
+    return any(value.startswith(prefix) and bool(value[len(prefix) :]) for value in values)
 
 
 def _nonempty_durable_refs(values: Sequence[str]) -> bool:
