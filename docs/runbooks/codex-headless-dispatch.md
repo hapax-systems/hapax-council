@@ -76,7 +76,7 @@ ssh appendix "bash -lc 'mkdir -p ~/.codex && chmod 700 ~/.codex && if [ -f ~/.co
 ssh appendix "bash -lc 'umask 077; cat > ~/.codex/auth.json.tmp && chmod 600 ~/.codex/auth.json.tmp && mv ~/.codex/auth.json.tmp ~/.codex/auth.json'" < ~/.codex/auth.json
 ssh appendix "bash -lc 'stat -c \"%a %U %G %s\" ~/.codex/auth.json && unset CODEX_ACCESS_TOKEN CODEX_HOME CODEX_API_KEY OPENAI_API_KEY && codex login status'"
 ssh appendix 'bash -lc '\''unset CODEX_ACCESS_TOKEN CODEX_HOME CODEX_API_KEY OPENAI_API_KEY; exec codex exec --ephemeral --skip-git-repo-check --ignore-rules --sandbox read-only --json --cd ~ "Reply exactly: HAPAX_CODEX_EXEC_AUTH_OK"'\'''
-uv run python scripts/hapax-platform-capability-receipts --platform codex --codex-exec-auth-probe --json
+HAPAX_CODEX_EXEC_AUTH_HOST=appendix uv run python scripts/hapax-platform-capability-receipts --platform codex --codex-exec-auth-probe --json
 scripts/hapax-quota-telemetry-writer --json
 ```
 
@@ -84,9 +84,11 @@ scripts/hapax-quota-telemetry-writer --json
 fresh while the current fresh Codex platform capability receipt reports
 `codex_exec_auth_failed`, `codex_exec_auth_token_invalidated`, or
 `codex_exec_auth_refresh_token_invalidated`; it records the subscription snapshot
-as `unknown` until a repaired receipt is observed. If receipt refresh itself is
-stale or skipped, dispatch launchers still run their saved-login preflight and
-must fail closed before starting Codex work.
+as `unknown` until a repaired receipt is observed. When no dispatch-host
+environment is set, telemetry accepts the platform receipt probe's default
+appendix witness as the remote Codex dispatch-host proof. If receipt refresh
+itself is stale or skipped, dispatch launchers still run their saved-login
+preflight and must fail closed before starting Codex work.
 
 On the remote host, the launcher materializes both the legacy and session-keyed
 claim caches plus their epoch sidecars before `codex exec` starts, using the

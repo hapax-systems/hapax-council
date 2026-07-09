@@ -48,6 +48,10 @@ query($owner: String!, $name: String!, $number: Int!) {
   }
 }
 """
+_GRAPHQL_FAIL_CLOSED_HINT = (
+    "next action: inspect the gh api graphql error payload and rerun this "
+    "queue-admission-proof check; semantic GraphQL errors must not fall back to REST"
+)
 
 
 @dataclass(frozen=True)
@@ -197,7 +201,9 @@ def fetch_latest_proof_graphql(repo: str, pr: int, *, runner: Any = None) -> Pro
         ((payload.get("data") or {}).get("repository") or {}) if isinstance(payload, dict) else {}
     )
     if isinstance(payload, dict) and payload.get("errors"):
-        raise RuntimeError(f"GraphQL response contained errors for PR #{pr}")
+        raise RuntimeError(
+            f"GraphQL response contained errors for PR #{pr}; {_GRAPHQL_FAIL_CLOSED_HINT}"
+        )
     if not repository:
         raise RuntimeError(f"GraphQL repository payload unavailable for PR #{pr}")
     pull_request = repository.get("pullRequest") or {}

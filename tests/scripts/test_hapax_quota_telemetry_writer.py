@@ -481,6 +481,35 @@ def test_writes_valid_live_ledger_with_fresh_captured_at(tmp_path: Path) -> None
     assert states["litellm.local.command-r-35b"] == "fresh"
 
 
+def test_codex_snapshot_fresh_for_default_appendix_saved_login_witness(
+    tmp_path: Path,
+) -> None:
+    platform_receipts = tmp_path / "platform-receipts"
+    _codex_platform_receipt(
+        platform_receipts,
+        evidence_refs_override=[
+            "remote:hapax-appendix:codex:exec:auth:observed",
+            "host:hapax-appendix:codex:exec:auth:saved-login:observed",
+        ],
+    )
+
+    result, out = _run_writer(
+        tmp_path,
+        "--platform-capability-receipt-dir",
+        str(platform_receipts),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    codex_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "codex.headless.full"
+    )
+    assert codex_snapshot["subscription_quota_state"] == "fresh"
+    assert "codex_exec_auth_witness_absent" not in codex_snapshot["operator_visible_reason"]
+
+
 def test_codex_snapshot_unknown_when_exec_auth_receipt_reports_refresh_token_invalidated(
     tmp_path: Path,
 ) -> None:

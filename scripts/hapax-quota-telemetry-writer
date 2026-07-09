@@ -968,12 +968,19 @@ def codex_exec_auth_ref_attested(
 
 def expected_codex_exec_auth_hosts() -> frozenset[tuple[str, ...]]:
     dispatch_host = (
-        os.environ.get("HAPAX_DISPATCH_HOST") or os.environ.get("HAPAX_DEFAULT_DISPATCH_HOST") or ""
+        os.environ.get("HAPAX_CODEX_EXEC_AUTH_HOST")
+        or os.environ.get("HAPAX_DISPATCH_HOST")
+        or os.environ.get("HAPAX_DEFAULT_DISPATCH_HOST")
+        or ""
     ).strip()
     if dispatch_host:
         return host_token_variants(dispatch_host)
     current = socket.gethostname().split(".", 1)[0]
-    return host_token_variants("local") | host_token_variants(current)
+    return (
+        host_token_variants("local")
+        | host_token_variants(current)
+        | host_token_variants("appendix")
+    )
 
 
 def host_token_variants(host: str) -> frozenset[tuple[str, ...]]:

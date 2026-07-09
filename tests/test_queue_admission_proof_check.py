@@ -170,7 +170,7 @@ def test_graphql_failure_falls_back_to_rest() -> None:
 def test_graphql_semantic_error_does_not_fall_back_to_rest() -> None:
     runner = _FakeRunner([], graphql_semantic_error=True)
 
-    with pytest.raises(RuntimeError, match="GraphQL response contained errors"):
+    with pytest.raises(RuntimeError, match="GraphQL response contained errors.*next action"):
         proof.fetch_latest_proof("owner/repo", 42, runner=runner)
 
     assert runner.calls == [
