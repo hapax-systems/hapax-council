@@ -195,6 +195,11 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: uv run --no-project --with pydantic==2.13.4 --with pyyaml==6.0.3 python scripts/check-public-surface-claims.py --check-registry-only
+      - name: Value-prop registry contract verify
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: uv run --no-project --with pyyaml==6.0.3 python scripts/check-value-prop-registry.py
 
   lint:
     needs: [docs_only_filter, post_merge_duplicate_filter]
