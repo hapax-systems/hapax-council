@@ -47,6 +47,7 @@ printf 'GITHUB_PERSONAL_ACCESS_TOKEN=%s\\n' "${{GITHUB_PERSONAL_ACCESS_TOKEN:-}}
 printf 'CODEX_GITHUB_PERSONAL_ACCESS_TOKEN=%s\\n' "${{CODEX_GITHUB_PERSONAL_ACCESS_TOKEN:-}}" >> {env_file}
 printf 'TAVILY_API_KEY=%s\\n' "${{TAVILY_API_KEY:-}}" >> {env_file}
 printf 'CODEX_ACCESS_TOKEN_PRESENT=%s\\n' "${{CODEX_ACCESS_TOKEN:+yes}}" >> {env_file}
+printf 'CODEX_HOME_PRESENT=%s\\n' "${{CODEX_HOME:+yes}}" >> {env_file}
 printf 'CODEX_API_KEY_PRESENT=%s\\n' "${{CODEX_API_KEY:+yes}}" >> {env_file}
 printf 'OPENAI_API_KEY_PRESENT=%s\\n' "${{OPENAI_API_KEY:+yes}}" >> {env_file}
 """
@@ -526,6 +527,7 @@ def test_launcher_ignores_inherited_codex_auth_env_without_published_token(
 ) -> None:
     env, _args_file, env_file = _env_with_fake_codex(tmp_path)
     env["CODEX_ACCESS_TOKEN"] = "ambient-token"
+    env["CODEX_HOME"] = str(tmp_path / "ambient-codex-home")
     env["CODEX_API_KEY"] = "ambient-codex-api-key"
     env["OPENAI_API_KEY"] = "ambient-openai-api-key"
 
@@ -550,11 +552,14 @@ def test_launcher_ignores_inherited_codex_auth_env_without_published_token(
 
     assert result.returncode == 0, result.stderr
     assert "ignoring inherited CODEX_ACCESS_TOKEN" in result.stderr
+    assert "ignoring inherited CODEX_HOME" in result.stderr
     assert "ignoring inherited CODEX_API_KEY" in result.stderr
     assert "ignoring inherited OPENAI_API_KEY" in result.stderr
-    assert "CODEX_ACCESS_TOKEN_PRESENT=\n" in env_file.read_text(encoding="utf-8")
-    assert "CODEX_API_KEY_PRESENT=\n" in env_file.read_text(encoding="utf-8")
-    assert "OPENAI_API_KEY_PRESENT=\n" in env_file.read_text(encoding="utf-8")
+    env_text = env_file.read_text(encoding="utf-8")
+    assert "CODEX_ACCESS_TOKEN_PRESENT=\n" in env_text
+    assert "CODEX_HOME_PRESENT=\n" in env_text
+    assert "CODEX_API_KEY_PRESENT=\n" in env_text
+    assert "OPENAI_API_KEY_PRESENT=\n" in env_text
 
 
 def test_launcher_skips_directory_codex_candidates(tmp_path: Path) -> None:
