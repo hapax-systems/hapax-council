@@ -2,7 +2,6 @@
 # Hapax-Install-Scope: system
 Description=Record system-scope Hapax failure for %i
 Documentation=file:/home/hapax/.cache/hapax/source-activation/worktree/systemd/README.md
-ConditionPathExists=/home/hapax/.cache/hapax/source-activation/worktree/scripts/hapax-p0-incident-intake
 After=user@1000.service
 
 [Service]
@@ -10,4 +9,4 @@ Type=oneshot
 User=hapax
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=PATH=/home/hapax/.cache/hapax/source-activation/worktree/.venv/bin:/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/home/hapax/.cache/hapax/source-activation/worktree/scripts/hapax-p0-incident-intake service-failed %i
+ExecStart=/usr/bin/env bash -lc 'exec /home/hapax/.cache/hapax/source-activation/worktree/scripts/hapax-p0-incident-intake service-failed "%i"'

@@ -6,6 +6,7 @@ Documentation=file:/home/hapax/.cache/hapax/source-activation/worktree/systemd/R
 [Timer]
 OnBootSec=30s
 OnUnitActiveSec=30s
+AccuracySec=1s
 Unit=hapax-oom-score-enforce.service
 
 [Install]

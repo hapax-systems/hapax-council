@@ -224,7 +224,7 @@ def audit_tmux_scopes() -> list[Check]:
     scopes = [line.split()[0] for line in proc.stdout.splitlines() if "tmux-spawn-" in line]
     checks: list[Check] = [Check("tmux_scope_count", "pass", ">=0", str(len(scopes)))]
     for scope in scopes:
-        values = _show(scope, ["MemoryHigh", "MemoryMax", "MemorySwapMax"], user=True)
+        values = _show(scope, ["MemoryHigh", "MemoryMax", "MemorySwapMax", "Slice"], user=True)
         if "_error" in values:
             checks.append(
                 Check(
@@ -241,14 +241,20 @@ def audit_tmux_scopes() -> list[Check]:
             for key in ("MemoryHigh", "MemoryMax", "MemorySwapMax")
             if values.get(key) == "infinity"
         ]
-        status = "warn" if unbounded else "pass"
-        detail = (
-            f"unbounded new tmux scope properties: {', '.join(unbounded)}; {NEXT_OOM_INSTALL}"
-            if unbounded
-            else ""
-        )
+        slice_name = values.get("Slice", "")
+        outside_app_slice = slice_name != "app.slice"
+        status = "warn" if unbounded and outside_app_slice else "pass"
+        detail_parts = []
+        if unbounded:
+            detail_parts.append(f"unbounded properties: {', '.join(unbounded)}")
+        if outside_app_slice:
+            detail_parts.append(f"Slice={slice_name}")
+        detail = ""
+        if detail_parts:
+            detail = f"tmux scope not bounded-or-app-slice-backed: {'; '.join(detail_parts)}; {NEXT_OOM_INSTALL}"
         actual = ",".join(
-            f"{key}={values.get(key, '')}" for key in ("MemoryHigh", "MemoryMax", "MemorySwapMax")
+            f"{key}={values.get(key, '')}"
+            for key in ("MemoryHigh", "MemoryMax", "MemorySwapMax", "Slice")
         )
         checks.append(
             Check(f"tmux_scope_{scope}", status, "bounded-or-app-slice-backed", actual, detail)

@@ -647,6 +647,10 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
     deferred = defer_dir / sha / "oom-containment"
     assert (deferred / "RUNBOOK.txt").is_file()
     assert (deferred / "scripts" / "install-p0-oom-containment").is_file()
+    runbook = (deferred / "RUNBOOK.txt").read_text(encoding="utf-8")
+    assert "sudo -v" in runbook
+    assert "root shell" not in runbook
+    assert "HAPAX_OOM_INSTALL_SUDO=" not in runbook
     assert (home / ".config" / "systemd" / "user" / "hapax-demo.service").is_file()
     assert "root-required oom-containment install deferred" in result.stdout
 
@@ -661,6 +665,31 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
     assert audit_result.returncode == 1
     assert "root-required post-merge deploy deferrals pending" in audit_result.stderr
     assert "--install --verify-live" in audit_result.stderr
+
+
+def test_root_required_audit_fails_when_oom_enforcer_source_missing(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    live_script = tmp_path / "sbin" / "hapax-oom-score-enforce"
+    live_script.parent.mkdir()
+    live_script.write_text("#!/usr/bin/env bash\necho live\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_ROOT_REQUIRED_SOURCE_ROOT": str(source_root),
+            "HAPAX_OOM_ENFORCER_DEST": str(live_script),
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(tmp_path / "no-deferrals"),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "root-required OOM enforcer source missing" in result.stderr
+    assert "next action:" in result.stderr
 
 
 def test_root_required_audit_detects_oom_enforcer_drift(tmp_path: Path) -> None:

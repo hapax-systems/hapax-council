@@ -35,15 +35,18 @@ run_user_systemctl() {
 }
 
 write_oom_score() {
-    local pid score path
+    local pid score path current
     pid="$1"
     score="$2"
     path="$PROC_ROOT/$pid/oom_score_adj"
     [ -e "$path" ] || return 0
-    printf '%s\n' "$score" > "$path" 2>/dev/null || {
+    current="$(cat "$path" 2>/dev/null || true)"
+    [ "$current" = "$score" ] && return 0
+    { printf '%s\n' "$score" > "$path"; } 2>/dev/null || {
         [ ! -e "$path" ] && return 0
         return 1
     }
+    printf 'changed\n'
 }
 
 pid_matches_unit() {
@@ -80,11 +83,11 @@ user_main_pid() {
 }
 
 apply_unit_score() {
-    local unit="$1" score="$2" pid
+    local unit="$1" score="$2" pid changed
     pid="$(user_main_pid "$unit")"
     [ -n "$pid" ] || return 0
-    if write_oom_score_for_unit "$pid" "$score" "$unit"; then
-        echo "user-unit $unit pid=$pid oom_score_adj=$score"
+    if changed="$(write_oom_score_for_unit "$pid" "$score" "$unit")"; then
+        [ -z "$changed" ] || echo "user-unit $unit pid=$pid oom_score_adj=$score"
     else
         echo "warn: failed to set oom_score_adj for $unit pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
     fi
@@ -92,8 +95,8 @@ apply_unit_score() {
 
 user_pid="$(system_main_pid "user@$TARGET_UID.service")"
 if [ -n "$user_pid" ]; then
-    if write_oom_score_for_unit "$user_pid" 100 "user@$TARGET_UID.service"; then
-        echo "system user@$TARGET_UID.service pid=$user_pid oom_score_adj=100"
+    if changed="$(write_oom_score_for_unit "$user_pid" 100 "user@$TARGET_UID.service")"; then
+        [ -z "$changed" ] || echo "system user@$TARGET_UID.service pid=$user_pid oom_score_adj=100"
     else
         echo "warn: failed to set oom_score_adj for user@$TARGET_UID.service pid=$user_pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
     fi

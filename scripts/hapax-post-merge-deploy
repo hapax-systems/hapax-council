@@ -1322,13 +1322,9 @@ Root-required post-merge deploy action deferred.
 Commit: $SHA
 Package: $label
 
-Run from this host after one of these root-authority preparations:
+Run from this host after this root-authority preparation:
 
   sudo -v
-
-or use a root shell and set the installer sudo shim empty:
-
-  HAPAX_OOM_INSTALL_SUDO= HAPAX_APCUPSD_INSTALL_SUDO= $dest/$installer --source $dest --install --verify-live
 
 Default sudo path after sudo -v:
 

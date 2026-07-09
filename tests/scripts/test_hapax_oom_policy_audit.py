@@ -35,6 +35,7 @@ def _fake_systemctl(
     user_oom: int = 100,
     app_bounded: bool = True,
     tmux_bounded: bool = True,
+    tmux_slice: str = "app.slice",
     wrong_unit_score: bool = False,
 ) -> Path:
     path = tmp_path / "systemctl"
@@ -44,9 +45,9 @@ def _fake_systemctl(
         else "MemoryHigh=infinity\nMemoryMax=infinity\nMemorySwapMax=infinity\n"
     )
     tmux_values = (
-        "MemoryHigh=12884901888\nMemoryMax=19327352832\nMemorySwapMax=3221225472\n"
+        f"MemoryHigh=12884901888\nMemoryMax=19327352832\nMemorySwapMax=3221225472\nSlice={tmux_slice}\n"
         if tmux_bounded
-        else "MemoryHigh=infinity\nMemoryMax=infinity\nMemorySwapMax=infinity\n"
+        else f"MemoryHigh=infinity\nMemoryMax=infinity\nMemorySwapMax=infinity\nSlice={tmux_slice}\n"
     )
     path.write_text(
         f"""#!/usr/bin/env bash
@@ -81,6 +82,7 @@ def _run(
     user_oom: int = 100,
     app_bounded: bool = True,
     tmux_bounded: bool = True,
+    tmux_slice: str = "app.slice",
     wrong_unit_score: bool = False,
     proc_root: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
@@ -97,6 +99,7 @@ def _run(
                 user_oom=user_oom,
                 app_bounded=app_bounded,
                 tmux_bounded=tmux_bounded,
+                tmux_slice=tmux_slice,
                 wrong_unit_score=wrong_unit_score,
             )
         ),
@@ -154,8 +157,20 @@ def test_audit_fails_when_protected_user_unit_loses_oom_score(tmp_path: Path) ->
     assert "install-p0-oom-containment" in check["detail"]
 
 
-def test_audit_warns_when_new_tmux_scope_is_unbounded(tmp_path: Path) -> None:
-    result = _run(tmp_path, tmux_bounded=False)
+def test_audit_passes_when_unbounded_tmux_scope_is_app_slice_backed(tmp_path: Path) -> None:
+    result = _run(tmp_path, tmux_bounded=False, tmux_slice="app.slice")
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    check = next(
+        item for item in payload["checks"] if item["name"] == "tmux_scope_tmux-spawn-a.scope"
+    )
+    assert check["status"] == "pass"
+    assert "Slice=app.slice" in check["actual"]
+
+
+def test_audit_warns_when_unbounded_tmux_scope_is_outside_app_slice(tmp_path: Path) -> None:
+    result = _run(tmp_path, tmux_bounded=False, tmux_slice="session.slice")
 
     assert result.returncode == 0
     payload = json.loads(result.stdout)
@@ -164,6 +179,7 @@ def test_audit_warns_when_new_tmux_scope_is_unbounded(tmp_path: Path) -> None:
     )
     assert check["status"] == "warn"
     assert "MemoryMax" in check["detail"]
+    assert "Slice=session.slice" in check["detail"]
 
 
 def test_audit_fails_when_user_process_retains_inherited_protection(tmp_path: Path) -> None:
