@@ -283,8 +283,6 @@ def event_text(event):
 
 
 stdout = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
-if stdout.strip() == sentinel:
-    raise SystemExit(0)
 for line in stdout.splitlines():
     try:
         event = json.loads(line)
@@ -559,8 +557,6 @@ def _auth_event_text(event):
         return _assistant_content_text(message.get("content"))
     return ""
 def _sentinel_observed(stdout):
-    if stdout.strip()==sentinel:
-        return True
     for line in stdout.splitlines():
         try:
             event=json.loads(line)

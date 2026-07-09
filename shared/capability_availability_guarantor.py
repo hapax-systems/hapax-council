@@ -9,7 +9,9 @@ unless a caller supplies an executable refresh strategy.
 from __future__ import annotations
 
 import json
+import os
 import re
+import socket
 import subprocess
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -671,17 +673,44 @@ def _exec_auth_attested(
     if route.platform.value != "codex" or route.auth_surface is not AuthSurface.OAUTH:
         return True
     refs = tuple(_ref_tokens(ref) for ref in freshness.evidence_refs)
-    return any(_exec_auth_ref_attested(ref) for ref in refs)
+    expected_hosts = _expected_exec_auth_hosts()
+    return any(_exec_auth_ref_attested(ref, expected_hosts=expected_hosts) for ref in refs)
 
 
-def _exec_auth_ref_attested(ref: tuple[str, ...]) -> bool:
+def _exec_auth_ref_attested(
+    ref: tuple[str, ...],
+    *,
+    expected_hosts: frozenset[tuple[str, ...]],
+) -> bool:
     if any(token in NEGATIVE_REF_TOKENS for token in ref):
         return False
-    return (
+    if not (
         len(ref) >= 8
         and ref[0] == "host"
         and ref[-6:] == ("codex", "exec", "auth", "saved", "login", "observed")
-    )
+    ):
+        return False
+    return ref[1:-6] in expected_hosts
+
+
+def _expected_exec_auth_hosts() -> frozenset[tuple[str, ...]]:
+    dispatch_host = (
+        os.environ.get("HAPAX_DISPATCH_HOST") or os.environ.get("HAPAX_DEFAULT_DISPATCH_HOST") or ""
+    ).strip()
+    if dispatch_host:
+        return _host_token_variants(dispatch_host)
+    current = socket.gethostname().split(".", 1)[0]
+    return _host_token_variants("local") | _host_token_variants(current)
+
+
+def _host_token_variants(host: str) -> frozenset[tuple[str, ...]]:
+    tokens = _ref_tokens(host)
+    variants = {tokens} if tokens else set()
+    if len(tokens) == 1 and tokens[0] not in {"local", "localhost"}:
+        variants.add(("hapax", tokens[0]))
+    if len(tokens) == 2 and tokens[0] == "hapax":
+        variants.add((tokens[1],))
+    return frozenset(variants)
 
 
 def _ref_tokens(ref: str) -> tuple[str, ...]:

@@ -77,15 +77,22 @@ def _parse_time(value: str | None) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
-def _gh_json(cmd: list[str], *, runner: Any = None) -> Any:
+def _gh_json(cmd: list[str], *, runner: Any = None, allow_error_payload: bool = False) -> Any:
     runner = runner or subprocess.run
     proc = runner(cmd, capture_output=True, text=True, check=False, timeout=60)
-    if proc.returncode != 0:
-        raise GhJsonError((proc.stderr or proc.stdout or f"command failed: {cmd}").strip())
     try:
-        return json.loads(proc.stdout or "null")
+        payload = json.loads(proc.stdout or "null")
     except json.JSONDecodeError as exc:
         raise GhJsonError(f"gh emitted non-JSON for {cmd}: {exc}") from exc
+    if proc.returncode != 0 and not allow_error_payload:
+        raise GhJsonError((proc.stderr or proc.stdout or f"command failed: {cmd}").strip())
+    if (
+        proc.returncode != 0
+        and allow_error_payload
+        and not (isinstance(payload, dict) and payload.get("errors"))
+    ):
+        raise GhJsonError((proc.stderr or proc.stdout or f"command failed: {cmd}").strip())
+    return payload
 
 
 def _split_repo(repo: str) -> tuple[str, str]:
@@ -184,6 +191,7 @@ def fetch_latest_proof_graphql(repo: str, pr: int, *, runner: Any = None) -> Pro
             f"number={pr}",
         ],
         runner=runner,
+        allow_error_payload=True,
     )
     repository = (
         ((payload.get("data") or {}).get("repository") or {}) if isinstance(payload, dict) else {}

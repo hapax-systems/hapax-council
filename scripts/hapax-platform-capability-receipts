@@ -230,8 +230,6 @@ def observe_cli(platform: str, *, timeout: float) -> CliEvidence:
 
 
 def codex_exec_auth_sentinel_observed(stdout: str) -> bool:
-    if stdout.strip() == CODEX_EXEC_AUTH_SENTINEL:
-        return True
     for line in stdout.splitlines():
         try:
             event = json.loads(line)

@@ -479,7 +479,7 @@ def test_codex_exec_auth_sentinel_parser_accepts_complete_output_shapes() -> Non
     namespace = runpy.run_path(str(SCRIPT))
     observed = namespace["codex_exec_auth_sentinel_observed"]
 
-    assert observed("HAPAX_CODEX_EXEC_AUTH_OK\n") is True
+    assert observed("HAPAX_CODEX_EXEC_AUTH_OK\n") is False
     assert (
         observed('{"type":"response.output_text.done","text":"HAPAX_CODEX_EXEC_AUTH_OK"}\n') is True
     )

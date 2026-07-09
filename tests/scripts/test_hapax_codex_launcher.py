@@ -336,6 +336,22 @@ exit 77
     assert "codex_saved_auth_sentinel_missing" in result.stderr
 
 
+def test_launcher_auth_sentinel_rejects_raw_stdout(tmp_path: Path) -> None:
+    output = tmp_path / "raw-auth-output.txt"
+    output.write_text("HAPAX_CODEX_EXEC_AUTH_OK\n", encoding="utf-8")
+    bash = shutil.which("bash") or "/usr/bin/bash"
+    script = "\n".join(
+        [
+            _extract_launcher_shell_function("codex_exec_auth_sentinel_observed"),
+            f'codex_exec_auth_sentinel_observed "{output}"',
+        ]
+    )
+
+    result = subprocess.run([bash, "-c", script], capture_output=True, text=True, timeout=5)
+
+    assert result.returncode == 1
+
+
 def test_remote_preflight_reports_refresh_token_invalidated(tmp_path: Path) -> None:
     remote_preflight_py = _extract_remote_python("REMOTE_PREFLIGHT_PY")
     bin_dir = tmp_path / "bin"

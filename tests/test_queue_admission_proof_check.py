@@ -56,7 +56,7 @@ class _FakeRunner:
                     "data": {"repository": None},
                     "errors": [{"message": "repository unavailable"}],
                 }
-                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+                return subprocess.CompletedProcess(cmd, 1, json.dumps(payload), "GraphQL error")
             contexts = [
                 {
                     "context": item.get("context"),
