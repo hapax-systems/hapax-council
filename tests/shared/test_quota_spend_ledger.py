@@ -148,6 +148,10 @@ CLAUDE_PLUS_BILLING_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace
     "witness:claude-subscription-headroom-observed-20260708t1400z:",
     "witness:billing+cus_123:",
 )
+CLAUDE_DOT_BILLING_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:cus.123:",
+)
 CLAUDE_BILLING_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
     "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
     "relay-receipt:claude-subscription-quota-admission-cus_123.yaml:",
@@ -171,6 +175,10 @@ CLAUDE_PLUS_LANE_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.repl
 CLAUDE_PLUS_BILLING_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
     "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
     "relay-receipt:claude-subscription-quota-admission-billing+cus_123.yaml:",
+)
+CLAUDE_DOT_BILLING_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:claude-subscription-quota-admission-cus.123.yaml:",
 )
 CLAUDE_HASHED_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
     "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
@@ -1707,6 +1715,11 @@ def test_receipt_bounded_route_rejects_billing_identifier_claude_witness() -> No
             "quota-claude-headless-full-plus-billing-witness",
             "fixture claude plus-delimited billing witness",
         ),
+        (
+            CLAUDE_DOT_BILLING_WITNESS_EVIDENCE_REF,
+            "quota-claude-headless-full-dot-billing-witness",
+            "fixture claude dot-delimited billing witness",
+        ),
     ],
 )
 def test_receipt_bounded_route_rejects_newly_unsafe_claude_witness_shapes(
@@ -1770,6 +1783,11 @@ def test_receipt_bounded_route_rejects_billing_identifier_claude_receipt_label()
             CLAUDE_PLUS_BILLING_RECEIPT_LABEL_EVIDENCE_REF,
             "quota-claude-headless-full-plus-billing-label",
             "fixture claude plus-delimited billing receipt label",
+        ),
+        (
+            CLAUDE_DOT_BILLING_RECEIPT_LABEL_EVIDENCE_REF,
+            "quota-claude-headless-full-dot-billing-label",
+            "fixture claude dot-delimited billing receipt label",
         ),
     ],
 )

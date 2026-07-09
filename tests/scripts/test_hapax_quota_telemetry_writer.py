@@ -1264,6 +1264,27 @@ def test_claude_admission_rejects_secret_persistence(tmp_path: Path) -> None:
         (
             {
                 "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-billing-cus.123-headroom-20260609",
+            },
+            "evidence-ref-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-account-acct.123-headroom-20260609",
+            },
+            "evidence-ref-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-subscription-sub.123-headroom-20260609",
+            },
+            "evidence-ref-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
                 "evidence_ref": "claude-billingcus123-headroom-20260609",
             },
             "evidence-ref-names-billing-or-account-identifier",
@@ -1356,6 +1377,27 @@ def test_claude_admission_rejects_secret_persistence(tmp_path: Path) -> None:
             {
                 "observed_at": "2026-06-09T23:55:00Z",
                 "name": "claude-subscription-quota-admission-billing+cus_123.yaml",
+            },
+            "receipt-name-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-cus.123.yaml",
+            },
+            "receipt-name-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-acct.123.yaml",
+            },
+            "receipt-name-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-sub.123.yaml",
             },
             "receipt-name-names-billing-or-account-identifier",
         ),
