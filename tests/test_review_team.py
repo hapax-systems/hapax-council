@@ -3197,6 +3197,36 @@ ratifications:
         blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
         assert len(blocking) == 1
 
+    def test_path_alleging_finding_never_waives(self, tmp_path: Path, monkeypatch) -> None:
+        # round-13: the local-path/username privacy class is enumerable — a finding
+        # alleging a private-path leak routes to operator disposition, never auto-waives.
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Generic research on residual linkage only.\n", encoding="utf-8")
+        finding = self._critical()
+        finding["title"] = "private path disclosed in residual paragraph"
+        reviews = [_review("codex-1", "codex", "block", findings=[finding])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1
+
+    def test_file_containing_local_path_is_not_waiver_safe(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # content leg: a ratified file that actually contains a user-homed path fails
+        # waiver safety, so findings on it block regardless of prose phrasing.
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("See /home/someuser/notes for the residual research.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1
+
     def test_killswitch_disables_ratification_gate(self, tmp_path: Path, monkeypatch) -> None:
         rt = _load_review_team_module()
         monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)

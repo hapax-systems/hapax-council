@@ -1400,7 +1400,11 @@ _NON_WAIVABLE_ALLEGATION_RE = re.compile(
     r"|spouse|\bwife\b|\bhusband\b|\bpartner'?s\s+name|\bchild(?:ren)?\b"
     r"|date\s+of\s+birth|\bDOB\b|social\s+security|\bSSN\b"
     r"|credential|password|api\s+key|\btoken\b|medical\s+record|patient"
-    r"|location\s+data|whereabouts|geolocation",
+    r"|location\s+data|whereabouts|geolocation"
+    # local-path/username privacy class — the repo's own claim-inventory taxonomy names
+    # it, and unlike names it is enumerable without leaking:
+    r"|private\s+path|local\s+path|vault\s+path|home\s+director(?:y|ies)"
+    r"|filesystem\s+path|user\s?name|/home/|~/|C:\\\\Users",
     re.IGNORECASE,
 )
 

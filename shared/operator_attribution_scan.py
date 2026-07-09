@@ -49,6 +49,9 @@ NON_RESIDUAL_PII_PATTERNS = (
         r"\b\d{1,5}\s+[A-Z][a-z]+\s+(?:St|Street|Ave|Avenue|Blvd|Road|Rd|Drive|Dr|Lane|Ln|Court|Ct|Way)\b"
     ),  # street address
     re.compile(r"\bDOB\b|\bdate\s+of\s+birth\b|\bborn\s+(?:on\s+)?\d", re.IGNORECASE),
+    # local filesystem paths / user-homed paths — the repo's claim-inventory taxonomy
+    # counts these as personal/operator privacy; enumerable without leaking
+    re.compile(r"/home/[a-z_][a-z0-9_-]*|~/[A-Za-z]|C:\\Users\\|Documents/Personal"),
 )
 
 
