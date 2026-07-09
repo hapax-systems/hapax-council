@@ -1387,16 +1387,37 @@ def _operator_ratifications(repo_root: Path) -> list[dict[str, Any]]:
     return valid
 
 
+#: Datum classes a data-owner ratification may NEVER waive, matched over finding PROSE
+#: in the BLOCKING direction (a match only ever keeps a finding blocking — false
+#: positives are safe). This is the un-enumerable-PII leg: content scans cannot detect
+#: estate-specific literals (a legal name, a place), so a finding ALLEGING such a datum
+#: routes to operator disposition (i.e. blocks) instead of auto-waiving, even when its
+#: prose also mentions a ratified topic term.
+_NON_WAIVABLE_ALLEGATION_RE = re.compile(
+    r"legal\s+name|real\s+name|full\s+name|surname|family\s+name|maiden\s+name"
+    r"|home\s+address|street\s+address|mailing\s+address|phone\s+number"
+    r"|e-?mail\s+address|employer|workplace|third[- ]part(?:y|ies)"
+    r"|spouse|\bwife\b|\bhusband\b|\bpartner'?s\s+name|\bchild(?:ren)?\b"
+    r"|date\s+of\s+birth|\bDOB\b|social\s+security|\bSSN\b"
+    r"|credential|password|api\s+key|\btoken\b|medical\s+record|patient"
+    r"|location\s+data|whereabouts|geolocation",
+    re.IGNORECASE,
+)
+
+
 def _operator_ratification_for(
     finding: Mapping[str, Any], ratifications: Sequence[Mapping[str, Any]]
 ) -> str | None:
     """The ratification id waiving this finding, or None. Waived ONLY when the
     finding's lens AND exact file path AND topic (title/detail must reference one of
-    the entry's ratified topic terms) are all named by a single ledger entry — an
-    unrelated finding in a ratified file still blocks."""
+    the entry's ratified topic terms) are all named by a single ledger entry, AND the
+    prose alleges no non-waivable datum class — an unrelated or datum-alleging finding
+    in a ratified file still blocks (operator disposition, never auto-waiver)."""
     lens = str(finding.get("lens", ""))
     file_ = str(finding.get("file", ""))
     text = f"{finding.get('title', '')} {finding.get('detail', '')}".lower()
+    if _NON_WAIVABLE_ALLEGATION_RE.search(text):
+        return None
     for entry in ratifications:
         if lens not in entry.get("lenses", ()) or file_ not in entry.get("files", ()):
             continue

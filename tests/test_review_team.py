@@ -3044,8 +3044,9 @@ ratifications:
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
         blocking, phantoms = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
         assert blocking == [] and phantoms == []
-        assert "ratification-gate: waived" in capsys.readouterr().err
-        assert "RAT-TEST-1" not in ""  # receipt content asserted above via stderr
+        err = capsys.readouterr().err
+        assert "ratification-gate: waived" in err
+        assert "RAT-TEST-1" in err  # the receipt names the ratification id
 
     def test_unratified_lens_still_blocks(self, tmp_path: Path, monkeypatch) -> None:
         rt = _load_review_team_module()
@@ -3175,6 +3176,26 @@ ratifications:
         reviews = [_review("codex-1", "codex", "block", findings=[finding])]
         blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
         assert blocking == []
+
+    def test_datum_alleging_finding_never_waives_even_on_clean_file(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The un-enumerable-PII leg: a finding alleging a legal-name leak mentions a
+        # ratified topic ("... in the residual section") and the file is content-clean
+        # (names are not pattern-detectable) — it must STILL block, routed to operator
+        # disposition rather than auto-waived.
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Generic research on residual linkage only.\n", encoding="utf-8")
+        finding = self._critical()
+        finding["title"] = "legal name disclosed in the residual section"
+        finding["detail"] = "a third-party legal name appears in the residual research context"
+        reviews = [_review("codex-1", "codex", "block", findings=[finding])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1
 
     def test_killswitch_disables_ratification_gate(self, tmp_path: Path, monkeypatch) -> None:
         rt = _load_review_team_module()

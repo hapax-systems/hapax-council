@@ -50,3 +50,10 @@ ratifications:
       neurotype literature does not constitute an operator diagnosis claim. This entry
       waives consent-provenance criticals on the named files only; any tier-1/tier-2
       attribution regression still fails the durable scan and still blocks review.
+      HONEST LIMITATION + ROUTING: content scans detect only pattern-detectable datum
+      classes (email/phone/SSN/street-address/DOB); estate-specific literals (legal
+      names, places, third-party facts) are NOT content-detectable in public source, so
+      any finding whose prose ALLEGES a name/identity/third-party/credential/medical
+      datum class is non-waivable by rule (_NON_WAIVABLE_ALLEGATION_RE) and routes to
+      operator disposition — the waiver covers only findings about the ratified
+      linkage class itself.

@@ -269,6 +269,24 @@ def test_unpinned_numeric_fails_c9(tmp_path: Path) -> None:
     assert "Next action:" in result.stdout
 
 
+def test_future_scout_date_fails_c7_fail_closed(tmp_path: Path) -> None:
+    # fail-closed at the date boundary: a future-dated scout must not dodge the TTL
+    registry = _base_registry()
+    registry["registry"][0]["comparative_claims"] = [
+        {
+            "claim": "no comparator ships this mechanism",
+            "evidence_level": "DC",
+            "scout_date": "2099-01-01",
+            "comparator": "spec-kit v0.9.2",
+        }
+    ]
+    registry_path = _write_registry(tmp_path / "registry.yaml", registry)
+    result = _run_checker("--registry", str(registry_path))
+    assert result.returncode == 1, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "Hapax.ValuePropRegistry.C7" in result.stdout
+    assert "in the future" in result.stdout
+
+
 def test_pinned_numeric_and_excluded_tokens_pass_c9(tmp_path: Path) -> None:
     registry = _base_registry()
     registry["registry"][0]["tangible_benefit"] = (

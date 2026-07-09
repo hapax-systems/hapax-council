@@ -8,7 +8,6 @@
 # generic CLT literature + system notification design (no operator diagnosis)
 agents/demo_pipeline/domain_corpus/cognitive-load-theory.md 672a202c9646
 # generic set-shifting literature; the design sentence names the system, not a diagnosis
-agents/hapax_daimonion/proofs/claim-6-bayesian-tools/RESEARCH.md 8ca3270e5c60
 # GUEST-facing consent-channel design (explicitly about guests, not the operator)
 docs/research/2026-03-15-consent-channel-selection-research.md e00e8b0a33d4
 docs/research/2026-03-15-consent-channel-selection-research.md 0d34e2793ebe

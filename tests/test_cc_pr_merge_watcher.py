@@ -608,7 +608,9 @@ class TestCloseOnPrMergeOptOut:
             text = f"---\nclose_on_pr_merge: {spelling}\n---\nbody\n"
             with caplog.at_level(logging.WARNING, logger="cc-pr-merge-watcher"):
                 assert watcher.declines_close_on_pr_merge(text), spelling
-            assert "unreadable value" in caplog.text
+            # two fail-closed paths, one direction: an unreadable VALUE inside parsed
+            # frontmatter, or frontmatter that fails to parse while mentioning the field
+            assert "unreadable value" in caplog.text or "failed to parse" in caplog.text
             caplog.clear()
 
     def test_note_with_other_value_still_closes(self, tmp_path: Path) -> None:

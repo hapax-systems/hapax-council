@@ -467,7 +467,21 @@ def check_c7_comparative_claim_pins(
                 )
             if scout is not None and not docs_internal:
                 age_days = (today - scout).days
-                if age_days > ttl_days:
+                if age_days < 0:
+                    # fail-closed at the date boundary: a future-dated scout would
+                    # otherwise dodge the TTL until its own date arrives
+                    findings.append(
+                        Finding(
+                            file=str(registry_path),
+                            check="C7",
+                            message=(
+                                f"{claim_label} scout_date {scout.isoformat()} is in the "
+                                "future — comparative pins must carry the date the scout "
+                                "actually ran (constraint comparative-claim-hygiene)."
+                            ),
+                        )
+                    )
+                elif age_days > ttl_days:
                     findings.append(
                         Finding(
                             file=str(registry_path),

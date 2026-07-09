@@ -50,6 +50,9 @@ from typing import Any
 SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from github_pr_status import (  # noqa: E402
     GRAPHQL_BACKOFF_RC,
@@ -60,6 +63,8 @@ from github_pr_status import (  # noqa: E402
     rest_pull_state,
     run_graphql_rate_aware,
 )
+
+from shared.frontmatter import parse_frontmatter_with_diagnostics  # noqa: E402
 
 LOG = logging.getLogger("cc-pr-merge-watcher")
 
@@ -224,47 +229,59 @@ class LinkedTask:
 # attempted opt-out we cannot read, so the watcher declines to close and warns rather
 # than proceeding to cc-close (auto-closing on a malformed opt-out is exactly the
 # lane-killing failure this gate exists to stop).
-_CLOSE_ON_PR_MERGE_LINE_RE = re.compile(
-    r"^close_on_pr_merge:[ \t]*(?P<value>[^\r\n]*?)[ \t]*\r?$", flags=re.MULTILINE
-)
-_FALSEISH_RE = re.compile(
-    # YAML-false spellings (false/no/off; bare or MATCHED-quoted), optional trailing
-    # comment — a round-trip through a YAML dumper must not silently drop the opt-out.
-    r"""^(?:(?i:false|no|off)|"(?i:false|no|off)"|'(?i:false|no|off)')[ \t]*(?:#[^\r\n]*)?$"""
-)
-_TRUEISH_RE = re.compile(
-    r"""^(?:(?i:true|yes|on)|"(?i:true|yes|on)"|'(?i:true|yes|on)')[ \t]*(?:#[^\r\n]*)?$"""
-)
-_FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)", flags=re.DOTALL)
+_FALSEISH_STRINGS = frozenset({"false", "no", "off"})
+_TRUEISH_STRINGS = frozenset({"true", "yes", "on"})
 
 
 def declines_close_on_pr_merge(text: str) -> bool:
     """True when the note FRONTMATTER opts out of merge-triggered auto-close.
 
-    Scoped to the leading ``---``-delimited block only: a body or session-log
-    line quoting ``close_on_pr_merge: false`` must not opt the task out — the
-    fail-safe auto-close default holds for notes without frontmatter or with
-    the field only mentioned in prose. When the field IS present but carries a
-    value that is neither true-ish nor false-ish, the watcher fails closed:
-    it declines to close and warns (see the three-way note above).
+    Parsed with the repo-canonical frontmatter parser (shared/frontmatter.py) so
+    YAML semantics — quoted spellings, no/off booleans, inline comments, duplicate
+    keys, CRLF, multi-line values containing ``---`` — resolve the way every other
+    consumer resolves them. Scoping to the leading block comes with the parser: a
+    body or session-log line quoting ``close_on_pr_merge: false`` never opts out.
+
+    Failure direction is uniformly SAFE toward not closing: when the note carries
+    the field with an unreadable value, or the frontmatter fails to parse while the
+    raw text mentions the field at all, the watcher treats it as an ATTEMPTED
+    opt-out, declines to close, and warns — auto-closing on a malformed opt-out is
+    exactly the lane-killing failure this gate exists to stop. A cleanly parsed
+    note without the field (or with an explicit true-ish value) keeps the
+    auto-close default.
     """
-    frontmatter = _FRONTMATTER_RE.match(text)
-    if frontmatter is None:
-        return False
-    line = _CLOSE_ON_PR_MERGE_LINE_RE.search(frontmatter.group(1))
-    if line is None:
-        return False
-    value = line.group("value")
-    if _FALSEISH_RE.match(value):
+    stripped = text.lstrip("﻿\n\r")  # a BOM/leading blank line must not hide the block
+    result = parse_frontmatter_with_diagnostics(stripped)
+    frontmatter = result.frontmatter if result.ok else None
+    if isinstance(frontmatter, dict):
+        if "close_on_pr_merge" not in frontmatter:
+            return False
+        value = frontmatter["close_on_pr_merge"]
+        if value is False:
+            return True
+        if value is True:
+            return False
+        if isinstance(value, str):
+            token = value.strip().lower()
+            if token in _FALSEISH_STRINGS:
+                return True
+            if token in _TRUEISH_STRINGS:
+                return False
+        LOG.warning(
+            "close_on_pr_merge has unreadable value %r — treating as opt-out (fail "
+            "closed: not auto-closing); fix the note frontmatter to a plain true/false",
+            value,
+        )
         return True
-    if _TRUEISH_RE.match(value):
-        return False
-    LOG.warning(
-        "close_on_pr_merge has unreadable value %r — treating as opt-out (fail closed: "
-        "not auto-closing); fix the note frontmatter to a plain true/false",
-        value,
-    )
-    return True
+    # Frontmatter failed to parse. If the note mentions the field at all, this is an
+    # attempted opt-out we cannot read — fail closed toward not closing.
+    if "close_on_pr_merge" in stripped:
+        LOG.warning(
+            "note frontmatter failed to parse and mentions close_on_pr_merge — "
+            "treating as opt-out (fail closed: not auto-closing); repair the note"
+        )
+        return True
+    return False
 
 
 def read_cursor(cursor_path: Path) -> datetime:

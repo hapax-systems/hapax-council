@@ -65,7 +65,7 @@ strategy, not just apply one.**
 impairment in shifting attention between task sets. The difficulty is
 not in performing tasks but in transitioning between them. A Bayesian
 mode system that handles transitions automatically directly
-addresses this — the system does the set-shifting, not the person.
+addresses this — the set-shifting moves into the system itself.
 
 **MCP (Model Context Protocol)**: Defines primitives for tool
 integration — Tools (callable), Resources (contextual data), Prompts
