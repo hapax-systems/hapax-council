@@ -6,6 +6,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE="$ROOT"
 SYSTEMD_SYSTEM_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
 SYSTEMD_USER_DIR="${HAPAX_OOM_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
+SYSTEMD_USER_CONTROL_DIR="${HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR:-$HOME/.config/systemd/user.control}"
 EARLYOOM_DEST="${HAPAX_OOM_EARLYOOM_DEST:-/etc/default/earlyoom}"
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
 SUDO="${HAPAX_OOM_INSTALL_SUDO:-sudo}"
@@ -76,6 +77,15 @@ run_root() {
     fi
 }
 
+preflight_root() {
+    if [ -n "$SUDO" ] && [ "$INSTALL" -eq 1 ]; then
+        "$SUDO" -n true 2>/dev/null || {
+            echo "sudo non-interactive access is required for OOM containment install; next action: grant NOPASSWD for install/systemctl/tee or run scripts/install-p0-oom-containment --install --verify-live interactively" >&2
+            return 1
+        }
+    fi
+}
+
 system_dropins=(
     systemd/system/user@1000.service.d/oom.conf
     systemd/system/apcupsd.service.d/oom-protect.conf
@@ -123,6 +133,7 @@ check_source() {
 install_live() {
     local rel dest
     check_source
+    preflight_root
     for rel in "${system_dropins[@]}"; do
         dest="$(system_dest "$rel")"
         run_root install -d -m 0755 "$(dirname "$dest")"
@@ -141,10 +152,19 @@ install_live() {
     install -m 0644 "$(src_path "$user_dropin")" "$dest"
     echo "  '$user_dropin' -> '$dest' (copy)"
 
+    control_dropin_dir="$SYSTEMD_USER_CONTROL_DIR/app.slice.d"
+    if [ -d "$control_dropin_dir" ]; then
+        rm -f \
+            "$control_dropin_dir/50-MemoryHigh.conf" \
+            "$control_dropin_dir/50-MemoryMax.conf" \
+            "$control_dropin_dir/50-MemorySwapMax.conf"
+        rmdir "$control_dropin_dir" 2>/dev/null || true
+    fi
+
     run_root "$SYSTEMCTL" daemon-reload
     "$SYSTEMCTL" --user daemon-reload
     if [ "$APPLY_RUNTIME" -eq 1 ]; then
-        "$SYSTEMCTL" --user set-property app.slice MemoryHigh=80G MemoryMax=104G MemorySwapMax=8G
+        "$SYSTEMCTL" --user set-property --runtime app.slice MemoryHigh=80G MemoryMax=104G MemorySwapMax=8G
         if "$SYSTEMCTL" is-active --quiet earlyoom.service; then
             run_root "$SYSTEMCTL" restart earlyoom.service
         fi

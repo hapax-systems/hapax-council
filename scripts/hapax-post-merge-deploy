@@ -53,6 +53,9 @@
 #                                    the live slice
 #   systemd/logrotate.d/*          → logrotate configs; require sudo install
 #   systemd/system/**              → other system-scoped configs; require sudo install
+#   scripts/install-apcupsd-power-alerts,
+#   config/apcupsd/**              → install podium apcupsd config/hooks/helper
+#                                    into /etc/apcupsd from the merge SHA
 #   scripts/hapax-recovery-plane-install, scripts/hapax-p0-incident-intake,
 #   scripts/hapax-coord-deploy, shared/{__init__,jsonl_append,p0_incident_intake}.py
 #                                  → refresh the stable D2 recovery bundle under
@@ -165,6 +168,7 @@ TRACE_MAX_RECORDS="${HAPAX_POST_MERGE_TRACE_MAX_RECORDS:-200}"
 LAST_DEPLOYED_SHA_PATH="${HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH:-$(dirname "$TRACE_PATH")/last-deployed-sha}"
 RECOVERY_INSTALLER_PATH="scripts/hapax-recovery-plane-install"
 OOM_CONTAINMENT_INSTALLER_PATH="scripts/install-p0-oom-containment"
+APCUPSD_INSTALLER_PATH="scripts/install-apcupsd-power-alerts"
 RECOVERY_BUNDLE_DEST="${HAPAX_RECOVERY_BUNDLE_DEST:-$HOME/.local/lib/hapax-recovery/council/current}"
 RECOVERY_BUNDLE_SOURCE_FILES=(
     scripts/hapax-p0-incident-intake
@@ -402,6 +406,7 @@ record_post_merge_trace() {
     HAPAX_TRACE_SYSTEMD_SYSTEM="$(_trace_join "${SYSTEMD_SYSTEM[@]}")" \
     HAPAX_TRACE_SYSTEMD_DROPINS="$(_trace_join "${SYSTEMD_DROPINS[@]}")" \
     HAPAX_TRACE_OOM_CONTAINMENT="$(_trace_join "${OOM_CONTAINMENT[@]}")" \
+    HAPAX_TRACE_APCUPSD_POWER_ALERTS="$(_trace_join "${APCUPSD_POWER_ALERTS[@]}")" \
     HAPAX_TRACE_USER_PRESETS="$(_trace_join "${USER_PRESETS[@]}")" \
     HAPAX_TRACE_WATCHDOGS="$(_trace_join "${WATCHDOGS[@]}")" \
     HAPAX_TRACE_RECOVERY_BUNDLE="$(_trace_join "${recovery_bundle_trace[@]}")" \
@@ -447,6 +452,7 @@ deploy_groups = {
     "systemd_system_units": lines("HAPAX_TRACE_SYSTEMD_SYSTEM"),
     "systemd_dropins": lines("HAPAX_TRACE_SYSTEMD_DROPINS"),
     "oom_containment": lines("HAPAX_TRACE_OOM_CONTAINMENT"),
+    "apcupsd_power_alerts": lines("HAPAX_TRACE_APCUPSD_POWER_ALERTS"),
     "systemd_user_presets": lines("HAPAX_TRACE_USER_PRESETS"),
     "systemd_watchdogs": lines("HAPAX_TRACE_WATCHDOGS"),
     "recovery_bundle": lines("HAPAX_TRACE_RECOVERY_BUNDLE"),
@@ -466,6 +472,7 @@ runtime_media_groups = [
         "systemd_system_units",
         "systemd_dropins",
         "oom_containment",
+        "apcupsd_power_alerts",
         "systemd_watchdogs",
         "recovery_bundle",
         "hapax_scripts",
@@ -566,7 +573,7 @@ else
     FILES="$(git diff-tree --root --no-commit-id --name-only -r "$SHA" | sort -u)"
 fi
 
-PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); OOM_CONTAINMENT=(); USER_PRESETS=(); WATCHDOGS=(); RECOVERY_BUNDLE=(); SCRIPTS=(); SCRIPT_PY=(); QUAKE_ASSETS=(); CANONICAL_GATE=()
+PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); OOM_CONTAINMENT=(); APCUPSD_POWER_ALERTS=(); USER_PRESETS=(); WATCHDOGS=(); RECOVERY_BUNDLE=(); SCRIPTS=(); SCRIPT_PY=(); QUAKE_ASSETS=(); CANONICAL_GATE=()
 GATE_CLOSURE=()
 # Must stay a superset of hooks-doctor's CLOSURE_SIBLINGS (+ the impl):
 # deploy_canonical REFUSES an incomplete staged closure, so a missing sibling
@@ -948,8 +955,10 @@ while IFS= read -r f; do
             fi
             ;;
         systemd/*.service|systemd/*.timer|systemd/*.path) SYSTEMD+=("$f") ;;
-        scripts/install-p0-oom-containment|config/earlyoom/default|systemd/system/user@1000.service.d/oom.conf|systemd/system/*.service.d/oom-protect.conf|systemd/units/app.slice.d/oom-containment.conf)
+        scripts/install-p0-oom-containment|config/earlyoom/default|systemd/system/user@1000.service.d/oom.conf|systemd/system/apcupsd.service.d/oom-protect.conf|systemd/system/systemd-logind.service.d/oom-protect.conf|systemd/system/systemd-resolved.service.d/oom-protect.conf|systemd/system/systemd-timesyncd.service.d/oom-protect.conf|systemd/system/NetworkManager.service.d/oom-protect.conf|systemd/system/dbus-broker.service.d/oom-protect.conf|systemd/system/sshd.service.d/oom-protect.conf|systemd/units/app.slice.d/oom-containment.conf)
             OOM_CONTAINMENT+=("$f") ;;
+        scripts/install-apcupsd-power-alerts|config/apcupsd/*)
+            APCUPSD_POWER_ALERTS+=("$f") ;;
         systemd/units/*.service.d/*.conf|systemd/units/*.timer.d/*.conf|systemd/units/*.slice.d/*.conf|systemd/units/*.scope.d/*.conf) SYSTEMD_DROPINS+=("$f") ;;
         systemd/user-preset.d/*.preset)   USER_PRESETS+=("$f") ;;
         systemd/watchdogs/*)              WATCHDOGS+=("$f") ;;
@@ -1308,6 +1317,54 @@ if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
     DID_ANYTHING=1
 fi
 
+# --- apcupsd power-alert config/hooks ---
+stage_apcupsd_power_alert_installer() {
+    local stage="$1"
+    local rel dest
+    local -a required=(
+        "$APCUPSD_INSTALLER_PATH"
+        config/apcupsd/apcupsd.conf
+        config/apcupsd/hapax-power-event.py
+        config/apcupsd/onbattery
+        config/apcupsd/offbattery
+    )
+    for rel in "${required[@]}"; do
+        if ! git cat-file -e "$SHA:$rel" 2>/dev/null; then
+            echo "hapax-post-merge-deploy: missing apcupsd power-alert source at $SHA:$rel; next: restore config/apcupsd plus scripts/install-apcupsd-power-alerts and rerun hapax-post-merge-deploy for this merge" >&2
+            return 2
+        fi
+        dest="$stage/$rel"
+        mkdir -p "$(dirname "$dest")"
+        git show "$SHA:$rel" > "$dest"
+    done
+    chmod +x "$stage/$APCUPSD_INSTALLER_PATH" "$stage/config/apcupsd/hapax-power-event.py" "$stage/config/apcupsd/onbattery" "$stage/config/apcupsd/offbattery"
+}
+
+if [ "${#APCUPSD_POWER_ALERTS[@]}" -gt 0 ]; then
+    echo "apcupsd power-alert files changed (${#APCUPSD_POWER_ALERTS[@]}):"
+    for f in "${APCUPSD_POWER_ALERTS[@]}"; do
+        echo "  $f"
+    done
+    APCUPSD_STAGE="$(mktemp -d)"
+    set +e
+    stage_apcupsd_power_alert_installer "$APCUPSD_STAGE"
+    stage_apcupsd_rc=$?
+    set -e
+    if [ "$stage_apcupsd_rc" -ne 0 ]; then
+        rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
+        exit "$stage_apcupsd_rc"
+    fi
+    set +e
+    "$APCUPSD_STAGE/$APCUPSD_INSTALLER_PATH" --source "$APCUPSD_STAGE" --install --verify-live
+    apcupsd_installer_rc=$?
+    set -e
+    rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
+    if [ "$apcupsd_installer_rc" -ne 0 ]; then
+        exit "$apcupsd_installer_rc"
+    fi
+    DID_ANYTHING=1
+fi
+
 # --- systemd unit drop-ins ---
 if [ "${#SYSTEMD_DROPINS[@]}" -gt 0 ]; then
     echo "systemd drop-ins changed (${#SYSTEMD_DROPINS[@]}):"
@@ -1332,7 +1389,19 @@ if [ "${#SYSTEMD_DROPINS[@]}" -gt 0 ]; then
     systemctl --user daemon-reload
     for u in "${DROPIN_UNITS_TO_RESTART[@]}"; do
         if [[ "$u" == *.slice ]]; then
-            echo "not restarting active slice $u after drop-in deploy; use a dedicated set-property activation path for live slice resource changes"
+            slice_props=()
+            for conf in "$SYSTEMD_USER_DIR/$u.d"/*.conf; do
+                [ -f "$conf" ] || continue
+                while IFS= read -r prop; do
+                    slice_props+=("$prop")
+                done < <(grep -E '^(MemoryHigh|MemoryMax|MemorySwapMax)=' "$conf" || true)
+            done
+            if [ "${#slice_props[@]}" -gt 0 ]; then
+                echo "applying active slice properties for $u without restart"
+                systemctl --user set-property --runtime "$u" "${slice_props[@]}"
+            else
+                echo "not restarting active slice $u after drop-in deploy; no runtime set-property candidates found"
+            fi
         elif systemctl --user is-active --quiet "$u"; then
             echo "restarting $u"
             restart_user_unit "$u"

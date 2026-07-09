@@ -354,9 +354,9 @@ fi
 #
 # Destination layout: ``~/.config/systemd/user/<service>.service.d/``
 # is a REAL directory (not a symlink). Individual ``.conf`` files
-# inside it are symlinks back to the repo. This matches the existing
-# manually-placed ``tabbyapi.service.d/gpu-pin.conf`` file that has
-# been on disk since Sprint 5b Phase 2a.
+# inside it are symlinks back to the repo, except app.slice's P0 OOM
+# containment backstop, which is copied so host safety does not depend
+# on any mutable worktree path.
 dropin_changed=0
 for dropin_dir in "$REPO_DIR"/*.service.d "$REPO_DIR"/*.timer.d "$REPO_DIR"/*.slice.d "$REPO_DIR"/*.scope.d; do
     [ -d "$dropin_dir" ] || continue
@@ -367,6 +367,18 @@ for dropin_dir in "$REPO_DIR"/*.service.d "$REPO_DIR"/*.timer.d "$REPO_DIR"/*.sl
         [ -f "$conf" ] || continue
         conf_name="$(basename "$conf")"
         dest_conf="$dest_dropin_dir/$conf_name"
+        if [ "$svc_name/$conf_name" = "app.slice.d/oom-containment.conf" ]; then
+            if [ -L "$dest_conf" ]; then
+                rm -f "$dest_conf"
+            fi
+            if [ -f "$dest_conf" ] && cmp -s "$conf" "$dest_conf"; then
+                continue
+            fi
+            install -m 0644 "$conf" "$dest_conf"
+            echo "dropin-copied: $svc_name/$conf_name"
+            dropin_changed=$((dropin_changed + 1))
+            continue
+        fi
         if [ -L "$dest_conf" ] && [ "$(readlink "$dest_conf")" = "$conf" ]; then
             continue
         fi

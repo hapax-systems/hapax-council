@@ -142,10 +142,15 @@ write `/dev/shm/hapax-compositor/broadcast-mode.json` through
   job at `MemoryHigh=1G` and `MemoryMax=2G` to absorb Python import,
   embedding, and persistence bursts while remaining bounded. This is not a
   blanket limit increase for 128M utility timers.
-- **earlyoom** (`/etc/default/earlyoom`): fires SIGTERM @ 5% avail / 5% swap-free, SIGKILL @ 2.5%.
+- **earlyoom** (`/etc/default/earlyoom`, source: `config/earlyoom/default`): fires SIGTERM @ 5% avail / 5% swap-free, SIGKILL @ 2.5%.
   - `--prefer`: `cargo|rustc|ld.lld|chrome|electron|node|claude|next-server|ffmpeg|bwrap` (expendable targets for OOM)
   - `--avoid`: `Hyprland|pipewire|wireplumber|dockerd|containerd|bluetoothd|systemd|foot|waybar|hapax-imagination|hapax-daimonion|studio-compositor|logos-api|officium-api` (stack protection)
-- **System-level OOM overrides**: earlyoom (-1000), docker (-900), pipewire/wireplumber (-900).
+  - `--ignore`: `apcupsd|systemd-logind|systemd-resolved|systemd-timesyncd|systemd-userdbd|dbus-broker|dbus-daemon|NetworkManager|sshd|sshd-session|getty|agetty` (operator recovery and UPS telemetry must not be earlyoom victims)
+- **P0 OOM containment package** (`scripts/install-p0-oom-containment`): installs source-controlled recovery policy into `/etc/default/earlyoom`, `/etc/systemd/system/*.service.d/oom-protect.conf`, `/etc/systemd/system/user@1000.service.d/oom.conf`, and `~/.config/systemd/user/app.slice.d/oom-containment.conf`.
+  - `user@1000.service`: `OOMScoreAdjust=100`, restoring the packaged kill ordering so the whole user manager does not shield every interactive workload.
+  - Recovery daemons: apcupsd (`-900`), systemd-logind/resolved/timesyncd/NetworkManager (`-800`), D-Bus (`-900`), and sshd (`-1000`).
+  - `app.slice`: `MemoryHigh=80G`, `MemoryMax=104G`, `MemorySwapMax=8G` as an aggregate user-app RAM/swap backstop; live activation uses `systemctl --user set-property --runtime` and must not restart the slice.
+- **Other system-level OOM overrides**: docker (-900), pipewire/wireplumber (-900), and hardware/service-specific drop-ins documented beside their installers.
 
 **Runtime application / receipt path:** source changes in this directory are
 not host mutation authority. A runtime-authorized follow-on task must first

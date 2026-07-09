@@ -214,6 +214,55 @@ class TestServiceDropInInstall:
             "drop-in loop must link each .conf individually, not the parent dir"
         )
 
+    def test_app_slice_oom_dropin_is_copied_not_symlinked(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        calls = tmp_path / "systemctl-calls.txt"
+        systemctl = bin_dir / "systemctl"
+        systemctl.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                printf '%s\n' "$*" >> "{calls}"
+                exit 0
+                """
+            ),
+            encoding="utf-8",
+        )
+        systemctl.chmod(0o755)
+        uv = bin_dir / "uv"
+        uv.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        uv.chmod(0o755)
+
+        env = os.environ.copy()
+        env["ALLOW_NONSTANDARD_REPO"] = "1"
+        env["HOME"] = str(tmp_path / "home")
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+
+        result = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert result.returncode == 0, result.stderr
+        dest = (
+            Path(env["HOME"])
+            / ".config"
+            / "systemd"
+            / "user"
+            / "app.slice.d"
+            / "oom-containment.conf"
+        )
+        assert dest.is_file()
+        assert not dest.is_symlink()
+        assert dest.read_text(encoding="utf-8") == (
+            REPO_ROOT / "systemd" / "units" / "app.slice.d" / "oom-containment.conf"
+        ).read_text(encoding="utf-8")
+        assert "dropin-copied: app.slice.d/oom-containment.conf" in result.stdout
+
     def test_script_reloads_daemon_when_dropins_change(self) -> None:
         body = INSTALL_SCRIPT.read_text(encoding="utf-8")
         assert "dropin_changed" in body

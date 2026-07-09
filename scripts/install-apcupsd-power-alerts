@@ -3,9 +3,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SRC="$ROOT/config/apcupsd"
-DEST="/etc/apcupsd"
-AUDIT_DIR="/var/log/hapax"
+SOURCE="$ROOT"
+SRC="$SOURCE/config/apcupsd"
+DEST="${HAPAX_APCUPSD_DEST:-/etc/apcupsd}"
+AUDIT_DIR="${HAPAX_APCUPSD_AUDIT_DIR:-/var/log/hapax}"
+SYSTEMCTL="${HAPAX_APCUPSD_SYSTEMCTL:-systemctl}"
+SUDO="${HAPAX_APCUPSD_INSTALL_SUDO:-sudo}"
 RESTART=1
 INSTALL=0
 CHECK=0
@@ -13,7 +16,7 @@ VERIFY_LIVE=0
 
 usage() {
     cat <<'USAGE'
-usage: scripts/install-apcupsd-power-alerts [--check] [--install] [--verify-live] [--no-restart]
+usage: scripts/install-apcupsd-power-alerts [--source DIR] [--check] [--install] [--verify-live] [--no-restart]
 
 Installs:
   config/apcupsd/apcupsd.conf        -> /etc/apcupsd/apcupsd.conf
@@ -28,6 +31,7 @@ USAGE
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
+        --source) SOURCE="${2:?source dir required after --source}"; SRC="$SOURCE/config/apcupsd"; shift ;;
         --check) CHECK=1 ;;
         --install) INSTALL=1 ;;
         --verify-live) VERIFY_LIVE=1 ;;
@@ -47,37 +51,45 @@ expect_header() {
     local first
     first="$(head -n1 "$file")"
     [ "$first" = "## apcupsd.conf v1.1 ##" ] || {
-        echo "bad apcupsd header in $file: $first" >&2
+        echo "bad apcupsd header in $file: $first; next action: restore config/apcupsd/apcupsd.conf and rerun scripts/install-apcupsd-power-alerts --install --verify-live" >&2
         return 1
     }
+}
+
+run_root() {
+    if [ -n "$SUDO" ]; then
+        "$SUDO" "$@"
+    else
+        "$@"
+    fi
 }
 
 check_source() {
     expect_header "$SRC/apcupsd.conf"
     [ -x "$SRC/hapax-power-event.py" ] || {
-        echo "source helper is not executable: $SRC/hapax-power-event.py" >&2
+        echo "source helper is not executable: $SRC/hapax-power-event.py; next action: chmod +x config/apcupsd/hapax-power-event.py and rerun scripts/install-apcupsd-power-alerts --check" >&2
         return 1
     }
     [ -x "$SRC/onbattery" ] || {
-        echo "source hook is not executable: $SRC/onbattery" >&2
+        echo "source hook is not executable: $SRC/onbattery; next action: chmod +x config/apcupsd/onbattery and rerun scripts/install-apcupsd-power-alerts --check" >&2
         return 1
     }
     [ -x "$SRC/offbattery" ] || {
-        echo "source hook is not executable: $SRC/offbattery" >&2
+        echo "source hook is not executable: $SRC/offbattery; next action: chmod +x config/apcupsd/offbattery and rerun scripts/install-apcupsd-power-alerts --check" >&2
         return 1
     }
 }
 
 install_live() {
     check_source
-    sudo install -d -m 0755 "$DEST"
-    sudo install -d -m 0750 "$AUDIT_DIR"
-    sudo install -m 0644 "$SRC/apcupsd.conf" "$DEST/apcupsd.conf"
-    sudo install -m 0755 "$SRC/hapax-power-event.py" "$DEST/hapax-power-event.py"
-    sudo install -m 0755 "$SRC/onbattery" "$DEST/onbattery"
-    sudo install -m 0755 "$SRC/offbattery" "$DEST/offbattery"
+    run_root install -d -m 0755 "$DEST"
+    run_root install -d -m 0750 "$AUDIT_DIR"
+    run_root install -m 0644 "$SRC/apcupsd.conf" "$DEST/apcupsd.conf"
+    run_root install -m 0755 "$SRC/hapax-power-event.py" "$DEST/hapax-power-event.py"
+    run_root install -m 0755 "$SRC/onbattery" "$DEST/onbattery"
+    run_root install -m 0755 "$SRC/offbattery" "$DEST/offbattery"
     if [ "$RESTART" -eq 1 ]; then
-        sudo systemctl restart apcupsd
+        run_root "$SYSTEMCTL" restart apcupsd
     fi
 }
 
@@ -88,7 +100,7 @@ verify_live() {
         return 1
     }
     [ -x "$DEST/hapax-power-event.py" ] || {
-        echo "live helper is not executable: $DEST/hapax-power-event.py" >&2
+        echo "live helper is not executable: $DEST/hapax-power-event.py; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
         return 1
     }
     cmp -s "$SRC/hapax-power-event.py" "$DEST/hapax-power-event.py" || {
@@ -96,7 +108,7 @@ verify_live() {
         return 1
     }
     [ -x "$DEST/onbattery" ] || {
-        echo "live onbattery hook is not executable" >&2
+        echo "live onbattery hook is not executable; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
         return 1
     }
     cmp -s "$SRC/onbattery" "$DEST/onbattery" || {
@@ -104,7 +116,7 @@ verify_live() {
         return 1
     }
     [ -x "$DEST/offbattery" ] || {
-        echo "live offbattery hook is not executable" >&2
+        echo "live offbattery hook is not executable; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
         return 1
     }
     cmp -s "$SRC/offbattery" "$DEST/offbattery" || {
@@ -112,7 +124,7 @@ verify_live() {
         return 1
     }
     [ -d "$AUDIT_DIR" ] || {
-        echo "audit directory missing: $AUDIT_DIR" >&2
+        echo "audit directory missing: $AUDIT_DIR; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
         return 1
     }
 }

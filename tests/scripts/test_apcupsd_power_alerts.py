@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -110,3 +111,35 @@ def test_installer_source_check_exercises_config_hooks_and_helper() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "apcupsd power alert install/check complete" in result.stdout
+
+
+def test_installer_install_and_verify_live_against_temp_destinations(tmp_path: Path) -> None:
+    dest = tmp_path / "apcupsd"
+    audit_dir = tmp_path / "hapax-log"
+    systemctl_calls = tmp_path / "systemctl-calls.txt"
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> {systemctl_calls!s}\nexit 0\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--install", "--verify-live"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_DEST": str(dest),
+            "HAPAX_APCUPSD_AUDIT_DIR": str(audit_dir),
+            "HAPAX_APCUPSD_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (dest / "hapax-power-event.py").is_file()
+    assert (dest / "onbattery").stat().st_mode & 0o100
+    assert audit_dir.is_dir()
+    assert "restart apcupsd" in systemctl_calls.read_text(encoding="utf-8")

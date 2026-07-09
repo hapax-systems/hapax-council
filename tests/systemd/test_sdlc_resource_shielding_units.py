@@ -181,4 +181,4 @@ def test_p0_oom_containment_has_dedicated_installer() -> None:
     assert "systemd/system/user@1000.service.d/oom.conf" in body
     assert "systemd/units/app.slice.d/oom-containment.conf" in body
     assert "config/earlyoom/default" in body
-    assert "set-property app.slice MemoryHigh=80G MemoryMax=104G MemorySwapMax=8G" in body
+    assert "set-property --runtime app.slice MemoryHigh=80G MemoryMax=104G MemorySwapMax=8G" in body

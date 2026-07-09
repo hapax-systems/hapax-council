@@ -552,6 +552,85 @@ def test_p0_oom_containment_deploy_uses_installer_without_restarting_app_slice(
     assert record["deploy_groups"]["systemd_dropins"] == []
 
 
+def test_apcupsd_power_alert_deploy_uses_dedicated_installer(tmp_path: Path) -> None:
+    installer_calls = tmp_path / "apcupsd-installer-calls.txt"
+    installer_body = (
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'printf \'%s\\n\' "$*" >> "$HAPAX_APCUPSD_INSTALL_CALLS"\n'
+    )
+    files = {
+        "scripts/install-apcupsd-power-alerts": installer_body,
+        "config/apcupsd/apcupsd.conf": "## apcupsd.conf v1.1 ##\nUPSNAME podium\n",
+        "config/apcupsd/hapax-power-event.py": "#!/usr/bin/env python3\n",
+        "config/apcupsd/onbattery": "#!/bin/sh\n",
+        "config/apcupsd/offbattery": "#!/bin/sh\n",
+    }
+    repo, sha = _repo_with_linear_commit(tmp_path, files)
+    home = tmp_path / "home"
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_APCUPSD_INSTALL_CALLS": str(installer_calls),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--install --verify-live" in installer_calls.read_text(encoding="utf-8")
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert set(record["deploy_groups"]["apcupsd_power_alerts"]) == set(files)
+
+
+def test_generic_slice_dropin_deploy_uses_runtime_set_property_not_restart(
+    tmp_path: Path,
+) -> None:
+    dropin_path = "systemd/units/demo.slice.d/memory.conf"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {dropin_path: "[Slice]\nMemoryHigh=1G\nMemoryMax=2G\nMemorySwapMax=512M\n"},
+    )
+    home = tmp_path / "home"
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = systemctl_calls.read_text(encoding="utf-8")
+    assert (
+        "--user set-property --runtime demo.slice MemoryHigh=1G MemoryMax=2G MemorySwapMax=512M"
+        in calls
+    )
+    assert "--user restart demo.slice" not in calls
+
+
 def test_systemd_coverage_includes_slice_units() -> None:
     # hapax-sdlc.slice (the SDLC resource-shielding slice) must be deploy-covered;
     # a .slice falling outside the case-globs is the absence-class deploy bug.
