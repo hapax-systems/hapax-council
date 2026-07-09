@@ -3426,3 +3426,106 @@ class TestCommittedRatificationLedgerIsHonest:
             "ratified content pin drifted — the data owner ratified different bytes; "
             "re-ratification required:\n" + "\n".join(drifted)
         )
+
+
+class TestHeadBoundRepoRoot:
+    """The production defect: cc-pr-review-dispatch passes the ACTIVATED SOURCE worktree
+    (which tracks main) as repo_root, so ``_repo_head_matches`` never matched a PR head and
+    BOTH head-bound gates — the go-gate's phantom invalidation and the operator-ratification
+    gate — silently no-oped. Every phantom and every waivable critical blocked forever.
+
+    ``_head_bound_repo_root`` accepts a candidate ONLY if its HEAD *is* the reviewed commit,
+    so it strictly widens where the gates may bind and never weakens the guard.
+    """
+
+    def test_returns_none_without_head_sha(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        assert rt._head_bound_repo_root(tmp_path, "") is None
+        assert rt._head_bound_repo_root(tmp_path, None) is None
+
+    def test_prefers_the_caller_root_when_it_matches(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda root, sha: root == tmp_path)
+        monkeypatch.setattr(rt, "_discover_repo_root", lambda: None)
+        assert rt._head_bound_repo_root(tmp_path, "a" * 40) == tmp_path
+
+    def test_finds_the_sibling_worktree_at_the_reviewed_head(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # the real production shape: caller root is main-tracking, the PR head lives in a
+        # sibling worktree of the SAME repository.
+        rt = _load_review_team_module()
+        stale, pr_tree = tmp_path / "activated", tmp_path / "pr"
+        stale.mkdir()
+        pr_tree.mkdir()
+        monkeypatch.setattr(rt, "_discover_repo_root", lambda: None)
+        monkeypatch.setattr(rt, "_worktrees_of", lambda root: [stale, pr_tree])
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda root, sha: root == pr_tree)
+        assert rt._head_bound_repo_root(stale, "b" * 40) == pr_tree
+
+    def test_none_when_no_checkout_is_the_reviewed_commit(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # fail-closed: no tree is the reviewed commit -> every critical keeps blocking
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_discover_repo_root", lambda: None)
+        monkeypatch.setattr(rt, "_worktrees_of", lambda root: [])
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda root, sha: False)
+        assert rt._head_bound_repo_root(tmp_path, "c" * 40) is None
+
+    def test_stale_caller_root_no_longer_disables_the_ratification_gate(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """End-to-end: a waivable critical is waived even though the caller handed us a
+        root that is NOT the reviewed head — the regression that wedged #4472."""
+        import hashlib
+
+        import yaml
+
+        rt = _load_review_team_module()
+        stale, pr_tree = tmp_path / "activated", tmp_path / "pr"
+        stale.mkdir()
+        doc = pr_tree / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True)
+        doc.write_text("Generic residual research.\n", encoding="utf-8")
+        led = pr_tree / "config" / "governance" / "operator-ratifications.yaml"
+        led.parent.mkdir(parents=True)
+        led.write_text(
+            yaml.safe_dump(
+                {
+                    "ratifications_schema": 1,
+                    "ratifications": [
+                        {
+                            "id": "RAT-TEST-1",
+                            "ratified": "2026-07-09",
+                            "authority": "operator",
+                            "decision_record": "test",
+                            "lenses": ["consent-provenance"],
+                            "topics": ["residual"],
+                            "files": ["docs/research/x.md"],
+                            "files_sha256": {
+                                "docs/research/x.md": hashlib.sha256(doc.read_bytes()).hexdigest()
+                            },
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(rt, "_discover_repo_root", lambda: None)
+        monkeypatch.setattr(rt, "_worktrees_of", lambda root: [stale, pr_tree])
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda root, sha: root == pr_tree)
+        finding = {
+            "severity": "critical",
+            "lens": "consent-provenance",
+            "file": "docs/research/x.md",
+            "line": 1,
+            "title": "residual disclosure",
+            "detail": "semantic privacy claim",
+            "resolved": False,
+        }
+        reviews = [_review("codex-1", "codex", "block", findings=[finding])]
+        blocking, phantom = rt._blocking_criticals(reviews, stale, head_sha="d" * 40)
+        assert blocking == [], "waivable critical must not block when a head-bound tree exists"
+        assert len(phantom) == 1, "waived critical must feed the quorum-promotion leg"
+        assert phantom[0][1]["_resolution_source"] == "operator-ratification"

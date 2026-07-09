@@ -1472,6 +1472,61 @@ def _operator_ratification_for(
     return None
 
 
+def _worktrees_of(repo_root: Path) -> list[Path]:
+    """Every git worktree of ``repo_root``'s repository (including itself)."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_root), "worktree", "list", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if out.returncode != 0:
+        return []
+    return [
+        Path(line.split(" ", 1)[1].strip())
+        for line in out.stdout.splitlines()
+        if line.startswith("worktree ")
+    ]
+
+
+def _head_bound_repo_root(repo_root: Path | None, head_sha: str | None) -> Path | None:
+    """The checkout that IS the reviewed commit, or None.
+
+    Both head-bound mechanisms (the go-gate's phantom invalidation and the
+    operator-ratification gate) refuse to run unless the tree they inspect is the tree
+    the reviewers reviewed. Callers, however, hand us whatever root they happen to have:
+    ``cc-pr-review-dispatch`` passes the *activated source* worktree, which tracks main
+    and is essentially never at a PR head — so both gates silently no-oped in production
+    and every phantom/waivable critical blocked forever.
+
+    Resolution order, each candidate accepted ONLY if its HEAD equals ``head_sha``:
+    the caller's root, the CWD-discovered repo, then any sibling worktree of either.
+    Returning None preserves the fail-closed behaviour (every critical blocks).
+    """
+    want = str(head_sha or "").strip()
+    if not want:
+        return None
+    seen: set[Path] = set()
+    candidates: list[Path] = []
+    for base in (repo_root, _discover_repo_root()):
+        if base is None or base in seen:
+            continue
+        seen.add(base)
+        candidates.append(base)
+        for tree in _worktrees_of(base):
+            if tree not in seen:
+                seen.add(tree)
+                candidates.append(tree)
+    for candidate in candidates:
+        if _repo_head_matches(candidate, want):
+            return candidate
+    return None
+
+
 def _blocking_criticals(
     reviews: Sequence[Mapping[str, Any]],
     repo_root: Path | None,
@@ -1490,10 +1545,11 @@ def _blocking_criticals(
     criticals = _unresolved_criticals(reviews)
     if os.environ.get(_GO_GATE_OFF_ENV) == "1":
         return criticals, []  # killswitch: every critical blocks (pre-go-gate behaviour)
-    root = repo_root if repo_root is not None else _discover_repo_root()
+    # Bind to the checkout that IS the reviewed commit, wherever it lives. The caller's
+    # root is often the activated-source worktree (tracks main), which never matches a PR
+    # head; before this resolver both head-bound gates silently no-oped in production.
+    root = _head_bound_repo_root(repo_root, head_sha)
     if root is None:
-        return criticals, []
-    if not head_sha or not _repo_head_matches(root, head_sha):
         return criticals, []  # no commit to bind to, or wrong checkout -> do not verify (keep all)
     ratifications = _operator_ratifications(root)
     if ratifications:

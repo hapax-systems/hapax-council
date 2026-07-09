@@ -392,16 +392,16 @@ Sovereignty is architectural, not contractual. The data physically resides on in
 
 **Limits of architectural sovereignty**: Cloud API dependency (LiteLLM routes to Anthropic/Gemini), hardware single point of failure, model quality gap (Ollama < frontier), supply chain dependency (packages, weights). The `corporate_boundary` axiom acknowledges the cloud trade-off explicitly.
 
-### 7.2 Neurodivergent Accommodation as Governance
+### 7.2 Executive-Function Accommodation as Governance
 
-The `executive_function` axiom (weight 95) treats neurodivergent accommodation not as a UX feature but as a constitutional requirement:
+The `executive_function` axiom (weight 95) treats executive-function accommodation not as a UX feature but as a constitutional requirement:
 
 - Zero-config agents (no setup steps that require sustained attention)
 - Errors include specific next actions (compensate for task initiation difficulty)
 - Routine work automated on schedules (compensate for routine maintenance challenge)
-- Accommodations proposed, not imposed (respect operator autonomy)
+- Accommodations proposed, not imposed (respect explicit confirmation)
 
-This is grounded in the social model of disability: the system adapts to the operator's cognitive architecture, not the reverse. The accommodation engine discovers patterns (time perception, demand sensitivity, energy cycles, task initiation) and proposes specific system adaptations, each requiring explicit operator confirmation.
+This is grounded in the social model of disability: the system adapts to the user's working context, not the reverse. The accommodation engine discovers patterns (time perception, demand sensitivity, energy cycles, task initiation) and proposes specific system adaptations, each requiring explicit confirmation.
 
 Making accommodation a governance axiom rather than a feature means: it cannot be deprioritized when deadlines press (T0 enforcement), it derives 35 implications with enforcement tiers, it governs other features (the axiom judge evaluates new features against it), and it builds precedent through the case law system.
 

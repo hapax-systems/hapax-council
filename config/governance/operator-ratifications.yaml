@@ -46,7 +46,7 @@ ratifications:
       agents/demo_pipeline/domain_corpus/neurodivergent-technology-design.md: 18832d58633f962c3ff7ea1eb92ab5813450b5ae6bdf236af60cf5302759a42d
       agents/demo_pipeline/domain_corpus/cognitive-load-theory.md: 912e76ef694fce2836dad9e3e5b41fb1318d7fc6bd7fc6bf4fc1a2c02cae709a
       docs/research/apperception-healthy-self-model-research.md: 7855cec64c2d1982f02c00acd6f1a029ece6145b4f2100a4c9a9c17218579ed3
-      docs/research/phenomenology-ai-perception-research.md: b242940461881cec526bcc12750a7ff898a1b356d4ea1336d304c85ca1baa4ab
+      docs/research/phenomenology-ai-perception-research.md: 3a7554399dcc1c99de02ec63d93b9a14b6131ca01598b160dfa02be7bcfcc753
     scope_note: >
       The ENFORCED privacy class is tier-1/tier-2 diagnostic attribution to the operator
       (fully redacted; hash-pinned two-tier guard). Section/document-level linkage between
