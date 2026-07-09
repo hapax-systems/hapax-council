@@ -41,6 +41,77 @@ API_NOW_DT = datetime.fromisoformat(API_NOW.replace("Z", "+00:00"))
 SECRET = "sk-live-secret-value"
 
 
+def test_load_receipt_accepts_route_specific_wrapper_evidence(tmp_path: Path) -> None:
+    path = tmp_path / "agy.json"
+    payload = {
+        "receipt_schema": 1,
+        "receipt_id": "agy-test",
+        "platform": "agy",
+        "routes": ["agy.review.direct"],
+        "observed_at": "2026-07-09T17:14:38Z",
+        "stale_after": "24h",
+        "cli": {
+            "binary": "agy",
+            "available": True,
+            "version": "1.0.16",
+            "error": None,
+        },
+        "wrapper": {
+            "path": "~/projects/hapax-council/scripts/hapax-agy-reviewer",
+            "exists": True,
+            "executable": True,
+            "sha256": "abc123",
+        },
+        "route_wrappers": {
+            "agy.review.direct": {
+                "path": "~/projects/hapax-council/scripts/hapax-agy-reviewer",
+                "exists": True,
+                "executable": True,
+                "sha256": "route123",
+            }
+        },
+        "config_refs": [],
+        "tool_state": [],
+        "mcp_status": [],
+        "capability": {
+            "status": "observed",
+            "source": "local_receipt_probe",
+            "observed_at": "2026-07-09T17:14:38Z",
+            "stale_after": "24h",
+            "evidence_refs": ["local:agy:cli-version:1.0.16"],
+            "reason_codes": [],
+        },
+        "resource": {
+            "status": "observed",
+            "source": "local_receipt_probe",
+            "observed_at": "2026-07-09T17:14:38Z",
+            "stale_after": "24h",
+            "evidence_refs": ["local:wrapper:exists:true"],
+            "reason_codes": [],
+        },
+        "quota": {
+            "status": "unobservable",
+            "source": "local_receipt_probe",
+            "observed_at": "2026-07-09T17:14:38Z",
+            "stale_after": "15m",
+            "evidence_refs": ["local:agy:quota-probe:unobservable"],
+            "reason_codes": ["account_live_quota_receipt_absent"],
+        },
+        "provider_docs": {
+            "refs": ["local:agy-docs"],
+            "fetched_at": "2026-07-09T17:14:38Z",
+            "stale_after": "30d",
+            "fetch_status": "observed",
+        },
+        "known_unknowns": [],
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    receipt = load_platform_capability_receipt(path)
+
+    assert receipt.route_wrappers["agy.review.direct"].sha256 == "route123"
+
+
 def _run_receipts(
     tmp_path: Path,
     *,
