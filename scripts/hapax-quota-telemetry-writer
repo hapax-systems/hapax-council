@@ -78,8 +78,8 @@ The output is validated through ``QuotaSpendLedger.model_validate`` before an
 atomic replace, so a bad tick can never clobber a good live ledger with junk.
 No secrets are persisted. Capability receipt refresh performs bounded live route
 probes where the route requires them: GLMCP invokes ``hapax-glmcp-reviewer
---check`` and Codex invokes a saved-login ``codex exec`` sentinel on the
-effective dispatch host with inherited Codex auth env stripped. Both
+    --check`` and Codex invokes a saved-login ``codex exec`` sentinel on the
+    effective dispatch host with inherited Codex auth env stripped. Both
 record redacted availability metadata only; local resource probes remain local
 files and nvidia-smi. If the Codex sentinel reports an invalidated saved login,
 the dispatch host login must be repaired through the documented operator
@@ -1930,7 +1930,7 @@ def quota_spend_live_lock(path: Path) -> Any:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
-def refresh_capability_receipts(*, timeout: float) -> bool:
+def refresh_capability_receipts(*, timeout: float, receipt_dir: Path) -> bool:
     """Refresh per-provider capability receipts; failure degrades, not aborts."""
 
     script = REPO_ROOT / "scripts" / "hapax-platform-capability-receipts"
@@ -1944,6 +1944,8 @@ def refresh_capability_receipts(*, timeout: float) -> bool:
                 "--codex-exec-auth-probe",
                 "--timeout",
                 str(timeout),
+                "--receipt-dir",
+                str(receipt_dir),
             ],
             capture_output=True,
             text=True,
@@ -2020,7 +2022,10 @@ def main(argv: list[str] | None = None) -> int:
 
     receipts_ok = True
     if not args.skip_receipts:
-        receipts_ok = refresh_capability_receipts(timeout=args.receipt_timeout)
+        receipts_ok = refresh_capability_receipts(
+            timeout=args.receipt_timeout,
+            receipt_dir=args.platform_capability_receipt_dir,
+        )
 
     try:
         base = load_quota_spend_ledger(args.base)

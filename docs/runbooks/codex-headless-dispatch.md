@@ -74,7 +74,7 @@ receipt probe:
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 ssh appendix "bash -lc 'mkdir -p ~/.codex && chmod 700 ~/.codex && if [ -f ~/.codex/auth.json ]; then cp -p ~/.codex/auth.json ~/.codex/auth.json.pre-copy-$stamp; fi'"
 ssh appendix "bash -lc 'umask 077; cat > ~/.codex/auth.json.tmp && chmod 600 ~/.codex/auth.json.tmp && mv ~/.codex/auth.json.tmp ~/.codex/auth.json'" < ~/.codex/auth.json
-ssh appendix "bash -lc 'stat -c \"%a %U %G %s\" ~/.codex/auth.json && codex login status'"
+ssh appendix "bash -lc 'stat -c \"%a %U %G %s\" ~/.codex/auth.json && unset CODEX_ACCESS_TOKEN CODEX_HOME CODEX_API_KEY OPENAI_API_KEY && codex login status'"
 ssh appendix 'bash -lc '\''unset CODEX_ACCESS_TOKEN CODEX_HOME CODEX_API_KEY OPENAI_API_KEY; exec codex exec --ephemeral --skip-git-repo-check --ignore-rules --sandbox read-only --json --cd ~ "Reply exactly: HAPAX_CODEX_EXEC_AUTH_OK"'\'''
 uv run python scripts/hapax-platform-capability-receipts --platform codex --codex-exec-auth-probe --json
 scripts/hapax-quota-telemetry-writer --json

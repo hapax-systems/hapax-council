@@ -71,9 +71,11 @@ def _run_writer(
 
 def test_capability_receipt_refresh_preserves_codex_exec_auth_probe(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     namespace = runpy.run_path(str(SCRIPT))
     calls: list[list[str]] = []
+    receipt_dir = tmp_path / "platform-receipts"
 
     def fake_run(
         argv: list[str],
@@ -90,7 +92,13 @@ def test_capability_receipt_refresh_preserves_codex_exec_auth_probe(
 
     monkeypatch.setattr(namespace["subprocess"], "run", fake_run)
 
-    assert namespace["refresh_capability_receipts"](timeout=12) is True
+    assert (
+        namespace["refresh_capability_receipts"](
+            timeout=12,
+            receipt_dir=receipt_dir,
+        )
+        is True
+    )
     assert calls == [
         [
             sys.executable,
@@ -99,6 +107,8 @@ def test_capability_receipt_refresh_preserves_codex_exec_auth_probe(
             "--codex-exec-auth-probe",
             "--timeout",
             "12",
+            "--receipt-dir",
+            str(receipt_dir),
         ]
     ]
 
