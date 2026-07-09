@@ -790,11 +790,14 @@ def test_codex_receipt_remote_exec_auth_strips_access_token_without_local_binary
         )
 
     module["resolve_platform_binary"] = fail_if_local_binary_resolved
+    current_host = module["current_host"]()
+    remote_alias = "podium" if current_host == "hapax-appendix" else "appendix"
+    remote_host = module["normalize_host"](remote_alias)
     with (
         patch.dict(
             os.environ,
             {
-                "HAPAX_CODEX_EXEC_AUTH_HOST": "appendix",
+                "HAPAX_CODEX_EXEC_AUTH_HOST": remote_alias,
                 "HAPAX_CODEX_EXEC_AUTH_REMOTE_CWD": str(tmp_path / "remote cwd"),
                 "CODEX_ACCESS_TOKEN": "ambient-token-must-not-prove-auth",
                 "CODEX_HOME": str(tmp_path / "ambient-codex-home"),
@@ -806,13 +809,13 @@ def test_codex_receipt_remote_exec_auth_strips_access_token_without_local_binary
 
     assert reasons == []
     assert refs == [
-        "remote:hapax-appendix:codex:exec:auth:observed",
-        "host:hapax-appendix:codex:exec:auth:saved-login:observed",
+        f"remote:{remote_host}:codex:exec:auth:observed",
+        f"host:{remote_host}:codex:exec:auth:saved-login:observed",
     ]
     assert len(calls) == 1
     ssh_args, kwargs = calls[0]
     assert ssh_args[:5] == ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=7"]
-    assert ssh_args[5] == "appendix"
+    assert ssh_args[5] == remote_alias
     remote_command = ssh_args[6]
     assert remote_command.startswith("bash -lc ")
     assert (
