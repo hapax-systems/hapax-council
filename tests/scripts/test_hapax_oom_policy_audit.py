@@ -34,14 +34,31 @@ esac
     return path
 
 
+def _write_proc(proc_root: Path, pid: int, *, name: str, uid: int, oom_score: int) -> None:
+    pid_dir = proc_root / str(pid)
+    pid_dir.mkdir(parents=True)
+    (pid_dir / "status").write_text(
+        f"Name:\t{name}\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n", encoding="utf-8"
+    )
+    (pid_dir / "oom_score_adj").write_text(f"{oom_score}\n", encoding="utf-8")
+
+
 def _run(
-    tmp_path: Path, *, user_oom: int = 100, app_bounded: bool = True
+    tmp_path: Path,
+    *,
+    user_oom: int = 100,
+    app_bounded: bool = True,
+    proc_root: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    if proc_root is None:
+        proc_root = tmp_path / "proc"
+        proc_root.mkdir(exist_ok=True)
     env = {
         **os.environ,
         "HAPAX_SYSTEMCTL": str(
             _fake_systemctl(tmp_path, user_oom=user_oom, app_bounded=app_bounded)
         ),
+        "HAPAX_OOM_AUDIT_PROC_ROOT": str(proc_root),
     }
     return subprocess.run(
         [str(SCRIPT), "--json", "--uid", "1000"],
@@ -79,3 +96,21 @@ def test_audit_fails_when_app_slice_backstop_is_unbounded(tmp_path: Path) -> Non
     app_checks = [item for item in payload["checks"] if item["name"].startswith("app_slice_")]
     assert app_checks
     assert all(item["status"] == "gap" for item in app_checks)
+
+
+def test_audit_fails_when_user_process_retains_inherited_protection(tmp_path: Path) -> None:
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    _write_proc(proc_root, 101, name="codex", uid=1000, oom_score=-900)
+    _write_proc(proc_root, 102, name="wireplumber", uid=1000, oom_score=-900)
+
+    result = _run(tmp_path, proc_root=proc_root)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item for item in payload["checks"] if item["name"] == "user_process_residual_oom_protection"
+    )
+    assert check["status"] == "gap"
+    assert "101:codex=-900" in check["actual"]
+    assert "102:wireplumber=-900" not in check["actual"]

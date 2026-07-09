@@ -169,6 +169,8 @@ LAST_DEPLOYED_SHA_PATH="${HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH:-$(dirname "$T
 RECOVERY_INSTALLER_PATH="scripts/hapax-recovery-plane-install"
 OOM_CONTAINMENT_INSTALLER_PATH="scripts/install-p0-oom-containment"
 APCUPSD_INSTALLER_PATH="scripts/install-apcupsd-power-alerts"
+ROOT_REQUIRED_RC=77
+ROOT_DEFER_DIR="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$HOME/.cache/hapax/post-merge-root-required}"
 RECOVERY_BUNDLE_DEST="${HAPAX_RECOVERY_BUNDLE_DEST:-$HOME/.local/lib/hapax-recovery/council/current}"
 RECOVERY_BUNDLE_SOURCE_FILES=(
     scripts/hapax-p0-incident-intake
@@ -1292,6 +1294,29 @@ stage_oom_containment_installer() {
     chmod +x "$stage/$OOM_CONTAINMENT_INSTALLER_PATH"
 }
 
+defer_root_required_installer() {
+    local label="$1" stage="$2" installer="$3" dest
+    dest="$ROOT_DEFER_DIR/$SHA/$label"
+    rm -rf "$dest" 2>/dev/null || true
+    mkdir -p "$(dirname "$dest")"
+    cp -a "$stage" "$dest"
+    cat > "$dest/RUNBOOK.txt" <<EOF
+Root-required post-merge deploy action deferred.
+
+Commit: $SHA
+Package: $label
+
+Run from this host when interactive sudo or an equivalent root path is available:
+
+  $dest/$installer --source $dest --install --verify-live
+
+Post-merge deploy continued after this deferral so unrelated user-scope deploy
+groups for the same merge were not skipped.
+EOF
+    echo "root-required $label install deferred to $dest"
+    echo "next action: run $dest/$installer --source $dest --install --verify-live with root authority"
+}
+
 if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
     echo "P0 OOM containment files changed (${#OOM_CONTAINMENT[@]}):"
     for f in "${OOM_CONTAINMENT[@]}"; do
@@ -1310,10 +1335,13 @@ if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
     "$OOM_STAGE/$OOM_CONTAINMENT_INSTALLER_PATH" --source "$OOM_STAGE" --install --verify-live
     oom_installer_rc=$?
     set -e
-    rm -rf "$OOM_STAGE" 2>/dev/null || true
-    if [ "$oom_installer_rc" -ne 0 ]; then
+    if [ "$oom_installer_rc" -eq "$ROOT_REQUIRED_RC" ]; then
+        defer_root_required_installer "oom-containment" "$OOM_STAGE" "$OOM_CONTAINMENT_INSTALLER_PATH"
+    elif [ "$oom_installer_rc" -ne 0 ]; then
+        rm -rf "$OOM_STAGE" 2>/dev/null || true
         exit "$oom_installer_rc"
     fi
+    rm -rf "$OOM_STAGE" 2>/dev/null || true
     DID_ANYTHING=1
 fi
 
@@ -1358,10 +1386,13 @@ if [ "${#APCUPSD_POWER_ALERTS[@]}" -gt 0 ]; then
     "$APCUPSD_STAGE/$APCUPSD_INSTALLER_PATH" --source "$APCUPSD_STAGE" --install --verify-live
     apcupsd_installer_rc=$?
     set -e
-    rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
-    if [ "$apcupsd_installer_rc" -ne 0 ]; then
+    if [ "$apcupsd_installer_rc" -eq "$ROOT_REQUIRED_RC" ]; then
+        defer_root_required_installer "apcupsd-power-alerts" "$APCUPSD_STAGE" "$APCUPSD_INSTALLER_PATH"
+    elif [ "$apcupsd_installer_rc" -ne 0 ]; then
+        rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
         exit "$apcupsd_installer_rc"
     fi
+    rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
     DID_ANYTHING=1
 fi
 

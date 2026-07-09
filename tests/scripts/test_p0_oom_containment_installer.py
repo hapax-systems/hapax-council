@@ -18,6 +18,9 @@ def test_p0_oom_containment_source_check_passes() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "p0 oom containment install/check complete" in result.stdout
+    earlyoom = (REPO_ROOT / "config" / "earlyoom" / "default").read_text(encoding="utf-8")
+    assert "--ignore (" in earlyoom
+    assert "'(" not in earlyoom
 
 
 def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
@@ -30,6 +33,8 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     stale_control.parent.mkdir(parents=True)
     stale_control.write_text("[Slice]\nMemoryHigh=1G\n", encoding="utf-8")
     earlyoom_dest = tmp_path / "earlyoom"
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
     systemctl_calls = tmp_path / "systemctl-calls.txt"
     fake_systemctl = tmp_path / "systemctl"
     fake_systemctl.write_text(
@@ -51,6 +56,7 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
             "HAPAX_OOM_EARLYOOM_DEST": str(earlyoom_dest),
             "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
             "HAPAX_OOM_INSTALL_SUDO": "",
+            "HAPAX_OOM_PROC_ROOT": str(proc_root),
         },
     )
 
@@ -69,3 +75,93 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert not stale_control.exists()
     calls = systemctl_calls.read_text(encoding="utf-8")
     assert "daemon-reload" in calls
+
+
+def _write_proc(proc_root: Path, pid: int, *, name: str, uid: int, oom_score: int) -> None:
+    pid_dir = proc_root / str(pid)
+    pid_dir.mkdir(parents=True, exist_ok=True)
+    (pid_dir / "status").write_text(
+        f"Name:\t{name}\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n", encoding="utf-8"
+    )
+    (pid_dir / "oom_score_adj").write_text(f"{oom_score}\n", encoding="utf-8")
+
+
+def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_user_protection(
+    tmp_path: Path,
+) -> None:
+    system_dir = tmp_path / "systemd-system"
+    user_dir = tmp_path / "systemd-user"
+    user_control_dir = tmp_path / "systemd-user-control"
+    earlyoom_dest = tmp_path / "earlyoom"
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    unit_pids = {
+        "apcupsd.service": 200,
+        "systemd-logind.service": 201,
+        "systemd-resolved.service": 202,
+        "systemd-timesyncd.service": 203,
+        "NetworkManager.service": 204,
+        "dbus-broker.service": 205,
+        "sshd.service": 206,
+        "user@1000.service": 900,
+    }
+    for unit, pid in unit_pids.items():
+        _write_proc(proc_root, pid, name=unit.split(".")[0], uid=0, oom_score=0)
+    _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=-900)
+    _write_proc(proc_root, 901, name="codex", uid=1000, oom_score=-900)
+    _write_proc(proc_root, 902, name="wireplumber", uid=1000, oom_score=-900)
+
+    systemctl_calls = tmp_path / "systemctl-calls.txt"
+    systemctl_calls.write_text("", encoding="utf-8")
+    fake_systemctl = tmp_path / "systemctl"
+    cases = "\n".join(
+        f'  *"show {unit} -p MainPID --value"*) printf "{pid}\\n" ;;'
+        for unit, pid in unit_pids.items()
+    )
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' \"$*\" >> {systemctl_calls!s}\n"
+        'case "$*" in\n'
+        f"{cases}\n"
+        '  *"is-active --quiet earlyoom.service"*) exit 3 ;;\n'
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--install", "--verify-live"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(system_dir),
+            "HAPAX_OOM_SYSTEMD_USER_DIR": str(user_dir),
+            "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR": str(user_control_dir),
+            "HAPAX_OOM_EARLYOOM_DEST": str(earlyoom_dest),
+            "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_OOM_INSTALL_SUDO": "",
+            "HAPAX_OOM_PROC_ROOT": str(proc_root),
+            "HAPAX_OOM_TARGET_UID": "1000",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    expected_scores = {
+        200: -900,
+        201: -800,
+        202: -800,
+        203: -800,
+        204: -800,
+        205: -900,
+        206: -1000,
+        900: 100,
+        901: 100,
+        902: -900,
+    }
+    for pid, score in expected_scores.items():
+        assert (proc_root / str(pid) / "oom_score_adj").read_text(encoding="utf-8").strip() == str(
+            score
+        )

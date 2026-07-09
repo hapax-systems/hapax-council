@@ -144,12 +144,13 @@ write `/dev/shm/hapax-compositor/broadcast-mode.json` through
   blanket limit increase for 128M utility timers.
 - **earlyoom** (`/etc/default/earlyoom`, source: `config/earlyoom/default`): fires SIGTERM @ 5% avail / 5% swap-free, SIGKILL @ 2.5%.
   - `--prefer`: `cargo|rustc|ld.lld|chrome|electron|node|claude|next-server|ffmpeg|bwrap` (expendable targets for OOM)
-  - `--avoid`: `Hyprland|pipewire|wireplumber|dockerd|containerd|bluetoothd|systemd|foot|waybar|hapax-imagination|hapax-daimonion|studio-compositor|logos-api|officium-api` (stack protection)
+  - `--avoid`: `Hyprland|pipewire|wireplumber|dockerd|containerd|bluetoothd|systemd|foot|waybar|hapax-logos|hapax-imagination|hapax-daimonion|studio-compositor|logos-api|officium-api` (stack protection)
   - `--ignore`: `apcupsd|systemd-logind|systemd-resolved|systemd-timesyncd|systemd-userdbd|dbus-broker|dbus-daemon|NetworkManager|sshd|sshd-session|getty|agetty` (operator recovery and UPS telemetry must not be earlyoom victims)
 - **P0 OOM containment package** (`scripts/install-p0-oom-containment`): installs source-controlled recovery policy into `/etc/default/earlyoom`, `/etc/systemd/system/*.service.d/oom-protect.conf`, `/etc/systemd/system/user@1000.service.d/oom.conf`, and `~/.config/systemd/user/app.slice.d/oom-containment.conf`.
   - `user@1000.service`: `OOMScoreAdjust=100`, restoring the packaged kill ordering so the whole user manager does not shield every interactive workload.
-  - Recovery daemons: apcupsd (`-900`), systemd-logind/resolved/timesyncd/NetworkManager (`-800`), D-Bus (`-900`), and sshd (`-1000`).
+  - Recovery daemons: apcupsd (`-900`), systemd-logind/resolved/timesyncd/NetworkManager (`-800`), D-Bus (`-900`), and sshd (`-1000`); the installer writes the running main PIDs without restarting login/network.
   - `app.slice`: `MemoryHigh=80G`, `MemoryMax=104G`, `MemorySwapMax=8G` as an aggregate user-app RAM/swap backstop; live activation uses `systemctl --user set-property --runtime` and must not restart the slice.
+  - Recheck: `scripts/install-p0-oom-containment --check`, `scripts/install-p0-oom-containment --verify-live`, and `scripts/hapax-oom-policy-audit --json`.
 - **Other system-level OOM overrides**: docker (-900), pipewire/wireplumber (-900), and hardware/service-specific drop-ins documented beside their installers.
 
 **Runtime application / receipt path:** source changes in this directory are

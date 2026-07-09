@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 BYTES_80G = 80 * 1024**3
 BYTES_104G = 104 * 1024**3
@@ -141,6 +142,70 @@ def audit_tmux_scopes() -> list[Check]:
     return checks
 
 
+_ALLOWED_USER_PROTECTED_NAMES = {
+    "pipewire",
+    "wireplumber",
+    "dbus-broker",
+    "dbus-daemon",
+    "hapax-daimonion",
+    "hapax-daimonio",
+    "studio-compositor",
+    "studio-composit",
+    "hapax-imagination",
+    "hapax-imaginat",
+    "systemd",
+}
+
+
+def _status_field(status: Path, key: str) -> str:
+    try:
+        for line in status.read_text(encoding="utf-8", errors="replace").splitlines():
+            parts = line.split()
+            if parts and parts[0] == f"{key}:" and len(parts) > 1:
+                return parts[1]
+    except OSError:
+        return ""
+    return ""
+
+
+def audit_residual_user_process_protection(uid: int) -> Check:
+    proc_root = Path(os.environ.get("HAPAX_OOM_AUDIT_PROC_ROOT", "/proc"))
+    if not proc_root.is_dir():
+        return Check("user_process_residual_oom_protection", "warn", "observable", "N/A")
+    offenders: list[str] = []
+    for adj in proc_root.glob("[0-9]*/oom_score_adj"):
+        pid_dir = adj.parent
+        status = pid_dir / "status"
+        if _status_field(status, "Uid") != str(uid):
+            continue
+        try:
+            score = int(adj.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            continue
+        if score > -800:
+            continue
+        name = _status_field(status, "Name")
+        if name in _ALLOWED_USER_PROTECTED_NAMES:
+            continue
+        offenders.append(f"{pid_dir.name}:{name}={score}")
+    if offenders:
+        shown = ",".join(offenders[:8])
+        extra = "" if len(offenders) <= 8 else f",+{len(offenders) - 8} more"
+        return Check(
+            "user_process_residual_oom_protection",
+            "gap",
+            "no uid processes <= -800 outside allowlist",
+            shown + extra,
+            "stale inherited OOMScoreAdjust; next action: scripts/install-p0-oom-containment --install --verify-live",
+        )
+    return Check(
+        "user_process_residual_oom_protection",
+        "pass",
+        "no uid processes <= -800 outside allowlist",
+        "none",
+    )
+
+
 def format_human(checks: list[Check]) -> str:
     lines = []
     for check in checks:
@@ -157,7 +222,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--uid", type=int, default=os.getuid(), help="user manager UID to audit")
     args = parser.parse_args(argv)
 
-    checks = [audit_user_manager(args.uid), *audit_app_slice(), *audit_tmux_scopes()]
+    checks = [
+        audit_user_manager(args.uid),
+        *audit_app_slice(),
+        audit_residual_user_process_protection(args.uid),
+        *audit_tmux_scopes(),
+    ]
     if args.json:
         print(json.dumps({"checks": [asdict(check) for check in checks]}, indent=2, sort_keys=True))
     else:

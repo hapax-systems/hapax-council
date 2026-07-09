@@ -552,6 +552,67 @@ def test_p0_oom_containment_deploy_uses_installer_without_restarting_app_slice(
     assert record["deploy_groups"]["systemd_dropins"] == []
 
 
+def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: Path) -> None:
+    installer_body = "#!/usr/bin/env bash\nexit 77\n"
+    files = {
+        "scripts/install-p0-oom-containment": installer_body,
+        "config/earlyoom/default": 'EARLYOOM_ARGS="--ignore recovery"\n',
+        "systemd/system/user@1000.service.d/oom.conf": "[Service]\nOOMScoreAdjust=100\n",
+        "systemd/system/apcupsd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-900\n",
+        "systemd/system/systemd-logind.service.d/oom-protect.conf": (
+            "[Service]\nOOMScoreAdjust=-800\n"
+        ),
+        "systemd/system/systemd-resolved.service.d/oom-protect.conf": (
+            "[Service]\nOOMScoreAdjust=-800\n"
+        ),
+        "systemd/system/systemd-timesyncd.service.d/oom-protect.conf": (
+            "[Service]\nOOMScoreAdjust=-800\n"
+        ),
+        "systemd/system/NetworkManager.service.d/oom-protect.conf": (
+            "[Service]\nOOMScoreAdjust=-800\n"
+        ),
+        "systemd/system/dbus-broker.service.d/oom-protect.conf": (
+            "[Service]\nOOMScoreAdjust=-900\n"
+        ),
+        "systemd/system/sshd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-1000\n",
+        "systemd/units/app.slice.d/oom-containment.conf": (
+            "[Slice]\nMemoryHigh=80G\nMemoryMax=104G\nMemorySwapMax=8G\n"
+        ),
+        "systemd/units/hapax-demo.service": (
+            "[Unit]\nDescription=Demo\n\n[Service]\nType=oneshot\nExecStart=/bin/true\n"
+        ),
+    }
+    repo, sha = _repo_with_linear_commit(tmp_path, files)
+    home = tmp_path / "home"
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    defer_dir = tmp_path / "root-required"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+        "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_dir),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    deferred = defer_dir / sha / "oom-containment"
+    assert (deferred / "RUNBOOK.txt").is_file()
+    assert (deferred / "scripts" / "install-p0-oom-containment").is_file()
+    assert (home / ".config" / "systemd" / "user" / "hapax-demo.service").is_file()
+    assert "root-required oom-containment install deferred" in result.stdout
+
+
 def test_apcupsd_power_alert_deploy_uses_dedicated_installer(tmp_path: Path) -> None:
     installer_calls = tmp_path / "apcupsd-installer-calls.txt"
     installer_body = (

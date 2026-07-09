@@ -9,6 +9,7 @@ DEST="${HAPAX_APCUPSD_DEST:-/etc/apcupsd}"
 AUDIT_DIR="${HAPAX_APCUPSD_AUDIT_DIR:-/var/log/hapax}"
 SYSTEMCTL="${HAPAX_APCUPSD_SYSTEMCTL:-systemctl}"
 SUDO="${HAPAX_APCUPSD_INSTALL_SUDO:-sudo}"
+ROOT_REQUIRED_RC=77
 RESTART=1
 INSTALL=0
 CHECK=0
@@ -64,6 +65,15 @@ run_root() {
     fi
 }
 
+preflight_root() {
+    if [ -n "$SUDO" ] && [ "$INSTALL" -eq 1 ]; then
+        "$SUDO" -n true 2>/dev/null || {
+            echo "sudo non-interactive access is required for apcupsd power-alert install; next action: run scripts/install-apcupsd-power-alerts --install --verify-live interactively or grant the post-merge deploy user NOPASSWD for install/systemctl" >&2
+            return "$ROOT_REQUIRED_RC"
+        }
+    fi
+}
+
 check_source() {
     expect_header "$SRC/apcupsd.conf"
     [ -x "$SRC/hapax-power-event.py" ] || {
@@ -82,6 +92,7 @@ check_source() {
 
 install_live() {
     check_source
+    preflight_root
     run_root install -d -m 0755 "$DEST"
     run_root install -d -m 0750 "$AUDIT_DIR"
     run_root install -m 0644 "$SRC/apcupsd.conf" "$DEST/apcupsd.conf"

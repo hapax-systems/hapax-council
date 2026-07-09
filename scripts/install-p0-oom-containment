@@ -10,6 +10,9 @@ SYSTEMD_USER_CONTROL_DIR="${HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR:-$HOME/.config/sy
 EARLYOOM_DEST="${HAPAX_OOM_EARLYOOM_DEST:-/etc/default/earlyoom}"
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
 SUDO="${HAPAX_OOM_INSTALL_SUDO:-sudo}"
+PROC_ROOT="${HAPAX_OOM_PROC_ROOT:-/proc}"
+TARGET_UID="${HAPAX_OOM_TARGET_UID:-$(id -u)}"
+ROOT_REQUIRED_RC=77
 INSTALL=0
 CHECK=0
 VERIFY_LIVE=0
@@ -81,7 +84,7 @@ preflight_root() {
     if [ -n "$SUDO" ] && [ "$INSTALL" -eq 1 ]; then
         "$SUDO" -n true 2>/dev/null || {
             echo "sudo non-interactive access is required for OOM containment install; next action: grant NOPASSWD for install/systemctl/tee or run scripts/install-p0-oom-containment --install --verify-live interactively" >&2
-            return 1
+            return "$ROOT_REQUIRED_RC"
         }
     fi
 }
@@ -98,6 +101,15 @@ system_dropins=(
 )
 user_dropin="systemd/units/app.slice.d/oom-containment.conf"
 earlyoom_source="config/earlyoom/default"
+recovery_unit_scores=(
+    apcupsd.service:-900
+    systemd-logind.service:-800
+    systemd-resolved.service:-800
+    systemd-timesyncd.service:-800
+    NetworkManager.service:-800
+    dbus-broker.service:-900
+    sshd.service:-1000
+)
 
 src_path() {
     printf '%s/%s\n' "$SOURCE" "$1"
@@ -128,6 +140,86 @@ check_source() {
         echo "earlyoom config missing --ignore recovery list; next action: restore config/earlyoom/default from the P0 PR" >&2
         return 1
     }
+    if grep -Eq -- "--(prefer|avoid|ignore)[[:space:]]+'" "$(src_path "$earlyoom_source")"; then
+        echo "earlyoom regex arguments must not carry literal single quotes; next action: remove inner quotes from config/earlyoom/default and rerun scripts/install-p0-oom-containment --check" >&2
+        return 1
+    fi
+}
+
+write_oom_score() {
+    local pid score path
+    pid="$1"
+    score="$2"
+    path="$PROC_ROOT/$pid/oom_score_adj"
+    [ -e "$path" ] || return 0
+    if [ -w "$path" ]; then
+        printf '%s\n' "$score" > "$path" 2>/dev/null || {
+            [ ! -e "$path" ] && return 0
+            return 1
+        }
+    else
+        printf '%s\n' "$score" | run_root tee "$path" >/dev/null || {
+            [ ! -e "$path" ] && return 0
+            return 1
+        }
+    fi
+}
+
+main_pid_for_unit() {
+    local unit="$1" pid
+    pid="$("$SYSTEMCTL" show "$unit" -p MainPID --value 2>/dev/null || true)"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ]; then
+        printf '%s\n' "$pid"
+    fi
+}
+
+apply_recovery_unit_oom_scores() {
+    local spec unit score pid
+    for spec in "${recovery_unit_scores[@]}"; do
+        unit="${spec%%:*}"
+        score="${spec##*:}"
+        pid="$(main_pid_for_unit "$unit")"
+        [ -n "$pid" ] || continue
+        write_oom_score "$pid" "$score"
+    done
+}
+
+allowed_user_protected_process() {
+    case "$1" in
+        pipewire|wireplumber|dbus-broker|dbus-daemon|hapax-daimonion|hapax-daimonio|studio-compositor|studio-composit|hapax-imagination|hapax-imaginat|systemd)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+status_field() {
+    local status="$1" key="$2"
+    awk -v key="$key" '$1 == key ":" {print $2; exit}' "$status" 2>/dev/null || true
+}
+
+apply_user_process_oom_floor() {
+    local adj pid_dir pid status uid name score fixed=0
+    [ -d "$PROC_ROOT" ] || return 0
+    for adj in "$PROC_ROOT"/[0-9]*/oom_score_adj; do
+        [ -e "$adj" ] || continue
+        pid_dir="$(dirname "$adj")"
+        pid="$(basename "$pid_dir")"
+        status="$pid_dir/status"
+        [ -r "$status" ] || continue
+        uid="$(status_field "$status" Uid)"
+        [ "$uid" = "$TARGET_UID" ] || continue
+        name="$(status_field "$status" Name)"
+        score="$(cat "$adj" 2>/dev/null || true)"
+        [[ "$score" =~ ^-?[0-9]+$ ]] || continue
+        [ "$score" -le -800 ] || continue
+        allowed_user_protected_process "$name" && continue
+        write_oom_score "$pid" 100
+        fixed=$((fixed + 1))
+    done
+    if [ "$fixed" -gt 0 ]; then
+        echo "reset $fixed stale user process oom_score_adj values to 100"
+    fi
 }
 
 install_live() {
@@ -168,12 +260,12 @@ install_live() {
         if "$SYSTEMCTL" is-active --quiet earlyoom.service; then
             run_root "$SYSTEMCTL" restart earlyoom.service
         fi
+        apply_recovery_unit_oom_scores
         user_pid="$("$SYSTEMCTL" show user@1000.service -p MainPID --value 2>/dev/null || true)"
-        if [[ "$user_pid" =~ ^[0-9]+$ ]] && [ "$user_pid" -gt 0 ] && [ -w "/proc/$user_pid/oom_score_adj" ]; then
-            printf '%s\n' 100 > "/proc/$user_pid/oom_score_adj" || true
-        elif [[ "$user_pid" =~ ^[0-9]+$ ]] && [ "$user_pid" -gt 0 ]; then
-            printf '%s\n' 100 | run_root tee "/proc/$user_pid/oom_score_adj" >/dev/null || true
+        if [[ "$user_pid" =~ ^[0-9]+$ ]] && [ "$user_pid" -gt 0 ]; then
+            write_oom_score "$user_pid" 100 || true
         fi
+        apply_user_process_oom_floor
     fi
 }
 
@@ -201,6 +293,46 @@ verify_live() {
         return 1
     fi
     verify_pair "$(src_path "$user_dropin")" "$dest"
+    verify_recovery_unit_oom_scores
+    verify_user_process_oom_floor
+}
+
+verify_recovery_unit_oom_scores() {
+    local spec unit score pid actual failed=0
+    for spec in "${recovery_unit_scores[@]}"; do
+        unit="${spec%%:*}"
+        score="${spec##*:}"
+        pid="$(main_pid_for_unit "$unit")"
+        [ -n "$pid" ] || continue
+        actual="$(cat "$PROC_ROOT/$pid/oom_score_adj" 2>/dev/null || true)"
+        if [ "$actual" != "$score" ]; then
+            echo "live OOM score drift for $unit pid $pid: actual=$actual expected=$score; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+            failed=1
+        fi
+    done
+    [ "$failed" -eq 0 ]
+}
+
+verify_user_process_oom_floor() {
+    local adj pid_dir pid status uid name score failed=0
+    [ -d "$PROC_ROOT" ] || return 0
+    for adj in "$PROC_ROOT"/[0-9]*/oom_score_adj; do
+        [ -e "$adj" ] || continue
+        pid_dir="$(dirname "$adj")"
+        pid="$(basename "$pid_dir")"
+        status="$pid_dir/status"
+        [ -r "$status" ] || continue
+        uid="$(status_field "$status" Uid)"
+        [ "$uid" = "$TARGET_UID" ] || continue
+        name="$(status_field "$status" Name)"
+        score="$(cat "$adj" 2>/dev/null || true)"
+        [[ "$score" =~ ^-?[0-9]+$ ]] || continue
+        [ "$score" -le -800 ] || continue
+        allowed_user_protected_process "$name" && continue
+        echo "residual inherited OOM protection: pid=$pid name=$name oom_score_adj=$score; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        failed=1
+    done
+    [ "$failed" -eq 0 ]
 }
 
 [ "$CHECK" -eq 0 ] || check_source
