@@ -6,7 +6,13 @@ TARGET_USER="${HAPAX_OOM_TARGET_USER:-hapax}"
 TARGET_UID="${HAPAX_OOM_TARGET_UID:-$(id -u "$TARGET_USER")}"
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
 PROC_ROOT="${HAPAX_OOM_PROC_ROOT:-/proc}"
-CGROUP_ROOT="${HAPAX_OOM_CGROUP_ROOT:-/sys/fs/cgroup}"
+if [ -n "${HAPAX_OOM_CGROUP_ROOT:-}" ]; then
+    CGROUP_ROOT="$HAPAX_OOM_CGROUP_ROOT"
+elif [ "$PROC_ROOT" != "/proc" ]; then
+    CGROUP_ROOT="$(dirname "$PROC_ROOT")/cgroup"
+else
+    CGROUP_ROOT="/sys/fs/cgroup"
+fi
 
 usage() {
     cat <<'USAGE'
@@ -51,8 +57,9 @@ write_oom_score() {
 }
 
 pid_matches_unit() {
-    local pid="$1" unit="$2" cgroup="$PROC_ROOT/$pid/cgroup"
-    [ -r "$cgroup" ] || return 0
+    local pid="$1" unit="$2" cgroup
+    cgroup="$PROC_ROOT/$pid/cgroup"
+    [ -r "$cgroup" ] || return 1
     grep -Fq "$unit" "$cgroup"
 }
 
@@ -105,6 +112,7 @@ user_unit_pids() {
     cgroup_pids "$cgroup"
     pid="$(user_main_pid "$unit")"
     [ -n "$pid" ] && printf '%s\n' "$pid"
+    return 0
 }
 
 apply_unit_score() {

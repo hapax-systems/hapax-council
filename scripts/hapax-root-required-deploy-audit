@@ -4,6 +4,7 @@ set -euo pipefail
 
 ROOT_DEFER_DIR="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$HOME/.cache/hapax/post-merge-root-required}"
 SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_SOURCE_ROOT:-$HOME/.cache/hapax/source-activation/worktree}"
+INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$ROOT_DEFER_DIR/current-source}"
 OOM_ENFORCER_DEST="${HAPAX_OOM_ENFORCER_DEST:-/usr/local/sbin/hapax-oom-score-enforce}"
 ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapax-root-failure-intake}"
 EARLYOOM_DEST="${HAPAX_OOM_EARLYOOM_DEST:-/etc/default/earlyoom}"
@@ -13,8 +14,23 @@ APCUPSD_LOGROTATE_DEST="${HAPAX_APCUPSD_LOGROTATE_DEST:-/etc/logrotate.d/hapax-u
 
 rc=0
 
+pending_runbooks() {
+    [ -d "$ROOT_DEFER_DIR" ] || return 0
+    find "$ROOT_DEFER_DIR" -mindepth 3 -maxdepth 3 -name RUNBOOK.txt -type f | sort
+}
+
+source_for_rel() {
+    local rel="$1"
+    if [ -f "$INSTALLED_SOURCE_ROOT/$rel" ]; then
+        printf '%s/%s\n' "$INSTALLED_SOURCE_ROOT" "$rel"
+        return 0
+    fi
+    printf '%s/%s\n' "$SOURCE_ROOT" "$rel"
+}
+
 compare_root_file() {
-    local rel="$1" dest="$2" source="$SOURCE_ROOT/$rel"
+    local rel="$1" dest="$2" source
+    source="$(source_for_rel "$rel")"
     if [ ! -f "$source" ]; then
         echo "root-required source missing: $source" >&2
         echo "  next action: restore source activation or run HAPAX_ROOT_REQUIRED_SOURCE_ROOT=<repo> scripts/hapax-root-required-deploy-audit" >&2
@@ -77,18 +93,9 @@ audit_root_installs() {
     [ "$failed" -eq 0 ]
 }
 
-audit_root_installs || rc=1
-
-if [ ! -d "$ROOT_DEFER_DIR" ]; then
-    if [ "$rc" -ne 0 ]; then
-        exit "$rc"
-    fi
-    echo "root-required post-merge deploy deferrals: none"
-    exit 0
-fi
-
-mapfile -t runbooks < <(find "$ROOT_DEFER_DIR" -mindepth 3 -maxdepth 3 -name RUNBOOK.txt -type f | sort)
+mapfile -t runbooks < <(pending_runbooks)
 if [ "${#runbooks[@]}" -eq 0 ]; then
+    audit_root_installs || rc=1
     if [ "$rc" -ne 0 ]; then
         exit "$rc"
     fi

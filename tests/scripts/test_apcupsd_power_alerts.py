@@ -68,6 +68,9 @@ def test_power_event_helper_records_jsonl_without_ntfy(tmp_path: Path) -> None:
     assert records[1]["provenance_degraded"] is False
     assert records[1]["delivery"]["attempted"] is False
     assert records[1]["apcaccess"]["STATUS"] == "ONLINE"
+    assert "observed_at=" in records[0]["message"]
+    assert "STATUS=ONLINE" in records[0]["message"]
+    assert "TONBATT=0 Seconds" in records[0]["message"]
     assert audit.stat().st_mode & 0o777 == 0o640
 
 
@@ -156,12 +159,12 @@ def test_power_event_helper_notifies_when_intent_audit_fails(tmp_path: Path) -> 
 
     assert result.returncode == 0
     assert "failed to append intent audit log" in result.stderr
-    assert seen == [
-        {
-            "title": "UPS ON BATTERY - podium",
-            "body": "SRT3000XLA on battery. apcupsd shuts down at 20%/5min remaining.",
-        }
-    ]
+    assert len(seen) == 1
+    assert seen[0]["title"] == "UPS ON BATTERY - podium"
+    assert "SRT3000XLA on battery" in seen[0]["body"]
+    assert "observed_at=" in seen[0]["body"]
+    assert "STATUS=ONLINE" in seen[0]["body"]
+    assert "TONBATT=0 Seconds" in seen[0]["body"]
 
 
 def test_installer_source_check_exercises_config_hooks_and_helper() -> None:

@@ -178,6 +178,7 @@ OOM_CONTAINMENT_INSTALLER_PATH="scripts/install-p0-oom-containment"
 APCUPSD_INSTALLER_PATH="scripts/install-apcupsd-power-alerts"
 ROOT_REQUIRED_RC=77
 ROOT_DEFER_DIR="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$HOME/.cache/hapax/post-merge-root-required}"
+ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$ROOT_DEFER_DIR/current-source}"
 RECOVERY_BUNDLE_DEST="${HAPAX_RECOVERY_BUNDLE_DEST:-$HOME/.local/lib/hapax-recovery/council/current}"
 RECOVERY_BUNDLE_SOURCE_FILES=(
     scripts/hapax-p0-incident-intake
@@ -1339,6 +1340,12 @@ EOF
     echo "next action: run $dest/$installer --source $dest --install --verify-live with root authority"
 }
 
+record_root_required_source() {
+    local stage="$1"
+    mkdir -p "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"
+    cp -a "$stage"/. "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"/
+}
+
 if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
     echo "P0 OOM containment files changed (${#OOM_CONTAINMENT[@]}):"
     for f in "${OOM_CONTAINMENT[@]}"; do
@@ -1362,6 +1369,8 @@ if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
     elif [ "$oom_installer_rc" -ne 0 ]; then
         rm -rf "$OOM_STAGE" 2>/dev/null || true
         exit "$oom_installer_rc"
+    else
+        record_root_required_source "$OOM_STAGE"
     fi
     rm -rf "$OOM_STAGE" 2>/dev/null || true
     DID_ANYTHING=1
@@ -1414,6 +1423,8 @@ if [ "${#APCUPSD_POWER_ALERTS[@]}" -gt 0 ]; then
     elif [ "$apcupsd_installer_rc" -ne 0 ]; then
         rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
         exit "$apcupsd_installer_rc"
+    else
+        record_root_required_source "$APCUPSD_STAGE"
     fi
     rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
     DID_ANYTHING=1

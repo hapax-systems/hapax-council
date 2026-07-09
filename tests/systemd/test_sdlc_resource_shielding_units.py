@@ -122,6 +122,8 @@ def test_broadcast_critical_user_oom_dropins_are_source_controlled() -> None:
     for rel, score in expected.items():
         text = (UNITS_DIR / rel).read_text()
         assert _directive(text, "OOMScoreAdjust") == score
+        assert _directive(text, "MemoryLow") is not None
+        assert _directive(text, "MemoryMin") is not None
 
 
 def test_oom_policy_audit_timer_is_source_controlled() -> None:
@@ -129,7 +131,9 @@ def test_oom_policy_audit_timer_is_source_controlled() -> None:
     service = (UNITS_DIR / "hapax-oom-policy-audit.service").read_text()
     assert "Hapax-Auto-Enable: true" in timer
     assert "OnUnitActiveSec=5min" in timer
-    assert 'scripts/hapax-oom-policy-audit" --json' in service
+    assert "scripts/hapax-oom-policy-audit --json" in service
+    assert "StartLimitIntervalSec=30min" in service
+    assert "StartLimitBurst=2" in service
     assert "ConditionPathExists" not in service
 
 
@@ -139,6 +143,8 @@ def test_root_required_deploy_audit_timer_is_source_controlled() -> None:
     assert "Hapax-Auto-Enable: true" in timer
     assert "OnUnitActiveSec=10min" in timer
     assert "scripts/hapax-root-required-deploy-audit" in service
+    assert "StartLimitIntervalSec=30min" in service
+    assert "StartLimitBurst=2" in service
     assert "ConditionPathExists" not in service
 
 
@@ -148,10 +154,13 @@ def test_root_oom_enforcer_uses_system_scoped_failure_intake() -> None:
     intake = (UNITS_DIR / "hapax-root-failure-intake@.service").read_text()
     assert "# Hapax-Install-Scope: system" in enforcer
     assert "OnFailure=hapax-root-failure-intake@%n.service" in enforcer
+    assert "StartLimitIntervalSec=10min" in enforcer
+    assert "StartLimitBurst=3" in enforcer
     assert "AccuracySec=1s" in timer
     assert "# Hapax-Install-Scope: system" in intake
     assert "User=hapax" in intake
-    assert 'exec /usr/local/sbin/hapax-root-failure-intake "$1"' in intake
+    assert "ExecStart=/usr/local/sbin/hapax-root-failure-intake %i" in intake
+    assert "%I" not in intake
     assert "source-activation/worktree" not in intake
     assert "ConditionPathExists" not in intake
 

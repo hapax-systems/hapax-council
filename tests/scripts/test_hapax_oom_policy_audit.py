@@ -87,6 +87,10 @@ def _write_proc(proc_root: Path, pid: int, *, name: str, uid: int, oom_score: in
     (pid_dir / "oom_score_adj").write_text(f"{oom_score}\n", encoding="utf-8")
 
 
+def _write_proc_cgroup(proc_root: Path, pid: int, cgroup: str) -> None:
+    (proc_root / str(pid) / "cgroup").write_text(f"0::{cgroup}\n", encoding="utf-8")
+
+
 def _run(
     tmp_path: Path,
     *,
@@ -255,3 +259,34 @@ def test_audit_fails_when_user_process_retains_inherited_protection(tmp_path: Pa
     assert check["status"] == "gap"
     assert "101:codex=-900" in check["actual"]
     assert "102:wireplumber=-900" not in check["actual"]
+
+
+def test_audit_allows_python_child_inside_protected_unit_cgroup(tmp_path: Path) -> None:
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    cgroup_root = tmp_path / "cgroup"
+    studio_cgroup = (
+        "/user.slice/user-1000.slice/user@1000.service/app.slice/studio-compositor.service"
+    )
+    cgroup_dir = cgroup_root / studio_cgroup.lstrip("/")
+    cgroup_dir.mkdir(parents=True)
+    (cgroup_dir / "cgroup.procs").write_text("914\n916\n", encoding="utf-8")
+    _write_proc(proc_root, 914, name="python", uid=1000, oom_score=-800)
+    _write_proc(proc_root, 916, name="python", uid=1000, oom_score=-800)
+    _write_proc_cgroup(proc_root, 914, studio_cgroup)
+    _write_proc_cgroup(proc_root, 916, studio_cgroup)
+
+    result = _run(
+        tmp_path,
+        proc_root=proc_root,
+        cgroup_root=cgroup_root,
+        protected_unit_pids={"studio-compositor.service": 914},
+        protected_unit_cgroups={"studio-compositor.service": studio_cgroup},
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    check = next(
+        item for item in payload["checks"] if item["name"] == "user_process_residual_oom_protection"
+    )
+    assert check["status"] == "pass"

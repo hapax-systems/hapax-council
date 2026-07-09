@@ -13,6 +13,13 @@ ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapa
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
 SUDO="${HAPAX_OOM_INSTALL_SUDO-sudo}"
 PROC_ROOT="${HAPAX_OOM_PROC_ROOT:-/proc}"
+if [ -n "${HAPAX_OOM_CGROUP_ROOT:-}" ]; then
+    CGROUP_ROOT="$HAPAX_OOM_CGROUP_ROOT"
+elif [ "$PROC_ROOT" != "/proc" ]; then
+    CGROUP_ROOT="$(dirname "$PROC_ROOT")/cgroup"
+else
+    CGROUP_ROOT="/sys/fs/cgroup"
+fi
 TARGET_UID="${HAPAX_OOM_TARGET_UID:-$(id -u)}"
 ROOT_REQUIRED_RC=77
 INSTALL=0
@@ -251,6 +258,39 @@ main_pid_for_user_unit() {
     return 0
 }
 
+control_group_for_user_unit() {
+    local unit="$1"
+    "$SYSTEMCTL" --user show "$unit" -p ControlGroup --value 2>/dev/null || true
+}
+
+cgroup_pids() {
+    local cgroup="$1" dir procs
+    [ -n "$cgroup" ] || return 0
+    dir="$CGROUP_ROOT/${cgroup#/}"
+    [ -d "$dir" ] || return 0
+    find "$dir" -name cgroup.procs -type f -print 2>/dev/null |
+        while IFS= read -r procs; do
+            sed -n '/^[0-9][0-9]*$/p' "$procs" 2>/dev/null || true
+        done | sort -u
+}
+
+user_unit_pids() {
+    local unit="$1" cgroup pid
+    cgroup="$(control_group_for_user_unit "$unit")"
+    cgroup_pids "$cgroup"
+    pid="$(main_pid_for_user_unit "$unit")"
+    [ -n "$pid" ] && printf '%s\n' "$pid"
+    return 0
+}
+
+pid_matches_cgroup() {
+    local pid="$1" cgroup="$2" proc_cgroup
+    proc_cgroup="$PROC_ROOT/$pid/cgroup"
+    [ -n "$cgroup" ] || return 1
+    [ -r "$proc_cgroup" ] || return 1
+    grep -Fq "$cgroup" "$proc_cgroup"
+}
+
 write_oom_score_or_warn() {
     local pid="$1" score="$2" label="$3"
     if write_oom_score "$pid" "$score"; then
@@ -276,9 +316,10 @@ apply_protected_user_unit_oom_scores() {
     for spec in "${protected_user_unit_scores[@]}"; do
         unit="${spec%%:*}"
         score="${spec##*:}"
-        pid="$(main_pid_for_user_unit "$unit")"
-        [ -n "$pid" ] || continue
-        write_oom_score_or_warn "$pid" "$score" "$unit"
+        user_unit_pids "$unit" | while IFS= read -r pid; do
+            [ -n "$pid" ] || continue
+            write_oom_score_or_warn "$pid" "$score" "$unit"
+        done
     done
 }
 
@@ -291,12 +332,14 @@ allowed_user_protected_process() {
     return 1
 }
 
-protected_user_unit_pid() {
-    local candidate="$1" spec unit pid
+protected_user_unit_member_pid() {
+    local candidate="$1" spec unit pid cgroup
     for spec in "${protected_user_unit_scores[@]}"; do
         unit="${spec%%:*}"
         pid="$(main_pid_for_user_unit "$unit")"
         [ -n "$pid" ] && [ "$candidate" = "$pid" ] && return 0
+        cgroup="$(control_group_for_user_unit "$unit")"
+        pid_matches_cgroup "$candidate" "$cgroup" && return 0
     done
     return 1
 }
@@ -321,7 +364,7 @@ apply_user_process_oom_floor() {
         score="$(cat "$adj" 2>/dev/null || true)"
         [[ "$score" =~ ^-?[0-9]+$ ]] || continue
         [ "$score" -le -800 ] || continue
-        protected_user_unit_pid "$pid" && continue
+        protected_user_unit_member_pid "$pid" && continue
         allowed_user_protected_process "$name" && continue
         if write_oom_score "$pid" 100; then
             fixed=$((fixed + 1))
@@ -505,13 +548,14 @@ verify_protected_user_unit_oom_scores() {
             echo "user unit OOM policy drift for $unit: configured=$configured expected=$score; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
             failed=1
         fi
-        pid="$(main_pid_for_user_unit "$unit")"
-        [ -n "$pid" ] || continue
-        actual="$(cat "$PROC_ROOT/$pid/oom_score_adj" 2>/dev/null || true)"
-        if [ "$actual" != "$score" ]; then
-            echo "live user unit OOM score drift for $unit pid $pid: actual=$actual expected=$score; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
-            failed=1
-        fi
+        while IFS= read -r pid; do
+            [ -n "$pid" ] || continue
+            actual="$(cat "$PROC_ROOT/$pid/oom_score_adj" 2>/dev/null || true)"
+            if [ "$actual" != "$score" ]; then
+                echo "live user unit OOM score drift for $unit pid $pid: actual=$actual expected=$score; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+                failed=1
+            fi
+        done < <(user_unit_pids "$unit")
     done
     [ "$failed" -eq 0 ]
 }
@@ -531,7 +575,7 @@ verify_user_process_oom_floor() {
         score="$(cat "$adj" 2>/dev/null || true)"
         [[ "$score" =~ ^-?[0-9]+$ ]] || continue
         [ "$score" -le -800 ] || continue
-        protected_user_unit_pid "$pid" && continue
+        protected_user_unit_member_pid "$pid" && continue
         allowed_user_protected_process "$name" && continue
         echo "residual inherited OOM protection: pid=$pid name=$name oom_score_adj=$score; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
         failed=1

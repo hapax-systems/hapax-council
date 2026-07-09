@@ -2,10 +2,12 @@
 Description=Audit deferred root-required post-merge deploy actions
 Documentation=file:%h/.cache/hapax/source-activation/worktree/systemd/README.md
 OnFailure=notify-failure@%n.service
+StartLimitIntervalSec=30min
+StartLimitBurst=2
 
 [Service]
 Type=oneshot
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/usr/bin/env bash -lc 'exec "%h/.cache/hapax/source-activation/worktree/scripts/hapax-root-required-deploy-audit"'
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-root-required-deploy-audit
 SyslogIdentifier=hapax-root-required-deploy-audit

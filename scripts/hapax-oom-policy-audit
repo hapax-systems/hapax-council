@@ -183,6 +183,17 @@ def _cgroup_pids(cgroup: str) -> list[str]:
     return sorted(pids, key=int)
 
 
+def _protected_user_unit_pids() -> set[str]:
+    protected: set[str] = set()
+    for unit in PROTECTED_USER_UNITS:
+        values = _show(unit, ["OOMScoreAdjust", "MainPID", "ControlGroup"], user=True)
+        main_pid = values.get("MainPID", "0")
+        if main_pid and main_pid != "0":
+            protected.add(main_pid)
+        protected.update(_cgroup_pids(values.get("ControlGroup", "")))
+    return protected
+
+
 def audit_protected_user_units() -> list[Check]:
     checks: list[Check] = []
     for unit, expected in PROTECTED_USER_UNITS.items():
@@ -239,7 +250,11 @@ def audit_tmux_scopes() -> list[Check]:
     if proc.returncode != 0:
         return [
             Check(
-                "tmux_scope_scan", "warn", "observable", "N/A", (proc.stderr or proc.stdout).strip()
+                "tmux_scope_scan",
+                "error",
+                "observable",
+                "N/A",
+                f"{(proc.stderr or proc.stdout).strip()}; {NEXT_OOM_INSTALL}",
             )
         ]
     scopes = [line.split()[0] for line in proc.stdout.splitlines() if "tmux-spawn-" in line]
@@ -250,10 +265,10 @@ def audit_tmux_scopes() -> list[Check]:
             checks.append(
                 Check(
                     f"tmux_scope_{scope}",
-                    "warn",
+                    "error",
                     "bounded-or-app-slice-backed",
                     "N/A",
-                    values["_error"],
+                    f"{values['_error']}; {NEXT_OOM_INSTALL}",
                 )
             )
             continue
@@ -314,13 +329,14 @@ def _status_field(status: Path, key: str) -> str:
 def audit_residual_user_process_protection(uid: int) -> Check:
     proc_root = PROC_ROOT
     if not proc_root.is_dir():
-        return Check("user_process_residual_oom_protection", "warn", "observable", "N/A")
-    protected_pids = {
-        values.get("MainPID", "0")
-        for unit in PROTECTED_USER_UNITS
-        for values in [_show(unit, ["MainPID"], user=True)]
-        if values.get("MainPID") not in {None, "", "0"}
-    }
+        return Check(
+            "user_process_residual_oom_protection",
+            "error",
+            "observable",
+            "N/A",
+            f"proc root unavailable; {NEXT_OOM_INSTALL}",
+        )
+    protected_pids = _protected_user_unit_pids()
     offenders: list[str] = []
     for adj in proc_root.glob("[0-9]*/oom_score_adj"):
         pid_dir = adj.parent

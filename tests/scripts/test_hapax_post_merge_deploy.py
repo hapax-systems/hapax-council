@@ -785,6 +785,28 @@ def test_root_required_audit_detects_oom_enforcer_drift(tmp_path: Path) -> None:
     assert "install-p0-oom-containment --install --verify-live" in result.stderr
 
 
+def test_root_required_audit_prefers_installed_merge_stage_source(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    source_root = Path(env["HAPAX_ROOT_REQUIRED_SOURCE_ROOT"])
+    installed_source = tmp_path / "installed-root-source"
+    rel = "scripts/hapax-oom-score-enforce"
+    (source_root / rel).write_text("stale activation source\n", encoding="utf-8")
+    installed_path = installed_source / rel
+    installed_path.parent.mkdir(parents=True)
+    installed_path.write_text(ROOT_AUDIT_SOURCE_FILES[rel], encoding="utf-8")
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**env, "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "root-required post-merge deploy deferrals: none" in result.stdout
+
+
 def test_root_required_audit_passes_when_oom_enforcer_matches(tmp_path: Path) -> None:
     result = subprocess.run(
         [str(ROOT_REQUIRED_AUDIT)],

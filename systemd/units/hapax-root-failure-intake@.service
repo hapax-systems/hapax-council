@@ -7,4 +7,4 @@ Documentation=file:/home/hapax/.local/lib/hapax-recovery/council/current/manifes
 Type=oneshot
 User=hapax
 Environment=PATH=/home/hapax/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/usr/bin/env bash -lc 'exec /usr/local/sbin/hapax-root-failure-intake "$1"' hapax-root-failure-intake %I
+ExecStart=/usr/local/sbin/hapax-root-failure-intake %i

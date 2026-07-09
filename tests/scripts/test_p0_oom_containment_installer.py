@@ -19,8 +19,18 @@ PROTECTED_USER_UNIT_SCORES = {
 }
 
 
-def _systemctl_user_unit_cases(unit_pids: dict[str, int] | None = None) -> str:
+def _unit_cgroup(unit: str) -> str:
+    return f"/user.slice/user-1000.slice/user@1000.service/app.slice/{unit}"
+
+
+def _systemctl_user_unit_cases(
+    unit_pids: dict[str, int] | None = None,
+    unit_cgroups: dict[str, str] | None = None,
+) -> str:
     unit_pids = unit_pids or {}
+    unit_cgroups = unit_cgroups or {
+        unit: _unit_cgroup(unit) for unit in unit_pids if unit in PROTECTED_USER_UNIT_SCORES
+    }
     cases = []
     for unit, score in PROTECTED_USER_UNIT_SCORES.items():
         cases.append(
@@ -30,6 +40,10 @@ def _systemctl_user_unit_cases(unit_pids: dict[str, int] | None = None) -> str:
         cases.append(
             f"  *--user\\ show\\ {unit}\\ -p\\ MainPID\\ --value*) "
             f"printf '%s\\n' '{unit_pids.get(unit, 0)}' ;;"
+        )
+        cases.append(
+            f"  *--user\\ show\\ {unit}\\ -p\\ ControlGroup\\ --value*) "
+            f"printf '%s\\n' '{unit_cgroups.get(unit, '')}' ;;"
         )
     return "\n".join(cases)
 
@@ -100,7 +114,7 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     fake_systemctl.chmod(0o755)
 
     result = subprocess.run(
-        [str(INSTALLER), "--install", "--verify-live", "--no-runtime"],
+        [str(INSTALLER), "--install", "--verify-live"],
         text=True,
         capture_output=True,
         check=False,
@@ -137,13 +151,23 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert "daemon-reload" in calls
 
 
-def _write_proc(proc_root: Path, pid: int, *, name: str, uid: int, oom_score: int) -> None:
+def _write_proc(
+    proc_root: Path,
+    pid: int,
+    *,
+    name: str,
+    uid: int,
+    oom_score: int,
+    cgroup: str | None = None,
+) -> None:
     pid_dir = proc_root / str(pid)
     pid_dir.mkdir(parents=True, exist_ok=True)
     (pid_dir / "status").write_text(
         f"Name:\t{name}\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n", encoding="utf-8"
     )
     (pid_dir / "oom_score_adj").write_text(f"{oom_score}\n", encoding="utf-8")
+    if cgroup is not None:
+        (pid_dir / "cgroup").write_text(f"0::{cgroup}\n", encoding="utf-8")
 
 
 def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_user_protection(
@@ -174,8 +198,18 @@ def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_use
         "hapax-imagination.service": 915,
     }
     for unit, pid in unit_pids.items():
-        _write_proc(proc_root, pid, name=unit.split(".")[0], uid=0, oom_score=0)
-    _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=-900)
+        cgroup = (
+            _unit_cgroup(unit) if unit in PROTECTED_USER_UNIT_SCORES else f"/system.slice/{unit}"
+        )
+        _write_proc(proc_root, pid, name=unit.split(".")[0], uid=0, oom_score=0, cgroup=cgroup)
+    _write_proc(
+        proc_root,
+        900,
+        name="systemd",
+        uid=1000,
+        oom_score=-900,
+        cgroup="/user.slice/user-1000.slice/user@1000.service",
+    )
     _write_proc(proc_root, 901, name="codex", uid=1000, oom_score=-900)
     _write_proc(proc_root, 902, name="wireplumber", uid=1000, oom_score=-900)
 
@@ -265,8 +299,22 @@ def test_installer_falls_back_to_sudo_when_direct_oom_score_write_fails(
     root_failure_dest = tmp_path / "sbin" / "hapax-root-failure-intake"
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
-    _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=100)
-    _write_proc(proc_root, 910, name="pipewire", uid=1000, oom_score=100)
+    _write_proc(
+        proc_root,
+        900,
+        name="systemd",
+        uid=1000,
+        oom_score=100,
+        cgroup="/user.slice/user-1000.slice/user@1000.service",
+    )
+    _write_proc(
+        proc_root,
+        910,
+        name="pipewire",
+        uid=1000,
+        oom_score=100,
+        cgroup=_unit_cgroup("pipewire.service"),
+    )
 
     fake_systemctl = tmp_path / "systemctl"
     fake_systemctl.write_text(
@@ -329,9 +377,23 @@ def test_root_oom_score_enforcer_writes_live_user_manager_and_service_scores(
         "studio-compositor.service": 914,
         "hapax-imagination.service": 915,
     }
-    _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=-900)
+    _write_proc(
+        proc_root,
+        900,
+        name="systemd",
+        uid=1000,
+        oom_score=-900,
+        cgroup="/user.slice/user-1000.slice/user@1000.service",
+    )
     for unit, pid in unit_pids.items():
-        _write_proc(proc_root, pid, name=unit.split(".")[0], uid=1000, oom_score=100)
+        _write_proc(
+            proc_root,
+            pid,
+            name=unit.split(".")[0],
+            uid=1000,
+            oom_score=100,
+            cgroup=_unit_cgroup(unit),
+        )
 
     fake_systemctl = tmp_path / "systemctl"
     fake_systemctl.write_text(
@@ -396,7 +458,14 @@ def test_root_oom_score_enforcer_is_quiet_when_scores_already_match(
         "studio-compositor.service": 914,
         "hapax-imagination.service": 915,
     }
-    _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=100)
+    _write_proc(
+        proc_root,
+        900,
+        name="systemd",
+        uid=1000,
+        oom_score=100,
+        cgroup="/user.slice/user-1000.slice/user@1000.service",
+    )
     for unit, pid in unit_pids.items():
         _write_proc(
             proc_root,
@@ -404,6 +473,7 @@ def test_root_oom_score_enforcer_is_quiet_when_scores_already_match(
             name=unit.split(".")[0],
             uid=1000,
             oom_score=PROTECTED_USER_UNIT_SCORES[unit],
+            cgroup=_unit_cgroup(unit),
         )
 
     fake_systemctl = tmp_path / "systemctl"
@@ -460,9 +530,30 @@ def test_root_oom_score_enforcer_writes_all_user_unit_cgroup_pids(
     )
     cgroup_dir.mkdir(parents=True)
     (cgroup_dir / "cgroup.procs").write_text("910\n916\n", encoding="utf-8")
-    _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=100)
-    _write_proc(proc_root, 910, name="pipewire", uid=1000, oom_score=100)
-    _write_proc(proc_root, 916, name="pipewire-worker", uid=1000, oom_score=100)
+    _write_proc(
+        proc_root,
+        900,
+        name="systemd",
+        uid=1000,
+        oom_score=100,
+        cgroup="/user.slice/user-1000.slice/user@1000.service",
+    )
+    _write_proc(
+        proc_root,
+        910,
+        name="pipewire",
+        uid=1000,
+        oom_score=100,
+        cgroup=_unit_cgroup("pipewire.service"),
+    )
+    _write_proc(
+        proc_root,
+        916,
+        name="pipewire-worker",
+        uid=1000,
+        oom_score=100,
+        cgroup=_unit_cgroup("pipewire.service"),
+    )
 
     fake_systemctl = tmp_path / "systemctl"
     fake_systemctl.write_text(
@@ -518,9 +609,23 @@ def test_root_oom_score_enforcer_continues_after_per_unit_write_failure(
         "pipewire-pulse.service": 911,
         "wireplumber.service": 912,
     }
-    _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=-900)
+    _write_proc(
+        proc_root,
+        900,
+        name="systemd",
+        uid=1000,
+        oom_score=-900,
+        cgroup="/user.slice/user-1000.slice/user@1000.service",
+    )
     for unit, pid in unit_pids.items():
-        _write_proc(proc_root, pid, name=unit.split(".")[0], uid=1000, oom_score=100)
+        _write_proc(
+            proc_root,
+            pid,
+            name=unit.split(".")[0],
+            uid=1000,
+            oom_score=100,
+            cgroup=_unit_cgroup(unit),
+        )
     (proc_root / "911" / "oom_score_adj").chmod(0o400)
 
     fake_systemctl = tmp_path / "systemctl"
@@ -563,6 +668,71 @@ def test_root_oom_score_enforcer_continues_after_per_unit_write_failure(
     assert "failed to set oom_score_adj for pipewire-pulse.service" in result.stderr
     assert "next action: run scripts/hapax-oom-policy-audit --json" in result.stderr
     assert (proc_root / "912" / "oom_score_adj").read_text(encoding="utf-8").strip() == "-900"
+
+
+def test_installer_preserves_python_child_inside_protected_user_unit_cgroup(
+    tmp_path: Path,
+) -> None:
+    system_dir = tmp_path / "systemd-system"
+    user_dir = tmp_path / "systemd-user"
+    user_control_dir = tmp_path / "systemd-user-control"
+    earlyoom_dest = tmp_path / "earlyoom"
+    enforcer_dest = tmp_path / "sbin" / "hapax-oom-score-enforce"
+    root_failure_dest = tmp_path / "sbin" / "hapax-root-failure-intake"
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    studio_cgroup = _unit_cgroup("studio-compositor.service")
+    _write_proc(
+        proc_root,
+        900,
+        name="systemd",
+        uid=1000,
+        oom_score=100,
+        cgroup="/user.slice/user-1000.slice/user@1000.service",
+    )
+    _write_proc(proc_root, 914, name="python", uid=1000, oom_score=-800, cgroup=studio_cgroup)
+    _write_proc(proc_root, 916, name="python", uid=1000, oom_score=-800, cgroup=studio_cgroup)
+    _write_proc(
+        proc_root, 999, name="codex", uid=1000, oom_score=-900, cgroup="/user.slice/session.slice"
+    )
+
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$*" in\n'
+        '  *"show user@1000.service -p MainPID --value"*) printf "900\\n" ;;\n'
+        f"{_systemctl_user_unit_cases({'studio-compositor.service': 914}, {'studio-compositor.service': studio_cgroup})}\n"
+        f"{_systemctl_app_slice_cases()}\n"
+        '  *"is-active --quiet earlyoom.service"*) exit 3 ;;\n'
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--install", "--verify-live"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(system_dir),
+            "HAPAX_OOM_SYSTEMD_USER_DIR": str(user_dir),
+            "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR": str(user_control_dir),
+            "HAPAX_OOM_EARLYOOM_DEST": str(earlyoom_dest),
+            "HAPAX_OOM_ENFORCER_DEST": str(enforcer_dest),
+            "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
+            "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_OOM_INSTALL_SUDO": "",
+            "HAPAX_OOM_PROC_ROOT": str(proc_root),
+            "HAPAX_OOM_TARGET_UID": "1000",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (proc_root / "916" / "oom_score_adj").read_text(encoding="utf-8").strip() == "-800"
+    assert (proc_root / "999" / "oom_score_adj").read_text(encoding="utf-8").strip() == "100"
 
 
 def test_root_failure_intake_uses_stable_recovery_bundle(tmp_path: Path) -> None:

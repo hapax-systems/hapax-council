@@ -32,6 +32,8 @@ EVENT_TEXT = {
     },
 }
 
+APC_MESSAGE_FIELDS = ("STATUS", "BCHARGE", "TIMELEFT", "TONBATT", "NUMXFERS", "LINEV")
+
 
 @dataclass
 class Delivery:
@@ -67,6 +69,12 @@ def read_apcaccess(path: str) -> tuple[dict[str, str], str]:
     if proc.returncode != 0:
         return {}, (proc.stderr or proc.stdout).strip() or f"rc={proc.returncode}"
     return parse_apcaccess(proc.stdout), ""
+
+
+def format_ntfy_message(base_message: str, apc: dict[str, str], recorded_at: str) -> str:
+    fields = [f"{key}={apc[key]}" for key in APC_MESSAGE_FIELDS if apc.get(key)]
+    telemetry = ", ".join(fields) if fields else "apcaccess=unavailable"
+    return f"{base_message}\nobserved_at={recorded_at}\n{telemetry}"
 
 
 def post_ntfy(url: str, title: str, message: str, priority: str, timeout_s: float) -> Delivery:
@@ -132,17 +140,20 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     text = EVENT_TEXT[args.event]
     apc, apc_error = read_apcaccess(args.apcaccess)
+    observed_at = utc_now()
+    message = format_ntfy_message(text["message"], apc, observed_at)
     base_record = {
         "schema": "hapax.ups_power_event.v1",
         "event": args.event,
         "apcupsd_args": args.apcupsd_args,
         "title": text["title"],
-        "message": text["message"],
+        "message": message,
         "priority": text["priority"],
         "ntfy_url": args.ntfy_url,
         "apcaccess": apc,
         "apcaccess_error": apc_error,
         "pid": os.getpid(),
+        "observed_at": observed_at,
     }
     intent_audit_error = ""
     try:
@@ -166,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
     delivery = post_ntfy(
         "" if args.no_ntfy else args.ntfy_url,
         text["title"],
-        text["message"],
+        message,
         text["priority"],
         args.timeout,
     )
