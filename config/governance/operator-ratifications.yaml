@@ -10,6 +10,10 @@
 # name its decision record. Waived findings are receipted in the dossier evaluation log,
 # never silent (go-gate phantom precedent).
 ratifications_schema: 1
+ratification_classes:
+  operator-privacy-residual:
+    authority: operator
+    safety_policy: operator_privacy_residual
 ratifications:
   - id: RAT-20260709-privacy-residual-item27
     ratified: "2026-07-09"

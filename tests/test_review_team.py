@@ -3004,6 +3004,10 @@ class TestOperatorRatificationGate:
     malformed ledgers and unproven checkouts (go-gate binding rule)."""
 
     LEDGER = """ratifications_schema: 1
+ratification_classes:
+  operator-privacy-residual:
+    authority: operator
+    safety_policy: operator_privacy_residual
 ratifications:
   - id: RAT-TEST-1
     ratified: "2026-07-09"
@@ -3099,6 +3103,56 @@ ratifications:
         rt = _load_review_team_module()
         monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
         self._ledger(tmp_path, self.LEDGER.replace("    authority: operator\n", ""))
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1
+
+    def test_configured_class_id_is_not_hardcoded(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(
+            tmp_path,
+            self.LEDGER.replace("operator-privacy-residual", "operator-privacy-residual-next"),
+        )
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert blocking == []
+
+    def test_ledger_with_unknown_class_waives_nothing(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(
+            tmp_path,
+            self.LEDGER.replace(
+                "    class: operator-privacy-residual\n",
+                "    class: undeclared-ratification-class\n",
+            ),
+        )
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1
+
+    def test_ledger_with_unsupported_class_policy_waives_nothing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(
+            tmp_path,
+            self.LEDGER.replace(
+                "    safety_policy: operator_privacy_residual\n",
+                "    safety_policy: unimplemented_policy\n",
+            ),
+        )
         doc = tmp_path / "docs" / "research" / "x.md"
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Clean generic research text.\n", encoding="utf-8")
@@ -3494,6 +3548,12 @@ class TestHeadBoundRepoRoot:
             yaml.safe_dump(
                 {
                     "ratifications_schema": 1,
+                    "ratification_classes": {
+                        "operator-privacy-residual": {
+                            "authority": "operator",
+                            "safety_policy": "operator_privacy_residual",
+                        }
+                    },
                     "ratifications": [
                         {
                             "id": "RAT-TEST-1",

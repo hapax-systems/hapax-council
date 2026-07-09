@@ -1347,6 +1347,35 @@ def verify_literal_defect_critical(finding: Mapping[str, Any], repo_root: Path) 
 
 
 _OPERATOR_RATIFICATIONS_RELPATH = Path("config/governance/operator-ratifications.yaml")
+_SUPPORTED_RATIFICATION_SAFETY_POLICIES = frozenset({"operator_privacy_residual"})
+
+
+def _ratification_classes(payload: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Ledger-declared ratification classes keyed by stable class id.
+
+    The code implements safety policies, not class names. Class ids live in the ledger
+    so adding a new named class is a data/schema act; adding a new safety policy remains
+    source work with tests. Fail-closed: malformed or unsupported classes make the
+    ledger waive nothing.
+    """
+    raw = payload.get("ratification_classes")
+    if not isinstance(raw, Mapping) or not raw:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for class_id, config in raw.items():
+        if not isinstance(class_id, str) or not class_id.strip() or not isinstance(config, Mapping):
+            return {}
+        authority = config.get("authority")
+        safety_policy = config.get("safety_policy")
+        if (
+            not isinstance(authority, str)
+            or not authority.strip()
+            or not isinstance(safety_policy, str)
+            or safety_policy not in _SUPPORTED_RATIFICATION_SAFETY_POLICIES
+        ):
+            return {}
+        out[class_id] = {"authority": authority, "safety_policy": safety_policy}
+    return out
 
 
 def _operator_ratifications(repo_root: Path) -> list[dict[str, Any]]:
@@ -1365,6 +1394,9 @@ def _operator_ratifications(repo_root: Path) -> list[dict[str, Any]]:
     entries = payload.get("ratifications")
     if not isinstance(entries, list):
         return []
+    classes = _ratification_classes(payload)
+    if not classes:
+        return []
     valid: list[dict[str, Any]] = []
     for entry in entries:
         if not isinstance(entry, Mapping):
@@ -1373,15 +1405,17 @@ def _operator_ratifications(repo_root: Path) -> list[dict[str, Any]]:
         files = entry.get("files")
         topics = entry.get("topics")
         pins = entry.get("files_sha256")
+        entry_class = entry.get("class")
+        class_config = classes.get(entry_class) if isinstance(entry_class, str) else None
         if (
             not isinstance(entry.get("id"), str)
             or not str(entry.get("id")).strip()
             or not isinstance(entry.get("ratified"), str)
             or not str(entry.get("ratified")).strip()
-            or entry.get("authority") != "operator"
+            or class_config is None
+            or entry.get("authority") != class_config["authority"]
             or not isinstance(entry.get("decision_record"), str)
             or not str(entry.get("decision_record")).strip()
-            or entry.get("class") != "operator-privacy-residual"
             or not isinstance(lenses, list)
             or not lenses
             or not all(isinstance(item, str) and item.strip() for item in lenses)
@@ -1400,7 +1434,9 @@ def _operator_ratifications(repo_root: Path) -> list[dict[str, Any]]:
             )
         ):
             return []
-        valid.append(dict(entry))
+        ratification = dict(entry)
+        ratification["_safety_policy"] = class_config["safety_policy"]
+        valid.append(ratification)
     return valid
 
 
@@ -1463,6 +1499,8 @@ def _operator_ratification_for(
     if _NON_WAIVABLE_ALLEGATION_RE.search(text):
         return None
     for entry in ratifications:
+        if entry.get("_safety_policy") != "operator_privacy_residual":
+            continue
         if lens not in entry.get("lenses", ()) or file_ not in entry.get("files", ()):
             continue
         if any(str(topic).lower() in text for topic in entry.get("topics", ())):
