@@ -662,6 +662,7 @@ def _decision_can_advance(decision: SCEDPhase1Decision) -> bool:
         and decision.gate_result.status is GateStatus.LIT
         and decision.gate_result.verdict is True
         and not decision.reject_reasons
+        and _decision_has_durable_candidate_id(decision)
         and bool(decision.candidate_digest)
         and bool(decision.technique_refs)
         and decision.target is not None
@@ -670,6 +671,16 @@ def _decision_can_advance(decision: SCEDPhase1Decision) -> bool:
         and bool(decision.evidence_refs)
         and bool(decision.gate_result.evidence_refs)
     )
+
+
+def _decision_has_durable_candidate_id(decision: SCEDPhase1Decision) -> bool:
+    if not decision.candidate_id:
+        return False
+    try:
+        _required_durable_ref(decision.candidate_id, field="candidate_id")
+    except ValueError:
+        return False
+    return True
 
 
 def _witnesses_match_candidate(
