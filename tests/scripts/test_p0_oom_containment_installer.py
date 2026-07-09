@@ -54,6 +54,25 @@ def _systemctl_app_slice_cases() -> str:
             '  *"--user show app.slice -p MemoryHigh --value"*) printf "85899345920\\n" ;;',
             '  *"--user show app.slice -p MemoryMax --value"*) printf "111669149696\\n" ;;',
             '  *"--user show app.slice -p MemorySwapMax --value"*) printf "8589934592\\n" ;;',
+            '  *"--user show app.slice -p MemoryLow --value"*) printf "17179869184\\n" ;;',
+            '  *"--user show app.slice -p MemoryMin --value"*) printf "8589934592\\n" ;;',
+        ]
+    )
+
+
+def _systemctl_system_memory_cases() -> str:
+    return "\n".join(
+        [
+            '  *"show user-1000.slice -p MemoryHigh --value"*) printf "103079215104\\n" ;;',
+            '  *"show user-1000.slice -p MemoryMax --value"*) printf "120259084288\\n" ;;',
+            '  *"show user-1000.slice -p MemorySwapMax --value"*) printf "8589934592\\n" ;;',
+            '  *"show user-1000.slice -p MemoryLow --value"*) printf "17179869184\\n" ;;',
+            '  *"show user-1000.slice -p MemoryMin --value"*) printf "8589934592\\n" ;;',
+            '  *"show user@1000.service -p MemoryHigh --value"*) printf "103079215104\\n" ;;',
+            '  *"show user@1000.service -p MemoryMax --value"*) printf "120259084288\\n" ;;',
+            '  *"show user@1000.service -p MemorySwapMax --value"*) printf "8589934592\\n" ;;',
+            '  *"show user@1000.service -p MemoryLow --value"*) printf "17179869184\\n" ;;',
+            '  *"show user@1000.service -p MemoryMin --value"*) printf "8589934592\\n" ;;',
         ]
     )
 
@@ -93,6 +112,11 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     earlyoom_dest = tmp_path / "earlyoom"
     enforcer_dest = tmp_path / "sbin" / "hapax-oom-score-enforce"
     root_failure_dest = tmp_path / "sbin" / "hapax-root-failure-intake"
+    root_defer = tmp_path / "root-required"
+    drain_dir = root_defer / "sha" / "oom-containment"
+    installed_source = tmp_path / "current-source"
+    drain_dir.mkdir(parents=True)
+    (drain_dir / "RUNBOOK.txt").write_text("run installer\n", encoding="utf-8")
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
     _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=100)
@@ -105,6 +129,7 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         f"printf '%s\\n' \"$*\" >> {systemctl_calls!s}\n"
         'case "$*" in\n'
         '  *"show user@1000.service -p MainPID --value"*) printf "900\\n" ;;\n'
+        f"{_systemctl_system_memory_cases()}\n"
         f"{_systemctl_user_unit_cases()}\n"
         f"{_systemctl_app_slice_cases()}\n"
         "esac\n"
@@ -129,20 +154,27 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
             "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
             "HAPAX_OOM_INSTALL_SUDO": "",
             "HAPAX_OOM_PROC_ROOT": str(proc_root),
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(root_defer),
+            "HAPAX_ROOT_REQUIRED_DRAIN_DIR": str(drain_dir),
+            "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source),
         },
     )
 
     assert result.returncode == 0, result.stderr
-    assert (
-        (system_dir / "user@1000.service.d" / "oom.conf")
-        .read_text(encoding="utf-8")
-        .strip()
-        .endswith("OOMScoreAdjust=100")
+    assert not drain_dir.exists()
+    assert (installed_source / "scripts" / "install-p0-oom-containment").is_file()
+    assert "root-required deferral drained" in result.stdout
+    user_manager_dropin = (system_dir / "user@1000.service.d" / "oom.conf").read_text(
+        encoding="utf-8"
     )
+    assert "OOMScoreAdjust=100" in user_manager_dropin
+    assert "MemoryMax=112G" in user_manager_dropin
     app_dropin = user_dir / "app.slice.d" / "oom-containment.conf"
     assert app_dropin.is_file()
     assert not app_dropin.is_symlink()
     assert "MemorySwapMax=8G" in app_dropin.read_text(encoding="utf-8")
+    assert "MemoryLow=16G" in app_dropin.read_text(encoding="utf-8")
+    assert (system_dir / "user-1000.slice.d" / "oom-containment.conf").is_file()
     assert earlyoom_dest.read_text(encoding="utf-8").startswith("EARLYOOM_ARGS=")
     assert enforcer_dest.is_file()
     assert root_failure_dest.is_file()
@@ -231,6 +263,7 @@ def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_use
         'case "$*" in\n'
         f"{cases}\n"
         f"{user_cases}\n"
+        f"{_systemctl_system_memory_cases()}\n"
         f"{_systemctl_app_slice_cases()}\n"
         '  *"is-active --quiet earlyoom.service"*) exit 3 ;;\n'
         "esac\n"
@@ -283,8 +316,11 @@ def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_use
             score
         )
     calls = systemctl_calls.read_text(encoding="utf-8")
+    assert "set-property --runtime user-1000.slice MemoryHigh=96G MemoryMax=112G" in calls
+    assert "set-property --runtime user@1000.service MemoryHigh=96G MemoryMax=112G" in calls
     assert (
-        "set-property --runtime app.slice MemoryHigh=80G MemoryMax=104G MemorySwapMax=8G" in calls
+        "set-property --runtime app.slice MemoryHigh=80G MemoryMax=104G MemorySwapMax=8G MemoryLow=16G MemoryMin=8G"
+        in calls
     )
 
 
@@ -324,6 +360,7 @@ def test_installer_falls_back_to_sudo_when_direct_oom_score_write_fails(
         '  *"--user show pipewire.service -p OOMScoreAdjust --value"*) printf "-900\\n" ;;\n'
         '  *"--user show pipewire.service -p MainPID --value"*) printf "910\\n" ;;\n'
         f"{_systemctl_user_unit_cases()}\n"
+        f"{_systemctl_system_memory_cases()}\n"
         f"{_systemctl_app_slice_cases()}\n"
         '  *"is-active --quiet earlyoom.service"*) exit 3 ;;\n'
         "esac\n"
@@ -702,6 +739,7 @@ def test_installer_preserves_python_child_inside_protected_user_unit_cgroup(
         'case "$*" in\n'
         '  *"show user@1000.service -p MainPID --value"*) printf "900\\n" ;;\n'
         f"{_systemctl_user_unit_cases({'studio-compositor.service': 914}, {'studio-compositor.service': studio_cgroup})}\n"
+        f"{_systemctl_system_memory_cases()}\n"
         f"{_systemctl_app_slice_cases()}\n"
         '  *"is-active --quiet earlyoom.service"*) exit 3 ;;\n'
         "esac\n"

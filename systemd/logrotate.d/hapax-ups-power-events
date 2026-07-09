@@ -1,6 +1,7 @@
 /var/log/hapax/ups-power-events.jsonl {
     size 64M
     rotate 14
+    su root root
     copytruncate
     compress
     missingok

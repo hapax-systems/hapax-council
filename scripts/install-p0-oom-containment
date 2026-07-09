@@ -13,6 +13,12 @@ ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapa
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
 SUDO="${HAPAX_OOM_INSTALL_SUDO-sudo}"
 ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$HOME/.cache/hapax/post-merge-root-required/current-source}"
+ROOT_REQUIRED_DEFER_ROOT="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-}"
+if [ -z "$ROOT_REQUIRED_DEFER_ROOT" ] && [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ]; then
+    ROOT_REQUIRED_DEFER_ROOT="$(dirname "$(dirname "$HAPAX_ROOT_REQUIRED_DRAIN_DIR")")"
+fi
+ROOT_REQUIRED_DEFER_ROOT="${ROOT_REQUIRED_DEFER_ROOT:-$HOME/.cache/hapax/post-merge-root-required}"
+ROOT_REQUIRED_LABEL="oom-containment"
 PROC_ROOT="${HAPAX_OOM_PROC_ROOT:-/proc}"
 if [ -n "${HAPAX_OOM_CGROUP_ROOT:-}" ]; then
     CGROUP_ROOT="$HAPAX_OOM_CGROUP_ROOT"
@@ -104,12 +110,24 @@ preflight_root() {
     fi
 }
 
-drain_root_required_deferral() {
-    local drain="${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}"
+canonical_dir() {
+    local dir="$1"
+    [ -d "$dir" ] || return 1
+    (cd "$dir" && pwd -P)
+}
+
+pending_root_required_deferral_dirs() {
+    [ -d "$ROOT_REQUIRED_DEFER_ROOT" ] || return 0
+    find "$ROOT_REQUIRED_DEFER_ROOT" -mindepth 2 -maxdepth 2 -type d -name "$ROOT_REQUIRED_LABEL" | sort
+}
+
+drain_root_required_deferral_dir() {
+    local drain="$1" root_real drain_real
     [ -n "$drain" ] || return 0
     case "$drain" in
-        /|"")
-            echo "refusing unsafe root-required drain dir: $drain" >&2
+        /*) ;;
+        *)
+            echo "refusing relative root-required drain dir: $drain" >&2
             return 1
             ;;
     esac
@@ -117,13 +135,46 @@ drain_root_required_deferral() {
         echo "root-required drain dir missing RUNBOOK.txt: $drain" >&2
         return 1
     }
-    mkdir -p "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"
-    cp -a "$SOURCE"/. "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"/
-    rm -rf "$drain"
-    echo "root-required deferral drained: $drain"
+    root_real="$(canonical_dir "$ROOT_REQUIRED_DEFER_ROOT")" || {
+        echo "root-required defer root missing: $ROOT_REQUIRED_DEFER_ROOT" >&2
+        return 1
+    }
+    drain_real="$(canonical_dir "$drain")" || {
+        echo "root-required drain dir missing: $drain" >&2
+        return 1
+    }
+    case "$drain_real" in
+        "$root_real"/*) ;;
+        *)
+            echo "refusing root-required drain dir outside defer root: $drain" >&2
+            return 1
+            ;;
+    esac
+    rm -rf "$drain_real"
+    echo "root-required deferral drained: $drain_real"
+}
+
+drain_root_required_deferral() {
+    local drain found=0
+    if [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ]; then
+        found=1
+        mkdir -p "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"
+        cp -a "$SOURCE"/. "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"/
+        drain_root_required_deferral_dir "$HAPAX_ROOT_REQUIRED_DRAIN_DIR"
+    fi
+    while IFS= read -r drain; do
+        [ -n "$drain" ] || continue
+        [ -d "$drain" ] || continue
+        found=1
+        mkdir -p "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"
+        cp -a "$SOURCE"/. "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"/
+        drain_root_required_deferral_dir "$drain"
+    done < <(pending_root_required_deferral_dirs)
+    [ "$found" -eq 0 ] || return 0
 }
 
 system_dropins=(
+    systemd/system/user-1000.slice.d/oom-containment.conf
     systemd/system/user@1000.service.d/oom.conf
     systemd/system/apcupsd.service.d/oom-protect.conf
     systemd/system/systemd-logind.service.d/oom-protect.conf
@@ -183,6 +234,17 @@ app_slice_value() {
     printf '%s\n' "$value"
 }
 
+source_unit_value() {
+    local rel="$1" key="$2" file value
+    file="$(src_path "$rel")"
+    value="$(awk -F= -v key="$key" '$1 == key {print $2; exit}' "$file" 2>/dev/null || true)"
+    if [ -z "$value" ]; then
+        echo "$rel missing $key; next action: restore $rel from the P0 PR" >&2
+        return 1
+    fi
+    printf '%s\n' "$value"
+}
+
 memory_to_bytes() {
     local value="$1" number suffix
     case "$value" in
@@ -230,6 +292,18 @@ check_source() {
     app_slice_value MemoryHigh >/dev/null
     app_slice_value MemoryMax >/dev/null
     app_slice_value MemorySwapMax >/dev/null
+    app_slice_value MemoryLow >/dev/null
+    app_slice_value MemoryMin >/dev/null
+    source_unit_value systemd/system/user-1000.slice.d/oom-containment.conf MemoryHigh >/dev/null
+    source_unit_value systemd/system/user-1000.slice.d/oom-containment.conf MemoryMax >/dev/null
+    source_unit_value systemd/system/user-1000.slice.d/oom-containment.conf MemorySwapMax >/dev/null
+    source_unit_value systemd/system/user-1000.slice.d/oom-containment.conf MemoryLow >/dev/null
+    source_unit_value systemd/system/user-1000.slice.d/oom-containment.conf MemoryMin >/dev/null
+    source_unit_value systemd/system/user@1000.service.d/oom.conf MemoryHigh >/dev/null
+    source_unit_value systemd/system/user@1000.service.d/oom.conf MemoryMax >/dev/null
+    source_unit_value systemd/system/user@1000.service.d/oom.conf MemorySwapMax >/dev/null
+    source_unit_value systemd/system/user@1000.service.d/oom.conf MemoryLow >/dev/null
+    source_unit_value systemd/system/user@1000.service.d/oom.conf MemoryMin >/dev/null
     grep -q -- "--ignore" "$(src_path "$earlyoom_source")" || {
         echo "earlyoom config missing --ignore recovery list; next action: restore config/earlyoom/default from the P0 PR" >&2
         return 1
@@ -454,11 +528,17 @@ install_live() {
     }
     "$SYSTEMCTL" --user daemon-reload
     if [ "$APPLY_RUNTIME" -eq 1 ]; then
+        apply_system_runtime_memory user-1000.slice systemd/system/user-1000.slice.d/oom-containment.conf
+        apply_system_runtime_memory user@1000.service systemd/system/user@1000.service.d/oom.conf
         mem_high="$(app_slice_value MemoryHigh)"
         mem_max="$(app_slice_value MemoryMax)"
         mem_swap="$(app_slice_value MemorySwapMax)"
         "$SYSTEMCTL" --user set-property --runtime app.slice \
-            "MemoryHigh=$mem_high" "MemoryMax=$mem_max" "MemorySwapMax=$mem_swap"
+            "MemoryHigh=$mem_high" \
+            "MemoryMax=$mem_max" \
+            "MemorySwapMax=$mem_swap" \
+            "MemoryLow=$(app_slice_value MemoryLow)" \
+            "MemoryMin=$(app_slice_value MemoryMin)"
         if "$SYSTEMCTL" is-active --quiet earlyoom.service; then
             run_root "$SYSTEMCTL" restart earlyoom.service
         fi
@@ -470,6 +550,19 @@ install_live() {
         fi
         apply_user_process_oom_floor
     fi
+}
+
+apply_system_runtime_memory() {
+    local unit="$1" rel="$2"
+    run_root "$SYSTEMCTL" set-property --runtime "$unit" \
+        "MemoryHigh=$(source_unit_value "$rel" MemoryHigh)" \
+        "MemoryMax=$(source_unit_value "$rel" MemoryMax)" \
+        "MemorySwapMax=$(source_unit_value "$rel" MemorySwapMax)" \
+        "MemoryLow=$(source_unit_value "$rel" MemoryLow)" \
+        "MemoryMin=$(source_unit_value "$rel" MemoryMin)" || {
+        echo "unable to apply runtime memory policy to $unit; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    }
 }
 
 verify_pair() {
@@ -505,15 +598,34 @@ verify_live() {
         verify_pair "$(src_path "$rel")" "$SYSTEMD_USER_DIR/${rel#systemd/units/}"
     done
     verify_user_manager_oom_score
+    verify_system_unit_runtime_memory user-1000.slice systemd/system/user-1000.slice.d/oom-containment.conf
+    verify_system_unit_runtime_memory user@1000.service systemd/system/user@1000.service.d/oom.conf
     verify_app_slice_runtime
     verify_recovery_unit_oom_scores
     verify_protected_user_unit_oom_scores
     verify_user_process_oom_floor
 }
 
+verify_system_unit_runtime_memory() {
+    local unit="$1" rel="$2" key expected_raw expected_bytes actual failed=0
+    for key in MemoryHigh MemoryMax MemorySwapMax MemoryLow MemoryMin; do
+        expected_raw="$(source_unit_value "$rel" "$key")"
+        expected_bytes="$(memory_to_bytes "$expected_raw")" || {
+            echo "cannot parse $unit $key=$expected_raw from $rel; next action: fix the source drop-in and rerun scripts/install-p0-oom-containment --check" >&2
+            return 1
+        }
+        actual="$("$SYSTEMCTL" show "$unit" -p "$key" --value 2>/dev/null || true)"
+        if [ "$actual" != "$expected_raw" ] && [ "$actual" != "$expected_bytes" ]; then
+            echo "live $unit $key drift: actual=$actual expected=$expected_raw; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+            failed=1
+        fi
+    done
+    [ "$failed" -eq 0 ]
+}
+
 verify_app_slice_runtime() {
     local key expected_raw expected_bytes actual failed=0
-    for key in MemoryHigh MemoryMax MemorySwapMax; do
+    for key in MemoryHigh MemoryMax MemorySwapMax MemoryLow MemoryMin; do
         expected_raw="$(app_slice_value "$key")"
         expected_bytes="$(memory_to_bytes "$expected_raw")" || {
             echo "cannot parse app.slice $key=$expected_raw from $user_dropin; next action: fix the source drop-in and rerun scripts/install-p0-oom-containment --check" >&2

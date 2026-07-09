@@ -214,6 +214,7 @@ def test_installer_install_and_verify_live_against_temp_destinations(tmp_path: P
     assert audit_dir.is_dir()
     assert audit_dir.stat().st_mode & 0o777 == 0o775
     assert logrotate_dest.is_file()
+    assert "su root root" in logrotate_dest.read_text(encoding="utf-8")
     assert "restart apcupsd" in systemctl_calls.read_text(encoding="utf-8")
     systemctl_calls.write_text("", encoding="utf-8")
 

@@ -51,9 +51,26 @@ def _fake_systemctl(
 ) -> Path:
     path = tmp_path / "systemctl"
     app_values = (
-        "MemoryHigh=85899345920\nMemoryMax=111669149696\nMemorySwapMax=8589934592\n"
+        "MemoryHigh=85899345920\n"
+        "MemoryMax=111669149696\n"
+        "MemorySwapMax=8589934592\n"
+        "MemoryLow=17179869184\n"
+        "MemoryMin=8589934592\n"
         if app_bounded
-        else "MemoryHigh=infinity\nMemoryMax=infinity\nMemorySwapMax=infinity\n"
+        else (
+            "MemoryHigh=infinity\n"
+            "MemoryMax=infinity\n"
+            "MemorySwapMax=infinity\n"
+            "MemoryLow=infinity\n"
+            "MemoryMin=infinity\n"
+        )
+    )
+    uid_memory_values = (
+        "MemoryHigh=103079215104\n"
+        "MemoryMax=120259084288\n"
+        "MemorySwapMax=8589934592\n"
+        "MemoryLow=17179869184\n"
+        "MemoryMin=8589934592\n"
     )
     tmux_values = (
         f"MemoryHigh=12884901888\nMemoryMax=19327352832\nMemorySwapMax=3221225472\nSlice={tmux_slice}\n"
@@ -64,6 +81,8 @@ def _fake_systemctl(
         f"""#!/usr/bin/env bash
 set -euo pipefail
 case "$*" in
+  *"show user-1000.slice"*) printf '{uid_memory_values}' ;;
+  *"show user@1000.service --no-pager -p MemoryHigh"*) printf '{uid_memory_values}' ;;
   *"show user@1000.service"*) printf 'OOMScoreAdjust={user_oom}\\nDropInPaths=/etc/systemd/system/user@1000.service.d/oom.conf\\nMainPID=900\\n' ;;
   *"show app.slice"*) printf '{app_values}' ;;
 {_protected_user_unit_cases(wrong_unit_score=wrong_unit_score, unit_pids=protected_unit_pids, unit_cgroups=protected_unit_cgroups)}

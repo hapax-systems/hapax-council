@@ -21,10 +21,6 @@ pending_runbooks() {
 
 source_for_rel() {
     local rel="$1"
-    if [ -f "$INSTALLED_SOURCE_ROOT/$rel" ]; then
-        printf '%s/%s\n' "$INSTALLED_SOURCE_ROOT" "$rel"
-        return 0
-    fi
     printf '%s/%s\n' "$SOURCE_ROOT" "$rel"
 }
 
@@ -67,6 +63,7 @@ audit_root_installs() {
         "scripts/hapax-oom-score-enforce|$OOM_ENFORCER_DEST"
         "scripts/hapax-root-failure-intake|$ROOT_FAILURE_INTAKE_DEST"
         "config/earlyoom/default|$EARLYOOM_DEST"
+        "systemd/system/user-1000.slice.d/oom-containment.conf|$SYSTEMD_SYSTEM_DIR/user-1000.slice.d/oom-containment.conf"
         "systemd/system/user@1000.service.d/oom.conf|$SYSTEMD_SYSTEM_DIR/user@1000.service.d/oom.conf"
         "systemd/system/apcupsd.service.d/oom-protect.conf|$SYSTEMD_SYSTEM_DIR/apcupsd.service.d/oom-protect.conf"
         "systemd/system/systemd-logind.service.d/oom-protect.conf|$SYSTEMD_SYSTEM_DIR/systemd-logind.service.d/oom-protect.conf"

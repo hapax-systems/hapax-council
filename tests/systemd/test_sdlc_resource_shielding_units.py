@@ -71,11 +71,29 @@ def test_app_slice_has_aggregate_oom_backstop() -> None:
     assert _directive(text, "MemoryHigh") == "80G"
     assert _directive(text, "MemoryMax") == "104G"
     assert _directive(text, "MemorySwapMax") == "8G"
+    assert _directive(text, "MemoryLow") == "16G"
+    assert _directive(text, "MemoryMin") == "8G"
+
+
+def test_uid_slice_has_session_and_app_aggregate_oom_backstop() -> None:
+    text = (
+        REPO_ROOT / "systemd" / "system" / "user-1000.slice.d" / "oom-containment.conf"
+    ).read_text()
+    assert _directive(text, "MemoryHigh") == "96G"
+    assert _directive(text, "MemoryMax") == "112G"
+    assert _directive(text, "MemorySwapMax") == "8G"
+    assert _directive(text, "MemoryLow") == "16G"
+    assert _directive(text, "MemoryMin") == "8G"
 
 
 def test_user_manager_does_not_protect_every_interactive_workload() -> None:
     text = (REPO_ROOT / "systemd" / "system" / "user@1000.service.d" / "oom.conf").read_text()
     assert _directive(text, "OOMScoreAdjust") == "100"
+    assert _directive(text, "MemoryHigh") == "96G"
+    assert _directive(text, "MemoryMax") == "112G"
+    assert _directive(text, "MemorySwapMax") == "8G"
+    assert _directive(text, "MemoryLow") == "16G"
+    assert _directive(text, "MemoryMin") == "8G"
 
 
 def test_live_cuepoints_restart_storm_is_bounded() -> None:
@@ -236,9 +254,13 @@ def test_installer_links_service_dropins() -> None:
 def test_p0_oom_containment_has_dedicated_installer() -> None:
     installer = REPO_ROOT / "scripts" / "install-p0-oom-containment"
     body = installer.read_text()
+    assert "systemd/system/user-1000.slice.d/oom-containment.conf" in body
     assert "systemd/system/user@1000.service.d/oom.conf" in body
     assert "systemd/units/app.slice.d/oom-containment.conf" in body
     assert "config/earlyoom/default" in body
     assert "app_slice_value MemoryHigh" in body
+    assert "apply_system_runtime_memory user-1000.slice" in body
+    assert "apply_system_runtime_memory user@1000.service" in body
     assert "set-property --runtime app.slice" in body
+    assert "verify_system_unit_runtime_memory user-1000.slice" in body
     assert "verify_app_slice_runtime" in body

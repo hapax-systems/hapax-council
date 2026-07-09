@@ -36,6 +36,9 @@ ROOT_AUDIT_SOURCE_FILES = {
     "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\necho enforcer\n",
     "scripts/hapax-root-failure-intake": "#!/usr/bin/env bash\necho root failure\n",
     "config/earlyoom/default": 'EARLYOOM_ARGS="--ignore recovery"\n',
+    "systemd/system/user-1000.slice.d/oom-containment.conf": (
+        "[Slice]\nMemoryHigh=96G\nMemoryMax=112G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
+    ),
     "systemd/system/user@1000.service.d/oom.conf": "[Service]\nOOMScoreAdjust=100\n",
     "systemd/system/apcupsd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-900\n",
     "systemd/system/systemd-logind.service.d/oom-protect.conf": (
@@ -568,6 +571,7 @@ def test_systemd_coverage_includes_dropins_presets_and_source_overrides() -> Non
             "systemd/hapax-build-reload.path",
             "systemd/units/pipewire.service.d/cpu-affinity.conf",
             "systemd/units/app.slice.d/oom-containment.conf",
+            "systemd/system/user-1000.slice.d/oom-containment.conf",
             "systemd/system/user@1000.service.d/oom.conf",
             "systemd/system/apcupsd.service.d/oom-protect.conf",
             "systemd/user-preset.d/hapax.preset",
@@ -599,6 +603,9 @@ def test_p0_oom_containment_deploy_uses_installer_without_restarting_app_slice(
         "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\nexit 0\n",
         "scripts/hapax-root-failure-intake": "#!/usr/bin/env bash\nexit 0\n",
         "config/earlyoom/default": 'EARLYOOM_ARGS="--ignore recovery"\n',
+        "systemd/system/user-1000.slice.d/oom-containment.conf": (
+            "[Slice]\nMemoryHigh=96G\nMemoryMax=112G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
+        ),
         "systemd/system/user@1000.service.d/oom.conf": "[Service]\nOOMScoreAdjust=100\n",
         "systemd/system/apcupsd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-900\n",
         "systemd/system/systemd-logind.service.d/oom-protect.conf": (
@@ -627,7 +634,7 @@ def test_p0_oom_containment_deploy_uses_installer_without_restarting_app_slice(
             "[Unit]\n# Hapax-Install-Scope: system\n[Timer]\nOnBootSec=30s\nOnUnitActiveSec=30s\n"
         ),
         "systemd/units/app.slice.d/oom-containment.conf": (
-            "[Slice]\nMemoryHigh=80G\nMemoryMax=104G\nMemorySwapMax=8G\n"
+            "[Slice]\nMemoryHigh=80G\nMemoryMax=104G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
         ),
         **P0_USER_OOM_DROPINS,
     }
@@ -635,6 +642,10 @@ def test_p0_oom_containment_deploy_uses_installer_without_restarting_app_slice(
     home = tmp_path / "home"
     bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
     trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    defer_dir = tmp_path / "root-required"
+    stale_deferral = defer_dir / "old-sha" / "oom-containment"
+    stale_deferral.mkdir(parents=True)
+    (stale_deferral / "RUNBOOK.txt").write_text("old deferred install\n", encoding="utf-8")
     env = {
         **os.environ,
         "HOME": str(home),
@@ -643,6 +654,7 @@ def test_p0_oom_containment_deploy_uses_installer_without_restarting_app_slice(
         "HAPAX_OOM_INSTALL_CALLS": str(installer_calls),
         "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
         "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+        "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_dir),
     }
 
     result = subprocess.run(
@@ -655,6 +667,7 @@ def test_p0_oom_containment_deploy_uses_installer_without_restarting_app_slice(
 
     assert result.returncode == 0, result.stderr
     assert "--install --verify-live" in installer_calls.read_text(encoding="utf-8")
+    assert not stale_deferral.exists()
     calls = systemctl_calls.read_text(encoding="utf-8") if systemctl_calls.exists() else ""
     assert "--user restart app.slice" not in calls
     record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
@@ -669,6 +682,9 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
         "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\nexit 0\n",
         "scripts/hapax-root-failure-intake": "#!/usr/bin/env bash\nexit 0\n",
         "config/earlyoom/default": 'EARLYOOM_ARGS="--ignore recovery"\n',
+        "systemd/system/user-1000.slice.d/oom-containment.conf": (
+            "[Slice]\nMemoryHigh=96G\nMemoryMax=112G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
+        ),
         "systemd/system/user@1000.service.d/oom.conf": "[Service]\nOOMScoreAdjust=100\n",
         "systemd/system/apcupsd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-900\n",
         "systemd/system/systemd-logind.service.d/oom-protect.conf": (
@@ -697,7 +713,7 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
             "[Unit]\n# Hapax-Install-Scope: system\n[Timer]\nOnBootSec=30s\nOnUnitActiveSec=30s\n"
         ),
         "systemd/units/app.slice.d/oom-containment.conf": (
-            "[Slice]\nMemoryHigh=80G\nMemoryMax=104G\nMemorySwapMax=8G\n"
+            "[Slice]\nMemoryHigh=80G\nMemoryMax=104G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
         ),
         **P0_USER_OOM_DROPINS,
         "systemd/units/hapax-demo.service": (
@@ -787,7 +803,9 @@ def test_root_required_audit_detects_oom_enforcer_drift(tmp_path: Path) -> None:
     assert "install-p0-oom-containment --install --verify-live" in result.stderr
 
 
-def test_root_required_audit_prefers_installed_merge_stage_source(tmp_path: Path) -> None:
+def test_root_required_audit_detects_activation_drift_even_with_installed_source(
+    tmp_path: Path,
+) -> None:
     env = _root_audit_env(tmp_path)
     source_root = Path(env["HAPAX_ROOT_REQUIRED_SOURCE_ROOT"])
     installed_source = tmp_path / "installed-root-source"
@@ -805,8 +823,9 @@ def test_root_required_audit_prefers_installed_merge_stage_source(tmp_path: Path
         env={**env, "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source)},
     )
 
-    assert result.returncode == 0, result.stderr
-    assert "root-required post-merge deploy deferrals: none" in result.stdout
+    assert result.returncode == 1
+    assert "root-required install drift" in result.stderr
+    assert "stale activation source" not in result.stderr
 
 
 def test_root_required_audit_passes_when_oom_enforcer_matches(tmp_path: Path) -> None:

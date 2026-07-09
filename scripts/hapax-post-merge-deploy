@@ -43,6 +43,7 @@
 #   systemd/watchdogs/*            → install executable into ~/.local/bin
 #   scripts/install-p0-oom-containment,
 #   config/earlyoom/default,
+#   systemd/system/user-1000.slice.d/oom-containment.conf,
 #   systemd/system/user@1000.service.d/oom.conf,
 #   systemd/system/*.service.d/oom-protect.conf,
 #   systemd/units/hapax-root-failure-intake@.service,
@@ -949,7 +950,7 @@ while IFS= read -r f; do
         config/hapax/*.conf)              HAPAX_CONF+=("$f") ;;
         config/wireplumber/scripts/hapax/*.lua) WP_LUA+=("$f") ;;
         config/wireplumber/*.conf)        WP+=("$f") ;;
-        scripts/install-p0-oom-containment|scripts/hapax-oom-score-enforce|scripts/hapax-root-failure-intake|config/earlyoom/default|systemd/system/user@1000.service.d/oom.conf|systemd/system/apcupsd.service.d/oom-protect.conf|systemd/system/systemd-logind.service.d/oom-protect.conf|systemd/system/systemd-resolved.service.d/oom-protect.conf|systemd/system/systemd-timesyncd.service.d/oom-protect.conf|systemd/system/NetworkManager.service.d/oom-protect.conf|systemd/system/dbus-broker.service.d/oom-protect.conf|systemd/system/sshd.service.d/oom-protect.conf|systemd/units/hapax-root-failure-intake@.service|systemd/units/hapax-oom-score-enforce.service|systemd/units/hapax-oom-score-enforce.timer|systemd/units/app.slice.d/oom-containment.conf|systemd/units/pipewire.service.d/oom-protect.conf|systemd/units/pipewire-pulse.service.d/oom-protect.conf|systemd/units/wireplumber.service.d/oom-protect.conf|systemd/units/hapax-daimonion.service.d/oom-protect.conf|systemd/units/studio-compositor.service.d/oom-protect.conf|systemd/units/hapax-imagination.service.d/oom-protect.conf)
+        scripts/install-p0-oom-containment|scripts/hapax-oom-score-enforce|scripts/hapax-root-failure-intake|config/earlyoom/default|systemd/system/user-1000.slice.d/oom-containment.conf|systemd/system/user@1000.service.d/oom.conf|systemd/system/apcupsd.service.d/oom-protect.conf|systemd/system/systemd-logind.service.d/oom-protect.conf|systemd/system/systemd-resolved.service.d/oom-protect.conf|systemd/system/systemd-timesyncd.service.d/oom-protect.conf|systemd/system/NetworkManager.service.d/oom-protect.conf|systemd/system/dbus-broker.service.d/oom-protect.conf|systemd/system/sshd.service.d/oom-protect.conf|systemd/units/hapax-root-failure-intake@.service|systemd/units/hapax-oom-score-enforce.service|systemd/units/hapax-oom-score-enforce.timer|systemd/units/app.slice.d/oom-containment.conf|systemd/units/pipewire.service.d/oom-protect.conf|systemd/units/pipewire-pulse.service.d/oom-protect.conf|systemd/units/wireplumber.service.d/oom-protect.conf|systemd/units/hapax-daimonion.service.d/oom-protect.conf|systemd/units/studio-compositor.service.d/oom-protect.conf|systemd/units/hapax-imagination.service.d/oom-protect.conf)
             OOM_CONTAINMENT+=("$f") ;;
         scripts/install-apcupsd-power-alerts|config/apcupsd/*|systemd/logrotate.d/hapax-ups-power-events)
             APCUPSD_POWER_ALERTS+=("$f") ;;
@@ -1282,6 +1283,7 @@ stage_oom_containment_installer() {
         scripts/hapax-oom-score-enforce
         scripts/hapax-root-failure-intake
         config/earlyoom/default
+        systemd/system/user-1000.slice.d/oom-containment.conf
         systemd/system/user@1000.service.d/oom.conf
         systemd/system/apcupsd.service.d/oom-protect.conf
         systemd/system/systemd-logind.service.d/oom-protect.conf
@@ -1346,6 +1348,17 @@ record_root_required_source() {
     cp -a "$stage"/. "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"/
 }
 
+clear_root_required_deferrals() {
+    local label="$1" dir
+    [ -d "$ROOT_DEFER_DIR" ] || return 0
+    while IFS= read -r dir; do
+        [ -n "$dir" ] || continue
+        [ -f "$dir/RUNBOOK.txt" ] || continue
+        rm -rf "$dir"
+        echo "root-required $label deferral cleared: $dir"
+    done < <(find "$ROOT_DEFER_DIR" -mindepth 2 -maxdepth 2 -type d -name "$label" | sort)
+}
+
 if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
     echo "P0 OOM containment files changed (${#OOM_CONTAINMENT[@]}):"
     for f in "${OOM_CONTAINMENT[@]}"; do
@@ -1371,6 +1384,7 @@ if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
         exit "$oom_installer_rc"
     else
         record_root_required_source "$OOM_STAGE"
+        clear_root_required_deferrals "oom-containment"
     fi
     rm -rf "$OOM_STAGE" 2>/dev/null || true
     DID_ANYTHING=1
@@ -1425,6 +1439,7 @@ if [ "${#APCUPSD_POWER_ALERTS[@]}" -gt 0 ]; then
         exit "$apcupsd_installer_rc"
     else
         record_root_required_source "$APCUPSD_STAGE"
+        clear_root_required_deferrals "apcupsd-power-alerts"
     fi
     rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
     DID_ANYTHING=1

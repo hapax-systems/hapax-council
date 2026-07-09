@@ -12,7 +12,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 BYTES_80G = 80 * 1024**3
+BYTES_96G = 96 * 1024**3
 BYTES_104G = 104 * 1024**3
+BYTES_112G = 112 * 1024**3
+BYTES_16G = 16 * 1024**3
 BYTES_8G = 8 * 1024**3
 NEXT_OOM_INSTALL = "next action: scripts/install-p0-oom-containment --install --verify-live"
 PROC_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_PROC_ROOT", "/proc"))
@@ -139,6 +142,8 @@ def audit_app_slice() -> list[Check]:
         "MemoryHigh": BYTES_80G,
         "MemoryMax": BYTES_104G,
         "MemorySwapMax": BYTES_8G,
+        "MemoryLow": BYTES_16G,
+        "MemoryMin": BYTES_8G,
     }
     values = _show("app.slice", list(expected), user=True)
     if "_error" in values:
@@ -156,6 +161,39 @@ def audit_app_slice() -> list[Check]:
             else f"app.slice aggregate RAM/swap backstop drifted; {NEXT_OOM_INSTALL}"
         )
         checks.append(Check(f"app_slice_{key}", status, str(target), actual, detail))
+    return checks
+
+
+def audit_system_memory_unit(unit: str) -> list[Check]:
+    expected = {
+        "MemoryHigh": BYTES_96G,
+        "MemoryMax": BYTES_112G,
+        "MemorySwapMax": BYTES_8G,
+        "MemoryLow": BYTES_16G,
+        "MemoryMin": BYTES_8G,
+    }
+    values = _show(unit, list(expected))
+    if "_error" in values:
+        return [
+            Check(
+                f"{unit}_memory",
+                "error",
+                "bounded",
+                "N/A",
+                f"{values['_error']}; {NEXT_OOM_INSTALL}",
+            )
+        ]
+    checks: list[Check] = []
+    for key, target in expected.items():
+        actual = values.get(key, "")
+        parsed = _int_value(actual)
+        status = "pass" if parsed == target else "gap"
+        detail = (
+            ""
+            if status == "pass"
+            else f"{unit} aggregate memory policy drifted; {NEXT_OOM_INSTALL}"
+        )
+        checks.append(Check(f"{unit}_{key}", status, str(target), actual, detail))
     return checks
 
 
@@ -196,6 +234,7 @@ def _protected_user_unit_pids() -> set[str]:
 
 def audit_protected_user_units() -> list[Check]:
     checks: list[Check] = []
+    enforcer_attempted = False
     for unit, expected in PROTECTED_USER_UNITS.items():
         values = _show(unit, ["OOMScoreAdjust", "MainPID", "ControlGroup"], user=True)
         if "_error" in values:
@@ -226,12 +265,16 @@ def audit_protected_user_units() -> list[Check]:
             live_pids = sorted({*live_pids, main_pid}, key=int)
         for pid in live_pids:
             live = _proc_oom_score(pid)
+            if live != expected and not enforcer_attempted:
+                enforcer_attempted = True
+                _run([_systemctl(), "start", "hapax-oom-score-enforce.service"])
+                live = _proc_oom_score(pid)
             live_actual = "N/A" if live is None else str(live)
             live_status = "pass" if live == expected else "gap"
             live_detail = (
                 ""
                 if live_status == "pass"
-                else f"live broadcast-critical user unit OOM score drifted; {NEXT_OOM_INSTALL}"
+                else f"live broadcast-critical user unit OOM score drifted after enforcer retry; {NEXT_OOM_INSTALL}"
             )
             checks.append(
                 Check(
@@ -385,6 +428,8 @@ def main(argv: list[str] | None = None) -> int:
     checks = [
         audit_user_manager(args.uid),
         audit_user_manager_live_score(args.uid),
+        *audit_system_memory_unit(f"user-{args.uid}.slice"),
+        *audit_system_memory_unit(f"user@{args.uid}.service"),
         *audit_app_slice(),
         *audit_protected_user_units(),
         audit_residual_user_process_protection(args.uid),
