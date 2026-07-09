@@ -6,6 +6,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALLER = REPO_ROOT / "scripts" / "install-p0-oom-containment"
+OOM_ENFORCER = REPO_ROOT / "scripts" / "hapax-oom-score-enforce"
 PROTECTED_USER_UNIT_SCORES = {
     "pipewire.service": -900,
     "pipewire-pulse.service": -900,
@@ -56,8 +57,10 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     stale_control.parent.mkdir(parents=True)
     stale_control.write_text("[Slice]\nMemoryHigh=1G\n", encoding="utf-8")
     earlyoom_dest = tmp_path / "earlyoom"
+    enforcer_dest = tmp_path / "sbin" / "hapax-oom-score-enforce"
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
+    _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=100)
     systemctl_calls = tmp_path / "systemctl-calls.txt"
     systemctl_calls.write_text("", encoding="utf-8")
     systemctl_calls.chmod(0o666)
@@ -66,6 +69,7 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         "#!/usr/bin/env bash\n"
         f"printf '%s\\n' \"$*\" >> {systemctl_calls!s}\n"
         'case "$*" in\n'
+        '  *"show user@1000.service -p MainPID --value"*) printf "900\\n" ;;\n'
         f"{_systemctl_user_unit_cases()}\n"
         "esac\n"
         "exit 0\n",
@@ -84,6 +88,7 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
             "HAPAX_OOM_SYSTEMD_USER_DIR": str(user_dir),
             "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR": str(user_control_dir),
             "HAPAX_OOM_EARLYOOM_DEST": str(earlyoom_dest),
+            "HAPAX_OOM_ENFORCER_DEST": str(enforcer_dest),
             "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
             "HAPAX_OOM_INSTALL_SUDO": "",
             "HAPAX_OOM_PROC_ROOT": str(proc_root),
@@ -102,6 +107,7 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert not app_dropin.is_symlink()
     assert "MemorySwapMax=8G" in app_dropin.read_text(encoding="utf-8")
     assert earlyoom_dest.read_text(encoding="utf-8").startswith("EARLYOOM_ARGS=")
+    assert enforcer_dest.is_file()
     assert not stale_control.exists()
     calls = systemctl_calls.read_text(encoding="utf-8")
     assert "daemon-reload" in calls
@@ -123,6 +129,7 @@ def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_use
     user_dir = tmp_path / "systemd-user"
     user_control_dir = tmp_path / "systemd-user-control"
     earlyoom_dest = tmp_path / "earlyoom"
+    enforcer_dest = tmp_path / "sbin" / "hapax-oom-score-enforce"
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
     unit_pids = {
@@ -183,6 +190,7 @@ def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_use
             "HAPAX_OOM_SYSTEMD_USER_DIR": str(user_dir),
             "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR": str(user_control_dir),
             "HAPAX_OOM_EARLYOOM_DEST": str(earlyoom_dest),
+            "HAPAX_OOM_ENFORCER_DEST": str(enforcer_dest),
             "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
             "HAPAX_OOM_INSTALL_SUDO": "",
             "HAPAX_OOM_PROC_ROOT": str(proc_root),
@@ -209,6 +217,73 @@ def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_use
         914: -800,
         915: -800,
     }
+    for pid, score in expected_scores.items():
+        assert (proc_root / str(pid) / "oom_score_adj").read_text(encoding="utf-8").strip() == str(
+            score
+        )
+
+
+def test_root_oom_score_enforcer_writes_live_user_manager_and_service_scores(
+    tmp_path: Path,
+) -> None:
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    unit_pids = {
+        "pipewire.service": 910,
+        "pipewire-pulse.service": 911,
+        "wireplumber.service": 912,
+        "hapax-daimonion.service": 913,
+        "studio-compositor.service": 914,
+        "hapax-imagination.service": 915,
+    }
+    _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=-900)
+    for unit, pid in unit_pids.items():
+        _write_proc(proc_root, pid, name=unit.split(".")[0], uid=1000, oom_score=100)
+
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$*" in\n'
+        '  *"show user@1000.service -p MainPID --value"*) printf "900\\n" ;;\n'
+        '  *) echo "unexpected system args: $*" >&2; exit 9 ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    fake_user_systemctl = tmp_path / "systemctl-user"
+    user_cases = "\n".join(
+        f'  *"show {unit} -p MainPID --value"*) printf "{pid}\\n" ;;'
+        for unit, pid in unit_pids.items()
+    )
+    fake_user_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$*" in\n'
+        f"{user_cases}\n"
+        '  *) echo "unexpected user args: $*" >&2; exit 9 ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake_user_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(OOM_ENFORCER), "--apply"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_PROC_ROOT": str(proc_root),
+            "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_OOM_USER_SYSTEMCTL": str(fake_user_systemctl),
+            "HAPAX_OOM_TARGET_UID": "1000",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    expected_scores = {900: 100}
+    for unit, pid in unit_pids.items():
+        expected_scores[pid] = PROTECTED_USER_UNIT_SCORES[unit]
     for pid, score in expected_scores.items():
         assert (proc_root / str(pid) / "oom_score_adj").read_text(encoding="utf-8").strip() == str(
             score

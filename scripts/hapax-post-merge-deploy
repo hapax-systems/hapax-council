@@ -45,6 +45,8 @@
 #   config/earlyoom/default,
 #   systemd/system/user@1000.service.d/oom.conf,
 #   systemd/system/*.service.d/oom-protect.conf,
+#   systemd/system/hapax-oom-score-enforce.{service,timer},
+#   scripts/hapax-oom-score-enforce,
 #   systemd/units/{pipewire,pipewire-pulse,wireplumber,hapax-daimonion,studio-compositor,hapax-imagination}.service.d/oom-protect.conf,
 #   systemd/units/app.slice.d/oom-containment.conf
 #                                  → install P0 OOM containment policy into
@@ -55,7 +57,9 @@
 #   systemd/logrotate.d/*          → logrotate configs; require sudo install
 #   systemd/system/**              → other system-scoped configs; require sudo install
 #   scripts/install-apcupsd-power-alerts,
-#   config/apcupsd/**              → install podium apcupsd config/hooks/helper
+#   config/apcupsd/**,
+#   systemd/logrotate.d/hapax-ups-power-events
+#                                  → install podium apcupsd config/hooks/helper
 #                                    into /etc/apcupsd from the merge SHA
 #   scripts/hapax-recovery-plane-install, scripts/hapax-p0-incident-intake,
 #   scripts/hapax-coord-deploy, shared/{__init__,jsonl_append,p0_incident_intake}.py
@@ -942,6 +946,10 @@ while IFS= read -r f; do
         config/hapax/*.conf)              HAPAX_CONF+=("$f") ;;
         config/wireplumber/scripts/hapax/*.lua) WP_LUA+=("$f") ;;
         config/wireplumber/*.conf)        WP+=("$f") ;;
+        scripts/install-p0-oom-containment|scripts/hapax-oom-score-enforce|config/earlyoom/default|systemd/system/user@1000.service.d/oom.conf|systemd/system/apcupsd.service.d/oom-protect.conf|systemd/system/systemd-logind.service.d/oom-protect.conf|systemd/system/systemd-resolved.service.d/oom-protect.conf|systemd/system/systemd-timesyncd.service.d/oom-protect.conf|systemd/system/NetworkManager.service.d/oom-protect.conf|systemd/system/dbus-broker.service.d/oom-protect.conf|systemd/system/sshd.service.d/oom-protect.conf|systemd/system/hapax-oom-score-enforce.service|systemd/system/hapax-oom-score-enforce.timer|systemd/units/app.slice.d/oom-containment.conf|systemd/units/pipewire.service.d/oom-protect.conf|systemd/units/pipewire-pulse.service.d/oom-protect.conf|systemd/units/wireplumber.service.d/oom-protect.conf|systemd/units/hapax-daimonion.service.d/oom-protect.conf|systemd/units/studio-compositor.service.d/oom-protect.conf|systemd/units/hapax-imagination.service.d/oom-protect.conf)
+            OOM_CONTAINMENT+=("$f") ;;
+        scripts/install-apcupsd-power-alerts|config/apcupsd/*|systemd/logrotate.d/hapax-ups-power-events)
+            APCUPSD_POWER_ALERTS+=("$f") ;;
         systemd/units/notify-failure@.service|systemd/units/hapax-coord.service|systemd/units/hapax-coord-rebuild.service|systemd/units/hapax-coord-rebuild.timer)
             RECOVERY_BUNDLE+=("$f")
             if [ "$(unit_install_scope "$f")" = "system" ]; then
@@ -958,10 +966,6 @@ while IFS= read -r f; do
             fi
             ;;
         systemd/*.service|systemd/*.timer|systemd/*.path) SYSTEMD+=("$f") ;;
-        scripts/install-p0-oom-containment|config/earlyoom/default|systemd/system/user@1000.service.d/oom.conf|systemd/system/apcupsd.service.d/oom-protect.conf|systemd/system/systemd-logind.service.d/oom-protect.conf|systemd/system/systemd-resolved.service.d/oom-protect.conf|systemd/system/systemd-timesyncd.service.d/oom-protect.conf|systemd/system/NetworkManager.service.d/oom-protect.conf|systemd/system/dbus-broker.service.d/oom-protect.conf|systemd/system/sshd.service.d/oom-protect.conf|systemd/units/app.slice.d/oom-containment.conf|systemd/units/pipewire.service.d/oom-protect.conf|systemd/units/pipewire-pulse.service.d/oom-protect.conf|systemd/units/wireplumber.service.d/oom-protect.conf|systemd/units/hapax-daimonion.service.d/oom-protect.conf|systemd/units/studio-compositor.service.d/oom-protect.conf|systemd/units/hapax-imagination.service.d/oom-protect.conf)
-            OOM_CONTAINMENT+=("$f") ;;
-        scripts/install-apcupsd-power-alerts|config/apcupsd/*)
-            APCUPSD_POWER_ALERTS+=("$f") ;;
         systemd/units/*.service.d/*.conf|systemd/units/*.timer.d/*.conf|systemd/units/*.slice.d/*.conf|systemd/units/*.scope.d/*.conf) SYSTEMD_DROPINS+=("$f") ;;
         systemd/user-preset.d/*.preset)   USER_PRESETS+=("$f") ;;
         systemd/watchdogs/*)              WATCHDOGS+=("$f") ;;
@@ -1272,6 +1276,7 @@ stage_oom_containment_installer() {
     local rel dest
     local -a required=(
         "$OOM_CONTAINMENT_INSTALLER_PATH"
+        scripts/hapax-oom-score-enforce
         config/earlyoom/default
         systemd/system/user@1000.service.d/oom.conf
         systemd/system/apcupsd.service.d/oom-protect.conf
@@ -1281,6 +1286,8 @@ stage_oom_containment_installer() {
         systemd/system/NetworkManager.service.d/oom-protect.conf
         systemd/system/dbus-broker.service.d/oom-protect.conf
         systemd/system/sshd.service.d/oom-protect.conf
+        systemd/system/hapax-oom-score-enforce.service
+        systemd/system/hapax-oom-score-enforce.timer
         systemd/units/app.slice.d/oom-containment.conf
         systemd/units/pipewire.service.d/oom-protect.conf
         systemd/units/pipewire-pulse.service.d/oom-protect.conf
@@ -1298,7 +1305,7 @@ stage_oom_containment_installer() {
         mkdir -p "$(dirname "$dest")"
         git show "$SHA:$rel" > "$dest"
     done
-    chmod +x "$stage/$OOM_CONTAINMENT_INSTALLER_PATH"
+    chmod +x "$stage/$OOM_CONTAINMENT_INSTALLER_PATH" "$stage/scripts/hapax-oom-score-enforce"
 }
 
 defer_root_required_installer() {
@@ -1362,6 +1369,7 @@ stage_apcupsd_power_alert_installer() {
         config/apcupsd/hapax-power-event.py
         config/apcupsd/onbattery
         config/apcupsd/offbattery
+        systemd/logrotate.d/hapax-ups-power-events
     )
     for rel in "${required[@]}"; do
         if ! git cat-file -e "$SHA:$rel" 2>/dev/null; then

@@ -1,5 +1,7 @@
 [Unit]
 Description=Audit deferred root-required post-merge deploy actions
+Documentation=file:/home/hapax/projects/hapax-council/systemd/README.md
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot

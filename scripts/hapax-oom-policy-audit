@@ -106,6 +106,33 @@ def audit_user_manager(uid: int) -> Check:
     return Check("user_manager_oom_score_adjust", "pass", ">=0", actual)
 
 
+def audit_user_manager_live_score(uid: int) -> Check:
+    unit = f"user@{uid}.service"
+    values = _show(unit, ["MainPID"])
+    if "_error" in values:
+        return Check(
+            "user_manager_live_oom_score_adj",
+            "error",
+            "100",
+            "N/A",
+            f"{values['_error']}; {NEXT_OOM_INSTALL}",
+        )
+    pid = values.get("MainPID", "0")
+    if not pid or pid == "0":
+        return Check(
+            "user_manager_live_oom_score_adj",
+            "gap",
+            "100",
+            pid,
+            f"user@ has no live MainPID to verify; {NEXT_OOM_INSTALL}",
+        )
+    actual = _proc_oom_score(pid)
+    actual_text = "N/A" if actual is None else str(actual)
+    status = "pass" if actual == 100 else "gap"
+    detail = "" if status == "pass" else f"live user@ OOM score drifted; {NEXT_OOM_INSTALL}"
+    return Check("user_manager_live_oom_score_adj", status, "100", actual_text, detail)
+
+
 def audit_app_slice() -> list[Check]:
     expected = {
         "MemoryHigh": BYTES_80G,
@@ -319,6 +346,7 @@ def main(argv: list[str] | None = None) -> int:
 
     checks = [
         audit_user_manager(args.uid),
+        audit_user_manager_live_score(args.uid),
         *audit_app_slice(),
         *audit_protected_user_units(),
         audit_residual_user_process_protection(args.uid),

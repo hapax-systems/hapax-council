@@ -7,6 +7,7 @@ SOURCE="$ROOT"
 SRC="$SOURCE/config/apcupsd"
 DEST="${HAPAX_APCUPSD_DEST:-/etc/apcupsd}"
 AUDIT_DIR="${HAPAX_APCUPSD_AUDIT_DIR:-/var/log/hapax}"
+LOGROTATE_DEST="${HAPAX_APCUPSD_LOGROTATE_DEST:-/etc/logrotate.d/hapax-ups-power-events}"
 SYSTEMCTL="${HAPAX_APCUPSD_SYSTEMCTL:-systemctl}"
 SUDO="${HAPAX_APCUPSD_INSTALL_SUDO:-sudo}"
 ROOT_REQUIRED_RC=77
@@ -24,6 +25,7 @@ Installs:
   config/apcupsd/hapax-power-event.py -> /etc/apcupsd/hapax-power-event.py
   config/apcupsd/onbattery           -> /etc/apcupsd/onbattery
   config/apcupsd/offbattery          -> /etc/apcupsd/offbattery
+  systemd/logrotate.d/hapax-ups-power-events -> /etc/logrotate.d/hapax-ups-power-events
 
 Power events are recorded at /var/log/hapax/ups-power-events.jsonl before/after
 ntfy delivery state is known.
@@ -88,6 +90,10 @@ check_source() {
         echo "source hook is not executable: $SRC/offbattery; next action: chmod +x config/apcupsd/offbattery and rerun scripts/install-apcupsd-power-alerts --check" >&2
         return 1
     }
+    [ -f "$SOURCE/systemd/logrotate.d/hapax-ups-power-events" ] || {
+        echo "source logrotate config missing: $SOURCE/systemd/logrotate.d/hapax-ups-power-events; next action: restore the UPS logrotate source and rerun scripts/install-apcupsd-power-alerts --check" >&2
+        return 1
+    }
 }
 
 install_live() {
@@ -99,6 +105,8 @@ install_live() {
     run_root install -m 0755 "$SRC/hapax-power-event.py" "$DEST/hapax-power-event.py"
     run_root install -m 0755 "$SRC/onbattery" "$DEST/onbattery"
     run_root install -m 0755 "$SRC/offbattery" "$DEST/offbattery"
+    run_root install -d -m 0755 "$(dirname "$LOGROTATE_DEST")"
+    run_root install -m 0644 "$SOURCE/systemd/logrotate.d/hapax-ups-power-events" "$LOGROTATE_DEST"
     if [ "$RESTART" -eq 1 ]; then
         run_root "$SYSTEMCTL" restart apcupsd
     fi
@@ -132,6 +140,10 @@ verify_live() {
     }
     cmp -s "$SRC/offbattery" "$DEST/offbattery" || {
         echo "live offbattery hook differs from source; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    }
+    cmp -s "$SOURCE/systemd/logrotate.d/hapax-ups-power-events" "$LOGROTATE_DEST" || {
+        echo "live UPS logrotate config differs from source; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
         return 1
     }
     [ -d "$AUDIT_DIR" ] || {

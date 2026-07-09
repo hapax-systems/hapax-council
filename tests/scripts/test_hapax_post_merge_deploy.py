@@ -490,6 +490,7 @@ def test_systemd_coverage_includes_dropins_presets_and_source_overrides() -> Non
             "systemd/system/apcupsd.service.d/oom-protect.conf",
             "systemd/user-preset.d/hapax.preset",
             "systemd/scripts/install-units.sh",
+            "systemd/logrotate.d/hapax-ups-power-events",
             "systemd/overrides/audio-stability/README.md",
             "systemd/overrides/audio-stability/pipewire-cpu-affinity.conf",
             "systemd/watchdogs/scout-watchdog",
@@ -513,6 +514,7 @@ def test_p0_oom_containment_deploy_uses_installer_without_restarting_app_slice(
     )
     files = {
         "scripts/install-p0-oom-containment": installer_body,
+        "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\nexit 0\n",
         "config/earlyoom/default": 'EARLYOOM_ARGS="--ignore recovery"\n',
         "systemd/system/user@1000.service.d/oom.conf": "[Service]\nOOMScoreAdjust=100\n",
         "systemd/system/apcupsd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-900\n",
@@ -532,6 +534,12 @@ def test_p0_oom_containment_deploy_uses_installer_without_restarting_app_slice(
             "[Service]\nOOMScoreAdjust=-900\n"
         ),
         "systemd/system/sshd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-1000\n",
+        "systemd/system/hapax-oom-score-enforce.service": (
+            "[Service]\nType=oneshot\nExecStart=/usr/local/sbin/hapax-oom-score-enforce --apply\n"
+        ),
+        "systemd/system/hapax-oom-score-enforce.timer": (
+            "[Timer]\nOnBootSec=30s\nOnUnitActiveSec=30s\n"
+        ),
         "systemd/units/app.slice.d/oom-containment.conf": (
             "[Slice]\nMemoryHigh=80G\nMemoryMax=104G\nMemorySwapMax=8G\n"
         ),
@@ -572,6 +580,7 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
     installer_body = "#!/usr/bin/env bash\nexit 77\n"
     files = {
         "scripts/install-p0-oom-containment": installer_body,
+        "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\nexit 0\n",
         "config/earlyoom/default": 'EARLYOOM_ARGS="--ignore recovery"\n',
         "systemd/system/user@1000.service.d/oom.conf": "[Service]\nOOMScoreAdjust=100\n",
         "systemd/system/apcupsd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-900\n",
@@ -591,6 +600,12 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
             "[Service]\nOOMScoreAdjust=-900\n"
         ),
         "systemd/system/sshd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-1000\n",
+        "systemd/system/hapax-oom-score-enforce.service": (
+            "[Service]\nType=oneshot\nExecStart=/usr/local/sbin/hapax-oom-score-enforce --apply\n"
+        ),
+        "systemd/system/hapax-oom-score-enforce.timer": (
+            "[Timer]\nOnBootSec=30s\nOnUnitActiveSec=30s\n"
+        ),
         "systemd/units/app.slice.d/oom-containment.conf": (
             "[Slice]\nMemoryHigh=80G\nMemoryMax=104G\nMemorySwapMax=8G\n"
         ),
@@ -655,6 +670,7 @@ def test_apcupsd_power_alert_deploy_uses_dedicated_installer(tmp_path: Path) -> 
         "config/apcupsd/hapax-power-event.py": "#!/usr/bin/env python3\n",
         "config/apcupsd/onbattery": "#!/bin/sh\n",
         "config/apcupsd/offbattery": "#!/bin/sh\n",
+        "systemd/logrotate.d/hapax-ups-power-events": "/var/log/hapax/ups-power-events.jsonl {\n}\n",
     }
     repo, sha = _repo_with_linear_commit(tmp_path, files)
     home = tmp_path / "home"

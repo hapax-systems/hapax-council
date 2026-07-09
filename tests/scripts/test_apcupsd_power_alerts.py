@@ -20,6 +20,10 @@ def test_apcupsd_config_uses_current_header() -> None:
 def test_apcupsd_hooks_delegate_to_provenance_helper() -> None:
     onbattery = (CONFIG_DIR / "onbattery").read_text(encoding="utf-8")
     offbattery = (CONFIG_DIR / "offbattery").read_text(encoding="utf-8")
+    assert 'HELPER="/etc/apcupsd/hapax-power-event.py"' in onbattery
+    assert 'HELPER="/etc/apcupsd/hapax-power-event.py"' in offbattery
+    assert "HAPAX_APCUPSD_TEST_MODE" in onbattery
+    assert "HAPAX_APCUPSD_TEST_MODE" in offbattery
     assert "HAPAX_APCUPSD_HELPER" in onbattery
     assert 'exec "$HELPER" onbattery "$@"' in onbattery
     assert "HAPAX_APCUPSD_HELPER" in offbattery
@@ -116,6 +120,7 @@ def test_installer_source_check_exercises_config_hooks_and_helper() -> None:
 def test_installer_install_and_verify_live_against_temp_destinations(tmp_path: Path) -> None:
     dest = tmp_path / "apcupsd"
     audit_dir = tmp_path / "hapax-log"
+    logrotate_dest = tmp_path / "logrotate.d" / "hapax-ups-power-events"
     systemctl_calls = tmp_path / "systemctl-calls.txt"
     fake_systemctl = tmp_path / "systemctl"
     fake_systemctl.write_text(
@@ -133,6 +138,7 @@ def test_installer_install_and_verify_live_against_temp_destinations(tmp_path: P
             **os.environ,
             "HAPAX_APCUPSD_DEST": str(dest),
             "HAPAX_APCUPSD_AUDIT_DIR": str(audit_dir),
+            "HAPAX_APCUPSD_LOGROTATE_DEST": str(logrotate_dest),
             "HAPAX_APCUPSD_SYSTEMCTL": str(fake_systemctl),
             "HAPAX_APCUPSD_INSTALL_SUDO": "",
         },
@@ -142,6 +148,7 @@ def test_installer_install_and_verify_live_against_temp_destinations(tmp_path: P
     assert (dest / "hapax-power-event.py").is_file()
     assert (dest / "onbattery").stat().st_mode & 0o100
     assert audit_dir.is_dir()
+    assert logrotate_dest.is_file()
     assert "restart apcupsd" in systemctl_calls.read_text(encoding="utf-8")
 
     hook_audit = tmp_path / "hook.jsonl"
@@ -152,6 +159,7 @@ def test_installer_install_and_verify_live_against_temp_destinations(tmp_path: P
         check=False,
         env={
             **os.environ,
+            "HAPAX_APCUPSD_TEST_MODE": "1",
             "HAPAX_APCUPSD_HELPER": str(dest / "hapax-power-event.py"),
             "HAPAX_UPS_AUDIT_LOG": str(hook_audit),
             "HAPAX_UPS_APCACCESS": "",

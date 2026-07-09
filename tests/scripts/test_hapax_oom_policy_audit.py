@@ -52,7 +52,7 @@ def _fake_systemctl(
         f"""#!/usr/bin/env bash
 set -euo pipefail
 case "$*" in
-  *"show user@1000.service"*) printf 'OOMScoreAdjust={user_oom}\\nDropInPaths=/etc/systemd/system/user@1000.service.d/oom.conf\\n' ;;
+  *"show user@1000.service"*) printf 'OOMScoreAdjust={user_oom}\\nDropInPaths=/etc/systemd/system/user@1000.service.d/oom.conf\\nMainPID=900\\n' ;;
   *"show app.slice"*) printf '{app_values}' ;;
 {_protected_user_unit_cases(wrong_unit_score=wrong_unit_score)}
   *"list-units --type=scope"*) printf 'tmux-spawn-a.scope loaded active running tmux child pane\\n' ;;
@@ -87,6 +87,8 @@ def _run(
     if proc_root is None:
         proc_root = tmp_path / "proc"
         proc_root.mkdir(exist_ok=True)
+    if not (proc_root / "900").exists():
+        _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=100)
     env = {
         **os.environ,
         "HAPAX_SYSTEMCTL": str(
@@ -169,6 +171,7 @@ def test_audit_fails_when_user_process_retains_inherited_protection(tmp_path: Pa
     proc_root.mkdir()
     _write_proc(proc_root, 101, name="codex", uid=1000, oom_score=-900)
     _write_proc(proc_root, 102, name="wireplumber", uid=1000, oom_score=-900)
+    _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=100)
 
     result = _run(tmp_path, proc_root=proc_root)
 

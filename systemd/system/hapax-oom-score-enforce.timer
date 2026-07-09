@@ -1,0 +1,11 @@
+[Unit]
+Description=Reapply live Hapax OOM scores
+Documentation=file:/home/hapax/projects/hapax-council/systemd/README.md
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+Unit=hapax-oom-score-enforce.service
+
+[Install]
+WantedBy=timers.target

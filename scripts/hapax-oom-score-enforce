@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Root-side live OOM score enforcer for the P0 podium containment package.
+set -euo pipefail
+
+TARGET_USER="${HAPAX_OOM_TARGET_USER:-hapax}"
+TARGET_UID="${HAPAX_OOM_TARGET_UID:-$(id -u "$TARGET_USER")}"
+SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
+PROC_ROOT="${HAPAX_OOM_PROC_ROOT:-/proc}"
+
+usage() {
+    cat <<'USAGE'
+usage: hapax-oom-score-enforce --apply
+
+Writes live /proc oom_score_adj values that unprivileged user units cannot
+lower by themselves after user@1000.service is made killable.
+USAGE
+}
+
+if [ "${1:-}" != "--apply" ]; then
+    usage >&2
+    exit 2
+fi
+
+run_user_systemctl() {
+    if [ -n "${HAPAX_OOM_USER_SYSTEMCTL:-}" ]; then
+        # shellcheck disable=SC2086
+        $HAPAX_OOM_USER_SYSTEMCTL "$@"
+    elif [ "$(id -u)" = "$TARGET_UID" ]; then
+        "$SYSTEMCTL" --user "$@"
+    elif [ "$(id -u)" = "0" ]; then
+        runuser -u "$TARGET_USER" -- env XDG_RUNTIME_DIR="/run/user/$TARGET_UID" "$SYSTEMCTL" --user "$@"
+    else
+        XDG_RUNTIME_DIR="/run/user/$TARGET_UID" "$SYSTEMCTL" --user "$@"
+    fi
+}
+
+write_oom_score() {
+    local pid score path
+    pid="$1"
+    score="$2"
+    path="$PROC_ROOT/$pid/oom_score_adj"
+    [ -e "$path" ] || return 0
+    printf '%s\n' "$score" > "$path" 2>/dev/null || {
+        [ ! -e "$path" ] && return 0
+        return 1
+    }
+}
+
+system_main_pid() {
+    local unit="$1" pid
+    pid="$("$SYSTEMCTL" show "$unit" -p MainPID --value 2>/dev/null || true)"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ]; then
+        printf '%s\n' "$pid"
+    fi
+}
+
+user_main_pid() {
+    local unit="$1" pid
+    pid="$(run_user_systemctl show "$unit" -p MainPID --value 2>/dev/null || true)"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ]; then
+        printf '%s\n' "$pid"
+    fi
+}
+
+apply_unit_score() {
+    local unit="$1" score="$2" pid
+    pid="$(user_main_pid "$unit")"
+    [ -n "$pid" ] || return 0
+    write_oom_score "$pid" "$score"
+    echo "user-unit $unit pid=$pid oom_score_adj=$score"
+}
+
+user_pid="$(system_main_pid "user@$TARGET_UID.service")"
+if [ -n "$user_pid" ]; then
+    write_oom_score "$user_pid" 100
+    echo "system user@$TARGET_UID.service pid=$user_pid oom_score_adj=100"
+fi
+
+apply_unit_score pipewire.service -900
+apply_unit_score pipewire-pulse.service -900
+apply_unit_score wireplumber.service -900
+apply_unit_score hapax-daimonion.service -500
+apply_unit_score studio-compositor.service -800
+apply_unit_score hapax-imagination.service -800

@@ -8,6 +8,7 @@ SYSTEMD_SYSTEM_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
 SYSTEMD_USER_DIR="${HAPAX_OOM_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
 SYSTEMD_USER_CONTROL_DIR="${HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR:-$HOME/.config/systemd/user.control}"
 EARLYOOM_DEST="${HAPAX_OOM_EARLYOOM_DEST:-/etc/default/earlyoom}"
+OOM_ENFORCER_DEST="${HAPAX_OOM_ENFORCER_DEST:-/usr/local/sbin/hapax-oom-score-enforce}"
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
 SUDO="${HAPAX_OOM_INSTALL_SUDO:-sudo}"
 PROC_ROOT="${HAPAX_OOM_PROC_ROOT:-/proc}"
@@ -25,6 +26,8 @@ usage: scripts/install-p0-oom-containment [--source DIR] [--check] [--install] [
 Installs the P0 podium OOM containment package:
   systemd/system/user@1000.service.d/oom.conf       -> /etc/systemd/system/user@1000.service.d/oom.conf
   systemd/system/*.service.d/oom-protect.conf       -> /etc/systemd/system/*.service.d/oom-protect.conf
+  systemd/system/hapax-oom-score-enforce.{service,timer} -> /etc/systemd/system/
+  scripts/hapax-oom-score-enforce                   -> /usr/local/sbin/hapax-oom-score-enforce
   systemd/units/*.service.d/oom-protect.conf        -> ~/.config/systemd/user/*.service.d/oom-protect.conf
   systemd/units/app.slice.d/oom-containment.conf    -> ~/.config/systemd/user/app.slice.d/oom-containment.conf
   config/earlyoom/default                           -> /etc/default/earlyoom
@@ -100,6 +103,10 @@ system_dropins=(
     systemd/system/dbus-broker.service.d/oom-protect.conf
     systemd/system/sshd.service.d/oom-protect.conf
 )
+system_units=(
+    systemd/system/hapax-oom-score-enforce.service
+    systemd/system/hapax-oom-score-enforce.timer
+)
 user_dropin="systemd/units/app.slice.d/oom-containment.conf"
 user_protection_dropins=(
     systemd/units/pipewire.service.d/oom-protect.conf
@@ -110,6 +117,7 @@ user_protection_dropins=(
     systemd/units/hapax-imagination.service.d/oom-protect.conf
 )
 earlyoom_source="config/earlyoom/default"
+oom_enforcer_source="scripts/hapax-oom-score-enforce"
 recovery_unit_scores=(
     apcupsd.service:-900
     systemd-logind.service:-800
@@ -139,7 +147,7 @@ system_dest() {
 
 check_source() {
     local rel
-    for rel in "${system_dropins[@]}" "$user_dropin" "${user_protection_dropins[@]}" "$earlyoom_source"; do
+    for rel in "${system_dropins[@]}" "${system_units[@]}" "$user_dropin" "${user_protection_dropins[@]}" "$earlyoom_source" "$oom_enforcer_source"; do
         [ -f "$(src_path "$rel")" ] || {
             echo "missing source file: $(src_path "$rel"); next action: restore the source tree or rerun from the PR/activation worktree" >&2
             return 1
@@ -279,6 +287,15 @@ install_live() {
         run_root install -m 0644 "$(src_path "$rel")" "$dest"
         echo "  '$rel' -> '$dest'"
     done
+    for rel in "${system_units[@]}"; do
+        dest="$(system_dest "$rel")"
+        run_root install -d -m 0755 "$(dirname "$dest")"
+        run_root install -m 0644 "$(src_path "$rel")" "$dest"
+        echo "  '$rel' -> '$dest'"
+    done
+    run_root install -d -m 0755 "$(dirname "$OOM_ENFORCER_DEST")"
+    run_root install -m 0755 "$(src_path "$oom_enforcer_source")" "$OOM_ENFORCER_DEST"
+    echo "  '$oom_enforcer_source' -> '$OOM_ENFORCER_DEST'"
     run_root install -d -m 0755 "$(dirname "$EARLYOOM_DEST")"
     run_root install -m 0644 "$(src_path "$earlyoom_source")" "$EARLYOOM_DEST"
     echo "  '$earlyoom_source' -> '$EARLYOOM_DEST'"
@@ -308,6 +325,10 @@ install_live() {
     fi
 
     run_root "$SYSTEMCTL" daemon-reload
+    run_root "$SYSTEMCTL" enable --now hapax-oom-score-enforce.timer >/dev/null 2>&1 || {
+        echo "unable to enable hapax-oom-score-enforce.timer; next action: run sudo systemctl enable --now hapax-oom-score-enforce.timer" >&2
+        return 1
+    }
     "$SYSTEMCTL" --user daemon-reload
     if [ "$APPLY_RUNTIME" -eq 1 ]; then
         "$SYSTEMCTL" --user set-property --runtime app.slice MemoryHigh=80G MemoryMax=104G MemorySwapMax=8G
@@ -318,7 +339,7 @@ install_live() {
         apply_protected_user_unit_oom_scores
         user_pid="$("$SYSTEMCTL" show user@1000.service -p MainPID --value 2>/dev/null || true)"
         if [[ "$user_pid" =~ ^[0-9]+$ ]] && [ "$user_pid" -gt 0 ]; then
-            write_oom_score "$user_pid" 100 || true
+            write_oom_score "$user_pid" 100
         fi
         apply_user_process_oom_floor
     fi
@@ -341,6 +362,10 @@ verify_live() {
     for rel in "${system_dropins[@]}"; do
         verify_pair "$(src_path "$rel")" "$(system_dest "$rel")"
     done
+    for rel in "${system_units[@]}"; do
+        verify_pair "$(src_path "$rel")" "$(system_dest "$rel")"
+    done
+    verify_pair "$(src_path "$oom_enforcer_source")" "$OOM_ENFORCER_DEST"
     verify_pair "$(src_path "$earlyoom_source")" "$EARLYOOM_DEST"
     dest="$SYSTEMD_USER_DIR/app.slice.d/oom-containment.conf"
     if [ -L "$dest" ]; then
@@ -351,6 +376,7 @@ verify_live() {
     for rel in "${user_protection_dropins[@]}"; do
         verify_pair "$(src_path "$rel")" "$SYSTEMD_USER_DIR/${rel#systemd/units/}"
     done
+    verify_user_manager_oom_score
     verify_recovery_unit_oom_scores
     verify_protected_user_unit_oom_scores
     verify_user_process_oom_floor
@@ -370,6 +396,20 @@ verify_recovery_unit_oom_scores() {
         fi
     done
     [ "$failed" -eq 0 ]
+}
+
+verify_user_manager_oom_score() {
+    local pid actual
+    pid="$("$SYSTEMCTL" show user@1000.service -p MainPID --value 2>/dev/null || true)"
+    if ! [[ "$pid" =~ ^[0-9]+$ ]] || [ "$pid" -le 0 ]; then
+        echo "unable to read live user@1000.service MainPID; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    actual="$(cat "$PROC_ROOT/$pid/oom_score_adj" 2>/dev/null || true)"
+    if [ "$actual" != "100" ]; then
+        echo "live user@1000.service OOM score drift: pid=$pid actual=$actual expected=100; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
 }
 
 verify_protected_user_unit_oom_scores() {
