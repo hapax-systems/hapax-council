@@ -52,20 +52,35 @@ class ExecutorCapabilities(BaseModel, frozen=True):
 
 
 EXECUTOR_REGISTRY: dict[str, ExecutorCapabilities] = {
-    "api": ExecutorCapabilities(
-        platform="api",
+    "agy": ExecutorCapabilities(
+        platform="agy",
         modes=(),
-        profiles=("api_frontier", "provider_gateway"),
+        profiles=("direct",),
         mutates=False,
         claims=False,
         hooks_wired=False,
         headless=False,
         read_only=True,
         notes=(
-            "receipt-only route metadata for both REQUIRED api routes "
-            "(api_frontier cloud-burst + provider_gateway maintenance); no direct "
-            "provider launcher is wired (modes=()), so dispatch emits receipts "
-            "without spending provider budget"
+            "receipt-only review-seat route (agy.review.direct); a read-only PR "
+            "reviewer via hapax-agy-reviewer and /usr/bin/agy, not a launchable "
+            "worker lane (modes=())."
+        ),
+    ),
+    "api": ExecutorCapabilities(
+        platform="api",
+        modes=(),
+        profiles=("api_frontier", "openrouter", "provider_gateway"),
+        mutates=False,
+        claims=False,
+        hooks_wired=False,
+        headless=False,
+        read_only=True,
+        notes=(
+            "receipt-only route metadata for REQUIRED api routes "
+            "(api_frontier cloud-burst, openrouter frontier leaf, and "
+            "provider_gateway maintenance); no direct provider launcher is wired "
+            "(modes=()), so dispatch emits receipts without spending provider budget"
         ),
     ),
     "glmcp": ExecutorCapabilities(

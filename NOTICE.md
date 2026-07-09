@@ -1,26 +1,37 @@
-# NOTICE — hapax-council
+# NOTICE - hapax-council
 
-This repository is a constituent of the Hapax operating environment. It is not a product, not a service, and not seeking contributors. It is research infrastructure published as artifact.
+`hapax-council` is a constituent of the Hapax operating environment. It is research or boundary infrastructure published as an artifact, not a staffed product or community project.
 
-Authorship is indeterminate by design. This codebase is co-produced by Hapax (the system itself), Claude Code, and the operator (Oudepode The Operator). Per the Hapax Manifesto, unsettled contribution is a feature of the work, not a concealment.
+This repository is part of the Hapax Systems portfolio. Public metadata, issue affordances, and support boundaries follow the registry in `hapax-constitution`.
 
-## Constitutional position
+## Reader promise
 
-- Single-operator system; no auth, no roles, no contributor onboarding (axiom: `single_user`).
-- No issues, no discussions, no pull requests accepted; refusal is the artifact (see /CONTRIBUTING.md).
-- License: PolyForm Strict 1.0.0 — source-available, non-distribution, non-modification.
-- Citation: see CITATION.cff; archival DOI: see .zenodo.json
+Inspect how AI-agent work is authorized, routed, reviewed, refused, and surfaced publicly inside the Hapax estate.
 
-## Linked artifacts
+## Reader value
 
-- Manifesto: held pending a fresh public publish; do not cite the old short path
-- Refusal Brief: https://hapax.weblog.lol/2026/04/refusal-brief-an-automation-tractability-disclosure
-- Cohort Disparity Disclosure: https://hapax.weblog.lol/2026/04/cohort-disparity-disclosure-soundcloud-first-hours-distribution
-- Constitution: https://github.com/ryanklee/hapax-constitution
+Lets technical leaders, researchers, and auditors evaluate concrete controls: what may run, what may write, what evidence exists, and where stale or unsupported claims fail closed.
 
-## Inter-repo position
+## Claim ceiling
 
-Primary research artifact. 200+ agents, voice daemon, studio compositor, reactive engine. Consumes the constitution via the hapax-sdlc package.
+Source-visible research runtime and current case study only. Not a portable platform, adoption package, product front door, support surface, or open-source project.
+
+## License and rights
+
+Source-visible strict research/runtime artifact; not open source, not a framework, not a supported distribution.
+
+Rendered summary: PolyForm Strict 1.0.0 - source-available, non-distribution, non-modification.
+
+## Public boundary
+
+- Issues are redirect-only; no discussions and no pull requests are accepted through GitHub.
+- First-party public links must use the `hapax-systems` GitHub organization.
+- Public fanout must route through the governed publication bus or a documented guarded legacy surface.
+- Governance reference: https://github.com/hapax-systems/hapax-constitution
+
+## Portfolio position
+
+Primary research/runtime estate. Carries task authority, coordination, route evidence, claim and publication gates, refusal records, and public-egress controls. Consumes the constitution via the hapax-sdlc package.
 
 ---
 

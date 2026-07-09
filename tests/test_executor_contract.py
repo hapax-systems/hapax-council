@@ -19,7 +19,7 @@ if str(SCRIPTS) not in sys.path:
 
 import executor_contract as ec  # noqa: E402
 
-ALL_PLATFORMS = {"api", "glmcp", "claude", "codex", "vibe", "local_tool"}
+ALL_PLATFORMS = {"agy", "api", "glmcp", "claude", "codex", "vibe", "local_tool"}
 
 
 def test_registry_covers_all_runtimes() -> None:
@@ -47,6 +47,8 @@ def test_supports_route_for_known_routes() -> None:
 def test_supports_route_rejects_unlaunchable_routes() -> None:
     assert not ec.supports_route("gemini", "headless")
     assert not ec.supports_route("gemini", "interactive")
+    assert not ec.supports_route("agy", "review")
+    assert not ec.supports_route("agy", "headless")
     assert not ec.supports_route("antigrav", "interactive")
     assert not ec.supports_route("antigrav", "headless")
     assert not ec.supports_route("vibe", "interactive")
@@ -66,6 +68,15 @@ def test_codex_has_a_genuine_headless_path() -> None:
 
 def test_antigrav_is_excised_from_executor_registry() -> None:
     assert ec.capabilities("antigrav") is None
+
+
+def test_agy_is_read_only_review_surface_not_launcher() -> None:
+    agy = ec.capabilities("agy")
+    assert agy is not None
+    assert agy.read_only is True
+    assert agy.modes == ()
+    assert agy.profiles == ("direct",)
+    assert "hapax-agy-reviewer" in agy.notes
 
 
 def test_capabilities_unknown_is_none() -> None:
@@ -115,7 +126,7 @@ def test_executor_profiles_cover_every_required_route() -> None:
     # gap-8 regression: every route in REQUIRED_ROUTE_IDS must have its profile
     # declared in its platform's executor profiles, or the declared capability
     # surface diverges from the required-route contract. The originating defect:
-    # `api.headless.provider_gateway` is REQUIRED but api profiles only listed
+    # `api.headless.provider_gateway` was REQUIRED but api profiles only listed
     # ("api_frontier",), so the executor contract under-declared a required route.
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))

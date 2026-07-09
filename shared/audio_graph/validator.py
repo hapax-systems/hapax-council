@@ -127,6 +127,7 @@ _WP_DEFAULT_CLOCK_QUANTUM_RE = re.compile(r"default\.clock\.quantum\s*=\s*(\d+)"
 _WP_MIN_QUANTUM_RE = re.compile(r"default\.clock\.min-quantum\s*=\s*(\d+)")
 _WP_MAX_QUANTUM_RE = re.compile(r"default\.clock\.max-quantum\s*=\s*(\d+)")
 _WP_ALLOWED_RATES_RE = re.compile(r"default\.clock\.allowed-rates\s*=\s*\[([\d\s,]+)\]")
+_PW_RESAMPLE_QUALITY_RE = re.compile(r"resample\.quality\s*=\s*(\d+)")
 _WP_API_ALSA_USE_ACP_RE = re.compile(r"api\.alsa\.use-acp\s*=\s*(true|false)")
 _WP_DEVICE_PROFILE_RE = re.compile(r'device\.profile\s*=\s*"?([\w\-]+)"?')
 _WP_PRIORITY_SESSION_RE = re.compile(r"priority\.session\s*=\s*(-?\d+)")
@@ -708,17 +709,19 @@ def _decompose_pipewire_conf(
     profile_pins: list[AlsaProfilePin] = []
 
     # Global tunables (gap G-1).
-    has_quantum = bool(
+    has_tunables = bool(
         _WP_DEFAULT_CLOCK_QUANTUM_RE.search(text)
         or _WP_MIN_QUANTUM_RE.search(text)
         or _WP_MAX_QUANTUM_RE.search(text)
         or _WP_ALLOWED_RATES_RE.search(text)
+        or _PW_RESAMPLE_QUALITY_RE.search(text)
     )
-    if has_quantum:
+    if has_tunables:
         m_quantum = _WP_DEFAULT_CLOCK_QUANTUM_RE.search(text)
         m_min = _WP_MIN_QUANTUM_RE.search(text)
         m_max = _WP_MAX_QUANTUM_RE.search(text)
         m_rates = _WP_ALLOWED_RATES_RE.search(text)
+        m_resample_quality = _PW_RESAMPLE_QUALITY_RE.search(text)
         rates: list[int] = []
         if m_rates:
             for token in m_rates.group(1).split():
@@ -730,6 +733,7 @@ def _decompose_pipewire_conf(
             default_clock_quantum=int(m_quantum.group(1)) if m_quantum else None,
             min_quantum=int(m_min.group(1)) if m_min else None,
             max_quantum=int(m_max.group(1)) if m_max else None,
+            resample_quality=(int(m_resample_quality.group(1)) if m_resample_quality else None),
             allowed_rates=rates,
         )
         gaps.inferred_models.append(f"GlobalTunables from {path.name}")

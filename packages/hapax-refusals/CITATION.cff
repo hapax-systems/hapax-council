@@ -22,8 +22,8 @@ authors:
 - given-names: Ryan
   family-names: Kleeberger
   affiliation: Oudepode Studio
-repository-code: https://github.com/ryanklee/hapax-council
-url: https://github.com/ryanklee/hapax-council/tree/main/packages/hapax-refusals
+repository-code: https://github.com/hapax-systems/hapax-council
+url: https://github.com/hapax-systems/hapax-council/tree/main/packages/hapax-refusals
 license: LicenseRef-PolyForm-Strict-1.0.0
 keywords:
 - refusal-gate

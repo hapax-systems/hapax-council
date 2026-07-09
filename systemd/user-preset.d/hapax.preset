@@ -13,6 +13,7 @@ enable hapax-datacite-mirror.timer
 enable hapax-cc-hygiene.timer
 enable hapax-cc-pr-autoqueue.timer
 enable hapax-cc-pr-merge-watcher.timer
+enable hapax-pr-review-dispatch.timer
 enable hapax-request-intake-consumer.timer
 enable hapax-request-intake-consumer.path
 enable hapax-request-decompose.timer

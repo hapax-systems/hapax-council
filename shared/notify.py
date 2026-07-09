@@ -234,6 +234,16 @@ def send_notification(
         intake_task_id = intake.task_id
         replace_id = intake.replace_id
         intake_recorded = True
+    elif (
+        intake is not None
+        and not intake.technical
+        and intake.task_id is not None
+        and intake.reason
+        in {"stalled_incident_task_no_remint", "dispatch_refusal_incident_task_no_remint"}
+    ):
+        intake_task_id = intake.task_id
+        replace_id = intake.replace_id
+        intake_recorded = True
 
     if intake_recorded and intake_task_id is not None:
         _dismiss_existing_intake_notifications(intake_task_id)

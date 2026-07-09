@@ -1,35 +1,14 @@
 blank_issues_enabled: false
-
-# This repo is single-operator infrastructure. The Issues surface is
-# walled by design — there is no contributor-issue intake. The four
-# contact links below redirect would-be issue authors to surfaces
-# Hapax actually engages with: research deposits, refusal annexes,
-# the chronicle log, and the operator-publication trail. See cc-task
-# `repo-pres-issues` and the family-wide refusal-shaped-affordance
-# stance documented in the V5 publication-bus surface registry.
 contact_links:
-  - name: Research deposits (Zenodo)
-    url: https://zenodo.org/communities/hapax
-    about: |
-      Citation-graph-shaped engagement. If you have research that intersects
-      Hapax's operator-awareness or refusal-as-data work, the deposit graph
-      is the canonical surface — DOI-addressable, no authentication wall.
-  - name: Refusal annexes (per-surface)
-    url: https://github.com/ryanklee/hapax-council/tree/main/docs/refusals
-    about: |
-      Hapax records refusals as data. Each surface Hapax declines to engage
-      with has a refusal annex documenting the constitutional reasoning.
-      If you wanted to file an issue requesting a feature on a refused
-      surface, the annex already explains why it will not exist.
-  - name: Chronicle (operator log)
-    url: https://hapax.weblog.lol
-    about: |
-      Operator-authored running log. The chronicle is the canonical
-      narration of system state, decisions, and incidents. If you wanted
-      to file a "what's happening" issue, the chronicle is the answer.
-  - name: ORCID record (publication trail)
-    url: https://orcid.org/0009-0009-1453-5817
-    about: |
-      Operator's authored-works graph. DataCite-linked DOIs surface here.
-      For citation context or publication-status questions, this is the
-      canonical record.
+- name: Read the repository overview
+  url: https://github.com/hapax-systems/hapax-council#readme
+  about: Start with the rendered README and repository body.
+- name: Read the support boundary
+  url: https://github.com/hapax-systems/hapax-council/blob/main/SUPPORT.md
+  about: GitHub Issues are not a staffed support queue.
+- name: Read the security disclosure path
+  url: https://github.com/hapax-systems/hapax-council/security/policy
+  about: Use the repository security policy before sending a disclosure.
+- name: Read Hapax governance
+  url: https://github.com/hapax-systems/hapax-constitution
+  about: Repository governance is centralized in hapax-constitution.

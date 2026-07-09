@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 from pydantic import ValidationError
 
@@ -21,6 +23,7 @@ from shared.route_metadata_schema import (
     assess_route_metadata,
     build_demand_vector,
     check_demand_vector_freshness,
+    stable_payload_hash,
     validate_route_metadata,
 )
 
@@ -116,6 +119,12 @@ def _valid_route_envelope_payload(**overrides: object) -> dict[str, object]:
 
 def _dispatchable_metadata() -> dict[str, object]:
     return {**_explicit_metadata(), "route_envelope": _valid_route_envelope_payload()}
+
+
+def test_stable_payload_hash_normalizes_date_scalars() -> None:
+    expected = stable_payload_hash({"task_id": "task-a", "created": "2026-07-08"})
+
+    assert stable_payload_hash({"task_id": "task-a", "created": date(2026, 7, 8)}) == expected
 
 
 def test_full_explicit_route_metadata_validates() -> None:
@@ -778,6 +787,12 @@ def test_demand_vector_hashes_frontmatter_and_source_refs(tmp_path) -> None:
     assert demand.work_item.authority_case == "CASE-TEST-001"
     assert demand.task_demand.authority_class == "source_mutation"
     assert {ref.source_id for ref in demand.source_refs} >= {"task_note", "parent_spec"}
+
+
+def test_stable_payload_hash_accepts_date_only_yaml_scalars() -> None:
+    assert stable_payload_hash({"created_at": date(2026, 6, 9)}) == stable_payload_hash(
+        {"created_at": "2026-06-09"}
+    )
 
 
 def test_demand_vector_freshness_stales_when_frontmatter_changes(tmp_path) -> None:

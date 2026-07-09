@@ -68,8 +68,12 @@ CAPABILITY_ALIASES: dict[str, str] = {
     "claude-interactive": "claude.interactive.full",
     "api": "api.headless.provider_gateway",
     "api-frontier": "api.headless.api_frontier",
+    "openrouter": "api.headless.openrouter",
+    "openrouter-frontier": "api.headless.openrouter",
     "vibe": "vibe.headless.full",
     # valid routes, but reached via a different surface (not a spawnable lane):
+    "agy": "agy.review.direct",
+    "agy-review": "agy.review.direct",
     "glmcp-review": "glmcp.review.direct",
     "local-worker": "local_tool.local.worker",
 }
@@ -77,14 +81,13 @@ CAPABILITY_ALIASES: dict[str, str] = {
 # Capabilities the operator names that have NO governed route yet — fail CLOSED
 # with the exact follow-on that defines them (never a silent bypass).
 UNROUTED_POINTERS: dict[str, str] = {
-    "agy": "Antigrav is deprecated/excised; define measured agy supply leaves with route/resource/governance receipts before dispatch.",
-    "antigrav": "Antigrav is deprecated/excised; define measured agy supply leaves with route/resource/governance receipts before dispatch.",
-    "antigravity": "Antigrav is deprecated/excised; define measured agy supply leaves with route/resource/governance receipts before dispatch.",
-    "antigrav.interactive.full": "Antigrav is deprecated/excised; define measured agy supply leaves with route/resource/governance receipts before dispatch.",
-    "gemini-cli": "Gemini CLI is retired/excised; define measured agy supply leaves with route/resource/governance receipts before dispatch.",
+    "antigrav": "Antigrav is deprecated/excised; use agy-review/agy.review.direct for the live CLI review harness. Do not dispatch Antigrav.",
+    "antigravity": "Antigrav is deprecated/excised; use agy-review/agy.review.direct for the live CLI review harness. Do not dispatch Antigrav.",
+    "antigrav.interactive.full": "Antigrav is deprecated/excised; use agy-review/agy.review.direct for the live CLI review harness. Do not dispatch Antigrav.",
+    "gemini-cli": "Gemini CLI is retired/excised; use agy-review/agy.review.direct for the live agy CLI review harness.",
     "fugu": "no route yet — P2: define codex.headless.fugu (codex -p fugu / Sakana). See RESUME §P2.",
     "fugu-ultra": "no route yet — P2: define codex.headless.fugu_ultra. See RESUME §P2.",
-    "gemini": "Gemini/agy is a provider or carrier label, not capability supply; mint measured model/profile/context/tool leaves before dispatch.",
+    "gemini": "Gemini is an engine label under the agy harness, not capability supply; use agy-review/agy.review.direct for the live review route.",
     "sakana": "= fugu (Sakana); no route yet — P2 (codex.headless.fugu) / P4 design. See RESUME.",
     "glmcp": "worker route not minted — P3: glmcp-workhorse-bakeoff must emit promote_to_dispatch_shadow first.",
     "glm": "worker route not minted — P3: glmcp-workhorse-bakeoff (review seat = 'glmcp-review').",

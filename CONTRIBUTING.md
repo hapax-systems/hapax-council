@@ -1,20 +1,25 @@
 # Contributing
 
-`hapax-council` is source-available research infrastructure for one operator. It is not a product, not a service, and not seeking contributors.
+This repository does not accept contributions through GitHub. Hapax is operated as a single-operator research estate; public repository affordances are for inspection, citation, and boundary review, not contributor onboarding.
 
-The repository is published for inspection, citation, audit, and archival evidence. External patches, feature requests, support requests, issue intake, discussions, community governance, and contributor onboarding are refused by design under the `single_user` constitutional axiom.
+The `single_user` axiom is a boundary: it prevents public maintainer roles, community governance, and external patch queues from becoming part of this repository's authority model.
 
-Useful public entry points:
+## Why
 
-- [`START_HERE.md`](START_HERE.md) for reviewer orientation.
-- [`NOTICE.md`](NOTICE.md) for project posture and license.
-- [`CITATION.cff`](CITATION.cff) for citation metadata.
-- [Refusal Brief](https://hapax.weblog.lol/2026/04/refusal-brief-an-automation-tractability-disclosure) for the refusal-as-data stance.
+Hapax is a single-operator research/runtime apparatus. This repository is not a staffed product, service, or community library. The refusal keeps GitHub from becoming an implied support, roadmap, or governance surface. See the Refusal Brief at https://hapax.weblog.lol/2026/04/refusal-brief-an-automation-tractability-disclosure.
 
-## CI Gates and Module Verification
+## What this means in practice
 
-To maintain codebase health and prevent dead code, any newly added Python module must have at least one import reference in a non-test source file. If your pull request introduces a module that has zero non-test consumers, the `new-module-consumer-check` gate will fail.
+- Issues are redirect-only; `.github/ISSUE_TEMPLATE/config.yml` disables blank issues.
+- Pull requests are not an intake path for this repository.
+- Repositories disable Discussions and Wiki except for the `hapax-constitution` Wiki, which mirrors the axiom registry.
+- Funding links, if present, are no-perk research support only.
+- This file is rendered from `hapax-constitution/sdlc/render/`; edits are overwritten on next render.
 
-To satisfy the gate:
-1. **Add a Real Consumer**: Import and use the module in at least one non-test source file (e.g., under `agents/`, `logos/`, `shared/`, or `scripts/`).
-2. **Use the Entry-point Allowlist**: If the module is a library entry-point intended for future or dynamic use, add the module name or its path to the allowlist in [`config/new-module-allowlist.json`](config/new-module-allowlist.json). You can use glob patterns (e.g., `shared.my_lib.*`).
+## If you are reading this because you found a bug
+
+Security disclosures remain in scope through `SECURITY.md`. Other bug reports, feature requests, integration help, and community maintenance requests are out of scope for GitHub.
+
+## Citation
+
+If your research engages with this codebase, cite via `CITATION.cff` (Citation File Format v1.2.0). Archival DOI lives in `.zenodo.json`.

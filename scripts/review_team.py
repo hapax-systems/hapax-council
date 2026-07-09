@@ -30,7 +30,7 @@ import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +47,35 @@ from shared.failure_classification import (  # noqa: E402
     STRUCTURED_QUOTA_ERROR_CLASSES,
     FailureCode,
     FailureReceipt,
+)
+from shared.platform_capability_registry import (  # noqa: E402
+    DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
+    AuthorityCeiling,
+    Mode,
+    PlatformCapabilityRegistry,
+    PlatformCapabilityRegistryError,
+    PlatformCapabilityRoute,
+    QualityFloor,
+    RouteState,
+    check_registry_freshness,
+    load_platform_capability_registry,
+    normalize_route_id,
+)
+from shared.quota_spend_ledger import (  # noqa: E402
+    GLMCP_ADMISSION_PAYG_ENDPOINT,
+    GLMCP_PAYG_BUDGET_PROFILE,
+    GLMCP_PAYG_BUDGET_PROVIDER,
+    GLMCP_PAYG_BUDGET_QUALITY_FLOOR,
+    GLMCP_PAYG_BUDGET_ROUTE_ID,
+    GLMCP_PAYG_BUDGET_TASK_CLASS,
+    GLMCP_PAYG_ESTIMATED_COST_USD,
+    CapacityPool,
+    PaidRouteRequest,
+    QuotaSpendLedgerError,
+    evaluate_paid_route_eligibility,
+    has_successful_task_scoped_glmcp_payg_review_spend,
+    load_quota_spend_ledger_resolved,
+    subscription_quota_state_for_route,
 )
 
 DEFAULT_REGISTRY_PATH = REPO_ROOT / "config" / "review-lenses" / "registry.yaml"
@@ -69,6 +98,8 @@ ACCEPT_VERDICTS = frozenset({"accept", "accept-with-findings"})
 #: hours and t1's require_all_families sealed the merge gate fleet-wide
 #: (postmortem failure class #1). Availability failures must be named so the
 #: constitution can degrade instead of seal, while preserving the true cause.
+#: ``reviewer-internal-error`` is a dispatcher/local runner failure, distinct
+#: from model garbage output and never counted as availability degradation.
 REVIEWER_VERDICTS = frozenset(
     {
         "accept",
@@ -78,6 +109,7 @@ REVIEWER_VERDICTS = frozenset(
         "quota-wall",
         "provider-outage",
         "reviewer-route-unavailable",
+        "reviewer-internal-error",
     }
 )
 FAMILY_OUTAGE_VERDICTS = frozenset({"quota-wall", "provider-outage", "reviewer-route-unavailable"})
@@ -483,7 +515,9 @@ def writer_family_for_lane(lane: str | None, registry: Mapping[str, Any]) -> str
     lane_norm = (lane or "").strip().lower()
     if not lane_norm:
         return lane_families["default"]
-    if lane_norm in set(lane_families.get("retired") or []):
+    retired = set(lane_families.get("retired") or [])
+    retired_prefixes = tuple(lane_families.get("retired_prefixes") or ())
+    if lane_norm in retired or any(lane_norm.startswith(prefix) for prefix in retired_prefixes):
         raise ValueError(f"retired authoring lane is not admissible: {lane_norm}")
     exact = lane_families.get("exact") or {}
     if lane_norm in exact:
@@ -508,6 +542,397 @@ class Constitution:
     notes: tuple[str, ...]
 
 
+def _reviewer_command(entry: Mapping[str, Any]) -> tuple[str, ...]:
+    raw = entry.get("reviewer_command") or []
+    if not isinstance(raw, Sequence) or isinstance(raw, str):
+        return ()
+    return tuple(str(part) for part in raw if str(part).strip())
+
+
+def _review_family_entry_from_descriptor(entry: Mapping[str, Any]) -> dict[str, Any] | None:
+    family = str(entry.get("family") or "").strip()
+    route_id = normalize_route_id(str(entry.get("route_id") or "").strip())
+    command = _reviewer_command(entry)
+    if not family or not route_id or not command:
+        return None
+    out = dict(entry)
+    out["family"] = family
+    out["route_id"] = route_id
+    out["reviewer_command"] = list(command)
+    out["timeout_seconds"] = int(entry.get("timeout_seconds") or 1200)
+    out.setdefault("review_family_source", "route_descriptor")
+    return out
+
+
+def _route_discovered_review_family_entry(route: PlatformCapabilityRoute) -> dict[str, Any] | None:
+    if route.mode is not Mode.REVIEW:
+        return None
+    wrapper = route.sanctioned_wrapper.strip()
+    if not wrapper:
+        return None
+    return {
+        "family": route.platform.value,
+        "route_id": route.route_id,
+        "reviewer_command": [wrapper],
+        "timeout_seconds": 1200,
+        "review_family_source": "platform_capability_registry",
+    }
+
+
+def review_family_entries(
+    registry: Mapping[str, Any],
+    *,
+    platform_registry: PlatformCapabilityRegistry | None = None,
+) -> tuple[dict[str, Any], ...]:
+    """Effective review roster entries, including governed route-backed additions.
+
+    ``families`` remains the static base roster. ``route_backed_review_families``
+    may either bind an existing static family to a governed route or add a new
+    explicit review-seat descriptor; platform-registry discovery may add future
+    ``mode=review`` routes. New additions are family- and route-distinct so
+    they cannot silently override the historical claude/codex/gemini/glm
+    behavior.
+    """
+
+    entries: list[dict[str, Any]] = [
+        dict(entry) for entry in (registry.get("families") or []) if isinstance(entry, Mapping)
+    ]
+    seen_families = {str(entry.get("family") or "").strip() for entry in entries}
+    entries_by_family = {str(entry.get("family") or "").strip(): entry for entry in entries}
+    seen_route_ids = {
+        normalize_route_id(str(entry.get("route_id") or "").strip())
+        for entry in entries
+        if str(entry.get("route_id") or "").strip()
+    }
+
+    for raw in registry.get("route_backed_review_families") or []:
+        if not isinstance(raw, Mapping):
+            continue
+        entry = _review_family_entry_from_descriptor(raw)
+        if entry is None:
+            continue
+        family = entry["family"]
+        route_id = entry["route_id"]
+        if family in seen_families:
+            existing = entries_by_family.get(family)
+            if (
+                existing is not None
+                and not str(existing.get("route_id") or "").strip()
+                and route_id not in seen_route_ids
+                and _reviewer_command(existing) == _reviewer_command(entry)
+            ):
+                existing["route_id"] = route_id
+                existing["route_binding_source"] = entry.get(
+                    "review_family_source", "route_descriptor"
+                )
+                seen_route_ids.add(route_id)
+            continue
+        if route_id in seen_route_ids:
+            continue
+        entries.append(entry)
+        seen_families.add(family)
+        entries_by_family[family] = entry
+        seen_route_ids.add(route_id)
+
+    if platform_registry is not None:
+        for route in sorted(platform_registry.routes, key=lambda item: item.route_id):
+            entry = _route_discovered_review_family_entry(route)
+            if entry is None:
+                continue
+            family = entry["family"]
+            route_id = entry["route_id"]
+            if family in seen_families or route_id in seen_route_ids:
+                continue
+            entries.append(entry)
+            seen_families.add(family)
+            seen_route_ids.add(route_id)
+
+    return tuple(entries)
+
+
+def review_registry_with_route_families(
+    registry: Mapping[str, Any],
+    *,
+    platform_registry: PlatformCapabilityRegistry | None = None,
+) -> dict[str, Any]:
+    """Return a registry copy whose ``families`` is the effective roster."""
+
+    out = dict(registry)
+    out["families"] = [
+        dict(entry)
+        for entry in review_family_entries(registry, platform_registry=platform_registry)
+    ]
+    return out
+
+
+def review_family_route_ids(registry: Mapping[str, Any]) -> dict[str, str]:
+    """Review families that require a platform-capability route admission."""
+
+    out: dict[str, str] = {}
+    for entry in review_family_entries(registry):
+        family = str(entry.get("family") or "").strip()
+        route_id = str(entry.get("route_id") or "").strip()
+        if family and route_id:
+            out[family] = normalize_route_id(route_id)
+    return out
+
+
+def _route_authority_review_safe(route: PlatformCapabilityRoute) -> bool:
+    if route.authority_ceiling is AuthorityCeiling.READ_ONLY:
+        return True
+    return (
+        not route.mutability.any_mutation()
+        and route.tool_access.filesystem.value != "read_write"
+        and route.tool_access.shell.value != "full"
+    )
+
+
+def _route_review_admission_reasons(
+    *,
+    family: str,
+    entry: Mapping[str, Any],
+    route: PlatformCapabilityRoute | None,
+    freshness_errors: Sequence[str] = (),
+) -> tuple[str, ...]:
+    route_id = normalize_route_id(str(entry.get("route_id") or "").strip())
+    if route is None:
+        return (f"{route_id}:route_missing_from_platform_registry",)
+
+    reasons: list[str] = [
+        *route.blocked_reasons,
+        *route.freshness.evidence.all_blocked_reasons(),
+    ]
+    if route.route_state is not RouteState.ACTIVE and not reasons:
+        reasons.append(f"{route_id}:route_state_{route.route_state.value}")
+    reasons.extend(f"freshness_check:{error}" for error in freshness_errors)
+
+    command = _reviewer_command(entry)
+    if not command:
+        reasons.append(f"{route_id}:reviewer_command_missing")
+    elif command[0] != route.sanctioned_wrapper:
+        reasons.append(f"{route_id}:reviewer_command_not_sanctioned_wrapper:{command[0]}")
+    if not route.sanctioned_wrapper.strip():
+        reasons.append(f"{route_id}:sanctioned_wrapper_missing")
+    if not _route_authority_review_safe(route):
+        reasons.append(f"{route_id}:authority_not_review_safe:{route.authority_ceiling.value}")
+    if QualityFloor.FRONTIER_REVIEW_REQUIRED not in route.quality_envelope.eligible_quality_floors:
+        reasons.append(f"{route_id}:frontier_review_required_quality_missing")
+    if not str(family).strip():
+        reasons.append(f"{route_id}:review_family_missing")
+    return tuple(dict.fromkeys(reasons))
+
+
+def review_route_blocked_families(
+    registry: Mapping[str, Any],
+    *,
+    platform_registry: PlatformCapabilityRegistry | None = None,
+) -> dict[str, tuple[str, ...]]:
+    """Reviewer families whose declared backing route is not admitted.
+
+    A wrapper's existence is not capacity. Families that declare a route_id
+    count only when that platform-capability route is active and fresh; missing
+    routes are treated as blocked supply, not as an ad hoc reviewer.
+    """
+
+    resolved_platform_registry = platform_registry or load_platform_capability_registry(
+        receipt_dir=DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR
+    )
+    effective_registry = review_registry_with_route_families(
+        registry, platform_registry=resolved_platform_registry
+    )
+    route_ids = review_family_route_ids(effective_registry)
+    if not route_ids:
+        return {}
+    family_entries = {
+        str(entry.get("family") or "").strip(): entry
+        for entry in review_family_entries(effective_registry)
+    }
+
+    route_map = resolved_platform_registry.route_map()
+    freshness_checks = {
+        check.route_id: check
+        for check in check_registry_freshness(
+            resolved_platform_registry, route_ids=route_ids.values()
+        ).routes
+    }
+    blocked: dict[str, tuple[str, ...]] = {}
+    for family, route_id in route_ids.items():
+        route = route_map.get(route_id)
+        freshness_check = freshness_checks.get(route_id)
+        entry = family_entries.get(family) or {"family": family, "route_id": route_id}
+        freshness_errors: Sequence[str] = ()
+        if (
+            route is not None
+            and route.route_state is RouteState.ACTIVE
+            and freshness_check is not None
+            and not freshness_check.ok
+        ):
+            freshness_errors = freshness_check.errors
+        reasons = _route_review_admission_reasons(
+            family=family,
+            entry=entry,
+            route=route,
+            freshness_errors=freshness_errors,
+        )
+        if reasons:
+            blocked[family] = reasons
+    return blocked
+
+
+def _degradation_notes(
+    *,
+    outage_families: Sequence[str],
+    route_blocked_families: Mapping[str, Sequence[str]],
+    route_ids: Mapping[str, str],
+) -> list[str]:
+    notes = [f"degraded_family_outage:{family}" for family in sorted(outage_families)]
+    for family in sorted(route_blocked_families):
+        route_id = route_ids.get(family, "unknown")
+        notes.append(f"degraded_family_route_blocked:{family}")
+        for reason in route_blocked_families[family]:
+            normalized_reason = str(reason).strip()
+            if normalized_reason.startswith(f"{route_id}:"):
+                normalized_reason = normalized_reason[len(route_id) + 1 :]
+            notes.append(f"route_blocked_family_reason:{family}:{route_id}:{normalized_reason}")
+    if outage_families:
+        notes.append("post_recovery_rereview_required")
+    if route_blocked_families:
+        notes.append("post_route_receipt_rereview_required")
+    return notes
+
+
+def _route_block_reason_notes(
+    notes: Sequence[str],
+) -> tuple[dict[str, tuple[tuple[str, str], ...]], tuple[str, ...]]:
+    out: dict[str, list[tuple[str, str]]] = {}
+    malformed: list[str] = []
+    for note in notes:
+        if not note.startswith("route_blocked_family_reason:"):
+            continue
+        parts = note.split(":", 3)
+        if len(parts) != 4 or not parts[1].strip() or not parts[2].strip() or not parts[3].strip():
+            malformed.append(note)
+            continue
+        family = parts[1].strip()
+        route_id = normalize_route_id(parts[2].strip())
+        reason = parts[3].strip()
+        out.setdefault(family, []).append((route_id, reason))
+    return {family: tuple(reasons) for family, reasons in out.items()}, tuple(malformed)
+
+
+def _route_reason_code(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9_.:-]+", "_", value.strip().lower()).strip("_")
+    return normalized or "unknown"
+
+
+def _add_route_blocker(
+    blocked: dict[str, tuple[str, ...]],
+    family: str,
+    reasons: tuple[str, ...],
+) -> None:
+    blocked[family] = tuple(dict.fromkeys((*blocked.get(family, ()), *reasons)))
+
+
+def task_scoped_paid_review_route_blocked_families(
+    registry: Mapping[str, Any],
+    route_blocked_families: Mapping[str, Sequence[str]] | None,
+    task_ids: Sequence[str],
+    *,
+    now: datetime | str | None = None,
+) -> dict[str, tuple[str, ...]]:
+    """Add task-scoped PAYG blockers for review routes with per-task budgets.
+
+    Route freshness is route-global, while GLMCP PAYG review admission is charged
+    to a concrete task. Dossier admission must compare degraded route-block
+    reasons against that task-scoped witness, not only the global route state.
+    """
+
+    blocked = {
+        str(family): tuple(str(reason) for reason in reasons)
+        for family, reasons in (route_blocked_families or {}).items()
+    }
+    glmcp_families = [
+        family
+        for family, route_id in review_family_route_ids(registry).items()
+        if route_id == GLMCP_PAYG_BUDGET_ROUTE_ID
+    ]
+    if not glmcp_families:
+        return blocked
+
+    try:
+        resolved = load_quota_spend_ledger_resolved()
+    except (OSError, QuotaSpendLedgerError, ValueError) as exc:
+        reason = (
+            f"{GLMCP_PAYG_BUDGET_ROUTE_ID}:"
+            f"task_scoped_paid_spend_ledger_unavailable:{type(exc).__name__}"
+        )
+        for family in glmcp_families:
+            _add_route_blocker(blocked, family, (reason,))
+        return blocked
+
+    if resolved.source != "live":
+        reason = f"{GLMCP_PAYG_BUDGET_ROUTE_ID}:task_scoped_paid_spend_live_ledger_absent"
+        if resolved.live_error:
+            reason = f"{GLMCP_PAYG_BUDGET_ROUTE_ID}:task_scoped_paid_spend_live_ledger_invalid"
+        for family in glmcp_families:
+            _add_route_blocker(blocked, family, (reason,))
+        return blocked
+
+    try:
+        now_dt = _coerce_datetime(now, reference=datetime.now(UTC))
+    except ValueError:
+        now_dt = datetime.now(UTC)
+    _state, evidence_refs = subscription_quota_state_for_route(
+        resolved.ledger,
+        GLMCP_PAYG_BUDGET_ROUTE_ID,
+        now=now_dt,
+    )
+    route_uses_payg = any(
+        "spend-gate-payg-receipt:" in ref or f":endpoint:{GLMCP_ADMISSION_PAYG_ENDPOINT}:" in ref
+        for ref in evidence_refs
+    )
+    if not route_uses_payg:
+        return blocked
+
+    unique_task_ids = tuple(dict.fromkeys(str(task_id).strip() for task_id in task_ids if task_id))
+    if len(unique_task_ids) != 1:
+        reason = f"{GLMCP_PAYG_BUDGET_ROUTE_ID}:task_scoped_paid_spend_task_id_ambiguous"
+        for family in glmcp_families:
+            _add_route_blocker(blocked, family, (reason,))
+        return blocked
+    if has_successful_task_scoped_glmcp_payg_review_spend(resolved.ledger, unique_task_ids[0]):
+        return blocked
+
+    request = PaidRouteRequest.model_validate(
+        {
+            "route_id": GLMCP_PAYG_BUDGET_ROUTE_ID,
+            "task_id": unique_task_ids[0],
+            "provider": GLMCP_PAYG_BUDGET_PROVIDER,
+            "profile": GLMCP_PAYG_BUDGET_PROFILE,
+            "task_class": GLMCP_PAYG_BUDGET_TASK_CLASS,
+            "quality_floor": GLMCP_PAYG_BUDGET_QUALITY_FLOOR,
+            "estimated_cost_usd": GLMCP_PAYG_ESTIMATED_COST_USD,
+            "capacity_pool": CapacityPool.API_PAID_SPEND,
+        }
+    )
+    decision = evaluate_paid_route_eligibility(
+        resolved.ledger,
+        request,
+        now=now_dt,
+    )
+    if decision.eligible and decision.budget_id:
+        return blocked
+
+    reasons = [f"{GLMCP_PAYG_BUDGET_ROUTE_ID}:task_scoped_paid_spend_gate:{decision.state}"]
+    reasons.extend(
+        f"{GLMCP_PAYG_BUDGET_ROUTE_ID}:task_scoped_paid_spend_blocker:{_route_reason_code(reason)}"
+        for reason in decision.blocking_reasons
+    )
+    for family in glmcp_families:
+        _add_route_blocker(blocked, family, tuple(reasons))
+    return blocked
+
+
 def constitute_team(
     team_class: str,
     writer_family: str,
@@ -516,6 +941,7 @@ def constitute_team(
     pr_number: int,
     available_families: Sequence[str] | None = None,
     outage_families: frozenset[str] | set[str] = frozenset(),
+    route_blocked_families: Mapping[str, Sequence[str]] | None = None,
 ) -> Constitution:
     """Constitute the review team for a class — deterministic, fail-closed.
 
@@ -535,28 +961,50 @@ def constitute_team(
     """
 
     sizing = registry["sizing"][team_class]
-    roster = [entry["family"] for entry in registry["families"]]
+    roster = [entry["family"] for entry in review_family_entries(registry)]
     if available_families is None:
         available = list(roster)
     else:
         wanted = {f for f in available_families}
         available = [f for f in roster if f in wanted]
+    route_ids = review_family_route_ids(registry)
+    route_blocked = {
+        family: tuple(str(reason) for reason in reasons)
+        for family, reasons in (route_blocked_families or {}).items()
+    }
     out = [f for f in available if f in outage_families]
-    available = [f for f in available if f not in outage_families]
-    notes = [f"family_unavailable:{f}" for f in roster if f not in available and f not in out]
+    blocked = [f for f in available if f in route_blocked]
+    available = [f for f in available if f not in outage_families and f not in route_blocked]
+    notes = [
+        f"family_unavailable:{f}"
+        for f in roster
+        if f not in available and f not in out and f not in blocked
+    ]
     degraded: list[str] = []
+    route_degraded: dict[str, tuple[str, ...]] = {}
 
     if team_class == "t1_critical":
         size = int(sizing["team_size_min"])
         if sizing.get("require_all_families"):
             missing = [f for f in roster if f not in available]
-            if missing and all(f in outage_families for f in missing):
+            degradable = set(outage_families) | set(route_blocked)
+            if missing and all(f in degradable for f in missing):
                 degraded = sorted(missing)
+                route_degraded = {
+                    family: route_blocked[family]
+                    for family in sorted(missing)
+                    if family in route_blocked
+                }
                 sizing = registry["sizing"]["t2_standard"]
                 size = int(sizing["team_size"])
-                notes.extend(f"degraded_family_outage:{f}" for f in degraded)
+                notes.extend(
+                    _degradation_notes(
+                        outage_families=[f for f in degraded if f in outage_families],
+                        route_blocked_families=route_degraded,
+                        route_ids=route_ids,
+                    )
+                )
                 notes.append("degraded_to:t2_standard")
-                notes.append("post_recovery_rereview_required")
             elif missing:
                 raise ValueError(
                     "t1_critical requires every model family on the team; "
@@ -564,12 +1012,17 @@ def constitute_team(
                 )
     else:
         size = int(sizing["team_size"])
-        if out:
+        if out or blocked:
             # t2/t3 keep their own sizing — the walled family simply is not
-            # seated; the markers still ride so synthesis/admission validate
-            # by the shrunken roster and the re-review obligation is recorded
-            notes.extend(f"degraded_family_outage:{f}" for f in sorted(out))
-            notes.append("post_recovery_rereview_required")
+            # seated; route-blocked families behave the same, but carry route
+            # receipt reasons so recovery is auditable.
+            notes.extend(
+                _degradation_notes(
+                    outage_families=out,
+                    route_blocked_families={family: route_blocked[family] for family in blocked},
+                    route_ids=route_ids,
+                )
+            )
     min_families = int(sizing.get("min_families", 1))
     if not available:
         raise ValueError("no reviewer families available")
@@ -1082,7 +1535,7 @@ def synthesize_dossier(
     """
 
     sizing = registry["sizing"][team_class]
-    roster = [entry["family"] for entry in registry["families"]]
+    roster = [entry["family"] for entry in review_family_entries(registry)]
     # an outage-degraded constitution judges itself by the DEGRADED rules:
     # t2 sizing, roster minus the walled families (postmortem 2026-06-12 —
     # otherwise require_all_families would seal the verdict it already
@@ -1092,12 +1545,18 @@ def synthesize_dossier(
         for n in constitution_notes
         if str(n).startswith("degraded_family_outage:")
     )
-    if degraded_outage:
+    degraded_route_blocked = sorted(
+        n.split(":", 1)[1]
+        for n in constitution_notes
+        if str(n).startswith("degraded_family_route_blocked:")
+    )
+    degraded_families = set(degraded_outage) | set(degraded_route_blocked)
+    if degraded_families:
         # roster shrinks for ANY outage-degraded class; the t1->t2 sizing
         # swap applies only when the constitution actually degraded sizing
         # (round-3 review finding: t2/t3 outage dossiers must not be judged
         # by rules their class never had)
-        roster = [f for f in roster if f not in degraded_outage]
+        roster = [f for f in roster if f not in degraded_families]
         if any(str(n) == "degraded_to:t2_standard" for n in constitution_notes):
             sizing = registry["sizing"]["t2_standard"]
     block_reviews = [r for r in reviews if str(r.get("verdict", "")).lower() == "block"]
@@ -1198,7 +1657,9 @@ def synthesize_dossier(
         "changed_files": scoped_files,
         "constitution_notes": list(constitution_notes),
         "degraded_family_outage": degraded_outage,
+        "degraded_family_route_blocked": degraded_route_blocked,
         "post_recovery_rereview_required": bool(degraded_outage),
+        "post_route_receipt_rereview_required": bool(degraded_route_blocked),
         "lenses": list(lenses),
         "reviewers": _reviews_with_phantom_resolutions(reviews, phantom_criticals),
         "escalations": escalations,
@@ -1228,6 +1689,7 @@ def _dossier_validity_blockers(
     changed_file_count: int | None = None,
     outage_state_path: Path | None = None,
     admission_time: datetime | str | None = None,
+    route_blocked_families: Mapping[str, Sequence[str]] | None = None,
 ) -> tuple[str, ...]:
     blockers: list[str] = []
     scoped_files = (
@@ -1273,8 +1735,16 @@ def _dossier_validity_blockers(
         n.split(":", 1)[1] for n in _notes if n.startswith("degraded_family_outage:")
     )
     _field_out = sorted(str(f) for f in (dossier.get("degraded_family_outage") or []))
+    _note_route_blocked = sorted(
+        n.split(":", 1)[1] for n in _notes if n.startswith("degraded_family_route_blocked:")
+    )
+    _field_route_blocked = sorted(
+        str(f) for f in (dossier.get("degraded_family_route_blocked") or [])
+    )
+    _note_route_block_reasons, malformed_reason_notes = _route_block_reason_notes(_notes)
     degraded_outage: list[str] = []
-    if _note_out or _field_out:
+    degraded_route_blocked: list[str] = []
+    if _note_out or _field_out or _note_route_blocked or _field_route_blocked:
         # consistency: notes and fields agree + the re-review flag is set.
         # The t1->t2 sizing marker is only demanded where the class actually
         # degraded sizing — t2/t3 outage dossiers keep their own sizing
@@ -1283,71 +1753,128 @@ def _dossier_validity_blockers(
         sizing_degraded = "degraded_to:t2_standard" in _notes
         if (
             _note_out != _field_out
-            or not dossier.get("post_recovery_rereview_required")
+            or _note_route_blocked != _field_route_blocked
+            or malformed_reason_notes
+            or (_note_out and not dossier.get("post_recovery_rereview_required"))
+            or (_note_route_blocked and not dossier.get("post_route_receipt_rereview_required"))
             or (sizing_degraded and team_class != "t1_critical")
             or (team_class == "t1_critical" and not sizing_degraded)
         ):
             blockers.append("review_dossier_degradation_flags_inconsistent")
             return tuple(blockers)
         degraded_outage = _note_out
+        degraded_route_blocked = _note_route_blocked
         # a degraded family must be a REAL roster family (round-5 finding:
         # a nonsense family name in the markers + witness state would buy a
         # t1->t2 downgrade while leaving the actual roster untouched)
-        _full_roster = {str(entry["family"]) for entry in registry["families"]}
-        _unknown_degraded = sorted(set(degraded_outage) - _full_roster)
+        _full_roster = {str(entry["family"]) for entry in review_family_entries(registry)}
+        _unknown_degraded = sorted(
+            (set(degraded_outage) | set(degraded_route_blocked)) - _full_roster
+        )
         if _unknown_degraded:
             blockers.append(
                 "review_dossier_degradation_unknown_family:" + ",".join(_unknown_degraded)
             )
             return tuple(blockers)
+    try:
+        live_route_blocked = (
+            dict(route_blocked_families)
+            if route_blocked_families is not None
+            else task_scoped_paid_review_route_blocked_families(
+                registry,
+                review_route_blocked_families(registry),
+                (str(dossier.get("task_id") or ""),),
+                now=admission_time,
+            )
+        )
+    except PlatformCapabilityRegistryError as exc:
+        blockers.append(f"review_dossier_route_gate_unavailable:{type(exc).__name__}")
+        return tuple(blockers)
+    if degraded_outage or degraded_route_blocked:
         # external witness (round-4 finding: dossier-internal consistency can
         # be forged wholesale): each degraded family must appear in the
         # dispatcher's outage state with observed_at within TTL BEFORE this
         # dossier's constituted_at. Recovery clears the state entry, which
         # mechanically enforces post_recovery_rereview_required — degraded
         # dossiers stop admitting the moment the family answers again.
-        witness_path = outage_state_path or FAMILY_OUTAGE_STATE
-        unwitnessed = list(degraded_outage)
-        try:
-            witness_state = json.loads(Path(witness_path).read_text(encoding="utf-8"))
-            if not isinstance(witness_state, Mapping):
-                raise TypeError("family outage witness is not a mapping")
-            constituted = _parse_iso_datetime(dossier.get("constituted_at"))
-            admitted_at = _coerce_datetime(admission_time, reference=constituted)
-            unwitnessed = []
-            for fam in degraded_outage:
-                try:
-                    started, observed = _witness_window(witness_state.get(fam))
-                    if started is None or observed is None:
+        if degraded_outage:
+            witness_path = outage_state_path or FAMILY_OUTAGE_STATE
+            unwitnessed = list(degraded_outage)
+            try:
+                witness_state = json.loads(Path(witness_path).read_text(encoding="utf-8"))
+                if not isinstance(witness_state, Mapping):
+                    raise TypeError("family outage witness is not a mapping")
+                constituted = _parse_iso_datetime(dossier.get("constituted_at"))
+                admitted_at = _coerce_datetime(admission_time, reference=constituted)
+                unwitnessed = []
+                for fam in degraded_outage:
+                    try:
+                        started, observed = _witness_window(witness_state.get(fam))
+                        if started is None or observed is None:
+                            unwitnessed.append(fam)
+                            continue
+                        # Window model (#4246 re-design): the dossier is valid iff it was
+                        # constituted AND admitted DURING the sustained outage. The STABLE
+                        # outage_started_at anchors the lower bound (anti-forge: a back-dated
+                        # constituted_at < outage_started_at blocks — the abs() symmetric
+                        # relaxation is NOT used, per the #4246 review finding). The MOVING
+                        # observed_at bounds freshness on the upper side (constituted/admitted
+                        # within TTL of the latest observation) — re-stamping observed_at
+                        # forward only extends the window, so a later run never un-witnesses a
+                        # valid dossier (the clobber fix). Recovery clears the family entirely
+                        # in update_family_outage (-> entry absent -> None -> unwitnessed),
+                        # which mechanically enforces post_recovery_rereview_required.
+                        if not (
+                            _seconds_between(constituted, started) >= 0
+                            and _seconds_between(constituted, observed) <= FAMILY_OUTAGE_TTL_S
+                            and _seconds_between(admitted_at, started) >= 0
+                            and _seconds_between(admitted_at, observed) <= FAMILY_OUTAGE_TTL_S
+                        ):
+                            unwitnessed.append(fam)
+                    except (TypeError, ValueError):
                         unwitnessed.append(fam)
-                        continue
-                    # Window model (#4246 re-design): the dossier is valid iff it was
-                    # constituted AND admitted DURING the sustained outage. The STABLE
-                    # outage_started_at anchors the lower bound (anti-forge: a back-dated
-                    # constituted_at < outage_started_at blocks — the abs() symmetric
-                    # relaxation is NOT used, per the #4246 review finding). The MOVING
-                    # observed_at bounds freshness on the upper side (constituted/admitted
-                    # within TTL of the latest observation) — re-stamping observed_at
-                    # forward only extends the window, so a later run never un-witnesses a
-                    # valid dossier (the clobber fix). Recovery clears the family entirely
-                    # in update_family_outage (-> entry absent -> None -> unwitnessed),
-                    # which mechanically enforces post_recovery_rereview_required.
-                    if not (
-                        _seconds_between(constituted, started) >= 0
-                        and _seconds_between(constituted, observed) <= FAMILY_OUTAGE_TTL_S
-                        and _seconds_between(admitted_at, started) >= 0
-                        and _seconds_between(admitted_at, observed) <= FAMILY_OUTAGE_TTL_S
-                    ):
-                        unwitnessed.append(fam)
-                except (TypeError, ValueError):
-                    unwitnessed.append(fam)
-        except (OSError, json.JSONDecodeError, TypeError, ValueError):
-            pass  # unreadable witness state -> every family stays unwitnessed
-        if unwitnessed:
-            blockers.append(
-                "review_dossier_degradation_unwitnessed:" + ",".join(sorted(unwitnessed))
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                pass  # unreadable witness state -> every family stays unwitnessed
+            if unwitnessed:
+                blockers.append(
+                    "review_dossier_degradation_unwitnessed:" + ",".join(sorted(unwitnessed))
+                )
+                return tuple(blockers)
+        if degraded_route_blocked:
+            unwitnessed_route_block = sorted(
+                family for family in degraded_route_blocked if family not in live_route_blocked
             )
-            return tuple(blockers)
+            if unwitnessed_route_block:
+                blockers.append(
+                    "review_dossier_route_block_degradation_unwitnessed:"
+                    + ",".join(unwitnessed_route_block)
+                )
+                return tuple(blockers)
+            route_ids = review_family_route_ids(registry)
+            reason_mismatches: list[str] = []
+            for family in degraded_route_blocked:
+                recorded = _note_route_block_reasons.get(family, ())
+                recorded_route_ids = {route_id for route_id, _ in recorded}
+                expected_route_id = route_ids.get(family)
+                recorded_reasons = {reason for _, reason in recorded}
+                live_reasons = set()
+                for reason in live_route_blocked.get(family, ()):
+                    normalized_reason = str(reason).strip()
+                    if expected_route_id and normalized_reason.startswith(f"{expected_route_id}:"):
+                        normalized_reason = normalized_reason[len(expected_route_id) + 1 :]
+                    live_reasons.add(normalized_reason)
+                if (
+                    not expected_route_id
+                    or recorded_route_ids != {expected_route_id}
+                    or recorded_reasons != live_reasons
+                ):
+                    reason_mismatches.append(family)
+            if reason_mismatches:
+                blockers.append(
+                    "review_dossier_route_block_degradation_reason_mismatch:"
+                    + ",".join(sorted(reason_mismatches))
+                )
+                return tuple(blockers)
         if sizing_degraded:
             sizing = (registry.get("sizing") or {}).get("t2_standard")
             if not isinstance(sizing, Mapping):
@@ -1385,17 +1912,26 @@ def _dossier_validity_blockers(
     )
     if duplicate_reviewer_ids:
         blockers.append("review_dossier_duplicate_reviewer_id:" + ",".join(duplicate_reviewer_ids))
-    roster = {entry["family"] for entry in registry["families"]}
+    roster = {entry["family"] for entry in review_family_entries(registry)}
     unknown_reviewer_families = {str(r.get("family") or "missing") for r in reviews} - roster
     if unknown_reviewer_families:
         blockers.append(
             "review_dossier_unknown_reviewer_family:" + ",".join(sorted(unknown_reviewer_families))
         )
-    if degraded_outage:
-        seated_walled = sorted({str(r.get("family")) for r in reviews} & set(degraded_outage))
-        if seated_walled:
-            blockers.append("review_dossier_degraded_family_was_seated:" + ",".join(seated_walled))
-        roster = roster - set(degraded_outage)
+    degraded_families = set(degraded_outage) | set(degraded_route_blocked)
+    if degraded_families:
+        seated_degraded = sorted({str(r.get("family")) for r in reviews} & degraded_families)
+        if seated_degraded:
+            blockers.append(
+                "review_dossier_degraded_family_was_seated:" + ",".join(seated_degraded)
+            )
+        roster = roster - degraded_families
+    blocked_route_families = set(live_route_blocked) - degraded_families
+    seated_blocked_routes = sorted({str(r.get("family")) for r in reviews} & blocked_route_families)
+    if seated_blocked_routes:
+        blockers.append(
+            "review_dossier_blocked_route_family_seated:" + ",".join(seated_blocked_routes)
+        )
     unknown_verdicts = {
         str(r.get("verdict") or "missing").lower()
         for r in reviews
@@ -1500,6 +2036,7 @@ def review_dossier_validity_blockers(
     registry: Mapping[str, Any] | None = None,
     outage_state_path: Path | None = None,
     admission_time: datetime | str | None = None,
+    route_blocked_families: Mapping[str, Sequence[str]] | None = None,
 ) -> tuple[str, ...]:
     """Validate a recorded review dossier without honoring any gate killswitch."""
 
@@ -1533,6 +2070,7 @@ def review_dossier_validity_blockers(
         changed_file_count=changed_file_count,
         outage_state_path=outage_state_path,
         admission_time=admission_time,
+        route_blocked_families=route_blocked_families,
     )
 
 
@@ -1547,6 +2085,7 @@ def review_team_verdict_blockers(
     registry: Mapping[str, Any] | None = None,
     outage_state_path: Path | None = None,
     admission_time: datetime | str | None = None,
+    route_blocked_families: Mapping[str, Sequence[str]] | None = None,
 ) -> tuple[str, ...]:
     """Admission blockers from the review-team quorum gate (no quorum, no merge).
 
@@ -1572,4 +2111,5 @@ def review_team_verdict_blockers(
         registry=registry,
         outage_state_path=outage_state_path,
         admission_time=admission_time,
+        route_blocked_families=route_blocked_families,
     )

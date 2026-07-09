@@ -120,10 +120,32 @@ def test_platform_without_adapter_emits_unknown_receipt() -> None:
         mock.patch.object(_MOD, "update_worker_family_availability"),
     ):
         _MOD._classify_and_witness_terminal_failure(
-            1, task_id="t", lane="vbe-1", platform="vibe", mode="headless", profile="worker"
+            1,
+            task_id="t",
+            lane="worker-1",
+            platform="unmapped_worker",
+            mode="headless",
+            profile="worker",
         )
     assert rec.call_args.kwargs["receipt"].code is FailureCode.UNKNOWN
+    assert rec.call_args.kwargs["receipt"].platform == "unmapped_worker"
+
+
+def test_vibe_quota_text_classifies_via_registered_adapter() -> None:
+    with (
+        mock.patch.object(
+            _MOD, "_read_worker_failure_text", return_value="HTTP 429 Too Many Requests"
+        ),
+        mock.patch.object(_MOD, "append_failure_receipt_record") as rec,
+        mock.patch.object(_MOD, "update_worker_family_availability") as wit,
+    ):
+        _MOD._classify_and_witness_terminal_failure(
+            1, task_id="t", lane="vbe-1", platform="vibe", mode="headless", profile="full"
+        )
+    assert rec.call_args.kwargs["receipt"].code is FailureCode.QUOTA_EXHAUSTION
     assert rec.call_args.kwargs["receipt"].platform == "vibe"
+    assert rec.call_args.kwargs["receipt"].route_id == "vibe.headless.full"
+    assert wit.call_args.kwargs["family"] == "vibe"
 
 
 def test_deprecated_antigrav_has_no_dispatch_failure_adapter() -> None:

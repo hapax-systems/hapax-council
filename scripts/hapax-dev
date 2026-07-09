@@ -355,7 +355,8 @@ main() {
     ls|list)        shift || true; cmd_ls ;;
     attach)         shift; cmd_attach "$@" ;;
     claude|codex) cmd_launch "$@" ;;
-    agy|antigrav|antigravity) die "platform '$cmd' is retired; use claude|codex or a future measured agy supply leaf" 2 ;;
+    agy) die "platform '$cmd' is not a visible-dev worker lane; use agy.review.direct via scripts/hapax-agy-reviewer for read-only review" 2 ;;
+    antigrav|antigravity) die "platform '$cmd' is retired; use claude|codex or agy.review.direct for read-only review" 2 ;;
     *) usage >&2; die "unknown command or platform '$cmd'" 2 ;;
   esac
 }

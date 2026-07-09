@@ -1,15 +1,15 @@
 [Unit]
-Description=Hapax PR admission governor — auto-cycle timer (every 5 min)
-Documentation=file://%h/projects/hapax-council/scripts/hapax-pr-admission
+Description=Hapax PR admission governor — auto-cycle timer
+Documentation=file://%h/.cache/hapax/source-activation/worktree/scripts/hapax-pr-admission
 
 [Timer]
-# Fire 30s after boot to give other services time to settle.
-OnBootSec=30s
-# Then every 5 min thereafter.
-OnUnitActiveSec=5min
+# Fire before the heavier PR automation, then run on its own staggered cadence.
+OnBootSec=45s
+OnUnitActiveSec=7min
+RandomizedDelaySec=45s
 # Persistent so missed boots don't accumulate; AccuracySec slightly loose.
 Persistent=true
-AccuracySec=15s
+AccuracySec=30s
 Unit=hapax-pr-admission-auto.service
 
 [Install]

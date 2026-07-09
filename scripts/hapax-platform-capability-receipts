@@ -12,6 +12,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from shared.codex_oauth_refresher import (  # noqa: E402
+    DEFAULT_PUBLISHED_ACCESS_TOKEN,
+    load_published_access_token,
+    needs_refresh,
+)
 from shared.platform_capability_receipts import (  # noqa: E402
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
@@ -40,18 +46,27 @@ from shared.platform_capability_registry import (  # noqa: E402
 )
 
 BINARY_BY_PLATFORM = {
+    "agy": "agy",
     "api": "python3",
     "claude": "claude",
     "codex": "codex",
+    "glmcp": "scripts/hapax-glmcp-reviewer",
     "vibe": "vibe",
 }
 VERSION_ARGS_BY_PLATFORM = {
+    "agy": ["--version"],
     "api": ["--version"],
     "claude": ["--version"],
     "codex": ["--version"],
+    "glmcp": ["--check"],
     "vibe": ["--version"],
 }
+CODEX_EXEC_AUTH_SENTINEL = "HAPAX_CODEX_EXEC_AUTH_OK"
 CONFIG_REFS_BY_PLATFORM = {
+    "agy": [
+        "~/.gemini/antigravity-cli/builtin/skills/antigravity_guide/references/cli.md",
+        "scripts/hapax-agy-reviewer",
+    ],
     "api": [
         "~/llm-stack/litellm-config.yaml",
         "~/llm-stack/docker-compose.yml",
@@ -61,6 +76,13 @@ CONFIG_REFS_BY_PLATFORM = {
     ],
     "claude": ["~/.claude/settings.json", "~/.claude.json", "CLAUDE.md"],
     "codex": ["~/.codex/config.toml", "~/.codex/AGENTS.md", "AGENTS.md"],
+    "glmcp": [
+        "scripts/hapax-glmcp-reviewer",
+        "scripts/hapax-glmcp-quota-admission",
+        "scripts/hapax-quota-telemetry-writer",
+        "config/platform-capability-registry.json",
+        "config/quota-spend-ledger-fixtures.json",
+    ],
     "vibe": [
         "~/.vibe/config.toml",
         "~/.vibe/.env",
@@ -68,7 +90,7 @@ CONFIG_REFS_BY_PLATFORM = {
     ],
 }
 SECRETISH_RE = re.compile(r"(?i)(api[_-]?key|token|secret|password|credential)([=:])(\S+)")
-RETIRED_ANTIGRAV_PLATFORMS = frozenset({"agy", "antigrav", "antigravity", "gemini-cli"})
+RETIRED_ANTIGRAV_PLATFORMS = frozenset({"antigrav", "antigravity", "gemini-cli"})
 
 
 def parse_utc(value: str) -> datetime:
@@ -131,6 +153,25 @@ def sha256_file(path: Path) -> str | None:
 
 def candidate_binaries(platform: str) -> list[str]:
     override = os.environ.get(f"HAPAX_{platform.upper()}_BIN", "").strip()
+    if platform == "codex":
+        candidates = []
+        candidates.append(BINARY_BY_PLATFORM[platform])
+        path_override = os.environ.get("HAPAX_CODEX_BIN_PATH", "").strip()
+        if path_override:
+            candidates.append(path_override)
+        candidates.extend(
+            [
+                str(Path.home() / ".npm-global" / "bin" / "codex"),
+                *(
+                    [f"{os.environ['NPM_CONFIG_PREFIX'].rstrip('/')}/bin/codex"]
+                    if os.environ.get("NPM_CONFIG_PREFIX")
+                    else []
+                ),
+                str(Path.home() / ".local" / "share" / "npm" / "bin" / "codex"),
+                "/usr/local/bin/codex",
+            ]
+        )
+        return list(dict.fromkeys(candidates))
     candidates = [BINARY_BY_PLATFORM[platform]]
     if override:
         candidates.insert(0, override)
@@ -141,10 +182,13 @@ def resolve_binary(binary: str) -> str | None:
     path = Path(binary).expanduser()
     if path.is_absolute():
         return str(path) if path.is_file() and os.access(path, os.X_OK) else None
+    if "/" in binary:
+        resolved = resolve_ref(binary)
+        return str(resolved) if resolved.is_file() and os.access(resolved, os.X_OK) else None
     return shutil.which(binary)
 
 
-def observe_cli(platform: str, *, timeout: float) -> CliEvidence:
+def resolve_platform_binary(platform: str) -> tuple[str, str | None, list[str]]:
     attempted: list[str] = []
     binary = BINARY_BY_PLATFORM[platform]
     resolved = None
@@ -154,6 +198,11 @@ def observe_cli(platform: str, *, timeout: float) -> CliEvidence:
         if resolved is not None:
             binary = candidate
             break
+    return binary, resolved, attempted
+
+
+def observe_cli(platform: str, *, timeout: float) -> CliEvidence:
+    binary, resolved, attempted = resolve_platform_binary(platform)
     if resolved is None:
         return CliEvidence(
             binary=binary,
@@ -181,6 +230,134 @@ def observe_cli(platform: str, *, timeout: float) -> CliEvidence:
             error=safe_text(result.stderr or result.stdout or f"exit {result.returncode}"),
         )
     return CliEvidence(binary=binary, available=True, version=output)
+
+
+def codex_exec_auth_sentinel_observed(stdout: str) -> bool:
+    if stdout.strip() == CODEX_EXEC_AUTH_SENTINEL:
+        return True
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if codex_exec_auth_event_text(event).strip() == CODEX_EXEC_AUTH_SENTINEL:
+            return True
+    return False
+
+
+def codex_exec_auth_event_text(event: Any) -> str:
+    if not isinstance(event, dict):
+        return ""
+    if event.get("type") == "item.completed":
+        item = event.get("item")
+        if isinstance(item, dict) and item.get("type") == "agent_message":
+            text = item.get("text")
+            return text if isinstance(text, str) else ""
+    if event.get("type") == "response.output_text.done":
+        text = event.get("text")
+        return text if isinstance(text, str) else ""
+    if event.get("role") == "assistant":
+        return assistant_content_text(event.get("content"))
+    message = event.get("message")
+    if isinstance(message, dict) and message.get("role") == "assistant":
+        return assistant_content_text(message.get("content"))
+    return ""
+
+
+def assistant_content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts = []
+    for part in content:
+        if isinstance(part, str):
+            parts.append(part)
+        elif isinstance(part, dict) and part.get("type") in {"text", "output_text"}:
+            text = part.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+    return "\n".join(parts)
+
+
+def observe_codex_exec_auth(*, enabled: bool, timeout: float) -> tuple[list[str], list[str]]:
+    if not enabled:
+        return [], ["codex_exec_auth_probe_not_requested"]
+    _, resolved, _ = resolve_platform_binary("codex")
+    if resolved is None:
+        return [], ["codex_exec_auth_binary_missing"]
+    token_file = Path(
+        os.environ.get("HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE", str(DEFAULT_PUBLISHED_ACCESS_TOKEN))
+    ).expanduser()
+    token = load_published_access_token(token_file=token_file)
+    if token is None:
+        return [], ["codex_exec_auth_published_access_token_absent_or_unsafe"]
+    if needs_refresh(token):
+        return [], ["codex_exec_auth_published_access_token_absent_or_expiring"]
+    command = [
+        resolved,
+        "exec",
+        "--ephemeral",
+        "--skip-git-repo-check",
+        "--ignore-rules",
+        "--sandbox",
+        "read-only",
+        "--json",
+        "--cd",
+        str(REPO_ROOT),
+        "Reply exactly: HAPAX_CODEX_EXEC_AUTH_OK",
+    ]
+    try:
+        with tempfile.TemporaryDirectory(prefix="hapax-codex-receipt-") as codex_home:
+            env = {
+                key: value
+                for key in (
+                    "ALL_PROXY",
+                    "HOME",
+                    "HTTP_PROXY",
+                    "HTTPS_PROXY",
+                    "LANG",
+                    "LC_ALL",
+                    "NO_PROXY",
+                    "PATH",
+                    "REQUESTS_CA_BUNDLE",
+                    "SSL_CERT_FILE",
+                )
+                if (value := os.environ.get(key)) is not None
+            }
+            env.update(
+                {
+                    "CODEX_ACCESS_TOKEN": token.raw,
+                    "CODEX_HOME": codex_home,
+                    "NO_COLOR": "1",
+                }
+            )
+            result = subprocess.run(
+                command,
+                check=False,
+                text=True,
+                capture_output=True,
+                timeout=timeout,
+                env=env,
+            )
+    except subprocess.TimeoutExpired:
+        return [], ["codex_exec_auth_timeout"]
+    except OSError:
+        return [], ["codex_exec_auth_exec_failed"]
+    if result.returncode == 0:
+        if codex_exec_auth_sentinel_observed(result.stdout):
+            return ["local:codex:exec:auth:observed"], []
+        return [], ["codex_exec_auth_sentinel_missing"]
+
+    output = safe_text(result.stderr or result.stdout or "", limit=300) or ""
+    reasons = ["codex_exec_auth_failed"]
+    if "agent identity JWT payload is not valid JSON" in output:
+        reasons.append("codex_exec_auth_agent_identity_jwt_invalid_json")
+    if "refresh_token_invalidated" in output:
+        reasons.append("codex_exec_auth_refresh_token_invalidated")
+    if re.search(r"(?i)(login required|required to log in|please log in|not logged in)", output):
+        reasons.append("codex_exec_auth_login_required")
+    return [], reasons
 
 
 def observe_wrapper(route: PlatformCapabilityRoute) -> WrapperEvidence:
@@ -251,6 +428,7 @@ def build_receipt(
     stale_after: str,
     provider_docs_stale_after: str,
     timeout: float,
+    codex_exec_auth_probe: bool,
 ) -> PlatformCapabilityReceipt:
     primary_route = routes[0]
     cli = observe_cli(platform, timeout=timeout)
@@ -259,19 +437,40 @@ def build_receipt(
     receipt_id = f"{platform}-{observed_at.strftime('%Y%m%dT%H%M%SZ')}"
     capability_reasons: list[str] = []
     capability_refs: list[str] = []
+    wrapper_usable = wrapper.exists and wrapper.executable and bool(wrapper.sha256)
     if cli.available:
         capability_refs.append(f"local:{platform}:cli-version:{cli.version or 'available'}")
     else:
         capability_reasons.append("cli_missing_or_unusable")
-    if wrapper.exists and wrapper.sha256:
+    if wrapper_usable:
         capability_refs.append(f"local:{wrapper.path}:sha256:{wrapper.sha256}")
+    elif wrapper.exists and wrapper.sha256 and not wrapper.executable:
+        capability_reasons.append("sanctioned_wrapper_not_executable")
     else:
         capability_reasons.append("sanctioned_wrapper_missing_or_unreadable")
+    if platform == "codex":
+        exec_auth_refs, exec_auth_reasons = observe_codex_exec_auth(
+            enabled=codex_exec_auth_probe,
+            timeout=timeout,
+        )
+        capability_refs.extend(exec_auth_refs)
+        capability_reasons.extend(exec_auth_reasons)
     capability_status = (
         EvidenceStatus.OBSERVED if not capability_reasons else EvidenceStatus.BLOCKED
     )
-    resource_status = EvidenceStatus.OBSERVED if wrapper.exists else EvidenceStatus.MISSING
-    resource_refs = [f"local:{wrapper.path}:exists:{str(wrapper.exists).lower()}"]
+    if wrapper_usable:
+        resource_status = EvidenceStatus.OBSERVED
+        resource_reasons: list[str] = []
+    elif wrapper.exists and not wrapper.executable:
+        resource_status = EvidenceStatus.BLOCKED
+        resource_reasons = ["wrapper_not_executable"]
+    else:
+        resource_status = EvidenceStatus.MISSING
+        resource_reasons = ["wrapper_missing"]
+    resource_refs = [
+        f"local:{wrapper.path}:exists:{str(wrapper.exists).lower()}",
+        f"local:{wrapper.path}:executable:{str(wrapper.executable).lower()}",
+    ]
     quota_reason = "account_live_quota_receipt_absent"
     quota = surface_evidence(
         status=EvidenceStatus.UNOBSERVABLE,
@@ -309,7 +508,7 @@ def build_receipt(
             observed_at=observed_at,
             stale_after=stale_after,
             evidence_refs=resource_refs,
-            reason_codes=[] if resource_status is EvidenceStatus.OBSERVED else ["wrapper_missing"],
+            reason_codes=resource_reasons,
         ),
         quota=quota,
         provider_docs=ProviderDocsEvidence(
@@ -327,18 +526,37 @@ def build_receipt(
 
 
 def known_unknowns_for(platform: str) -> list[str]:
-    unknowns = [
-        "Receipt command records config paths and existence only; it never reads secret values.",
-    ]
+    unknowns = []
     if platform == "api":
         unknowns.insert(
             0,
             "Provider spend is authorized by the quota/spend ledger, not by this local receipt.",
         )
+        unknowns.append(
+            "Receipt command records config paths and existence only; it never reads secret values."
+        )
+    elif platform == "glmcp":
+        unknowns.extend(
+            [
+                "GLMCP quota freshness is admitted by short-lived quota-spend-ledger receipts; this local receipt only checks wrapper/config/docs/resource surfaces.",
+                "GLMCP receipt refresh may read the pass-backed secret to verify wrapper availability; it records only redacted metadata and never persists the secret value.",
+            ]
+        )
+    elif platform == "codex":
+        unknowns.insert(
+            0,
+            "Account-live subscription quota is not exposed by the local receipt probe.",
+        )
+        unknowns.append(
+            "Codex exec-auth probe reads the published OAuth access token for a bounded CODEX_ACCESS_TOKEN witness; it records only redacted availability metadata and never persists the secret value."
+        )
     else:
         unknowns.insert(
             0,
             "Account-live subscription quota is not exposed by the local receipt probe.",
+        )
+        unknowns.append(
+            "Receipt command records config paths and existence only; it never reads secret values."
         )
     return unknowns
 
@@ -382,7 +600,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--stale-after", default="24h")
     parser.add_argument("--provider-docs-stale-after", default="30d")
     parser.add_argument("--timeout", type=float, default=5.0)
-    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--codex-exec-auth-probe",
+        action="store_true",
+        help=(
+            "For Codex receipts, run a bounded codex exec probe and only emit "
+            "exec-auth evidence if the dispatch auth path succeeds."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Do not write receipts. Observation probes still run, including "
+            "--codex-exec-auth-probe when that flag is supplied."
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
@@ -399,9 +632,8 @@ def main(argv: list[str] | None = None) -> int:
         retired = [platform for platform in unknown if platform in RETIRED_ANTIGRAV_PLATFORMS]
         for platform in retired:
             print(
-                f"platform '{platform}' is retired/excised; mint measured agy supply-leaf "
-                "intake with route/resource/governance receipts before any future "
-                "interactive worker path",
+                f"platform '{platform}' is retired/excised; use agy.review.direct for "
+                "the live read-only review route",
                 file=sys.stderr,
             )
         if retired:
@@ -420,6 +652,7 @@ def main(argv: list[str] | None = None) -> int:
             stale_after=args.stale_after,
             provider_docs_stale_after=args.provider_docs_stale_after,
             timeout=args.timeout,
+            codex_exec_auth_probe=args.codex_exec_auth_probe,
         )
         path = None if args.dry_run else write_receipt(receipt, args.receipt_dir)
         outputs.append(
@@ -429,6 +662,10 @@ def main(argv: list[str] | None = None) -> int:
                 "path": str(path) if path else None,
                 "cli_available": receipt.cli.available,
                 "wrapper_exists": receipt.wrapper.exists,
+                "capability_status": receipt.capability.status.value,
+                "capability_reason_codes": receipt.capability.reason_codes,
+                "resource_status": receipt.resource.status.value,
+                "resource_reason_codes": receipt.resource.reason_codes,
                 "quota_status": receipt.quota.status.value,
                 "quota_reason_codes": receipt.quota.reason_codes,
             }

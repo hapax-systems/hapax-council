@@ -170,7 +170,7 @@ def test_vibe_delegates_to_methodology_dispatch(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "retired_platform",
-    ["agy", "antigrav", "Antigrav", "antigravity", "gemini-cli"],
+    ["antigrav", "Antigrav", "antigravity", "gemini-cli"],
 )
 def test_antigrav_is_not_cross_runtime_dispatchable(tmp_path: Path, retired_platform: str) -> None:
     env, dispatcher_log = _env(tmp_path / "antigrav")
@@ -194,7 +194,7 @@ def test_antigrav_is_not_cross_runtime_dispatchable(tmp_path: Path, retired_plat
     assert result.returncode == 10
     canonical_platform = retired_platform.lower()
     assert f"platform '{canonical_platform}' is retired/excised" in result.stderr
-    assert "measured agy supply-leaf intake" in result.stderr
+    assert "agy.review.direct" in result.stderr
     assert not dispatcher_log.exists()
     ledger_path = Path(env["HAPAX_ORCHESTRATION_LEDGER_DIR"]) / "dispatch-ledger.jsonl"
     records = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()]
@@ -202,7 +202,7 @@ def test_antigrav_is_not_cross_runtime_dispatchable(tmp_path: Path, retired_plat
     assert records[-1]["target_platform"] == canonical_platform
     assert records[-1]["dispatch_id"].startswith("BLOCKED-")
     assert records[-1]["replay_key"]
-    assert "measured agy supply-leaf intake" in records[-1]["reason"]
+    assert "agy.review.direct" in records[-1]["reason"]
 
     second = subprocess.run(
         [
@@ -224,6 +224,36 @@ def test_antigrav_is_not_cross_runtime_dispatchable(tmp_path: Path, retired_plat
         json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()
     ]
     assert records_after == records
+
+
+def test_agy_platform_is_review_route_not_cross_runtime_worker(tmp_path: Path) -> None:
+    env, dispatcher_log = _env(tmp_path / "agy")
+
+    result = subprocess.run(
+        [
+            str(SCRIPT),
+            "--lane",
+            "beta",
+            "--platform",
+            "agy",
+            "--task",
+            "demo-task",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 10
+    assert "platform 'agy' is the non-launchable read-only agy.review.direct" in result.stderr
+    assert "scripts/hapax-agy-reviewer" in result.stderr
+    assert not dispatcher_log.exists()
+    ledger_path = Path(env["HAPAX_ORCHESTRATION_LEDGER_DIR"]) / "dispatch-ledger.jsonl"
+    records = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()]
+    assert records[-1]["outcome"] == "blocked"
+    assert records[-1]["target_platform"] == "agy"
+    assert "agy.review.direct" in records[-1]["reason"]
 
 
 def test_blocked_dispatch_receipt_dedup_is_flock_guarded() -> None:
@@ -270,15 +300,15 @@ def test_antigrav_lane_name_is_not_cross_runtime_dispatchable(
     )
 
     assert result.returncode == 10
-    assert f"lane '{retired_lane}' is retired/excised" in result.stderr
-    assert "measured agy supply-leaf intake" in result.stderr
+    assert f"lane '{retired_lane}' is non-launchable for cross-runtime dispatch" in result.stderr
+    assert "agy.review.direct" in result.stderr
     assert not dispatcher_log.exists()
     ledger_path = Path(env["HAPAX_ORCHESTRATION_LEDGER_DIR"]) / "dispatch-ledger.jsonl"
     records = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()]
     assert records[-1]["outcome"] == "blocked"
     assert records[-1]["target_lane"] == retired_lane
     assert records[-1]["target_platform"] == "codex"
-    assert f"lane '{retired_lane}' is retired/excised" in records[-1]["reason"]
+    assert f"lane '{retired_lane}' is non-launchable" in records[-1]["reason"]
 
 
 def test_list_eligible_skips_retired_antigrav_metadata(tmp_path: Path) -> None:

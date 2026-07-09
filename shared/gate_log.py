@@ -59,6 +59,12 @@ class GateEvent(BaseModel):
     p_correct: float | None = None  # judge confidence when gate_type implies one
     latency_ms: float | None = None
     cost_usd: float | None = None
+    # The spine's intake fit-score (demand-shape magnitude, 0..5; None = not scored).
+    # Additive + default None: reins' :route lens treats candidate RANKING as a spine
+    # decision (DARK); this is the spine echoing that measured demand magnitude so the
+    # lens has a non-fabricated input to surface. Never moves a Thompson posterior
+    # (provenance governs that) — it is observational only.
+    fit_score: float | None = None
     learning_eligibility: LearningEligibility | None = None
     provenance: Provenance = "unknown"  # only "witnessed" may move a posterior (see Provenance)
 

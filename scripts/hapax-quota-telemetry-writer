@@ -9,7 +9,8 @@ checked-in ``config/quota-spend-ledger-fixtures.json`` snapshot.
 Each tick does two writes:
 
 1. Refresh the per-provider platform capability receipts (quota / resource /
-   capability surfaces) via ``scripts/hapax-platform-capability-receipts --all``.
+   capability surfaces) via
+   ``scripts/hapax-platform-capability-receipts --all --codex-exec-auth-probe``.
    The registry freshness check reads these; the quota surface carries
    ``stale_after=15m``, so the paired systemd timer fires inside that window to
    keep subscription routes from HOLDing on ``quota_telemetry_stale_or_unknown``.
@@ -17,8 +18,10 @@ Each tick does two writes:
 2. Rebuild the live quota/spend ledger at
    ``~/.cache/hapax/orchestration/quota-spend-ledger-live.json`` (or
    ``$HAPAX_QUOTA_SPEND_LEDGER_LIVE``). Governance records (transition budgets,
-   spend receipts, dependencies, provenance, renewals) are carried over from the
-   checked-in base unchanged — telemetry never grants spend authority. The
+   dependencies, provenance, renewals) are carried over from the checked-in
+   base unchanged. Spend receipts are carried over from the base plus validated
+   GLMCP PAYG spend receipts reserved by ``scripts/hapax-glmcp-reviewer`` before
+   a paid fallback call; telemetry never grants spend authority. The
    telemetry fields are re-derived live:
 
    - ``captured_at``: now.
@@ -26,14 +29,22 @@ Each tick does two writes:
      relay receipts (``~/.cache/hapax/relay/receipts/<role>-quota-wall.yaml``,
      written by ``shared.quota_wall`` on observed 429/quota-exhaustion). An
      unexpired wall marks the platform ``exhausted``; otherwise the established
-     Claude/Codex/Gemini subscription routes are ``fresh``. GLMCP is stricter:
-     it is ``unknown`` unless a fresh, short-lived Coding Plan admission receipt
-     exists. Recheck admission evidence with
+     Claude/Codex subscription routes are ``fresh``. GLMCP and agy are stricter:
+     they are ``unknown`` unless a fresh, short-lived admission receipt exists.
+     Coding Plan quota walls block Coding Plan receipts, but a fresh
+     endpoint-matched PAYG admission can supersede that subscription wall only
+     when it is bound to the active Coding Plan quota-wall witness and a
+     validated PAYG spend receipt reservation.
+     Recheck admission evidence with
      ``find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '*glmcp-quota-admission*.yaml' -print``
      and ``scripts/hapax-quota-telemetry-writer --json``.
      If a receipt exists but GLMCP remains ``unknown``, read this writer's
      stderr warnings; malformed, stale, mismatched, or unbounded receipts are
      ignored loudly.
+     Recheck agy reviewer admission evidence with
+     ``find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '*agy-quota-admission*.yaml' -print``
+     and create fresh short-lived agy admission receipts only after a sanctioned
+     ``scripts/hapax-agy-reviewer`` smoke succeeds.
      Admission receipts with ``stale_after_seconds`` above 3600 seconds are
      intentionally ignored; write a fresh short-lived witness instead.
      The emergency false-negative recovery path is to create a fresh
@@ -46,18 +57,26 @@ Each tick does two writes:
      There is intentionally no environment-variable bypass for stale/unknown
      subscription quota. ``evidence_ref`` values are limited to 3-240 safe
      witness-reference characters.
+   - ``spend_receipts``: base governance receipts plus GLMCP PAYG estimated
+     spend receipts from ``*glmcp-payg-spend*.yaml``. These receipts are
+     validated through the inert ``SpendReceipt`` model before they can reduce
+     remaining paid-spend caps.
    - ``local_resource_state`` + local-compute snapshot: nvidia-smi VRAM
      pressure and load average, fail-closed to ``unknown`` when unprobeable.
 
 The output is validated through ``QuotaSpendLedger.model_validate`` before an
 atomic replace, so a bad tick can never clobber a good live ledger with junk.
-No secrets are read or persisted: the probes are local files, nvidia-smi, and
-the existing receipts script (which records config paths/existence only).
+No secrets are persisted. Capability receipt refresh performs bounded live route
+probes where the route requires them: GLMCP invokes ``hapax-glmcp-reviewer
+--check`` and Codex invokes the published-token ``codex exec`` auth witness.
+Both record redacted availability metadata only; local resource probes remain
+local files and nvidia-smi.
 """
 
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -65,6 +84,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -78,8 +98,12 @@ from shared.quota_spend_ledger import (  # noqa: E402
     DEFAULT_QUOTA_SPEND_LEDGER_LIVE,
     QUOTA_SPEND_LEDGER_FIXTURES,
     QUOTA_SPEND_LEDGER_LIVE_ENV,
+    PaidRouteEligibility,
+    PaidRouteRequest,
     QuotaSpendLedger,
     QuotaSpendLedgerError,
+    SpendReceipt,
+    evaluate_paid_route_eligibility,
     load_quota_spend_ledger,
 )
 
@@ -93,28 +117,103 @@ RELAY_RECEIPT_DIR = Path(
 # Subscription platforms with quota-wall detection and their canonical
 # dispatch route (the registry's primary subscription route per platform).
 SUBSCRIPTION_ROUTES = {
+    "agy": "agy.review.direct",
     "claude": "claude.headless.full",
     "codex": "codex.headless.full",
     "glmcp": "glmcp.review.direct",
 }
 
 SUBSCRIPTION_PROVIDERS = {
+    "agy": "google-antigravity-cli-agy",
     "glmcp": "z_ai-glm-coding-plan",
 }
 
+AGY_ADMISSION_SCHEMA = "hapax.agy_quota_admission.v1"
+AGY_ADMISSION_PROVIDER = SUBSCRIPTION_PROVIDERS["agy"]
+AGY_ADMISSION_CAPACITY_POOL = "subscription_quota"
+AGY_ADMISSION_SUPPORTED_TOOL = "hapax-agy-reviewer"
+AGY_ADMISSION_MODEL = "gemini-3.1-pro-preview"
+AGY_ADMISSION_SECRET_SOURCE = "agy:operator-session"
+AGY_ADMISSION_BILLING_MODE = "operator_session_subscription"
+AGY_ADMISSION_SMOKE_COMMAND = "scripts/hapax-agy-reviewer"
+AGY_ADMISSION_MAX_STALE_AFTER_SECONDS = 3600
+AGY_ADMISSION_RECEIPT_GLOB = "*agy-quota-admission*.yaml"
+AGY_ADMISSION_SAFE_RECEIPT_NAME_RE = re.compile(
+    r"\A[a-z0-9_.+-]*agy-quota-admission[a-z0-9_.+-]*\.yaml\Z"
+)
+AGY_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
+AGY_ADMISSION_SECRETISH_RE = re.compile(
+    r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
+    re.IGNORECASE,
+)
+AGY_ADMISSION_RECHECK_COMMAND = (
+    f"find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '{AGY_ADMISSION_RECEIPT_GLOB}' -print"
+)
+AGY_ADMISSION_RECOVERY_HINT = (
+    "false-negative recovery: create a fresh short-lived admission receipt with "
+    "scripts/hapax-agy-quota-admission after a sanctioned agy reviewer smoke succeeds"
+)
+AGY_ADMISSION_FIELDS = frozenset(
+    {
+        "schema",
+        "status",
+        "provider",
+        "capacity_pool",
+        "route_id",
+        "supported_tool",
+        "model",
+        "observed_at",
+        "stale_after_seconds",
+        "evidence_ref",
+        "secret_source",
+        "secret_value_persisted",
+        "prompt_or_output_persisted",
+        "billing_mode",
+        "smoke_command",
+        "smoke_returncode",
+        "smoke_stdout_validated",
+        "positive_admission",
+    }
+)
+
 GLMCP_ADMISSION_PROVIDER = SUBSCRIPTION_PROVIDERS["glmcp"]
 GLMCP_ADMISSION_CAPACITY_POOL = "subscription_quota"
+GLMCP_ADMISSION_PAYG_CAPACITY_POOL = "api_paid_spend"
+GLMCP_PAYG_BUDGET_PROVIDER = "z_ai"
+GLMCP_PAYG_BUDGET_PROFILE = "glmcp-review-direct"
+GLMCP_PAYG_BUDGET_TASK_CLASS = "independent-review"
+GLMCP_PAYG_BUDGET_QUALITY_FLOOR = "frontier_review_required"
+GLMCP_PAYG_ESTIMATED_COST_USD = "0.05"
 GLMCP_ADMISSION_SCHEMA = "hapax.glmcp_quota_admission.v1"
+GLMCP_CODING_PLAN_ENDPOINT = "https://api.z.ai/api/coding/paas/v4"
+GLMCP_PAYG_ENDPOINT = "https://api.z.ai/api/paas/v4"
 GLMCP_ADMISSION_TOOL_ENDPOINTS = {
-    "hapax-glmcp-reviewer": frozenset({"https://api.z.ai/api/coding/paas/v4"}),
+    "hapax-glmcp-reviewer": frozenset(
+        {
+            GLMCP_CODING_PLAN_ENDPOINT,
+            GLMCP_PAYG_ENDPOINT,
+        }
+    ),
 }
 GLMCP_ADMISSION_SUPPORTED_TOOLS = frozenset(GLMCP_ADMISSION_TOOL_ENDPOINTS)
 GLMCP_ADMISSION_ENDPOINTS = frozenset(
     endpoint for endpoints in GLMCP_ADMISSION_TOOL_ENDPOINTS.values() for endpoint in endpoints
 )
+GLMCP_ADMISSION_CONTRACT_BY_ENDPOINT = {
+    GLMCP_CODING_PLAN_ENDPOINT: {
+        "capacity_pool": GLMCP_ADMISSION_CAPACITY_POOL,
+        "billing_mode": "coding_plan_subscription",
+        "payg_fallback": "false",
+    },
+    GLMCP_PAYG_ENDPOINT: {
+        "capacity_pool": GLMCP_ADMISSION_PAYG_CAPACITY_POOL,
+        "billing_mode": "api_credit_payg",
+        "payg_fallback": "true",
+    },
+}
 # Keep this fail-closed. This receipt gates the direct GLM review route, so the
 # model must match scripts/hapax-glmcp-reviewer's Coding Plan adapter.
-GLMCP_ADMISSION_MODELS = frozenset({"glm-5"})
+GLMCP_ADMISSION_MODELS = frozenset({"glm-5.2"})
 GLMCP_ADMISSION_FIELDS = frozenset(
     {
         "billing_mode",
@@ -128,6 +227,8 @@ GLMCP_ADMISSION_FIELDS = frozenset(
         "payg_fallback",
         "provider",
         "prompt_or_output_persisted",
+        "primary_error_class",
+        "quota_wall_evidence_ref",
         "route_id",
         "schema",
         "secret_source",
@@ -138,6 +239,7 @@ GLMCP_ADMISSION_FIELDS = frozenset(
     }
 )
 GLMCP_ADMISSION_MAX_STALE_AFTER_SECONDS = 3600
+GLMCP_PAYG_PRIMARY_ERROR_CLASSES = frozenset({"daily_limit_exhausted", "quota_exhausted"})
 GLMCP_ADMISSION_RECEIPT_GLOB = "*glmcp-quota-admission*.yaml"
 GLMCP_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
 GLMCP_ADMISSION_SAFE_RECEIPT_NAME_RE = re.compile(
@@ -155,21 +257,108 @@ GLMCP_ADMISSION_RECOVERY_HINT = (
     "short-lived admission receipt with schema, status, provider, capacity_pool, route_id, "
     "supported_tool, endpoint, model, observed_at, stale_after_seconds, "
     "3-240 character evidence_ref, secret_source, secret_value_persisted=false, "
-    "prompt_or_output_persisted=false, billing_mode, and payg_fallback=false, "
-    "then rerun writer"
+    "prompt_or_output_persisted=false, billing_mode, and endpoint-matched payg_fallback, "
+    "then rerun writer; PAYG receipts also require an active paid-spend budget gate"
 )
+GLMCP_PAYG_SPEND_RECEIPT_SCHEMA = "hapax.glmcp_payg_spend.v1"
+GLMCP_PAYG_SPEND_RECEIPT_GLOB = "*glmcp-payg-spend*.yaml"
+GLMCP_PAYG_SPEND_SAFE_RECEIPT_NAME_RE = re.compile(
+    r"\A[a-z0-9_.+-]*glmcp-payg-spend[a-z0-9_.+-]*\.yaml\Z"
+)
+GLMCP_PAYG_SPEND_TASK_HASH_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
+GLMCP_PAYG_SPEND_FIELDS = frozenset(
+    {
+        "auth_surface",
+        "authority_case",
+        "billing_mode",
+        "budget_id",
+        "capacity_pool",
+        "cap_remaining_usd",
+        "created_at",
+        "effort",
+        "endpoint",
+        "estimated_cost_usd",
+        "actual_cost_usd",
+        "model_id",
+        "model_or_engine",
+        "payg_fallback",
+        "primary_error_class",
+        "prompt_or_output_persisted",
+        "provider",
+        "quality_floor",
+        "quality_preservation_reason",
+        "quantization",
+        "reconcile_by",
+        "reconciliation_state",
+        "reconciled_at",
+        "reconciliation_reason",
+        "route_id",
+        "schema",
+        "secret_source",
+        "secret_value_persisted",
+        "spend_id",
+        "spend_reason",
+        "status",
+        "support_artifact_authority",
+        "supported_tool",
+        "task_hash",
+        "task_id",
+    }
+)
+GLMCP_PAYG_SPEND_NULLABLE_FIELDS = frozenset(
+    {
+        "actual_cost_usd",
+        "cap_remaining_usd",
+        "model_id",
+        "model_or_engine",
+        "reconcile_by",
+        "reconciled_at",
+        "reconciliation_reason",
+    }
+)
+GLMCP_PAYG_SPEND_NULL_LITERALS = frozenset({"", "none", "null", "~"})
 
 
 @dataclass(frozen=True)
 class GlmcpAdmission:
     evidence_ref: str
     fresh_until: datetime
+    endpoint: str
+    witness_ref: str
+    primary_error_class: str | None = None
+    quota_wall_evidence_ref: str | None = None
 
 
 @dataclass(frozen=True)
 class GlmcpAdmissionScan:
     admissions: list[GlmcpAdmission]
     ignored_evidence_refs: list[str]
+
+
+@dataclass(frozen=True)
+class AgyAdmission:
+    evidence_ref: str
+    fresh_until: datetime
+
+
+@dataclass(frozen=True)
+class AgyAdmissionScan:
+    admissions: list[AgyAdmission]
+    ignored_evidence_refs: list[str]
+
+
+@dataclass(frozen=True)
+class GlmcpPaygSpendScan:
+    receipts: list[SpendReceipt]
+    ignored_evidence_refs: list[str]
+
+
+@dataclass(frozen=True)
+class QuotaWall:
+    evidence_ref: str
+    receipt_label: str
+    failure_class: str
+    rate_limit_type: str
 
 
 LOCAL_COMPUTE_ROUTE = "litellm.local.command-r-35b"
@@ -202,7 +391,9 @@ def role_platform(role: str) -> str:
         return "codex"
     if normalized.startswith("gemini") or normalized.startswith("gm-"):
         return "retired-gemini"
-    if normalized.startswith("antigrav") or normalized.startswith("agy"):
+    if normalized.startswith("agy"):
+        return "agy"
+    if normalized.startswith("antigrav"):
         return "antigrav"
     if normalized.startswith("vbe-") or normalized.startswith("vibe"):
         return "vibe"
@@ -222,7 +413,11 @@ def _parse_flat_yaml(text: str) -> dict[str, str]:
     return fields
 
 
-def _parse_flat_yaml_strict(text: str) -> tuple[dict[str, str], str | None]:
+def _parse_flat_yaml_strict(
+    text: str,
+    *,
+    allowed_fields: frozenset[str] = GLMCP_ADMISSION_FIELDS,
+) -> tuple[dict[str, str], str | None]:
     """Parse flat admission receipts and reject ambiguous YAML-shaped input."""
 
     fields: dict[str, str] = {}
@@ -238,7 +433,7 @@ def _parse_flat_yaml_strict(text: str) -> tuple[dict[str, str], str | None]:
         normalized_key = key.strip()
         if not normalized_key:
             return {}, f"empty key on line {line_no}"
-        if normalized_key not in GLMCP_ADMISSION_FIELDS:
+        if normalized_key not in allowed_fields:
             return {}, f"unsupported key on line {line_no}"
         if normalized_key in fields:
             return {}, f"duplicate key on line {line_no}"
@@ -272,12 +467,148 @@ def _warn_ignored_glmcp_admission(path: Path, reason: str) -> str:
     return f"relay-receipt:{receipt_label}:ignored:{_reason_code(reason)}"
 
 
+def _warn_ignored_glmcp_payg_spend(path: Path, reason: str) -> str:
+    receipt_label = _receipt_label(path)
+    print(
+        f"hapax-quota-telemetry-writer: ignoring GLMCP PAYG spend receipt {receipt_label}: "
+        f"{reason}; recheck: find ~/.cache/hapax/relay/receipts -maxdepth 1 "
+        f"-name '{GLMCP_PAYG_SPEND_RECEIPT_GLOB}' -print",
+        file=sys.stderr,
+    )
+    return f"relay-receipt:{receipt_label}:ignored:{_reason_code(reason)}"
+
+
+def _warn_stripped_glmcp_payg_spend_task_hash(path: Path, task_hash: str) -> None:
+    receipt_label = _receipt_label(path)
+    print(
+        "hapax-quota-telemetry-writer: stripped malformed optional task_hash from "
+        f"GLMCP PAYG spend receipt {receipt_label}; spend still counts against cap; "
+        f"task_hash={task_hash!r}",
+        file=sys.stderr,
+    )
+
+
+def _glmcp_payg_spend_field_is_nullish(key: str, value: str) -> bool:
+    return (
+        key in GLMCP_PAYG_SPEND_NULLABLE_FIELDS
+        and value.strip().strip("'\"").lower() in GLMCP_PAYG_SPEND_NULL_LITERALS
+    )
+
+
+def _glmcp_payg_budget_request(task_id: str) -> PaidRouteRequest:
+    return PaidRouteRequest.model_validate(
+        {
+            "route_id": "glmcp.review.direct",
+            "task_id": task_id,
+            "provider": GLMCP_PAYG_BUDGET_PROVIDER,
+            "profile": GLMCP_PAYG_BUDGET_PROFILE,
+            "task_class": GLMCP_PAYG_BUDGET_TASK_CLASS,
+            "quality_floor": GLMCP_PAYG_BUDGET_QUALITY_FLOOR,
+            "estimated_cost_usd": GLMCP_PAYG_ESTIMATED_COST_USD,
+            "capacity_pool": GLMCP_ADMISSION_PAYG_CAPACITY_POOL,
+        }
+    )
+
+
+def _glmcp_payg_spend_gate_ledger(base: QuotaSpendLedger, *, now: datetime) -> QuotaSpendLedger:
+    payload = base.model_dump(mode="json")
+    payload["captured_at"] = now.isoformat().replace("+00:00", "Z")
+    payload["generated_from"] = list(
+        dict.fromkeys([*payload["generated_from"], "scripts/hapax-quota-telemetry-writer"])
+    )
+    return QuotaSpendLedger.model_validate(payload)
+
+
+def _glmcp_payg_budget_decision(
+    base: QuotaSpendLedger,
+    *,
+    now: datetime,
+    task_id: str,
+) -> PaidRouteEligibility:
+    return evaluate_paid_route_eligibility(
+        _glmcp_payg_spend_gate_ledger(base, now=now),
+        _glmcp_payg_budget_request(task_id),
+        now=now,
+    )
+
+
+def _glmcp_payg_budget_evidence(decision: PaidRouteEligibility) -> list[str]:
+    evidence = [f"spend-gate:glmcp.review.direct:{decision.state}"]
+    for ref in decision.evidence_refs:
+        evidence.append(f"spend-gate-budget:{ref}")
+    if decision.budget_id:
+        evidence.append(f"spend-gate-budget:{decision.budget_id}")
+    for reason in decision.blocking_reasons:
+        evidence.append(f"spend-gate-blocker:{_reason_code(reason)}")
+    return list(dict.fromkeys(evidence))
+
+
+def _glmcp_payg_budget_reason(decision: PaidRouteEligibility) -> str:
+    if decision.eligible:
+        return (
+            f"PAYG fallback passed paid-spend gate budget {decision.budget_id}; "
+            "GLMCP remains receipt-bounded and budget-bounded"
+        )
+    blockers = "; ".join(decision.blocking_reasons) or decision.state
+    return f"PAYG fallback refused by paid-spend gate: {blockers}"
+
+
+def _payg_admission_matches_active_wall(
+    admission: GlmcpAdmission,
+    platform_walls: list[QuotaWall],
+) -> bool:
+    if (
+        admission.endpoint != GLMCP_PAYG_ENDPOINT
+        or not admission.quota_wall_evidence_ref
+        or not admission.primary_error_class
+    ):
+        return False
+    return any(
+        wall.receipt_label == admission.quota_wall_evidence_ref
+        and admission.primary_error_class in {wall.failure_class, wall.rate_limit_type}
+        for wall in platform_walls
+    )
+
+
+def _payg_spend_receipt_witness_refs(receipt: SpendReceipt) -> set[str]:
+    refs = {receipt.spend_id}
+    match = re.fullmatch(r"spend-([0-9]{8}T[0-9]{6}Z)-glmcp-payg-review-(.+)", receipt.spend_id)
+    if match is not None:
+        stamp, suffix = match.groups()
+        refs.add(f"glmcp-payg-spend-{stamp.lower()}-{suffix}.yaml")
+    return refs
+
+
+def _payg_admission_matching_spend_receipt(
+    admission: GlmcpAdmission,
+    receipts: list[SpendReceipt],
+) -> SpendReceipt | None:
+    if admission.endpoint != GLMCP_PAYG_ENDPOINT:
+        return None
+    return next(
+        (
+            receipt
+            for receipt in receipts
+            if admission.witness_ref in _payg_spend_receipt_witness_refs(receipt)
+        ),
+        None,
+    )
+
+
+def _payg_admission_has_validated_spend_receipt(
+    admission: GlmcpAdmission,
+    receipts: list[SpendReceipt],
+) -> bool:
+    return _payg_admission_matching_spend_receipt(admission, receipts) is not None
+
+
 def _receipt_label(path: Path) -> str:
     name = path.name
     if (
-        GLMCP_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(name)
-        and GLMCP_ADMISSION_SECRETISH_RE.search(name) is None
-    ):
+        AGY_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(name)
+        or GLMCP_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(name)
+        or GLMCP_PAYG_SPEND_SAFE_RECEIPT_NAME_RE.fullmatch(name)
+    ) and GLMCP_ADMISSION_SECRETISH_RE.search(name) is None:
         return name
     digest = hashlib.sha256(name.encode("utf-8", errors="replace")).hexdigest()[:16]
     return f"unsafe-receipt-name-sha256:{digest}"
@@ -287,10 +618,10 @@ def active_quota_walls(
     receipt_dir: Path,
     *,
     now: datetime,
-) -> dict[str, list[str]]:
+) -> dict[str, list[QuotaWall]]:
     """Return platform -> wall evidence refs for unexpired quota-wall receipts."""
 
-    walls: dict[str, list[str]] = {}
+    walls: dict[str, list[QuotaWall]] = {}
     if not receipt_dir.is_dir():
         return walls
     for path in sorted(receipt_dir.glob("*-quota-wall.yaml")):
@@ -314,10 +645,136 @@ def active_quota_walls(
                 file=sys.stderr,
             )
             continue
+        failure_class = fields.get("failure_class") or "unknown"
+        rate_limit_type = fields.get("rate_limit_type") or "unknown"
         walls.setdefault(platform, []).append(
-            f"relay-receipt:{path.name}:resets_at:{fields.get('resets_at') or 'unknown'}"
+            QuotaWall(
+                evidence_ref=(
+                    f"relay-receipt:{path.name}:failure_class:{failure_class}:"
+                    f"rate_limit_type:{rate_limit_type}:resets_at:"
+                    f"{fields.get('resets_at') or 'unknown'}"
+                ),
+                receipt_label=path.name,
+                failure_class=failure_class,
+                rate_limit_type=rate_limit_type,
+            )
         )
     return walls
+
+
+def _warn_ignored_agy_admission(path: Path, reason: str) -> str:
+    receipt_label = _receipt_label(path)
+    print(
+        "hapax-quota-telemetry-writer: ignoring agy admission receipt: "
+        f"validation failed; recheck: {AGY_ADMISSION_RECHECK_COMMAND}; "
+        f"{AGY_ADMISSION_RECOVERY_HINT}",
+        file=sys.stderr,
+    )
+    return f"relay-receipt:{receipt_label}:ignored:{_reason_code(reason)}"
+
+
+def active_agy_admission_receipts(
+    receipt_dir: Path,
+    *,
+    now: datetime,
+) -> AgyAdmissionScan:
+    """Return fresh positive agy route-specific admission evidence refs."""
+
+    if not receipt_dir.is_dir():
+        return AgyAdmissionScan(admissions=[], ignored_evidence_refs=[])
+    refs: list[AgyAdmission] = []
+    ignored_refs: list[str] = []
+
+    def reject(path: Path, reason: str) -> None:
+        ignored_refs.append(_warn_ignored_agy_admission(path, reason))
+
+    for path in sorted(receipt_dir.glob(AGY_ADMISSION_RECEIPT_GLOB)):
+        if AGY_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(path.name) is None:
+            reject(path, "unsafe receipt name")
+            continue
+        try:
+            raw_receipt = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            reject(path, f"unreadable receipt {type(exc).__name__}")
+            continue
+        fields, parse_error = _parse_flat_yaml_strict(
+            raw_receipt,
+            allowed_fields=AGY_ADMISSION_FIELDS,
+        )
+        if parse_error is not None:
+            reject(path, parse_error)
+            continue
+        expected = {
+            "schema": AGY_ADMISSION_SCHEMA,
+            "status": "quota_available",
+            "provider": AGY_ADMISSION_PROVIDER,
+            "route_id": SUBSCRIPTION_ROUTES["agy"],
+            "capacity_pool": AGY_ADMISSION_CAPACITY_POOL,
+            "supported_tool": AGY_ADMISSION_SUPPORTED_TOOL,
+            "model": AGY_ADMISSION_MODEL,
+            "secret_source": AGY_ADMISSION_SECRET_SOURCE,
+            "secret_value_persisted": "false",
+            "prompt_or_output_persisted": "false",
+            "billing_mode": AGY_ADMISSION_BILLING_MODE,
+            "smoke_command": AGY_ADMISSION_SMOKE_COMMAND,
+            "smoke_returncode": "0",
+            "smoke_stdout_validated": "true",
+            "positive_admission": "true",
+        }
+        failed = False
+        for key, value in expected.items():
+            if fields.get(key, "") != value:
+                reject(path, f"{key} missing or unsupported; expected {value}")
+                failed = True
+                break
+        if failed:
+            continue
+        receipt_evidence_ref = " ".join(fields.get("evidence_ref", "").strip().split())
+        if (
+            AGY_ADMISSION_EVIDENCE_REF_RE.fullmatch(receipt_evidence_ref) is None
+            or AGY_ADMISSION_SECRETISH_RE.search(receipt_evidence_ref) is not None
+        ):
+            reject(path, "evidence_ref unsafe; expected sanitized agy smoke witness reference")
+            continue
+        observed_at = _parse_utc(fields.get("observed_at", "").strip())
+        if observed_at is None:
+            reject(path, "missing or malformed observed_at")
+            continue
+        if observed_at > now:
+            reject(path, "observed_at is in the future")
+            continue
+        try:
+            stale_after_seconds = int(fields.get("stale_after_seconds", "").strip())
+        except ValueError:
+            reject(path, "malformed stale_after_seconds")
+            continue
+        if stale_after_seconds <= 0:
+            reject(path, "non-positive stale_after_seconds")
+            continue
+        if stale_after_seconds > AGY_ADMISSION_MAX_STALE_AFTER_SECONDS:
+            reject(
+                path,
+                f"stale_after_seconds exceeds maximum {AGY_ADMISSION_MAX_STALE_AFTER_SECONDS}",
+            )
+            continue
+        fresh_until = observed_at + timedelta(seconds=stale_after_seconds)
+        if now >= fresh_until:
+            reject(path, "receipt expired")
+            continue
+        refs.append(
+            AgyAdmission(
+                evidence_ref=(
+                    "relay-receipt:"
+                    f"{_receipt_label(path)}:witness:{receipt_evidence_ref}:"
+                    f"supported_tool:{AGY_ADMISSION_SUPPORTED_TOOL}:"
+                    f"model:{AGY_ADMISSION_MODEL}:"
+                    f"observed_at:{observed_at.isoformat().replace('+00:00', 'Z')}:"
+                    f"fresh_until:{fresh_until.isoformat().replace('+00:00', 'Z')}"
+                ),
+                fresh_until=fresh_until,
+            )
+        )
+    return AgyAdmissionScan(admissions=refs, ignored_evidence_refs=ignored_refs)
 
 
 def active_glmcp_admission_receipts(
@@ -375,13 +832,6 @@ def active_glmcp_admission_receipts(
                     f"provider missing or unsupported; expected {GLMCP_ADMISSION_PROVIDER}",
                 )
             continue
-        capacity_pool = fields.get("capacity_pool", "")
-        if capacity_pool != GLMCP_ADMISSION_CAPACITY_POOL:
-            reject(
-                path,
-                f"capacity_pool missing or unsupported; expected {GLMCP_ADMISSION_CAPACITY_POOL}",
-            )
-            continue
         route_id = fields.get("route_id", "")
         if route_id != SUBSCRIPTION_ROUTES["glmcp"]:
             reject(
@@ -400,7 +850,7 @@ def active_glmcp_admission_receipts(
         if endpoint not in GLMCP_ADMISSION_ENDPOINTS:
             reject(
                 path,
-                "endpoint missing or unsupported; expected official Z.ai Coding Plan endpoint",
+                "endpoint missing or unsupported; expected official Z.ai Coding Plan or PAYG endpoint",
             )
             continue
         if endpoint not in GLMCP_ADMISSION_TOOL_ENDPOINTS[supported_tool]:
@@ -409,11 +859,19 @@ def active_glmcp_admission_receipts(
                 "supported_tool/endpoint mismatch; expected official endpoint for supported tool",
             )
             continue
+        endpoint_contract = GLMCP_ADMISSION_CONTRACT_BY_ENDPOINT[endpoint]
+        capacity_pool = fields.get("capacity_pool", "")
+        if capacity_pool != endpoint_contract["capacity_pool"]:
+            reject(
+                path,
+                "capacity_pool missing or unsupported for endpoint",
+            )
+            continue
         model = fields.get("model", "")
         if model not in GLMCP_ADMISSION_MODELS:
             reject(
                 path,
-                "model missing or unsupported; expected documented GLM review model id glm-5",
+                "model missing or unsupported; expected documented GLM review model id glm-5.2",
             )
             continue
         receipt_evidence_ref = fields.get("evidence_ref", "").strip()
@@ -500,11 +958,32 @@ def active_glmcp_admission_receipts(
         if fields.get("prompt_or_output_persisted", "") != "false":
             reject(path, "prompt_or_output_persisted must be false")
             continue
-        if fields.get("billing_mode", "") != "coding_plan_subscription":
-            reject(path, "billing_mode missing or unsupported")
+        if fields.get("billing_mode", "") != endpoint_contract["billing_mode"]:
+            reject(path, "billing_mode missing or unsupported for endpoint")
             continue
-        if fields.get("payg_fallback", "") != "false":
-            reject(path, "payg_fallback must be false")
+        if fields.get("payg_fallback", "") != endpoint_contract["payg_fallback"]:
+            reject(path, "payg_fallback missing or unsupported for endpoint")
+            continue
+        primary_error_class = fields.get("primary_error_class", "").strip()
+        quota_wall_evidence_ref = fields.get("quota_wall_evidence_ref", "").strip()
+        if endpoint == GLMCP_PAYG_ENDPOINT:
+            if primary_error_class not in GLMCP_PAYG_PRIMARY_ERROR_CLASSES:
+                reject(
+                    path,
+                    "PAYG admission missing supported primary Coding Plan quota-wall class",
+                )
+                continue
+            if (
+                GLMCP_ADMISSION_EVIDENCE_REF_RE.fullmatch(quota_wall_evidence_ref) is None
+                or GLMCP_ADMISSION_SECRETISH_RE.search(quota_wall_evidence_ref) is not None
+            ):
+                reject(
+                    path,
+                    "PAYG admission missing sanitized quota-wall evidence reference",
+                )
+                continue
+        elif primary_error_class or quota_wall_evidence_ref:
+            reject(path, "Coding Plan admission carried PAYG-only witness fields")
             continue
         refs.append(
             GlmcpAdmission(
@@ -512,13 +991,185 @@ def active_glmcp_admission_receipts(
                     "relay-receipt:"
                     f"{_receipt_label(path)}:witness:{receipt_evidence_ref}:"
                     f"supported_tool:{supported_tool}:endpoint:{endpoint}:model:{model}:"
-                    f"observed_at:{observed_at.isoformat().replace('+00:00', 'Z')}:"
+                    + (
+                        f"primary_error_class:{primary_error_class}:"
+                        f"quota_wall_evidence_ref:{quota_wall_evidence_ref}:"
+                        if endpoint == GLMCP_PAYG_ENDPOINT
+                        else ""
+                    )
+                    + f"observed_at:{observed_at.isoformat().replace('+00:00', 'Z')}:"
                     f"fresh_until:{fresh_until.isoformat().replace('+00:00', 'Z')}"
                 ),
                 fresh_until=fresh_until,
+                endpoint=endpoint,
+                witness_ref=receipt_evidence_ref,
+                primary_error_class=primary_error_class or None,
+                quota_wall_evidence_ref=quota_wall_evidence_ref or None,
             )
         )
     return GlmcpAdmissionScan(admissions=refs, ignored_evidence_refs=ignored_refs)
+
+
+def active_glmcp_payg_spend_receipts(
+    receipt_dir: Path,
+    *,
+    base: QuotaSpendLedger,
+    now: datetime,
+) -> GlmcpPaygSpendScan:
+    """Return validated pending GLMCP PAYG spend receipts for budget accounting."""
+
+    if not receipt_dir.is_dir():
+        return GlmcpPaygSpendScan(receipts=[], ignored_evidence_refs=[])
+    receipts: list[SpendReceipt] = []
+    ignored_refs: list[str] = []
+    budget_by_id = {budget.budget_id: budget for budget in base.transition_budgets}
+
+    def reject(path: Path, reason: str) -> None:
+        ignored_refs.append(_warn_ignored_glmcp_payg_spend(path, reason))
+
+    for path in sorted(receipt_dir.glob(GLMCP_PAYG_SPEND_RECEIPT_GLOB)):
+        try:
+            raw_receipt = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            reject(path, f"unreadable receipt {type(exc).__name__}")
+            continue
+        fields, parse_error = _parse_flat_yaml_strict(
+            raw_receipt,
+            allowed_fields=GLMCP_PAYG_SPEND_FIELDS,
+        )
+        if parse_error is not None:
+            reject(path, parse_error)
+            continue
+        if fields.get("schema", "") != GLMCP_PAYG_SPEND_RECEIPT_SCHEMA:
+            reject(
+                path, f"schema missing or unsupported; expected {GLMCP_PAYG_SPEND_RECEIPT_SCHEMA}"
+            )
+            continue
+        if fields.get("status", "") not in {"spend_estimated", "spend_reconciled"}:
+            reject(path, "status missing or unsupported; expected spend_estimated/spend_reconciled")
+            continue
+        if fields.get("supported_tool", "") != "hapax-glmcp-reviewer":
+            reject(path, "supported_tool missing or unsupported")
+            continue
+        if fields.get("endpoint", "") != GLMCP_PAYG_ENDPOINT:
+            reject(path, "endpoint missing or unsupported; expected official Z.ai PAYG endpoint")
+            continue
+        if fields.get("billing_mode", "") != "api_credit_payg":
+            reject(path, "billing_mode missing or unsupported")
+            continue
+        if fields.get("payg_fallback", "") != "true":
+            reject(path, "payg_fallback must be true")
+            continue
+        if fields.get("secret_source", "") != "pass:glmcp/api-key":
+            reject(path, "secret_source missing or unsupported")
+            continue
+        if fields.get("secret_value_persisted", "") != "false":
+            reject(path, "secret_value_persisted must be false")
+            continue
+        if fields.get("prompt_or_output_persisted", "") != "false":
+            reject(path, "prompt_or_output_persisted must be false")
+            continue
+        if fields.get("primary_error_class", "") not in GLMCP_PAYG_PRIMARY_ERROR_CLASSES:
+            reject(path, "primary_error_class missing or unsupported")
+            continue
+        if fields.get("route_id", "") != "glmcp.review.direct":
+            reject(path, "route_id missing or unsupported")
+            continue
+        if fields.get("capacity_pool", "") != GLMCP_ADMISSION_PAYG_CAPACITY_POOL:
+            reject(path, "capacity_pool missing or unsupported")
+            continue
+        if fields.get("provider", "") != GLMCP_PAYG_BUDGET_PROVIDER:
+            reject(path, "provider missing or unsupported")
+            continue
+        if fields.get("model_or_engine", "") != "glm-5.2":
+            reject(path, "model_or_engine missing or unsupported")
+            continue
+        if fields.get("estimated_cost_usd", "") != GLMCP_PAYG_ESTIMATED_COST_USD:
+            reject(path, "estimated_cost_usd missing or unsupported")
+            continue
+        budget = budget_by_id.get(fields.get("budget_id", ""))
+        if budget is None:
+            reject(path, "budget_id missing or unknown")
+            continue
+        if fields.get("authority_case", "") != budget.authority_case:
+            reject(path, "authority_case does not match budget")
+            continue
+        created_at = _parse_utc(fields.get("created_at", ""))
+        if created_at is None:
+            reject(path, "created_at missing or malformed")
+            continue
+        if created_at > now:
+            reject(path, "created_at is in the future")
+            continue
+        reconcile_by = _parse_utc(fields.get("reconcile_by", ""))
+        if reconcile_by is None:
+            reject(path, "reconcile_by missing or malformed")
+            continue
+        receipt_payload = {
+            key: value
+            for key, value in fields.items()
+            if key
+            in {
+                "auth_surface",
+                "authority_case",
+                "budget_id",
+                "capacity_pool",
+                "cap_remaining_usd",
+                "created_at",
+                "effort",
+                "estimated_cost_usd",
+                "actual_cost_usd",
+                "model_id",
+                "model_or_engine",
+                "provider",
+                "quality_floor",
+                "quality_preservation_reason",
+                "quantization",
+                "reconcile_by",
+                "reconciliation_state",
+                "reconciled_at",
+                "reconciliation_reason",
+                "route_id",
+                "spend_id",
+                "spend_reason",
+                "support_artifact_authority",
+                "task_hash",
+                "task_id",
+            }
+            and not _glmcp_payg_spend_field_is_nullish(key, value)
+        }
+        task_hash = receipt_payload.get("task_hash")
+        if isinstance(task_hash, str) and not GLMCP_PAYG_SPEND_TASK_HASH_RE.fullmatch(task_hash):
+            _warn_stripped_glmcp_payg_spend_task_hash(path, task_hash)
+            receipt_payload.pop("task_hash", None)
+        receipt_payload["spend_receipt_schema"] = 1
+        try:
+            receipts.append(SpendReceipt.model_validate(receipt_payload))
+        except (ValueError, TypeError) as exc:
+            reject(path, f"invalid SpendReceipt contract: {type(exc).__name__}")
+            continue
+    return GlmcpPaygSpendScan(receipts=receipts, ignored_evidence_refs=ignored_refs)
+
+
+def _ledger_with_glmcp_payg_spend_receipts(
+    base: QuotaSpendLedger,
+    receipts: list[SpendReceipt],
+) -> QuotaSpendLedger:
+    if not receipts:
+        return base
+    payload = base.model_dump(mode="json")
+    existing_ids = {receipt["spend_id"] for receipt in payload["spend_receipts"]}
+    new_receipts: list[dict[str, Any]] = []
+    for receipt in receipts:
+        if receipt.spend_id in existing_ids:
+            continue
+        existing_ids.add(receipt.spend_id)
+        new_receipts.append(receipt.model_dump(mode="json"))
+    payload["spend_receipts"] = [
+        *payload["spend_receipts"],
+        *new_receipts,
+    ]
+    return QuotaSpendLedger.model_validate(payload)
 
 
 def probe_local_resource_state(*, nvidia_smi: str = "nvidia-smi") -> tuple[str, list[str]]:
@@ -578,14 +1229,19 @@ def build_live_ledger(
     base: QuotaSpendLedger,
     *,
     now: datetime,
-    walls: dict[str, list[str]],
+    walls: dict[str, list[QuotaWall]],
+    agy_admissions: list[AgyAdmission],
+    agy_ignored_receipts: list[str],
     glmcp_admissions: list[GlmcpAdmission],
     glmcp_ignored_receipts: list[str],
+    glmcp_payg_spend_receipts: list[SpendReceipt],
+    glmcp_ignored_payg_spend_receipts: list[str],
     local_resource_state: str,
     local_resource_evidence: list[str],
 ) -> QuotaSpendLedger:
     """Carry governance records over from base; re-derive telemetry live."""
 
+    spend_base = _ledger_with_glmcp_payg_spend_receipts(base, glmcp_payg_spend_receipts)
     stamp = now.strftime("%Y%m%dT%H%M%SZ")
     # QuotaSnapshot ids must match ^quota-[a-z0-9_.:-]+$ — lowercase the stamp.
     snapshot_stamp = stamp.lower()
@@ -594,34 +1250,181 @@ def build_live_ledger(
     snapshots: list[dict[str, Any]] = []
     for platform, route_id in sorted(SUBSCRIPTION_ROUTES.items()):
         platform_walls = walls.get(platform, [])
-        if platform_walls:
+        platform_wall_evidence = [wall.evidence_ref for wall in platform_walls]
+        agy_platform_admissions = [admission for admission in agy_admissions if platform == "agy"]
+        glmcp_payg_admissions = [
+            admission
+            for admission in glmcp_admissions
+            if platform == "glmcp" and admission.endpoint == GLMCP_PAYG_ENDPOINT
+        ]
+        glmcp_wall_matched_payg_admissions = [
+            admission
+            for admission in glmcp_payg_admissions
+            if _payg_admission_matches_active_wall(admission, platform_walls)
+        ]
+        glmcp_spend_bound_payg_admissions: list[tuple[GlmcpAdmission, SpendReceipt]] = []
+        for admission in glmcp_wall_matched_payg_admissions:
+            receipt = _payg_admission_matching_spend_receipt(
+                admission,
+                glmcp_payg_spend_receipts,
+            )
+            if receipt is not None:
+                glmcp_spend_bound_payg_admissions.append((admission, receipt))
+        glmcp_coding_plan_admissions = [
+            admission
+            for admission in glmcp_admissions
+            if platform == "glmcp" and admission.endpoint == GLMCP_CODING_PLAN_ENDPOINT
+        ]
+        glmcp_payg_budget_decisions = [
+            (
+                admission,
+                receipt,
+                _glmcp_payg_budget_decision(spend_base, now=now, task_id=receipt.task_id),
+            )
+            for admission, receipt in glmcp_spend_bound_payg_admissions
+        ]
+        glmcp_eligible_payg_budget_decisions = [
+            (admission, receipt, decision)
+            for admission, receipt, decision in glmcp_payg_budget_decisions
+            if decision.eligible
+        ]
+        glmcp_payg_budget_evidence = list(
+            dict.fromkeys(
+                evidence
+                for _, _, decision in glmcp_payg_budget_decisions
+                for evidence in _glmcp_payg_budget_evidence(decision)
+            )
+        )
+        glmcp_payg_budget_reason = "; ".join(
+            dict.fromkeys(
+                _glmcp_payg_budget_reason(decision)
+                for _, _, decision in glmcp_payg_budget_decisions
+            )
+        )
+        if not glmcp_payg_budget_reason:
+            glmcp_payg_budget_reason = (
+                "PAYG fallback did not reach paid-spend gate because no matching "
+                "task-bound spend receipt witness was available"
+            )
+        if platform == "agy":
+            if agy_platform_admissions:
+                state = "fresh"
+                evidence = [
+                    *(admission.evidence_ref for admission in agy_platform_admissions),
+                    writer_ref,
+                ]
+                fresh_until = max(admission.fresh_until for admission in agy_platform_admissions)
+                reason = (
+                    "fresh agy supported-tool route admission receipt present; "
+                    "agy.review.direct remains receipt-bounded and reviewer-only"
+                )
+            else:
+                state = "unknown"
+                evidence = (
+                    [*agy_ignored_receipts, writer_ref]
+                    if agy_ignored_receipts
+                    else ["relay-receipt:agy:quota-admission:absent", writer_ref]
+                )
+                fresh_until = None
+                reason = (
+                    "no fresh agy route-specific quota admission receipt; agy.review.direct "
+                    "must hold/backoff rather than dispatch blind"
+                )
+        elif platform_walls and glmcp_eligible_payg_budget_decisions:
+            state = "fresh"
+            eligible_admissions = [
+                admission for admission, _, _ in glmcp_eligible_payg_budget_decisions
+            ]
+            evidence = [
+                *platform_wall_evidence,
+                *(admission.evidence_ref for admission in eligible_admissions),
+                *(
+                    f"spend-gate-payg-receipt:{admission.witness_ref}"
+                    for admission in eligible_admissions
+                ),
+                *glmcp_payg_budget_evidence,
+                writer_ref,
+            ]
+            fresh_until = max(admission.fresh_until for admission in eligible_admissions)
+            reason = (
+                "GLMCP Coding Plan quota wall is present, but a fresh API-credit PAYG "
+                "supported-tool admission receipt, validated spend receipt reservation, and "
+                "paid-spend gate keep the review route available. " + glmcp_payg_budget_reason
+            )
+        elif platform_walls and glmcp_payg_admissions:
+            spend_receipt_blocker = []
+            if glmcp_wall_matched_payg_admissions and not glmcp_spend_bound_payg_admissions:
+                spend_receipt_blocker.append(
+                    "spend-gate-blocker:validated-payg-spend-receipt-absent"
+                )
             state = "exhausted"
-            evidence = [*platform_walls, writer_ref]
+            evidence = [
+                *platform_wall_evidence,
+                *(admission.evidence_ref for admission in glmcp_payg_admissions),
+                *glmcp_payg_budget_evidence,
+                *spend_receipt_blocker,
+                writer_ref,
+            ]
+            fresh_until = None
+            reason = (
+                "GLMCP Coding Plan quota wall is present, and PAYG admission cannot supersede "
+                "it without a matching active quota-wall witness, validated PAYG spend receipt "
+                "reservation, and active paid-spend gate. " + glmcp_payg_budget_reason
+            )
+        elif platform_walls:
+            state = "exhausted"
+            evidence = [*platform_wall_evidence, writer_ref]
             fresh_until = None
             reason = (
                 f"{platform} subscription lane hit an unexpired quota wall; "
                 "state from quota-wall relay receipt(s)"
             )
         elif platform == "glmcp":
-            if glmcp_admissions:
+            if glmcp_coding_plan_admissions:
                 state = "fresh"
-                evidence = [*(admission.evidence_ref for admission in glmcp_admissions), writer_ref]
-                fresh_until = max(admission.fresh_until for admission in glmcp_admissions)
+                evidence = [
+                    *(admission.evidence_ref for admission in glmcp_coding_plan_admissions),
+                    writer_ref,
+                ]
+                fresh_until = max(
+                    admission.fresh_until for admission in glmcp_coding_plan_admissions
+                )
                 reason = (
                     "fresh GLMCP supported-tool quota admission receipt present; "
                     "GLM Coding Plan Max remains finite and receipt-bounded"
                 )
+            elif glmcp_payg_admissions:
+                state = "unknown"
+                evidence = [
+                    *(admission.evidence_ref for admission in glmcp_payg_admissions),
+                    *glmcp_payg_budget_evidence,
+                    writer_ref,
+                ]
+                reason = (
+                    "GLMCP PAYG admission receipt was present without an active Coding Plan "
+                    "quota-wall witness; PAYG cannot be treated as the primary rail and "
+                    "unknown quota must hold/backoff. " + glmcp_payg_budget_reason
+                )
+                fresh_until = None
             else:
                 state = "unknown"
                 if glmcp_ignored_receipts:
-                    evidence = [*glmcp_ignored_receipts, writer_ref]
+                    evidence = [
+                        *glmcp_ignored_receipts,
+                        *glmcp_ignored_payg_spend_receipts,
+                        writer_ref,
+                    ]
                     reason = (
                         "GLMCP quota admission receipt(s) were present but rejected; "
                         "GLM Coding Plan Max is finite and rejected evidence must "
                         "hold/backoff rather than dispatch blind"
                     )
                 else:
-                    evidence = ["relay-receipt:glmcp:quota-admission:absent", writer_ref]
+                    evidence = [
+                        "relay-receipt:glmcp:quota-admission:absent",
+                        *glmcp_ignored_payg_spend_receipts,
+                        writer_ref,
+                    ]
                     reason = (
                         "no fresh GLMCP quota admission receipt; GLM Coding Plan Max is finite "
                         "and unknown quota must hold/backoff rather than dispatch blind"
@@ -667,7 +1470,7 @@ def build_live_ledger(
         }
     )
 
-    base_payload = base.model_dump(mode="json")
+    base_payload = spend_base.model_dump(mode="json")
     generated_from = list(dict.fromkeys([*base_payload["generated_from"], writer_ref]))
     evidence_refs = list(dict.fromkeys([*base_payload["evidence_refs"], writer_ref]))
     payload = {
@@ -696,16 +1499,36 @@ def write_ledger_atomic(ledger: QuotaSpendLedger, path: Path) -> None:
         raise
 
 
+@contextmanager
+def quota_spend_live_lock(path: Path) -> Any:
+    lock_path = path.with_name(f"{path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def refresh_capability_receipts(*, timeout: float) -> bool:
     """Refresh per-provider capability receipts; failure degrades, not aborts."""
 
     script = REPO_ROOT / "scripts" / "hapax-platform-capability-receipts"
+    outer_timeout = max(timeout * 3, timeout + 15)
     try:
         result = subprocess.run(
-            [sys.executable, str(script), "--all"],
+            [
+                sys.executable,
+                str(script),
+                "--all",
+                "--codex-exec-auth-probe",
+                "--timeout",
+                str(timeout),
+            ],
             capture_output=True,
             text=True,
-            timeout=timeout,
+            timeout=outer_timeout,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         print(
@@ -775,29 +1598,39 @@ def main(argv: list[str] | None = None) -> int:
         print(f"hapax-quota-telemetry-writer: base ledger unusable: {exc}", file=sys.stderr)
         return 1
 
-    walls = active_quota_walls(args.relay_receipt_dir, now=now)
-    glmcp_scan = active_glmcp_admission_receipts(args.relay_receipt_dir, now=now)
-    resource_state, resource_evidence = probe_local_resource_state(nvidia_smi=args.nvidia_smi)
-    try:
-        ledger = build_live_ledger(
-            base,
-            now=now,
-            walls=walls,
-            glmcp_admissions=glmcp_scan.admissions,
-            glmcp_ignored_receipts=glmcp_scan.ignored_evidence_refs,
-            local_resource_state=resource_state,
-            local_resource_evidence=resource_evidence,
-        )
-    except (ValueError, QuotaSpendLedgerError) as exc:
-        print(f"hapax-quota-telemetry-writer: live ledger invalid: {exc}", file=sys.stderr)
-        return 1
-
     if args.out is not None:
         out_path = args.out
     else:
         configured = os.environ.get(QUOTA_SPEND_LEDGER_LIVE_ENV)
         out_path = Path(configured).expanduser() if configured else DEFAULT_QUOTA_SPEND_LEDGER_LIVE
-    write_ledger_atomic(ledger, out_path)
+    with quota_spend_live_lock(out_path):
+        walls = active_quota_walls(args.relay_receipt_dir, now=now)
+        agy_scan = active_agy_admission_receipts(args.relay_receipt_dir, now=now)
+        glmcp_scan = active_glmcp_admission_receipts(args.relay_receipt_dir, now=now)
+        glmcp_payg_spend_scan = active_glmcp_payg_spend_receipts(
+            args.relay_receipt_dir,
+            base=base,
+            now=now,
+        )
+        resource_state, resource_evidence = probe_local_resource_state(nvidia_smi=args.nvidia_smi)
+        try:
+            ledger = build_live_ledger(
+                base,
+                now=now,
+                walls=walls,
+                agy_admissions=agy_scan.admissions,
+                agy_ignored_receipts=agy_scan.ignored_evidence_refs,
+                glmcp_admissions=glmcp_scan.admissions,
+                glmcp_ignored_receipts=glmcp_scan.ignored_evidence_refs,
+                glmcp_payg_spend_receipts=glmcp_payg_spend_scan.receipts,
+                glmcp_ignored_payg_spend_receipts=glmcp_payg_spend_scan.ignored_evidence_refs,
+                local_resource_state=resource_state,
+                local_resource_evidence=resource_evidence,
+            )
+        except (ValueError, QuotaSpendLedgerError) as exc:
+            print(f"hapax-quota-telemetry-writer: live ledger invalid: {exc}", file=sys.stderr)
+            return 1
+        write_ledger_atomic(ledger, out_path)
 
     summary = {
         "ledger_id": ledger.ledger_id,
@@ -805,8 +1638,12 @@ def main(argv: list[str] | None = None) -> int:
         "out": str(out_path),
         "receipts_refreshed": receipts_ok,
         "local_resource_state": resource_state,
+        "agy_admissions": len(agy_scan.admissions),
+        "agy_ignored_admissions": len(agy_scan.ignored_evidence_refs),
         "glmcp_admissions": len(glmcp_scan.admissions),
         "glmcp_ignored_admissions": len(glmcp_scan.ignored_evidence_refs),
+        "glmcp_payg_spend_receipts": len(glmcp_payg_spend_scan.receipts),
+        "glmcp_ignored_payg_spend_receipts": len(glmcp_payg_spend_scan.ignored_evidence_refs),
         "quota_walls": {platform: len(refs) for platform, refs in sorted(walls.items())},
         "snapshot_count": len(ledger.quota_snapshots),
     }

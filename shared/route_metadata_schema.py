@@ -12,7 +12,7 @@ import json
 import os
 import re
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, Self
@@ -2298,6 +2298,8 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, (list, tuple, set, frozenset)):
         return [_jsonable(item) for item in value]
     if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
         return value.isoformat()
     if isinstance(value, Path):
         return str(value)

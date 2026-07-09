@@ -1,8 +1,14 @@
 # License reconciliation status
 
-**Status:** RESOLVED — all four canonical surfaces declare PolyForm Strict 1.0.0.
+**Status:** LOCAL LICENSE POSTURE RECONCILED — live GitHub/license-detection
+closure is tracked separately in the public-surface live-state report. Zenodo's
+machine `license` field uses `other-closed` because PolyForm Strict is not a
+standard Zenodo license id; the same Zenodo record carries the explicit
+repository-license note. Verify that note from the checked-in `.zenodo.json`
+object itself; GitHub diff views may truncate before the `notes` field. The
+`Recheck` section below includes the runnable JSON/YAML assertion.
 
-## Current state
+## Current Local State
 
 | Surface | Declared license |
 |---|---|
@@ -10,7 +16,18 @@
 | `NOTICE.md` | PolyForm Strict 1.0.0 |
 | `CITATION.cff` | `license: PolyForm-Strict-1.0.0` |
 | `codemeta.json` | `https://polyformproject.org/licenses/strict/1.0.0/` |
+| `.zenodo.json` | `license: other-closed`; `notes` names PolyForm Strict 1.0.0 |
 | `README.md` | Defers to `NOTICE.md` / `CITATION.cff` / `codemeta.json` |
+| Public prose | Uses "source-visible" to describe inspectability, not an open-source license |
+
+## DOI Succession Status
+
+The existing Zenodo snapshot DOI `10.5281/zenodo.20113515` and concept DOI
+`10.5281/zenodo.20113514` remain the active citation identifiers for this
+repository. They are retained in `.zenodo.json`, `CITATION.cff`, and the README
+badge. No replacement deposit is active in this branch; any future
+Hapax Systems org-owned successor deposit must document the relationship to
+these identifiers before removing or superseding them from citation surfaces.
 
 ## Decision rationale (2026-05-09)
 
@@ -23,9 +40,28 @@ Path 1 adopted per operator directive ("research best license for me and go with
 5. **No obligation to supporters:** Zero CLAs, no copyleft enforcement, no reciprocal sharing.
 6. **Constitutional alignment:** `single_user` axiom (weight 100) and NOTICE.md's refusal stance are philosophically coherent with PolyForm Strict.
 
-## Remaining items
+## Remaining Items
 
-- ✅ All four metadata surfaces converged
-- ⏳ Verify GitHub `licensee` gem detects PolyForm Strict in repository settings
-- ✅ Profile README at correct public GitHub location (`ryanklee/ryanklee/README.md`)
+- ✅ Repository license posture converges on PolyForm Strict 1.0.0; Zenodo uses
+  `other-closed` only as its platform compatibility field and carries the
+  PolyForm Strict note in `notes`
+- ⏳ Reconcile live GitHub/licensee detection where the live-state report still
+  records blocking license-detection drift
+- ✅ Profile README at correct public GitHub location (`hapax-systems/.github/profile/README.md`)
 - ✅ README/profile drift checks in `tests/docs/test_readme_current_project_spine.py` and `tests/docs/test_github_profile_readme_spine.py`
+
+## Recheck
+
+```bash
+uv run python scripts/github-public-surface-reconcile.py
+gh api repos/hapax-systems/.github/contents/profile/README.md --jq '{path,sha,html_url}'
+gh api repos/hapax-systems/hapax-council --jq '{repo:.full_name,license:.license}'
+python - <<'PY'
+import json, pathlib, yaml
+assert yaml.safe_load(pathlib.Path("CITATION.cff").read_text())["license"] == "PolyForm-Strict-1.0.0"
+assert json.loads(pathlib.Path("codemeta.json").read_text())["license"].endswith("/strict/1.0.0/")
+zenodo = json.loads(pathlib.Path(".zenodo.json").read_text())
+assert zenodo["license"] == "other-closed" and "PolyForm Strict 1.0.0" in zenodo["notes"]
+PY
+uv run pytest tests/docs/test_readme_current_project_spine.py::TestLicenseReconciliationStatusDoc tests/shared/test_github_public_surface.py -q
+```
