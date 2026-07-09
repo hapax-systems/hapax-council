@@ -2996,3 +2996,94 @@ class TestClassifyFailureReceipt:
         assert rt.is_reviewer_route_unavailable(text, process_failed=True)
         assert rt.is_provider_outage(text, process_failed=True)
         assert rt.classify_failure(text, process_failed=True).code is FailureCode.ROUTE_UNAVAILABLE
+
+
+class TestOperatorRatificationGate:
+    """Data-owner ratification ledger: criticals whose (lens, file) are named by an
+    active entry are waived with a receipt; everything else blocks. Fail-closed on
+    malformed ledgers and unproven checkouts (go-gate binding rule)."""
+
+    LEDGER = """ratifications_schema: 1
+ratifications:
+  - id: RAT-TEST-1
+    ratified: "2026-07-09"
+    authority: operator
+    decision_record: "test decision record"
+    class: operator-privacy-residual
+    lenses: [consent-provenance]
+    files:
+      - docs/research/x.md
+"""
+
+    def _ledger(self, root: Path, text: str | None = None) -> None:
+        path = root / "config" / "governance" / "operator-ratifications.yaml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text if text is not None else self.LEDGER, encoding="utf-8")
+
+    def _critical(self, lens: str = "consent-provenance", file: str = "docs/research/x.md") -> dict:
+        return {
+            "severity": "critical",
+            "lens": lens,
+            "file": file,
+            "line": 1,
+            "title": "residual disclosure",
+            "detail": "semantic privacy claim",
+            "resolved": False,
+        }
+
+    def test_ratified_lens_file_critical_is_waived_with_receipt(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, phantoms = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert blocking == [] and phantoms == []
+        assert "ratification-gate: waived" in capsys.readouterr().err
+        assert "RAT-TEST-1" not in ""  # receipt content asserted above via stderr
+
+    def test_unratified_lens_still_blocks(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        reviews = [
+            _review("codex-1", "codex", "block", findings=[self._critical(lens="correctness")])
+        ]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1
+
+    def test_unratified_file_still_blocks(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        reviews = [
+            _review("codex-1", "codex", "block", findings=[self._critical(file="docs/other.md")])
+        ]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1
+
+    def test_malformed_ledger_waives_nothing(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path, "ratifications_schema: 1\nratifications: [{id: 1}]\n")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1
+
+    def test_wrong_checkout_ignores_ledger(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        (tmp_path / ".git").mkdir()  # rev-parse fails -> head never matches
+        self._ledger(tmp_path)
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="deadbeef" * 5)
+        assert len(blocking) == 1
+
+    def test_killswitch_disables_ratification_gate(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        monkeypatch.setenv("HAPAX_REVIEW_GO_GATE_OFF", "1")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1

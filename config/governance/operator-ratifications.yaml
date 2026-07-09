@@ -1,0 +1,36 @@
+# Operator ratification ledger — data-owner dispositions the review plane honors.
+#
+# Purpose: in a single-operator estate (axiom single_user, weight 100) certain review
+# finding classes are decisions that belong to the DATA OWNER, not to reviewers —
+# canonically: the operator's own privacy posture. An entry here records a ratified
+# decision and waives EXACTLY the (lens x file) intersection it names. Everything else
+# blocks as before. Fail-closed: a malformed ledger waives NOTHING.
+#
+# Governance: entries are sovereign stipulations (registry-guard class). Each entry MUST
+# name its decision record. Waived findings are receipted in the dossier evaluation log,
+# never silent (go-gate phantom precedent).
+ratifications_schema: 1
+ratifications:
+  - id: RAT-20260709-privacy-residual-item27
+    ratified: "2026-07-09"
+    authority: operator
+    decision_record: "operator decision memo 2026-07-09, item 27 — disposition accept-residual (vault: 30-areas/hapax/operator-decision-memo-2026-07-09.md)"
+    class: operator-privacy-residual
+    lenses: [consent-provenance]
+    files:
+      - docs/research/content-scheduling-research.md
+      - docs/research/apperception-healthy-self-model-research.md
+      - docs/research/phenomenology-ai-perception-research.md
+      - docs/research/hapax-ontology-and-visual-fitment.md
+      - agents/demo_pipeline/domain_corpus/neurodivergent-technology-design.md
+      - agents/demo_pipeline/domain_corpus/cognitive-load-theory.md
+      - tests/test_operator_attribution_redaction.py
+      - tests/operator_attribution_reviewed_generic.txt
+    scope_note: >
+      The ENFORCED privacy class is tier-1/tier-2 diagnostic attribution to the operator
+      (fully redacted; hash-pinned two-tier guard). Section/document-level linkage between
+      neurotype research and system design in profile-grounded research documents is an
+      operator-ACCEPTED residual: the privacy owner ratified that grounding design in
+      neurotype literature does not constitute an operator diagnosis claim. This entry
+      waives consent-provenance criticals on the named files only; any tier-1/tier-2
+      attribution regression still fails the durable scan and still blocks review.

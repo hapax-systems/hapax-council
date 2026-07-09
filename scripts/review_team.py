@@ -1344,6 +1344,57 @@ def verify_literal_defect_critical(finding: Mapping[str, Any], repo_root: Path) 
     return False  # parses clean — the syntax/compile claim is a phantom
 
 
+_OPERATOR_RATIFICATIONS_RELPATH = Path("config/governance/operator-ratifications.yaml")
+
+
+def _operator_ratifications(repo_root: Path) -> list[dict[str, Any]]:
+    """Load the data-owner ratification ledger. FAIL-CLOSED: any parse or schema problem
+    returns [] (waive nothing). Entries waive exactly the (lens x file) intersection they
+    name; governance and rationale live in the ledger header."""
+    path = repo_root / _OPERATOR_RATIFICATIONS_RELPATH
+    if not path.is_file():
+        return []
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return []
+    if not isinstance(payload, Mapping) or payload.get("ratifications_schema") != 1:
+        return []
+    entries = payload.get("ratifications")
+    if not isinstance(entries, list):
+        return []
+    valid: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            return []  # one malformed entry poisons the whole ledger — waive nothing
+        lenses = entry.get("lenses")
+        files = entry.get("files")
+        if (
+            not isinstance(entry.get("id"), str)
+            or not isinstance(entry.get("decision_record"), str)
+            or not isinstance(lenses, list)
+            or not all(isinstance(item, str) for item in lenses)
+            or not isinstance(files, list)
+            or not all(isinstance(item, str) for item in files)
+        ):
+            return []
+        valid.append(dict(entry))
+    return valid
+
+
+def _operator_ratification_for(
+    finding: Mapping[str, Any], ratifications: Sequence[Mapping[str, Any]]
+) -> str | None:
+    """The ratification id waiving this finding, or None. Waived ONLY when both the
+    finding's lens and its exact file path are named by a single ledger entry."""
+    lens = str(finding.get("lens", ""))
+    file_ = str(finding.get("file", ""))
+    for entry in ratifications:
+        if lens in entry.get("lenses", ()) and file_ in entry.get("files", ()):
+            return str(entry["id"])
+    return None
+
+
 def _blocking_criticals(
     reviews: Sequence[Mapping[str, Any]],
     repo_root: Path | None,
@@ -1352,7 +1403,13 @@ def _blocking_criticals(
     """Partition unresolved criticals into (blocking, phantom). ``repo_root=None`` discovers the repo
     from cwd. The verifier runs ONLY when the checkout is confirmed to be the reviewed commit
     (``head_sha`` matches local HEAD, when given); otherwise — no repo, killswitch, or a wrong/unknown
-    checkout — every critical blocks (the safe, pre-go-gate behaviour)."""
+    checkout — every critical blocks (the safe, pre-go-gate behaviour).
+
+    Data-owner ratifications: criticals whose (lens, file) are named by an active entry in
+    the operator-ratification ledger are waived WITH a stderr receipt (go-gate phantom
+    precedent) — the disposition belongs to the data owner (single_user axiom), not to
+    reviewers. Same binding rule as the go-gate: the ledger is honored only against a
+    checkout proven to be the reviewed head, and the killswitch disables it too."""
     criticals = _unresolved_criticals(reviews)
     if os.environ.get(_GO_GATE_OFF_ENV) == "1":
         return criticals, []  # killswitch: every critical blocks (pre-go-gate behaviour)
@@ -1361,6 +1418,21 @@ def _blocking_criticals(
         return criticals, []
     if not head_sha or not _repo_head_matches(root, head_sha):
         return criticals, []  # no commit to bind to, or wrong checkout -> do not verify (keep all)
+    ratifications = _operator_ratifications(root)
+    if ratifications:
+        kept: list[tuple[str, dict]] = []
+        for reviewer_id, finding in criticals:
+            ratification_id = _operator_ratification_for(finding, ratifications)
+            if ratification_id is not None:
+                print(
+                    f"ratification-gate: waived critical {str(finding.get('title'))!r} "
+                    f"({finding.get('file')}) under {ratification_id} — data-owner "
+                    "disposition, receipted",
+                    file=sys.stderr,
+                )
+            else:
+                kept.append((reviewer_id, finding))
+        criticals = kept
     blocking: list[tuple[str, dict]] = []
     phantom: list[tuple[str, dict]] = []
     for reviewer_id, finding in criticals:
