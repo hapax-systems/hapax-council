@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import runpy
@@ -398,6 +399,25 @@ def test_power_event_helper_redacts_malformed_ntfy_url_error(tmp_path: Path) -> 
     for secret in ("agent", "secret", "private topic", "credential"):
         assert secret not in raw_audit
         assert secret not in result.stderr
+
+
+def test_power_event_helper_redacts_socket_error_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    namespace = runpy.run_path(str(HELPER))
+    secret_url = "https://agent:secret@example.test:8443/private-topic?token=credential"
+
+    def refuse_connection(*args: object, **kwargs: object) -> None:
+        raise ConnectionRefusedError(errno.ECONNREFUSED, f"refused {secret_url}")
+
+    monkeypatch.setattr(namespace["urllib"].request, "urlopen", refuse_connection)
+    delivery = namespace["post_ntfy"](secret_url, "title", "message", "urgent", 1.0)
+
+    assert delivery.error == (
+        f"ConnectionRefusedError: errno={errno.ECONNREFUSED}; destination=https://example.test:8443"
+    )
+    for secret in ("agent", "secret", "private-topic", "credential"):
+        assert secret not in delivery.error
 
 
 @pytest.mark.parametrize("invalid_timeout", ["invalid", "nan", "inf", "-1", "0"])

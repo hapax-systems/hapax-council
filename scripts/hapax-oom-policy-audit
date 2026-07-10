@@ -4,10 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
+import stat
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -26,6 +30,15 @@ BYTES_20G = 20 * 1024**3
 NEXT_OOM_INSTALL = "next action: scripts/install-p0-oom-containment --install --verify-live"
 PROC_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_PROC_ROOT", "/proc"))
 CGROUP_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_CGROUP_ROOT", "/sys/fs/cgroup"))
+ROOT_REQUIRED_STATE_ROOT = Path(
+    os.environ.get(
+        "HAPAX_ROOT_REQUIRED_STATE_ROOT",
+        str(Path.home() / ".local/state/hapax/root-required"),
+    )
+)
+ROOT_REQUIRED_LOCK_FILE = Path(
+    os.environ.get("HAPAX_ROOT_REQUIRED_LOCK_FILE", str(ROOT_REQUIRED_STATE_ROOT / ".lock"))
+)
 RECOVERY_SYSTEM_UNITS = {
     "apcupsd.service": -900,
     "systemd-logind.service": -800,
@@ -68,6 +81,67 @@ class Check:
     target: str
     actual: str
     detail: str = ""
+
+
+class AuditLockError(RuntimeError):
+    pass
+
+
+def _validate_lock_fd(fd: int) -> None:
+    try:
+        inode = os.fstat(fd)
+        path_inode = os.lstat(ROOT_REQUIRED_LOCK_FILE)
+    except OSError as exc:
+        raise AuditLockError(f"cannot inspect {ROOT_REQUIRED_LOCK_FILE}: {exc}") from exc
+    if (
+        not stat.S_ISREG(inode.st_mode)
+        or not stat.S_ISREG(path_inode.st_mode)
+        or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
+        or inode.st_uid != os.geteuid()
+        or inode.st_nlink != 1
+        or inode.st_mode & 0o022
+    ):
+        raise AuditLockError(
+            f"unsafe package lock {ROOT_REQUIRED_LOCK_FILE}; expected the caller-owned, "
+            "single-link, non-group-writable regular path inode"
+        )
+    os.fchmod(fd, 0o600)
+
+
+@contextmanager
+def shared_root_required_lock() -> Iterator[None]:
+    inherited = os.environ.get("HAPAX_ROOT_REQUIRED_LOCK_FD", "")
+    owns_fd = not inherited
+    if inherited:
+        try:
+            fd = int(inherited)
+        except ValueError as exc:
+            raise AuditLockError("invalid inherited package lock descriptor") from exc
+        if fd < 3:
+            raise AuditLockError("invalid inherited package lock descriptor")
+        lock_mode = os.environ.get("HAPAX_ROOT_REQUIRED_LOCK_MODE", "shared")
+        if lock_mode not in {"shared", "exclusive"}:
+            raise AuditLockError(f"invalid inherited package lock mode: {lock_mode}")
+    else:
+        ROOT_REQUIRED_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(
+                ROOT_REQUIRED_LOCK_FILE,
+                os.O_CLOEXEC | os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR,
+                0o600,
+            )
+        except OSError as exc:
+            raise AuditLockError(
+                f"cannot open safe package lock {ROOT_REQUIRED_LOCK_FILE}: {exc}"
+            ) from exc
+        lock_mode = "shared"
+    try:
+        _validate_lock_fd(fd)
+        fcntl.flock(fd, fcntl.LOCK_EX if lock_mode == "exclusive" else fcntl.LOCK_SH)
+        yield
+    finally:
+        if owns_fd:
+            os.close(fd)
 
 
 def _systemctl() -> str:
@@ -863,23 +937,41 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--uid", type=int, default=os.getuid(), help="user manager UID to audit")
     args = parser.parse_args(argv)
 
-    checks = [
-        audit_user_manager(args.uid),
-        audit_user_manager_policy(args.uid),
-        audit_user_manager_live_score(args.uid),
-        *audit_recovery_system_units(),
-        *audit_sshd_policy(),
-        *audit_system_slice_reservation(),
-        *audit_user_slice_reservation(),
-        *audit_system_memory_unit(f"user-{args.uid}.slice"),
-        *audit_system_memory_unit(f"user@{args.uid}.service"),
-        *audit_app_slice(),
-        *audit_session_slice(),
-        *audit_user_child_floor_composition(args.uid),
-        *audit_protected_user_units(),
-        audit_residual_user_process_protection(args.uid),
-        *audit_tmux_scopes(),
-    ]
+    try:
+        with shared_root_required_lock():
+            checks = [
+                Check(
+                    "root_required_package_lock",
+                    "pass",
+                    "shared package lock held during readback",
+                    str(ROOT_REQUIRED_LOCK_FILE),
+                ),
+                audit_user_manager(args.uid),
+                audit_user_manager_policy(args.uid),
+                audit_user_manager_live_score(args.uid),
+                *audit_recovery_system_units(),
+                *audit_sshd_policy(),
+                *audit_system_slice_reservation(),
+                *audit_user_slice_reservation(),
+                *audit_system_memory_unit(f"user-{args.uid}.slice"),
+                *audit_system_memory_unit(f"user@{args.uid}.service"),
+                *audit_app_slice(),
+                *audit_session_slice(),
+                *audit_user_child_floor_composition(args.uid),
+                *audit_protected_user_units(),
+                audit_residual_user_process_protection(args.uid),
+                *audit_tmux_scopes(),
+            ]
+    except AuditLockError as exc:
+        checks = [
+            Check(
+                "root_required_package_lock",
+                "error",
+                "shared package lock held during readback",
+                str(ROOT_REQUIRED_LOCK_FILE),
+                f"{exc}; {NEXT_OOM_INSTALL}",
+            )
+        ]
     if args.json:
         print(json.dumps({"checks": [asdict(check) for check in checks]}, indent=2, sort_keys=True))
     else:

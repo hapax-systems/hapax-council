@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import stat
 import subprocess
+import time
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-oom-policy-audit"
@@ -336,6 +340,7 @@ def _run(
         ),
         "HAPAX_OOM_AUDIT_PROC_ROOT": str(proc_root),
         "HAPAX_OOM_AUDIT_CGROUP_ROOT": str(cgroup_root),
+        "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(tmp_path / "root-state" / ".lock"),
     }
     return subprocess.run(
         [str(SCRIPT), "--json", "--uid", "1000"],
@@ -351,6 +356,7 @@ def test_audit_passes_when_user_manager_is_killable_and_app_slice_bounded(tmp_pa
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     statuses = {check["name"]: check["status"] for check in payload["checks"]}
+    assert statuses["root_required_package_lock"] == "pass"
     assert statuses["user_manager_oom_score_adjust"] == "pass"
     assert statuses["user_manager_OOMPolicy"] == "pass"
     assert statuses["system_slice_MemoryLow"] == "pass"
@@ -366,6 +372,90 @@ def test_audit_passes_when_user_manager_is_killable_and_app_slice_bounded(tmp_pa
     assert statuses["user_unit_pipewire.service_Slice"] == "pass"
     assert statuses["user_unit_pipewire.service_NoNewPrivileges"] == "pass"
     assert statuses["user_unit_studio-compositor.service_Slice"] == "pass"
+
+
+def test_audit_waits_for_exclusive_package_install_lock(tmp_path: Path) -> None:
+    lock = tmp_path / "root-state" / ".lock"
+    lock.parent.mkdir(parents=True)
+    calls = tmp_path / "systemctl-calls"
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {calls!s}\nexit 1\n", encoding="utf-8"
+    )
+    fake_systemctl.chmod(0o755)
+
+    with lock.open("w", encoding="utf-8") as lock_file:
+        lock.chmod(0o600)
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        proc = subprocess.Popen(
+            [str(SCRIPT), "--json", "--uid", "1000"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={
+                **os.environ,
+                "HAPAX_SYSTEMCTL": str(fake_systemctl),
+                "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(lock),
+            },
+        )
+        time.sleep(0.25)
+        assert proc.poll() is None
+        assert not calls.exists()
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    stdout, stderr = proc.communicate(timeout=5)
+    assert proc.returncode == 1, stderr
+    assert calls.is_file()
+    payload = json.loads(stdout)
+    lock_check = next(
+        check for check in payload["checks"] if check["name"] == "root_required_package_lock"
+    )
+    assert lock_check["status"] == "pass"
+
+
+@pytest.mark.parametrize("lock_kind", ["symlink", "hardlink"])
+def test_audit_refuses_unsafe_package_lock_without_system_reads(
+    tmp_path: Path, lock_kind: str
+) -> None:
+    state_root = tmp_path / "root-state"
+    state_root.mkdir()
+    protected = tmp_path / "protected"
+    protected.write_text("sentinel\n", encoding="utf-8")
+    lock = state_root / ".lock"
+    if lock_kind == "symlink":
+        lock.symlink_to(protected)
+    else:
+        os.link(protected, lock)
+    calls = tmp_path / "systemctl-calls"
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {calls!s}\nexit 1\n", encoding="utf-8"
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--json", "--uid", "1000"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(lock),
+        },
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert len(payload["checks"]) == 1
+    check = payload["checks"][0]
+    assert check["actual"] == str(lock)
+    assert check["name"] == "root_required_package_lock"
+    assert check["status"] == "error"
+    assert check["target"] == "shared package lock held during readback"
+    assert "package lock" in check["detail"]
+    assert not calls.exists()
+    assert protected.read_text(encoding="utf-8") == "sentinel\n"
 
 
 def test_audit_fails_when_session_slice_audio_reservation_is_missing(tmp_path: Path) -> None:
