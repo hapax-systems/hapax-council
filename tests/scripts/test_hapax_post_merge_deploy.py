@@ -10,6 +10,8 @@ import subprocess
 import time
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-post-merge-deploy"
 ROOT_REQUIRED_AUDIT = REPO_ROOT / "scripts" / "hapax-root-required-deploy-audit"
@@ -1650,6 +1652,83 @@ def test_root_required_audit_waits_for_shared_package_lock(tmp_path: Path) -> No
     assert audit.returncode == 0, (stdout, stderr)
 
 
+@pytest.mark.parametrize("link_kind", ("symlink", "hardlink"))
+def test_root_required_audit_refuses_unsafe_shared_lock_before_target_mutation(
+    tmp_path: Path,
+    link_kind: str,
+) -> None:
+    env = _root_audit_env(tmp_path)
+    state_root = Path(env["HAPAX_ROOT_REQUIRED_STATE_ROOT"])
+    protected = tmp_path / "protected-target"
+    protected.write_text("sentinel\n", encoding="utf-8")
+    lock = state_root / ".lock"
+    if link_kind == "symlink":
+        lock.symlink_to(protected)
+    else:
+        os.link(protected, lock)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "refused unsafe shared lock" in result.stderr
+    assert protected.read_text(encoding="utf-8") == "sentinel\n"
+    if link_kind == "symlink":
+        assert lock.is_symlink()
+    else:
+        assert lock.stat().st_ino == protected.stat().st_ino
+
+
+@pytest.mark.parametrize("link_kind", ("symlink", "hardlink"))
+def test_post_merge_deploy_refuses_unsafe_shared_lock_before_mutation(
+    tmp_path: Path,
+    link_kind: str,
+) -> None:
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {"scripts/hapax-demo": "#!/usr/bin/env bash\nexit 0\n"},
+    )
+    home = tmp_path / "home"
+    state_root = tmp_path / "root-state"
+    state_root.mkdir()
+    protected = tmp_path / "protected-target"
+    protected.write_text("sentinel\n", encoding="utf-8")
+    lock = state_root / ".lock"
+    if link_kind == "symlink":
+        lock.symlink_to(protected)
+    else:
+        os.link(protected, lock)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "REPO": str(repo),
+            "HAPAX_ROOT_REQUIRED_STATE_ROOT": str(state_root),
+            "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(lock),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "refused unsafe shared lock" in result.stderr
+    assert protected.read_text(encoding="utf-8") == "sentinel\n"
+    if link_kind == "symlink":
+        assert lock.is_symlink()
+    else:
+        assert lock.stat().st_ino == protected.stat().st_ino
+    assert not (home / ".local/bin/hapax-demo").exists()
+
+
 def test_apcupsd_power_alert_deploy_uses_dedicated_installer(tmp_path: Path) -> None:
     installer_calls = tmp_path / "apcupsd-installer-calls.txt"
     installer_body = (
@@ -1744,6 +1823,53 @@ def test_generic_slice_dropin_deploy_uses_runtime_set_property_not_restart(
         "MemorySwapMax=512M MemoryLow=256M MemoryMin=128M" in calls
     )
     assert "--user restart demo.slice" not in calls
+
+
+@pytest.mark.parametrize(
+    "co_resident_content",
+    (
+        "[Service]\nMemoryMax=64M\n",
+        "[Slice]\nMemoryMax=not-a-size\n",
+    ),
+)
+def test_generic_slice_dropin_rejects_unsafe_co_resident_before_mutation(
+    tmp_path: Path,
+    co_resident_content: str,
+) -> None:
+    dropin_path = "systemd/units/demo.slice.d/memory.conf"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {dropin_path: "[Slice]\nMemoryHigh=1G\nMemoryMax=2G\n"},
+    )
+    home = tmp_path / "home"
+    co_resident = home / ".config/systemd/user/demo.slice.d/local.conf"
+    co_resident.parent.mkdir(parents=True)
+    co_resident.write_text(co_resident_content, encoding="utf-8")
+    changed_dest = co_resident.with_name("memory.conf")
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "unsafe co-resident generic slice drop-in" in result.stderr
+    assert co_resident.read_text(encoding="utf-8") == co_resident_content
+    assert not changed_dest.exists()
+    calls = systemctl_calls.read_text(encoding="utf-8") if systemctl_calls.exists() else ""
+    assert "daemon-reload" not in calls
+    assert "set-property" not in calls
 
 
 def test_generic_slice_dropin_deletion_fails_before_persistent_or_runtime_drift(

@@ -96,6 +96,7 @@
 # Exits non-zero if any deploy step failed (or, in --report-coverage
 # mode, if any systemd/** path is unclassified).
 set -euo pipefail
+ORIGINAL_ARGS=("$@")
 
 DRY_RUN=0
 REPORT_COVERAGE=0
@@ -184,6 +185,114 @@ RECOVERY_BUNDLE_REQUIRED_FILES=(
     "${RECOVERY_BUNDLE_SOURCE_FILES[@]}"
     manifest.json
 )
+
+acquire_inherited_root_required_lock() {
+    local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
+    if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ]; then
+        echo "hapax-post-merge-deploy: safe shared lock descriptor is absent; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun the package-owned deploy script" >&2
+        return 1
+    fi
+    /usr/bin/python3 - "$lock_fd" "$ROOT_REQUIRED_LOCK_FILE" <<'PY'
+from __future__ import annotations
+
+import fcntl
+import os
+import stat
+import sys
+
+fd = int(sys.argv[1])
+lock_path = sys.argv[2]
+try:
+    inode = os.fstat(fd)
+    path_inode = os.lstat(lock_path)
+except OSError as exc:
+    print(
+        f"hapax-post-merge-deploy: refused invalid shared lock descriptor for {lock_path}: "
+        f"{exc}; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+if (
+    not stat.S_ISREG(inode.st_mode)
+    or not stat.S_ISREG(path_inode.st_mode)
+    or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
+    or inode.st_uid != os.geteuid()
+    or inode.st_nlink != 1
+    or inode.st_mode & 0o022
+):
+    print(
+        f"hapax-post-merge-deploy: refused invalid shared lock descriptor for {lock_path}; "
+        "expected the caller-owned, single-link, non-group-writable regular path inode; "
+        "next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+os.fchmod(fd, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+PY
+}
+
+reexec_with_safe_root_required_lock() {
+    if [ -n "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" ]; then
+        acquire_inherited_root_required_lock
+        return
+    fi
+    exec /usr/bin/python3 - "$ROOT_REQUIRED_LOCK_FILE" "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
+from __future__ import annotations
+
+import fcntl
+import os
+import stat
+import subprocess
+import sys
+
+lock_path, script, *args = sys.argv[1:]
+os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+try:
+    fd = os.open(
+        lock_path,
+        os.O_CLOEXEC | os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR,
+        0o600,
+    )
+except OSError as exc:
+    print(
+        f"hapax-post-merge-deploy: refused unsafe shared lock {lock_path}: {exc}; "
+        "next action: remove only a confirmed symlink/non-regular lock and rerun",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+try:
+    inode = os.fstat(fd)
+    if (
+        not stat.S_ISREG(inode.st_mode)
+        or inode.st_uid != os.geteuid()
+        or inode.st_nlink != 1
+        or inode.st_mode & 0o022
+    ):
+        print(
+            f"hapax-post-merge-deploy: refused unsafe shared lock inode {lock_path}; expected "
+            "one caller-owned, single-link, non-group-writable regular file; next action: "
+            "remove only a confirmed unsafe lock and rerun",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    os.fchmod(fd, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    env = os.environ.copy()
+    env.pop("HAPAX_ROOT_REQUIRED_LOCK_HELD", None)
+    env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
+    env["HAPAX_ROOT_REQUIRED_LOCK_MODE"] = "exclusive"
+    result = subprocess.run(
+        [os.path.abspath(script), *args],
+        env=env,
+        pass_fds=(fd,),
+        check=False,
+    )
+    raise SystemExit(result.returncode)
+finally:
+    os.close(fd)
+PY
+}
 
 # --- auto-enable marker (reform-improve-deploy-activation-20260601) ---
 # A systemd unit may declare it wants to be enabled+started on deploy by
@@ -1050,6 +1159,10 @@ if [ "$REPORT_COVERAGE" = "1" ]; then
     exit 0
 fi
 
+if [ "$DRY_RUN" != "1" ]; then
+    reexec_with_safe_root_required_lock
+fi
+
 TRACE_READY=1
 if [ -z "$FILES" ]; then
     reconcile_canonical_gate_closure
@@ -1349,17 +1462,13 @@ stage_oom_containment_installer() {
 }
 
 defer_root_required_installer() {
-    local label="$1" stage="$2" installer="$3" dest temp receipt lock_fd
-    mkdir -p "$ROOT_DEFER_DIR" "$(dirname "$ROOT_REQUIRED_LOCK_FILE")"
-    exec {lock_fd}>"$ROOT_REQUIRED_LOCK_FILE"
-    flock -x "$lock_fd"
+    local label="$1" stage="$2" installer="$3" dest temp receipt
+    mkdir -p "$ROOT_DEFER_DIR"
     dest="$ROOT_DEFER_DIR/$SHA/$label"
     mkdir -p "$(dirname "$dest")"
     receipt="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/$label.sha"
     if [ -f "$receipt" ] && [ "$(tr -d '[:space:]' < "$receipt")" = "$SHA" ]; then
         echo "root-required $label already installed at $SHA; deferral not recreated"
-        flock -u "$lock_fd"
-        exec {lock_fd}>&-
         return 0
     fi
     temp="$ROOT_DEFER_DIR/$SHA/.${label}.tmp.$$"
@@ -1384,8 +1493,6 @@ groups for the same merge were not skipped.
 EOF
     rm -rf "$dest" 2>/dev/null || true
     mv "$temp" "$dest"
-    flock -u "$lock_fd"
-    exec {lock_fd}>&-
     echo "root-required $label install deferred to $dest"
     echo "next action: run HAPAX_ROOT_REQUIRED_PACKAGE_SHA=$SHA HAPAX_ROOT_REQUIRED_DRAIN_DIR=$dest HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT=$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT=$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_GIT_REPO=$REPO $dest/$installer --source $dest --install --verify-live with root authority"
 }
@@ -1412,34 +1519,26 @@ validate_root_required_stage_manifest() {
 }
 
 record_root_required_desired_sha() {
-    local label="$1" stage="$2" receipt temp lock_fd current manifest_rel
+    local label="$1" stage="$2" receipt temp current manifest_rel
     case "$label" in
         oom-containment) manifest_rel="config/root-required/oom-containment.files" ;;
         apcupsd-power-alerts) manifest_rel="config/root-required/apcupsd-power-alerts.files" ;;
         *) echo "hapax-post-merge-deploy: unknown root-required package label: $label; next action: use oom-containment or apcupsd-power-alerts from the governed staging path" >&2; return 2 ;;
     esac
     validate_root_required_stage_manifest "$stage" "$manifest_rel" || return 1
-    mkdir -p "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" "$(dirname "$ROOT_REQUIRED_LOCK_FILE")"
-    exec {lock_fd}>"$ROOT_REQUIRED_LOCK_FILE"
-    flock -x "$lock_fd"
+    mkdir -p "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT"
     receipt="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha"
     if [ -f "$receipt" ]; then
         current="$(tr -d '[:space:]' < "$receipt")"
         if ! [[ "$current" =~ ^[0-9a-f]{40}$ ]] || ! git -C "$REPO" cat-file -e "$current^{commit}" 2>/dev/null; then
             echo "hapax-post-merge-deploy: invalid or unavailable desired $label receipt $current; next action: restore the latest governed receipt and rerun this deploy" >&2
-            flock -u "$lock_fd"
-            exec {lock_fd}>&-
             return 1
         fi
         if [ "$current" = "$SHA" ]; then
-            flock -u "$lock_fd"
-            exec {lock_fd}>&-
             return 0
         fi
         if git -C "$REPO" merge-base --is-ancestor "$SHA" "$current"; then
             echo "root-required $label desired state $current supersedes stale deploy $SHA; desired receipt preserved"
-            flock -u "$lock_fd"
-            exec {lock_fd}>&-
             return 0
         fi
         if ! git -C "$REPO" merge-base --is-ancestor "$current" "$SHA"; then
@@ -1447,8 +1546,6 @@ record_root_required_desired_sha() {
                 echo "root-required $label desired state is ancestry-divergent but package-content equivalent; accepting squash/rebase transition to $SHA"
             else
                 echo "hapax-post-merge-deploy: refusing divergent desired $label transition current=$current candidate=$SHA; next action: dispatch governed root-package reconciliation" >&2
-                flock -u "$lock_fd"
-                exec {lock_fd}>&-
                 return 1
             fi
         fi
@@ -1456,8 +1553,6 @@ record_root_required_desired_sha() {
     temp="$receipt.tmp.$$"
     printf '%s\n' "$SHA" > "$temp"
     mv -f "$temp" "$receipt"
-    flock -u "$lock_fd"
-    exec {lock_fd}>&-
 }
 
 # apcupsd must be active before the OOM package verifies the recovery plane.
@@ -1540,6 +1635,96 @@ if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
     DID_ANYTHING=1
 fi
 
+slice_memory_issue_from_content() {
+    awk '
+        function trim(value) {
+            sub(/^[[:space:]]+/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            return value
+        }
+        /^[[:space:]]*[#;]/ || /^[[:space:]]*$/ { next }
+        {
+            line = $0
+            candidate = trim(line)
+            if (candidate ~ /^\[[^]]+\]$/) {
+                section = candidate
+                gsub(/^\[|\]$/, "", section)
+                next
+            }
+            equals = index(line, "=")
+            if (!equals) { next }
+            key = trim(substr(line, 1, equals - 1))
+            value = trim(substr(line, equals + 1))
+            if (key !~ /^(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)$/) { next }
+            if (section != "Slice") {
+                print "memory property outside [Slice]: " candidate
+                exit
+            }
+            if (value !~ /^(infinity|[0-9]+([.][0-9]+)?([KMGTPE](iB|B)?)?|[0-9]+%)$/) {
+                print "invalid memory value: " candidate
+                exit
+            }
+        }
+    '
+}
+
+slice_memory_properties_from_content() {
+    awk '
+        function trim(value) {
+            sub(/^[[:space:]]+/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            return value
+        }
+        /^[[:space:]]*[#;]/ || /^[[:space:]]*$/ { next }
+        {
+            line = $0
+            candidate = trim(line)
+            if (candidate ~ /^\[[^]]+\]$/) {
+                section = candidate
+                gsub(/^\[|\]$/, "", section)
+                next
+            }
+            equals = index(line, "=")
+            if (!equals) { next }
+            key = trim(substr(line, 1, equals - 1))
+            value = trim(substr(line, equals + 1))
+            if (section == "Slice" && key ~ /^(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)$/) {
+                print key "=" value
+            }
+        }
+    '
+}
+
+generic_dropin_destination_is_replaced() {
+    local candidate="$1" changed rel
+    for changed in "${SYSTEMD_DROPINS[@]}"; do
+        rel="${changed#systemd/units/}"
+        if [ "$SYSTEMD_USER_DIR/$rel" = "$candidate" ] \
+            && git -C "$REPO" cat-file -e "$SHA:$changed" 2>/dev/null; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+validate_co_resident_slice_dropins() {
+    local dropin_dir="$1" conf content issue
+    for conf in "$SYSTEMD_USER_DIR/$dropin_dir"/*.conf; do
+        [ -e "$conf" ] || [ -L "$conf" ] || continue
+        generic_dropin_destination_is_replaced "$conf" && continue
+        if [ -L "$conf" ] || [ ! -f "$conf" ]; then
+            echo "hapax-post-merge-deploy: unsafe co-resident generic slice drop-in $conf is not a regular file; next action: remove the unsafe local entry or dispatch a slice-specific reconciliation before retrying activation" >&2
+            return 1
+        fi
+        content="$(cat "$conf")"
+        issue="$(printf '%s\n' "$content" | slice_memory_issue_from_content)"
+        if [ -n "$issue" ]; then
+            echo "hapax-post-merge-deploy: unsafe co-resident generic slice drop-in $conf: $issue; next action: repair or remove the local drift before retrying the governed slice activation" >&2
+            return 1
+        fi
+    done
+}
+
 validate_generic_dropin_activation() {
     local f="$1" rel dropin_dir unit_name content unsupported invalid_memory old_content old_prop
     rel="${f#systemd/units/}"
@@ -1586,6 +1771,7 @@ validate_generic_dropin_activation() {
                 echo "hapax-post-merge-deploy: no runtime-safe memory property found in generic slice drop-in $f; next action: use a slice-specific installer for non-memory directives" >&2
                 return 1
             fi
+            validate_co_resident_slice_dropins "$dropin_dir" || return 1
             if [ -n "${DROPIN_BASE_REF:-}" ] \
                 && git -C "$REPO" cat-file -e "$DROPIN_BASE_REF:$f" 2>/dev/null; then
                 old_content="$(git -C "$REPO" show "$DROPIN_BASE_REF:$f")"
@@ -1632,9 +1818,15 @@ if [ "${#SYSTEMD_DROPINS[@]}" -gt 0 ]; then
             slice_props=()
             for conf in "$SYSTEMD_USER_DIR/$u.d"/*.conf; do
                 [ -f "$conf" ] || continue
+                content="$(cat "$conf")"
+                issue="$(printf '%s\n' "$content" | slice_memory_issue_from_content)"
+                if [ -n "$issue" ]; then
+                    echo "hapax-post-merge-deploy: refusing runtime promotion from unsafe generic slice drop-in $conf after daemon reload: $issue; next action: repair local slice drift and rerun the governed deploy" >&2
+                    exit 1
+                fi
                 while IFS= read -r prop; do
                     slice_props+=("$prop")
-                done < <(grep -E '^(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)=' "$conf" || true)
+                done < <(printf '%s\n' "$content" | slice_memory_properties_from_content)
             done
             if [ "${#slice_props[@]}" -gt 0 ]; then
                 echo "applying active slice properties for $u without restart"

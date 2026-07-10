@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Fail when post-merge root-required deploy actions were deferred and not drained.
 set -euo pipefail
+ORIGINAL_ARGS=("$@")
 
 ROOT_DEFER_DIR="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$HOME/.cache/hapax/post-merge-root-required}"
 # Deferrals are cleared only by the explicit HAPAX_ROOT_REQUIRED_DRAIN_DIR path
@@ -38,6 +39,116 @@ SUDO="${HAPAX_ROOT_AUDIT_SUDO:-/usr/bin/sudo}"
 VISUDO="${HAPAX_ROOT_AUDIT_VISUDO:-/usr/bin/visudo}"
 ROOT_ARTIFACT_TEST_UID="${HAPAX_ROOT_AUDIT_TEST_ROOT_UID:-$(/usr/bin/id -u)}"
 ROOT_ARTIFACT_TEST_GID="${HAPAX_ROOT_AUDIT_TEST_ROOT_GID:-$(/usr/bin/id -g)}"
+
+acquire_inherited_root_required_lock() {
+    local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
+    local lock_mode="${HAPAX_ROOT_REQUIRED_LOCK_MODE:-shared}"
+    if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ]; then
+        echo "root-required audit safe lock descriptor is absent; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun the installed audit" >&2
+        return 1
+    fi
+    /usr/bin/python3 - "$lock_fd" "$ROOT_REQUIRED_LOCK_FILE" "$lock_mode" <<'PY'
+from __future__ import annotations
+
+import fcntl
+import os
+import stat
+import sys
+
+fd = int(sys.argv[1])
+lock_path = sys.argv[2]
+lock_mode = sys.argv[3]
+try:
+    inode = os.fstat(fd)
+    path_inode = os.lstat(lock_path)
+except OSError as exc:
+    print(
+        f"root-required audit refused invalid shared lock descriptor for {lock_path}: {exc}; "
+        "next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+if (
+    not stat.S_ISREG(inode.st_mode)
+    or not stat.S_ISREG(path_inode.st_mode)
+    or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
+    or inode.st_uid != os.geteuid()
+    or inode.st_nlink != 1
+    or inode.st_mode & 0o022
+):
+    print(
+        f"root-required audit refused invalid shared lock descriptor for {lock_path}; expected "
+        "the caller-owned, single-link, non-group-writable regular path inode; next action: "
+        "remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+os.fchmod(fd, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX if lock_mode == "exclusive" else fcntl.LOCK_SH)
+PY
+}
+
+reexec_with_safe_root_required_lock() {
+    if [ -n "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" ]; then
+        acquire_inherited_root_required_lock
+        return
+    fi
+    exec /usr/bin/python3 - "$ROOT_REQUIRED_LOCK_FILE" "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
+from __future__ import annotations
+
+import fcntl
+import os
+import stat
+import subprocess
+import sys
+
+lock_path, script, *args = sys.argv[1:]
+os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+try:
+    fd = os.open(
+        lock_path,
+        os.O_CLOEXEC | os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR,
+        0o600,
+    )
+except OSError as exc:
+    print(
+        f"root-required audit refused unsafe shared lock {lock_path}: {exc}; "
+        "next action: remove only a confirmed symlink/non-regular lock and rerun",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+try:
+    inode = os.fstat(fd)
+    if (
+        not stat.S_ISREG(inode.st_mode)
+        or inode.st_uid != os.geteuid()
+        or inode.st_nlink != 1
+        or inode.st_mode & 0o022
+    ):
+        print(
+            f"root-required audit refused unsafe shared lock inode {lock_path}; expected one "
+            "caller-owned, single-link, non-group-writable regular file; next action: remove "
+            "only a confirmed unsafe lock and rerun",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    os.fchmod(fd, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_SH)
+    env = os.environ.copy()
+    env.pop("HAPAX_ROOT_REQUIRED_LOCK_HELD", None)
+    env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
+    env["HAPAX_ROOT_REQUIRED_LOCK_MODE"] = "shared"
+    result = subprocess.run(
+        [os.path.abspath(script), *args],
+        env=env,
+        pass_fds=(fd,),
+        check=False,
+    )
+    raise SystemExit(result.returncode)
+finally:
+    os.close(fd)
+PY
+}
 
 oom_package_files=(
     config/root-required/oom-containment.files
@@ -88,9 +199,8 @@ apcupsd_package_files=(
     systemd/logrotate.d/hapax-ups-power-events
 )
 
-mkdir -p "$ROOT_DEFER_DIR" "$(dirname "$ROOT_REQUIRED_LOCK_FILE")"
-exec {ROOT_REQUIRED_LOCK_FD}>"$ROOT_REQUIRED_LOCK_FILE"
-flock -s "$ROOT_REQUIRED_LOCK_FD"
+mkdir -p "$ROOT_DEFER_DIR"
+reexec_with_safe_root_required_lock
 
 rc=0
 
