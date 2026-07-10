@@ -64,6 +64,8 @@ def _fake_systemctl(
     user_slice_unprotected: bool = False,
     protected_unit_pids: dict[str, int] | None = None,
     protected_unit_cgroups: dict[str, str] | None = None,
+    sshd_score: int = 0,
+    sshd_policy: str = "continue",
 ) -> Path:
     path = tmp_path / "systemctl"
     app_values = (
@@ -116,6 +118,7 @@ case "$*" in
   *"show user-1000.slice"*) printf '{uid_memory_values}' ;;
   *"show user@1000.service --no-pager -p MemoryHigh"*) printf '{uid_memory_values}' ;;
   *"show user@1000.service"*) printf 'OOMScoreAdjust={user_oom}\\nDropInPaths=/etc/systemd/system/user@1000.service.d/oom.conf\\nMainPID=900\\n' ;;
+  *"show sshd.service"*) printf 'OOMScoreAdjust={sshd_score}\\nOOMPolicy={sshd_policy}\\nMainPID=920\\n' ;;
   *"show app.slice"*) printf '{app_values}' ;;
 {_protected_user_unit_cases(wrong_unit_score=wrong_unit_score, wrong_unit_memory=wrong_unit_memory, unit_pids=protected_unit_pids, unit_cgroups=protected_unit_cgroups)}
   *"list-units --type=scope"*) printf 'tmux-spawn-a.scope loaded active running tmux child pane\\n' ;;
@@ -155,6 +158,8 @@ def _run(
     user_slice_unprotected: bool = False,
     protected_unit_pids: dict[str, int] | None = None,
     protected_unit_cgroups: dict[str, str] | None = None,
+    sshd_score: int = 0,
+    sshd_policy: str = "continue",
     proc_root: Path | None = None,
     cgroup_root: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
@@ -163,6 +168,8 @@ def _run(
         proc_root.mkdir(exist_ok=True)
     if not (proc_root / "900").exists():
         _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=100)
+    if not (proc_root / "920").exists():
+        _write_proc(proc_root, 920, name="sshd", uid=0, oom_score=0)
     if cgroup_root is None:
         cgroup_root = tmp_path / "cgroup"
         cgroup_root.mkdir(exist_ok=True)
@@ -181,6 +188,8 @@ def _run(
                 user_slice_unprotected=user_slice_unprotected,
                 protected_unit_pids=protected_unit_pids,
                 protected_unit_cgroups=protected_unit_cgroups,
+                sshd_score=sshd_score,
+                sshd_policy=sshd_policy,
             )
         ),
         "HAPAX_OOM_AUDIT_PROC_ROOT": str(proc_root),
@@ -215,6 +224,18 @@ def test_audit_fails_when_user_manager_protects_all_descendants(tmp_path: Path) 
     )
     assert check["status"] == "gap"
     assert "descendant workload" in check["detail"]
+
+
+def test_audit_fails_when_effective_sshd_policy_is_overridden(tmp_path: Path) -> None:
+    result = _run(tmp_path, sshd_score=-1000, sshd_policy="stop")
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    checks = {item["name"]: item for item in payload["checks"]}
+    assert checks["sshd_effective_OOMScoreAdjust"]["status"] == "gap"
+    assert "future sessions" in checks["sshd_effective_OOMScoreAdjust"]["detail"]
+    assert checks["sshd_effective_OOMPolicy"]["status"] == "gap"
+    assert checks["sshd_live_oom_score_adj"]["status"] == "pass"
 
 
 def test_audit_fails_when_app_slice_backstop_is_unbounded(tmp_path: Path) -> None:

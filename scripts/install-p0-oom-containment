@@ -42,7 +42,7 @@ fi
 ROOT_REQUIRED_DEFER_ROOT="${ROOT_REQUIRED_DEFER_ROOT:-$TARGET_HOME/.cache/hapax/post-merge-root-required}"
 ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/installed-receipts}"
 ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/desired-receipts}"
-ROOT_REQUIRED_GIT_REPO="${HAPAX_ROOT_REQUIRED_GIT_REPO:-/home/hapax/projects/hapax-council}"
+ROOT_REQUIRED_GIT_REPO="${HAPAX_ROOT_REQUIRED_GIT_REPO:-$TARGET_HOME/.cache/hapax/source-activation/worktree}"
 ROOT_REQUIRED_PACKAGE_SHA="${HAPAX_ROOT_REQUIRED_PACKAGE_SHA:-}"
 ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_STATE_ROOT/.lock}"
 ROOT_REQUIRED_RECEIPT="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/oom-containment.sha"
@@ -121,6 +121,10 @@ while [ "$#" -gt 0 ]; do
             ;;
     esac
 done
+
+if [ "$INSTALL" -eq 1 ]; then
+    VERIFY_LIVE=1
+fi
 
 if [ "$CHECK" -eq 0 ] && [ "$INSTALL" -eq 0 ] && [ "$VERIFY_LIVE" -eq 0 ]; then
     CHECK=1
@@ -290,6 +294,25 @@ validate_package_source_matches_commit() {
             return 1
         fi
     done
+}
+
+validate_no_unhandled_package_removals() {
+    local installed_sha rel
+    [ -f "$ROOT_REQUIRED_RECEIPT" ] || return 0
+    installed_sha="$(tr -d '[:space:]' < "$ROOT_REQUIRED_RECEIPT")"
+    if ! git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$installed_sha:$package_manifest_source" 2>/dev/null; then
+        echo "installed OOM commit predates the versioned ownership manifest; package-removal guard is using the one-time legacy bridge"
+        return 0
+    fi
+    while IFS= read -r rel; do
+        if ! awk -v wanted="$rel" 'NF && $1 !~ /^#/ && $1 == wanted { found = 1 } END { exit !found }' "$(src_path "$package_manifest_source")"; then
+            echo "refusing OOM package removal or rename of $rel; next action: retain the owned path or add explicit governed live-removal handling before advancing receipts" >&2
+            return 1
+        fi
+    done < <(
+        git -C "$ROOT_REQUIRED_GIT_REPO" show "$installed_sha:$package_manifest_source" |
+            awk 'NF && $1 !~ /^#/ {print $1}'
+    )
 }
 
 validate_root_required_deferral_dir() {
@@ -1046,6 +1069,7 @@ if [ "$INSTALL" -eq 1 ] && [ "$SKIP_SUPERSEDED_INSTALL" -eq 1 ]; then
     exit 0
 fi
 [ "$INSTALL" -eq 0 ] || validate_package_source_matches_commit
+[ "$INSTALL" -eq 0 ] || validate_no_unhandled_package_removals
 [ "$INSTALL" -eq 0 ] || validate_root_required_deferral
 [ "$INSTALL" -eq 0 ] || install_live
 [ "$VERIFY_LIVE" -eq 0 ] || verify_live

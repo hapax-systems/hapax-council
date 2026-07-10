@@ -147,6 +147,47 @@ def audit_user_manager_live_score(uid: int) -> Check:
     return Check("user_manager_live_oom_score_adj", status, "100", actual_text, detail)
 
 
+def audit_sshd_policy() -> list[Check]:
+    values = _show("sshd.service", ["OOMScoreAdjust", "OOMPolicy", "MainPID"])
+    if "_error" in values:
+        detail = f"{values['_error']}; {NEXT_OOM_INSTALL}"
+        return [
+            Check("sshd_effective_OOMScoreAdjust", "error", "0", "N/A", detail),
+            Check("sshd_effective_OOMPolicy", "error", "continue", "N/A", detail),
+            Check("sshd_live_oom_score_adj", "error", "0", "N/A", detail),
+        ]
+
+    score = values.get("OOMScoreAdjust", "")
+    score_status = "pass" if _int_value(score) == 0 else "gap"
+    score_detail = (
+        ""
+        if score_status == "pass"
+        else f"effective sshd policy would be inherited by future sessions; {NEXT_OOM_INSTALL}"
+    )
+    policy = values.get("OOMPolicy", "")
+    policy_status = "pass" if policy == "continue" else "gap"
+    policy_detail = (
+        ""
+        if policy_status == "pass"
+        else f"sshd must remain available after a session OOM; {NEXT_OOM_INSTALL}"
+    )
+
+    pid = values.get("MainPID", "0")
+    live = _proc_oom_score(pid) if pid.isdigit() and pid != "0" else None
+    live_actual = "N/A" if live is None else str(live)
+    live_status = "pass" if live == 0 else "gap"
+    live_detail = (
+        ""
+        if live_status == "pass"
+        else f"sshd has no live neutral-score main process; {NEXT_OOM_INSTALL}"
+    )
+    return [
+        Check("sshd_effective_OOMScoreAdjust", score_status, "0", score, score_detail),
+        Check("sshd_effective_OOMPolicy", policy_status, "continue", policy, policy_detail),
+        Check("sshd_live_oom_score_adj", live_status, "0", live_actual, live_detail),
+    ]
+
+
 def audit_app_slice() -> list[Check]:
     expected = {
         "MemoryHigh": BYTES_72G,
@@ -529,6 +570,7 @@ def main(argv: list[str] | None = None) -> int:
     checks = [
         audit_user_manager(args.uid),
         audit_user_manager_live_score(args.uid),
+        *audit_sshd_policy(),
         *audit_system_slice_reservation(),
         *audit_user_slice_reservation(),
         *audit_system_memory_unit(f"user-{args.uid}.slice"),

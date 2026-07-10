@@ -275,6 +275,15 @@ class TestServiceDropInInstall:
             dest = user_dir / relative
             assert not dest.exists()
             assert f"dropin-skipped-dedicated-installer: {relative}" in result.stdout
+        p0_audit_units = [
+            "hapax-oom-policy-audit.service",
+            "hapax-oom-policy-audit.timer",
+            "hapax-root-required-deploy-audit.service",
+            "hapax-root-required-deploy-audit.timer",
+        ]
+        for unit in p0_audit_units:
+            assert not (user_dir / unit).exists()
+            assert f"skipped dedicated P0 OOM unit: {unit}" in result.stdout
 
     def test_system_install_scope_units_are_not_linked_into_user_dir(self, tmp_path: Path) -> None:
         bin_dir = tmp_path / "bin"

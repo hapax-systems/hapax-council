@@ -196,6 +196,8 @@ def test_root_oom_enforcer_uses_system_scoped_failure_intake() -> None:
     intake = (UNITS_DIR / "hapax-root-failure-intake@.service").read_text()
     assert "# Hapax-Install-Scope: system" in enforcer
     assert "OnFailure=hapax-root-failure-intake@%n.service" in enforcer
+    assert "Wants=user@1000.service" in enforcer
+    assert "After=user@1000.service" in enforcer
     assert "StartLimitIntervalSec=0" in enforcer
     assert "StartLimitBurst" not in enforcer
     assert "AccuracySec=1s" in timer

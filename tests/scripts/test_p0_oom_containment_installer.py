@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -14,6 +15,13 @@ ROOT_FAILURE_INTAKE = REPO_ROOT / "scripts" / "hapax-root-failure-intake"
 REPO_HEAD = subprocess.run(
     ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, check=True, text=True, capture_output=True
 ).stdout.strip()
+OOM_PACKAGE_FILES = tuple(
+    line
+    for line in (REPO_ROOT / "config" / "root-required" / "oom-containment.files")
+    .read_text(encoding="utf-8")
+    .splitlines()
+    if line and not line.startswith("#")
+)
 PROTECTED_USER_UNIT_SCORES = {
     "pipewire.service": -900,
     "pipewire-pulse.service": -900,
@@ -22,6 +30,13 @@ PROTECTED_USER_UNIT_SCORES = {
     "studio-compositor.service": -800,
     "hapax-imagination.service": -800,
 }
+
+
+def _copy_oom_package(dest_root: Path) -> None:
+    for relative in OOM_PACKAGE_FILES:
+        dest = dest_root / relative
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(REPO_ROOT / relative, dest)
 
 
 @pytest.fixture(autouse=True)
@@ -39,6 +54,7 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
         str(tmp_path / "sbin" / "hapax-root-required-deploy-audit"),
     )
     monkeypatch.setenv("HAPAX_OOM_SYSTEMD_USER_DIR", str(tmp_path / "systemd-user-default"))
+    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_GIT_REPO", str(REPO_ROOT))
 
 
 def _unit_cgroup(unit: str) -> str:
@@ -297,6 +313,73 @@ def test_unversioned_oom_install_source_fails_before_live_mutation(tmp_path: Pat
     assert result.returncode == 1
     assert "source has no package SHA" in result.stderr
     assert not live.exists()
+
+
+def test_oom_manifest_shrink_fails_before_live_mutation(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "oom-test@example.test"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "OOM Test"], cwd=repo, check=True)
+    _copy_oom_package(repo)
+    manifest = repo / "config/root-required/oom-containment.files"
+    retired_rel = "config/earlyoom/retired-policy"
+    manifest.write_text(manifest.read_text(encoding="utf-8") + f"{retired_rel}\n", encoding="utf-8")
+    retired = repo / retired_rel
+    retired.parent.mkdir(parents=True, exist_ok=True)
+    retired.write_text("formerly installed\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "installed package"], cwd=repo, check=True, capture_output=True
+    )
+    installed_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+
+    manifest.write_text(
+        (REPO_ROOT / "config/root-required/oom-containment.files").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    retired.unlink()
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "candidate drops path"], cwd=repo, check=True, capture_output=True
+    )
+    candidate_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+
+    receipt_root = tmp_path / "receipts"
+    receipt_root.mkdir()
+    receipt = receipt_root / "oom-containment.sha"
+    receipt.write_text(f"{installed_sha}\n", encoding="utf-8")
+    live = tmp_path / "live-earlyoom"
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(repo), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_INSTALL_SUDO": "",
+            "HAPAX_OOM_EARLYOOM_DEST": str(live),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": candidate_sha,
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(repo),
+            "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT": str(receipt_root),
+        },
+    )
+
+    assert result.returncode == 1
+    assert f"refusing OOM package removal or rename of {retired_rel}" in result.stderr
+    assert "explicit governed live-removal handling" in result.stderr
+    assert receipt.read_text(encoding="utf-8").strip() == installed_sha
+    assert not live.exists()
+
+
+def test_oom_install_implies_live_verification() -> None:
+    body = INSTALLER.read_text(encoding="utf-8")
+    assert 'if [ "$INSTALL" -eq 1 ]; then\n    VERIFY_LIVE=1\nfi' in body
+    assert "$TARGET_HOME/.cache/hapax/source-activation/worktree" in body
 
 
 def _write_proc(
@@ -680,9 +763,7 @@ def test_installer_falls_back_to_sudo_when_direct_oom_score_write_fails(
         "#!/usr/bin/env bash\n"
         'case "$*" in\n'
         '  *"show user@1000.service -p MainPID --value"*) printf "900\\n" ;;\n'
-        '  *"--user show pipewire.service -p OOMScoreAdjust --value"*) printf "-900\\n" ;;\n'
-        '  *"--user show pipewire.service -p MainPID --value"*) printf "910\\n" ;;\n'
-        f"{_systemctl_user_unit_cases()}\n"
+        f"{_systemctl_user_unit_cases({'pipewire.service': 910})}\n"
         f"{_systemctl_system_memory_cases()}\n"
         f"{_systemctl_app_slice_cases()}\n"
         "esac\n"

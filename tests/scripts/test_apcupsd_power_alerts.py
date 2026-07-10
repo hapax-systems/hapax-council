@@ -58,6 +58,7 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     )
     fake_apcaccess.chmod(0o755)
     monkeypatch.setenv("HAPAX_APCUPSD_APCACCESS", str(fake_apcaccess))
+    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_GIT_REPO", str(REPO_ROOT))
 
 
 def test_apcupsd_config_uses_current_header() -> None:
@@ -389,7 +390,7 @@ def test_installer_source_check_exercises_config_hooks_and_helper() -> None:
     assert "apcupsd power alert install/check complete" in result.stdout
 
 
-def test_installer_install_and_verify_live_against_temp_destinations(tmp_path: Path) -> None:
+def test_installer_install_implies_verify_live_against_temp_destinations(tmp_path: Path) -> None:
     dest = tmp_path / "apcupsd"
     audit_dir = tmp_path / "hapax-log"
     logrotate_dest = tmp_path / "logrotate.d" / "hapax-ups-power-events"
@@ -403,7 +404,7 @@ def test_installer_install_and_verify_live_against_temp_destinations(tmp_path: P
     fake_systemctl.chmod(0o755)
 
     result = subprocess.run(
-        [str(INSTALLER), "--install", "--verify-live"],
+        [str(INSTALLER), "--install"],
         text=True,
         capture_output=True,
         check=False,
@@ -436,7 +437,7 @@ def test_installer_install_and_verify_live_against_temp_destinations(tmp_path: P
     systemctl_calls.write_text("", encoding="utf-8")
 
     second_result = subprocess.run(
-        [str(INSTALLER), "--install", "--verify-live"],
+        [str(INSTALLER), "--install"],
         text=True,
         capture_output=True,
         check=False,
@@ -640,6 +641,72 @@ def test_unversioned_apcupsd_install_source_fails_before_live_mutation(tmp_path:
     assert result.returncode == 1
     assert "source has no package SHA" in result.stderr
     assert not live.exists()
+
+
+def test_apcupsd_manifest_shrink_fails_before_live_mutation(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "ups-test@example.test"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "UPS Test"], cwd=repo, check=True)
+    _copy_apcupsd_package(repo)
+    manifest = repo / "config/root-required/apcupsd-power-alerts.files"
+    retired_rel = "config/apcupsd/retired-hook"
+    manifest.write_text(manifest.read_text(encoding="utf-8") + f"{retired_rel}\n", encoding="utf-8")
+    retired = repo / retired_rel
+    retired.write_text("formerly installed\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "installed package"], cwd=repo, check=True, capture_output=True
+    )
+    installed_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+
+    manifest.write_text(
+        (REPO_ROOT / "config/root-required/apcupsd-power-alerts.files").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    retired.unlink()
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "candidate drops path"], cwd=repo, check=True, capture_output=True
+    )
+    candidate_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+
+    receipt_root = tmp_path / "receipts"
+    receipt_root.mkdir()
+    receipt = receipt_root / "apcupsd-power-alerts.sha"
+    receipt.write_text(f"{installed_sha}\n", encoding="utf-8")
+    live = tmp_path / "live-apcupsd"
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(repo), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+            "HAPAX_APCUPSD_DEST": str(live),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": candidate_sha,
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(repo),
+            "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT": str(receipt_root),
+        },
+    )
+
+    assert result.returncode == 1
+    assert f"refusing apcupsd package removal or rename of {retired_rel}" in result.stderr
+    assert "explicit governed live-removal handling" in result.stderr
+    assert receipt.read_text(encoding="utf-8").strip() == installed_sha
+    assert not live.exists()
+
+
+def test_apcupsd_install_implies_live_verification() -> None:
+    body = INSTALLER.read_text(encoding="utf-8")
+    assert 'if [ "$INSTALL" -eq 1 ]; then\n    VERIFY_LIVE=1\nfi' in body
+    assert "$TARGET_HOME/.cache/hapax/source-activation/worktree" in body
 
 
 def test_claimed_apcupsd_commit_rejects_modified_package_before_live_mutation(

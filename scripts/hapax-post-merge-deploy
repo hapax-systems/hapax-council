@@ -1378,12 +1378,12 @@ EOF
 root_required_stage_matches_commit() {
     local stage="$1" commit="$2" manifest_rel="$3" file rel
     cmp -s "$stage/$manifest_rel" <(git -C "$REPO" show "$commit:$manifest_rel" 2>/dev/null) || return 1
-    while IFS= read -r -d '' file; do
-        rel="${file#"$stage"/}"
-        [ "$rel" != ".hapax-root-required-package-sha" ] || continue
+    while IFS= read -r rel; do
+        file="$stage/$rel"
+        [ -f "$file" ] || return 1
         git -C "$REPO" cat-file -e "$commit:$rel" 2>/dev/null || return 1
         cmp -s "$file" <(git -C "$REPO" show "$commit:$rel") || return 1
-    done < <(find "$stage" -type f -print0)
+    done < <(awk 'NF && $1 !~ /^#/ {print $1}' "$stage/$manifest_rel")
 }
 
 validate_root_required_stage_manifest() {
@@ -1401,7 +1401,7 @@ record_root_required_desired_sha() {
     case "$label" in
         oom-containment) manifest_rel="config/root-required/oom-containment.files" ;;
         apcupsd-power-alerts) manifest_rel="config/root-required/apcupsd-power-alerts.files" ;;
-        *) echo "hapax-post-merge-deploy: unknown root-required package label: $label" >&2; return 2 ;;
+        *) echo "hapax-post-merge-deploy: unknown root-required package label: $label; next action: use oom-containment or apcupsd-power-alerts from the governed staging path" >&2; return 2 ;;
     esac
     validate_root_required_stage_manifest "$stage" "$manifest_rel" || return 1
     mkdir -p "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" "$(dirname "$ROOT_REQUIRED_LOCK_FILE")"
