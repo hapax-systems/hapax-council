@@ -156,6 +156,17 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         encoding="utf-8",
     )
     fake_systemctl.chmod(0o755)
+    runuser_calls = tmp_path / "runuser-calls.txt"
+    fake_runuser = tmp_path / "runuser"
+    fake_runuser.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' \"$*\" >> {runuser_calls!s}\n"
+        'while [ "$1" != "--" ]; do shift; done\n'
+        "shift\n"
+        'exec "$@"\n',
+        encoding="utf-8",
+    )
+    fake_runuser.chmod(0o755)
 
     result = subprocess.run(
         [str(INSTALLER), "--install", "--verify-live"],
@@ -172,6 +183,8 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
             "HAPAX_OOM_ENFORCER_DEST": str(enforcer_dest),
             "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
             "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_OOM_EFFECTIVE_UID": "0",
+            "HAPAX_OOM_RUNUSER": str(fake_runuser),
             "HAPAX_OOM_INSTALL_SUDO": "",
             "HAPAX_OOM_PROC_ROOT": str(proc_root),
             "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(root_defer),
@@ -206,6 +219,14 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert not (root_home / ".config" / "systemd").exists()
     calls = systemctl_calls.read_text(encoding="utf-8")
     assert "daemon-reload" in calls
+    assert "enable --now earlyoom.service" in calls
+    assert "restart earlyoom.service" in calls
+    assert "is-enabled --quiet earlyoom.service" in calls
+    assert "is-active --quiet earlyoom.service" in calls
+    assert (
+        f"-u hapax -- env XDG_RUNTIME_DIR=/run/user/1000 {fake_systemctl} --user daemon-reload"
+        in runuser_calls.read_text(encoding="utf-8")
+    )
 
 
 def _write_proc(
@@ -290,7 +311,6 @@ def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_use
         f"{user_cases}\n"
         f"{_systemctl_system_memory_cases()}\n"
         f"{_systemctl_app_slice_cases()}\n"
-        '  *"is-active --quiet earlyoom.service"*) exit 3 ;;\n'
         "esac\n"
         "exit 0\n",
         encoding="utf-8",
@@ -388,7 +408,6 @@ def test_installer_falls_back_to_sudo_when_direct_oom_score_write_fails(
         f"{_systemctl_user_unit_cases()}\n"
         f"{_systemctl_system_memory_cases()}\n"
         f"{_systemctl_app_slice_cases()}\n"
-        '  *"is-active --quiet earlyoom.service"*) exit 3 ;;\n'
         "esac\n"
         "exit 0\n",
         encoding="utf-8",
@@ -727,7 +746,7 @@ def test_root_oom_score_enforcer_continues_after_per_unit_write_failure(
         },
     )
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1
     assert "failed to set oom_score_adj for pipewire-pulse.service" in result.stderr
     assert "next action: run scripts/hapax-oom-policy-audit --json" in result.stderr
     assert (proc_root / "912" / "oom_score_adj").read_text(encoding="utf-8").strip() == "-900"
@@ -767,7 +786,6 @@ def test_installer_preserves_python_child_inside_protected_user_unit_cgroup(
         f"{_systemctl_user_unit_cases({'studio-compositor.service': 914}, {'studio-compositor.service': studio_cgroup})}\n"
         f"{_systemctl_system_memory_cases()}\n"
         f"{_systemctl_app_slice_cases()}\n"
-        '  *"is-active --quiet earlyoom.service"*) exit 3 ;;\n'
         "esac\n"
         "exit 0\n",
         encoding="utf-8",

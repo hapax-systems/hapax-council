@@ -33,7 +33,10 @@ EVENT_TEXT = {
     },
     "offbattery": {
         "title": "UPS power restored - podium",
-        "message": "UPS input restored; inspect the event trail for any prior shutdown request.",
+        "message": (
+            "UPS input restored. This event does not determine whether shutdown was previously "
+            "requested."
+        ),
         "priority": "default",
         "shutdown_requested": None,
     },

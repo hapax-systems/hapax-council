@@ -191,6 +191,7 @@ for unit in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.target "$REP
         continue
     fi
     if system_install_scope_unit "$unit"; then
+        systemctl --user disable --now "$name" >/dev/null 2>&1 || true
         if [ -e "$dest" ] || [ -L "$dest" ]; then
             rm -f "$dest"
             changed=$((changed + 1))

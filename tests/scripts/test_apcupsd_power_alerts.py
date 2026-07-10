@@ -44,7 +44,7 @@ def test_apcupsd_hooks_delegate_to_provenance_helper() -> None:
     assert 'exec "$HELPER" offbattery "$@"' in offbattery
     assert 'HELPER="/etc/apcupsd/hapax-power-event.py"' in doshutdown
     assert "HAPAX_APCUPSD_TEST_MODE" in doshutdown
-    assert '"$HELPER" doshutdown "$@" || :' in doshutdown
+    assert '"$TIMEOUT" --signal=KILL 3s "$HELPER" doshutdown "$@" || :' in doshutdown
     assert doshutdown.rstrip().endswith("exit 0")
 
 
@@ -134,7 +134,7 @@ def test_power_event_helper_records_offbattery_delivery_failure(tmp_path: Path) 
     assert [record["phase"] for record in records] == ["intent", "delivery"]
     assert records[1]["event"] == "offbattery"
     assert records[1]["shutdown_requested"] is None
-    assert "inspect the event trail" in records[1]["message"]
+    assert "does not determine whether shutdown was previously requested" in records[1]["message"]
     assert records[1]["delivery"]["attempted"] is True
     assert records[1]["delivery"]["ok"] is False
     assert records[1]["delivery"]["error"]
@@ -228,6 +228,31 @@ def test_doshutdown_external_io_is_bounded(tmp_path: Path) -> None:
     assert records[0]["apcaccess_timeout_s"] == 1.0
     assert records[0]["notification_timeout_s"] == 1.0
     assert "TimeoutExpired" in records[0]["apcaccess_error"]
+
+
+def test_doshutdown_hook_deadlines_blocked_provenance_write(tmp_path: Path) -> None:
+    audit_fifo = tmp_path / "blocked-audit.fifo"
+    os.mkfifo(audit_fifo)
+
+    started = time.monotonic()
+    result = subprocess.run(
+        [str(CONFIG_DIR / "doshutdown"), "podium-srt3000xla", "1", "1"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_TEST_MODE": "1",
+            "HAPAX_APCUPSD_HELPER": str(HELPER),
+            "HAPAX_UPS_AUDIT_LOG": str(audit_fifo),
+            "HAPAX_UPS_APCACCESS": "",
+            "HAPAX_UPS_NTFY_URL": "",
+        },
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.returncode == 0
+    assert elapsed < 4
 
 
 def test_power_event_helper_notifies_when_intent_audit_fails(tmp_path: Path) -> None:

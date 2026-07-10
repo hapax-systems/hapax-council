@@ -317,8 +317,12 @@ class TestServiceDropInInstall:
         stale.write_text("[Timer]\nOnUnitActiveSec=30s\n", encoding="utf-8")
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
+        calls = tmp_path / "systemctl-calls.txt"
         systemctl = bin_dir / "systemctl"
-        systemctl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        systemctl.write_text(
+            f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> {calls!s}\nexit 0\n",
+            encoding="utf-8",
+        )
         systemctl.chmod(0o755)
         uv = bin_dir / "uv"
         uv.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
@@ -341,6 +345,9 @@ class TestServiceDropInInstall:
         assert not stale.exists()
         assert (
             "removed stale user-scope system unit: hapax-oom-score-enforce.timer" in result.stdout
+        )
+        assert "--user disable --now hapax-oom-score-enforce.timer" in calls.read_text(
+            encoding="utf-8"
         )
 
     def test_script_reloads_daemon_when_dropins_change(self) -> None:

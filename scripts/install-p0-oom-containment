@@ -6,12 +6,16 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE="$ROOT"
 SYSTEMD_SYSTEM_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
 TARGET_UID="${HAPAX_OOM_TARGET_UID:-1000}"
+TARGET_USER="${HAPAX_OOM_TARGET_USER:-}"
 TARGET_HOME="${HAPAX_OOM_TARGET_HOME:-}"
+if [ -z "$TARGET_USER" ]; then
+    TARGET_USER="$(getent passwd "$TARGET_UID" | cut -d: -f1 || true)"
+fi
 if [ -z "$TARGET_HOME" ]; then
     TARGET_HOME="$(getent passwd "$TARGET_UID" | cut -d: -f6 || true)"
 fi
-if [ -z "$TARGET_HOME" ]; then
-    echo "unable to resolve home for OOM target UID $TARGET_UID; next action: set HAPAX_OOM_TARGET_UID and HAPAX_OOM_TARGET_HOME explicitly" >&2
+if [ -z "$TARGET_USER" ] || [ -z "$TARGET_HOME" ]; then
+    echo "unable to resolve account/home for OOM target UID $TARGET_UID; next action: set HAPAX_OOM_TARGET_UID, HAPAX_OOM_TARGET_USER, and HAPAX_OOM_TARGET_HOME explicitly" >&2
     exit 2
 fi
 SYSTEMD_USER_DIR="${HAPAX_OOM_SYSTEMD_USER_DIR:-$TARGET_HOME/.config/systemd/user}"
@@ -21,6 +25,8 @@ OOM_ENFORCER_DEST="${HAPAX_OOM_ENFORCER_DEST:-/usr/local/sbin/hapax-oom-score-en
 ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapax-root-failure-intake}"
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
 SUDO="${HAPAX_OOM_INSTALL_SUDO-sudo}"
+RUNUSER="${HAPAX_OOM_RUNUSER:-runuser}"
+EFFECTIVE_UID="${HAPAX_OOM_EFFECTIVE_UID:-$(id -u)}"
 ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$TARGET_HOME/.cache/hapax/post-merge-root-required/current-source}"
 ROOT_REQUIRED_DEFER_ROOT="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-}"
 if [ -z "$ROOT_REQUIRED_DEFER_ROOT" ] && [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ]; then
@@ -106,6 +112,17 @@ run_root() {
         "$SUDO" "$@"
     else
         "$@"
+    fi
+}
+
+user_systemctl() {
+    if [ "$EFFECTIVE_UID" = "$TARGET_UID" ]; then
+        "$SYSTEMCTL" --user "$@"
+    elif [ "$EFFECTIVE_UID" = "0" ]; then
+        "$RUNUSER" -u "$TARGET_USER" -- env XDG_RUNTIME_DIR="/run/user/$TARGET_UID" "$SYSTEMCTL" --user "$@"
+    else
+        echo "cannot control UID $TARGET_UID user manager from effective UID $EFFECTIVE_UID; next action: run as UID $TARGET_UID or root, or set HAPAX_OOM_TARGET_UID/USER/HOME correctly" >&2
+        return 1
     fi
 }
 
@@ -349,7 +366,7 @@ main_pid_for_unit() {
 
 main_pid_for_user_unit() {
     local unit="$1" pid
-    pid="$("$SYSTEMCTL" --user show "$unit" -p MainPID --value 2>/dev/null || true)"
+    pid="$(user_systemctl show "$unit" -p MainPID --value 2>/dev/null || true)"
     if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ]; then
         printf '%s\n' "$pid"
     fi
@@ -358,7 +375,7 @@ main_pid_for_user_unit() {
 
 control_group_for_user_unit() {
     local unit="$1"
-    "$SYSTEMCTL" --user show "$unit" -p ControlGroup --value 2>/dev/null || true
+    user_systemctl show "$unit" -p ControlGroup --value 2>/dev/null || true
 }
 
 cgroup_pids() {
@@ -530,7 +547,15 @@ install_live() {
         echo "unable to enable hapax-oom-score-enforce.timer; next action: run sudo systemctl enable --now hapax-oom-score-enforce.timer" >&2
         return 1
     }
-    "$SYSTEMCTL" --user daemon-reload
+    run_root "$SYSTEMCTL" enable --now earlyoom.service >/dev/null 2>&1 || {
+        echo "unable to enable earlyoom.service; next action: run sudo systemctl enable --now earlyoom.service" >&2
+        return 1
+    }
+    run_root "$SYSTEMCTL" restart earlyoom.service || {
+        echo "unable to restart earlyoom.service with the installed policy; next action: run sudo systemctl restart earlyoom.service and inspect journalctl -u earlyoom.service" >&2
+        return 1
+    }
+    user_systemctl daemon-reload
     if [ "$APPLY_RUNTIME" -eq 1 ]; then
         apply_system_runtime_memory system.slice systemd/system/system.slice.d/oom-containment.conf
         apply_system_runtime_memory user-1000.slice systemd/system/user-1000.slice.d/oom-containment.conf
@@ -538,15 +563,12 @@ install_live() {
         mem_high="$(app_slice_value MemoryHigh)"
         mem_max="$(app_slice_value MemoryMax)"
         mem_swap="$(app_slice_value MemorySwapMax)"
-        "$SYSTEMCTL" --user set-property --runtime app.slice \
+        user_systemctl set-property --runtime app.slice \
             "MemoryHigh=$mem_high" \
             "MemoryMax=$mem_max" \
             "MemorySwapMax=$mem_swap" \
             "MemoryLow=$(app_slice_value MemoryLow)" \
             "MemoryMin=$(app_slice_value MemoryMin)"
-        if "$SYSTEMCTL" is-active --quiet earlyoom.service; then
-            run_root "$SYSTEMCTL" restart earlyoom.service
-        fi
         apply_recovery_unit_oom_scores
         apply_protected_user_unit_oom_scores
         user_pid="$("$SYSTEMCTL" show user@1000.service -p MainPID --value 2>/dev/null || true)"
@@ -593,6 +615,14 @@ verify_live() {
     verify_pair "$(src_path "$oom_enforcer_source")" "$OOM_ENFORCER_DEST"
     verify_pair "$(src_path "$root_failure_intake_source")" "$ROOT_FAILURE_INTAKE_DEST"
     verify_pair "$(src_path "$earlyoom_source")" "$EARLYOOM_DEST"
+    run_root "$SYSTEMCTL" is-enabled --quiet earlyoom.service || {
+        echo "earlyoom.service is not enabled; next action: run sudo systemctl enable --now earlyoom.service" >&2
+        return 1
+    }
+    run_root "$SYSTEMCTL" is-active --quiet earlyoom.service || {
+        echo "earlyoom.service is not active; next action: run sudo systemctl enable --now earlyoom.service and inspect journalctl -u earlyoom.service" >&2
+        return 1
+    }
     dest="$SYSTEMD_USER_DIR/app.slice.d/oom-containment.conf"
     if [ -L "$dest" ]; then
         echo "live app.slice drop-in is a symlink: $dest; next action: run scripts/install-p0-oom-containment --install --verify-live to replace it with a copy" >&2
@@ -637,7 +667,7 @@ verify_app_slice_runtime() {
             echo "cannot parse app.slice $key=$expected_raw from $user_dropin; next action: fix the source drop-in and rerun scripts/install-p0-oom-containment --check" >&2
             return 1
         }
-        actual="$("$SYSTEMCTL" --user show app.slice -p "$key" --value 2>/dev/null || true)"
+        actual="$(user_systemctl show app.slice -p "$key" --value 2>/dev/null || true)"
         if [ "$actual" != "$expected_raw" ] && [ "$actual" != "$expected_bytes" ]; then
             echo "live app.slice $key drift: actual=$actual expected=$expected_raw; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
             failed=1
@@ -681,7 +711,7 @@ verify_protected_user_unit_oom_scores() {
     for spec in "${protected_user_unit_scores[@]}"; do
         unit="${spec%%:*}"
         score="${spec##*:}"
-        configured="$("$SYSTEMCTL" --user show "$unit" -p OOMScoreAdjust --value 2>/dev/null || true)"
+        configured="$(user_systemctl show "$unit" -p OOMScoreAdjust --value 2>/dev/null || true)"
         if [ "$configured" != "$score" ]; then
             echo "user unit OOM policy drift for $unit: configured=$configured expected=$score; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
             failed=1

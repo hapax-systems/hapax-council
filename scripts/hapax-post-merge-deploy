@@ -1350,17 +1350,6 @@ record_root_required_source() {
     cp -a "$stage"/. "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"/
 }
 
-clear_root_required_deferrals() {
-    local label="$1" dir
-    [ -d "$ROOT_DEFER_DIR" ] || return 0
-    while IFS= read -r dir; do
-        [ -n "$dir" ] || continue
-        [ -f "$dir/RUNBOOK.txt" ] || continue
-        rm -rf "$dir"
-        echo "root-required $label deferral cleared: $dir"
-    done < <(find "$ROOT_DEFER_DIR" -mindepth 2 -maxdepth 2 -type d -name "$label" | sort)
-}
-
 if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
     echo "P0 OOM containment files changed (${#OOM_CONTAINMENT[@]}):"
     for f in "${OOM_CONTAINMENT[@]}"; do
@@ -1386,7 +1375,6 @@ if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
         exit "$oom_installer_rc"
     else
         record_root_required_source "$OOM_STAGE"
-        clear_root_required_deferrals "oom-containment"
     fi
     rm -rf "$OOM_STAGE" 2>/dev/null || true
     DID_ANYTHING=1
@@ -1443,7 +1431,6 @@ if [ "${#APCUPSD_POWER_ALERTS[@]}" -gt 0 ]; then
         exit "$apcupsd_installer_rc"
     else
         record_root_required_source "$APCUPSD_STAGE"
-        clear_root_required_deferrals "apcupsd-power-alerts"
     fi
     rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
     DID_ANYTHING=1

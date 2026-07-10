@@ -614,7 +614,7 @@ def test_systemd_coverage_includes_dropins_presets_and_source_overrides() -> Non
     assert "ok: all systemd/** paths" in result.stdout
 
 
-def test_p0_oom_containment_deploy_uses_installer_without_restarting_app_slice(
+def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
     tmp_path: Path,
 ) -> None:
     installer_calls = tmp_path / "oom-installer-calls.txt"
@@ -696,7 +696,9 @@ def test_p0_oom_containment_deploy_uses_installer_without_restarting_app_slice(
 
     assert result.returncode == 0, result.stderr
     assert "--install --verify-live" in installer_calls.read_text(encoding="utf-8")
-    assert not stale_deferral.exists()
+    assert stale_deferral.exists(), (
+        "only an explicit staged RUNBOOK invocation may drain a deferral"
+    )
     calls = systemctl_calls.read_text(encoding="utf-8") if systemctl_calls.exists() else ""
     assert "--user restart app.slice" not in calls
     record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
@@ -918,6 +920,30 @@ def test_root_required_audit_detects_disabled_enforcer_timer(tmp_path: Path) -> 
     assert result.returncode == 1
     assert "hapax-oom-score-enforce.timer is not enabled" in result.stderr
     assert "enable --now" in result.stderr
+
+
+def test_root_required_audit_detects_inactive_earlyoom(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$*" = "is-active --quiet earlyoom.service" ]; then exit 1; fi\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "earlyoom.service is not active" in result.stderr
+    assert "enable --now earlyoom.service" in result.stderr
 
 
 def test_root_required_audit_passes_when_oom_enforcer_matches(tmp_path: Path) -> None:

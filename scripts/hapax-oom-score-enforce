@@ -6,6 +6,7 @@ TARGET_USER="${HAPAX_OOM_TARGET_USER:-hapax}"
 TARGET_UID="${HAPAX_OOM_TARGET_UID:-$(id -u "$TARGET_USER")}"
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
 PROC_ROOT="${HAPAX_OOM_PROC_ROOT:-/proc}"
+failed=0
 if [ -n "${HAPAX_OOM_CGROUP_ROOT:-}" ]; then
     CGROUP_ROOT="$HAPAX_OOM_CGROUP_ROOT"
 elif [ "$PROC_ROOT" != "/proc" ]; then
@@ -74,7 +75,10 @@ write_oom_score_for_unit() {
 
 system_main_pid() {
     local unit="$1" pid
-    pid="$("$SYSTEMCTL" show "$unit" -p MainPID --value 2>/dev/null || true)"
+    if ! pid="$("$SYSTEMCTL" show "$unit" -p MainPID --value 2>/dev/null)"; then
+        echo "warn: unable to query $unit MainPID; next action: inspect systemctl status $unit and run scripts/hapax-oom-policy-audit --json" >&2
+        return 1
+    fi
     if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ]; then
         printf '%s\n' "$pid"
     fi
@@ -125,17 +129,23 @@ apply_unit_score() {
             [ -z "$changed" ] || echo "user-unit $unit pid=$pid oom_score_adj=$score"
         else
             echo "warn: failed to set oom_score_adj for $unit pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            failed=1
         fi
     done
 }
 
-user_pid="$(system_main_pid "user@$TARGET_UID.service")"
-if [ -n "$user_pid" ]; then
+if ! user_pid="$(system_main_pid "user@$TARGET_UID.service")"; then
+    failed=1
+elif [ -n "$user_pid" ]; then
     if changed="$(write_oom_score_for_unit "$user_pid" 100 "user@$TARGET_UID.service")"; then
         [ -z "$changed" ] || echo "system user@$TARGET_UID.service pid=$user_pid oom_score_adj=100"
     else
         echo "warn: failed to set oom_score_adj for user@$TARGET_UID.service pid=$user_pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        failed=1
     fi
+else
+    echo "warn: user@$TARGET_UID.service has no live MainPID; next action: inspect systemctl status user@$TARGET_UID.service and run scripts/hapax-oom-policy-audit --json" >&2
+    failed=1
 fi
 
 apply_unit_score pipewire.service -900
@@ -144,3 +154,5 @@ apply_unit_score wireplumber.service -900
 apply_unit_score hapax-daimonion.service -500
 apply_unit_score studio-compositor.service -800
 apply_unit_score hapax-imagination.service -800
+
+exit "$failed"

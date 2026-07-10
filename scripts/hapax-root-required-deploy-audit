@@ -3,6 +3,8 @@
 set -euo pipefail
 
 ROOT_DEFER_DIR="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$HOME/.cache/hapax/post-merge-root-required}"
+# Deferrals are cleared only by the explicit HAPAX_ROOT_REQUIRED_DRAIN_DIR path
+# in the owning installer; this audit intentionally never mutates them.
 SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_SOURCE_ROOT:-$HOME/.cache/hapax/source-activation/worktree}"
 INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$ROOT_DEFER_DIR/current-source}"
 OOM_ENFORCER_DEST="${HAPAX_OOM_ENFORCER_DEST:-/usr/local/sbin/hapax-oom-score-enforce}"
@@ -95,6 +97,16 @@ audit_systemd_state() {
     if ! "$SYSTEMCTL" is-active --quiet apcupsd.service; then
         echo "root-required activation drift: apcupsd.service is not active" >&2
         echo "  next action: run sudo systemctl restart apcupsd.service and inspect journalctl -u apcupsd.service" >&2
+        failed=1
+    fi
+    if ! "$SYSTEMCTL" is-enabled --quiet earlyoom.service; then
+        echo "root-required activation drift: earlyoom.service is not enabled" >&2
+        echo "  next action: run sudo systemctl enable --now earlyoom.service" >&2
+        failed=1
+    fi
+    if ! "$SYSTEMCTL" is-active --quiet earlyoom.service; then
+        echo "root-required activation drift: earlyoom.service is not active" >&2
+        echo "  next action: run sudo systemctl enable --now earlyoom.service and inspect journalctl -u earlyoom.service" >&2
         failed=1
     fi
     [ "$failed" -eq 0 ]
