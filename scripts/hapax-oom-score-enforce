@@ -88,12 +88,6 @@ run_user_systemctl() {
     fi
 }
 
-# A stopped user manager has no live scores to enforce. Do not pull it back in
-# from the recurring timer; the next activation will be handled normally.
-if ! "$SYSTEMCTL" is-active --quiet "user@$TARGET_UID.service"; then
-    exit 0
-fi
-
 write_oom_score() {
     local pid score path current
     pid="$1"
@@ -259,11 +253,33 @@ protected_user_unit_score() {
     esac
 }
 
+requested_score=""
 if [ "$mode" = "--apply-unit" ]; then
     if ! requested_score="$(protected_user_unit_score "$requested_unit")"; then
         echo "refusing non-allowlisted protected user unit: $requested_unit; next action: use one of the source-controlled OOM protection drop-ins" >&2
         exit 2
     fi
+fi
+
+# A confirmed inactive user manager has no live scores to enforce. Query the
+# state directly so failed/unknown manager and transport errors remain visible.
+user_manager_unit="user@$TARGET_UID.service"
+if ! user_manager_state="$(
+    "$SYSTEMCTL" show "$user_manager_unit" -p ActiveState --value 2>/dev/null
+)"; then
+    echo "warn: unable to query $user_manager_unit ActiveState; next action: inspect systemctl status $user_manager_unit and run scripts/hapax-oom-policy-audit --json" >&2
+    exit 1
+fi
+case "$user_manager_state" in
+    active|reloading|refreshing) ;;
+    inactive) exit 0 ;;
+    *)
+        echo "warn: refusing to skip OOM score enforcement for $user_manager_unit with ActiveState=${user_manager_state:-empty}; next action: inspect systemctl status $user_manager_unit and run scripts/hapax-oom-policy-audit --json" >&2
+        exit 1
+        ;;
+esac
+
+if [ "$mode" = "--apply-unit" ]; then
     apply_unit_main_score "$requested_unit" "$requested_score"
     exit "$failed"
 fi

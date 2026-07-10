@@ -129,7 +129,7 @@ def _unit_cgroup(unit: str) -> str:
 def _enforcer_system_manager_cases(pid: int = 900) -> str:
     return "\n".join(
         [
-            '  "is-active --quiet user@1000.service") exit 0 ;;',
+            '  "show user@1000.service -p ActiveState --value") printf "active\\n" ;;',
             f'  *"show user@1000.service -p MainPID --value"*) printf "{pid}\\n" ;;',
             '  *"show user@1000.service -p ControlGroup --value"*) printf "/user.slice/user-1000.slice/user@1000.service\\n" ;;',
         ]
@@ -1312,7 +1312,7 @@ def test_installer_falls_back_to_sudo_when_direct_oom_score_write_fails(
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
         'case "$*" in\n'
-        '  "is-active --quiet user@1000.service") exit 0 ;;\n'
+        '  "show user@1000.service -p ActiveState --value") printf "active\\n" ;;\n'
         '  *"show user@1000.service -p MainPID --value"*) printf "900\\n" ;;\n'
         f"{_systemctl_user_unit_cases({'pipewire.service': 910})}\n"
         f"{_systemctl_system_memory_cases(RECOVERY_SYSTEM_UNIT_PIDS)}\n"
@@ -1630,7 +1630,9 @@ def test_root_oom_score_enforcer_applies_one_allowlisted_unit_after_start(
     (cgroup_dir / "cgroup.procs").write_text("910\n916\n", encoding="utf-8")
     fake_systemctl = tmp_path / "systemctl"
     fake_systemctl.write_text(
-        '#!/usr/bin/env bash\n[ "$*" = "is-active --quiet user@1000.service" ]\n',
+        "#!/usr/bin/env bash\n"
+        '[ "$*" = "show user@1000.service -p ActiveState --value" ] || exit 9\n'
+        'printf "active\\n"\n',
         encoding="utf-8",
     )
     fake_systemctl.chmod(0o755)
@@ -1690,7 +1692,12 @@ def test_root_oom_score_enforcer_does_not_start_an_inactive_user_manager(
     tmp_path: Path,
 ) -> None:
     fake_systemctl = tmp_path / "systemctl"
-    fake_systemctl.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        '[ "$*" = "show user@1000.service -p ActiveState --value" ] || exit 9\n'
+        'printf "inactive\\n"\n',
+        encoding="utf-8",
+    )
     fake_systemctl.chmod(0o755)
 
     result = subprocess.run(
@@ -1708,6 +1715,62 @@ def test_root_oom_score_enforcer_does_not_start_an_inactive_user_manager(
     assert result.returncode == 0
     assert result.stdout == ""
     assert result.stderr == ""
+
+
+@pytest.mark.parametrize("active_state", ("failed", "unknown", "activating", ""))
+def test_root_oom_score_enforcer_fails_for_noninactive_user_manager_state(
+    tmp_path: Path,
+    active_state: str,
+) -> None:
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        '[ "$*" = "show user@1000.service -p ActiveState --value" ] || exit 9\n'
+        f'printf "%s\\n" {active_state!r}\n',
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(OOM_ENFORCER), "--apply"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_OOM_TARGET_UID": "1000",
+        },
+    )
+
+    assert result.returncode == 1
+    assert "refusing to skip OOM score enforcement" in result.stderr
+    assert f"ActiveState={active_state or 'empty'}" in result.stderr
+    assert "next action:" in result.stderr
+
+
+def test_root_oom_score_enforcer_fails_when_user_manager_query_errors(
+    tmp_path: Path,
+) -> None:
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text("#!/usr/bin/env bash\nexit 4\n", encoding="utf-8")
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(OOM_ENFORCER), "--apply"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_OOM_TARGET_UID": "1000",
+        },
+    )
+
+    assert result.returncode == 1
+    assert "unable to query user@1000.service ActiveState" in result.stderr
+    assert "next action:" in result.stderr
 
 
 def test_root_oom_score_enforcer_is_quiet_when_scores_already_match(
