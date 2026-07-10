@@ -214,6 +214,53 @@ class TestServiceDropInInstall:
             "drop-in loop must link each .conf individually, not the parent dir"
         )
 
+    def test_generic_installer_links_all_supported_dropin_classes(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        script = project / "systemd" / "scripts" / "install-units.sh"
+        units = project / "systemd" / "units"
+        script.parent.mkdir(parents=True)
+        units.mkdir(parents=True)
+        script.write_text(INSTALL_SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+        script.chmod(0o755)
+
+        sources: dict[str, Path] = {}
+        for unit_type in ("service", "timer", "slice", "scope"):
+            relative = f"ordinary-{unit_type}.{unit_type}.d/positive.conf"
+            source = units / relative
+            source.parent.mkdir()
+            source.write_text("[Unit]\nDescription=positive drop-in witness\n", encoding="utf-8")
+            sources[relative] = source
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        calls = tmp_path / "systemctl-calls.txt"
+        systemctl = bin_dir / "systemctl"
+        systemctl.write_text(
+            f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> {calls!s}\nexit 0\n",
+            encoding="utf-8",
+        )
+        systemctl.chmod(0o755)
+        uv = bin_dir / "uv"
+        uv.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        uv.chmod(0o755)
+
+        env = os.environ.copy()
+        env["ALLOW_NONSTANDARD_REPO"] = "1"
+        env["HOME"] = str(tmp_path / "home")
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        result = subprocess.run(
+            ["bash", str(script)], check=False, capture_output=True, text=True, env=env
+        )
+
+        assert result.returncode == 0, result.stderr
+        user_dir = Path(env["HOME"]) / ".config" / "systemd" / "user"
+        for relative, source in sources.items():
+            destination = user_dir / relative
+            assert destination.is_symlink()
+            assert destination.resolve() == source.resolve()
+            assert f"dropin-linked: {relative}" in result.stdout
+        assert "--user daemon-reload" in calls.read_text(encoding="utf-8")
+
     def test_generic_installer_behaviorally_skips_all_dedicated_p0_surfaces(
         self, tmp_path: Path
     ) -> None:

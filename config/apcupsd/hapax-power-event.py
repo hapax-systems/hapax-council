@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import errno
 import fcntl
+import http.client
 import json
 import math
 import os
@@ -109,8 +110,13 @@ def redact_ntfy_url(url: str) -> str:
 
 
 def redact_delivery_error(url: str, exc: BaseException) -> str:
-    rendered = f"{type(exc).__name__}: {exc}"
-    return rendered.replace(url, redact_ntfy_url(url)) if url else rendered
+    details: list[str] = []
+    if isinstance(exc, urllib.error.HTTPError):
+        details.append(f"status={exc.code}")
+    elif isinstance(exc, OSError) and exc.errno is not None:
+        details.append(f"errno={exc.errno}")
+    details.append(f"destination={redact_ntfy_url(url)}")
+    return f"{type(exc).__name__}: {'; '.join(details)}"
 
 
 def parse_apcaccess(raw: str) -> dict[str, str]:
@@ -168,7 +174,7 @@ def post_ntfy(url: str, title: str, message: str, priority: str, timeout_s: floa
             status=exc.code,
             error=redact_delivery_error(url, exc),
         )
-    except (OSError, ValueError, OverflowError) as exc:
+    except (http.client.HTTPException, OSError, ValueError, OverflowError) as exc:
         return Delivery(attempted=True, ok=False, error=redact_delivery_error(url, exc))
 
 

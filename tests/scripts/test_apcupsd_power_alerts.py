@@ -302,7 +302,9 @@ def test_power_event_helper_records_offbattery_delivery_failure(tmp_path: Path) 
     assert records[1]["delivery"]["attempted"] is True
     assert records[1]["delivery"]["ok"] is False
     assert records[1]["delivery"]["status"] == 500
-    assert "HTTP Error 500" in records[1]["delivery"]["error"]
+    assert records[1]["delivery"]["error"] == (
+        f"HTTPError: status=500; destination=http://127.0.0.1:{server.server_port}"
+    )
     assert "UPS notification delivery failed" in result.stderr
     assert "next action:" in result.stderr
 
@@ -352,11 +354,50 @@ def test_power_event_helper_redacts_ntfy_url_from_delivery_error(
 
     assert delivery.attempted is True
     assert delivery.ok is False
-    assert delivery.error == "ValueError: invalid destination https://example.test:8443"
+    assert delivery.error == "ValueError: destination=https://example.test:8443"
     assert "agent" not in delivery.error
     assert "secret" not in delivery.error
     assert "private-topic" not in delivery.error
     assert "credential" not in delivery.error
+
+
+def test_power_event_helper_redacts_malformed_ntfy_url_error(tmp_path: Path) -> None:
+    audit = tmp_path / "ups-events.jsonl"
+    secret_url = "https://agent:secret@example.test:8443/private topic?token=credential"
+
+    result = subprocess.run(
+        [
+            str(HELPER),
+            "onbattery",
+            "--audit-log",
+            str(audit),
+            "--apcaccess",
+            "",
+            "--ntfy-url",
+            secret_url,
+            "--timeout",
+            "0.2",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    raw_audit = audit.read_text(encoding="utf-8")
+    records = [json.loads(line) for line in raw_audit.splitlines() if line.strip()]
+    assert [record["phase"] for record in records] == ["intent", "delivery"]
+    assert records[1]["delivery"] == {
+        "attempted": True,
+        "error": "InvalidURL: destination=https://example.test:8443",
+        "ok": False,
+        "status": None,
+    }
+    assert "UPS notification delivery failed" in result.stderr
+    assert "next action:" in result.stderr
+    for secret in ("agent", "secret", "private topic", "credential"):
+        assert secret not in raw_audit
+        assert secret not in result.stderr
 
 
 @pytest.mark.parametrize("invalid_timeout", ["invalid", "nan", "inf", "-1", "0"])
