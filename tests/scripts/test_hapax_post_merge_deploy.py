@@ -182,6 +182,8 @@ def _repo_with_linear_commit(tmp_path: Path, files: dict[str, str]) -> tuple[Pat
         path = repo / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(body, encoding="utf-8")
+        if body.startswith("#!"):
+            path.chmod(0o755)
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", "add deployable files")
     return repo, _git(repo, "rev-parse", "HEAD")
@@ -731,8 +733,12 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
         "set -euo pipefail\n"
         'printf \'%s\\n\' "$*" >> "$HAPAX_OOM_INSTALL_CALLS"\n'
     )
+    future_manifest_path = "config/earlyoom/future-policy"
     files = {
-        "config/root-required/oom-containment.files": OOM_PACKAGE_MANIFEST,
+        "config/root-required/oom-containment.files": (
+            OOM_PACKAGE_MANIFEST + f"{future_manifest_path}\n"
+        ),
+        future_manifest_path: 'FUTURE_EARLYOOM_POLICY="enabled"\n',
         "scripts/install-p0-oom-containment": installer_body,
         "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\nexit 0\n",
         "scripts/hapax-root-failure-intake": "#!/usr/bin/env bash\nexit 0\n",
@@ -1077,6 +1083,47 @@ def test_root_required_audit_detects_oom_enforcer_drift(tmp_path: Path) -> None:
     assert "install-p0-oom-containment --install --verify-live" in result.stderr
 
 
+def test_root_required_audit_rejects_byte_identical_symlinked_install(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    dest = Path(env["HAPAX_OOM_ENFORCER_DEST"])
+    mutable_target = tmp_path / "mutable-worktree" / "hapax-oom-score-enforce"
+    mutable_target.parent.mkdir()
+    mutable_target.write_bytes(dest.read_bytes())
+    mutable_target.chmod(0o755)
+    dest.unlink()
+    dest.symlink_to(mutable_target)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "install missing or not a regular stable copy" in result.stderr
+    assert "install-p0-oom-containment --install --verify-live" in result.stderr
+
+
+def test_root_required_audit_rejects_nonexact_install_mode(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    earlyoom = Path(env["HAPAX_OOM_EARLYOOM_DEST"])
+    earlyoom.chmod(0o600)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "install mode drift" in result.stderr
+    assert "mode=600 expected=644" in result.stderr
+
+
 def test_root_required_audit_rejects_snapshot_not_matching_installed_receipt(
     tmp_path: Path,
 ) -> None:
@@ -1370,8 +1417,12 @@ def test_apcupsd_power_alert_deploy_uses_dedicated_installer(tmp_path: Path) -> 
         "set -euo pipefail\n"
         'printf \'%s\\n\' "$*" >> "$HAPAX_APCUPSD_INSTALL_CALLS"\n'
     )
+    future_manifest_path = "config/apcupsd/future-hook"
     files = {
-        "config/root-required/apcupsd-power-alerts.files": APCUPSD_PACKAGE_MANIFEST,
+        "config/root-required/apcupsd-power-alerts.files": (
+            APCUPSD_PACKAGE_MANIFEST + f"{future_manifest_path}\n"
+        ),
+        future_manifest_path: "future hook\n",
         "scripts/install-apcupsd-power-alerts": installer_body,
         "config/apcupsd/apcupsd.conf": (
             "## apcupsd.conf v1.1 ##\nUPSNAME podium\nBATTERYLEVEL 20\nMINUTES 5\nTIMEOUT 0\n"

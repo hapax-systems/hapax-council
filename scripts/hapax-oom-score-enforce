@@ -42,6 +42,12 @@ run_user_systemctl() {
     fi
 }
 
+# A stopped user manager has no live scores to enforce. Do not pull it back in
+# from the recurring timer; the next activation will be handled normally.
+if ! "$SYSTEMCTL" is-active --quiet "user@$TARGET_UID.service"; then
+    exit 0
+fi
+
 write_oom_score() {
     local pid score path current
     pid="$1"

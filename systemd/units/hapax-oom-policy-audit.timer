@@ -1,6 +1,7 @@
 # Hapax-Auto-Enable: true
 [Unit]
 Description=Run Hapax OOM containment policy audit
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/systemd/README.md
 
 [Timer]
 OnBootSec=2min

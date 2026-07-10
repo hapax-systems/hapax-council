@@ -557,6 +557,10 @@ check_source() {
         echo "user@1000 OOM drop-in must set OOMScoreAdjust=100; next action: restore systemd/system/user@1000.service.d/oom.conf from the P0 PR" >&2
         return 1
     }
+    grep -Eq '^OOMPolicy=continue$' "$(src_path systemd/system/user@1000.service.d/oom.conf)" || {
+        echo "user@1000 OOM drop-in must continue after a descendant OOM; next action: restore systemd/system/user@1000.service.d/oom.conf from the P0 PR" >&2
+        return 1
+    }
     grep -Eq '^OOMScoreAdjust=0$' "$(src_path systemd/system/sshd.service.d/oom-protect.conf)" || {
         echo "sshd OOM drop-in must keep child-inheritable OOMScoreAdjust neutral; next action: restore systemd/system/sshd.service.d/oom-protect.conf from the P0 PR" >&2
         return 1
@@ -664,11 +668,16 @@ user_unit_pids() {
 }
 
 pid_matches_cgroup() {
-    local pid="$1" cgroup="$2" proc_cgroup
+    local pid="$1" cgroup="$2" proc_cgroup _hierarchy _controllers path
     proc_cgroup="$PROC_ROOT/$pid/cgroup"
     [ -n "$cgroup" ] || return 1
     [ -r "$proc_cgroup" ] || return 1
-    grep -Fq "$cgroup" "$proc_cgroup"
+    while IFS=: read -r _hierarchy _controllers path; do
+        if [ "$path" = "$cgroup" ] || [[ "$path" == "$cgroup/"* ]]; then
+            return 0
+        fi
+    done < "$proc_cgroup"
+    return 1
 }
 
 write_oom_score_or_warn() {
@@ -1003,7 +1012,11 @@ verify_recovery_unit_oom_scores() {
             fi
         fi
         pid="$(main_pid_for_unit "$unit")"
-        [ -n "$pid" ] || continue
+        if [ -z "$pid" ]; then
+            echo "recovery daemon has no live MainPID: $unit; next action: inspect systemctl status $unit and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            failed=1
+            continue
+        fi
         actual="$(cat "$PROC_ROOT/$pid/oom_score_adj" 2>/dev/null || true)"
         if [ "$actual" != "$score" ]; then
             echo "live OOM score drift for $unit pid $pid: actual=$actual expected=$score; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
@@ -1014,7 +1027,12 @@ verify_recovery_unit_oom_scores() {
 }
 
 verify_user_manager_oom_score() {
-    local pid actual
+    local pid actual policy
+    policy="$("$SYSTEMCTL" show user@1000.service -p OOMPolicy --value 2>/dev/null || true)"
+    if [ "$policy" != "continue" ]; then
+        echo "effective user@1000.service OOMPolicy drift: actual=$policy expected=continue; next action: remove higher-priority drop-in drift and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
     pid="$("$SYSTEMCTL" show user@1000.service -p MainPID --value 2>/dev/null || true)"
     if ! [[ "$pid" =~ ^[0-9]+$ ]] || [ "$pid" -le 0 ]; then
         echo "unable to read live user@1000.service MainPID; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2

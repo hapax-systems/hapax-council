@@ -155,6 +155,27 @@ def audit_user_manager_live_score(uid: int) -> Check:
     return Check("user_manager_live_oom_score_adj", status, "100", actual_text, detail)
 
 
+def audit_user_manager_policy(uid: int) -> Check:
+    unit = f"user@{uid}.service"
+    values = _show(unit, ["OOMPolicy"])
+    if "_error" in values:
+        return Check(
+            "user_manager_OOMPolicy",
+            "error",
+            "continue",
+            "N/A",
+            f"{values['_error']}; {NEXT_OOM_INSTALL}",
+        )
+    actual = values.get("OOMPolicy", "")
+    status = "pass" if actual == "continue" else "gap"
+    detail = (
+        ""
+        if status == "pass"
+        else f"user manager must survive descendant OOM kills; {NEXT_OOM_INSTALL}"
+    )
+    return Check("user_manager_OOMPolicy", status, "continue", actual, detail)
+
+
 def audit_recovery_system_units() -> list[Check]:
     checks: list[Check] = []
     for unit, expected in RECOVERY_SYSTEM_UNITS.items():
@@ -203,9 +224,10 @@ def audit_recovery_system_units() -> list[Check]:
             checks.append(
                 Check(
                     f"system_unit_{unit}_live_oom_score_adj",
-                    "pass",
+                    "gap",
                     str(expected),
                     "inactive",
+                    f"recovery daemon has no live main process; {NEXT_OOM_INSTALL}",
                 )
             )
             continue
@@ -662,6 +684,7 @@ def main(argv: list[str] | None = None) -> int:
 
     checks = [
         audit_user_manager(args.uid),
+        audit_user_manager_policy(args.uid),
         audit_user_manager_live_score(args.uid),
         *audit_recovery_system_units(),
         *audit_sshd_policy(),

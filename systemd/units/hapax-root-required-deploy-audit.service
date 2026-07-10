@@ -1,5 +1,6 @@
 [Unit]
 Description=Audit deferred root-required post-merge deploy actions
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/systemd/README.md
 OnFailure=notify-failure@%n.service
 StartLimitIntervalSec=0
 

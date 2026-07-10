@@ -116,7 +116,9 @@ audit_package_receipt() {
                 fi
                 ;;
         esac
-        if [ ! -f "$INSTALLED_SOURCE_ROOT/$rel" ] || ! cmp -s <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$sha:$rel") "$INSTALLED_SOURCE_ROOT/$rel"; then
+        if [ ! -f "$INSTALLED_SOURCE_ROOT/$rel" ] \
+            || [ -L "$INSTALLED_SOURCE_ROOT/$rel" ] \
+            || ! cmp -s <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$sha:$rel") "$INSTALLED_SOURCE_ROOT/$rel"; then
             echo "root-required installed source is not bound to $label receipt $sha: $INSTALLED_SOURCE_ROOT/$rel" >&2
             echo "  next action: rerun the newest governed $label installer package from an exact staged RUNBOOK" >&2
             failed=1
@@ -152,15 +154,29 @@ audit_desired_receipt() {
 }
 
 compare_root_file() {
-    local rel="$1" dest="$2" source
+    local rel="$1" dest="$2" source expected_mode actual_mode
     source="$(source_for_rel "$rel")"
-    if [ ! -f "$source" ]; then
-        echo "root-required source missing: $source" >&2
+    if [ ! -f "$source" ] || [ -L "$source" ]; then
+        echo "root-required source missing or not a regular stable copy: $source" >&2
         echo "  next action: rerun the owning root installer to refresh the receipt-bound snapshot at $INSTALLED_SOURCE_ROOT" >&2
         return 1
     fi
-    if [ ! -f "$dest" ]; then
-        echo "root-required install missing: $dest" >&2
+    if [ ! -f "$dest" ] || [ -L "$dest" ]; then
+        echo "root-required install missing or not a regular stable copy: $dest" >&2
+        case "$rel" in
+            config/apcupsd/*|config/upower/*|systemd/logrotate.d/hapax-ups-power-events)
+                echo "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+                ;;
+            *)
+                echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+                ;;
+        esac
+        return 1
+    fi
+    expected_mode="$(expected_install_mode "$rel")"
+    actual_mode="$(stat -c '%a' "$dest" 2>/dev/null || true)"
+    if [ "$actual_mode" != "$expected_mode" ]; then
+        echo "root-required install mode drift: $dest mode=${actual_mode:-unavailable} expected=$expected_mode" >&2
         case "$rel" in
             config/apcupsd/*|config/upower/*|systemd/logrotate.d/hapax-ups-power-events)
                 echo "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
@@ -183,6 +199,17 @@ compare_root_file() {
         esac
         return 1
     fi
+}
+
+expected_install_mode() {
+    case "$1" in
+        scripts/hapax-oom-score-enforce|scripts/hapax-root-failure-intake|scripts/hapax-oom-policy-audit|scripts/hapax-root-required-deploy-audit|config/apcupsd/hapax-power-event.py|config/apcupsd/onbattery|config/apcupsd/offbattery|config/apcupsd/doshutdown)
+            printf '755\n'
+            ;;
+        *)
+            printf '644\n'
+            ;;
+    esac
 }
 
 verify_executable() {

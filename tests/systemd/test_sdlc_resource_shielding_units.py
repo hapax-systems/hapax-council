@@ -98,6 +98,7 @@ def test_user_slice_allocates_ancestor_memory_protection() -> None:
 def test_user_manager_does_not_protect_every_interactive_workload() -> None:
     text = (REPO_ROOT / "systemd" / "system" / "user@1000.service.d" / "oom.conf").read_text()
     assert _directive(text, "OOMScoreAdjust") == "100"
+    assert _directive(text, "OOMPolicy") == "continue"
     assert _directive(text, "MemoryHigh") == "80G"
     assert _directive(text, "MemoryMax") == "96G"
     assert _directive(text, "MemorySwapMax") == "8G"
@@ -172,6 +173,8 @@ def test_oom_policy_audit_timer_is_source_controlled() -> None:
     assert "Hapax-Auto-Enable: true" in timer
     assert "OnUnitActiveSec=5min" in timer
     assert "ExecStart=/usr/local/sbin/hapax-oom-policy-audit --json" in service
+    assert "hapax-systems/hapax-council/blob/main/systemd/README.md" in service
+    assert "hapax-systems/hapax-council/blob/main/systemd/README.md" in timer
     assert "source-activation" not in service
     assert "StartLimitIntervalSec=0" in service
     assert "StartLimitBurst" not in service
@@ -184,6 +187,8 @@ def test_root_required_deploy_audit_timer_is_source_controlled() -> None:
     assert "Hapax-Auto-Enable: true" in timer
     assert "OnUnitActiveSec=10min" in timer
     assert "ExecStart=/usr/local/sbin/hapax-root-required-deploy-audit" in service
+    assert "hapax-systems/hapax-council/blob/main/systemd/README.md" in service
+    assert "hapax-systems/hapax-council/blob/main/systemd/README.md" in timer
     assert "source-activation" not in service
     assert "StartLimitIntervalSec=0" in service
     assert "StartLimitBurst" not in service
@@ -196,7 +201,7 @@ def test_root_oom_enforcer_uses_system_scoped_failure_intake() -> None:
     intake = (UNITS_DIR / "hapax-root-failure-intake@.service").read_text()
     assert "# Hapax-Install-Scope: system" in enforcer
     assert "OnFailure=hapax-root-failure-intake@%n.service" in enforcer
-    assert "Wants=user@1000.service" in enforcer
+    assert "Wants=user@1000.service" not in enforcer
     assert "After=user@1000.service" in enforcer
     assert "StartLimitIntervalSec=0" in enforcer
     assert "StartLimitBurst" not in enforcer

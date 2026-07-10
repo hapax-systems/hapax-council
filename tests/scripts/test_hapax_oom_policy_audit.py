@@ -62,11 +62,13 @@ def _protected_user_unit_cases(
     return "\n".join(cases)
 
 
-def _recovery_system_unit_cases(*, wrong_score: bool = False) -> str:
+def _recovery_system_unit_cases(
+    *, wrong_score: bool = False, inactive_unit: str | None = None
+) -> str:
     cases = []
     for unit, score in RECOVERY_SYSTEM_UNIT_SCORES.items():
         actual = -1000 if wrong_score and unit == "apcupsd.service" else score
-        pid = RECOVERY_SYSTEM_UNIT_PIDS[unit]
+        pid = 0 if unit == inactive_unit else RECOVERY_SYSTEM_UNIT_PIDS[unit]
         cases.append(f"  *\"show {unit}\"*) printf 'OOMScoreAdjust={actual}\\nMainPID={pid}\\n' ;;")
     return "\n".join(cases)
 
@@ -75,6 +77,7 @@ def _fake_systemctl(
     tmp_path: Path,
     *,
     user_oom: int = 100,
+    user_oom_policy: str = "continue",
     app_bounded: bool = True,
     tmux_bounded: bool = True,
     tmux_slice: str = "app.slice",
@@ -87,6 +90,7 @@ def _fake_systemctl(
     sshd_score: int = 0,
     sshd_policy: str = "continue",
     wrong_recovery_unit_score: bool = False,
+    inactive_recovery_unit: str | None = None,
 ) -> Path:
     path = tmp_path / "systemctl"
     app_values = (
@@ -138,9 +142,9 @@ case "$*" in
   *"show user.slice"*) printf '{user_slice_values}' ;;
   *"show user-1000.slice"*) printf '{uid_memory_values}' ;;
   *"show user@1000.service --no-pager -p MemoryHigh"*) printf '{uid_memory_values}' ;;
-  *"show user@1000.service"*) printf 'OOMScoreAdjust={user_oom}\\nDropInPaths=/etc/systemd/system/user@1000.service.d/oom.conf\\nMainPID=900\\n' ;;
+  *"show user@1000.service"*) printf 'OOMScoreAdjust={user_oom}\\nOOMPolicy={user_oom_policy}\\nDropInPaths=/etc/systemd/system/user@1000.service.d/oom.conf\\nMainPID=900\\n' ;;
   *"show sshd.service"*) printf 'OOMScoreAdjust={sshd_score}\\nOOMPolicy={sshd_policy}\\nMainPID=920\\n' ;;
-{_recovery_system_unit_cases(wrong_score=wrong_recovery_unit_score)}
+{_recovery_system_unit_cases(wrong_score=wrong_recovery_unit_score, inactive_unit=inactive_recovery_unit)}
   *"show app.slice"*) printf '{app_values}' ;;
 {_protected_user_unit_cases(wrong_unit_score=wrong_unit_score, wrong_unit_memory=wrong_unit_memory, unit_pids=protected_unit_pids, unit_cgroups=protected_unit_cgroups)}
   *"list-units --type=scope"*) printf 'tmux-spawn-a.scope loaded active running tmux child pane\\n' ;;
@@ -171,6 +175,7 @@ def _run(
     tmp_path: Path,
     *,
     user_oom: int = 100,
+    user_oom_policy: str = "continue",
     app_bounded: bool = True,
     tmux_bounded: bool = True,
     tmux_slice: str = "app.slice",
@@ -184,6 +189,7 @@ def _run(
     sshd_policy: str = "continue",
     wrong_recovery_unit_score: bool = False,
     wrong_recovery_live_score: bool = False,
+    inactive_recovery_unit: str | None = None,
     proc_root: Path | None = None,
     cgroup_root: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
@@ -217,6 +223,7 @@ def _run(
             _fake_systemctl(
                 tmp_path,
                 user_oom=user_oom,
+                user_oom_policy=user_oom_policy,
                 app_bounded=app_bounded,
                 tmux_bounded=tmux_bounded,
                 tmux_slice=tmux_slice,
@@ -229,6 +236,7 @@ def _run(
                 sshd_score=sshd_score,
                 sshd_policy=sshd_policy,
                 wrong_recovery_unit_score=wrong_recovery_unit_score,
+                inactive_recovery_unit=inactive_recovery_unit,
             )
         ),
         "HAPAX_OOM_AUDIT_PROC_ROOT": str(proc_root),
@@ -249,6 +257,7 @@ def test_audit_passes_when_user_manager_is_killable_and_app_slice_bounded(tmp_pa
     payload = json.loads(result.stdout)
     statuses = {check["name"]: check["status"] for check in payload["checks"]}
     assert statuses["user_manager_oom_score_adjust"] == "pass"
+    assert statuses["user_manager_OOMPolicy"] == "pass"
     assert statuses["system_slice_MemoryLow"] == "pass"
     assert statuses["user_slice_MemoryLow"] == "pass"
     assert statuses["app_slice_MemorySwapMax"] == "pass"
@@ -263,6 +272,16 @@ def test_audit_fails_when_user_manager_protects_all_descendants(tmp_path: Path) 
     )
     assert check["status"] == "gap"
     assert "descendant workload" in check["detail"]
+
+
+def test_audit_fails_when_user_manager_would_stop_after_descendant_oom(tmp_path: Path) -> None:
+    result = _run(tmp_path, user_oom_policy="stop")
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(item for item in payload["checks"] if item["name"] == "user_manager_OOMPolicy")
+    assert check["status"] == "gap"
+    assert "survive descendant OOM" in check["detail"]
 
 
 def test_audit_fails_when_effective_sshd_policy_is_overridden(tmp_path: Path) -> None:
@@ -303,6 +322,18 @@ def test_audit_fails_when_live_recovery_daemon_score_drifts(tmp_path: Path) -> N
     assert live["status"] == "gap"
     assert live["actual"] == "100"
     assert "live recovery-daemon OOM score drifted" in live["detail"]
+
+
+def test_audit_fails_when_recovery_daemon_is_inactive(tmp_path: Path) -> None:
+    result = _run(tmp_path, inactive_recovery_unit="apcupsd.service")
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    checks = {item["name"]: item for item in payload["checks"]}
+    live = checks["system_unit_apcupsd.service_live_oom_score_adj"]
+    assert live["status"] == "gap"
+    assert live["actual"] == "inactive"
+    assert "no live main process" in live["detail"]
 
 
 def test_audit_fails_when_app_slice_backstop_is_unbounded(tmp_path: Path) -> None:

@@ -1,5 +1,6 @@
 [Unit]
 Description=Audit Hapax OOM containment policy drift
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/systemd/README.md
 OnFailure=notify-failure@%n.service
 StartLimitIntervalSec=0
 

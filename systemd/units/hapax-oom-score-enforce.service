@@ -4,7 +4,6 @@ Description=Apply live Hapax OOM scores that require root authority
 Documentation=https://github.com/hapax-systems/hapax-council/blob/main/systemd/README.md
 OnFailure=hapax-root-failure-intake@%n.service
 StartLimitIntervalSec=0
-Wants=user@1000.service
 After=user@1000.service
 
 [Service]

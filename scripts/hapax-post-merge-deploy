@@ -41,20 +41,7 @@
 #   systemd/overrides/**           → source/rationale docs only; no direct deploy
 #   systemd/scripts/*              → installer helper scripts; no direct deploy
 #   systemd/watchdogs/*            → install executable into ~/.local/bin
-#   scripts/install-p0-oom-containment,
-#   config/root-required/oom-containment.files,
-#   config/earlyoom/default,
-#   systemd/system/system.slice.d/oom-containment.conf,
-#   systemd/system/user.slice.d/oom-containment.conf,
-#   systemd/system/user-1000.slice.d/oom-containment.conf,
-#   systemd/system/user@1000.service.d/oom.conf,
-#   systemd/system/*.service.d/oom-protect.conf,
-#   systemd/units/hapax-root-failure-intake@.service,
-#   systemd/units/hapax-oom-score-enforce.{service,timer},
-#   scripts/hapax-oom-score-enforce,
-#   scripts/hapax-root-failure-intake,
-#   systemd/units/{pipewire,pipewire-pulse,wireplumber,hapax-daimonion,studio-compositor,hapax-imagination}.service.d/oom-protect.conf,
-#   systemd/units/app.slice.d/oom-containment.conf
+#   config/root-required/oom-containment.files and every path it owns
 #                                  → install P0 OOM containment policy into
 #                                    /etc/default, /etc/systemd/system, and
 #                                    ~/.config/systemd/user; apply active
@@ -62,10 +49,7 @@
 #                                    the live slice
 #   systemd/logrotate.d/*          → logrotate configs; require sudo install
 #   systemd/system/**              → other system-scoped configs; require sudo install
-#   scripts/install-apcupsd-power-alerts,
-#   config/root-required/apcupsd-power-alerts.files,
-#   config/apcupsd/**,
-#   systemd/logrotate.d/hapax-ups-power-events
+#   config/root-required/apcupsd-power-alerts.files and every path it owns
 #                                  → install podium apcupsd config/hooks/helper
 #                                    into /etc/apcupsd from the merge SHA
 #   scripts/hapax-recovery-plane-install, scripts/hapax-p0-incident-intake,
@@ -593,6 +577,8 @@ else
 fi
 
 PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); OOM_CONTAINMENT=(); APCUPSD_POWER_ALERTS=(); USER_PRESETS=(); WATCHDOGS=(); RECOVERY_BUNDLE=(); SCRIPTS=(); SCRIPT_PY=(); QUAKE_ASSETS=(); CANONICAL_GATE=()
+declare -A OOM_PACKAGE_PATHS=()
+declare -A APCUPSD_PACKAGE_PATHS=()
 GATE_CLOSURE=()
 # Must stay a superset of hooks-doctor's CLOSURE_SIBLINGS (+ the impl):
 # deploy_canonical REFUSES an incomplete staged closure, so a missing sibling
@@ -616,6 +602,43 @@ GOVERNED_INTAKE_PRESET_UNIT_SETS=(
     "hapax-cc-task-offer-ready.timer hapax-cc-task-offer-ready.service"
 )
 GOVERNED_INTAKE_PRESET_ENABLE=()
+
+load_root_required_manifest_paths() {
+    local manifest="$1" revision="$2" target_name="$3" content rel
+    local -n target="$target_name"
+    if [ "$COVERAGE_FROM_STDIN" = "1" ]; then
+        [ -f "$REPO/$manifest" ] || return 0
+        content="$(cat "$REPO/$manifest")"
+    else
+        content="$(git -C "$REPO" show "$revision:$manifest" 2>/dev/null || true)"
+    fi
+    while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
+        target["$rel"]=1
+    done < <(awk 'NF && $1 !~ /^#/ {print $1}' <<< "$content")
+}
+
+load_root_required_package_paths() {
+    local base_ref=""
+    load_root_required_manifest_paths \
+        config/root-required/oom-containment.files "$SHA" OOM_PACKAGE_PATHS
+    load_root_required_manifest_paths \
+        config/root-required/apcupsd-power-alerts.files "$SHA" APCUPSD_PACKAGE_PATHS
+    [ "$COVERAGE_FROM_STDIN" = "1" ] && return 0
+    if [ -n "$SINCE" ]; then
+        base_ref="$SINCE"
+    else
+        base_ref="$(git -C "$REPO" rev-parse --verify --quiet "$SHA^1" 2>/dev/null || true)"
+    fi
+    [ -n "$base_ref" ] || return 0
+    # Include the old manifest so removals still trigger their owning package.
+    load_root_required_manifest_paths \
+        config/root-required/oom-containment.files "$base_ref" OOM_PACKAGE_PATHS
+    load_root_required_manifest_paths \
+        config/root-required/apcupsd-power-alerts.files "$base_ref" APCUPSD_PACKAGE_PATHS
+}
+
+load_root_required_package_paths
 
 unit_install_scope() {
     local f="$1"
@@ -947,6 +970,14 @@ reconcile_canonical_gate_closure() {
 # remediation epic).
 while IFS= read -r f; do
     [ -z "$f" ] && continue
+    if [ -n "${OOM_PACKAGE_PATHS[$f]+present}" ]; then
+        OOM_CONTAINMENT+=("$f")
+        continue
+    fi
+    if [ -n "${APCUPSD_PACKAGE_PATHS[$f]+present}" ]; then
+        APCUPSD_POWER_ALERTS+=("$f")
+        continue
+    fi
     case "$f" in
         # ARCHIVED confs are records, not deployables. Bash case-globs match
         # across slashes, so without this exclusion config/pipewire/archive/**
@@ -958,10 +989,6 @@ while IFS= read -r f; do
         config/hapax/*.conf)              HAPAX_CONF+=("$f") ;;
         config/wireplumber/scripts/hapax/*.lua) WP_LUA+=("$f") ;;
         config/wireplumber/*.conf)        WP+=("$f") ;;
-        config/root-required/oom-containment.files|scripts/install-p0-oom-containment|scripts/hapax-oom-score-enforce|scripts/hapax-root-failure-intake|scripts/hapax-oom-policy-audit|scripts/hapax-root-required-deploy-audit|config/earlyoom/default|systemd/system/system.slice.d/oom-containment.conf|systemd/system/user.slice.d/oom-containment.conf|systemd/system/user-1000.slice.d/oom-containment.conf|systemd/system/user@1000.service.d/oom.conf|systemd/system/apcupsd.service.d/oom-protect.conf|systemd/system/systemd-logind.service.d/oom-protect.conf|systemd/system/systemd-resolved.service.d/oom-protect.conf|systemd/system/systemd-timesyncd.service.d/oom-protect.conf|systemd/system/NetworkManager.service.d/oom-protect.conf|systemd/system/dbus-broker.service.d/oom-protect.conf|systemd/system/sshd.service.d/oom-protect.conf|systemd/units/hapax-root-failure-intake@.service|systemd/units/hapax-oom-score-enforce.service|systemd/units/hapax-oom-score-enforce.timer|systemd/units/hapax-oom-policy-audit.service|systemd/units/hapax-oom-policy-audit.timer|systemd/units/hapax-root-required-deploy-audit.service|systemd/units/hapax-root-required-deploy-audit.timer|systemd/units/app.slice.d/oom-containment.conf|systemd/units/pipewire.service.d/oom-protect.conf|systemd/units/pipewire-pulse.service.d/oom-protect.conf|systemd/units/wireplumber.service.d/oom-protect.conf|systemd/units/hapax-daimonion.service.d/oom-protect.conf|systemd/units/studio-compositor.service.d/oom-protect.conf|systemd/units/hapax-imagination.service.d/oom-protect.conf)
-            OOM_CONTAINMENT+=("$f") ;;
-        config/root-required/apcupsd-power-alerts.files|scripts/install-apcupsd-power-alerts|config/apcupsd/*|config/upower/*|systemd/logrotate.d/hapax-ups-power-events)
-            APCUPSD_POWER_ALERTS+=("$f") ;;
         systemd/units/notify-failure@.service|systemd/units/hapax-coord.service|systemd/units/hapax-coord-rebuild.service|systemd/units/hapax-coord-rebuild.timer)
             RECOVERY_BUNDLE+=("$f")
             if [ "$(unit_install_scope "$f")" = "system" ]; then
@@ -1283,54 +1310,42 @@ if [ "${#RECOVERY_BUNDLE[@]}" -gt 0 ] || [ "$RECOVERY_BUNDLE_SELF_HEAL" = "1" ];
 fi
 
 # --- P0 OOM containment system/user policy ---
-stage_oom_containment_installer() {
-    local stage="$1"
-    local rel dest
-    local -a required=(
-        "$OOM_CONTAINMENT_INSTALLER_PATH"
-        scripts/hapax-oom-score-enforce
-        scripts/hapax-root-failure-intake
-        scripts/hapax-oom-policy-audit
-        scripts/hapax-root-required-deploy-audit
-        config/root-required/oom-containment.files
-        config/earlyoom/default
-        systemd/system/system.slice.d/oom-containment.conf
-        systemd/system/user.slice.d/oom-containment.conf
-        systemd/system/user-1000.slice.d/oom-containment.conf
-        systemd/system/user@1000.service.d/oom.conf
-        systemd/system/apcupsd.service.d/oom-protect.conf
-        systemd/system/systemd-logind.service.d/oom-protect.conf
-        systemd/system/systemd-resolved.service.d/oom-protect.conf
-        systemd/system/systemd-timesyncd.service.d/oom-protect.conf
-        systemd/system/NetworkManager.service.d/oom-protect.conf
-        systemd/system/dbus-broker.service.d/oom-protect.conf
-        systemd/system/sshd.service.d/oom-protect.conf
-        systemd/units/hapax-root-failure-intake@.service
-        systemd/units/hapax-oom-score-enforce.service
-        systemd/units/hapax-oom-score-enforce.timer
-        systemd/units/hapax-oom-policy-audit.service
-        systemd/units/hapax-oom-policy-audit.timer
-        systemd/units/hapax-root-required-deploy-audit.service
-        systemd/units/hapax-root-required-deploy-audit.timer
-        systemd/units/app.slice.d/oom-containment.conf
-        systemd/units/pipewire.service.d/oom-protect.conf
-        systemd/units/pipewire-pulse.service.d/oom-protect.conf
-        systemd/units/wireplumber.service.d/oom-protect.conf
-        systemd/units/hapax-daimonion.service.d/oom-protect.conf
-        systemd/units/studio-compositor.service.d/oom-protect.conf
-        systemd/units/hapax-imagination.service.d/oom-protect.conf
-    )
-    for rel in "${required[@]}"; do
+stage_root_required_package() {
+    local stage="$1" manifest="$2" label="$3"
+    local rel dest git_mode
+    if ! git cat-file -e "$SHA:$manifest" 2>/dev/null; then
+        echo "hapax-post-merge-deploy: missing $label manifest at $SHA:$manifest; next: restore the versioned ownership manifest and rerun hapax-post-merge-deploy for this merge" >&2
+        return 2
+    fi
+    while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
         if ! git cat-file -e "$SHA:$rel" 2>/dev/null; then
-            echo "hapax-post-merge-deploy: missing OOM containment source at $SHA:$rel; next: restore the full P0 OOM containment source package and rerun hapax-post-merge-deploy for this merge" >&2
+            echo "hapax-post-merge-deploy: missing $label source at $SHA:$rel; next: restore every path declared by $manifest and rerun hapax-post-merge-deploy for this merge" >&2
             return 2
         fi
+        git_mode="$(git -C "$REPO" ls-tree "$SHA" -- "$rel" | awk 'NR == 1 {print $1}')"
+        case "$git_mode" in
+            100644|100755) ;;
+            *)
+                echo "hapax-post-merge-deploy: unsupported $label Git mode ${git_mode:-missing} at $SHA:$rel; next: replace symlink/submodule entries with regular package files" >&2
+                return 2
+                ;;
+        esac
         dest="$stage/$rel"
         mkdir -p "$(dirname "$dest")"
         git show "$SHA:$rel" > "$dest"
-    done
-    chmod +x "$stage/$OOM_CONTAINMENT_INSTALLER_PATH" "$stage/scripts/hapax-oom-score-enforce" "$stage/scripts/hapax-root-failure-intake" "$stage/scripts/hapax-oom-policy-audit" "$stage/scripts/hapax-root-required-deploy-audit"
+        if [ "$git_mode" = "100755" ]; then
+            chmod 0755 "$dest"
+        else
+            chmod 0644 "$dest"
+        fi
+    done < <(git -C "$REPO" show "$SHA:$manifest" | awk 'NF && $1 !~ /^#/ {print $1}')
     printf '%s\n' "$SHA" > "$stage/.hapax-root-required-package-sha"
+}
+
+stage_oom_containment_installer() {
+    stage_root_required_package \
+        "$1" config/root-required/oom-containment.files "OOM containment"
 }
 
 defer_root_required_installer() {
@@ -1484,30 +1499,8 @@ fi
 
 # --- apcupsd power-alert config/hooks ---
 stage_apcupsd_power_alert_installer() {
-    local stage="$1"
-    local rel dest
-    local -a required=(
-        "$APCUPSD_INSTALLER_PATH"
-        config/root-required/apcupsd-power-alerts.files
-        config/apcupsd/apcupsd.conf
-        config/apcupsd/hapax-power-event.py
-        config/apcupsd/onbattery
-        config/apcupsd/offbattery
-        config/apcupsd/doshutdown
-        config/upower/90-hapax-apcupsd-owner.conf
-        systemd/logrotate.d/hapax-ups-power-events
-    )
-    for rel in "${required[@]}"; do
-        if ! git cat-file -e "$SHA:$rel" 2>/dev/null; then
-            echo "hapax-post-merge-deploy: missing apcupsd power-alert source at $SHA:$rel; next: restore config/apcupsd plus scripts/install-apcupsd-power-alerts and rerun hapax-post-merge-deploy for this merge" >&2
-            return 2
-        fi
-        dest="$stage/$rel"
-        mkdir -p "$(dirname "$dest")"
-        git show "$SHA:$rel" > "$dest"
-    done
-    chmod +x "$stage/$APCUPSD_INSTALLER_PATH" "$stage/config/apcupsd/hapax-power-event.py" "$stage/config/apcupsd/onbattery" "$stage/config/apcupsd/offbattery" "$stage/config/apcupsd/doshutdown"
-    printf '%s\n' "$SHA" > "$stage/.hapax-root-required-package-sha"
+    stage_root_required_package \
+        "$1" config/root-required/apcupsd-power-alerts.files "apcupsd power-alert"
 }
 
 if [ "${#APCUPSD_POWER_ALERTS[@]}" -gt 0 ]; then
