@@ -55,6 +55,8 @@ RESTART=1
 INSTALL=0
 CHECK=0
 VERIFY_LIVE=0
+APCUPSD_LIVE_POLICY_DETAIL=""
+UPOWER_LIVE_POLICY_DETAIL=""
 package_manifest_source="config/root-required/apcupsd-power-alerts.files"
 package_files=(
     "$package_manifest_source"
@@ -729,7 +731,11 @@ install_live() {
 
 apcupsd_live_policy_matches_source() {
     local status spec config_key status_key expected actual
-    status="$("$APCACCESS" status 2>/dev/null)" || return 1
+    APCUPSD_LIVE_POLICY_DETAIL=""
+    if ! status="$("$APCACCESS" status 2>/dev/null)"; then
+        APCUPSD_LIVE_POLICY_DETAIL="status unavailable"
+        return 1
+    fi
     for spec in BATTERYLEVEL:MBATTCHG MINUTES:MINTIMEL TIMEOUT:MAXTIME; do
         config_key="${spec%%:*}"
         status_key="${spec##*:}"
@@ -748,6 +754,7 @@ apcupsd_live_policy_matches_source() {
             }
         ')"
         if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then
+            APCUPSD_LIVE_POLICY_DETAIL="$status_key=${actual:-unavailable} expected $expected from $config_key"
             return 1
         fi
     done
@@ -755,20 +762,25 @@ apcupsd_live_policy_matches_source() {
 
 verify_apcupsd_live_policy() {
     if ! apcupsd_live_policy_matches_source; then
-        echo "apcupsd loaded shutdown policy drift or unavailable status; next action: run sudo systemctl restart apcupsd.service and rerun scripts/install-apcupsd-power-alerts --verify-live" >&2
+        echo "apcupsd loaded shutdown policy drift: ${APCUPSD_LIVE_POLICY_DETAIL:-unknown}; next action: run sudo systemctl restart apcupsd.service and rerun scripts/install-apcupsd-power-alerts --verify-live" >&2
         return 1
     fi
 }
 
 upower_live_policy_matches_source() {
     local loaded
-    loaded="$("$BUSCTL" call org.freedesktop.UPower /org/freedesktop/UPower org.freedesktop.UPower GetCriticalAction 2>/dev/null)" || return 1
+    UPOWER_LIVE_POLICY_DETAIL=""
+    if ! loaded="$("$BUSCTL" call org.freedesktop.UPower /org/freedesktop/UPower org.freedesktop.UPower GetCriticalAction 2>/dev/null)"; then
+        UPOWER_LIVE_POLICY_DETAIL="status unavailable"
+        return 1
+    fi
+    UPOWER_LIVE_POLICY_DETAIL="$loaded"
     [ "$loaded" = 's "Ignore"' ]
 }
 
 verify_upower_live_policy() {
     if ! upower_live_policy_matches_source; then
-        echo "UPower still owns a loaded shutdown action or its status is unavailable; next action: run sudo systemctl restart upower.service and rerun scripts/install-apcupsd-power-alerts --verify-live" >&2
+        echo "UPower still owns a loaded shutdown action: ${UPOWER_LIVE_POLICY_DETAIL:-unknown}; next action: run sudo systemctl restart upower.service and rerun scripts/install-apcupsd-power-alerts --verify-live" >&2
         return 1
     fi
 }
