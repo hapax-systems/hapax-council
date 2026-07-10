@@ -23,6 +23,7 @@ APCUPSD_LOGROTATE_DEST="${HAPAX_APCUPSD_LOGROTATE_DEST:-/etc/logrotate.d/hapax-u
 UPOWER_CONF_DEST="${HAPAX_UPOWER_CONF_DEST:-/etc/UPower/UPower.conf.d/90-hapax-apcupsd-owner.conf}"
 SYSTEMCTL="${HAPAX_ROOT_AUDIT_SYSTEMCTL:-systemctl}"
 BUSCTL="${HAPAX_ROOT_AUDIT_BUSCTL:-busctl}"
+APCACCESS="${HAPAX_ROOT_AUDIT_APCACCESS:-apcaccess}"
 
 oom_package_files=(
     scripts/install-p0-oom-containment
@@ -238,6 +239,40 @@ audit_systemd_state() {
     [ "$failed" -eq 0 ]
 }
 
+audit_apcupsd_loaded_policy() {
+    local status spec config_key status_key expected actual source_config failed=0
+    source_config="$INSTALLED_SOURCE_ROOT/config/apcupsd/apcupsd.conf"
+    status="$("$APCACCESS" status 2>/dev/null)" || {
+        echo "root-required activation drift: unable to query apcupsd loaded shutdown policy" >&2
+        echo "  next action: inspect systemctl status apcupsd.service and run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    }
+    for spec in BATTERYLEVEL:MBATTCHG MINUTES:MINTIMEL TIMEOUT:MAXTIME; do
+        config_key="${spec%%:*}"
+        status_key="${spec##*:}"
+        expected="$(awk -v key="$config_key" '$1 == key {print $2; exit}' "$source_config" 2>/dev/null || true)"
+        actual="$(printf '%s\n' "$status" | awk -F: -v key="$status_key" '
+            {
+                name = $1
+                gsub(/[[:space:]]/, "", name)
+                if (name == key) {
+                    value = $2
+                    sub(/^[[:space:]]*/, "", value)
+                    split(value, fields, /[[:space:]]+/)
+                    print fields[1]
+                    exit
+                }
+            }
+        ')"
+        if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then
+            echo "root-required activation drift: apcupsd loaded $status_key=${actual:-unavailable}, expected $expected from $config_key" >&2
+            echo "  next action: run sudo systemctl restart apcupsd.service and scripts/install-apcupsd-power-alerts --verify-live" >&2
+            failed=1
+        fi
+    done
+    [ "$failed" -eq 0 ]
+}
+
 audit_root_installs() {
     local -a manifest=(
         "scripts/hapax-oom-score-enforce|$OOM_ENFORCER_DEST"
@@ -290,6 +325,7 @@ audit_root_installs() {
         esac
     done
     audit_systemd_state || failed=1
+    audit_apcupsd_loaded_policy || failed=1
     [ "$failed" -eq 0 ]
 }
 

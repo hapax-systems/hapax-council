@@ -12,6 +12,7 @@ LOGROTATE_DEST="${HAPAX_APCUPSD_LOGROTATE_DEST:-/etc/logrotate.d/hapax-ups-power
 UPOWER_CONF_DEST="${HAPAX_UPOWER_CONF_DEST:-/etc/UPower/UPower.conf.d/90-hapax-apcupsd-owner.conf}"
 SYSTEMCTL="${HAPAX_APCUPSD_SYSTEMCTL:-systemctl}"
 BUSCTL="${HAPAX_APCUPSD_BUSCTL:-busctl}"
+APCACCESS="${HAPAX_APCUPSD_APCACCESS:-apcaccess}"
 SUDO="${HAPAX_APCUPSD_INSTALL_SUDO-sudo}"
 TARGET_UID="${HAPAX_APCUPSD_TARGET_UID:-1000}"
 TARGET_HOME="${HAPAX_APCUPSD_TARGET_HOME:-}"
@@ -181,8 +182,37 @@ package_commits_equivalent() {
     done
 }
 
+validate_candidate_against_receipt() {
+    local receipt_kind="$1" receipt_path="$2" receipt_sha
+    [ -f "$receipt_path" ] || return 0
+    receipt_sha="$(tr -d '[:space:]' < "$receipt_path")"
+    [[ "$receipt_sha" =~ ^[0-9a-f]{40}$ ]] || {
+        echo "invalid $receipt_kind apcupsd package receipt: $receipt_path; next action: inspect the receipt and rerun the newest governed post-merge package" >&2
+        return 1
+    }
+    [ "$receipt_sha" != "$ROOT_REQUIRED_PACKAGE_SHA" ] || return 0
+    if ! git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$receipt_sha^{commit}" 2>/dev/null; then
+        echo "cannot validate apcupsd package order for $receipt_kind=$receipt_sha candidate=$ROOT_REQUIRED_PACKAGE_SHA; next action: fetch both commits into $ROOT_REQUIRED_GIT_REPO and rerun the staged RUNBOOK" >&2
+        return 1
+    fi
+    if git -C "$ROOT_REQUIRED_GIT_REPO" merge-base --is-ancestor "$receipt_sha" "$ROOT_REQUIRED_PACKAGE_SHA"; then
+        return 0
+    fi
+    if git -C "$ROOT_REQUIRED_GIT_REPO" merge-base --is-ancestor "$ROOT_REQUIRED_PACKAGE_SHA" "$receipt_sha"; then
+        SKIP_SUPERSEDED_INSTALL=1
+        echo "root-required apcupsd package $ROOT_REQUIRED_PACKAGE_SHA is superseded by $receipt_kind $receipt_sha; live files and durable desired state will not be rolled back"
+        return 0
+    fi
+    if package_commits_equivalent "$receipt_sha" "$ROOT_REQUIRED_PACKAGE_SHA"; then
+        echo "root-required apcupsd package and $receipt_kind receipt are ancestry-divergent but package-content equivalent; accepting squash/rebase transition"
+        return 0
+    fi
+    echo "refusing divergent apcupsd package $receipt_kind=$receipt_sha candidate=$ROOT_REQUIRED_PACKAGE_SHA; next action: dispatch a governed reconciliation from current main and leave this RUNBOOK pending" >&2
+    return 1
+}
+
 validate_root_required_package_order() {
-    local installed_sha staged_sha package_sha_file
+    local staged_sha package_sha_file
     package_sha_file="$SOURCE/.hapax-root-required-package-sha"
     if [ -f "$package_sha_file" ]; then
         staged_sha="$(tr -d '[:space:]' < "$package_sha_file")"
@@ -208,31 +238,8 @@ validate_root_required_package_order() {
         echo "root-required apcupsd package commit is unavailable: $ROOT_REQUIRED_PACKAGE_SHA; next action: fetch it into $ROOT_REQUIRED_GIT_REPO and rerun the staged RUNBOOK" >&2
         return 1
     }
-    [ -f "$ROOT_REQUIRED_RECEIPT" ] || return 0
-    installed_sha="$(tr -d '[:space:]' < "$ROOT_REQUIRED_RECEIPT")"
-    [[ "$installed_sha" =~ ^[0-9a-f]{40}$ ]] || {
-        echo "invalid installed apcupsd package receipt: $ROOT_REQUIRED_RECEIPT; next action: inspect the receipt and rerun the newest governed post-merge package" >&2
-        return 1
-    }
-    [ "$installed_sha" != "$ROOT_REQUIRED_PACKAGE_SHA" ] || return 0
-    if ! git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$installed_sha^{commit}" 2>/dev/null; then
-        echo "cannot validate apcupsd package ancestry for installed=$installed_sha candidate=$ROOT_REQUIRED_PACKAGE_SHA; next action: fetch both commits into $ROOT_REQUIRED_GIT_REPO and rerun the staged RUNBOOK" >&2
-        return 1
-    fi
-    if git -C "$ROOT_REQUIRED_GIT_REPO" merge-base --is-ancestor "$installed_sha" "$ROOT_REQUIRED_PACKAGE_SHA"; then
-        return 0
-    fi
-    if git -C "$ROOT_REQUIRED_GIT_REPO" merge-base --is-ancestor "$ROOT_REQUIRED_PACKAGE_SHA" "$installed_sha"; then
-        SKIP_SUPERSEDED_INSTALL=1
-        echo "root-required apcupsd package $ROOT_REQUIRED_PACKAGE_SHA is superseded by installed $installed_sha; live files will not be rolled back"
-        return 0
-    fi
-    if package_commits_equivalent "$installed_sha" "$ROOT_REQUIRED_PACKAGE_SHA"; then
-        echo "root-required apcupsd package commits are ancestry-divergent but package-content equivalent; accepting squash/rebase transition"
-        return 0
-    fi
-    echo "refusing divergent apcupsd package installed=$installed_sha candidate=$ROOT_REQUIRED_PACKAGE_SHA; next action: dispatch a governed reconciliation from current main and leave this RUNBOOK pending" >&2
-    return 1
+    validate_candidate_against_receipt installed "$ROOT_REQUIRED_RECEIPT"
+    validate_candidate_against_receipt desired "$ROOT_REQUIRED_DESIRED_RECEIPT"
 }
 
 record_root_required_package_receipt() {
@@ -371,13 +378,8 @@ check_source() {
 }
 
 install_live() {
-    local apcupsd_changed=0 pair
     check_source
     preflight_root
-    for pair in apcupsd.conf hapax-power-event.py onbattery offbattery doshutdown; do
-        cmp -s "$SRC/$pair" "$DEST/$pair" 2>/dev/null || apcupsd_changed=1
-    done
-    cmp -s "$SOURCE/systemd/logrotate.d/hapax-ups-power-events" "$LOGROTATE_DEST" 2>/dev/null || apcupsd_changed=1
     run_root install -d -m 0755 "$DEST"
     install_audit_dir
     run_root install -m 0644 "$SRC/apcupsd.conf" "$DEST/apcupsd.conf"
@@ -393,8 +395,11 @@ install_live() {
         echo "unable to enable and start apcupsd.service; next action: run sudo systemctl enable --now apcupsd.service and inspect journalctl -u apcupsd.service" >&2
         return 1
     }
-    if [ "$RESTART" -eq 1 ] && [ "$apcupsd_changed" -eq 1 ]; then
-        run_root "$SYSTEMCTL" restart apcupsd.service
+    if [ "$RESTART" -eq 1 ]; then
+        run_root "$SYSTEMCTL" restart apcupsd.service || {
+            echo "unable to reload apcupsd's shutdown policy; next action: run sudo systemctl restart apcupsd.service and inspect journalctl -u apcupsd.service" >&2
+            return 1
+        }
     fi
     if [ "$RESTART" -eq 1 ]; then
         run_root "$SYSTEMCTL" try-restart upower.service || {
@@ -402,6 +407,36 @@ install_live() {
             return 1
         }
     fi
+}
+
+verify_apcupsd_live_policy() {
+    local status spec config_key status_key expected actual
+    status="$("$APCACCESS" status 2>/dev/null)" || {
+        echo "unable to query apcupsd's loaded shutdown policy; next action: inspect systemctl status apcupsd.service and rerun scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    }
+    for spec in BATTERYLEVEL:MBATTCHG MINUTES:MINTIMEL TIMEOUT:MAXTIME; do
+        config_key="${spec%%:*}"
+        status_key="${spec##*:}"
+        expected="$(awk -v key="$config_key" '$1 == key {print $2; exit}' "$SRC/apcupsd.conf")"
+        actual="$(printf '%s\n' "$status" | awk -F: -v key="$status_key" '
+            {
+                name = $1
+                gsub(/[[:space:]]/, "", name)
+                if (name == key) {
+                    value = $2
+                    sub(/^[[:space:]]*/, "", value)
+                    split(value, fields, /[[:space:]]+/)
+                    print fields[1]
+                    exit
+                }
+            }
+        ')"
+        if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then
+            echo "apcupsd loaded shutdown policy drift: $status_key=${actual:-unavailable} expected $expected from $config_key; next action: run sudo systemctl restart apcupsd.service and rerun scripts/install-apcupsd-power-alerts --verify-live" >&2
+            return 1
+        fi
+    done
 }
 
 verify_upower_live_policy() {
@@ -475,6 +510,7 @@ verify_live() {
         echo "apcupsd.service is not active; next action: run sudo systemctl enable --now apcupsd.service and inspect journalctl -u apcupsd.service" >&2
         return 1
     }
+    verify_apcupsd_live_policy
 }
 
 [ "$CHECK" -eq 0 ] || check_source

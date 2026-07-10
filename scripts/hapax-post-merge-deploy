@@ -1372,12 +1372,52 @@ EOF
     echo "next action: run HAPAX_ROOT_REQUIRED_PACKAGE_SHA=$SHA HAPAX_ROOT_REQUIRED_DRAIN_DIR=$dest HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT=$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT=$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_GIT_REPO=$REPO $dest/$installer --source $dest --install --verify-live with root authority"
 }
 
+root_required_stage_matches_commit() {
+    local stage="$1" commit="$2" file rel
+    while IFS= read -r -d '' file; do
+        rel="${file#"$stage"/}"
+        [ "$rel" != ".hapax-root-required-package-sha" ] || continue
+        git -C "$REPO" cat-file -e "$commit:$rel" 2>/dev/null || return 1
+        cmp -s "$file" <(git -C "$REPO" show "$commit:$rel") || return 1
+    done < <(find "$stage" -type f -print0)
+}
+
 record_root_required_desired_sha() {
-    local label="$1" receipt temp lock_fd
+    local label="$1" stage="$2" receipt temp lock_fd current
     mkdir -p "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" "$(dirname "$ROOT_REQUIRED_LOCK_FILE")"
     exec {lock_fd}>"$ROOT_REQUIRED_LOCK_FILE"
     flock -x "$lock_fd"
     receipt="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha"
+    if [ -f "$receipt" ]; then
+        current="$(tr -d '[:space:]' < "$receipt")"
+        if ! [[ "$current" =~ ^[0-9a-f]{40}$ ]] || ! git -C "$REPO" cat-file -e "$current^{commit}" 2>/dev/null; then
+            echo "hapax-post-merge-deploy: invalid or unavailable desired $label receipt $current; next action: restore the latest governed receipt and rerun this deploy" >&2
+            flock -u "$lock_fd"
+            exec {lock_fd}>&-
+            return 1
+        fi
+        if [ "$current" = "$SHA" ]; then
+            flock -u "$lock_fd"
+            exec {lock_fd}>&-
+            return 0
+        fi
+        if git -C "$REPO" merge-base --is-ancestor "$SHA" "$current"; then
+            echo "root-required $label desired state $current supersedes stale deploy $SHA; desired receipt preserved"
+            flock -u "$lock_fd"
+            exec {lock_fd}>&-
+            return 0
+        fi
+        if ! git -C "$REPO" merge-base --is-ancestor "$current" "$SHA"; then
+            if root_required_stage_matches_commit "$stage" "$current"; then
+                echo "root-required $label desired state is ancestry-divergent but package-content equivalent; accepting squash/rebase transition to $SHA"
+            else
+                echo "hapax-post-merge-deploy: refusing divergent desired $label transition current=$current candidate=$SHA; next action: dispatch governed root-package reconciliation" >&2
+                flock -u "$lock_fd"
+                exec {lock_fd}>&-
+                return 1
+            fi
+        fi
+    fi
     temp="$receipt.tmp.$$"
     printf '%s\n' "$SHA" > "$temp"
     mv -f "$temp" "$receipt"
@@ -1399,7 +1439,7 @@ if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
         rm -rf "$OOM_STAGE" 2>/dev/null || true
         exit "$stage_oom_rc"
     fi
-    record_root_required_desired_sha "oom-containment"
+    record_root_required_desired_sha "oom-containment" "$OOM_STAGE"
     set +e
     HAPAX_ROOT_REQUIRED_PACKAGE_SHA="$SHA" \
         HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" \
@@ -1460,7 +1500,7 @@ if [ "${#APCUPSD_POWER_ALERTS[@]}" -gt 0 ]; then
         rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
         exit "$stage_apcupsd_rc"
     fi
-    record_root_required_desired_sha "apcupsd-power-alerts"
+    record_root_required_desired_sha "apcupsd-power-alerts" "$APCUPSD_STAGE"
     set +e
     HAPAX_ROOT_REQUIRED_PACKAGE_SHA="$SHA" \
         HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" \

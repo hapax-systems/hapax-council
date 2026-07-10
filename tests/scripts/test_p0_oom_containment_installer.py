@@ -371,6 +371,67 @@ def test_stale_deferred_oom_package_drains_without_rolling_back_newer_install(
     assert live_marker.read_text(encoding="utf-8") == "newer B policy\n"
 
 
+def test_installed_oom_repair_cannot_erase_newer_desired_receipt(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "oom-test@example.test"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "OOM Test"], cwd=repo, check=True)
+    marker = repo / "marker"
+    marker.write_text("A\n", encoding="utf-8")
+    subprocess.run(["git", "add", "marker"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "A"], cwd=repo, check=True, capture_output=True)
+    sha_a = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+    marker.write_text("B\n", encoding="utf-8")
+    subprocess.run(["git", "commit", "-am", "B"], cwd=repo, check=True, capture_output=True)
+    sha_b = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+
+    defer_root = tmp_path / "root-required"
+    drain_dir = defer_root / sha_a / "oom-containment"
+    drain_dir.mkdir(parents=True)
+    (drain_dir / "RUNBOOK.txt").write_text("stale repair A\n", encoding="utf-8")
+    (drain_dir / ".hapax-root-required-package-sha").write_text(f"{sha_a}\n", encoding="utf-8")
+    installed_root = tmp_path / "root-state" / "installed-receipts"
+    desired_root = tmp_path / "root-state" / "desired-receipts"
+    installed_root.mkdir(parents=True)
+    desired_root.mkdir(parents=True)
+    installed = installed_root / "oom-containment.sha"
+    desired = desired_root / "oom-containment.sha"
+    installed.write_text(f"{sha_a}\n", encoding="utf-8")
+    desired.write_text(f"{sha_b}\n", encoding="utf-8")
+    live_marker = tmp_path / "live-earlyoom"
+    live_marker.write_text("installed A policy\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(drain_dir), "--install", "--verify-live"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_INSTALL_SUDO": "",
+            "HAPAX_OOM_EARLYOOM_DEST": str(live_marker),
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_root),
+            "HAPAX_ROOT_REQUIRED_DRAIN_DIR": str(drain_dir),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": sha_a,
+            "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT": str(installed_root),
+            "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT": str(desired_root),
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(repo),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "superseded by desired" in result.stdout
+    assert installed.read_text(encoding="utf-8").strip() == sha_a
+    assert desired.read_text(encoding="utf-8").strip() == sha_b
+    assert live_marker.read_text(encoding="utf-8") == "installed A policy\n"
+    assert (drain_dir / "DRAINED.txt").is_file()
+
+
 def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_user_protection(
     tmp_path: Path,
 ) -> None:

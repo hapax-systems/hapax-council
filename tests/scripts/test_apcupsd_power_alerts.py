@@ -49,6 +49,14 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     fake_busctl.write_text("#!/bin/sh\nprintf 's \\\"Ignore\\\"\\n'\n", encoding="utf-8")
     fake_busctl.chmod(0o755)
     monkeypatch.setenv("HAPAX_APCUPSD_BUSCTL", str(fake_busctl))
+    fake_apcaccess = tmp_path / "apcaccess"
+    fake_apcaccess.write_text(
+        "#!/bin/sh\n"
+        "printf 'STATUS   : ONLINE\\nMBATTCHG : 20 Percent\\nMINTIMEL : 5 Minutes\\nMAXTIME  : 0 Seconds\\n'\n",
+        encoding="utf-8",
+    )
+    fake_apcaccess.chmod(0o755)
+    monkeypatch.setenv("HAPAX_APCUPSD_APCACCESS", str(fake_apcaccess))
 
 
 def test_apcupsd_config_uses_current_header() -> None:
@@ -445,7 +453,7 @@ def test_installer_install_and_verify_live_against_temp_destinations(tmp_path: P
     assert second_result.returncode == 0, second_result.stderr
     second_calls = systemctl_calls.read_text(encoding="utf-8")
     assert "enable --now apcupsd.service" in second_calls
-    assert "restart apcupsd.service" not in second_calls
+    assert "restart apcupsd.service" in second_calls
     assert "try-restart upower.service" in second_calls
 
     hook_audit = tmp_path / "hook.jsonl"
@@ -502,6 +510,40 @@ def test_verify_live_rejects_stale_upower_loaded_action(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "UPower still owns a loaded shutdown action" in result.stderr
+
+
+def test_verify_live_rejects_stale_apcupsd_loaded_thresholds(tmp_path: Path) -> None:
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_systemctl.chmod(0o755)
+    stale_apcaccess = tmp_path / "stale-apcaccess"
+    stale_apcaccess.write_text(
+        "#!/bin/sh\n"
+        "printf 'STATUS   : ONLINE\\nMBATTCHG : 99 Percent\\nMINTIMEL : 5 Minutes\\nMAXTIME  : 0 Seconds\\n'\n",
+        encoding="utf-8",
+    )
+    stale_apcaccess.chmod(0o755)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--install", "--verify-live", "--no-restart"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_DEST": str(tmp_path / "apcupsd"),
+            "HAPAX_APCUPSD_AUDIT_DIR": str(tmp_path / "hapax-log"),
+            "HAPAX_APCUPSD_LOGROTATE_DEST": str(tmp_path / "logrotate"),
+            "HAPAX_UPOWER_CONF_DEST": str(tmp_path / "upower"),
+            "HAPAX_APCUPSD_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_APCUPSD_APCACCESS": str(stale_apcaccess),
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+        },
+    )
+
+    assert result.returncode == 1
+    assert "apcupsd loaded shutdown policy drift" in result.stderr
+    assert "MBATTCHG=99 expected 20" in result.stderr
 
 
 def test_root_invocation_uses_target_home_for_durable_package_state(tmp_path: Path) -> None:
@@ -835,6 +877,69 @@ def test_stale_deferred_apcupsd_package_does_not_roll_back_newer_install(
     assert not (drain_dir / "RUNBOOK.txt").exists()
     assert receipt.read_text(encoding="utf-8").strip() == sha_b
     assert live_marker.read_text(encoding="utf-8") == "newer B policy\n"
+
+
+def test_installed_apcupsd_repair_cannot_erase_newer_desired_receipt(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "ups-test@example.test"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "UPS Test"], cwd=repo, check=True)
+    marker = repo / "marker"
+    marker.write_text("A\n", encoding="utf-8")
+    subprocess.run(["git", "add", "marker"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "A"], cwd=repo, check=True, capture_output=True)
+    sha_a = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+    marker.write_text("B\n", encoding="utf-8")
+    subprocess.run(["git", "commit", "-am", "B"], cwd=repo, check=True, capture_output=True)
+    sha_b = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+
+    defer_root = tmp_path / "root-required"
+    drain_dir = defer_root / sha_a / "apcupsd-power-alerts"
+    drain_dir.mkdir(parents=True)
+    (drain_dir / "RUNBOOK.txt").write_text("stale repair A\n", encoding="utf-8")
+    (drain_dir / ".hapax-root-required-package-sha").write_text(f"{sha_a}\n", encoding="utf-8")
+    installed_root = tmp_path / "root-state" / "installed-receipts"
+    desired_root = tmp_path / "root-state" / "desired-receipts"
+    installed_root.mkdir(parents=True)
+    desired_root.mkdir(parents=True)
+    installed = installed_root / "apcupsd-power-alerts.sha"
+    desired = desired_root / "apcupsd-power-alerts.sha"
+    installed.write_text(f"{sha_a}\n", encoding="utf-8")
+    desired.write_text(f"{sha_b}\n", encoding="utf-8")
+    live_dest = tmp_path / "live-apcupsd"
+    live_dest.mkdir()
+    live_marker = live_dest / "apcupsd.conf"
+    live_marker.write_text("installed A policy\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(drain_dir), "--install", "--verify-live"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+            "HAPAX_APCUPSD_DEST": str(live_dest),
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_root),
+            "HAPAX_ROOT_REQUIRED_DRAIN_DIR": str(drain_dir),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": sha_a,
+            "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT": str(installed_root),
+            "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT": str(desired_root),
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(repo),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "superseded by desired" in result.stdout
+    assert installed.read_text(encoding="utf-8").strip() == sha_a
+    assert desired.read_text(encoding="utf-8").strip() == sha_b
+    assert live_marker.read_text(encoding="utf-8") == "installed A policy\n"
+    assert (drain_dir / "DRAINED.txt").is_file()
 
 
 def test_apcupsd_installer_accepts_content_equivalent_squash_sibling(

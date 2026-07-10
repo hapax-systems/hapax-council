@@ -101,7 +101,9 @@ ROOT_AUDIT_SOURCE_FILES = {
         "[Slice]\nMemoryHigh=72G\nMemoryMax=88G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
     ),
     **P0_USER_OOM_DROPINS,
-    "config/apcupsd/apcupsd.conf": "## apcupsd.conf v1.1 ##\nUPSNAME podium\n",
+    "config/apcupsd/apcupsd.conf": (
+        "## apcupsd.conf v1.1 ##\nUPSNAME podium\nBATTERYLEVEL 20\nMINUTES 5\nTIMEOUT 0\n"
+    ),
     "config/apcupsd/hapax-power-event.py": "#!/usr/bin/env python3\n",
     "config/apcupsd/onbattery": "#!/usr/bin/env bash\n",
     "config/apcupsd/offbattery": "#!/usr/bin/env bash\n",
@@ -309,6 +311,13 @@ def _root_audit_env(
     fake_busctl = tmp_path / "root-audit-busctl"
     fake_busctl.write_text("#!/bin/sh\nprintf 's \\\"Ignore\\\"\\n'\n", encoding="utf-8")
     fake_busctl.chmod(0o755)
+    fake_apcaccess = tmp_path / "root-audit-apcaccess"
+    fake_apcaccess.write_text(
+        "#!/bin/sh\n"
+        "printf 'STATUS   : ONLINE\\nMBATTCHG : 20 Percent\\nMINTIMEL : 5 Minutes\\nMAXTIME  : 0 Seconds\\n'\n",
+        encoding="utf-8",
+    )
+    fake_apcaccess.chmod(0o755)
     dests = {
         "scripts/hapax-oom-score-enforce": enforcer_dest,
         "scripts/hapax-root-failure-intake": root_failure_dest,
@@ -396,6 +405,7 @@ def _root_audit_env(
         "HAPAX_UPOWER_CONF_DEST": str(upower_dest),
         "HAPAX_ROOT_AUDIT_SYSTEMCTL": str(fake_systemctl),
         "HAPAX_ROOT_AUDIT_BUSCTL": str(fake_busctl),
+        "HAPAX_ROOT_AUDIT_APCACCESS": str(fake_apcaccess),
         "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(root_defer),
     }
 
@@ -808,6 +818,40 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
     assert record["deploy_groups"]["systemd_dropins"] == []
 
 
+def test_stale_post_merge_deploy_preserves_newer_desired_receipt(tmp_path: Path) -> None:
+    repo, sha_a = _repo_with_linear_commit(tmp_path, ROOT_AUDIT_SOURCE_FILES)
+    earlyoom = repo / "config" / "earlyoom" / "default"
+    earlyoom.write_text('EARLYOOM_ARGS="newer policy"\n', encoding="utf-8")
+    _git(repo, "add", "config/earlyoom/default")
+    _git(repo, "commit", "-m", "newer OOM package")
+    sha_b = _git(repo, "rev-parse", "HEAD")
+    home = tmp_path / "home"
+    desired = home / ".local" / "state" / "hapax" / "root-required" / "desired-receipts"
+    desired.mkdir(parents=True)
+    oom_desired = desired / "oom-containment.sha"
+    oom_desired.write_text(f"{sha_b}\n", encoding="utf-8")
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha_a],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "supersedes stale deploy" in result.stdout
+    assert oom_desired.read_text(encoding="utf-8").strip() == sha_b
+
+
 def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: Path) -> None:
     installer_body = "#!/usr/bin/env bash\nexit 77\n"
     files = {
@@ -1157,6 +1201,29 @@ def test_root_required_audit_detects_stale_loaded_upower_action(tmp_path: Path) 
     assert "expected Ignore" in result.stderr
 
 
+def test_root_required_audit_detects_stale_loaded_apcupsd_thresholds(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    fake_apcaccess = Path(env["HAPAX_ROOT_AUDIT_APCACCESS"])
+    fake_apcaccess.write_text(
+        "#!/bin/sh\n"
+        "printf 'STATUS   : ONLINE\\nMBATTCHG : 99 Percent\\nMINTIMEL : 5 Minutes\\nMAXTIME  : 0 Seconds\\n'\n",
+        encoding="utf-8",
+    )
+    fake_apcaccess.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "apcupsd loaded MBATTCHG=99" in result.stderr
+    assert "expected 20" in result.stderr
+
+
 def test_root_required_audit_passes_when_oom_enforcer_matches(tmp_path: Path) -> None:
     result = subprocess.run(
         [str(ROOT_REQUIRED_AUDIT)],
@@ -1200,7 +1267,9 @@ def test_apcupsd_power_alert_deploy_uses_dedicated_installer(tmp_path: Path) -> 
     )
     files = {
         "scripts/install-apcupsd-power-alerts": installer_body,
-        "config/apcupsd/apcupsd.conf": "## apcupsd.conf v1.1 ##\nUPSNAME podium\n",
+        "config/apcupsd/apcupsd.conf": (
+            "## apcupsd.conf v1.1 ##\nUPSNAME podium\nBATTERYLEVEL 20\nMINUTES 5\nTIMEOUT 0\n"
+        ),
         "config/apcupsd/hapax-power-event.py": "#!/usr/bin/env python3\n",
         "config/apcupsd/onbattery": "#!/bin/sh\n",
         "config/apcupsd/offbattery": "#!/bin/sh\n",
