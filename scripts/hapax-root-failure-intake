@@ -22,7 +22,6 @@ from pathlib import Path
 ledger = Path(sys.argv[1])
 unit = sys.argv[2]
 intake = sys.argv[3]
-ledger.parent.mkdir(parents=True, exist_ok=True)
 record = {
     "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     "kind": "root_failure_intake_cli_missing",
@@ -37,8 +36,18 @@ record = {
         "and rerun scripts/install-p0-oom-containment --install --verify-live."
     ),
 }
-with ledger.open("a", encoding="utf-8") as handle:
-    handle.write(json.dumps(record, sort_keys=True) + "\n")
+try:
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    with ledger.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
+except OSError as exc:
+    print(
+        f"root failure intake fallback could not write emergency ledger {ledger}: {exc}; "
+        "next action: repair the ledger parent ownership/capacity, reinstall the D2 recovery "
+        "bundle, and rerun scripts/install-p0-oom-containment --install --verify-live",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from None
 PY
 
 echo "root failure intake fallback recorded for $unit; missing intake: $intake; next action: reinstall the D2 recovery bundle and rerun scripts/install-p0-oom-containment --install --verify-live" >&2

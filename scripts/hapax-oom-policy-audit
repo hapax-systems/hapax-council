@@ -42,6 +42,7 @@ PROTECTED_USER_UNITS = {
     "studio-compositor.service": -800,
     "hapax-imagination.service": -800,
 }
+AUDIO_USER_UNITS = frozenset({"pipewire.service", "pipewire-pulse.service", "wireplumber.service"})
 PROTECTED_USER_UNIT_SLICES = {
     "pipewire.service": "session.slice",
     "pipewire-pulse.service": "session.slice",
@@ -375,47 +376,73 @@ def audit_session_slice() -> list[Check]:
     return checks
 
 
+def _direct_child_floor_sum(control_group: str, key: str) -> tuple[int | None, str]:
+    parent = CGROUP_ROOT / control_group.lstrip("/")
+    filename = {"MemoryLow": "memory.low", "MemoryMin": "memory.min"}[key]
+    try:
+        children = sorted((child for child in parent.iterdir() if child.is_dir()), key=str)
+    except OSError as exc:
+        return None, f"cannot enumerate direct children of {control_group}: {exc}"
+    values: list[tuple[str, int]] = []
+    for child in children:
+        try:
+            raw = (child / filename).read_text(encoding="utf-8").strip()
+            value = int(raw)
+        except (OSError, ValueError) as exc:
+            return None, f"cannot read {filename} for direct child {child.name}: {exc}"
+        if value < 0:
+            return None, f"invalid negative {filename} for direct child {child.name}: {value}"
+        values.append((child.name, value))
+    detail = ",".join(f"{name}:{value}" for name, value in values) or "none"
+    return sum(value for _, value in values), detail
+
+
 def audit_user_child_floor_composition(uid: int) -> list[Check]:
-    parent = _show(f"user@{uid}.service", ["MemoryLow", "MemoryMin"])
-    app = _show("app.slice", ["MemoryLow", "MemoryMin"], user=True)
-    session = _show("session.slice", ["MemoryLow", "MemoryMin"], user=True)
-    if any("_error" in values for values in (parent, app, session)):
-        detail = "; ".join(
-            values["_error"] for values in (parent, app, session) if "_error" in values
-        )
+    parent = _show(f"user@{uid}.service", ["MemoryLow", "MemoryMin", "ControlGroup"])
+    if "_error" in parent:
         return [
             Check(
                 "user_manager_child_floor_composition",
                 "error",
-                "parent >= app + session",
+                "parent >= all direct children",
                 "N/A",
-                f"{detail}; {NEXT_OOM_INSTALL}",
+                f"{parent['_error']}; {NEXT_OOM_INSTALL}",
+            )
+        ]
+    control_group = parent.get("ControlGroup", "")
+    if not control_group:
+        return [
+            Check(
+                "user_manager_child_floor_composition",
+                "error",
+                "parent >= all direct children",
+                "N/A",
+                f"user manager ControlGroup is empty; {NEXT_OOM_INSTALL}",
             )
         ]
     checks: list[Check] = []
     for key in ("MemoryLow", "MemoryMin"):
         parent_value = _int_value(parent.get(key, ""))
-        app_value = _int_value(app.get(key, ""))
-        session_value = _int_value(session.get(key, ""))
-        child_sum = (
-            None if app_value is None or session_value is None else app_value + session_value
-        )
+        child_sum, child_detail = _direct_child_floor_sum(control_group, key)
         status = (
             "pass"
             if parent_value is not None and child_sum is not None and parent_value >= child_sum
             else "gap"
         )
-        actual = f"parent={parent_value};children={child_sum}"
+        actual = f"parent={parent_value};children={child_sum};direct={child_detail}"
         detail = (
             ""
             if status == "pass"
-            else f"cgroup-v2 would proportionally dilute child {key} floors; {NEXT_OOM_INSTALL}"
+            else (
+                f"cgroup-v2 would proportionally dilute direct-child {key} floors or their "
+                f"effective cgroup values are unreadable; {NEXT_OOM_INSTALL}"
+            )
         )
         checks.append(
             Check(
                 f"user_manager_child_floor_{key}",
                 status,
-                "parent >= app + session",
+                "parent >= all direct children",
                 actual,
                 detail,
             )
@@ -567,7 +594,15 @@ def audit_protected_user_units() -> list[Check]:
     for unit, expected in PROTECTED_USER_UNITS.items():
         values = _show(
             unit,
-            ["OOMScoreAdjust", "MainPID", "ControlGroup", "MemoryLow", "MemoryMin", "Slice"],
+            [
+                "OOMScoreAdjust",
+                "MainPID",
+                "ControlGroup",
+                "MemoryLow",
+                "MemoryMin",
+                "Slice",
+                "NoNewPrivileges",
+            ],
             user=True,
         )
         if "_error" in values:
@@ -613,6 +648,23 @@ def audit_protected_user_units() -> list[Check]:
                 slice_detail,
             )
         )
+        if unit in AUDIO_USER_UNITS:
+            sandbox_actual = values.get("NoNewPrivileges", "")
+            sandbox_status = "pass" if sandbox_actual == "yes" else "gap"
+            sandbox_detail = (
+                ""
+                if sandbox_status == "pass"
+                else f"audio service must retain its distro privilege boundary; {NEXT_OOM_INSTALL}"
+            )
+            checks.append(
+                Check(
+                    f"user_unit_{unit}_NoNewPrivileges",
+                    sandbox_status,
+                    "yes",
+                    sandbox_actual,
+                    sandbox_detail,
+                )
+            )
         for key, memory_expected in PROTECTED_USER_UNIT_MEMORY[unit].items():
             memory_actual = values.get(key, "")
             memory_status = "pass" if _int_value(memory_actual) == memory_expected else "gap"

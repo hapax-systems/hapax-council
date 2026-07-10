@@ -42,6 +42,7 @@ def _protected_user_unit_cases(
     wrong_unit_score: bool = False,
     wrong_unit_memory: bool = False,
     wrong_unit_slice: bool = False,
+    wrong_audio_no_new_privileges: bool = False,
     unit_pids: dict[str, int] | None = None,
     unit_cgroups: dict[str, str] | None = None,
 ) -> str:
@@ -60,10 +61,18 @@ def _protected_user_unit_cases(
         )
         if wrong_unit_slice and unit == "studio-compositor.service":
             slice_name = "session.slice"
+        no_new_privileges = (
+            "no"
+            if wrong_audio_no_new_privileges and unit == "pipewire.service"
+            else "yes"
+            if unit.startswith(("pipewire", "wireplumber"))
+            else "no"
+        )
         cases.append(
             f'  *"--user show {unit} --no-pager -p OOMScoreAdjust -p MainPID"*) '
             f"printf 'OOMScoreAdjust={actual}\\nMainPID={pid}\\nControlGroup={cgroup}\\n"
-            f"MemoryLow={memory_low}\\nMemoryMin={memory_min}\\nSlice={slice_name}\\n' ;;"
+            f"MemoryLow={memory_low}\\nMemoryMin={memory_min}\\nSlice={slice_name}\\n"
+            f"NoNewPrivileges={no_new_privileges}\\n' ;;"
         )
     return "\n".join(cases)
 
@@ -90,6 +99,7 @@ def _fake_systemctl(
     wrong_unit_score: bool = False,
     wrong_unit_memory: bool = False,
     wrong_unit_slice: bool = False,
+    wrong_audio_no_new_privileges: bool = False,
     system_slice_finite_max: bool = False,
     user_slice_unprotected: bool = False,
     session_slice_unprotected: bool = False,
@@ -158,13 +168,13 @@ case "$*" in
   *"show user.slice"*) printf '{user_slice_values}' ;;
   *"show user-1000.slice"*) printf '{uid_memory_values}' ;;
   *"show user@1000.service --no-pager -p MemoryHigh"*) printf '{uid_memory_values}' ;;
-  *"show user@1000.service --no-pager -p MemoryLow"*) printf '{uid_memory_values}' ;;
+  *"show user@1000.service --no-pager -p MemoryLow"*) printf '{uid_memory_values}ControlGroup=/user.slice/user-1000.slice/user@1000.service\n' ;;
   *"show user@1000.service"*) printf 'OOMScoreAdjust={user_oom}\\nOOMPolicy={user_oom_policy}\\nDropInPaths=/etc/systemd/system/user@1000.service.d/oom.conf\\nMainPID=900\\n' ;;
   *"show sshd.service"*) printf 'OOMScoreAdjust={sshd_score}\\nOOMPolicy={sshd_policy}\\nMainPID=920\\n' ;;
 {_recovery_system_unit_cases(wrong_score=wrong_recovery_unit_score, inactive_unit=inactive_recovery_unit)}
   *"show app.slice"*) printf '{app_values}' ;;
   *"show session.slice"*) printf '{session_slice_values}' ;;
-{_protected_user_unit_cases(wrong_unit_score=wrong_unit_score, wrong_unit_memory=wrong_unit_memory, wrong_unit_slice=wrong_unit_slice, unit_pids=protected_unit_pids, unit_cgroups=protected_unit_cgroups)}
+{_protected_user_unit_cases(wrong_unit_score=wrong_unit_score, wrong_unit_memory=wrong_unit_memory, wrong_unit_slice=wrong_unit_slice, wrong_audio_no_new_privileges=wrong_audio_no_new_privileges, unit_pids=protected_unit_pids, unit_cgroups=protected_unit_cgroups)}
   *"list-units --type=scope"*) printf 'tmux-spawn-a.scope loaded active running tmux child pane\\n' ;;
   *"show tmux-spawn-a.scope"*) printf '{tmux_values}' ;;
   *) echo "unexpected args: $*" >&2; exit 9 ;;
@@ -200,6 +210,7 @@ def _run(
     wrong_unit_score: bool = False,
     wrong_unit_memory: bool = False,
     wrong_unit_slice: bool = False,
+    wrong_audio_no_new_privileges: bool = False,
     system_slice_finite_max: bool = False,
     user_slice_unprotected: bool = False,
     session_slice_unprotected: bool = False,
@@ -213,6 +224,7 @@ def _run(
     inactive_recovery_unit: str | None = None,
     proc_root: Path | None = None,
     cgroup_root: Path | None = None,
+    extra_direct_child_floor: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     if proc_root is None:
         proc_root = tmp_path / "proc"
@@ -238,6 +250,18 @@ def _run(
     if cgroup_root is None:
         cgroup_root = tmp_path / "cgroup"
         cgroup_root.mkdir(exist_ok=True)
+    manager_cgroup = cgroup_root / "user.slice/user-1000.slice/user@1000.service"
+    direct_child_floors = {
+        "app.slice": (17179869184, 8589934592),
+        "session.slice": (2147483648, 1073741824),
+    }
+    if extra_direct_child_floor:
+        direct_child_floors["background.slice"] = (4294967296, 2147483648)
+    for child, (memory_low, memory_min) in direct_child_floors.items():
+        child_dir = manager_cgroup / child
+        child_dir.mkdir(parents=True, exist_ok=True)
+        (child_dir / "memory.low").write_text(f"{memory_low}\n", encoding="utf-8")
+        (child_dir / "memory.min").write_text(f"{memory_min}\n", encoding="utf-8")
     env = {
         **os.environ,
         "HAPAX_SYSTEMCTL": str(
@@ -251,6 +275,7 @@ def _run(
                 wrong_unit_score=wrong_unit_score,
                 wrong_unit_memory=wrong_unit_memory,
                 wrong_unit_slice=wrong_unit_slice,
+                wrong_audio_no_new_privileges=wrong_audio_no_new_privileges,
                 system_slice_finite_max=system_slice_finite_max,
                 user_slice_unprotected=user_slice_unprotected,
                 session_slice_unprotected=session_slice_unprotected,
@@ -289,6 +314,7 @@ def test_audit_passes_when_user_manager_is_killable_and_app_slice_bounded(tmp_pa
     assert statuses["user_manager_child_floor_MemoryLow"] == "pass"
     assert statuses["user_manager_child_floor_MemoryMin"] == "pass"
     assert statuses["user_unit_pipewire.service_Slice"] == "pass"
+    assert statuses["user_unit_pipewire.service_NoNewPrivileges"] == "pass"
     assert statuses["user_unit_studio-compositor.service_Slice"] == "pass"
 
 
@@ -314,6 +340,22 @@ def test_audit_fails_when_child_floors_exceed_user_manager_parent(tmp_path: Path
     assert "proportionally dilute" in checks["user_manager_child_floor_MemoryLow"]["detail"]
 
 
+def test_audit_fails_when_additional_direct_child_dilutes_user_manager_floor(
+    tmp_path: Path,
+) -> None:
+    result = _run(tmp_path, extra_direct_child_floor=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    checks = {item["name"]: item for item in payload["checks"]}
+    low = checks["user_manager_child_floor_MemoryLow"]
+    minimum = checks["user_manager_child_floor_MemoryMin"]
+    assert low["status"] == "gap"
+    assert minimum["status"] == "gap"
+    assert "background.slice:4294967296" in low["actual"]
+    assert low["target"] == "parent >= all direct children"
+
+
 def test_audit_fails_when_protected_unit_leaves_checked_app_slice_chain(tmp_path: Path) -> None:
     result = _run(tmp_path, wrong_unit_slice=True)
 
@@ -327,6 +369,21 @@ def test_audit_fails_when_protected_unit_leaves_checked_app_slice_chain(tmp_path
     assert check["status"] == "gap"
     assert check["actual"] == "session.slice"
     assert check["target"] == "app.slice"
+
+
+def test_audit_fails_when_audio_service_loses_no_new_privileges(tmp_path: Path) -> None:
+    result = _run(tmp_path, wrong_audio_no_new_privileges=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item
+        for item in payload["checks"]
+        if item["name"] == "user_unit_pipewire.service_NoNewPrivileges"
+    )
+    assert check["status"] == "gap"
+    assert check["target"] == "yes"
+    assert "privilege boundary" in check["detail"]
 
 
 def test_audit_fails_when_user_manager_protects_all_descendants(tmp_path: Path) -> None:

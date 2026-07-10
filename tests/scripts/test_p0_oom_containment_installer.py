@@ -38,16 +38,19 @@ PROTECTED_USER_UNIT_RUNTIME = {
         "Slice": "session.slice",
         "MemoryLow": "536870912",
         "MemoryMin": "268435456",
+        "NoNewPrivileges": "yes",
     },
     "pipewire-pulse.service": {
         "Slice": "session.slice",
         "MemoryLow": "536870912",
         "MemoryMin": "268435456",
+        "NoNewPrivileges": "yes",
     },
     "wireplumber.service": {
         "Slice": "session.slice",
         "MemoryLow": "536870912",
         "MemoryMin": "268435456",
+        "NoNewPrivileges": "yes",
     },
     "hapax-daimonion.service": {
         "Slice": "app.slice",
@@ -637,6 +640,44 @@ def test_claimed_oom_commit_rejects_substituted_source_before_live_mutation(
     assert not live.exists()
 
 
+def test_claimed_oom_commit_rejects_tracked_destination_mode_drift(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "oom-mode@example.test"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "OOM Mode Test"], cwd=repo, check=True)
+    _copy_oom_package(repo)
+    relative = Path("scripts/install-p0-oom-containment")
+    (repo / relative).chmod(0o644)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "mode drift"], cwd=repo, check=True, capture_output=True)
+    candidate_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+    live = tmp_path / "live-earlyoom"
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(repo), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_INSTALL_SUDO": "",
+            "HAPAX_OOM_EARLYOOM_DEST": str(live),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": candidate_sha,
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(repo),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "Git mode violates the destination contract" in result.stderr
+    assert str(relative) in result.stderr
+    assert not live.exists()
+
+
 def test_oom_manifest_shrink_fails_before_live_mutation(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -752,7 +793,12 @@ def test_oom_install_without_verify_flag_cannot_advance_receipts_after_live_prob
 
 @pytest.mark.parametrize(
     ("property_name", "bad_value"),
-    (("Slice", "wrong.slice"), ("MemoryLow", "0"), ("MemoryMin", "0")),
+    (
+        ("Slice", "wrong.slice"),
+        ("MemoryLow", "0"),
+        ("MemoryMin", "0"),
+        ("NoNewPrivileges", "no"),
+    ),
 )
 def test_oom_install_rejects_effective_protected_unit_reservation_drift_before_receipts(
     tmp_path: Path,
@@ -2110,3 +2156,26 @@ def test_root_failure_intake_records_emergency_ledger_when_bundle_missing(tmp_pa
     assert record["kind"] == "root_failure_intake_cli_missing"
     assert record["unit"] == "hapax-oom-score-enforce.service"
     assert not marker.exists()
+
+
+def test_root_failure_intake_reports_action_when_emergency_ledger_is_unwritable(
+    tmp_path: Path,
+) -> None:
+    non_directory = tmp_path / "not-a-directory"
+    non_directory.write_text("occupied\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(ROOT_FAILURE_INTAKE), "hapax-oom-score-enforce.service"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_ROOT_FAILURE_INTAKE_CLI": str(tmp_path / "missing-intake"),
+            "HAPAX_ROOT_FAILURE_LEDGER": str(non_directory / "events.jsonl"),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "could not write emergency ledger" in result.stderr
+    assert "next action: repair the ledger parent ownership/capacity" in result.stderr

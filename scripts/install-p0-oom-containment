@@ -324,7 +324,7 @@ migrate_legacy_root_required_state() {
 }
 
 package_commits_equivalent() {
-    local installed_sha="$1" candidate_sha="$2" rel
+    local installed_sha="$1" candidate_sha="$2" rel installed_mode candidate_mode
     cmp -s \
         <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$installed_sha:$package_manifest_source" 2>/dev/null) \
         <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$candidate_sha:$package_manifest_source" 2>/dev/null) || return 1
@@ -334,6 +334,9 @@ package_commits_equivalent() {
         cmp -s \
             <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$installed_sha:$rel") \
             <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$candidate_sha:$rel") || return 1
+        installed_mode="$(git -C "$ROOT_REQUIRED_GIT_REPO" ls-tree "$installed_sha" -- "$rel" | awk 'NR == 1 {print $1}')"
+        candidate_mode="$(git -C "$ROOT_REQUIRED_GIT_REPO" ls-tree "$candidate_sha" -- "$rel" | awk 'NR == 1 {print $1}')"
+        [ -n "$installed_mode" ] && [ "$installed_mode" = "$candidate_mode" ] || return 1
     done
 }
 
@@ -408,10 +411,22 @@ record_root_required_package_receipt() {
     mv -f "$desired_temp" "$ROOT_REQUIRED_DESIRED_RECEIPT"
 }
 
+expected_package_git_mode() {
+    case "$1" in
+        scripts/*) printf '%s\n' 100755 ;;
+        *) printf '%s\n' 100644 ;;
+    esac
+}
+
 validate_package_source_matches_commit() {
-    local rel git_mode
+    local rel git_mode expected_mode
     for rel in "${package_files[@]}"; do
         git_mode="$(git -C "$ROOT_REQUIRED_GIT_REPO" ls-tree "$ROOT_REQUIRED_PACKAGE_SHA" -- "$rel" | awk 'NR == 1 {print $1}')"
+        expected_mode="$(expected_package_git_mode "$rel")"
+        if [ "$git_mode" != "$expected_mode" ]; then
+            echo "OOM package Git mode violates the destination contract at $rel: actual=$git_mode expected=$expected_mode; next action: restore the tracked executable class and rerun from a clean Git worktree or exact staged RUNBOOK" >&2
+            return 1
+        fi
         if ! /usr/bin/python3 - "$SOURCE/$rel" "$git_mode" <<'PY'
 from __future__ import annotations
 
@@ -1428,7 +1443,14 @@ verify_protected_user_unit_oom_scores() {
             failed=1
         fi
         case "$unit" in
-            pipewire.service|pipewire-pulse.service|wireplumber.service) expected_slice=session.slice ;;
+            pipewire.service|pipewire-pulse.service|wireplumber.service)
+                expected_slice=session.slice
+                actual="$(user_systemctl show "$unit" -p NoNewPrivileges --value 2>/dev/null || true)"
+                if [ "$actual" != "yes" ]; then
+                    echo "live user unit NoNewPrivileges drift for $unit: actual=$actual expected=yes; next action: restore the distro audio sandbox and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+                    failed=1
+                fi
+                ;;
             *) expected_slice=app.slice ;;
         esac
         actual="$(user_systemctl show "$unit" -p Slice --value 2>/dev/null || true)"

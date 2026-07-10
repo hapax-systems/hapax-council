@@ -182,7 +182,6 @@ def test_broadcast_critical_user_oom_dropins_are_source_controlled() -> None:
         if rel in audio_units:
             assert _directive(text, "ExecStartPost") is None
             assert _directive(text, "NoNewPrivileges") is None
-            assert "NoNewPrivileges=yes" in text
         else:
             assert _directive(text, "ExecStartPost") == "-/usr/local/bin/hapax-oom-score-trigger %n"
         assert _directive(text, "MemoryLow") is not None

@@ -1002,6 +1002,44 @@ def test_claimed_apcupsd_commit_rejects_substituted_source_before_live_mutation(
     assert not live.exists()
 
 
+def test_claimed_apcupsd_commit_rejects_tracked_destination_mode_drift(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "apc-mode@example.test"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "APC Mode Test"], cwd=repo, check=True)
+    _copy_apcupsd_package(repo)
+    relative = Path("scripts/install-apcupsd-power-alerts")
+    (repo / relative).chmod(0o644)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "mode drift"], cwd=repo, check=True, capture_output=True)
+    candidate_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+    live = tmp_path / "live-apcupsd"
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(repo), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+            "HAPAX_APCUPSD_DEST": str(live),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": candidate_sha,
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(repo),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "Git mode violates the destination contract" in result.stderr
+    assert str(relative) in result.stderr
+    assert not live.exists()
+
+
 def test_mismatched_apcupsd_deferral_is_rejected_before_live_mutation(tmp_path: Path) -> None:
     defer_root = tmp_path / "root-required"
     expected = defer_root / REPO_HEAD / "apcupsd-power-alerts"
