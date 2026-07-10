@@ -91,8 +91,8 @@ def test_uid_slice_has_session_and_app_aggregate_oom_backstop() -> None:
     assert _directive(text, "MemoryHigh") == "80G"
     assert _directive(text, "MemoryMax") == "96G"
     assert _directive(text, "MemorySwapMax") == "8G"
-    assert _directive(text, "MemoryLow") == "16G"
-    assert _directive(text, "MemoryMin") == "8G"
+    assert _directive(text, "MemoryLow") == "20G"
+    assert _directive(text, "MemoryMin") == "10G"
 
 
 def test_user_slice_allocates_ancestor_memory_protection() -> None:
@@ -100,19 +100,19 @@ def test_user_slice_allocates_ancestor_memory_protection() -> None:
     assert _directive(text, "MemoryHigh") == "infinity"
     assert _directive(text, "MemoryMax") == "infinity"
     assert _directive(text, "MemorySwapMax") == "infinity"
-    assert _directive(text, "MemoryLow") == "16G"
-    assert _directive(text, "MemoryMin") == "8G"
+    assert _directive(text, "MemoryLow") == "20G"
+    assert _directive(text, "MemoryMin") == "10G"
 
 
 def test_user_manager_does_not_protect_every_interactive_workload() -> None:
     text = (REPO_ROOT / "systemd" / "system" / "user@1000.service.d" / "oom.conf").read_text()
     assert _directive(text, "OOMScoreAdjust") == "100"
     assert _directive(text, "OOMPolicy") == "continue"
+    assert _directive(text, "MemoryLow") == "20G"
+    assert _directive(text, "MemoryMin") == "10G"
     assert _directive(text, "MemoryHigh") == "80G"
     assert _directive(text, "MemoryMax") == "96G"
     assert _directive(text, "MemorySwapMax") == "8G"
-    assert _directive(text, "MemoryLow") == "16G"
-    assert _directive(text, "MemoryMin") == "8G"
 
 
 def test_system_slice_has_reciprocal_recovery_plane_reservation() -> None:

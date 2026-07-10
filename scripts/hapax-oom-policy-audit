@@ -21,6 +21,8 @@ BYTES_88G = 88 * 1024**3
 BYTES_96G = 96 * 1024**3
 BYTES_16G = 16 * 1024**3
 BYTES_8G = 8 * 1024**3
+BYTES_10G = 10 * 1024**3
+BYTES_20G = 20 * 1024**3
 NEXT_OOM_INSTALL = "next action: scripts/install-p0-oom-containment --install --verify-live"
 PROC_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_PROC_ROOT", "/proc"))
 CGROUP_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_CGROUP_ROOT", "/sys/fs/cgroup"))
@@ -373,13 +375,61 @@ def audit_session_slice() -> list[Check]:
     return checks
 
 
+def audit_user_child_floor_composition(uid: int) -> list[Check]:
+    parent = _show(f"user@{uid}.service", ["MemoryLow", "MemoryMin"])
+    app = _show("app.slice", ["MemoryLow", "MemoryMin"], user=True)
+    session = _show("session.slice", ["MemoryLow", "MemoryMin"], user=True)
+    if any("_error" in values for values in (parent, app, session)):
+        detail = "; ".join(
+            values["_error"] for values in (parent, app, session) if "_error" in values
+        )
+        return [
+            Check(
+                "user_manager_child_floor_composition",
+                "error",
+                "parent >= app + session",
+                "N/A",
+                f"{detail}; {NEXT_OOM_INSTALL}",
+            )
+        ]
+    checks: list[Check] = []
+    for key in ("MemoryLow", "MemoryMin"):
+        parent_value = _int_value(parent.get(key, ""))
+        app_value = _int_value(app.get(key, ""))
+        session_value = _int_value(session.get(key, ""))
+        child_sum = (
+            None if app_value is None or session_value is None else app_value + session_value
+        )
+        status = (
+            "pass"
+            if parent_value is not None and child_sum is not None and parent_value >= child_sum
+            else "gap"
+        )
+        actual = f"parent={parent_value};children={child_sum}"
+        detail = (
+            ""
+            if status == "pass"
+            else f"cgroup-v2 would proportionally dilute child {key} floors; {NEXT_OOM_INSTALL}"
+        )
+        checks.append(
+            Check(
+                f"user_manager_child_floor_{key}",
+                status,
+                "parent >= app + session",
+                actual,
+                detail,
+            )
+        )
+    return checks
+
+
 def audit_system_memory_unit(unit: str) -> list[Check]:
     expected = {
         "MemoryHigh": BYTES_80G,
         "MemoryMax": BYTES_96G,
         "MemorySwapMax": BYTES_8G,
-        "MemoryLow": BYTES_16G,
-        "MemoryMin": BYTES_8G,
+        "MemoryLow": BYTES_20G,
+        "MemoryMin": BYTES_10G,
     }
     values = _show(unit, list(expected))
     if "_error" in values:
@@ -444,8 +494,8 @@ def audit_user_slice_reservation() -> list[Check]:
         "MemoryHigh": None,
         "MemoryMax": None,
         "MemorySwapMax": None,
-        "MemoryLow": BYTES_16G,
-        "MemoryMin": BYTES_8G,
+        "MemoryLow": BYTES_20G,
+        "MemoryMin": BYTES_10G,
     }
     values = _show("user.slice", list(expected))
     if "_error" in values:
@@ -758,6 +808,7 @@ def main(argv: list[str] | None = None) -> int:
         *audit_system_memory_unit(f"user@{args.uid}.service"),
         *audit_app_slice(),
         *audit_session_slice(),
+        *audit_user_child_floor_composition(args.uid),
         *audit_protected_user_units(),
         audit_residual_user_process_protection(args.uid),
         *audit_tmux_scopes(),

@@ -182,18 +182,18 @@ def _systemctl_system_memory_cases(
         '  *"show user.slice -p MemoryHigh --value"*) printf "infinity\\n" ;;',
         '  *"show user.slice -p MemoryMax --value"*) printf "infinity\\n" ;;',
         '  *"show user.slice -p MemorySwapMax --value"*) printf "infinity\\n" ;;',
-        '  *"show user.slice -p MemoryLow --value"*) printf "17179869184\\n" ;;',
-        '  *"show user.slice -p MemoryMin --value"*) printf "8589934592\\n" ;;',
+        '  *"show user.slice -p MemoryLow --value"*) printf "21474836480\\n" ;;',
+        '  *"show user.slice -p MemoryMin --value"*) printf "10737418240\\n" ;;',
         '  *"show user-1000.slice -p MemoryHigh --value"*) printf "85899345920\\n" ;;',
         '  *"show user-1000.slice -p MemoryMax --value"*) printf "103079215104\\n" ;;',
         '  *"show user-1000.slice -p MemorySwapMax --value"*) printf "8589934592\\n" ;;',
-        '  *"show user-1000.slice -p MemoryLow --value"*) printf "17179869184\\n" ;;',
-        '  *"show user-1000.slice -p MemoryMin --value"*) printf "8589934592\\n" ;;',
+        '  *"show user-1000.slice -p MemoryLow --value"*) printf "21474836480\\n" ;;',
+        '  *"show user-1000.slice -p MemoryMin --value"*) printf "10737418240\\n" ;;',
         '  *"show user@1000.service -p MemoryHigh --value"*) printf "85899345920\\n" ;;',
         '  *"show user@1000.service -p MemoryMax --value"*) printf "103079215104\\n" ;;',
         '  *"show user@1000.service -p MemorySwapMax --value"*) printf "8589934592\\n" ;;',
-        '  *"show user@1000.service -p MemoryLow --value"*) printf "17179869184\\n" ;;',
-        '  *"show user@1000.service -p MemoryMin --value"*) printf "8589934592\\n" ;;',
+        '  *"show user@1000.service -p MemoryLow --value"*) printf "21474836480\\n" ;;',
+        '  *"show user@1000.service -p MemoryMin --value"*) printf "10737418240\\n" ;;',
         f'  *"show user@1000.service -p OOMScoreAdjust --value"*) printf "{user_manager_score}\\n" ;;',
         '  *"show user@1000.service -p OOMPolicy --value"*) printf "continue\\n" ;;',
     ]
@@ -280,6 +280,36 @@ def test_whole_script_root_mode_refuses_user_owned_lock_symlink(tmp_path: Path) 
 
     assert result.returncode == 2
     assert "whole-script root execution is refused" in result.stderr
+    assert protected.read_text(encoding="utf-8") == "sentinel\n"
+    assert lock.is_symlink()
+    assert not live.exists()
+
+
+def test_nonroot_installer_refuses_shared_lock_symlink_before_mutation(tmp_path: Path) -> None:
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    protected = tmp_path / "protected-target"
+    protected.write_text("sentinel\n", encoding="utf-8")
+    lock = state_root / ".lock"
+    lock.symlink_to(protected)
+    live = tmp_path / "sbin" / "hapax-oom-score-enforce"
+
+    result = subprocess.run(
+        [str(INSTALLER), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_ENFORCER_DEST": str(live),
+            "HAPAX_OOM_INSTALL_SUDO": "",
+            "HAPAX_ROOT_REQUIRED_STATE_ROOT": str(state_root),
+            "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(lock),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "refused unsafe shared lock" in result.stderr
     assert protected.read_text(encoding="utf-8") == "sentinel\n"
     assert lock.is_symlink()
     assert not live.exists()
@@ -411,7 +441,7 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert "MemoryLow=2G" in session_dropin.read_text(encoding="utf-8")
     assert "MemoryMin=1G" in session_dropin.read_text(encoding="utf-8")
     assert (system_dir / "user-1000.slice.d" / "oom-containment.conf").is_file()
-    assert "MemoryMin=8G" in (system_dir / "user.slice.d" / "oom-containment.conf").read_text(
+    assert "MemoryMin=10G" in (system_dir / "user.slice.d" / "oom-containment.conf").read_text(
         encoding="utf-8"
     )
     assert "MemoryLow=24G" in (system_dir / "system.slice.d" / "oom-containment.conf").read_text(
@@ -1281,6 +1311,36 @@ def test_oom_score_sudoers_grant_is_narrow_and_valid() -> None:
     assert "/usr/bin/visudo -cf /etc/sudoers.d/hapax-oom-score-enforce" in policy
     assert "NOPASSWD:NOSETENV:" in policy
     assert "NOPASSWD: ALL" not in policy
+
+
+def test_root_entrypoints_pin_absolute_interpreters() -> None:
+    assert OOM_ENFORCER.read_text(encoding="utf-8").splitlines()[0] == "#!/usr/bin/bash"
+    helper = REPO_ROOT / "config" / "apcupsd" / "hapax-power-event.py"
+    assert helper.read_text(encoding="utf-8").splitlines()[0] == "#!/usr/bin/python3"
+
+
+def test_oom_enforcer_hostile_path_cannot_select_attacker_bash(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    marker = tmp_path / "attacker-bash-ran"
+    fake_bash = fake_bin / "bash"
+    fake_bash.write_text(f"#!/bin/sh\ntouch {marker!s}\nexit 99\n", encoding="utf-8")
+    fake_bash.chmod(0o755)
+
+    result = subprocess.run(
+        [str(OOM_ENFORCER), "--invalid"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            "HOME": os.environ["HOME"],
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+        },
+    )
+
+    assert result.returncode == 2
+    assert "usage: hapax-oom-score-enforce" in result.stderr
+    assert not marker.exists()
 
 
 def test_root_oom_score_enforcer_refuses_production_environment_overrides(

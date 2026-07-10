@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """Record and notify Hapax UPS power events from apcupsd hooks."""
 
 from __future__ import annotations

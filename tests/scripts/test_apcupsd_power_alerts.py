@@ -86,7 +86,8 @@ def test_apcupsd_hooks_delegate_to_provenance_helper() -> None:
     assert offbattery.rstrip().endswith("exit 0")
     assert 'HELPER="/etc/apcupsd/hapax-power-event.py"' in doshutdown
     assert "HAPAX_APCUPSD_TEST_MODE" in doshutdown
-    assert '"$TIMEOUT" --signal=KILL 3s "$HELPER" doshutdown "$@" || :' in doshutdown
+    assert 'DEADLINE="5s"' in doshutdown
+    assert '"$TIMEOUT" --signal=KILL "$DEADLINE" "$HELPER" doshutdown "$@" || :' in doshutdown
     assert doshutdown.rstrip().endswith("exit 0")
 
 
@@ -394,6 +395,7 @@ def test_doshutdown_hook_deadlines_blocked_provenance_write(tmp_path: Path) -> N
             **os.environ,
             "HAPAX_APCUPSD_TEST_MODE": "1",
             "HAPAX_APCUPSD_HELPER": str(HELPER),
+            "HAPAX_APCUPSD_SHUTDOWN_DEADLINE": "1s",
             "HAPAX_UPS_AUDIT_LOG": str(audit_fifo),
             "HAPAX_UPS_APCACCESS": "",
             "HAPAX_UPS_NTFY_URL": "",
@@ -402,7 +404,33 @@ def test_doshutdown_hook_deadlines_blocked_provenance_write(tmp_path: Path) -> N
     elapsed = time.monotonic() - started
 
     assert result.returncode == 0
-    assert elapsed < 4
+    assert elapsed < 2
+
+
+def test_doshutdown_hook_records_shutdown_receipt(tmp_path: Path) -> None:
+    audit = tmp_path / "ups-events.jsonl"
+
+    result = subprocess.run(
+        [str(CONFIG_DIR / "doshutdown"), "podium-srt3000xla", "1", "1"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_TEST_MODE": "1",
+            "HAPAX_APCUPSD_HELPER": str(HELPER),
+            "HAPAX_UPS_AUDIT_LOG": str(audit),
+            "HAPAX_UPS_APCACCESS": "",
+            "HAPAX_UPS_NTFY_URL": "",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    records = [json.loads(line) for line in audit.read_text(encoding="utf-8").splitlines()]
+    assert records[0]["event"] == "doshutdown"
+    assert records[0]["phase"] == "intent"
+    assert records[0]["shutdown_requested"] is True
+    assert records[0]["event_requests_shutdown"] is True
 
 
 @pytest.mark.parametrize("hook", ["onbattery", "offbattery"])
@@ -708,6 +736,36 @@ def test_whole_script_root_mode_refuses_user_owned_lock_symlink(tmp_path: Path) 
 
     assert result.returncode == 2
     assert "whole-script root execution is refused" in result.stderr
+    assert protected.read_text(encoding="utf-8") == "sentinel\n"
+    assert lock.is_symlink()
+    assert not live.exists()
+
+
+def test_nonroot_installer_refuses_shared_lock_symlink_before_mutation(tmp_path: Path) -> None:
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    protected = tmp_path / "protected-target"
+    protected.write_text("sentinel\n", encoding="utf-8")
+    lock = state_root / ".lock"
+    lock.symlink_to(protected)
+    live = tmp_path / "apcupsd"
+
+    result = subprocess.run(
+        [str(INSTALLER), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_DEST": str(live),
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+            "HAPAX_ROOT_REQUIRED_STATE_ROOT": str(state_root),
+            "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(lock),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "refused unsafe shared lock" in result.stderr
     assert protected.read_text(encoding="utf-8") == "sentinel\n"
     assert lock.is_symlink()
     assert not live.exists()

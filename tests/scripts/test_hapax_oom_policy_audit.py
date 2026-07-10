@@ -93,6 +93,7 @@ def _fake_systemctl(
     system_slice_finite_max: bool = False,
     user_slice_unprotected: bool = False,
     session_slice_unprotected: bool = False,
+    user_floor_overcommitted: bool = False,
     protected_unit_pids: dict[str, int] | None = None,
     protected_unit_cgroups: dict[str, str] | None = None,
     sshd_score: int = 0,
@@ -120,8 +121,8 @@ def _fake_systemctl(
         "MemoryHigh=85899345920\n"
         "MemoryMax=103079215104\n"
         "MemorySwapMax=8589934592\n"
-        "MemoryLow=17179869184\n"
-        "MemoryMin=8589934592\n"
+        f"MemoryLow={'17179869184' if user_floor_overcommitted else '21474836480'}\n"
+        f"MemoryMin={'8589934592' if user_floor_overcommitted else '10737418240'}\n"
     )
     tmux_values = (
         f"MemoryHigh=12884901888\nMemoryMax=19327352832\nMemorySwapMax=3221225472\nSlice={tmux_slice}\n"
@@ -139,8 +140,8 @@ def _fake_systemctl(
         "MemoryHigh=infinity\n"
         "MemoryMax=infinity\n"
         "MemorySwapMax=infinity\n"
-        f"MemoryLow={'0' if user_slice_unprotected else '17179869184'}\n"
-        f"MemoryMin={'0' if user_slice_unprotected else '8589934592'}\n"
+        f"MemoryLow={'0' if user_slice_unprotected else '21474836480'}\n"
+        f"MemoryMin={'0' if user_slice_unprotected else '10737418240'}\n"
     )
     session_slice_values = (
         "MemoryHigh=infinity\n"
@@ -157,6 +158,7 @@ case "$*" in
   *"show user.slice"*) printf '{user_slice_values}' ;;
   *"show user-1000.slice"*) printf '{uid_memory_values}' ;;
   *"show user@1000.service --no-pager -p MemoryHigh"*) printf '{uid_memory_values}' ;;
+  *"show user@1000.service --no-pager -p MemoryLow"*) printf '{uid_memory_values}' ;;
   *"show user@1000.service"*) printf 'OOMScoreAdjust={user_oom}\\nOOMPolicy={user_oom_policy}\\nDropInPaths=/etc/systemd/system/user@1000.service.d/oom.conf\\nMainPID=900\\n' ;;
   *"show sshd.service"*) printf 'OOMScoreAdjust={sshd_score}\\nOOMPolicy={sshd_policy}\\nMainPID=920\\n' ;;
 {_recovery_system_unit_cases(wrong_score=wrong_recovery_unit_score, inactive_unit=inactive_recovery_unit)}
@@ -201,6 +203,7 @@ def _run(
     system_slice_finite_max: bool = False,
     user_slice_unprotected: bool = False,
     session_slice_unprotected: bool = False,
+    user_floor_overcommitted: bool = False,
     protected_unit_pids: dict[str, int] | None = None,
     protected_unit_cgroups: dict[str, str] | None = None,
     sshd_score: int = 0,
@@ -251,6 +254,7 @@ def _run(
                 system_slice_finite_max=system_slice_finite_max,
                 user_slice_unprotected=user_slice_unprotected,
                 session_slice_unprotected=session_slice_unprotected,
+                user_floor_overcommitted=user_floor_overcommitted,
                 protected_unit_pids=protected_unit_pids,
                 protected_unit_cgroups=protected_unit_cgroups,
                 sshd_score=sshd_score,
@@ -282,6 +286,8 @@ def test_audit_passes_when_user_manager_is_killable_and_app_slice_bounded(tmp_pa
     assert statuses["user_slice_MemoryLow"] == "pass"
     assert statuses["app_slice_MemorySwapMax"] == "pass"
     assert statuses["session_slice_MemoryLow"] == "pass"
+    assert statuses["user_manager_child_floor_MemoryLow"] == "pass"
+    assert statuses["user_manager_child_floor_MemoryMin"] == "pass"
     assert statuses["user_unit_pipewire.service_Slice"] == "pass"
     assert statuses["user_unit_studio-compositor.service_Slice"] == "pass"
 
@@ -295,6 +301,17 @@ def test_audit_fails_when_session_slice_audio_reservation_is_missing(tmp_path: P
     assert check["status"] == "gap"
     assert check["actual"] == "0"
     assert check["target"] == "2147483648"
+
+
+def test_audit_fails_when_child_floors_exceed_user_manager_parent(tmp_path: Path) -> None:
+    result = _run(tmp_path, user_floor_overcommitted=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    checks = {item["name"]: item for item in payload["checks"]}
+    assert checks["user_manager_child_floor_MemoryLow"]["status"] == "gap"
+    assert checks["user_manager_child_floor_MemoryMin"]["status"] == "gap"
+    assert "proportionally dilute" in checks["user_manager_child_floor_MemoryLow"]["detail"]
 
 
 def test_audit_fails_when_protected_unit_leaves_checked_app_slice_chain(tmp_path: Path) -> None:

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Install Hapax apcupsd config/hooks and verify power-event provenance paths.
 set -euo pipefail
+ORIGINAL_ARGS=("$@")
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE="$ROOT"
@@ -153,10 +154,64 @@ canonical_dir() {
 }
 
 acquire_root_required_lock() {
-    mkdir -p "$ROOT_REQUIRED_DEFER_ROOT" "$(dirname "$ROOT_REQUIRED_LOCK_FILE")"
-    exec {ROOT_REQUIRED_LOCK_FD}>"$ROOT_REQUIRED_LOCK_FILE"
-    flock -x "$ROOT_REQUIRED_LOCK_FD"
+    if [ "${HAPAX_ROOT_REQUIRED_LOCK_HELD:-}" != "1" ]; then
+        echo "apcupsd installer internal error: safe shared lock is not held; next action: rerun the unmodified installer as UID $TARGET_UID" >&2
+        return 1
+    fi
+    mkdir -p "$ROOT_REQUIRED_DEFER_ROOT"
     migrate_legacy_root_required_state
+}
+
+reexec_with_safe_root_required_lock() {
+    [ "${HAPAX_ROOT_REQUIRED_LOCK_HELD:-}" != "1" ] || return 0
+    exec /usr/bin/python3 - "$ROOT_REQUIRED_LOCK_FILE" "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
+from __future__ import annotations
+
+import fcntl
+import os
+import stat
+import subprocess
+import sys
+
+lock_path, script, *args = sys.argv[1:]
+os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+try:
+    fd = os.open(
+        lock_path,
+        os.O_CLOEXEC | os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR,
+        0o600,
+    )
+except OSError as exc:
+    print(
+        f"apcupsd installer refused unsafe shared lock {lock_path}: {exc}; "
+        "next action: remove only a confirmed symlink/non-regular lock and rerun as the target account",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+try:
+    inode = os.fstat(fd)
+    if (
+        not stat.S_ISREG(inode.st_mode)
+        or inode.st_uid != os.geteuid()
+        or inode.st_nlink != 1
+        or inode.st_mode & 0o022
+    ):
+        print(
+            f"apcupsd installer refused unsafe shared lock inode {lock_path}; expected one "
+            "regular, caller-owned, non-group-writable file; next action: remove only a "
+            "confirmed unsafe lock and rerun as the target account",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    os.fchmod(fd, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    env = os.environ.copy()
+    env["HAPAX_ROOT_REQUIRED_LOCK_HELD"] = "1"
+    result = subprocess.run([os.path.abspath(script), *args], env=env, check=False)
+    raise SystemExit(result.returncode)
+finally:
+    os.close(fd)
+PY
 }
 
 migrate_legacy_root_required_state() {
@@ -391,6 +446,10 @@ check_source() {
         echo "source helper is not executable: $SRC/hapax-power-event.py; next action: chmod +x config/apcupsd/hapax-power-event.py and rerun scripts/install-apcupsd-power-alerts --check" >&2
         return 1
     }
+    [ "$(head -n 1 "$SRC/hapax-power-event.py")" = "#!/usr/bin/python3" ] || {
+        echo "source helper must pin /usr/bin/python3 before root execution: $SRC/hapax-power-event.py; next action: restore the absolute interpreter shebang and rerun scripts/install-apcupsd-power-alerts --check" >&2
+        return 1
+    }
     [ -x "$SRC/onbattery" ] || {
         echo "source hook is not executable: $SRC/onbattery; next action: chmod +x config/apcupsd/onbattery and rerun scripts/install-apcupsd-power-alerts --check" >&2
         return 1
@@ -595,6 +654,7 @@ verify_live() {
 
 [ "$CHECK" -eq 0 ] || check_source
 [ "$INSTALL" -eq 0 ] || refuse_whole_script_root
+[ "$INSTALL" -eq 0 ] || reexec_with_safe_root_required_lock
 [ "$INSTALL" -eq 0 ] || acquire_root_required_lock
 [ "$INSTALL" -eq 0 ] || validate_root_required_package_order
 if [ "$INSTALL" -eq 1 ] && [ "$SKIP_SUPERSEDED_INSTALL" -eq 1 ]; then

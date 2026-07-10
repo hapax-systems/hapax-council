@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # Root-side live OOM score enforcer for the P0 podium containment package.
 set -euo pipefail
 
