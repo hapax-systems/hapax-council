@@ -200,7 +200,13 @@ def audit_system_memory_unit(unit: str) -> list[Check]:
 
 
 def audit_system_slice_reservation() -> list[Check]:
-    expected = {"MemoryLow": BYTES_24G, "MemoryMin": BYTES_12G}
+    expected: dict[str, int | None] = {
+        "MemoryHigh": None,
+        "MemoryMax": None,
+        "MemorySwapMax": None,
+        "MemoryLow": BYTES_24G,
+        "MemoryMin": BYTES_12G,
+    }
     values = _show("system.slice", list(expected))
     if "_error" in values:
         return [
@@ -215,13 +221,14 @@ def audit_system_slice_reservation() -> list[Check]:
     checks: list[Check] = []
     for key, target in expected.items():
         actual = values.get(key, "")
-        status = "pass" if _int_value(actual) == target else "gap"
+        target_text = "infinity" if target is None else str(target)
+        status = "pass" if actual == target_text else "gap"
         detail = (
             ""
             if status == "pass"
             else f"system.slice recovery-plane reservation drifted; {NEXT_OOM_INSTALL}"
         )
-        checks.append(Check(f"system_slice_{key}", status, str(target), actual, detail))
+        checks.append(Check(f"system_slice_{key}", status, target_text, actual, detail))
     return checks
 
 

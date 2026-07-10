@@ -33,6 +33,12 @@ if [ -z "$ROOT_REQUIRED_DEFER_ROOT" ] && [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-
     ROOT_REQUIRED_DEFER_ROOT="$(dirname "$(dirname "$HAPAX_ROOT_REQUIRED_DRAIN_DIR")")"
 fi
 ROOT_REQUIRED_DEFER_ROOT="${ROOT_REQUIRED_DEFER_ROOT:-$TARGET_HOME/.cache/hapax/post-merge-root-required}"
+ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT:-$ROOT_REQUIRED_DEFER_ROOT/installed-receipts}"
+ROOT_REQUIRED_GIT_REPO="${HAPAX_ROOT_REQUIRED_GIT_REPO:-/home/hapax/projects/hapax-council}"
+ROOT_REQUIRED_PACKAGE_SHA="${HAPAX_ROOT_REQUIRED_PACKAGE_SHA:-}"
+ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_DEFER_ROOT/.lock}"
+ROOT_REQUIRED_RECEIPT="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/oom-containment.sha"
+SKIP_SUPERSEDED_INSTALL=0
 PROC_ROOT="${HAPAX_OOM_PROC_ROOT:-/proc}"
 if [ -n "${HAPAX_OOM_CGROUP_ROOT:-}" ]; then
     CGROUP_ROOT="$HAPAX_OOM_CGROUP_ROOT"
@@ -139,6 +145,72 @@ canonical_dir() {
     local dir="$1"
     [ -d "$dir" ] || return 1
     (cd "$dir" && pwd -P)
+}
+
+acquire_root_required_lock() {
+    [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ] || return 0
+    mkdir -p "$ROOT_REQUIRED_DEFER_ROOT"
+    exec {ROOT_REQUIRED_LOCK_FD}>"$ROOT_REQUIRED_LOCK_FILE"
+    flock -x "$ROOT_REQUIRED_LOCK_FD"
+}
+
+validate_root_required_package_order() {
+    local installed_sha staged_sha package_sha_file
+    package_sha_file="$SOURCE/.hapax-root-required-package-sha"
+    if [ -f "$package_sha_file" ]; then
+        staged_sha="$(tr -d '[:space:]' < "$package_sha_file")"
+        if [ -z "$ROOT_REQUIRED_PACKAGE_SHA" ]; then
+            ROOT_REQUIRED_PACKAGE_SHA="$staged_sha"
+        elif [ "$ROOT_REQUIRED_PACKAGE_SHA" != "$staged_sha" ]; then
+            echo "root-required OOM package SHA mismatch: env=$ROOT_REQUIRED_PACKAGE_SHA staged=$staged_sha; next action: rerun the unmodified command from this package's RUNBOOK.txt" >&2
+            return 1
+        fi
+    fi
+    if [ -z "$ROOT_REQUIRED_PACKAGE_SHA" ]; then
+        if [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ]; then
+            echo "root-required drain is missing HAPAX_ROOT_REQUIRED_PACKAGE_SHA; next action: rerun the exact command from the staged RUNBOOK.txt" >&2
+            return 1
+        fi
+        return 0
+    fi
+    [[ "$ROOT_REQUIRED_PACKAGE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+        echo "invalid root-required package SHA: $ROOT_REQUIRED_PACKAGE_SHA; next action: rerun the exact command from the staged RUNBOOK.txt" >&2
+        return 1
+    }
+    git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$ROOT_REQUIRED_PACKAGE_SHA^{commit}" 2>/dev/null || {
+        echo "root-required OOM package commit is unavailable: $ROOT_REQUIRED_PACKAGE_SHA; next action: fetch it into $ROOT_REQUIRED_GIT_REPO and rerun the staged RUNBOOK" >&2
+        return 1
+    }
+    [ -f "$ROOT_REQUIRED_RECEIPT" ] || return 0
+    installed_sha="$(tr -d '[:space:]' < "$ROOT_REQUIRED_RECEIPT")"
+    [[ "$installed_sha" =~ ^[0-9a-f]{40}$ ]] || {
+        echo "invalid installed OOM package receipt: $ROOT_REQUIRED_RECEIPT; next action: inspect the receipt and rerun the newest governed post-merge package" >&2
+        return 1
+    }
+    [ "$installed_sha" != "$ROOT_REQUIRED_PACKAGE_SHA" ] || return 0
+    if ! git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$installed_sha^{commit}" 2>/dev/null; then
+        echo "cannot validate OOM package ancestry for installed=$installed_sha candidate=$ROOT_REQUIRED_PACKAGE_SHA; next action: fetch both commits into $ROOT_REQUIRED_GIT_REPO and rerun the staged RUNBOOK" >&2
+        return 1
+    fi
+    if git -C "$ROOT_REQUIRED_GIT_REPO" merge-base --is-ancestor "$installed_sha" "$ROOT_REQUIRED_PACKAGE_SHA"; then
+        return 0
+    fi
+    if git -C "$ROOT_REQUIRED_GIT_REPO" merge-base --is-ancestor "$ROOT_REQUIRED_PACKAGE_SHA" "$installed_sha"; then
+        SKIP_SUPERSEDED_INSTALL=1
+        echo "root-required OOM package $ROOT_REQUIRED_PACKAGE_SHA is superseded by installed $installed_sha; live files will not be rolled back"
+        return 0
+    fi
+    echo "refusing divergent OOM package installed=$installed_sha candidate=$ROOT_REQUIRED_PACKAGE_SHA; next action: dispatch a governed reconciliation from current main and leave this RUNBOOK pending" >&2
+    return 1
+}
+
+record_root_required_package_receipt() {
+    local temp
+    [ -n "$ROOT_REQUIRED_PACKAGE_SHA" ] || return 0
+    mkdir -p "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT"
+    temp="$ROOT_REQUIRED_RECEIPT.tmp.$$"
+    printf '%s\n' "$ROOT_REQUIRED_PACKAGE_SHA" > "$temp"
+    mv -f "$temp" "$ROOT_REQUIRED_RECEIPT"
 }
 
 drain_root_required_deferral_dir() {
@@ -752,8 +824,16 @@ verify_user_process_oom_floor() {
 }
 
 [ "$CHECK" -eq 0 ] || check_source
+[ "$INSTALL" -eq 0 ] || acquire_root_required_lock
+[ "$INSTALL" -eq 0 ] || validate_root_required_package_order
+if [ "$INSTALL" -eq 1 ] && [ "$SKIP_SUPERSEDED_INSTALL" -eq 1 ]; then
+    drain_root_required_deferral
+    echo "p0 oom containment superseded deferral drained without live mutation"
+    exit 0
+fi
 [ "$INSTALL" -eq 0 ] || install_live
 [ "$VERIFY_LIVE" -eq 0 ] || verify_live
 [ "$INSTALL" -eq 0 ] || record_installed_source
+[ "$INSTALL" -eq 0 ] || record_root_required_package_receipt
 [ "$INSTALL" -eq 0 ] || drain_root_required_deferral
 echo "p0 oom containment install/check complete"

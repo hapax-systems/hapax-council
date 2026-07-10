@@ -375,10 +375,10 @@ fi
 #
 # Destination layout: ``~/.config/systemd/user/<service>.service.d/``
 # is a REAL directory (not a symlink). Individual ``.conf`` files
-# inside it are symlinks back to the repo, except P0 OOM containment
-# backstops, which are copied so host safety does not depend on any
-# mutable worktree path.
-copy_dropin_for_host_safety() {
+# inside it are symlinks back to the repo. P0 OOM containment backstops are
+# skipped here because only scripts/install-p0-oom-containment may install
+# them from a governed, commit-staged source package.
+dedicated_p0_oom_dropin() {
     case "$1" in
         app.slice.d/oom-containment.conf|\
         pipewire.service.d/oom-protect.conf|\
@@ -399,24 +399,16 @@ dropin_changed=0
 for dropin_dir in "$REPO_DIR"/*.service.d "$REPO_DIR"/*.timer.d "$REPO_DIR"/*.slice.d "$REPO_DIR"/*.scope.d; do
     [ -d "$dropin_dir" ] || continue
     svc_name="$(basename "$dropin_dir")"
-    dest_dropin_dir="$DEST_DIR/$svc_name"
-    mkdir -p "$dest_dropin_dir"
     for conf in "$dropin_dir"/*.conf; do
         [ -f "$conf" ] || continue
         conf_name="$(basename "$conf")"
-        dest_conf="$dest_dropin_dir/$conf_name"
-        if copy_dropin_for_host_safety "$svc_name/$conf_name"; then
-            if [ -L "$dest_conf" ]; then
-                rm -f "$dest_conf"
-            fi
-            if [ -f "$dest_conf" ] && cmp -s "$conf" "$dest_conf"; then
-                continue
-            fi
-            install -m 0644 "$conf" "$dest_conf"
-            echo "dropin-copied: $svc_name/$conf_name"
-            dropin_changed=$((dropin_changed + 1))
+        if dedicated_p0_oom_dropin "$svc_name/$conf_name"; then
+            echo "dropin-skipped-dedicated-installer: $svc_name/$conf_name"
             continue
         fi
+        dest_dropin_dir="$DEST_DIR/$svc_name"
+        mkdir -p "$dest_dropin_dir"
+        dest_conf="$dest_dropin_dir/$conf_name"
         if [ -L "$dest_conf" ] && [ "$(readlink "$dest_conf")" = "$conf" ]; then
             continue
         fi

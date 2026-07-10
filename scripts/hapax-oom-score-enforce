@@ -87,7 +87,10 @@ system_main_pid() {
 
 user_main_pid() {
     local unit="$1" pid
-    pid="$(run_user_systemctl show "$unit" -p MainPID --value 2>/dev/null || true)"
+    if ! pid="$(run_user_systemctl show "$unit" -p MainPID --value 2>/dev/null)"; then
+        echo "warn: unable to query user unit $unit MainPID; next action: inspect the UID $TARGET_UID user manager and run scripts/hapax-oom-policy-audit --json" >&2
+        return 1
+    fi
     if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ]; then
         printf '%s\n' "$pid"
     fi
@@ -96,7 +99,10 @@ user_main_pid() {
 
 user_control_group() {
     local unit="$1"
-    run_user_systemctl show "$unit" -p ControlGroup --value 2>/dev/null || true
+    if ! run_user_systemctl show "$unit" -p ControlGroup --value 2>/dev/null; then
+        echo "warn: unable to query user unit $unit ControlGroup; next action: inspect the UID $TARGET_UID user manager and run scripts/hapax-oom-policy-audit --json" >&2
+        return 1
+    fi
 }
 
 cgroup_pids() {
@@ -112,17 +118,21 @@ cgroup_pids() {
 
 user_unit_pids() {
     local unit="$1" cgroup pid
-    cgroup="$(user_control_group "$unit")"
+    cgroup="$(user_control_group "$unit")" || return 1
     cgroup_pids "$cgroup"
-    pid="$(user_main_pid "$unit")"
+    pid="$(user_main_pid "$unit")" || return 1
     [ -n "$pid" ] && printf '%s\n' "$pid"
     return 0
 }
 
 apply_unit_score() {
-    local unit="$1" score="$2" pid changed
+    local unit="$1" score="$2" pid changed output
     local -a pids
-    mapfile -t pids < <(user_unit_pids "$unit" | sort -u)
+    if ! output="$(user_unit_pids "$unit")"; then
+        failed=1
+        return 0
+    fi
+    mapfile -t pids < <(printf '%s\n' "$output" | sed -n '/^[0-9][0-9]*$/p' | sort -u)
     [ "${#pids[@]}" -gt 0 ] || return 0
     for pid in "${pids[@]}"; do
         if changed="$(write_oom_score_for_unit "$pid" "$score" "$unit")"; then

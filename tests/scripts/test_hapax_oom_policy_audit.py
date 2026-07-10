@@ -46,6 +46,7 @@ def _fake_systemctl(
     tmux_bounded: bool = True,
     tmux_slice: str = "app.slice",
     wrong_unit_score: bool = False,
+    system_slice_finite_max: bool = False,
     protected_unit_pids: dict[str, int] | None = None,
     protected_unit_cgroups: dict[str, str] | None = None,
 ) -> Path:
@@ -77,11 +78,18 @@ def _fake_systemctl(
         if tmux_bounded
         else f"MemoryHigh=infinity\nMemoryMax=infinity\nMemorySwapMax=infinity\nSlice={tmux_slice}\n"
     )
+    system_slice_values = (
+        "MemoryHigh=infinity\n"
+        f"MemoryMax={'68719476736' if system_slice_finite_max else 'infinity'}\n"
+        "MemorySwapMax=infinity\n"
+        "MemoryLow=25769803776\n"
+        "MemoryMin=12884901888\n"
+    )
     path.write_text(
         f"""#!/usr/bin/env bash
 set -euo pipefail
 case "$*" in
-  *"show system.slice"*) printf 'MemoryLow=25769803776\nMemoryMin=12884901888\n' ;;
+  *"show system.slice"*) printf '{system_slice_values}' ;;
   *"show user-1000.slice"*) printf '{uid_memory_values}' ;;
   *"show user@1000.service --no-pager -p MemoryHigh"*) printf '{uid_memory_values}' ;;
   *"show user@1000.service"*) printf 'OOMScoreAdjust={user_oom}\\nDropInPaths=/etc/systemd/system/user@1000.service.d/oom.conf\\nMainPID=900\\n' ;;
@@ -119,6 +127,7 @@ def _run(
     tmux_bounded: bool = True,
     tmux_slice: str = "app.slice",
     wrong_unit_score: bool = False,
+    system_slice_finite_max: bool = False,
     protected_unit_pids: dict[str, int] | None = None,
     protected_unit_cgroups: dict[str, str] | None = None,
     proc_root: Path | None = None,
@@ -142,6 +151,7 @@ def _run(
                 tmux_bounded=tmux_bounded,
                 tmux_slice=tmux_slice,
                 wrong_unit_score=wrong_unit_score,
+                system_slice_finite_max=system_slice_finite_max,
                 protected_unit_pids=protected_unit_pids,
                 protected_unit_cgroups=protected_unit_cgroups,
             )
@@ -186,6 +196,16 @@ def test_audit_fails_when_app_slice_backstop_is_unbounded(tmp_path: Path) -> Non
     app_checks = [item for item in payload["checks"] if item["name"].startswith("app_slice_")]
     assert app_checks
     assert all(item["status"] == "gap" for item in app_checks)
+
+
+def test_audit_fails_when_system_slice_has_finite_hard_ceiling(tmp_path: Path) -> None:
+    result = _run(tmp_path, system_slice_finite_max=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(item for item in payload["checks"] if item["name"] == "system_slice_MemoryMax")
+    assert check["status"] == "gap"
+    assert check["target"] == "infinity"
 
 
 def test_audit_fails_when_protected_user_unit_loses_oom_score(tmp_path: Path) -> None:

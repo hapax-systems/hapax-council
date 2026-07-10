@@ -11,6 +11,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALLER = REPO_ROOT / "scripts" / "install-p0-oom-containment"
 OOM_ENFORCER = REPO_ROOT / "scripts" / "hapax-oom-score-enforce"
 ROOT_FAILURE_INTAKE = REPO_ROOT / "scripts" / "hapax-root-failure-intake"
+REPO_HEAD = subprocess.run(
+    ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, check=True, text=True, capture_output=True
+).stdout.strip()
 PROTECTED_USER_UNIT_SCORES = {
     "pipewire.service": -900,
     "pipewire-pulse.service": -900,
@@ -188,6 +191,8 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
             "HAPAX_OOM_INSTALL_SUDO": "",
             "HAPAX_OOM_PROC_ROOT": str(proc_root),
             "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(root_defer),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": REPO_HEAD,
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
             "HAPAX_ROOT_REQUIRED_DRAIN_DIR": str(drain_dir),
             "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source),
         },
@@ -196,6 +201,9 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert result.returncode == 0, result.stderr
     assert not drain_dir.exists()
     assert sibling_dir.exists()
+    assert (
+        root_defer / "installed-receipts" / "oom-containment.sha"
+    ).read_text().strip() == REPO_HEAD
     assert (installed_source / "scripts" / "install-p0-oom-containment").is_file()
     assert "root-required deferral drained" in result.stdout
     user_manager_dropin = (system_dir / "user@1000.service.d" / "oom.conf").read_text(
@@ -212,7 +220,7 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert "MemoryLow=24G" in (system_dir / "system.slice.d" / "oom-containment.conf").read_text(
         encoding="utf-8"
     )
-    assert earlyoom_dest.read_text(encoding="utf-8").startswith("EARLYOOM_ARGS=")
+    assert "EARLYOOM_ARGS=" in earlyoom_dest.read_text(encoding="utf-8")
     assert enforcer_dest.is_file()
     assert root_failure_dest.is_file()
     assert not stale_control.exists()
@@ -246,6 +254,65 @@ def _write_proc(
     (pid_dir / "oom_score_adj").write_text(f"{oom_score}\n", encoding="utf-8")
     if cgroup is not None:
         (pid_dir / "cgroup").write_text(f"0::{cgroup}\n", encoding="utf-8")
+
+
+def test_stale_deferred_oom_package_drains_without_rolling_back_newer_install(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "oom-test@example.test"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "OOM Test"], cwd=repo, check=True)
+    marker = repo / "marker"
+    marker.write_text("A\n", encoding="utf-8")
+    subprocess.run(["git", "add", "marker"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "A"], cwd=repo, check=True, capture_output=True)
+    sha_a = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+    marker.write_text("B\n", encoding="utf-8")
+    subprocess.run(["git", "commit", "-am", "B"], cwd=repo, check=True, capture_output=True)
+    sha_b = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+
+    defer_root = tmp_path / "root-required"
+    drain_dir = defer_root / sha_a / "oom-containment"
+    drain_dir.mkdir(parents=True)
+    (drain_dir / "RUNBOOK.txt").write_text("stale A\n", encoding="utf-8")
+    receipt_root = defer_root / "installed-receipts"
+    receipt_root.mkdir()
+    receipt = receipt_root / "oom-containment.sha"
+    receipt.write_text(f"{sha_b}\n", encoding="utf-8")
+    live_marker = tmp_path / "live-earlyoom"
+    live_marker.write_text("newer B policy\n", encoding="utf-8")
+    staged_a = tmp_path / "staged-a"
+    staged_a.mkdir()
+    (staged_a / ".hapax-root-required-package-sha").write_text(f"{sha_a}\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(staged_a), "--install", "--verify-live"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_INSTALL_SUDO": "",
+            "HAPAX_OOM_EARLYOOM_DEST": str(live_marker),
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_root),
+            "HAPAX_ROOT_REQUIRED_DRAIN_DIR": str(drain_dir),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": sha_a,
+            "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT": str(receipt_root),
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(repo),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "superseded" in result.stdout
+    assert not drain_dir.exists()
+    assert receipt.read_text(encoding="utf-8").strip() == sha_b
+    assert live_marker.read_text(encoding="utf-8") == "newer B policy\n"
 
 
 def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_user_protection(
@@ -497,6 +564,7 @@ def test_root_oom_score_enforcer_writes_live_user_manager_and_service_scores(
         "#!/usr/bin/env bash\n"
         'case "$*" in\n'
         f"{user_cases}\n"
+        '  *" -p ControlGroup --value"*) printf "\\n" ;;\n'
         '  *) echo "unexpected user args: $*" >&2; exit 9 ;;\n'
         "esac\n",
         encoding="utf-8",
@@ -577,6 +645,7 @@ def test_root_oom_score_enforcer_is_quiet_when_scores_already_match(
         "#!/usr/bin/env bash\n"
         'case "$*" in\n'
         f"{user_cases}\n"
+        '  *" -p ControlGroup --value"*) printf "\\n" ;;\n'
         '  *) echo "unexpected user args: $*" >&2; exit 9 ;;\n'
         "esac\n",
         encoding="utf-8",
@@ -750,6 +819,48 @@ def test_root_oom_score_enforcer_continues_after_per_unit_write_failure(
     assert "failed to set oom_score_adj for pipewire-pulse.service" in result.stderr
     assert "next action: run scripts/hapax-oom-policy-audit --json" in result.stderr
     assert (proc_root / "912" / "oom_score_adj").read_text(encoding="utf-8").strip() == "-900"
+
+
+def test_root_oom_score_enforcer_fails_when_user_manager_queries_fail(tmp_path: Path) -> None:
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    _write_proc(
+        proc_root,
+        900,
+        name="systemd",
+        uid=1000,
+        oom_score=100,
+        cgroup="/user.slice/user-1000.slice/user@1000.service",
+    )
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$*" == *"show user@1000.service -p MainPID --value"* ]]; then printf "900\\n"; exit 0; fi\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+    failing_user_systemctl = tmp_path / "systemctl-user"
+    failing_user_systemctl.write_text("#!/usr/bin/env bash\nexit 9\n", encoding="utf-8")
+    failing_user_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(OOM_ENFORCER), "--apply"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_PROC_ROOT": str(proc_root),
+            "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_OOM_USER_SYSTEMCTL": str(failing_user_systemctl),
+            "HAPAX_OOM_TARGET_UID": "1000",
+        },
+    )
+
+    assert result.returncode == 1
+    assert "unable to query user unit pipewire.service ControlGroup" in result.stderr
+    assert "next action:" in result.stderr
 
 
 def test_installer_preserves_python_child_inside_protected_user_unit_cgroup(

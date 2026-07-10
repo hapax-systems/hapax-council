@@ -15,6 +15,9 @@ CONFIG_DIR = REPO_ROOT / "config" / "apcupsd"
 HELPER = CONFIG_DIR / "hapax-power-event.py"
 INSTALLER = REPO_ROOT / "scripts" / "install-apcupsd-power-alerts"
 UPOWER_CONFIG = REPO_ROOT / "config" / "upower" / "90-hapax-apcupsd-owner.conf"
+REPO_HEAD = subprocess.run(
+    ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, check=True, text=True, capture_output=True
+).stdout.strip()
 
 
 @pytest.fixture(autouse=True)
@@ -87,7 +90,8 @@ def test_power_event_helper_records_jsonl_without_ntfy(tmp_path: Path) -> None:
     assert records[0]["schema"] == "hapax.ups_power_event.v1"
     assert records[0]["event"] == "onbattery"
     assert records[0]["policy_owner"] == "apcupsd"
-    assert records[0]["shutdown_requested"] is False
+    assert records[0]["shutdown_requested"] is None
+    assert records[0]["event_requests_shutdown"] is False
     assert "delivery" not in records[0]
     assert records[1]["provenance_degraded"] is False
     assert records[1]["delivery"]["attempted"] is False
@@ -134,6 +138,7 @@ def test_power_event_helper_records_offbattery_delivery_failure(tmp_path: Path) 
     assert [record["phase"] for record in records] == ["intent", "delivery"]
     assert records[1]["event"] == "offbattery"
     assert records[1]["shutdown_requested"] is None
+    assert records[1]["event_requests_shutdown"] is None
     assert "does not determine whether shutdown was previously requested" in records[1]["message"]
     assert records[1]["delivery"]["attempted"] is True
     assert records[1]["delivery"]["ok"] is False
@@ -163,15 +168,16 @@ def test_power_event_helper_marks_doshutdown_as_distinct_intent(tmp_path: Path) 
     records = [json.loads(line) for line in audit.read_text(encoding="utf-8").splitlines()]
     assert records[0]["event"] == "doshutdown"
     assert records[0]["shutdown_requested"] is True
+    assert records[0]["event_requests_shutdown"] is True
     assert records[0]["priority"] == "max"
     assert records[0]["title"] == "UPS REQUESTED HOST SHUTDOWN - podium"
     assert records[0]["apcaccess_timeout_s"] == 1.0
     assert records[0]["notification_timeout_s"] == 1.0
 
 
-def test_offbattery_does_not_overwrite_prior_shutdown_intent(tmp_path: Path) -> None:
+def test_later_power_events_do_not_overwrite_prior_shutdown_intent(tmp_path: Path) -> None:
     audit = tmp_path / "ups-events.jsonl"
-    for event in ("doshutdown", "offbattery"):
+    for event in ("doshutdown", "offbattery", "onbattery"):
         result = subprocess.run(
             [
                 str(HELPER),
@@ -193,7 +199,8 @@ def test_offbattery_does_not_overwrite_prior_shutdown_intent(tmp_path: Path) -> 
         for line in audit.read_text(encoding="utf-8").splitlines()
         if json.loads(line)["phase"] == "intent"
     ]
-    assert [record["shutdown_requested"] for record in intents] == [True, None]
+    assert [record["shutdown_requested"] for record in intents] == [True, None, None]
+    assert [record["event_requests_shutdown"] for record in intents] == [True, None, False]
 
 
 def test_doshutdown_external_io_is_bounded(tmp_path: Path) -> None:
@@ -304,7 +311,7 @@ def test_power_event_helper_notifies_when_intent_audit_fails(tmp_path: Path) -> 
     assert "failed to append intent audit log" in result.stderr
     assert len(seen) == 1
     assert seen[0]["title"] == "UPS transfer to battery - podium"
-    assert "No host shutdown was requested" in seen[0]["body"]
+    assert "transfer event does not itself request host shutdown" in seen[0]["body"]
     assert "observed_at=" in seen[0]["body"]
     assert "STATUS=ONLINE" in seen[0]["body"]
     assert "TONBATT=0 Seconds" in seen[0]["body"]
@@ -465,6 +472,8 @@ def test_installer_drains_root_required_deferral_after_success(tmp_path: Path) -
             "HAPAX_UPOWER_CONF_DEST": str(upower_dest),
             "HAPAX_APCUPSD_SYSTEMCTL": str(fake_systemctl),
             "HAPAX_APCUPSD_INSTALL_SUDO": "",
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": REPO_HEAD,
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
             "HAPAX_ROOT_REQUIRED_DRAIN_DIR": str(drain_dir),
             "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source),
         },
@@ -473,5 +482,69 @@ def test_installer_drains_root_required_deferral_after_success(tmp_path: Path) -
     assert result.returncode == 0, result.stderr
     assert not drain_dir.exists()
     assert sibling_dir.exists()
+    assert (
+        tmp_path / "root-required" / "installed-receipts" / "apcupsd-power-alerts.sha"
+    ).read_text().strip() == REPO_HEAD
     assert (installed_source / "config" / "apcupsd" / "hapax-power-event.py").is_file()
     assert "root-required deferral drained" in result.stdout
+
+
+def test_stale_deferred_apcupsd_package_does_not_roll_back_newer_install(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "ups-test@example.test"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "UPS Test"], cwd=repo, check=True)
+    marker = repo / "marker"
+    marker.write_text("A\n", encoding="utf-8")
+    subprocess.run(["git", "add", "marker"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "A"], cwd=repo, check=True, capture_output=True)
+    sha_a = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+    marker.write_text("B\n", encoding="utf-8")
+    subprocess.run(["git", "commit", "-am", "B"], cwd=repo, check=True, capture_output=True)
+    sha_b = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+
+    defer_root = tmp_path / "root-required"
+    drain_dir = defer_root / sha_a / "apcupsd-power-alerts"
+    drain_dir.mkdir(parents=True)
+    (drain_dir / "RUNBOOK.txt").write_text("stale A\n", encoding="utf-8")
+    receipt_root = defer_root / "installed-receipts"
+    receipt_root.mkdir()
+    receipt = receipt_root / "apcupsd-power-alerts.sha"
+    receipt.write_text(f"{sha_b}\n", encoding="utf-8")
+    live_dest = tmp_path / "live-apcupsd"
+    live_dest.mkdir()
+    live_marker = live_dest / "apcupsd.conf"
+    live_marker.write_text("newer B policy\n", encoding="utf-8")
+    staged_a = tmp_path / "staged-a"
+    staged_a.mkdir()
+    (staged_a / ".hapax-root-required-package-sha").write_text(f"{sha_a}\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(staged_a), "--install", "--verify-live"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+            "HAPAX_APCUPSD_DEST": str(live_dest),
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_root),
+            "HAPAX_ROOT_REQUIRED_DRAIN_DIR": str(drain_dir),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": sha_a,
+            "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT": str(receipt_root),
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(repo),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "superseded" in result.stdout
+    assert not drain_dir.exists()
+    assert receipt.read_text(encoding="utf-8").strip() == sha_b
+    assert live_marker.read_text(encoding="utf-8") == "newer B policy\n"

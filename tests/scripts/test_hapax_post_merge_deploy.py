@@ -787,7 +787,10 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
     assert "root shell" not in runbook
     assert "HAPAX_OOM_INSTALL_SUDO=" not in runbook
     assert "HAPAX_ROOT_REQUIRED_DRAIN_DIR=" in runbook
+    assert f"HAPAX_ROOT_REQUIRED_PACKAGE_SHA={sha}" in runbook
     assert "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=" in runbook
+    assert "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT=" in runbook
+    assert "HAPAX_ROOT_REQUIRED_GIT_REPO=" in runbook
     assert (home / ".config" / "systemd" / "user" / "hapax-demo.service").is_file()
     assert "root-required oom-containment install deferred" in result.stdout
 
@@ -802,6 +805,15 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
     assert audit_result.returncode == 1
     assert "root-required post-merge deploy deferrals pending" in audit_result.stderr
     assert "--install --verify-live" in audit_result.stderr
+
+
+def test_root_required_deferral_staging_is_locked_and_atomic() -> None:
+    body = SCRIPT.read_text(encoding="utf-8")
+
+    assert 'flock -x "$lock_fd"' in body
+    assert 'temp="$ROOT_DEFER_DIR/$SHA/.${label}.tmp.$$"' in body
+    assert 'mv "$temp" "$dest"' in body
+    assert "already installed at $SHA; deferral not recreated" in body
 
 
 def test_root_required_audit_fails_when_oom_enforcer_source_missing(tmp_path: Path) -> None:

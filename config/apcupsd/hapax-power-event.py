@@ -25,11 +25,13 @@ EVENT_TEXT = {
     "onbattery": {
         "title": "UPS transfer to battery - podium",
         "message": (
-            "SRT3000XLA reports battery operation. No host shutdown was requested; "
-            "apcupsd only requests shutdown below 20% charge or 5 minutes remaining."
+            "SRT3000XLA reports battery operation. This transfer event does not itself "
+            "request host shutdown; apcupsd emits a separate shutdown event below 20% "
+            "charge or 5 minutes remaining."
         ),
         "priority": "urgent",
-        "shutdown_requested": False,
+        "shutdown_requested": None,
+        "event_requests_shutdown": False,
     },
     "offbattery": {
         "title": "UPS power restored - podium",
@@ -39,6 +41,7 @@ EVENT_TEXT = {
         ),
         "priority": "default",
         "shutdown_requested": None,
+        "event_requests_shutdown": None,
     },
     "doshutdown": {
         "title": "UPS REQUESTED HOST SHUTDOWN - podium",
@@ -47,6 +50,7 @@ EVENT_TEXT = {
         ),
         "priority": "max",
         "shutdown_requested": True,
+        "event_requests_shutdown": True,
     },
 }
 
@@ -177,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
         "priority": text["priority"],
         "policy_owner": "apcupsd",
         "shutdown_requested": text["shutdown_requested"],
+        "event_requests_shutdown": text["event_requests_shutdown"],
         "ntfy_url": args.ntfy_url,
         "apcaccess": apc,
         "apcaccess_error": apc_error,

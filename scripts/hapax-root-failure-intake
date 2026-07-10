@@ -41,4 +41,4 @@ with ledger.open("a", encoding="utf-8") as handle:
     handle.write(json.dumps(record, sort_keys=True) + "\n")
 PY
 
-echo "root failure intake fallback recorded for $unit; missing intake: $intake" >&2
+echo "root failure intake fallback recorded for $unit; missing intake: $intake; next action: reinstall the D2 recovery bundle and rerun scripts/install-p0-oom-containment --install --verify-live" >&2

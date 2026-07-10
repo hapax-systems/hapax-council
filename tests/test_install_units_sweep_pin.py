@@ -214,7 +214,7 @@ class TestServiceDropInInstall:
             "drop-in loop must link each .conf individually, not the parent dir"
         )
 
-    def test_p0_oom_dropins_are_copied_not_symlinked(self, tmp_path: Path) -> None:
+    def test_p0_oom_dropins_are_owned_only_by_dedicated_installer(self, tmp_path: Path) -> None:
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         calls = tmp_path / "systemctl-calls.txt"
@@ -260,11 +260,8 @@ class TestServiceDropInInstall:
         user_dir = Path(env["HOME"]) / ".config" / "systemd" / "user"
         for relative in p0_dropins:
             dest = user_dir / relative
-            source = REPO_ROOT / "systemd" / "units" / relative
-            assert dest.is_file()
-            assert not dest.is_symlink()
-            assert dest.read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
-            assert f"dropin-copied: {relative}" in result.stdout
+            assert not dest.exists()
+            assert f"dropin-skipped-dedicated-installer: {relative}" in result.stdout
 
     def test_system_install_scope_units_are_not_linked_into_user_dir(self, tmp_path: Path) -> None:
         bin_dir = tmp_path / "bin"
