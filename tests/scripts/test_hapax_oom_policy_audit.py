@@ -271,7 +271,23 @@ def test_audit_fails_when_user_manager_protects_all_descendants(tmp_path: Path) 
         item for item in payload["checks"] if item["name"] == "user_manager_oom_score_adjust"
     )
     assert check["status"] == "gap"
-    assert "descendant workload" in check["detail"]
+    assert check["target"] == "100"
+    assert "packaged kill ordering exactly" in check["detail"]
+
+
+def test_audit_fails_when_configured_user_manager_score_is_zero_but_live_score_is_100(
+    tmp_path: Path,
+) -> None:
+    result = _run(tmp_path, user_oom=0)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    checks = {item["name"]: item for item in payload["checks"]}
+    configured = checks["user_manager_oom_score_adjust"]
+    assert configured["status"] == "gap"
+    assert configured["actual"] == "0"
+    assert configured["target"] == "100"
+    assert checks["user_manager_live_oom_score_adj"]["status"] == "pass"
 
 
 def test_audit_fails_when_user_manager_would_stop_after_descendant_oom(tmp_path: Path) -> None:

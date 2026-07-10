@@ -73,6 +73,30 @@ def _unit_cgroup(unit: str) -> str:
     return f"/user.slice/user-1000.slice/user@1000.service/app.slice/{unit}"
 
 
+def _enforcer_system_manager_cases(pid: int = 900) -> str:
+    return "\n".join(
+        [
+            '  "is-active --quiet user@1000.service") exit 0 ;;',
+            f'  *"show user@1000.service -p MainPID --value"*) printf "{pid}\\n" ;;',
+            '  *"show user@1000.service -p ControlGroup --value"*) printf "/user.slice/user-1000.slice/user@1000.service\\n" ;;',
+        ]
+    )
+
+
+def _enforcer_user_unit_cases(
+    unit_pids: dict[str, int], unit_cgroups: dict[str, str] | None = None
+) -> str:
+    unit_cgroups = unit_cgroups or {unit: _unit_cgroup(unit) for unit in unit_pids}
+    cases = []
+    for unit, pid in unit_pids.items():
+        cases.append(f'  *"show {unit} -p MainPID --value"*) printf "{pid}\\n" ;;')
+        cases.append(
+            f'  *"show {unit} -p ControlGroup --value"*) '
+            f'printf "{unit_cgroups.get(unit, "")}\\n" ;;'
+        )
+    return "\n".join(cases)
+
+
 def _systemctl_user_unit_cases(
     unit_pids: dict[str, int] | None = None,
     unit_cgroups: dict[str, str] | None = None,
@@ -124,6 +148,8 @@ def _systemctl_recovery_unit_cases(unit_pids: dict[str, int] | None = None) -> s
 
 def _systemctl_system_memory_cases(
     recovery_unit_pids: dict[str, int] | None = None,
+    *,
+    user_manager_score: int = 100,
 ) -> str:
     cases = [
         '  *"show system.slice -p MemoryHigh --value"*) printf "infinity\\n" ;;',
@@ -146,6 +172,7 @@ def _systemctl_system_memory_cases(
         '  *"show user@1000.service -p MemorySwapMax --value"*) printf "8589934592\\n" ;;',
         '  *"show user@1000.service -p MemoryLow --value"*) printf "17179869184\\n" ;;',
         '  *"show user@1000.service -p MemoryMin --value"*) printf "8589934592\\n" ;;',
+        f'  *"show user@1000.service -p OOMScoreAdjust --value"*) printf "{user_manager_score}\\n" ;;',
         '  *"show user@1000.service -p OOMPolicy --value"*) printf "continue\\n" ;;',
     ]
     return "\n".join([*cases, _systemctl_recovery_unit_cases(recovery_unit_pids)])
@@ -422,6 +449,7 @@ def test_oom_install_without_verify_flag_cannot_advance_receipts_after_live_prob
     fake_systemctl = tmp_path / "systemctl"
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
+        'if [[ "$*" == *"show user@1000.service -p OOMScoreAdjust --value"* ]]; then printf "100\\n"; fi\n'
         'if [[ "$*" == *"show user@1000.service -p OOMPolicy --value"* ]]; then printf "continue\\n"; fi\n'
         "exit 0\n",
         encoding="utf-8",
@@ -844,6 +872,31 @@ def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_use
     assert inactive_result.returncode == 1
     assert "recovery daemon has no live MainPID: apcupsd.service" in inactive_result.stderr
 
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$*" in\n'
+        f"{cases}\n"
+        f"{user_cases}\n"
+        f"{_systemctl_system_memory_cases(unit_pids, user_manager_score=0)}\n"
+        f"{_systemctl_app_slice_cases()}\n"
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    configured_drift_result = subprocess.run(
+        [str(INSTALLER), "--install", "--verify-live"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=install_env,
+    )
+
+    assert configured_drift_result.returncode == 1
+    assert (
+        "effective user@1000.service OOMScoreAdjust drift: actual=0 expected=100"
+        in configured_drift_result.stderr
+    )
+
 
 def test_installer_falls_back_to_sudo_when_direct_oom_score_write_fails(
     tmp_path: Path,
@@ -956,8 +1009,7 @@ def test_root_oom_score_enforcer_writes_live_user_manager_and_service_scores(
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
         'case "$*" in\n'
-        '  "is-active --quiet user@1000.service") exit 0 ;;\n'
-        '  *"show user@1000.service -p MainPID --value"*) printf "900\\n" ;;\n'
+        f"{_enforcer_system_manager_cases()}\n"
         '  *) echo "unexpected system args: $*" >&2; exit 9 ;;\n'
         "esac\n",
         encoding="utf-8",
@@ -965,15 +1017,11 @@ def test_root_oom_score_enforcer_writes_live_user_manager_and_service_scores(
     fake_systemctl.chmod(0o755)
 
     fake_user_systemctl = tmp_path / "systemctl-user"
-    user_cases = "\n".join(
-        f'  *"show {unit} -p MainPID --value"*) printf "{pid}\\n" ;;'
-        for unit, pid in unit_pids.items()
-    )
+    user_cases = _enforcer_user_unit_cases(unit_pids)
     fake_user_systemctl.write_text(
         "#!/usr/bin/env bash\n"
         'case "$*" in\n'
         f"{user_cases}\n"
-        '  *" -p ControlGroup --value"*) printf "\\n" ;;\n'
         '  *) echo "unexpected user args: $*" >&2; exit 9 ;;\n'
         "esac\n",
         encoding="utf-8",
@@ -1063,23 +1111,18 @@ def test_root_oom_score_enforcer_is_quiet_when_scores_already_match(
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
         'case "$*" in\n'
-        '  "is-active --quiet user@1000.service") exit 0 ;;\n'
-        '  *"show user@1000.service -p MainPID --value"*) printf "900\\n" ;;\n'
+        f"{_enforcer_system_manager_cases()}\n"
         '  *) echo "unexpected system args: $*" >&2; exit 9 ;;\n'
         "esac\n",
         encoding="utf-8",
     )
     fake_systemctl.chmod(0o755)
     fake_user_systemctl = tmp_path / "systemctl-user"
-    user_cases = "\n".join(
-        f'  *"show {unit} -p MainPID --value"*) printf "{pid}\\n" ;;'
-        for unit, pid in unit_pids.items()
-    )
+    user_cases = _enforcer_user_unit_cases(unit_pids)
     fake_user_systemctl.write_text(
         "#!/usr/bin/env bash\n"
         'case "$*" in\n'
         f"{user_cases}\n"
-        '  *" -p ControlGroup --value"*) printf "\\n" ;;\n'
         '  *) echo "unexpected user args: $*" >&2; exit 9 ;;\n'
         "esac\n",
         encoding="utf-8",
@@ -1144,7 +1187,7 @@ def test_root_oom_score_enforcer_writes_all_user_unit_cgroup_pids(
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
         'case "$*" in\n'
-        '  *"show user@1000.service -p MainPID --value"*) printf "900\\n" ;;\n'
+        f"{_enforcer_system_manager_cases()}\n"
         '  *) printf "0\\n" ;;\n'
         "esac\n",
         encoding="utf-8",
@@ -1201,13 +1244,16 @@ def test_root_oom_score_enforcer_rejects_substring_only_unit_match(tmp_path: Pat
         name="pipewire-shadow",
         uid=1000,
         oom_score=100,
-        cgroup="/user.slice/user-1000.slice/user@1000.service/app.slice/pipewire.service-shadow",
+        cgroup=(
+            "/user.slice/user-1000.slice/user@1000.service/"
+            "app.slice/attacker.scope/pipewire.service"
+        ),
     )
     fake_systemctl = tmp_path / "systemctl"
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
         'case "$*" in\n'
-        '  *"show user@1000.service -p MainPID --value"*) printf "900\\n" ;;\n'
+        f"{_enforcer_system_manager_cases()}\n"
         '  *) printf "0\\n" ;;\n'
         "esac\n",
         encoding="utf-8",
@@ -1217,7 +1263,7 @@ def test_root_oom_score_enforcer_rejects_substring_only_unit_match(tmp_path: Pat
     fake_user_systemctl.write_text(
         "#!/usr/bin/env bash\n"
         'case "$*" in\n'
-        '  *"show pipewire.service -p MainPID --value"*) printf "910\\n" ;;\n'
+        f"{_enforcer_user_unit_cases({'pipewire.service': 910})}\n"
         '  *" -p MainPID --value"*) printf "0\\n" ;;\n'
         '  *" -p ControlGroup --value"*) printf "\\n" ;;\n'
         "esac\n",
@@ -1240,7 +1286,7 @@ def test_root_oom_score_enforcer_rejects_substring_only_unit_match(tmp_path: Pat
     )
 
     assert result.returncode == 0
-    assert "cgroup no longer matches" in result.stderr
+    assert "outside expected subtree" in result.stderr
     assert (proc_root / "910" / "oom_score_adj").read_text(encoding="utf-8").strip() == "100"
 
 
@@ -1277,7 +1323,7 @@ def test_root_oom_score_enforcer_continues_after_per_unit_write_failure(
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
         'case "$*" in\n'
-        '  *"show user@1000.service -p MainPID --value"*) printf "900\\n" ;;\n'
+        f"{_enforcer_system_manager_cases()}\n"
         '  *) printf "0\\n" ;;\n'
         "esac\n",
         encoding="utf-8",
@@ -1285,10 +1331,7 @@ def test_root_oom_score_enforcer_continues_after_per_unit_write_failure(
     fake_systemctl.chmod(0o755)
 
     fake_user_systemctl = tmp_path / "systemctl-user"
-    user_cases = "\n".join(
-        f'  *"show {unit} -p MainPID --value"*) printf "{pid}\\n" ;;'
-        for unit, pid in unit_pids.items()
-    )
+    user_cases = _enforcer_user_unit_cases(unit_pids)
     fake_user_systemctl.write_text(
         f'#!/usr/bin/env bash\ncase "$*" in\n{user_cases}\n  *) printf "0\\n" ;;\nesac\n',
         encoding="utf-8",
@@ -1328,9 +1371,7 @@ def test_root_oom_score_enforcer_fails_when_user_manager_queries_fail(tmp_path: 
     )
     fake_systemctl = tmp_path / "systemctl"
     fake_systemctl.write_text(
-        "#!/usr/bin/env bash\n"
-        'if [[ "$*" == *"show user@1000.service -p MainPID --value"* ]]; then printf "900\\n"; exit 0; fi\n'
-        "exit 0\n",
+        f'#!/usr/bin/env bash\ncase "$*" in\n{_enforcer_system_manager_cases()}\nesac\nexit 0\n',
         encoding="utf-8",
     )
     fake_systemctl.chmod(0o755)

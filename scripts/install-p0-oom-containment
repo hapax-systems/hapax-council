@@ -1027,7 +1027,12 @@ verify_recovery_unit_oom_scores() {
 }
 
 verify_user_manager_oom_score() {
-    local pid actual policy
+    local pid actual policy configured
+    configured="$("$SYSTEMCTL" show user@1000.service -p OOMScoreAdjust --value 2>/dev/null || true)"
+    if [ "$configured" != "100" ]; then
+        echo "effective user@1000.service OOMScoreAdjust drift: actual=$configured expected=100; next action: remove higher-priority drop-in drift and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
     policy="$("$SYSTEMCTL" show user@1000.service -p OOMPolicy --value 2>/dev/null || true)"
     if [ "$policy" != "continue" ]; then
         echo "effective user@1000.service OOMPolicy drift: actual=$policy expected=continue; next action: remove higher-priority drop-in drift and rerun scripts/install-p0-oom-containment --install --verify-live" >&2

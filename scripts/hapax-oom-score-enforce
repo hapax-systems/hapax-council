@@ -63,22 +63,23 @@ write_oom_score() {
     printf 'changed\n'
 }
 
-pid_matches_unit() {
-    local pid="$1" unit="$2" cgroup _hierarchy _controllers path
-    cgroup="$PROC_ROOT/$pid/cgroup"
-    [ -r "$cgroup" ] || return 1
+pid_matches_cgroup() {
+    local pid="$1" expected_cgroup="$2" proc_cgroup _hierarchy _controllers path
+    proc_cgroup="$PROC_ROOT/$pid/cgroup"
+    [ -n "$expected_cgroup" ] || return 1
+    [ -r "$proc_cgroup" ] || return 1
     while IFS=: read -r _hierarchy _controllers path; do
-        case "/${path#/}/" in
-            *"/$unit/"*) return 0 ;;
-        esac
-    done < "$cgroup"
+        if [ "$path" = "$expected_cgroup" ] || [[ "$path" == "$expected_cgroup/"* ]]; then
+            return 0
+        fi
+    done < "$proc_cgroup"
     return 1
 }
 
-write_oom_score_for_unit() {
-    local pid="$1" score="$2" unit="$3"
-    if ! pid_matches_unit "$pid" "$unit"; then
-        echo "warn: refusing oom_score_adj write for $unit pid=$pid because /proc cgroup no longer matches; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+write_oom_score_for_cgroup() {
+    local pid="$1" score="$2" label="$3" expected_cgroup="$4"
+    if ! pid_matches_cgroup "$pid" "$expected_cgroup"; then
+        echo "warn: refusing oom_score_adj write for $label pid=$pid because /proc cgroup is outside expected subtree $expected_cgroup; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 0
     fi
     write_oom_score "$pid" "$score"
@@ -94,6 +95,14 @@ system_main_pid() {
         printf '%s\n' "$pid"
     fi
     return 0
+}
+
+system_control_group() {
+    local unit="$1"
+    if ! "$SYSTEMCTL" show "$unit" -p ControlGroup --value 2>/dev/null; then
+        echo "warn: unable to query $unit ControlGroup; next action: inspect systemctl status $unit and run scripts/hapax-oom-policy-audit --json" >&2
+        return 1
+    fi
 }
 
 user_main_pid() {
@@ -128,8 +137,10 @@ cgroup_pids() {
 }
 
 user_unit_pids() {
-    local unit="$1" cgroup pid
-    cgroup="$(user_control_group "$unit")" || return 1
+    local unit="$1" cgroup="${2:-}" pid
+    if [ -z "$cgroup" ]; then
+        cgroup="$(user_control_group "$unit")" || return 1
+    fi
     cgroup_pids "$cgroup"
     pid="$(user_main_pid "$unit")" || return 1
     [ -n "$pid" ] && printf '%s\n' "$pid"
@@ -137,16 +148,20 @@ user_unit_pids() {
 }
 
 apply_unit_score() {
-    local unit="$1" score="$2" pid changed output
+    local unit="$1" score="$2" pid changed output cgroup
     local -a pids
-    if ! output="$(user_unit_pids "$unit")"; then
+    if ! cgroup="$(user_control_group "$unit")"; then
+        failed=1
+        return 0
+    fi
+    if ! output="$(user_unit_pids "$unit" "$cgroup")"; then
         failed=1
         return 0
     fi
     mapfile -t pids < <(printf '%s\n' "$output" | sed -n '/^[0-9][0-9]*$/p' | sort -u)
     [ "${#pids[@]}" -gt 0 ] || return 0
     for pid in "${pids[@]}"; do
-        if changed="$(write_oom_score_for_unit "$pid" "$score" "$unit")"; then
+        if changed="$(write_oom_score_for_cgroup "$pid" "$score" "$unit" "$cgroup")"; then
             [ -z "$changed" ] || echo "user-unit $unit pid=$pid oom_score_adj=$score"
         else
             echo "warn: failed to set oom_score_adj for $unit pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
@@ -155,10 +170,14 @@ apply_unit_score() {
     done
 }
 
-if ! user_pid="$(system_main_pid "user@$TARGET_UID.service")"; then
+user_manager_unit="user@$TARGET_UID.service"
+if ! user_pid="$(system_main_pid "$user_manager_unit")"; then
     failed=1
 elif [ -n "$user_pid" ]; then
-    if changed="$(write_oom_score_for_unit "$user_pid" 100 "user@$TARGET_UID.service")"; then
+    if ! user_cgroup="$(system_control_group "$user_manager_unit")" || [ -z "$user_cgroup" ]; then
+        echo "warn: $user_manager_unit has no live ControlGroup; next action: inspect systemctl status $user_manager_unit and run scripts/hapax-oom-policy-audit --json" >&2
+        failed=1
+    elif changed="$(write_oom_score_for_cgroup "$user_pid" 100 "$user_manager_unit" "$user_cgroup")"; then
         [ -z "$changed" ] || echo "system user@$TARGET_UID.service pid=$user_pid oom_score_adj=100"
     else
         echo "warn: failed to set oom_score_adj for user@$TARGET_UID.service pid=$user_pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2

@@ -89,6 +89,9 @@ def test_upower_is_observation_only_when_apcupsd_owns_shutdown_policy() -> None:
     policy = UPOWER_CONFIG.read_text(encoding="utf-8")
     assert "AllowRiskyCriticalPowerAction=true" in policy
     assert "CriticalPowerAction=Ignore" in policy
+    assert "busctl call org.freedesktop.UPower" in policy
+    assert "org.freedesktop.UPower GetCriticalAction" in policy
+    assert "busctl get-property" not in policy
 
 
 def test_power_event_helper_records_jsonl_without_ntfy(tmp_path: Path) -> None:

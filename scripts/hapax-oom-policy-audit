@@ -103,7 +103,7 @@ def audit_user_manager(uid: int) -> Check:
         return Check(
             "user_manager_oom_score_adjust",
             "error",
-            ">=0",
+            "100",
             "N/A",
             f"{values['_error']}; {NEXT_OOM_INSTALL}",
         )
@@ -113,19 +113,19 @@ def audit_user_manager(uid: int) -> Check:
         return Check(
             "user_manager_oom_score_adjust",
             "error",
-            ">=0",
+            "100",
             actual,
             f"unparseable; {NEXT_OOM_INSTALL}",
         )
-    if parsed < 0:
+    if parsed != 100:
         return Check(
             "user_manager_oom_score_adjust",
             "gap",
-            ">=0",
+            "100",
             actual,
-            f"user@ must not protect every descendant workload over login/network daemons; {NEXT_OOM_INSTALL}",
+            f"effective user@ score must match the packaged kill ordering exactly; {NEXT_OOM_INSTALL}",
         )
-    return Check("user_manager_oom_score_adjust", "pass", ">=0", actual)
+    return Check("user_manager_oom_score_adjust", "pass", "100", actual)
 
 
 def audit_user_manager_live_score(uid: int) -> Check:
