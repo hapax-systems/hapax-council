@@ -1541,7 +1541,7 @@ if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
 fi
 
 validate_generic_dropin_activation() {
-    local f="$1" rel dropin_dir unit_name content unsupported old_content old_prop
+    local f="$1" rel dropin_dir unit_name content unsupported invalid_memory old_content old_prop
     rel="${f#systemd/units/}"
     dropin_dir="$(dirname "$rel")"
     unit_name="${dropin_dir%.d}"
@@ -1556,6 +1556,18 @@ validate_generic_dropin_activation() {
                 return 1
             fi
             content="$(git -C "$REPO" show "$SHA:$f")"
+            invalid_memory="$(printf '%s\n' "$content" | awk -F= '
+                /^(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)=/ {
+                    if ($2 !~ /^(infinity|[0-9]+([.][0-9]+)?([KMGTPE](iB|B)?)?|[0-9]+%)$/) {
+                        print
+                        exit
+                    }
+                }
+            ')"
+            if [ -n "$invalid_memory" ]; then
+                echo "hapax-post-merge-deploy: invalid generic slice memory value in $f: $invalid_memory; next action: use a systemd memory size, percentage, or infinity before retrying activation" >&2
+                return 1
+            fi
             unsupported="$(printf '%s\n' "$content" | awk '
                 /^[[:space:]]*$/ || /^[[:space:]]*[#;]/ { next }
                 /^[[:space:]]*\[Slice\][[:space:]]*$/ { section = "slice"; next }

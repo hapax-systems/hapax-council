@@ -41,6 +41,7 @@ def _protected_user_unit_cases(
     *,
     wrong_unit_score: bool = False,
     wrong_unit_memory: bool = False,
+    wrong_unit_slice: bool = False,
     unit_pids: dict[str, int] | None = None,
     unit_cgroups: dict[str, str] | None = None,
 ) -> str:
@@ -54,10 +55,15 @@ def _protected_user_unit_cases(
         memory_low, memory_min = PROTECTED_USER_UNIT_MEMORY[unit]
         if wrong_unit_memory and unit == "studio-compositor.service":
             memory_min = 0
+        slice_name = (
+            "session.slice"
+            if wrong_unit_slice and unit == "studio-compositor.service"
+            else "app.slice"
+        )
         cases.append(
             f'  *"--user show {unit} --no-pager -p OOMScoreAdjust -p MainPID"*) '
             f"printf 'OOMScoreAdjust={actual}\\nMainPID={pid}\\nControlGroup={cgroup}\\n"
-            f"MemoryLow={memory_low}\\nMemoryMin={memory_min}\\n' ;;"
+            f"MemoryLow={memory_low}\\nMemoryMin={memory_min}\\nSlice={slice_name}\\n' ;;"
         )
     return "\n".join(cases)
 
@@ -83,6 +89,7 @@ def _fake_systemctl(
     tmux_slice: str = "app.slice",
     wrong_unit_score: bool = False,
     wrong_unit_memory: bool = False,
+    wrong_unit_slice: bool = False,
     system_slice_finite_max: bool = False,
     user_slice_unprotected: bool = False,
     protected_unit_pids: dict[str, int] | None = None,
@@ -146,7 +153,7 @@ case "$*" in
   *"show sshd.service"*) printf 'OOMScoreAdjust={sshd_score}\\nOOMPolicy={sshd_policy}\\nMainPID=920\\n' ;;
 {_recovery_system_unit_cases(wrong_score=wrong_recovery_unit_score, inactive_unit=inactive_recovery_unit)}
   *"show app.slice"*) printf '{app_values}' ;;
-{_protected_user_unit_cases(wrong_unit_score=wrong_unit_score, wrong_unit_memory=wrong_unit_memory, unit_pids=protected_unit_pids, unit_cgroups=protected_unit_cgroups)}
+{_protected_user_unit_cases(wrong_unit_score=wrong_unit_score, wrong_unit_memory=wrong_unit_memory, wrong_unit_slice=wrong_unit_slice, unit_pids=protected_unit_pids, unit_cgroups=protected_unit_cgroups)}
   *"list-units --type=scope"*) printf 'tmux-spawn-a.scope loaded active running tmux child pane\\n' ;;
   *"show tmux-spawn-a.scope"*) printf '{tmux_values}' ;;
   *) echo "unexpected args: $*" >&2; exit 9 ;;
@@ -181,6 +188,7 @@ def _run(
     tmux_slice: str = "app.slice",
     wrong_unit_score: bool = False,
     wrong_unit_memory: bool = False,
+    wrong_unit_slice: bool = False,
     system_slice_finite_max: bool = False,
     user_slice_unprotected: bool = False,
     protected_unit_pids: dict[str, int] | None = None,
@@ -229,6 +237,7 @@ def _run(
                 tmux_slice=tmux_slice,
                 wrong_unit_score=wrong_unit_score,
                 wrong_unit_memory=wrong_unit_memory,
+                wrong_unit_slice=wrong_unit_slice,
                 system_slice_finite_max=system_slice_finite_max,
                 user_slice_unprotected=user_slice_unprotected,
                 protected_unit_pids=protected_unit_pids,
@@ -261,6 +270,22 @@ def test_audit_passes_when_user_manager_is_killable_and_app_slice_bounded(tmp_pa
     assert statuses["system_slice_MemoryLow"] == "pass"
     assert statuses["user_slice_MemoryLow"] == "pass"
     assert statuses["app_slice_MemorySwapMax"] == "pass"
+    assert statuses["user_unit_studio-compositor.service_Slice"] == "pass"
+
+
+def test_audit_fails_when_protected_unit_leaves_checked_app_slice_chain(tmp_path: Path) -> None:
+    result = _run(tmp_path, wrong_unit_slice=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item
+        for item in payload["checks"]
+        if item["name"] == "user_unit_studio-compositor.service_Slice"
+    )
+    assert check["status"] == "gap"
+    assert check["actual"] == "session.slice"
+    assert check["target"] == "app.slice"
 
 
 def test_audit_fails_when_user_manager_protects_all_descendants(tmp_path: Path) -> None:

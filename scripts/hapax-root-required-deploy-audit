@@ -36,6 +36,8 @@ APCACCESS="${HAPAX_ROOT_AUDIT_APCACCESS:-apcaccess}"
 CMP="${HAPAX_ROOT_AUDIT_CMP:-/usr/bin/cmp}"
 SUDO="${HAPAX_ROOT_AUDIT_SUDO:-/usr/bin/sudo}"
 VISUDO="${HAPAX_ROOT_AUDIT_VISUDO:-/usr/bin/visudo}"
+ROOT_ARTIFACT_TEST_UID="${HAPAX_ROOT_AUDIT_TEST_ROOT_UID:-$(/usr/bin/id -u)}"
+ROOT_ARTIFACT_TEST_GID="${HAPAX_ROOT_AUDIT_TEST_ROOT_GID:-$(/usr/bin/id -g)}"
 
 oom_package_files=(
     config/root-required/oom-containment.files
@@ -217,6 +219,44 @@ compare_root_file() {
         esac
         return 1
     }
+}
+
+audit_root_artifact_trust() {
+    local path="$1" expected_uid expected_gid actual parent parent_actual parent_mode
+    case "$path" in
+        "$SYSTEMD_USER_DIR"/*)
+            return 0
+            ;;
+        /etc/*|/usr/local/*)
+            expected_uid=0
+            expected_gid=0
+            ;;
+        *)
+            expected_uid="$ROOT_ARTIFACT_TEST_UID"
+            expected_gid="$ROOT_ARTIFACT_TEST_GID"
+            ;;
+    esac
+    actual="$(stat -c '%u:%g' "$path" 2>/dev/null || true)"
+    if [ "$actual" != "$expected_uid:$expected_gid" ]; then
+        echo "root-required root-artifact ownership drift: $path owner=${actual:-unavailable} expected=$expected_uid:$expected_gid" >&2
+        echo "  next action: rerun the owning installer as the target account after sudo -v" >&2
+        return 1
+    fi
+    parent="$(dirname "$path")"
+    if [ ! -d "$parent" ] || [ -L "$parent" ]; then
+        echo "root-required root-artifact parent is missing, symlinked, or not a directory: $parent" >&2
+        echo "  next action: repair the root-owned destination directory and rerun the owning installer" >&2
+        return 1
+    fi
+    parent_actual="$(stat -c '%u:%g' "$parent" 2>/dev/null || true)"
+    parent_mode="$(stat -c '%a' "$parent" 2>/dev/null || true)"
+    if [ "$parent_actual" != "$expected_uid:$expected_gid" ] \
+        || ! [[ "$parent_mode" =~ ^[0-7]+$ ]] \
+        || (( (8#$parent_mode & 8#022) != 0 )); then
+        echo "root-required root-artifact parent trust drift: $parent owner/mode=${parent_actual:-unavailable}:${parent_mode:-unavailable} expected=$expected_uid:$expected_gid and no group/other write bits" >&2
+        echo "  next action: repair the root-owned destination directory and rerun the owning installer" >&2
+        return 1
+    fi
 }
 
 audit_sudoers_trust() {
@@ -410,6 +450,7 @@ audit_root_installs() {
         rel="${entry%%|*}"
         dest="${entry#*|}"
         compare_root_file "$rel" "$dest" || failed=1
+        audit_root_artifact_trust "$dest" || failed=1
         case "$rel" in
             scripts/hapax-oom-score-enforce|scripts/hapax-oom-score-trigger|scripts/hapax-root-failure-intake|scripts/hapax-oom-policy-audit|scripts/hapax-root-required-deploy-audit|config/apcupsd/hapax-power-event.py|config/apcupsd/onbattery|config/apcupsd/offbattery|config/apcupsd/doshutdown)
                 verify_executable "$rel" "$dest" || failed=1

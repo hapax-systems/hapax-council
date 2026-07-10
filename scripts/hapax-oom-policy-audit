@@ -458,7 +458,7 @@ def _protected_user_unit_pids() -> set[str]:
     for unit in PROTECTED_USER_UNITS:
         values = _show(
             unit,
-            ["OOMScoreAdjust", "MainPID", "ControlGroup", "MemoryLow", "MemoryMin"],
+            ["OOMScoreAdjust", "MainPID", "ControlGroup", "MemoryLow", "MemoryMin", "Slice"],
             user=True,
         )
         main_pid = values.get("MainPID", "0")
@@ -474,7 +474,7 @@ def audit_protected_user_units() -> list[Check]:
     for unit, expected in PROTECTED_USER_UNITS.items():
         values = _show(
             unit,
-            ["OOMScoreAdjust", "MainPID", "ControlGroup", "MemoryLow", "MemoryMin"],
+            ["OOMScoreAdjust", "MainPID", "ControlGroup", "MemoryLow", "MemoryMin", "Slice"],
             user=True,
         )
         if "_error" in values:
@@ -500,6 +500,25 @@ def audit_protected_user_units() -> list[Check]:
             )
         )
         checks.append(Check(f"user_unit_{unit}_OOMScoreAdjust", status, "100", actual, detail))
+        slice_actual = values.get("Slice", "")
+        slice_status = "pass" if slice_actual == "app.slice" else "gap"
+        slice_detail = (
+            ""
+            if slice_status == "pass"
+            else (
+                "broadcast-critical reservation must remain below app.slice so its checked "
+                f"ancestor protection is effective; {NEXT_OOM_INSTALL}"
+            )
+        )
+        checks.append(
+            Check(
+                f"user_unit_{unit}_Slice",
+                slice_status,
+                "app.slice",
+                slice_actual,
+                slice_detail,
+            )
+        )
         for key, memory_expected in PROTECTED_USER_UNIT_MEMORY[unit].items():
             memory_actual = values.get(key, "")
             memory_status = "pass" if _int_value(memory_actual) == memory_expected else "gap"

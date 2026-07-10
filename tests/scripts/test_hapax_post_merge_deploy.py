@@ -1017,8 +1017,10 @@ def test_post_merge_squash_equivalence_rejects_newer_manifest_file(tmp_path: Pat
     assert desired_receipt.read_text(encoding="utf-8").strip() == desired_sha
 
 
-def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: Path) -> None:
-    installer_body = "#!/usr/bin/env bash\nexit 77\n"
+def test_concurrent_same_sha_root_required_oom_deploy_stages_complete_deferral(
+    tmp_path: Path,
+) -> None:
+    installer_body = "#!/usr/bin/env bash\nsleep 0.2\nexit 77\n"
     files = {
         "config/root-required/oom-containment.files": OOM_PACKAGE_MANIFEST,
         "scripts/install-p0-oom-containment": installer_body,
@@ -1093,18 +1095,35 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
         "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_dir),
     }
 
-    result = subprocess.run(
+    first_env = {**env, "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace-first.jsonl")}
+    second_env = {**env, "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace-second.jsonl")}
+    first = subprocess.Popen(
         [str(SCRIPT), sha],
         text=True,
-        capture_output=True,
-        check=False,
-        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=first_env,
     )
+    second = subprocess.Popen(
+        [str(SCRIPT), sha],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=second_env,
+    )
+    first_stdout, first_stderr = first.communicate(timeout=30)
+    second_stdout, second_stderr = second.communicate(timeout=30)
 
-    assert result.returncode == 0, result.stderr
+    assert first.returncode == 0, first_stderr
+    assert second.returncode == 0, second_stderr
     deferred = defer_dir / sha / "oom-containment"
     assert (deferred / "RUNBOOK.txt").is_file()
     assert (deferred / "scripts" / "install-p0-oom-containment").is_file()
+    for rel in (
+        line for line in OOM_PACKAGE_MANIFEST.splitlines() if line and not line.startswith("#")
+    ):
+        assert (deferred / rel).read_bytes() == (repo / rel).read_bytes()
+    assert not list((defer_dir / sha).glob(".oom-containment.tmp.*"))
     runbook = (deferred / "RUNBOOK.txt").read_text(encoding="utf-8")
     assert "sudo -v" in runbook
     assert "root shell" not in runbook
@@ -1116,7 +1135,7 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
     assert "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT=" in runbook
     assert "HAPAX_ROOT_REQUIRED_GIT_REPO=" in runbook
     assert (home / ".config" / "systemd" / "user" / "hapax-demo.service").is_file()
-    assert "root-required oom-containment install deferred" in result.stdout
+    assert "root-required oom-containment install deferred" in first_stdout + second_stdout
     desired = home / ".local/state/hapax/root-required/desired-receipts/oom-containment.sha"
     assert desired.read_text(encoding="utf-8").strip() == sha
 
@@ -1133,16 +1152,6 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
     assert "--install --verify-live" in audit_result.stderr
     (deferred / "RUNBOOK.txt").unlink()
     assert desired.read_text(encoding="utf-8").strip() == sha
-
-
-def test_root_required_deferral_staging_is_locked_and_atomic() -> None:
-    body = SCRIPT.read_text(encoding="utf-8")
-
-    assert 'flock -x "$lock_fd"' in body
-    assert 'temp="$ROOT_DEFER_DIR/$SHA/.${label}.tmp.$$"' in body
-    assert 'mv "$temp" "$dest"' in body
-    assert "already installed at $SHA; deferral not recreated" in body
-    assert "record_root_required_source" not in body
 
 
 def test_root_required_audit_fails_when_oom_enforcer_source_missing(tmp_path: Path) -> None:
@@ -1177,6 +1186,40 @@ def test_root_required_audit_detects_oom_enforcer_drift(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert "root-required install drift" in result.stderr
     assert "install-p0-oom-containment --install --verify-live" in result.stderr
+
+
+def test_root_required_audit_rejects_untrusted_root_artifact_owner(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    env["HAPAX_ROOT_AUDIT_TEST_ROOT_UID"] = str(os.getuid() + 1)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "root-artifact ownership drift" in result.stderr
+    assert env["HAPAX_OOM_ENFORCER_DEST"] in result.stderr
+
+
+def test_root_required_audit_rejects_writable_root_artifact_parent(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    Path(env["HAPAX_OOM_ENFORCER_DEST"]).parent.chmod(0o775)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "root-artifact parent trust drift" in result.stderr
+    assert str(Path(env["HAPAX_OOM_ENFORCER_DEST"]).parent) in result.stderr
 
 
 def test_root_required_audit_detects_sudoers_mode_drift(tmp_path: Path) -> None:
@@ -1756,6 +1799,43 @@ def test_generic_slice_dropin_rejects_unsupported_live_directive(tmp_path: Path)
     assert "unsupported generic slice directive" in result.stderr
     assert not (home / ".config/systemd/user" / dropin_path.removeprefix("systemd/units/")).exists()
     calls = systemctl_calls.read_text(encoding="utf-8") if systemctl_calls.exists() else ""
+    assert "set-property" not in calls
+
+
+def test_generic_slice_dropin_rejects_invalid_memory_value_before_mutation(
+    tmp_path: Path,
+) -> None:
+    dropin_path = "systemd/units/demo.slice.d/memory.conf"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {dropin_path: "[Slice]\nMemoryHigh=garbage\nMemoryMax=2G\n"},
+    )
+    home = tmp_path / "home"
+    deployed = home / ".config/systemd/user/demo.slice.d/memory.conf"
+    deployed.parent.mkdir(parents=True)
+    deployed.write_text("[Slice]\nMemoryHigh=1G\nMemoryMax=2G\n", encoding="utf-8")
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "invalid generic slice memory value" in result.stderr
+    assert deployed.read_text(encoding="utf-8") == "[Slice]\nMemoryHigh=1G\nMemoryMax=2G\n"
+    calls = systemctl_calls.read_text(encoding="utf-8") if systemctl_calls.exists() else ""
+    assert "daemon-reload" not in calls
     assert "set-property" not in calls
 
 

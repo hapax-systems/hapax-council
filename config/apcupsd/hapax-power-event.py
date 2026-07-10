@@ -136,7 +136,9 @@ def append_jsonl(path: Path, payload: dict) -> None:
     )
     try:
         inode = os.fstat(fd)
-        expected_uid = 0 if os.geteuid() == 0 else os.geteuid()
+        # Production apcupsd hooks run as root; non-root ownership supports
+        # unprivileged dry-runs and the isolated regression suite.
+        expected_uid = os.geteuid()
         if not stat.S_ISREG(inode.st_mode) or inode.st_uid != expected_uid or inode.st_nlink != 1:
             raise OSError(
                 errno.EPERM,

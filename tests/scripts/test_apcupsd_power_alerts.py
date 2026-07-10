@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import runpy
 import shutil
 import subprocess
 import threading
@@ -170,6 +171,78 @@ def test_power_event_helper_refuses_symlinked_privileged_audit_log(tmp_path: Pat
     assert target.read_text(encoding="utf-8") == "sentinel\n"
     assert "failed to append intent audit log" in result.stderr
     assert "failed to append delivery audit log" in result.stderr
+
+
+def test_power_event_helper_refuses_hard_linked_audit_log(tmp_path: Path) -> None:
+    target = tmp_path / "protected-target"
+    target.write_text("sentinel\n", encoding="utf-8")
+    audit = tmp_path / "ups-events.jsonl"
+    os.link(target, audit)
+
+    result = subprocess.run(
+        [
+            str(HELPER),
+            "onbattery",
+            "--audit-log",
+            str(audit),
+            "--apcaccess",
+            str(tmp_path / "missing-apcaccess"),
+            "--no-ntfy",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert target.read_text(encoding="utf-8") == "sentinel\n"
+    assert "unsafe UPS audit log inode" in result.stderr
+    assert "failed to append intent audit log" in result.stderr
+    assert "failed to append delivery audit log" in result.stderr
+
+
+def test_power_event_helper_refuses_nonregular_audit_log(tmp_path: Path) -> None:
+    audit = tmp_path / "ups-events.jsonl"
+    os.mkfifo(audit)
+    reader_fd = os.open(audit, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        result = subprocess.run(
+            [
+                str(HELPER),
+                "onbattery",
+                "--audit-log",
+                str(audit),
+                "--apcaccess",
+                str(tmp_path / "missing-apcaccess"),
+                "--no-ntfy",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=5,
+        )
+    finally:
+        os.close(reader_fd)
+
+    assert result.returncode == 0
+    assert "unsafe UPS audit log inode" in result.stderr
+    assert "failed to append intent audit log" in result.stderr
+    assert "failed to append delivery audit log" in result.stderr
+
+
+def test_power_event_append_refuses_wrong_owner_regular_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audit = tmp_path / "ups-events.jsonl"
+    audit.write_text("sentinel\n", encoding="utf-8")
+    namespace = runpy.run_path(str(HELPER))
+    actual_uid = os.geteuid()
+    monkeypatch.setattr(namespace["os"], "geteuid", lambda: actual_uid + 1)
+
+    with pytest.raises(OSError, match="unsafe UPS audit log inode"):
+        namespace["append_jsonl"](audit, {"event": "test"})
+
+    assert audit.read_text(encoding="utf-8") == "sentinel\n"
 
 
 def test_power_event_helper_records_offbattery_delivery_failure(tmp_path: Path) -> None:
@@ -609,76 +682,35 @@ def test_verify_live_rejects_stale_apcupsd_loaded_thresholds(tmp_path: Path) -> 
     assert "MBATTCHG=99 expected 20" in result.stderr
 
 
-def test_root_invocation_uses_target_home_for_durable_package_state(tmp_path: Path) -> None:
-    root_home = tmp_path / "root-home"
-    target_home = tmp_path / "target-home"
-    dest = tmp_path / "apcupsd"
-    audit_dir = tmp_path / "hapax-log"
-    logrotate_dest = tmp_path / "logrotate.d" / "hapax-ups-power-events"
-    upower_dest = tmp_path / "UPower.conf.d" / "90-hapax-apcupsd-owner.conf"
-    fake_systemctl = tmp_path / "systemctl"
-    fake_systemctl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
-    fake_systemctl.chmod(0o755)
-    fake_bin = tmp_path / "fake-bin"
-    fake_bin.mkdir()
-    fake_id = fake_bin / "id"
-    fake_id.write_text(
-        "#!/usr/bin/env bash\n"
-        'if [ "${1:-}" = "-u" ]; then echo 0; else exec /usr/bin/id "$@"; fi\n',
-        encoding="utf-8",
-    )
-    fake_id.chmod(0o755)
-    chown_calls = tmp_path / "chown-calls.txt"
-    fake_chown = fake_bin / "chown"
-    fake_chown.write_text(
-        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> {chown_calls!s}\n",
-        encoding="utf-8",
-    )
-    fake_chown.chmod(0o755)
-    legacy_receipts = target_home / ".cache/hapax/post-merge-root-required/installed-receipts"
-    legacy_receipts.mkdir(parents=True)
-    (legacy_receipts / "oom-containment.sha").write_text(f"{REPO_HEAD}\n", encoding="utf-8")
+def test_whole_script_root_mode_refuses_user_owned_lock_symlink(tmp_path: Path) -> None:
+    state_root = tmp_path / "root-state"
+    state_root.mkdir()
+    protected = tmp_path / "protected-target"
+    protected.write_text("sentinel\n", encoding="utf-8")
+    lock = state_root / ".lock"
+    lock.symlink_to(protected)
+    live = tmp_path / "apcupsd"
 
     result = subprocess.run(
-        [str(INSTALLER), "--install", "--verify-live"],
+        [str(INSTALLER), "--install"],
         text=True,
         capture_output=True,
         check=False,
         env={
             **os.environ,
-            "HOME": str(root_home),
-            "PATH": f"{fake_bin}:{os.environ['PATH']}",
-            "HAPAX_APCUPSD_TARGET_UID": "1000",
-            "HAPAX_APCUPSD_TARGET_HOME": str(target_home),
-            "HAPAX_APCUPSD_DEST": str(dest),
-            "HAPAX_APCUPSD_AUDIT_DIR": str(audit_dir),
-            "HAPAX_APCUPSD_LOGROTATE_DEST": str(logrotate_dest),
-            "HAPAX_UPOWER_CONF_DEST": str(upower_dest),
-            "HAPAX_APCUPSD_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_APCUPSD_DEST": str(live),
             "HAPAX_APCUPSD_INSTALL_SUDO": "",
-            "HAPAX_APCUPSD_AUDIT_GROUP": "",
-            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": "",
-            "HAPAX_ROOT_REQUIRED_STATE_ROOT": "",
-            "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": "",
-            "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT": "",
-            "HAPAX_ROOT_REQUIRED_LOCK_FILE": "",
-            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
+            "HAPAX_APCUPSD_INSTALL_TEST_ACTUAL_UID": "0",
+            "HAPAX_ROOT_REQUIRED_STATE_ROOT": str(state_root),
+            "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(lock),
         },
     )
 
-    assert result.returncode == 0, result.stderr
-    receipt = (
-        target_home / ".local/state/hapax/root-required/installed-receipts/apcupsd-power-alerts.sha"
-    )
-    assert receipt.read_text(encoding="utf-8").strip() == REPO_HEAD
-    migrated_oom = (
-        target_home / ".local/state/hapax/root-required/installed-receipts/oom-containment.sha"
-    )
-    assert migrated_oom.read_text(encoding="utf-8").strip() == REPO_HEAD
-    assert "migrated oom-containment installed-package receipt" in result.stdout
-    assert not (root_home / ".local/state/hapax/root-required").exists()
-    ownership_calls = chown_calls.read_text(encoding="utf-8")
-    assert str(target_home / ".local/state/hapax/root-required") in ownership_calls
+    assert result.returncode == 2
+    assert "whole-script root execution is refused" in result.stderr
+    assert protected.read_text(encoding="utf-8") == "sentinel\n"
+    assert lock.is_symlink()
+    assert not live.exists()
 
 
 def test_unversioned_apcupsd_install_source_fails_before_live_mutation(tmp_path: Path) -> None:

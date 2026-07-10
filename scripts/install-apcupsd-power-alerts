@@ -14,6 +14,10 @@ SYSTEMCTL="${HAPAX_APCUPSD_SYSTEMCTL:-systemctl}"
 BUSCTL="${HAPAX_APCUPSD_BUSCTL:-busctl}"
 APCACCESS="${HAPAX_APCUPSD_APCACCESS:-apcaccess}"
 SUDO="${HAPAX_APCUPSD_INSTALL_SUDO-sudo}"
+ACTUAL_UID="$(/usr/bin/id -u)"
+if [ "$ACTUAL_UID" != "0" ] && [ "${HAPAX_APCUPSD_INSTALL_TEST_ACTUAL_UID:-}" = "0" ]; then
+    ACTUAL_UID=0
+fi
 TARGET_UID="${HAPAX_APCUPSD_TARGET_UID:-1000}"
 TARGET_HOME="${HAPAX_APCUPSD_TARGET_HOME:-}"
 TARGET_GID="${HAPAX_APCUPSD_TARGET_GID:-}"
@@ -74,7 +78,8 @@ Installs:
   systemd/logrotate.d/hapax-ups-power-events -> /etc/logrotate.d/hapax-ups-power-events
 
 Power events are recorded at /var/log/hapax/ups-power-events.jsonl before/after
-ntfy delivery state is known.
+ntfy delivery state is known. Run the installer as the target account; it uses
+sudo only for root-owned destinations and refuses whole-script root execution.
 USAGE
 }
 
@@ -120,9 +125,16 @@ run_root() {
 preflight_root() {
     if [ -n "$SUDO" ] && [ "$INSTALL" -eq 1 ]; then
         "$SUDO" -n true 2>/dev/null || {
-            echo "sudo non-interactive access is required for apcupsd power-alert install; next action: run sudo -v, grant the post-merge deploy user NOPASSWD for install/systemctl, or run as root with HAPAX_APCUPSD_INSTALL_SUDO= scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+            echo "sudo non-interactive access is required for apcupsd power-alert install; next action: run sudo -v or grant the target account NOPASSWD for the governed install/systemctl commands, then rerun as that account" >&2
             return "$ROOT_REQUIRED_RC"
         }
+    fi
+}
+
+refuse_whole_script_root() {
+    if [ "$INSTALL" -eq 1 ] && [ "$ACTUAL_UID" = "0" ]; then
+        echo "whole-script root execution is refused because durable package state and its shared lock are owned by UID $TARGET_UID; next action: run this installer as UID $TARGET_UID after sudo -v so only run_root commands cross the privilege boundary" >&2
+        return 2
     fi
 }
 
@@ -347,15 +359,6 @@ drain_root_required_deferral() {
     echo "root-required deferral marked drained: $ROOT_REQUIRED_DRAIN_REAL"
 }
 
-normalize_target_ownership() {
-    local path
-    [ "$(id -u)" = "0" ] || return 0
-    for path in "$ROOT_REQUIRED_STATE_ROOT" "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" "$ROOT_REQUIRED_LOCK_FILE"; do
-        [ -e "$path" ] || continue
-        chown -R "$TARGET_UID:$TARGET_GID" "$path"
-    done
-}
-
 record_installed_source() {
     local rel dest
     for rel in "${package_files[@]}"; do
@@ -488,7 +491,47 @@ verify_upower_live_policy() {
     fi
 }
 
+verify_root_artifact_trust() {
+    local path="$1" expected_mode="$2" expected_uid expected_gid actual parent parent_actual parent_mode
+    case "$path" in
+        /etc/*|/usr/local/*)
+            expected_uid=0
+            expected_gid=0
+            ;;
+        *)
+            expected_uid="$(/usr/bin/id -u)"
+            expected_gid="$(/usr/bin/id -g)"
+            ;;
+    esac
+    if [ ! -f "$path" ] || [ -L "$path" ]; then
+        echo "root-owned UPS artifact is missing, symlinked, or not a regular file: $path; next action: rerun scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    fi
+    actual="$(stat -c '%u:%g:%a' "$path" 2>/dev/null || true)"
+    if [ "$actual" != "$expected_uid:$expected_gid:$expected_mode" ]; then
+        echo "root-owned UPS artifact trust drift: $path owner/mode=${actual:-unavailable} expected=$expected_uid:$expected_gid:$expected_mode; next action: rerun scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    fi
+    parent="$(dirname "$path")"
+    parent_actual="$(stat -c '%u:%g' "$parent" 2>/dev/null || true)"
+    parent_mode="$(stat -c '%a' "$parent" 2>/dev/null || true)"
+    if [ ! -d "$parent" ] || [ -L "$parent" ] \
+        || [ "$parent_actual" != "$expected_uid:$expected_gid" ] \
+        || ! [[ "$parent_mode" =~ ^[0-7]+$ ]] \
+        || (( (8#$parent_mode & 8#022) != 0 )); then
+        echo "root-owned UPS artifact parent trust drift: $parent owner/mode=${parent_actual:-unavailable}:${parent_mode:-unavailable}; next action: repair the root-owned directory and rerun scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    fi
+}
+
 verify_live() {
+    verify_root_artifact_trust "$DEST/apcupsd.conf" 644
+    verify_root_artifact_trust "$DEST/hapax-power-event.py" 755
+    verify_root_artifact_trust "$DEST/onbattery" 755
+    verify_root_artifact_trust "$DEST/offbattery" 755
+    verify_root_artifact_trust "$DEST/doshutdown" 755
+    verify_root_artifact_trust "$UPOWER_CONF_DEST" 644
+    verify_root_artifact_trust "$LOGROTATE_DEST" 644
     expect_header "$DEST/apcupsd.conf"
     cmp -s "$SRC/apcupsd.conf" "$DEST/apcupsd.conf" || {
         echo "live config differs from source: $DEST; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
@@ -551,6 +594,7 @@ verify_live() {
 }
 
 [ "$CHECK" -eq 0 ] || check_source
+[ "$INSTALL" -eq 0 ] || refuse_whole_script_root
 [ "$INSTALL" -eq 0 ] || acquire_root_required_lock
 [ "$INSTALL" -eq 0 ] || validate_root_required_package_order
 if [ "$INSTALL" -eq 1 ] && [ "$SKIP_SUPERSEDED_INSTALL" -eq 1 ]; then
@@ -565,6 +609,5 @@ fi
 [ "$VERIFY_LIVE" -eq 0 ] || verify_live
 [ "$INSTALL" -eq 0 ] || record_installed_source
 [ "$INSTALL" -eq 0 ] || record_root_required_package_receipt
-[ "$INSTALL" -eq 0 ] || normalize_target_ownership
 [ "$INSTALL" -eq 0 ] || drain_root_required_deferral
 echo "apcupsd power alert install/check complete"

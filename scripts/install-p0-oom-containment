@@ -36,6 +36,10 @@ OOM_POLICY_AUDIT_DEST="${HAPAX_OOM_POLICY_AUDIT_DEST:-/usr/local/sbin/hapax-oom-
 ROOT_REQUIRED_AUDIT_DEST="${HAPAX_ROOT_REQUIRED_AUDIT_DEST:-/usr/local/sbin/hapax-root-required-deploy-audit}"
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
 SUDO="${HAPAX_OOM_INSTALL_SUDO-sudo}"
+ACTUAL_UID="$(/usr/bin/id -u)"
+if [ "$ACTUAL_UID" != "0" ] && [ "${HAPAX_OOM_INSTALL_TEST_ACTUAL_UID:-}" = "0" ]; then
+    ACTUAL_UID=0
+fi
 RUNUSER="${HAPAX_OOM_RUNUSER:-runuser}"
 VISUDO="${HAPAX_OOM_VISUDO:-visudo}"
 EFFECTIVE_UID="${HAPAX_OOM_EFFECTIVE_UID:-$(id -u)}"
@@ -93,7 +97,9 @@ Installs the P0 podium OOM containment package:
 
 The app.slice drop-in is copied, not symlinked, so live containment does not
 depend on a mutable PR worktree. Runtime activation uses set-property for the
-active app.slice instead of restarting the slice.
+active app.slice instead of restarting the slice. Run as the target account;
+the installer uses sudo only for root-owned destinations and refuses
+whole-script root execution.
 USAGE
 }
 
@@ -161,9 +167,16 @@ user_systemctl() {
 preflight_root() {
     if [ -n "$SUDO" ] && [ "$INSTALL" -eq 1 ]; then
         "$SUDO" -n true 2>/dev/null || {
-            echo "sudo non-interactive access is required for OOM containment install; next action: run sudo -v, grant NOPASSWD for install/systemctl/tee, or run as root with HAPAX_OOM_INSTALL_SUDO= scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "sudo non-interactive access is required for OOM containment install; next action: run sudo -v or grant the target account NOPASSWD for the governed install/systemctl/tee commands, then rerun as that account" >&2
             return "$ROOT_REQUIRED_RC"
         }
+    fi
+}
+
+refuse_whole_script_root() {
+    if [ "$INSTALL" -eq 1 ] && [ "$ACTUAL_UID" = "0" ]; then
+        echo "whole-script root execution is refused because durable package state and its shared lock are owned by UID $TARGET_UID; next action: run this installer as UID $TARGET_UID after sudo -v so only run_root commands cross the privilege boundary" >&2
+        return 2
     fi
 }
 
@@ -378,21 +391,6 @@ drain_root_required_deferral() {
     [ -n "${ROOT_REQUIRED_DRAIN_REAL:-}" ] || validate_root_required_deferral
     mv "$ROOT_REQUIRED_DRAIN_REAL/RUNBOOK.txt" "$ROOT_REQUIRED_DRAIN_REAL/DRAINED.txt"
     echo "root-required deferral marked drained: $ROOT_REQUIRED_DRAIN_REAL"
-}
-
-normalize_target_ownership() {
-    local rel dest path
-    [ "$(id -u)" = "0" ] || return 0
-    for path in "$ROOT_REQUIRED_STATE_ROOT" "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" "$ROOT_REQUIRED_LOCK_FILE"; do
-        [ -e "$path" ] || continue
-        chown -R "$TARGET_UID:$TARGET_GID" "$path"
-    done
-    dest="$SYSTEMD_USER_DIR/app.slice.d/oom-containment.conf"
-    chown "$TARGET_UID:$TARGET_GID" "$(dirname "$dest")" "$dest"
-    for rel in "${user_protection_dropins[@]}" "${user_audit_units[@]}"; do
-        dest="$SYSTEMD_USER_DIR/${rel#systemd/units/}"
-        chown "$TARGET_UID:$TARGET_GID" "$(dirname "$dest")" "$dest"
-    done
 }
 
 system_dropins=(
@@ -1031,13 +1029,50 @@ verify_production_reference_dirs() {
     done
 }
 
+verify_root_artifact_trust() {
+    local path="$1" expected_mode="$2" expected_uid expected_gid actual parent parent_actual parent_mode
+    case "$path" in
+        /etc/*|/usr/local/*)
+            expected_uid=0
+            expected_gid=0
+            ;;
+        *)
+            expected_uid="$(/usr/bin/id -u)"
+            expected_gid="$(/usr/bin/id -g)"
+            ;;
+    esac
+    if [ ! -f "$path" ] || [ -L "$path" ]; then
+        echo "installed root artifact is missing, symlinked, or not a regular file: $path; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    actual="$(stat -c '%u:%g:%a' "$path" 2>/dev/null || true)"
+    if [ "$actual" != "$expected_uid:$expected_gid:$expected_mode" ]; then
+        echo "installed root artifact trust drift: $path owner/mode=${actual:-unavailable} expected=$expected_uid:$expected_gid:$expected_mode; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    parent="$(dirname "$path")"
+    parent_actual="$(stat -c '%u:%g' "$parent" 2>/dev/null || true)"
+    parent_mode="$(stat -c '%a' "$parent" 2>/dev/null || true)"
+    if [ ! -d "$parent" ] || [ -L "$parent" ] \
+        || [ "$parent_actual" != "$expected_uid:$expected_gid" ] \
+        || ! [[ "$parent_mode" =~ ^[0-7]+$ ]] \
+        || (( (8#$parent_mode & 8#022) != 0 )); then
+        echo "installed root artifact parent trust drift: $parent owner/mode=${parent_actual:-unavailable}:${parent_mode:-unavailable}; next action: repair the root-owned directory and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+}
+
 verify_live() {
     local rel dest timer
     for rel in "${system_dropins[@]}"; do
-        verify_pair "$(src_path "$rel")" "$(system_dest "$rel")"
+        dest="$(system_dest "$rel")"
+        verify_pair "$(src_path "$rel")" "$dest"
+        verify_root_artifact_trust "$dest" 644
     done
     for rel in "${system_units[@]}"; do
-        verify_pair "$(src_path "$rel")" "$(system_dest "$rel")"
+        dest="$(system_dest "$rel")"
+        verify_pair "$(src_path "$rel")" "$dest"
+        verify_root_artifact_trust "$dest" 644
         dest="$SYSTEMD_USER_DIR/$(basename "$rel")"
         if [ -e "$dest" ] || [ -L "$dest" ]; then
             echo "stale user-scope copy of system unit remains: $dest; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
@@ -1045,13 +1080,17 @@ verify_live() {
         fi
     done
     verify_pair "$(src_path "$oom_enforcer_source")" "$OOM_ENFORCER_DEST"
+    verify_root_artifact_trust "$OOM_ENFORCER_DEST" 755
     verify_pair "$(src_path "$oom_trigger_source")" "$OOM_TRIGGER_DEST"
+    verify_root_artifact_trust "$OOM_TRIGGER_DEST" 755
     [ -x "$OOM_TRIGGER_DEST" ] || {
         echo "installed OOM startup trigger is not executable: $OOM_TRIGGER_DEST; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     }
     verify_sudoers_trust "$OOM_SUDOERS_DEST" 440 "sudoers policy"
     verify_sudoers_trust "$OOM_SUDOERS_REFERENCE_DEST" 444 "sudoers audit reference"
+    verify_root_artifact_trust "$OOM_SUDOERS_DEST" 440
+    verify_root_artifact_trust "$OOM_SUDOERS_REFERENCE_DEST" 444
     if [ "$OOM_SUDOERS_REFERENCE_DEST" = "/usr/local/share/hapax/root-required/hapax-oom-score-enforce.sudoers" ]; then
         verify_production_reference_dirs
     fi
@@ -1062,9 +1101,13 @@ verify_live() {
         return 1
     }
     verify_pair "$(src_path "$root_failure_intake_source")" "$ROOT_FAILURE_INTAKE_DEST"
+    verify_root_artifact_trust "$ROOT_FAILURE_INTAKE_DEST" 755
     verify_pair "$(src_path "$oom_policy_audit_source")" "$OOM_POLICY_AUDIT_DEST"
+    verify_root_artifact_trust "$OOM_POLICY_AUDIT_DEST" 755
     verify_pair "$(src_path "$root_required_audit_source")" "$ROOT_REQUIRED_AUDIT_DEST"
+    verify_root_artifact_trust "$ROOT_REQUIRED_AUDIT_DEST" 755
     verify_pair "$(src_path "$earlyoom_source")" "$EARLYOOM_DEST"
+    verify_root_artifact_trust "$EARLYOOM_DEST" 644
     run_root "$SYSTEMCTL" is-enabled --quiet earlyoom.service || {
         echo "earlyoom.service is not enabled; next action: run sudo systemctl enable --now earlyoom.service" >&2
         return 1
@@ -1247,6 +1290,7 @@ verify_user_process_oom_floor() {
 }
 
 [ "$CHECK" -eq 0 ] || check_source
+[ "$INSTALL" -eq 0 ] || refuse_whole_script_root
 [ "$INSTALL" -eq 0 ] || acquire_root_required_lock
 [ "$INSTALL" -eq 0 ] || validate_root_required_package_order
 if [ "$INSTALL" -eq 1 ] && [ "$SKIP_SUPERSEDED_INSTALL" -eq 1 ]; then
@@ -1261,6 +1305,5 @@ fi
 [ "$VERIFY_LIVE" -eq 0 ] || verify_live
 [ "$INSTALL" -eq 0 ] || record_installed_source
 [ "$INSTALL" -eq 0 ] || record_root_required_package_receipt
-[ "$INSTALL" -eq 0 ] || normalize_target_ownership
 [ "$INSTALL" -eq 0 ] || drain_root_required_deferral
 echo "p0 oom containment install/check complete"

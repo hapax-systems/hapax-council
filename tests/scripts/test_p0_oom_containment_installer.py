@@ -249,6 +249,37 @@ def test_source_check_rejects_production_sudoers_identity_override(
     assert "next action:" in result.stderr
 
 
+def test_whole_script_root_mode_refuses_user_owned_lock_symlink(tmp_path: Path) -> None:
+    state_root = tmp_path / "root-state"
+    state_root.mkdir()
+    protected = tmp_path / "protected-target"
+    protected.write_text("sentinel\n", encoding="utf-8")
+    lock = state_root / ".lock"
+    lock.symlink_to(protected)
+    live = tmp_path / "sbin" / "hapax-oom-score-enforce"
+
+    result = subprocess.run(
+        [str(INSTALLER), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_ENFORCER_DEST": str(live),
+            "HAPAX_OOM_INSTALL_SUDO": "",
+            "HAPAX_OOM_INSTALL_TEST_ACTUAL_UID": "0",
+            "HAPAX_ROOT_REQUIRED_STATE_ROOT": str(state_root),
+            "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(lock),
+        },
+    )
+
+    assert result.returncode == 2
+    assert "whole-script root execution is refused" in result.stderr
+    assert protected.read_text(encoding="utf-8") == "sentinel\n"
+    assert lock.is_symlink()
+    assert not live.exists()
+
+
 def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     tmp_path: Path,
 ) -> None:
