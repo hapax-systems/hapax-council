@@ -9,6 +9,9 @@ SRC="$SOURCE/config/apcupsd"
 DEST="${HAPAX_APCUPSD_DEST:-/etc/apcupsd}"
 AUDIT_DIR="${HAPAX_APCUPSD_AUDIT_DIR:-/var/log/hapax}"
 AUDIT_GROUP="${HAPAX_APCUPSD_AUDIT_GROUP:-hapax}"
+AUDIT_LOG="${HAPAX_UPS_AUDIT_LOG:-$AUDIT_DIR/ups-power-events.jsonl}"
+AUDIT_LOG_OWNER_UID="${HAPAX_UPS_AUDIT_LOG_OWNER_UID:-}"
+AUDIT_LOG_OWNER_GID="${HAPAX_UPS_AUDIT_LOG_OWNER_GID:-}"
 LOGROTATE_DEST="${HAPAX_APCUPSD_LOGROTATE_DEST:-/etc/logrotate.d/hapax-ups-power-events}"
 UPOWER_CONF_DEST="${HAPAX_UPOWER_CONF_DEST:-/etc/UPower/UPower.conf.d/90-hapax-apcupsd-owner.conf}"
 SYSTEMCTL="${HAPAX_APCUPSD_SYSTEMCTL:-systemctl}"
@@ -145,6 +148,114 @@ install_audit_dir() {
     else
         run_root install -d -m 0775 "$AUDIT_DIR"
     fi
+}
+
+resolve_audit_log_identity() {
+    if [ -z "$AUDIT_LOG_OWNER_UID" ]; then
+        if [[ "$AUDIT_LOG" == /var/log/* ]]; then
+            AUDIT_LOG_OWNER_UID=0
+        else
+            AUDIT_LOG_OWNER_UID="$(/usr/bin/id -u)"
+        fi
+    fi
+    if [ -z "$AUDIT_LOG_OWNER_GID" ]; then
+        if [[ "$AUDIT_LOG" == /var/log/* ]] \
+            && [ -n "$AUDIT_GROUP" ] \
+            && getent group "$AUDIT_GROUP" >/dev/null 2>&1; then
+            AUDIT_LOG_OWNER_GID="$(getent group "$AUDIT_GROUP" | cut -d: -f3)"
+        else
+            AUDIT_LOG_OWNER_GID="$(/usr/bin/id -g)"
+        fi
+    fi
+    if ! [[ "$AUDIT_LOG_OWNER_UID" =~ ^[0-9]+$ && "$AUDIT_LOG_OWNER_GID" =~ ^[0-9]+$ ]]; then
+        echo "invalid UPS audit-log owner identity uid=$AUDIT_LOG_OWNER_UID gid=$AUDIT_LOG_OWNER_GID; next action: remove invalid HAPAX_UPS_AUDIT_LOG_OWNER_UID/GID overrides and rerun the installer" >&2
+        return 1
+    fi
+}
+
+prepare_audit_log() {
+    resolve_audit_log_identity
+    run_root /usr/bin/python3 - "$AUDIT_LOG" "$AUDIT_LOG_OWNER_UID" "$AUDIT_LOG_OWNER_GID" <<'PY'
+from __future__ import annotations
+
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+owner_uid = int(sys.argv[2])
+owner_gid = int(sys.argv[3])
+try:
+    fd = os.open(
+        path,
+        os.O_APPEND
+        | os.O_CLOEXEC
+        | os.O_CREAT
+        | os.O_NOFOLLOW
+        | os.O_NONBLOCK
+        | os.O_RDWR,
+        0o640,
+    )
+except OSError as exc:
+    print(
+        f"refused unsafe UPS audit log {path}: {exc}; next action: preserve any valid log "
+        "content, remove only a confirmed symlink/non-regular inode, and rerun the installer",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+try:
+    inode = os.fstat(fd)
+    if not stat.S_ISREG(inode.st_mode) or inode.st_nlink != 1:
+        print(
+            f"refused unsafe UPS audit log inode {path}; expected a single-link regular file; "
+            "next action: preserve any valid log content, remove the unsafe inode, and rerun",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    os.fchown(fd, owner_uid, owner_gid)
+    os.fchmod(fd, 0o640)
+finally:
+    os.close(fd)
+PY
+}
+
+verify_audit_log_target() {
+    resolve_audit_log_identity
+    /usr/bin/python3 - "$AUDIT_LOG" "$AUDIT_LOG_OWNER_UID" "$AUDIT_LOG_OWNER_GID" <<'PY'
+from __future__ import annotations
+
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+owner_uid = int(sys.argv[2])
+owner_gid = int(sys.argv[3])
+try:
+    inode = os.lstat(path)
+except OSError as exc:
+    print(
+        f"UPS audit log is missing or unreadable: {path}: {exc}; next action: rerun "
+        "scripts/install-apcupsd-power-alerts --install --verify-live",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+if (
+    not stat.S_ISREG(inode.st_mode)
+    or inode.st_nlink != 1
+    or inode.st_uid != owner_uid
+    or inode.st_gid != owner_gid
+    or stat.S_IMODE(inode.st_mode) != 0o640
+):
+    print(
+        f"UPS audit log trust drift: {path} owner={inode.st_uid}:{inode.st_gid} "
+        f"mode={stat.S_IMODE(inode.st_mode):03o} links={inode.st_nlink}; expected "
+        f"{owner_uid}:{owner_gid}:640 with one regular link; next action: rerun "
+        "scripts/install-apcupsd-power-alerts --install --verify-live",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+PY
 }
 
 canonical_dir() {
@@ -526,6 +637,7 @@ install_live() {
     preflight_root
     run_root install -d -m 0755 "$DEST"
     install_audit_dir
+    prepare_audit_log
     run_root install -m 0644 "$SRC/apcupsd.conf" "$DEST/apcupsd.conf"
     run_root install -m 0755 "$SRC/hapax-power-event.py" "$DEST/hapax-power-event.py"
     run_root install -m 0755 "$SRC/onbattery" "$DEST/onbattery"
@@ -686,6 +798,7 @@ verify_live() {
         echo "audit directory missing: $AUDIT_DIR; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
         return 1
     }
+    verify_audit_log_target
     run_root "$SYSTEMCTL" is-enabled --quiet apcupsd.service || {
         echo "apcupsd.service is not enabled; next action: run sudo systemctl enable --now apcupsd.service" >&2
         return 1

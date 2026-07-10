@@ -585,6 +585,11 @@ def test_installer_install_implies_verify_live_against_temp_destinations(tmp_pat
     assert (dest / "hapax-power-event.py").is_file()
     assert (dest / "onbattery").stat().st_mode & 0o100
     assert (dest / "doshutdown").stat().st_mode & 0o100
+    audit_log = audit_dir / "ups-power-events.jsonl"
+    assert audit_log.is_file()
+    assert not audit_log.is_symlink()
+    assert audit_log.stat().st_nlink == 1
+    assert audit_log.stat().st_mode & 0o777 == 0o640
     assert audit_dir.is_dir()
     assert audit_dir.stat().st_mode & 0o777 == 0o775
     assert logrotate_dest.is_file()
@@ -708,6 +713,41 @@ def test_verify_live_rejects_stale_apcupsd_loaded_thresholds(tmp_path: Path) -> 
     assert result.returncode == 1
     assert "apcupsd loaded shutdown policy drift" in result.stderr
     assert "MBATTCHG=99 expected 20" in result.stderr
+
+
+@pytest.mark.parametrize("link_kind", ("symlink", "hardlink"))
+def test_installer_refuses_unsafe_existing_ups_audit_log(
+    tmp_path: Path,
+    link_kind: str,
+) -> None:
+    audit_dir = tmp_path / "hapax-log"
+    audit_dir.mkdir()
+    audit_log = audit_dir / "ups-power-events.jsonl"
+    protected = tmp_path / "protected-target"
+    protected.write_text("sentinel\n", encoding="utf-8")
+    if link_kind == "symlink":
+        audit_log.symlink_to(protected)
+    else:
+        os.link(protected, audit_log)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_DEST": str(tmp_path / "apcupsd"),
+            "HAPAX_APCUPSD_AUDIT_DIR": str(audit_dir),
+            "HAPAX_APCUPSD_LOGROTATE_DEST": str(tmp_path / "logrotate"),
+            "HAPAX_UPOWER_CONF_DEST": str(tmp_path / "upower"),
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+        },
+    )
+
+    assert result.returncode == 1
+    assert "refused unsafe UPS audit log" in result.stderr
+    assert protected.read_text(encoding="utf-8") == "sentinel\n"
 
 
 def test_whole_script_root_mode_refuses_user_owned_lock_symlink(tmp_path: Path) -> None:

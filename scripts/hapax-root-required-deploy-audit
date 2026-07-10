@@ -29,6 +29,9 @@ EARLYOOM_DEST="${HAPAX_OOM_EARLYOOM_DEST:-/etc/default/earlyoom}"
 SYSTEMD_SYSTEM_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
 SYSTEMD_USER_DIR="${HAPAX_OOM_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
 APCUPSD_DEST="${HAPAX_APCUPSD_DEST:-/etc/apcupsd}"
+APCUPSD_AUDIT_LOG="${HAPAX_UPS_AUDIT_LOG:-/var/log/hapax/ups-power-events.jsonl}"
+APCUPSD_AUDIT_LOG_OWNER_UID="${HAPAX_UPS_AUDIT_LOG_OWNER_UID:-}"
+APCUPSD_AUDIT_LOG_OWNER_GID="${HAPAX_UPS_AUDIT_LOG_OWNER_GID:-}"
 APCUPSD_LOGROTATE_DEST="${HAPAX_APCUPSD_LOGROTATE_DEST:-/etc/logrotate.d/hapax-ups-power-events}"
 UPOWER_CONF_DEST="${HAPAX_UPOWER_CONF_DEST:-/etc/UPower/UPower.conf.d/90-hapax-apcupsd-owner.conf}"
 SYSTEMCTL="${HAPAX_ROOT_AUDIT_SYSTEMCTL:-systemctl}"
@@ -147,6 +150,73 @@ try:
     raise SystemExit(result.returncode)
 finally:
     os.close(fd)
+PY
+}
+
+resolve_apcupsd_audit_log_identity() {
+    if [ -z "$APCUPSD_AUDIT_LOG_OWNER_UID" ]; then
+        if [[ "$APCUPSD_AUDIT_LOG" == /var/log/* ]]; then
+            APCUPSD_AUDIT_LOG_OWNER_UID=0
+        else
+            APCUPSD_AUDIT_LOG_OWNER_UID="$(/usr/bin/id -u)"
+        fi
+    fi
+    if [ -z "$APCUPSD_AUDIT_LOG_OWNER_GID" ]; then
+        if [[ "$APCUPSD_AUDIT_LOG" == /var/log/* ]] && getent group hapax >/dev/null 2>&1; then
+            APCUPSD_AUDIT_LOG_OWNER_GID="$(getent group hapax | cut -d: -f3)"
+        else
+            APCUPSD_AUDIT_LOG_OWNER_GID="$(/usr/bin/id -g)"
+        fi
+    fi
+    if ! [[ "$APCUPSD_AUDIT_LOG_OWNER_UID" =~ ^[0-9]+$ \
+        && "$APCUPSD_AUDIT_LOG_OWNER_GID" =~ ^[0-9]+$ ]]; then
+        echo "root-required install drift: invalid UPS audit-log owner identity uid=$APCUPSD_AUDIT_LOG_OWNER_UID gid=$APCUPSD_AUDIT_LOG_OWNER_GID" >&2
+        echo "  next action: remove invalid HAPAX_UPS_AUDIT_LOG_OWNER_UID/GID overrides and rerun the installed audit" >&2
+        return 1
+    fi
+}
+
+audit_apcupsd_audit_log() {
+    resolve_apcupsd_audit_log_identity || return 1
+    /usr/bin/python3 - "$APCUPSD_AUDIT_LOG" \
+        "$APCUPSD_AUDIT_LOG_OWNER_UID" "$APCUPSD_AUDIT_LOG_OWNER_GID" <<'PY'
+from __future__ import annotations
+
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+owner_uid = int(sys.argv[2])
+owner_gid = int(sys.argv[3])
+try:
+    inode = os.lstat(path)
+except OSError as exc:
+    print(f"root-required install drift: UPS audit log missing: {path}: {exc}", file=sys.stderr)
+    print(
+        "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+if (
+    not stat.S_ISREG(inode.st_mode)
+    or inode.st_nlink != 1
+    or inode.st_uid != owner_uid
+    or inode.st_gid != owner_gid
+    or stat.S_IMODE(inode.st_mode) != 0o640
+):
+    print(
+        f"root-required install drift: unsafe UPS audit log {path} "
+        f"owner={inode.st_uid}:{inode.st_gid} mode={stat.S_IMODE(inode.st_mode):03o} "
+        f"links={inode.st_nlink}; expected {owner_uid}:{owner_gid}:640 with one regular link",
+        file=sys.stderr,
+    )
+    print(
+        "  next action: preserve valid content and run "
+        "scripts/install-apcupsd-power-alerts --install --verify-live",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 PY
 }
 
@@ -592,6 +662,7 @@ audit_root_installs() {
     fi
     audit_systemd_state || failed=1
     audit_apcupsd_loaded_policy || failed=1
+    audit_apcupsd_audit_log || failed=1
     [ "$failed" -eq 0 ]
 }
 

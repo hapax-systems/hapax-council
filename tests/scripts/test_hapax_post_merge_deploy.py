@@ -317,6 +317,7 @@ def _root_audit_env(
     desired_root = state_root / "desired-receipts"
     system_dir = tmp_path / "etc" / "systemd" / "system"
     apcupsd_dir = tmp_path / "etc" / "apcupsd"
+    apcupsd_audit_log = tmp_path / "var" / "log" / "hapax" / "ups-power-events.jsonl"
     logrotate_dest = tmp_path / "etc" / "logrotate.d" / "hapax-ups-power-events"
     upower_dest = tmp_path / "etc" / "UPower" / "UPower.conf.d" / "90-hapax-apcupsd-owner.conf"
     enforcer_dest = tmp_path / "sbin" / "hapax-oom-score-enforce"
@@ -420,6 +421,9 @@ def _root_audit_env(
         encoding="utf-8",
     )
     sudoers_reference_dest.chmod(0o444)
+    apcupsd_audit_log.parent.mkdir(parents=True)
+    apcupsd_audit_log.write_text("", encoding="utf-8")
+    apcupsd_audit_log.chmod(0o640)
     _git(source_root, "init", "-b", "main")
     _git(source_root, "config", "user.email", "root-audit@example.test")
     _git(source_root, "config", "user.name", "Root Audit Test")
@@ -453,6 +457,9 @@ def _root_audit_env(
         "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(system_dir),
         "HAPAX_OOM_SYSTEMD_USER_DIR": str(user_dir),
         "HAPAX_APCUPSD_DEST": str(apcupsd_dir),
+        "HAPAX_UPS_AUDIT_LOG": str(apcupsd_audit_log),
+        "HAPAX_UPS_AUDIT_LOG_OWNER_UID": str(os.getuid()),
+        "HAPAX_UPS_AUDIT_LOG_OWNER_GID": str(os.getgid()),
         "HAPAX_APCUPSD_LOGROTATE_DEST": str(logrotate_dest),
         "HAPAX_UPOWER_CONF_DEST": str(upower_dest),
         "HAPAX_ROOT_AUDIT_SYSTEMCTL": str(fake_systemctl),
@@ -1685,6 +1692,34 @@ def test_root_required_audit_refuses_unsafe_shared_lock_before_target_mutation(
 
 
 @pytest.mark.parametrize("link_kind", ("symlink", "hardlink"))
+def test_root_required_audit_rejects_unsafe_ups_log_inode(
+    tmp_path: Path,
+    link_kind: str,
+) -> None:
+    env = _root_audit_env(tmp_path)
+    audit_log = Path(env["HAPAX_UPS_AUDIT_LOG"])
+    audit_log.unlink()
+    protected = tmp_path / "protected-ups-log-target"
+    protected.write_text("sentinel\n", encoding="utf-8")
+    if link_kind == "symlink":
+        audit_log.symlink_to(protected)
+    else:
+        os.link(protected, audit_log)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "unsafe UPS audit log" in result.stderr
+    assert protected.read_text(encoding="utf-8") == "sentinel\n"
+
+
+@pytest.mark.parametrize("link_kind", ("symlink", "hardlink"))
 def test_post_merge_deploy_refuses_unsafe_shared_lock_before_mutation(
     tmp_path: Path,
     link_kind: str,
@@ -1870,6 +1905,44 @@ def test_generic_slice_dropin_rejects_unsafe_co_resident_before_mutation(
     calls = systemctl_calls.read_text(encoding="utf-8") if systemctl_calls.exists() else ""
     assert "daemon-reload" not in calls
     assert "set-property" not in calls
+
+
+def test_generic_slice_dropin_atomically_replaces_changed_destination_symlink(
+    tmp_path: Path,
+) -> None:
+    dropin_path = "systemd/units/demo.slice.d/memory.conf"
+    deployed_content = "[Slice]\nMemoryHigh=2G\nMemoryMax=3G\n"
+    repo, sha = _repo_with_linear_commit(tmp_path, {dropin_path: deployed_content})
+    home = tmp_path / "home"
+    mutable_target = tmp_path / "mutable-worktree" / "memory.conf"
+    mutable_target.parent.mkdir()
+    mutable_target.write_text("[Slice]\nMemoryHigh=1G\n", encoding="utf-8")
+    deployed = home / ".config/systemd/user/demo.slice.d/memory.conf"
+    deployed.parent.mkdir(parents=True)
+    deployed.symlink_to(mutable_target)
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert mutable_target.read_text(encoding="utf-8") == "[Slice]\nMemoryHigh=1G\n"
+    assert deployed.read_text(encoding="utf-8") == deployed_content
+    assert not deployed.is_symlink()
+    calls = systemctl_calls.read_text(encoding="utf-8")
+    assert "--user set-property --runtime demo.slice MemoryHigh=2G MemoryMax=3G" in calls
 
 
 def test_generic_slice_dropin_deletion_fails_before_persistent_or_runtime_drift(

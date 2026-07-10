@@ -169,10 +169,20 @@ def test_broadcast_critical_user_oom_dropins_are_source_controlled() -> None:
         "studio-compositor.service.d/oom-protect.conf",
         "hapax-imagination.service.d/oom-protect.conf",
     }
+    audio_units = {
+        "pipewire.service.d/oom-protect.conf",
+        "pipewire-pulse.service.d/oom-protect.conf",
+        "wireplumber.service.d/oom-protect.conf",
+    }
     for rel in expected:
         text = (UNITS_DIR / rel).read_text()
         assert _directive(text, "OOMScoreAdjust") == "100"
-        assert _directive(text, "ExecStartPost") == "-/usr/local/bin/hapax-oom-score-trigger %n"
+        if rel in audio_units:
+            assert _directive(text, "ExecStartPost") is None
+            assert _directive(text, "NoNewPrivileges") is None
+            assert "NoNewPrivileges=yes" in text
+        else:
+            assert _directive(text, "ExecStartPost") == "-/usr/local/bin/hapax-oom-score-trigger %n"
         assert _directive(text, "MemoryLow") is not None
         assert _directive(text, "MemoryMin") is not None
 

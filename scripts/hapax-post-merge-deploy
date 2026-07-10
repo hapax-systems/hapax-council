@@ -1805,7 +1805,21 @@ if [ "${#SYSTEMD_DROPINS[@]}" -gt 0 ]; then
         dest="$dest_dir/$conf_name"
         mkdir -p "$dest_dir"
         if git cat-file -e "$SHA:$f" 2>/dev/null; then
-            git show "$SHA:$f" > "$dest"
+            if ! dropin_temp="$(mktemp "$dest_dir/.${conf_name}.tmp.XXXXXX")"; then
+                echo "hapax-post-merge-deploy: unable to reserve a temporary path for $f; next action: verify destination ownership and capacity, then rerun the governed deploy" >&2
+                exit 1
+            fi
+            if ! git show "$SHA:$f" > "$dropin_temp"; then
+                rm -f "$dropin_temp" 2>/dev/null || true
+                echo "hapax-post-merge-deploy: unable to materialize $f before drop-in activation; next action: verify the commit object and rerun the governed deploy" >&2
+                exit 1
+            fi
+            chmod 0644 "$dropin_temp"
+            if ! mv -fT "$dropin_temp" "$dest"; then
+                rm -f "$dropin_temp" 2>/dev/null || true
+                echo "hapax-post-merge-deploy: unable to atomically replace drop-in $dest; next action: remove unsafe destination drift and rerun the governed deploy" >&2
+                exit 1
+            fi
             echo "  '$f' -> '$dest'"
             DROPIN_UNITS_TO_RESTART+=("$unit_name")
         else
