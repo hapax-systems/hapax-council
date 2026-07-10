@@ -423,6 +423,11 @@ user_protection_dropins=(
     systemd/units/studio-compositor.service.d/oom-protect.conf
     systemd/units/hapax-imagination.service.d/oom-protect.conf
 )
+legacy_user_oom_overrides=(
+    pipewire.service.d/override.conf
+    pipewire-pulse.service.d/override.conf
+    wireplumber.service.d/override.conf
+)
 earlyoom_source="config/earlyoom/default"
 oom_enforcer_source="scripts/hapax-oom-score-enforce"
 root_failure_intake_source="scripts/hapax-root-failure-intake"
@@ -766,6 +771,30 @@ apply_user_process_oom_floor() {
     fi
 }
 
+scrub_legacy_user_oom_overrides() {
+    local rel path temp
+    for rel in "${legacy_user_oom_overrides[@]}"; do
+        path="$SYSTEMD_USER_DIR/$rel"
+        [ -e "$path" ] || continue
+        if [ -L "$path" ]; then
+            echo "refusing symlinked legacy user OOM override: $path; next action: replace it with a regular file and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            return 1
+        fi
+        grep -Eq '^[[:space:]]*OOMScoreAdjust=' "$path" || continue
+        temp="$(mktemp "$path.tmp.XXXXXX")"
+        if ! awk '!/^[[:space:]]*OOMScoreAdjust=/' "$path" > "$temp"; then
+            rm -f "$temp"
+            return 1
+        fi
+        chmod --reference="$path" "$temp"
+        if [ "$(id -u)" = "0" ]; then
+            chown --reference="$path" "$temp"
+        fi
+        mv -f "$temp" "$path"
+        echo "removed stale user-manager-inapplicable OOMScoreAdjust from $path"
+    done
+}
+
 install_live() {
     local rel dest timer control_dropin_dir user_pid mem_high mem_max mem_swap
     check_source
@@ -812,6 +841,8 @@ install_live() {
         install -m 0644 "$(src_path "$rel")" "$dest"
         echo "  '$rel' -> '$dest' (copy)"
     done
+
+    scrub_legacy_user_oom_overrides
 
     for rel in "${user_audit_units[@]}"; do
         dest="$SYSTEMD_USER_DIR/${rel#systemd/units/}"

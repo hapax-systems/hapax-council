@@ -220,6 +220,15 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     stale_min = user_control_dir / "app.slice.d" / "50-MemoryMin.conf"
     stale_low.write_text("[Slice]\nMemoryLow=64G\n", encoding="utf-8")
     stale_min.write_text("[Slice]\nMemoryMin=32G\n", encoding="utf-8")
+    legacy_audio_overrides = {
+        "pipewire.service.d/override.conf": "[Service]\nOOMScoreAdjust=-900\nLimitNOFILE=8192\n",
+        "pipewire-pulse.service.d/override.conf": "[Service]\nOOMScoreAdjust=-900\n",
+        "wireplumber.service.d/override.conf": "[Service]\nOOMScoreAdjust=-900\n",
+    }
+    for relative, content in legacy_audio_overrides.items():
+        path = user_dir / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
     earlyoom_dest = tmp_path / "earlyoom"
     enforcer_dest = tmp_path / "sbin" / "hapax-oom-score-enforce"
     root_failure_dest = tmp_path / "sbin" / "hapax-root-failure-intake"
@@ -331,6 +340,11 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert not stale_control.exists()
     assert not stale_low.exists()
     assert not stale_min.exists()
+    for relative in legacy_audio_overrides:
+        assert "OOMScoreAdjust=" not in (user_dir / relative).read_text(encoding="utf-8")
+    assert "LimitNOFILE=8192" in (user_dir / "pipewire.service.d" / "override.conf").read_text(
+        encoding="utf-8"
+    )
     assert not (root_home / ".config" / "systemd").exists()
     calls = systemctl_calls.read_text(encoding="utf-8")
     assert "daemon-reload" in calls
