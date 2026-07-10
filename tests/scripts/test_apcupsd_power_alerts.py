@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import errno
+import grp
 import json
 import os
+import pwd
 import runpy
 import shutil
 import subprocess
@@ -18,6 +20,7 @@ CONFIG_DIR = REPO_ROOT / "config" / "apcupsd"
 HELPER = CONFIG_DIR / "hapax-power-event.py"
 INSTALLER = REPO_ROOT / "scripts" / "install-apcupsd-power-alerts"
 UPOWER_CONFIG = REPO_ROOT / "config" / "upower" / "90-hapax-apcupsd-owner.conf"
+LOGROTATE_CONFIG = REPO_ROOT / "systemd" / "logrotate.d" / "hapax-ups-power-events"
 REPO_HEAD = subprocess.run(
     ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, check=True, text=True, capture_output=True
 ).stdout.strip()
@@ -245,6 +248,84 @@ def test_power_event_append_refuses_wrong_owner_regular_file(
         namespace["append_jsonl"](audit, {"event": "test"})
 
     assert audit.read_text(encoding="utf-8") == "sentinel\n"
+
+
+def test_logrotate_rename_create_preserves_inflight_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    logrotate = shutil.which("logrotate")
+    if logrotate is None:
+        pytest.skip("logrotate is not installed")
+    source_config = LOGROTATE_CONFIG.read_text(encoding="utf-8")
+    assert "copytruncate" not in source_config
+    assert "create 0640 root hapax" in source_config
+    assert "delaycompress" in source_config
+
+    audit = tmp_path / "ups-power-events.jsonl"
+    audit.write_text('{"phase":"seed"}\n', encoding="utf-8")
+    audit.chmod(0o640)
+    username = pwd.getpwuid(os.geteuid()).pw_name
+    group = grp.getgrgid(os.getegid()).gr_name
+    config = tmp_path / "logrotate.conf"
+    config.write_text(
+        source_config.replace("/var/log/hapax/ups-power-events.jsonl", str(audit), 1)
+        .replace("su root root", f"su {username} {group}", 1)
+        .replace("create 0640 root hapax", f"create 0640 {username} {group}", 1),
+        encoding="utf-8",
+    )
+
+    namespace = runpy.run_path(str(HELPER))
+    entered_write = threading.Event()
+    release_write = threading.Event()
+    real_write = namespace["os"].write
+    errors: list[BaseException] = []
+
+    def blocked_write(fd: int, payload: bytes) -> int:
+        entered_write.set()
+        if not release_write.wait(timeout=5):
+            raise TimeoutError("rotation witness did not release writer")
+        return real_write(fd, payload)
+
+    def append_during_rotation() -> None:
+        try:
+            namespace["append_jsonl"](audit, {"phase": "during"})
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    monkeypatch.setattr(namespace["os"], "write", blocked_write)
+    writer = threading.Thread(target=append_during_rotation, daemon=True)
+    writer.start()
+    assert entered_write.wait(timeout=2)
+    try:
+        result = subprocess.run(
+            [logrotate, "--force", "--state", str(tmp_path / "state"), str(config)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+    finally:
+        release_write.set()
+        writer.join(timeout=5)
+    assert not writer.is_alive()
+    assert not errors
+
+    namespace["append_jsonl"](audit, {"phase": "after"})
+    rotated = Path(f"{audit}.1")
+    assert rotated.is_file()
+    assert not Path(f"{audit}.1.gz").exists()
+    rotated_phases = [
+        json.loads(line)["phase"]
+        for line in rotated.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    current_phases = [
+        json.loads(line)["phase"]
+        for line in audit.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert rotated_phases == ["seed", "during"]
+    assert current_phases == ["after"]
 
 
 def test_power_event_helper_records_offbattery_delivery_failure(tmp_path: Path) -> None:

@@ -2,8 +2,9 @@
     size 64M
     rotate 14
     su root root
-    copytruncate
+    create 0640 root hapax
     compress
+    delaycompress
     missingok
     notifempty
 }

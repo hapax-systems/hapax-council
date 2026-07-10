@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # Activation-independent failure intake bridge for system-scope P0 units.
 set -euo pipefail
 

@@ -1537,6 +1537,7 @@ def test_oom_score_sudoers_grant_is_narrow_and_valid() -> None:
 def test_root_entrypoints_pin_absolute_interpreters() -> None:
     assert OOM_ENFORCER.read_text(encoding="utf-8").splitlines()[0] == "#!/usr/bin/bash"
     assert OOM_TRIGGER.read_text(encoding="utf-8").splitlines()[0] == "#!/usr/bin/bash"
+    assert ROOT_FAILURE_INTAKE.read_text(encoding="utf-8").splitlines()[0] == "#!/usr/bin/bash"
     helper = REPO_ROOT / "config" / "apcupsd" / "hapax-power-event.py"
     assert helper.read_text(encoding="utf-8").splitlines()[0] == "#!/usr/bin/python3"
 
