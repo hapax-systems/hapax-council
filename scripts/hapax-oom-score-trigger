@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # Fail-bounded user-side bridge to the allowlisted root OOM score enforcer.
 set -euo pipefail
 

@@ -154,16 +154,55 @@ canonical_dir() {
 }
 
 acquire_root_required_lock() {
-    if [ "${HAPAX_ROOT_REQUIRED_LOCK_HELD:-}" != "1" ]; then
-        echo "apcupsd installer internal error: safe shared lock is not held; next action: rerun the unmodified installer as UID $TARGET_UID" >&2
+    local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
+    if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ]; then
+        echo "apcupsd installer internal error: safe shared lock descriptor is absent; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun the unmodified installer as UID $TARGET_UID" >&2
         return 1
     fi
+    /usr/bin/python3 - "$lock_fd" "$ROOT_REQUIRED_LOCK_FILE" <<'PY'
+from __future__ import annotations
+
+import fcntl
+import os
+import stat
+import sys
+
+fd = int(sys.argv[1])
+lock_path = sys.argv[2]
+try:
+    inode = os.fstat(fd)
+    path_inode = os.lstat(lock_path)
+except OSError as exc:
+    print(
+        f"apcupsd installer refused invalid shared lock descriptor for {lock_path}: {exc}; "
+        "next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+if (
+    not stat.S_ISREG(inode.st_mode)
+    or not stat.S_ISREG(path_inode.st_mode)
+    or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
+    or inode.st_uid != os.geteuid()
+    or inode.st_nlink != 1
+    or inode.st_mode & 0o022
+):
+    print(
+        f"apcupsd installer refused invalid shared lock descriptor for {lock_path}; expected "
+        "the caller-owned, single-link, non-group-writable regular path inode; next action: "
+        "remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+os.fchmod(fd, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+PY
     mkdir -p "$ROOT_REQUIRED_DEFER_ROOT"
     migrate_legacy_root_required_state
 }
 
 reexec_with_safe_root_required_lock() {
-    [ "${HAPAX_ROOT_REQUIRED_LOCK_HELD:-}" != "1" ] || return 0
+    [ -z "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" ] || return 0
     exec /usr/bin/python3 - "$ROOT_REQUIRED_LOCK_FILE" "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
 from __future__ import annotations
 
@@ -206,8 +245,14 @@ try:
     os.fchmod(fd, 0o600)
     fcntl.flock(fd, fcntl.LOCK_EX)
     env = os.environ.copy()
-    env["HAPAX_ROOT_REQUIRED_LOCK_HELD"] = "1"
-    result = subprocess.run([os.path.abspath(script), *args], env=env, check=False)
+    env.pop("HAPAX_ROOT_REQUIRED_LOCK_HELD", None)
+    env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
+    result = subprocess.run(
+        [os.path.abspath(script), *args],
+        env=env,
+        pass_fds=(fd,),
+        check=False,
+    )
     raise SystemExit(result.returncode)
 finally:
     os.close(fd)

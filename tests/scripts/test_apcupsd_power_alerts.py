@@ -761,6 +761,7 @@ def test_nonroot_installer_refuses_shared_lock_symlink_before_mutation(tmp_path:
             "HAPAX_APCUPSD_INSTALL_SUDO": "",
             "HAPAX_ROOT_REQUIRED_STATE_ROOT": str(state_root),
             "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(lock),
+            "HAPAX_ROOT_REQUIRED_LOCK_HELD": "1",
         },
     )
 
@@ -768,6 +769,40 @@ def test_nonroot_installer_refuses_shared_lock_symlink_before_mutation(tmp_path:
     assert "refused unsafe shared lock" in result.stderr
     assert protected.read_text(encoding="utf-8") == "sentinel\n"
     assert lock.is_symlink()
+    assert not live.exists()
+
+
+def test_installer_rejects_forged_inherited_lock_descriptor_before_mutation(
+    tmp_path: Path,
+) -> None:
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    lock = state_root / ".lock"
+    forged = tmp_path / "forged-lock"
+    forged_fd = os.open(forged, os.O_CREAT | os.O_RDWR, 0o600)
+    live = tmp_path / "apcupsd"
+    try:
+        result = subprocess.run(
+            [str(INSTALLER), "--install"],
+            text=True,
+            capture_output=True,
+            check=False,
+            pass_fds=(forged_fd,),
+            env={
+                **os.environ,
+                "HAPAX_APCUPSD_DEST": str(live),
+                "HAPAX_APCUPSD_INSTALL_SUDO": "",
+                "HAPAX_ROOT_REQUIRED_STATE_ROOT": str(state_root),
+                "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(lock),
+                "HAPAX_ROOT_REQUIRED_LOCK_FD": str(forged_fd),
+            },
+        )
+    finally:
+        os.close(forged_fd)
+
+    assert result.returncode == 1
+    assert "refused invalid shared lock descriptor" in result.stderr
+    assert not lock.exists()
     assert not live.exists()
 
 
@@ -955,6 +990,7 @@ def test_apcupsd_installs_serialize_on_shared_package_lock(tmp_path: Path) -> No
         "HAPAX_APCUPSD_INSTALL_SUDO": "",
         "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": REPO_HEAD,
         "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
+        "HAPAX_ROOT_REQUIRED_LOCK_HELD": "1",
     }
 
     first = subprocess.Popen(
