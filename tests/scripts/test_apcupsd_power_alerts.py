@@ -352,7 +352,7 @@ def test_power_event_helper_redacts_ntfy_url_from_delivery_error(
 
     assert delivery.attempted is True
     assert delivery.ok is False
-    assert "https://example.test:8443" in delivery.error
+    assert delivery.error == "ValueError: invalid destination https://example.test:8443"
     assert "agent" not in delivery.error
     assert "secret" not in delivery.error
     assert "private-topic" not in delivery.error
