@@ -165,8 +165,8 @@ def _fake_systemctl(
 set -euo pipefail
 case "$*" in
   *"show system.slice"*) printf '{system_slice_values}' ;;
-  *"show user.slice"*) printf '{user_slice_values}' ;;
-  *"show user-1000.slice"*) printf '{uid_memory_values}' ;;
+  *"show user.slice"*) printf '{user_slice_values}ControlGroup=/user.slice\n' ;;
+  *"show user-1000.slice"*) printf '{uid_memory_values}ControlGroup=/user.slice/user-1000.slice\n' ;;
   *"show user@1000.service --no-pager -p MemoryHigh"*) printf '{uid_memory_values}' ;;
   *"show user@1000.service --no-pager -p MemoryLow"*) printf '{uid_memory_values}ControlGroup=/user.slice/user-1000.slice/user@1000.service\n' ;;
   *"show user@1000.service"*) printf 'OOMScoreAdjust={user_oom}\\nOOMPolicy={user_oom_policy}\\nDropInPaths=/etc/systemd/system/user@1000.service.d/oom.conf\\nMainPID=900\\n' ;;
@@ -225,6 +225,8 @@ def _run(
     proc_root: Path | None = None,
     cgroup_root: Path | None = None,
     extra_direct_child_floor: bool = False,
+    extra_uid_sibling_floor: bool = False,
+    extra_user_sibling_floor: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     if proc_root is None:
         proc_root = tmp_path / "proc"
@@ -250,7 +252,25 @@ def _run(
     if cgroup_root is None:
         cgroup_root = tmp_path / "cgroup"
         cgroup_root.mkdir(exist_ok=True)
-    manager_cgroup = cgroup_root / "user.slice/user-1000.slice/user@1000.service"
+    user_slice_cgroup = cgroup_root / "user.slice"
+    uid_cgroup = user_slice_cgroup / "user-1000.slice"
+    manager_cgroup = uid_cgroup / "user@1000.service"
+    uid_cgroup.mkdir(parents=True, exist_ok=True)
+    (uid_cgroup / "memory.low").write_text("21474836480\n", encoding="utf-8")
+    (uid_cgroup / "memory.min").write_text("10737418240\n", encoding="utf-8")
+    manager_cgroup.mkdir(parents=True, exist_ok=True)
+    (manager_cgroup / "memory.low").write_text("21474836480\n", encoding="utf-8")
+    (manager_cgroup / "memory.min").write_text("10737418240\n", encoding="utf-8")
+    if extra_user_sibling_floor:
+        sibling = user_slice_cgroup / "user-1001.slice"
+        sibling.mkdir()
+        (sibling / "memory.low").write_text("2147483648\n", encoding="utf-8")
+        (sibling / "memory.min").write_text("1073741824\n", encoding="utf-8")
+    if extra_uid_sibling_floor:
+        sibling = uid_cgroup / "session-42.scope"
+        sibling.mkdir()
+        (sibling / "memory.low").write_text("2147483648\n", encoding="utf-8")
+        (sibling / "memory.min").write_text("1073741824\n", encoding="utf-8")
     direct_child_floors = {
         "app.slice": (17179869184, 8589934592),
         "session.slice": (2147483648, 1073741824),
@@ -311,6 +331,8 @@ def test_audit_passes_when_user_manager_is_killable_and_app_slice_bounded(tmp_pa
     assert statuses["user_slice_MemoryLow"] == "pass"
     assert statuses["app_slice_MemorySwapMax"] == "pass"
     assert statuses["session_slice_MemoryLow"] == "pass"
+    assert statuses["user_slice_child_floor_MemoryLow"] == "pass"
+    assert statuses["user_1000_slice_child_floor_MemoryLow"] == "pass"
     assert statuses["user_manager_child_floor_MemoryLow"] == "pass"
     assert statuses["user_manager_child_floor_MemoryMin"] == "pass"
     assert statuses["user_unit_pipewire.service_Slice"] == "pass"
@@ -354,6 +376,32 @@ def test_audit_fails_when_additional_direct_child_dilutes_user_manager_floor(
     assert minimum["status"] == "gap"
     assert "background.slice:4294967296" in low["actual"]
     assert low["target"] == "parent >= all direct children"
+
+
+def test_audit_fails_when_session_scope_dilutes_uid_slice_floor(tmp_path: Path) -> None:
+    result = _run(tmp_path, extra_uid_sibling_floor=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item
+        for item in payload["checks"]
+        if item["name"] == "user_1000_slice_child_floor_MemoryLow"
+    )
+    assert check["status"] == "gap"
+    assert "session-42.scope:2147483648" in check["actual"]
+
+
+def test_audit_fails_when_another_uid_dilutes_user_slice_floor(tmp_path: Path) -> None:
+    result = _run(tmp_path, extra_user_sibling_floor=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item for item in payload["checks"] if item["name"] == "user_slice_child_floor_MemoryLow"
+    )
+    assert check["status"] == "gap"
+    assert "user-1001.slice:2147483648" in check["actual"]
 
 
 def test_audit_fails_when_protected_unit_leaves_checked_app_slice_chain(tmp_path: Path) -> None:

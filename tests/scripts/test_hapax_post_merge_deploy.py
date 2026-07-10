@@ -1035,6 +1035,60 @@ def test_post_merge_squash_equivalence_rejects_newer_manifest_file(tmp_path: Pat
     assert desired_receipt.read_text(encoding="utf-8").strip() == desired_sha
 
 
+def test_post_merge_squash_equivalence_rejects_git_mode_drift(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "mode-test@example.test")
+    _git(repo, "config", "user.name", "Mode Test")
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "base")
+    base_sha = _git(repo, "rev-parse", "HEAD")
+
+    _git(repo, "switch", "-c", "candidate")
+    for relative, body in ROOT_AUDIT_SOURCE_FILES.items():
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+        if body.startswith("#!"):
+            path.chmod(0o755)
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "candidate packages")
+    candidate_sha = _git(repo, "rev-parse", "HEAD")
+
+    _git(repo, "switch", "-c", "desired", base_sha)
+    _git(repo, "checkout", "candidate", "--", ".")
+    mode_drift = repo / "scripts/hapax-root-failure-intake"
+    mode_drift.chmod(0o644)
+    _git(repo, "add", mode_drift.relative_to(repo).as_posix())
+    _git(repo, "commit", "-m", "desired mode drift")
+    desired_sha = _git(repo, "rev-parse", "HEAD")
+
+    home = tmp_path / "home"
+    desired_root = home / ".local/state/hapax/root-required/desired-receipts"
+    desired_root.mkdir(parents=True)
+    desired_receipt = desired_root / "oom-containment.sha"
+    desired_receipt.write_text(f"{desired_sha}\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(SCRIPT), candidate_sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "REPO": str(repo),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "refusing divergent desired oom-containment transition" in result.stderr
+    assert desired_receipt.read_text(encoding="utf-8").strip() == desired_sha
+
+
 def test_concurrent_same_sha_root_required_oom_deploy_stages_complete_deferral(
     tmp_path: Path,
 ) -> None:
@@ -1161,12 +1215,14 @@ def test_concurrent_same_sha_root_required_oom_deploy_stages_complete_deferral(
     desired = home / ".local/state/hapax/root-required/desired-receipts/oom-containment.sha"
     assert desired.read_text(encoding="utf-8").strip() == sha
 
+    audit_env = _root_audit_env(tmp_path)
+    audit_env["HAPAX_POST_MERGE_ROOT_DEFER_DIR"] = str(defer_dir)
     audit_result = subprocess.run(
         [str(ROOT_REQUIRED_AUDIT)],
         text=True,
         capture_output=True,
         check=False,
-        env={**os.environ, "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_dir)},
+        env=audit_env,
     )
 
     assert audit_result.returncode == 1

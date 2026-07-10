@@ -1498,13 +1498,18 @@ EOF
 }
 
 root_required_stage_matches_commit() {
-    local stage="$1" commit="$2" manifest_rel="$3" file rel
+    local stage="$1" commit="$2" manifest_rel="$3" file rel git_mode stage_mode
     cmp -s "$stage/$manifest_rel" <(git -C "$REPO" show "$commit:$manifest_rel" 2>/dev/null) || return 1
     while IFS= read -r rel; do
         file="$stage/$rel"
         [ -f "$file" ] || return 1
+        [ ! -L "$file" ] || return 1
         git -C "$REPO" cat-file -e "$commit:$rel" 2>/dev/null || return 1
         cmp -s "$file" <(git -C "$REPO" show "$commit:$rel") || return 1
+        git_mode="$(git -C "$REPO" ls-tree "$commit" -- "$rel" | awk 'NR == 1 {print $1}')"
+        stage_mode=100644
+        [ -x "$file" ] && stage_mode=100755
+        [ "$git_mode" = "$stage_mode" ] || return 1
     done < <(awk 'NF && $1 !~ /^#/ {print $1}' "$stage/$manifest_rel")
 }
 

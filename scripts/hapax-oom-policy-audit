@@ -397,12 +397,12 @@ def _direct_child_floor_sum(control_group: str, key: str) -> tuple[int | None, s
     return sum(value for _, value in values), detail
 
 
-def audit_user_child_floor_composition(uid: int) -> list[Check]:
-    parent = _show(f"user@{uid}.service", ["MemoryLow", "MemoryMin", "ControlGroup"])
+def _audit_direct_child_floor_composition(unit: str, check_prefix: str) -> list[Check]:
+    parent = _show(unit, ["MemoryLow", "MemoryMin", "ControlGroup"])
     if "_error" in parent:
         return [
             Check(
-                "user_manager_child_floor_composition",
+                f"{check_prefix}_composition",
                 "error",
                 "parent >= all direct children",
                 "N/A",
@@ -413,11 +413,11 @@ def audit_user_child_floor_composition(uid: int) -> list[Check]:
     if not control_group:
         return [
             Check(
-                "user_manager_child_floor_composition",
+                f"{check_prefix}_composition",
                 "error",
                 "parent >= all direct children",
                 "N/A",
-                f"user manager ControlGroup is empty; {NEXT_OOM_INSTALL}",
+                f"{unit} ControlGroup is empty; {NEXT_OOM_INSTALL}",
             )
         ]
     checks: list[Check] = []
@@ -440,13 +440,24 @@ def audit_user_child_floor_composition(uid: int) -> list[Check]:
         )
         checks.append(
             Check(
-                f"user_manager_child_floor_{key}",
+                f"{check_prefix}_{key}",
                 status,
                 "parent >= all direct children",
                 actual,
                 detail,
             )
         )
+    return checks
+
+
+def audit_user_child_floor_composition(uid: int) -> list[Check]:
+    checks: list[Check] = []
+    for unit, prefix in (
+        ("user.slice", "user_slice_child_floor"),
+        (f"user-{uid}.slice", f"user_{uid}_slice_child_floor"),
+        (f"user@{uid}.service", "user_manager_child_floor"),
+    ):
+        checks.extend(_audit_direct_child_floor_composition(unit, prefix))
     return checks
 
 
