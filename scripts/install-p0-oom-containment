@@ -986,10 +986,22 @@ verify_app_slice_runtime() {
 }
 
 verify_recovery_unit_oom_scores() {
-    local spec unit score pid actual failed=0
+    local spec unit score pid actual configured policy failed=0
     for spec in "${recovery_unit_scores[@]}"; do
         unit="${spec%%:*}"
         score="${spec##*:}"
+        configured="$("$SYSTEMCTL" show "$unit" -p OOMScoreAdjust --value 2>/dev/null || true)"
+        if [ "$configured" != "$score" ]; then
+            echo "effective OOM policy drift for $unit: configured=$configured expected=$score; next action: remove higher-priority drop-in drift and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            failed=1
+        fi
+        if [ "$unit" = "sshd.service" ]; then
+            policy="$("$SYSTEMCTL" show "$unit" -p OOMPolicy --value 2>/dev/null || true)"
+            if [ "$policy" != "continue" ]; then
+                echo "effective OOM policy drift for sshd.service: OOMPolicy=$policy expected=continue; next action: remove higher-priority drop-in drift and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+                failed=1
+            fi
+        fi
         pid="$(main_pid_for_unit "$unit")"
         [ -n "$pid" ] || continue
         actual="$(cat "$PROC_ROOT/$pid/oom_score_adj" 2>/dev/null || true)"

@@ -30,6 +30,15 @@ PROTECTED_USER_UNIT_SCORES = {
     "studio-compositor.service": -800,
     "hapax-imagination.service": -800,
 }
+RECOVERY_SYSTEM_UNIT_SCORES = {
+    "apcupsd.service": -900,
+    "systemd-logind.service": -800,
+    "systemd-resolved.service": -800,
+    "systemd-timesyncd.service": -800,
+    "NetworkManager.service": -800,
+    "dbus-broker.service": -900,
+    "sshd.service": 0,
+}
 
 
 def _copy_oom_package(dest_root: Path) -> None:
@@ -98,31 +107,39 @@ def _systemctl_app_slice_cases() -> str:
     )
 
 
+def _systemctl_recovery_unit_cases() -> str:
+    cases = [
+        (f"  *\"show {unit} -p OOMScoreAdjust --value\"*) printf '%s\\n' '{score}' ;;")
+        for unit, score in RECOVERY_SYSTEM_UNIT_SCORES.items()
+    ]
+    cases.append('  *"show sshd.service -p OOMPolicy --value"*) printf "continue\\n" ;;')
+    return "\n".join(cases)
+
+
 def _systemctl_system_memory_cases() -> str:
-    return "\n".join(
-        [
-            '  *"show system.slice -p MemoryHigh --value"*) printf "infinity\\n" ;;',
-            '  *"show system.slice -p MemoryMax --value"*) printf "infinity\\n" ;;',
-            '  *"show system.slice -p MemorySwapMax --value"*) printf "infinity\\n" ;;',
-            '  *"show system.slice -p MemoryLow --value"*) printf "25769803776\\n" ;;',
-            '  *"show system.slice -p MemoryMin --value"*) printf "12884901888\\n" ;;',
-            '  *"show user.slice -p MemoryHigh --value"*) printf "infinity\\n" ;;',
-            '  *"show user.slice -p MemoryMax --value"*) printf "infinity\\n" ;;',
-            '  *"show user.slice -p MemorySwapMax --value"*) printf "infinity\\n" ;;',
-            '  *"show user.slice -p MemoryLow --value"*) printf "17179869184\\n" ;;',
-            '  *"show user.slice -p MemoryMin --value"*) printf "8589934592\\n" ;;',
-            '  *"show user-1000.slice -p MemoryHigh --value"*) printf "85899345920\\n" ;;',
-            '  *"show user-1000.slice -p MemoryMax --value"*) printf "103079215104\\n" ;;',
-            '  *"show user-1000.slice -p MemorySwapMax --value"*) printf "8589934592\\n" ;;',
-            '  *"show user-1000.slice -p MemoryLow --value"*) printf "17179869184\\n" ;;',
-            '  *"show user-1000.slice -p MemoryMin --value"*) printf "8589934592\\n" ;;',
-            '  *"show user@1000.service -p MemoryHigh --value"*) printf "85899345920\\n" ;;',
-            '  *"show user@1000.service -p MemoryMax --value"*) printf "103079215104\\n" ;;',
-            '  *"show user@1000.service -p MemorySwapMax --value"*) printf "8589934592\\n" ;;',
-            '  *"show user@1000.service -p MemoryLow --value"*) printf "17179869184\\n" ;;',
-            '  *"show user@1000.service -p MemoryMin --value"*) printf "8589934592\\n" ;;',
-        ]
-    )
+    cases = [
+        '  *"show system.slice -p MemoryHigh --value"*) printf "infinity\\n" ;;',
+        '  *"show system.slice -p MemoryMax --value"*) printf "infinity\\n" ;;',
+        '  *"show system.slice -p MemorySwapMax --value"*) printf "infinity\\n" ;;',
+        '  *"show system.slice -p MemoryLow --value"*) printf "25769803776\\n" ;;',
+        '  *"show system.slice -p MemoryMin --value"*) printf "12884901888\\n" ;;',
+        '  *"show user.slice -p MemoryHigh --value"*) printf "infinity\\n" ;;',
+        '  *"show user.slice -p MemoryMax --value"*) printf "infinity\\n" ;;',
+        '  *"show user.slice -p MemorySwapMax --value"*) printf "infinity\\n" ;;',
+        '  *"show user.slice -p MemoryLow --value"*) printf "17179869184\\n" ;;',
+        '  *"show user.slice -p MemoryMin --value"*) printf "8589934592\\n" ;;',
+        '  *"show user-1000.slice -p MemoryHigh --value"*) printf "85899345920\\n" ;;',
+        '  *"show user-1000.slice -p MemoryMax --value"*) printf "103079215104\\n" ;;',
+        '  *"show user-1000.slice -p MemorySwapMax --value"*) printf "8589934592\\n" ;;',
+        '  *"show user-1000.slice -p MemoryLow --value"*) printf "17179869184\\n" ;;',
+        '  *"show user-1000.slice -p MemoryMin --value"*) printf "8589934592\\n" ;;',
+        '  *"show user@1000.service -p MemoryHigh --value"*) printf "85899345920\\n" ;;',
+        '  *"show user@1000.service -p MemoryMax --value"*) printf "103079215104\\n" ;;',
+        '  *"show user@1000.service -p MemorySwapMax --value"*) printf "8589934592\\n" ;;',
+        '  *"show user@1000.service -p MemoryLow --value"*) printf "17179869184\\n" ;;',
+        '  *"show user@1000.service -p MemoryMin --value"*) printf "8589934592\\n" ;;',
+    ]
+    return "\n".join([*cases, _systemctl_recovery_unit_cases()])
 
 
 def test_p0_oom_containment_source_check_passes() -> None:
@@ -380,6 +397,46 @@ def test_oom_install_implies_live_verification() -> None:
     body = INSTALLER.read_text(encoding="utf-8")
     assert 'if [ "$INSTALL" -eq 1 ]; then\n    VERIFY_LIVE=1\nfi' in body
     assert "$TARGET_HOME/.cache/hapax/source-activation/worktree" in body
+
+
+def test_oom_install_without_verify_flag_cannot_advance_receipts_after_live_probe_failure(
+    tmp_path: Path,
+) -> None:
+    system_dir = tmp_path / "systemd-system"
+    user_dir = tmp_path / "systemd-user"
+    user_control_dir = tmp_path / "systemd-user-control"
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(system_dir),
+            "HAPAX_OOM_SYSTEMD_USER_DIR": str(user_dir),
+            "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR": str(user_control_dir),
+            "HAPAX_OOM_EARLYOOM_DEST": str(tmp_path / "earlyoom"),
+            "HAPAX_OOM_ENFORCER_DEST": str(tmp_path / "sbin/hapax-oom-score-enforce"),
+            "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(tmp_path / "sbin/hapax-root-failure-intake"),
+            "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_OOM_INSTALL_SUDO": "",
+            "HAPAX_OOM_PROC_ROOT": str(proc_root),
+            "HAPAX_OOM_TARGET_UID": "1000",
+        },
+    )
+
+    assert result.returncode == 1
+    assert "unable to read live user@1000.service MainPID" in result.stderr
+    state_root = tmp_path / "root-state"
+    assert not (state_root / "installed-receipts/oom-containment.sha").exists()
+    assert not (state_root / "desired-receipts/oom-containment.sha").exists()
+    assert not (tmp_path / "installed-source").exists()
 
 
 def _write_proc(

@@ -8,6 +8,17 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-oom-policy-audit"
+RECOVERY_SYSTEM_UNIT_SCORES = {
+    "apcupsd.service": -900,
+    "systemd-logind.service": -800,
+    "systemd-resolved.service": -800,
+    "systemd-timesyncd.service": -800,
+    "NetworkManager.service": -800,
+    "dbus-broker.service": -900,
+}
+RECOVERY_SYSTEM_UNIT_PIDS = {
+    unit: 930 + index for index, unit in enumerate(RECOVERY_SYSTEM_UNIT_SCORES)
+}
 PROTECTED_USER_UNIT_SCORES = {
     "pipewire.service": -900,
     "pipewire-pulse.service": -900,
@@ -51,6 +62,15 @@ def _protected_user_unit_cases(
     return "\n".join(cases)
 
 
+def _recovery_system_unit_cases(*, wrong_score: bool = False) -> str:
+    cases = []
+    for unit, score in RECOVERY_SYSTEM_UNIT_SCORES.items():
+        actual = -1000 if wrong_score and unit == "apcupsd.service" else score
+        pid = RECOVERY_SYSTEM_UNIT_PIDS[unit]
+        cases.append(f"  *\"show {unit}\"*) printf 'OOMScoreAdjust={actual}\\nMainPID={pid}\\n' ;;")
+    return "\n".join(cases)
+
+
 def _fake_systemctl(
     tmp_path: Path,
     *,
@@ -66,6 +86,7 @@ def _fake_systemctl(
     protected_unit_cgroups: dict[str, str] | None = None,
     sshd_score: int = 0,
     sshd_policy: str = "continue",
+    wrong_recovery_unit_score: bool = False,
 ) -> Path:
     path = tmp_path / "systemctl"
     app_values = (
@@ -119,6 +140,7 @@ case "$*" in
   *"show user@1000.service --no-pager -p MemoryHigh"*) printf '{uid_memory_values}' ;;
   *"show user@1000.service"*) printf 'OOMScoreAdjust={user_oom}\\nDropInPaths=/etc/systemd/system/user@1000.service.d/oom.conf\\nMainPID=900\\n' ;;
   *"show sshd.service"*) printf 'OOMScoreAdjust={sshd_score}\\nOOMPolicy={sshd_policy}\\nMainPID=920\\n' ;;
+{_recovery_system_unit_cases(wrong_score=wrong_recovery_unit_score)}
   *"show app.slice"*) printf '{app_values}' ;;
 {_protected_user_unit_cases(wrong_unit_score=wrong_unit_score, wrong_unit_memory=wrong_unit_memory, unit_pids=protected_unit_pids, unit_cgroups=protected_unit_cgroups)}
   *"list-units --type=scope"*) printf 'tmux-spawn-a.scope loaded active running tmux child pane\\n' ;;
@@ -160,6 +182,7 @@ def _run(
     protected_unit_cgroups: dict[str, str] | None = None,
     sshd_score: int = 0,
     sshd_policy: str = "continue",
+    wrong_recovery_unit_score: bool = False,
     proc_root: Path | None = None,
     cgroup_root: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
@@ -170,6 +193,15 @@ def _run(
         _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=100)
     if not (proc_root / "920").exists():
         _write_proc(proc_root, 920, name="sshd", uid=0, oom_score=0)
+    for unit, pid in RECOVERY_SYSTEM_UNIT_PIDS.items():
+        if not (proc_root / str(pid)).exists():
+            _write_proc(
+                proc_root,
+                pid,
+                name=unit.removesuffix(".service"),
+                uid=0,
+                oom_score=RECOVERY_SYSTEM_UNIT_SCORES[unit],
+            )
     if cgroup_root is None:
         cgroup_root = tmp_path / "cgroup"
         cgroup_root.mkdir(exist_ok=True)
@@ -190,6 +222,7 @@ def _run(
                 protected_unit_cgroups=protected_unit_cgroups,
                 sshd_score=sshd_score,
                 sshd_policy=sshd_policy,
+                wrong_recovery_unit_score=wrong_recovery_unit_score,
             )
         ),
         "HAPAX_OOM_AUDIT_PROC_ROOT": str(proc_root),
@@ -236,6 +269,21 @@ def test_audit_fails_when_effective_sshd_policy_is_overridden(tmp_path: Path) ->
     assert "future sessions" in checks["sshd_effective_OOMScoreAdjust"]["detail"]
     assert checks["sshd_effective_OOMPolicy"]["status"] == "gap"
     assert checks["sshd_live_oom_score_adj"]["status"] == "pass"
+
+
+def test_audit_fails_when_effective_recovery_daemon_policy_is_overridden(
+    tmp_path: Path,
+) -> None:
+    result = _run(tmp_path, wrong_recovery_unit_score=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    checks = {item["name"]: item for item in payload["checks"]}
+    effective = checks["system_unit_apcupsd.service_OOMScoreAdjust"]
+    assert effective["status"] == "gap"
+    assert effective["actual"] == "-1000"
+    assert "effective recovery-daemon OOM policy drifted" in effective["detail"]
+    assert checks["system_unit_apcupsd.service_live_oom_score_adj"]["status"] == "pass"
 
 
 def test_audit_fails_when_app_slice_backstop_is_unbounded(tmp_path: Path) -> None:

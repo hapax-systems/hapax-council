@@ -22,6 +22,14 @@ BYTES_8G = 8 * 1024**3
 NEXT_OOM_INSTALL = "next action: scripts/install-p0-oom-containment --install --verify-live"
 PROC_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_PROC_ROOT", "/proc"))
 CGROUP_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_CGROUP_ROOT", "/sys/fs/cgroup"))
+RECOVERY_SYSTEM_UNITS = {
+    "apcupsd.service": -900,
+    "systemd-logind.service": -800,
+    "systemd-resolved.service": -800,
+    "systemd-timesyncd.service": -800,
+    "NetworkManager.service": -800,
+    "dbus-broker.service": -900,
+}
 PROTECTED_USER_UNITS = {
     "pipewire.service": -900,
     "pipewire-pulse.service": -900,
@@ -145,6 +153,91 @@ def audit_user_manager_live_score(uid: int) -> Check:
     status = "pass" if actual == 100 else "gap"
     detail = "" if status == "pass" else f"live user@ OOM score drifted; {NEXT_OOM_INSTALL}"
     return Check("user_manager_live_oom_score_adj", status, "100", actual_text, detail)
+
+
+def audit_recovery_system_units() -> list[Check]:
+    checks: list[Check] = []
+    for unit, expected in RECOVERY_SYSTEM_UNITS.items():
+        values = _show(unit, ["OOMScoreAdjust", "MainPID"])
+        if "_error" in values:
+            detail = f"{values['_error']}; {NEXT_OOM_INSTALL}"
+            checks.extend(
+                [
+                    Check(
+                        f"system_unit_{unit}_OOMScoreAdjust",
+                        "error",
+                        str(expected),
+                        "N/A",
+                        detail,
+                    ),
+                    Check(
+                        f"system_unit_{unit}_live_oom_score_adj",
+                        "error",
+                        str(expected),
+                        "N/A",
+                        detail,
+                    ),
+                ]
+            )
+            continue
+
+        configured = values.get("OOMScoreAdjust", "")
+        configured_status = "pass" if _int_value(configured) == expected else "gap"
+        configured_detail = (
+            ""
+            if configured_status == "pass"
+            else f"effective recovery-daemon OOM policy drifted; {NEXT_OOM_INSTALL}"
+        )
+        checks.append(
+            Check(
+                f"system_unit_{unit}_OOMScoreAdjust",
+                configured_status,
+                str(expected),
+                configured,
+                configured_detail,
+            )
+        )
+
+        pid = values.get("MainPID", "0")
+        if pid == "0":
+            checks.append(
+                Check(
+                    f"system_unit_{unit}_live_oom_score_adj",
+                    "pass",
+                    str(expected),
+                    "inactive",
+                )
+            )
+            continue
+        if not pid.isdigit():
+            checks.append(
+                Check(
+                    f"system_unit_{unit}_live_oom_score_adj",
+                    "error",
+                    str(expected),
+                    pid,
+                    f"unparseable recovery-daemon MainPID; {NEXT_OOM_INSTALL}",
+                )
+            )
+            continue
+        live = _proc_oom_score(pid)
+        live_actual = "N/A" if live is None else str(live)
+        live_status = "pass" if live == expected else "gap"
+        live_detail = (
+            ""
+            if live_status == "pass"
+            else f"live recovery-daemon OOM score drifted; {NEXT_OOM_INSTALL}"
+        )
+        checks.append(
+            Check(
+                f"system_unit_{unit}_live_oom_score_adj",
+                live_status,
+                str(expected),
+                live_actual,
+                live_detail,
+            )
+        )
+    return checks
 
 
 def audit_sshd_policy() -> list[Check]:
@@ -570,6 +663,7 @@ def main(argv: list[str] | None = None) -> int:
     checks = [
         audit_user_manager(args.uid),
         audit_user_manager_live_score(args.uid),
+        *audit_recovery_system_units(),
         *audit_sshd_policy(),
         *audit_system_slice_reservation(),
         *audit_user_slice_reservation(),
