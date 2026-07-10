@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """Audit Hapax host OOM policy drift."""
 
 from __future__ import annotations
@@ -397,8 +397,10 @@ def _direct_child_floor_sum(control_group: str, key: str) -> tuple[int | None, s
     return sum(value for _, value in values), detail
 
 
-def _audit_direct_child_floor_composition(unit: str, check_prefix: str) -> list[Check]:
-    parent = _show(unit, ["MemoryLow", "MemoryMin", "ControlGroup"])
+def _audit_direct_child_floor_composition(
+    unit: str, check_prefix: str, *, user: bool = False
+) -> list[Check]:
+    parent = _show(unit, ["MemoryLow", "MemoryMin", "ControlGroup"], user=user)
     if "_error" in parent:
         return [
             Check(
@@ -452,12 +454,14 @@ def _audit_direct_child_floor_composition(unit: str, check_prefix: str) -> list[
 
 def audit_user_child_floor_composition(uid: int) -> list[Check]:
     checks: list[Check] = []
-    for unit, prefix in (
-        ("user.slice", "user_slice_child_floor"),
-        (f"user-{uid}.slice", f"user_{uid}_slice_child_floor"),
-        (f"user@{uid}.service", "user_manager_child_floor"),
+    for unit, prefix, user in (
+        ("user.slice", "user_slice_child_floor", False),
+        (f"user-{uid}.slice", f"user_{uid}_slice_child_floor", False),
+        (f"user@{uid}.service", "user_manager_child_floor", False),
+        ("app.slice", "app_slice_child_floor", True),
+        ("session.slice", "session_slice_child_floor", True),
     ):
-        checks.extend(_audit_direct_child_floor_composition(unit, prefix))
+        checks.extend(_audit_direct_child_floor_composition(unit, prefix, user=user))
     return checks
 
 

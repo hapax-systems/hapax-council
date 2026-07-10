@@ -172,8 +172,8 @@ case "$*" in
   *"show user@1000.service"*) printf 'OOMScoreAdjust={user_oom}\\nOOMPolicy={user_oom_policy}\\nDropInPaths=/etc/systemd/system/user@1000.service.d/oom.conf\\nMainPID=900\\n' ;;
   *"show sshd.service"*) printf 'OOMScoreAdjust={sshd_score}\\nOOMPolicy={sshd_policy}\\nMainPID=920\\n' ;;
 {_recovery_system_unit_cases(wrong_score=wrong_recovery_unit_score, inactive_unit=inactive_recovery_unit)}
-  *"show app.slice"*) printf '{app_values}' ;;
-  *"show session.slice"*) printf '{session_slice_values}' ;;
+  *"show app.slice"*) printf '{app_values}ControlGroup=/user.slice/user-1000.slice/user@1000.service/app.slice\n' ;;
+  *"show session.slice"*) printf '{session_slice_values}ControlGroup=/user.slice/user-1000.slice/user@1000.service/session.slice\n' ;;
 {_protected_user_unit_cases(wrong_unit_score=wrong_unit_score, wrong_unit_memory=wrong_unit_memory, wrong_unit_slice=wrong_unit_slice, wrong_audio_no_new_privileges=wrong_audio_no_new_privileges, unit_pids=protected_unit_pids, unit_cgroups=protected_unit_cgroups)}
   *"list-units --type=scope"*) printf 'tmux-spawn-a.scope loaded active running tmux child pane\\n' ;;
   *"show tmux-spawn-a.scope"*) printf '{tmux_values}' ;;
@@ -227,6 +227,8 @@ def _run(
     extra_direct_child_floor: bool = False,
     extra_uid_sibling_floor: bool = False,
     extra_user_sibling_floor: bool = False,
+    extra_app_sibling_floor: bool = False,
+    extra_session_sibling_floor: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     if proc_root is None:
         proc_root = tmp_path / "proc"
@@ -282,6 +284,30 @@ def _run(
         child_dir.mkdir(parents=True, exist_ok=True)
         (child_dir / "memory.low").write_text(f"{memory_low}\n", encoding="utf-8")
         (child_dir / "memory.min").write_text(f"{memory_min}\n", encoding="utf-8")
+    app_cgroup = manager_cgroup / "app.slice"
+    session_cgroup = manager_cgroup / "session.slice"
+    leaf_floors = {
+        app_cgroup: {
+            "hapax-daimonion.service": (2147483648, 1073741824),
+            "studio-compositor.service": (6442450944, 3221225472),
+            "hapax-imagination.service": (6442450944, 3221225472),
+        },
+        session_cgroup: {
+            "pipewire.service": (536870912, 268435456),
+            "pipewire-pulse.service": (536870912, 268435456),
+            "wireplumber.service": (536870912, 268435456),
+        },
+    }
+    if extra_app_sibling_floor:
+        leaf_floors[app_cgroup]["browser-batch.scope"] = (3221225472, 2147483648)
+    if extra_session_sibling_floor:
+        leaf_floors[session_cgroup]["session-99.scope"] = (1073741824, 536870912)
+    for parent, children in leaf_floors.items():
+        for child, (memory_low, memory_min) in children.items():
+            child_dir = parent / child
+            child_dir.mkdir(parents=True, exist_ok=True)
+            (child_dir / "memory.low").write_text(f"{memory_low}\n", encoding="utf-8")
+            (child_dir / "memory.min").write_text(f"{memory_min}\n", encoding="utf-8")
     env = {
         **os.environ,
         "HAPAX_SYSTEMCTL": str(
@@ -335,6 +361,8 @@ def test_audit_passes_when_user_manager_is_killable_and_app_slice_bounded(tmp_pa
     assert statuses["user_1000_slice_child_floor_MemoryLow"] == "pass"
     assert statuses["user_manager_child_floor_MemoryLow"] == "pass"
     assert statuses["user_manager_child_floor_MemoryMin"] == "pass"
+    assert statuses["app_slice_child_floor_MemoryLow"] == "pass"
+    assert statuses["session_slice_child_floor_MemoryMin"] == "pass"
     assert statuses["user_unit_pipewire.service_Slice"] == "pass"
     assert statuses["user_unit_pipewire.service_NoNewPrivileges"] == "pass"
     assert statuses["user_unit_studio-compositor.service_Slice"] == "pass"
@@ -402,6 +430,28 @@ def test_audit_fails_when_another_uid_dilutes_user_slice_floor(tmp_path: Path) -
     )
     assert check["status"] == "gap"
     assert "user-1001.slice:2147483648" in check["actual"]
+
+
+def test_audit_fails_when_app_sibling_dilutes_app_slice_floor(tmp_path: Path) -> None:
+    result = _run(tmp_path, extra_app_sibling_floor=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    checks = {item["name"]: item for item in payload["checks"]}
+    assert checks["app_slice_child_floor_MemoryLow"]["status"] == "gap"
+    assert checks["app_slice_child_floor_MemoryMin"]["status"] == "gap"
+    assert "browser-batch.scope:3221225472" in checks["app_slice_child_floor_MemoryLow"]["actual"]
+
+
+def test_audit_fails_when_session_sibling_dilutes_session_slice_floor(tmp_path: Path) -> None:
+    result = _run(tmp_path, extra_session_sibling_floor=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    checks = {item["name"]: item for item in payload["checks"]}
+    assert checks["session_slice_child_floor_MemoryLow"]["status"] == "gap"
+    assert checks["session_slice_child_floor_MemoryMin"]["status"] == "gap"
+    assert "session-99.scope:1073741824" in checks["session_slice_child_floor_MemoryLow"]["actual"]
 
 
 def test_audit_fails_when_protected_unit_leaves_checked_app_slice_chain(tmp_path: Path) -> None:
