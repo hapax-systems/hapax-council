@@ -966,6 +966,42 @@ def test_claimed_apcupsd_commit_rejects_modified_package_before_live_mutation(
     assert not live.exists()
 
 
+@pytest.mark.parametrize("drift_kind", ("symlink", "git_mode"))
+def test_claimed_apcupsd_commit_rejects_substituted_source_before_live_mutation(
+    tmp_path: Path,
+    drift_kind: str,
+) -> None:
+    source = tmp_path / "staged"
+    _copy_apcupsd_package(source)
+    relative = Path("config/apcupsd/apcupsd.conf")
+    candidate = source / relative
+    if drift_kind == "symlink":
+        candidate.unlink()
+        candidate.symlink_to(REPO_ROOT / relative)
+    else:
+        candidate.chmod(0o755)
+    live = tmp_path / "live-apcupsd"
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(source), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+            "HAPAX_APCUPSD_DEST": str(live),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": REPO_HEAD,
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "not a regular file with the claimed Git mode" in result.stderr
+    assert str(relative) in result.stderr
+    assert not live.exists()
+
+
 def test_mismatched_apcupsd_deferral_is_rejected_before_live_mutation(tmp_path: Path) -> None:
     defer_root = tmp_path / "root-required"
     expected = defer_root / REPO_HEAD / "apcupsd-power-alerts"

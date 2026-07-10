@@ -409,9 +409,32 @@ record_root_required_package_receipt() {
 }
 
 validate_package_source_matches_commit() {
-    local rel
+    local rel git_mode
     for rel in "${package_files[@]}"; do
-        if [ ! -f "$SOURCE/$rel" ] || ! cmp -s <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$ROOT_REQUIRED_PACKAGE_SHA:$rel") "$SOURCE/$rel"; then
+        git_mode="$(git -C "$ROOT_REQUIRED_GIT_REPO" ls-tree "$ROOT_REQUIRED_PACKAGE_SHA" -- "$rel" | awk 'NR == 1 {print $1}')"
+        if ! /usr/bin/python3 - "$SOURCE/$rel" "$git_mode" <<'PY'
+from __future__ import annotations
+
+import os
+import stat
+import sys
+
+path, git_mode = sys.argv[1:]
+try:
+    inode = os.lstat(path)
+except OSError:
+    raise SystemExit(1)
+if not stat.S_ISREG(inode.st_mode):
+    raise SystemExit(1)
+worktree_mode = "100755" if stat.S_IMODE(inode.st_mode) & 0o111 else "100644"
+if git_mode not in {"100644", "100755"} or worktree_mode != git_mode:
+    raise SystemExit(1)
+PY
+        then
+            echo "OOM install source is not a regular file with the claimed Git mode at $rel; next action: discard the substituted or mode-drifted package and rerun from a clean Git worktree or exact staged RUNBOOK" >&2
+            return 1
+        fi
+        if ! cmp -s <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$ROOT_REQUIRED_PACKAGE_SHA:$rel") "$SOURCE/$rel"; then
             echo "OOM install source does not match claimed commit $ROOT_REQUIRED_PACKAGE_SHA at $rel; next action: discard the modified package and rerun from a clean Git worktree or exact staged RUNBOOK" >&2
             return 1
         fi
@@ -1395,7 +1418,7 @@ verify_user_manager_oom_score() {
 }
 
 verify_protected_user_unit_oom_scores() {
-    local spec unit score pid actual configured failed=0
+    local spec unit score pid actual configured rel expected_slice key expected_raw expected_bytes failed=0
     for spec in "${protected_user_unit_scores[@]}"; do
         unit="${spec%%:*}"
         score="${spec##*:}"
@@ -1404,6 +1427,28 @@ verify_protected_user_unit_oom_scores() {
             echo "user unit startup OOM policy drift for $unit: configured=$configured expected=100; the user manager cannot lower a child score, so root must apply live score $score after start; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
             failed=1
         fi
+        case "$unit" in
+            pipewire.service|pipewire-pulse.service|wireplumber.service) expected_slice=session.slice ;;
+            *) expected_slice=app.slice ;;
+        esac
+        actual="$(user_systemctl show "$unit" -p Slice --value 2>/dev/null || true)"
+        if [ "$actual" != "$expected_slice" ]; then
+            echo "live user unit Slice drift for $unit: actual=$actual expected=$expected_slice; next action: remove higher-priority user-unit drop-in drift and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            failed=1
+        fi
+        rel="systemd/units/$unit.d/oom-protect.conf"
+        for key in MemoryLow MemoryMin; do
+            expected_raw="$(source_unit_value "$rel" "$key")"
+            expected_bytes="$(memory_to_bytes "$expected_raw")" || {
+                echo "cannot parse protected user unit $unit $key=$expected_raw from $rel; next action: fix the source drop-in and rerun scripts/install-p0-oom-containment --check" >&2
+                return 1
+            }
+            actual="$(user_systemctl show "$unit" -p "$key" --value 2>/dev/null || true)"
+            if [ "$actual" != "$expected_raw" ] && [ "$actual" != "$expected_bytes" ]; then
+                echo "live user unit $key drift for $unit: actual=$actual expected=$expected_raw; next action: remove higher-priority user-unit drop-in drift and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+                failed=1
+            fi
+        done
         while IFS= read -r pid; do
             [ -n "$pid" ] || continue
             actual="$(cat "$PROC_ROOT/$pid/oom_score_adj" 2>/dev/null || true)"

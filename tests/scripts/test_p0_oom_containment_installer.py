@@ -33,6 +33,38 @@ PROTECTED_USER_UNIT_SCORES = {
     "studio-compositor.service": -800,
     "hapax-imagination.service": -800,
 }
+PROTECTED_USER_UNIT_RUNTIME = {
+    "pipewire.service": {
+        "Slice": "session.slice",
+        "MemoryLow": "536870912",
+        "MemoryMin": "268435456",
+    },
+    "pipewire-pulse.service": {
+        "Slice": "session.slice",
+        "MemoryLow": "536870912",
+        "MemoryMin": "268435456",
+    },
+    "wireplumber.service": {
+        "Slice": "session.slice",
+        "MemoryLow": "536870912",
+        "MemoryMin": "268435456",
+    },
+    "hapax-daimonion.service": {
+        "Slice": "app.slice",
+        "MemoryLow": "2147483648",
+        "MemoryMin": "1073741824",
+    },
+    "studio-compositor.service": {
+        "Slice": "app.slice",
+        "MemoryLow": "6442450944",
+        "MemoryMin": "3221225472",
+    },
+    "hapax-imagination.service": {
+        "Slice": "app.slice",
+        "MemoryLow": "6442450944",
+        "MemoryMin": "3221225472",
+    },
+}
 RECOVERY_SYSTEM_UNIT_SCORES = {
     "apcupsd.service": -900,
     "systemd-logind.service": -800,
@@ -118,8 +150,10 @@ def _enforcer_user_unit_cases(
 def _systemctl_user_unit_cases(
     unit_pids: dict[str, int] | None = None,
     unit_cgroups: dict[str, str] | None = None,
+    effective_overrides: dict[str, dict[str, str]] | None = None,
 ) -> str:
     unit_pids = unit_pids or {}
+    effective_overrides = effective_overrides or {}
     unit_cgroups = unit_cgroups or {
         unit: _unit_cgroup(unit) for unit in unit_pids if unit in PROTECTED_USER_UNIT_SCORES
     }
@@ -136,6 +170,11 @@ def _systemctl_user_unit_cases(
             f"  *--user\\ show\\ {unit}\\ -p\\ ControlGroup\\ --value*) "
             f"printf '%s\\n' '{unit_cgroups.get(unit, '')}' ;;"
         )
+        for key, expected in PROTECTED_USER_UNIT_RUNTIME[unit].items():
+            actual = effective_overrides.get(unit, {}).get(key, expected)
+            cases.append(
+                f"  *--user\\ show\\ {unit}\\ -p\\ {key}\\ --value*) printf '%s\\n' '{actual}' ;;"
+            )
     return "\n".join(cases)
 
 
@@ -562,6 +601,42 @@ def test_unversioned_oom_install_source_fails_before_live_mutation(tmp_path: Pat
     assert not live.exists()
 
 
+@pytest.mark.parametrize("drift_kind", ("symlink", "git_mode"))
+def test_claimed_oom_commit_rejects_substituted_source_before_live_mutation(
+    tmp_path: Path,
+    drift_kind: str,
+) -> None:
+    source = tmp_path / "staged"
+    _copy_oom_package(source)
+    relative = Path("config/earlyoom/default")
+    candidate = source / relative
+    if drift_kind == "symlink":
+        candidate.unlink()
+        candidate.symlink_to(REPO_ROOT / relative)
+    else:
+        candidate.chmod(0o755)
+    live = tmp_path / "live-earlyoom"
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(source), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_INSTALL_SUDO": "",
+            "HAPAX_OOM_EARLYOOM_DEST": str(live),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": REPO_HEAD,
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "not a regular file with the claimed Git mode" in result.stderr
+    assert str(relative) in result.stderr
+    assert not live.exists()
+
+
 def test_oom_manifest_shrink_fails_before_live_mutation(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -669,6 +744,71 @@ def test_oom_install_without_verify_flag_cannot_advance_receipts_after_live_prob
 
     assert result.returncode == 1
     assert "unable to read live user@1000.service MainPID" in result.stderr
+    state_root = tmp_path / "root-state"
+    assert not (state_root / "installed-receipts/oom-containment.sha").exists()
+    assert not (state_root / "desired-receipts/oom-containment.sha").exists()
+    assert not (tmp_path / "installed-source").exists()
+
+
+@pytest.mark.parametrize(
+    ("property_name", "bad_value"),
+    (("Slice", "wrong.slice"), ("MemoryLow", "0"), ("MemoryMin", "0")),
+)
+def test_oom_install_rejects_effective_protected_unit_reservation_drift_before_receipts(
+    tmp_path: Path,
+    property_name: str,
+    bad_value: str,
+) -> None:
+    system_dir = tmp_path / "systemd-system"
+    user_dir = tmp_path / "systemd-user"
+    user_control_dir = tmp_path / "systemd-user-control"
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    _write_proc(
+        proc_root,
+        900,
+        name="systemd",
+        uid=1000,
+        oom_score=100,
+        cgroup="/user.slice/user-1000.slice/user@1000.service",
+    )
+    _write_recovery_procs(proc_root)
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$*" in\n'
+        '  *"show user@1000.service -p MainPID --value"*) printf "900\\n" ;;\n'
+        f"{_systemctl_system_memory_cases(RECOVERY_SYSTEM_UNIT_PIDS)}\n"
+        f"{_systemctl_app_slice_cases()}\n"
+        f"{_systemctl_user_unit_cases(effective_overrides={'pipewire.service': {property_name: bad_value}})}\n"
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(system_dir),
+            "HAPAX_OOM_SYSTEMD_USER_DIR": str(user_dir),
+            "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR": str(user_control_dir),
+            "HAPAX_OOM_EARLYOOM_DEST": str(tmp_path / "earlyoom"),
+            "HAPAX_OOM_ENFORCER_DEST": str(tmp_path / "sbin/hapax-oom-score-enforce"),
+            "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(tmp_path / "sbin/hapax-root-failure-intake"),
+            "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_OOM_INSTALL_SUDO": "",
+            "HAPAX_OOM_PROC_ROOT": str(proc_root),
+            "HAPAX_OOM_TARGET_UID": "1000",
+        },
+    )
+
+    assert result.returncode == 1
+    assert f"live user unit {property_name} drift for pipewire.service" in result.stderr
     state_root = tmp_path / "root-state"
     assert not (state_root / "installed-receipts/oom-containment.sha").exists()
     assert not (state_root / "desired-receipts/oom-containment.sha").exists()

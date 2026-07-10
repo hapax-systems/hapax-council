@@ -7,6 +7,8 @@ load-bearing directives from silently regressing.
 
 from __future__ import annotations
 
+import ast
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -185,6 +187,76 @@ def test_broadcast_critical_user_oom_dropins_are_source_controlled() -> None:
             assert _directive(text, "ExecStartPost") == "-/usr/local/bin/hapax-oom-score-trigger %n"
         assert _directive(text, "MemoryLow") is not None
         assert _directive(text, "MemoryMin") is not None
+
+
+def test_protected_user_unit_allowlist_and_scores_match_across_runtime_surfaces() -> None:
+    expected = {
+        "pipewire.service": -900,
+        "pipewire-pulse.service": -900,
+        "wireplumber.service": -900,
+        "hapax-daimonion.service": -500,
+        "studio-compositor.service": -800,
+        "hapax-imagination.service": -800,
+    }
+    oom_installer = (REPO_ROOT / "scripts/install-p0-oom-containment").read_text()
+    installer_block = re.search(
+        r"^protected_user_unit_scores=\(\n(?P<body>.*?)^\)",
+        oom_installer,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    assert installer_block is not None
+    installer_scores = {}
+    for line in installer_block.group("body").splitlines():
+        unit, score = line.strip().rsplit(":", 1)
+        installer_scores[unit] = int(score)
+
+    enforcer = (REPO_ROOT / "scripts/hapax-oom-score-enforce").read_text()
+    enforcer_scores = {
+        unit: int(score)
+        for unit, score in re.findall(
+            r"^apply_unit_score ([a-z0-9@_.-]+) (-?\d+)$", enforcer, flags=re.MULTILINE
+        )
+    }
+    enforcer_allowlist = {}
+    enforcer_function = re.search(
+        r"protected_user_unit_score\(\) \{(?P<body>.*?)^\}",
+        enforcer,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    assert enforcer_function is not None
+    for units, score in re.findall(
+        r"^\s+([a-z0-9@_. |/-]+)\)\n\s+printf '%s\\n' (-?\d+)$",
+        enforcer_function.group("body"),
+        flags=re.MULTILINE,
+    ):
+        for unit in units.split("|"):
+            enforcer_allowlist[unit.strip()] = int(score)
+
+    audit_tree = ast.parse((REPO_ROOT / "scripts/hapax-oom-policy-audit").read_text())
+    audit_scores = None
+    for node in audit_tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "PROTECTED_USER_UNITS"
+            for target in node.targets
+        ):
+            audit_scores = ast.literal_eval(node.value)
+            break
+    assert audit_scores is not None
+
+    trigger = (REPO_ROOT / "scripts/hapax-oom-score-trigger").read_text()
+    trigger_match = re.search(r'case "\$unit" in\n\s+(?P<units>[^\n]+)\) ;;', trigger)
+    assert trigger_match is not None
+    trigger_units = {unit.strip() for unit in trigger_match.group("units").split("|")}
+
+    sudoers = (REPO_ROOT / "config/root-required/hapax-oom-score-enforce.sudoers").read_text()
+    sudoers_units = set(re.findall(r"--apply-unit ([a-z0-9@_.-]+)", sudoers))
+    dropin_units = {
+        path.parent.name.removesuffix(".d")
+        for path in UNITS_DIR.glob("*.service.d/oom-protect.conf")
+    }
+
+    assert installer_scores == enforcer_scores == enforcer_allowlist == audit_scores == expected
+    assert trigger_units == sudoers_units == dropin_units == set(expected)
 
 
 def test_oom_policy_audit_timer_is_source_controlled() -> None:
