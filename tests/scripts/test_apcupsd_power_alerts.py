@@ -255,23 +255,40 @@ def test_power_event_helper_records_offbattery_delivery_failure(tmp_path: Path) 
     )
     fake_apcaccess.chmod(0o755)
 
-    result = subprocess.run(
-        [
-            str(HELPER),
-            "offbattery",
-            "--audit-log",
-            str(audit),
-            "--apcaccess",
-            str(fake_apcaccess),
-            "--ntfy-url",
-            "http://127.0.0.1:9/hapax-alerts",
-            "--timeout",
-            "0.2",
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            self.send_response(500)
+            self.end_headers()
+
+        def log_message(self, fmt: str, *args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        result = subprocess.run(
+            [
+                str(HELPER),
+                "offbattery",
+                "--audit-log",
+                str(audit),
+                "--apcaccess",
+                str(fake_apcaccess),
+                "--ntfy-url",
+                f"http://127.0.0.1:{server.server_port}/hapax-alerts",
+                "--timeout",
+                "0.2",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
 
     assert result.returncode == 0, result.stderr
     records = [
@@ -284,9 +301,111 @@ def test_power_event_helper_records_offbattery_delivery_failure(tmp_path: Path) 
     assert "does not determine whether shutdown was previously requested" in records[1]["message"]
     assert records[1]["delivery"]["attempted"] is True
     assert records[1]["delivery"]["ok"] is False
-    assert records[1]["delivery"]["error"]
+    assert records[1]["delivery"]["status"] == 500
+    assert "HTTP Error 500" in records[1]["delivery"]["error"]
     assert "UPS notification delivery failed" in result.stderr
     assert "next action:" in result.stderr
+
+
+def test_power_event_helper_redacts_ntfy_credentials_and_topic(tmp_path: Path) -> None:
+    audit = tmp_path / "ups-events.jsonl"
+    secret_url = "https://agent:secret@example.test:8443/private-topic?token=credential"
+
+    result = subprocess.run(
+        [
+            str(HELPER),
+            "onbattery",
+            "--audit-log",
+            str(audit),
+            "--apcaccess",
+            "",
+            "--ntfy-url",
+            secret_url,
+            "--no-ntfy",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    raw_audit = audit.read_text(encoding="utf-8")
+    records = [json.loads(line) for line in raw_audit.splitlines() if line.strip()]
+    assert {record["ntfy_url"] for record in records} == {"https://example.test:8443"}
+    assert "agent" not in raw_audit
+    assert "secret" not in raw_audit
+    assert "private-topic" not in raw_audit
+    assert "credential" not in raw_audit
+
+
+def test_power_event_helper_redacts_ntfy_url_from_delivery_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    namespace = runpy.run_path(str(HELPER))
+    secret_url = "https://agent:secret@example.test:8443/private-topic?token=credential"
+
+    def fail_delivery(*args: object, **kwargs: object) -> None:
+        raise ValueError(f"invalid destination {secret_url}")
+
+    monkeypatch.setattr(namespace["urllib"].request, "urlopen", fail_delivery)
+    delivery = namespace["post_ntfy"](secret_url, "title", "message", "urgent", 1.0)
+
+    assert delivery.attempted is True
+    assert delivery.ok is False
+    assert "https://example.test:8443" in delivery.error
+    assert "agent" not in delivery.error
+    assert "secret" not in delivery.error
+    assert "private-topic" not in delivery.error
+    assert "credential" not in delivery.error
+
+
+@pytest.mark.parametrize("invalid_timeout", ["invalid", "nan", "inf", "-1", "0"])
+def test_power_event_helper_falls_back_for_invalid_env_timeout(
+    tmp_path: Path, invalid_timeout: str
+) -> None:
+    audit = tmp_path / f"ups-events-{invalid_timeout}.jsonl"
+
+    result = subprocess.run(
+        [
+            str(HELPER),
+            "onbattery",
+            "--audit-log",
+            str(audit),
+            "--apcaccess",
+            "",
+            "--no-ntfy",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "HAPAX_UPS_NTFY_TIMEOUT": invalid_timeout},
+    )
+
+    assert result.returncode == 0, result.stderr
+    records = [
+        json.loads(line) for line in audit.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
+    assert {record["notification_timeout_s"] for record in records} == {5.0}
+
+
+def test_power_event_helper_rejects_invalid_explicit_timeout(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            str(HELPER),
+            "onbattery",
+            "--audit-log",
+            str(tmp_path / "ups-events.jsonl"),
+            "--timeout",
+            "nan",
+            "--no-ntfy",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "timeout must be a positive finite number" in result.stderr
 
 
 def test_power_event_helper_marks_doshutdown_as_distinct_intent(tmp_path: Path) -> None:

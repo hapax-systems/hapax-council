@@ -7,12 +7,14 @@ import argparse
 import errno
 import fcntl
 import json
+import math
 import os
 import stat
 import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -20,6 +22,7 @@ from pathlib import Path
 
 DEFAULT_AUDIT_LOG = "/var/log/hapax/ups-power-events.jsonl"
 DEFAULT_NTFY_URL = "http://localhost:8090/hapax-alerts"
+DEFAULT_NTFY_TIMEOUT_S = 5.0
 DEFAULT_APCACCESS = "/usr/bin/apcaccess"
 DEFAULT_APCACCESS_TIMEOUT_S = 3.0
 SHUTDOWN_IO_TIMEOUT_S = 1.0
@@ -72,6 +75,44 @@ def utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
+def positive_finite_timeout(value: str | float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("timeout must be a positive finite number") from exc
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("timeout must be a positive finite number")
+    return parsed
+
+
+def ntfy_timeout_default() -> float:
+    try:
+        return positive_finite_timeout(os.environ.get("HAPAX_UPS_NTFY_TIMEOUT", "5"))
+    except argparse.ArgumentTypeError:
+        return DEFAULT_NTFY_TIMEOUT_S
+
+
+def redact_ntfy_url(url: str) -> str:
+    if not url:
+        return ""
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return "invalid-destination"
+    if not parsed.scheme or not hostname:
+        return "invalid-destination"
+    safe_host = f"[{hostname}]" if ":" in hostname else hostname
+    safe_netloc = f"{safe_host}:{port}" if port is not None else safe_host
+    return urllib.parse.urlunsplit((parsed.scheme, safe_netloc, "", "", ""))
+
+
+def redact_delivery_error(url: str, exc: BaseException) -> str:
+    rendered = f"{type(exc).__name__}: {exc}"
+    return rendered.replace(url, redact_ntfy_url(url)) if url else rendered
+
+
 def parse_apcaccess(raw: str) -> dict[str, str]:
     out: dict[str, str] = {}
     for line in raw.splitlines():
@@ -107,23 +148,28 @@ def format_ntfy_message(base_message: str, apc: dict[str, str], recorded_at: str
 def post_ntfy(url: str, title: str, message: str, priority: str, timeout_s: float) -> Delivery:
     if not url:
         return Delivery(attempted=False, ok=False, error="ntfy disabled")
-    req = urllib.request.Request(
-        url,
-        data=message.encode("utf-8"),
-        headers={
-            "Title": title,
-            "Priority": priority,
-            "Tags": "warning",
-        },
-        method="POST",
-    )
     try:
+        req = urllib.request.Request(
+            url,
+            data=message.encode("utf-8"),
+            headers={
+                "Title": title,
+                "Priority": priority,
+                "Tags": "warning",
+            },
+            method="POST",
+        )
         with urllib.request.urlopen(req, timeout=timeout_s) as resp:
             return Delivery(attempted=True, ok=200 <= resp.status < 300, status=resp.status)
     except urllib.error.HTTPError as exc:
-        return Delivery(attempted=True, ok=False, status=exc.code, error=str(exc))
-    except OSError as exc:
-        return Delivery(attempted=True, ok=False, error=f"{type(exc).__name__}: {exc}")
+        return Delivery(
+            attempted=True,
+            ok=False,
+            status=exc.code,
+            error=redact_delivery_error(url, exc),
+        )
+    except (OSError, ValueError, OverflowError) as exc:
+        return Delivery(attempted=True, ok=False, error=redact_delivery_error(url, exc))
 
 
 def append_jsonl(path: Path, payload: dict) -> None:
@@ -164,9 +210,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--apcaccess", default=os.environ.get("HAPAX_UPS_APCACCESS", DEFAULT_APCACCESS)
     )
-    parser.add_argument(
-        "--timeout", type=float, default=float(os.environ.get("HAPAX_UPS_NTFY_TIMEOUT", "5"))
-    )
+    parser.add_argument("--timeout", type=positive_finite_timeout, default=ntfy_timeout_default())
     parser.add_argument("--no-ntfy", action="store_true", help="record only; do not send ntfy")
     return parser
 
@@ -203,7 +247,7 @@ def main(argv: list[str] | None = None) -> int:
         "policy_owner": "apcupsd",
         "shutdown_requested": text["shutdown_requested"],
         "event_requests_shutdown": text["event_requests_shutdown"],
-        "ntfy_url": args.ntfy_url,
+        "ntfy_url": redact_ntfy_url(args.ntfy_url),
         "apcaccess": apc,
         "apcaccess_error": apc_error,
         "apcaccess_timeout_s": apcaccess_timeout_s,

@@ -2129,6 +2129,13 @@ def test_root_failure_intake_uses_stable_recovery_bundle(tmp_path: Path) -> None
     )
 
 
+def test_root_failure_intake_default_is_independent_of_process_home() -> None:
+    source = ROOT_FAILURE_INTAKE.read_text(encoding="utf-8")
+
+    assert 'hapax_home="${HAPAX_ROOT_FAILURE_HOME:-/home/hapax}"' in source
+    assert "${HOME" not in source
+
+
 def test_root_failure_intake_records_emergency_ledger_when_bundle_missing(tmp_path: Path) -> None:
     ledger = tmp_path / "events.jsonl"
     marker = tmp_path / "user-python-was-used"
@@ -2178,4 +2185,6 @@ def test_root_failure_intake_reports_action_when_emergency_ledger_is_unwritable(
 
     assert result.returncode == 1
     assert "could not write emergency ledger" in result.stderr
+    assert "unit=hapax-oom-score-enforce.service" in result.stderr
+    assert f"missing_intake={tmp_path / 'missing-intake'}" in result.stderr
     assert "next action: repair the ledger parent ownership/capacity" in result.stderr

@@ -3,7 +3,7 @@
 set -euo pipefail
 
 unit="${1:?unit name required}"
-hapax_home="${HAPAX_ROOT_FAILURE_HOME:-${HOME:-/home/hapax}}"
+hapax_home="${HAPAX_ROOT_FAILURE_HOME:-/home/hapax}"
 intake="${HAPAX_ROOT_FAILURE_INTAKE_CLI:-$hapax_home/.local/lib/hapax-recovery/council/current/scripts/hapax-p0-incident-intake}"
 ledger="${HAPAX_ROOT_FAILURE_LEDGER:-$hapax_home/.cache/hapax/p0-incident-intake/events.jsonl}"
 
@@ -43,6 +43,7 @@ try:
 except OSError as exc:
     print(
         f"root failure intake fallback could not write emergency ledger {ledger}: {exc}; "
+        f"unit={unit}; missing_intake={intake}; "
         "next action: repair the ledger parent ownership/capacity, reinstall the D2 recovery "
         "bundle, and rerun scripts/install-p0-oom-containment --install --verify-live",
         file=sys.stderr,
