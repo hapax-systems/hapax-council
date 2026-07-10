@@ -952,7 +952,7 @@ while IFS= read -r f; do
         config/wireplumber/*.conf)        WP+=("$f") ;;
         scripts/install-p0-oom-containment|scripts/hapax-oom-score-enforce|scripts/hapax-root-failure-intake|config/earlyoom/default|systemd/system/user-1000.slice.d/oom-containment.conf|systemd/system/user@1000.service.d/oom.conf|systemd/system/apcupsd.service.d/oom-protect.conf|systemd/system/systemd-logind.service.d/oom-protect.conf|systemd/system/systemd-resolved.service.d/oom-protect.conf|systemd/system/systemd-timesyncd.service.d/oom-protect.conf|systemd/system/NetworkManager.service.d/oom-protect.conf|systemd/system/dbus-broker.service.d/oom-protect.conf|systemd/system/sshd.service.d/oom-protect.conf|systemd/units/hapax-root-failure-intake@.service|systemd/units/hapax-oom-score-enforce.service|systemd/units/hapax-oom-score-enforce.timer|systemd/units/app.slice.d/oom-containment.conf|systemd/units/pipewire.service.d/oom-protect.conf|systemd/units/pipewire-pulse.service.d/oom-protect.conf|systemd/units/wireplumber.service.d/oom-protect.conf|systemd/units/hapax-daimonion.service.d/oom-protect.conf|systemd/units/studio-compositor.service.d/oom-protect.conf|systemd/units/hapax-imagination.service.d/oom-protect.conf)
             OOM_CONTAINMENT+=("$f") ;;
-        scripts/install-apcupsd-power-alerts|config/apcupsd/*|systemd/logrotate.d/hapax-ups-power-events)
+        scripts/install-apcupsd-power-alerts|config/apcupsd/*|config/upower/*|systemd/logrotate.d/hapax-ups-power-events)
             APCUPSD_POWER_ALERTS+=("$f") ;;
         systemd/units/notify-failure@.service|systemd/units/hapax-coord.service|systemd/units/hapax-coord-rebuild.service|systemd/units/hapax-coord-rebuild.timer)
             RECOVERY_BUNDLE+=("$f")
@@ -1400,6 +1400,8 @@ stage_apcupsd_power_alert_installer() {
         config/apcupsd/hapax-power-event.py
         config/apcupsd/onbattery
         config/apcupsd/offbattery
+        config/apcupsd/doshutdown
+        config/upower/90-hapax-apcupsd-owner.conf
         systemd/logrotate.d/hapax-ups-power-events
     )
     for rel in "${required[@]}"; do
@@ -1411,7 +1413,7 @@ stage_apcupsd_power_alert_installer() {
         mkdir -p "$(dirname "$dest")"
         git show "$SHA:$rel" > "$dest"
     done
-    chmod +x "$stage/$APCUPSD_INSTALLER_PATH" "$stage/config/apcupsd/hapax-power-event.py" "$stage/config/apcupsd/onbattery" "$stage/config/apcupsd/offbattery"
+    chmod +x "$stage/$APCUPSD_INSTALLER_PATH" "$stage/config/apcupsd/hapax-power-event.py" "$stage/config/apcupsd/onbattery" "$stage/config/apcupsd/offbattery" "$stage/config/apcupsd/doshutdown"
 }
 
 if [ "${#APCUPSD_POWER_ALERTS[@]}" -gt 0 ]; then

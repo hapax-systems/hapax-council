@@ -21,14 +21,27 @@ DEFAULT_APCACCESS = "/usr/bin/apcaccess"
 
 EVENT_TEXT = {
     "onbattery": {
-        "title": "UPS ON BATTERY - podium",
-        "message": "SRT3000XLA on battery. apcupsd shuts down at 20%/5min remaining.",
+        "title": "UPS transfer to battery - podium",
+        "message": (
+            "SRT3000XLA reports battery operation. No host shutdown was requested; "
+            "apcupsd only requests shutdown below 20% charge or 5 minutes remaining."
+        ),
         "priority": "urgent",
+        "shutdown_requested": False,
     },
     "offbattery": {
         "title": "UPS power restored - podium",
-        "message": "Mains back; SRT3000XLA recharging.",
+        "message": "UPS input restored; no host shutdown was requested.",
         "priority": "default",
+        "shutdown_requested": False,
+    },
+    "doshutdown": {
+        "title": "UPS REQUESTED HOST SHUTDOWN - podium",
+        "message": (
+            "apcupsd crossed a configured battery threshold and is requesting host shutdown now."
+        ),
+        "priority": "max",
+        "shutdown_requested": True,
     },
 }
 
@@ -149,6 +162,8 @@ def main(argv: list[str] | None = None) -> int:
         "title": text["title"],
         "message": message,
         "priority": text["priority"],
+        "policy_owner": "apcupsd",
+        "shutdown_requested": text["shutdown_requested"],
         "ntfy_url": args.ntfy_url,
         "apcaccess": apc,
         "apcaccess_error": apc_error,

@@ -11,6 +11,7 @@ EARLYOOM_DEST="${HAPAX_OOM_EARLYOOM_DEST:-/etc/default/earlyoom}"
 SYSTEMD_SYSTEM_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
 APCUPSD_DEST="${HAPAX_APCUPSD_DEST:-/etc/apcupsd}"
 APCUPSD_LOGROTATE_DEST="${HAPAX_APCUPSD_LOGROTATE_DEST:-/etc/logrotate.d/hapax-ups-power-events}"
+UPOWER_CONF_DEST="${HAPAX_UPOWER_CONF_DEST:-/etc/UPower/UPower.conf.d/90-hapax-apcupsd-owner.conf}"
 
 rc=0
 
@@ -35,7 +36,7 @@ compare_root_file() {
     if [ ! -f "$dest" ]; then
         echo "root-required install missing: $dest" >&2
         case "$rel" in
-            config/apcupsd/*|systemd/logrotate.d/hapax-ups-power-events)
+            config/apcupsd/*|config/upower/*|systemd/logrotate.d/hapax-ups-power-events)
                 echo "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
                 ;;
             *)
@@ -47,7 +48,7 @@ compare_root_file() {
     if ! cmp -s "$source" "$dest"; then
         echo "root-required install drift: $dest differs from $source" >&2
         case "$rel" in
-            config/apcupsd/*|systemd/logrotate.d/hapax-ups-power-events)
+            config/apcupsd/*|config/upower/*|systemd/logrotate.d/hapax-ups-power-events)
                 echo "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
                 ;;
             *)
@@ -79,6 +80,8 @@ audit_root_installs() {
         "config/apcupsd/hapax-power-event.py|$APCUPSD_DEST/hapax-power-event.py"
         "config/apcupsd/onbattery|$APCUPSD_DEST/onbattery"
         "config/apcupsd/offbattery|$APCUPSD_DEST/offbattery"
+        "config/apcupsd/doshutdown|$APCUPSD_DEST/doshutdown"
+        "config/upower/90-hapax-apcupsd-owner.conf|$UPOWER_CONF_DEST"
         "systemd/logrotate.d/hapax-ups-power-events|$APCUPSD_LOGROTATE_DEST"
     )
     local entry rel dest failed=0

@@ -1,0 +1,10 @@
+#!/bin/sh
+if [ "${HAPAX_APCUPSD_TEST_MODE:-0}" = "1" ]; then
+    HELPER="${HAPAX_APCUPSD_HELPER:-/etc/apcupsd/hapax-power-event.py}"
+else
+    HELPER="/etc/apcupsd/hapax-power-event.py"
+fi
+
+# Provenance must never suppress apccontrol's default safety shutdown.
+"$HELPER" doshutdown "$@" || :
+exit 0

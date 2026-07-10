@@ -68,6 +68,10 @@ ROOT_AUDIT_SOURCE_FILES = {
     "config/apcupsd/hapax-power-event.py": "#!/usr/bin/env python3\n",
     "config/apcupsd/onbattery": "#!/usr/bin/env bash\n",
     "config/apcupsd/offbattery": "#!/usr/bin/env bash\n",
+    "config/apcupsd/doshutdown": "#!/usr/bin/env bash\n",
+    "config/upower/90-hapax-apcupsd-owner.conf": (
+        "[UPower]\nAllowRiskyCriticalPowerAction=true\nCriticalPowerAction=Ignore\n"
+    ),
     "systemd/logrotate.d/hapax-ups-power-events": "/var/log/hapax/ups-power-events.jsonl {}\n",
 }
 
@@ -250,6 +254,7 @@ def _root_audit_env(
     system_dir = tmp_path / "etc" / "systemd" / "system"
     apcupsd_dir = tmp_path / "etc" / "apcupsd"
     logrotate_dest = tmp_path / "etc" / "logrotate.d" / "hapax-ups-power-events"
+    upower_dest = tmp_path / "etc" / "UPower" / "UPower.conf.d" / "90-hapax-apcupsd-owner.conf"
     enforcer_dest = tmp_path / "sbin" / "hapax-oom-score-enforce"
     root_failure_dest = tmp_path / "sbin" / "hapax-root-failure-intake"
     earlyoom_dest = tmp_path / "etc" / "default" / "earlyoom"
@@ -258,6 +263,7 @@ def _root_audit_env(
         "scripts/hapax-root-failure-intake": root_failure_dest,
         "config/earlyoom/default": earlyoom_dest,
         "systemd/logrotate.d/hapax-ups-power-events": logrotate_dest,
+        "config/upower/90-hapax-apcupsd-owner.conf": upower_dest,
     }
     for rel in ROOT_AUDIT_SOURCE_FILES:
         if rel.startswith("systemd/system/"):
@@ -283,6 +289,7 @@ def _root_audit_env(
         "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(system_dir),
         "HAPAX_APCUPSD_DEST": str(apcupsd_dir),
         "HAPAX_APCUPSD_LOGROTATE_DEST": str(logrotate_dest),
+        "HAPAX_UPOWER_CONF_DEST": str(upower_dest),
         "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(tmp_path / "no-deferrals"),
     }
 
@@ -854,6 +861,10 @@ def test_apcupsd_power_alert_deploy_uses_dedicated_installer(tmp_path: Path) -> 
         "config/apcupsd/hapax-power-event.py": "#!/usr/bin/env python3\n",
         "config/apcupsd/onbattery": "#!/bin/sh\n",
         "config/apcupsd/offbattery": "#!/bin/sh\n",
+        "config/apcupsd/doshutdown": "#!/bin/sh\n",
+        "config/upower/90-hapax-apcupsd-owner.conf": (
+            "[UPower]\nAllowRiskyCriticalPowerAction=true\nCriticalPowerAction=Ignore\n"
+        ),
         "systemd/logrotate.d/hapax-ups-power-events": "/var/log/hapax/ups-power-events.jsonl {\n}\n",
     }
     repo, sha = _repo_with_linear_commit(tmp_path, files)
