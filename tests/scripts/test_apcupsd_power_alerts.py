@@ -7,6 +7,7 @@ import os
 import pwd
 import runpy
 import shutil
+import stat
 import subprocess
 import threading
 import time
@@ -326,6 +327,40 @@ def test_logrotate_rename_create_preserves_inflight_writer(
     ]
     assert rotated_phases == ["seed", "during"]
     assert current_phases == ["after"]
+
+
+def test_writer_entering_logrotate_create_gap_enforces_file_contract(tmp_path: Path) -> None:
+    namespace = runpy.run_path(str(HELPER))
+    audit_dir = tmp_path / "hapax-log"
+    audit_dir.mkdir()
+    audit_dir.chmod(0o2775)
+    audit = audit_dir / "ups-power-events.jsonl"
+    namespace["append_jsonl"](audit, {"phase": "before"})
+    rotated = Path(f"{audit}.1")
+    audit.rename(rotated)
+
+    namespace["append_jsonl"](audit, {"phase": "gap"})
+
+    inode = audit.stat()
+    assert inode.st_uid == os.geteuid()
+    assert inode.st_gid == audit_dir.stat().st_gid
+    assert stat.S_IMODE(inode.st_mode) == 0o640
+    assert inode.st_nlink == 1
+    assert [json.loads(line)["phase"] for line in rotated.read_text().splitlines()] == ["before"]
+    assert [json.loads(line)["phase"] for line in audit.read_text().splitlines()] == ["gap"]
+
+
+def test_canonical_root_writer_resolves_required_hapax_gid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    namespace = runpy.run_path(str(HELPER))
+    group = type("Group", (), {"gr_gid": 4242})()
+    monkeypatch.setattr(namespace["os"], "geteuid", lambda: 0)
+    monkeypatch.setattr(namespace["grp"], "getgrnam", lambda name: group)
+
+    identity = namespace["audit_log_expected_identity"](Path(namespace["DEFAULT_AUDIT_LOG"]), 7)
+
+    assert identity == (0, 4242)
 
 
 def test_power_event_helper_records_offbattery_delivery_failure(tmp_path: Path) -> None:

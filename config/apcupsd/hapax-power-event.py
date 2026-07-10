@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import errno
 import fcntl
+import grp
 import http.client
 import json
 import math
@@ -22,6 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 DEFAULT_AUDIT_LOG = "/var/log/hapax/ups-power-events.jsonl"
+DEFAULT_AUDIT_GROUP = "hapax"
 DEFAULT_NTFY_URL = "http://localhost:8090/hapax-alerts"
 DEFAULT_NTFY_TIMEOUT_S = 5.0
 DEFAULT_APCACCESS = "/usr/bin/apcaccess"
@@ -178,23 +180,56 @@ def post_ntfy(url: str, title: str, message: str, priority: str, timeout_s: floa
         return Delivery(attempted=True, ok=False, error=redact_delivery_error(url, exc))
 
 
+def audit_log_expected_identity(path: Path, parent_gid: int) -> tuple[int, int]:
+    expected_uid = os.geteuid()
+    expected_gid = parent_gid
+    if expected_uid == 0 and str(path) == DEFAULT_AUDIT_LOG:
+        try:
+            expected_gid = grp.getgrnam(DEFAULT_AUDIT_GROUP).gr_gid
+        except KeyError as exc:
+            raise OSError(
+                errno.ENOENT,
+                f"required UPS audit group is missing: {DEFAULT_AUDIT_GROUP}",
+                path,
+            ) from exc
+    return expected_uid, expected_gid
+
+
 def append_jsonl(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     blob = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
-    fd = os.open(
-        path,
-        os.O_APPEND | os.O_CLOEXEC | os.O_CREAT | os.O_NOFOLLOW | os.O_WRONLY,
-        0o640,
-    )
+    parent_inode = os.lstat(path.parent)
+    if not stat.S_ISDIR(parent_inode.st_mode):
+        raise OSError(
+            errno.ENOTDIR, "unsafe UPS audit log parent; expected a directory", path.parent
+        )
+    expected_uid, expected_gid = audit_log_expected_identity(path, parent_inode.st_gid)
+    flags = os.O_APPEND | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_WRONLY
+    created = False
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        try:
+            fd = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o640)
+            created = True
+        except FileExistsError:
+            fd = os.open(path, flags)
     try:
         inode = os.fstat(fd)
-        # Production apcupsd hooks run as root; non-root ownership supports
-        # unprivileged dry-runs and the isolated regression suite.
-        expected_uid = os.geteuid()
-        if not stat.S_ISREG(inode.st_mode) or inode.st_uid != expected_uid or inode.st_nlink != 1:
+        if created:
+            os.fchown(fd, -1, expected_gid)
+            os.fchmod(fd, 0o640)
+            inode = os.fstat(fd)
+        if (
+            not stat.S_ISREG(inode.st_mode)
+            or inode.st_uid != expected_uid
+            or inode.st_gid != expected_gid
+            or stat.S_IMODE(inode.st_mode) != 0o640
+            or inode.st_nlink != 1
+        ):
             raise OSError(
                 errno.EPERM,
-                "unsafe UPS audit log inode; expected one regular file owned by the hook uid",
+                "unsafe UPS audit log inode; expected one 0640 regular file owned by the hook uid and parent gid",
                 path,
             )
         fcntl.flock(fd, fcntl.LOCK_EX)

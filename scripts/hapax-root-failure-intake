@@ -2,7 +2,11 @@
 # Activation-independent failure intake bridge for system-scope P0 units.
 set -euo pipefail
 
-unit="${1:?unit name required}"
+if [ "$#" -lt 1 ] || [ -z "$1" ]; then
+    echo "usage: hapax-root-failure-intake UNIT; next action: pass the failed systemd unit name from OnFailure=%n" >&2
+    exit 64
+fi
+unit="$1"
 hapax_home="${HAPAX_ROOT_FAILURE_HOME:-/home/hapax}"
 intake="${HAPAX_ROOT_FAILURE_INTAKE_CLI:-$hapax_home/.local/lib/hapax-recovery/council/current/scripts/hapax-p0-incident-intake}"
 ledger="${HAPAX_ROOT_FAILURE_LEDGER:-$hapax_home/.cache/hapax/p0-incident-intake/events.jsonl}"

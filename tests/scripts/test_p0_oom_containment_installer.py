@@ -2130,6 +2130,14 @@ def test_root_failure_intake_uses_stable_recovery_bundle(tmp_path: Path) -> None
     )
 
 
+def test_root_failure_intake_requires_actionable_unit_argument() -> None:
+    result = subprocess.run([str(ROOT_FAILURE_INTAKE)], text=True, capture_output=True, check=False)
+
+    assert result.returncode == 64
+    assert "usage: hapax-root-failure-intake UNIT" in result.stderr
+    assert "next action:" in result.stderr
+
+
 def test_root_failure_intake_default_is_independent_of_process_home() -> None:
     source = ROOT_FAILURE_INTAKE.read_text(encoding="utf-8")
 

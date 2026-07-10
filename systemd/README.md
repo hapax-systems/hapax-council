@@ -364,6 +364,13 @@ rule in pre-commit for top-level PipeWire confs; generated compiler
 artifacts under `config/pipewire/generated/` keep the audio-routing
 compiler's node-id filename convention.
 
+`systemd/overrides/**` contains source/rationale and historical snapshots only;
+`hapax-post-merge-deploy` intentionally does not install it. In particular, the
+three `OOMScoreAdjust=-900` PipeWire override snapshots there are non-deployable
+evidence from the former design. The authoritative deployable drop-ins live
+under `systemd/units/{pipewire,pipewire-pulse,wireplumber}.service.d/`, configure
+the valid startup score `100`, and rely on the root timer for live score `-900`.
+
 ## Storage Management
 
 Automated systems prevent disk exhaustion:
