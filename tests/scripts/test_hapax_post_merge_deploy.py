@@ -1186,6 +1186,25 @@ def test_root_required_audit_detects_sudoers_mode_drift(tmp_path: Path) -> None:
     assert "expected=440" in result.stderr
 
 
+def test_root_required_audit_detects_stale_user_copy_of_system_unit(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    stale = Path(env["HAPAX_OOM_SYSTEMD_USER_DIR"]) / "hapax-oom-score-enforce.timer"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text("[Timer]\nOnUnitActiveSec=30s\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "stale user-scope copy of system unit remains" in result.stderr
+    assert "install-p0-oom-containment --install --verify-live" in result.stderr
+
+
 def test_root_required_audit_reads_sudoers_only_through_narrow_sudo(tmp_path: Path) -> None:
     env = _root_audit_env(tmp_path)
 
@@ -1691,6 +1710,38 @@ def test_generic_slice_dropin_rejects_unsupported_live_directive(tmp_path: Path)
     assert result.returncode == 1
     assert "unsupported generic slice directive" in result.stderr
     assert not (home / ".config/systemd/user" / dropin_path.removeprefix("systemd/units/")).exists()
+    calls = systemctl_calls.read_text(encoding="utf-8") if systemctl_calls.exists() else ""
+    assert "set-property" not in calls
+
+
+def test_generic_slice_dropin_rejects_memory_property_outside_slice_section(
+    tmp_path: Path,
+) -> None:
+    dropin_path = "systemd/units/demo.slice.d/wrong-section.conf"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {dropin_path: "[Service]\nMemoryHigh=1G\n"},
+    )
+    home = tmp_path / "home"
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "unsupported generic slice directive" in result.stderr
     calls = systemctl_calls.read_text(encoding="utf-8") if systemctl_calls.exists() else ""
     assert "set-property" not in calls
 

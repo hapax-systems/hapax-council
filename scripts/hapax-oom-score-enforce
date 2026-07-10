@@ -2,12 +2,40 @@
 # Root-side live OOM score enforcer for the P0 podium containment package.
 set -euo pipefail
 
-TARGET_USER="${HAPAX_OOM_TARGET_USER:-hapax}"
-TARGET_UID="${HAPAX_OOM_TARGET_UID:-$(id -u "$TARGET_USER")}"
-SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
-PROC_ROOT="${HAPAX_OOM_PROC_ROOT:-/proc}"
+TEST_MODE="${HAPAX_OOM_ENFORCE_TEST_MODE:-0}"
+if [ "$TEST_MODE" = "1" ]; then
+    if [ "$(id -u)" = "0" ] || [ -n "${SUDO_USER:-}" ]; then
+        echo "refusing OOM enforcer test overrides under root/sudo execution; next action: run the installed enforcer without HAPAX_OOM_ENFORCE_TEST_MODE" >&2
+        exit 2
+    fi
+    TARGET_USER="${HAPAX_OOM_TARGET_USER:-hapax}"
+    TARGET_UID="${HAPAX_OOM_TARGET_UID:-$(id -u "$TARGET_USER")}"
+    SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
+    USER_SYSTEMCTL="${HAPAX_OOM_USER_SYSTEMCTL:-}"
+    PROC_ROOT="${HAPAX_OOM_PROC_ROOT:-/proc}"
+else
+    for override in \
+        HAPAX_OOM_TARGET_USER HAPAX_OOM_TARGET_UID HAPAX_OOM_SYSTEMCTL \
+        HAPAX_OOM_USER_SYSTEMCTL HAPAX_OOM_PROC_ROOT HAPAX_OOM_CGROUP_ROOT; do
+        if declare -p "$override" >/dev/null 2>&1; then
+            echo "refusing production OOM enforcer override $override; next action: remove HAPAX_OOM_* overrides and rerun the package-owned command" >&2
+            exit 2
+        fi
+    done
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+    export PATH
+    TARGET_USER=hapax
+    TARGET_UID=1000
+    SYSTEMCTL=/usr/bin/systemctl
+    USER_SYSTEMCTL=""
+    PROC_ROOT=/proc
+    if [ "$(id -u "$TARGET_USER" 2>/dev/null || true)" != "$TARGET_UID" ]; then
+        echo "refusing OOM enforcer on a host where hapax is not UID 1000; next action: dispatch a host-specific OOM package instead of overriding this podium policy" >&2
+        exit 2
+    fi
+fi
 failed=0
-if [ -n "${HAPAX_OOM_CGROUP_ROOT:-}" ]; then
+if [ "$TEST_MODE" = "1" ] && [ -n "${HAPAX_OOM_CGROUP_ROOT:-}" ]; then
     CGROUP_ROOT="$HAPAX_OOM_CGROUP_ROOT"
 elif [ "$PROC_ROOT" != "/proc" ]; then
     CGROUP_ROOT="$(dirname "$PROC_ROOT")/cgroup"
@@ -49,13 +77,12 @@ case "$mode" in
 esac
 
 run_user_systemctl() {
-    if [ -n "${HAPAX_OOM_USER_SYSTEMCTL:-}" ]; then
-        # shellcheck disable=SC2086
-        $HAPAX_OOM_USER_SYSTEMCTL "$@"
+    if [ -n "$USER_SYSTEMCTL" ]; then
+        "$USER_SYSTEMCTL" "$@"
     elif [ "$(id -u)" = "$TARGET_UID" ]; then
         "$SYSTEMCTL" --user "$@"
     elif [ "$(id -u)" = "0" ]; then
-        runuser -u "$TARGET_USER" -- env XDG_RUNTIME_DIR="/run/user/$TARGET_UID" "$SYSTEMCTL" --user "$@"
+        /usr/bin/runuser -u "$TARGET_USER" -- /usr/bin/env XDG_RUNTIME_DIR="/run/user/$TARGET_UID" "$SYSTEMCTL" --user "$@"
     else
         XDG_RUNTIME_DIR="/run/user/$TARGET_UID" "$SYSTEMCTL" --user "$@"
     fi

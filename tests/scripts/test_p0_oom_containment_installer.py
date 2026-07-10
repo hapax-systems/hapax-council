@@ -56,6 +56,7 @@ def _copy_oom_package(dest_root: Path) -> None:
 
 @pytest.fixture(autouse=True)
 def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HAPAX_OOM_ENFORCE_TEST_MODE", "1")
     monkeypatch.setenv("HAPAX_POST_MERGE_ROOT_DEFER_DIR", str(tmp_path / "root-required"))
     monkeypatch.setenv("HAPAX_ROOT_REQUIRED_STATE_ROOT", str(tmp_path / "root-state"))
     monkeypatch.setenv(
@@ -216,6 +217,32 @@ def test_p0_oom_containment_source_check_passes() -> None:
     assert "studio-composit" not in earlyoom_args
 
 
+def test_source_check_rejects_production_sudoers_identity_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HAPAX_OOM_SUDOERS_DEST", "/etc/sudoers.d/hapax-oom-score-enforce")
+    monkeypatch.setenv("HAPAX_OOM_TARGET_USER", "hapax")
+    monkeypatch.setenv("HAPAX_OOM_TARGET_UID", "999")
+    monkeypatch.setenv("HAPAX_OOM_TARGET_GID", "1000")
+    monkeypatch.setenv("HAPAX_OOM_TARGET_HOME", "/home/hapax")
+    monkeypatch.setenv(
+        "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT",
+        "/home/hapax/.local/state/hapax/root-required/current-source",
+    )
+
+    result = subprocess.run(
+        [str(INSTALLER), "--check"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=os.environ.copy(),
+    )
+
+    assert result.returncode == 1
+    assert "fixed to hapax/UID 1000" in result.stderr
+    assert "next action:" in result.stderr
+
+
 def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     tmp_path: Path,
 ) -> None:
@@ -224,6 +251,15 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     root_home = tmp_path / "root-home"
     user_dir = target_home / ".config" / "systemd" / "user"
     user_control_dir = target_home / ".config" / "systemd" / "user.control"
+    stale_user_system_units = (
+        "hapax-root-failure-intake@.service",
+        "hapax-oom-score-enforce.service",
+        "hapax-oom-score-enforce.timer",
+    )
+    for unit in stale_user_system_units:
+        path = user_dir / unit
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("[Unit]\nDescription=stale user copy\n", encoding="utf-8")
     stale_control = user_control_dir / "app.slice.d" / "50-MemoryHigh.conf"
     stale_control.parent.mkdir(parents=True)
     stale_control.write_text("[Slice]\nMemoryHigh=1G\n", encoding="utf-8")
@@ -353,6 +389,8 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         unit_path = user_dir / unit
         assert unit_path.is_file()
         assert not unit_path.is_symlink()
+    for unit in stale_user_system_units:
+        assert not (user_dir / unit).exists()
     assert not stale_control.exists()
     assert not stale_low.exists()
     assert not stale_min.exists()
@@ -378,6 +416,8 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert "--user enable --now hapax-root-required-deploy-audit.timer" in user_calls
     assert "--user is-enabled --quiet hapax-oom-policy-audit.timer" in user_calls
     assert "--user is-active --quiet hapax-root-required-deploy-audit.timer" in user_calls
+    for unit in stale_user_system_units:
+        assert f"--user disable --now {unit}" in user_calls
 
 
 def test_unversioned_oom_install_source_fails_before_live_mutation(tmp_path: Path) -> None:
@@ -1179,7 +1219,45 @@ def test_oom_score_sudoers_grant_is_narrow_and_valid() -> None:
         "/etc/sudoers.d/hapax-oom-score-enforce"
     ) in policy
     assert "/usr/bin/visudo -cf /etc/sudoers.d/hapax-oom-score-enforce" in policy
+    assert "NOPASSWD:NOSETENV:" in policy
     assert "NOPASSWD: ALL" not in policy
+
+
+def test_root_oom_score_enforcer_refuses_production_environment_overrides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = tmp_path / "unexpected-systemctl-call"
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(f"#!/bin/sh\ntouch {marker!s}\n", encoding="utf-8")
+    fake_systemctl.chmod(0o755)
+    monkeypatch.delenv("HAPAX_OOM_ENFORCE_TEST_MODE", raising=False)
+
+    result = subprocess.run(
+        [str(OOM_ENFORCER), "--apply-unit", "pipewire.service"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl)},
+    )
+
+    assert result.returncode == 2
+    assert "refusing production OOM enforcer override" in result.stderr
+    assert "next action:" in result.stderr
+    assert not marker.exists()
+
+
+def test_root_oom_score_enforcer_refuses_test_mode_under_sudo() -> None:
+    result = subprocess.run(
+        [str(OOM_ENFORCER), "--apply-unit", "pipewire.service"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "SUDO_USER": "hapax"},
+    )
+
+    assert result.returncode == 2
+    assert "refusing OOM enforcer test overrides under root/sudo execution" in result.stderr
+    assert "next action:" in result.stderr
 
 
 def test_root_oom_score_enforcer_applies_one_allowlisted_unit_after_start(

@@ -1557,8 +1557,13 @@ validate_generic_dropin_activation() {
             fi
             content="$(git -C "$REPO" show "$SHA:$f")"
             unsupported="$(printf '%s\n' "$content" | awk '
-                /^[[:space:]]*$/ || /^[[:space:]]*[#;]/ || /^[[:space:]]*\[[^]]+\][[:space:]]*$/ { next }
-                /^(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)=[^[:space:]].*$/ { next }
+                /^[[:space:]]*$/ || /^[[:space:]]*[#;]/ { next }
+                /^[[:space:]]*\[Slice\][[:space:]]*$/ { section = "slice"; next }
+                /^[[:space:]]*\[[^]]+\][[:space:]]*$/ { print; exit }
+                /^(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)=[^[:space:]].*$/ {
+                    if (section != "slice") { print; exit }
+                    next
+                }
                 { print; exit }
             ')"
             if [ -n "$unsupported" ]; then

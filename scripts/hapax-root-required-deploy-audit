@@ -382,6 +382,17 @@ audit_root_installs() {
                 ;;
         esac
     done
+    for rel in \
+        systemd/units/hapax-root-failure-intake@.service \
+        systemd/units/hapax-oom-score-enforce.service \
+        systemd/units/hapax-oom-score-enforce.timer; do
+        dest="$SYSTEMD_USER_DIR/$(basename "$rel")"
+        if [ -e "$dest" ] || [ -L "$dest" ]; then
+            echo "root-required install drift: stale user-scope copy of system unit remains: $dest" >&2
+            echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+            failed=1
+        fi
+    done
     if ! "$SUDO" -n "$VISUDO" -cf "$OOM_SUDOERS_DEST" >/dev/null; then
         echo "root-required install drift: sudoers policy does not parse: $OOM_SUDOERS_DEST" >&2
         echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2

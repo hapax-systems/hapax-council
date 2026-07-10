@@ -575,6 +575,14 @@ check_source() {
         echo "invalid OOM enforcer sudoers policy: $(src_path "$oom_sudoers_source"); next action: repair the allowlisted commands and rerun scripts/install-p0-oom-containment --check" >&2
         return 1
     }
+    if [ "$OOM_SUDOERS_DEST" = "/etc/sudoers.d/hapax-oom-score-enforce" ] \
+        && { [ "$TARGET_USER" != "hapax" ] \
+            || [ "$TARGET_UID" != "1000" ] \
+            || [ "$TARGET_HOME" != "/home/hapax" ] \
+            || [ "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" != "/home/hapax/.local/state/hapax/root-required/current-source" ]; }; then
+        echo "production OOM sudoers policy is fixed to hapax/UID 1000 and /home/hapax durable state; next action: use the podium defaults or dispatch a host-specific package instead of overriding target identity/state paths" >&2
+        return 1
+    fi
     grep -Eq '^OOMScoreAdjust=100$' "$(src_path systemd/system/user@1000.service.d/oom.conf)" || {
         echo "user@1000 OOM drop-in must set OOMScoreAdjust=100; next action: restore systemd/system/user@1000.service.d/oom.conf from the P0 PR" >&2
         return 1
@@ -828,6 +836,14 @@ install_live() {
         run_root install -m 0644 "$(src_path "$rel")" "$dest"
         echo "  '$rel' -> '$dest'"
     done
+    for rel in "${system_units[@]}"; do
+        dest="$SYSTEMD_USER_DIR/$(basename "$rel")"
+        user_systemctl disable --now "$(basename "$rel")" >/dev/null 2>&1 || true
+        if [ -e "$dest" ] || [ -L "$dest" ]; then
+            rm -f "$dest"
+            echo "  removed stale user-scope copy '$dest'"
+        fi
+    done
     run_root install -d -m 0755 "$(dirname "$OOM_ENFORCER_DEST")"
     run_root install -m 0755 "$(src_path "$oom_enforcer_source")" "$OOM_ENFORCER_DEST"
     echo "  '$oom_enforcer_source' -> '$OOM_ENFORCER_DEST'"
@@ -978,6 +994,11 @@ verify_live() {
     done
     for rel in "${system_units[@]}"; do
         verify_pair "$(src_path "$rel")" "$(system_dest "$rel")"
+        dest="$SYSTEMD_USER_DIR/$(basename "$rel")"
+        if [ -e "$dest" ] || [ -L "$dest" ]; then
+            echo "stale user-scope copy of system unit remains: $dest; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            return 1
+        fi
     done
     verify_pair "$(src_path "$oom_enforcer_source")" "$OOM_ENFORCER_DEST"
     verify_pair "$(src_path "$oom_trigger_source")" "$OOM_TRIGGER_DEST"

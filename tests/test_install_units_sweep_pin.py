@@ -66,19 +66,6 @@ class TestPrimaryWorktreeGuard:
         )
 
 
-def test_generic_installer_skips_dedicated_p0_audit_units() -> None:
-    body = INSTALL_SCRIPT.read_text(encoding="utf-8")
-    assert "dedicated_p0_oom_unit" in body
-    for unit in (
-        "hapax-oom-policy-audit.service",
-        "hapax-oom-policy-audit.timer",
-        "hapax-root-required-deploy-audit.service",
-        "hapax-root-required-deploy-audit.timer",
-    ):
-        assert unit in body
-    assert "skipped dedicated P0 OOM unit" in body
-
-
 class TestTimerEnablementSweep:
     """Pin the delta 2026-04-14-systemd-timer-enablement-gap fix."""
 
@@ -227,7 +214,9 @@ class TestServiceDropInInstall:
             "drop-in loop must link each .conf individually, not the parent dir"
         )
 
-    def test_p0_oom_dropins_are_owned_only_by_dedicated_installer(self, tmp_path: Path) -> None:
+    def test_generic_installer_behaviorally_skips_all_dedicated_p0_surfaces(
+        self, tmp_path: Path
+    ) -> None:
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         calls = tmp_path / "systemctl-calls.txt"
