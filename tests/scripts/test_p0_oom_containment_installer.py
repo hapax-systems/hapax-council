@@ -106,10 +106,9 @@ def _systemctl_user_unit_cases(
         unit: _unit_cgroup(unit) for unit in unit_pids if unit in PROTECTED_USER_UNIT_SCORES
     }
     cases = []
-    for unit, score in PROTECTED_USER_UNIT_SCORES.items():
+    for unit in PROTECTED_USER_UNIT_SCORES:
         cases.append(
-            f"  *--user\\ show\\ {unit}\\ -p\\ OOMScoreAdjust\\ --value*) "
-            f"printf '%s\\n' '{score}' ;;"
+            f"  *--user\\ show\\ {unit}\\ -p\\ OOMScoreAdjust\\ --value*) printf '%s\\n' '100' ;;"
         )
         cases.append(
             f"  *--user\\ show\\ {unit}\\ -p\\ MainPID\\ --value*) "
@@ -193,14 +192,17 @@ def test_p0_oom_containment_source_check_passes() -> None:
     assert "'(" not in earlyoom
     assert "systemd-resolved" not in earlyoom
     assert "systemd-timesyncd" not in earlyoom
-    assert "hapax-imagination" not in earlyoom
-    assert "studio-compositor" not in earlyoom
+    earlyoom_args = next(
+        line for line in earlyoom.splitlines() if line.startswith("EARLYOOM_ARGS=")
+    )
+    assert "hapax-imagination" not in earlyoom_args
+    assert "studio-compositor" not in earlyoom_args
     assert "logos-api" not in earlyoom
     assert "officium-api" not in earlyoom
     assert "systemd-resolve" in earlyoom
     assert "systemd-timesyn" in earlyoom
     assert "hapax-imaginati" in earlyoom
-    assert "studio-composit" in earlyoom
+    assert "studio-composit" not in earlyoom_args
 
 
 def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
@@ -1052,6 +1054,75 @@ def test_root_oom_score_enforcer_writes_live_user_manager_and_service_scores(
         )
 
 
+def test_root_oom_score_enforcer_applies_one_allowlisted_unit_after_start(
+    tmp_path: Path,
+) -> None:
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    _write_proc(
+        proc_root,
+        910,
+        name="pipewire",
+        uid=1000,
+        oom_score=100,
+        cgroup=_unit_cgroup("pipewire.service"),
+    )
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        '#!/usr/bin/env bash\n[ "$*" = "is-active --quiet user@1000.service" ]\n',
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+    fake_user_systemctl = tmp_path / "systemctl-user"
+    fake_user_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$*" in\n'
+        f"{_enforcer_user_unit_cases({'pipewire.service': 910})}\n"
+        '  *) echo "unexpected user args: $*" >&2; exit 9 ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake_user_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(OOM_ENFORCER), "--apply-unit", "pipewire.service"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_PROC_ROOT": str(proc_root),
+            "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_OOM_USER_SYSTEMCTL": str(fake_user_systemctl),
+            "HAPAX_OOM_TARGET_UID": "1000",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (proc_root / "910" / "oom_score_adj").read_text(encoding="utf-8").strip() == "-900"
+
+
+def test_root_oom_score_enforcer_rejects_non_allowlisted_startup_unit(tmp_path: Path) -> None:
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(OOM_ENFORCER), "--apply-unit", "attacker.service"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_OOM_TARGET_UID": "1000",
+        },
+    )
+
+    assert result.returncode == 2
+    assert "refusing non-allowlisted" in result.stderr
+
+
 def test_root_oom_score_enforcer_does_not_start_an_inactive_user_manager(
     tmp_path: Path,
 ) -> None:
@@ -1285,7 +1356,7 @@ def test_root_oom_score_enforcer_rejects_substring_only_unit_match(tmp_path: Pat
         },
     )
 
-    assert result.returncode == 0
+    assert result.returncode == 1
     assert "outside expected subtree" in result.stderr
     assert (proc_root / "910" / "oom_score_adj").read_text(encoding="utf-8").strip() == "100"
 

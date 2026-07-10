@@ -1056,8 +1056,8 @@ verify_protected_user_unit_oom_scores() {
         unit="${spec%%:*}"
         score="${spec##*:}"
         configured="$(user_systemctl show "$unit" -p OOMScoreAdjust --value 2>/dev/null || true)"
-        if [ "$configured" != "$score" ]; then
-            echo "user unit OOM policy drift for $unit: configured=$configured expected=$score; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        if [ "$configured" != "100" ]; then
+            echo "user unit startup OOM policy drift for $unit: configured=$configured expected=100; the user manager cannot lower a child score, so root must apply live score $score after start; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
             failed=1
         fi
         while IFS= read -r pid; do

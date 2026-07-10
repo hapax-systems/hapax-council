@@ -153,16 +153,20 @@ def test_recovery_daemon_oom_dropins_are_source_controlled() -> None:
 
 def test_broadcast_critical_user_oom_dropins_are_source_controlled() -> None:
     expected = {
-        "pipewire.service.d/oom-protect.conf": "-900",
-        "pipewire-pulse.service.d/oom-protect.conf": "-900",
-        "wireplumber.service.d/oom-protect.conf": "-900",
-        "hapax-daimonion.service.d/oom-protect.conf": "-500",
-        "studio-compositor.service.d/oom-protect.conf": "-800",
-        "hapax-imagination.service.d/oom-protect.conf": "-800",
+        "pipewire.service.d/oom-protect.conf",
+        "pipewire-pulse.service.d/oom-protect.conf",
+        "wireplumber.service.d/oom-protect.conf",
+        "hapax-daimonion.service.d/oom-protect.conf",
+        "studio-compositor.service.d/oom-protect.conf",
+        "hapax-imagination.service.d/oom-protect.conf",
     }
-    for rel, score in expected.items():
+    for rel in expected:
         text = (UNITS_DIR / rel).read_text()
-        assert _directive(text, "OOMScoreAdjust") == score
+        assert _directive(text, "OOMScoreAdjust") == "100"
+        assert (
+            _directive(text, "ExecStartPost")
+            == "-/usr/bin/sudo -n /usr/local/sbin/hapax-oom-score-enforce --apply-unit %n"
+        )
         assert _directive(text, "MemoryLow") is not None
         assert _directive(text, "MemoryMin") is not None
 

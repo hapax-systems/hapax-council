@@ -18,16 +18,35 @@ fi
 usage() {
     cat <<'USAGE'
 usage: hapax-oom-score-enforce --apply
+       hapax-oom-score-enforce --apply-unit UNIT
 
 Writes live /proc oom_score_adj values that unprivileged user units cannot
-lower by themselves after user@1000.service is made killable.
+lower by themselves after user@1000.service is made killable. --apply-unit is
+restricted to the package's protected user-unit allowlist and is intended for
+each unit's fail-open ExecStartPost startup trigger.
 USAGE
 }
 
-if [ "${1:-}" != "--apply" ]; then
-    usage >&2
-    exit 2
-fi
+mode="${1:-}"
+requested_unit="${2:-}"
+case "$mode" in
+    --apply)
+        [ "$#" -eq 1 ] || {
+            usage >&2
+            exit 2
+        }
+        ;;
+    --apply-unit)
+        [ "$#" -eq 2 ] || {
+            usage >&2
+            exit 2
+        }
+        ;;
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac
 
 run_user_systemctl() {
     if [ -n "${HAPAX_OOM_USER_SYSTEMCTL:-}" ]; then
@@ -80,7 +99,7 @@ write_oom_score_for_cgroup() {
     local pid="$1" score="$2" label="$3" expected_cgroup="$4"
     if ! pid_matches_cgroup "$pid" "$expected_cgroup"; then
         echo "warn: refusing oom_score_adj write for $label pid=$pid because /proc cgroup is outside expected subtree $expected_cgroup; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
-        return 0
+        return 1
     fi
     write_oom_score "$pid" "$score"
 }
@@ -148,7 +167,7 @@ user_unit_pids() {
 }
 
 apply_unit_score() {
-    local unit="$1" score="$2" pid changed output cgroup
+    local unit="$1" score="$2" require_live="${3:-0}" pid changed output cgroup
     local -a pids
     if ! cgroup="$(user_control_group "$unit")"; then
         failed=1
@@ -159,7 +178,13 @@ apply_unit_score() {
         return 0
     fi
     mapfile -t pids < <(printf '%s\n' "$output" | sed -n '/^[0-9][0-9]*$/p' | sort -u)
-    [ "${#pids[@]}" -gt 0 ] || return 0
+    if [ "${#pids[@]}" -eq 0 ]; then
+        if [ "$require_live" = "1" ]; then
+            echo "warn: protected user unit $unit has no live PID for its startup OOM trigger; next action: inspect systemctl --user status $unit and run scripts/hapax-oom-policy-audit --json" >&2
+            failed=1
+        fi
+        return 0
+    fi
     for pid in "${pids[@]}"; do
         if changed="$(write_oom_score_for_cgroup "$pid" "$score" "$unit" "$cgroup")"; then
             [ -z "$changed" ] || echo "user-unit $unit pid=$pid oom_score_adj=$score"
@@ -169,6 +194,32 @@ apply_unit_score() {
         fi
     done
 }
+
+protected_user_unit_score() {
+    case "$1" in
+        pipewire.service | pipewire-pulse.service | wireplumber.service)
+            printf '%s\n' -900
+            ;;
+        hapax-daimonion.service)
+            printf '%s\n' -500
+            ;;
+        studio-compositor.service | hapax-imagination.service)
+            printf '%s\n' -800
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+if [ "$mode" = "--apply-unit" ]; then
+    if ! requested_score="$(protected_user_unit_score "$requested_unit")"; then
+        echo "refusing non-allowlisted protected user unit: $requested_unit; next action: use one of the source-controlled OOM protection drop-ins" >&2
+        exit 2
+    fi
+    apply_unit_score "$requested_unit" "$requested_score" 1
+    exit "$failed"
+fi
 
 user_manager_unit="user@$TARGET_UID.service"
 if ! user_pid="$(system_main_pid "$user_manager_unit")"; then

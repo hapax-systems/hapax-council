@@ -76,9 +76,13 @@ def test_apcupsd_hooks_delegate_to_provenance_helper() -> None:
     assert "HAPAX_APCUPSD_TEST_MODE" in onbattery
     assert "HAPAX_APCUPSD_TEST_MODE" in offbattery
     assert "HAPAX_APCUPSD_HELPER" in onbattery
-    assert 'exec "$HELPER" onbattery "$@"' in onbattery
+    assert '"$TIMEOUT" --signal=KILL "$DEADLINE" "$HELPER" onbattery "$@" || :' in onbattery
+    assert 'DEADLINE="10s"' in onbattery
+    assert onbattery.rstrip().endswith("exit 0")
     assert "HAPAX_APCUPSD_HELPER" in offbattery
-    assert 'exec "$HELPER" offbattery "$@"' in offbattery
+    assert '"$TIMEOUT" --signal=KILL "$DEADLINE" "$HELPER" offbattery "$@" || :' in offbattery
+    assert 'DEADLINE="10s"' in offbattery
+    assert offbattery.rstrip().endswith("exit 0")
     assert 'HELPER="/etc/apcupsd/hapax-power-event.py"' in doshutdown
     assert "HAPAX_APCUPSD_TEST_MODE" in doshutdown
     assert '"$TIMEOUT" --signal=KILL 3s "$HELPER" doshutdown "$@" || :' in doshutdown
@@ -299,6 +303,33 @@ def test_doshutdown_hook_deadlines_blocked_provenance_write(tmp_path: Path) -> N
 
     assert result.returncode == 0
     assert elapsed < 4
+
+
+@pytest.mark.parametrize("hook", ["onbattery", "offbattery"])
+def test_transfer_hooks_deadline_blocked_provenance_write(tmp_path: Path, hook: str) -> None:
+    audit_fifo = tmp_path / f"blocked-{hook}.fifo"
+    os.mkfifo(audit_fifo)
+
+    started = time.monotonic()
+    result = subprocess.run(
+        [str(CONFIG_DIR / hook), "podium-srt3000xla", "1", "1"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_TEST_MODE": "1",
+            "HAPAX_APCUPSD_HELPER": str(HELPER),
+            "HAPAX_APCUPSD_EVENT_DEADLINE": "1s",
+            "HAPAX_UPS_AUDIT_LOG": str(audit_fifo),
+            "HAPAX_UPS_APCACCESS": "",
+            "HAPAX_UPS_NTFY_URL": "",
+        },
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.returncode == 0
+    assert elapsed < 2.5
 
 
 def test_power_event_helper_notifies_when_intent_audit_fails(tmp_path: Path) -> None:

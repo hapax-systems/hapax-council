@@ -47,8 +47,8 @@ def _protected_user_unit_cases(
     unit_pids = unit_pids or {}
     unit_cgroups = unit_cgroups or {}
     cases = []
-    for unit, score in PROTECTED_USER_UNIT_SCORES.items():
-        actual = 100 if wrong_unit_score and unit == "studio-compositor.service" else score
+    for unit in PROTECTED_USER_UNIT_SCORES:
+        actual = 0 if wrong_unit_score and unit == "studio-compositor.service" else 100
         pid = unit_pids.get(unit, 0)
         cgroup = unit_cgroups.get(unit, "")
         memory_low, memory_min = PROTECTED_USER_UNIT_MEMORY[unit]

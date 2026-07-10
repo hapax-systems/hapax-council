@@ -490,15 +490,16 @@ def audit_protected_user_units() -> list[Check]:
             continue
         actual = values.get("OOMScoreAdjust", "")
         parsed = _int_value(actual)
-        status = "pass" if parsed == expected else "gap"
+        status = "pass" if parsed == 100 else "gap"
         detail = (
             ""
             if status == "pass"
-            else f"broadcast-critical user unit OOM policy drifted; {NEXT_OOM_INSTALL}"
+            else (
+                "broadcast-critical user unit must start at the user manager's valid score 100; "
+                f"root applies live score {expected} after startup; {NEXT_OOM_INSTALL}"
+            )
         )
-        checks.append(
-            Check(f"user_unit_{unit}_OOMScoreAdjust", status, str(expected), actual, detail)
-        )
+        checks.append(Check(f"user_unit_{unit}_OOMScoreAdjust", status, "100", actual, detail))
         for key, memory_expected in PROTECTED_USER_UNIT_MEMORY[unit].items():
             memory_actual = values.get(key, "")
             memory_status = "pass" if _int_value(memory_actual) == memory_expected else "gap"

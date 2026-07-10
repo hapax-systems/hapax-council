@@ -1,7 +1,14 @@
 #!/bin/sh
 if [ "${HAPAX_APCUPSD_TEST_MODE:-0}" = "1" ]; then
     HELPER="${HAPAX_APCUPSD_HELPER:-/etc/apcupsd/hapax-power-event.py}"
+    TIMEOUT="${HAPAX_APCUPSD_TIMEOUT:-/usr/bin/timeout}"
+    DEADLINE="${HAPAX_APCUPSD_EVENT_DEADLINE:-10s}"
 else
     HELPER="/etc/apcupsd/hapax-power-event.py"
+    TIMEOUT="/usr/bin/timeout"
+    DEADLINE="10s"
 fi
-exec "$HELPER" offbattery "$@"
+
+# Restoration telemetry must not block apccontrol from processing later events.
+"$TIMEOUT" --signal=KILL "$DEADLINE" "$HELPER" offbattery "$@" || :
+exit 0
