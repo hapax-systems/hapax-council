@@ -199,6 +199,9 @@ migrate_legacy_root_required_state() {
 
 package_commits_equivalent() {
     local installed_sha="$1" candidate_sha="$2" rel
+    cmp -s \
+        <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$installed_sha:$package_manifest_source" 2>/dev/null) \
+        <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$candidate_sha:$package_manifest_source" 2>/dev/null) || return 1
     for rel in "${package_files[@]}"; do
         git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$installed_sha:$rel" 2>/dev/null || return 1
         git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$candidate_sha:$rel" 2>/dev/null || return 1
@@ -402,7 +405,9 @@ oom_enforcer_source="scripts/hapax-oom-score-enforce"
 root_failure_intake_source="scripts/hapax-root-failure-intake"
 oom_policy_audit_source="scripts/hapax-oom-policy-audit"
 root_required_audit_source="scripts/hapax-root-required-deploy-audit"
+package_manifest_source="config/root-required/oom-containment.files"
 package_files=(
+    "$package_manifest_source"
     scripts/install-p0-oom-containment
     "${system_dropins[@]}"
     "${system_units[@]}"
@@ -439,10 +444,26 @@ src_path() {
 
 record_installed_source() {
     local rel dest
-    for rel in scripts/install-p0-oom-containment "${system_dropins[@]}" "${system_units[@]}" "${user_audit_units[@]}" "$user_dropin" "${user_protection_dropins[@]}" "$earlyoom_source" "$oom_enforcer_source" "$root_failure_intake_source" "$oom_policy_audit_source" "$root_required_audit_source"; do
+    for rel in "${package_files[@]}"; do
         dest="$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT/$rel"
         mkdir -p "$(dirname "$dest")"
         cp -a "$(src_path "$rel")" "$dest"
+    done
+}
+
+validate_package_manifest() {
+    local -a declared=()
+    local index
+    mapfile -t declared < <(awk 'NF && $1 !~ /^#/ {print $1}' "$(src_path "$package_manifest_source")")
+    if [ "${#declared[@]}" -ne "${#package_files[@]}" ]; then
+        echo "OOM package ownership manifest count mismatch; next action: reconcile $package_manifest_source with package_files in scripts/install-p0-oom-containment" >&2
+        return 1
+    fi
+    for index in "${!package_files[@]}"; do
+        if [ "${declared[$index]}" != "${package_files[$index]}" ]; then
+            echo "OOM package ownership manifest mismatch at index $index: declared=${declared[$index]} runtime=${package_files[$index]}; next action: update both lists in the same governed change" >&2
+            return 1
+        fi
     done
 }
 
@@ -502,7 +523,8 @@ system_dest() {
 
 check_source() {
     local rel
-    for rel in "${system_dropins[@]}" "${system_units[@]}" "${user_audit_units[@]}" "$user_dropin" "${user_protection_dropins[@]}" "$earlyoom_source" "$oom_enforcer_source" "$root_failure_intake_source" "$oom_policy_audit_source" "$root_required_audit_source"; do
+    validate_package_manifest
+    for rel in "${package_files[@]}"; do
         [ -f "$(src_path "$rel")" ] || {
             echo "missing source file: $(src_path "$rel"); next action: restore the source tree or rerun from the PR/activation worktree" >&2
             return 1
@@ -772,7 +794,9 @@ install_live() {
         rm -f \
             "$control_dropin_dir/50-MemoryHigh.conf" \
             "$control_dropin_dir/50-MemoryMax.conf" \
-            "$control_dropin_dir/50-MemorySwapMax.conf"
+            "$control_dropin_dir/50-MemorySwapMax.conf" \
+            "$control_dropin_dir/50-MemoryLow.conf" \
+            "$control_dropin_dir/50-MemoryMin.conf"
         rmdir "$control_dropin_dir" 2>/dev/null || true
     fi
 

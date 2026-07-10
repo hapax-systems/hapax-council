@@ -143,6 +143,10 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     stale_control = user_control_dir / "app.slice.d" / "50-MemoryHigh.conf"
     stale_control.parent.mkdir(parents=True)
     stale_control.write_text("[Slice]\nMemoryHigh=1G\n", encoding="utf-8")
+    stale_low = user_control_dir / "app.slice.d" / "50-MemoryLow.conf"
+    stale_min = user_control_dir / "app.slice.d" / "50-MemoryMin.conf"
+    stale_low.write_text("[Slice]\nMemoryLow=64G\n", encoding="utf-8")
+    stale_min.write_text("[Slice]\nMemoryMin=32G\n", encoding="utf-8")
     earlyoom_dest = tmp_path / "earlyoom"
     enforcer_dest = tmp_path / "sbin" / "hapax-oom-score-enforce"
     root_failure_dest = tmp_path / "sbin" / "hapax-root-failure-intake"
@@ -251,6 +255,8 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         assert unit_path.is_file()
         assert not unit_path.is_symlink()
     assert not stale_control.exists()
+    assert not stale_low.exists()
+    assert not stale_min.exists()
     assert not (root_home / ".config" / "systemd").exists()
     calls = systemctl_calls.read_text(encoding="utf-8")
     assert "daemon-reload" in calls
@@ -430,6 +436,92 @@ def test_installed_oom_repair_cannot_erase_newer_desired_receipt(tmp_path: Path)
     assert desired.read_text(encoding="utf-8").strip() == sha_b
     assert live_marker.read_text(encoding="utf-8") == "installed A policy\n"
     assert (drain_dir / "DRAINED.txt").is_file()
+
+
+def test_oom_squash_equivalence_rejects_newer_manifest_file(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "manifest-test@example.test"], cwd=repo, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Manifest Test"], cwd=repo, check=True)
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True, capture_output=True)
+    base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+
+    subprocess.run(["git", "switch", "-c", "candidate"], cwd=repo, check=True, capture_output=True)
+    candidate_manifest = repo / "config/root-required/oom-containment.files"
+    candidate_manifest.parent.mkdir(parents=True)
+    candidate_manifest.write_text(
+        "config/root-required/oom-containment.files\nscripts/install-p0-oom-containment\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "candidate"], cwd=repo, check=True, capture_output=True)
+    candidate_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+
+    subprocess.run(
+        ["git", "switch", "-c", "desired", base_sha], cwd=repo, check=True, capture_output=True
+    )
+    desired_manifest = repo / "config/root-required/oom-containment.files"
+    desired_manifest.parent.mkdir(parents=True)
+    desired_manifest.write_text(
+        "config/root-required/oom-containment.files\nscripts/install-p0-oom-containment\nconfig/earlyoom/new-policy\n",
+        encoding="utf-8",
+    )
+    extra = repo / "config/earlyoom/new-policy"
+    extra.parent.mkdir(parents=True)
+    extra.write_text("new owned policy\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "desired adds owned file"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    desired_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+
+    defer_root = tmp_path / "root-required"
+    stage = defer_root / candidate_sha / "oom-containment"
+    stage.mkdir(parents=True)
+    (stage / "RUNBOOK.txt").write_text("candidate\n", encoding="utf-8")
+    (stage / ".hapax-root-required-package-sha").write_text(f"{candidate_sha}\n", encoding="utf-8")
+    installed_root = tmp_path / "root-state/installed-receipts"
+    desired_root = tmp_path / "root-state/desired-receipts"
+    installed_root.mkdir(parents=True)
+    desired_root.mkdir(parents=True)
+    (installed_root / "oom-containment.sha").write_text(f"{candidate_sha}\n", encoding="utf-8")
+    desired_receipt = desired_root / "oom-containment.sha"
+    desired_receipt.write_text(f"{desired_sha}\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(stage), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_INSTALL_SUDO": "",
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_root),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": candidate_sha,
+            "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT": str(installed_root),
+            "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT": str(desired_root),
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(repo),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "refusing divergent OOM package desired=" in result.stderr
+    assert desired_receipt.read_text(encoding="utf-8").strip() == desired_sha
+    assert (stage / "RUNBOOK.txt").is_file()
 
 
 def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_user_protection(
@@ -866,6 +958,66 @@ def test_root_oom_score_enforcer_writes_all_user_unit_cgroup_pids(
     assert result.returncode == 0, result.stderr
     assert (proc_root / "910" / "oom_score_adj").read_text(encoding="utf-8").strip() == "-900"
     assert (proc_root / "916" / "oom_score_adj").read_text(encoding="utf-8").strip() == "-900"
+
+
+def test_root_oom_score_enforcer_rejects_substring_only_unit_match(tmp_path: Path) -> None:
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    _write_proc(
+        proc_root,
+        900,
+        name="systemd",
+        uid=1000,
+        oom_score=100,
+        cgroup="/user.slice/user-1000.slice/user@1000.service",
+    )
+    _write_proc(
+        proc_root,
+        910,
+        name="pipewire-shadow",
+        uid=1000,
+        oom_score=100,
+        cgroup="/user.slice/user-1000.slice/user@1000.service/app.slice/pipewire.service-shadow",
+    )
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$*" in\n'
+        '  *"show user@1000.service -p MainPID --value"*) printf "900\\n" ;;\n'
+        '  *) printf "0\\n" ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+    fake_user_systemctl = tmp_path / "systemctl-user"
+    fake_user_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$*" in\n'
+        '  *"show pipewire.service -p MainPID --value"*) printf "910\\n" ;;\n'
+        '  *" -p MainPID --value"*) printf "0\\n" ;;\n'
+        '  *" -p ControlGroup --value"*) printf "\\n" ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake_user_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(OOM_ENFORCER), "--apply"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_PROC_ROOT": str(proc_root),
+            "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_OOM_USER_SYSTEMCTL": str(fake_user_systemctl),
+            "HAPAX_OOM_TARGET_UID": "1000",
+        },
+    )
+
+    assert result.returncode == 0
+    assert "cgroup no longer matches" in result.stderr
+    assert (proc_root / "910" / "oom_score_adj").read_text(encoding="utf-8").strip() == "100"
 
 
 def test_root_oom_score_enforcer_continues_after_per_unit_write_failure(

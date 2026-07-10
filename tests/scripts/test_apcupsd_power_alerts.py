@@ -20,6 +20,7 @@ REPO_HEAD = subprocess.run(
     ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, check=True, text=True, capture_output=True
 ).stdout.strip()
 APCUPSD_PACKAGE_FILES = (
+    "config/root-required/apcupsd-power-alerts.files",
     "scripts/install-apcupsd-power-alerts",
     "config/apcupsd/apcupsd.conf",
     "config/apcupsd/hapax-power-event.py",
@@ -940,6 +941,92 @@ def test_installed_apcupsd_repair_cannot_erase_newer_desired_receipt(tmp_path: P
     assert desired.read_text(encoding="utf-8").strip() == sha_b
     assert live_marker.read_text(encoding="utf-8") == "installed A policy\n"
     assert (drain_dir / "DRAINED.txt").is_file()
+
+
+def test_apcupsd_squash_equivalence_rejects_newer_manifest_file(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "manifest-test@example.test"], cwd=repo, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Manifest Test"], cwd=repo, check=True)
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True, capture_output=True)
+    base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+
+    subprocess.run(["git", "switch", "-c", "candidate"], cwd=repo, check=True, capture_output=True)
+    candidate_manifest = repo / "config/root-required/apcupsd-power-alerts.files"
+    candidate_manifest.parent.mkdir(parents=True)
+    candidate_manifest.write_text(
+        "config/root-required/apcupsd-power-alerts.files\nscripts/install-apcupsd-power-alerts\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "candidate"], cwd=repo, check=True, capture_output=True)
+    candidate_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+
+    subprocess.run(
+        ["git", "switch", "-c", "desired", base_sha], cwd=repo, check=True, capture_output=True
+    )
+    desired_manifest = repo / "config/root-required/apcupsd-power-alerts.files"
+    desired_manifest.parent.mkdir(parents=True)
+    desired_manifest.write_text(
+        "config/root-required/apcupsd-power-alerts.files\nscripts/install-apcupsd-power-alerts\nconfig/apcupsd/new-policy\n",
+        encoding="utf-8",
+    )
+    extra = repo / "config/apcupsd/new-policy"
+    extra.parent.mkdir(parents=True)
+    extra.write_text("new owned policy\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "desired adds owned file"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    desired_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+
+    defer_root = tmp_path / "root-required"
+    stage = defer_root / candidate_sha / "apcupsd-power-alerts"
+    stage.mkdir(parents=True)
+    (stage / "RUNBOOK.txt").write_text("candidate\n", encoding="utf-8")
+    (stage / ".hapax-root-required-package-sha").write_text(f"{candidate_sha}\n", encoding="utf-8")
+    installed_root = tmp_path / "root-state/installed-receipts"
+    desired_root = tmp_path / "root-state/desired-receipts"
+    installed_root.mkdir(parents=True)
+    desired_root.mkdir(parents=True)
+    (installed_root / "apcupsd-power-alerts.sha").write_text(f"{candidate_sha}\n", encoding="utf-8")
+    desired_receipt = desired_root / "apcupsd-power-alerts.sha"
+    desired_receipt.write_text(f"{desired_sha}\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(stage), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_root),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": candidate_sha,
+            "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT": str(installed_root),
+            "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT": str(desired_root),
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(repo),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "refusing divergent apcupsd package desired=" in result.stderr
+    assert desired_receipt.read_text(encoding="utf-8").strip() == desired_sha
+    assert (stage / "RUNBOOK.txt").is_file()
 
 
 def test_apcupsd_installer_accepts_content_equivalent_squash_sibling(

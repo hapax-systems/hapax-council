@@ -13,6 +13,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-post-merge-deploy"
 ROOT_REQUIRED_AUDIT = REPO_ROOT / "scripts" / "hapax-root-required-deploy-audit"
+OOM_PACKAGE_MANIFEST = (REPO_ROOT / "config/root-required/oom-containment.files").read_text(
+    encoding="utf-8"
+)
+APCUPSD_PACKAGE_MANIFEST = (
+    REPO_ROOT / "config/root-required/apcupsd-power-alerts.files"
+).read_text(encoding="utf-8")
 RECOVERY_BUNDLE_SOURCE_FILES = {
     "scripts/hapax-p0-incident-intake": "#!/usr/bin/env bash\necho intake\n",
     "scripts/hapax-coord-deploy": "#!/usr/bin/env bash\necho coord deploy\n",
@@ -53,6 +59,8 @@ P0_OOM_AUDIT_FILES = {
     ),
 }
 ROOT_AUDIT_SOURCE_FILES = {
+    "config/root-required/oom-containment.files": OOM_PACKAGE_MANIFEST,
+    "config/root-required/apcupsd-power-alerts.files": APCUPSD_PACKAGE_MANIFEST,
     "scripts/install-p0-oom-containment": "#!/usr/bin/env bash\n",
     "scripts/install-apcupsd-power-alerts": "#!/usr/bin/env bash\n",
     "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\necho enforcer\n",
@@ -724,6 +732,7 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
         'printf \'%s\\n\' "$*" >> "$HAPAX_OOM_INSTALL_CALLS"\n'
     )
     files = {
+        "config/root-required/oom-containment.files": OOM_PACKAGE_MANIFEST,
         "scripts/install-p0-oom-containment": installer_body,
         "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\nexit 0\n",
         "scripts/hapax-root-failure-intake": "#!/usr/bin/env bash\nexit 0\n",
@@ -852,9 +861,68 @@ def test_stale_post_merge_deploy_preserves_newer_desired_receipt(tmp_path: Path)
     assert oom_desired.read_text(encoding="utf-8").strip() == sha_b
 
 
+def test_post_merge_squash_equivalence_rejects_newer_manifest_file(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "manifest-test@example.test")
+    _git(repo, "config", "user.name", "Manifest Test")
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "base")
+    base_sha = _git(repo, "rev-parse", "HEAD")
+
+    _git(repo, "switch", "-c", "candidate")
+    for relative, body in ROOT_AUDIT_SOURCE_FILES.items():
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "candidate packages")
+    candidate_sha = _git(repo, "rev-parse", "HEAD")
+
+    _git(repo, "switch", "-c", "desired", base_sha)
+    _git(repo, "checkout", "candidate", "--", ".")
+    desired_manifest = repo / "config/root-required/oom-containment.files"
+    desired_manifest.write_text(
+        desired_manifest.read_text(encoding="utf-8") + "config/earlyoom/new-policy\n",
+        encoding="utf-8",
+    )
+    extra = repo / "config/earlyoom/new-policy"
+    extra.parent.mkdir(parents=True, exist_ok=True)
+    extra.write_text("new owned policy\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "desired adds owned file")
+    desired_sha = _git(repo, "rev-parse", "HEAD")
+
+    home = tmp_path / "home"
+    desired_root = home / ".local/state/hapax/root-required/desired-receipts"
+    desired_root.mkdir(parents=True)
+    desired_receipt = desired_root / "oom-containment.sha"
+    desired_receipt.write_text(f"{desired_sha}\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(SCRIPT), candidate_sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "REPO": str(repo),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "refusing divergent desired oom-containment transition" in result.stderr
+    assert desired_receipt.read_text(encoding="utf-8").strip() == desired_sha
+
+
 def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: Path) -> None:
     installer_body = "#!/usr/bin/env bash\nexit 77\n"
     files = {
+        "config/root-required/oom-containment.files": OOM_PACKAGE_MANIFEST,
         "scripts/install-p0-oom-containment": installer_body,
         "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\nexit 0\n",
         "scripts/hapax-root-failure-intake": "#!/usr/bin/env bash\nexit 0\n",
@@ -1266,6 +1334,7 @@ def test_apcupsd_power_alert_deploy_uses_dedicated_installer(tmp_path: Path) -> 
         'printf \'%s\\n\' "$*" >> "$HAPAX_APCUPSD_INSTALL_CALLS"\n'
     )
     files = {
+        "config/root-required/apcupsd-power-alerts.files": APCUPSD_PACKAGE_MANIFEST,
         "scripts/install-apcupsd-power-alerts": installer_body,
         "config/apcupsd/apcupsd.conf": (
             "## apcupsd.conf v1.1 ##\nUPSNAME podium\nBATTERYLEVEL 20\nMINUTES 5\nTIMEOUT 0\n"

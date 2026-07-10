@@ -58,10 +58,15 @@ write_oom_score() {
 }
 
 pid_matches_unit() {
-    local pid="$1" unit="$2" cgroup
+    local pid="$1" unit="$2" cgroup _hierarchy _controllers path
     cgroup="$PROC_ROOT/$pid/cgroup"
     [ -r "$cgroup" ] || return 1
-    grep -Fq "$unit" "$cgroup"
+    while IFS=: read -r _hierarchy _controllers path; do
+        case "/${path#/}/" in
+            *"/$unit/"*) return 0 ;;
+        esac
+    done < "$cgroup"
+    return 1
 }
 
 write_oom_score_for_unit() {

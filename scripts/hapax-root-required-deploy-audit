@@ -26,6 +26,7 @@ BUSCTL="${HAPAX_ROOT_AUDIT_BUSCTL:-busctl}"
 APCACCESS="${HAPAX_ROOT_AUDIT_APCACCESS:-apcaccess}"
 
 oom_package_files=(
+    config/root-required/oom-containment.files
     scripts/install-p0-oom-containment
     scripts/hapax-oom-score-enforce
     scripts/hapax-root-failure-intake
@@ -59,6 +60,7 @@ oom_package_files=(
     systemd/units/hapax-imagination.service.d/oom-protect.conf
 )
 apcupsd_package_files=(
+    config/root-required/apcupsd-power-alerts.files
     scripts/install-apcupsd-power-alerts
     config/apcupsd/apcupsd.conf
     config/apcupsd/hapax-power-event.py
