@@ -147,6 +147,11 @@ def _systemctl_app_slice_cases() -> str:
             '  *"--user show app.slice -p MemorySwapMax --value"*) printf "8589934592\\n" ;;',
             '  *"--user show app.slice -p MemoryLow --value"*) printf "17179869184\\n" ;;',
             '  *"--user show app.slice -p MemoryMin --value"*) printf "8589934592\\n" ;;',
+            '  *"--user show session.slice -p MemoryHigh --value"*) printf "infinity\\n" ;;',
+            '  *"--user show session.slice -p MemoryMax --value"*) printf "infinity\\n" ;;',
+            '  *"--user show session.slice -p MemorySwapMax --value"*) printf "infinity\\n" ;;',
+            '  *"--user show session.slice -p MemoryLow --value"*) printf "2147483648\\n" ;;',
+            '  *"--user show session.slice -p MemoryMin --value"*) printf "1073741824\\n" ;;',
         ]
     )
 
@@ -400,6 +405,11 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert not app_dropin.is_symlink()
     assert "MemorySwapMax=8G" in app_dropin.read_text(encoding="utf-8")
     assert "MemoryLow=16G" in app_dropin.read_text(encoding="utf-8")
+    session_dropin = user_dir / "session.slice.d" / "oom-containment.conf"
+    assert session_dropin.is_file()
+    assert not session_dropin.is_symlink()
+    assert "MemoryLow=2G" in session_dropin.read_text(encoding="utf-8")
+    assert "MemoryMin=1G" in session_dropin.read_text(encoding="utf-8")
     assert (system_dir / "user-1000.slice.d" / "oom-containment.conf").is_file()
     assert "MemoryMin=8G" in (system_dir / "user.slice.d" / "oom-containment.conf").read_text(
         encoding="utf-8"
@@ -958,6 +968,10 @@ def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_use
     assert (
         "set-property --runtime app.slice MemoryHigh=72G MemoryMax=88G MemorySwapMax=8G MemoryLow=16G MemoryMin=8G"
         in calls
+    )
+    assert (
+        "set-property --runtime session.slice MemoryHigh=infinity MemoryMax=infinity "
+        "MemorySwapMax=infinity MemoryLow=2G MemoryMin=1G" in calls
     )
 
     inactive_pids = {**unit_pids, "apcupsd.service": 0}

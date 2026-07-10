@@ -56,10 +56,10 @@ def _protected_user_unit_cases(
         if wrong_unit_memory and unit == "studio-compositor.service":
             memory_min = 0
         slice_name = (
-            "session.slice"
-            if wrong_unit_slice and unit == "studio-compositor.service"
-            else "app.slice"
+            "session.slice" if unit.startswith(("pipewire", "wireplumber")) else "app.slice"
         )
+        if wrong_unit_slice and unit == "studio-compositor.service":
+            slice_name = "session.slice"
         cases.append(
             f'  *"--user show {unit} --no-pager -p OOMScoreAdjust -p MainPID"*) '
             f"printf 'OOMScoreAdjust={actual}\\nMainPID={pid}\\nControlGroup={cgroup}\\n"
@@ -92,6 +92,7 @@ def _fake_systemctl(
     wrong_unit_slice: bool = False,
     system_slice_finite_max: bool = False,
     user_slice_unprotected: bool = False,
+    session_slice_unprotected: bool = False,
     protected_unit_pids: dict[str, int] | None = None,
     protected_unit_cgroups: dict[str, str] | None = None,
     sshd_score: int = 0,
@@ -141,6 +142,13 @@ def _fake_systemctl(
         f"MemoryLow={'0' if user_slice_unprotected else '17179869184'}\n"
         f"MemoryMin={'0' if user_slice_unprotected else '8589934592'}\n"
     )
+    session_slice_values = (
+        "MemoryHigh=infinity\n"
+        "MemoryMax=infinity\n"
+        "MemorySwapMax=infinity\n"
+        f"MemoryLow={'0' if session_slice_unprotected else '2147483648'}\n"
+        f"MemoryMin={'0' if session_slice_unprotected else '1073741824'}\n"
+    )
     path.write_text(
         f"""#!/usr/bin/env bash
 set -euo pipefail
@@ -153,6 +161,7 @@ case "$*" in
   *"show sshd.service"*) printf 'OOMScoreAdjust={sshd_score}\\nOOMPolicy={sshd_policy}\\nMainPID=920\\n' ;;
 {_recovery_system_unit_cases(wrong_score=wrong_recovery_unit_score, inactive_unit=inactive_recovery_unit)}
   *"show app.slice"*) printf '{app_values}' ;;
+  *"show session.slice"*) printf '{session_slice_values}' ;;
 {_protected_user_unit_cases(wrong_unit_score=wrong_unit_score, wrong_unit_memory=wrong_unit_memory, wrong_unit_slice=wrong_unit_slice, unit_pids=protected_unit_pids, unit_cgroups=protected_unit_cgroups)}
   *"list-units --type=scope"*) printf 'tmux-spawn-a.scope loaded active running tmux child pane\\n' ;;
   *"show tmux-spawn-a.scope"*) printf '{tmux_values}' ;;
@@ -191,6 +200,7 @@ def _run(
     wrong_unit_slice: bool = False,
     system_slice_finite_max: bool = False,
     user_slice_unprotected: bool = False,
+    session_slice_unprotected: bool = False,
     protected_unit_pids: dict[str, int] | None = None,
     protected_unit_cgroups: dict[str, str] | None = None,
     sshd_score: int = 0,
@@ -240,6 +250,7 @@ def _run(
                 wrong_unit_slice=wrong_unit_slice,
                 system_slice_finite_max=system_slice_finite_max,
                 user_slice_unprotected=user_slice_unprotected,
+                session_slice_unprotected=session_slice_unprotected,
                 protected_unit_pids=protected_unit_pids,
                 protected_unit_cgroups=protected_unit_cgroups,
                 sshd_score=sshd_score,
@@ -270,7 +281,20 @@ def test_audit_passes_when_user_manager_is_killable_and_app_slice_bounded(tmp_pa
     assert statuses["system_slice_MemoryLow"] == "pass"
     assert statuses["user_slice_MemoryLow"] == "pass"
     assert statuses["app_slice_MemorySwapMax"] == "pass"
+    assert statuses["session_slice_MemoryLow"] == "pass"
+    assert statuses["user_unit_pipewire.service_Slice"] == "pass"
     assert statuses["user_unit_studio-compositor.service_Slice"] == "pass"
+
+
+def test_audit_fails_when_session_slice_audio_reservation_is_missing(tmp_path: Path) -> None:
+    result = _run(tmp_path, session_slice_unprotected=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(item for item in payload["checks"] if item["name"] == "session_slice_MemoryLow")
+    assert check["status"] == "gap"
+    assert check["actual"] == "0"
+    assert check["target"] == "2147483648"
 
 
 def test_audit_fails_when_protected_unit_leaves_checked_app_slice_chain(tmp_path: Path) -> None:

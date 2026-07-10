@@ -75,6 +75,15 @@ def test_app_slice_has_aggregate_oom_backstop() -> None:
     assert _directive(text, "MemoryMin") == "8G"
 
 
+def test_session_slice_carries_audio_reservation_ancestor() -> None:
+    text = (UNITS_DIR / "session.slice.d" / "oom-containment.conf").read_text()
+    assert _directive(text, "MemoryHigh") == "infinity"
+    assert _directive(text, "MemoryMax") == "infinity"
+    assert _directive(text, "MemorySwapMax") == "infinity"
+    assert _directive(text, "MemoryLow") == "2G"
+    assert _directive(text, "MemoryMin") == "1G"
+
+
 def test_uid_slice_has_session_and_app_aggregate_oom_backstop() -> None:
     text = (
         REPO_ROOT / "systemd" / "system" / "user-1000.slice.d" / "oom-containment.conf"
@@ -299,10 +308,13 @@ def test_p0_oom_containment_has_dedicated_installer() -> None:
     assert "systemd/system/user-1000.slice.d/oom-containment.conf" in body
     assert "systemd/system/user@1000.service.d/oom.conf" in body
     assert "systemd/units/app.slice.d/oom-containment.conf" in body
+    assert "systemd/units/session.slice.d/oom-containment.conf" in body
     assert "config/earlyoom/default" in body
     assert "app_slice_value MemoryHigh" in body
     assert "apply_system_runtime_memory user-1000.slice" in body
     assert "apply_system_runtime_memory user@1000.service" in body
     assert "set-property --runtime app.slice" in body
+    assert "set-property --runtime session.slice" in body
     assert "verify_system_unit_runtime_memory user-1000.slice" in body
     assert "verify_app_slice_runtime" in body
+    assert "verify_session_slice_runtime" in body

@@ -11,6 +11,8 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+BYTES_1G = 1024**3
+BYTES_2G = 2 * 1024**3
 BYTES_12G = 12 * 1024**3
 BYTES_24G = 24 * 1024**3
 BYTES_72G = 72 * 1024**3
@@ -37,6 +39,14 @@ PROTECTED_USER_UNITS = {
     "hapax-daimonion.service": -500,
     "studio-compositor.service": -800,
     "hapax-imagination.service": -800,
+}
+PROTECTED_USER_UNIT_SLICES = {
+    "pipewire.service": "session.slice",
+    "pipewire-pulse.service": "session.slice",
+    "wireplumber.service": "session.slice",
+    "hapax-daimonion.service": "app.slice",
+    "studio-compositor.service": "app.slice",
+    "hapax-imagination.service": "app.slice",
 }
 PROTECTED_USER_UNIT_MEMORY = {
     "pipewire.service": {"MemoryLow": 512 * 1024**2, "MemoryMin": 256 * 1024**2},
@@ -330,6 +340,39 @@ def audit_app_slice() -> list[Check]:
     return checks
 
 
+def audit_session_slice() -> list[Check]:
+    expected: dict[str, int | None] = {
+        "MemoryHigh": None,
+        "MemoryMax": None,
+        "MemorySwapMax": None,
+        "MemoryLow": BYTES_2G,
+        "MemoryMin": BYTES_1G,
+    }
+    values = _show("session.slice", list(expected), user=True)
+    if "_error" in values:
+        return [
+            Check(
+                "session_slice",
+                "error",
+                "protected",
+                "N/A",
+                f"{values['_error']}; {NEXT_OOM_INSTALL}",
+            )
+        ]
+    checks: list[Check] = []
+    for key, target in expected.items():
+        actual = values.get(key, "")
+        target_text = "infinity" if target is None else str(target)
+        status = "pass" if actual == target_text else "gap"
+        detail = (
+            ""
+            if status == "pass"
+            else f"session.slice audio ancestor reservation drifted; {NEXT_OOM_INSTALL}"
+        )
+        checks.append(Check(f"session_slice_{key}", status, target_text, actual, detail))
+    return checks
+
+
 def audit_system_memory_unit(unit: str) -> list[Check]:
     expected = {
         "MemoryHigh": BYTES_80G,
@@ -500,13 +543,14 @@ def audit_protected_user_units() -> list[Check]:
             )
         )
         checks.append(Check(f"user_unit_{unit}_OOMScoreAdjust", status, "100", actual, detail))
+        slice_target = PROTECTED_USER_UNIT_SLICES[unit]
         slice_actual = values.get("Slice", "")
-        slice_status = "pass" if slice_actual == "app.slice" else "gap"
+        slice_status = "pass" if slice_actual == slice_target else "gap"
         slice_detail = (
             ""
             if slice_status == "pass"
             else (
-                "broadcast-critical reservation must remain below app.slice so its checked "
+                f"broadcast-critical reservation must remain below {slice_target} so its checked "
                 f"ancestor protection is effective; {NEXT_OOM_INSTALL}"
             )
         )
@@ -514,7 +558,7 @@ def audit_protected_user_units() -> list[Check]:
             Check(
                 f"user_unit_{unit}_Slice",
                 slice_status,
-                "app.slice",
+                slice_target,
                 slice_actual,
                 slice_detail,
             )
@@ -713,6 +757,7 @@ def main(argv: list[str] | None = None) -> int:
         *audit_system_memory_unit(f"user-{args.uid}.slice"),
         *audit_system_memory_unit(f"user@{args.uid}.service"),
         *audit_app_slice(),
+        *audit_session_slice(),
         *audit_protected_user_units(),
         audit_residual_user_process_protection(args.uid),
         *audit_tmux_scopes(),

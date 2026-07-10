@@ -388,8 +388,8 @@ fi
 # file now fixes both the new drop-ins and the latent existing ones.
 #
 # 2026-07-09 P0 follow-up: the same install contract now covers slice/scope
-# drop-ins as well. app.slice containment is a host-safety backstop, and it
-# must not be skipped merely because it is not a service unit.
+# drop-ins as well. app.slice/session.slice containment is a host-safety
+# backstop, and it must not be skipped merely because it is not a service unit.
 #
 # Destination layout: ``~/.config/systemd/user/<service>.service.d/``
 # is a REAL directory (not a symlink). Individual ``.conf`` files
@@ -399,6 +399,7 @@ fi
 dedicated_p0_oom_dropin() {
     case "$1" in
         app.slice.d/oom-containment.conf|\
+        session.slice.d/oom-containment.conf|\
         pipewire.service.d/oom-protect.conf|\
         pipewire-pulse.service.d/oom-protect.conf|\
         wireplumber.service.d/oom-protect.conf|\

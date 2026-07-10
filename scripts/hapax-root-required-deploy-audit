@@ -68,6 +68,7 @@ oom_package_files=(
     systemd/units/hapax-root-required-deploy-audit.service
     systemd/units/hapax-root-required-deploy-audit.timer
     systemd/units/app.slice.d/oom-containment.conf
+    systemd/units/session.slice.d/oom-containment.conf
     systemd/units/pipewire.service.d/oom-protect.conf
     systemd/units/pipewire-pulse.service.d/oom-protect.conf
     systemd/units/wireplumber.service.d/oom-protect.conf
@@ -431,6 +432,7 @@ audit_root_installs() {
         "systemd/units/hapax-root-required-deploy-audit.service|$SYSTEMD_USER_DIR/hapax-root-required-deploy-audit.service"
         "systemd/units/hapax-root-required-deploy-audit.timer|$SYSTEMD_USER_DIR/hapax-root-required-deploy-audit.timer"
         "systemd/units/app.slice.d/oom-containment.conf|$SYSTEMD_USER_DIR/app.slice.d/oom-containment.conf"
+        "systemd/units/session.slice.d/oom-containment.conf|$SYSTEMD_USER_DIR/session.slice.d/oom-containment.conf"
         "systemd/units/pipewire.service.d/oom-protect.conf|$SYSTEMD_USER_DIR/pipewire.service.d/oom-protect.conf"
         "systemd/units/pipewire-pulse.service.d/oom-protect.conf|$SYSTEMD_USER_DIR/pipewire-pulse.service.d/oom-protect.conf"
         "systemd/units/wireplumber.service.d/oom-protect.conf|$SYSTEMD_USER_DIR/wireplumber.service.d/oom-protect.conf"

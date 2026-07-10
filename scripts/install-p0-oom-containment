@@ -92,12 +92,12 @@ Installs the P0 podium OOM containment package:
   systemd/units/hapax-{oom-policy,root-required-deploy}-audit.{service,timer}
                                                      -> ~/.config/systemd/user/
   systemd/units/*.service.d/oom-protect.conf        -> ~/.config/systemd/user/*.service.d/oom-protect.conf
-  systemd/units/app.slice.d/oom-containment.conf    -> ~/.config/systemd/user/app.slice.d/oom-containment.conf
+  systemd/units/{app,session}.slice.d/oom-containment.conf -> ~/.config/systemd/user/<slice>.slice.d/oom-containment.conf
   config/earlyoom/default                           -> /etc/default/earlyoom
 
-The app.slice drop-in is copied, not symlinked, so live containment does not
-depend on a mutable PR worktree. Runtime activation uses set-property for the
-active app.slice instead of restarting the slice. Run as the target account;
+The app.slice and session.slice drop-ins are copied, not symlinked, so live
+containment does not depend on a mutable PR worktree. Runtime activation uses
+set-property instead of restarting either slice. Run as the target account;
 the installer uses sudo only for root-owned destinations and refuses
 whole-script root execution.
 USAGE
@@ -422,6 +422,11 @@ user_audit_timers=(
     hapax-root-required-deploy-audit.timer
 )
 user_dropin="systemd/units/app.slice.d/oom-containment.conf"
+session_slice_dropin="systemd/units/session.slice.d/oom-containment.conf"
+user_slice_dropins=(
+    "$user_dropin"
+    "$session_slice_dropin"
+)
 user_protection_dropins=(
     systemd/units/pipewire.service.d/oom-protect.conf
     systemd/units/pipewire-pulse.service.d/oom-protect.conf
@@ -450,7 +455,7 @@ package_files=(
     "${system_dropins[@]}"
     "${system_units[@]}"
     "${user_audit_units[@]}"
-    "$user_dropin"
+    "${user_slice_dropins[@]}"
     "${user_protection_dropins[@]}"
     "$earlyoom_source"
     "$oom_enforcer_source"
@@ -612,6 +617,11 @@ check_source() {
     app_slice_value MemorySwapMax >/dev/null
     app_slice_value MemoryLow >/dev/null
     app_slice_value MemoryMin >/dev/null
+    source_unit_value "$session_slice_dropin" MemoryHigh >/dev/null
+    source_unit_value "$session_slice_dropin" MemoryMax >/dev/null
+    source_unit_value "$session_slice_dropin" MemorySwapMax >/dev/null
+    source_unit_value "$session_slice_dropin" MemoryLow >/dev/null
+    source_unit_value "$session_slice_dropin" MemoryMin >/dev/null
     source_unit_value systemd/system/user-1000.slice.d/oom-containment.conf MemoryHigh >/dev/null
     source_unit_value systemd/system/user-1000.slice.d/oom-containment.conf MemoryMax >/dev/null
     source_unit_value systemd/system/user-1000.slice.d/oom-containment.conf MemorySwapMax >/dev/null
@@ -884,13 +894,15 @@ install_live() {
     run_root install -m 0644 "$(src_path "$earlyoom_source")" "$EARLYOOM_DEST"
     echo "  '$earlyoom_source' -> '$EARLYOOM_DEST'"
 
-    dest="$SYSTEMD_USER_DIR/app.slice.d/oom-containment.conf"
-    install -d -m 0755 "$(dirname "$dest")"
-    if [ -L "$dest" ]; then
-        rm -f "$dest"
-    fi
-    install -m 0644 "$(src_path "$user_dropin")" "$dest"
-    echo "  '$user_dropin' -> '$dest' (copy)"
+    for rel in "${user_slice_dropins[@]}"; do
+        dest="$SYSTEMD_USER_DIR/${rel#systemd/units/}"
+        install -d -m 0755 "$(dirname "$dest")"
+        if [ -L "$dest" ]; then
+            rm -f "$dest"
+        fi
+        install -m 0644 "$(src_path "$rel")" "$dest"
+        echo "  '$rel' -> '$dest' (copy)"
+    done
 
     for rel in "${user_protection_dropins[@]}"; do
         dest="$SYSTEMD_USER_DIR/${rel#systemd/units/}"
@@ -954,6 +966,12 @@ install_live() {
             "MemorySwapMax=$mem_swap" \
             "MemoryLow=$(app_slice_value MemoryLow)" \
             "MemoryMin=$(app_slice_value MemoryMin)"
+        user_systemctl set-property --runtime session.slice \
+            "MemoryHigh=$(source_unit_value "$session_slice_dropin" MemoryHigh)" \
+            "MemoryMax=$(source_unit_value "$session_slice_dropin" MemoryMax)" \
+            "MemorySwapMax=$(source_unit_value "$session_slice_dropin" MemorySwapMax)" \
+            "MemoryLow=$(source_unit_value "$session_slice_dropin" MemoryLow)" \
+            "MemoryMin=$(source_unit_value "$session_slice_dropin" MemoryMin)"
         apply_recovery_unit_oom_scores
         apply_protected_user_unit_oom_scores
         user_pid="$("$SYSTEMCTL" show user@1000.service -p MainPID --value 2>/dev/null || true)"
@@ -1116,12 +1134,14 @@ verify_live() {
         echo "earlyoom.service is not active; next action: run sudo systemctl enable --now earlyoom.service and inspect journalctl -u earlyoom.service" >&2
         return 1
     }
-    dest="$SYSTEMD_USER_DIR/app.slice.d/oom-containment.conf"
-    if [ -L "$dest" ]; then
-        echo "live app.slice drop-in is a symlink: $dest; next action: run scripts/install-p0-oom-containment --install --verify-live to replace it with a copy" >&2
-        return 1
-    fi
-    verify_pair "$(src_path "$user_dropin")" "$dest"
+    for rel in "${user_slice_dropins[@]}"; do
+        dest="$SYSTEMD_USER_DIR/${rel#systemd/units/}"
+        if [ -L "$dest" ]; then
+            echo "live P0 slice drop-in is a symlink: $dest; next action: run scripts/install-p0-oom-containment --install --verify-live to replace it with a copy" >&2
+            return 1
+        fi
+        verify_pair "$(src_path "$rel")" "$dest"
+    done
     for rel in "${user_protection_dropins[@]}"; do
         verify_pair "$(src_path "$rel")" "$SYSTEMD_USER_DIR/${rel#systemd/units/}"
     done
@@ -1149,6 +1169,7 @@ verify_live() {
     verify_system_unit_runtime_memory user-1000.slice systemd/system/user-1000.slice.d/oom-containment.conf
     verify_system_unit_runtime_memory user@1000.service systemd/system/user@1000.service.d/oom.conf
     verify_app_slice_runtime
+    verify_session_slice_runtime
     verify_recovery_unit_oom_scores
     verify_protected_user_unit_oom_scores
     verify_user_process_oom_floor
@@ -1182,6 +1203,23 @@ verify_app_slice_runtime() {
         actual="$(user_systemctl show app.slice -p "$key" --value 2>/dev/null || true)"
         if [ "$actual" != "$expected_raw" ] && [ "$actual" != "$expected_bytes" ]; then
             echo "live app.slice $key drift: actual=$actual expected=$expected_raw; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+            failed=1
+        fi
+    done
+    [ "$failed" -eq 0 ]
+}
+
+verify_session_slice_runtime() {
+    local key expected_raw expected_bytes actual failed=0
+    for key in MemoryHigh MemoryMax MemorySwapMax MemoryLow MemoryMin; do
+        expected_raw="$(source_unit_value "$session_slice_dropin" "$key")"
+        expected_bytes="$(memory_to_bytes "$expected_raw")" || {
+            echo "cannot parse session.slice $key=$expected_raw from $session_slice_dropin; next action: fix the source drop-in and rerun scripts/install-p0-oom-containment --check" >&2
+            return 1
+        }
+        actual="$(user_systemctl show session.slice -p "$key" --value 2>/dev/null || true)"
+        if [ "$actual" != "$expected_raw" ] && [ "$actual" != "$expected_bytes" ]; then
+            echo "live session.slice $key drift: actual=$actual expected=$expected_raw; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
             failed=1
         fi
     done

@@ -21,6 +21,7 @@ systemd/units/hapax-oom-policy-audit.timer
 systemd/units/hapax-root-required-deploy-audit.service
 systemd/units/hapax-root-required-deploy-audit.timer
 systemd/units/app.slice.d/oom-containment.conf
+systemd/units/session.slice.d/oom-containment.conf
 systemd/units/pipewire.service.d/oom-protect.conf
 systemd/units/pipewire-pulse.service.d/oom-protect.conf
 systemd/units/wireplumber.service.d/oom-protect.conf

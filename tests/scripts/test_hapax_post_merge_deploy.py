@@ -112,6 +112,10 @@ ROOT_AUDIT_SOURCE_FILES = {
     "systemd/units/app.slice.d/oom-containment.conf": (
         "[Slice]\nMemoryHigh=72G\nMemoryMax=88G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
     ),
+    "systemd/units/session.slice.d/oom-containment.conf": (
+        "[Slice]\nMemoryHigh=infinity\nMemoryMax=infinity\nMemorySwapMax=infinity\n"
+        "MemoryLow=2G\nMemoryMin=1G\n"
+    ),
     **P0_USER_OOM_DROPINS,
     "config/apcupsd/apcupsd.conf": (
         "## apcupsd.conf v1.1 ##\nUPSNAME podium\nBATTERYLEVEL 20\nMINUTES 5\nTIMEOUT 0\n"
@@ -743,6 +747,7 @@ def test_systemd_coverage_includes_dropins_presets_and_source_overrides() -> Non
             "systemd/hapax-build-reload.path",
             "systemd/units/pipewire.service.d/cpu-affinity.conf",
             "systemd/units/app.slice.d/oom-containment.conf",
+            "systemd/units/session.slice.d/oom-containment.conf",
             "systemd/system/system.slice.d/oom-containment.conf",
             "systemd/system/user.slice.d/oom-containment.conf",
             "systemd/system/user-1000.slice.d/oom-containment.conf",
@@ -829,6 +834,10 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
         **P0_OOM_AUDIT_FILES,
         "systemd/units/app.slice.d/oom-containment.conf": (
             "[Slice]\nMemoryHigh=72G\nMemoryMax=88G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
+        ),
+        "systemd/units/session.slice.d/oom-containment.conf": (
+            "[Slice]\nMemoryHigh=infinity\nMemoryMax=infinity\nMemorySwapMax=infinity\n"
+            "MemoryLow=2G\nMemoryMin=1G\n"
         ),
         **P0_USER_OOM_DROPINS,
     }
@@ -1074,6 +1083,10 @@ def test_concurrent_same_sha_root_required_oom_deploy_stages_complete_deferral(
         **P0_OOM_AUDIT_FILES,
         "systemd/units/app.slice.d/oom-containment.conf": (
             "[Slice]\nMemoryHigh=72G\nMemoryMax=88G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
+        ),
+        "systemd/units/session.slice.d/oom-containment.conf": (
+            "[Slice]\nMemoryHigh=infinity\nMemoryMax=infinity\nMemorySwapMax=infinity\n"
+            "MemoryLow=2G\nMemoryMin=1G\n"
         ),
         **P0_USER_OOM_DROPINS,
         "systemd/units/hapax-demo.service": (

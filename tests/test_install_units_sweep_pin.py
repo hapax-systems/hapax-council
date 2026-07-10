@@ -252,6 +252,7 @@ class TestServiceDropInInstall:
         assert result.returncode == 0, result.stderr
         p0_dropins = [
             "app.slice.d/oom-containment.conf",
+            "session.slice.d/oom-containment.conf",
             "pipewire.service.d/oom-protect.conf",
             "pipewire-pulse.service.d/oom-protect.conf",
             "wireplumber.service.d/oom-protect.conf",
