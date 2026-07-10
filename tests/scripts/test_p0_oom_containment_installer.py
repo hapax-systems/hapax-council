@@ -1081,6 +1081,18 @@ def test_root_oom_score_enforcer_applies_one_allowlisted_unit_after_start(
         oom_score=100,
         cgroup=_unit_cgroup("pipewire.service"),
     )
+    _write_proc(
+        proc_root,
+        916,
+        name="systemctl",
+        uid=1000,
+        oom_score=100,
+        cgroup="/user.slice/user-1000.slice/session-1.scope",
+    )
+    cgroup_root = tmp_path / "cgroup"
+    cgroup_dir = cgroup_root / _unit_cgroup("pipewire.service").lstrip("/")
+    cgroup_dir.mkdir(parents=True)
+    (cgroup_dir / "cgroup.procs").write_text("910\n916\n", encoding="utf-8")
     fake_systemctl = tmp_path / "systemctl"
     fake_systemctl.write_text(
         '#!/usr/bin/env bash\n[ "$*" = "is-active --quiet user@1000.service" ]\n',
@@ -1106,6 +1118,7 @@ def test_root_oom_score_enforcer_applies_one_allowlisted_unit_after_start(
         env={
             **os.environ,
             "HAPAX_OOM_PROC_ROOT": str(proc_root),
+            "HAPAX_OOM_CGROUP_ROOT": str(cgroup_root),
             "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
             "HAPAX_OOM_USER_SYSTEMCTL": str(fake_user_systemctl),
             "HAPAX_OOM_TARGET_UID": "1000",
@@ -1114,6 +1127,7 @@ def test_root_oom_score_enforcer_applies_one_allowlisted_unit_after_start(
 
     assert result.returncode == 0, result.stderr
     assert (proc_root / "910" / "oom_score_adj").read_text(encoding="utf-8").strip() == "-900"
+    assert (proc_root / "916" / "oom_score_adj").read_text(encoding="utf-8").strip() == "100"
 
 
 def test_root_oom_score_enforcer_rejects_non_allowlisted_startup_unit(tmp_path: Path) -> None:

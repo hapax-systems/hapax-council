@@ -195,6 +195,26 @@ apply_unit_score() {
     done
 }
 
+apply_unit_main_score() {
+    local unit="$1" score="$2" pid changed cgroup
+    if ! cgroup="$(user_control_group "$unit")" || [ -z "$cgroup" ]; then
+        echo "warn: protected user unit $unit has no authoritative ControlGroup for its startup OOM trigger; next action: inspect systemctl --user status $unit and run scripts/hapax-oom-policy-audit --json" >&2
+        failed=1
+        return 0
+    fi
+    if ! pid="$(user_main_pid "$unit")" || [ -z "$pid" ]; then
+        echo "warn: protected user unit $unit has no live MainPID for its startup OOM trigger; next action: inspect systemctl --user status $unit and run scripts/hapax-oom-policy-audit --json" >&2
+        failed=1
+        return 0
+    fi
+    if changed="$(write_oom_score_for_cgroup "$pid" "$score" "$unit" "$cgroup")"; then
+        [ -z "$changed" ] || echo "user-unit $unit pid=$pid oom_score_adj=$score"
+    else
+        echo "warn: failed to set startup oom_score_adj for $unit pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        failed=1
+    fi
+}
+
 protected_user_unit_score() {
     case "$1" in
         pipewire.service | pipewire-pulse.service | wireplumber.service)
@@ -217,7 +237,7 @@ if [ "$mode" = "--apply-unit" ]; then
         echo "refusing non-allowlisted protected user unit: $requested_unit; next action: use one of the source-controlled OOM protection drop-ins" >&2
         exit 2
     fi
-    apply_unit_score "$requested_unit" "$requested_score" 1
+    apply_unit_main_score "$requested_unit" "$requested_score"
     exit "$failed"
 fi
 
