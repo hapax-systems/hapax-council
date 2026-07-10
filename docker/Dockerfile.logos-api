@@ -26,6 +26,7 @@ COPY pyproject.toml README.md ./
 COPY agents/ agents/
 COPY logos/ logos/
 COPY shared/ shared/
+COPY docs/formal/sdlc-stage-metadata.yaml docs/formal/sdlc-stage-metadata.yaml
 
 EXPOSE 8051
 

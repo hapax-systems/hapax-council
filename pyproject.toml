@@ -8,6 +8,9 @@ allow-direct-references = true
 [tool.hatch.build.targets.wheel]
 packages = ["agents", "logos", "shared"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"docs/formal/sdlc-stage-metadata.yaml" = "shared/_data/sdlc-stage-metadata.yaml"
+
 [project]
 name = "hapax-council"
 version = "0.3.7"

@@ -6,7 +6,9 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from importlib import resources
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import yaml
@@ -529,22 +531,690 @@ _AUTO_ARM_TRUTHY = {"1", "true", "yes", "y", "required"}
 _STAGE_PREFIX_RE = re.compile(r"^s(\d{1,2})", re.IGNORECASE)
 
 # --- Canonical stage-shape vocabulary (proof-plane: the S0..S11 ladder) -------
-# Three matchers with deliberately different jobs (do NOT collapse into one):
-#  * STAGE_RE — strict full-shape validator "S<n>[_LABEL]"; cc-stage-advance pins
-#    its local _STAGE_RE to this (case-sensitive, <=2 digits, uppercase label).
-#  * stage_token — normalizes a labeled/branch stage to its ladder token
-#    ("S6_IMPLEMENTATION"->"S6", "S3.5"->"S3_5"); the naming-drift bridge the
-#    invariants monitor reuses (shared.sdlc_invariants._stage_token).
-#  * _STAGE_PREFIX_RE (above) — lenient case-insensitive numeric *prefix* used
-#    only by the release-arm _stage_below_s7 check; intentionally distinct from
-#    STAGE_RE (it must tolerate stray case/suffixes on a release-gate read).
+# STAGE_RE remains a legacy shape grammar until transition writers move to the
+# exact metadata catalog. It is not an alias registry: matching this regex does
+# not make a stage canonical. _STAGE_PREFIX_RE remains the deliberately lenient
+# release-arm reader and must not be used for lifecycle admission.
 STAGE_RE = re.compile(r"^S(\d{1,2})(?:_[A-Z][A-Z0-9_]*)?$")
+SDLC_STAGE_METADATA_PATH = (
+    Path(__file__).resolve().parents[1] / "docs" / "formal" / "sdlc-stage-metadata.yaml"
+)
+_CANONICAL_STAGE_TOKENS = (
+    "S0",
+    "S1",
+    "S2",
+    "S3",
+    "S3_5",
+    "S4",
+    "S5",
+    "S6",
+    "S7",
+    "S8",
+    "S9",
+    "S10",
+    "S11",
+    "BLOCKED",
+)
+
+
+class StageMetadataError(ValueError):
+    """Typed fail-closed stage metadata or resolution failure."""
+
+    def __init__(self, reason_code: str, *, raw_stage: str = "", repair_action: str) -> None:
+        self.reason_code = reason_code
+        self.raw_stage = raw_stage
+        self.repair_action = repair_action
+        detail = f":{raw_stage}" if raw_stage else ""
+        super().__init__(f"{reason_code}{detail}; repair={repair_action}")
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """Safe YAML loader that rejects last-wins duplicate mappings."""
+
+
+def _construct_unique_mapping(
+    loader: _UniqueKeyLoader, node: yaml.MappingNode, deep: bool = False
+) -> dict[object, object]:
+    mapping: dict[object, object] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in mapping
+        except TypeError as exc:
+            raise StageMetadataError(
+                "stage_metadata_invalid_yaml_key",
+                repair_action="use scalar mapping keys in the stage metadata SSOT",
+            ) from exc
+        if duplicate:
+            raise StageMetadataError(
+                "stage_metadata_duplicate_yaml_key",
+                raw_stage=str(key),
+                repair_action="remove the duplicate key; last-wins YAML is forbidden",
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping
+)
+
+
+@dataclass(frozen=True)
+class StageEdgeMetadata:
+    """One typed normal, escape, or fall edge from the stage SSOT."""
+
+    to: str
+    authority_capability: str
+    guards: tuple[str, ...]
+    actions: tuple[str, ...]
+    enforcement: str
+    enforcement_ref: str | None
+
+
+@dataclass(frozen=True)
+class StageDeliverableMetadata:
+    """The artifact shape due at one lifecycle stage."""
+
+    id: str
+    required_fields: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class StageOperationAdmissionMetadata:
+    """One governed operation that may occur while a task remains in a stage."""
+
+    operation: str
+    authority_capability: str
+    guards: tuple[str, ...]
+    actions: tuple[str, ...]
+    enforcement: str
+    enforcement_ref: str | None
+
+
+@dataclass(frozen=True)
+class StageMetadata:
+    """One immutable row in the canonical SDLC stage table."""
+
+    token: str
+    display_alias: str
+    aliases: tuple[str, ...]
+    deprecated_aliases: tuple[str, ...]
+    label: str
+    terminal: bool
+    blocked: bool
+    deliverable: StageDeliverableMetadata
+    operation_admissions: tuple[StageOperationAdmissionMetadata, ...]
+    next_edges: tuple[StageEdgeMetadata, ...]
+    fall_edges: tuple[StageEdgeMetadata, ...]
+
+
+@dataclass(frozen=True)
+class StageMetadataCatalog:
+    """Immutable indexed view of the stage metadata SSOT."""
+
+    schema: str
+    stages: tuple[StageMetadata, ...]
+    by_token: Mapping[str, StageMetadata]
+    alias_to_token: Mapping[str, str]
+
+    @property
+    def tokens(self) -> tuple[str, ...]:
+        return tuple(stage.token for stage in self.stages)
+
+
+def _metadata_error(reason: str, repair: str, raw_stage: str = "") -> StageMetadataError:
+    return StageMetadataError(reason, raw_stage=raw_stage, repair_action=repair)
+
+
+def _assert_exact_keys(
+    payload: Mapping[str, Any], expected: set[str], *, row: str, optional: set[str] | None = None
+) -> None:
+    optional = optional or set()
+    keys = {str(key) for key in payload}
+    unknown = keys - expected - optional
+    missing = expected - keys
+    if unknown:
+        raise _metadata_error(
+            "stage_metadata_unknown_field",
+            f"remove unknown fields: {', '.join(sorted(unknown))}",
+            row,
+        )
+    if missing:
+        raise _metadata_error(
+            "stage_metadata_missing_field",
+            f"add required fields: {', '.join(sorted(missing))}",
+            row,
+        )
+
+
+def _required_string(payload: Mapping[str, Any], key: str, *, row: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise _metadata_error(
+            "stage_metadata_invalid_field",
+            f"set {key} to a non-empty string",
+            f"{row}.{key}",
+        )
+    if value != value.strip():
+        raise _metadata_error(
+            "stage_metadata_whitespace_drift",
+            f"remove leading or trailing whitespace from {key}",
+            f"{row}.{key}",
+        )
+    return value
+
+
+def _string_tuple(
+    value: object, *, row: str, field_name: str, allow_empty: bool = True
+) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise _metadata_error(
+            "stage_metadata_invalid_field", f"set {field_name} to a list", f"{row}.{field_name}"
+        )
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise _metadata_error(
+                "stage_metadata_invalid_field",
+                f"use non-empty string entries in {field_name}",
+                f"{row}.{field_name}",
+            )
+        if item != item.strip():
+            raise _metadata_error(
+                "stage_metadata_whitespace_drift",
+                f"remove leading or trailing whitespace from {field_name}",
+                f"{row}.{field_name}",
+            )
+        result.append(item)
+    if not result and not allow_empty:
+        raise _metadata_error(
+            "stage_metadata_semantic_field_empty",
+            f"declare at least one value in {field_name}",
+            f"{row}.{field_name}",
+        )
+    if len(result) != len(set(result)):
+        raise _metadata_error(
+            "stage_metadata_duplicate_value",
+            f"remove duplicate entries from {field_name}",
+            f"{row}.{field_name}",
+        )
+    return tuple(result)
+
+
+def _edge_tuple(value: object, *, row: str, edge_class: str) -> tuple[StageEdgeMetadata, ...]:
+    if not isinstance(value, list):
+        raise _metadata_error(
+            "stage_metadata_invalid_edge_list",
+            f"set {edge_class} to a list of typed edges",
+            row,
+        )
+    edges: list[StageEdgeMetadata] = []
+    destinations: set[str] = set()
+    for index, item in enumerate(value):
+        edge_row = f"{row}.{edge_class}[{index}]"
+        if not isinstance(item, Mapping):
+            raise _metadata_error(
+                "stage_metadata_invalid_edge", "replace the edge with a mapping", edge_row
+            )
+        _assert_exact_keys(
+            item,
+            {"to", "authority_capability", "guards", "actions", "enforcement"},
+            optional={"enforcement_ref"},
+            row=edge_row,
+        )
+        destination = _required_string(item, "to", row=edge_row)
+        if destination in destinations:
+            raise _metadata_error(
+                "stage_metadata_duplicate_edge",
+                f"keep one {edge_class} edge to {destination}",
+                edge_row,
+            )
+        destinations.add(destination)
+        enforcement = _required_string(item, "enforcement", row=edge_row)
+        if enforcement not in {"declared", "enforced"}:
+            raise _metadata_error(
+                "stage_metadata_invalid_enforcement",
+                "use declared or enforced",
+                edge_row,
+            )
+        enforcement_ref_raw = item.get("enforcement_ref")
+        enforcement_ref = None
+        if enforcement_ref_raw is not None:
+            enforcement_ref = _required_string(item, "enforcement_ref", row=edge_row)
+        if enforcement == "enforced" and enforcement_ref is None:
+            raise _metadata_error(
+                "stage_metadata_enforcement_witness_missing",
+                "add enforcement_ref or mark the edge declared",
+                edge_row,
+            )
+        edges.append(
+            StageEdgeMetadata(
+                to=destination,
+                authority_capability=_required_string(
+                    item, "authority_capability", row=edge_row
+                ),
+                guards=_string_tuple(
+                    item.get("guards"), row=edge_row, field_name="guards", allow_empty=False
+                ),
+                actions=_string_tuple(
+                    item.get("actions"), row=edge_row, field_name="actions", allow_empty=False
+                ),
+                enforcement=enforcement,
+                enforcement_ref=enforcement_ref,
+            )
+        )
+    return tuple(edges)
+
+
+def _operation_admission_tuple(
+    value: object, *, row: str
+) -> tuple[StageOperationAdmissionMetadata, ...]:
+    if not isinstance(value, list):
+        raise _metadata_error(
+            "stage_metadata_invalid_operation_admission_list",
+            "set operation_admissions to a list of typed admissions",
+            row,
+        )
+    admissions: list[StageOperationAdmissionMetadata] = []
+    operations: set[str] = set()
+    for index, item in enumerate(value):
+        admission_row = f"{row}.operation_admissions[{index}]"
+        if not isinstance(item, Mapping):
+            raise _metadata_error(
+                "stage_metadata_invalid_operation_admission",
+                "replace the operation admission with a mapping",
+                admission_row,
+            )
+        _assert_exact_keys(
+            item,
+            {"operation", "authority_capability", "guards", "actions", "enforcement"},
+            optional={"enforcement_ref"},
+            row=admission_row,
+        )
+        operation = _required_string(item, "operation", row=admission_row)
+        if operation in operations:
+            raise _metadata_error(
+                "stage_metadata_duplicate_operation_admission",
+                f"keep one admission for {operation}",
+                admission_row,
+            )
+        operations.add(operation)
+        enforcement = _required_string(item, "enforcement", row=admission_row)
+        if enforcement not in {"declared", "enforced"}:
+            raise _metadata_error(
+                "stage_metadata_invalid_enforcement",
+                "use declared or enforced",
+                admission_row,
+            )
+        enforcement_ref = None
+        if item.get("enforcement_ref") is not None:
+            enforcement_ref = _required_string(item, "enforcement_ref", row=admission_row)
+        if enforcement == "enforced" and enforcement_ref is None:
+            raise _metadata_error(
+                "stage_metadata_enforcement_witness_missing",
+                "add enforcement_ref or mark the operation admission declared",
+                admission_row,
+            )
+        admissions.append(
+            StageOperationAdmissionMetadata(
+                operation=operation,
+                authority_capability=_required_string(
+                    item, "authority_capability", row=admission_row
+                ),
+                guards=_string_tuple(
+                    item.get("guards"),
+                    row=admission_row,
+                    field_name="guards",
+                    allow_empty=False,
+                ),
+                actions=_string_tuple(
+                    item.get("actions"),
+                    row=admission_row,
+                    field_name="actions",
+                    allow_empty=False,
+                ),
+                enforcement=enforcement,
+                enforcement_ref=enforcement_ref,
+            )
+        )
+    return tuple(admissions)
+
+
+def _parse_stage_row(payload: object, *, index: int) -> StageMetadata:
+    row = f"stages[{index}]"
+    if not isinstance(payload, Mapping):
+        raise _metadata_error("stage_metadata_invalid_row", "replace the row with a mapping", row)
+    _assert_exact_keys(
+        payload,
+        {
+            "token",
+            "display_alias",
+            "aliases",
+            "label",
+            "terminal",
+            "blocked",
+            "deliverable",
+            "operation_admissions",
+            "next",
+            "fall",
+        },
+        optional={"deprecated_aliases"},
+        row=row,
+    )
+    token = _required_string(payload, "token", row=row)
+    deliverable_payload = payload.get("deliverable")
+    if not isinstance(deliverable_payload, Mapping):
+        raise _metadata_error(
+            "stage_metadata_invalid_deliverable", "set deliverable to a mapping", token
+        )
+    _assert_exact_keys(
+        deliverable_payload, {"id", "required_fields"}, row=f"{token}.deliverable"
+    )
+    terminal = payload.get("terminal")
+    blocked = payload.get("blocked")
+    if not isinstance(terminal, bool) or not isinstance(blocked, bool):
+        raise _metadata_error(
+            "stage_metadata_invalid_flags",
+            "set terminal and blocked to explicit booleans",
+            token,
+        )
+    return StageMetadata(
+        token=token,
+        display_alias=_required_string(payload, "display_alias", row=token),
+        aliases=_string_tuple(payload.get("aliases"), row=token, field_name="aliases"),
+        deprecated_aliases=_string_tuple(
+            payload.get("deprecated_aliases", []), row=token, field_name="deprecated_aliases"
+        ),
+        label=_required_string(payload, "label", row=token),
+        terminal=terminal,
+        blocked=blocked,
+        deliverable=StageDeliverableMetadata(
+            id=_required_string(deliverable_payload, "id", row=f"{token}.deliverable"),
+            required_fields=_string_tuple(
+                deliverable_payload.get("required_fields"),
+                row=f"{token}.deliverable",
+                field_name="required_fields",
+                allow_empty=False,
+            ),
+        ),
+        operation_admissions=_operation_admission_tuple(
+            payload.get("operation_admissions"), row=token
+        ),
+        next_edges=_edge_tuple(payload.get("next"), row=token, edge_class="next"),
+        fall_edges=_edge_tuple(payload.get("fall"), row=token, edge_class="fall"),
+    )
+
+
+def _read_stage_metadata(path: Path | None) -> tuple[str, str]:
+    if path is not None:
+        source_label = str(path)
+        try:
+            return path.read_text(encoding="utf-8"), source_label
+        except FileNotFoundError as exc:
+            raise _metadata_error(
+                "stage_metadata_source_missing",
+                "restore the packaged or repository stage metadata SSOT",
+                source_label,
+            ) from exc
+        except UnicodeError as exc:
+            raise _metadata_error(
+                "stage_metadata_source_encoding_invalid",
+                "encode the stage metadata SSOT as UTF-8",
+                source_label,
+            ) from exc
+        except OSError as exc:
+            raise _metadata_error(
+                "stage_metadata_source_unreadable",
+                "restore readable permissions for the stage metadata SSOT",
+                source_label,
+            ) from exc
+    if SDLC_STAGE_METADATA_PATH.is_file():
+        return _read_stage_metadata(SDLC_STAGE_METADATA_PATH)
+    packaged = resources.files("shared").joinpath("_data").joinpath("sdlc-stage-metadata.yaml")
+    source_label = "shared/_data/sdlc-stage-metadata.yaml"
+    try:
+        return packaged.read_text(encoding="utf-8"), source_label
+    except FileNotFoundError as exc:
+        raise _metadata_error(
+            "stage_metadata_source_missing",
+            "restore the packaged or repository stage metadata SSOT",
+            source_label,
+        ) from exc
+    except UnicodeError as exc:
+        raise _metadata_error(
+            "stage_metadata_source_encoding_invalid",
+            "encode the packaged stage metadata SSOT as UTF-8",
+            source_label,
+        ) from exc
+    except OSError as exc:
+        raise _metadata_error(
+            "stage_metadata_source_unreadable",
+            "restore readable permissions for the packaged stage metadata SSOT",
+            source_label,
+        ) from exc
+
+
+def load_sdlc_stage_metadata(path: Path | None = None) -> StageMetadataCatalog:
+    """Load and strictly validate the canonical stage table without fallback."""
+
+    raw, source_label = _read_stage_metadata(path)
+    try:
+        payload = yaml.load(raw, Loader=_UniqueKeyLoader)
+    except StageMetadataError:
+        raise
+    except yaml.YAMLError as exc:
+        raise _metadata_error(
+            "stage_metadata_yaml_invalid", "repair the YAML syntax", source_label
+        ) from exc
+    if not isinstance(payload, Mapping):
+        raise _metadata_error(
+            "stage_metadata_root_invalid", "make the YAML root a mapping", source_label
+        )
+    _assert_exact_keys(
+        payload, {"schema", "formal_model", "edge_classes", "stages"}, row="root"
+    )
+    schema = payload.get("schema")
+    if schema != "hapax.sdlc-stage-metadata.v1":
+        raise _metadata_error(
+            "stage_metadata_schema_unknown",
+            "set schema to hapax.sdlc-stage-metadata.v1",
+            str(schema or "<missing>"),
+        )
+    if payload.get("formal_model") != "docs/formal/sdlc-ladder.tla":
+        raise _metadata_error(
+            "stage_metadata_formal_model_invalid",
+            "set formal_model to docs/formal/sdlc-ladder.tla",
+            str(payload.get("formal_model") or "<missing>"),
+        )
+    edge_classes = payload.get("edge_classes")
+    if not isinstance(edge_classes, Mapping):
+        raise _metadata_error(
+            "stage_metadata_edge_classes_invalid",
+            "declare next and fall edge classes as a mapping",
+            source_label,
+        )
+    _assert_exact_keys(edge_classes, {"next", "fall"}, row="edge_classes")
+    for name in ("next", "fall"):
+        _required_string(edge_classes, name, row="edge_classes")
+    rows = payload.get("stages")
+    if not isinstance(rows, list) or not rows:
+        raise _metadata_error(
+            "stage_metadata_stages_missing", "provide a non-empty stages list", source_label
+        )
+    stages = tuple(_parse_stage_row(row, index=index) for index, row in enumerate(rows))
+    tokens = [stage.token for stage in stages]
+    if len(tokens) != len(set(tokens)):
+        raise _metadata_error(
+            "stage_metadata_duplicate_token", "keep exactly one row per stage token"
+        )
+    if tuple(tokens) != _CANONICAL_STAGE_TOKENS:
+        raise _metadata_error(
+            "stage_metadata_token_sequence_invalid",
+            "restore the exact ordered S0..S11, S3_5, BLOCKED token sequence",
+        )
+    by_token = {stage.token: stage for stage in stages}
+    alias_to_token: dict[str, str] = {token: token for token in tokens}
+    casefolded: dict[str, str] = {token.casefold(): token for token in tokens}
+    for stage in stages:
+        declared_aliases = (stage.display_alias, *stage.aliases)
+        if stage.display_alias in stage.aliases or stage.token in stage.aliases:
+            raise _metadata_error(
+                "stage_metadata_duplicate_alias",
+                "do not repeat display_alias or the canonical token in aliases",
+                stage.token,
+            )
+        if not set(stage.deprecated_aliases).issubset(set(stage.aliases)):
+            raise _metadata_error(
+                "stage_metadata_deprecated_alias_not_declared",
+                "list every deprecated alias in aliases too",
+                stage.token,
+            )
+        for alias in declared_aliases:
+            alias_match = STAGE_RE.fullmatch(alias)
+            special_owner = {"S3.5": "S3_5", "S3_5": "S3_5", "BLOCKED": "BLOCKED"}.get(
+                alias
+            )
+            if alias_match is None and special_owner is None:
+                raise _metadata_error(
+                    "stage_metadata_alias_shape_invalid",
+                    "use an exact uppercase stage alias or the declared S3.5 compatibility form",
+                    alias,
+                )
+            alias_owner = f"S{alias_match.group(1)}" if alias_match is not None else special_owner
+            if alias_owner != stage.token:
+                raise _metadata_error(
+                    "stage_metadata_alias_token_mismatch",
+                    f"use an alias whose stage prefix resolves to {stage.token}",
+                    alias,
+                )
+            if alias == stage.token:
+                continue
+            owner = alias_to_token.get(alias)
+            if owner is not None and owner != stage.token:
+                raise _metadata_error(
+                    "stage_metadata_duplicate_alias",
+                    f"assign {alias} to only one stage",
+                    alias,
+                )
+            folded_owner = casefolded.get(alias.casefold())
+            if folded_owner is not None and folded_owner != alias:
+                raise _metadata_error(
+                    "stage_metadata_casefold_collision",
+                    f"remove alias {alias}; it collides by case with {folded_owner}",
+                    alias,
+                )
+            alias_to_token[alias] = stage.token
+            casefolded[alias.casefold()] = alias
+    target_tokens = set(tokens)
+    terminal = [stage for stage in stages if stage.terminal]
+    blocked = [stage for stage in stages if stage.blocked]
+    if len(terminal) != 1 or len(blocked) != 1:
+        raise _metadata_error(
+            "stage_metadata_terminal_blocked_cardinality",
+            "declare exactly one terminal and one blocked stage",
+        )
+    blocked_token = blocked[0].token
+    for stage in stages:
+        if stage.terminal and (stage.next_edges or stage.fall_edges):
+            raise _metadata_error(
+                "stage_metadata_terminal_has_edges",
+                "remove all next and fall edges from the terminal stage",
+                stage.token,
+            )
+        if stage.blocked and (not stage.next_edges or stage.fall_edges):
+            raise _metadata_error(
+                "stage_metadata_blocked_edge_invalid",
+                "give BLOCKED escape next edges and no fall edges",
+                stage.token,
+            )
+        if not stage.terminal and not stage.blocked and not stage.next_edges:
+            raise _metadata_error(
+                "stage_metadata_nonterminal_dead_end",
+                "add at least one normal successor",
+                stage.token,
+            )
+        for edge in (*stage.next_edges, *stage.fall_edges):
+            if edge.to not in target_tokens:
+                raise _metadata_error(
+                    "stage_metadata_unknown_edge_target",
+                    f"declare target {edge.to} or correct the edge",
+                    stage.token,
+                )
+        if not stage.terminal and not stage.blocked:
+            if tuple(edge.to for edge in stage.fall_edges) != (blocked_token,):
+                raise _metadata_error(
+                    "stage_metadata_fall_contract_invalid",
+                    f"give {stage.token} exactly one fall edge to {blocked_token}",
+                    stage.token,
+                )
+    return StageMetadataCatalog(
+        schema=str(schema),
+        stages=stages,
+        by_token=MappingProxyType(by_token),
+        alias_to_token=MappingProxyType(alias_to_token),
+    )
+
+
+SDLC_STAGE_METADATA = load_sdlc_stage_metadata()
 
 
 def stage_token(raw: str) -> str:
-    """Normalize 'S6_IMPLEMENTATION' / 'S3.5' to the ladder token (S6 / S3_5)."""
-    token = raw.strip().replace(".", "_")
-    return token.split("_")[0] if (token[:1] == "S" and "_" in token and token != "S3_5") else token
+    """Resolve one exact canonical token or declared alias, case-sensitively."""
+
+    if not raw.strip():
+        raise _metadata_error("stage_blank", "provide a canonical stage token or declared alias")
+    if raw != raw.strip():
+        raise _metadata_error(
+            "stage_whitespace_drift", "remove leading or trailing whitespace", raw
+        )
+    candidate = raw
+    resolved = SDLC_STAGE_METADATA.alias_to_token.get(candidate)
+    if resolved is not None:
+        return resolved
+    folded = {alias.casefold(): alias for alias in SDLC_STAGE_METADATA.alias_to_token}
+    if candidate.casefold() in folded:
+        canonical = folded[candidate.casefold()]
+        raise _metadata_error(
+            "stage_case_drift", f"use exact case: {canonical}", candidate
+        )
+    if STAGE_RE.fullmatch(candidate):
+        raise _metadata_error(
+            "stage_alias_unknown",
+            "use a token or alias declared in docs/formal/sdlc-stage-metadata.yaml",
+            candidate,
+        )
+    raise _metadata_error(
+        "stage_shape_invalid",
+        "use a token or alias declared in docs/formal/sdlc-stage-metadata.yaml",
+        candidate,
+    )
+
+
+def stage_edges(raw: str, *, include_fall: bool = False) -> frozenset[str]:
+    """Return declared Next destinations, optionally unioned with Fall."""
+
+    stage = SDLC_STAGE_METADATA.by_token[stage_token(raw)]
+    destinations = {edge.to for edge in stage.next_edges}
+    if include_fall:
+        destinations.update(edge.to for edge in stage.fall_edges)
+    return frozenset(destinations)
+
+
+def is_legal_stage_edge(source: str, target: str, *, edge_class: str = "any") -> bool:
+    """Pure edge lookup; transition writers begin enforcing it in slice 4."""
+
+    if edge_class not in {"next", "fall", "any"}:
+        raise ValueError("edge_class must be next, fall, or any")
+    stage = SDLC_STAGE_METADATA.by_token[stage_token(source)]
+    target_token = stage_token(target)
+    next_targets = {edge.to for edge in stage.next_edges}
+    fall_targets = {edge.to for edge in stage.fall_edges}
+    if edge_class == "next":
+        return target_token in next_targets
+    if edge_class == "fall":
+        return target_token in fall_targets
+    return target_token in next_targets or target_token in fall_targets
 
 
 @dataclass(frozen=True)

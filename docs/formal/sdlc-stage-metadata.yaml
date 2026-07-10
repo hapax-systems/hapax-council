@@ -1,0 +1,375 @@
+schema: hapax.sdlc-stage-metadata.v1
+formal_model: docs/formal/sdlc-ladder.tla
+edge_classes:
+  next: TLA Next(s), including BLOCKED escape edges
+  fall: TLA Fall(t), distinct from Next even when the destination duplicates a Next edge
+stages:
+  - token: S0
+    display_alias: S0_INTAKE
+    aliases: []
+    label: Intake
+    terminal: false
+    blocked: false
+    deliverable:
+      id: task_note
+      required_fields: [task_id, parent_spec, authority_case]
+    operation_admissions: []
+    next:
+      - to: S1
+        authority_capability: coord.case.advance
+        guards: [cc_task_shape_valid, parent_spec_present, authority_case_present]
+        actions: [append_stage_transition, begin_research]
+        enforcement: declared
+    fall:
+      - to: BLOCKED
+        authority_capability: system.gate.refusal
+        guards: [gate_refused]
+        actions: [record_blocker_report, append_stage_transition]
+        enforcement: declared
+  - token: S1
+    display_alias: S1_RESEARCH
+    aliases: []
+    label: Research
+    terminal: false
+    blocked: false
+    deliverable:
+      id: research_record
+      required_fields: [research_anchors]
+    operation_admissions: []
+    next:
+      - to: S2
+        authority_capability: coord.case.advance
+        guards: [research_anchors_present]
+        actions: [append_stage_transition, begin_design]
+        enforcement: declared
+    fall:
+      - to: BLOCKED
+        authority_capability: system.gate.refusal
+        guards: [gate_refused]
+        actions: [record_blocker_report, append_stage_transition]
+        enforcement: declared
+  - token: S2
+    display_alias: S2_DESIGN
+    aliases: []
+    label: Design
+    terminal: false
+    blocked: false
+    deliverable:
+      id: design_record
+      required_fields: [standards, failure_predicates, quality_floor]
+    operation_admissions: []
+    next:
+      - to: S3
+        authority_capability: coord.case.advance
+        guards: [standards_present, failure_predicates_present, frontier_review_floor_declared]
+        actions: [append_stage_transition, begin_review]
+        enforcement: declared
+    fall:
+      - to: BLOCKED
+        authority_capability: system.gate.refusal
+        guards: [gate_refused]
+        actions: [record_blocker_report, append_stage_transition]
+        enforcement: declared
+  - token: S3
+    display_alias: S3_REVIEW
+    aliases: []
+    label: Review
+    terminal: false
+    blocked: false
+    deliverable:
+      id: review_synthesis
+      required_fields: [review_findings, disposition]
+    operation_admissions: []
+    next:
+      - to: S4
+        authority_capability: coord.case.advance
+        guards: [disconfirmation_not_selected]
+        actions: [append_stage_transition, begin_acceptance]
+        enforcement: declared
+      - to: S3_5
+        authority_capability: coord.case.advance
+        guards: [disconfirmation_selected]
+        actions: [append_stage_transition, begin_disconfirmation]
+        enforcement: declared
+    fall:
+      - to: BLOCKED
+        authority_capability: system.gate.refusal
+        guards: [gate_refused]
+        actions: [record_blocker_report, append_stage_transition]
+        enforcement: declared
+  - token: S3_5
+    display_alias: S3_5
+    aliases: [S3.5]
+    label: Adversarial disconfirmation
+    terminal: false
+    blocked: false
+    deliverable:
+      id: disconfirmation_record
+      required_fields: [failure_attempts, disposition]
+    operation_admissions: []
+    next:
+      - to: S4
+        authority_capability: coord.case.advance
+        guards: [disconfirmation_allows_advance]
+        actions: [append_stage_transition, begin_acceptance]
+        enforcement: declared
+      - to: S0
+        authority_capability: coord.case.advance
+        guards: [disconfirmation_requires_restart]
+        actions: [append_stage_transition, restart_intake]
+        enforcement: declared
+    fall:
+      - to: BLOCKED
+        authority_capability: system.gate.refusal
+        guards: [gate_refused]
+        actions: [record_blocker_report, append_stage_transition]
+        enforcement: declared
+  - token: S4
+    display_alias: S4_ACCEPTANCE
+    aliases: []
+    label: Acceptance
+    terminal: false
+    blocked: false
+    deliverable:
+      id: plan_acceptance_record
+      required_fields: [formation_records, acceptance_disposition]
+    operation_admissions: []
+    next:
+      - to: S5
+        authority_capability: coord.case.advance
+        guards: [formation_records_present, plan_accepted]
+        actions: [append_stage_transition, begin_implementation_authorization]
+        enforcement: declared
+    fall:
+      - to: BLOCKED
+        authority_capability: system.gate.refusal
+        guards: [gate_refused]
+        actions: [record_blocker_report, append_stage_transition]
+        enforcement: declared
+  - token: S5
+    display_alias: S5_IMPLEMENTATION_AUTHORIZATION
+    aliases: []
+    label: Implementation authorization
+    terminal: false
+    blocked: false
+    deliverable:
+      id: implementation_authorization_packet
+      required_fields: [authority_case, evidence_collection_plan, implementation_authorized]
+    operation_admissions: []
+    next:
+      - to: S6
+        authority_capability: coord.case.advance
+        guards: [authority_case_granted, evidence_collection_plan_present, implementation_authorized]
+        actions: [append_stage_transition, begin_implementation]
+        enforcement: declared
+    fall:
+      - to: BLOCKED
+        authority_capability: system.gate.refusal
+        guards: [gate_refused]
+        actions: [record_blocker_report, append_stage_transition]
+        enforcement: declared
+  - token: S6
+    display_alias: S6_IMPLEMENTATION
+    aliases: []
+    label: Implementation
+    terminal: false
+    blocked: false
+    deliverable:
+      id: implementation_evidence
+      required_fields: [mutation_scope_refs, implementation_evidence]
+    operation_admissions:
+      - operation: source_mutation
+        authority_capability: system.mutation.admit
+        guards:
+          - stage_at_least_s6
+          - implementation_authorized
+          - source_mutation_authorized
+          - mutation_in_mutation_scope_refs
+        actions: [admit_scoped_mutation]
+        enforcement: enforced
+        enforcement_ref: hooks/scripts/cc-task-gate.impl.sh
+    next:
+      - to: S7
+        authority_capability: coord.case.advance
+        guards: [implementation_complete, evidence_present]
+        actions: [append_stage_transition, begin_runtime_verification]
+        enforcement: declared
+      - to: BLOCKED
+        authority_capability: system.gate.refusal
+        guards: [implementation_gate_refused]
+        actions: [record_blocker_report, append_stage_transition]
+        enforcement: declared
+    fall:
+      - to: BLOCKED
+        authority_capability: system.gate.refusal
+        guards: [gate_refused]
+        actions: [record_blocker_report, append_stage_transition]
+        enforcement: declared
+  - token: S7
+    display_alias: S7_RUNTIME_VERIFICATION
+    aliases: [S7_RELEASE]
+    deprecated_aliases: [S7_RELEASE]
+    label: Runtime verification
+    terminal: false
+    blocked: false
+    deliverable:
+      id: live_witness
+      required_fields: [live_witness, release_authorized]
+    operation_admissions:
+      - operation: source_mutation
+        authority_capability: system.mutation.admit
+        guards:
+          - stage_at_least_s6
+          - implementation_authorized
+          - source_mutation_authorized
+          - mutation_in_mutation_scope_refs
+        actions: [admit_scoped_mutation]
+        enforcement: enforced
+        enforcement_ref: hooks/scripts/cc-task-gate.impl.sh
+    next:
+      - to: S8
+        authority_capability: coord.case.advance
+        guards: [live_witness_present, release_authorized]
+        actions: [append_stage_transition, begin_release]
+        enforcement: declared
+      - to: BLOCKED
+        authority_capability: system.gate.refusal
+        guards: [runtime_gate_refused]
+        actions: [record_blocker_report, append_stage_transition]
+        enforcement: declared
+    fall:
+      - to: BLOCKED
+        authority_capability: system.gate.refusal
+        guards: [gate_refused]
+        actions: [record_blocker_report, append_stage_transition]
+        enforcement: declared
+  - token: S8
+    display_alias: S8_RELEASE
+    aliases: []
+    label: Release
+    terminal: false
+    blocked: false
+    deliverable:
+      id: merge_decision
+      required_fields: [pr, merge_state]
+    operation_admissions:
+      - operation: source_mutation
+        authority_capability: system.mutation.admit
+        guards:
+          - stage_at_least_s6
+          - implementation_authorized
+          - source_mutation_authorized
+          - mutation_in_mutation_scope_refs
+        actions: [admit_scoped_mutation]
+        enforcement: enforced
+        enforcement_ref: hooks/scripts/cc-task-gate.impl.sh
+    next:
+      - to: S9
+        authority_capability: coord.case.advance
+        guards: [pr_merged]
+        actions: [append_stage_transition, begin_post_merge_verification]
+        enforcement: declared
+    fall:
+      - to: BLOCKED
+        authority_capability: system.gate.refusal
+        guards: [gate_refused]
+        actions: [record_blocker_report, append_stage_transition]
+        enforcement: declared
+  - token: S9
+    display_alias: S9_POST_MERGE
+    aliases: []
+    label: Post-merge verification
+    terminal: false
+    blocked: false
+    deliverable:
+      id: production_regression_witness
+      required_fields: [production_regression_witness]
+    operation_admissions:
+      - operation: source_mutation
+        authority_capability: system.mutation.admit
+        guards:
+          - stage_at_least_s6
+          - implementation_authorized
+          - source_mutation_authorized
+          - mutation_in_mutation_scope_refs
+        actions: [admit_scoped_mutation]
+        enforcement: enforced
+        enforcement_ref: hooks/scripts/cc-task-gate.impl.sh
+    next:
+      - to: S10
+        authority_capability: coord.case.advance
+        guards: [production_regression_witness_present, acceptance_receipt_valid]
+        actions: [append_stage_transition, begin_closure]
+        enforcement: declared
+    fall:
+      - to: BLOCKED
+        authority_capability: system.gate.refusal
+        guards: [gate_refused]
+        actions: [record_blocker_report, append_stage_transition]
+        enforcement: declared
+  - token: S10
+    display_alias: S10_CLOSURE
+    aliases: []
+    label: Closure
+    terminal: false
+    blocked: false
+    deliverable:
+      id: closure_receipts
+      required_fields: [closure_receipts, cc_close_ready]
+    operation_admissions:
+      - operation: source_mutation
+        authority_capability: system.mutation.admit
+        guards:
+          - stage_at_least_s6
+          - implementation_authorized
+          - source_mutation_authorized
+          - mutation_in_mutation_scope_refs
+        actions: [admit_scoped_mutation]
+        enforcement: enforced
+        enforcement_ref: hooks/scripts/cc-task-gate.impl.sh
+    next:
+      - to: S11
+        authority_capability: coord.case.advance
+        guards: [closure_receipts_present, cc_close_ready]
+        actions: [append_stage_transition, close_task]
+        enforcement: declared
+    fall:
+      - to: BLOCKED
+        authority_capability: system.gate.refusal
+        guards: [gate_refused]
+        actions: [record_blocker_report, append_stage_transition]
+        enforcement: declared
+  - token: S11
+    display_alias: S11_CLOSED
+    aliases: []
+    label: Terminal
+    terminal: true
+    blocked: false
+    deliverable:
+      id: terminal_receipt
+      required_fields: [closed_at]
+    operation_admissions: []
+    next: []
+    fall: []
+  - token: BLOCKED
+    display_alias: BLOCKED
+    aliases: []
+    label: Blocked repair state
+    terminal: false
+    blocked: true
+    deliverable:
+      id: blocker_report
+      required_fields: [blocked_reason, blocked_witness, relay_receipt]
+    operation_admissions: []
+    next:
+      - to: S6
+        authority_capability: coord.grant.mint
+        guards: [escape_grant_valid, resume_authorized]
+        actions: [record_escape_grant, append_stage_transition, resume_implementation]
+        enforcement: declared
+      - to: S0
+        authority_capability: coord.grant.mint
+        guards: [escape_grant_valid, restart_authorized]
+        actions: [record_escape_grant, append_stage_transition, restart_intake]
+        enforcement: declared
+    fall: []
