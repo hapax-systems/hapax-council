@@ -1305,6 +1305,43 @@ def test_root_required_audit_passes_when_oom_enforcer_matches(tmp_path: Path) ->
     assert "root-required post-merge deploy deferrals: none" in result.stdout
 
 
+def test_root_required_audit_legacy_manifest_transition_is_fail_closed(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    repo = Path(env["HAPAX_ROOT_REQUIRED_GIT_REPO"])
+    manifest_rel = "config/root-required/apcupsd-power-alerts.files"
+    _git(repo, "rm", manifest_rel)
+    _git(repo, "commit", "-m", "legacy apcupsd package without manifest")
+    legacy_sha = _git(repo, "rev-parse", "HEAD")
+    for root_key in (
+        "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT",
+        "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT",
+    ):
+        (Path(env[root_key]) / "apcupsd-power-alerts.sha").write_text(
+            f"{legacy_sha}\n", encoding="utf-8"
+        )
+
+    unexpected_manifest = Path(env["HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"]) / manifest_rel
+    rejected = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+    assert rejected.returncode == 1
+    assert "installed manifest is not bound to legacy" in rejected.stderr
+
+    unexpected_manifest.unlink()
+    accepted = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+    assert accepted.returncode == 0, accepted.stderr
+
+
 def test_root_required_audit_waits_for_shared_package_lock(tmp_path: Path) -> None:
     env = _root_audit_env(tmp_path)
     lock_path = Path(env["HAPAX_ROOT_REQUIRED_STATE_ROOT"]) / ".lock"

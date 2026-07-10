@@ -103,6 +103,19 @@ audit_package_receipt() {
         return 1
     fi
     for rel in "$@"; do
+        case "$rel" in
+            config/root-required/*.files)
+                if ! git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$sha:$rel" 2>/dev/null; then
+                    if [ ! -e "$INSTALLED_SOURCE_ROOT/$rel" ]; then
+                        continue
+                    fi
+                    echo "root-required installed manifest is not bound to legacy $label receipt $sha: $INSTALLED_SOURCE_ROOT/$rel" >&2
+                    echo "  next action: rerun the newest governed $label installer package" >&2
+                    failed=1
+                    continue
+                fi
+                ;;
+        esac
         if [ ! -f "$INSTALLED_SOURCE_ROOT/$rel" ] || ! cmp -s <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$sha:$rel") "$INSTALLED_SOURCE_ROOT/$rel"; then
             echo "root-required installed source is not bound to $label receipt $sha: $INSTALLED_SOURCE_ROOT/$rel" >&2
             echo "  next action: rerun the newest governed $label installer package from an exact staged RUNBOOK" >&2
