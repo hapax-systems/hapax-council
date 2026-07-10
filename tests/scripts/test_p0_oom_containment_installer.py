@@ -973,9 +973,13 @@ def test_installer_falls_back_to_sudo_when_direct_oom_score_write_fails(
         encoding="utf-8",
     )
     fake_systemctl.chmod(0o755)
+    sudo_calls = tmp_path / "sudo-calls"
     fake_sudo = tmp_path / "sudo"
     fake_sudo.write_text(
-        '#!/usr/bin/env bash\nif [ "${1:-}" = "-n" ]; then shift; fi\nexec "$@"\n',
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' \"$*\" >> {sudo_calls!s}\n"
+        'if [ "${1:-}" = "-n" ]; then shift; fi\n'
+        'exec "$@"\n',
         encoding="utf-8",
     )
     fake_sudo.chmod(0o755)
@@ -1002,6 +1006,10 @@ def test_installer_falls_back_to_sudo_when_direct_oom_score_write_fails(
     )
 
     assert result.returncode == 0, result.stderr
+    assert any(
+        line.startswith("cmp -s ") and str(OOM_SUDOERS) in line
+        for line in sudo_calls.read_text(encoding="utf-8").splitlines()
+    )
     assert (proc_root / "900" / "oom_score_adj").read_text(encoding="utf-8").strip() == "100"
     assert (proc_root / "910" / "oom_score_adj").read_text(encoding="utf-8").strip() == "-900"
 
