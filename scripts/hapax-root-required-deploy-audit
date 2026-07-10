@@ -9,8 +9,11 @@ SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_SOURCE_ROOT:-$HOME/.cache/hapax/source-activa
 INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$ROOT_DEFER_DIR/current-source}"
 OOM_ENFORCER_DEST="${HAPAX_OOM_ENFORCER_DEST:-/usr/local/sbin/hapax-oom-score-enforce}"
 ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapax-root-failure-intake}"
+OOM_POLICY_AUDIT_DEST="${HAPAX_OOM_POLICY_AUDIT_DEST:-/usr/local/sbin/hapax-oom-policy-audit}"
+ROOT_REQUIRED_AUDIT_DEST="${HAPAX_ROOT_REQUIRED_AUDIT_DEST:-/usr/local/sbin/hapax-root-required-deploy-audit}"
 EARLYOOM_DEST="${HAPAX_OOM_EARLYOOM_DEST:-/etc/default/earlyoom}"
 SYSTEMD_SYSTEM_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
+SYSTEMD_USER_DIR="${HAPAX_OOM_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
 APCUPSD_DEST="${HAPAX_APCUPSD_DEST:-/etc/apcupsd}"
 APCUPSD_LOGROTATE_DEST="${HAPAX_APCUPSD_LOGROTATE_DEST:-/etc/logrotate.d/hapax-ups-power-events}"
 UPOWER_CONF_DEST="${HAPAX_UPOWER_CONF_DEST:-/etc/UPower/UPower.conf.d/90-hapax-apcupsd-owner.conf}"
@@ -99,6 +102,11 @@ audit_systemd_state() {
         echo "  next action: run sudo systemctl restart apcupsd.service and inspect journalctl -u apcupsd.service" >&2
         failed=1
     fi
+    if ! "$SYSTEMCTL" is-enabled --quiet apcupsd.service; then
+        echo "root-required activation drift: apcupsd.service is not enabled" >&2
+        echo "  next action: run sudo systemctl enable --now apcupsd.service" >&2
+        failed=1
+    fi
     if ! "$SYSTEMCTL" is-enabled --quiet earlyoom.service; then
         echo "root-required activation drift: earlyoom.service is not enabled" >&2
         echo "  next action: run sudo systemctl enable --now earlyoom.service" >&2
@@ -109,6 +117,18 @@ audit_systemd_state() {
         echo "  next action: run sudo systemctl enable --now earlyoom.service and inspect journalctl -u earlyoom.service" >&2
         failed=1
     fi
+    for timer in hapax-oom-policy-audit.timer hapax-root-required-deploy-audit.timer; do
+        if ! "$SYSTEMCTL" --user is-enabled --quiet "$timer"; then
+            echo "root-required activation drift: $timer is not enabled" >&2
+            echo "  next action: run systemctl --user enable --now $timer" >&2
+            failed=1
+        fi
+        if ! "$SYSTEMCTL" --user is-active --quiet "$timer"; then
+            echo "root-required activation drift: $timer is not active" >&2
+            echo "  next action: run systemctl --user enable --now $timer" >&2
+            failed=1
+        fi
+    done
     [ "$failed" -eq 0 ]
 }
 
@@ -116,6 +136,8 @@ audit_root_installs() {
     local -a manifest=(
         "scripts/hapax-oom-score-enforce|$OOM_ENFORCER_DEST"
         "scripts/hapax-root-failure-intake|$ROOT_FAILURE_INTAKE_DEST"
+        "scripts/hapax-oom-policy-audit|$OOM_POLICY_AUDIT_DEST"
+        "scripts/hapax-root-required-deploy-audit|$ROOT_REQUIRED_AUDIT_DEST"
         "config/earlyoom/default|$EARLYOOM_DEST"
         "systemd/system/system.slice.d/oom-containment.conf|$SYSTEMD_SYSTEM_DIR/system.slice.d/oom-containment.conf"
         "systemd/system/user-1000.slice.d/oom-containment.conf|$SYSTEMD_SYSTEM_DIR/user-1000.slice.d/oom-containment.conf"
@@ -130,6 +152,10 @@ audit_root_installs() {
         "systemd/units/hapax-root-failure-intake@.service|$SYSTEMD_SYSTEM_DIR/hapax-root-failure-intake@.service"
         "systemd/units/hapax-oom-score-enforce.service|$SYSTEMD_SYSTEM_DIR/hapax-oom-score-enforce.service"
         "systemd/units/hapax-oom-score-enforce.timer|$SYSTEMD_SYSTEM_DIR/hapax-oom-score-enforce.timer"
+        "systemd/units/hapax-oom-policy-audit.service|$SYSTEMD_USER_DIR/hapax-oom-policy-audit.service"
+        "systemd/units/hapax-oom-policy-audit.timer|$SYSTEMD_USER_DIR/hapax-oom-policy-audit.timer"
+        "systemd/units/hapax-root-required-deploy-audit.service|$SYSTEMD_USER_DIR/hapax-root-required-deploy-audit.service"
+        "systemd/units/hapax-root-required-deploy-audit.timer|$SYSTEMD_USER_DIR/hapax-root-required-deploy-audit.timer"
         "config/apcupsd/apcupsd.conf|$APCUPSD_DEST/apcupsd.conf"
         "config/apcupsd/hapax-power-event.py|$APCUPSD_DEST/hapax-power-event.py"
         "config/apcupsd/onbattery|$APCUPSD_DEST/onbattery"
@@ -144,7 +170,7 @@ audit_root_installs() {
         dest="${entry#*|}"
         compare_root_file "$rel" "$dest" || failed=1
         case "$rel" in
-            scripts/hapax-oom-score-enforce|scripts/hapax-root-failure-intake|config/apcupsd/hapax-power-event.py|config/apcupsd/onbattery|config/apcupsd/offbattery|config/apcupsd/doshutdown)
+            scripts/hapax-oom-score-enforce|scripts/hapax-root-failure-intake|scripts/hapax-oom-policy-audit|scripts/hapax-root-required-deploy-audit|config/apcupsd/hapax-power-event.py|config/apcupsd/onbattery|config/apcupsd/offbattery|config/apcupsd/doshutdown)
                 verify_executable "$rel" "$dest" || failed=1
                 ;;
         esac

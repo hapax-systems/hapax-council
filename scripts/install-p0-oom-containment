@@ -23,6 +23,8 @@ SYSTEMD_USER_CONTROL_DIR="${HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR:-$TARGET_HOME/.co
 EARLYOOM_DEST="${HAPAX_OOM_EARLYOOM_DEST:-/etc/default/earlyoom}"
 OOM_ENFORCER_DEST="${HAPAX_OOM_ENFORCER_DEST:-/usr/local/sbin/hapax-oom-score-enforce}"
 ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapax-root-failure-intake}"
+OOM_POLICY_AUDIT_DEST="${HAPAX_OOM_POLICY_AUDIT_DEST:-/usr/local/sbin/hapax-oom-policy-audit}"
+ROOT_REQUIRED_AUDIT_DEST="${HAPAX_ROOT_REQUIRED_AUDIT_DEST:-/usr/local/sbin/hapax-root-required-deploy-audit}"
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
 SUDO="${HAPAX_OOM_INSTALL_SUDO-sudo}"
 RUNUSER="${HAPAX_OOM_RUNUSER:-runuser}"
@@ -65,6 +67,10 @@ Installs the P0 podium OOM containment package:
   systemd/units/hapax-oom-score-enforce.{service,timer} -> /etc/systemd/system/
   scripts/hapax-oom-score-enforce                   -> /usr/local/sbin/hapax-oom-score-enforce
   scripts/hapax-root-failure-intake                  -> /usr/local/sbin/hapax-root-failure-intake
+  scripts/hapax-oom-policy-audit                     -> /usr/local/sbin/hapax-oom-policy-audit
+  scripts/hapax-root-required-deploy-audit            -> /usr/local/sbin/hapax-root-required-deploy-audit
+  systemd/units/hapax-{oom-policy,root-required-deploy}-audit.{service,timer}
+                                                     -> ~/.config/systemd/user/
   systemd/units/*.service.d/oom-protect.conf        -> ~/.config/systemd/user/*.service.d/oom-protect.conf
   systemd/units/app.slice.d/oom-containment.conf    -> ~/.config/systemd/user/app.slice.d/oom-containment.conf
   config/earlyoom/default                           -> /etc/default/earlyoom
@@ -148,7 +154,6 @@ canonical_dir() {
 }
 
 acquire_root_required_lock() {
-    [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ] || return 0
     mkdir -p "$ROOT_REQUIRED_DEFER_ROOT"
     exec {ROOT_REQUIRED_LOCK_FD}>"$ROOT_REQUIRED_LOCK_FILE"
     flock -x "$ROOT_REQUIRED_LOCK_FD"
@@ -167,11 +172,11 @@ validate_root_required_package_order() {
         fi
     fi
     if [ -z "$ROOT_REQUIRED_PACKAGE_SHA" ]; then
-        if [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ]; then
-            echo "root-required drain is missing HAPAX_ROOT_REQUIRED_PACKAGE_SHA; next action: rerun the exact command from the staged RUNBOOK.txt" >&2
-            return 1
-        fi
-        return 0
+        ROOT_REQUIRED_PACKAGE_SHA="$(git -C "$SOURCE" rev-parse HEAD 2>/dev/null || true)"
+    fi
+    if [ -z "$ROOT_REQUIRED_PACKAGE_SHA" ]; then
+        echo "OOM install source has no package SHA; next action: run from a Git worktree or the exact staged RUNBOOK command" >&2
+        return 1
     fi
     [[ "$ROOT_REQUIRED_PACKAGE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
         echo "invalid root-required package SHA: $ROOT_REQUIRED_PACKAGE_SHA; next action: rerun the exact command from the staged RUNBOOK.txt" >&2
@@ -206,11 +211,33 @@ validate_root_required_package_order() {
 
 record_root_required_package_receipt() {
     local temp
-    [ -n "$ROOT_REQUIRED_PACKAGE_SHA" ] || return 0
     mkdir -p "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT"
     temp="$ROOT_REQUIRED_RECEIPT.tmp.$$"
     printf '%s\n' "$ROOT_REQUIRED_PACKAGE_SHA" > "$temp"
     mv -f "$temp" "$ROOT_REQUIRED_RECEIPT"
+}
+
+validate_package_source_matches_commit() {
+    local rel
+    local -a package_files=(
+        scripts/install-p0-oom-containment
+        "${system_dropins[@]}"
+        "${system_units[@]}"
+        "${user_audit_units[@]}"
+        "$user_dropin"
+        "${user_protection_dropins[@]}"
+        "$earlyoom_source"
+        "$oom_enforcer_source"
+        "$root_failure_intake_source"
+        "$oom_policy_audit_source"
+        "$root_required_audit_source"
+    )
+    for rel in "${package_files[@]}"; do
+        if [ ! -f "$SOURCE/$rel" ] || ! cmp -s <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$ROOT_REQUIRED_PACKAGE_SHA:$rel") "$SOURCE/$rel"; then
+            echo "OOM install source does not match claimed commit $ROOT_REQUIRED_PACKAGE_SHA at $rel; next action: discard the modified package and rerun from a clean Git worktree or exact staged RUNBOOK" >&2
+            return 1
+        fi
+    done
 }
 
 drain_root_required_deferral_dir() {
@@ -268,6 +295,16 @@ system_units=(
     systemd/units/hapax-oom-score-enforce.service
     systemd/units/hapax-oom-score-enforce.timer
 )
+user_audit_units=(
+    systemd/units/hapax-oom-policy-audit.service
+    systemd/units/hapax-oom-policy-audit.timer
+    systemd/units/hapax-root-required-deploy-audit.service
+    systemd/units/hapax-root-required-deploy-audit.timer
+)
+user_audit_timers=(
+    hapax-oom-policy-audit.timer
+    hapax-root-required-deploy-audit.timer
+)
 user_dropin="systemd/units/app.slice.d/oom-containment.conf"
 user_protection_dropins=(
     systemd/units/pipewire.service.d/oom-protect.conf
@@ -280,6 +317,8 @@ user_protection_dropins=(
 earlyoom_source="config/earlyoom/default"
 oom_enforcer_source="scripts/hapax-oom-score-enforce"
 root_failure_intake_source="scripts/hapax-root-failure-intake"
+oom_policy_audit_source="scripts/hapax-oom-policy-audit"
+root_required_audit_source="scripts/hapax-root-required-deploy-audit"
 recovery_unit_scores=(
     apcupsd.service:-900
     systemd-logind.service:-800
@@ -304,7 +343,7 @@ src_path() {
 
 record_installed_source() {
     local rel dest
-    for rel in scripts/install-p0-oom-containment "${system_dropins[@]}" "${system_units[@]}" "$user_dropin" "${user_protection_dropins[@]}" "$earlyoom_source" "$oom_enforcer_source" "$root_failure_intake_source"; do
+    for rel in scripts/install-p0-oom-containment "${system_dropins[@]}" "${system_units[@]}" "${user_audit_units[@]}" "$user_dropin" "${user_protection_dropins[@]}" "$earlyoom_source" "$oom_enforcer_source" "$root_failure_intake_source" "$oom_policy_audit_source" "$root_required_audit_source"; do
         dest="$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT/$rel"
         mkdir -p "$(dirname "$dest")"
         cp -a "$(src_path "$rel")" "$dest"
@@ -367,7 +406,7 @@ system_dest() {
 
 check_source() {
     local rel
-    for rel in "${system_dropins[@]}" "${system_units[@]}" "$user_dropin" "${user_protection_dropins[@]}" "$earlyoom_source" "$oom_enforcer_source" "$root_failure_intake_source"; do
+    for rel in "${system_dropins[@]}" "${system_units[@]}" "${user_audit_units[@]}" "$user_dropin" "${user_protection_dropins[@]}" "$earlyoom_source" "$oom_enforcer_source" "$root_failure_intake_source" "$oom_policy_audit_source" "$root_required_audit_source"; do
         [ -f "$(src_path "$rel")" ] || {
             echo "missing source file: $(src_path "$rel"); next action: restore the source tree or rerun from the PR/activation worktree" >&2
             return 1
@@ -565,7 +604,7 @@ apply_user_process_oom_floor() {
 }
 
 install_live() {
-    local rel dest control_dropin_dir user_pid mem_high mem_max mem_swap
+    local rel dest timer control_dropin_dir user_pid mem_high mem_max mem_swap
     check_source
     preflight_root
     for rel in "${system_dropins[@]}"; do
@@ -586,6 +625,12 @@ install_live() {
     run_root install -d -m 0755 "$(dirname "$ROOT_FAILURE_INTAKE_DEST")"
     run_root install -m 0755 "$(src_path "$root_failure_intake_source")" "$ROOT_FAILURE_INTAKE_DEST"
     echo "  '$root_failure_intake_source' -> '$ROOT_FAILURE_INTAKE_DEST'"
+    run_root install -d -m 0755 "$(dirname "$OOM_POLICY_AUDIT_DEST")"
+    run_root install -m 0755 "$(src_path "$oom_policy_audit_source")" "$OOM_POLICY_AUDIT_DEST"
+    echo "  '$oom_policy_audit_source' -> '$OOM_POLICY_AUDIT_DEST'"
+    run_root install -d -m 0755 "$(dirname "$ROOT_REQUIRED_AUDIT_DEST")"
+    run_root install -m 0755 "$(src_path "$root_required_audit_source")" "$ROOT_REQUIRED_AUDIT_DEST"
+    echo "  '$root_required_audit_source' -> '$ROOT_REQUIRED_AUDIT_DEST'"
     run_root install -d -m 0755 "$(dirname "$EARLYOOM_DEST")"
     run_root install -m 0644 "$(src_path "$earlyoom_source")" "$EARLYOOM_DEST"
     echo "  '$earlyoom_source' -> '$EARLYOOM_DEST'"
@@ -601,6 +646,14 @@ install_live() {
     for rel in "${user_protection_dropins[@]}"; do
         dest="$SYSTEMD_USER_DIR/${rel#systemd/units/}"
         install -d -m 0755 "$(dirname "$dest")"
+        install -m 0644 "$(src_path "$rel")" "$dest"
+        echo "  '$rel' -> '$dest' (copy)"
+    done
+
+    for rel in "${user_audit_units[@]}"; do
+        dest="$SYSTEMD_USER_DIR/${rel#systemd/units/}"
+        install -d -m 0755 "$(dirname "$dest")"
+        [ ! -L "$dest" ] || rm -f "$dest"
         install -m 0644 "$(src_path "$rel")" "$dest"
         echo "  '$rel' -> '$dest' (copy)"
     done
@@ -628,6 +681,12 @@ install_live() {
         return 1
     }
     user_systemctl daemon-reload
+    for timer in "${user_audit_timers[@]}"; do
+        user_systemctl enable --now "$timer" >/dev/null 2>&1 || {
+            echo "unable to enable $timer for UID $TARGET_UID; next action: run systemctl --user enable --now $timer as $TARGET_USER" >&2
+            return 1
+        }
+    done
     if [ "$APPLY_RUNTIME" -eq 1 ]; then
         apply_system_runtime_memory system.slice systemd/system/system.slice.d/oom-containment.conf
         apply_system_runtime_memory user-1000.slice systemd/system/user-1000.slice.d/oom-containment.conf
@@ -677,7 +736,7 @@ verify_pair() {
 }
 
 verify_live() {
-    local rel dest
+    local rel dest timer
     for rel in "${system_dropins[@]}"; do
         verify_pair "$(src_path "$rel")" "$(system_dest "$rel")"
     done
@@ -686,6 +745,8 @@ verify_live() {
     done
     verify_pair "$(src_path "$oom_enforcer_source")" "$OOM_ENFORCER_DEST"
     verify_pair "$(src_path "$root_failure_intake_source")" "$ROOT_FAILURE_INTAKE_DEST"
+    verify_pair "$(src_path "$oom_policy_audit_source")" "$OOM_POLICY_AUDIT_DEST"
+    verify_pair "$(src_path "$root_required_audit_source")" "$ROOT_REQUIRED_AUDIT_DEST"
     verify_pair "$(src_path "$earlyoom_source")" "$EARLYOOM_DEST"
     run_root "$SYSTEMCTL" is-enabled --quiet earlyoom.service || {
         echo "earlyoom.service is not enabled; next action: run sudo systemctl enable --now earlyoom.service" >&2
@@ -703,6 +764,24 @@ verify_live() {
     verify_pair "$(src_path "$user_dropin")" "$dest"
     for rel in "${user_protection_dropins[@]}"; do
         verify_pair "$(src_path "$rel")" "$SYSTEMD_USER_DIR/${rel#systemd/units/}"
+    done
+    for rel in "${user_audit_units[@]}"; do
+        dest="$SYSTEMD_USER_DIR/${rel#systemd/units/}"
+        if [ -L "$dest" ]; then
+            echo "live P0 audit unit is a symlink: $dest; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+            return 1
+        fi
+        verify_pair "$(src_path "$rel")" "$dest"
+    done
+    for timer in "${user_audit_timers[@]}"; do
+        user_systemctl is-enabled --quiet "$timer" || {
+            echo "$timer is not enabled for UID $TARGET_UID; next action: run systemctl --user enable --now $timer as $TARGET_USER" >&2
+            return 1
+        }
+        user_systemctl is-active --quiet "$timer" || {
+            echo "$timer is not active for UID $TARGET_UID; next action: run systemctl --user enable --now $timer as $TARGET_USER" >&2
+            return 1
+        }
     done
     verify_user_manager_oom_score
     verify_system_unit_runtime_memory system.slice systemd/system/system.slice.d/oom-containment.conf
@@ -831,6 +910,7 @@ if [ "$INSTALL" -eq 1 ] && [ "$SKIP_SUPERSEDED_INSTALL" -eq 1 ]; then
     echo "p0 oom containment superseded deferral drained without live mutation"
     exit 0
 fi
+[ "$INSTALL" -eq 0 ] || validate_package_source_matches_commit
 [ "$INSTALL" -eq 0 ] || install_live
 [ "$VERIFY_LIVE" -eq 0 ] || verify_live
 [ "$INSTALL" -eq 0 ] || record_installed_source

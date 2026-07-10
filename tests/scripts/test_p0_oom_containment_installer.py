@@ -26,9 +26,18 @@ PROTECTED_USER_UNIT_SCORES = {
 
 @pytest.fixture(autouse=True)
 def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HAPAX_POST_MERGE_ROOT_DEFER_DIR", str(tmp_path / "root-required"))
     monkeypatch.setenv(
         "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT", str(tmp_path / "installed-source")
     )
+    monkeypatch.setenv(
+        "HAPAX_OOM_POLICY_AUDIT_DEST", str(tmp_path / "sbin" / "hapax-oom-policy-audit")
+    )
+    monkeypatch.setenv(
+        "HAPAX_ROOT_REQUIRED_AUDIT_DEST",
+        str(tmp_path / "sbin" / "hapax-root-required-deploy-audit"),
+    )
+    monkeypatch.setenv("HAPAX_OOM_SYSTEMD_USER_DIR", str(tmp_path / "systemd-user-default"))
 
 
 def _unit_cgroup(unit: str) -> str:
@@ -180,6 +189,8 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
             **os.environ,
             "HOME": str(root_home),
             "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(system_dir),
+            "HAPAX_OOM_SYSTEMD_USER_DIR": str(user_dir),
+            "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR": str(user_control_dir),
             "HAPAX_OOM_TARGET_UID": "1000",
             "HAPAX_OOM_TARGET_HOME": str(target_home),
             "HAPAX_OOM_EARLYOOM_DEST": str(earlyoom_dest),
@@ -223,6 +234,17 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert "EARLYOOM_ARGS=" in earlyoom_dest.read_text(encoding="utf-8")
     assert enforcer_dest.is_file()
     assert root_failure_dest.is_file()
+    assert (tmp_path / "sbin" / "hapax-oom-policy-audit").is_file()
+    assert (tmp_path / "sbin" / "hapax-root-required-deploy-audit").is_file()
+    for unit in (
+        "hapax-oom-policy-audit.service",
+        "hapax-oom-policy-audit.timer",
+        "hapax-root-required-deploy-audit.service",
+        "hapax-root-required-deploy-audit.timer",
+    ):
+        unit_path = user_dir / unit
+        assert unit_path.is_file()
+        assert not unit_path.is_symlink()
     assert not stale_control.exists()
     assert not (root_home / ".config" / "systemd").exists()
     calls = systemctl_calls.read_text(encoding="utf-8")
@@ -235,6 +257,34 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         f"-u hapax -- env XDG_RUNTIME_DIR=/run/user/1000 {fake_systemctl} --user daemon-reload"
         in runuser_calls.read_text(encoding="utf-8")
     )
+    user_calls = runuser_calls.read_text(encoding="utf-8")
+    assert "--user enable --now hapax-oom-policy-audit.timer" in user_calls
+    assert "--user enable --now hapax-root-required-deploy-audit.timer" in user_calls
+    assert "--user is-enabled --quiet hapax-oom-policy-audit.timer" in user_calls
+    assert "--user is-active --quiet hapax-root-required-deploy-audit.timer" in user_calls
+
+
+def test_unversioned_oom_install_source_fails_before_live_mutation(tmp_path: Path) -> None:
+    source = tmp_path / "not-a-repo"
+    source.mkdir()
+    live = tmp_path / "live-earlyoom"
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(source), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_INSTALL_SUDO": "",
+            "HAPAX_OOM_EARLYOOM_DEST": str(live),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": "",
+        },
+    )
+
+    assert result.returncode == 1
+    assert "source has no package SHA" in result.stderr
+    assert not live.exists()
 
 
 def _write_proc(

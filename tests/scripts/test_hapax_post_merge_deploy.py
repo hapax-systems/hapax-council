@@ -32,9 +32,28 @@ P0_USER_OOM_DROPINS = {
         "[Service]\nOOMScoreAdjust=-800\n"
     ),
 }
+P0_OOM_AUDIT_FILES = {
+    "scripts/hapax-oom-policy-audit": "#!/usr/bin/env python3\n",
+    "scripts/hapax-root-required-deploy-audit": "#!/usr/bin/env bash\n",
+    "systemd/units/hapax-oom-policy-audit.service": (
+        "[Unit]\nDescription=OOM audit\n[Service]\nType=oneshot\n"
+        "ExecStart=/usr/local/sbin/hapax-oom-policy-audit --json\n"
+    ),
+    "systemd/units/hapax-oom-policy-audit.timer": (
+        "[Unit]\nDescription=OOM audit timer\n[Timer]\nOnUnitActiveSec=5min\n"
+    ),
+    "systemd/units/hapax-root-required-deploy-audit.service": (
+        "[Unit]\nDescription=Root deploy audit\n[Service]\nType=oneshot\n"
+        "ExecStart=/usr/local/sbin/hapax-root-required-deploy-audit\n"
+    ),
+    "systemd/units/hapax-root-required-deploy-audit.timer": (
+        "[Unit]\nDescription=Root deploy audit timer\n[Timer]\nOnUnitActiveSec=10min\n"
+    ),
+}
 ROOT_AUDIT_SOURCE_FILES = {
     "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\necho enforcer\n",
     "scripts/hapax-root-failure-intake": "#!/usr/bin/env bash\necho root failure\n",
+    **P0_OOM_AUDIT_FILES,
     "config/earlyoom/default": 'EARLYOOM_ARGS="--ignore recovery"\n',
     "systemd/system/system.slice.d/oom-containment.conf": (
         "[Slice]\nMemoryHigh=infinity\nMemoryMax=infinity\nMemorySwapMax=infinity\n"
@@ -261,6 +280,9 @@ def _root_audit_env(
     upower_dest = tmp_path / "etc" / "UPower" / "UPower.conf.d" / "90-hapax-apcupsd-owner.conf"
     enforcer_dest = tmp_path / "sbin" / "hapax-oom-score-enforce"
     root_failure_dest = tmp_path / "sbin" / "hapax-root-failure-intake"
+    oom_audit_dest = tmp_path / "sbin" / "hapax-oom-policy-audit"
+    root_audit_dest = tmp_path / "sbin" / "hapax-root-required-deploy-audit"
+    user_dir = tmp_path / "home" / ".config" / "systemd" / "user"
     earlyoom_dest = tmp_path / "etc" / "default" / "earlyoom"
     fake_systemctl = tmp_path / "root-audit-systemctl"
     fake_systemctl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
@@ -268,6 +290,8 @@ def _root_audit_env(
     dests = {
         "scripts/hapax-oom-score-enforce": enforcer_dest,
         "scripts/hapax-root-failure-intake": root_failure_dest,
+        "scripts/hapax-oom-policy-audit": oom_audit_dest,
+        "scripts/hapax-root-required-deploy-audit": root_audit_dest,
         "config/earlyoom/default": earlyoom_dest,
         "systemd/logrotate.d/hapax-ups-power-events": logrotate_dest,
         "config/upower/90-hapax-apcupsd-owner.conf": upower_dest,
@@ -276,7 +300,11 @@ def _root_audit_env(
         if rel.startswith("systemd/system/"):
             dests[rel] = system_dir / rel.removeprefix("systemd/system/")
         elif rel.startswith("systemd/units/"):
-            dests[rel] = system_dir / rel.removeprefix("systemd/units/")
+            unit_name = rel.removeprefix("systemd/units/")
+            if rel in P0_OOM_AUDIT_FILES:
+                dests[rel] = user_dir / unit_name
+            else:
+                dests[rel] = system_dir / unit_name
         elif rel.startswith("config/apcupsd/"):
             dests[rel] = apcupsd_dir / rel.removeprefix("config/apcupsd/")
     for rel, body in ROOT_AUDIT_SOURCE_FILES.items():
@@ -290,6 +318,8 @@ def _root_audit_env(
         if rel in {
             "scripts/hapax-oom-score-enforce",
             "scripts/hapax-root-failure-intake",
+            "scripts/hapax-oom-policy-audit",
+            "scripts/hapax-root-required-deploy-audit",
             "config/apcupsd/hapax-power-event.py",
             "config/apcupsd/onbattery",
             "config/apcupsd/offbattery",
@@ -301,8 +331,11 @@ def _root_audit_env(
         "HAPAX_ROOT_REQUIRED_SOURCE_ROOT": str(source_root),
         "HAPAX_OOM_ENFORCER_DEST": str(enforcer_dest),
         "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
+        "HAPAX_OOM_POLICY_AUDIT_DEST": str(oom_audit_dest),
+        "HAPAX_ROOT_REQUIRED_AUDIT_DEST": str(root_audit_dest),
         "HAPAX_OOM_EARLYOOM_DEST": str(earlyoom_dest),
         "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(system_dir),
+        "HAPAX_OOM_SYSTEMD_USER_DIR": str(user_dir),
         "HAPAX_APCUPSD_DEST": str(apcupsd_dir),
         "HAPAX_APCUPSD_LOGROTATE_DEST": str(logrotate_dest),
         "HAPAX_UPOWER_CONF_DEST": str(upower_dest),
@@ -662,6 +695,7 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
         "systemd/units/hapax-oom-score-enforce.timer": (
             "[Unit]\n# Hapax-Install-Scope: system\n[Timer]\nOnBootSec=30s\nOnUnitActiveSec=30s\n"
         ),
+        **P0_OOM_AUDIT_FILES,
         "systemd/units/app.slice.d/oom-containment.conf": (
             "[Slice]\nMemoryHigh=72G\nMemoryMax=88G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
         ),
@@ -747,6 +781,7 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
         "systemd/units/hapax-oom-score-enforce.timer": (
             "[Unit]\n# Hapax-Install-Scope: system\n[Timer]\nOnBootSec=30s\nOnUnitActiveSec=30s\n"
         ),
+        **P0_OOM_AUDIT_FILES,
         "systemd/units/app.slice.d/oom-containment.conf": (
             "[Slice]\nMemoryHigh=72G\nMemoryMax=88G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
         ),
@@ -956,6 +991,30 @@ def test_root_required_audit_detects_inactive_earlyoom(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert "earlyoom.service is not active" in result.stderr
     assert "enable --now earlyoom.service" in result.stderr
+
+
+def test_root_required_audit_detects_disabled_apcupsd(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$*" = "is-enabled --quiet apcupsd.service" ]; then exit 1; fi\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "apcupsd.service is not enabled" in result.stderr
+    assert "enable --now apcupsd.service" in result.stderr
 
 
 def test_root_required_audit_passes_when_oom_enforcer_matches(tmp_path: Path) -> None:

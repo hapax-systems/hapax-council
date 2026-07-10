@@ -66,6 +66,19 @@ class TestPrimaryWorktreeGuard:
         )
 
 
+def test_generic_installer_skips_dedicated_p0_audit_units() -> None:
+    body = INSTALL_SCRIPT.read_text(encoding="utf-8")
+    assert "dedicated_p0_oom_unit" in body
+    for unit in (
+        "hapax-oom-policy-audit.service",
+        "hapax-oom-policy-audit.timer",
+        "hapax-root-required-deploy-audit.service",
+        "hapax-root-required-deploy-audit.timer",
+    ):
+        assert unit in body
+    assert "skipped dedicated P0 OOM unit" in body
+
+
 class TestTimerEnablementSweep:
     """Pin the delta 2026-04-14-systemd-timer-enablement-gap fix."""
 

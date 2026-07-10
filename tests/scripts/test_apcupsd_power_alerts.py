@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -22,6 +23,7 @@ REPO_HEAD = subprocess.run(
 
 @pytest.fixture(autouse=True)
 def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HAPAX_POST_MERGE_ROOT_DEFER_DIR", str(tmp_path / "root-required"))
     monkeypatch.setenv(
         "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT", str(tmp_path / "installed-source")
     )
@@ -392,7 +394,11 @@ def test_installer_install_and_verify_live_against_temp_destinations(tmp_path: P
     assert logrotate_dest.is_file()
     assert "su root root" in logrotate_dest.read_text(encoding="utf-8")
     assert upower_dest.read_text(encoding="utf-8") == UPOWER_CONFIG.read_text(encoding="utf-8")
-    assert "restart apcupsd" in systemctl_calls.read_text(encoding="utf-8")
+    calls = systemctl_calls.read_text(encoding="utf-8")
+    assert "enable --now apcupsd.service" in calls
+    assert "restart apcupsd.service" in calls
+    assert "is-enabled --quiet apcupsd.service" in calls
+    assert "is-active --quiet apcupsd.service" in calls
     assert "try-restart upower.service" in systemctl_calls.read_text(encoding="utf-8")
     systemctl_calls.write_text("", encoding="utf-8")
 
@@ -413,8 +419,10 @@ def test_installer_install_and_verify_live_against_temp_destinations(tmp_path: P
     )
 
     assert second_result.returncode == 0, second_result.stderr
-    assert "restart apcupsd" not in systemctl_calls.read_text(encoding="utf-8")
-    assert "try-restart upower.service" not in systemctl_calls.read_text(encoding="utf-8")
+    second_calls = systemctl_calls.read_text(encoding="utf-8")
+    assert "enable --now apcupsd.service" in second_calls
+    assert "restart apcupsd.service" not in second_calls
+    assert "try-restart upower.service" not in second_calls
 
     hook_audit = tmp_path / "hook.jsonl"
     hook_result = subprocess.run(
@@ -441,6 +449,137 @@ def test_installer_install_and_verify_live_against_temp_destinations(tmp_path: P
     assert records[0]["event"] == "onbattery"
     assert records[1]["delivery"]["attempted"] is False
     assert records[1]["delivery"]["ok"] is False
+
+
+def test_unversioned_apcupsd_install_source_fails_before_live_mutation(tmp_path: Path) -> None:
+    source = tmp_path / "not-a-repo"
+    source.mkdir()
+    live = tmp_path / "live-apcupsd"
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(source), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+            "HAPAX_APCUPSD_DEST": str(live),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": "",
+        },
+    )
+
+    assert result.returncode == 1
+    assert "source has no package SHA" in result.stderr
+    assert not live.exists()
+
+
+def test_claimed_apcupsd_commit_rejects_modified_package_before_live_mutation(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "staged"
+    package_files = (
+        "scripts/install-apcupsd-power-alerts",
+        "config/apcupsd/apcupsd.conf",
+        "config/apcupsd/hapax-power-event.py",
+        "config/apcupsd/onbattery",
+        "config/apcupsd/offbattery",
+        "config/apcupsd/doshutdown",
+        "config/upower/90-hapax-apcupsd-owner.conf",
+        "systemd/logrotate.d/hapax-ups-power-events",
+    )
+    for relative in package_files:
+        dest = source / relative
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(REPO_ROOT / relative, dest)
+    (source / ".hapax-root-required-package-sha").write_text(f"{REPO_HEAD}\n", encoding="utf-8")
+    (source / "config" / "apcupsd" / "apcupsd.conf").write_text(
+        "## apcupsd.conf v1.1 ##\nUPSNAME tampered\n", encoding="utf-8"
+    )
+    live = tmp_path / "live-apcupsd"
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(source), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+            "HAPAX_APCUPSD_DEST": str(live),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": REPO_HEAD,
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "does not match claimed commit" in result.stderr
+    assert "config/apcupsd/apcupsd.conf" in result.stderr
+    assert not live.exists()
+
+
+def test_apcupsd_installs_serialize_on_shared_package_lock(tmp_path: Path) -> None:
+    dest = tmp_path / "apcupsd"
+    audit_dir = tmp_path / "hapax-log"
+    logrotate_dest = tmp_path / "logrotate.d" / "hapax-ups-power-events"
+    upower_dest = tmp_path / "UPower.conf.d" / "90-hapax-apcupsd-owner.conf"
+    calls = tmp_path / "systemctl-calls.txt"
+    entered = tmp_path / "first-install-entered"
+    release = tmp_path / "release-first-install"
+    hold_claim = tmp_path / "hold-claim"
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' \"$*\" >> {calls!s}\n"
+        'if [ "$*" = "enable --now apcupsd.service" ] '
+        f"&& mkdir {hold_claim!s} 2>/dev/null; then\n"
+        f"  touch {entered!s}\n"
+        f"  while [ ! -f {release!s} ]; do sleep 0.02; done\n"
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+    env = {
+        **os.environ,
+        "HAPAX_APCUPSD_DEST": str(dest),
+        "HAPAX_APCUPSD_AUDIT_DIR": str(audit_dir),
+        "HAPAX_APCUPSD_LOGROTATE_DEST": str(logrotate_dest),
+        "HAPAX_UPOWER_CONF_DEST": str(upower_dest),
+        "HAPAX_APCUPSD_SYSTEMCTL": str(fake_systemctl),
+        "HAPAX_APCUPSD_INSTALL_SUDO": "",
+        "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": REPO_HEAD,
+        "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
+    }
+
+    first = subprocess.Popen(
+        [str(INSTALLER), "--install", "--verify-live"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+    deadline = time.monotonic() + 5
+    while not entered.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert entered.exists(), first.communicate(timeout=1)
+
+    second = subprocess.Popen(
+        [str(INSTALLER), "--install", "--verify-live"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+    time.sleep(0.25)
+    assert second.poll() is None
+    assert calls.read_text(encoding="utf-8").splitlines().count("enable --now apcupsd.service") == 1
+
+    release.touch()
+    first_stdout, first_stderr = first.communicate(timeout=5)
+    second_stdout, second_stderr = second.communicate(timeout=5)
+    assert first.returncode == 0, (first_stdout, first_stderr)
+    assert second.returncode == 0, (second_stdout, second_stderr)
 
 
 def test_installer_drains_root_required_deferral_after_success(tmp_path: Path) -> None:

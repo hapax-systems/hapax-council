@@ -159,7 +159,8 @@ def test_oom_policy_audit_timer_is_source_controlled() -> None:
     service = (UNITS_DIR / "hapax-oom-policy-audit.service").read_text()
     assert "Hapax-Auto-Enable: true" in timer
     assert "OnUnitActiveSec=5min" in timer
-    assert "scripts/hapax-oom-policy-audit --json" in service
+    assert "ExecStart=/usr/local/sbin/hapax-oom-policy-audit --json" in service
+    assert "source-activation" not in service
     assert "StartLimitIntervalSec=0" in service
     assert "StartLimitBurst" not in service
     assert "ConditionPathExists" not in service
@@ -170,7 +171,8 @@ def test_root_required_deploy_audit_timer_is_source_controlled() -> None:
     service = (UNITS_DIR / "hapax-root-required-deploy-audit.service").read_text()
     assert "Hapax-Auto-Enable: true" in timer
     assert "OnUnitActiveSec=10min" in timer
-    assert "scripts/hapax-root-required-deploy-audit" in service
+    assert "ExecStart=/usr/local/sbin/hapax-root-required-deploy-audit" in service
+    assert "source-activation" not in service
     assert "StartLimitIntervalSec=0" in service
     assert "StartLimitBurst" not in service
     assert "ConditionPathExists" not in service

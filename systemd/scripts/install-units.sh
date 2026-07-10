@@ -174,6 +174,20 @@ timer_enable_only() {
     return 0
 }
 
+dedicated_p0_oom_unit() {
+    case "$1" in
+        hapax-oom-policy-audit.service|\
+        hapax-oom-policy-audit.timer|\
+        hapax-root-required-deploy-audit.service|\
+        hapax-root-required-deploy-audit.timer)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 changed=0
 new_timers=()
 for retired_unit in "${DECOMMISSIONED_UNITS[@]}"; do
@@ -188,6 +202,10 @@ for unit in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.target "$REP
     dest="$DEST_DIR/$name"
     if is_decommissioned_unit "$name"; then
         echo "skipped decommissioned unit: $name"
+        continue
+    fi
+    if dedicated_p0_oom_unit "$name"; then
+        echo "skipped dedicated P0 OOM unit: $name"
         continue
     fi
     if system_install_scope_unit "$unit"; then

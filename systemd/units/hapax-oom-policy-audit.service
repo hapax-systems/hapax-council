@@ -1,12 +1,9 @@
 [Unit]
 Description=Audit Hapax OOM containment policy drift
-Documentation=file:%h/.cache/hapax/source-activation/worktree/systemd/README.md
 OnFailure=notify-failure@%n.service
 StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
-WorkingDirectory=%h/.cache/hapax/source-activation/worktree
-Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-oom-policy-audit --json
+ExecStart=/usr/local/sbin/hapax-oom-policy-audit --json
 SyslogIdentifier=hapax-oom-policy-audit

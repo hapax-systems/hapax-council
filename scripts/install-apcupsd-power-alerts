@@ -107,7 +107,6 @@ canonical_dir() {
 }
 
 acquire_root_required_lock() {
-    [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ] || return 0
     mkdir -p "$ROOT_REQUIRED_DEFER_ROOT"
     exec {ROOT_REQUIRED_LOCK_FD}>"$ROOT_REQUIRED_LOCK_FILE"
     flock -x "$ROOT_REQUIRED_LOCK_FD"
@@ -126,11 +125,11 @@ validate_root_required_package_order() {
         fi
     fi
     if [ -z "$ROOT_REQUIRED_PACKAGE_SHA" ]; then
-        if [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ]; then
-            echo "root-required drain is missing HAPAX_ROOT_REQUIRED_PACKAGE_SHA; next action: rerun the exact command from the staged RUNBOOK.txt" >&2
-            return 1
-        fi
-        return 0
+        ROOT_REQUIRED_PACKAGE_SHA="$(git -C "$SOURCE" rev-parse HEAD 2>/dev/null || true)"
+    fi
+    if [ -z "$ROOT_REQUIRED_PACKAGE_SHA" ]; then
+        echo "apcupsd install source has no package SHA; next action: run from a Git worktree or the exact staged RUNBOOK command" >&2
+        return 1
     fi
     [[ "$ROOT_REQUIRED_PACKAGE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
         echo "invalid root-required package SHA: $ROOT_REQUIRED_PACKAGE_SHA; next action: rerun the exact command from the staged RUNBOOK.txt" >&2
@@ -165,11 +164,30 @@ validate_root_required_package_order() {
 
 record_root_required_package_receipt() {
     local temp
-    [ -n "$ROOT_REQUIRED_PACKAGE_SHA" ] || return 0
     mkdir -p "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT"
     temp="$ROOT_REQUIRED_RECEIPT.tmp.$$"
     printf '%s\n' "$ROOT_REQUIRED_PACKAGE_SHA" > "$temp"
     mv -f "$temp" "$ROOT_REQUIRED_RECEIPT"
+}
+
+validate_package_source_matches_commit() {
+    local rel
+    local -a package_files=(
+        scripts/install-apcupsd-power-alerts
+        config/apcupsd/apcupsd.conf
+        config/apcupsd/hapax-power-event.py
+        config/apcupsd/onbattery
+        config/apcupsd/offbattery
+        config/apcupsd/doshutdown
+        config/upower/90-hapax-apcupsd-owner.conf
+        systemd/logrotate.d/hapax-ups-power-events
+    )
+    for rel in "${package_files[@]}"; do
+        if [ ! -f "$SOURCE/$rel" ] || ! cmp -s <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$ROOT_REQUIRED_PACKAGE_SHA:$rel") "$SOURCE/$rel"; then
+            echo "apcupsd install source does not match claimed commit $ROOT_REQUIRED_PACKAGE_SHA at $rel; next action: discard the modified package and rerun from a clean Git worktree or exact staged RUNBOOK" >&2
+            return 1
+        fi
+    done
 }
 
 drain_root_required_deferral_dir() {
@@ -275,8 +293,12 @@ install_live() {
     run_root install -m 0644 "$SOURCE/systemd/logrotate.d/hapax-ups-power-events" "$LOGROTATE_DEST"
     run_root install -d -m 0755 "$(dirname "$UPOWER_CONF_DEST")"
     run_root install -m 0644 "$SOURCE/config/upower/90-hapax-apcupsd-owner.conf" "$UPOWER_CONF_DEST"
+    run_root "$SYSTEMCTL" enable --now apcupsd.service || {
+        echo "unable to enable and start apcupsd.service; next action: run sudo systemctl enable --now apcupsd.service and inspect journalctl -u apcupsd.service" >&2
+        return 1
+    }
     if [ "$RESTART" -eq 1 ] && [ "$apcupsd_changed" -eq 1 ]; then
-        run_root "$SYSTEMCTL" restart apcupsd
+        run_root "$SYSTEMCTL" restart apcupsd.service
     fi
     if [ "$RESTART" -eq 1 ] && [ "$upower_changed" -eq 1 ]; then
         run_root "$SYSTEMCTL" try-restart upower.service
@@ -333,6 +355,14 @@ verify_live() {
         echo "audit directory missing: $AUDIT_DIR; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
         return 1
     }
+    run_root "$SYSTEMCTL" is-enabled --quiet apcupsd.service || {
+        echo "apcupsd.service is not enabled; next action: run sudo systemctl enable --now apcupsd.service" >&2
+        return 1
+    }
+    run_root "$SYSTEMCTL" is-active --quiet apcupsd.service || {
+        echo "apcupsd.service is not active; next action: run sudo systemctl enable --now apcupsd.service and inspect journalctl -u apcupsd.service" >&2
+        return 1
+    }
 }
 
 [ "$CHECK" -eq 0 ] || check_source
@@ -343,6 +373,7 @@ if [ "$INSTALL" -eq 1 ] && [ "$SKIP_SUPERSEDED_INSTALL" -eq 1 ]; then
     echo "apcupsd superseded deferral drained without live mutation"
     exit 0
 fi
+[ "$INSTALL" -eq 0 ] || validate_package_source_matches_commit
 [ "$INSTALL" -eq 0 ] || install_live
 [ "$VERIFY_LIVE" -eq 0 ] || verify_live
 [ "$INSTALL" -eq 0 ] || record_installed_source
