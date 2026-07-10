@@ -9,7 +9,7 @@ ROOT_REQUIRED_STATE_ROOT="${HAPAX_ROOT_REQUIRED_STATE_ROOT:-$HOME/.local/state/h
 INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$ROOT_REQUIRED_STATE_ROOT/current-source}"
 INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/installed-receipts}"
 DESIRED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/desired-receipts}"
-ROOT_REQUIRED_GIT_REPO="${HAPAX_ROOT_REQUIRED_GIT_REPO:-$HOME/projects/hapax-council}"
+ROOT_REQUIRED_GIT_REPO="${HAPAX_ROOT_REQUIRED_GIT_REPO:-$HOME/.cache/hapax/source-activation/worktree}"
 ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_STATE_ROOT/.lock}"
 OOM_ENFORCER_DEST="${HAPAX_OOM_ENFORCER_DEST:-/usr/local/sbin/hapax-oom-score-enforce}"
 ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapax-root-failure-intake}"
@@ -22,6 +22,7 @@ APCUPSD_DEST="${HAPAX_APCUPSD_DEST:-/etc/apcupsd}"
 APCUPSD_LOGROTATE_DEST="${HAPAX_APCUPSD_LOGROTATE_DEST:-/etc/logrotate.d/hapax-ups-power-events}"
 UPOWER_CONF_DEST="${HAPAX_UPOWER_CONF_DEST:-/etc/UPower/UPower.conf.d/90-hapax-apcupsd-owner.conf}"
 SYSTEMCTL="${HAPAX_ROOT_AUDIT_SYSTEMCTL:-systemctl}"
+BUSCTL="${HAPAX_ROOT_AUDIT_BUSCTL:-busctl}"
 
 oom_package_files=(
     scripts/install-p0-oom-containment
@@ -31,6 +32,7 @@ oom_package_files=(
     scripts/hapax-root-required-deploy-audit
     config/earlyoom/default
     systemd/system/system.slice.d/oom-containment.conf
+    systemd/system/user.slice.d/oom-containment.conf
     systemd/system/user-1000.slice.d/oom-containment.conf
     systemd/system/user@1000.service.d/oom.conf
     systemd/system/apcupsd.service.d/oom-protect.conf
@@ -184,7 +186,7 @@ verify_executable() {
 }
 
 audit_systemd_state() {
-    local failed=0
+    local failed=0 loaded_upower_action
     if ! "$SYSTEMCTL" is-enabled --quiet hapax-oom-score-enforce.timer; then
         echo "root-required activation drift: hapax-oom-score-enforce.timer is not enabled" >&2
         echo "  next action: run sudo systemctl enable --now hapax-oom-score-enforce.timer" >&2
@@ -203,6 +205,12 @@ audit_systemd_state() {
     if ! "$SYSTEMCTL" is-enabled --quiet apcupsd.service; then
         echo "root-required activation drift: apcupsd.service is not enabled" >&2
         echo "  next action: run sudo systemctl enable --now apcupsd.service" >&2
+        failed=1
+    fi
+    loaded_upower_action="$("$BUSCTL" call org.freedesktop.UPower /org/freedesktop/UPower org.freedesktop.UPower GetCriticalAction 2>/dev/null || true)"
+    if [ "$loaded_upower_action" != 's "Ignore"' ]; then
+        echo "root-required activation drift: UPower loaded critical action is ${loaded_upower_action:-unavailable}, expected Ignore" >&2
+        echo "  next action: run sudo systemctl restart upower.service and scripts/install-apcupsd-power-alerts --verify-live" >&2
         failed=1
     fi
     if ! "$SYSTEMCTL" is-enabled --quiet earlyoom.service; then
@@ -238,6 +246,7 @@ audit_root_installs() {
         "scripts/hapax-root-required-deploy-audit|$ROOT_REQUIRED_AUDIT_DEST"
         "config/earlyoom/default|$EARLYOOM_DEST"
         "systemd/system/system.slice.d/oom-containment.conf|$SYSTEMD_SYSTEM_DIR/system.slice.d/oom-containment.conf"
+        "systemd/system/user.slice.d/oom-containment.conf|$SYSTEMD_SYSTEM_DIR/user.slice.d/oom-containment.conf"
         "systemd/system/user-1000.slice.d/oom-containment.conf|$SYSTEMD_SYSTEM_DIR/user-1000.slice.d/oom-containment.conf"
         "systemd/system/user@1000.service.d/oom.conf|$SYSTEMD_SYSTEM_DIR/user@1000.service.d/oom.conf"
         "systemd/system/apcupsd.service.d/oom-protect.conf|$SYSTEMD_SYSTEM_DIR/apcupsd.service.d/oom-protect.conf"

@@ -1,7 +1,7 @@
 [Unit]
 # Hapax-Install-Scope: system
 Description=Reapply live Hapax OOM scores
-Documentation=file:/home/hapax/.local/lib/hapax-recovery/council/current/manifest.json
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/systemd/README.md
 
 [Timer]
 OnBootSec=30s

@@ -11,6 +11,7 @@ AUDIT_GROUP="${HAPAX_APCUPSD_AUDIT_GROUP:-hapax}"
 LOGROTATE_DEST="${HAPAX_APCUPSD_LOGROTATE_DEST:-/etc/logrotate.d/hapax-ups-power-events}"
 UPOWER_CONF_DEST="${HAPAX_UPOWER_CONF_DEST:-/etc/UPower/UPower.conf.d/90-hapax-apcupsd-owner.conf}"
 SYSTEMCTL="${HAPAX_APCUPSD_SYSTEMCTL:-systemctl}"
+BUSCTL="${HAPAX_APCUPSD_BUSCTL:-busctl}"
 SUDO="${HAPAX_APCUPSD_INSTALL_SUDO-sudo}"
 TARGET_UID="${HAPAX_APCUPSD_TARGET_UID:-1000}"
 TARGET_HOME="${HAPAX_APCUPSD_TARGET_HOME:-}"
@@ -359,6 +360,10 @@ check_source() {
         echo "source UPower policy-owner config missing: $SOURCE/config/upower/90-hapax-apcupsd-owner.conf; next action: restore config/upower and rerun scripts/install-apcupsd-power-alerts --check" >&2
         return 1
     }
+    grep -Eq '^CriticalPowerAction=Ignore$' "$SOURCE/config/upower/90-hapax-apcupsd-owner.conf" || {
+        echo "source UPower policy must leave apcupsd as sole shutdown owner; next action: restore CriticalPowerAction=Ignore and rerun scripts/install-apcupsd-power-alerts --check" >&2
+        return 1
+    }
     [ -f "$SOURCE/systemd/logrotate.d/hapax-ups-power-events" ] || {
         echo "source logrotate config missing: $SOURCE/systemd/logrotate.d/hapax-ups-power-events; next action: restore the UPS logrotate source and rerun scripts/install-apcupsd-power-alerts --check" >&2
         return 1
@@ -366,14 +371,13 @@ check_source() {
 }
 
 install_live() {
-    local apcupsd_changed=0 upower_changed=0 pair
+    local apcupsd_changed=0 pair
     check_source
     preflight_root
     for pair in apcupsd.conf hapax-power-event.py onbattery offbattery doshutdown; do
         cmp -s "$SRC/$pair" "$DEST/$pair" 2>/dev/null || apcupsd_changed=1
     done
     cmp -s "$SOURCE/systemd/logrotate.d/hapax-ups-power-events" "$LOGROTATE_DEST" 2>/dev/null || apcupsd_changed=1
-    cmp -s "$SOURCE/config/upower/90-hapax-apcupsd-owner.conf" "$UPOWER_CONF_DEST" 2>/dev/null || upower_changed=1
     run_root install -d -m 0755 "$DEST"
     install_audit_dir
     run_root install -m 0644 "$SRC/apcupsd.conf" "$DEST/apcupsd.conf"
@@ -392,8 +396,23 @@ install_live() {
     if [ "$RESTART" -eq 1 ] && [ "$apcupsd_changed" -eq 1 ]; then
         run_root "$SYSTEMCTL" restart apcupsd.service
     fi
-    if [ "$RESTART" -eq 1 ] && [ "$upower_changed" -eq 1 ]; then
-        run_root "$SYSTEMCTL" try-restart upower.service
+    if [ "$RESTART" -eq 1 ]; then
+        run_root "$SYSTEMCTL" try-restart upower.service || {
+            echo "unable to reload UPower's shutdown policy; next action: run sudo systemctl restart upower.service and verify busctl call org.freedesktop.UPower /org/freedesktop/UPower org.freedesktop.UPower GetCriticalAction returns Ignore" >&2
+            return 1
+        }
+    fi
+}
+
+verify_upower_live_policy() {
+    local loaded
+    loaded="$("$BUSCTL" call org.freedesktop.UPower /org/freedesktop/UPower org.freedesktop.UPower GetCriticalAction 2>/dev/null)" || {
+        echo "unable to query UPower's loaded critical action; next action: inspect systemctl status upower.service and rerun scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    }
+    if [ "$loaded" != 's "Ignore"' ]; then
+        echo "UPower still owns a loaded shutdown action: $loaded; next action: run sudo systemctl restart upower.service and rerun scripts/install-apcupsd-power-alerts --verify-live" >&2
+        return 1
     fi
 }
 
@@ -439,6 +458,7 @@ verify_live() {
         echo "live UPower policy-owner config differs from source; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
         return 1
     }
+    verify_upower_live_policy
     cmp -s "$SOURCE/systemd/logrotate.d/hapax-ups-power-events" "$LOGROTATE_DEST" || {
         echo "live UPS logrotate config differs from source; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
         return 1

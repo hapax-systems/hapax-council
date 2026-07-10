@@ -63,6 +63,10 @@ ROOT_AUDIT_SOURCE_FILES = {
         "[Slice]\nMemoryHigh=infinity\nMemoryMax=infinity\nMemorySwapMax=infinity\n"
         "MemoryLow=24G\nMemoryMin=12G\n"
     ),
+    "systemd/system/user.slice.d/oom-containment.conf": (
+        "[Slice]\nMemoryHigh=infinity\nMemoryMax=infinity\nMemorySwapMax=infinity\n"
+        "MemoryLow=16G\nMemoryMin=8G\n"
+    ),
     "systemd/system/user-1000.slice.d/oom-containment.conf": (
         "[Slice]\nMemoryHigh=80G\nMemoryMax=96G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
     ),
@@ -81,7 +85,9 @@ ROOT_AUDIT_SOURCE_FILES = {
         "[Service]\nOOMScoreAdjust=-800\n"
     ),
     "systemd/system/dbus-broker.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-900\n",
-    "systemd/system/sshd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-1000\n",
+    "systemd/system/sshd.service.d/oom-protect.conf": (
+        "[Service]\nOOMScoreAdjust=0\nOOMPolicy=continue\n"
+    ),
     "systemd/units/hapax-root-failure-intake@.service": (
         "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\n"
     ),
@@ -300,6 +306,9 @@ def _root_audit_env(
     fake_systemctl = tmp_path / "root-audit-systemctl"
     fake_systemctl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     fake_systemctl.chmod(0o755)
+    fake_busctl = tmp_path / "root-audit-busctl"
+    fake_busctl.write_text("#!/bin/sh\nprintf 's \\\"Ignore\\\"\\n'\n", encoding="utf-8")
+    fake_busctl.chmod(0o755)
     dests = {
         "scripts/hapax-oom-score-enforce": enforcer_dest,
         "scripts/hapax-root-failure-intake": root_failure_dest,
@@ -386,6 +395,7 @@ def _root_audit_env(
         "HAPAX_APCUPSD_LOGROTATE_DEST": str(logrotate_dest),
         "HAPAX_UPOWER_CONF_DEST": str(upower_dest),
         "HAPAX_ROOT_AUDIT_SYSTEMCTL": str(fake_systemctl),
+        "HAPAX_ROOT_AUDIT_BUSCTL": str(fake_busctl),
         "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(root_defer),
     }
 
@@ -675,6 +685,7 @@ def test_systemd_coverage_includes_dropins_presets_and_source_overrides() -> Non
             "systemd/units/pipewire.service.d/cpu-affinity.conf",
             "systemd/units/app.slice.d/oom-containment.conf",
             "systemd/system/system.slice.d/oom-containment.conf",
+            "systemd/system/user.slice.d/oom-containment.conf",
             "systemd/system/user-1000.slice.d/oom-containment.conf",
             "systemd/system/user@1000.service.d/oom.conf",
             "systemd/system/apcupsd.service.d/oom-protect.conf",
@@ -711,6 +722,10 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
             "[Slice]\nMemoryHigh=infinity\nMemoryMax=infinity\nMemorySwapMax=infinity\n"
             "MemoryLow=24G\nMemoryMin=12G\n"
         ),
+        "systemd/system/user.slice.d/oom-containment.conf": (
+            "[Slice]\nMemoryHigh=infinity\nMemoryMax=infinity\nMemorySwapMax=infinity\n"
+            "MemoryLow=16G\nMemoryMin=8G\n"
+        ),
         "systemd/system/user-1000.slice.d/oom-containment.conf": (
             "[Slice]\nMemoryHigh=80G\nMemoryMax=96G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
         ),
@@ -731,7 +746,9 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
         "systemd/system/dbus-broker.service.d/oom-protect.conf": (
             "[Service]\nOOMScoreAdjust=-900\n"
         ),
-        "systemd/system/sshd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-1000\n",
+        "systemd/system/sshd.service.d/oom-protect.conf": (
+            "[Service]\nOOMScoreAdjust=0\nOOMPolicy=continue\n"
+        ),
         "systemd/units/hapax-root-failure-intake@.service": (
             "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\n"
         ),
@@ -802,6 +819,10 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
             "[Slice]\nMemoryHigh=infinity\nMemoryMax=infinity\nMemorySwapMax=infinity\n"
             "MemoryLow=24G\nMemoryMin=12G\n"
         ),
+        "systemd/system/user.slice.d/oom-containment.conf": (
+            "[Slice]\nMemoryHigh=infinity\nMemoryMax=infinity\nMemorySwapMax=infinity\n"
+            "MemoryLow=16G\nMemoryMin=8G\n"
+        ),
         "systemd/system/user-1000.slice.d/oom-containment.conf": (
             "[Slice]\nMemoryHigh=80G\nMemoryMax=96G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
         ),
@@ -822,7 +843,9 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
         "systemd/system/dbus-broker.service.d/oom-protect.conf": (
             "[Service]\nOOMScoreAdjust=-900\n"
         ),
-        "systemd/system/sshd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-1000\n",
+        "systemd/system/sshd.service.d/oom-protect.conf": (
+            "[Service]\nOOMScoreAdjust=0\nOOMPolicy=continue\n"
+        ),
         "systemd/units/hapax-root-failure-intake@.service": (
             "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\n"
         ),
@@ -1113,6 +1136,25 @@ def test_root_required_audit_detects_disabled_apcupsd(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert "apcupsd.service is not enabled" in result.stderr
     assert "enable --now apcupsd.service" in result.stderr
+
+
+def test_root_required_audit_detects_stale_loaded_upower_action(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    fake_busctl = Path(env["HAPAX_ROOT_AUDIT_BUSCTL"])
+    fake_busctl.write_text("#!/bin/sh\nprintf 's \\\"PowerOff\\\"\\n'\n", encoding="utf-8")
+    fake_busctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "UPower loaded critical action" in result.stderr
+    assert "expected Ignore" in result.stderr
 
 
 def test_root_required_audit_passes_when_oom_enforcer_matches(tmp_path: Path) -> None:

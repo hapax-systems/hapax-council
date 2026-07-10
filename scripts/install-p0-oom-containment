@@ -356,6 +356,7 @@ normalize_target_ownership() {
 
 system_dropins=(
     systemd/system/system.slice.d/oom-containment.conf
+    systemd/system/user.slice.d/oom-containment.conf
     systemd/system/user-1000.slice.d/oom-containment.conf
     systemd/system/user@1000.service.d/oom.conf
     systemd/system/apcupsd.service.d/oom-protect.conf
@@ -415,7 +416,7 @@ recovery_unit_scores=(
     systemd-timesyncd.service:-800
     NetworkManager.service:-800
     dbus-broker.service:-900
-    sshd.service:-1000
+    sshd.service:0
 )
 protected_user_unit_scores=(
     pipewire.service:-900
@@ -505,6 +506,14 @@ check_source() {
         echo "user@1000 OOM drop-in must set OOMScoreAdjust=100; next action: restore systemd/system/user@1000.service.d/oom.conf from the P0 PR" >&2
         return 1
     }
+    grep -Eq '^OOMScoreAdjust=0$' "$(src_path systemd/system/sshd.service.d/oom-protect.conf)" || {
+        echo "sshd OOM drop-in must keep child-inheritable OOMScoreAdjust neutral; next action: restore systemd/system/sshd.service.d/oom-protect.conf from the P0 PR" >&2
+        return 1
+    }
+    grep -Eq '^OOMPolicy=continue$' "$(src_path systemd/system/sshd.service.d/oom-protect.conf)" || {
+        echo "sshd OOM drop-in must continue after a session OOM; next action: restore systemd/system/sshd.service.d/oom-protect.conf from the P0 PR" >&2
+        return 1
+    }
     app_slice_value MemoryHigh >/dev/null
     app_slice_value MemoryMax >/dev/null
     app_slice_value MemorySwapMax >/dev/null
@@ -520,6 +529,11 @@ check_source() {
     source_unit_value systemd/system/system.slice.d/oom-containment.conf MemorySwapMax >/dev/null
     source_unit_value systemd/system/system.slice.d/oom-containment.conf MemoryLow >/dev/null
     source_unit_value systemd/system/system.slice.d/oom-containment.conf MemoryMin >/dev/null
+    source_unit_value systemd/system/user.slice.d/oom-containment.conf MemoryHigh >/dev/null
+    source_unit_value systemd/system/user.slice.d/oom-containment.conf MemoryMax >/dev/null
+    source_unit_value systemd/system/user.slice.d/oom-containment.conf MemorySwapMax >/dev/null
+    source_unit_value systemd/system/user.slice.d/oom-containment.conf MemoryLow >/dev/null
+    source_unit_value systemd/system/user.slice.d/oom-containment.conf MemoryMin >/dev/null
     source_unit_value systemd/system/user@1000.service.d/oom.conf MemoryHigh >/dev/null
     source_unit_value systemd/system/user@1000.service.d/oom.conf MemoryMax >/dev/null
     source_unit_value systemd/system/user@1000.service.d/oom.conf MemorySwapMax >/dev/null
@@ -778,6 +792,7 @@ install_live() {
     done
     if [ "$APPLY_RUNTIME" -eq 1 ]; then
         apply_system_runtime_memory system.slice systemd/system/system.slice.d/oom-containment.conf
+        apply_system_runtime_memory user.slice systemd/system/user.slice.d/oom-containment.conf
         apply_system_runtime_memory user-1000.slice systemd/system/user-1000.slice.d/oom-containment.conf
         apply_system_runtime_memory user@1000.service systemd/system/user@1000.service.d/oom.conf
         mem_high="$(app_slice_value MemoryHigh)"
@@ -874,6 +889,7 @@ verify_live() {
     done
     verify_user_manager_oom_score
     verify_system_unit_runtime_memory system.slice systemd/system/system.slice.d/oom-containment.conf
+    verify_system_unit_runtime_memory user.slice systemd/system/user.slice.d/oom-containment.conf
     verify_system_unit_runtime_memory user-1000.slice systemd/system/user-1000.slice.d/oom-containment.conf
     verify_system_unit_runtime_memory user@1000.service systemd/system/user@1000.service.d/oom.conf
     verify_app_slice_runtime

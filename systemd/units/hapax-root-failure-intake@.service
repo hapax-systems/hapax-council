@@ -1,7 +1,7 @@
 [Unit]
 # Hapax-Install-Scope: system
 Description=Record system-scope Hapax failure for %i
-Documentation=file:/home/hapax/.local/lib/hapax-recovery/council/current/manifest.json
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/systemd/README.md
 StartLimitIntervalSec=1h
 StartLimitBurst=1
 

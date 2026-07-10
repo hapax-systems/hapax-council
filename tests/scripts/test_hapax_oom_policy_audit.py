@@ -61,6 +61,7 @@ def _fake_systemctl(
     wrong_unit_score: bool = False,
     wrong_unit_memory: bool = False,
     system_slice_finite_max: bool = False,
+    user_slice_unprotected: bool = False,
     protected_unit_pids: dict[str, int] | None = None,
     protected_unit_cgroups: dict[str, str] | None = None,
 ) -> Path:
@@ -99,11 +100,19 @@ def _fake_systemctl(
         "MemoryLow=25769803776\n"
         "MemoryMin=12884901888\n"
     )
+    user_slice_values = (
+        "MemoryHigh=infinity\n"
+        "MemoryMax=infinity\n"
+        "MemorySwapMax=infinity\n"
+        f"MemoryLow={'0' if user_slice_unprotected else '17179869184'}\n"
+        f"MemoryMin={'0' if user_slice_unprotected else '8589934592'}\n"
+    )
     path.write_text(
         f"""#!/usr/bin/env bash
 set -euo pipefail
 case "$*" in
   *"show system.slice"*) printf '{system_slice_values}' ;;
+  *"show user.slice"*) printf '{user_slice_values}' ;;
   *"show user-1000.slice"*) printf '{uid_memory_values}' ;;
   *"show user@1000.service --no-pager -p MemoryHigh"*) printf '{uid_memory_values}' ;;
   *"show user@1000.service"*) printf 'OOMScoreAdjust={user_oom}\\nDropInPaths=/etc/systemd/system/user@1000.service.d/oom.conf\\nMainPID=900\\n' ;;
@@ -143,6 +152,7 @@ def _run(
     wrong_unit_score: bool = False,
     wrong_unit_memory: bool = False,
     system_slice_finite_max: bool = False,
+    user_slice_unprotected: bool = False,
     protected_unit_pids: dict[str, int] | None = None,
     protected_unit_cgroups: dict[str, str] | None = None,
     proc_root: Path | None = None,
@@ -168,6 +178,7 @@ def _run(
                 wrong_unit_score=wrong_unit_score,
                 wrong_unit_memory=wrong_unit_memory,
                 system_slice_finite_max=system_slice_finite_max,
+                user_slice_unprotected=user_slice_unprotected,
                 protected_unit_pids=protected_unit_pids,
                 protected_unit_cgroups=protected_unit_cgroups,
             )
@@ -191,6 +202,7 @@ def test_audit_passes_when_user_manager_is_killable_and_app_slice_bounded(tmp_pa
     statuses = {check["name"]: check["status"] for check in payload["checks"]}
     assert statuses["user_manager_oom_score_adjust"] == "pass"
     assert statuses["system_slice_MemoryLow"] == "pass"
+    assert statuses["user_slice_MemoryLow"] == "pass"
     assert statuses["app_slice_MemorySwapMax"] == "pass"
 
 
@@ -222,6 +234,16 @@ def test_audit_fails_when_system_slice_has_finite_hard_ceiling(tmp_path: Path) -
     check = next(item for item in payload["checks"] if item["name"] == "system_slice_MemoryMax")
     assert check["status"] == "gap"
     assert check["target"] == "infinity"
+
+
+def test_audit_fails_when_user_slice_ancestor_has_no_reservation(tmp_path: Path) -> None:
+    result = _run(tmp_path, user_slice_unprotected=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(item for item in payload["checks"] if item["name"] == "user_slice_MemoryMin")
+    assert check["status"] == "gap"
+    assert "ancestor reservation" in check["detail"]
 
 
 def test_audit_fails_when_protected_user_unit_loses_oom_score(tmp_path: Path) -> None:

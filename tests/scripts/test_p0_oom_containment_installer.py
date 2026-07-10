@@ -90,6 +90,11 @@ def _systemctl_system_memory_cases() -> str:
             '  *"show system.slice -p MemorySwapMax --value"*) printf "infinity\\n" ;;',
             '  *"show system.slice -p MemoryLow --value"*) printf "25769803776\\n" ;;',
             '  *"show system.slice -p MemoryMin --value"*) printf "12884901888\\n" ;;',
+            '  *"show user.slice -p MemoryHigh --value"*) printf "infinity\\n" ;;',
+            '  *"show user.slice -p MemoryMax --value"*) printf "infinity\\n" ;;',
+            '  *"show user.slice -p MemorySwapMax --value"*) printf "infinity\\n" ;;',
+            '  *"show user.slice -p MemoryLow --value"*) printf "17179869184\\n" ;;',
+            '  *"show user.slice -p MemoryMin --value"*) printf "8589934592\\n" ;;',
             '  *"show user-1000.slice -p MemoryHigh --value"*) printf "85899345920\\n" ;;',
             '  *"show user-1000.slice -p MemoryMax --value"*) printf "103079215104\\n" ;;',
             '  *"show user-1000.slice -p MemorySwapMax --value"*) printf "8589934592\\n" ;;',
@@ -225,6 +230,9 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert "MemorySwapMax=8G" in app_dropin.read_text(encoding="utf-8")
     assert "MemoryLow=16G" in app_dropin.read_text(encoding="utf-8")
     assert (system_dir / "user-1000.slice.d" / "oom-containment.conf").is_file()
+    assert "MemoryMin=8G" in (system_dir / "user.slice.d" / "oom-containment.conf").read_text(
+        encoding="utf-8"
+    )
     assert "MemoryLow=24G" in (system_dir / "system.slice.d" / "oom-containment.conf").read_text(
         encoding="utf-8"
     )
@@ -248,6 +256,7 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert "daemon-reload" in calls
     assert "enable --now earlyoom.service" in calls
     assert "restart earlyoom.service" in calls
+    assert "set-property --runtime user.slice" in calls
     assert "is-enabled --quiet earlyoom.service" in calls
     assert "is-active --quiet earlyoom.service" in calls
     assert (
@@ -459,7 +468,7 @@ def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_use
         203: -800,
         204: -800,
         205: -900,
-        206: -1000,
+        206: 0,
         900: 100,
         901: 100,
         902: -900,
@@ -476,6 +485,7 @@ def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_use
         )
     calls = systemctl_calls.read_text(encoding="utf-8")
     assert "set-property --runtime system.slice MemoryHigh=infinity MemoryMax=infinity" in calls
+    assert "set-property --runtime user.slice MemoryHigh=infinity MemoryMax=infinity" in calls
     assert "set-property --runtime user-1000.slice MemoryHigh=80G MemoryMax=96G" in calls
     assert "set-property --runtime user@1000.service MemoryHigh=80G MemoryMax=96G" in calls
     assert (

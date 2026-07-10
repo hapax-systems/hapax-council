@@ -86,6 +86,15 @@ def test_uid_slice_has_session_and_app_aggregate_oom_backstop() -> None:
     assert _directive(text, "MemoryMin") == "8G"
 
 
+def test_user_slice_allocates_ancestor_memory_protection() -> None:
+    text = (REPO_ROOT / "systemd" / "system" / "user.slice.d" / "oom-containment.conf").read_text()
+    assert _directive(text, "MemoryHigh") == "infinity"
+    assert _directive(text, "MemoryMax") == "infinity"
+    assert _directive(text, "MemorySwapMax") == "infinity"
+    assert _directive(text, "MemoryLow") == "16G"
+    assert _directive(text, "MemoryMin") == "8G"
+
+
 def test_user_manager_does_not_protect_every_interactive_workload() -> None:
     text = (REPO_ROOT / "systemd" / "system" / "user@1000.service.d" / "oom.conf").read_text()
     assert _directive(text, "OOMScoreAdjust") == "100"
@@ -131,11 +140,14 @@ def test_recovery_daemon_oom_dropins_are_source_controlled() -> None:
         "systemd-timesyncd.service.d/oom-protect.conf": "-800",
         "NetworkManager.service.d/oom-protect.conf": "-800",
         "dbus-broker.service.d/oom-protect.conf": "-900",
-        "sshd.service.d/oom-protect.conf": "-1000",
+        "sshd.service.d/oom-protect.conf": "0",
     }
     for rel, score in expected.items():
         text = (REPO_ROOT / "systemd" / "system" / rel).read_text()
         assert _directive(text, "OOMScoreAdjust") == score
+
+    sshd = (REPO_ROOT / "systemd" / "system" / "sshd.service.d/oom-protect.conf").read_text()
+    assert _directive(sshd, "OOMPolicy") == "continue"
 
 
 def test_broadcast_critical_user_oom_dropins_are_source_controlled() -> None:
@@ -195,7 +207,8 @@ def test_root_oom_enforcer_uses_system_scoped_failure_intake() -> None:
     assert "StartLimitIntervalSec=1h" in intake
     assert "StartLimitBurst=1" in intake
     assert "source-activation/worktree" not in enforcer
-    assert "hapax-recovery/council/current/manifest.json" in enforcer
+    assert "hapax-systems/hapax-council/blob/main/systemd/README.md" in enforcer
+    assert "/home/hapax" not in enforcer
     assert "ConditionPathExists" not in intake
 
 

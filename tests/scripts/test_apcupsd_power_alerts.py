@@ -45,6 +45,10 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv(
         "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT", str(tmp_path / "installed-source")
     )
+    fake_busctl = tmp_path / "busctl"
+    fake_busctl.write_text("#!/bin/sh\nprintf 's \\\"Ignore\\\"\\n'\n", encoding="utf-8")
+    fake_busctl.chmod(0o755)
+    monkeypatch.setenv("HAPAX_APCUPSD_BUSCTL", str(fake_busctl))
 
 
 def test_apcupsd_config_uses_current_header() -> None:
@@ -442,7 +446,7 @@ def test_installer_install_and_verify_live_against_temp_destinations(tmp_path: P
     second_calls = systemctl_calls.read_text(encoding="utf-8")
     assert "enable --now apcupsd.service" in second_calls
     assert "restart apcupsd.service" not in second_calls
-    assert "try-restart upower.service" not in second_calls
+    assert "try-restart upower.service" in second_calls
 
     hook_audit = tmp_path / "hook.jsonl"
     hook_result = subprocess.run(
@@ -469,6 +473,35 @@ def test_installer_install_and_verify_live_against_temp_destinations(tmp_path: P
     assert records[0]["event"] == "onbattery"
     assert records[1]["delivery"]["attempted"] is False
     assert records[1]["delivery"]["ok"] is False
+
+
+def test_verify_live_rejects_stale_upower_loaded_action(tmp_path: Path) -> None:
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_systemctl.chmod(0o755)
+    stale_busctl = tmp_path / "stale-busctl"
+    stale_busctl.write_text("#!/bin/sh\nprintf 's \\\"PowerOff\\\"\\n'\n", encoding="utf-8")
+    stale_busctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--install", "--verify-live", "--no-restart"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_DEST": str(tmp_path / "apcupsd"),
+            "HAPAX_APCUPSD_AUDIT_DIR": str(tmp_path / "hapax-log"),
+            "HAPAX_APCUPSD_LOGROTATE_DEST": str(tmp_path / "logrotate"),
+            "HAPAX_UPOWER_CONF_DEST": str(tmp_path / "upower"),
+            "HAPAX_APCUPSD_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_APCUPSD_BUSCTL": str(stale_busctl),
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+        },
+    )
+
+    assert result.returncode == 1
+    assert "UPower still owns a loaded shutdown action" in result.stderr
 
 
 def test_root_invocation_uses_target_home_for_durable_package_state(tmp_path: Path) -> None:

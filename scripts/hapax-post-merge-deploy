@@ -44,6 +44,7 @@
 #   scripts/install-p0-oom-containment,
 #   config/earlyoom/default,
 #   systemd/system/system.slice.d/oom-containment.conf,
+#   systemd/system/user.slice.d/oom-containment.conf,
 #   systemd/system/user-1000.slice.d/oom-containment.conf,
 #   systemd/system/user@1000.service.d/oom.conf,
 #   systemd/system/*.service.d/oom-protect.conf,
@@ -955,7 +956,7 @@ while IFS= read -r f; do
         config/hapax/*.conf)              HAPAX_CONF+=("$f") ;;
         config/wireplumber/scripts/hapax/*.lua) WP_LUA+=("$f") ;;
         config/wireplumber/*.conf)        WP+=("$f") ;;
-        scripts/install-p0-oom-containment|scripts/hapax-oom-score-enforce|scripts/hapax-root-failure-intake|scripts/hapax-oom-policy-audit|scripts/hapax-root-required-deploy-audit|config/earlyoom/default|systemd/system/system.slice.d/oom-containment.conf|systemd/system/user-1000.slice.d/oom-containment.conf|systemd/system/user@1000.service.d/oom.conf|systemd/system/apcupsd.service.d/oom-protect.conf|systemd/system/systemd-logind.service.d/oom-protect.conf|systemd/system/systemd-resolved.service.d/oom-protect.conf|systemd/system/systemd-timesyncd.service.d/oom-protect.conf|systemd/system/NetworkManager.service.d/oom-protect.conf|systemd/system/dbus-broker.service.d/oom-protect.conf|systemd/system/sshd.service.d/oom-protect.conf|systemd/units/hapax-root-failure-intake@.service|systemd/units/hapax-oom-score-enforce.service|systemd/units/hapax-oom-score-enforce.timer|systemd/units/hapax-oom-policy-audit.service|systemd/units/hapax-oom-policy-audit.timer|systemd/units/hapax-root-required-deploy-audit.service|systemd/units/hapax-root-required-deploy-audit.timer|systemd/units/app.slice.d/oom-containment.conf|systemd/units/pipewire.service.d/oom-protect.conf|systemd/units/pipewire-pulse.service.d/oom-protect.conf|systemd/units/wireplumber.service.d/oom-protect.conf|systemd/units/hapax-daimonion.service.d/oom-protect.conf|systemd/units/studio-compositor.service.d/oom-protect.conf|systemd/units/hapax-imagination.service.d/oom-protect.conf)
+        scripts/install-p0-oom-containment|scripts/hapax-oom-score-enforce|scripts/hapax-root-failure-intake|scripts/hapax-oom-policy-audit|scripts/hapax-root-required-deploy-audit|config/earlyoom/default|systemd/system/system.slice.d/oom-containment.conf|systemd/system/user.slice.d/oom-containment.conf|systemd/system/user-1000.slice.d/oom-containment.conf|systemd/system/user@1000.service.d/oom.conf|systemd/system/apcupsd.service.d/oom-protect.conf|systemd/system/systemd-logind.service.d/oom-protect.conf|systemd/system/systemd-resolved.service.d/oom-protect.conf|systemd/system/systemd-timesyncd.service.d/oom-protect.conf|systemd/system/NetworkManager.service.d/oom-protect.conf|systemd/system/dbus-broker.service.d/oom-protect.conf|systemd/system/sshd.service.d/oom-protect.conf|systemd/units/hapax-root-failure-intake@.service|systemd/units/hapax-oom-score-enforce.service|systemd/units/hapax-oom-score-enforce.timer|systemd/units/hapax-oom-policy-audit.service|systemd/units/hapax-oom-policy-audit.timer|systemd/units/hapax-root-required-deploy-audit.service|systemd/units/hapax-root-required-deploy-audit.timer|systemd/units/app.slice.d/oom-containment.conf|systemd/units/pipewire.service.d/oom-protect.conf|systemd/units/pipewire-pulse.service.d/oom-protect.conf|systemd/units/wireplumber.service.d/oom-protect.conf|systemd/units/hapax-daimonion.service.d/oom-protect.conf|systemd/units/studio-compositor.service.d/oom-protect.conf|systemd/units/hapax-imagination.service.d/oom-protect.conf)
             OOM_CONTAINMENT+=("$f") ;;
         scripts/install-apcupsd-power-alerts|config/apcupsd/*|config/upower/*|systemd/logrotate.d/hapax-ups-power-events)
             APCUPSD_POWER_ALERTS+=("$f") ;;
@@ -1291,6 +1292,7 @@ stage_oom_containment_installer() {
         scripts/hapax-root-required-deploy-audit
         config/earlyoom/default
         systemd/system/system.slice.d/oom-containment.conf
+        systemd/system/user.slice.d/oom-containment.conf
         systemd/system/user-1000.slice.d/oom-containment.conf
         systemd/system/user@1000.service.d/oom.conf
         systemd/system/apcupsd.service.d/oom-protect.conf

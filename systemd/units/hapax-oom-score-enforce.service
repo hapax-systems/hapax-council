@@ -1,7 +1,7 @@
 [Unit]
 # Hapax-Install-Scope: system
 Description=Apply live Hapax OOM scores that require root authority
-Documentation=file:/home/hapax/.local/lib/hapax-recovery/council/current/manifest.json
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/systemd/README.md
 OnFailure=hapax-root-failure-intake@%n.service
 StartLimitIntervalSec=0
 
