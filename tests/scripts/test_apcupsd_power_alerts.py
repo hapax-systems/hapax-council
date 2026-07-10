@@ -825,6 +825,77 @@ def test_installer_install_implies_verify_live_against_temp_destinations(tmp_pat
     assert records[1]["delivery"]["ok"] is False
 
 
+def test_installer_retry_repairs_loaded_policy_after_interrupted_activation(tmp_path: Path) -> None:
+    dest = tmp_path / "apcupsd"
+    dest.mkdir()
+    for name in ("apcupsd.conf", "hapax-power-event.py", "onbattery", "offbattery", "doshutdown"):
+        shutil.copy2(CONFIG_DIR / name, dest / name)
+    logrotate_dest = tmp_path / "logrotate.d" / "hapax-ups-power-events"
+    logrotate_dest.parent.mkdir()
+    shutil.copy2(REPO_ROOT / "systemd/logrotate.d/hapax-ups-power-events", logrotate_dest)
+    upower_dest = tmp_path / "UPower.conf.d" / "90-hapax-apcupsd-owner.conf"
+    upower_dest.parent.mkdir()
+    shutil.copy2(UPOWER_CONFIG, upower_dest)
+
+    apcupsd_reloaded = tmp_path / "apcupsd-reloaded"
+    upower_reloaded = tmp_path / "upower-reloaded"
+    systemctl_calls = tmp_path / "systemctl-calls.txt"
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' \"$*\" >> {systemctl_calls!s}\n"
+        f'if [ "$*" = "restart apcupsd.service" ]; then touch {apcupsd_reloaded!s}; fi\n'
+        f'if [ "$*" = "try-restart upower.service" ]; then touch {upower_reloaded!s}; fi\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+    fake_apcaccess = tmp_path / "apcaccess"
+    fake_apcaccess.write_text(
+        "#!/usr/bin/env bash\n"
+        f"if [ -f {apcupsd_reloaded!s} ]; then\n"
+        "  printf 'MBATTCHG : 20 Percent\\nMINTIMEL : 5 Minutes\\nMAXTIME : 0 Seconds\\n'\n"
+        "else\n"
+        "  printf 'MBATTCHG : 99 Percent\\nMINTIMEL : 1 Minutes\\nMAXTIME : 60 Seconds\\n'\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    fake_apcaccess.chmod(0o755)
+    fake_busctl = tmp_path / "busctl"
+    fake_busctl.write_text(
+        "#!/usr/bin/env bash\n"
+        f"if [ -f {upower_reloaded!s} ]; then printf 's \"Ignore\"\\n'; "
+        "else printf 's \"PowerOff\"\\n'; fi\n",
+        encoding="utf-8",
+    )
+    fake_busctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_DEST": str(dest),
+            "HAPAX_APCUPSD_AUDIT_DIR": str(tmp_path / "hapax-log"),
+            "HAPAX_APCUPSD_LOGROTATE_DEST": str(logrotate_dest),
+            "HAPAX_UPOWER_CONF_DEST": str(upower_dest),
+            "HAPAX_APCUPSD_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_APCUPSD_APCACCESS": str(fake_apcaccess),
+            "HAPAX_APCUPSD_BUSCTL": str(fake_busctl),
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert apcupsd_reloaded.exists()
+    assert upower_reloaded.exists()
+    calls = systemctl_calls.read_text(encoding="utf-8")
+    assert "restart apcupsd.service" in calls
+    assert "try-restart upower.service" in calls
+
+
 def test_verify_live_rejects_stale_upower_loaded_action(tmp_path: Path) -> None:
     fake_systemctl = tmp_path / "systemctl"
     fake_systemctl.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
