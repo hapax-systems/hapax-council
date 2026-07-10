@@ -132,7 +132,7 @@ def read_apcaccess(
         proc = subprocess.run(
             [path, "status"], capture_output=True, text=True, timeout=timeout_s, check=False
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+    except (OSError, subprocess.TimeoutExpired) as exc:
         return {}, f"{type(exc).__name__}: {exc}"
     if proc.returncode != 0:
         return {}, (proc.stderr or proc.stdout).strip() or f"rc={proc.returncode}"

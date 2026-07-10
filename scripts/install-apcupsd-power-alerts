@@ -673,8 +673,24 @@ check_source() {
 }
 
 install_live() {
+    local apcupsd_changed=0 upower_changed=0 source_path dest_path
     check_source
     preflight_root
+    for source_path in \
+        "$SRC/apcupsd.conf" \
+        "$SRC/hapax-power-event.py" \
+        "$SRC/onbattery" \
+        "$SRC/offbattery" \
+        "$SRC/doshutdown"; do
+        dest_path="$DEST/${source_path##*/}"
+        if [ ! -f "$dest_path" ] || ! cmp -s "$source_path" "$dest_path"; then
+            apcupsd_changed=1
+            break
+        fi
+    done
+    if [ ! -f "$UPOWER_CONF_DEST" ] || ! cmp -s "$SOURCE/config/upower/90-hapax-apcupsd-owner.conf" "$UPOWER_CONF_DEST"; then
+        upower_changed=1
+    fi
     run_root install -d -m 0755 "$DEST"
     install_audit_dir
     prepare_audit_log
@@ -691,13 +707,13 @@ install_live() {
         echo "unable to enable and start apcupsd.service; next action: run sudo systemctl enable --now apcupsd.service and inspect journalctl -u apcupsd.service" >&2
         return 1
     }
-    if [ "$RESTART" -eq 1 ]; then
+    if [ "$RESTART" -eq 1 ] && [ "$apcupsd_changed" -eq 1 ]; then
         run_root "$SYSTEMCTL" restart apcupsd.service || {
             echo "unable to reload apcupsd's shutdown policy; next action: run sudo systemctl restart apcupsd.service and inspect journalctl -u apcupsd.service" >&2
             return 1
         }
     fi
-    if [ "$RESTART" -eq 1 ]; then
+    if [ "$RESTART" -eq 1 ] && [ "$upower_changed" -eq 1 ]; then
         run_root "$SYSTEMCTL" try-restart upower.service || {
             echo "unable to reload UPower's shutdown policy; next action: run sudo systemctl restart upower.service and verify busctl call org.freedesktop.UPower /org/freedesktop/UPower org.freedesktop.UPower GetCriticalAction returns Ignore" >&2
             return 1

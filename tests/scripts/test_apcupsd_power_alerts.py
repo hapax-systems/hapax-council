@@ -500,6 +500,33 @@ def test_doshutdown_external_io_is_bounded(tmp_path: Path) -> None:
     assert "TimeoutExpired" in records[0]["apcaccess_error"]
 
 
+def test_power_event_helper_keeps_apcaccess_oserror_nonfatal(tmp_path: Path) -> None:
+    audit = tmp_path / "ups-events.jsonl"
+    non_executable_apcaccess = tmp_path / "apcaccess"
+    non_executable_apcaccess.write_text("not executable\n", encoding="utf-8")
+    non_executable_apcaccess.chmod(0o644)
+
+    result = subprocess.run(
+        [
+            str(HELPER),
+            "onbattery",
+            "--audit-log",
+            str(audit),
+            "--apcaccess",
+            str(non_executable_apcaccess),
+            "--no-ntfy",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    records = [json.loads(line) for line in audit.read_text(encoding="utf-8").splitlines()]
+    assert records[0]["apcaccess"] == {}
+    assert "PermissionError" in records[0]["apcaccess_error"]
+
+
 def test_doshutdown_hook_deadlines_blocked_provenance_write(tmp_path: Path) -> None:
     audit_fifo = tmp_path / "blocked-audit.fifo"
     os.mkfifo(audit_fifo)
@@ -741,8 +768,35 @@ def test_installer_install_implies_verify_live_against_temp_destinations(tmp_pat
     assert second_result.returncode == 0, second_result.stderr
     second_calls = systemctl_calls.read_text(encoding="utf-8")
     assert "enable --now apcupsd.service" in second_calls
-    assert "restart apcupsd.service" in second_calls
-    assert "try-restart upower.service" in second_calls
+    assert "restart apcupsd.service" not in second_calls
+    assert "try-restart upower.service" not in second_calls
+
+    logrotate_dest.write_text("stale logrotate config\n", encoding="utf-8")
+    systemctl_calls.write_text("", encoding="utf-8")
+    logrotate_only_result = subprocess.run(
+        [str(INSTALLER), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_DEST": str(dest),
+            "HAPAX_APCUPSD_AUDIT_DIR": str(audit_dir),
+            "HAPAX_APCUPSD_LOGROTATE_DEST": str(logrotate_dest),
+            "HAPAX_UPOWER_CONF_DEST": str(upower_dest),
+            "HAPAX_APCUPSD_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+        },
+    )
+
+    assert logrotate_only_result.returncode == 0, logrotate_only_result.stderr
+    assert logrotate_dest.read_text(encoding="utf-8") == (
+        REPO_ROOT / "systemd" / "logrotate.d" / "hapax-ups-power-events"
+    ).read_text(encoding="utf-8")
+    logrotate_only_calls = systemctl_calls.read_text(encoding="utf-8")
+    assert "enable --now apcupsd.service" in logrotate_only_calls
+    assert "restart apcupsd.service" not in logrotate_only_calls
+    assert "try-restart upower.service" not in logrotate_only_calls
 
     hook_audit = tmp_path / "hook.jsonl"
     hook_result = subprocess.run(
