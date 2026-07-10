@@ -1158,6 +1158,7 @@ def test_oom_score_trigger_rejects_non_allowlisted_unit() -> None:
 
     assert result.returncode == 2
     assert "refusing non-allowlisted" in result.stderr
+    assert "next action:" in result.stderr
 
 
 def test_oom_score_sudoers_grant_is_narrow_and_valid() -> None:

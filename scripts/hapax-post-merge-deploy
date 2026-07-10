@@ -1540,9 +1540,57 @@ if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
     DID_ANYTHING=1
 fi
 
+validate_generic_dropin_activation() {
+    local f="$1" rel dropin_dir unit_name content unsupported old_content old_prop
+    rel="${f#systemd/units/}"
+    dropin_dir="$(dirname "$rel")"
+    unit_name="${dropin_dir%.d}"
+    case "$unit_name" in
+        *.scope)
+            echo "hapax-post-merge-deploy: refusing generic scope drop-in deploy for $f; next action: use a governed scope-specific installer that updates the transient scope without restarting it" >&2
+            return 1
+            ;;
+        *.slice)
+            if ! git -C "$REPO" cat-file -e "$SHA:$f" 2>/dev/null; then
+                echo "hapax-post-merge-deploy: refusing generic slice drop-in deletion for $f because runtime set-property overrides cannot be safely inferred; next action: use a governed slice-specific removal that clears persistent and runtime policy together" >&2
+                return 1
+            fi
+            content="$(git -C "$REPO" show "$SHA:$f")"
+            unsupported="$(printf '%s\n' "$content" | awk '
+                /^[[:space:]]*$/ || /^[[:space:]]*[#;]/ || /^[[:space:]]*\[[^]]+\][[:space:]]*$/ { next }
+                /^(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)=[^[:space:]].*$/ { next }
+                { print; exit }
+            ')"
+            if [ -n "$unsupported" ]; then
+                echo "hapax-post-merge-deploy: unsupported generic slice directive in $f: $unsupported; next action: use only MemoryHigh/MemoryMax/MemorySwapMax/MemoryLow/MemoryMin or dispatch a slice-specific activation path" >&2
+                return 1
+            fi
+            if ! grep -Eq '^(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)=' <<< "$content"; then
+                echo "hapax-post-merge-deploy: no runtime-safe memory property found in generic slice drop-in $f; next action: use a slice-specific installer for non-memory directives" >&2
+                return 1
+            fi
+            if [ -n "${DROPIN_BASE_REF:-}" ] \
+                && git -C "$REPO" cat-file -e "$DROPIN_BASE_REF:$f" 2>/dev/null; then
+                old_content="$(git -C "$REPO" show "$DROPIN_BASE_REF:$f")"
+                while IFS= read -r old_prop; do
+                    [ -n "$old_prop" ] || continue
+                    if ! grep -q "^${old_prop}=" <<< "$content"; then
+                        echo "hapax-post-merge-deploy: refusing generic removal of $old_prop from $f because its runtime override would remain stale; next action: use a governed slice-specific transition that resets the removed property" >&2
+                        return 1
+                    fi
+                done < <(grep -E '^(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)=' <<< "$old_content" | cut -d= -f1 | sort -u || true)
+            fi
+            ;;
+    esac
+}
+
 # --- systemd unit drop-ins ---
 if [ "${#SYSTEMD_DROPINS[@]}" -gt 0 ]; then
     echo "systemd drop-ins changed (${#SYSTEMD_DROPINS[@]}):"
+    DROPIN_BASE_REF="${SINCE:-${FIRST_PARENT:-}}"
+    for f in "${SYSTEMD_DROPINS[@]}"; do
+        validate_generic_dropin_activation "$f"
+    done
     mkdir -p "$SYSTEMD_USER_DIR"
     DROPIN_UNITS_TO_RESTART=()
     for f in "${SYSTEMD_DROPINS[@]}"; do
@@ -1569,7 +1617,7 @@ if [ "${#SYSTEMD_DROPINS[@]}" -gt 0 ]; then
                 [ -f "$conf" ] || continue
                 while IFS= read -r prop; do
                     slice_props+=("$prop")
-                done < <(grep -E '^(MemoryHigh|MemoryMax|MemorySwapMax)=' "$conf" || true)
+                done < <(grep -E '^(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)=' "$conf" || true)
             done
             if [ "${#slice_props[@]}" -gt 0 ]; then
                 echo "applying active slice properties for $u without restart"

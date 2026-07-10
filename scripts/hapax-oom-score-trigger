@@ -6,7 +6,7 @@ unit="${1:-}"
 case "$unit" in
     pipewire.service | pipewire-pulse.service | wireplumber.service | hapax-daimonion.service | studio-compositor.service | hapax-imagination.service) ;;
     *)
-        echo "refusing non-allowlisted protected user unit: $unit" >&2
+        echo "refusing non-allowlisted protected user unit: $unit; next action: update this trigger allowlist and config/root-required/hapax-oom-score-enforce.sudoers together, then reinstall the OOM package" >&2
         exit 2
         ;;
 esac

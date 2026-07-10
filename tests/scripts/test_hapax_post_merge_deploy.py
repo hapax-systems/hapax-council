@@ -1590,7 +1590,12 @@ def test_generic_slice_dropin_deploy_uses_runtime_set_property_not_restart(
     dropin_path = "systemd/units/demo.slice.d/memory.conf"
     repo, sha = _repo_with_linear_commit(
         tmp_path,
-        {dropin_path: "[Slice]\nMemoryHigh=1G\nMemoryMax=2G\nMemorySwapMax=512M\n"},
+        {
+            dropin_path: (
+                "[Slice]\nMemoryHigh=1G\nMemoryMax=2G\nMemorySwapMax=512M\n"
+                "MemoryLow=256M\nMemoryMin=128M\n"
+            )
+        },
     )
     home = tmp_path / "home"
     bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
@@ -1615,10 +1620,150 @@ def test_generic_slice_dropin_deploy_uses_runtime_set_property_not_restart(
     assert result.returncode == 0, result.stderr
     calls = systemctl_calls.read_text(encoding="utf-8")
     assert (
-        "--user set-property --runtime demo.slice MemoryHigh=1G MemoryMax=2G MemorySwapMax=512M"
-        in calls
+        "--user set-property --runtime demo.slice MemoryHigh=1G MemoryMax=2G "
+        "MemorySwapMax=512M MemoryLow=256M MemoryMin=128M" in calls
     )
     assert "--user restart demo.slice" not in calls
+
+
+def test_generic_slice_dropin_deletion_fails_before_persistent_or_runtime_drift(
+    tmp_path: Path,
+) -> None:
+    dropin_path = "systemd/units/demo.slice.d/memory.conf"
+    old_content = "[Slice]\nMemoryHigh=1G\nMemoryLow=256M\n"
+    repo, _ = _repo_with_linear_commit(tmp_path, {dropin_path: old_content})
+    _git(repo, "rm", dropin_path)
+    _git(repo, "commit", "-m", "delete generic slice policy")
+    sha = _git(repo, "rev-parse", "HEAD")
+    home = tmp_path / "home"
+    deployed = home / ".config/systemd/user/demo.slice.d/memory.conf"
+    deployed.parent.mkdir(parents=True)
+    deployed.write_text(old_content, encoding="utf-8")
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "refusing generic slice drop-in deletion" in result.stderr
+    assert "next action:" in result.stderr
+    assert deployed.read_text(encoding="utf-8") == old_content
+    calls = systemctl_calls.read_text(encoding="utf-8") if systemctl_calls.exists() else ""
+    assert "restart demo.slice" not in calls
+
+
+def test_generic_slice_dropin_rejects_unsupported_live_directive(tmp_path: Path) -> None:
+    dropin_path = "systemd/units/demo.slice.d/policy.conf"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {dropin_path: "[Slice]\nMemoryHigh=1G\nCPUWeight=100\n"},
+    )
+    home = tmp_path / "home"
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "unsupported generic slice directive" in result.stderr
+    assert not (home / ".config/systemd/user" / dropin_path.removeprefix("systemd/units/")).exists()
+    calls = systemctl_calls.read_text(encoding="utf-8") if systemctl_calls.exists() else ""
+    assert "set-property" not in calls
+
+
+def test_generic_slice_dropin_property_removal_fails_before_runtime_drift(
+    tmp_path: Path,
+) -> None:
+    dropin_path = "systemd/units/demo.slice.d/memory.conf"
+    old_content = "[Slice]\nMemoryHigh=1G\nMemoryLow=256M\n"
+    repo, _ = _repo_with_linear_commit(tmp_path, {dropin_path: old_content})
+    updated = repo / dropin_path
+    updated.write_text("[Slice]\nMemoryHigh=2G\n", encoding="utf-8")
+    _git(repo, "add", dropin_path)
+    _git(repo, "commit", "-m", "remove generic slice reservation")
+    sha = _git(repo, "rev-parse", "HEAD")
+    home = tmp_path / "home"
+    deployed = home / ".config/systemd/user/demo.slice.d/memory.conf"
+    deployed.parent.mkdir(parents=True)
+    deployed.write_text(old_content, encoding="utf-8")
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "refusing generic removal of MemoryLow" in result.stderr
+    assert "next action:" in result.stderr
+    assert deployed.read_text(encoding="utf-8") == old_content
+    calls = systemctl_calls.read_text(encoding="utf-8") if systemctl_calls.exists() else ""
+    assert "set-property" not in calls
+
+
+def test_generic_scope_dropin_fails_closed_without_restart(tmp_path: Path) -> None:
+    dropin_path = "systemd/units/demo.scope.d/memory.conf"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {dropin_path: "[Scope]\nMemoryMax=1G\n"},
+    )
+    home = tmp_path / "home"
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "refusing generic scope drop-in deploy" in result.stderr
+    assert "next action:" in result.stderr
+    calls = systemctl_calls.read_text(encoding="utf-8") if systemctl_calls.exists() else ""
+    assert "restart demo.scope" not in calls
 
 
 def test_systemd_coverage_includes_slice_units() -> None:
