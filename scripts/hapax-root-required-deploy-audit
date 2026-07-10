@@ -12,6 +12,8 @@ DESIRED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT:-$ROOT_REQUIRED
 ROOT_REQUIRED_GIT_REPO="${HAPAX_ROOT_REQUIRED_GIT_REPO:-$HOME/.cache/hapax/source-activation/worktree}"
 ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_STATE_ROOT/.lock}"
 OOM_ENFORCER_DEST="${HAPAX_OOM_ENFORCER_DEST:-/usr/local/sbin/hapax-oom-score-enforce}"
+OOM_TRIGGER_DEST="${HAPAX_OOM_TRIGGER_DEST:-/usr/local/bin/hapax-oom-score-trigger}"
+OOM_SUDOERS_DEST="${HAPAX_OOM_SUDOERS_DEST:-/etc/sudoers.d/hapax-oom-score-enforce}"
 ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapax-root-failure-intake}"
 OOM_POLICY_AUDIT_DEST="${HAPAX_OOM_POLICY_AUDIT_DEST:-/usr/local/sbin/hapax-oom-policy-audit}"
 ROOT_REQUIRED_AUDIT_DEST="${HAPAX_ROOT_REQUIRED_AUDIT_DEST:-/usr/local/sbin/hapax-root-required-deploy-audit}"
@@ -24,11 +26,14 @@ UPOWER_CONF_DEST="${HAPAX_UPOWER_CONF_DEST:-/etc/UPower/UPower.conf.d/90-hapax-a
 SYSTEMCTL="${HAPAX_ROOT_AUDIT_SYSTEMCTL:-systemctl}"
 BUSCTL="${HAPAX_ROOT_AUDIT_BUSCTL:-busctl}"
 APCACCESS="${HAPAX_ROOT_AUDIT_APCACCESS:-apcaccess}"
+VISUDO="${HAPAX_ROOT_AUDIT_VISUDO:-visudo}"
 
 oom_package_files=(
     config/root-required/oom-containment.files
     scripts/install-p0-oom-containment
+    config/root-required/hapax-oom-score-enforce.sudoers
     scripts/hapax-oom-score-enforce
+    scripts/hapax-oom-score-trigger
     scripts/hapax-root-failure-intake
     scripts/hapax-oom-policy-audit
     scripts/hapax-root-required-deploy-audit
@@ -203,7 +208,10 @@ compare_root_file() {
 
 expected_install_mode() {
     case "$1" in
-        scripts/hapax-oom-score-enforce|scripts/hapax-root-failure-intake|scripts/hapax-oom-policy-audit|scripts/hapax-root-required-deploy-audit|config/apcupsd/hapax-power-event.py|config/apcupsd/onbattery|config/apcupsd/offbattery|config/apcupsd/doshutdown)
+        config/root-required/hapax-oom-score-enforce.sudoers)
+            printf '440\n'
+            ;;
+        scripts/hapax-oom-score-enforce|scripts/hapax-oom-score-trigger|scripts/hapax-root-failure-intake|scripts/hapax-oom-policy-audit|scripts/hapax-root-required-deploy-audit|config/apcupsd/hapax-power-event.py|config/apcupsd/onbattery|config/apcupsd/offbattery|config/apcupsd/doshutdown)
             printf '755\n'
             ;;
         *)
@@ -318,6 +326,8 @@ audit_apcupsd_loaded_policy() {
 audit_root_installs() {
     local -a manifest=(
         "scripts/hapax-oom-score-enforce|$OOM_ENFORCER_DEST"
+        "scripts/hapax-oom-score-trigger|$OOM_TRIGGER_DEST"
+        "config/root-required/hapax-oom-score-enforce.sudoers|$OOM_SUDOERS_DEST"
         "scripts/hapax-root-failure-intake|$ROOT_FAILURE_INTAKE_DEST"
         "scripts/hapax-oom-policy-audit|$OOM_POLICY_AUDIT_DEST"
         "scripts/hapax-root-required-deploy-audit|$ROOT_REQUIRED_AUDIT_DEST"
@@ -361,11 +371,16 @@ audit_root_installs() {
         dest="${entry#*|}"
         compare_root_file "$rel" "$dest" || failed=1
         case "$rel" in
-            scripts/hapax-oom-score-enforce|scripts/hapax-root-failure-intake|scripts/hapax-oom-policy-audit|scripts/hapax-root-required-deploy-audit|config/apcupsd/hapax-power-event.py|config/apcupsd/onbattery|config/apcupsd/offbattery|config/apcupsd/doshutdown)
+            scripts/hapax-oom-score-enforce|scripts/hapax-oom-score-trigger|scripts/hapax-root-failure-intake|scripts/hapax-oom-policy-audit|scripts/hapax-root-required-deploy-audit|config/apcupsd/hapax-power-event.py|config/apcupsd/onbattery|config/apcupsd/offbattery|config/apcupsd/doshutdown)
                 verify_executable "$rel" "$dest" || failed=1
                 ;;
         esac
     done
+    if ! "$VISUDO" -cf "$OOM_SUDOERS_DEST" >/dev/null; then
+        echo "root-required install drift: sudoers policy does not parse: $OOM_SUDOERS_DEST" >&2
+        echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        failed=1
+    fi
     audit_systemd_state || failed=1
     audit_apcupsd_loaded_policy || failed=1
     [ "$failed" -eq 0 ]

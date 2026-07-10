@@ -26,12 +26,15 @@ SYSTEMD_USER_DIR="${HAPAX_OOM_SYSTEMD_USER_DIR:-$TARGET_HOME/.config/systemd/use
 SYSTEMD_USER_CONTROL_DIR="${HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR:-$TARGET_HOME/.config/systemd/user.control}"
 EARLYOOM_DEST="${HAPAX_OOM_EARLYOOM_DEST:-/etc/default/earlyoom}"
 OOM_ENFORCER_DEST="${HAPAX_OOM_ENFORCER_DEST:-/usr/local/sbin/hapax-oom-score-enforce}"
+OOM_TRIGGER_DEST="${HAPAX_OOM_TRIGGER_DEST:-/usr/local/bin/hapax-oom-score-trigger}"
+OOM_SUDOERS_DEST="${HAPAX_OOM_SUDOERS_DEST:-/etc/sudoers.d/hapax-oom-score-enforce}"
 ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapax-root-failure-intake}"
 OOM_POLICY_AUDIT_DEST="${HAPAX_OOM_POLICY_AUDIT_DEST:-/usr/local/sbin/hapax-oom-policy-audit}"
 ROOT_REQUIRED_AUDIT_DEST="${HAPAX_ROOT_REQUIRED_AUDIT_DEST:-/usr/local/sbin/hapax-root-required-deploy-audit}"
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
 SUDO="${HAPAX_OOM_INSTALL_SUDO-sudo}"
 RUNUSER="${HAPAX_OOM_RUNUSER:-runuser}"
+VISUDO="${HAPAX_OOM_VISUDO:-visudo}"
 EFFECTIVE_UID="${HAPAX_OOM_EFFECTIVE_UID:-$(id -u)}"
 ROOT_REQUIRED_STATE_ROOT="${HAPAX_ROOT_REQUIRED_STATE_ROOT:-$TARGET_HOME/.local/state/hapax/root-required}"
 ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$ROOT_REQUIRED_STATE_ROOT/current-source}"
@@ -73,6 +76,8 @@ Installs the P0 podium OOM containment package:
   systemd/units/hapax-root-failure-intake@.service  -> /etc/systemd/system/
   systemd/units/hapax-oom-score-enforce.{service,timer} -> /etc/systemd/system/
   scripts/hapax-oom-score-enforce                   -> /usr/local/sbin/hapax-oom-score-enforce
+  scripts/hapax-oom-score-trigger                   -> /usr/local/bin/hapax-oom-score-trigger
+  config/root-required/hapax-oom-score-enforce.sudoers -> /etc/sudoers.d/hapax-oom-score-enforce
   scripts/hapax-root-failure-intake                  -> /usr/local/sbin/hapax-root-failure-intake
   scripts/hapax-oom-policy-audit                     -> /usr/local/sbin/hapax-oom-policy-audit
   scripts/hapax-root-required-deploy-audit            -> /usr/local/sbin/hapax-root-required-deploy-audit
@@ -430,6 +435,8 @@ legacy_user_oom_overrides=(
 )
 earlyoom_source="config/earlyoom/default"
 oom_enforcer_source="scripts/hapax-oom-score-enforce"
+oom_trigger_source="scripts/hapax-oom-score-trigger"
+oom_sudoers_source="config/root-required/hapax-oom-score-enforce.sudoers"
 root_failure_intake_source="scripts/hapax-root-failure-intake"
 oom_policy_audit_source="scripts/hapax-oom-policy-audit"
 root_required_audit_source="scripts/hapax-root-required-deploy-audit"
@@ -437,6 +444,7 @@ package_manifest_source="config/root-required/oom-containment.files"
 package_files=(
     "$package_manifest_source"
     scripts/install-p0-oom-containment
+    "$oom_sudoers_source"
     "${system_dropins[@]}"
     "${system_units[@]}"
     "${user_audit_units[@]}"
@@ -444,6 +452,7 @@ package_files=(
     "${user_protection_dropins[@]}"
     "$earlyoom_source"
     "$oom_enforcer_source"
+    "$oom_trigger_source"
     "$root_failure_intake_source"
     "$oom_policy_audit_source"
     "$root_required_audit_source"
@@ -558,6 +567,14 @@ check_source() {
             return 1
         }
     done
+    [ -x "$(src_path "$oom_trigger_source")" ] || {
+        echo "OOM startup trigger is not executable: $(src_path "$oom_trigger_source"); next action: chmod +x scripts/hapax-oom-score-trigger" >&2
+        return 1
+    }
+    "$VISUDO" -cf "$(src_path "$oom_sudoers_source")" >/dev/null || {
+        echo "invalid OOM enforcer sudoers policy: $(src_path "$oom_sudoers_source"); next action: repair the allowlisted commands and rerun scripts/install-p0-oom-containment --check" >&2
+        return 1
+    }
     grep -Eq '^OOMScoreAdjust=100$' "$(src_path systemd/system/user@1000.service.d/oom.conf)" || {
         echo "user@1000 OOM drop-in must set OOMScoreAdjust=100; next action: restore systemd/system/user@1000.service.d/oom.conf from the P0 PR" >&2
         return 1
@@ -814,6 +831,16 @@ install_live() {
     run_root install -d -m 0755 "$(dirname "$OOM_ENFORCER_DEST")"
     run_root install -m 0755 "$(src_path "$oom_enforcer_source")" "$OOM_ENFORCER_DEST"
     echo "  '$oom_enforcer_source' -> '$OOM_ENFORCER_DEST'"
+    run_root install -d -m 0755 "$(dirname "$OOM_TRIGGER_DEST")"
+    run_root install -m 0755 "$(src_path "$oom_trigger_source")" "$OOM_TRIGGER_DEST"
+    echo "  '$oom_trigger_source' -> '$OOM_TRIGGER_DEST'"
+    run_root install -d -m 0755 "$(dirname "$OOM_SUDOERS_DEST")"
+    run_root install -m 0440 "$(src_path "$oom_sudoers_source")" "$OOM_SUDOERS_DEST"
+    run_root "$VISUDO" -cf "$OOM_SUDOERS_DEST" >/dev/null || {
+        echo "installed OOM enforcer sudoers policy is invalid: $OOM_SUDOERS_DEST; next action: restore it from the exact root-required package" >&2
+        return 1
+    }
+    echo "  '$oom_sudoers_source' -> '$OOM_SUDOERS_DEST'"
     run_root install -d -m 0755 "$(dirname "$ROOT_FAILURE_INTAKE_DEST")"
     run_root install -m 0755 "$(src_path "$root_failure_intake_source")" "$ROOT_FAILURE_INTAKE_DEST"
     echo "  '$root_failure_intake_source' -> '$ROOT_FAILURE_INTAKE_DEST'"
@@ -941,6 +968,20 @@ verify_live() {
         verify_pair "$(src_path "$rel")" "$(system_dest "$rel")"
     done
     verify_pair "$(src_path "$oom_enforcer_source")" "$OOM_ENFORCER_DEST"
+    verify_pair "$(src_path "$oom_trigger_source")" "$OOM_TRIGGER_DEST"
+    [ -x "$OOM_TRIGGER_DEST" ] || {
+        echo "installed OOM startup trigger is not executable: $OOM_TRIGGER_DEST; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    }
+    if [ -L "$OOM_SUDOERS_DEST" ] || [ "$(stat -c '%a' "$OOM_SUDOERS_DEST" 2>/dev/null || true)" != "440" ]; then
+        echo "installed OOM sudoers policy is missing, symlinked, or not mode 0440: $OOM_SUDOERS_DEST; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    verify_pair "$(src_path "$oom_sudoers_source")" "$OOM_SUDOERS_DEST"
+    run_root "$VISUDO" -cf "$OOM_SUDOERS_DEST" >/dev/null || {
+        echo "installed OOM enforcer sudoers policy no longer parses: $OOM_SUDOERS_DEST; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    }
     verify_pair "$(src_path "$root_failure_intake_source")" "$ROOT_FAILURE_INTAKE_DEST"
     verify_pair "$(src_path "$oom_policy_audit_source")" "$OOM_POLICY_AUDIT_DEST"
     verify_pair "$(src_path "$root_required_audit_source")" "$ROOT_REQUIRED_AUDIT_DEST"

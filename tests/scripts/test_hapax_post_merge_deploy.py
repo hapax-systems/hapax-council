@@ -27,18 +27,18 @@ RECOVERY_BUNDLE_SOURCE_FILES = {
     "shared/p0_incident_intake.py": "def main():\n    return 0\n",
 }
 P0_USER_OOM_DROPINS = {
-    "systemd/units/pipewire.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-900\n",
-    "systemd/units/pipewire-pulse.service.d/oom-protect.conf": ("[Service]\nOOMScoreAdjust=-900\n"),
-    "systemd/units/wireplumber.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-900\n",
-    "systemd/units/hapax-daimonion.service.d/oom-protect.conf": (
-        "[Service]\nOOMScoreAdjust=-500\n"
-    ),
-    "systemd/units/studio-compositor.service.d/oom-protect.conf": (
-        "[Service]\nOOMScoreAdjust=-800\n"
-    ),
-    "systemd/units/hapax-imagination.service.d/oom-protect.conf": (
-        "[Service]\nOOMScoreAdjust=-800\n"
-    ),
+    relative: (
+        "[Service]\nOOMScoreAdjust=100\n"
+        f"ExecStartPost=-/usr/local/bin/hapax-oom-score-trigger {unit}\n"
+    )
+    for relative, unit in {
+        "systemd/units/pipewire.service.d/oom-protect.conf": "pipewire.service",
+        "systemd/units/pipewire-pulse.service.d/oom-protect.conf": "pipewire-pulse.service",
+        "systemd/units/wireplumber.service.d/oom-protect.conf": "wireplumber.service",
+        "systemd/units/hapax-daimonion.service.d/oom-protect.conf": "hapax-daimonion.service",
+        "systemd/units/studio-compositor.service.d/oom-protect.conf": "studio-compositor.service",
+        "systemd/units/hapax-imagination.service.d/oom-protect.conf": "hapax-imagination.service",
+    }.items()
 }
 P0_OOM_AUDIT_FILES = {
     "scripts/hapax-oom-policy-audit": "#!/usr/bin/env python3\n",
@@ -62,8 +62,12 @@ ROOT_AUDIT_SOURCE_FILES = {
     "config/root-required/oom-containment.files": OOM_PACKAGE_MANIFEST,
     "config/root-required/apcupsd-power-alerts.files": APCUPSD_PACKAGE_MANIFEST,
     "scripts/install-p0-oom-containment": "#!/usr/bin/env bash\n",
+    "config/root-required/hapax-oom-score-enforce.sudoers": (
+        "hapax ALL=(root) NOPASSWD: /usr/local/sbin/hapax-oom-score-enforce --apply-unit pipewire.service\n"
+    ),
     "scripts/install-apcupsd-power-alerts": "#!/usr/bin/env bash\n",
     "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\necho enforcer\n",
+    "scripts/hapax-oom-score-trigger": "#!/usr/bin/env bash\necho trigger\n",
     "scripts/hapax-root-failure-intake": "#!/usr/bin/env bash\necho root failure\n",
     **P0_OOM_AUDIT_FILES,
     "config/earlyoom/default": 'EARLYOOM_ARGS="--ignore recovery"\n',
@@ -310,6 +314,8 @@ def _root_audit_env(
     logrotate_dest = tmp_path / "etc" / "logrotate.d" / "hapax-ups-power-events"
     upower_dest = tmp_path / "etc" / "UPower" / "UPower.conf.d" / "90-hapax-apcupsd-owner.conf"
     enforcer_dest = tmp_path / "sbin" / "hapax-oom-score-enforce"
+    trigger_dest = tmp_path / "bin" / "hapax-oom-score-trigger"
+    sudoers_dest = tmp_path / "etc" / "sudoers.d" / "hapax-oom-score-enforce"
     root_failure_dest = tmp_path / "sbin" / "hapax-root-failure-intake"
     oom_audit_dest = tmp_path / "sbin" / "hapax-oom-policy-audit"
     root_audit_dest = tmp_path / "sbin" / "hapax-root-required-deploy-audit"
@@ -328,8 +334,13 @@ def _root_audit_env(
         encoding="utf-8",
     )
     fake_apcaccess.chmod(0o755)
+    fake_visudo = tmp_path / "root-audit-visudo"
+    fake_visudo.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_visudo.chmod(0o755)
     dests = {
         "scripts/hapax-oom-score-enforce": enforcer_dest,
+        "scripts/hapax-oom-score-trigger": trigger_dest,
+        "config/root-required/hapax-oom-score-enforce.sudoers": sudoers_dest,
         "scripts/hapax-root-failure-intake": root_failure_dest,
         "scripts/hapax-oom-policy-audit": oom_audit_dest,
         "scripts/hapax-root-required-deploy-audit": root_audit_dest,
@@ -357,6 +368,7 @@ def _root_audit_env(
         "scripts/install-p0-oom-containment",
         "scripts/install-apcupsd-power-alerts",
         "scripts/hapax-oom-score-enforce",
+        "scripts/hapax-oom-score-trigger",
         "scripts/hapax-root-failure-intake",
         "scripts/hapax-oom-policy-audit",
         "scripts/hapax-root-required-deploy-audit",
@@ -383,6 +395,8 @@ def _root_audit_env(
             dest.write_text(("stale\n" if rel == drift_rel else body), encoding="utf-8")
             if rel in executable_rels:
                 dest.chmod(0o755)
+            elif rel == "config/root-required/hapax-oom-score-enforce.sudoers":
+                dest.chmod(0o440)
     _git(source_root, "init", "-b", "main")
     _git(source_root, "config", "user.email", "root-audit@example.test")
     _git(source_root, "config", "user.name", "Root Audit Test")
@@ -404,6 +418,8 @@ def _root_audit_env(
         "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT": str(desired_root),
         "HAPAX_ROOT_REQUIRED_GIT_REPO": str(source_root),
         "HAPAX_OOM_ENFORCER_DEST": str(enforcer_dest),
+        "HAPAX_OOM_TRIGGER_DEST": str(trigger_dest),
+        "HAPAX_OOM_SUDOERS_DEST": str(sudoers_dest),
         "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
         "HAPAX_OOM_POLICY_AUDIT_DEST": str(oom_audit_dest),
         "HAPAX_ROOT_REQUIRED_AUDIT_DEST": str(root_audit_dest),
@@ -416,6 +432,7 @@ def _root_audit_env(
         "HAPAX_ROOT_AUDIT_SYSTEMCTL": str(fake_systemctl),
         "HAPAX_ROOT_AUDIT_BUSCTL": str(fake_busctl),
         "HAPAX_ROOT_AUDIT_APCACCESS": str(fake_apcaccess),
+        "HAPAX_ROOT_AUDIT_VISUDO": str(fake_visudo),
         "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(root_defer),
     }
 
@@ -740,7 +757,11 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
         ),
         future_manifest_path: 'FUTURE_EARLYOOM_POLICY="enabled"\n',
         "scripts/install-p0-oom-containment": installer_body,
+        "config/root-required/hapax-oom-score-enforce.sudoers": (
+            "hapax ALL=(root) NOPASSWD: /usr/local/sbin/hapax-oom-score-enforce --apply-unit pipewire.service\n"
+        ),
         "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\nexit 0\n",
+        "scripts/hapax-oom-score-trigger": "#!/usr/bin/env bash\nexit 0\n",
         "scripts/hapax-root-failure-intake": "#!/usr/bin/env bash\nexit 0\n",
         "config/earlyoom/default": 'EARLYOOM_ARGS="--ignore recovery"\n',
         "systemd/system/system.slice.d/oom-containment.conf": (
@@ -833,6 +854,53 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
     assert record["deploy_groups"]["systemd_dropins"] == []
 
 
+def test_root_packages_install_apcupsd_before_oom_recovery_verification(tmp_path: Path) -> None:
+    order = tmp_path / "install-order"
+    apcupsd_ready = tmp_path / "apcupsd-ready"
+    apcupsd_installer = (
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'printf "apcupsd\\n" >> "$HAPAX_ROOT_PACKAGE_ORDER"\n'
+        'touch "$HAPAX_APCUPSD_READY_WITNESS"\n'
+    )
+    oom_installer = (
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        '[ -f "$HAPAX_APCUPSD_READY_WITNESS" ] || { echo "apcupsd inactive" >&2; exit 42; }\n'
+        'printf "oom\\n" >> "$HAPAX_ROOT_PACKAGE_ORDER"\n'
+    )
+    files = {
+        "config/root-required/apcupsd-power-alerts.files": (
+            "config/root-required/apcupsd-power-alerts.files\n"
+            "scripts/install-apcupsd-power-alerts\n"
+        ),
+        "scripts/install-apcupsd-power-alerts": apcupsd_installer,
+        "config/root-required/oom-containment.files": (
+            "config/root-required/oom-containment.files\nscripts/install-p0-oom-containment\n"
+        ),
+        "scripts/install-p0-oom-containment": oom_installer,
+    }
+    repo, sha = _repo_with_linear_commit(tmp_path, files)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(tmp_path / "home"),
+            "REPO": str(repo),
+            "HAPAX_ROOT_PACKAGE_ORDER": str(order),
+            "HAPAX_APCUPSD_READY_WITNESS": str(apcupsd_ready),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert order.read_text(encoding="utf-8").splitlines() == ["apcupsd", "oom"]
+
+
 def test_stale_post_merge_deploy_preserves_newer_desired_receipt(tmp_path: Path) -> None:
     repo, sha_a = _repo_with_linear_commit(tmp_path, ROOT_AUDIT_SOURCE_FILES)
     earlyoom = repo / "config" / "earlyoom" / "default"
@@ -883,6 +951,8 @@ def test_post_merge_squash_equivalence_rejects_newer_manifest_file(tmp_path: Pat
         path = repo / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(body, encoding="utf-8")
+        if body.startswith("#!"):
+            path.chmod(0o755)
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", "candidate packages")
     candidate_sha = _git(repo, "rev-parse", "HEAD")
@@ -930,7 +1000,11 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
     files = {
         "config/root-required/oom-containment.files": OOM_PACKAGE_MANIFEST,
         "scripts/install-p0-oom-containment": installer_body,
+        "config/root-required/hapax-oom-score-enforce.sudoers": (
+            "hapax ALL=(root) NOPASSWD: /usr/local/sbin/hapax-oom-score-enforce --apply-unit pipewire.service\n"
+        ),
         "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\nexit 0\n",
+        "scripts/hapax-oom-score-trigger": "#!/usr/bin/env bash\nexit 0\n",
         "scripts/hapax-root-failure-intake": "#!/usr/bin/env bash\nexit 0\n",
         "config/earlyoom/default": 'EARLYOOM_ARGS="--ignore recovery"\n',
         "systemd/system/system.slice.d/oom-containment.conf": (
@@ -1081,6 +1155,23 @@ def test_root_required_audit_detects_oom_enforcer_drift(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert "root-required install drift" in result.stderr
     assert "install-p0-oom-containment --install --verify-live" in result.stderr
+
+
+def test_root_required_audit_detects_sudoers_mode_drift(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    Path(env["HAPAX_OOM_SUDOERS_DEST"]).chmod(0o644)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "root-required install mode drift" in result.stderr
+    assert "expected=440" in result.stderr
 
 
 def test_root_required_audit_rejects_byte_identical_symlinked_install(tmp_path: Path) -> None:

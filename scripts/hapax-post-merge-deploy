@@ -1460,44 +1460,7 @@ record_root_required_desired_sha() {
     exec {lock_fd}>&-
 }
 
-if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
-    echo "P0 OOM containment files changed (${#OOM_CONTAINMENT[@]}):"
-    for f in "${OOM_CONTAINMENT[@]}"; do
-        echo "  $f"
-    done
-    OOM_STAGE="$(mktemp -d)"
-    set +e
-    stage_oom_containment_installer "$OOM_STAGE"
-    stage_oom_rc=$?
-    set -e
-    if [ "$stage_oom_rc" -ne 0 ]; then
-        rm -rf "$OOM_STAGE" 2>/dev/null || true
-        exit "$stage_oom_rc"
-    fi
-    if ! record_root_required_desired_sha "oom-containment" "$OOM_STAGE"; then
-        rm -rf "$OOM_STAGE" 2>/dev/null || true
-        exit 1
-    fi
-    set +e
-    HAPAX_ROOT_REQUIRED_PACKAGE_SHA="$SHA" \
-        HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" \
-        HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" \
-        HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" \
-        HAPAX_ROOT_REQUIRED_GIT_REPO="$REPO" \
-        "$OOM_STAGE/$OOM_CONTAINMENT_INSTALLER_PATH" --source "$OOM_STAGE" --install --verify-live
-    oom_installer_rc=$?
-    set -e
-    if [ "$oom_installer_rc" -eq "$ROOT_REQUIRED_RC" ]; then
-        defer_root_required_installer "oom-containment" "$OOM_STAGE" "$OOM_CONTAINMENT_INSTALLER_PATH"
-    elif [ "$oom_installer_rc" -ne 0 ]; then
-        rm -rf "$OOM_STAGE" 2>/dev/null || true
-        exit "$oom_installer_rc"
-    fi
-    rm -rf "$OOM_STAGE" 2>/dev/null || true
-    DID_ANYTHING=1
-fi
-
-# --- apcupsd power-alert config/hooks ---
+# apcupsd must be active before the OOM package verifies the recovery plane.
 stage_apcupsd_power_alert_installer() {
     stage_root_required_package \
         "$1" config/root-required/apcupsd-power-alerts.files "apcupsd power-alert"
@@ -1537,6 +1500,43 @@ if [ "${#APCUPSD_POWER_ALERTS[@]}" -gt 0 ]; then
         exit "$apcupsd_installer_rc"
     fi
     rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
+    DID_ANYTHING=1
+fi
+
+if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
+    echo "P0 OOM containment files changed (${#OOM_CONTAINMENT[@]}):"
+    for f in "${OOM_CONTAINMENT[@]}"; do
+        echo "  $f"
+    done
+    OOM_STAGE="$(mktemp -d)"
+    set +e
+    stage_oom_containment_installer "$OOM_STAGE"
+    stage_oom_rc=$?
+    set -e
+    if [ "$stage_oom_rc" -ne 0 ]; then
+        rm -rf "$OOM_STAGE" 2>/dev/null || true
+        exit "$stage_oom_rc"
+    fi
+    if ! record_root_required_desired_sha "oom-containment" "$OOM_STAGE"; then
+        rm -rf "$OOM_STAGE" 2>/dev/null || true
+        exit 1
+    fi
+    set +e
+    HAPAX_ROOT_REQUIRED_PACKAGE_SHA="$SHA" \
+        HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" \
+        HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" \
+        HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" \
+        HAPAX_ROOT_REQUIRED_GIT_REPO="$REPO" \
+        "$OOM_STAGE/$OOM_CONTAINMENT_INSTALLER_PATH" --source "$OOM_STAGE" --install --verify-live
+    oom_installer_rc=$?
+    set -e
+    if [ "$oom_installer_rc" -eq "$ROOT_REQUIRED_RC" ]; then
+        defer_root_required_installer "oom-containment" "$OOM_STAGE" "$OOM_CONTAINMENT_INSTALLER_PATH"
+    elif [ "$oom_installer_rc" -ne 0 ]; then
+        rm -rf "$OOM_STAGE" 2>/dev/null || true
+        exit "$oom_installer_rc"
+    fi
+    rm -rf "$OOM_STAGE" 2>/dev/null || true
     DID_ANYTHING=1
 fi
 

@@ -163,10 +163,7 @@ def test_broadcast_critical_user_oom_dropins_are_source_controlled() -> None:
     for rel in expected:
         text = (UNITS_DIR / rel).read_text()
         assert _directive(text, "OOMScoreAdjust") == "100"
-        assert (
-            _directive(text, "ExecStartPost")
-            == "-/usr/bin/sudo -n /usr/local/sbin/hapax-oom-score-enforce --apply-unit %n"
-        )
+        assert _directive(text, "ExecStartPost") == "-/usr/local/bin/hapax-oom-score-trigger %n"
         assert _directive(text, "MemoryLow") is not None
         assert _directive(text, "MemoryMin") is not None
 
@@ -213,6 +210,7 @@ def test_root_oom_enforcer_uses_system_scoped_failure_intake() -> None:
     assert "# Hapax-Install-Scope: system" in intake
     assert "User=hapax" in intake
     assert "ExecStart=/usr/local/sbin/hapax-root-failure-intake %i" in intake
+    assert "SyslogIdentifier=hapax-root-failure-intake" in intake
     assert "%I" not in intake
     assert "source-activation/worktree" not in intake
     assert "StartLimitIntervalSec=1h" in intake

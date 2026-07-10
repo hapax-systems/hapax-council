@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALLER = REPO_ROOT / "scripts" / "install-p0-oom-containment"
 OOM_ENFORCER = REPO_ROOT / "scripts" / "hapax-oom-score-enforce"
+OOM_TRIGGER = REPO_ROOT / "scripts" / "hapax-oom-score-trigger"
+OOM_SUDOERS = REPO_ROOT / "config" / "root-required" / "hapax-oom-score-enforce.sudoers"
 ROOT_FAILURE_INTAKE = REPO_ROOT / "scripts" / "hapax-root-failure-intake"
 REPO_HEAD = subprocess.run(
     ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, check=True, text=True, capture_output=True
@@ -65,6 +68,14 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
         "HAPAX_ROOT_REQUIRED_AUDIT_DEST",
         str(tmp_path / "sbin" / "hapax-root-required-deploy-audit"),
     )
+    monkeypatch.setenv("HAPAX_OOM_TRIGGER_DEST", str(tmp_path / "bin" / "hapax-oom-score-trigger"))
+    monkeypatch.setenv(
+        "HAPAX_OOM_SUDOERS_DEST", str(tmp_path / "sudoers.d" / "hapax-oom-score-enforce")
+    )
+    fake_visudo = tmp_path / "visudo"
+    fake_visudo.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_visudo.chmod(0o755)
+    monkeypatch.setenv("HAPAX_OOM_VISUDO", str(fake_visudo))
     monkeypatch.setenv("HAPAX_OOM_SYSTEMD_USER_DIR", str(tmp_path / "systemd-user-default"))
     monkeypatch.setenv("HAPAX_ROOT_REQUIRED_GIT_REPO", str(REPO_ROOT))
 
@@ -325,6 +336,11 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     )
     assert "EARLYOOM_ARGS=" in earlyoom_dest.read_text(encoding="utf-8")
     assert enforcer_dest.is_file()
+    trigger_dest = Path(os.environ["HAPAX_OOM_TRIGGER_DEST"])
+    sudoers_dest = Path(os.environ["HAPAX_OOM_SUDOERS_DEST"])
+    assert trigger_dest.is_file() and os.access(trigger_dest, os.X_OK)
+    assert sudoers_dest.is_file()
+    assert sudoers_dest.stat().st_mode & 0o777 == 0o440
     assert root_failure_dest.is_file()
     assert (tmp_path / "sbin" / "hapax-oom-policy-audit").is_file()
     assert (tmp_path / "sbin" / "hapax-root-required-deploy-audit").is_file()
@@ -1066,6 +1082,89 @@ def test_root_oom_score_enforcer_writes_live_user_manager_and_service_scores(
         assert (proc_root / str(pid) / "oom_score_adj").read_text(encoding="utf-8").strip() == str(
             score
         )
+
+
+def test_oom_score_trigger_uses_allowlisted_root_command(tmp_path: Path) -> None:
+    calls = tmp_path / "enforcer-calls"
+    fake_enforcer = tmp_path / "enforcer"
+    fake_enforcer.write_text(
+        f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {calls!s}\n",
+        encoding="utf-8",
+    )
+    fake_enforcer.chmod(0o755)
+    fake_sudo = tmp_path / "sudo"
+    fake_sudo.write_text(
+        '#!/bin/sh\n[ "${1:-}" != "-n" ] || shift\nexec "$@"\n',
+        encoding="utf-8",
+    )
+    fake_sudo.chmod(0o755)
+
+    result = subprocess.run(
+        [str(OOM_TRIGGER), "pipewire.service"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_TRIGGER_TEST_MODE": "1",
+            "HAPAX_OOM_TRIGGER_SUDO": str(fake_sudo),
+            "HAPAX_OOM_TRIGGER_ENFORCER": str(fake_enforcer),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert calls.read_text(encoding="utf-8").strip() == "--apply-unit pipewire.service"
+
+
+def test_oom_score_trigger_deadlines_blocked_privilege_path(tmp_path: Path) -> None:
+    blocked_sudo = tmp_path / "blocked-sudo"
+    blocked_sudo.write_text("#!/bin/sh\nsleep 5\n", encoding="utf-8")
+    blocked_sudo.chmod(0o755)
+
+    started = time.monotonic()
+    result = subprocess.run(
+        [str(OOM_TRIGGER), "pipewire.service"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_TRIGGER_TEST_MODE": "1",
+            "HAPAX_OOM_TRIGGER_SUDO": str(blocked_sudo),
+            "HAPAX_OOM_TRIGGER_DEADLINE": "1s",
+        },
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.returncode != 0
+    assert elapsed < 2.5
+
+
+def test_oom_score_trigger_rejects_non_allowlisted_unit() -> None:
+    result = subprocess.run(
+        [str(OOM_TRIGGER), "attacker.service"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "refusing non-allowlisted" in result.stderr
+
+
+def test_oom_score_sudoers_grant_is_narrow_and_valid() -> None:
+    result = subprocess.run(
+        ["visudo", "-cf", str(OOM_SUDOERS)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    policy = OOM_SUDOERS.read_text(encoding="utf-8")
+
+    assert result.returncode == 0, result.stderr
+    for unit in PROTECTED_USER_UNIT_SCORES:
+        assert f"--apply-unit {unit}" in policy
+    assert "NOPASSWD: ALL" not in policy
 
 
 def test_root_oom_score_enforcer_applies_one_allowlisted_unit_after_start(
