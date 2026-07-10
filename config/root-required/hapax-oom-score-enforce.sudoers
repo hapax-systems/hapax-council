@@ -1,6 +1,6 @@
 # Managed by the Hapax P0 OOM containment package.
-# Podium is fixed to account hapax, UID 1000, /home/hapax, and the durable
-# current-source path below; the production installer refuses another coupling.
+# Podium is fixed to account hapax, UID 1000, and /home/hapax; the production
+# installer refuses another coupling. The audit compares two root-owned files.
 Cmnd_Alias HAPAX_OOM_SCORE_ENFORCE = \
     /usr/local/sbin/hapax-oom-score-enforce --apply-unit pipewire.service, \
     /usr/local/sbin/hapax-oom-score-enforce --apply-unit pipewire-pulse.service, \
@@ -10,7 +10,7 @@ Cmnd_Alias HAPAX_OOM_SCORE_ENFORCE = \
     /usr/local/sbin/hapax-oom-score-enforce --apply-unit hapax-imagination.service
 
 Cmnd_Alias HAPAX_ROOT_REQUIRED_AUDIT = \
-    /usr/bin/cmp -s /home/hapax/.local/state/hapax/root-required/current-source/config/root-required/hapax-oom-score-enforce.sudoers /etc/sudoers.d/hapax-oom-score-enforce, \
+    /usr/bin/cmp -s /usr/local/share/hapax/root-required/hapax-oom-score-enforce.sudoers /etc/sudoers.d/hapax-oom-score-enforce, \
     /usr/bin/visudo -cf /etc/sudoers.d/hapax-oom-score-enforce
 
 hapax ALL=(root) NOPASSWD:NOSETENV: HAPAX_OOM_SCORE_ENFORCE, HAPAX_ROOT_REQUIRED_AUDIT

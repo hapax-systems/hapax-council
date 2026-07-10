@@ -316,6 +316,7 @@ def _root_audit_env(
     enforcer_dest = tmp_path / "sbin" / "hapax-oom-score-enforce"
     trigger_dest = tmp_path / "bin" / "hapax-oom-score-trigger"
     sudoers_dest = tmp_path / "etc" / "sudoers.d" / "hapax-oom-score-enforce"
+    sudoers_reference_dest = tmp_path / "share" / "hapax-oom-score-enforce.sudoers"
     root_failure_dest = tmp_path / "sbin" / "hapax-root-failure-intake"
     oom_audit_dest = tmp_path / "sbin" / "hapax-oom-policy-audit"
     root_audit_dest = tmp_path / "sbin" / "hapax-root-required-deploy-audit"
@@ -407,6 +408,12 @@ def _root_audit_env(
                 dest.chmod(0o755)
             elif rel == "config/root-required/hapax-oom-score-enforce.sudoers":
                 dest.chmod(0o440)
+    sudoers_reference_dest.parent.mkdir(parents=True, exist_ok=True)
+    sudoers_reference_dest.write_text(
+        ROOT_AUDIT_SOURCE_FILES["config/root-required/hapax-oom-score-enforce.sudoers"],
+        encoding="utf-8",
+    )
+    sudoers_reference_dest.chmod(0o444)
     _git(source_root, "init", "-b", "main")
     _git(source_root, "config", "user.email", "root-audit@example.test")
     _git(source_root, "config", "user.name", "Root Audit Test")
@@ -430,6 +437,9 @@ def _root_audit_env(
         "HAPAX_OOM_ENFORCER_DEST": str(enforcer_dest),
         "HAPAX_OOM_TRIGGER_DEST": str(trigger_dest),
         "HAPAX_OOM_SUDOERS_DEST": str(sudoers_dest),
+        "HAPAX_OOM_SUDOERS_REFERENCE_DEST": str(sudoers_reference_dest),
+        "HAPAX_OOM_SUDOERS_OWNER_UID": str(os.getuid()),
+        "HAPAX_OOM_SUDOERS_OWNER_GID": str(os.getgid()),
         "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
         "HAPAX_OOM_POLICY_AUDIT_DEST": str(oom_audit_dest),
         "HAPAX_ROOT_REQUIRED_AUDIT_DEST": str(root_audit_dest),
@@ -1184,6 +1194,41 @@ def test_root_required_audit_detects_sudoers_mode_drift(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert "root-required install mode drift" in result.stderr
     assert "expected=440" in result.stderr
+
+
+def test_root_required_audit_detects_root_owned_sudoers_reference_drift(
+    tmp_path: Path,
+) -> None:
+    env = _root_audit_env(tmp_path)
+    Path(env["HAPAX_OOM_SUDOERS_REFERENCE_DEST"]).chmod(0o644)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "root-required install mode drift" in result.stderr
+    assert "expected=444" in result.stderr
+
+
+def test_root_required_audit_detects_sudoers_reference_owner_drift(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    env["HAPAX_OOM_SUDOERS_OWNER_UID"] = str(os.getuid() + 1)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "sudoers audit reference ownership/mode drift" in result.stderr
 
 
 def test_root_required_audit_detects_stale_user_copy_of_system_unit(tmp_path: Path) -> None:

@@ -11,7 +11,7 @@ if [ -x "$intake" ]; then
     exec "$intake" service-failed "$unit"
 fi
 
-python3 - "$ledger" "$unit" "$intake" <<'PY'
+/usr/bin/python3 - "$ledger" "$unit" "$intake" <<'PY'
 from __future__ import annotations
 
 import json

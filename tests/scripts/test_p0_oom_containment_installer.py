@@ -73,6 +73,12 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv(
         "HAPAX_OOM_SUDOERS_DEST", str(tmp_path / "sudoers.d" / "hapax-oom-score-enforce")
     )
+    monkeypatch.setenv(
+        "HAPAX_OOM_SUDOERS_REFERENCE_DEST",
+        str(tmp_path / "share" / "hapax-oom-score-enforce.sudoers"),
+    )
+    monkeypatch.setenv("HAPAX_OOM_SUDOERS_OWNER_UID", str(os.getuid()))
+    monkeypatch.setenv("HAPAX_OOM_SUDOERS_OWNER_GID", str(os.getgid()))
     fake_visudo = tmp_path / "visudo"
     fake_visudo.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     fake_visudo.chmod(0o755)
@@ -374,9 +380,16 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert enforcer_dest.is_file()
     trigger_dest = Path(os.environ["HAPAX_OOM_TRIGGER_DEST"])
     sudoers_dest = Path(os.environ["HAPAX_OOM_SUDOERS_DEST"])
+    sudoers_reference = Path(os.environ["HAPAX_OOM_SUDOERS_REFERENCE_DEST"])
     assert trigger_dest.is_file() and os.access(trigger_dest, os.X_OK)
     assert sudoers_dest.is_file()
     assert sudoers_dest.stat().st_mode & 0o777 == 0o440
+    assert sudoers_dest.stat().st_uid == os.getuid()
+    assert sudoers_dest.stat().st_gid == os.getgid()
+    assert sudoers_reference.is_file()
+    assert sudoers_reference.stat().st_mode & 0o777 == 0o444
+    assert sudoers_reference.stat().st_uid == os.getuid()
+    assert sudoers_reference.stat().st_gid == os.getgid()
     assert root_failure_dest.is_file()
     assert (tmp_path / "sbin" / "hapax-oom-policy-audit").is_file()
     assert (tmp_path / "sbin" / "hapax-root-required-deploy-audit").is_file()
@@ -1047,7 +1060,9 @@ def test_installer_falls_back_to_sudo_when_direct_oom_score_write_fails(
 
     assert result.returncode == 0, result.stderr
     assert any(
-        line.startswith("cmp -s ") and str(OOM_SUDOERS) in line
+        line.startswith("cmp -s ")
+        and os.environ["HAPAX_OOM_SUDOERS_REFERENCE_DEST"] in line
+        and os.environ["HAPAX_OOM_SUDOERS_DEST"] in line
         for line in sudo_calls.read_text(encoding="utf-8").splitlines()
     )
     assert (proc_root / "900" / "oom_score_adj").read_text(encoding="utf-8").strip() == "100"
@@ -1214,8 +1229,8 @@ def test_oom_score_sudoers_grant_is_narrow_and_valid() -> None:
     for unit in PROTECTED_USER_UNIT_SCORES:
         assert f"--apply-unit {unit}" in policy
     assert (
-        "/usr/bin/cmp -s /home/hapax/.local/state/hapax/root-required/current-source/"
-        "config/root-required/hapax-oom-score-enforce.sudoers "
+        "/usr/bin/cmp -s /usr/local/share/hapax/root-required/"
+        "hapax-oom-score-enforce.sudoers "
         "/etc/sudoers.d/hapax-oom-score-enforce"
     ) in policy
     assert "/usr/bin/visudo -cf /etc/sudoers.d/hapax-oom-score-enforce" in policy
@@ -1789,6 +1804,12 @@ def test_root_failure_intake_uses_stable_recovery_bundle(tmp_path: Path) -> None
 
 def test_root_failure_intake_records_emergency_ledger_when_bundle_missing(tmp_path: Path) -> None:
     ledger = tmp_path / "events.jsonl"
+    marker = tmp_path / "user-python-was-used"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_python = bin_dir / "python3"
+    fake_python.write_text(f"#!/bin/sh\ntouch {marker!s}\nexit 99\n", encoding="utf-8")
+    fake_python.chmod(0o755)
 
     result = subprocess.run(
         [str(ROOT_FAILURE_INTAKE), "hapax-oom-score-enforce.service"],
@@ -1797,6 +1818,7 @@ def test_root_failure_intake_records_emergency_ledger_when_bundle_missing(tmp_pa
         check=False,
         env={
             **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
             "HAPAX_ROOT_FAILURE_INTAKE_CLI": str(tmp_path / "missing-intake"),
             "HAPAX_ROOT_FAILURE_LEDGER": str(ledger),
         },
@@ -1806,3 +1828,4 @@ def test_root_failure_intake_records_emergency_ledger_when_bundle_missing(tmp_pa
     record = json.loads(ledger.read_text(encoding="utf-8"))
     assert record["kind"] == "root_failure_intake_cli_missing"
     assert record["unit"] == "hapax-oom-score-enforce.service"
+    assert not marker.exists()

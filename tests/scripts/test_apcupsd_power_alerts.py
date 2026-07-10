@@ -145,6 +145,33 @@ def test_power_event_helper_records_jsonl_without_ntfy(tmp_path: Path) -> None:
     assert audit.stat().st_mode & 0o777 == 0o640
 
 
+def test_power_event_helper_refuses_symlinked_privileged_audit_log(tmp_path: Path) -> None:
+    target = tmp_path / "protected-target"
+    target.write_text("sentinel\n", encoding="utf-8")
+    audit = tmp_path / "ups-events.jsonl"
+    audit.symlink_to(target)
+
+    result = subprocess.run(
+        [
+            str(HELPER),
+            "onbattery",
+            "--audit-log",
+            str(audit),
+            "--apcaccess",
+            str(tmp_path / "missing-apcaccess"),
+            "--no-ntfy",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert target.read_text(encoding="utf-8") == "sentinel\n"
+    assert "failed to append intent audit log" in result.stderr
+    assert "failed to append delivery audit log" in result.stderr
+
+
 def test_power_event_helper_records_offbattery_delivery_failure(tmp_path: Path) -> None:
     audit = tmp_path / "ups-events.jsonl"
     fake_apcaccess = tmp_path / "apcaccess"

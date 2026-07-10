@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import errno
+import fcntl
 import json
 import os
+import stat
 import subprocess
 import sys
 import time
@@ -125,9 +128,25 @@ def post_ntfy(url: str, title: str, message: str, priority: str, timeout_s: floa
 
 def append_jsonl(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o640)
-    with os.fdopen(fd, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(payload, sort_keys=True) + "\n")
+    blob = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
+    fd = os.open(
+        path,
+        os.O_APPEND | os.O_CLOEXEC | os.O_CREAT | os.O_NOFOLLOW | os.O_WRONLY,
+        0o640,
+    )
+    try:
+        inode = os.fstat(fd)
+        expected_uid = 0 if os.geteuid() == 0 else os.geteuid()
+        if not stat.S_ISREG(inode.st_mode) or inode.st_uid != expected_uid or inode.st_nlink != 1:
+            raise OSError(
+                errno.EPERM,
+                "unsafe UPS audit log inode; expected one regular file owned by the hook uid",
+                path,
+            )
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        os.write(fd, blob)
+    finally:
+        os.close(fd)
 
 
 def build_parser() -> argparse.ArgumentParser:

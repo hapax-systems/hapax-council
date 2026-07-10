@@ -14,6 +14,13 @@ ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_STATE_R
 OOM_ENFORCER_DEST="${HAPAX_OOM_ENFORCER_DEST:-/usr/local/sbin/hapax-oom-score-enforce}"
 OOM_TRIGGER_DEST="${HAPAX_OOM_TRIGGER_DEST:-/usr/local/bin/hapax-oom-score-trigger}"
 OOM_SUDOERS_DEST="${HAPAX_OOM_SUDOERS_DEST:-/etc/sudoers.d/hapax-oom-score-enforce}"
+OOM_SUDOERS_REFERENCE_DEST="${HAPAX_OOM_SUDOERS_REFERENCE_DEST:-/usr/local/share/hapax/root-required/hapax-oom-score-enforce.sudoers}"
+OOM_SUDOERS_OWNER_UID="${HAPAX_OOM_SUDOERS_OWNER_UID:-0}"
+OOM_SUDOERS_OWNER_GID="${HAPAX_OOM_SUDOERS_OWNER_GID:-0}"
+if [ "$OOM_SUDOERS_REFERENCE_DEST" = "/usr/local/share/hapax/root-required/hapax-oom-score-enforce.sudoers" ]; then
+    OOM_SUDOERS_OWNER_UID=0
+    OOM_SUDOERS_OWNER_GID=0
+fi
 ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapax-root-failure-intake}"
 OOM_POLICY_AUDIT_DEST="${HAPAX_OOM_POLICY_AUDIT_DEST:-/usr/local/sbin/hapax-oom-policy-audit}"
 ROOT_REQUIRED_AUDIT_DEST="${HAPAX_ROOT_REQUIRED_AUDIT_DEST:-/usr/local/sbin/hapax-root-required-deploy-audit}"
@@ -161,7 +168,7 @@ audit_desired_receipt() {
 }
 
 compare_root_file() {
-    local rel="$1" dest="$2" source expected_mode actual_mode
+    local rel="$1" dest="$2" mode_override="${3:-}" source expected_mode actual_mode
     source="$(source_for_rel "$rel")"
     if [ ! -f "$source" ] || [ -L "$source" ]; then
         echo "root-required source missing or not a regular stable copy: $source" >&2
@@ -180,7 +187,7 @@ compare_root_file() {
         esac
         return 1
     fi
-    expected_mode="$(expected_install_mode "$rel")"
+    expected_mode="${mode_override:-$(expected_install_mode "$rel")}"
     actual_mode="$(stat -c '%a' "$dest" 2>/dev/null || true)"
     if [ "$actual_mode" != "$expected_mode" ]; then
         echo "root-required install mode drift: $dest mode=${actual_mode:-unavailable} expected=$expected_mode" >&2
@@ -194,8 +201,8 @@ compare_root_file() {
         esac
         return 1
     fi
-    if [ "$rel" = "config/root-required/hapax-oom-score-enforce.sudoers" ]; then
-        "$SUDO" -n "$CMP" -s "$source" "$dest"
+    if [ "$dest" = "$OOM_SUDOERS_DEST" ]; then
+        "$SUDO" -n "$CMP" -s "$OOM_SUDOERS_REFERENCE_DEST" "$dest"
     else
         cmp -s "$source" "$dest"
     fi || {
@@ -210,6 +217,33 @@ compare_root_file() {
         esac
         return 1
     }
+}
+
+audit_sudoers_trust() {
+    local path="$1" expected_mode="$2" label="$3" actual failed=0
+    if [ ! -f "$path" ] || [ -L "$path" ]; then
+        echo "root-required $label missing or not a regular stable copy: $path" >&2
+        echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    actual="$(stat -c '%u:%g:%a' "$path" 2>/dev/null || true)"
+    if [ "$actual" != "$OOM_SUDOERS_OWNER_UID:$OOM_SUDOERS_OWNER_GID:$expected_mode" ]; then
+        echo "root-required $label ownership/mode drift: $path owner/mode=${actual:-unavailable} expected=$OOM_SUDOERS_OWNER_UID:$OOM_SUDOERS_OWNER_GID:$expected_mode" >&2
+        echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        failed=1
+    fi
+    if [ "$path" = "$OOM_SUDOERS_REFERENCE_DEST" ] \
+        && [ "$OOM_SUDOERS_REFERENCE_DEST" = "/usr/local/share/hapax/root-required/hapax-oom-score-enforce.sudoers" ]; then
+        for path in /usr/local/share/hapax /usr/local/share/hapax/root-required; do
+            actual="$(stat -c '%u:%g:%a:%F' "$path" 2>/dev/null || true)"
+            if [ -L "$path" ] || [ "$actual" != "0:0:755:directory" ]; then
+                echo "root-required sudoers reference directory trust drift: $path owner/mode/type=${actual:-unavailable} expected=0:0:755:directory" >&2
+                echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+                failed=1
+            fi
+        done
+    fi
+    return "$failed"
 }
 
 expected_install_mode() {
@@ -393,6 +427,11 @@ audit_root_installs() {
             failed=1
         fi
     done
+    audit_sudoers_trust "$OOM_SUDOERS_DEST" 440 "sudoers policy" || failed=1
+    audit_sudoers_trust "$OOM_SUDOERS_REFERENCE_DEST" 444 "sudoers audit reference" || failed=1
+    compare_root_file \
+        config/root-required/hapax-oom-score-enforce.sudoers \
+        "$OOM_SUDOERS_REFERENCE_DEST" 444 || failed=1
     if ! "$SUDO" -n "$VISUDO" -cf "$OOM_SUDOERS_DEST" >/dev/null; then
         echo "root-required install drift: sudoers policy does not parse: $OOM_SUDOERS_DEST" >&2
         echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2

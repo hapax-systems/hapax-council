@@ -8,6 +8,6 @@ StartLimitBurst=1
 [Service]
 Type=oneshot
 User=hapax
-Environment=PATH=/home/hapax/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/usr/local/sbin/hapax-root-failure-intake %i
 SyslogIdentifier=hapax-root-failure-intake

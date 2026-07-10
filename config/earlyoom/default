@@ -1,4 +1,4 @@
 # earlyoom matches /proc/<pid>/comm, not systemd unit names. The only long
 # Hapax name retained here is the live-observed 15-byte hapax-imaginati comm.
-# Recheck: systemctl show earlyoom.service -p ExecStart; cat /proc/$(systemctl --user show hapax-imagination.service -p MainPID --value)/comm
+# Recheck: tr '\0' ' ' </proc/$(systemctl show earlyoom.service -p MainPID --value)/cmdline; cat /proc/$(systemctl --user show hapax-imagination.service -p MainPID --value)/comm
 EARLYOOM_ARGS="-m 5 -s 5 -n -r 60 --prefer (cargo|rustc|ld\\.lld|chrome|electron|node|claude|next-server|ffmpeg|bwrap) --avoid (Hyprland|pipewire|wireplumber|dockerd|containerd|bluetoothd|systemd|foot|waybar|hapax-imaginati) --ignore (apcupsd|systemd-logind|systemd-resolve|systemd-timesyn|systemd-userdbd|dbus-broker|dbus-daemon|NetworkManager|sshd|sshd-session|getty|agetty)"

@@ -28,6 +28,9 @@ EARLYOOM_DEST="${HAPAX_OOM_EARLYOOM_DEST:-/etc/default/earlyoom}"
 OOM_ENFORCER_DEST="${HAPAX_OOM_ENFORCER_DEST:-/usr/local/sbin/hapax-oom-score-enforce}"
 OOM_TRIGGER_DEST="${HAPAX_OOM_TRIGGER_DEST:-/usr/local/bin/hapax-oom-score-trigger}"
 OOM_SUDOERS_DEST="${HAPAX_OOM_SUDOERS_DEST:-/etc/sudoers.d/hapax-oom-score-enforce}"
+OOM_SUDOERS_REFERENCE_DEST="${HAPAX_OOM_SUDOERS_REFERENCE_DEST:-/usr/local/share/hapax/root-required/hapax-oom-score-enforce.sudoers}"
+OOM_SUDOERS_OWNER_UID="${HAPAX_OOM_SUDOERS_OWNER_UID:-0}"
+OOM_SUDOERS_OWNER_GID="${HAPAX_OOM_SUDOERS_OWNER_GID:-0}"
 ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapax-root-failure-intake}"
 OOM_POLICY_AUDIT_DEST="${HAPAX_OOM_POLICY_AUDIT_DEST:-/usr/local/sbin/hapax-oom-policy-audit}"
 ROOT_REQUIRED_AUDIT_DEST="${HAPAX_ROOT_REQUIRED_AUDIT_DEST:-/usr/local/sbin/hapax-root-required-deploy-audit}"
@@ -78,6 +81,7 @@ Installs the P0 podium OOM containment package:
   scripts/hapax-oom-score-enforce                   -> /usr/local/sbin/hapax-oom-score-enforce
   scripts/hapax-oom-score-trigger                   -> /usr/local/bin/hapax-oom-score-trigger
   config/root-required/hapax-oom-score-enforce.sudoers -> /etc/sudoers.d/hapax-oom-score-enforce
+                                                   and root-owned audit reference under /usr/local/share/hapax/root-required/
   scripts/hapax-root-failure-intake                  -> /usr/local/sbin/hapax-root-failure-intake
   scripts/hapax-oom-policy-audit                     -> /usr/local/sbin/hapax-oom-policy-audit
   scripts/hapax-root-required-deploy-audit            -> /usr/local/sbin/hapax-root-required-deploy-audit
@@ -579,8 +583,14 @@ check_source() {
         && { [ "$TARGET_USER" != "hapax" ] \
             || [ "$TARGET_UID" != "1000" ] \
             || [ "$TARGET_HOME" != "/home/hapax" ] \
-            || [ "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" != "/home/hapax/.local/state/hapax/root-required/current-source" ]; }; then
-        echo "production OOM sudoers policy is fixed to hapax/UID 1000 and /home/hapax durable state; next action: use the podium defaults or dispatch a host-specific package instead of overriding target identity/state paths" >&2
+            || [ "$OOM_SUDOERS_REFERENCE_DEST" != "/usr/local/share/hapax/root-required/hapax-oom-score-enforce.sudoers" ] \
+            || [ "$OOM_SUDOERS_OWNER_UID" != "0" ] \
+            || [ "$OOM_SUDOERS_OWNER_GID" != "0" ]; }; then
+        echo "production OOM sudoers policy is fixed to hapax/UID 1000, /home/hapax, and root-owned live/reference paths; next action: use the podium defaults or dispatch a host-specific package instead of overriding target identity or trust paths" >&2
+        return 1
+    fi
+    if ! [[ "$OOM_SUDOERS_OWNER_UID" =~ ^[0-9]+$ && "$OOM_SUDOERS_OWNER_GID" =~ ^[0-9]+$ ]]; then
+        echo "OOM sudoers owner UID/GID must be numeric; next action: remove invalid HAPAX_OOM_SUDOERS_OWNER_UID/GID overrides" >&2
         return 1
     fi
     grep -Eq '^OOMScoreAdjust=100$' "$(src_path systemd/system/user@1000.service.d/oom.conf)" || {
@@ -850,8 +860,14 @@ install_live() {
     run_root install -d -m 0755 "$(dirname "$OOM_TRIGGER_DEST")"
     run_root install -m 0755 "$(src_path "$oom_trigger_source")" "$OOM_TRIGGER_DEST"
     echo "  '$oom_trigger_source' -> '$OOM_TRIGGER_DEST'"
-    run_root install -d -m 0755 "$(dirname "$OOM_SUDOERS_DEST")"
-    run_root install -m 0440 "$(src_path "$oom_sudoers_source")" "$OOM_SUDOERS_DEST"
+    run_root install -d -o "$OOM_SUDOERS_OWNER_UID" -g "$OOM_SUDOERS_OWNER_GID" -m 0755 "$(dirname "$OOM_SUDOERS_DEST")"
+    if [ "$OOM_SUDOERS_REFERENCE_DEST" = "/usr/local/share/hapax/root-required/hapax-oom-score-enforce.sudoers" ]; then
+        run_root install -d -o 0 -g 0 -m 0755 /usr/local/share/hapax
+    fi
+    run_root install -d -o "$OOM_SUDOERS_OWNER_UID" -g "$OOM_SUDOERS_OWNER_GID" -m 0755 "$(dirname "$OOM_SUDOERS_REFERENCE_DEST")"
+    run_root install -o "$OOM_SUDOERS_OWNER_UID" -g "$OOM_SUDOERS_OWNER_GID" -m 0444 "$(src_path "$oom_sudoers_source")" "$OOM_SUDOERS_REFERENCE_DEST"
+    echo "  '$oom_sudoers_source' -> '$OOM_SUDOERS_REFERENCE_DEST' (root-owned audit reference)"
+    run_root install -o "$OOM_SUDOERS_OWNER_UID" -g "$OOM_SUDOERS_OWNER_GID" -m 0440 "$(src_path "$oom_sudoers_source")" "$OOM_SUDOERS_DEST"
     run_root "$VISUDO" -cf "$OOM_SUDOERS_DEST" >/dev/null || {
         echo "installed OOM enforcer sudoers policy is invalid: $OOM_SUDOERS_DEST; next action: restore it from the exact root-required package" >&2
         return 1
@@ -987,6 +1003,34 @@ verify_root_pair() {
     }
 }
 
+verify_sudoers_trust() {
+    local path="$1" expected_mode="$2" label="$3" actual
+    if [ ! -f "$path" ] || [ -L "$path" ]; then
+        echo "installed OOM $label is missing, symlinked, or not a regular file: $path; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    actual="$(stat -c '%u:%g:%a' "$path" 2>/dev/null || true)"
+    if [ "$actual" != "$OOM_SUDOERS_OWNER_UID:$OOM_SUDOERS_OWNER_GID:$expected_mode" ]; then
+        echo "installed OOM $label trust drift: $path owner/mode=${actual:-unavailable} expected=$OOM_SUDOERS_OWNER_UID:$OOM_SUDOERS_OWNER_GID:$expected_mode; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+}
+
+verify_production_reference_dirs() {
+    local path actual
+    for path in /usr/local/share/hapax /usr/local/share/hapax/root-required; do
+        if [ ! -d "$path" ] || [ -L "$path" ]; then
+            echo "installed OOM sudoers reference directory is missing, symlinked, or not a directory: $path; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            return 1
+        fi
+        actual="$(stat -c '%u:%g:%a' "$path" 2>/dev/null || true)"
+        if [ "$actual" != "0:0:755" ]; then
+            echo "installed OOM sudoers reference directory trust drift: $path owner/mode=${actual:-unavailable} expected=0:0:755; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            return 1
+        fi
+    done
+}
+
 verify_live() {
     local rel dest timer
     for rel in "${system_dropins[@]}"; do
@@ -1006,11 +1050,13 @@ verify_live() {
         echo "installed OOM startup trigger is not executable: $OOM_TRIGGER_DEST; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     }
-    if [ -L "$OOM_SUDOERS_DEST" ] || [ "$(stat -c '%a' "$OOM_SUDOERS_DEST" 2>/dev/null || true)" != "440" ]; then
-        echo "installed OOM sudoers policy is missing, symlinked, or not mode 0440: $OOM_SUDOERS_DEST; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
-        return 1
+    verify_sudoers_trust "$OOM_SUDOERS_DEST" 440 "sudoers policy"
+    verify_sudoers_trust "$OOM_SUDOERS_REFERENCE_DEST" 444 "sudoers audit reference"
+    if [ "$OOM_SUDOERS_REFERENCE_DEST" = "/usr/local/share/hapax/root-required/hapax-oom-score-enforce.sudoers" ]; then
+        verify_production_reference_dirs
     fi
-    verify_root_pair "$(src_path "$oom_sudoers_source")" "$OOM_SUDOERS_DEST"
+    verify_pair "$(src_path "$oom_sudoers_source")" "$OOM_SUDOERS_REFERENCE_DEST"
+    verify_root_pair "$OOM_SUDOERS_REFERENCE_DEST" "$OOM_SUDOERS_DEST"
     run_root "$VISUDO" -cf "$OOM_SUDOERS_DEST" >/dev/null || {
         echo "installed OOM enforcer sudoers policy no longer parses: $OOM_SUDOERS_DEST; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1

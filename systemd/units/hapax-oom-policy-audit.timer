@@ -1,4 +1,4 @@
-# Hapax-Auto-Enable: true
+# Hapax-Installer-Owner: scripts/install-p0-oom-containment
 [Unit]
 Description=Run Hapax OOM containment policy audit
 Documentation=https://github.com/hapax-systems/hapax-council/blob/main/systemd/README.md

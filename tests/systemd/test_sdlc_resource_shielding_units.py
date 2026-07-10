@@ -171,7 +171,8 @@ def test_broadcast_critical_user_oom_dropins_are_source_controlled() -> None:
 def test_oom_policy_audit_timer_is_source_controlled() -> None:
     timer = (UNITS_DIR / "hapax-oom-policy-audit.timer").read_text()
     service = (UNITS_DIR / "hapax-oom-policy-audit.service").read_text()
-    assert "Hapax-Auto-Enable: true" in timer
+    assert "Hapax-Installer-Owner: scripts/install-p0-oom-containment" in timer
+    assert "Hapax-Auto-Enable" not in timer
     assert "OnUnitActiveSec=5min" in timer
     assert "ExecStart=/usr/local/sbin/hapax-oom-policy-audit --json" in service
     assert "hapax-systems/hapax-council/blob/main/systemd/README.md" in service
@@ -185,7 +186,8 @@ def test_oom_policy_audit_timer_is_source_controlled() -> None:
 def test_root_required_deploy_audit_timer_is_source_controlled() -> None:
     timer = (UNITS_DIR / "hapax-root-required-deploy-audit.timer").read_text()
     service = (UNITS_DIR / "hapax-root-required-deploy-audit.service").read_text()
-    assert "Hapax-Auto-Enable: true" in timer
+    assert "Hapax-Installer-Owner: scripts/install-p0-oom-containment" in timer
+    assert "Hapax-Auto-Enable" not in timer
     assert "OnUnitActiveSec=10min" in timer
     assert "ExecStart=/usr/local/sbin/hapax-root-required-deploy-audit" in service
     assert "hapax-systems/hapax-council/blob/main/systemd/README.md" in service
@@ -209,6 +211,8 @@ def test_root_oom_enforcer_uses_system_scoped_failure_intake() -> None:
     assert "AccuracySec=1s" in timer
     assert "# Hapax-Install-Scope: system" in intake
     assert "User=hapax" in intake
+    assert "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin" in intake
+    assert "/home/hapax/.local/bin" not in intake
     assert "ExecStart=/usr/local/sbin/hapax-root-failure-intake %i" in intake
     assert "SyslogIdentifier=hapax-root-failure-intake" in intake
     assert "%I" not in intake
