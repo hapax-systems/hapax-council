@@ -216,6 +216,13 @@ def main(argv: list[str] | None = None) -> int:
         text["priority"],
         io_timeout_s,
     )
+    if delivery.attempted and not delivery.ok:
+        print(
+            "hapax-power-event: UPS notification delivery failed: "
+            f"{delivery.error}; next action: verify the local ntfy service and endpoint, then rerun "
+            "scripts/install-apcupsd-power-alerts --install --verify-live",
+            file=sys.stderr,
+        )
     record = {
         **base_record,
         "phase": "delivery",

@@ -180,9 +180,10 @@ OOM_CONTAINMENT_INSTALLER_PATH="scripts/install-p0-oom-containment"
 APCUPSD_INSTALLER_PATH="scripts/install-apcupsd-power-alerts"
 ROOT_REQUIRED_RC=77
 ROOT_DEFER_DIR="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$HOME/.cache/hapax/post-merge-root-required}"
-ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$ROOT_DEFER_DIR/current-source}"
-ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT:-$ROOT_DEFER_DIR/installed-receipts}"
-ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_DEFER_DIR/.lock}"
+ROOT_REQUIRED_STATE_ROOT="${HAPAX_ROOT_REQUIRED_STATE_ROOT:-$HOME/.local/state/hapax/root-required}"
+ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$ROOT_REQUIRED_STATE_ROOT/current-source}"
+ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/installed-receipts}"
+ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_STATE_ROOT/.lock}"
 RECOVERY_BUNDLE_DEST="${HAPAX_RECOVERY_BUNDLE_DEST:-$HOME/.local/lib/hapax-recovery/council/current}"
 RECOVERY_BUNDLE_SOURCE_FILES=(
     scripts/hapax-p0-incident-intake
@@ -1328,7 +1329,7 @@ stage_oom_containment_installer() {
 
 defer_root_required_installer() {
     local label="$1" stage="$2" installer="$3" dest temp receipt lock_fd
-    mkdir -p "$ROOT_DEFER_DIR"
+    mkdir -p "$ROOT_DEFER_DIR" "$(dirname "$ROOT_REQUIRED_LOCK_FILE")"
     exec {lock_fd}>"$ROOT_REQUIRED_LOCK_FILE"
     flock -x "$lock_fd"
     dest="$ROOT_DEFER_DIR/$SHA/$label"
@@ -1368,12 +1369,6 @@ EOF
     echo "next action: run HAPAX_ROOT_REQUIRED_PACKAGE_SHA=$SHA HAPAX_ROOT_REQUIRED_DRAIN_DIR=$dest HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT=$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_GIT_REPO=$REPO $dest/$installer --source $dest --install --verify-live with root authority"
 }
 
-record_root_required_source() {
-    local stage="$1"
-    mkdir -p "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"
-    cp -a "$stage"/. "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"/
-}
-
 if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
     echo "P0 OOM containment files changed (${#OOM_CONTAINMENT[@]}):"
     for f in "${OOM_CONTAINMENT[@]}"; do
@@ -1401,8 +1396,6 @@ if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
     elif [ "$oom_installer_rc" -ne 0 ]; then
         rm -rf "$OOM_STAGE" 2>/dev/null || true
         exit "$oom_installer_rc"
-    else
-        record_root_required_source "$OOM_STAGE"
     fi
     rm -rf "$OOM_STAGE" 2>/dev/null || true
     DID_ANYTHING=1
@@ -1462,8 +1455,6 @@ if [ "${#APCUPSD_POWER_ALERTS[@]}" -gt 0 ]; then
     elif [ "$apcupsd_installer_rc" -ne 0 ]; then
         rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
         exit "$apcupsd_installer_rc"
-    else
-        record_root_required_source "$APCUPSD_STAGE"
     fi
     rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
     DID_ANYTHING=1

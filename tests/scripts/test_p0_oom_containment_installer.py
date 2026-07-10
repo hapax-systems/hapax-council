@@ -27,6 +27,7 @@ PROTECTED_USER_UNIT_SCORES = {
 @pytest.fixture(autouse=True)
 def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HAPAX_POST_MERGE_ROOT_DEFER_DIR", str(tmp_path / "root-required"))
+    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_STATE_ROOT", str(tmp_path / "root-state"))
     monkeypatch.setenv(
         "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT", str(tmp_path / "installed-source")
     )
@@ -141,10 +142,7 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     enforcer_dest = tmp_path / "sbin" / "hapax-oom-score-enforce"
     root_failure_dest = tmp_path / "sbin" / "hapax-root-failure-intake"
     root_defer = tmp_path / "root-required"
-    drain_dir = root_defer / "sha" / "oom-containment"
     installed_source = tmp_path / "current-source"
-    drain_dir.mkdir(parents=True)
-    (drain_dir / "RUNBOOK.txt").write_text("run installer\n", encoding="utf-8")
     sibling_dir = root_defer / "other-sha" / "oom-containment"
     sibling_dir.mkdir(parents=True)
     (sibling_dir / "RUNBOOK.txt").write_text("run other installer\n", encoding="utf-8")
@@ -158,6 +156,8 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
         f"printf '%s\\n' \"$*\" >> {systemctl_calls!s}\n"
+        f'if [[ "$*" == "--user enable --now hapax-oom-policy-audit.timer" ]]; then test -x {tmp_path / "sbin" / "hapax-oom-policy-audit"!s} && test -f {user_dir / "hapax-oom-policy-audit.timer"!s} || exit 42; fi\n'
+        f'if [[ "$*" == "--user enable --now hapax-root-required-deploy-audit.timer" ]]; then test -x {tmp_path / "sbin" / "hapax-root-required-deploy-audit"!s} && test -f {user_dir / "hapax-root-required-deploy-audit.timer"!s} || exit 43; fi\n'
         'case "$*" in\n'
         '  *"show user@1000.service -p MainPID --value"*) printf "900\\n" ;;\n'
         f"{_systemctl_system_memory_cases()}\n"
@@ -204,19 +204,16 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
             "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(root_defer),
             "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": REPO_HEAD,
             "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
-            "HAPAX_ROOT_REQUIRED_DRAIN_DIR": str(drain_dir),
             "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source),
         },
     )
 
     assert result.returncode == 0, result.stderr
-    assert not drain_dir.exists()
     assert sibling_dir.exists()
     assert (
-        root_defer / "installed-receipts" / "oom-containment.sha"
+        tmp_path / "root-state" / "installed-receipts" / "oom-containment.sha"
     ).read_text().strip() == REPO_HEAD
     assert (installed_source / "scripts" / "install-p0-oom-containment").is_file()
-    assert "root-required deferral drained" in result.stdout
     user_manager_dropin = (system_dir / "user@1000.service.d" / "oom.conf").read_text(
         encoding="utf-8"
     )
@@ -337,12 +334,10 @@ def test_stale_deferred_oom_package_drains_without_rolling_back_newer_install(
     receipt.write_text(f"{sha_b}\n", encoding="utf-8")
     live_marker = tmp_path / "live-earlyoom"
     live_marker.write_text("newer B policy\n", encoding="utf-8")
-    staged_a = tmp_path / "staged-a"
-    staged_a.mkdir()
-    (staged_a / ".hapax-root-required-package-sha").write_text(f"{sha_a}\n", encoding="utf-8")
+    (drain_dir / ".hapax-root-required-package-sha").write_text(f"{sha_a}\n", encoding="utf-8")
 
     result = subprocess.run(
-        [str(INSTALLER), "--source", str(staged_a), "--install", "--verify-live"],
+        [str(INSTALLER), "--source", str(drain_dir), "--install", "--verify-live"],
         text=True,
         capture_output=True,
         check=False,

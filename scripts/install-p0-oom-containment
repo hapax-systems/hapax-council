@@ -29,16 +29,17 @@ SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
 SUDO="${HAPAX_OOM_INSTALL_SUDO-sudo}"
 RUNUSER="${HAPAX_OOM_RUNUSER:-runuser}"
 EFFECTIVE_UID="${HAPAX_OOM_EFFECTIVE_UID:-$(id -u)}"
-ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$TARGET_HOME/.cache/hapax/post-merge-root-required/current-source}"
+ROOT_REQUIRED_STATE_ROOT="${HAPAX_ROOT_REQUIRED_STATE_ROOT:-$TARGET_HOME/.local/state/hapax/root-required}"
+ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$ROOT_REQUIRED_STATE_ROOT/current-source}"
 ROOT_REQUIRED_DEFER_ROOT="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-}"
 if [ -z "$ROOT_REQUIRED_DEFER_ROOT" ] && [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ]; then
     ROOT_REQUIRED_DEFER_ROOT="$(dirname "$(dirname "$HAPAX_ROOT_REQUIRED_DRAIN_DIR")")"
 fi
 ROOT_REQUIRED_DEFER_ROOT="${ROOT_REQUIRED_DEFER_ROOT:-$TARGET_HOME/.cache/hapax/post-merge-root-required}"
-ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT:-$ROOT_REQUIRED_DEFER_ROOT/installed-receipts}"
+ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/installed-receipts}"
 ROOT_REQUIRED_GIT_REPO="${HAPAX_ROOT_REQUIRED_GIT_REPO:-/home/hapax/projects/hapax-council}"
 ROOT_REQUIRED_PACKAGE_SHA="${HAPAX_ROOT_REQUIRED_PACKAGE_SHA:-}"
-ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_DEFER_ROOT/.lock}"
+ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_STATE_ROOT/.lock}"
 ROOT_REQUIRED_RECEIPT="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/oom-containment.sha"
 SKIP_SUPERSEDED_INSTALL=0
 PROC_ROOT="${HAPAX_OOM_PROC_ROOT:-/proc}"
@@ -154,9 +155,33 @@ canonical_dir() {
 }
 
 acquire_root_required_lock() {
-    mkdir -p "$ROOT_REQUIRED_DEFER_ROOT"
+    mkdir -p "$ROOT_REQUIRED_DEFER_ROOT" "$(dirname "$ROOT_REQUIRED_LOCK_FILE")"
     exec {ROOT_REQUIRED_LOCK_FD}>"$ROOT_REQUIRED_LOCK_FILE"
     flock -x "$ROOT_REQUIRED_LOCK_FD"
+    migrate_legacy_root_required_state
+}
+
+migrate_legacy_root_required_state() {
+    local label legacy receipt temp
+    legacy="$ROOT_REQUIRED_DEFER_ROOT/current-source"
+    if [ ! -e "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" ] && [ -d "$legacy" ]; then
+        mkdir -p "$(dirname "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT")"
+        temp="$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT.migrate.$$"
+        rm -rf "$temp"
+        cp -a "$legacy" "$temp"
+        mv "$temp" "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"
+        echo "migrated root-required installed-source snapshot to durable state"
+    fi
+    for label in oom-containment apcupsd-power-alerts; do
+        legacy="$ROOT_REQUIRED_DEFER_ROOT/installed-receipts/$label.sha"
+        receipt="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/$label.sha"
+        if [ ! -f "$receipt" ] && [ "$legacy" != "$receipt" ] && [ -f "$legacy" ]; then
+            mkdir -p "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT"
+            cp "$legacy" "$receipt.migrate.$$"
+            mv -f "$receipt.migrate.$$" "$receipt"
+            echo "migrated $label installed-package receipt to durable state"
+        fi
+    done
 }
 
 validate_root_required_package_order() {
@@ -240,8 +265,8 @@ validate_package_source_matches_commit() {
     done
 }
 
-drain_root_required_deferral_dir() {
-    local drain="$1" root_real drain_real
+validate_root_required_deferral_dir() {
+    local drain="$1" root_real drain_real expected_real source_real
     [ -n "$drain" ] || return 0
     case "$drain" in
         /*) ;;
@@ -269,13 +294,31 @@ drain_root_required_deferral_dir() {
             return 1
             ;;
     esac
-    rm -rf "$drain_real"
-    echo "root-required deferral drained: $drain_real"
+    expected_real="$(canonical_dir "$ROOT_REQUIRED_DEFER_ROOT/$ROOT_REQUIRED_PACKAGE_SHA/oom-containment")" || {
+        echo "expected OOM deferral package is missing: $ROOT_REQUIRED_DEFER_ROOT/$ROOT_REQUIRED_PACKAGE_SHA/oom-containment; next action: rerun the exact command from that package's RUNBOOK.txt" >&2
+        return 1
+    }
+    source_real="$(canonical_dir "$SOURCE")" || {
+        echo "OOM install source is missing: $SOURCE; next action: rerun the exact staged RUNBOOK command" >&2
+        return 1
+    }
+    if [ "$drain_real" != "$expected_real" ] || [ "$source_real" != "$expected_real" ]; then
+        echo "refusing mismatched OOM deferral drain: source=$source_real drain=$drain_real expected=$expected_real; next action: use the unmodified command from $expected_real/RUNBOOK.txt" >&2
+        return 1
+    fi
+    ROOT_REQUIRED_DRAIN_REAL="$drain_real"
+}
+
+validate_root_required_deferral() {
+    [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ] || return 0
+    validate_root_required_deferral_dir "$HAPAX_ROOT_REQUIRED_DRAIN_DIR"
 }
 
 drain_root_required_deferral() {
     [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ] || return 0
-    drain_root_required_deferral_dir "$HAPAX_ROOT_REQUIRED_DRAIN_DIR"
+    [ -n "${ROOT_REQUIRED_DRAIN_REAL:-}" ] || validate_root_required_deferral
+    rm -rf "$ROOT_REQUIRED_DRAIN_REAL"
+    echo "root-required deferral drained: $ROOT_REQUIRED_DRAIN_REAL"
 }
 
 system_dropins=(
@@ -911,6 +954,7 @@ if [ "$INSTALL" -eq 1 ] && [ "$SKIP_SUPERSEDED_INSTALL" -eq 1 ]; then
     exit 0
 fi
 [ "$INSTALL" -eq 0 ] || validate_package_source_matches_commit
+[ "$INSTALL" -eq 0 ] || validate_root_required_deferral
 [ "$INSTALL" -eq 0 ] || install_live
 [ "$VERIFY_LIVE" -eq 0 ] || verify_live
 [ "$INSTALL" -eq 0 ] || record_installed_source

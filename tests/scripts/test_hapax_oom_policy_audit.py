@@ -16,11 +16,20 @@ PROTECTED_USER_UNIT_SCORES = {
     "studio-compositor.service": -800,
     "hapax-imagination.service": -800,
 }
+PROTECTED_USER_UNIT_MEMORY = {
+    "pipewire.service": (536870912, 268435456),
+    "pipewire-pulse.service": (536870912, 268435456),
+    "wireplumber.service": (536870912, 268435456),
+    "hapax-daimonion.service": (2147483648, 1073741824),
+    "studio-compositor.service": (6442450944, 3221225472),
+    "hapax-imagination.service": (6442450944, 3221225472),
+}
 
 
 def _protected_user_unit_cases(
     *,
     wrong_unit_score: bool = False,
+    wrong_unit_memory: bool = False,
     unit_pids: dict[str, int] | None = None,
     unit_cgroups: dict[str, str] | None = None,
 ) -> str:
@@ -31,9 +40,13 @@ def _protected_user_unit_cases(
         actual = 100 if wrong_unit_score and unit == "studio-compositor.service" else score
         pid = unit_pids.get(unit, 0)
         cgroup = unit_cgroups.get(unit, "")
+        memory_low, memory_min = PROTECTED_USER_UNIT_MEMORY[unit]
+        if wrong_unit_memory and unit == "studio-compositor.service":
+            memory_min = 0
         cases.append(
             f'  *"--user show {unit} --no-pager -p OOMScoreAdjust -p MainPID"*) '
-            f"printf 'OOMScoreAdjust={actual}\\nMainPID={pid}\\nControlGroup={cgroup}\\n' ;;"
+            f"printf 'OOMScoreAdjust={actual}\\nMainPID={pid}\\nControlGroup={cgroup}\\n"
+            f"MemoryLow={memory_low}\\nMemoryMin={memory_min}\\n' ;;"
         )
     return "\n".join(cases)
 
@@ -46,6 +59,7 @@ def _fake_systemctl(
     tmux_bounded: bool = True,
     tmux_slice: str = "app.slice",
     wrong_unit_score: bool = False,
+    wrong_unit_memory: bool = False,
     system_slice_finite_max: bool = False,
     protected_unit_pids: dict[str, int] | None = None,
     protected_unit_cgroups: dict[str, str] | None = None,
@@ -94,7 +108,7 @@ case "$*" in
   *"show user@1000.service --no-pager -p MemoryHigh"*) printf '{uid_memory_values}' ;;
   *"show user@1000.service"*) printf 'OOMScoreAdjust={user_oom}\\nDropInPaths=/etc/systemd/system/user@1000.service.d/oom.conf\\nMainPID=900\\n' ;;
   *"show app.slice"*) printf '{app_values}' ;;
-{_protected_user_unit_cases(wrong_unit_score=wrong_unit_score, unit_pids=protected_unit_pids, unit_cgroups=protected_unit_cgroups)}
+{_protected_user_unit_cases(wrong_unit_score=wrong_unit_score, wrong_unit_memory=wrong_unit_memory, unit_pids=protected_unit_pids, unit_cgroups=protected_unit_cgroups)}
   *"list-units --type=scope"*) printf 'tmux-spawn-a.scope loaded active running tmux child pane\\n' ;;
   *"show tmux-spawn-a.scope"*) printf '{tmux_values}' ;;
   *) echo "unexpected args: $*" >&2; exit 9 ;;
@@ -127,6 +141,7 @@ def _run(
     tmux_bounded: bool = True,
     tmux_slice: str = "app.slice",
     wrong_unit_score: bool = False,
+    wrong_unit_memory: bool = False,
     system_slice_finite_max: bool = False,
     protected_unit_pids: dict[str, int] | None = None,
     protected_unit_cgroups: dict[str, str] | None = None,
@@ -151,6 +166,7 @@ def _run(
                 tmux_bounded=tmux_bounded,
                 tmux_slice=tmux_slice,
                 wrong_unit_score=wrong_unit_score,
+                wrong_unit_memory=wrong_unit_memory,
                 system_slice_finite_max=system_slice_finite_max,
                 protected_unit_pids=protected_unit_pids,
                 protected_unit_cgroups=protected_unit_cgroups,
@@ -220,6 +236,23 @@ def test_audit_fails_when_protected_user_unit_loses_oom_score(tmp_path: Path) ->
     )
     assert check["status"] == "gap"
     assert "install-p0-oom-containment" in check["detail"]
+
+
+def test_audit_fails_when_protected_user_unit_loses_memory_reservation(
+    tmp_path: Path,
+) -> None:
+    result = _run(tmp_path, wrong_unit_memory=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item
+        for item in payload["checks"]
+        if item["name"] == "user_unit_studio-compositor.service_MemoryMin"
+    )
+    assert check["status"] == "gap"
+    assert check["target"] == "3221225472"
+    assert "memory reservation drifted" in check["detail"]
 
 
 def test_audit_fails_when_protected_user_unit_cgroup_pid_loses_oom_score(

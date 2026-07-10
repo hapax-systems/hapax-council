@@ -19,11 +19,29 @@ UPOWER_CONFIG = REPO_ROOT / "config" / "upower" / "90-hapax-apcupsd-owner.conf"
 REPO_HEAD = subprocess.run(
     ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, check=True, text=True, capture_output=True
 ).stdout.strip()
+APCUPSD_PACKAGE_FILES = (
+    "scripts/install-apcupsd-power-alerts",
+    "config/apcupsd/apcupsd.conf",
+    "config/apcupsd/hapax-power-event.py",
+    "config/apcupsd/onbattery",
+    "config/apcupsd/offbattery",
+    "config/apcupsd/doshutdown",
+    "config/upower/90-hapax-apcupsd-owner.conf",
+    "systemd/logrotate.d/hapax-ups-power-events",
+)
+
+
+def _copy_apcupsd_package(dest_root: Path) -> None:
+    for relative in APCUPSD_PACKAGE_FILES:
+        dest = dest_root / relative
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(REPO_ROOT / relative, dest)
 
 
 @pytest.fixture(autouse=True)
 def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HAPAX_POST_MERGE_ROOT_DEFER_DIR", str(tmp_path / "root-required"))
+    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_STATE_ROOT", str(tmp_path / "root-state"))
     monkeypatch.setenv(
         "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT", str(tmp_path / "installed-source")
     )
@@ -145,6 +163,8 @@ def test_power_event_helper_records_offbattery_delivery_failure(tmp_path: Path) 
     assert records[1]["delivery"]["attempted"] is True
     assert records[1]["delivery"]["ok"] is False
     assert records[1]["delivery"]["error"]
+    assert "UPS notification delivery failed" in result.stderr
+    assert "next action:" in result.stderr
 
 
 def test_power_event_helper_marks_doshutdown_as_distinct_intent(tmp_path: Path) -> None:
@@ -451,6 +471,58 @@ def test_installer_install_and_verify_live_against_temp_destinations(tmp_path: P
     assert records[1]["delivery"]["ok"] is False
 
 
+def test_root_invocation_uses_target_home_for_durable_package_state(tmp_path: Path) -> None:
+    root_home = tmp_path / "root-home"
+    target_home = tmp_path / "target-home"
+    dest = tmp_path / "apcupsd"
+    audit_dir = tmp_path / "hapax-log"
+    logrotate_dest = tmp_path / "logrotate.d" / "hapax-ups-power-events"
+    upower_dest = tmp_path / "UPower.conf.d" / "90-hapax-apcupsd-owner.conf"
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    fake_systemctl.chmod(0o755)
+    legacy_receipts = target_home / ".cache/hapax/post-merge-root-required/installed-receipts"
+    legacy_receipts.mkdir(parents=True)
+    (legacy_receipts / "oom-containment.sha").write_text(f"{REPO_HEAD}\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(INSTALLER), "--install", "--verify-live"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(root_home),
+            "HAPAX_APCUPSD_TARGET_UID": "1000",
+            "HAPAX_APCUPSD_TARGET_HOME": str(target_home),
+            "HAPAX_APCUPSD_DEST": str(dest),
+            "HAPAX_APCUPSD_AUDIT_DIR": str(audit_dir),
+            "HAPAX_APCUPSD_LOGROTATE_DEST": str(logrotate_dest),
+            "HAPAX_UPOWER_CONF_DEST": str(upower_dest),
+            "HAPAX_APCUPSD_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": "",
+            "HAPAX_ROOT_REQUIRED_STATE_ROOT": "",
+            "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": "",
+            "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT": "",
+            "HAPAX_ROOT_REQUIRED_LOCK_FILE": "",
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    receipt = (
+        target_home / ".local/state/hapax/root-required/installed-receipts/apcupsd-power-alerts.sha"
+    )
+    assert receipt.read_text(encoding="utf-8").strip() == REPO_HEAD
+    migrated_oom = (
+        target_home / ".local/state/hapax/root-required/installed-receipts/oom-containment.sha"
+    )
+    assert migrated_oom.read_text(encoding="utf-8").strip() == REPO_HEAD
+    assert "migrated oom-containment installed-package receipt" in result.stdout
+    assert not (root_home / ".local/state/hapax/root-required").exists()
+
+
 def test_unversioned_apcupsd_install_source_fails_before_live_mutation(tmp_path: Path) -> None:
     source = tmp_path / "not-a-repo"
     source.mkdir()
@@ -478,20 +550,7 @@ def test_claimed_apcupsd_commit_rejects_modified_package_before_live_mutation(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "staged"
-    package_files = (
-        "scripts/install-apcupsd-power-alerts",
-        "config/apcupsd/apcupsd.conf",
-        "config/apcupsd/hapax-power-event.py",
-        "config/apcupsd/onbattery",
-        "config/apcupsd/offbattery",
-        "config/apcupsd/doshutdown",
-        "config/upower/90-hapax-apcupsd-owner.conf",
-        "systemd/logrotate.d/hapax-ups-power-events",
-    )
-    for relative in package_files:
-        dest = source / relative
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(REPO_ROOT / relative, dest)
+    _copy_apcupsd_package(source)
     (source / ".hapax-root-required-package-sha").write_text(f"{REPO_HEAD}\n", encoding="utf-8")
     (source / "config" / "apcupsd" / "apcupsd.conf").write_text(
         "## apcupsd.conf v1.1 ##\nUPSNAME tampered\n", encoding="utf-8"
@@ -515,6 +574,38 @@ def test_claimed_apcupsd_commit_rejects_modified_package_before_live_mutation(
     assert result.returncode == 1
     assert "does not match claimed commit" in result.stderr
     assert "config/apcupsd/apcupsd.conf" in result.stderr
+    assert not live.exists()
+
+
+def test_mismatched_apcupsd_deferral_is_rejected_before_live_mutation(tmp_path: Path) -> None:
+    defer_root = tmp_path / "root-required"
+    expected = defer_root / REPO_HEAD / "apcupsd-power-alerts"
+    wrong = defer_root / REPO_HEAD / "wrong-package"
+    _copy_apcupsd_package(expected)
+    (expected / ".hapax-root-required-package-sha").write_text(f"{REPO_HEAD}\n", encoding="utf-8")
+    (expected / "RUNBOOK.txt").write_text("expected\n", encoding="utf-8")
+    wrong.mkdir(parents=True)
+    (wrong / "RUNBOOK.txt").write_text("wrong\n", encoding="utf-8")
+    live = tmp_path / "live-apcupsd"
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(expected), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+            "HAPAX_APCUPSD_DEST": str(live),
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_root),
+            "HAPAX_ROOT_REQUIRED_DRAIN_DIR": str(wrong),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": REPO_HEAD,
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "refusing mismatched apcupsd deferral drain" in result.stderr
     assert not live.exists()
 
 
@@ -587,9 +678,11 @@ def test_installer_drains_root_required_deferral_after_success(tmp_path: Path) -
     audit_dir = tmp_path / "hapax-log"
     logrotate_dest = tmp_path / "logrotate.d" / "hapax-ups-power-events"
     upower_dest = tmp_path / "UPower.conf.d" / "90-hapax-apcupsd-owner.conf"
-    drain_dir = tmp_path / "root-required" / "sha" / "apcupsd-power-alerts"
+    drain_dir = tmp_path / "root-required" / REPO_HEAD / "apcupsd-power-alerts"
     installed_source = tmp_path / "current-source"
     drain_dir.mkdir(parents=True)
+    _copy_apcupsd_package(drain_dir)
+    (drain_dir / ".hapax-root-required-package-sha").write_text(f"{REPO_HEAD}\n", encoding="utf-8")
     (drain_dir / "RUNBOOK.txt").write_text("run installer\n", encoding="utf-8")
     sibling_dir = tmp_path / "root-required" / "other-sha" / "apcupsd-power-alerts"
     sibling_dir.mkdir(parents=True)
@@ -599,7 +692,7 @@ def test_installer_drains_root_required_deferral_after_success(tmp_path: Path) -
     fake_systemctl.chmod(0o755)
 
     result = subprocess.run(
-        [str(INSTALLER), "--install", "--verify-live"],
+        [str(INSTALLER), "--source", str(drain_dir), "--install", "--verify-live"],
         text=True,
         capture_output=True,
         check=False,
@@ -622,7 +715,7 @@ def test_installer_drains_root_required_deferral_after_success(tmp_path: Path) -
     assert not drain_dir.exists()
     assert sibling_dir.exists()
     assert (
-        tmp_path / "root-required" / "installed-receipts" / "apcupsd-power-alerts.sha"
+        tmp_path / "root-state" / "installed-receipts" / "apcupsd-power-alerts.sha"
     ).read_text().strip() == REPO_HEAD
     assert (installed_source / "config" / "apcupsd" / "hapax-power-event.py").is_file()
     assert "root-required deferral drained" in result.stdout
@@ -661,12 +754,10 @@ def test_stale_deferred_apcupsd_package_does_not_roll_back_newer_install(
     live_dest.mkdir()
     live_marker = live_dest / "apcupsd.conf"
     live_marker.write_text("newer B policy\n", encoding="utf-8")
-    staged_a = tmp_path / "staged-a"
-    staged_a.mkdir()
-    (staged_a / ".hapax-root-required-package-sha").write_text(f"{sha_a}\n", encoding="utf-8")
+    (drain_dir / ".hapax-root-required-package-sha").write_text(f"{sha_a}\n", encoding="utf-8")
 
     result = subprocess.run(
-        [str(INSTALLER), "--source", str(staged_a), "--install", "--verify-live"],
+        [str(INSTALLER), "--source", str(drain_dir), "--install", "--verify-live"],
         text=True,
         capture_output=True,
         check=False,

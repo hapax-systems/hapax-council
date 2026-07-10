@@ -30,6 +30,14 @@ PROTECTED_USER_UNITS = {
     "studio-compositor.service": -800,
     "hapax-imagination.service": -800,
 }
+PROTECTED_USER_UNIT_MEMORY = {
+    "pipewire.service": {"MemoryLow": 512 * 1024**2, "MemoryMin": 256 * 1024**2},
+    "pipewire-pulse.service": {"MemoryLow": 512 * 1024**2, "MemoryMin": 256 * 1024**2},
+    "wireplumber.service": {"MemoryLow": 512 * 1024**2, "MemoryMin": 256 * 1024**2},
+    "hapax-daimonion.service": {"MemoryLow": 2 * 1024**3, "MemoryMin": 1024**3},
+    "studio-compositor.service": {"MemoryLow": 6 * 1024**3, "MemoryMin": 3 * 1024**3},
+    "hapax-imagination.service": {"MemoryLow": 6 * 1024**3, "MemoryMin": 3 * 1024**3},
+}
 
 
 @dataclass
@@ -259,7 +267,11 @@ def _cgroup_pids(cgroup: str) -> list[str]:
 def _protected_user_unit_pids() -> set[str]:
     protected: set[str] = set()
     for unit in PROTECTED_USER_UNITS:
-        values = _show(unit, ["OOMScoreAdjust", "MainPID", "ControlGroup"], user=True)
+        values = _show(
+            unit,
+            ["OOMScoreAdjust", "MainPID", "ControlGroup", "MemoryLow", "MemoryMin"],
+            user=True,
+        )
         main_pid = values.get("MainPID", "0")
         if main_pid and main_pid != "0":
             protected.add(main_pid)
@@ -271,7 +283,11 @@ def audit_protected_user_units() -> list[Check]:
     checks: list[Check] = []
     enforcer_attempted = False
     for unit, expected in PROTECTED_USER_UNITS.items():
-        values = _show(unit, ["OOMScoreAdjust", "MainPID", "ControlGroup"], user=True)
+        values = _show(
+            unit,
+            ["OOMScoreAdjust", "MainPID", "ControlGroup", "MemoryLow", "MemoryMin"],
+            user=True,
+        )
         if "_error" in values:
             checks.append(
                 Check(
@@ -294,6 +310,23 @@ def audit_protected_user_units() -> list[Check]:
         checks.append(
             Check(f"user_unit_{unit}_OOMScoreAdjust", status, str(expected), actual, detail)
         )
+        for key, memory_expected in PROTECTED_USER_UNIT_MEMORY[unit].items():
+            memory_actual = values.get(key, "")
+            memory_status = "pass" if _int_value(memory_actual) == memory_expected else "gap"
+            memory_detail = (
+                ""
+                if memory_status == "pass"
+                else f"broadcast-critical user unit memory reservation drifted; {NEXT_OOM_INSTALL}"
+            )
+            checks.append(
+                Check(
+                    f"user_unit_{unit}_{key}",
+                    memory_status,
+                    str(memory_expected),
+                    memory_actual,
+                    memory_detail,
+                )
+            )
         live_pids = _cgroup_pids(values.get("ControlGroup", ""))
         main_pid = values.get("MainPID", "0")
         if main_pid.isdigit() and main_pid != "0":

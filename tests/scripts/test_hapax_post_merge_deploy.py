@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -51,6 +53,8 @@ P0_OOM_AUDIT_FILES = {
     ),
 }
 ROOT_AUDIT_SOURCE_FILES = {
+    "scripts/install-p0-oom-containment": "#!/usr/bin/env bash\n",
+    "scripts/install-apcupsd-power-alerts": "#!/usr/bin/env bash\n",
     "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\necho enforcer\n",
     "scripts/hapax-root-failure-intake": "#!/usr/bin/env bash\necho root failure\n",
     **P0_OOM_AUDIT_FILES,
@@ -87,6 +91,10 @@ ROOT_AUDIT_SOURCE_FILES = {
     "systemd/units/hapax-oom-score-enforce.timer": (
         "[Unit]\n# Hapax-Install-Scope: system\n[Timer]\nOnUnitActiveSec=30s\n"
     ),
+    "systemd/units/app.slice.d/oom-containment.conf": (
+        "[Slice]\nMemoryHigh=72G\nMemoryMax=88G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
+    ),
+    **P0_USER_OOM_DROPINS,
     "config/apcupsd/apcupsd.conf": "## apcupsd.conf v1.1 ##\nUPSNAME podium\n",
     "config/apcupsd/hapax-power-event.py": "#!/usr/bin/env python3\n",
     "config/apcupsd/onbattery": "#!/usr/bin/env bash\n",
@@ -274,6 +282,10 @@ def _root_audit_env(
     missing_source_rel: str | None = None,
 ) -> dict[str, str]:
     source_root = tmp_path / "source"
+    installed_source = tmp_path / "installed-source"
+    root_defer = tmp_path / "no-deferrals"
+    state_root = tmp_path / "root-state"
+    receipt_root = root_defer / "installed-receipts"
     system_dir = tmp_path / "etc" / "systemd" / "system"
     apcupsd_dir = tmp_path / "etc" / "apcupsd"
     logrotate_dest = tmp_path / "etc" / "logrotate.d" / "hapax-ups-power-events"
@@ -296,39 +308,68 @@ def _root_audit_env(
         "systemd/logrotate.d/hapax-ups-power-events": logrotate_dest,
         "config/upower/90-hapax-apcupsd-owner.conf": upower_dest,
     }
+    system_units = {
+        "systemd/units/hapax-root-failure-intake@.service",
+        "systemd/units/hapax-oom-score-enforce.service",
+        "systemd/units/hapax-oom-score-enforce.timer",
+    }
     for rel in ROOT_AUDIT_SOURCE_FILES:
         if rel.startswith("systemd/system/"):
             dests[rel] = system_dir / rel.removeprefix("systemd/system/")
         elif rel.startswith("systemd/units/"):
             unit_name = rel.removeprefix("systemd/units/")
-            if rel in P0_OOM_AUDIT_FILES:
-                dests[rel] = user_dir / unit_name
-            else:
+            if rel in system_units:
                 dests[rel] = system_dir / unit_name
+            else:
+                dests[rel] = user_dir / unit_name
         elif rel.startswith("config/apcupsd/"):
             dests[rel] = apcupsd_dir / rel.removeprefix("config/apcupsd/")
+    executable_rels = {
+        "scripts/install-p0-oom-containment",
+        "scripts/install-apcupsd-power-alerts",
+        "scripts/hapax-oom-score-enforce",
+        "scripts/hapax-root-failure-intake",
+        "scripts/hapax-oom-policy-audit",
+        "scripts/hapax-root-required-deploy-audit",
+        "config/apcupsd/hapax-power-event.py",
+        "config/apcupsd/onbattery",
+        "config/apcupsd/offbattery",
+        "config/apcupsd/doshutdown",
+    }
     for rel, body in ROOT_AUDIT_SOURCE_FILES.items():
+        source = source_root / rel
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(body, encoding="utf-8")
+        if rel in executable_rels:
+            source.chmod(0o755)
         if rel != missing_source_rel:
-            source = source_root / rel
-            source.parent.mkdir(parents=True, exist_ok=True)
-            source.write_text(body, encoding="utf-8")
-        dest = dests[rel]
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(("stale\n" if rel == drift_rel else body), encoding="utf-8")
-        if rel in {
-            "scripts/hapax-oom-score-enforce",
-            "scripts/hapax-root-failure-intake",
-            "scripts/hapax-oom-policy-audit",
-            "scripts/hapax-root-required-deploy-audit",
-            "config/apcupsd/hapax-power-event.py",
-            "config/apcupsd/onbattery",
-            "config/apcupsd/offbattery",
-            "config/apcupsd/doshutdown",
-        }:
-            dest.chmod(0o755)
+            installed = installed_source / rel
+            installed.parent.mkdir(parents=True, exist_ok=True)
+            installed.write_text(body, encoding="utf-8")
+            if rel in executable_rels:
+                installed.chmod(0o755)
+        if rel in dests:
+            dest = dests[rel]
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(("stale\n" if rel == drift_rel else body), encoding="utf-8")
+            if rel in executable_rels:
+                dest.chmod(0o755)
+    _git(source_root, "init", "-b", "main")
+    _git(source_root, "config", "user.email", "root-audit@example.test")
+    _git(source_root, "config", "user.name", "Root Audit Test")
+    _git(source_root, "add", ".")
+    _git(source_root, "commit", "-m", "root audit package")
+    package_sha = _git(source_root, "rev-parse", "HEAD")
+    receipt_root.mkdir(parents=True)
+    (receipt_root / "oom-containment.sha").write_text(f"{package_sha}\n", encoding="utf-8")
+    (receipt_root / "apcupsd-power-alerts.sha").write_text(f"{package_sha}\n", encoding="utf-8")
     return {
         **os.environ,
         "HAPAX_ROOT_REQUIRED_SOURCE_ROOT": str(source_root),
+        "HAPAX_ROOT_REQUIRED_STATE_ROOT": str(state_root),
+        "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source),
+        "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT": str(receipt_root),
+        "HAPAX_ROOT_REQUIRED_GIT_REPO": str(source_root),
         "HAPAX_OOM_ENFORCER_DEST": str(enforcer_dest),
         "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
         "HAPAX_OOM_POLICY_AUDIT_DEST": str(oom_audit_dest),
@@ -340,7 +381,7 @@ def _root_audit_env(
         "HAPAX_APCUPSD_LOGROTATE_DEST": str(logrotate_dest),
         "HAPAX_UPOWER_CONF_DEST": str(upower_dest),
         "HAPAX_ROOT_AUDIT_SYSTEMCTL": str(fake_systemctl),
-        "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(tmp_path / "no-deferrals"),
+        "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(root_defer),
     }
 
 
@@ -706,6 +747,7 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
     bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
     trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
     defer_dir = tmp_path / "root-required"
+    installed_source = tmp_path / "root-state" / "current-source"
     stale_deferral = defer_dir / "old-sha" / "oom-containment"
     stale_deferral.mkdir(parents=True)
     (stale_deferral / "RUNBOOK.txt").write_text("old deferred install\n", encoding="utf-8")
@@ -718,6 +760,7 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
         "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
         "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
         "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_dir),
+        "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source),
     }
 
     result = subprocess.run(
@@ -732,6 +775,9 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
     assert "--install --verify-live" in installer_calls.read_text(encoding="utf-8")
     assert stale_deferral.exists(), (
         "only an explicit staged RUNBOOK invocation may drain a deferral"
+    )
+    assert not installed_source.exists(), (
+        "post-merge must not republish installed source after the owning installer releases its lock"
     )
     calls = systemctl_calls.read_text(encoding="utf-8") if systemctl_calls.exists() else ""
     assert "--user restart app.slice" not in calls
@@ -849,6 +895,7 @@ def test_root_required_deferral_staging_is_locked_and_atomic() -> None:
     assert 'temp="$ROOT_DEFER_DIR/$SHA/.${label}.tmp.$$"' in body
     assert 'mv "$temp" "$dest"' in body
     assert "already installed at $SHA; deferral not recreated" in body
+    assert "record_root_required_source" not in body
 
 
 def test_root_required_audit_fails_when_oom_enforcer_source_missing(tmp_path: Path) -> None:
@@ -885,46 +932,63 @@ def test_root_required_audit_detects_oom_enforcer_drift(tmp_path: Path) -> None:
     assert "install-p0-oom-containment --install --verify-live" in result.stderr
 
 
-def test_root_required_audit_prefers_matching_installed_source_over_stale_activation(
+def test_root_required_audit_rejects_snapshot_not_matching_installed_receipt(
     tmp_path: Path,
 ) -> None:
     env = _root_audit_env(tmp_path)
-    source_root = Path(env["HAPAX_ROOT_REQUIRED_SOURCE_ROOT"])
-    installed_source = tmp_path / "installed-root-source"
     rel = "scripts/hapax-oom-score-enforce"
-    (source_root / rel).write_text("stale activation source\n", encoding="utf-8")
-    installed_path = installed_source / rel
-    installed_path.parent.mkdir(parents=True)
-    installed_path.write_text(ROOT_AUDIT_SOURCE_FILES[rel], encoding="utf-8")
+    installed_path = Path(env["HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"]) / rel
+    installed_path.write_text("stale installed snapshot\n", encoding="utf-8")
 
     result = subprocess.run(
         [str(ROOT_REQUIRED_AUDIT)],
         text=True,
         capture_output=True,
         check=False,
-        env={**env, "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source)},
+        env=env,
     )
 
-    assert result.returncode == 0, result.stderr
-    assert "root-required post-merge deploy deferrals: none" in result.stdout
+    assert result.returncode == 1
+    assert "installed source is not bound" in result.stderr
+    assert "oom-containment receipt" in result.stderr
 
 
-def test_root_required_audit_falls_back_to_activation_when_snapshot_file_absent(
+def test_root_required_audit_fails_closed_when_snapshot_file_absent(
     tmp_path: Path,
 ) -> None:
     env = _root_audit_env(tmp_path)
-    installed_source = tmp_path / "installed-root-source"
-    installed_source.mkdir()
+    installed = Path(env["HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"])
+    (installed / "scripts" / "hapax-oom-score-enforce").unlink()
 
     result = subprocess.run(
         [str(ROOT_REQUIRED_AUDIT)],
         text=True,
         capture_output=True,
         check=False,
-        env={**env, "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source)},
+        env=env,
     )
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1
+    assert "installed source is not bound" in result.stderr
+    assert "root-required source missing" in result.stderr
+
+
+def test_root_required_audit_fails_when_installed_receipt_is_missing(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    receipt = Path(env["HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT"]) / "oom-containment.sha"
+    receipt.unlink()
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "installed receipt missing" in result.stderr
+    assert "oom-containment.sha" in result.stderr
 
 
 def test_root_required_audit_detects_nonexecutable_hook(tmp_path: Path) -> None:
@@ -1028,6 +1092,27 @@ def test_root_required_audit_passes_when_oom_enforcer_matches(tmp_path: Path) ->
 
     assert result.returncode == 0, result.stderr
     assert "root-required post-merge deploy deferrals: none" in result.stdout
+
+
+def test_root_required_audit_waits_for_shared_package_lock(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    lock_path = Path(env["HAPAX_ROOT_REQUIRED_STATE_ROOT"]) / ".lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        audit = subprocess.Popen(
+            [str(ROOT_REQUIRED_AUDIT)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        time.sleep(0.2)
+        assert audit.poll() is None
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    stdout, stderr = audit.communicate(timeout=5)
+    assert audit.returncode == 0, (stdout, stderr)
 
 
 def test_apcupsd_power_alert_deploy_uses_dedicated_installer(tmp_path: Path) -> None:

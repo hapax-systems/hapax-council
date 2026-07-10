@@ -5,8 +5,11 @@ set -euo pipefail
 ROOT_DEFER_DIR="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$HOME/.cache/hapax/post-merge-root-required}"
 # Deferrals are cleared only by the explicit HAPAX_ROOT_REQUIRED_DRAIN_DIR path
 # in the owning installer; this audit intentionally never mutates them.
-SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_SOURCE_ROOT:-$HOME/.cache/hapax/source-activation/worktree}"
-INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$ROOT_DEFER_DIR/current-source}"
+ROOT_REQUIRED_STATE_ROOT="${HAPAX_ROOT_REQUIRED_STATE_ROOT:-$HOME/.local/state/hapax/root-required}"
+INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$ROOT_REQUIRED_STATE_ROOT/current-source}"
+INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/installed-receipts}"
+ROOT_REQUIRED_GIT_REPO="${HAPAX_ROOT_REQUIRED_GIT_REPO:-$HOME/projects/hapax-council}"
+ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_STATE_ROOT/.lock}"
 OOM_ENFORCER_DEST="${HAPAX_OOM_ENFORCER_DEST:-/usr/local/sbin/hapax-oom-score-enforce}"
 ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapax-root-failure-intake}"
 OOM_POLICY_AUDIT_DEST="${HAPAX_OOM_POLICY_AUDIT_DEST:-/usr/local/sbin/hapax-oom-policy-audit}"
@@ -19,6 +22,53 @@ APCUPSD_LOGROTATE_DEST="${HAPAX_APCUPSD_LOGROTATE_DEST:-/etc/logrotate.d/hapax-u
 UPOWER_CONF_DEST="${HAPAX_UPOWER_CONF_DEST:-/etc/UPower/UPower.conf.d/90-hapax-apcupsd-owner.conf}"
 SYSTEMCTL="${HAPAX_ROOT_AUDIT_SYSTEMCTL:-systemctl}"
 
+oom_package_files=(
+    scripts/install-p0-oom-containment
+    scripts/hapax-oom-score-enforce
+    scripts/hapax-root-failure-intake
+    scripts/hapax-oom-policy-audit
+    scripts/hapax-root-required-deploy-audit
+    config/earlyoom/default
+    systemd/system/system.slice.d/oom-containment.conf
+    systemd/system/user-1000.slice.d/oom-containment.conf
+    systemd/system/user@1000.service.d/oom.conf
+    systemd/system/apcupsd.service.d/oom-protect.conf
+    systemd/system/systemd-logind.service.d/oom-protect.conf
+    systemd/system/systemd-resolved.service.d/oom-protect.conf
+    systemd/system/systemd-timesyncd.service.d/oom-protect.conf
+    systemd/system/NetworkManager.service.d/oom-protect.conf
+    systemd/system/dbus-broker.service.d/oom-protect.conf
+    systemd/system/sshd.service.d/oom-protect.conf
+    systemd/units/hapax-root-failure-intake@.service
+    systemd/units/hapax-oom-score-enforce.service
+    systemd/units/hapax-oom-score-enforce.timer
+    systemd/units/hapax-oom-policy-audit.service
+    systemd/units/hapax-oom-policy-audit.timer
+    systemd/units/hapax-root-required-deploy-audit.service
+    systemd/units/hapax-root-required-deploy-audit.timer
+    systemd/units/app.slice.d/oom-containment.conf
+    systemd/units/pipewire.service.d/oom-protect.conf
+    systemd/units/pipewire-pulse.service.d/oom-protect.conf
+    systemd/units/wireplumber.service.d/oom-protect.conf
+    systemd/units/hapax-daimonion.service.d/oom-protect.conf
+    systemd/units/studio-compositor.service.d/oom-protect.conf
+    systemd/units/hapax-imagination.service.d/oom-protect.conf
+)
+apcupsd_package_files=(
+    scripts/install-apcupsd-power-alerts
+    config/apcupsd/apcupsd.conf
+    config/apcupsd/hapax-power-event.py
+    config/apcupsd/onbattery
+    config/apcupsd/offbattery
+    config/apcupsd/doshutdown
+    config/upower/90-hapax-apcupsd-owner.conf
+    systemd/logrotate.d/hapax-ups-power-events
+)
+
+mkdir -p "$ROOT_DEFER_DIR" "$(dirname "$ROOT_REQUIRED_LOCK_FILE")"
+exec {ROOT_REQUIRED_LOCK_FD}>"$ROOT_REQUIRED_LOCK_FILE"
+flock -s "$ROOT_REQUIRED_LOCK_FD"
+
 rc=0
 
 pending_runbooks() {
@@ -28,11 +78,32 @@ pending_runbooks() {
 
 source_for_rel() {
     local rel="$1"
-    if [ -f "$INSTALLED_SOURCE_ROOT/$rel" ]; then
-        printf '%s/%s\n' "$INSTALLED_SOURCE_ROOT" "$rel"
-    else
-        printf '%s/%s\n' "$SOURCE_ROOT" "$rel"
+    printf '%s/%s\n' "$INSTALLED_SOURCE_ROOT" "$rel"
+}
+
+audit_package_receipt() {
+    local label="$1" receipt sha rel failed=0
+    shift
+    receipt="$INSTALLED_RECEIPT_ROOT/$label.sha"
+    if [ ! -f "$receipt" ]; then
+        echo "root-required installed receipt missing: $receipt" >&2
+        echo "  next action: rerun the newest governed $label installer package" >&2
+        return 1
     fi
+    sha="$(tr -d '[:space:]' < "$receipt")"
+    if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || ! git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$sha^{commit}" 2>/dev/null; then
+        echo "root-required installed receipt is invalid or unavailable: $receipt sha=$sha" >&2
+        echo "  next action: fetch the installed commit into $ROOT_REQUIRED_GIT_REPO and rerun the newest governed $label installer package" >&2
+        return 1
+    fi
+    for rel in "$@"; do
+        if [ ! -f "$INSTALLED_SOURCE_ROOT/$rel" ] || ! cmp -s <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$sha:$rel") "$INSTALLED_SOURCE_ROOT/$rel"; then
+            echo "root-required installed source is not bound to $label receipt $sha: $INSTALLED_SOURCE_ROOT/$rel" >&2
+            echo "  next action: rerun the newest governed $label installer package from an exact staged RUNBOOK" >&2
+            failed=1
+        fi
+    done
+    [ "$failed" -eq 0 ]
 }
 
 compare_root_file() {
@@ -40,7 +111,7 @@ compare_root_file() {
     source="$(source_for_rel "$rel")"
     if [ ! -f "$source" ]; then
         echo "root-required source missing: $source" >&2
-        echo "  next action: rerun the owning root installer to refresh $INSTALLED_SOURCE_ROOT, or restore source activation and set HAPAX_ROOT_REQUIRED_SOURCE_ROOT=<repo>" >&2
+        echo "  next action: rerun the owning root installer to refresh the receipt-bound snapshot at $INSTALLED_SOURCE_ROOT" >&2
         return 1
     fi
     if [ ! -f "$dest" ]; then
@@ -156,6 +227,13 @@ audit_root_installs() {
         "systemd/units/hapax-oom-policy-audit.timer|$SYSTEMD_USER_DIR/hapax-oom-policy-audit.timer"
         "systemd/units/hapax-root-required-deploy-audit.service|$SYSTEMD_USER_DIR/hapax-root-required-deploy-audit.service"
         "systemd/units/hapax-root-required-deploy-audit.timer|$SYSTEMD_USER_DIR/hapax-root-required-deploy-audit.timer"
+        "systemd/units/app.slice.d/oom-containment.conf|$SYSTEMD_USER_DIR/app.slice.d/oom-containment.conf"
+        "systemd/units/pipewire.service.d/oom-protect.conf|$SYSTEMD_USER_DIR/pipewire.service.d/oom-protect.conf"
+        "systemd/units/pipewire-pulse.service.d/oom-protect.conf|$SYSTEMD_USER_DIR/pipewire-pulse.service.d/oom-protect.conf"
+        "systemd/units/wireplumber.service.d/oom-protect.conf|$SYSTEMD_USER_DIR/wireplumber.service.d/oom-protect.conf"
+        "systemd/units/hapax-daimonion.service.d/oom-protect.conf|$SYSTEMD_USER_DIR/hapax-daimonion.service.d/oom-protect.conf"
+        "systemd/units/studio-compositor.service.d/oom-protect.conf|$SYSTEMD_USER_DIR/studio-compositor.service.d/oom-protect.conf"
+        "systemd/units/hapax-imagination.service.d/oom-protect.conf|$SYSTEMD_USER_DIR/hapax-imagination.service.d/oom-protect.conf"
         "config/apcupsd/apcupsd.conf|$APCUPSD_DEST/apcupsd.conf"
         "config/apcupsd/hapax-power-event.py|$APCUPSD_DEST/hapax-power-event.py"
         "config/apcupsd/onbattery|$APCUPSD_DEST/onbattery"
@@ -181,6 +259,8 @@ audit_root_installs() {
 
 mapfile -t runbooks < <(pending_runbooks)
 if [ "${#runbooks[@]}" -eq 0 ]; then
+    audit_package_receipt "oom-containment" "${oom_package_files[@]}" || rc=1
+    audit_package_receipt "apcupsd-power-alerts" "${apcupsd_package_files[@]}" || rc=1
     audit_root_installs || rc=1
     if [ "$rc" -ne 0 ]; then
         exit "$rc"
