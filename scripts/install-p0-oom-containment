@@ -5,20 +5,28 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE="$ROOT"
 SYSTEMD_SYSTEM_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
-SYSTEMD_USER_DIR="${HAPAX_OOM_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
-SYSTEMD_USER_CONTROL_DIR="${HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR:-$HOME/.config/systemd/user.control}"
+TARGET_UID="${HAPAX_OOM_TARGET_UID:-1000}"
+TARGET_HOME="${HAPAX_OOM_TARGET_HOME:-}"
+if [ -z "$TARGET_HOME" ]; then
+    TARGET_HOME="$(getent passwd "$TARGET_UID" | cut -d: -f6 || true)"
+fi
+if [ -z "$TARGET_HOME" ]; then
+    echo "unable to resolve home for OOM target UID $TARGET_UID; next action: set HAPAX_OOM_TARGET_UID and HAPAX_OOM_TARGET_HOME explicitly" >&2
+    exit 2
+fi
+SYSTEMD_USER_DIR="${HAPAX_OOM_SYSTEMD_USER_DIR:-$TARGET_HOME/.config/systemd/user}"
+SYSTEMD_USER_CONTROL_DIR="${HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR:-$TARGET_HOME/.config/systemd/user.control}"
 EARLYOOM_DEST="${HAPAX_OOM_EARLYOOM_DEST:-/etc/default/earlyoom}"
 OOM_ENFORCER_DEST="${HAPAX_OOM_ENFORCER_DEST:-/usr/local/sbin/hapax-oom-score-enforce}"
 ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapax-root-failure-intake}"
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
 SUDO="${HAPAX_OOM_INSTALL_SUDO-sudo}"
-ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$HOME/.cache/hapax/post-merge-root-required/current-source}"
+ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$TARGET_HOME/.cache/hapax/post-merge-root-required/current-source}"
 ROOT_REQUIRED_DEFER_ROOT="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-}"
 if [ -z "$ROOT_REQUIRED_DEFER_ROOT" ] && [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ]; then
     ROOT_REQUIRED_DEFER_ROOT="$(dirname "$(dirname "$HAPAX_ROOT_REQUIRED_DRAIN_DIR")")"
 fi
-ROOT_REQUIRED_DEFER_ROOT="${ROOT_REQUIRED_DEFER_ROOT:-$HOME/.cache/hapax/post-merge-root-required}"
-ROOT_REQUIRED_LABEL="oom-containment"
+ROOT_REQUIRED_DEFER_ROOT="${ROOT_REQUIRED_DEFER_ROOT:-$TARGET_HOME/.cache/hapax/post-merge-root-required}"
 PROC_ROOT="${HAPAX_OOM_PROC_ROOT:-/proc}"
 if [ -n "${HAPAX_OOM_CGROUP_ROOT:-}" ]; then
     CGROUP_ROOT="$HAPAX_OOM_CGROUP_ROOT"
@@ -27,7 +35,6 @@ elif [ "$PROC_ROOT" != "/proc" ]; then
 else
     CGROUP_ROOT="/sys/fs/cgroup"
 fi
-TARGET_UID="${HAPAX_OOM_TARGET_UID:-$(id -u)}"
 ROOT_REQUIRED_RC=77
 INSTALL=0
 CHECK=0
@@ -40,6 +47,7 @@ usage: scripts/install-p0-oom-containment [--source DIR] [--check] [--install] [
 
 Installs the P0 podium OOM containment package:
   systemd/system/user@1000.service.d/oom.conf       -> /etc/systemd/system/user@1000.service.d/oom.conf
+  systemd/system/system.slice.d/oom-containment.conf -> /etc/systemd/system/system.slice.d/oom-containment.conf
   systemd/system/*.service.d/oom-protect.conf       -> /etc/systemd/system/*.service.d/oom-protect.conf
   systemd/units/hapax-root-failure-intake@.service  -> /etc/systemd/system/
   systemd/units/hapax-oom-score-enforce.{service,timer} -> /etc/systemd/system/
@@ -116,37 +124,32 @@ canonical_dir() {
     (cd "$dir" && pwd -P)
 }
 
-pending_root_required_deferral_dirs() {
-    [ -d "$ROOT_REQUIRED_DEFER_ROOT" ] || return 0
-    find "$ROOT_REQUIRED_DEFER_ROOT" -mindepth 2 -maxdepth 2 -type d -name "$ROOT_REQUIRED_LABEL" | sort
-}
-
 drain_root_required_deferral_dir() {
     local drain="$1" root_real drain_real
     [ -n "$drain" ] || return 0
     case "$drain" in
         /*) ;;
         *)
-            echo "refusing relative root-required drain dir: $drain" >&2
+            echo "refusing relative root-required drain dir: $drain; next action: set HAPAX_ROOT_REQUIRED_DRAIN_DIR to the absolute deferral directory named in its RUNBOOK.txt" >&2
             return 1
             ;;
     esac
     [ -f "$drain/RUNBOOK.txt" ] || {
-        echo "root-required drain dir missing RUNBOOK.txt: $drain" >&2
+        echo "root-required drain dir missing RUNBOOK.txt: $drain; next action: inspect the staged deferral and rerun with the exact directory named by hapax-post-merge-deploy" >&2
         return 1
     }
     root_real="$(canonical_dir "$ROOT_REQUIRED_DEFER_ROOT")" || {
-        echo "root-required defer root missing: $ROOT_REQUIRED_DEFER_ROOT" >&2
+        echo "root-required defer root missing: $ROOT_REQUIRED_DEFER_ROOT; next action: set HAPAX_POST_MERGE_ROOT_DEFER_DIR to the parent of the requested deferral" >&2
         return 1
     }
     drain_real="$(canonical_dir "$drain")" || {
-        echo "root-required drain dir missing: $drain" >&2
+        echo "root-required drain dir missing: $drain; next action: clear HAPAX_ROOT_REQUIRED_DRAIN_DIR if it was already drained, or use the extant staged directory" >&2
         return 1
     }
     case "$drain_real" in
         "$root_real"/*) ;;
         *)
-            echo "refusing root-required drain dir outside defer root: $drain" >&2
+            echo "refusing root-required drain dir outside defer root: $drain; next action: set HAPAX_POST_MERGE_ROOT_DEFER_DIR to its governed parent and retry" >&2
             return 1
             ;;
     esac
@@ -155,25 +158,12 @@ drain_root_required_deferral_dir() {
 }
 
 drain_root_required_deferral() {
-    local drain found=0
-    if [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ]; then
-        found=1
-        mkdir -p "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"
-        cp -a "$SOURCE"/. "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"/
-        drain_root_required_deferral_dir "$HAPAX_ROOT_REQUIRED_DRAIN_DIR"
-    fi
-    while IFS= read -r drain; do
-        [ -n "$drain" ] || continue
-        [ -d "$drain" ] || continue
-        found=1
-        mkdir -p "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"
-        cp -a "$SOURCE"/. "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"/
-        drain_root_required_deferral_dir "$drain"
-    done < <(pending_root_required_deferral_dirs)
-    [ "$found" -eq 0 ] || return 0
+    [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ] || return 0
+    drain_root_required_deferral_dir "$HAPAX_ROOT_REQUIRED_DRAIN_DIR"
 }
 
 system_dropins=(
+    systemd/system/system.slice.d/oom-containment.conf
     systemd/system/user-1000.slice.d/oom-containment.conf
     systemd/system/user@1000.service.d/oom.conf
     systemd/system/apcupsd.service.d/oom-protect.conf
@@ -221,6 +211,15 @@ protected_user_unit_scores=(
 
 src_path() {
     printf '%s/%s\n' "$SOURCE" "$1"
+}
+
+record_installed_source() {
+    local rel dest
+    for rel in scripts/install-p0-oom-containment "${system_dropins[@]}" "${system_units[@]}" "$user_dropin" "${user_protection_dropins[@]}" "$earlyoom_source" "$oom_enforcer_source" "$root_failure_intake_source"; do
+        dest="$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT/$rel"
+        mkdir -p "$(dirname "$dest")"
+        cp -a "$(src_path "$rel")" "$dest"
+    done
 }
 
 app_slice_value() {
@@ -299,6 +298,11 @@ check_source() {
     source_unit_value systemd/system/user-1000.slice.d/oom-containment.conf MemorySwapMax >/dev/null
     source_unit_value systemd/system/user-1000.slice.d/oom-containment.conf MemoryLow >/dev/null
     source_unit_value systemd/system/user-1000.slice.d/oom-containment.conf MemoryMin >/dev/null
+    source_unit_value systemd/system/system.slice.d/oom-containment.conf MemoryHigh >/dev/null
+    source_unit_value systemd/system/system.slice.d/oom-containment.conf MemoryMax >/dev/null
+    source_unit_value systemd/system/system.slice.d/oom-containment.conf MemorySwapMax >/dev/null
+    source_unit_value systemd/system/system.slice.d/oom-containment.conf MemoryLow >/dev/null
+    source_unit_value systemd/system/system.slice.d/oom-containment.conf MemoryMin >/dev/null
     source_unit_value systemd/system/user@1000.service.d/oom.conf MemoryHigh >/dev/null
     source_unit_value systemd/system/user@1000.service.d/oom.conf MemoryMax >/dev/null
     source_unit_value systemd/system/user@1000.service.d/oom.conf MemorySwapMax >/dev/null
@@ -528,6 +532,7 @@ install_live() {
     }
     "$SYSTEMCTL" --user daemon-reload
     if [ "$APPLY_RUNTIME" -eq 1 ]; then
+        apply_system_runtime_memory system.slice systemd/system/system.slice.d/oom-containment.conf
         apply_system_runtime_memory user-1000.slice systemd/system/user-1000.slice.d/oom-containment.conf
         apply_system_runtime_memory user@1000.service systemd/system/user@1000.service.d/oom.conf
         mem_high="$(app_slice_value MemoryHigh)"
@@ -598,6 +603,7 @@ verify_live() {
         verify_pair "$(src_path "$rel")" "$SYSTEMD_USER_DIR/${rel#systemd/units/}"
     done
     verify_user_manager_oom_score
+    verify_system_unit_runtime_memory system.slice systemd/system/system.slice.d/oom-containment.conf
     verify_system_unit_runtime_memory user-1000.slice systemd/system/user-1000.slice.d/oom-containment.conf
     verify_system_unit_runtime_memory user@1000.service systemd/system/user@1000.service.d/oom.conf
     verify_app_slice_runtime
@@ -718,5 +724,6 @@ verify_user_process_oom_floor() {
 [ "$CHECK" -eq 0 ] || check_source
 [ "$INSTALL" -eq 0 ] || install_live
 [ "$VERIFY_LIVE" -eq 0 ] || verify_live
+[ "$INSTALL" -eq 0 ] || record_installed_source
 [ "$INSTALL" -eq 0 ] || drain_root_required_deferral
 echo "p0 oom containment install/check complete"

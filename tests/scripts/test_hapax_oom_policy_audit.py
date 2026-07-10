@@ -51,8 +51,8 @@ def _fake_systemctl(
 ) -> Path:
     path = tmp_path / "systemctl"
     app_values = (
-        "MemoryHigh=85899345920\n"
-        "MemoryMax=111669149696\n"
+        "MemoryHigh=77309411328\n"
+        "MemoryMax=94489280512\n"
         "MemorySwapMax=8589934592\n"
         "MemoryLow=17179869184\n"
         "MemoryMin=8589934592\n"
@@ -66,8 +66,8 @@ def _fake_systemctl(
         )
     )
     uid_memory_values = (
-        "MemoryHigh=103079215104\n"
-        "MemoryMax=120259084288\n"
+        "MemoryHigh=85899345920\n"
+        "MemoryMax=103079215104\n"
         "MemorySwapMax=8589934592\n"
         "MemoryLow=17179869184\n"
         "MemoryMin=8589934592\n"
@@ -81,6 +81,7 @@ def _fake_systemctl(
         f"""#!/usr/bin/env bash
 set -euo pipefail
 case "$*" in
+  *"show system.slice"*) printf 'MemoryLow=25769803776\nMemoryMin=12884901888\n' ;;
   *"show user-1000.slice"*) printf '{uid_memory_values}' ;;
   *"show user@1000.service --no-pager -p MemoryHigh"*) printf '{uid_memory_values}' ;;
   *"show user@1000.service"*) printf 'OOMScoreAdjust={user_oom}\\nDropInPaths=/etc/systemd/system/user@1000.service.d/oom.conf\\nMainPID=900\\n' ;;
@@ -163,6 +164,7 @@ def test_audit_passes_when_user_manager_is_killable_and_app_slice_bounded(tmp_pa
     payload = json.loads(result.stdout)
     statuses = {check["name"]: check["status"] for check in payload["checks"]}
     assert statuses["user_manager_oom_score_adjust"] == "pass"
+    assert statuses["system_slice_MemoryLow"] == "pass"
     assert statuses["app_slice_MemorySwapMax"] == "pass"
 
 
@@ -240,6 +242,9 @@ def test_audit_passes_when_unbounded_tmux_scope_is_app_slice_backed(tmp_path: Pa
     result = _run(tmp_path, tmux_bounded=False, tmux_slice="app.slice")
 
     assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    check = next(item for item in payload["checks"] if item["name"].startswith("tmux_scope_tmux"))
+    assert check["detail"] == ""
     payload = json.loads(result.stdout)
     check = next(
         item for item in payload["checks"] if item["name"] == "tmux_scope_tmux-spawn-a.scope"

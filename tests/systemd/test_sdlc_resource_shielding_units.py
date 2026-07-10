@@ -68,8 +68,8 @@ def test_sdlc_slice_throttles_memory_without_killing() -> None:
 
 def test_app_slice_has_aggregate_oom_backstop() -> None:
     text = (UNITS_DIR / "app.slice.d" / "oom-containment.conf").read_text()
-    assert _directive(text, "MemoryHigh") == "80G"
-    assert _directive(text, "MemoryMax") == "104G"
+    assert _directive(text, "MemoryHigh") == "72G"
+    assert _directive(text, "MemoryMax") == "88G"
     assert _directive(text, "MemorySwapMax") == "8G"
     assert _directive(text, "MemoryLow") == "16G"
     assert _directive(text, "MemoryMin") == "8G"
@@ -79,8 +79,8 @@ def test_uid_slice_has_session_and_app_aggregate_oom_backstop() -> None:
     text = (
         REPO_ROOT / "systemd" / "system" / "user-1000.slice.d" / "oom-containment.conf"
     ).read_text()
-    assert _directive(text, "MemoryHigh") == "96G"
-    assert _directive(text, "MemoryMax") == "112G"
+    assert _directive(text, "MemoryHigh") == "80G"
+    assert _directive(text, "MemoryMax") == "96G"
     assert _directive(text, "MemorySwapMax") == "8G"
     assert _directive(text, "MemoryLow") == "16G"
     assert _directive(text, "MemoryMin") == "8G"
@@ -89,11 +89,21 @@ def test_uid_slice_has_session_and_app_aggregate_oom_backstop() -> None:
 def test_user_manager_does_not_protect_every_interactive_workload() -> None:
     text = (REPO_ROOT / "systemd" / "system" / "user@1000.service.d" / "oom.conf").read_text()
     assert _directive(text, "OOMScoreAdjust") == "100"
-    assert _directive(text, "MemoryHigh") == "96G"
-    assert _directive(text, "MemoryMax") == "112G"
+    assert _directive(text, "MemoryHigh") == "80G"
+    assert _directive(text, "MemoryMax") == "96G"
     assert _directive(text, "MemorySwapMax") == "8G"
     assert _directive(text, "MemoryLow") == "16G"
     assert _directive(text, "MemoryMin") == "8G"
+
+
+def test_system_slice_has_reciprocal_recovery_plane_reservation() -> None:
+    text = (
+        REPO_ROOT / "systemd" / "system" / "system.slice.d" / "oom-containment.conf"
+    ).read_text()
+    assert _directive(text, "MemoryHigh") == "infinity"
+    assert _directive(text, "MemoryMax") == "infinity"
+    assert _directive(text, "MemoryLow") == "24G"
+    assert _directive(text, "MemoryMin") == "12G"
 
 
 def test_live_cuepoints_restart_storm_is_bounded() -> None:
@@ -180,6 +190,10 @@ def test_root_oom_enforcer_uses_system_scoped_failure_intake() -> None:
     assert "ExecStart=/usr/local/sbin/hapax-root-failure-intake %i" in intake
     assert "%I" not in intake
     assert "source-activation/worktree" not in intake
+    assert "StartLimitIntervalSec=1h" in intake
+    assert "StartLimitBurst=1" in intake
+    assert "source-activation/worktree" not in enforcer
+    assert "hapax-recovery/council/current/manifest.json" in enforcer
     assert "ConditionPathExists" not in intake
 
 

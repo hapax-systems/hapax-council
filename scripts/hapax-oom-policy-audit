@@ -11,10 +11,12 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+BYTES_12G = 12 * 1024**3
+BYTES_24G = 24 * 1024**3
+BYTES_72G = 72 * 1024**3
 BYTES_80G = 80 * 1024**3
+BYTES_88G = 88 * 1024**3
 BYTES_96G = 96 * 1024**3
-BYTES_104G = 104 * 1024**3
-BYTES_112G = 112 * 1024**3
 BYTES_16G = 16 * 1024**3
 BYTES_8G = 8 * 1024**3
 NEXT_OOM_INSTALL = "next action: scripts/install-p0-oom-containment --install --verify-live"
@@ -139,8 +141,8 @@ def audit_user_manager_live_score(uid: int) -> Check:
 
 def audit_app_slice() -> list[Check]:
     expected = {
-        "MemoryHigh": BYTES_80G,
-        "MemoryMax": BYTES_104G,
+        "MemoryHigh": BYTES_72G,
+        "MemoryMax": BYTES_88G,
         "MemorySwapMax": BYTES_8G,
         "MemoryLow": BYTES_16G,
         "MemoryMin": BYTES_8G,
@@ -166,8 +168,8 @@ def audit_app_slice() -> list[Check]:
 
 def audit_system_memory_unit(unit: str) -> list[Check]:
     expected = {
-        "MemoryHigh": BYTES_96G,
-        "MemoryMax": BYTES_112G,
+        "MemoryHigh": BYTES_80G,
+        "MemoryMax": BYTES_96G,
         "MemorySwapMax": BYTES_8G,
         "MemoryLow": BYTES_16G,
         "MemoryMin": BYTES_8G,
@@ -194,6 +196,32 @@ def audit_system_memory_unit(unit: str) -> list[Check]:
             else f"{unit} aggregate memory policy drifted; {NEXT_OOM_INSTALL}"
         )
         checks.append(Check(f"{unit}_{key}", status, str(target), actual, detail))
+    return checks
+
+
+def audit_system_slice_reservation() -> list[Check]:
+    expected = {"MemoryLow": BYTES_24G, "MemoryMin": BYTES_12G}
+    values = _show("system.slice", list(expected))
+    if "_error" in values:
+        return [
+            Check(
+                "system_slice_reservation",
+                "error",
+                "protected",
+                "N/A",
+                f"{values['_error']}; {NEXT_OOM_INSTALL}",
+            )
+        ]
+    checks: list[Check] = []
+    for key, target in expected.items():
+        actual = values.get(key, "")
+        status = "pass" if _int_value(actual) == target else "gap"
+        detail = (
+            ""
+            if status == "pass"
+            else f"system.slice recovery-plane reservation drifted; {NEXT_OOM_INSTALL}"
+        )
+        checks.append(Check(f"system_slice_{key}", status, str(target), actual, detail))
     return checks
 
 
@@ -329,7 +357,7 @@ def audit_tmux_scopes() -> list[Check]:
         if outside_app_slice:
             detail_parts.append(f"Slice={slice_name}")
         detail = ""
-        if detail_parts:
+        if status == "gap" and detail_parts:
             detail = f"tmux scope not bounded-or-app-slice-backed: {'; '.join(detail_parts)}; {NEXT_OOM_INSTALL}"
         actual = ",".join(
             f"{key}={values.get(key, '')}"
@@ -428,6 +456,7 @@ def main(argv: list[str] | None = None) -> int:
     checks = [
         audit_user_manager(args.uid),
         audit_user_manager_live_score(args.uid),
+        *audit_system_slice_reservation(),
         *audit_system_memory_unit(f"user-{args.uid}.slice"),
         *audit_system_memory_unit(f"user@{args.uid}.service"),
         *audit_app_slice(),

@@ -12,6 +12,7 @@ SYSTEMD_SYSTEM_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
 APCUPSD_DEST="${HAPAX_APCUPSD_DEST:-/etc/apcupsd}"
 APCUPSD_LOGROTATE_DEST="${HAPAX_APCUPSD_LOGROTATE_DEST:-/etc/logrotate.d/hapax-ups-power-events}"
 UPOWER_CONF_DEST="${HAPAX_UPOWER_CONF_DEST:-/etc/UPower/UPower.conf.d/90-hapax-apcupsd-owner.conf}"
+SYSTEMCTL="${HAPAX_ROOT_AUDIT_SYSTEMCTL:-systemctl}"
 
 rc=0
 
@@ -22,7 +23,11 @@ pending_runbooks() {
 
 source_for_rel() {
     local rel="$1"
-    printf '%s/%s\n' "$SOURCE_ROOT" "$rel"
+    if [ -f "$INSTALLED_SOURCE_ROOT/$rel" ]; then
+        printf '%s/%s\n' "$INSTALLED_SOURCE_ROOT" "$rel"
+    else
+        printf '%s/%s\n' "$SOURCE_ROOT" "$rel"
+    fi
 }
 
 compare_root_file() {
@@ -30,7 +35,7 @@ compare_root_file() {
     source="$(source_for_rel "$rel")"
     if [ ! -f "$source" ]; then
         echo "root-required source missing: $source" >&2
-        echo "  next action: restore source activation or run HAPAX_ROOT_REQUIRED_SOURCE_ROOT=<repo> scripts/hapax-root-required-deploy-audit" >&2
+        echo "  next action: rerun the owning root installer to refresh $INSTALLED_SOURCE_ROOT, or restore source activation and set HAPAX_ROOT_REQUIRED_SOURCE_ROOT=<repo>" >&2
         return 1
     fi
     if [ ! -f "$dest" ]; then
@@ -59,11 +64,48 @@ compare_root_file() {
     fi
 }
 
+verify_executable() {
+    local rel="$1" dest="$2"
+    [ -x "$dest" ] || {
+        echo "root-required executable mode drift: $dest is not executable" >&2
+        case "$rel" in
+            config/apcupsd/*)
+                echo "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+                ;;
+            *)
+                echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+                ;;
+        esac
+        return 1
+    }
+}
+
+audit_systemd_state() {
+    local failed=0
+    if ! "$SYSTEMCTL" is-enabled --quiet hapax-oom-score-enforce.timer; then
+        echo "root-required activation drift: hapax-oom-score-enforce.timer is not enabled" >&2
+        echo "  next action: run sudo systemctl enable --now hapax-oom-score-enforce.timer" >&2
+        failed=1
+    fi
+    if ! "$SYSTEMCTL" is-active --quiet hapax-oom-score-enforce.timer; then
+        echo "root-required activation drift: hapax-oom-score-enforce.timer is not active" >&2
+        echo "  next action: run sudo systemctl enable --now hapax-oom-score-enforce.timer" >&2
+        failed=1
+    fi
+    if ! "$SYSTEMCTL" is-active --quiet apcupsd.service; then
+        echo "root-required activation drift: apcupsd.service is not active" >&2
+        echo "  next action: run sudo systemctl restart apcupsd.service and inspect journalctl -u apcupsd.service" >&2
+        failed=1
+    fi
+    [ "$failed" -eq 0 ]
+}
+
 audit_root_installs() {
     local -a manifest=(
         "scripts/hapax-oom-score-enforce|$OOM_ENFORCER_DEST"
         "scripts/hapax-root-failure-intake|$ROOT_FAILURE_INTAKE_DEST"
         "config/earlyoom/default|$EARLYOOM_DEST"
+        "systemd/system/system.slice.d/oom-containment.conf|$SYSTEMD_SYSTEM_DIR/system.slice.d/oom-containment.conf"
         "systemd/system/user-1000.slice.d/oom-containment.conf|$SYSTEMD_SYSTEM_DIR/user-1000.slice.d/oom-containment.conf"
         "systemd/system/user@1000.service.d/oom.conf|$SYSTEMD_SYSTEM_DIR/user@1000.service.d/oom.conf"
         "systemd/system/apcupsd.service.d/oom-protect.conf|$SYSTEMD_SYSTEM_DIR/apcupsd.service.d/oom-protect.conf"
@@ -89,7 +131,13 @@ audit_root_installs() {
         rel="${entry%%|*}"
         dest="${entry#*|}"
         compare_root_file "$rel" "$dest" || failed=1
+        case "$rel" in
+            scripts/hapax-oom-score-enforce|scripts/hapax-root-failure-intake|config/apcupsd/hapax-power-event.py|config/apcupsd/onbattery|config/apcupsd/offbattery|config/apcupsd/doshutdown)
+                verify_executable "$rel" "$dest" || failed=1
+                ;;
+        esac
     done
+    audit_systemd_state || failed=1
     [ "$failed" -eq 0 ]
 }
 

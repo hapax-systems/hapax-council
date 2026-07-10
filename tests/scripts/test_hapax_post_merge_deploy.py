@@ -36,8 +36,12 @@ ROOT_AUDIT_SOURCE_FILES = {
     "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\necho enforcer\n",
     "scripts/hapax-root-failure-intake": "#!/usr/bin/env bash\necho root failure\n",
     "config/earlyoom/default": 'EARLYOOM_ARGS="--ignore recovery"\n',
+    "systemd/system/system.slice.d/oom-containment.conf": (
+        "[Slice]\nMemoryHigh=infinity\nMemoryMax=infinity\nMemorySwapMax=infinity\n"
+        "MemoryLow=24G\nMemoryMin=12G\n"
+    ),
     "systemd/system/user-1000.slice.d/oom-containment.conf": (
-        "[Slice]\nMemoryHigh=96G\nMemoryMax=112G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
+        "[Slice]\nMemoryHigh=80G\nMemoryMax=96G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
     ),
     "systemd/system/user@1000.service.d/oom.conf": "[Service]\nOOMScoreAdjust=100\n",
     "systemd/system/apcupsd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-900\n",
@@ -258,6 +262,9 @@ def _root_audit_env(
     enforcer_dest = tmp_path / "sbin" / "hapax-oom-score-enforce"
     root_failure_dest = tmp_path / "sbin" / "hapax-root-failure-intake"
     earlyoom_dest = tmp_path / "etc" / "default" / "earlyoom"
+    fake_systemctl = tmp_path / "root-audit-systemctl"
+    fake_systemctl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    fake_systemctl.chmod(0o755)
     dests = {
         "scripts/hapax-oom-score-enforce": enforcer_dest,
         "scripts/hapax-root-failure-intake": root_failure_dest,
@@ -280,6 +287,15 @@ def _root_audit_env(
         dest = dests[rel]
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(("stale\n" if rel == drift_rel else body), encoding="utf-8")
+        if rel in {
+            "scripts/hapax-oom-score-enforce",
+            "scripts/hapax-root-failure-intake",
+            "config/apcupsd/hapax-power-event.py",
+            "config/apcupsd/onbattery",
+            "config/apcupsd/offbattery",
+            "config/apcupsd/doshutdown",
+        }:
+            dest.chmod(0o755)
     return {
         **os.environ,
         "HAPAX_ROOT_REQUIRED_SOURCE_ROOT": str(source_root),
@@ -290,6 +306,7 @@ def _root_audit_env(
         "HAPAX_APCUPSD_DEST": str(apcupsd_dir),
         "HAPAX_APCUPSD_LOGROTATE_DEST": str(logrotate_dest),
         "HAPAX_UPOWER_CONF_DEST": str(upower_dest),
+        "HAPAX_ROOT_AUDIT_SYSTEMCTL": str(fake_systemctl),
         "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(tmp_path / "no-deferrals"),
     }
 
@@ -578,6 +595,7 @@ def test_systemd_coverage_includes_dropins_presets_and_source_overrides() -> Non
             "systemd/hapax-build-reload.path",
             "systemd/units/pipewire.service.d/cpu-affinity.conf",
             "systemd/units/app.slice.d/oom-containment.conf",
+            "systemd/system/system.slice.d/oom-containment.conf",
             "systemd/system/user-1000.slice.d/oom-containment.conf",
             "systemd/system/user@1000.service.d/oom.conf",
             "systemd/system/apcupsd.service.d/oom-protect.conf",
@@ -610,8 +628,12 @@ def test_p0_oom_containment_deploy_uses_installer_without_restarting_app_slice(
         "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\nexit 0\n",
         "scripts/hapax-root-failure-intake": "#!/usr/bin/env bash\nexit 0\n",
         "config/earlyoom/default": 'EARLYOOM_ARGS="--ignore recovery"\n',
+        "systemd/system/system.slice.d/oom-containment.conf": (
+            "[Slice]\nMemoryHigh=infinity\nMemoryMax=infinity\nMemorySwapMax=infinity\n"
+            "MemoryLow=24G\nMemoryMin=12G\n"
+        ),
         "systemd/system/user-1000.slice.d/oom-containment.conf": (
-            "[Slice]\nMemoryHigh=96G\nMemoryMax=112G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
+            "[Slice]\nMemoryHigh=80G\nMemoryMax=96G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
         ),
         "systemd/system/user@1000.service.d/oom.conf": "[Service]\nOOMScoreAdjust=100\n",
         "systemd/system/apcupsd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-900\n",
@@ -641,7 +663,7 @@ def test_p0_oom_containment_deploy_uses_installer_without_restarting_app_slice(
             "[Unit]\n# Hapax-Install-Scope: system\n[Timer]\nOnBootSec=30s\nOnUnitActiveSec=30s\n"
         ),
         "systemd/units/app.slice.d/oom-containment.conf": (
-            "[Slice]\nMemoryHigh=80G\nMemoryMax=104G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
+            "[Slice]\nMemoryHigh=72G\nMemoryMax=88G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
         ),
         **P0_USER_OOM_DROPINS,
     }
@@ -689,8 +711,12 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
         "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\nexit 0\n",
         "scripts/hapax-root-failure-intake": "#!/usr/bin/env bash\nexit 0\n",
         "config/earlyoom/default": 'EARLYOOM_ARGS="--ignore recovery"\n',
+        "systemd/system/system.slice.d/oom-containment.conf": (
+            "[Slice]\nMemoryHigh=infinity\nMemoryMax=infinity\nMemorySwapMax=infinity\n"
+            "MemoryLow=24G\nMemoryMin=12G\n"
+        ),
         "systemd/system/user-1000.slice.d/oom-containment.conf": (
-            "[Slice]\nMemoryHigh=96G\nMemoryMax=112G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
+            "[Slice]\nMemoryHigh=80G\nMemoryMax=96G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
         ),
         "systemd/system/user@1000.service.d/oom.conf": "[Service]\nOOMScoreAdjust=100\n",
         "systemd/system/apcupsd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-900\n",
@@ -720,7 +746,7 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
             "[Unit]\n# Hapax-Install-Scope: system\n[Timer]\nOnBootSec=30s\nOnUnitActiveSec=30s\n"
         ),
         "systemd/units/app.slice.d/oom-containment.conf": (
-            "[Slice]\nMemoryHigh=80G\nMemoryMax=104G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
+            "[Slice]\nMemoryHigh=72G\nMemoryMax=88G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
         ),
         **P0_USER_OOM_DROPINS,
         "systemd/units/hapax-demo.service": (
@@ -810,7 +836,7 @@ def test_root_required_audit_detects_oom_enforcer_drift(tmp_path: Path) -> None:
     assert "install-p0-oom-containment --install --verify-live" in result.stderr
 
 
-def test_root_required_audit_detects_activation_drift_even_with_installed_source(
+def test_root_required_audit_prefers_matching_installed_source_over_stale_activation(
     tmp_path: Path,
 ) -> None:
     env = _root_audit_env(tmp_path)
@@ -830,9 +856,68 @@ def test_root_required_audit_detects_activation_drift_even_with_installed_source
         env={**env, "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source)},
     )
 
+    assert result.returncode == 0, result.stderr
+    assert "root-required post-merge deploy deferrals: none" in result.stdout
+
+
+def test_root_required_audit_falls_back_to_activation_when_snapshot_file_absent(
+    tmp_path: Path,
+) -> None:
+    env = _root_audit_env(tmp_path)
+    installed_source = tmp_path / "installed-root-source"
+    installed_source.mkdir()
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**env, "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source)},
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_root_required_audit_detects_nonexecutable_hook(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    hook = Path(env["HAPAX_APCUPSD_DEST"]) / "doshutdown"
+    hook.chmod(0o644)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
     assert result.returncode == 1
-    assert "root-required install drift" in result.stderr
-    assert "stale activation source" not in result.stderr
+    assert "executable mode drift" in result.stderr
+    assert "install-apcupsd-power-alerts" in result.stderr
+
+
+def test_root_required_audit_detects_disabled_enforcer_timer(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$*" = "is-enabled --quiet hapax-oom-score-enforce.timer" ]; then exit 1; fi\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "hapax-oom-score-enforce.timer is not enabled" in result.stderr
+    assert "enable --now" in result.stderr
 
 
 def test_root_required_audit_passes_when_oom_enforcer_matches(tmp_path: Path) -> None:

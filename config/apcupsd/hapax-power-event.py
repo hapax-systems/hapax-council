@@ -18,6 +18,8 @@ from pathlib import Path
 DEFAULT_AUDIT_LOG = "/var/log/hapax/ups-power-events.jsonl"
 DEFAULT_NTFY_URL = "http://localhost:8090/hapax-alerts"
 DEFAULT_APCACCESS = "/usr/bin/apcaccess"
+DEFAULT_APCACCESS_TIMEOUT_S = 3.0
+SHUTDOWN_IO_TIMEOUT_S = 1.0
 
 EVENT_TEXT = {
     "onbattery": {
@@ -31,9 +33,9 @@ EVENT_TEXT = {
     },
     "offbattery": {
         "title": "UPS power restored - podium",
-        "message": "UPS input restored; no host shutdown was requested.",
+        "message": "UPS input restored; inspect the event trail for any prior shutdown request.",
         "priority": "default",
-        "shutdown_requested": False,
+        "shutdown_requested": None,
     },
     "doshutdown": {
         "title": "UPS REQUESTED HOST SHUTDOWN - podium",
@@ -70,12 +72,14 @@ def parse_apcaccess(raw: str) -> dict[str, str]:
     return out
 
 
-def read_apcaccess(path: str) -> tuple[dict[str, str], str]:
+def read_apcaccess(
+    path: str, *, timeout_s: float = DEFAULT_APCACCESS_TIMEOUT_S
+) -> tuple[dict[str, str], str]:
     if not path:
         return {}, "disabled"
     try:
         proc = subprocess.run(
-            [path, "status"], capture_output=True, text=True, timeout=3, check=False
+            [path, "status"], capture_output=True, text=True, timeout=timeout_s, check=False
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return {}, f"{type(exc).__name__}: {exc}"
@@ -152,7 +156,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     text = EVENT_TEXT[args.event]
-    apc, apc_error = read_apcaccess(args.apcaccess)
+    io_timeout_s = (
+        min(args.timeout, SHUTDOWN_IO_TIMEOUT_S) if args.event == "doshutdown" else args.timeout
+    )
+    apcaccess_timeout_s = (
+        SHUTDOWN_IO_TIMEOUT_S if args.event == "doshutdown" else DEFAULT_APCACCESS_TIMEOUT_S
+    )
+    apc, apc_error = read_apcaccess(args.apcaccess, timeout_s=apcaccess_timeout_s)
     observed_at = utc_now()
     message = format_ntfy_message(text["message"], apc, observed_at)
     base_record = {
@@ -167,6 +177,8 @@ def main(argv: list[str] | None = None) -> int:
         "ntfy_url": args.ntfy_url,
         "apcaccess": apc,
         "apcaccess_error": apc_error,
+        "apcaccess_timeout_s": apcaccess_timeout_s,
+        "notification_timeout_s": io_timeout_s,
         "pid": os.getpid(),
         "observed_at": observed_at,
     }
@@ -194,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
         text["title"],
         message,
         text["priority"],
-        args.timeout,
+        io_timeout_s,
     )
     record = {
         **base_record,

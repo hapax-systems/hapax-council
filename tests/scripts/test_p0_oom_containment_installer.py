@@ -5,6 +5,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALLER = REPO_ROOT / "scripts" / "install-p0-oom-containment"
 OOM_ENFORCER = REPO_ROOT / "scripts" / "hapax-oom-score-enforce"
@@ -17,6 +19,13 @@ PROTECTED_USER_UNIT_SCORES = {
     "studio-compositor.service": -800,
     "hapax-imagination.service": -800,
 }
+
+
+@pytest.fixture(autouse=True)
+def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT", str(tmp_path / "installed-source")
+    )
 
 
 def _unit_cgroup(unit: str) -> str:
@@ -51,8 +60,8 @@ def _systemctl_user_unit_cases(
 def _systemctl_app_slice_cases() -> str:
     return "\n".join(
         [
-            '  *"--user show app.slice -p MemoryHigh --value"*) printf "85899345920\\n" ;;',
-            '  *"--user show app.slice -p MemoryMax --value"*) printf "111669149696\\n" ;;',
+            '  *"--user show app.slice -p MemoryHigh --value"*) printf "77309411328\\n" ;;',
+            '  *"--user show app.slice -p MemoryMax --value"*) printf "94489280512\\n" ;;',
             '  *"--user show app.slice -p MemorySwapMax --value"*) printf "8589934592\\n" ;;',
             '  *"--user show app.slice -p MemoryLow --value"*) printf "17179869184\\n" ;;',
             '  *"--user show app.slice -p MemoryMin --value"*) printf "8589934592\\n" ;;',
@@ -63,13 +72,18 @@ def _systemctl_app_slice_cases() -> str:
 def _systemctl_system_memory_cases() -> str:
     return "\n".join(
         [
-            '  *"show user-1000.slice -p MemoryHigh --value"*) printf "103079215104\\n" ;;',
-            '  *"show user-1000.slice -p MemoryMax --value"*) printf "120259084288\\n" ;;',
+            '  *"show system.slice -p MemoryHigh --value"*) printf "infinity\\n" ;;',
+            '  *"show system.slice -p MemoryMax --value"*) printf "infinity\\n" ;;',
+            '  *"show system.slice -p MemorySwapMax --value"*) printf "infinity\\n" ;;',
+            '  *"show system.slice -p MemoryLow --value"*) printf "25769803776\\n" ;;',
+            '  *"show system.slice -p MemoryMin --value"*) printf "12884901888\\n" ;;',
+            '  *"show user-1000.slice -p MemoryHigh --value"*) printf "85899345920\\n" ;;',
+            '  *"show user-1000.slice -p MemoryMax --value"*) printf "103079215104\\n" ;;',
             '  *"show user-1000.slice -p MemorySwapMax --value"*) printf "8589934592\\n" ;;',
             '  *"show user-1000.slice -p MemoryLow --value"*) printf "17179869184\\n" ;;',
             '  *"show user-1000.slice -p MemoryMin --value"*) printf "8589934592\\n" ;;',
-            '  *"show user@1000.service -p MemoryHigh --value"*) printf "103079215104\\n" ;;',
-            '  *"show user@1000.service -p MemoryMax --value"*) printf "120259084288\\n" ;;',
+            '  *"show user@1000.service -p MemoryHigh --value"*) printf "85899345920\\n" ;;',
+            '  *"show user@1000.service -p MemoryMax --value"*) printf "103079215104\\n" ;;',
             '  *"show user@1000.service -p MemorySwapMax --value"*) printf "8589934592\\n" ;;',
             '  *"show user@1000.service -p MemoryLow --value"*) printf "17179869184\\n" ;;',
             '  *"show user@1000.service -p MemoryMin --value"*) printf "8589934592\\n" ;;',
@@ -104,8 +118,10 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     tmp_path: Path,
 ) -> None:
     system_dir = tmp_path / "systemd-system"
-    user_dir = tmp_path / "systemd-user"
-    user_control_dir = tmp_path / "systemd-user-control"
+    target_home = tmp_path / "target-home"
+    root_home = tmp_path / "root-home"
+    user_dir = target_home / ".config" / "systemd" / "user"
+    user_control_dir = target_home / ".config" / "systemd" / "user.control"
     stale_control = user_control_dir / "app.slice.d" / "50-MemoryHigh.conf"
     stale_control.parent.mkdir(parents=True)
     stale_control.write_text("[Slice]\nMemoryHigh=1G\n", encoding="utf-8")
@@ -117,6 +133,9 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     installed_source = tmp_path / "current-source"
     drain_dir.mkdir(parents=True)
     (drain_dir / "RUNBOOK.txt").write_text("run installer\n", encoding="utf-8")
+    sibling_dir = root_defer / "other-sha" / "oom-containment"
+    sibling_dir.mkdir(parents=True)
+    (sibling_dir / "RUNBOOK.txt").write_text("run other installer\n", encoding="utf-8")
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
     _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=100)
@@ -145,9 +164,10 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         check=False,
         env={
             **os.environ,
+            "HOME": str(root_home),
             "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(system_dir),
-            "HAPAX_OOM_SYSTEMD_USER_DIR": str(user_dir),
-            "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR": str(user_control_dir),
+            "HAPAX_OOM_TARGET_UID": "1000",
+            "HAPAX_OOM_TARGET_HOME": str(target_home),
             "HAPAX_OOM_EARLYOOM_DEST": str(earlyoom_dest),
             "HAPAX_OOM_ENFORCER_DEST": str(enforcer_dest),
             "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
@@ -162,23 +182,28 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
 
     assert result.returncode == 0, result.stderr
     assert not drain_dir.exists()
+    assert sibling_dir.exists()
     assert (installed_source / "scripts" / "install-p0-oom-containment").is_file()
     assert "root-required deferral drained" in result.stdout
     user_manager_dropin = (system_dir / "user@1000.service.d" / "oom.conf").read_text(
         encoding="utf-8"
     )
     assert "OOMScoreAdjust=100" in user_manager_dropin
-    assert "MemoryMax=112G" in user_manager_dropin
+    assert "MemoryMax=96G" in user_manager_dropin
     app_dropin = user_dir / "app.slice.d" / "oom-containment.conf"
     assert app_dropin.is_file()
     assert not app_dropin.is_symlink()
     assert "MemorySwapMax=8G" in app_dropin.read_text(encoding="utf-8")
     assert "MemoryLow=16G" in app_dropin.read_text(encoding="utf-8")
     assert (system_dir / "user-1000.slice.d" / "oom-containment.conf").is_file()
+    assert "MemoryLow=24G" in (system_dir / "system.slice.d" / "oom-containment.conf").read_text(
+        encoding="utf-8"
+    )
     assert earlyoom_dest.read_text(encoding="utf-8").startswith("EARLYOOM_ARGS=")
     assert enforcer_dest.is_file()
     assert root_failure_dest.is_file()
     assert not stale_control.exists()
+    assert not (root_home / ".config" / "systemd").exists()
     calls = systemctl_calls.read_text(encoding="utf-8")
     assert "daemon-reload" in calls
 
@@ -316,10 +341,11 @@ def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_use
             score
         )
     calls = systemctl_calls.read_text(encoding="utf-8")
-    assert "set-property --runtime user-1000.slice MemoryHigh=96G MemoryMax=112G" in calls
-    assert "set-property --runtime user@1000.service MemoryHigh=96G MemoryMax=112G" in calls
+    assert "set-property --runtime system.slice MemoryHigh=infinity MemoryMax=infinity" in calls
+    assert "set-property --runtime user-1000.slice MemoryHigh=80G MemoryMax=96G" in calls
+    assert "set-property --runtime user@1000.service MemoryHigh=80G MemoryMax=96G" in calls
     assert (
-        "set-property --runtime app.slice MemoryHigh=80G MemoryMax=104G MemorySwapMax=8G MemoryLow=16G MemoryMin=8G"
+        "set-property --runtime app.slice MemoryHigh=72G MemoryMax=88G MemorySwapMax=8G MemoryLow=16G MemoryMin=8G"
         in calls
     )
 

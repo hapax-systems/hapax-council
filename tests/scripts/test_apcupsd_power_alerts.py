@@ -4,14 +4,24 @@ import json
 import os
 import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_DIR = REPO_ROOT / "config" / "apcupsd"
 HELPER = CONFIG_DIR / "hapax-power-event.py"
 INSTALLER = REPO_ROOT / "scripts" / "install-apcupsd-power-alerts"
 UPOWER_CONFIG = REPO_ROOT / "config" / "upower" / "90-hapax-apcupsd-owner.conf"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT", str(tmp_path / "installed-source")
+    )
 
 
 def test_apcupsd_config_uses_current_header() -> None:
@@ -123,7 +133,8 @@ def test_power_event_helper_records_offbattery_delivery_failure(tmp_path: Path) 
     ]
     assert [record["phase"] for record in records] == ["intent", "delivery"]
     assert records[1]["event"] == "offbattery"
-    assert records[1]["shutdown_requested"] is False
+    assert records[1]["shutdown_requested"] is None
+    assert "inspect the event trail" in records[1]["message"]
     assert records[1]["delivery"]["attempted"] is True
     assert records[1]["delivery"]["ok"] is False
     assert records[1]["delivery"]["error"]
@@ -154,6 +165,69 @@ def test_power_event_helper_marks_doshutdown_as_distinct_intent(tmp_path: Path) 
     assert records[0]["shutdown_requested"] is True
     assert records[0]["priority"] == "max"
     assert records[0]["title"] == "UPS REQUESTED HOST SHUTDOWN - podium"
+    assert records[0]["apcaccess_timeout_s"] == 1.0
+    assert records[0]["notification_timeout_s"] == 1.0
+
+
+def test_offbattery_does_not_overwrite_prior_shutdown_intent(tmp_path: Path) -> None:
+    audit = tmp_path / "ups-events.jsonl"
+    for event in ("doshutdown", "offbattery"):
+        result = subprocess.run(
+            [
+                str(HELPER),
+                event,
+                "--audit-log",
+                str(audit),
+                "--apcaccess",
+                "",
+                "--no-ntfy",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+    intents = [
+        json.loads(line)
+        for line in audit.read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["phase"] == "intent"
+    ]
+    assert [record["shutdown_requested"] for record in intents] == [True, None]
+
+
+def test_doshutdown_external_io_is_bounded(tmp_path: Path) -> None:
+    audit = tmp_path / "ups-events.jsonl"
+    slow_apcaccess = tmp_path / "apcaccess"
+    slow_apcaccess.write_text("#!/bin/sh\nsleep 5\n", encoding="utf-8")
+    slow_apcaccess.chmod(0o755)
+
+    started = time.monotonic()
+    result = subprocess.run(
+        [
+            str(HELPER),
+            "doshutdown",
+            "--audit-log",
+            str(audit),
+            "--apcaccess",
+            str(slow_apcaccess),
+            "--ntfy-url",
+            "http://127.0.0.1:9/hapax-alerts",
+            "--timeout",
+            "5",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.returncode == 0, result.stderr
+    assert elapsed < 3
+    records = [json.loads(line) for line in audit.read_text(encoding="utf-8").splitlines()]
+    assert records[0]["apcaccess_timeout_s"] == 1.0
+    assert records[0]["notification_timeout_s"] == 1.0
+    assert "TimeoutExpired" in records[0]["apcaccess_error"]
 
 
 def test_power_event_helper_notifies_when_intent_audit_fails(tmp_path: Path) -> None:
@@ -346,6 +420,9 @@ def test_installer_drains_root_required_deferral_after_success(tmp_path: Path) -
     installed_source = tmp_path / "current-source"
     drain_dir.mkdir(parents=True)
     (drain_dir / "RUNBOOK.txt").write_text("run installer\n", encoding="utf-8")
+    sibling_dir = tmp_path / "root-required" / "other-sha" / "apcupsd-power-alerts"
+    sibling_dir.mkdir(parents=True)
+    (sibling_dir / "RUNBOOK.txt").write_text("run other installer\n", encoding="utf-8")
     fake_systemctl = tmp_path / "systemctl"
     fake_systemctl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     fake_systemctl.chmod(0o755)
@@ -370,5 +447,6 @@ def test_installer_drains_root_required_deferral_after_success(tmp_path: Path) -
 
     assert result.returncode == 0, result.stderr
     assert not drain_dir.exists()
+    assert sibling_dir.exists()
     assert (installed_source / "config" / "apcupsd" / "hapax-power-event.py").is_file()
     assert "root-required deferral drained" in result.stdout
