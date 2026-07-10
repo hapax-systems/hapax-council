@@ -183,6 +183,7 @@ def _run(
     sshd_score: int = 0,
     sshd_policy: str = "continue",
     wrong_recovery_unit_score: bool = False,
+    wrong_recovery_live_score: bool = False,
     proc_root: Path | None = None,
     cgroup_root: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
@@ -195,12 +196,17 @@ def _run(
         _write_proc(proc_root, 920, name="sshd", uid=0, oom_score=0)
     for unit, pid in RECOVERY_SYSTEM_UNIT_PIDS.items():
         if not (proc_root / str(pid)).exists():
+            live_score = (
+                100
+                if wrong_recovery_live_score and unit == "apcupsd.service"
+                else RECOVERY_SYSTEM_UNIT_SCORES[unit]
+            )
             _write_proc(
                 proc_root,
                 pid,
                 name=unit.removesuffix(".service"),
                 uid=0,
-                oom_score=RECOVERY_SYSTEM_UNIT_SCORES[unit],
+                oom_score=live_score,
             )
     if cgroup_root is None:
         cgroup_root = tmp_path / "cgroup"
@@ -284,6 +290,19 @@ def test_audit_fails_when_effective_recovery_daemon_policy_is_overridden(
     assert effective["actual"] == "-1000"
     assert "effective recovery-daemon OOM policy drifted" in effective["detail"]
     assert checks["system_unit_apcupsd.service_live_oom_score_adj"]["status"] == "pass"
+
+
+def test_audit_fails_when_live_recovery_daemon_score_drifts(tmp_path: Path) -> None:
+    result = _run(tmp_path, wrong_recovery_live_score=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    checks = {item["name"]: item for item in payload["checks"]}
+    assert checks["system_unit_apcupsd.service_OOMScoreAdjust"]["status"] == "pass"
+    live = checks["system_unit_apcupsd.service_live_oom_score_adj"]
+    assert live["status"] == "gap"
+    assert live["actual"] == "100"
+    assert "live recovery-daemon OOM score drifted" in live["detail"]
 
 
 def test_audit_fails_when_app_slice_backstop_is_unbounded(tmp_path: Path) -> None:

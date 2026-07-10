@@ -1,4 +1,4 @@
 # /proc/<pid>/comm is limited to 15 bytes; long names intentionally use their
 # observed truncated forms.
 # Recheck: systemctl show earlyoom.service -p ExecStart; journalctl -u earlyoom.service -b --no-pager
-EARLYOOM_ARGS="-m 5 -s 5 -n -r 60 --prefer (cargo|rustc|ld\\.lld|chrome|electron|node|claude|next-server|ffmpeg|bwrap) --avoid (Hyprland|pipewire|wireplumber|dockerd|containerd|bluetoothd|systemd|foot|waybar|hapax-logos|hapax-imaginati|hapax-daimonion|studio-composit|logos-api|officium-api) --ignore (apcupsd|systemd-logind|systemd-resolve|systemd-timesyn|systemd-userdbd|dbus-broker|dbus-daemon|NetworkManager|sshd|sshd-session|getty|agetty)"
+EARLYOOM_ARGS="-m 5 -s 5 -n -r 60 --prefer (cargo|rustc|ld\\.lld|chrome|electron|node|claude|next-server|ffmpeg|bwrap) --avoid (Hyprland|pipewire|wireplumber|dockerd|containerd|bluetoothd|systemd|foot|waybar|hapax-logos|hapax-imaginati|hapax-daimonion|studio-composit) --ignore (apcupsd|systemd-logind|systemd-resolve|systemd-timesyn|systemd-userdbd|dbus-broker|dbus-daemon|NetworkManager|sshd|sshd-session|getty|agetty)"

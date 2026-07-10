@@ -159,6 +159,8 @@ def test_p0_oom_containment_source_check_passes() -> None:
     assert "systemd-timesyncd" not in earlyoom
     assert "hapax-imagination" not in earlyoom
     assert "studio-compositor" not in earlyoom
+    assert "logos-api" not in earlyoom
+    assert "officium-api" not in earlyoom
     assert "systemd-resolve" in earlyoom
     assert "systemd-timesyn" in earlyoom
     assert "hapax-imaginati" in earlyoom
