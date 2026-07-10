@@ -337,6 +337,16 @@ def _root_audit_env(
     fake_visudo = tmp_path / "root-audit-visudo"
     fake_visudo.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     fake_visudo.chmod(0o755)
+    sudo_calls = tmp_path / "root-audit-sudo-calls"
+    fake_sudo = tmp_path / "root-audit-sudo"
+    fake_sudo.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$*\" >> {sudo_calls!s}\n"
+        '[ "${1:-}" != "-n" ] || shift\n'
+        'exec "$@"\n',
+        encoding="utf-8",
+    )
+    fake_sudo.chmod(0o755)
     dests = {
         "scripts/hapax-oom-score-enforce": enforcer_dest,
         "scripts/hapax-oom-score-trigger": trigger_dest,
@@ -432,7 +442,9 @@ def _root_audit_env(
         "HAPAX_ROOT_AUDIT_SYSTEMCTL": str(fake_systemctl),
         "HAPAX_ROOT_AUDIT_BUSCTL": str(fake_busctl),
         "HAPAX_ROOT_AUDIT_APCACCESS": str(fake_apcaccess),
+        "HAPAX_ROOT_AUDIT_SUDO": str(fake_sudo),
         "HAPAX_ROOT_AUDIT_VISUDO": str(fake_visudo),
+        "HAPAX_TEST_ROOT_AUDIT_SUDO_CALLS": str(sudo_calls),
         "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(root_defer),
     }
 
@@ -1172,6 +1184,23 @@ def test_root_required_audit_detects_sudoers_mode_drift(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert "root-required install mode drift" in result.stderr
     assert "expected=440" in result.stderr
+
+
+def test_root_required_audit_reads_sudoers_only_through_narrow_sudo(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    calls = Path(env["HAPAX_TEST_ROOT_AUDIT_SUDO_CALLS"]).read_text(encoding="utf-8")
+    assert result.returncode == 0, result.stderr
+    assert "-n /usr/bin/cmp -s " in calls
+    assert f"-n {env['HAPAX_ROOT_AUDIT_VISUDO']} -cf " in calls
 
 
 def test_root_required_audit_rejects_byte_identical_symlinked_install(tmp_path: Path) -> None:

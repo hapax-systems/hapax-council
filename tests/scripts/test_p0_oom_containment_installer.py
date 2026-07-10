@@ -1172,6 +1172,12 @@ def test_oom_score_sudoers_grant_is_narrow_and_valid() -> None:
     assert result.returncode == 0, result.stderr
     for unit in PROTECTED_USER_UNIT_SCORES:
         assert f"--apply-unit {unit}" in policy
+    assert (
+        "/usr/bin/cmp -s /home/hapax/.local/state/hapax/root-required/current-source/"
+        "config/root-required/hapax-oom-score-enforce.sudoers "
+        "/etc/sudoers.d/hapax-oom-score-enforce"
+    ) in policy
+    assert "/usr/bin/visudo -cf /etc/sudoers.d/hapax-oom-score-enforce" in policy
     assert "NOPASSWD: ALL" not in policy
 
 

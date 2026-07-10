@@ -26,7 +26,9 @@ UPOWER_CONF_DEST="${HAPAX_UPOWER_CONF_DEST:-/etc/UPower/UPower.conf.d/90-hapax-a
 SYSTEMCTL="${HAPAX_ROOT_AUDIT_SYSTEMCTL:-systemctl}"
 BUSCTL="${HAPAX_ROOT_AUDIT_BUSCTL:-busctl}"
 APCACCESS="${HAPAX_ROOT_AUDIT_APCACCESS:-apcaccess}"
-VISUDO="${HAPAX_ROOT_AUDIT_VISUDO:-visudo}"
+CMP="${HAPAX_ROOT_AUDIT_CMP:-/usr/bin/cmp}"
+SUDO="${HAPAX_ROOT_AUDIT_SUDO:-/usr/bin/sudo}"
+VISUDO="${HAPAX_ROOT_AUDIT_VISUDO:-/usr/bin/visudo}"
 
 oom_package_files=(
     config/root-required/oom-containment.files
@@ -192,7 +194,11 @@ compare_root_file() {
         esac
         return 1
     fi
-    if ! cmp -s "$source" "$dest"; then
+    if [ "$rel" = "config/root-required/hapax-oom-score-enforce.sudoers" ]; then
+        "$SUDO" -n "$CMP" -s "$source" "$dest"
+    else
+        cmp -s "$source" "$dest"
+    fi || {
         echo "root-required install drift: $dest differs from $source" >&2
         case "$rel" in
             config/apcupsd/*|config/upower/*|systemd/logrotate.d/hapax-ups-power-events)
@@ -203,7 +209,7 @@ compare_root_file() {
                 ;;
         esac
         return 1
-    fi
+    }
 }
 
 expected_install_mode() {
@@ -376,7 +382,7 @@ audit_root_installs() {
                 ;;
         esac
     done
-    if ! "$VISUDO" -cf "$OOM_SUDOERS_DEST" >/dev/null; then
+    if ! "$SUDO" -n "$VISUDO" -cf "$OOM_SUDOERS_DEST" >/dev/null; then
         echo "root-required install drift: sudoers policy does not parse: $OOM_SUDOERS_DEST" >&2
         echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
         failed=1
