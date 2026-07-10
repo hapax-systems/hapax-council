@@ -30,6 +30,8 @@ SYSTEMD_SYSTEM_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
 SYSTEMD_USER_DIR="${HAPAX_OOM_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
 APCUPSD_DEST="${HAPAX_APCUPSD_DEST:-/etc/apcupsd}"
 APCUPSD_AUDIT_LOG="${HAPAX_UPS_AUDIT_LOG:-/var/log/hapax/ups-power-events.jsonl}"
+APCUPSD_CANONICAL_AUDIT_LOG="/var/log/hapax/ups-power-events.jsonl"
+APCUPSD_CANONICAL_AUDIT_GROUP="hapax"
 APCUPSD_AUDIT_LOG_OWNER_UID="${HAPAX_UPS_AUDIT_LOG_OWNER_UID:-}"
 APCUPSD_AUDIT_LOG_OWNER_GID="${HAPAX_UPS_AUDIT_LOG_OWNER_GID:-}"
 APCUPSD_LOGROTATE_DEST="${HAPAX_APCUPSD_LOGROTATE_DEST:-/etc/logrotate.d/hapax-ups-power-events}"
@@ -154,6 +156,35 @@ PY
 }
 
 resolve_apcupsd_audit_log_identity() {
+    local group_entry required_gid
+    if [ "$APCUPSD_AUDIT_LOG" = "$APCUPSD_CANONICAL_AUDIT_LOG" ]; then
+        if ! group_entry="$(getent group "$APCUPSD_CANONICAL_AUDIT_GROUP" 2>/dev/null)" \
+            || [ -z "$group_entry" ]; then
+            echo "root-required install drift: required UPS audit group missing: $APCUPSD_CANONICAL_AUDIT_GROUP" >&2
+            echo "  next action: restore the canonical $APCUPSD_CANONICAL_AUDIT_GROUP group and rerun the installed audit" >&2
+            return 1
+        fi
+        required_gid="$(printf '%s\n' "$group_entry" | cut -d: -f3)"
+        if ! [[ "$required_gid" =~ ^[0-9]+$ ]]; then
+            echo "root-required install drift: required UPS audit group has an invalid gid: $APCUPSD_CANONICAL_AUDIT_GROUP" >&2
+            echo "  next action: repair the canonical group entry and rerun the installed audit" >&2
+            return 1
+        fi
+        if [ -n "$APCUPSD_AUDIT_LOG_OWNER_UID" ] \
+            && [ "$APCUPSD_AUDIT_LOG_OWNER_UID" != "0" ]; then
+            echo "root-required install drift: canonical UPS audit log requires owner uid 0, not $APCUPSD_AUDIT_LOG_OWNER_UID" >&2
+            echo "  next action: remove HAPAX_UPS_AUDIT_LOG_OWNER_UID or set it to 0, then rerun the installed audit" >&2
+            return 1
+        fi
+        if [ -n "$APCUPSD_AUDIT_LOG_OWNER_GID" ] \
+            && [ "$APCUPSD_AUDIT_LOG_OWNER_GID" != "$required_gid" ]; then
+            echo "root-required install drift: canonical UPS audit log requires gid $required_gid from group $APCUPSD_CANONICAL_AUDIT_GROUP, not $APCUPSD_AUDIT_LOG_OWNER_GID" >&2
+            echo "  next action: remove HAPAX_UPS_AUDIT_LOG_OWNER_GID or set it to the canonical group gid, then rerun the installed audit" >&2
+            return 1
+        fi
+        APCUPSD_AUDIT_LOG_OWNER_UID=0
+        APCUPSD_AUDIT_LOG_OWNER_GID="$required_gid"
+    fi
     if [ -z "$APCUPSD_AUDIT_LOG_OWNER_UID" ]; then
         if [[ "$APCUPSD_AUDIT_LOG" == /var/log/* ]]; then
             APCUPSD_AUDIT_LOG_OWNER_UID=0

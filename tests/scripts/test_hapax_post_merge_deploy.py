@@ -1249,6 +1249,31 @@ def test_root_required_audit_fails_when_oom_enforcer_source_missing(tmp_path: Pa
     assert "next action:" in result.stderr
 
 
+def test_root_required_audit_fails_when_canonical_audit_group_is_missing(
+    tmp_path: Path,
+) -> None:
+    env = _root_audit_env(tmp_path)
+    fake_bin = tmp_path / "missing-group-bin"
+    fake_bin.mkdir()
+    fake_getent = fake_bin / "getent"
+    fake_getent.write_text("#!/usr/bin/env bash\nexit 2\n", encoding="utf-8")
+    fake_getent.chmod(0o755)
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["HAPAX_UPS_AUDIT_LOG"] = "/var/log/hapax/ups-power-events.jsonl"
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "required UPS audit group missing: hapax" in result.stderr
+    assert "next action:" in result.stderr
+
+
 def test_root_required_audit_detects_oom_enforcer_drift(tmp_path: Path) -> None:
     result = subprocess.run(
         [str(ROOT_REQUIRED_AUDIT)],

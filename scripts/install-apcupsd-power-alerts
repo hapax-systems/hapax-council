@@ -7,8 +7,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE="$ROOT"
 SRC="$SOURCE/config/apcupsd"
 DEST="${HAPAX_APCUPSD_DEST:-/etc/apcupsd}"
-AUDIT_DIR="${HAPAX_APCUPSD_AUDIT_DIR:-/var/log/hapax}"
-AUDIT_GROUP="${HAPAX_APCUPSD_AUDIT_GROUP:-hapax}"
+DEFAULT_AUDIT_DIR="/var/log/hapax"
+DEFAULT_AUDIT_GROUP="hapax"
+DEFAULT_AUDIT_LOG="$DEFAULT_AUDIT_DIR/ups-power-events.jsonl"
+AUDIT_DIR="${HAPAX_APCUPSD_AUDIT_DIR:-$DEFAULT_AUDIT_DIR}"
+AUDIT_GROUP="${HAPAX_APCUPSD_AUDIT_GROUP:-$DEFAULT_AUDIT_GROUP}"
 AUDIT_LOG="${HAPAX_UPS_AUDIT_LOG:-$AUDIT_DIR/ups-power-events.jsonl}"
 AUDIT_LOG_OWNER_UID="${HAPAX_UPS_AUDIT_LOG_OWNER_UID:-}"
 AUDIT_LOG_OWNER_GID="${HAPAX_UPS_AUDIT_LOG_OWNER_GID:-}"
@@ -153,6 +156,33 @@ install_audit_dir() {
 }
 
 resolve_audit_log_identity() {
+    local group_entry required_gid
+    if [ "$AUDIT_LOG" = "$DEFAULT_AUDIT_LOG" ]; then
+        if [ "$AUDIT_GROUP" != "$DEFAULT_AUDIT_GROUP" ]; then
+            echo "canonical UPS audit log requires group $DEFAULT_AUDIT_GROUP, not $AUDIT_GROUP; next action: remove HAPAX_APCUPSD_AUDIT_GROUP or use a noncanonical audit-log path" >&2
+            return 1
+        fi
+        if ! group_entry="$(getent group "$DEFAULT_AUDIT_GROUP" 2>/dev/null)" \
+            || [ -z "$group_entry" ]; then
+            echo "required UPS audit group is missing: $DEFAULT_AUDIT_GROUP; next action: restore the canonical $DEFAULT_AUDIT_GROUP group before installing or verifying apcupsd power alerts" >&2
+            return 1
+        fi
+        required_gid="$(printf '%s\n' "$group_entry" | cut -d: -f3)"
+        if ! [[ "$required_gid" =~ ^[0-9]+$ ]]; then
+            echo "required UPS audit group has an invalid gid: $DEFAULT_AUDIT_GROUP; next action: repair the canonical group entry before installing or verifying apcupsd power alerts" >&2
+            return 1
+        fi
+        if [ -n "$AUDIT_LOG_OWNER_UID" ] && [ "$AUDIT_LOG_OWNER_UID" != "0" ]; then
+            echo "canonical UPS audit log requires owner uid 0, not $AUDIT_LOG_OWNER_UID; next action: remove HAPAX_UPS_AUDIT_LOG_OWNER_UID or set it to 0" >&2
+            return 1
+        fi
+        if [ -n "$AUDIT_LOG_OWNER_GID" ] && [ "$AUDIT_LOG_OWNER_GID" != "$required_gid" ]; then
+            echo "canonical UPS audit log requires gid $required_gid from group $DEFAULT_AUDIT_GROUP, not $AUDIT_LOG_OWNER_GID; next action: remove HAPAX_UPS_AUDIT_LOG_OWNER_GID or set it to the canonical group gid" >&2
+            return 1
+        fi
+        AUDIT_LOG_OWNER_UID=0
+        AUDIT_LOG_OWNER_GID="$required_gid"
+    fi
     if [ -z "$AUDIT_LOG_OWNER_UID" ]; then
         if [[ "$AUDIT_LOG" == /var/log/* ]]; then
             AUDIT_LOG_OWNER_UID=0
@@ -676,6 +706,7 @@ check_source() {
 
 install_live() {
     local apcupsd_changed=0 upower_changed=0 source_path dest_path
+    resolve_audit_log_identity
     check_source
     preflight_root
     for source_path in \
@@ -819,6 +850,7 @@ verify_root_artifact_trust() {
 }
 
 verify_live() {
+    resolve_audit_log_identity
     verify_root_artifact_trust "$DEST/apcupsd.conf" 644
     verify_root_artifact_trust "$DEST/hapax-power-event.py" 755
     verify_root_artifact_trust "$DEST/onbattery" 755

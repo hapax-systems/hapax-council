@@ -875,6 +875,33 @@ def test_installer_source_check_exercises_config_hooks_and_helper() -> None:
     assert "apcupsd power alert install/check complete" in result.stdout
 
 
+def test_installer_fails_closed_when_canonical_audit_group_is_missing(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_getent = fake_bin / "getent"
+    fake_getent.write_text("#!/usr/bin/env bash\nexit 2\n", encoding="utf-8")
+    fake_getent.chmod(0o755)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--verify-live"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_APCUPSD_TARGET_HOME": str(tmp_path),
+            "HAPAX_APCUPSD_TARGET_GID": str(os.getgid()),
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+        },
+    )
+
+    assert result.returncode == 1
+    assert "required UPS audit group is missing: hapax" in result.stderr
+
+
 def test_installer_install_implies_verify_live_against_temp_destinations(tmp_path: Path) -> None:
     dest = tmp_path / "apcupsd"
     audit_dir = tmp_path / "hapax-log"
