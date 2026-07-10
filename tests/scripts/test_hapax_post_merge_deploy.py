@@ -286,6 +286,7 @@ def _root_audit_env(
     root_defer = tmp_path / "no-deferrals"
     state_root = tmp_path / "root-state"
     receipt_root = root_defer / "installed-receipts"
+    desired_root = state_root / "desired-receipts"
     system_dir = tmp_path / "etc" / "systemd" / "system"
     apcupsd_dir = tmp_path / "etc" / "apcupsd"
     logrotate_dest = tmp_path / "etc" / "logrotate.d" / "hapax-ups-power-events"
@@ -363,12 +364,16 @@ def _root_audit_env(
     receipt_root.mkdir(parents=True)
     (receipt_root / "oom-containment.sha").write_text(f"{package_sha}\n", encoding="utf-8")
     (receipt_root / "apcupsd-power-alerts.sha").write_text(f"{package_sha}\n", encoding="utf-8")
+    desired_root.mkdir(parents=True)
+    (desired_root / "oom-containment.sha").write_text(f"{package_sha}\n", encoding="utf-8")
+    (desired_root / "apcupsd-power-alerts.sha").write_text(f"{package_sha}\n", encoding="utf-8")
     return {
         **os.environ,
         "HAPAX_ROOT_REQUIRED_SOURCE_ROOT": str(source_root),
         "HAPAX_ROOT_REQUIRED_STATE_ROOT": str(state_root),
         "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source),
         "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT": str(receipt_root),
+        "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT": str(desired_root),
         "HAPAX_ROOT_REQUIRED_GIT_REPO": str(source_root),
         "HAPAX_OOM_ENFORCER_DEST": str(enforcer_dest),
         "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
@@ -871,9 +876,12 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
     assert f"HAPAX_ROOT_REQUIRED_PACKAGE_SHA={sha}" in runbook
     assert "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=" in runbook
     assert "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT=" in runbook
+    assert "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT=" in runbook
     assert "HAPAX_ROOT_REQUIRED_GIT_REPO=" in runbook
     assert (home / ".config" / "systemd" / "user" / "hapax-demo.service").is_file()
     assert "root-required oom-containment install deferred" in result.stdout
+    desired = home / ".local/state/hapax/root-required/desired-receipts/oom-containment.sha"
+    assert desired.read_text(encoding="utf-8").strip() == sha
 
     audit_result = subprocess.run(
         [str(ROOT_REQUIRED_AUDIT)],
@@ -886,6 +894,8 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
     assert audit_result.returncode == 1
     assert "root-required post-merge deploy deferrals pending" in audit_result.stderr
     assert "--install --verify-live" in audit_result.stderr
+    (deferred / "RUNBOOK.txt").unlink()
+    assert desired.read_text(encoding="utf-8").strip() == sha
 
 
 def test_root_required_deferral_staging_is_locked_and_atomic() -> None:
@@ -989,6 +999,30 @@ def test_root_required_audit_fails_when_installed_receipt_is_missing(tmp_path: P
     assert result.returncode == 1
     assert "installed receipt missing" in result.stderr
     assert "oom-containment.sha" in result.stderr
+
+
+def test_root_required_audit_detects_desired_package_not_installed(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    repo = Path(env["HAPAX_ROOT_REQUIRED_GIT_REPO"])
+    (repo / "unrelated").write_text("new desired deployment\n", encoding="utf-8")
+    _git(repo, "add", "unrelated")
+    _git(repo, "commit", "-m", "new desired deployment")
+    desired_sha = _git(repo, "rev-parse", "HEAD")
+    desired = Path(env["HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT"]) / "oom-containment.sha"
+    desired.write_text(f"{desired_sha}\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "desired package is not installed" in result.stderr
+    assert f"desired={desired_sha}" in result.stderr
+    assert "even if the cached RUNBOOK was lost" in result.stderr
 
 
 def test_root_required_audit_detects_nonexecutable_hook(tmp_path: Path) -> None:

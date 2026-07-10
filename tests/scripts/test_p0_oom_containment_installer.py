@@ -355,7 +355,9 @@ def test_stale_deferred_oom_package_drains_without_rolling_back_newer_install(
 
     assert result.returncode == 0, result.stderr
     assert "superseded" in result.stdout
-    assert not drain_dir.exists()
+    assert drain_dir.is_dir()
+    assert (drain_dir / "DRAINED.txt").is_file()
+    assert not (drain_dir / "RUNBOOK.txt").exists()
     assert receipt.read_text(encoding="utf-8").strip() == sha_b
     assert live_marker.read_text(encoding="utf-8") == "newer B policy\n"
 

@@ -8,14 +8,18 @@ SYSTEMD_SYSTEM_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
 TARGET_UID="${HAPAX_OOM_TARGET_UID:-1000}"
 TARGET_USER="${HAPAX_OOM_TARGET_USER:-}"
 TARGET_HOME="${HAPAX_OOM_TARGET_HOME:-}"
+TARGET_GID="${HAPAX_OOM_TARGET_GID:-}"
 if [ -z "$TARGET_USER" ]; then
     TARGET_USER="$(getent passwd "$TARGET_UID" | cut -d: -f1 || true)"
 fi
 if [ -z "$TARGET_HOME" ]; then
     TARGET_HOME="$(getent passwd "$TARGET_UID" | cut -d: -f6 || true)"
 fi
-if [ -z "$TARGET_USER" ] || [ -z "$TARGET_HOME" ]; then
-    echo "unable to resolve account/home for OOM target UID $TARGET_UID; next action: set HAPAX_OOM_TARGET_UID, HAPAX_OOM_TARGET_USER, and HAPAX_OOM_TARGET_HOME explicitly" >&2
+if [ -z "$TARGET_GID" ]; then
+    TARGET_GID="$(getent passwd "$TARGET_UID" | cut -d: -f4 || true)"
+fi
+if [ -z "$TARGET_USER" ] || [ -z "$TARGET_HOME" ] || [ -z "$TARGET_GID" ]; then
+    echo "unable to resolve account/home/group for OOM target UID $TARGET_UID; next action: set HAPAX_OOM_TARGET_UID, HAPAX_OOM_TARGET_USER, HAPAX_OOM_TARGET_HOME, and HAPAX_OOM_TARGET_GID explicitly" >&2
     exit 2
 fi
 SYSTEMD_USER_DIR="${HAPAX_OOM_SYSTEMD_USER_DIR:-$TARGET_HOME/.config/systemd/user}"
@@ -37,10 +41,12 @@ if [ -z "$ROOT_REQUIRED_DEFER_ROOT" ] && [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-
 fi
 ROOT_REQUIRED_DEFER_ROOT="${ROOT_REQUIRED_DEFER_ROOT:-$TARGET_HOME/.cache/hapax/post-merge-root-required}"
 ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/installed-receipts}"
+ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/desired-receipts}"
 ROOT_REQUIRED_GIT_REPO="${HAPAX_ROOT_REQUIRED_GIT_REPO:-/home/hapax/projects/hapax-council}"
 ROOT_REQUIRED_PACKAGE_SHA="${HAPAX_ROOT_REQUIRED_PACKAGE_SHA:-}"
 ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_STATE_ROOT/.lock}"
 ROOT_REQUIRED_RECEIPT="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/oom-containment.sha"
+ROOT_REQUIRED_DESIRED_RECEIPT="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/oom-containment.sha"
 SKIP_SUPERSEDED_INSTALL=0
 PROC_ROOT="${HAPAX_OOM_PROC_ROOT:-/proc}"
 if [ -n "${HAPAX_OOM_CGROUP_ROOT:-}" ]; then
@@ -181,6 +187,24 @@ migrate_legacy_root_required_state() {
             mv -f "$receipt.migrate.$$" "$receipt"
             echo "migrated $label installed-package receipt to durable state"
         fi
+        receipt="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/$label.sha"
+        if [ ! -f "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha" ] && [ -f "$receipt" ]; then
+            mkdir -p "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT"
+            cp "$receipt" "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha.migrate.$$"
+            mv -f "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha.migrate.$$" "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha"
+            echo "initialized $label desired-package receipt from installed state"
+        fi
+    done
+}
+
+package_commits_equivalent() {
+    local installed_sha="$1" candidate_sha="$2" rel
+    for rel in "${package_files[@]}"; do
+        git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$installed_sha:$rel" 2>/dev/null || return 1
+        git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$candidate_sha:$rel" 2>/dev/null || return 1
+        cmp -s \
+            <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$installed_sha:$rel") \
+            <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$candidate_sha:$rel") || return 1
     done
 }
 
@@ -230,33 +254,27 @@ validate_root_required_package_order() {
         echo "root-required OOM package $ROOT_REQUIRED_PACKAGE_SHA is superseded by installed $installed_sha; live files will not be rolled back"
         return 0
     fi
+    if package_commits_equivalent "$installed_sha" "$ROOT_REQUIRED_PACKAGE_SHA"; then
+        echo "root-required OOM package commits are ancestry-divergent but package-content equivalent; accepting squash/rebase transition"
+        return 0
+    fi
     echo "refusing divergent OOM package installed=$installed_sha candidate=$ROOT_REQUIRED_PACKAGE_SHA; next action: dispatch a governed reconciliation from current main and leave this RUNBOOK pending" >&2
     return 1
 }
 
 record_root_required_package_receipt() {
-    local temp
-    mkdir -p "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT"
+    local temp desired_temp
+    mkdir -p "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT"
     temp="$ROOT_REQUIRED_RECEIPT.tmp.$$"
     printf '%s\n' "$ROOT_REQUIRED_PACKAGE_SHA" > "$temp"
     mv -f "$temp" "$ROOT_REQUIRED_RECEIPT"
+    desired_temp="$ROOT_REQUIRED_DESIRED_RECEIPT.tmp.$$"
+    printf '%s\n' "$ROOT_REQUIRED_PACKAGE_SHA" > "$desired_temp"
+    mv -f "$desired_temp" "$ROOT_REQUIRED_DESIRED_RECEIPT"
 }
 
 validate_package_source_matches_commit() {
     local rel
-    local -a package_files=(
-        scripts/install-p0-oom-containment
-        "${system_dropins[@]}"
-        "${system_units[@]}"
-        "${user_audit_units[@]}"
-        "$user_dropin"
-        "${user_protection_dropins[@]}"
-        "$earlyoom_source"
-        "$oom_enforcer_source"
-        "$root_failure_intake_source"
-        "$oom_policy_audit_source"
-        "$root_required_audit_source"
-    )
     for rel in "${package_files[@]}"; do
         if [ ! -f "$SOURCE/$rel" ] || ! cmp -s <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$ROOT_REQUIRED_PACKAGE_SHA:$rel") "$SOURCE/$rel"; then
             echo "OOM install source does not match claimed commit $ROOT_REQUIRED_PACKAGE_SHA at $rel; next action: discard the modified package and rerun from a clean Git worktree or exact staged RUNBOOK" >&2
@@ -317,8 +335,23 @@ validate_root_required_deferral() {
 drain_root_required_deferral() {
     [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ] || return 0
     [ -n "${ROOT_REQUIRED_DRAIN_REAL:-}" ] || validate_root_required_deferral
-    rm -rf "$ROOT_REQUIRED_DRAIN_REAL"
-    echo "root-required deferral drained: $ROOT_REQUIRED_DRAIN_REAL"
+    mv "$ROOT_REQUIRED_DRAIN_REAL/RUNBOOK.txt" "$ROOT_REQUIRED_DRAIN_REAL/DRAINED.txt"
+    echo "root-required deferral marked drained: $ROOT_REQUIRED_DRAIN_REAL"
+}
+
+normalize_target_ownership() {
+    local rel dest path
+    [ "$(id -u)" = "0" ] || return 0
+    for path in "$ROOT_REQUIRED_STATE_ROOT" "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" "$ROOT_REQUIRED_LOCK_FILE"; do
+        [ -e "$path" ] || continue
+        chown -R "$TARGET_UID:$TARGET_GID" "$path"
+    done
+    dest="$SYSTEMD_USER_DIR/app.slice.d/oom-containment.conf"
+    chown "$TARGET_UID:$TARGET_GID" "$(dirname "$dest")" "$dest"
+    for rel in "${user_protection_dropins[@]}" "${user_audit_units[@]}"; do
+        dest="$SYSTEMD_USER_DIR/${rel#systemd/units/}"
+        chown "$TARGET_UID:$TARGET_GID" "$(dirname "$dest")" "$dest"
+    done
 }
 
 system_dropins=(
@@ -362,6 +395,19 @@ oom_enforcer_source="scripts/hapax-oom-score-enforce"
 root_failure_intake_source="scripts/hapax-root-failure-intake"
 oom_policy_audit_source="scripts/hapax-oom-policy-audit"
 root_required_audit_source="scripts/hapax-root-required-deploy-audit"
+package_files=(
+    scripts/install-p0-oom-containment
+    "${system_dropins[@]}"
+    "${system_units[@]}"
+    "${user_audit_units[@]}"
+    "$user_dropin"
+    "${user_protection_dropins[@]}"
+    "$earlyoom_source"
+    "$oom_enforcer_source"
+    "$root_failure_intake_source"
+    "$oom_policy_audit_source"
+    "$root_required_audit_source"
+)
 recovery_unit_scores=(
     apcupsd.service:-900
     systemd-logind.service:-800
@@ -959,5 +1005,6 @@ fi
 [ "$VERIFY_LIVE" -eq 0 ] || verify_live
 [ "$INSTALL" -eq 0 ] || record_installed_source
 [ "$INSTALL" -eq 0 ] || record_root_required_package_receipt
+[ "$INSTALL" -eq 0 ] || normalize_target_ownership
 [ "$INSTALL" -eq 0 ] || drain_root_required_deferral
 echo "p0 oom containment install/check complete"

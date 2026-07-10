@@ -481,6 +481,22 @@ def test_root_invocation_uses_target_home_for_durable_package_state(tmp_path: Pa
     fake_systemctl = tmp_path / "systemctl"
     fake_systemctl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     fake_systemctl.chmod(0o755)
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_id = fake_bin / "id"
+    fake_id.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "${1:-}" = "-u" ]; then echo 0; else exec /usr/bin/id "$@"; fi\n',
+        encoding="utf-8",
+    )
+    fake_id.chmod(0o755)
+    chown_calls = tmp_path / "chown-calls.txt"
+    fake_chown = fake_bin / "chown"
+    fake_chown.write_text(
+        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> {chown_calls!s}\n",
+        encoding="utf-8",
+    )
+    fake_chown.chmod(0o755)
     legacy_receipts = target_home / ".cache/hapax/post-merge-root-required/installed-receipts"
     legacy_receipts.mkdir(parents=True)
     (legacy_receipts / "oom-containment.sha").write_text(f"{REPO_HEAD}\n", encoding="utf-8")
@@ -493,6 +509,7 @@ def test_root_invocation_uses_target_home_for_durable_package_state(tmp_path: Pa
         env={
             **os.environ,
             "HOME": str(root_home),
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "HAPAX_APCUPSD_TARGET_UID": "1000",
             "HAPAX_APCUPSD_TARGET_HOME": str(target_home),
             "HAPAX_APCUPSD_DEST": str(dest),
@@ -501,6 +518,7 @@ def test_root_invocation_uses_target_home_for_durable_package_state(tmp_path: Pa
             "HAPAX_UPOWER_CONF_DEST": str(upower_dest),
             "HAPAX_APCUPSD_SYSTEMCTL": str(fake_systemctl),
             "HAPAX_APCUPSD_INSTALL_SUDO": "",
+            "HAPAX_APCUPSD_AUDIT_GROUP": "",
             "HAPAX_POST_MERGE_ROOT_DEFER_DIR": "",
             "HAPAX_ROOT_REQUIRED_STATE_ROOT": "",
             "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": "",
@@ -521,6 +539,8 @@ def test_root_invocation_uses_target_home_for_durable_package_state(tmp_path: Pa
     assert migrated_oom.read_text(encoding="utf-8").strip() == REPO_HEAD
     assert "migrated oom-containment installed-package receipt" in result.stdout
     assert not (root_home / ".local/state/hapax/root-required").exists()
+    ownership_calls = chown_calls.read_text(encoding="utf-8")
+    assert str(target_home / ".local/state/hapax/root-required") in ownership_calls
 
 
 def test_unversioned_apcupsd_install_source_fails_before_live_mutation(tmp_path: Path) -> None:
@@ -712,13 +732,15 @@ def test_installer_drains_root_required_deferral_after_success(tmp_path: Path) -
     )
 
     assert result.returncode == 0, result.stderr
-    assert not drain_dir.exists()
+    assert drain_dir.is_dir()
+    assert (drain_dir / "DRAINED.txt").is_file()
+    assert not (drain_dir / "RUNBOOK.txt").exists()
     assert sibling_dir.exists()
     assert (
         tmp_path / "root-state" / "installed-receipts" / "apcupsd-power-alerts.sha"
     ).read_text().strip() == REPO_HEAD
     assert (installed_source / "config" / "apcupsd" / "hapax-power-event.py").is_file()
-    assert "root-required deferral drained" in result.stdout
+    assert "root-required deferral marked drained" in result.stdout
 
 
 def test_stale_deferred_apcupsd_package_does_not_roll_back_newer_install(
@@ -775,6 +797,85 @@ def test_stale_deferred_apcupsd_package_does_not_roll_back_newer_install(
 
     assert result.returncode == 0, result.stderr
     assert "superseded" in result.stdout
-    assert not drain_dir.exists()
+    assert drain_dir.is_dir()
+    assert (drain_dir / "DRAINED.txt").is_file()
+    assert not (drain_dir / "RUNBOOK.txt").exists()
     assert receipt.read_text(encoding="utf-8").strip() == sha_b
     assert live_marker.read_text(encoding="utf-8") == "newer B policy\n"
+
+
+def test_apcupsd_installer_accepts_content_equivalent_squash_sibling(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "squash-test@example.test"], cwd=repo, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Squash Test"], cwd=repo, check=True)
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True, capture_output=True)
+    base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+
+    subprocess.run(["git", "switch", "-c", "pr"], cwd=repo, check=True, capture_output=True)
+    _copy_apcupsd_package(repo)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "PR package"], cwd=repo, check=True, capture_output=True)
+    pr_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+
+    subprocess.run(
+        ["git", "switch", "-c", "squash-main", base_sha],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    _copy_apcupsd_package(repo)
+    (repo / "squash-marker").write_text("main sibling\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "squash package"], cwd=repo, check=True, capture_output=True
+    )
+    squash_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+    ancestry = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", pr_sha, squash_sha], cwd=repo, check=False
+    )
+    assert ancestry.returncode == 1
+
+    receipt_root = tmp_path / "root-state" / "installed-receipts"
+    receipt_root.mkdir(parents=True)
+    receipt = receipt_root / "apcupsd-power-alerts.sha"
+    receipt.write_text(f"{pr_sha}\n", encoding="utf-8")
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(repo), "--install", "--verify-live"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_DEST": str(tmp_path / "apcupsd"),
+            "HAPAX_APCUPSD_AUDIT_DIR": str(tmp_path / "audit"),
+            "HAPAX_APCUPSD_LOGROTATE_DEST": str(tmp_path / "logrotate"),
+            "HAPAX_UPOWER_CONF_DEST": str(tmp_path / "upower"),
+            "HAPAX_APCUPSD_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": squash_sha,
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(repo),
+            "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT": str(receipt_root),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "package-content equivalent" in result.stdout
+    assert receipt.read_text(encoding="utf-8").strip() == squash_sha

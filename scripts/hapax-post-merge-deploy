@@ -183,6 +183,7 @@ ROOT_DEFER_DIR="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$HOME/.cache/hapax/post-merge
 ROOT_REQUIRED_STATE_ROOT="${HAPAX_ROOT_REQUIRED_STATE_ROOT:-$HOME/.local/state/hapax/root-required}"
 ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$ROOT_REQUIRED_STATE_ROOT/current-source}"
 ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/installed-receipts}"
+ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/desired-receipts}"
 ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_STATE_ROOT/.lock}"
 RECOVERY_BUNDLE_DEST="${HAPAX_RECOVERY_BUNDLE_DEST:-$HOME/.local/lib/hapax-recovery/council/current}"
 RECOVERY_BUNDLE_SOURCE_FILES=(
@@ -1356,7 +1357,7 @@ Run from this host after this root-authority preparation:
 
 Default sudo path after sudo -v:
 
-  HAPAX_ROOT_REQUIRED_PACKAGE_SHA=$SHA HAPAX_ROOT_REQUIRED_DRAIN_DIR=$dest HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT=$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_GIT_REPO=$REPO $dest/$installer --source $dest --install --verify-live
+  HAPAX_ROOT_REQUIRED_PACKAGE_SHA=$SHA HAPAX_ROOT_REQUIRED_DRAIN_DIR=$dest HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT=$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT=$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_GIT_REPO=$REPO $dest/$installer --source $dest --install --verify-live
 
 Post-merge deploy continued after this deferral so unrelated user-scope deploy
 groups for the same merge were not skipped.
@@ -1366,7 +1367,20 @@ EOF
     flock -u "$lock_fd"
     exec {lock_fd}>&-
     echo "root-required $label install deferred to $dest"
-    echo "next action: run HAPAX_ROOT_REQUIRED_PACKAGE_SHA=$SHA HAPAX_ROOT_REQUIRED_DRAIN_DIR=$dest HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT=$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_GIT_REPO=$REPO $dest/$installer --source $dest --install --verify-live with root authority"
+    echo "next action: run HAPAX_ROOT_REQUIRED_PACKAGE_SHA=$SHA HAPAX_ROOT_REQUIRED_DRAIN_DIR=$dest HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT=$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT=$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_GIT_REPO=$REPO $dest/$installer --source $dest --install --verify-live with root authority"
+}
+
+record_root_required_desired_sha() {
+    local label="$1" receipt temp lock_fd
+    mkdir -p "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" "$(dirname "$ROOT_REQUIRED_LOCK_FILE")"
+    exec {lock_fd}>"$ROOT_REQUIRED_LOCK_FILE"
+    flock -x "$lock_fd"
+    receipt="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha"
+    temp="$receipt.tmp.$$"
+    printf '%s\n' "$SHA" > "$temp"
+    mv -f "$temp" "$receipt"
+    flock -u "$lock_fd"
+    exec {lock_fd}>&-
 }
 
 if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
@@ -1383,10 +1397,12 @@ if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
         rm -rf "$OOM_STAGE" 2>/dev/null || true
         exit "$stage_oom_rc"
     fi
+    record_root_required_desired_sha "oom-containment"
     set +e
     HAPAX_ROOT_REQUIRED_PACKAGE_SHA="$SHA" \
         HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" \
         HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" \
+        HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" \
         HAPAX_ROOT_REQUIRED_GIT_REPO="$REPO" \
         "$OOM_STAGE/$OOM_CONTAINMENT_INSTALLER_PATH" --source "$OOM_STAGE" --install --verify-live
     oom_installer_rc=$?
@@ -1442,10 +1458,12 @@ if [ "${#APCUPSD_POWER_ALERTS[@]}" -gt 0 ]; then
         rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
         exit "$stage_apcupsd_rc"
     fi
+    record_root_required_desired_sha "apcupsd-power-alerts"
     set +e
     HAPAX_ROOT_REQUIRED_PACKAGE_SHA="$SHA" \
         HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" \
         HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" \
+        HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" \
         HAPAX_ROOT_REQUIRED_GIT_REPO="$REPO" \
         "$APCUPSD_STAGE/$APCUPSD_INSTALLER_PATH" --source "$APCUPSD_STAGE" --install --verify-live
     apcupsd_installer_rc=$?

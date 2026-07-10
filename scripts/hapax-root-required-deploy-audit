@@ -8,6 +8,7 @@ ROOT_DEFER_DIR="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$HOME/.cache/hapax/post-merge
 ROOT_REQUIRED_STATE_ROOT="${HAPAX_ROOT_REQUIRED_STATE_ROOT:-$HOME/.local/state/hapax/root-required}"
 INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$ROOT_REQUIRED_STATE_ROOT/current-source}"
 INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/installed-receipts}"
+DESIRED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/desired-receipts}"
 ROOT_REQUIRED_GIT_REPO="${HAPAX_ROOT_REQUIRED_GIT_REPO:-$HOME/projects/hapax-council}"
 ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_STATE_ROOT/.lock}"
 OOM_ENFORCER_DEST="${HAPAX_OOM_ENFORCER_DEST:-/usr/local/sbin/hapax-oom-score-enforce}"
@@ -104,6 +105,32 @@ audit_package_receipt() {
         fi
     done
     [ "$failed" -eq 0 ]
+}
+
+audit_desired_receipt() {
+    local label="$1" desired installed desired_sha installed_sha
+    desired="$DESIRED_RECEIPT_ROOT/$label.sha"
+    installed="$INSTALLED_RECEIPT_ROOT/$label.sha"
+    if [ ! -f "$desired" ]; then
+        echo "root-required desired receipt missing: $desired" >&2
+        echo "  next action: rerun hapax-post-merge-deploy for current main or the newest governed $label installer" >&2
+        return 1
+    fi
+    desired_sha="$(tr -d '[:space:]' < "$desired")"
+    if ! [[ "$desired_sha" =~ ^[0-9a-f]{40}$ ]] || ! git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$desired_sha^{commit}" 2>/dev/null; then
+        echo "root-required desired receipt is invalid or unavailable: $desired sha=$desired_sha" >&2
+        echo "  next action: fetch the desired commit into $ROOT_REQUIRED_GIT_REPO and rerun hapax-post-merge-deploy" >&2
+        return 1
+    fi
+    installed_sha=""
+    if [ -f "$installed" ]; then
+        installed_sha="$(tr -d '[:space:]' < "$installed")"
+    fi
+    if [ "$installed_sha" != "$desired_sha" ]; then
+        echo "root-required desired package is not installed: $label desired=$desired_sha installed=${installed_sha:-missing}" >&2
+        echo "  next action: regenerate the exact package from $desired_sha and run its governed installer, even if the cached RUNBOOK was lost" >&2
+        return 1
+    fi
 }
 
 compare_root_file() {
@@ -259,6 +286,8 @@ audit_root_installs() {
 
 mapfile -t runbooks < <(pending_runbooks)
 if [ "${#runbooks[@]}" -eq 0 ]; then
+    audit_desired_receipt "oom-containment" || rc=1
+    audit_desired_receipt "apcupsd-power-alerts" || rc=1
     audit_package_receipt "oom-containment" "${oom_package_files[@]}" || rc=1
     audit_package_receipt "apcupsd-power-alerts" "${apcupsd_package_files[@]}" || rc=1
     audit_root_installs || rc=1
