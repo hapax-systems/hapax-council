@@ -210,6 +210,111 @@ def test_register_and_load_roundtrip(tmp_path, monkeypatch) -> None:
     assert wr.load("/p/hapax-council--missing") is None
 
 
+# --- lane-standardization S4: canonical Lane instance fields + union liveness ------------------------
+
+
+def test_register_load_roundtrip_canonical_lane_fields(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path))
+    wr.register(
+        "/p/hapax-council--agy",
+        role="agy",
+        lane_id="agy",
+        route_id="agy.interactive.full",
+        dispatch_host="appendix",
+        supervisor="agy.launcher.pid",
+        now=_NOW,
+    )
+    rec = wr.load("/p/hapax-council--agy")
+    assert rec is not None
+    assert rec.lane_id == "agy"
+    assert rec.route_id == "agy.interactive.full"
+    assert rec.dispatch_host == "appendix"
+    assert rec.supervisor == "agy.launcher.pid"
+    # `host` is deleted from the model (grep-clean of readers) — replaced by `dispatch_host`.
+    assert not hasattr(rec, "host")
+
+
+def test_legacy_record_with_host_key_still_deserializes(tmp_path, monkeypatch) -> None:
+    """A pre-S4 record on disk carrying the now-removed `host` key must load, not raise."""
+    import json
+
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path))
+    wr.register("/p/hapax-council--old", role="dev2", now=_NOW)
+    rp = wr.record_path("/p/hapax-council--old")
+    d = json.loads(rp.read_text(encoding="utf-8"))
+    d["host"] = "podium"  # legacy key no longer in the model
+    rp.write_text(json.dumps(d), encoding="utf-8")
+    rec = wr.load("/p/hapax-council--old")  # unknown key is ignored by d.get(...)
+    assert rec is not None
+    assert rec.role == "dev2"
+
+
+def test_probe_union_liveness_supervisor_keeps_no_cwd_lane_live(tmp_path, monkeypatch) -> None:
+    """A live SUPERVISOR launcher keeps a lane live even when no process resolves in the worktree —
+    the false-kill-under-live-supervisor class the path-scan alone cannot see."""
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wt, branch = _add_worktree(repo, "wt")
+    p = wr.probe_worktree(
+        path=str(wt),
+        branch=branch,
+        canonical=str(repo),
+        open_pr_branches=set(),
+        abandoned_after_s=3600,
+        live_count_fn=lambda _p: 0,  # nothing resolves inside the worktree
+        launcher_live_fn=lambda _rec: True,  # but the supervisor launcher is alive
+        now_epoch=_FUTURE_EPOCH,
+    )
+    assert p is not None
+    assert p["live"] is True
+    assert p["liveness_evidence"] == "pidfile"
+    assert p["status"] == "active"
+    assert wr.is_reapable(p["status"], p["clean"], live=p["live"]) is False
+
+
+def test_probe_path_process_evidence_is_proc(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wt, branch = _add_worktree(repo, "wt")
+    p = wr.probe_worktree(
+        path=str(wt),
+        branch=branch,
+        canonical=str(repo),
+        open_pr_branches=set(),
+        abandoned_after_s=3600,
+        live_count_fn=lambda _p: 1,  # a process resolves inside the worktree
+        launcher_live_fn=lambda _rec: False,
+        now_epoch=_FUTURE_EPOCH,
+    )
+    assert p["live"] is True
+    assert p["liveness_evidence"] == "proc"
+
+
+def test_probe_default_no_launcher_fn_is_path_only_unchanged(tmp_path, monkeypatch) -> None:
+    """Default (no launcher_live_fn) preserves pre-S4 behavior: path-scan only, abandoned when idle."""
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wt, branch = _add_worktree(repo, "wt")
+    p = wr.probe_worktree(
+        path=str(wt),
+        branch=branch,
+        canonical=str(repo),
+        open_pr_branches=set(),
+        abandoned_after_s=3600,
+        live_count_fn=lambda _p: 0,  # no launcher_live_fn -> default off
+        now_epoch=_FUTURE_EPOCH,
+    )
+    assert p["live"] is False
+    assert p["liveness_evidence"] is None
+    assert p["status"] == "abandoned"
+
+
 def test_heartbeat_updates_only_heartbeat(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path))
     t1 = datetime(2026, 6, 28, 13, 0, tzinfo=UTC)
