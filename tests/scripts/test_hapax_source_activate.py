@@ -625,6 +625,49 @@ def test_active_config_staging_failure_rolls_back_before_deploy(tmp_path: Path) 
     assert "active config staging failed" in receipt["message"]
 
 
+def test_postpublication_deploy_failure_restores_prior_active_config_alias(
+    tmp_path: Path,
+) -> None:
+    canonical, origin, active_sha = _make_repos(tmp_path)
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    active_source = tmp_path / "active-source"
+    installed_policy = tmp_path / "home" / ".config" / "hapax" / "usb-topology-policy.json"
+    prior_target = active_source / "config" / "usb-topology-policy.json"
+    prior_content = prior_target.read_text(encoding="utf-8")
+    installed_policy.unlink()
+    installed_policy.symlink_to(prior_target)
+
+    updater = tmp_path / "updater-config-deploy-failure"
+    _git(tmp_path, "clone", str(origin), str(updater))
+    _git(updater, "config", "user.email", "source-activate@example.test")
+    _git(updater, "config", "user.name", "Source Activate")
+    _write(updater / "config" / "usb-topology-policy.json", '{"known_absences":{"new":true}}\n')
+    _git(updater, "add", "config/usb-topology-policy.json")
+    _git(updater, "commit", "-m", "change config before failed deploy")
+    _git(updater, "push", "origin", "main")
+    failed_sha = _git(updater, "rev-parse", "HEAD")
+
+    second = _run_activate(tmp_path, canonical, deploy_exit=7)
+
+    assert second.returncode == 7
+    assert failed_sha != active_sha
+    assert "synced 1 config files" in second.stdout
+    assert _git(active_source, "rev-parse", "HEAD") == active_sha
+    assert installed_policy.is_symlink()
+    assert os.readlink(installed_policy) == str(prior_target)
+    assert installed_policy.read_text(encoding="utf-8") == prior_content
+    assert (tmp_path / "deploy-record.txt").read_text(encoding="utf-8").splitlines() == [
+        active_sha,
+        failed_sha,
+    ]
+    assert list((tmp_path / "state").glob("launcher-rollback.*")) == []
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["deploy_status"] == "failed"
+    assert receipt["source_cutover"]["rollback_status"] == "success"
+
+
 def test_launcher_restore_copy_failure_is_reported_without_removing_destination(
     tmp_path: Path,
 ) -> None:
@@ -675,7 +718,7 @@ def test_launcher_restore_copy_failure_is_reported_without_removing_destination(
     receipt = _current_receipt(tmp_path)
     assert receipt["status"] == "failed"
     assert receipt["source_cutover"]["rollback_status"] == "failed"
-    assert "managed launcher restore failed" in receipt["source_cutover"]["rollback_message"]
+    assert "active runtime restore failed" in receipt["source_cutover"]["rollback_message"]
 
 
 def test_failed_deploy_after_legacy_worktree_migration_does_not_self_link(
@@ -811,6 +854,43 @@ def test_activation_syncs_usb_topology_policy_config(tmp_path: Path) -> None:
     installed_policy = tmp_path / "home" / ".config" / "hapax" / "usb-topology-policy.json"
     active_policy = tmp_path / "active-source" / "config" / "usb-topology-policy.json"
     assert installed_policy.read_text(encoding="utf-8") == active_policy.read_text(encoding="utf-8")
+    assert not installed_policy.is_symlink()
+    assert installed_policy.stat().st_nlink == 1
+    assert installed_policy.stat().st_mode & 0o777 == 0o644
+
+
+def test_activation_normalizes_matching_active_config_aliases(tmp_path: Path) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    installed_policy = tmp_path / "home" / ".config" / "hapax" / "usb-topology-policy.json"
+    active_policy = tmp_path / "active-source" / "config" / "usb-topology-policy.json"
+
+    installed_policy.unlink()
+    installed_policy.symlink_to(active_policy)
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 0, second.stderr
+    assert not installed_policy.is_symlink()
+    assert installed_policy.read_text(encoding="utf-8") == active_policy.read_text(encoding="utf-8")
+    assert installed_policy.stat().st_nlink == 1
+    assert installed_policy.stat().st_mode & 0o777 == 0o644
+
+    peer = tmp_path / "matching-policy-peer.json"
+    peer.write_text(active_policy.read_text(encoding="utf-8"), encoding="utf-8")
+    peer.chmod(0o600)
+    installed_policy.unlink()
+    os.link(peer, installed_policy)
+    assert installed_policy.stat().st_nlink == 2
+    third = _run_activate(tmp_path, canonical)
+
+    assert third.returncode == 0, third.stderr
+    assert not installed_policy.is_symlink()
+    assert installed_policy.stat().st_nlink == 1
+    assert installed_policy.stat().st_mode & 0o777 == 0o644
+    assert peer.stat().st_nlink == 1
+    assert peer.stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / "deploy-record.txt").read_text(encoding="utf-8").splitlines() == [new_sha]
 
 
 def test_activation_syncs_active_source_dependencies_before_deploy(tmp_path: Path) -> None:

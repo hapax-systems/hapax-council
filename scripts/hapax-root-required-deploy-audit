@@ -624,6 +624,50 @@ audit_effective_service_unit() {
     fi
 }
 
+audit_effective_failure_intake_unit() {
+    local unit="hapax-root-failure-intake@hapax-oom-score-enforce.service.service"
+    local instance="hapax-oom-score-enforce.service"
+    local rel="systemd/units/hapax-root-failure-intake@.service"
+    local expected_fragment="$SYSTEMD_SYSTEM_DIR/hapax-root-failure-intake@.service"
+    local expected_exec expected_user expected_environment expected_interval expected_burst
+    local actual_fragment actual_dropins actual_exec actual_user actual_environment
+    local actual_interval actual_burst
+    expected_exec="$(installed_unit_value "$rel" ExecStart)"
+    expected_exec="${expected_exec//%i/$instance}"
+    expected_user="$(installed_unit_value "$rel" User)"
+    expected_environment="$(installed_unit_value "$rel" Environment)"
+    expected_interval="$(installed_unit_value "$rel" StartLimitIntervalSec)"
+    expected_burst="$(installed_unit_value "$rel" StartLimitBurst)"
+    actual_fragment="$(loaded_unit_property system "$unit" FragmentPath)" || actual_fragment=""
+    actual_dropins="$(loaded_unit_property system "$unit" DropInPaths)" || actual_dropins="query-error"
+    actual_exec="$(loaded_unit_property system "$unit" ExecStart)" || actual_exec=""
+    actual_user="$(loaded_unit_property system "$unit" User)" || actual_user="query-error"
+    actual_environment="$(loaded_unit_property system "$unit" Environment)" || actual_environment="query-error"
+    actual_interval="$(loaded_unit_property system "$unit" StartLimitIntervalUSec)" || actual_interval="query-error"
+    actual_burst="$(loaded_unit_property system "$unit" StartLimitBurst)" || actual_burst="query-error"
+    if [ -z "$expected_exec" ] || [ -z "$expected_user" ] || [ -z "$expected_environment" ] \
+        || [ -z "$expected_interval" ] || [ -z "$expected_burst" ] \
+        || [ "$actual_fragment" != "$expected_fragment" ] || [ -n "$actual_dropins" ]; then
+        echo "root-required effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins" >&2
+        echo "  next action: remove unauthorized template or instance overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    case "$actual_exec" in
+        *"argv[]=$expected_exec ;"*) ;;
+        *)
+            echo "root-required effective $unit ExecStart drift: actual=${actual_exec:-unavailable} expected=$expected_exec" >&2
+            echo "  next action: remove unauthorized template or instance overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+            return 1
+            ;;
+    esac
+    if [ "$actual_user" != "$expected_user" ] || [ "$actual_environment" != "$expected_environment" ] \
+        || [ "$actual_interval" != "$expected_interval" ] || [ "$actual_burst" != "$expected_burst" ]; then
+        echo "root-required effective $unit identity/limit drift: User=${actual_user:-default} Environment=${actual_environment:-none} StartLimitIntervalUSec=${actual_interval:-none} StartLimitBurst=${actual_burst:-none} expected User=$expected_user Environment=$expected_environment StartLimitIntervalUSec=$expected_interval StartLimitBurst=$expected_burst" >&2
+        echo "  next action: remove unauthorized template or instance overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+}
+
 audit_effective_timer_unit() {
     local manager="$1" unit="$2" rel="$3" expected_fragment="$4"
     local expected_target expected_boot expected_active actual_fragment actual_dropins
@@ -661,6 +705,7 @@ audit_effective_safety_units() {
     audit_effective_service_unit system hapax-oom-score-enforce.service \
         systemd/units/hapax-oom-score-enforce.service \
         "$SYSTEMD_SYSTEM_DIR/hapax-oom-score-enforce.service" || failed=1
+    audit_effective_failure_intake_unit || failed=1
     audit_effective_timer_unit system hapax-oom-score-enforce.timer \
         systemd/units/hapax-oom-score-enforce.timer \
         "$SYSTEMD_SYSTEM_DIR/hapax-oom-score-enforce.timer" || failed=1

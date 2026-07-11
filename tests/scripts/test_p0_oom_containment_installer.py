@@ -281,6 +281,13 @@ def _systemctl_system_memory_cases(
         '  *"show hapax-oom-score-enforce.service -p ExecStart --value"*) printf "%s\\n" "{ path=/usr/local/sbin/hapax-oom-score-enforce ; argv[]=/usr/local/sbin/hapax-oom-score-enforce --apply ; }" ;;',
         '  *"show hapax-oom-score-enforce.service -p OnFailure --value"*) printf "%s\\n" "hapax-root-failure-intake@hapax-oom-score-enforce.service.service" ;;',
         '  *"show hapax-oom-score-enforce.service -p User --value"*) printf "\\n" ;;',
+        '  *"show hapax-root-failure-intake@hapax-oom-score-enforce.service.service -p FragmentPath --value"*) printf "%s\\n" "${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}/hapax-root-failure-intake@.service" ;;',
+        '  *"show hapax-root-failure-intake@hapax-oom-score-enforce.service.service -p DropInPaths --value"*) printf "\\n" ;;',
+        '  *"show hapax-root-failure-intake@hapax-oom-score-enforce.service.service -p ExecStart --value"*) printf "%s\\n" "{ path=/usr/local/sbin/hapax-root-failure-intake ; argv[]=/usr/local/sbin/hapax-root-failure-intake hapax-oom-score-enforce.service ; }" ;;',
+        '  *"show hapax-root-failure-intake@hapax-oom-score-enforce.service.service -p User --value"*) printf "hapax\\n" ;;',
+        f'  *"show hapax-root-failure-intake@hapax-oom-score-enforce.service.service -p Environment --value"*) printf "{SAFE_AUDIT_ENVIRONMENT}\\n" ;;',
+        '  *"show hapax-root-failure-intake@hapax-oom-score-enforce.service.service -p StartLimitIntervalUSec --value"*) printf "1h\\n" ;;',
+        '  *"show hapax-root-failure-intake@hapax-oom-score-enforce.service.service -p StartLimitBurst --value"*) printf "1\\n" ;;',
         '  *"show hapax-oom-score-enforce.timer -p FragmentPath --value"*) printf "%s\\n" "${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}/hapax-oom-score-enforce.timer" ;;',
         '  *"show hapax-oom-score-enforce.timer -p DropInPaths --value"*) printf "\\n" ;;',
         '  *"show hapax-oom-score-enforce.timer -p Unit --value"*) printf "hapax-oom-score-enforce.service\\n" ;;',
@@ -989,6 +996,57 @@ def test_oom_install_rejects_stretched_effective_enforcer_timer_before_receipts(
     assert result.returncode == 1
     assert "effective hapax-oom-score-enforce.timer cadence drift" in result.stderr
     assert "OnUnitActiveUSec=1d" in result.stderr
+    state_root = tmp_path / "root-state"
+    assert not (state_root / "installed-receipts/oom-containment.sha").exists()
+    assert not (tmp_path / "installed-source").exists()
+
+
+def test_oom_install_rejects_effective_failure_intake_dropin_before_receipts(
+    tmp_path: Path,
+) -> None:
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    fake_systemctl = tmp_path / "systemctl"
+    failure_unit = "hapax-root-failure-intake@hapax-oom-score-enforce.service.service"
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$*" in\n'
+        f'  *"show {failure_unit} -p DropInPaths --value"*) '
+        "printf '%s\\n' '/etc/systemd/system/hapax-root-failure-intake@.service.d/override.conf' ;;\n"
+        f'  *"show {failure_unit} -p ExecStart --value"*) '
+        "printf '%s\\n' '{ path=/usr/bin/true ; argv[]=/usr/bin/true ; }' ;;\n"
+        f"{_systemctl_system_memory_cases()}\n"
+        f"{_systemctl_user_unit_cases()}\n"
+        f"{_systemctl_app_slice_cases()}\n"
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(tmp_path / "systemd-system"),
+            "HAPAX_OOM_SYSTEMD_USER_DIR": str(tmp_path / "systemd-user"),
+            "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR": str(tmp_path / "systemd-user-control"),
+            "HAPAX_OOM_EARLYOOM_DEST": str(tmp_path / "earlyoom"),
+            "HAPAX_OOM_ENFORCER_DEST": str(tmp_path / "sbin/hapax-oom-score-enforce"),
+            "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(tmp_path / "sbin/hapax-root-failure-intake"),
+            "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_OOM_INSTALL_SUDO": "",
+            "HAPAX_OOM_PROC_ROOT": str(proc_root),
+            "HAPAX_OOM_TARGET_UID": "1000",
+        },
+    )
+
+    assert result.returncode == 1
+    assert f"effective {failure_unit} unit-source drift" in result.stderr
+    assert "override.conf" in result.stderr
     state_root = tmp_path / "root-state"
     assert not (state_root / "installed-receipts/oom-containment.sha").exists()
     assert not (tmp_path / "installed-source").exists()

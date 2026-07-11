@@ -111,7 +111,11 @@ ROOT_AUDIT_SOURCE_FILES = {
         "[Service]\nOOMScoreAdjust=0\nOOMPolicy=continue\n"
     ),
     "systemd/units/hapax-root-failure-intake@.service": (
-        "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\n"
+        "[Unit]\n# Hapax-Install-Scope: system\n"
+        "StartLimitIntervalSec=1h\nStartLimitBurst=1\n"
+        "[Service]\nType=oneshot\nUser=hapax\n"
+        "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin\n"
+        "ExecStart=/usr/local/sbin/hapax-root-failure-intake %i\n"
     ),
     "systemd/units/hapax-oom-score-enforce.service": (
         "[Unit]\n# Hapax-Install-Scope: system\n"
@@ -354,6 +358,25 @@ def _effective_safety_unit_show_script(system_dir: Path, user_dir: Path) -> str:
                 f'if [ "$*" = "{prefix} {unit} -p {prop} --value" ]; '
                 f"then printf '%s\\n' '{value}'; fi\n"
             )
+    failure_unit = "hapax-root-failure-intake@hapax-oom-score-enforce.service.service"
+    failure_properties = {
+        "FragmentPath": str(system_dir / "hapax-root-failure-intake@.service"),
+        "DropInPaths": "",
+        "ExecStart": (
+            "{ path=/usr/local/sbin/hapax-root-failure-intake ; "
+            "argv[]=/usr/local/sbin/hapax-root-failure-intake "
+            "hapax-oom-score-enforce.service ; }"
+        ),
+        "User": "hapax",
+        "Environment": "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin",
+        "StartLimitIntervalUSec": "1h",
+        "StartLimitBurst": "1",
+    }
+    for prop, value in failure_properties.items():
+        lines.append(
+            f'if [ "$*" = "show {failure_unit} -p {prop} --value" ]; '
+            f"then printf '%s\\n' '{value}'; fi\n"
+        )
     timers = (
         (
             "system",
@@ -1894,6 +1917,42 @@ def test_root_required_audit_rejects_effective_service_dropin(tmp_path: Path) ->
 
     assert result.returncode == 1
     assert "effective hapax-oom-policy-audit.service unit-source drift" in result.stderr
+    assert "override.conf" in result.stderr
+
+
+def test_root_required_audit_rejects_effective_failure_intake_dropin(
+    tmp_path: Path,
+) -> None:
+    env = _root_audit_env(tmp_path)
+    fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
+    baseline_systemctl = fake_systemctl.with_name("root-audit-systemctl-baseline")
+    fake_systemctl.rename(baseline_systemctl)
+    failure_unit = "hapax-root-failure-intake@hapax-oom-score-enforce.service.service"
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [ "$*" = "show {failure_unit} -p DropInPaths --value" ]; then\n'
+        "  printf '%s\\n' '/etc/systemd/system/hapax-root-failure-intake@.service.d/override.conf'\n"
+        "  exit 0\n"
+        "fi\n"
+        f'if [ "$*" = "show {failure_unit} -p ExecStart --value" ]; then\n'
+        "  printf '%s\\n' '{ path=/usr/bin/true ; argv[]=/usr/bin/true ; }'\n"
+        "  exit 0\n"
+        "fi\n"
+        f'exec "{baseline_systemctl!s}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert f"effective {failure_unit} unit-source drift" in result.stderr
     assert "override.conf" in result.stderr
 
 

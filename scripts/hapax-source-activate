@@ -792,6 +792,7 @@ config_sync_count=0
 launcher_snapshot_dir=""
 launcher_snapshot_ready=0
 predeploy_failure_message=""
+active_config_dest="$HOME/.config/hapax/usb-topology-policy.json"
 
 snapshot_managed_launchers() {
     local root script base dest
@@ -842,6 +843,16 @@ snapshot_managed_launchers() {
             fi
         fi
     done
+    if [[ -e "$active_config_dest" || -L "$active_config_dest" ]]; then
+        if [[ ! -f "$active_config_dest" && ! -L "$active_config_dest" ]]; then
+            echo "hapax-source-activate: refusing non-file active config during snapshot: $active_config_dest; next action: move the non-file entry aside without following it and rerun governed source activation" >&2
+            return 1
+        fi
+        if ! cp -a -- "$active_config_dest" "$launcher_snapshot_dir/config-present"; then
+            echo "hapax-source-activate: unable to snapshot active config $active_config_dest; next action: leave the config unchanged, preserve $launcher_snapshot_dir for inspection, repair state-directory permissions or free space, then rerun governed source activation" >&2
+            return 1
+        fi
+    fi
     launcher_snapshot_ready=1
 }
 
@@ -889,12 +900,48 @@ restore_managed_launchers() {
             return 1
         fi
     done < "$launcher_snapshot_dir/names"
-    if ! rm -rf -- "$launcher_snapshot_dir"; then
-        echo "hapax-source-activate: launchers were restored but snapshot cleanup failed at $launcher_snapshot_dir; next action: verify restored launchers, preserve the snapshot until verified, then remove it and rerun governed source activation" >&2
+}
+
+restore_active_config() {
+    [[ "$launcher_snapshot_ready" == "1" ]] || return 0
+    local dest="$active_config_dest" saved="$launcher_snapshot_dir/config-present"
+    local dest_dir base restore_temp_dir
+    dest_dir="$(dirname "$dest")"
+    base="${dest##*/}"
+    if [[ -d "$dest" && ! -L "$dest" ]]; then
+        echo "hapax-source-activate: cannot restore active config over directory: $dest; next action: move the directory aside, preserve $launcher_snapshot_dir, and restore the prior config before rerunning governed source activation" >&2
         return 1
     fi
-    launcher_snapshot_dir=""
-    launcher_snapshot_ready=0
+    if [[ -e "$saved" || -L "$saved" ]]; then
+        if [[ ! -f "$saved" && ! -L "$saved" ]]; then
+            echo "hapax-source-activate: refusing unsafe saved active config during restore: $saved; next action: preserve $launcher_snapshot_dir for inspection and restore $dest manually before rerunning governed source activation" >&2
+            return 1
+        fi
+        if ! mkdir -p "$dest_dir"; then
+            echo "hapax-source-activate: unable to prepare active config restore directory $dest_dir; next action: preserve $launcher_snapshot_dir, repair the directory, and restore $dest from $saved" >&2
+            return 1
+        fi
+        if ! restore_temp_dir="$(mktemp -d "$dest_dir/.${base}.restore.XXXXXX")"; then
+            echo "hapax-source-activate: unable to reserve atomic config restore storage for $dest; next action: leave $dest unchanged, preserve $launcher_snapshot_dir, repair $dest_dir permissions or free space, then restore from $saved" >&2
+            return 1
+        fi
+        if ! cp -a -- "$saved" "$restore_temp_dir/$base"; then
+            echo "hapax-source-activate: unable to stage saved active config $saved for atomic restore; next action: leave $dest unchanged, preserve $launcher_snapshot_dir and $restore_temp_dir, then restore the saved config manually" >&2
+            rm -rf -- "$restore_temp_dir" 2>/dev/null || true
+            return 1
+        fi
+        if ! mv -fT -- "$restore_temp_dir/$base" "$dest"; then
+            echo "hapax-source-activate: unable to atomically restore $dest from $saved; next action: leave the current config unchanged, preserve $launcher_snapshot_dir and $restore_temp_dir, then restore the saved config manually" >&2
+            return 1
+        fi
+        if ! rmdir -- "$restore_temp_dir"; then
+            echo "hapax-source-activate: restored $dest but could not remove empty temporary directory $restore_temp_dir; next action: verify the restored config, remove only the confirmed empty directory, and rerun governed source activation" >&2
+            return 1
+        fi
+    elif ! rm -f -- "$dest"; then
+        echo "hapax-source-activate: unable to restore the prior absent state for $dest; next action: preserve $launcher_snapshot_dir, remove the failed-candidate config without following it, and rerun governed source activation" >&2
+        return 1
+    fi
 }
 
 discard_launcher_snapshot() {
@@ -907,11 +954,18 @@ discard_launcher_snapshot() {
 }
 
 rollback_activation() {
-    local reason="$1" worktree_rollback=0
+    local reason="$1" worktree_rollback=0 launcher_rollback=0 config_rollback=0
     rollback_active_worktree "$reason" || worktree_rollback=$?
-    if ! restore_managed_launchers; then
+    restore_managed_launchers || launcher_rollback=$?
+    restore_active_config || config_rollback=$?
+    if [[ "$launcher_rollback" -ne 0 || "$config_rollback" -ne 0 ]]; then
         rollback_status="failed"
-        rollback_message="managed launcher restore failed after: $reason"
+        rollback_message="active runtime restore failed after: $reason (launchers=$launcher_rollback config=$config_rollback)"
+        return 1
+    fi
+    if ! discard_launcher_snapshot; then
+        rollback_status="failed"
+        rollback_message="active runtime restored but rollback snapshot cleanup failed after: $reason"
         return 1
     fi
     return "$worktree_rollback"
@@ -959,8 +1013,16 @@ sync_active_config() {
     local src="$1"
     local dst="$2"
     local dst_dir temp
-    [[ -f "$src" ]] || return 0
-    if [[ -f "$dst" ]] && cmp -s "$src" "$dst"; then
+    [[ -e "$src" || -L "$src" ]] || return 0
+    if [[ ! -f "$src" || -L "$src" ]]; then
+        predeploy_failure_message="active config source is not a release regular file: $src"
+        echo "hapax-source-activate: refusing non-regular active config source $src; next action: restore it as a Git-tracked regular file and rerun governed source activation" >&2
+        return 1
+    fi
+    if [[ -f "$dst" && ! -L "$dst" ]] \
+        && [[ "$(stat -c %h -- "$dst" 2>/dev/null || true)" == "1" ]] \
+        && [[ "$(stat -c %a -- "$dst" 2>/dev/null || true)" == "644" ]] \
+        && cmp -s "$src" "$dst"; then
         return 0
     fi
     dst_dir="$(dirname "$dst")"
@@ -999,7 +1061,7 @@ prepare_active_runtime_surface() {
     done
     sync_active_config \
         "$ACTIVE_WORKTREE/config/usb-topology-policy.json" \
-        "$HOME/.config/hapax/usb-topology-policy.json" || return 1
+        "$active_config_dest" || return 1
 }
 
 if ! prepare_active_runtime_surface; then
