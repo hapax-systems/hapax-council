@@ -789,17 +789,19 @@ link_active_script() {
     local script="$1"
     [[ -f "$script" ]] || return 0
     [[ -x "$script" ]] || chmod +x "$script"
-    local base target
+    local base dest target
     base="$(basename "$script")"
-    # Post-merge deploy installs changed launchers as release-pinned regular
-    # copies. Preserve that ownership; this sweep repairs only absent or
-    # symlink-owned entries.
-    if [[ -e "$LOCAL_BIN/$base" && ! -L "$LOCAL_BIN/$base" ]]; then
+    dest="$LOCAL_BIN/$base"
+    # Post-merge deploy installs changed hapax-* launchers as regular copies.
+    # Preserve only an executable copy whose bytes match this commit-addressed
+    # release. Stale/tampered copies and cc-task tools remain symlink-owned.
+    if [[ "$base" == hapax-* && -f "$dest" && ! -L "$dest" && -x "$dest" ]] \
+        && cmp -s "$script" "$dest"; then
         return 0
     fi
-    target="$(readlink "$LOCAL_BIN/$base" 2>/dev/null || true)"
+    target="$(readlink "$dest" 2>/dev/null || true)"
     if [[ "$target" != "$script" ]]; then
-        ln -sf "$script" "$LOCAL_BIN/$base"
+        ln -sf "$script" "$dest"
         sweep_count=$((sweep_count + 1))
     fi
 }

@@ -116,12 +116,12 @@ write `/dev/shm/hapax-compositor/broadcast-mode.json` through
 | logos-api | 8G | default | unchanged | FastAPI :8051 |
 | visual-layer-aggregator | 4G | default | unchanged | perception pipeline |
 | hapax-reverie | 4G | default | unchanged | visual expression daemon |
-| hapax-dmn | 4G | default | cognitive substrate |
-| officium-api | 512M | default | FastAPI :8050 |
-| hapax-content-resolver | 512M | default | content resolver |
-| hapax-watch-receiver | 256M | default | Wear OS biometrics |
-| hapax-recent-impingements | 128M | -800 | salience overlay producer |
-| stimmung-sync | 2G | default | MemoryHigh=1G; role-specific source ceiling after 2026-05-13 `CONSTRAINT_MEMCG` evidence |
+| hapax-dmn | 4G | default | unchanged | cognitive substrate |
+| officium-api | 512M | default | unchanged | FastAPI :8050 |
+| hapax-content-resolver | 512M | default | unchanged | content resolver |
+| hapax-watch-receiver | 256M | default | unchanged | Wear OS biometrics |
+| hapax-recent-impingements | 128M | default | unchanged | salience overlay producer |
+| stimmung-sync | 2G | default | unchanged | MemoryHigh=1G; role-specific source ceiling after 2026-05-13 `CONSTRAINT_MEMCG` evidence |
 
 Recheck these four corrected hard limits with `systemctl --user show logos-api.service visual-layer-aggregator.service hapax-reverie.service hapax-dmn.service -p Id -p MemoryMax` and compare them with the corresponding tracked units under `systemd/units/`.
 

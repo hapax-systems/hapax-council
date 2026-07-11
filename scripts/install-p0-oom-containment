@@ -900,6 +900,10 @@ refresh_protected_user_unit_snapshot() {
         unit="${spec%%:*}"
         pid="$(main_pid_for_user_unit "$unit")" || return 1
         cgroup="$(control_group_for_user_unit "$unit")" || return 1
+        if [ -n "$pid" ] && [ -z "$cgroup" ]; then
+            echo "user unit $unit has live MainPID=$pid but an empty ControlGroup; next action: inspect systemctl --user show $unit -p MainPID -p ControlGroup and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            return 1
+        fi
         next_main_pids["$unit"]="$pid"
         next_cgroups["$unit"]="$cgroup"
     done

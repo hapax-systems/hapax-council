@@ -2299,6 +2299,75 @@ def test_installer_query_failure_cannot_scrub_protected_process_scores(tmp_path:
     assert (proc_root / "999" / "oom_score_adj").read_text(encoding="utf-8").strip() == "-900"
 
 
+def test_installer_empty_control_group_with_live_pid_aborts_before_scrub(
+    tmp_path: Path,
+) -> None:
+    system_dir = tmp_path / "systemd-system"
+    user_dir = tmp_path / "systemd-user"
+    user_control_dir = tmp_path / "systemd-user-control"
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    studio_cgroup = _unit_cgroup("studio-compositor.service")
+    _write_proc(
+        proc_root,
+        900,
+        name="systemd",
+        uid=1000,
+        oom_score=100,
+        cgroup="/user.slice/user-1000.slice/user@1000.service",
+    )
+    _write_proc(proc_root, 914, name="python", uid=1000, oom_score=-800, cgroup=studio_cgroup)
+    _write_proc(
+        proc_root,
+        999,
+        name="codex",
+        uid=1000,
+        oom_score=-900,
+        cgroup="/user.slice/session.slice",
+    )
+    _write_recovery_procs(proc_root)
+
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$*" in\n'
+        '  *"--user show studio-compositor.service -p ControlGroup --value"*) printf "\\n" ;;\n'
+        '  *"show user@1000.service -p MainPID --value"*) printf "900\\n" ;;\n'
+        f"{_systemctl_user_unit_cases({'studio-compositor.service': 914}, {'studio-compositor.service': studio_cgroup})}\n"
+        f"{_systemctl_system_memory_cases(RECOVERY_SYSTEM_UNIT_PIDS)}\n"
+        f"{_systemctl_app_slice_cases()}\n"
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(system_dir),
+            "HAPAX_OOM_SYSTEMD_USER_DIR": str(user_dir),
+            "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR": str(user_control_dir),
+            "HAPAX_OOM_EARLYOOM_DEST": str(tmp_path / "earlyoom"),
+            "HAPAX_OOM_ENFORCER_DEST": str(tmp_path / "sbin/hapax-oom-score-enforce"),
+            "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(tmp_path / "sbin/hapax-root-failure-intake"),
+            "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_OOM_INSTALL_SUDO": "",
+            "HAPAX_OOM_PROC_ROOT": str(proc_root),
+            "HAPAX_OOM_TARGET_UID": "1000",
+        },
+    )
+
+    assert result.returncode == 1
+    assert "live MainPID=914 but an empty ControlGroup" in result.stderr
+    assert (proc_root / "914" / "oom_score_adj").read_text(encoding="utf-8").strip() == "-800"
+    assert (proc_root / "999" / "oom_score_adj").read_text(encoding="utf-8").strip() == "-900"
+
+
 def test_installer_revalidates_cached_main_pid_cgroup_before_write_and_exemption(
     tmp_path: Path,
 ) -> None:

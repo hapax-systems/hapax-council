@@ -438,14 +438,39 @@ def test_activation_preserves_release_pinned_regular_launcher(tmp_path: Path) ->
     canonical, _origin, _new_sha = _make_repos(tmp_path)
     local_bin = tmp_path / "home" / ".local" / "bin"
     pinned = local_bin / "hapax-post-merge-deploy"
-    _write(pinned, "#!/usr/bin/env bash\necho candidate\n", executable=True)
+    release_content = (canonical / "scripts" / "hapax-post-merge-deploy").read_text(
+        encoding="utf-8"
+    )
+    _write(pinned, release_content, executable=True)
 
     result = _run_activate(tmp_path, canonical)
 
     assert result.returncode == 0, result.stderr
     assert pinned.is_file()
     assert not pinned.is_symlink()
-    assert pinned.read_text(encoding="utf-8") == "#!/usr/bin/env bash\necho candidate\n"
+    assert pinned.read_text(encoding="utf-8") == release_content
+
+
+def test_activation_replaces_stale_or_unowned_regular_launchers(tmp_path: Path) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+    local_bin = tmp_path / "home" / ".local" / "bin"
+    stale = local_bin / "hapax-post-merge-deploy"
+    regular_cc_claim = local_bin / "cc-claim"
+    _write(stale, "#!/usr/bin/env bash\necho tampered\n", executable=True)
+    _write(
+        regular_cc_claim,
+        (canonical / "scripts" / "cc-claim").read_text(encoding="utf-8"),
+        executable=True,
+    )
+
+    result = _run_activate(tmp_path, canonical)
+
+    assert result.returncode == 0, result.stderr
+    active_source = tmp_path / "active-source"
+    assert stale.is_symlink()
+    assert os.readlink(stale) == str(active_source / "scripts" / "hapax-post-merge-deploy")
+    assert regular_cc_claim.is_symlink()
+    assert os.readlink(regular_cc_claim) == str(active_source / "scripts" / "cc-claim")
 
 
 def test_activation_syncs_usb_topology_policy_config(tmp_path: Path) -> None:
