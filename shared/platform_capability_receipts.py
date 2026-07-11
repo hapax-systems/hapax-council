@@ -8,6 +8,7 @@ authority by themselves.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -22,6 +23,8 @@ DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR = (
 PLATFORM_CAPABILITY_RECEIPT_DIR_ENV = "HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR"
 RECEIPT_SCHEMA_VERSION = 1
 _DURATION_RE = re.compile(r"^(?P<count>[1-9][0-9]*)(?P<unit>s|m|h|d)$")
+
+LOG = logging.getLogger(__name__)
 
 
 class PlatformCapabilityReceiptError(ValueError):
@@ -178,13 +181,35 @@ def load_platform_capability_receipts(
     *,
     now: datetime | None = None,
 ) -> dict[str, PlatformCapabilityReceipt]:
-    """Load the newest fresh receipt per platform from a directory."""
+    """Load the newest fresh receipt per platform from a directory.
+
+    Per-file isolation: a malformed platform-capability receipt is quarantined
+    (logged and skipped), never allowed to abort this receipt load. Before this
+    guard, one bad top-level platform receipt raised
+    ``PlatformCapabilityReceiptError`` out of the loop and could make
+    ``load_platform_capability_registry`` fail closed with
+    ``capability_registry_unavailable`` for every route. This is file-level
+    quarantine for this receipt store: the bad receipt is absent from the overlay,
+    so the inert registry state remains conservative. Sibling receipt stores, such
+    as route-authority receipts, require their own isolation.
+    """
 
     if not receipt_dir.exists():
         return {}
     receipts: dict[str, PlatformCapabilityReceipt] = {}
     for path in sorted(receipt_dir.glob("*.json")):
-        receipt = load_platform_capability_receipt(path)
+        try:
+            receipt = load_platform_capability_receipt(path)
+        except PlatformCapabilityReceiptError as exc:
+            LOG.warning(
+                "quarantining malformed platform-capability receipt %s: %s; "
+                "next action: remove or regenerate this receipt with "
+                "scripts/hapax-platform-capability-receipts, then rerun "
+                "scripts/hapax-platform-capability-freshness",
+                path,
+                exc,
+            )
+            continue
         if not receipt_is_fresh(receipt, now=now):
             continue
         prior = receipts.get(receipt.platform)
