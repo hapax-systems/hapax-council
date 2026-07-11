@@ -623,6 +623,10 @@ def test_power_event_helper_rejects_invalid_explicit_timeout(tmp_path: Path) -> 
 
     assert result.returncode == 2
     assert "timeout must be a positive finite number" in result.stderr
+    assert (
+        "next action: supply a value greater than zero or remove the explicit override"
+        in result.stderr
+    )
 
 
 def test_power_event_helper_marks_doshutdown_as_distinct_intent(tmp_path: Path) -> None:

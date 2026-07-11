@@ -82,9 +82,13 @@ def positive_finite_timeout(value: str | float) -> float:
     try:
         parsed = float(value)
     except (TypeError, ValueError) as exc:
-        raise argparse.ArgumentTypeError("timeout must be a positive finite number") from exc
+        raise argparse.ArgumentTypeError(
+            "timeout must be a positive finite number; next action: supply a value greater than zero or remove the explicit override"
+        ) from exc
     if not math.isfinite(parsed) or parsed <= 0:
-        raise argparse.ArgumentTypeError("timeout must be a positive finite number")
+        raise argparse.ArgumentTypeError(
+            "timeout must be a positive finite number; next action: supply a value greater than zero or remove the explicit override"
+        )
     return parsed
 
 

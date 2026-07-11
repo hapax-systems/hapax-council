@@ -3512,6 +3512,49 @@ def test_hapax_script_deploy_restarts_active_units_that_reference_local_bin(
     assert record["deploy_groups"]["hapax_scripts"] == [script_path]
 
 
+def test_hapax_script_deploy_atomically_replaces_hard_link_without_mutating_peer(
+    tmp_path: Path,
+) -> None:
+    script_path = "scripts/hapax-atomic-launcher"
+    release_body = "#!/usr/bin/env bash\necho release\n"
+    repo, sha = _repo_with_linear_commit(tmp_path, {script_path: release_body})
+    home = tmp_path / "home"
+    local_bin = home / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    peer = tmp_path / "launcher-peer"
+    peer.write_text("#!/usr/bin/env bash\necho prior peer\n", encoding="utf-8")
+    peer.chmod(0o755)
+    installed = local_bin / "hapax-atomic-launcher"
+    os.link(peer, installed)
+    prior_peer_inode = peer.stat().st_ino
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert installed.read_text(encoding="utf-8") == release_body
+    assert installed.stat().st_mode & 0o777 == 0o755
+    assert installed.stat().st_nlink == 1
+    assert installed.stat().st_ino != prior_peer_inode
+    assert peer.stat().st_ino == prior_peer_inode
+    assert peer.stat().st_nlink == 1
+    assert peer.read_text(encoding="utf-8") == "#!/usr/bin/env bash\necho prior peer\n"
+
+
 def test_deploy_rejects_commit_ranges_before_touching_targets() -> None:
     result = subprocess.run(
         [str(SCRIPT), "HEAD..HEAD"],

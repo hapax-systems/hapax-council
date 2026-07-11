@@ -56,7 +56,7 @@
 #   scripts/hapax-coord-deploy, shared/{__init__,jsonl_append,p0_incident_intake}.py
 #                                  → refresh the stable D2 recovery bundle under
 #                                    ~/.local/lib/hapax-recovery/council
-#   scripts/hapax-*                → ensure ~/.local/bin/ symlink
+#   scripts/hapax-*                → publish a release-pinned regular copy in ~/.local/bin/
 #   hooks/scripts/{cc-task-gate.impl.sh,agent-role.sh,escape-grant.sh,
 #                  hapax_check_enable_latch.sh,cc-task-gate-bootstrap.py,
 #                  hooks-doctor.sh,cc-task-gate.sh}
@@ -2047,7 +2047,28 @@ if [ "${#USER_PRESETS[@]}" -gt 0 ]; then
     DID_ANYTHING=1
 fi
 
-# --- scripts/hapax-* symlinks ---
+publish_git_executable_at_sha() {
+    local source_path="$1" dest="$2" dest_dir base temp
+    dest_dir="$(dirname "$dest")"
+    base="$(basename "$dest")"
+    if ! temp="$(mktemp "$dest_dir/.${base}.tmp.XXXXXX")"; then
+        echo "hapax-post-merge-deploy: unable to reserve a temporary launcher beside $dest; next action: verify destination ownership and capacity, then rerun the governed deploy" >&2
+        return 1
+    fi
+    if ! git -C "$REPO" show "$SHA:$source_path" > "$temp"; then
+        rm -f "$temp" 2>/dev/null || true
+        echo "hapax-post-merge-deploy: unable to materialize $source_path for $dest; next action: verify the commit object and rerun the governed deploy" >&2
+        return 1
+    fi
+    chmod 0755 "$temp"
+    if ! mv -fT -- "$temp" "$dest"; then
+        rm -f "$temp" 2>/dev/null || true
+        echo "hapax-post-merge-deploy: unable to atomically publish launcher $dest; next action: move unsafe destination drift aside and rerun the governed deploy" >&2
+        return 1
+    fi
+}
+
+# --- scripts/hapax-* release copies ---
 if [ "${#SCRIPTS[@]}" -gt 0 ]; then
     echo "scripts changed (${#SCRIPTS[@]}):"
     mkdir -p "$LOCAL_BIN"
@@ -2057,9 +2078,7 @@ if [ "${#SCRIPTS[@]}" -gt 0 ]; then
         if git -C "$REPO" cat-file -e "$SHA:$f" 2>/dev/null; then
             # Copy-from-SHA (the WATCHDOGS pattern): the installed script is the
             # deployed release's content, never a live view of a mutable tree.
-            if [ -L "$dest" ]; then rm -f "$dest"; fi
-            git -C "$REPO" show "$SHA:$f" > "$dest"
-            chmod +x "$dest" 2>/dev/null || true
+            publish_git_executable_at_sha "$f" "$dest"
             echo "  '$f' -> '$dest' (copy @ ${SHA:0:9})"
         else
             rm -fv "$dest" || true
