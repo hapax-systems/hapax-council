@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+"""Vocab-drift audit (derivation-substrate MOVE 1, slice 1a — REPORT mode).
+
+The generative disease: a value-vocabulary (enum) is the SSOT, yet consumers RE-DECLARE it as a bare
+``Literal[...]`` / ``frozenset({...})`` that drifts — the antigrav->agy fleet crash was exactly this
+(``platform_capability_registry.Platform`` re-typed in ``team_registry``/``dispatcher_policy``/``core``).
+Centralization alone does not cure it (the SSOT already exists and is bypassed); a *forcing function*
+does. This is its first, safe form: DETECT the re-declarations.
+
+REPORT mode: this tool lists the drift and always exits 0 — it never fails the build. Slice 1b flips it
+to enforcing (import-or-fail) once the legitimately-guarded copies are exempted.
+
+It DERIVES the vocabulary from the enum itself (``{m.value for m in Platform}``) — the audit must not
+re-declare the vocabulary it polices, on pain of being the very boutique it hunts.
+
+Exemptions (the locus methodology Q0a/Q0b): the SSOT's own module (its declaration is not drift), and —
+extensible in slice 1b — a token-set already guarded by a parity/drift-pin test (Q0a) or in a module the
+SSOT already imports so a back-import would cycle (Q0b), which are NOT boutique.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# Each registered vocabulary maps to (module-path, enum-symbol); members are read from the live enum so
+# nothing here re-declares the vocabulary.
+_REGISTERED: dict[str, tuple[str, str]] = {
+    "Platform": ("shared.platform_capability_registry", "Platform"),
+}
+
+
+def registered_vocabularies() -> dict[str, frozenset[str]]:
+    """Derive each registered vocabulary's member set from its SSOT enum."""
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    out: dict[str, frozenset[str]] = {}
+    for name, (module, symbol) in _REGISTERED.items():
+        mod = __import__(module, fromlist=[symbol])
+        enum = getattr(mod, symbol)
+        out[name] = frozenset(str(m.value) for m in enum)
+    return out
+
+
+# The SSOT module basename per vocab — its own declaration is the source of truth, never drift.
+_SSOT_BASENAME = {
+    name: module.rsplit(".", 1)[-1] + ".py" for name, (module, _sym) in _REGISTERED.items()
+}
+
+
+def _string_members(node: ast.AST) -> frozenset[str]:
+    """String-literal members of a ``Literal[...]`` subscript or a ``frozenset(...)``/``set(...)`` call."""
+
+    def strs(container: ast.AST | None) -> set[str]:
+        found: set[str] = set()
+        if container is None:
+            return found
+        elts = getattr(container, "elts", None)
+        if elts is not None:
+            for e in elts:
+                if isinstance(e, ast.Constant) and isinstance(e.value, str):
+                    found.add(e.value)
+        elif isinstance(container, ast.Constant) and isinstance(container.value, str):
+            found.add(container.value)
+        return found
+
+    if (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "Literal"
+    ):
+        return frozenset(strs(node.slice))
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in ("frozenset", "set")
+        and node.args
+    ):
+        return frozenset(strs(node.args[0]))
+    return frozenset()
+
+
+def audit_file(
+    path: Path, vocabs: dict[str, frozenset[str]], *, min_overlap: int = 2
+) -> list[dict]:
+    """Findings for one file: token-sets that overlap a registered vocabulary above the threshold."""
+    findings: list[dict] = []
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (SyntaxError, OSError):
+        return findings
+    for node in ast.walk(tree):
+        members = _string_members(node)
+        if len(members) < min_overlap:
+            continue
+        for name, vocab in vocabs.items():
+            if path.name == _SSOT_BASENAME.get(name):
+                continue  # the SSOT's own declaration is authoritative, not drift
+            overlap = members & vocab
+            if len(overlap) >= min_overlap:
+                findings.append(
+                    {
+                        "path": str(path),
+                        "line": node.lineno,
+                        "vocab": name,
+                        "members": sorted(members),
+                        "divergent": sorted(members - vocab),
+                    }
+                )
+    return findings
+
+
+def audit_tree(
+    root: Path, vocabs: dict[str, frozenset[str]], *, min_overlap: int = 2
+) -> list[dict]:
+    findings: list[dict] = []
+    for p in sorted(root.rglob("*.py")):
+        findings.extend(audit_file(p, vocabs, min_overlap=min_overlap))
+    return findings
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        description="Vocab-drift audit (REPORT mode) — derivation-substrate MOVE 1 slice 1a"
+    )
+    ap.add_argument("--root", default=str(REPO_ROOT / "shared"))
+    ap.add_argument("--min-overlap", type=int, default=2)
+    args = ap.parse_args()
+    vocabs = registered_vocabularies()
+    findings = audit_tree(Path(args.root), vocabs, min_overlap=args.min_overlap)
+    for f in findings:
+        drift = ("  DRIFT-tokens:" + ",".join(f["divergent"])) if f["divergent"] else ""
+        print(f"{f['path']}:{f['line']}  re-declares {f['vocab']} vocabulary {f['members']}{drift}")
+    print(
+        f"\nvocab-drift-audit: {len(findings)} re-declaration(s) of registered vocabularies "
+        f"(REPORT mode — never fails the build; slice 1b flips to import-or-fail)"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
