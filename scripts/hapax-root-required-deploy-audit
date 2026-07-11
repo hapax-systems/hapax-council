@@ -1,7 +1,9 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # Fail when post-merge root-required deploy actions were deferred and not drained.
 set -euo pipefail
 ORIGINAL_ARGS=("$@")
+PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+export PATH
 
 ROOT_DEFER_DIR="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$HOME/.cache/hapax/post-merge-root-required}"
 # Deferrals are cleared only by the explicit HAPAX_ROOT_REQUIRED_DRAIN_DIR path
@@ -36,10 +38,11 @@ APCUPSD_AUDIT_LOG_OWNER_UID="${HAPAX_UPS_AUDIT_LOG_OWNER_UID:-}"
 APCUPSD_AUDIT_LOG_OWNER_GID="${HAPAX_UPS_AUDIT_LOG_OWNER_GID:-}"
 APCUPSD_LOGROTATE_DEST="${HAPAX_APCUPSD_LOGROTATE_DEST:-/etc/logrotate.d/hapax-ups-power-events}"
 UPOWER_CONF_DEST="${HAPAX_UPOWER_CONF_DEST:-/etc/UPower/UPower.conf.d/90-hapax-apcupsd-owner.conf}"
-SYSTEMCTL="${HAPAX_ROOT_AUDIT_SYSTEMCTL:-systemctl}"
-BUSCTL="${HAPAX_ROOT_AUDIT_BUSCTL:-busctl}"
-APCACCESS="${HAPAX_ROOT_AUDIT_APCACCESS:-apcaccess}"
+SYSTEMCTL="${HAPAX_ROOT_AUDIT_SYSTEMCTL:-/usr/bin/systemctl}"
+BUSCTL="${HAPAX_ROOT_AUDIT_BUSCTL:-/usr/bin/busctl}"
+APCACCESS="${HAPAX_ROOT_AUDIT_APCACCESS:-/usr/bin/apcaccess}"
 CMP="${HAPAX_ROOT_AUDIT_CMP:-/usr/bin/cmp}"
+GETENT="${HAPAX_ROOT_AUDIT_GETENT:-/usr/bin/getent}"
 SUDO="${HAPAX_ROOT_AUDIT_SUDO:-/usr/bin/sudo}"
 VISUDO="${HAPAX_ROOT_AUDIT_VISUDO:-/usr/bin/visudo}"
 ROOT_ARTIFACT_TEST_UID="${HAPAX_ROOT_AUDIT_TEST_ROOT_UID:-$(/usr/bin/id -u)}"
@@ -158,13 +161,13 @@ PY
 resolve_apcupsd_audit_log_identity() {
     local group_entry required_gid
     if [ "$APCUPSD_AUDIT_LOG" = "$APCUPSD_CANONICAL_AUDIT_LOG" ]; then
-        if ! group_entry="$(getent group "$APCUPSD_CANONICAL_AUDIT_GROUP" 2>/dev/null)" \
+        if ! group_entry="$("$GETENT" group "$APCUPSD_CANONICAL_AUDIT_GROUP" 2>/dev/null)" \
             || [ -z "$group_entry" ]; then
             echo "root-required install drift: required UPS audit group missing: $APCUPSD_CANONICAL_AUDIT_GROUP" >&2
             echo "  next action: restore the canonical $APCUPSD_CANONICAL_AUDIT_GROUP group and rerun the installed audit" >&2
             return 1
         fi
-        required_gid="$(printf '%s\n' "$group_entry" | cut -d: -f3)"
+        required_gid="$(printf '%s\n' "$group_entry" | /usr/bin/cut -d: -f3)"
         if ! [[ "$required_gid" =~ ^[0-9]+$ ]]; then
             echo "root-required install drift: required UPS audit group has an invalid gid: $APCUPSD_CANONICAL_AUDIT_GROUP" >&2
             echo "  next action: repair the canonical group entry and rerun the installed audit" >&2
@@ -193,8 +196,8 @@ resolve_apcupsd_audit_log_identity() {
         fi
     fi
     if [ -z "$APCUPSD_AUDIT_LOG_OWNER_GID" ]; then
-        if [[ "$APCUPSD_AUDIT_LOG" == /var/log/* ]] && getent group hapax >/dev/null 2>&1; then
-            APCUPSD_AUDIT_LOG_OWNER_GID="$(getent group hapax | cut -d: -f3)"
+        if [[ "$APCUPSD_AUDIT_LOG" == /var/log/* ]] && "$GETENT" group hapax >/dev/null 2>&1; then
+            APCUPSD_AUDIT_LOG_OWNER_GID="$("$GETENT" group hapax | /usr/bin/cut -d: -f3)"
         else
             APCUPSD_AUDIT_LOG_OWNER_GID="$(/usr/bin/id -g)"
         fi
@@ -208,9 +211,14 @@ resolve_apcupsd_audit_log_identity() {
 }
 
 audit_apcupsd_audit_log() {
+    local parent_expected_mode=""
     resolve_apcupsd_audit_log_identity || return 1
+    if [ "$APCUPSD_AUDIT_LOG" = "$APCUPSD_CANONICAL_AUDIT_LOG" ]; then
+        parent_expected_mode=2775
+    fi
     /usr/bin/python3 - "$APCUPSD_AUDIT_LOG" \
-        "$APCUPSD_AUDIT_LOG_OWNER_UID" "$APCUPSD_AUDIT_LOG_OWNER_GID" <<'PY'
+        "$APCUPSD_AUDIT_LOG_OWNER_UID" "$APCUPSD_AUDIT_LOG_OWNER_GID" \
+        "$parent_expected_mode" <<'PY'
 from __future__ import annotations
 
 import os
@@ -220,6 +228,45 @@ import sys
 path = sys.argv[1]
 owner_uid = int(sys.argv[2])
 owner_gid = int(sys.argv[3])
+parent_expected_mode = int(sys.argv[4], 8) if sys.argv[4] else None
+parent = os.path.dirname(path) or "."
+try:
+    parent_inode = os.lstat(parent)
+except OSError as exc:
+    print(
+        f"root-required install drift: UPS audit log parent missing: {parent}: {exc}",
+        file=sys.stderr,
+    )
+    print(
+        "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+if not stat.S_ISDIR(parent_inode.st_mode) or (
+    parent_expected_mode is not None
+    and (
+        parent_inode.st_uid != owner_uid
+        or parent_inode.st_gid != owner_gid
+        or stat.S_IMODE(parent_inode.st_mode) != parent_expected_mode
+    )
+):
+    print(
+        f"root-required install drift: UPS audit log parent trust drift: {parent} "
+        f"owner={parent_inode.st_uid}:{parent_inode.st_gid} "
+        f"mode={stat.S_IMODE(parent_inode.st_mode):04o}; expected a lexical non-symlink "
+        + (
+            f"directory with {owner_uid}:{owner_gid}:{parent_expected_mode:04o}"
+            if parent_expected_mode is not None
+            else "directory"
+        ),
+        file=sys.stderr,
+    )
+    print(
+        "  next action: repair the audit-log directory and run "
+        "scripts/install-apcupsd-power-alerts --install --verify-live",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 try:
     inode = os.lstat(path)
 except OSError as exc:
@@ -531,6 +578,7 @@ verify_executable() {
 audit_systemd_state() {
     local failed=0 loaded_upower_action expected_enforcer_timeout loaded_enforcer_timeout
     local spec unit rel expected_audit_timeout loaded_audit_timeout
+    local expected_audit_environment loaded_audit_environment
     if ! "$SYSTEMCTL" is-enabled --quiet hapax-oom-score-enforce.timer; then
         echo "root-required activation drift: hapax-oom-score-enforce.timer is not enabled" >&2
         echo "  next action: run sudo systemctl enable --now hapax-oom-score-enforce.timer" >&2
@@ -602,6 +650,24 @@ audit_systemd_state() {
             echo "  next action: run systemctl --user daemon-reload and scripts/install-p0-oom-containment --install --verify-live" >&2
             failed=1
         fi
+        expected_audit_environment="$(awk '$0 ~ /^Environment=/ {sub(/^[^=]*=/, ""); print; exit}' "$INSTALLED_SOURCE_ROOT/$rel" 2>/dev/null || true)"
+        if ! loaded_audit_environment="$("$SYSTEMCTL" --user show "$unit" -p Environment --value 2>/dev/null)"; then
+            loaded_audit_environment=""
+        fi
+        case " $loaded_audit_environment " in
+            *" $expected_audit_environment "*)
+                [ -n "$expected_audit_environment" ] || {
+                    echo "root-required activation drift: $unit source Environment is missing" >&2
+                    echo "  next action: restore the receipt-bound unit and run scripts/install-p0-oom-containment --install --verify-live" >&2
+                    failed=1
+                }
+                ;;
+            *)
+                echo "root-required activation drift: $unit loaded Environment=${loaded_audit_environment:-unavailable}, expected to contain ${expected_audit_environment:-source value missing}" >&2
+                echo "  next action: run systemctl --user daemon-reload and scripts/install-p0-oom-containment --install --verify-live" >&2
+                failed=1
+                ;;
+        esac
     done
     [ "$failed" -eq 0 ]
 }

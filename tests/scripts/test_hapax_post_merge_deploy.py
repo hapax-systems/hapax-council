@@ -48,6 +48,7 @@ P0_OOM_AUDIT_FILES = {
     "systemd/units/hapax-oom-policy-audit.service": (
         "[Unit]\nDescription=OOM audit\n[Service]\nType=oneshot\n"
         "TimeoutStartSec=2min\n"
+        "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin\n"
         "ExecStart=/usr/local/sbin/hapax-oom-policy-audit --json\n"
     ),
     "systemd/units/hapax-oom-policy-audit.timer": (
@@ -56,6 +57,7 @@ P0_OOM_AUDIT_FILES = {
     "systemd/units/hapax-root-required-deploy-audit.service": (
         "[Unit]\nDescription=Root deploy audit\n[Service]\nType=oneshot\n"
         "TimeoutStartSec=2min\n"
+        "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin\n"
         "ExecStart=/usr/local/sbin/hapax-root-required-deploy-audit\n"
     ),
     "systemd/units/hapax-root-required-deploy-audit.timer": (
@@ -337,6 +339,8 @@ def _root_audit_env(
         'if [ "$*" = "show hapax-oom-score-enforce.service -p TimeoutStartUSec --value" ]; then printf "25s\\n"; fi\n'
         'if [ "$*" = "--user show hapax-oom-policy-audit.service -p TimeoutStartUSec --value" ]; then printf "2min\\n"; fi\n'
         'if [ "$*" = "--user show hapax-root-required-deploy-audit.service -p TimeoutStartUSec --value" ]; then printf "2min\\n"; fi\n'
+        'if [ "$*" = "--user show hapax-oom-policy-audit.service -p Environment --value" ]; then printf "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin\\n"; fi\n'
+        'if [ "$*" = "--user show hapax-root-required-deploy-audit.service -p Environment --value" ]; then printf "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin\\n"; fi\n'
         "exit 0\n",
         encoding="utf-8",
     )
@@ -1267,7 +1271,7 @@ def test_root_required_audit_fails_when_canonical_audit_group_is_missing(
     fake_getent = fake_bin / "getent"
     fake_getent.write_text("#!/usr/bin/env bash\nexit 2\n", encoding="utf-8")
     fake_getent.chmod(0o755)
-    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["HAPAX_ROOT_AUDIT_GETENT"] = str(fake_getent)
     env["HAPAX_UPS_AUDIT_LOG"] = "/var/log/hapax/ups-power-events.jsonl"
 
     result = subprocess.run(
@@ -1744,6 +1748,32 @@ def test_root_required_audit_passes_when_oom_enforcer_matches(tmp_path: Path) ->
     assert "root-required post-merge deploy deferrals: none" in result.stdout
 
 
+def test_root_required_audit_ignores_hostile_path(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    hostile_bin = tmp_path / "hostile-bin"
+    hostile_bin.mkdir()
+    marker = tmp_path / "hostile-command-ran"
+    for command in ("bash", "git"):
+        executable = hostile_bin / command
+        executable.write_text(
+            f"#!/bin/sh\ntouch {marker!s}\nexit 99\n",
+            encoding="utf-8",
+        )
+        executable.chmod(0o755)
+    env["PATH"] = str(hostile_bin)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists()
+
+
 def test_root_required_audit_legacy_manifest_transition_is_fail_closed(tmp_path: Path) -> None:
     env = _root_audit_env(tmp_path)
     repo = Path(env["HAPAX_ROOT_REQUIRED_GIT_REPO"])
@@ -1860,6 +1890,27 @@ def test_root_required_audit_rejects_unsafe_ups_log_inode(
     assert result.returncode == 1
     assert "unsafe UPS audit log" in result.stderr
     assert protected.read_text(encoding="utf-8") == "sentinel\n"
+
+
+def test_root_required_audit_rejects_symlinked_ups_log_parent(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    audit_log = Path(env["HAPAX_UPS_AUDIT_LOG"])
+    lexical_parent = audit_log.parent
+    real_parent = tmp_path / "real-ups-log-parent"
+    lexical_parent.rename(real_parent)
+    lexical_parent.symlink_to(real_parent, target_is_directory=True)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "UPS audit log parent trust drift" in result.stderr
+    assert lexical_parent.is_symlink()
 
 
 @pytest.mark.parametrize("link_kind", ("symlink", "hardlink"))

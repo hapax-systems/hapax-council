@@ -1251,6 +1251,33 @@ def test_installer_refuses_unsafe_existing_ups_audit_log(
     assert protected.read_text(encoding="utf-8") == "sentinel\n"
 
 
+def test_installer_refuses_symlinked_ups_audit_log_parent(tmp_path: Path) -> None:
+    real_audit_dir = tmp_path / "real-hapax-log"
+    real_audit_dir.mkdir()
+    audit_dir = tmp_path / "hapax-log"
+    audit_dir.symlink_to(real_audit_dir, target_is_directory=True)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_DEST": str(tmp_path / "apcupsd"),
+            "HAPAX_APCUPSD_AUDIT_DIR": str(audit_dir),
+            "HAPAX_APCUPSD_LOGROTATE_DEST": str(tmp_path / "logrotate"),
+            "HAPAX_UPOWER_CONF_DEST": str(tmp_path / "upower"),
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+        },
+    )
+
+    assert result.returncode == 1
+    assert "UPS audit log parent trust drift" in result.stderr
+    assert audit_dir.is_symlink()
+    assert not (real_audit_dir / "ups-power-events.jsonl").exists()
+
+
 def test_whole_script_root_mode_refuses_user_owned_lock_symlink(tmp_path: Path) -> None:
     state_root = tmp_path / "root-state"
     state_root.mkdir()

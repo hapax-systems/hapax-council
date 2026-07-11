@@ -682,7 +682,7 @@ app_slice_value() {
 source_unit_value() {
     local rel="$1" key="$2" file value
     file="$(src_path "$rel")"
-    value="$(awk -F= -v key="$key" '$1 == key {print $2; exit}' "$file" 2>/dev/null || true)"
+    value="$(awk -v key="$key" '$0 ~ "^" key "=" {sub(/^[^=]*=/, ""); print; exit}' "$file" 2>/dev/null || true)"
     if [ -z "$value" ]; then
         echo "$rel missing $key; next action: restore $rel from the P0 PR" >&2
         return 1
@@ -1393,7 +1393,7 @@ verify_live() {
 }
 
 verify_user_audit_loaded_timeouts() {
-    local spec rel unit expected actual
+    local spec rel unit expected actual expected_environment loaded_environment
     for spec in \
         "hapax-oom-policy-audit.service|systemd/units/hapax-oom-policy-audit.service" \
         "hapax-root-required-deploy-audit.service|systemd/units/hapax-root-required-deploy-audit.service"; do
@@ -1408,6 +1408,18 @@ verify_user_audit_loaded_timeouts() {
             echo "live $unit TimeoutStartUSec drift: actual=${actual:-unavailable} expected=$expected; next action: run systemctl --user daemon-reload and scripts/install-p0-oom-containment --install --verify-live" >&2
             return 1
         fi
+        expected_environment="$(source_unit_value "$rel" Environment)" || return 1
+        if ! loaded_environment="$(user_systemctl show "$unit" -p Environment --value 2>/dev/null)"; then
+            echo "unable to query loaded $unit Environment; next action: inspect systemctl --user status $unit and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            return 1
+        fi
+        case " $loaded_environment " in
+            *" $expected_environment "*) ;;
+            *)
+                echo "live $unit Environment drift: actual=${loaded_environment:-unavailable} expected to contain $expected_environment; next action: run systemctl --user daemon-reload and scripts/install-p0-oom-containment --install --verify-live" >&2
+                return 1
+                ;;
+        esac
     done
 }
 

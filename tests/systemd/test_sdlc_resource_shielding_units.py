@@ -269,6 +269,10 @@ def test_oom_policy_audit_timer_is_source_controlled() -> None:
     assert "OnUnitActiveSec=5min" in timer
     assert "ExecStart=/usr/local/sbin/hapax-oom-policy-audit --json" in service
     assert "TimeoutStartSec=2min" in service
+    assert "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin" in service
+    audit = (REPO_ROOT / "scripts" / "hapax-oom-policy-audit").read_text()
+    assert 'SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/bin:/bin"' in audit
+    assert 'os.environ["PATH"] = SAFE_PATH' in audit
     assert "hapax-systems/hapax-council/blob/main/systemd/README.md" in service
     assert "hapax-systems/hapax-council/blob/main/systemd/README.md" in timer
     assert "source-activation" not in service
@@ -285,6 +289,10 @@ def test_root_required_deploy_audit_timer_is_source_controlled() -> None:
     assert "OnUnitActiveSec=10min" in timer
     assert "ExecStart=/usr/local/sbin/hapax-root-required-deploy-audit" in service
     assert "TimeoutStartSec=2min" in service
+    assert "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin" in service
+    audit = (REPO_ROOT / "scripts" / "hapax-root-required-deploy-audit").read_text()
+    assert audit.startswith("#!/usr/bin/bash\n")
+    assert "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin\nexport PATH\n" in audit
     assert "hapax-systems/hapax-council/blob/main/systemd/README.md" in service
     assert "hapax-systems/hapax-council/blob/main/systemd/README.md" in timer
     assert "source-activation" not in service

@@ -7,5 +7,6 @@ StartLimitIntervalSec=0
 [Service]
 Type=oneshot
 TimeoutStartSec=2min
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/usr/local/sbin/hapax-oom-policy-audit --json
 SyslogIdentifier=hapax-oom-policy-audit

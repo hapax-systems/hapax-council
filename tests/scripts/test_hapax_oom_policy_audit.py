@@ -3,6 +3,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import runpy
 import stat
 import subprocess
 import time
@@ -39,6 +40,18 @@ PROTECTED_USER_UNIT_MEMORY = {
     "studio-compositor.service": (6442450944, 3221225472),
     "hapax-imagination.service": (6442450944, 3221225472),
 }
+
+
+def test_audit_resets_hostile_path_before_command_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PATH", "/tmp/hapax-hostile-path")
+    monkeypatch.delenv("HAPAX_SYSTEMCTL", raising=False)
+
+    namespace = runpy.run_path(str(SCRIPT))
+
+    assert os.environ["PATH"] == "/usr/local/sbin:/usr/local/bin:/usr/bin:/bin"
+    assert namespace["_systemctl"]() == "/usr/bin/systemctl"
 
 
 def _protected_user_unit_cases(

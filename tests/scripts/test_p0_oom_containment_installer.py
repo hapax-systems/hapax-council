@@ -80,6 +80,7 @@ RECOVERY_SYSTEM_UNIT_SCORES = {
 RECOVERY_SYSTEM_UNIT_PIDS = {
     unit: 200 + index for index, unit in enumerate(RECOVERY_SYSTEM_UNIT_SCORES)
 }
+SAFE_AUDIT_ENVIRONMENT = "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin"
 
 
 def _copy_oom_package(dest_root: Path) -> None:
@@ -173,6 +174,10 @@ def _systemctl_user_unit_cases(
         cases.append(
             f"  *--user\\ show\\ {audit_unit}\\ -p\\ TimeoutStartUSec\\ --value*) "
             "printf '%s\\n' '2min' ;;"
+        )
+        cases.append(
+            f"  *--user\\ show\\ {audit_unit}\\ -p\\ Environment\\ --value*) "
+            f"printf '%s\\n' '{SAFE_AUDIT_ENVIRONMENT}' ;;"
         )
     for unit in PROTECTED_USER_UNIT_SCORES:
         cases.append(
@@ -623,6 +628,10 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         "--user show hapax-root-required-deploy-audit.service -p TimeoutStartUSec --value"
         in user_calls
     )
+    assert "--user show hapax-oom-policy-audit.service -p Environment --value" in user_calls
+    assert (
+        "--user show hapax-root-required-deploy-audit.service -p Environment --value" in user_calls
+    )
     for unit in stale_user_system_units:
         assert f"--user disable --now {unit}" in user_calls
 
@@ -804,6 +813,8 @@ def test_oom_install_without_verify_flag_cannot_advance_receipts_after_live_prob
         "#!/usr/bin/env bash\n"
         'if [[ "$*" == *"show hapax-oom-policy-audit.service -p TimeoutStartUSec --value"* ]]; then printf "2min\\n"; fi\n'
         'if [[ "$*" == *"show hapax-root-required-deploy-audit.service -p TimeoutStartUSec --value"* ]]; then printf "2min\\n"; fi\n'
+        f'if [[ "$*" == *"show hapax-oom-policy-audit.service -p Environment --value"* ]]; then printf "{SAFE_AUDIT_ENVIRONMENT}\\n"; fi\n'
+        f'if [[ "$*" == *"show hapax-root-required-deploy-audit.service -p Environment --value"* ]]; then printf "{SAFE_AUDIT_ENVIRONMENT}\\n"; fi\n'
         'if [[ "$*" == *"show hapax-oom-score-enforce.service -p TimeoutStartUSec --value"* ]]; then printf "25s\\n"; fi\n'
         'if [[ "$*" == *"show user@1000.service -p OOMScoreAdjust --value"* ]]; then printf "100\\n"; fi\n'
         'if [[ "$*" == *"show user@1000.service -p OOMPolicy --value"* ]]; then printf "continue\\n"; fi\n'
@@ -850,6 +861,8 @@ def test_oom_install_rejects_stale_loaded_enforcer_timeout_before_receipts(
         "#!/usr/bin/env bash\n"
         'if [[ "$*" == *"show hapax-oom-policy-audit.service -p TimeoutStartUSec --value"* ]]; then printf "2min\\n"; fi\n'
         'if [[ "$*" == *"show hapax-root-required-deploy-audit.service -p TimeoutStartUSec --value"* ]]; then printf "2min\\n"; fi\n'
+        f'if [[ "$*" == *"show hapax-oom-policy-audit.service -p Environment --value"* ]]; then printf "{SAFE_AUDIT_ENVIRONMENT}\\n"; fi\n'
+        f'if [[ "$*" == *"show hapax-root-required-deploy-audit.service -p Environment --value"* ]]; then printf "{SAFE_AUDIT_ENVIRONMENT}\\n"; fi\n'
         'if [[ "$*" == *"show hapax-oom-score-enforce.service -p TimeoutStartUSec --value"* ]]; then printf "infinity\\n"; fi\n'
         "exit 0\n",
         encoding="utf-8",
@@ -883,6 +896,50 @@ def test_oom_install_rejects_stale_loaded_enforcer_timeout_before_receipts(
     state_root = tmp_path / "root-state"
     assert not (state_root / "installed-receipts/oom-containment.sha").exists()
     assert not (tmp_path / "installed-source").exists()
+
+
+def test_oom_install_rejects_mutable_loaded_audit_path_before_receipts(tmp_path: Path) -> None:
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$*" == *"show hapax-oom-policy-audit.service -p TimeoutStartUSec --value"* ]]; then printf "2min\\n"; fi\n'
+        'if [[ "$*" == *"show hapax-root-required-deploy-audit.service -p TimeoutStartUSec --value"* ]]; then printf "2min\\n"; fi\n'
+        'if [[ "$*" == *"show hapax-oom-policy-audit.service -p Environment --value"* ]]; then printf "PATH=/tmp/shadow\\n"; fi\n'
+        f'if [[ "$*" == *"show hapax-root-required-deploy-audit.service -p Environment --value"* ]]; then printf "{SAFE_AUDIT_ENVIRONMENT}\\n"; fi\n'
+        'if [[ "$*" == *"show hapax-oom-score-enforce.service -p TimeoutStartUSec --value"* ]]; then printf "25s\\n"; fi\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(tmp_path / "systemd-system"),
+            "HAPAX_OOM_SYSTEMD_USER_DIR": str(tmp_path / "systemd-user"),
+            "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR": str(tmp_path / "systemd-user-control"),
+            "HAPAX_OOM_EARLYOOM_DEST": str(tmp_path / "earlyoom"),
+            "HAPAX_OOM_ENFORCER_DEST": str(tmp_path / "sbin/hapax-oom-score-enforce"),
+            "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(tmp_path / "sbin/hapax-root-failure-intake"),
+            "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_OOM_INSTALL_SUDO": "",
+            "HAPAX_OOM_PROC_ROOT": str(proc_root),
+        },
+    )
+
+    assert result.returncode == 1
+    assert (
+        "live hapax-oom-policy-audit.service Environment drift: "
+        "actual=PATH=/tmp/shadow expected to contain " + SAFE_AUDIT_ENVIRONMENT
+    ) in result.stderr
+    state_root = tmp_path / "root-state"
+    assert not (state_root / "installed-receipts/oom-containment.sha").exists()
 
 
 @pytest.mark.parametrize(

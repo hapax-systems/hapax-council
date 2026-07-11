@@ -15,6 +15,9 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/bin:/bin"
+os.environ["PATH"] = SAFE_PATH
+
 BYTES_1G = 1024**3
 BYTES_2G = 2 * 1024**3
 BYTES_12G = 12 * 1024**3
@@ -145,7 +148,7 @@ def shared_root_required_lock() -> Iterator[None]:
 
 
 def _systemctl() -> str:
-    return os.environ.get("HAPAX_SYSTEMCTL", "systemctl")
+    return os.environ.get("HAPAX_SYSTEMCTL", "/usr/bin/systemctl")
 
 
 def _run(args: list[str]) -> subprocess.CompletedProcess[str]:

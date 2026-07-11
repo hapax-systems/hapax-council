@@ -205,8 +205,62 @@ resolve_audit_log_identity() {
     fi
 }
 
+verify_audit_log_parent() {
+    local parent_expected_mode=""
+    resolve_audit_log_identity
+    if [ "$AUDIT_LOG" = "$DEFAULT_AUDIT_LOG" ]; then
+        parent_expected_mode=2775
+    fi
+    /usr/bin/python3 - "$AUDIT_LOG" "$AUDIT_LOG_OWNER_UID" "$AUDIT_LOG_OWNER_GID" \
+        "$parent_expected_mode" <<'PY'
+from __future__ import annotations
+
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+owner_uid = int(sys.argv[2])
+owner_gid = int(sys.argv[3])
+parent_expected_mode = int(sys.argv[4], 8) if sys.argv[4] else None
+parent = os.path.dirname(path) or "."
+try:
+    inode = os.lstat(parent)
+except OSError as exc:
+    print(
+        f"UPS audit log parent is missing or unreadable: {parent}: {exc}; next action: "
+        "repair the lexical parent and rerun scripts/install-apcupsd-power-alerts "
+        "--install --verify-live",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+if not stat.S_ISDIR(inode.st_mode) or (
+    parent_expected_mode is not None
+    and (
+        inode.st_uid != owner_uid
+        or inode.st_gid != owner_gid
+        or stat.S_IMODE(inode.st_mode) != parent_expected_mode
+    )
+):
+    print(
+        f"UPS audit log parent trust drift: {parent} owner={inode.st_uid}:{inode.st_gid} "
+        f"mode={stat.S_IMODE(inode.st_mode):04o}; expected a lexical non-symlink "
+        + (
+            f"directory with {owner_uid}:{owner_gid}:{parent_expected_mode:04o}"
+            if parent_expected_mode is not None
+            else "directory"
+        )
+        + "; next action: repair the audit-log directory and rerun "
+        "scripts/install-apcupsd-power-alerts --install --verify-live",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+PY
+}
+
 prepare_audit_log() {
     resolve_audit_log_identity
+    verify_audit_log_parent
     run_root /usr/bin/python3 - "$AUDIT_LOG" "$AUDIT_LOG_OWNER_UID" "$AUDIT_LOG_OWNER_GID" <<'PY'
 from __future__ import annotations
 
@@ -253,6 +307,7 @@ PY
 
 verify_audit_log_target() {
     resolve_audit_log_identity
+    verify_audit_log_parent
     /usr/bin/python3 - "$AUDIT_LOG" "$AUDIT_LOG_OWNER_UID" "$AUDIT_LOG_OWNER_GID" <<'PY'
 from __future__ import annotations
 
