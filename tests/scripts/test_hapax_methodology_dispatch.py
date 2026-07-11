@@ -4423,6 +4423,48 @@ def test_agy_dispatch_remains_route_gated_without_spawnable_route(tmp_path: Path
     assert receipt["route_policy_reason_codes"] == ["review_route_not_launchable"]
 
 
+def test_agy_lane_worktree_uses_canonical_agy_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _dispatcher_module()
+    monkeypatch.delenv("HAPAX_DISPATCH_WORKTREE", raising=False)
+    monkeypatch.setenv("HAPAX_DISPATCH_PROJECT_ROOT", str(tmp_path))
+
+    assert module.lane_worktree("agy-2", "agy") == tmp_path / "hapax-council--agy-2"
+
+
+def test_agy_dispatch_preflight_blocks_legacy_worktree_residue(tmp_path: Path) -> None:
+    worktree = _worktree(tmp_path / "worktree")
+    (worktree / ".agents").mkdir()
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "agy-2",
+        "--platform",
+        "agy",
+        "--mode",
+        "headless",
+        durable_mq=False,
+    )
+
+    assert result.returncode == 10
+    assert "agy worktree hygiene failed" in result.stderr
+    assert ".agents" in result.stderr
+
+
 def test_gemini_platform_is_not_dispatchable(tmp_path: Path) -> None:
     result = _run(
         tmp_path,
