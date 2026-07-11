@@ -1866,7 +1866,8 @@ def _dossier_validity_blockers(
                 if (
                     not expected_route_id
                     or recorded_route_ids != {expected_route_id}
-                    or recorded_reasons != live_reasons
+                    or not recorded_reasons
+                    or not recorded_reasons <= live_reasons
                 ):
                     reason_mismatches.append(family)
             if reason_mismatches:

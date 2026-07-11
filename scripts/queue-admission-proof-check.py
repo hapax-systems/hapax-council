@@ -21,6 +21,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from github_pr_status import run_graphql_rate_aware
+
 AUTOQUEUE_ADMISSION_CONTEXT = "hapax/autoqueue-admission"
 DEFAULT_TTL_SECONDS = 30 * 60
 QUEUE_ACTIONS = {"enqueued", "auto_merge_enabled"}
@@ -163,11 +165,56 @@ def pr_numbers_from_event(
 
 
 def fetch_head_sha(repo: str, pr: int, *, runner: Any = None) -> str:
-    payload = _gh_json(["gh", "api", f"repos/{repo}/pulls/{pr}"], runner=runner)
+    try:
+        payload = _gh_json(["gh", "api", f"repos/{repo}/pulls/{pr}"], runner=runner)
+    except RuntimeError as exc:
+        return fetch_head_sha_graphql(repo, pr, runner=runner, rest_error=str(exc))
     head = payload.get("head") if isinstance(payload, dict) else None
     sha = head.get("sha") if isinstance(head, dict) else None
     if not sha:
         raise RuntimeError(f"PR #{pr} head SHA unavailable")
+    return str(sha)
+
+
+def fetch_head_sha_graphql(
+    repo: str, pr: int, *, runner: Any = None, rest_error: str | None = None
+) -> str:
+    runner = runner or subprocess.run
+    owner, name = repo.split("/", 1)
+    query = (
+        "query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){"
+        "pullRequest(number:$number){headRefOid}}}"
+    )
+    proc = run_graphql_rate_aware(
+        [
+            "-f",
+            f"query={query}",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"repo={name}",
+            "-F",
+            f"number={pr}",
+        ],
+        repo_root=Path.cwd(),
+        runner=runner,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or f"graphql failed rc={proc.returncode}").strip()
+        prefix = f"REST pull fetch failed: {rest_error}; " if rest_error else ""
+        raise RuntimeError(f"{prefix}GraphQL head fallback failed: {detail}")
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"GraphQL head fallback emitted non-JSON: {exc}") from exc
+    pull = (
+        payload.get("data", {}).get("repository", {}).get("pullRequest")
+        if isinstance(payload, dict)
+        else None
+    )
+    sha = pull.get("headRefOid") if isinstance(pull, dict) else None
+    if not sha:
+        raise RuntimeError(f"PR #{pr} head SHA unavailable from GraphQL fallback")
     return str(sha)
 
 

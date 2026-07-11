@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import signal
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -408,6 +409,8 @@ class _FakeRunner:
         self.fail_queue_refs = False
         self.calls: list[list[str]] = []
         self.fail_status_posts = False
+        self.fail_status_reads = False
+        self.timeout_status_reads = False
         # head_sha -> existing commit statuses (most-recent-first), for the G3
         # read-before-write idempotency check in set_autoqueue_admission_status.
         self.head_statuses: dict[str, list[dict[str, Any]]] = {}
@@ -583,13 +586,21 @@ class _FakeRunner:
             return subprocess.CompletedProcess(cmd, 0, "\n".join(self.queue_refs), "")
         if cmd[:3] == ["gh", "pr", "merge"]:
             return subprocess.CompletedProcess(cmd, 0, f"merged {cmd[3]}\n", "")
+        status_read_path = None
+        if cmd[:4] == ["gh", "api", "--method", "GET"] and len(cmd) >= 5:
+            status_read_path = cmd[4]
+        elif cmd[:2] == ["gh", "api"] and len(cmd) >= 3:
+            status_read_path = cmd[2]
         if (
-            cmd[:2] == ["gh", "api"]
-            and len(cmd) == 3
-            and "/commits/" in cmd[2]
-            and cmd[2].endswith("/statuses")
+            status_read_path is not None
+            and "/commits/" in status_read_path
+            and status_read_path.endswith("/statuses")
         ):
-            sha = cmd[2].split("/commits/", 1)[1].rsplit("/statuses", 1)[0]
+            if self.timeout_status_reads:
+                raise subprocess.TimeoutExpired(cmd, timeout=timeout)
+            if self.fail_status_reads:
+                return subprocess.CompletedProcess(cmd, 1, "", "status read failed")
+            sha = status_read_path.split("/commits/", 1)[1].rsplit("/statuses", 1)[0]
             return subprocess.CompletedProcess(
                 cmd, 0, json.dumps(self.head_statuses.get(sha, [])), ""
             )
@@ -911,6 +922,132 @@ def test_fetch_open_prs_uses_rest_core_not_gh_pr_list(tmp_path: Path) -> None:
     )
     assert not any(call[:3] == ["gh", "pr", "list"] for call in runner.calls)
     assert not any(call[:3] == ["gh", "pr", "view"] for call in runner.calls)
+
+
+def test_reconciler_falls_back_to_graphql_when_rest_open_pr_scan_indeterminate(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=42)
+
+    class RestOpenPrScanBlockedRunner(_FakeRunner):
+        def _rest_response(self, cmd: list[str]) -> subprocess.CompletedProcess | None:
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+                path = cmd[6]
+                if path == "repos/owner/repo/pulls":
+                    return subprocess.CompletedProcess(cmd, 1, "", "secondary rate limit")
+            return super()._rest_response(cmd)
+
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            if cmd[:3] == ["gh", "api", "rate_limit"]:
+                self.calls.append(list(cmd))
+                payload = {"resources": {"graphql": {"remaining": 1000, "reset": 1893456000}}}
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            if cmd[:3] == ["gh", "api", "graphql"] and any("pullRequests" in part for part in cmd):
+                self.calls.append(list(cmd))
+                pr = _pr(42)
+                payload = {
+                    "data": {
+                        "repository": {
+                            "pullRequests": {
+                                "nodes": [
+                                    {
+                                        "number": pr["number"],
+                                        "id": pr["id"],
+                                        "title": pr["title"],
+                                        "body": pr["body"],
+                                        "isDraft": pr["isDraft"],
+                                        "headRefName": pr["headRefName"],
+                                        "headRefOid": pr["headRefOid"],
+                                        "changedFiles": pr["changedFiles"],
+                                        "mergeStateStatus": pr["mergeStateStatus"],
+                                        "reviewDecision": pr["reviewDecision"],
+                                        "autoMergeRequest": None,
+                                        "labels": {"nodes": []},
+                                        "files": {"nodes": []},
+                                        "commits": {
+                                            "nodes": [
+                                                {
+                                                    "commit": {
+                                                        "statusCheckRollup": {
+                                                            "contexts": {
+                                                                "nodes": pr["statusCheckRollup"]
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            ]
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            return super().__call__(cmd, **kwargs)
+
+    runner = RestOpenPrScanBlockedRunner()
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["queue"] == 1
+    assert report["decisions"][0]["pr"] == 42
+    assert any(
+        call[:5] == ["gh", "api", "--method", "GET", "-H"] and call[6] == "repos/owner/repo/pulls"
+        for call in runner.calls
+    )
+    assert any(call[:3] == ["gh", "api", "graphql"] for call in runner.calls)
+    assert ["gh", "pr", "merge", "42", "--repo", "owner/repo", "--auto", "--squash"] in runner.calls
+
+
+def test_reconciler_fails_closed_when_rest_and_graphql_open_pr_scans_indeterminate(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=42)
+
+    class OpenPrScanUnavailableRunner(_FakeRunner):
+        def _rest_response(self, cmd: list[str]) -> subprocess.CompletedProcess | None:
+            if (
+                cmd[:5] == ["gh", "api", "--method", "GET", "-H"]
+                and cmd[6] == "repos/owner/repo/pulls"
+            ):
+                return subprocess.CompletedProcess(cmd, 1, "", "secondary rate limit")
+            return super()._rest_response(cmd)
+
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            if cmd[:3] == ["gh", "api", "rate_limit"]:
+                self.calls.append(list(cmd))
+                payload = {"resources": {"graphql": {"remaining": 1000, "reset": 1893456000}}}
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            if cmd[:3] == ["gh", "api", "graphql"] and any("pullRequests" in part for part in cmd):
+                self.calls.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 1, "", "graphql unavailable")
+            return super().__call__(cmd, **kwargs)
+
+    runner = OpenPrScanUnavailableRunner()
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["skipped"] is True
+    assert report["reason"] == "open_pr_scan_indeterminate"
+    assert report["open_pr_count"] is None
+    assert report["queued_prs"] == []
+    assert report["mutations"] == []
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
 
 
 def test_empty_rest_reviews_do_not_synthesize_review_required(tmp_path: Path) -> None:
@@ -1951,6 +2088,53 @@ def test_writes_stable_report_with_verbatim_governor_and_blockers(tmp_path: Path
             "auto_arm": False,
         }
     ]
+
+
+def test_main_emits_stable_report_when_foreground_sigterm_interrupts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    report_path = tmp_path / "orchestration" / "cc-pr-autoqueue-report.json"
+    governor_path = tmp_path / "pr-admission-governor.yaml"
+
+    def interrupted_reconciler(**_: Any) -> dict[str, Any]:
+        raise autoqueue.AutoqueueTerminated(signal.SIGTERM)
+
+    monkeypatch.setattr(autoqueue, "run_reconciler", interrupted_reconciler)
+
+    rc = autoqueue.main(
+        [
+            "--repo",
+            "owner/repo",
+            "--repo-root",
+            str(tmp_path),
+            "--vault-root",
+            str(tmp_path),
+            "--apply",
+            "--limit",
+            "10",
+            "--report-path",
+            str(report_path),
+            "--admission-governor-path",
+            str(governor_path),
+        ]
+    )
+
+    assert rc == 143
+    stdout_payload = json.loads(capsys.readouterr().out)
+    assert stdout_payload["reason"] == "terminated_by_signal"
+    assert stdout_payload["signal"] == "SIGTERM"
+    assert stdout_payload["exit_code"] == 143
+    assert stdout_payload["apply"] is True
+    assert stdout_payload["limit"] == 10
+    assert stdout_payload["mutations"] == []
+    assert stdout_payload["stable_report"]["written"] is True
+
+    stable_payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert stable_payload["event"] == "cc_pr_autoqueue_report"
+    assert stable_payload["reason"] == "terminated_by_signal"
+    assert stable_payload["signal"] == "SIGTERM"
+    assert stable_payload["exit_code"] == 143
+    assert stable_payload["per_pr_admission"] == []
 
 
 def test_stable_report_marks_missing_governor_without_defaulting_normal(tmp_path: Path) -> None:
@@ -6250,6 +6434,71 @@ def test_admission_status_posts_when_no_current_status(tmp_path: Path) -> None:
     )
     assert result is not None and result[0]
     assert len(_admission_posts(runner)) == 1
+
+
+def test_admission_status_read_uses_bounded_get_first_page(tmp_path: Path) -> None:
+    decision = _admission_decision()
+    runner = _FakeRunner()
+
+    result = autoqueue.set_autoqueue_admission_status(
+        decision, repo="owner/repo", repo_root=tmp_path, runner=runner
+    )
+
+    assert result is not None and result[0]
+    read_calls = [
+        call
+        for call in runner.calls
+        if call[:5]
+        == [
+            "gh",
+            "api",
+            "--method",
+            "GET",
+            "repos/owner/repo/commits/sha-50/statuses",
+        ]
+    ]
+    assert read_calls == [
+        [
+            "gh",
+            "api",
+            "--method",
+            "GET",
+            "repos/owner/repo/commits/sha-50/statuses",
+            "-f",
+            "per_page=100",
+            "-f",
+            "page=1",
+        ]
+    ]
+
+
+def test_admission_status_read_timeout_fails_closed_without_post(tmp_path: Path) -> None:
+    decision = _admission_decision()
+    runner = _FakeRunner()
+    runner.timeout_status_reads = True
+
+    result = autoqueue.set_autoqueue_admission_status(
+        decision, repo="owner/repo", repo_root=tmp_path, runner=runner
+    )
+
+    assert result == (
+        False,
+        f"admission_status_read_failed:timeout: {autoqueue.AUTOQUEUE_ADMISSION_READ_TIMEOUT_SECONDS}s",
+    )
+    assert _admission_posts(runner) == []
+
+
+def test_admission_status_read_failure_fails_closed_without_post(tmp_path: Path) -> None:
+    decision = _admission_decision()
+    runner = _FakeRunner()
+    runner.fail_status_reads = True
+
+    result = autoqueue.set_autoqueue_admission_status(
+        decision, repo="owner/repo", repo_root=tmp_path, runner=runner
+    )
+
+    assert result == (False, "admission_status_read_failed:rc=1: status read failed")
+    assert _admission_posts(runner) == []
 
 
 def test_admission_status_idempotent_when_unchanged_and_fresh(tmp_path: Path) -> None:

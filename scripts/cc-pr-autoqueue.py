@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import re
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -136,6 +137,7 @@ RELEASE_MITIGATION_CHECK_CONTEXTS = frozenset(
 # re-posts the admission proof once it is older than half this window so the
 # server-side proof never goes stale (G3 idempotent writes).
 AUTOQUEUE_ADMISSION_TTL_SECONDS = 30 * 60
+AUTOQUEUE_ADMISSION_READ_TIMEOUT_SECONDS = 15
 # Failure proofs intentionally refresh less often than success proofs: blocked
 # PRs can sit for days, and GitHub caps commit statuses per SHA+context. Still,
 # when the blocker text changes, the proof must eventually stop advertising
@@ -157,6 +159,15 @@ DEFAULT_STORM_RECENT_RUN_LIMIT = 20
 STORM_MAX_ENTRIES_TO_BUILD = 1
 STEADY_MAX_ENTRIES_TO_BUILD = 6
 FAILED_MERGE_GROUP_CONCLUSIONS = {"failure", "timed_out", "startup_failure", "cancelled"}
+
+
+class AutoqueueTerminated(RuntimeError):
+    """Foreground SIGTERM interrupted reconciliation before a full report."""
+
+    def __init__(self, signum: int) -> None:
+        self.signum = signum
+        super().__init__(f"autoqueue terminated by {_signal_name(signum)}")
+
 
 # Shared-file epic serialization — single-lane affinity (CASE-SBCL-CLOG-COORD-001).
 # The CLOG/Trainyard cockpit epic is a parallel dependency DAG whose branches all
@@ -543,6 +554,73 @@ def write_stable_report(
     return payload, (True, str(report_path))
 
 
+def _signal_name(signum: int) -> str:
+    try:
+        return signal.Signals(signum).name
+    except ValueError:
+        return f"signal_{signum}"
+
+
+def _install_foreground_termination_handler() -> Any:
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def _handle_sigterm(signum: int, _frame: Any) -> None:
+        raise AutoqueueTerminated(signum)
+
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+    return previous
+
+
+def _restore_foreground_termination_handler(previous: Any) -> None:
+    signal.signal(signal.SIGTERM, previous)
+
+
+def _termination_report_from_args(
+    args: argparse.Namespace,
+    *,
+    signum: int,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    now = now or datetime.now(UTC)
+    exit_code = 128 + int(signum)
+    report = {
+        "repo": args.repo,
+        "apply": bool(args.apply),
+        "skipped": True,
+        "reason": "terminated_by_signal",
+        "signal": _signal_name(signum),
+        "exit_code": exit_code,
+        "detail": (
+            "Foreground autoqueue received SIGTERM before completing a full "
+            "reconciliation report; no additional queue mutation was attempted "
+            "by the termination handler."
+        ),
+        "require_route_metadata": not args.allow_legacy_task_metadata,
+        "include_pending_auto": not args.no_pending_auto,
+        "required_checks": []
+        if args.no_required_checks
+        else list(args.required_checks or DEFAULT_REQUIRED_CHECKS),
+        "limit": args.limit,
+        "decisions": [],
+        "mutations": [],
+        "counts": {
+            "queue": 0,
+            "enable_auto_merge": 0,
+            "already_queued": 0,
+            "already_auto_merge_enabled": 0,
+            "disable_auto_merge": 0,
+            "dequeue": 0,
+            "blocked": 0,
+        },
+    }
+    return _finalize_reconciler_report(
+        report,
+        report_path=None if args.no_write_report else args.report_path,
+        admission_governor_path=args.admission_governor_path,
+        now=now,
+    )
+
+
 def _finalize_reconciler_report(
     report: dict[str, Any],
     *,
@@ -698,6 +776,99 @@ def _parse_pr(item: dict[str, Any]) -> PullRequest | None:
     )
 
 
+def _graphql_open_pr_rows(
+    *,
+    repo: str,
+    repo_root: Path,
+    limit: int,
+    runner: Any,
+    include_files: bool,
+    include_status: bool,
+) -> list[dict[str, Any]] | None:
+    owner, name = repo.split("/", 1)
+    files_fragment = "files(first:100){nodes{path}}" if include_files else ""
+    status_fragment = (
+        "commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{"
+        "__typename ... on CheckRun{name status conclusion completedAt startedAt} "
+        "... on StatusContext{context state createdAt}}}}}}}"
+        if include_status
+        else ""
+    )
+    query = (
+        "query($owner:String!,$repo:String!,$limit:Int!){repository(owner:$owner,name:$repo){"
+        "pullRequests(states:OPEN,first:$limit,orderBy:{field:UPDATED_AT,direction:DESC}){"
+        "nodes{number id title body isDraft headRefName headRefOid changedFiles "
+        "mergeStateStatus reviewDecision autoMergeRequest{enabledAt} labels(first:50){nodes{name}} "
+        f"{files_fragment} {status_fragment}"
+        "}}}}"
+    )
+    proc = run_graphql_rate_aware(
+        [
+            "-f",
+            f"query={query}",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"repo={name}",
+            "-F",
+            f"limit={max(0, limit)}",
+        ],
+        repo_root=repo_root,
+        runner=runner,
+    )
+    if proc.returncode != 0:
+        LOG.warning("GraphQL open PR fallback indeterminate: %s", proc.stderr.strip())
+        return None
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        LOG.warning("GraphQL open PR fallback emitted non-JSON: %s", exc)
+        return None
+    nodes = (
+        payload.get("data", {}).get("repository", {}).get("pullRequests", {}).get("nodes", [])
+        if isinstance(payload, dict)
+        else []
+    )
+    if not isinstance(nodes, list):
+        return None
+    rows: list[dict[str, Any]] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        row = dict(node)
+        labels = row.get("labels")
+        row["labels"] = (
+            labels.get("nodes", []) if isinstance(labels, dict) else labels if labels else []
+        )
+        if include_files:
+            files = row.get("files")
+            row["files"] = files.get("nodes", []) if isinstance(files, dict) else []
+        else:
+            row["files"] = None
+        if include_status:
+            commit_nodes = (
+                row.get("commits", {}).get("nodes", [])
+                if isinstance(row.get("commits"), dict)
+                else []
+            )
+            commit = (
+                commit_nodes[-1].get("commit")
+                if commit_nodes and isinstance(commit_nodes[-1], dict)
+                else None
+            )
+            rollup = (
+                commit.get("statusCheckRollup", {}).get("contexts", {}).get("nodes")
+                if isinstance(commit, dict)
+                else None
+            )
+            row["statusCheckRollup"] = rollup if isinstance(rollup, list) else []
+        else:
+            row["statusCheckRollup"] = []
+        row.pop("commits", None)
+        rows.append(row)
+    return rows
+
+
 def fetch_open_prs(
     *,
     repo: str = DEFAULT_REPO,
@@ -707,14 +878,30 @@ def fetch_open_prs(
 ) -> list[PullRequest]:
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
-    raw = list_open_pr_statuses_rest(
-        repo=repo,
-        repo_root=repo_root,
-        runner=runner,
-        limit=limit,
-        include_files=True,
-        include_review_decision=True,
-    )
+    try:
+        raw = list_open_pr_statuses_rest(
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+            limit=limit,
+            include_files=True,
+            include_review_decision=True,
+            fail_on_indeterminate=True,
+        )
+    except subprocess.SubprocessError as exc:
+        LOG.warning("REST open PR scan indeterminate: %s", exc)
+        raw = _graphql_open_pr_rows(
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+            limit=limit,
+            include_files=True,
+            include_status=True,
+        )
+        if raw is None:
+            raise subprocess.SubprocessError(
+                f"REST and GraphQL open PR scans indeterminate for {repo}: {exc}"
+            ) from exc
     if not raw:
         LOG.warning("REST open PR scan returned no rows")
         return []
@@ -2171,24 +2358,77 @@ def _latest_admission_status(
     go stale: GitHub caps statuses at 1000 per SHA+context, and the old
     unconditional POST burned that cap into a 422 self-DoS that made the apply
     loop skip the queue mutation."""
-    cmd = ["gh", "api", f"repos/{repo}/commits/{head_sha}/statuses"]
-    proc = runner(cmd, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=60)
+    status, _error = _latest_admission_status_result(
+        head_sha, repo=repo, repo_root=repo_root, runner=runner
+    )
+    return status
+
+
+def _format_admission_status_read_error(kind: str, detail: str = "") -> str:
+    if detail:
+        return _status_description(f"{kind}: {detail}", limit=200)
+    return kind
+
+
+def _latest_admission_status_result(
+    head_sha: str,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+) -> tuple[tuple[str, str, datetime | None] | None, str | None]:
+    """Read the current admission status without broadening the mutation surface.
+
+    The caller needs to distinguish "absent" from "unreadable": absent means it
+    may POST the desired proof, but unreadable must fail closed so a slow or
+    broken status read does not turn into extra status writes across every
+    blocked PR in the run.
+    """
+    cmd = [
+        "gh",
+        "api",
+        "--method",
+        "GET",
+        f"repos/{repo}/commits/{head_sha}/statuses",
+        "-f",
+        "per_page=100",
+        "-f",
+        "page=1",
+    ]
+    try:
+        proc = runner(
+            cmd,
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=AUTOQUEUE_ADMISSION_READ_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return None, _format_admission_status_read_error(
+            "timeout", f"{AUTOQUEUE_ADMISSION_READ_TIMEOUT_SECONDS}s"
+        )
+    except OSError as exc:
+        return None, _format_admission_status_read_error(type(exc).__name__, str(exc))
     if getattr(proc, "returncode", 1) != 0:
-        return None
+        output = (getattr(proc, "stderr", "") or getattr(proc, "stdout", "") or "").strip()
+        return None, _format_admission_status_read_error(
+            f"rc={getattr(proc, 'returncode', 1)}", output
+        )
     try:
         items = json.loads(proc.stdout or "[]")
-    except (json.JSONDecodeError, TypeError):
-        return None
+    except (json.JSONDecodeError, TypeError) as exc:
+        return None, _format_admission_status_read_error("invalid_json", str(exc))
     if not isinstance(items, list):
-        return None
+        return None, _format_admission_status_read_error("unexpected_json", type(items).__name__)
     for item in items:  # the statuses API returns most-recent-first
         if isinstance(item, dict) and item.get("context") == AUTOQUEUE_ADMISSION_CONTEXT:
             return (
                 str(item.get("state") or ""),
                 str(item.get("description") or ""),
                 _parse_status_created_at(item.get("created_at")),
-            )
-    return None
+            ), None
+    return None, None
 
 
 def set_autoqueue_admission_status(
@@ -2216,9 +2456,11 @@ def set_autoqueue_admission_status(
     if not decision.pr.head_sha:
         return False, "missing_head_sha"
     state, description = status
-    current = _latest_admission_status(
+    current, read_error = _latest_admission_status_result(
         decision.pr.head_sha, repo=repo, repo_root=repo_root, runner=runner
     )
+    if read_error is not None:
+        return False, f"admission_status_read_failed:{read_error}"
     if current is not None:
         cur_state, cur_description, cur_created = current
         if cur_state == state == "failure":
@@ -2503,7 +2745,35 @@ def run_reconciler(
             now=now,
         )
     queued_prs = queued_prs_snapshot
-    prs = fetch_open_prs(repo=repo, repo_root=repo_root, limit=limit, runner=runner)
+    try:
+        prs = fetch_open_prs(repo=repo, repo_root=repo_root, limit=limit, runner=runner)
+    except subprocess.SubprocessError as exc:
+        report = {
+            "repo": repo,
+            "apply": apply,
+            "skipped": True,
+            "reason": "open_pr_scan_indeterminate",
+            "detail": str(exc),
+            "queued_prs": sorted(queued_prs),
+            "open_pr_count": None,
+            "decisions": [],
+            "mutations": [],
+            "counts": {
+                "queue": 0,
+                "enable_auto_merge": 0,
+                "already_queued": 0,
+                "already_auto_merge_enabled": 0,
+                "disable_auto_merge": 0,
+                "dequeue": 0,
+                "blocked": 0,
+            },
+        }
+        return _finalize_reconciler_report(
+            report,
+            report_path=report_path,
+            admission_governor_path=admission_governor_path,
+            now=now,
+        )
     preliminary_decisions = [
         classify_pr(
             pr,
@@ -2936,26 +3206,34 @@ def main(argv: list[str] | None = None) -> int:
         stream=sys.stderr,
     )
 
-    report = run_reconciler(
-        repo=args.repo,
-        repo_root=args.repo_root,
-        vault_root=args.vault_root,
-        apply=args.apply,
-        require_route_metadata=not args.allow_legacy_task_metadata,
-        include_pending_auto=not args.no_pending_auto,
-        required_checks=()
-        if args.no_required_checks
-        else tuple(args.required_checks or DEFAULT_REQUIRED_CHECKS),
-        limit=args.limit,
-        lineage_ledger_path=args.lineage_ledger_path,
-        storm_mode_enabled=not args.disable_storm_mode,
-        advisory_open_pr_count=args.advisory_open_pr_count,
-        storm_failed_merge_group_threshold=args.storm_failed_merge_group_threshold,
-        storm_recent_run_limit=args.storm_recent_run_limit,
-        report_path=None if args.no_write_report else args.report_path,
-        admission_governor_path=args.admission_governor_path,
-    )
-    print(json.dumps(report, indent=2, sort_keys=True))
+    previous_sigterm = _install_foreground_termination_handler()
+    try:
+        report = run_reconciler(
+            repo=args.repo,
+            repo_root=args.repo_root,
+            vault_root=args.vault_root,
+            apply=args.apply,
+            require_route_metadata=not args.allow_legacy_task_metadata,
+            include_pending_auto=not args.no_pending_auto,
+            required_checks=()
+            if args.no_required_checks
+            else tuple(args.required_checks or DEFAULT_REQUIRED_CHECKS),
+            limit=args.limit,
+            lineage_ledger_path=args.lineage_ledger_path,
+            storm_mode_enabled=not args.disable_storm_mode,
+            advisory_open_pr_count=args.advisory_open_pr_count,
+            storm_failed_merge_group_threshold=args.storm_failed_merge_group_threshold,
+            storm_recent_run_limit=args.storm_recent_run_limit,
+            report_path=None if args.no_write_report else args.report_path,
+            admission_governor_path=args.admission_governor_path,
+        )
+    except AutoqueueTerminated as exc:
+        report = _termination_report_from_args(args, signum=exc.signum)
+        print(json.dumps(report, indent=2, sort_keys=True), flush=True)
+        return 128 + exc.signum
+    finally:
+        _restore_foreground_termination_handler(previous_sigterm)
+    print(json.dumps(report, indent=2, sort_keys=True), flush=True)
     return 0
 
 

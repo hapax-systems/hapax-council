@@ -1245,6 +1245,25 @@ class TestVerdictBlockers:
 
         assert blockers == ()
 
+    def test_route_degradation_tolerates_extra_live_block_reasons(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = self._route_blocked_degraded_dossier(rt)
+        note = _write_dossier(tmp_path, "task-x", dossier)
+
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={
+                "gemini": (
+                    "agy.review.direct:route_specific_quota_receipt_absent",
+                    "agy.review.direct:route_pressure_backoff_observed",
+                )
+            },
+        )
+
+        assert blockers == ()
+
     def test_task_scoped_paid_route_degradation_default_witness_mismatch_blocks(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
