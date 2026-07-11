@@ -32,6 +32,7 @@ from agents.coordinator.core import (
     _dispatch_worktree,
     _effective_platform_suitability,
     _headless_task_from_argv,
+    _lane_from_tmux_session,
     _lane_to_dict,
     _live_headless_launcher,
     _parse_task,
@@ -1366,7 +1367,14 @@ retired_reason: clean exit
         completed = subprocess.CompletedProcess(
             args=["tmux"],
             returncode=0,
-            stdout="hapax-claude-alpha\nhapax-codex-cx-red\nwork\n",
+            stdout=(
+                "hapax-claude-alpha\n"
+                "hapax-claude-dev\n"
+                "hapax-claude-dev2\n"
+                "hapax-claude-DEV12\n"
+                "hapax-codex-cx-red\n"
+                "work\n"
+            ),
             stderr="",
         )
 
@@ -1400,6 +1408,12 @@ retired_reason: clean exit
         assert lanes["cx-red"].alive is True
         assert lanes["cx-red"].platform == "codex"
         assert lanes["cx-red"].dispatch_ready is True
+        assert "dev" not in lanes
+        assert "dev2" not in lanes
+        assert "DEV12" not in lanes
+        assert _lane_from_tmux_session("hapax-claude-dev") is None
+        assert _lane_from_tmux_session("hapax-claude-dev2") is None
+        assert _lane_from_tmux_session("hapax-claude-DEV12") is None
 
     def test_pid_backed_headless_lane_is_discovered_with_existing_tmux_sessions(
         self, tmp_path: Path
@@ -2212,10 +2226,8 @@ Body.
         assert state.task_flow_counts["offered"] == 1
         assert state.lanes_idle == 0
         assert state.dispatches_this_tick == 0
-        assert state.lanes["dev"]["alive"] is True
-        assert state.lanes["dev"]["idle"] is True
-        assert state.lanes["dev"]["dispatch_ready"] is False
-        assert "missing cc-claim" in state.lanes["dev"]["dispatch_blocked_reason"]
+        assert "dev" not in state.lanes
+        assert _lane_from_tmux_session("hapax-claude-dev") is None
         assert state.lanes["alpha"]["alive"] is False
         assert state.lanes["alpha"]["dispatch_ready"] is False
         assert "lane_not_alive" in state.lanes["alpha"]["dispatch_blocked_reason"]
@@ -2441,11 +2453,8 @@ Body.
         assert state.task_flow_counts["offered"] == 1
         assert state.lanes_idle == 0
         assert state.dispatches_this_tick == 0
-        assert state.lanes["dev"]["alive"] is True
-        assert state.lanes["dev"]["idle"] is True
-        assert state.lanes["dev"]["dispatch_ready"] is False
-        assert "stale cc-claim" in state.lanes["dev"]["dispatch_blocked_reason"]
-        assert "authority_case" in state.lanes["dev"]["dispatch_blocked_reason"]
+        assert "dev" not in state.lanes
+        assert _lane_from_tmux_session("hapax-claude-dev") is None
 
     def test_tick_does_not_dispatch_to_stale_close_lane(self, tmp_path: Path):
         coord = Coordinator()
@@ -2504,11 +2513,8 @@ Body.
         assert state.task_flow_counts["offered"] == 1
         assert state.lanes_idle == 0
         assert state.dispatches_this_tick == 0
-        assert state.lanes["dev"]["alive"] is True
-        assert state.lanes["dev"]["idle"] is True
-        assert state.lanes["dev"]["dispatch_ready"] is False
-        assert "stale cc-close" in state.lanes["dev"]["dispatch_blocked_reason"]
-        assert "frontmatter_task_id" in state.lanes["dev"]["dispatch_blocked_reason"]
+        assert "dev" not in state.lanes
+        assert _lane_from_tmux_session("hapax-claude-dev") is None
 
 
 class TestScanTasks:

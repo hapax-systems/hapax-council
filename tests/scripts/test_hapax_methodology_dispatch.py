@@ -803,6 +803,8 @@ def _run(
     durable_mq: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
+    env.pop("HAPAX_DISPATCH_HOST", None)
+    env.pop("HAPAX_DEFAULT_DISPATCH_HOST", None)
     env["HOME"] = str(tmp_path / "home")
     env["HAPAX_CC_TASK_ROOT"] = str(tmp_path / "tasks")
     env["HAPAX_DISPATCH_WORKTREE"] = str(tmp_path / "worktree")
@@ -1159,8 +1161,16 @@ def test_blocks_claude_dev_operator_pool_before_worktree_probe(tmp_path: Path) -
         """,
     )
 
-    for lane in ("dev", "dev2", "DEV12"):
-        result = _run(tmp_path, "--task", "governed-build", "--lane", lane)
+    for lane in ("dev", "dev1", "dev2", "DEV12"):
+        result = _run(
+            tmp_path,
+            "--task",
+            "governed-build",
+            "--lane",
+            lane,
+            "--platform",
+            "claude",
+        )
 
         assert result.returncode == 10
         assert "interactive Claude operator pool" in result.stderr
@@ -1171,6 +1181,34 @@ def test_blocks_claude_dev_operator_pool_before_worktree_probe(tmp_path: Path) -
         assert "--json <lane>" in result.stderr
         assert "not dev/devN" in result.stderr
         assert "missing cc-claim" not in result.stderr
+
+
+def test_non_claude_dev_lane_is_not_operator_pool_blocked(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree", guarded=False)
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "dev",
+        "--platform",
+        "codex",
+    )
+
+    assert result.returncode == 10
+    assert "interactive Claude operator pool" not in result.stderr
+    assert "stale cc-claim" in result.stderr
 
 
 def test_prompt_contains_worktree_local_cc_claim_path(tmp_path: Path) -> None:

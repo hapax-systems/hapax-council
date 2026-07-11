@@ -1224,8 +1224,11 @@ def _created_at_epoch(value: object) -> float | None:
 def _lane_from_tmux_session(session: str) -> LaneDescriptor | None:
     for prefix, platform in SESSION_PREFIXES:
         if session.startswith(prefix):
+            role = session.removeprefix(prefix)
+            if platform == "claude" and is_claude_operator_pool_role(role):
+                return None
             return LaneDescriptor(
-                role=session.removeprefix(prefix),
+                role=role,
                 session=session,
                 platform=platform,
             )
