@@ -22,6 +22,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from shared.capability_surface_delta import (
     CapabilitySurfaceDelta as CapabilitySurfaceDeltaSignal,
 )
+from shared.capability_weakness_taxonomy import (
+    WEAKNESS_TO_MITIGATING_LEVERS,
+    LeverId,
+    WeaknessId,
+)
 from shared.platform_capability_receipts import (
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
@@ -419,6 +424,93 @@ class DescriptorVariant(StrictModel):
     blocked_reasons: list[str] = Field(default_factory=list)
 
 
+class WeaknessApplicability(StrictModel):
+    weakness_id: WeaknessId
+    dominant: bool = False
+    evidence_refs: list[str] = Field(min_length=1)
+    notes: str | None = None
+
+
+class ImplementedLever(StrictModel):
+    lever_id: LeverId
+    evidence_refs: list[str] = Field(min_length=1)
+    notes: str | None = None
+
+
+class WaivedLever(StrictModel):
+    weakness_id: WeaknessId
+    lever_id: LeverId
+    reason: str = Field(min_length=1)
+    evidence_refs: list[str] = Field(min_length=1)
+
+
+def _duplicates(values: list[str]) -> list[str]:
+    return sorted({value for value in values if values.count(value) > 1})
+
+
+def _validate_weakness_lever_coverage(
+    descriptor_id: str,
+    *,
+    weakness_applicability: list[WeaknessApplicability],
+    implemented_levers: list[ImplementedLever],
+    waived_levers: list[WaivedLever],
+) -> None:
+    weakness_ids = [entry.weakness_id.value for entry in weakness_applicability]
+    duplicate_weaknesses = _duplicates(weakness_ids)
+    if duplicate_weaknesses:
+        raise ValueError(
+            f"{descriptor_id}: duplicate weakness_applicability ids: {duplicate_weaknesses}"
+        )
+
+    lever_ids = [entry.lever_id.value for entry in implemented_levers]
+    duplicate_levers = _duplicates(lever_ids)
+    if duplicate_levers:
+        raise ValueError(f"{descriptor_id}: duplicate implemented_levers ids: {duplicate_levers}")
+
+    waiver_keys = [f"{entry.weakness_id.value}:{entry.lever_id.value}" for entry in waived_levers]
+    duplicate_waivers = _duplicates(waiver_keys)
+    if duplicate_waivers:
+        raise ValueError(f"{descriptor_id}: duplicate waived_levers entries: {duplicate_waivers}")
+
+    dominant_weaknesses = {entry.weakness_id for entry in weakness_applicability if entry.dominant}
+    if not dominant_weaknesses:
+        raise ValueError(
+            f"{descriptor_id}: weakness_applicability must mark at least one dominant weakness"
+        )
+
+    applicable_weaknesses = {entry.weakness_id for entry in weakness_applicability}
+    implemented = {entry.lever_id for entry in implemented_levers}
+    waived = {(entry.weakness_id, entry.lever_id) for entry in waived_levers}
+    for waiver in waived_levers:
+        if waiver.weakness_id not in applicable_weaknesses:
+            raise ValueError(
+                f"{descriptor_id}: waived weakness {waiver.weakness_id.value} is not applicable"
+            )
+        mitigating_levers = WEAKNESS_TO_MITIGATING_LEVERS[waiver.weakness_id]
+        if waiver.lever_id not in mitigating_levers:
+            allowed = sorted(lever.value for lever in mitigating_levers)
+            raise ValueError(
+                f"{descriptor_id}: waiver {waiver.weakness_id.value}:{waiver.lever_id.value} "
+                f"does not name a mitigating lever; expected one of {allowed}"
+            )
+        if waiver.lever_id in implemented:
+            raise ValueError(
+                f"{descriptor_id}: lever {waiver.lever_id.value} is both implemented and waived"
+            )
+
+    for weakness_id in sorted(dominant_weaknesses, key=lambda weakness: weakness.value):
+        mitigating_levers = WEAKNESS_TO_MITIGATING_LEVERS[weakness_id]
+        if implemented & mitigating_levers:
+            continue
+        if any((weakness_id, lever_id) in waived for lever_id in mitigating_levers):
+            continue
+        expected = sorted(lever.value for lever in mitigating_levers)
+        raise ValueError(
+            f"{descriptor_id}: dominant weakness {weakness_id.value} has no declared "
+            f"mitigating lever or explicit waiver; expected one of {expected}"
+        )
+
+
 class CapabilityShapeDescriptor(StrictModel):
     """Evidence-only descriptor for an observed but not-yet-admitted capability surface.
 
@@ -438,6 +530,9 @@ class CapabilityShapeDescriptor(StrictModel):
     shape_state: CapabilityShapeState
     demand_eligible: bool = False
     route_ids: list[str] = Field(default_factory=list)
+    weakness_applicability: list[WeaknessApplicability] = Field(min_length=1)
+    implemented_levers: list[ImplementedLever] = Field(default_factory=list)
+    waived_levers: list[WaivedLever] = Field(default_factory=list)
     resource_semantics: list[str] = Field(min_length=1)
     spend_semantics: list[str] = Field(min_length=1)
     observability: list[str] = Field(min_length=1)
@@ -453,6 +548,12 @@ class CapabilityShapeDescriptor(StrictModel):
 
     @model_validator(mode="after")
     def _omitted_shape_is_not_supply(self) -> Self:
+        _validate_weakness_lever_coverage(
+            self.shape_id,
+            weakness_applicability=self.weakness_applicability,
+            implemented_levers=self.implemented_levers,
+            waived_levers=self.waived_levers,
+        )
         parse_duration_spec(self.stale_after)
         if self.demand_eligible:
             raise ValueError(
@@ -750,6 +851,9 @@ class PlatformCapabilityRoute(StrictModel):
     authority_ceiling: AuthorityCeiling
     tool_access: ToolAccess
     privacy_posture: PrivacyPosture
+    weakness_applicability: list[WeaknessApplicability] = Field(min_length=1)
+    implemented_levers: list[ImplementedLever] = Field(default_factory=list)
+    waived_levers: list[WaivedLever] = Field(default_factory=list)
     quality_envelope: QualityEnvelope
     capability_scores: CapabilityScores
     tool_state: list[ToolState] = Field(default_factory=list)
@@ -764,6 +868,13 @@ class PlatformCapabilityRoute(StrictModel):
         expected = f"{self.platform.value}.{self.mode.value}.{self.profile.value}"
         if self.route_id != expected:
             raise ValueError(f"route_id must equal platform.mode.profile: {expected}")
+
+        _validate_weakness_lever_coverage(
+            self.route_id,
+            weakness_applicability=self.weakness_applicability,
+            implemented_levers=self.implemented_levers,
+            waived_levers=self.waived_levers,
+        )
 
         if self.route_state is RouteState.BLOCKED and not self.blocked_reasons:
             raise ValueError("blocked routes must declare blocked_reasons")

@@ -520,6 +520,96 @@
         }
       }
     },
+    "weakness_id": {
+      "enum": [
+        "W1",
+        "W2",
+        "W3",
+        "W4",
+        "W5",
+        "W6",
+        "W7",
+        "W8",
+        "W9",
+        "W10",
+        "W11",
+        "W12",
+        "W13",
+        "W14",
+        "W15",
+        "W16",
+        "W17",
+        "W18"
+      ]
+    },
+    "lever_id": {
+      "enum": [
+        "L1",
+        "L2",
+        "L3",
+        "L4",
+        "L5",
+        "L6",
+        "L7",
+        "L8",
+        "L9",
+        "L10",
+        "L11",
+        "L12",
+        "L13",
+        "L14",
+        "L15",
+        "L16"
+      ]
+    },
+    "weakness_applicability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["weakness_id", "dominant", "evidence_refs"],
+      "properties": {
+        "weakness_id": {"$ref": "#/$defs/weakness_id"},
+        "dominant": {"type": "boolean"},
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "notes": {
+          "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
+        }
+      }
+    },
+    "implemented_lever": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lever_id", "evidence_refs"],
+      "properties": {
+        "lever_id": {"$ref": "#/$defs/lever_id"},
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "notes": {
+          "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
+        }
+      }
+    },
+    "waived_lever": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["weakness_id", "lever_id", "reason", "evidence_refs"],
+      "properties": {
+        "weakness_id": {"$ref": "#/$defs/weakness_id"},
+        "lever_id": {"$ref": "#/$defs/lever_id"},
+        "reason": {"type": "string", "minLength": 1},
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
     "capability_shape_descriptor": {
       "type": "object",
       "additionalProperties": false,
@@ -534,6 +624,9 @@
         "shape_state",
         "demand_eligible",
         "route_ids",
+        "weakness_applicability",
+        "implemented_levers",
+        "waived_levers",
         "resource_semantics",
         "spend_semantics",
         "observability",
@@ -558,6 +651,19 @@
         "shape_state": {"$ref": "#/$defs/capability_shape_state"},
         "demand_eligible": {"const": false},
         "route_ids": {"type": "array", "maxItems": 0},
+        "weakness_applicability": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/weakness_applicability"}
+        },
+        "implemented_levers": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/implemented_lever"}
+        },
+        "waived_levers": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/waived_lever"}
+        },
         "resource_semantics": {
           "type": "array",
           "minItems": 1,
@@ -628,6 +734,9 @@
         "authority_ceiling",
         "tool_access",
         "privacy_posture",
+        "weakness_applicability",
+        "implemented_levers",
+        "waived_levers",
         "quality_envelope",
         "capability_scores",
         "tool_state",
@@ -674,6 +783,19 @@
         "authority_ceiling": {"$ref": "#/$defs/authority_ceiling"},
         "tool_access": {"$ref": "#/$defs/tool_access"},
         "privacy_posture": {"$ref": "#/$defs/privacy_posture"},
+        "weakness_applicability": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/weakness_applicability"}
+        },
+        "implemented_levers": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/implemented_lever"}
+        },
+        "waived_levers": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/waived_lever"}
+        },
         "quality_envelope": {"$ref": "#/$defs/quality_envelope"},
         "capability_scores": {"$ref": "#/$defs/capability_scores"},
         "tool_state": {
