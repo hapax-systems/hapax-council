@@ -106,7 +106,7 @@ ROOT_AUDIT_SOURCE_FILES = {
         "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\n"
     ),
     "systemd/units/hapax-oom-score-enforce.service": (
-        "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\n"
+        "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\nTimeoutStartSec=25s\n"
     ),
     "systemd/units/hapax-oom-score-enforce.timer": (
         "[Unit]\n# Hapax-Install-Scope: system\n[Timer]\nOnUnitActiveSec=30s\n"
@@ -330,7 +330,12 @@ def _root_audit_env(
     user_dir = tmp_path / "home" / ".config" / "systemd" / "user"
     earlyoom_dest = tmp_path / "etc" / "default" / "earlyoom"
     fake_systemctl = tmp_path / "root-audit-systemctl"
-    fake_systemctl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$*" = "show hapax-oom-score-enforce.service -p TimeoutStartUSec --value" ]; then printf "25s\\n"; fi\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
     fake_systemctl.chmod(0o755)
     fake_busctl = tmp_path / "root-audit-busctl"
     fake_busctl.write_text("#!/bin/sh\nprintf 's \\\"Ignore\\\"\\n'\n", encoding="utf-8")
@@ -1577,6 +1582,30 @@ def test_root_required_audit_detects_disabled_enforcer_timer(tmp_path: Path) -> 
     assert result.returncode == 1
     assert "hapax-oom-score-enforce.timer is not enabled" in result.stderr
     assert "enable --now" in result.stderr
+
+
+def test_root_required_audit_detects_stale_loaded_enforcer_timeout(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$*" = "show hapax-oom-score-enforce.service -p TimeoutStartUSec --value" ]; then printf "infinity\\n"; fi\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "loaded TimeoutStartUSec=infinity, expected 25s" in result.stderr
+    assert "systemctl daemon-reload" in result.stderr
 
 
 def test_root_required_audit_detects_inactive_earlyoom(tmp_path: Path) -> None:

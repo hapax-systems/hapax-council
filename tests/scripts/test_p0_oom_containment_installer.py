@@ -216,6 +216,7 @@ def _systemctl_system_memory_cases(
     user_manager_score: int = 100,
 ) -> str:
     cases = [
+        '  *"show hapax-oom-score-enforce.service -p TimeoutStartUSec --value"*) printf "25s\\n" ;;',
         '  *"show system.slice -p MemoryHigh --value"*) printf "infinity\\n" ;;',
         '  *"show system.slice -p MemoryMax --value"*) printf "infinity\\n" ;;',
         '  *"show system.slice -p MemorySwapMax --value"*) printf "infinity\\n" ;;',
@@ -773,6 +774,7 @@ def test_oom_install_without_verify_flag_cannot_advance_receipts_after_live_prob
     fake_systemctl = tmp_path / "systemctl"
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
+        'if [[ "$*" == *"show hapax-oom-score-enforce.service -p TimeoutStartUSec --value"* ]]; then printf "25s\\n"; fi\n'
         'if [[ "$*" == *"show user@1000.service -p OOMScoreAdjust --value"* ]]; then printf "100\\n"; fi\n'
         'if [[ "$*" == *"show user@1000.service -p OOMPolicy --value"* ]]; then printf "continue\\n"; fi\n'
         "exit 0\n",
@@ -805,6 +807,49 @@ def test_oom_install_without_verify_flag_cannot_advance_receipts_after_live_prob
     state_root = tmp_path / "root-state"
     assert not (state_root / "installed-receipts/oom-containment.sha").exists()
     assert not (state_root / "desired-receipts/oom-containment.sha").exists()
+    assert not (tmp_path / "installed-source").exists()
+
+
+def test_oom_install_rejects_stale_loaded_enforcer_timeout_before_receipts(
+    tmp_path: Path,
+) -> None:
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$*" == *"show hapax-oom-score-enforce.service -p TimeoutStartUSec --value"* ]]; then printf "infinity\\n"; fi\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(tmp_path / "systemd-system"),
+            "HAPAX_OOM_SYSTEMD_USER_DIR": str(tmp_path / "systemd-user"),
+            "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR": str(tmp_path / "systemd-user-control"),
+            "HAPAX_OOM_EARLYOOM_DEST": str(tmp_path / "earlyoom"),
+            "HAPAX_OOM_ENFORCER_DEST": str(tmp_path / "sbin/hapax-oom-score-enforce"),
+            "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(tmp_path / "sbin/hapax-root-failure-intake"),
+            "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_OOM_INSTALL_SUDO": "",
+            "HAPAX_OOM_PROC_ROOT": str(proc_root),
+            "HAPAX_OOM_TARGET_UID": "1000",
+        },
+    )
+
+    assert result.returncode == 1
+    assert (
+        "live hapax-oom-score-enforce.service TimeoutStartUSec drift: actual=infinity expected=25s"
+    ) in result.stderr
+    state_root = tmp_path / "root-state"
+    assert not (state_root / "installed-receipts/oom-containment.sha").exists()
     assert not (tmp_path / "installed-source").exists()
 
 
@@ -2252,6 +2297,70 @@ def test_installer_query_failure_cannot_scrub_protected_process_scores(tmp_path:
     assert "unable to query user unit studio-compositor.service ControlGroup" in result.stderr
     assert (proc_root / "914" / "oom_score_adj").read_text(encoding="utf-8").strip() == "-800"
     assert (proc_root / "999" / "oom_score_adj").read_text(encoding="utf-8").strip() == "-900"
+
+
+def test_installer_revalidates_cached_main_pid_cgroup_before_write_and_exemption(
+    tmp_path: Path,
+) -> None:
+    system_dir = tmp_path / "systemd-system"
+    user_dir = tmp_path / "systemd-user"
+    user_control_dir = tmp_path / "systemd-user-control"
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    studio_cgroup = _unit_cgroup("studio-compositor.service")
+    moved_cgroup = "/user.slice/user-1000.slice/session.slice/app-niri-foot.scope"
+    _write_proc(
+        proc_root,
+        900,
+        name="systemd",
+        uid=1000,
+        oom_score=100,
+        cgroup="/user.slice/user-1000.slice/user@1000.service",
+    )
+    _write_proc(proc_root, 914, name="python", uid=1000, oom_score=-800, cgroup=studio_cgroup)
+    _write_recovery_procs(proc_root)
+
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$*" in\n'
+        '  *"--user show hapax-imagination.service -p ControlGroup --value"*) '
+        f'printf "0::{moved_cgroup}\\n" > "{proc_root / "914" / "cgroup"}"; printf "\\n" ;;\n'
+        '  *"show user@1000.service -p MainPID --value"*) printf "900\\n" ;;\n'
+        f"{_systemctl_user_unit_cases({'studio-compositor.service': 914}, {'studio-compositor.service': studio_cgroup})}\n"
+        f"{_systemctl_system_memory_cases(RECOVERY_SYSTEM_UNIT_PIDS)}\n"
+        f"{_systemctl_app_slice_cases()}\n"
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--install", "--verify-live"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(system_dir),
+            "HAPAX_OOM_SYSTEMD_USER_DIR": str(user_dir),
+            "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR": str(user_control_dir),
+            "HAPAX_OOM_EARLYOOM_DEST": str(tmp_path / "earlyoom"),
+            "HAPAX_OOM_ENFORCER_DEST": str(tmp_path / "sbin/hapax-oom-score-enforce"),
+            "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(tmp_path / "sbin/hapax-root-failure-intake"),
+            "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_OOM_INSTALL_SUDO": "",
+            "HAPAX_OOM_PROC_ROOT": str(proc_root),
+            "HAPAX_OOM_TARGET_UID": "1000",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (proc_root / "914" / "cgroup").read_text(encoding="utf-8").strip() == (
+        f"0::{moved_cgroup}"
+    )
+    assert (proc_root / "914" / "oom_score_adj").read_text(encoding="utf-8").strip() == "100"
 
 
 def test_root_failure_intake_uses_stable_recovery_bundle(tmp_path: Path) -> None:

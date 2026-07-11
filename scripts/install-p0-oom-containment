@@ -917,7 +917,9 @@ snapshotted_user_unit_pids() {
     cgroup="${protected_user_cgroup_snapshot[$unit]:-}"
     pid="${protected_user_main_pid_snapshot[$unit]:-}"
     cgroup_pids "$cgroup"
-    [ -n "$pid" ] && printf '%s\n' "$pid"
+    if [ -n "$pid" ] && pid_matches_cgroup "$pid" "$cgroup"; then
+        printf '%s\n' "$pid"
+    fi
     return 0
 }
 
@@ -955,14 +957,17 @@ apply_recovery_unit_oom_scores() {
 }
 
 apply_protected_user_unit_oom_scores() {
-    local spec unit score pid
+    local spec unit score pid cgroup output
     for spec in "${protected_user_unit_scores[@]}"; do
         unit="${spec%%:*}"
         score="${spec##*:}"
-        snapshotted_user_unit_pids "$unit" | while IFS= read -r pid; do
+        cgroup="${protected_user_cgroup_snapshot[$unit]:-}"
+        output="$(snapshotted_user_unit_pids "$unit")"
+        while IFS= read -r pid; do
             [ -n "$pid" ] || continue
+            pid_matches_cgroup "$pid" "$cgroup" || continue
             write_oom_score_or_warn "$pid" "$score" "$unit"
-        done
+        done < <(printf '%s\n' "$output" | sort -u)
     done
 }
 
@@ -976,11 +981,9 @@ allowed_user_protected_process() {
 }
 
 protected_user_unit_member_pid() {
-    local candidate="$1" spec unit pid cgroup
+    local candidate="$1" spec unit cgroup
     for spec in "${protected_user_unit_scores[@]}"; do
         unit="${spec%%:*}"
-        pid="${protected_user_main_pid_snapshot[$unit]:-}"
-        [ -n "$pid" ] && [ "$candidate" = "$pid" ] && return 0
         cgroup="${protected_user_cgroup_snapshot[$unit]:-}"
         pid_matches_cgroup "$candidate" "$cgroup" && return 0
     done
@@ -1370,6 +1373,7 @@ verify_live() {
             return 1
         }
     done
+    verify_enforcer_loaded_timeout
     verify_user_manager_oom_score
     verify_system_unit_runtime_memory system.slice systemd/system/system.slice.d/oom-containment.conf
     verify_system_unit_runtime_memory user.slice systemd/system/user.slice.d/oom-containment.conf
@@ -1381,6 +1385,19 @@ verify_live() {
     refresh_protected_user_unit_snapshot
     verify_protected_user_unit_oom_scores
     verify_user_process_oom_floor
+}
+
+verify_enforcer_loaded_timeout() {
+    local expected actual
+    expected="$(source_unit_value systemd/units/hapax-oom-score-enforce.service TimeoutStartSec)"
+    if ! actual="$("$SYSTEMCTL" show hapax-oom-score-enforce.service -p TimeoutStartUSec --value 2>/dev/null)"; then
+        echo "unable to query loaded hapax-oom-score-enforce.service TimeoutStartUSec; next action: inspect systemctl status hapax-oom-score-enforce.service and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    if [ "$actual" != "$expected" ]; then
+        echo "live hapax-oom-score-enforce.service TimeoutStartUSec drift: actual=${actual:-unavailable} expected=$expected; next action: run sudo systemctl daemon-reload and scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
 }
 
 verify_system_unit_runtime_memory() {
@@ -1491,10 +1508,11 @@ verify_user_manager_oom_score() {
 }
 
 verify_protected_user_unit_oom_scores() {
-    local spec unit score pid actual configured rel expected_slice key expected_raw expected_bytes failed=0
+    local spec unit score pid actual configured rel expected_slice key expected_raw expected_bytes cgroup failed=0
     for spec in "${protected_user_unit_scores[@]}"; do
         unit="${spec%%:*}"
         score="${spec##*:}"
+        cgroup="${protected_user_cgroup_snapshot[$unit]:-}"
         configured="$(user_systemctl show "$unit" -p OOMScoreAdjust --value 2>/dev/null || true)"
         if [ "$configured" != "100" ]; then
             echo "user unit startup OOM policy drift for $unit: configured=$configured expected=100; the user manager cannot lower a child score, so root must apply live score $score after start; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
@@ -1531,6 +1549,11 @@ verify_protected_user_unit_oom_scores() {
         done
         while IFS= read -r pid; do
             [ -n "$pid" ] || continue
+            if ! pid_matches_cgroup "$pid" "$cgroup"; then
+                echo "live user unit cgroup changed before OOM score readback for $unit pid $pid; next action: rerun scripts/install-p0-oom-containment --install --verify-live after unit churn settles" >&2
+                failed=1
+                continue
+            fi
             actual="$(cat "$PROC_ROOT/$pid/oom_score_adj" 2>/dev/null || true)"
             if [ "$actual" != "$score" ]; then
                 echo "live user unit OOM score drift for $unit pid $pid: actual=$actual expected=$score; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2

@@ -278,6 +278,19 @@ def test_power_event_append_completes_short_writes(
     }
 
 
+def test_power_event_append_rejects_zero_progress_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audit = tmp_path / "ups-events.jsonl"
+    namespace = runpy.run_path(str(HELPER))
+    monkeypatch.setattr(namespace["os"], "write", lambda _fd, _payload: 0)
+
+    with pytest.raises(OSError, match="short UPS audit log write made no progress"):
+        namespace["append_jsonl"](audit, {"event": "test"})
+
+    assert audit.read_bytes() == b""
+
+
 def test_logrotate_rename_create_preserves_inflight_writer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -317,7 +330,7 @@ def test_logrotate_rename_create_preserves_inflight_writer(
     def append_during_rotation() -> None:
         try:
             namespace["append_jsonl"](audit, {"phase": "during"})
-        except BaseException as exc:  # pragma: no cover - surfaced below
+        except Exception as exc:  # pragma: no cover - surfaced below
             errors.append(exc)
 
     monkeypatch.setattr(namespace["os"], "write", blocked_write)

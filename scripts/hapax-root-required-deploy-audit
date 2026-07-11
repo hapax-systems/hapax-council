@@ -529,7 +529,7 @@ verify_executable() {
 }
 
 audit_systemd_state() {
-    local failed=0 loaded_upower_action
+    local failed=0 loaded_upower_action expected_enforcer_timeout loaded_enforcer_timeout
     if ! "$SYSTEMCTL" is-enabled --quiet hapax-oom-score-enforce.timer; then
         echo "root-required activation drift: hapax-oom-score-enforce.timer is not enabled" >&2
         echo "  next action: run sudo systemctl enable --now hapax-oom-score-enforce.timer" >&2
@@ -538,6 +538,15 @@ audit_systemd_state() {
     if ! "$SYSTEMCTL" is-active --quiet hapax-oom-score-enforce.timer; then
         echo "root-required activation drift: hapax-oom-score-enforce.timer is not active" >&2
         echo "  next action: run sudo systemctl enable --now hapax-oom-score-enforce.timer" >&2
+        failed=1
+    fi
+    expected_enforcer_timeout="$(awk -F= '$1 == "TimeoutStartSec" {print $2; exit}' "$INSTALLED_SOURCE_ROOT/systemd/units/hapax-oom-score-enforce.service" 2>/dev/null || true)"
+    if ! loaded_enforcer_timeout="$("$SYSTEMCTL" show hapax-oom-score-enforce.service -p TimeoutStartUSec --value 2>/dev/null)"; then
+        loaded_enforcer_timeout=""
+    fi
+    if [ -z "$expected_enforcer_timeout" ] || [ "$loaded_enforcer_timeout" != "$expected_enforcer_timeout" ]; then
+        echo "root-required activation drift: hapax-oom-score-enforce.service loaded TimeoutStartUSec=${loaded_enforcer_timeout:-unavailable}, expected ${expected_enforcer_timeout:-source value missing}" >&2
+        echo "  next action: run sudo systemctl daemon-reload and scripts/install-p0-oom-containment --install --verify-live" >&2
         failed=1
     fi
     if ! "$SYSTEMCTL" is-active --quiet apcupsd.service; then
