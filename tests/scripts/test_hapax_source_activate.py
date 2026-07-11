@@ -381,6 +381,9 @@ def test_failed_deploy_restores_previous_release_launcher(tmp_path: Path) -> Non
     previous_script = tmp_path / "active-source" / "scripts" / "hapax-post-merge-deploy"
     previous_content = previous_script.read_text(encoding="utf-8")
     local_launcher = tmp_path / "home" / ".local" / "bin" / "hapax-post-merge-deploy"
+    local_cc_claim = tmp_path / "home" / ".local" / "bin" / "cc-claim"
+    previous_cc_claim_target = os.readlink(local_cc_claim)
+    failed_only_launcher = tmp_path / "home" / ".local" / "bin" / "hapax-failed-candidate"
     local_launcher.unlink()
     _write(local_launcher, previous_content, executable=True)
 
@@ -396,12 +399,22 @@ def test_failed_deploy_restores_previous_release_launcher(tmp_path: Path) -> Non
             rm -f "$HOME/.local/bin/hapax-post-merge-deploy"
             printf '#!/usr/bin/env bash\\necho failed candidate\\n' > "$HOME/.local/bin/hapax-post-merge-deploy"
             chmod 0755 "$HOME/.local/bin/hapax-post-merge-deploy"
+            rm -f "$HOME/.local/bin/cc-claim"
+            printf '#!/usr/bin/env bash\\necho failed cc claim\\n' > "$HOME/.local/bin/cc-claim"
+            chmod 0755 "$HOME/.local/bin/cc-claim"
+            printf '#!/usr/bin/env bash\\necho failed-only launcher\\n' > "$HOME/.local/bin/hapax-failed-candidate"
+            chmod 0755 "$HOME/.local/bin/hapax-failed-candidate"
             exit 7
             """
         ),
         executable=True,
     )
-    _git(updater, "add", "scripts/hapax-post-merge-deploy")
+    _write(
+        updater / "scripts" / "hapax-failed-candidate",
+        "#!/usr/bin/env bash\necho candidate source\n",
+        executable=True,
+    )
+    _git(updater, "add", "scripts/hapax-post-merge-deploy", "scripts/hapax-failed-candidate")
     _git(updater, "commit", "-m", "candidate deploy fails after launcher install")
     _git(updater, "push", "origin", "main")
     failed_sha = _git(updater, "rev-parse", "HEAD")
@@ -414,6 +427,9 @@ def test_failed_deploy_restores_previous_release_launcher(tmp_path: Path) -> Non
     assert local_launcher.is_file()
     assert not local_launcher.is_symlink()
     assert local_launcher.read_text(encoding="utf-8") == previous_content
+    assert local_cc_claim.is_symlink()
+    assert os.readlink(local_cc_claim) == previous_cc_claim_target
+    assert not failed_only_launcher.exists()
     receipt = _current_receipt(tmp_path)
     assert receipt["status"] == "failed"
     assert receipt["source_cutover"]["rollback_status"] == "success"
@@ -517,6 +533,30 @@ def test_activation_replaces_stale_or_unowned_regular_launchers(tmp_path: Path) 
     assert os.readlink(stale) == str(active_source / "scripts" / "hapax-post-merge-deploy")
     assert regular_cc_claim.is_symlink()
     assert os.readlink(regular_cc_claim) == str(active_source / "scripts" / "cc-claim")
+
+
+def test_activation_replaces_hard_linked_release_launcher(tmp_path: Path) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+    local_bin = tmp_path / "home" / ".local" / "bin"
+    launcher = local_bin / "hapax-post-merge-deploy"
+    peer = tmp_path / "launcher-peer"
+    release_content = (canonical / "scripts" / "hapax-post-merge-deploy").read_text(
+        encoding="utf-8"
+    )
+    _write(peer, release_content, executable=True)
+    local_bin.mkdir(parents=True, exist_ok=True)
+    os.link(peer, launcher)
+
+    result = _run_activate(tmp_path, canonical)
+
+    assert result.returncode == 0, result.stderr
+    active_source = tmp_path / "active-source"
+    assert launcher.is_symlink()
+    assert os.readlink(launcher) == str(active_source / "scripts" / "hapax-post-merge-deploy")
+    assert peer.is_file()
+    assert not peer.is_symlink()
+    assert peer.read_text(encoding="utf-8") == release_content
+    assert peer.stat().st_nlink == 1
 
 
 def test_activation_syncs_usb_topology_policy_config(tmp_path: Path) -> None:

@@ -182,7 +182,7 @@ record a read-only receipt:
 Only that separate runtime path may perform sysctl writes, zram-generator
 changes, daemon reloads, unit installation, or service restarts.
 
-**Design principle**: prevent global OOM by bounding transient memory spikers (cargo builds, ffmpeg) and giving kernel reclaim a larger buffer. Critical stack services are additionally protected via `OOMScoreAdjust=-500/-800` so the kernel strongly prefers killing leaf processes (interactive agent sessions, transient tools) over the stack in a true crisis. Individual `session-N.scope` leaves may have no local limit, but they remain killable and are covered by the aggregate `user-1000.slice` hard ceiling.
+**Design principle**: prevent global OOM by bounding transient memory spikers (cargo builds, ffmpeg) and giving kernel reclaim a larger buffer. Protected user services configure the valid manager-inherited startup score `OOMScoreAdjust=100`; the root enforcer applies their narrow live `oom_score_adj=-500/-800/-900` targets, so the kernel strongly prefers killing leaf processes (interactive agent sessions, transient tools) over the critical stack in a true crisis. Individual `session-N.scope` leaves may have no local limit, but they remain killable and are covered by the aggregate `user-1000.slice` hard ceiling.
 
 ## Ollama GPU Assignment
 

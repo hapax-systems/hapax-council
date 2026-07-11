@@ -796,7 +796,7 @@ snapshot_managed_launchers() {
             [[ -f "$script" ]] || continue
             base="$(basename "$script")"
             [[ "$base" =~ ^hapax-[A-Za-z0-9._-]+$ ]] || {
-                echo "hapax-source-activate: refusing unsafe managed launcher name: $base" >&2
+                echo "hapax-source-activate: refusing unsafe managed launcher name: $base; next action: rename the source launcher to hapax-[A-Za-z0-9._-]+ and rerun governed source activation" >&2
                 return 1
             }
             managed["$base"]=1
@@ -814,7 +814,7 @@ snapshot_managed_launchers() {
         dest="$LOCAL_BIN/$base"
         if [[ -e "$dest" || -L "$dest" ]]; then
             if [[ ! -f "$dest" && ! -L "$dest" ]]; then
-                echo "hapax-source-activate: refusing non-file managed launcher during snapshot: $dest" >&2
+                echo "hapax-source-activate: refusing non-file managed launcher during snapshot: $dest; next action: move the non-file entry aside without following it and rerun governed source activation" >&2
                 return 1
             fi
             cp -a -- "$dest" "$launcher_snapshot_dir/present/$base"
@@ -831,7 +831,7 @@ restore_managed_launchers() {
         dest="$LOCAL_BIN/$base"
         saved="$launcher_snapshot_dir/present/$base"
         if [[ -d "$dest" && ! -L "$dest" ]]; then
-            echo "hapax-source-activate: cannot restore launcher over directory: $dest" >&2
+            echo "hapax-source-activate: cannot restore launcher over directory: $dest; next action: move the directory aside, preserve $launcher_snapshot_dir, and rerun governed source activation" >&2
             return 1
         fi
         rm -f -- "$dest"
@@ -872,6 +872,7 @@ link_active_script() {
     # Preserve only an executable copy whose bytes match this commit-addressed
     # release. Stale/tampered copies and cc-task tools remain symlink-owned.
     if [[ "$base" == hapax-* && -f "$dest" && ! -L "$dest" && -x "$dest" ]] \
+        && [[ "$(stat -c %h -- "$dest" 2>/dev/null || true)" == "1" ]] \
         && cmp -s "$script" "$dest"; then
         return 0
     fi
