@@ -784,6 +784,82 @@ LOCAL_BIN="${HAPAX_SOURCE_ACTIVATE_LOCAL_BIN:-$HOME/.local/bin}"
 mkdir -p "$LOCAL_BIN"
 sweep_count=0
 config_sync_count=0
+launcher_snapshot_dir=""
+launcher_snapshot_ready=0
+
+snapshot_managed_launchers() {
+    local root script base dest
+    local -A managed=()
+    for root in "$candidate_worktree" "$previous_active_target"; do
+        [[ -d "$root/scripts" ]] || continue
+        for script in "$root"/scripts/hapax-*; do
+            [[ -f "$script" ]] || continue
+            base="$(basename "$script")"
+            [[ "$base" =~ ^hapax-[A-Za-z0-9._-]+$ ]] || {
+                echo "hapax-source-activate: refusing unsafe managed launcher name: $base" >&2
+                return 1
+            }
+            managed["$base"]=1
+        done
+        for base in cc-claim cc-close; do
+            [[ -f "$root/scripts/$base" ]] && managed["$base"]=1
+        done
+    done
+
+    launcher_snapshot_dir="$(mktemp -d "$STATE_DIR/launcher-rollback.XXXXXX")"
+    mkdir -p "$launcher_snapshot_dir/present"
+    : > "$launcher_snapshot_dir/names"
+    for base in "${!managed[@]}"; do
+        printf '%s\n' "$base" >> "$launcher_snapshot_dir/names"
+        dest="$LOCAL_BIN/$base"
+        if [[ -e "$dest" || -L "$dest" ]]; then
+            if [[ ! -f "$dest" && ! -L "$dest" ]]; then
+                echo "hapax-source-activate: refusing non-file managed launcher during snapshot: $dest" >&2
+                return 1
+            fi
+            cp -a -- "$dest" "$launcher_snapshot_dir/present/$base"
+        fi
+    done
+    launcher_snapshot_ready=1
+}
+
+restore_managed_launchers() {
+    [[ "$launcher_snapshot_ready" == "1" ]] || return 0
+    local base dest saved
+    while IFS= read -r base; do
+        [[ -n "$base" ]] || continue
+        dest="$LOCAL_BIN/$base"
+        saved="$launcher_snapshot_dir/present/$base"
+        if [[ -d "$dest" && ! -L "$dest" ]]; then
+            echo "hapax-source-activate: cannot restore launcher over directory: $dest" >&2
+            return 1
+        fi
+        rm -f -- "$dest"
+        if [[ -e "$saved" || -L "$saved" ]]; then
+            cp -a -- "$saved" "$dest"
+        fi
+    done < "$launcher_snapshot_dir/names"
+    rm -rf -- "$launcher_snapshot_dir"
+    launcher_snapshot_dir=""
+    launcher_snapshot_ready=0
+}
+
+discard_launcher_snapshot() {
+    [[ -z "$launcher_snapshot_dir" ]] || rm -rf -- "$launcher_snapshot_dir"
+    launcher_snapshot_dir=""
+    launcher_snapshot_ready=0
+}
+
+rollback_activation() {
+    local reason="$1" worktree_rollback=0
+    rollback_active_worktree "$reason" || worktree_rollback=$?
+    if ! restore_managed_launchers; then
+        rollback_status="failed"
+        rollback_message="managed launcher restore failed after: $reason"
+        return 1
+    fi
+    return "$worktree_rollback"
+}
 
 link_active_script() {
     local script="$1"
@@ -801,10 +877,21 @@ link_active_script() {
     fi
     target="$(readlink "$dest" 2>/dev/null || true)"
     if [[ "$target" != "$script" ]]; then
-        ln -sf "$script" "$dest"
+        ln -sfnT "$script" "$dest"
         sweep_count=$((sweep_count + 1))
     fi
 }
+
+previous_success="$(cat "$LAST_SUCCESS_SHA" 2>/dev/null || true)"
+if [[ "$SKIP_DEPLOY" != "1" ]] \
+    && [[ "$FORCE" == "1" || "$previous_success" != "$origin_sha" ]]; then
+    if ! snapshot_managed_launchers; then
+        rollback_active_worktree "managed launcher snapshot failed" || true
+        discard_launcher_snapshot
+        write_receipt "failed" "not_started" "2" "managed launcher snapshot failed"
+        exit 2
+    fi
+fi
 
 for script in "$ACTIVE_WORKTREE"/scripts/hapax-*; do
     link_active_script "$script"
@@ -835,14 +922,15 @@ if [[ "$config_sync_count" -gt 0 ]]; then
     echo "hapax-source-activate: synced $config_sync_count config files from activation worktree"
 fi
 
-previous_success="$(cat "$LAST_SUCCESS_SHA" 2>/dev/null || true)"
 if [[ "$FORCE" != "1" && "$SKIP_DEPLOY" != "1" && "$previous_success" == "$origin_sha" ]]; then
+    discard_launcher_snapshot
     write_receipt "no_op" "skipped_already_active" "0" "origin/main already activated"
     echo "hapax-source-activate: origin/main already activated at ${origin_sha:0:8}"
     exit 0
 fi
 
 if [[ "$SKIP_DEPLOY" == "1" ]]; then
+    discard_launcher_snapshot
     write_receipt "completed_skip_deploy" "skipped_by_flag" "0" "activation worktree refreshed; deploy skipped by flag"
     echo "hapax-source-activate: refreshed active source at ${origin_sha:0:8}; deploy skipped"
     exit 0
@@ -850,7 +938,7 @@ fi
 
 DEPLOY_SCRIPT="${HAPAX_SOURCE_ACTIVATE_DEPLOY_SCRIPT:-$ACTIVE_WORKTREE/scripts/hapax-post-merge-deploy}"
 if [[ ! -x "$DEPLOY_SCRIPT" ]]; then
-    rollback_active_worktree "deploy script missing" || true
+    rollback_activation "deploy script missing" || true
     write_receipt "failed" "not_started" "2" "deploy script missing or not executable"
     echo "hapax-source-activate: deploy script missing or not executable: $DEPLOY_SCRIPT" >&2
     if [[ "$rollback_status" == "success" ]]; then
@@ -882,7 +970,7 @@ deploy_rc=$?
 set -e
 
 if [[ "$deploy_rc" -ne 0 ]]; then
-    rollback_active_worktree "post-merge deploy failed" || true
+    rollback_activation "post-merge deploy failed" || true
     write_receipt "failed" "failed" "$deploy_rc" "post-merge deploy failed"
     echo "hapax-source-activate: post-merge deploy failed for ${origin_sha:0:8}" >&2
     if [[ "$rollback_status" == "success" ]]; then
@@ -893,6 +981,7 @@ if [[ "$deploy_rc" -ne 0 ]]; then
     exit "$deploy_rc"
 fi
 
+discard_launcher_snapshot
 printf '%s\n' "$origin_sha" > "$LAST_SUCCESS_SHA"
 refresh_active_source_fields
 write_receipt "completed" "success" "0" "origin/main activated"

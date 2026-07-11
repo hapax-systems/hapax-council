@@ -373,6 +373,52 @@ def test_failed_deploy_rolls_back_active_symlink_to_previous_release(tmp_path: P
     ).strip() == active_sha
 
 
+def test_failed_deploy_restores_previous_release_launcher(tmp_path: Path) -> None:
+    canonical, origin, active_sha = _make_repos(tmp_path)
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    previous_script = tmp_path / "active-source" / "scripts" / "hapax-post-merge-deploy"
+    previous_content = previous_script.read_text(encoding="utf-8")
+    local_launcher = tmp_path / "home" / ".local" / "bin" / "hapax-post-merge-deploy"
+    local_launcher.unlink()
+    _write(local_launcher, previous_content, executable=True)
+
+    updater = tmp_path / "updater-failed-launcher"
+    _git(tmp_path, "clone", str(origin), str(updater))
+    _git(updater, "config", "user.email", "source-activate@example.test")
+    _git(updater, "config", "user.name", "Source Activate")
+    _write(
+        updater / "scripts" / "hapax-post-merge-deploy",
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            rm -f "$HOME/.local/bin/hapax-post-merge-deploy"
+            printf '#!/usr/bin/env bash\\necho failed candidate\\n' > "$HOME/.local/bin/hapax-post-merge-deploy"
+            chmod 0755 "$HOME/.local/bin/hapax-post-merge-deploy"
+            exit 7
+            """
+        ),
+        executable=True,
+    )
+    _git(updater, "add", "scripts/hapax-post-merge-deploy")
+    _git(updater, "commit", "-m", "candidate deploy fails after launcher install")
+    _git(updater, "push", "origin", "main")
+    failed_sha = _git(updater, "rev-parse", "HEAD")
+
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 7
+    assert failed_sha != active_sha
+    assert _git(tmp_path / "active-source", "rev-parse", "HEAD") == active_sha
+    assert local_launcher.is_file()
+    assert not local_launcher.is_symlink()
+    assert local_launcher.read_text(encoding="utf-8") == previous_content
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["source_cutover"]["rollback_status"] == "success"
+
+
 def test_failed_deploy_after_legacy_worktree_migration_does_not_self_link(
     tmp_path: Path,
 ) -> None:

@@ -645,6 +645,26 @@ def _proc_oom_score(pid: str) -> int | None:
         return None
 
 
+def _proc_cgroups(pid: str) -> list[str]:
+    try:
+        lines = (PROC_ROOT / pid / "cgroup").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    paths: list[str] = []
+    for line in lines:
+        parts = line.split(":", 2)
+        if len(parts) == 3 and parts[2].startswith("/"):
+            paths.append(parts[2])
+    return paths
+
+
+def _pid_matches_cgroup(pid: str, cgroup: str) -> bool:
+    if not cgroup.startswith("/"):
+        return False
+    prefix = f"{cgroup.rstrip('/')}/"
+    return any(path == cgroup or path.startswith(prefix) for path in _proc_cgroups(pid))
+
+
 def _cgroup_pids(cgroup: str) -> list[str]:
     if not cgroup:
         return []
@@ -662,18 +682,22 @@ def _cgroup_pids(cgroup: str) -> list[str]:
     return sorted(pids, key=int)
 
 
-def _protected_user_unit_pids() -> set[str]:
-    protected: set[str] = set()
+def _protected_user_unit_memberships() -> dict[str, set[str]]:
+    protected: dict[str, set[str]] = {}
     for unit in PROTECTED_USER_UNITS:
         values = _show(
             unit,
             ["OOMScoreAdjust", "MainPID", "ControlGroup", "MemoryLow", "MemoryMin", "Slice"],
             user=True,
         )
+        cgroup = values.get("ControlGroup", "")
         main_pid = values.get("MainPID", "0")
-        if main_pid and main_pid != "0":
-            protected.add(main_pid)
-        protected.update(_cgroup_pids(values.get("ControlGroup", "")))
+        candidates = set(_cgroup_pids(cgroup))
+        if main_pid.isdigit() and main_pid != "0":
+            candidates.add(main_pid)
+        if cgroup.startswith("/"):
+            for pid in candidates:
+                protected.setdefault(pid, set()).add(cgroup)
     return protected
 
 
@@ -771,16 +795,41 @@ def audit_protected_user_units() -> list[Check]:
                     memory_detail,
                 )
             )
-        live_pids = _cgroup_pids(values.get("ControlGroup", ""))
+        control_group = values.get("ControlGroup", "")
+        live_pids = _cgroup_pids(control_group)
         main_pid = values.get("MainPID", "0")
         if main_pid.isdigit() and main_pid != "0":
             live_pids = sorted({*live_pids, main_pid}, key=int)
         for pid in live_pids:
+            if not _pid_matches_cgroup(pid, control_group):
+                actual_cgroups = _proc_cgroups(pid)
+                checks.append(
+                    Check(
+                        f"user_unit_{unit}_pid_{pid}_cgroup_membership",
+                        "gap",
+                        f"{control_group} or descendant",
+                        ",".join(actual_cgroups) if actual_cgroups else "N/A",
+                        f"protected PID left or was reused outside its authoritative cgroup; {NEXT_OOM_INSTALL}",
+                    )
+                )
+                continue
             live = _proc_oom_score(pid)
             if live != expected and not enforcer_attempted:
                 enforcer_attempted = True
                 _run([_systemctl(), "start", "hapax-oom-score-enforce.service"])
                 live = _proc_oom_score(pid)
+            if not _pid_matches_cgroup(pid, control_group):
+                actual_cgroups = _proc_cgroups(pid)
+                checks.append(
+                    Check(
+                        f"user_unit_{unit}_pid_{pid}_cgroup_membership",
+                        "gap",
+                        f"{control_group} or descendant",
+                        ",".join(actual_cgroups) if actual_cgroups else "N/A",
+                        f"protected PID moved during live-score readback; {NEXT_OOM_INSTALL}",
+                    )
+                )
+                continue
             live_actual = "N/A" if live is None else str(live)
             live_status = "pass" if live == expected else "gap"
             live_detail = (
@@ -884,7 +933,7 @@ def audit_residual_user_process_protection(uid: int) -> Check:
             "N/A",
             f"proc root unavailable; {NEXT_OOM_INSTALL}",
         )
-    protected_pids = _protected_user_unit_pids()
+    protected_memberships = _protected_user_unit_memberships()
     offenders: list[str] = []
     for adj in proc_root.glob("[0-9]*/oom_score_adj"):
         pid_dir = adj.parent
@@ -897,7 +946,10 @@ def audit_residual_user_process_protection(uid: int) -> Check:
             continue
         if score > -800:
             continue
-        if pid_dir.name in protected_pids:
+        if any(
+            _pid_matches_cgroup(pid_dir.name, cgroup)
+            for cgroup in protected_memberships.get(pid_dir.name, set())
+        ):
             continue
         name = _status_field(status, "Name")
         if name in _ALLOWED_USER_PROTECTED_NAMES:

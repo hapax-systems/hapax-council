@@ -736,6 +736,9 @@ def test_audit_fails_when_protected_user_unit_cgroup_pid_loses_oom_score(
     (cgroup_dir / "cgroup.procs").write_text("910\n916\n", encoding="utf-8")
     _write_proc(proc_root, 910, name="pipewire", uid=1000, oom_score=-900)
     _write_proc(proc_root, 916, name="pipewire-worker", uid=1000, oom_score=100)
+    pipewire_cgroup = "/user.slice/user-1000.slice/user@1000.service/app.slice/pipewire.service"
+    _write_proc_cgroup(proc_root, 910, pipewire_cgroup)
+    _write_proc_cgroup(proc_root, 916, pipewire_cgroup)
 
     result = _run(
         tmp_path,
@@ -757,6 +760,46 @@ def test_audit_fails_when_protected_user_unit_cgroup_pid_loses_oom_score(
         if item["name"] == "user_unit_pipewire.service_pid_916_live_oom_score_adj"
     )
     assert check["status"] == "gap"
+
+
+def test_audit_revalidates_protected_pid_cgroup_before_score_and_exemption(
+    tmp_path: Path,
+) -> None:
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    cgroup_root = tmp_path / "cgroup"
+    studio_cgroup = (
+        "/user.slice/user-1000.slice/user@1000.service/app.slice/studio-compositor.service"
+    )
+    moved_cgroup = "/user.slice/user-1000.slice/session.slice/app-niri-foot.scope"
+    cgroup_dir = cgroup_root / studio_cgroup.lstrip("/")
+    cgroup_dir.mkdir(parents=True)
+    (cgroup_dir / "cgroup.procs").write_text("914\n", encoding="utf-8")
+    _write_proc(proc_root, 914, name="python", uid=1000, oom_score=-800)
+    _write_proc_cgroup(proc_root, 914, moved_cgroup)
+
+    result = _run(
+        tmp_path,
+        proc_root=proc_root,
+        cgroup_root=cgroup_root,
+        protected_unit_pids={"studio-compositor.service": 914},
+        protected_unit_cgroups={"studio-compositor.service": studio_cgroup},
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    membership = next(
+        item
+        for item in payload["checks"]
+        if item["name"] == "user_unit_studio-compositor.service_pid_914_cgroup_membership"
+    )
+    assert membership["status"] == "gap"
+    assert membership["actual"] == moved_cgroup
+    residual = next(
+        item for item in payload["checks"] if item["name"] == "user_process_residual_oom_protection"
+    )
+    assert residual["status"] == "gap"
+    assert "914:python=-800" in residual["actual"]
 
 
 def test_audit_passes_when_unbounded_tmux_scope_is_app_slice_backed(tmp_path: Path) -> None:
