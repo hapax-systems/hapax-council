@@ -1,0 +1,14 @@
+[Unit]
+# Hapax-Install-Scope: system
+Description=Apply live Hapax OOM scores that require root authority
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/systemd/README.md
+OnFailure=hapax-root-failure-intake@%n.service
+StartLimitIntervalSec=0
+After=user@1000.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=25s
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/local/sbin/hapax-oom-score-enforce --apply
+SyslogIdentifier=hapax-oom-score-enforce

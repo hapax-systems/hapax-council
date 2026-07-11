@@ -1,0 +1,10 @@
+/var/log/hapax/ups-power-events.jsonl {
+    size 64M
+    rotate 14
+    su root root
+    create 0640 root hapax
+    compress
+    delaycompress
+    missingok
+    notifempty
+}
