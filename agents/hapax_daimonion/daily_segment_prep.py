@@ -848,23 +848,43 @@ def _recent_vault_topics(*, limit: int) -> list[str]:
 _IMPINGE_SALIENCE_WEIGHT = 1.0
 
 
-def _seed_recruit_density(seed: str) -> int:
-    """Cheap recruitability probe: count local hits for a seed WITHOUT a full gather or web.
-
-    A count-only query of the primary grounding collection — enough to rank a groundable
-    seed above an abstract one before paying ``recruit_source_sets``' full per-candidate cost
-    (and it pre-filters dry seeds out of that costly recruit). Fails soft to 0 — an un-probable
-    seed ranks as if dry, never raises.
+def _seed_recruit_densities(seeds: list[str]) -> dict[str, int]:
+    """Batch recruitability probe: count local ``documents`` hits for a POOL of seeds using ONE
+    embed call (``embed_batch``) + a per-vector Qdrant count. Replaces the per-seed embed of the
+    old single-seed probe in topic selection — N embeds → 1 — so ranking a pool no longer stalls
+    under embed load (py-spy 2026-06-22 showed the producer slow here on per-seed embeds to a
+    contended Ollama). Fails soft to 0 per seed: an un-probable seed ranks as if dry, never raises.
     """
-    seed = (seed or "").strip()
-    if not seed:
-        return 0
+    cleaned = [(s or "").strip() for s in seeds]
+    seeds_nn = [s for s in cleaned if s]
+    if not seeds_nn:
+        return {}
     try:
-        from agents.programme_authors.asset_resolver import _qdrant_search
+        from agents.programme_authors.asset_resolver import _qdrant_search_by_vector
+        from shared.config import embed_batch
 
-        return len(_qdrant_search("documents", seed, limit=3))
+        vectors = embed_batch(seeds_nn, prefix="search_query")
     except Exception:
-        return 0
+        log.debug("recruit-density batch embed failed; fail-soft to 0", exc_info=True)
+        return {s: 0 for s in seeds_nn}
+    if len(vectors) != len(seeds_nn):
+        # Defensive: a partial embed failure that returns without raising must not
+        # leak a length-mismatch into the zip (would raise under strict=True, or
+        # silently truncate under plain zip). Fail-soft the whole batch to 0,
+        # consistent with the embed-failure branch above — never raises.
+        log.debug(
+            "recruit-density embed returned %d vectors for %d seeds; fail-soft to 0",
+            len(vectors),
+            len(seeds_nn),
+        )
+        return {s: 0 for s in seeds_nn}
+    out: dict[str, int] = {}
+    for seed, vec in zip(seeds_nn, vectors, strict=True):
+        try:
+            out[seed] = len(_qdrant_search_by_vector("documents", vec, limit=3))
+        except Exception:
+            out[seed] = 0
+    return out
 
 
 def _impingement_salience(seed: str, impingements: list[dict[str, Any]] | None) -> float:
@@ -928,8 +948,12 @@ def _candidate_seed_topics(
     if not pool:
         return []
 
+    # Batch-probe the whole pool's recruit density in ONE embed call (was: a per-seed embed in
+    # _score → N embeds, the perception bottleneck under load).
+    densities = _seed_recruit_densities(pool)
+
     def _score(seed: str) -> float:
-        density = _seed_recruit_density(seed)
+        density = densities.get(seed, 0)
         if density <= 0:
             # Ungroundable: never promoted by impingement, but kept in the pool (banned nothing).
             return 0.0

@@ -176,27 +176,20 @@ ProgrammeAssets = (
 # --- Qdrant search helper (structured, not formatted-string) ----------------
 
 
-def _qdrant_search(
+def _qdrant_search_by_vector(
     collection: str,
-    query: str,
+    vector: list[float],
     *,
     limit: int,
 ) -> list[tuple[str, str, float]]:
-    """Return (text, source, score) triples; empty list on any failure.
-
-    :mod:`shared.knowledge_search` formats results as markdown for LLM
-    consumption. The asset resolvers need raw structured access — same
-    Qdrant call, different shape. Failing open keeps the planner from
-    blocking on a Qdrant outage.
+    """Qdrant query by a PRE-COMPUTED vector — for callers that embed a query once and
+    reuse it across collections (the recruit path), avoiding N re-embeds of the same
+    query. Same (text, source, score) shape + fail-open as ``_qdrant_search``.
     """
     try:
-        from shared.config import embed, get_qdrant
-    except ImportError:
-        log.debug("shared.config unavailable; skipping qdrant lookup")
-        return []
-    try:
+        from shared.config import get_qdrant
+
         client = get_qdrant()
-        vector = embed(query, prefix="search_query")
         results = client.query_points(collection, query=vector, limit=limit)
     except Exception:
         log.debug("qdrant query failed for collection=%s", collection, exc_info=True)
@@ -211,6 +204,34 @@ def _qdrant_search(
         score = float(getattr(pt, "score", 0.0) or 0.0)
         out.append((text, source, score))
     return out
+
+
+def _qdrant_search(
+    collection: str,
+    query: str,
+    *,
+    limit: int,
+) -> list[tuple[str, str, float]]:
+    """Return (text, source, score) triples; empty list on any failure.
+
+    :mod:`shared.knowledge_search` formats results as markdown for LLM
+    consumption. The asset resolvers need raw structured access — same
+    Qdrant call, different shape. Failing open keeps the planner from
+    blocking on a Qdrant outage. Embeds the query here; callers that query
+    multiple collections for the SAME query should use
+    ``_qdrant_search_by_vector`` with a single shared embedding.
+    """
+    try:
+        from shared.config import embed
+    except ImportError:
+        log.debug("shared.config unavailable; skipping qdrant lookup")
+        return []
+    try:
+        vector = embed(query, prefix="search_query")
+    except Exception:
+        log.debug("qdrant embed failed for collection=%s", collection, exc_info=True)
+        return []
+    return _qdrant_search_by_vector(collection, vector, limit=limit)
 
 
 def _vault_notes_for_topic(
