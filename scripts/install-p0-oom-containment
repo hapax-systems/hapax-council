@@ -852,16 +852,30 @@ main_pid_for_unit() {
 
 main_pid_for_user_unit() {
     local unit="$1" pid
-    pid="$(user_systemctl show "$unit" -p MainPID --value 2>/dev/null || true)"
+    if ! pid="$(user_systemctl show "$unit" -p MainPID --value 2>/dev/null)"; then
+        echo "unable to query user unit $unit MainPID; next action: inspect the UID $TARGET_UID user manager and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
     if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ]; then
         printf '%s\n' "$pid"
+    elif [ -n "$pid" ] && [ "$pid" != "0" ]; then
+        echo "invalid user unit $unit MainPID=$pid; next action: inspect systemctl --user show $unit -p MainPID and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
     fi
     return 0
 }
 
 control_group_for_user_unit() {
-    local unit="$1"
-    user_systemctl show "$unit" -p ControlGroup --value 2>/dev/null || true
+    local unit="$1" cgroup
+    if ! cgroup="$(user_systemctl show "$unit" -p ControlGroup --value 2>/dev/null)"; then
+        echo "unable to query user unit $unit ControlGroup; next action: inspect the UID $TARGET_UID user manager and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    if [ -n "$cgroup" ] && [[ "$cgroup" != /* ]]; then
+        echo "invalid user unit $unit ControlGroup=$cgroup; next action: inspect systemctl --user show $unit -p ControlGroup and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    printf '%s\n' "$cgroup"
 }
 
 cgroup_pids() {
@@ -875,11 +889,34 @@ cgroup_pids() {
         done | sort -u
 }
 
-user_unit_pids() {
+declare -A protected_user_main_pid_snapshot=()
+declare -A protected_user_cgroup_snapshot=()
+
+refresh_protected_user_unit_snapshot() {
+    local spec unit pid cgroup
+    local -A next_main_pids=()
+    local -A next_cgroups=()
+    for spec in "${protected_user_unit_scores[@]}"; do
+        unit="${spec%%:*}"
+        pid="$(main_pid_for_user_unit "$unit")" || return 1
+        cgroup="$(control_group_for_user_unit "$unit")" || return 1
+        next_main_pids["$unit"]="$pid"
+        next_cgroups["$unit"]="$cgroup"
+    done
+    protected_user_main_pid_snapshot=()
+    protected_user_cgroup_snapshot=()
+    for spec in "${protected_user_unit_scores[@]}"; do
+        unit="${spec%%:*}"
+        protected_user_main_pid_snapshot["$unit"]="${next_main_pids[$unit]}"
+        protected_user_cgroup_snapshot["$unit"]="${next_cgroups[$unit]}"
+    done
+}
+
+snapshotted_user_unit_pids() {
     local unit="$1" cgroup pid
-    cgroup="$(control_group_for_user_unit "$unit")"
+    cgroup="${protected_user_cgroup_snapshot[$unit]:-}"
+    pid="${protected_user_main_pid_snapshot[$unit]:-}"
     cgroup_pids "$cgroup"
-    pid="$(main_pid_for_user_unit "$unit")"
     [ -n "$pid" ] && printf '%s\n' "$pid"
     return 0
 }
@@ -922,7 +959,7 @@ apply_protected_user_unit_oom_scores() {
     for spec in "${protected_user_unit_scores[@]}"; do
         unit="${spec%%:*}"
         score="${spec##*:}"
-        user_unit_pids "$unit" | while IFS= read -r pid; do
+        snapshotted_user_unit_pids "$unit" | while IFS= read -r pid; do
             [ -n "$pid" ] || continue
             write_oom_score_or_warn "$pid" "$score" "$unit"
         done
@@ -942,9 +979,9 @@ protected_user_unit_member_pid() {
     local candidate="$1" spec unit pid cgroup
     for spec in "${protected_user_unit_scores[@]}"; do
         unit="${spec%%:*}"
-        pid="$(main_pid_for_user_unit "$unit")"
+        pid="${protected_user_main_pid_snapshot[$unit]:-}"
         [ -n "$pid" ] && [ "$candidate" = "$pid" ] && return 0
-        cgroup="$(control_group_for_user_unit "$unit")"
+        cgroup="${protected_user_cgroup_snapshot[$unit]:-}"
         pid_matches_cgroup "$candidate" "$cgroup" && return 0
     done
     return 1
@@ -1142,6 +1179,7 @@ install_live() {
             "MemoryLow=$(source_unit_value "$session_slice_dropin" MemoryLow)" \
             "MemoryMin=$(source_unit_value "$session_slice_dropin" MemoryMin)"
         apply_recovery_unit_oom_scores
+        refresh_protected_user_unit_snapshot
         apply_protected_user_unit_oom_scores
         user_pid="$("$SYSTEMCTL" show user@1000.service -p MainPID --value 2>/dev/null || true)"
         if [[ "$user_pid" =~ ^[0-9]+$ ]] && [ "$user_pid" -gt 0 ]; then
@@ -1340,6 +1378,7 @@ verify_live() {
     verify_app_slice_runtime
     verify_session_slice_runtime
     verify_recovery_unit_oom_scores
+    refresh_protected_user_unit_snapshot
     verify_protected_user_unit_oom_scores
     verify_user_process_oom_floor
 }
@@ -1497,7 +1536,7 @@ verify_protected_user_unit_oom_scores() {
                 echo "live user unit OOM score drift for $unit pid $pid: actual=$actual expected=$score; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
                 failed=1
             fi
-        done < <(user_unit_pids "$unit")
+        done < <(snapshotted_user_unit_pids "$unit")
     done
     [ "$failed" -eq 0 ]
 }

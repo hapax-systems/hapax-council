@@ -251,6 +251,33 @@ def test_power_event_append_refuses_wrong_owner_regular_file(
     assert audit.read_text(encoding="utf-8") == "sentinel\n"
 
 
+def test_power_event_append_completes_short_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audit = tmp_path / "ups-events.jsonl"
+    namespace = runpy.run_path(str(HELPER))
+    real_write = namespace["os"].write
+    writes = 0
+
+    def short_first_write(fd: int, payload: bytes) -> int:
+        nonlocal writes
+        writes += 1
+        if writes == 1:
+            prefix = payload[:7]
+            return real_write(fd, prefix)
+        return real_write(fd, payload)
+
+    monkeypatch.setattr(namespace["os"], "write", short_first_write)
+
+    namespace["append_jsonl"](audit, {"event": "test", "complete": True})
+
+    assert writes == 2
+    assert json.loads(audit.read_text(encoding="utf-8")) == {
+        "complete": True,
+        "event": "test",
+    }
+
+
 def test_logrotate_rename_create_preserves_inflight_writer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

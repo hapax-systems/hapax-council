@@ -170,11 +170,58 @@ class TestTimerEnablementSweep:
 
 
 class TestParkedUnits:
-    def test_installer_disables_marker_owned_parked_units(self) -> None:
-        body = INSTALL_SCRIPT.read_text(encoding="utf-8")
-        assert "Hapax-Parked:" in body
-        assert 'systemctl --user disable --now "$parked_name"' in body
-        assert 'systemctl --user reset-failed "$parked_name"' in body
+    def test_installer_disables_and_stops_marker_owned_parked_units(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        state = tmp_path / "cuepoints-state.txt"
+        state.write_text("enabled active failed\n", encoding="utf-8")
+        systemctl = bin_dir / "systemctl"
+        systemctl.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                read -r enabled active result < "{state}"
+                case "$*" in
+                  "--user disable --now hapax-live-cuepoints.service")
+                    enabled=disabled
+                    active=inactive
+                    ;;
+                  "--user reset-failed hapax-live-cuepoints.service")
+                    result=success
+                    ;;
+                  "--user enable hapax-live-cuepoints.service"|"--user enable --now hapax-live-cuepoints.service")
+                    enabled=enabled
+                    active=active
+                    ;;
+                esac
+                printf '%s %s %s\n' "$enabled" "$active" "$result" > "{state}"
+                exit 0
+                """
+            ),
+            encoding="utf-8",
+        )
+        systemctl.chmod(0o755)
+        uv = bin_dir / "uv"
+        uv.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        uv.chmod(0o755)
+
+        env = os.environ.copy()
+        env["ALLOW_NONSTANDARD_REPO"] = "1"
+        env["HOME"] = str(tmp_path / "home")
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        env.pop("SKIP_TIMER_ENABLE", None)
+
+        result = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert state.read_text(encoding="utf-8").strip() == "disabled inactive success"
+        assert "parked: hapax-live-cuepoints.service" in result.stdout
 
 
 class TestServiceDropInInstall:

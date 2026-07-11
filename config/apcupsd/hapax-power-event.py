@@ -233,7 +233,12 @@ def append_jsonl(path: Path, payload: dict) -> None:
                 path,
             )
         fcntl.flock(fd, fcntl.LOCK_EX)
-        os.write(fd, blob)
+        offset = 0
+        while offset < len(blob):
+            written = os.write(fd, blob[offset:])
+            if written <= 0:
+                raise OSError(errno.EIO, "short UPS audit log write made no progress", path)
+            offset += written
     finally:
         os.close(fd)
 
