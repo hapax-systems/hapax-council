@@ -1,6 +1,6 @@
 [Unit]
 Description=Torso S-4 witness-verified boot arm
-After=pipewire.service pipewire-pulse.service wireplumber.service hapax-audio-reconciler.service
+After=pipewire.service pipewire-pulse.service wireplumber.service systemd-udev-settle.service hapax-audio-reconciler.service
 Requires=pipewire.service pipewire-pulse.service wireplumber.service hapax-audio-reconciler.service
 OnFailure=notify-failure@%n.service
 
