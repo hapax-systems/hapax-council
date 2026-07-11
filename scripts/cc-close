@@ -159,6 +159,20 @@ if [[ "$final_status" == "done" ]]; then
     fi
   fi
 
+  # Execution-attestation SHADOW observe (CEI SLICE 4 caller; cc-task-execution-attestation-caller-20260709):
+  # observes the claiming session's transcript via the shipped execution_observer (zero
+  # production callers until now) and ledgers any served-model mismatch (model_refusal_fallback
+  # with request_id) — the receipt-attribution fix for the served-model accounting defect.
+  # SHADOW-only (HAPAX_EXECUTION_ATTESTATION=shadow) + fail-OPEN: advisory ledger write that
+  # NEVER blocks, slows, or crashes a closure. The provider decline is legitimate + final; this
+  # RECORDS, never circumvents or enforce-flips.
+  ATTEST_CHECKER="$SCRIPT_DIR/cc-execution-attestation-check.py"
+  if [[ -f "$ATTEST_CHECKER" ]]; then
+    set +e
+    python3 "$ATTEST_CHECKER" "$note_path" >/dev/null 2>&1
+    set -e
+  fi
+
   # Acceptance-receipt gate (routing Phase 0.2) — review-floor
   # (frontier_review_required) tasks close only with a signed acceptance
   # receipt (<task_id>.acceptance.yaml beside the note). The checker honors
