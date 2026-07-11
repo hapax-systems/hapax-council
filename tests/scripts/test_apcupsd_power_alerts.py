@@ -905,6 +905,12 @@ def test_installer_fails_closed_when_canonical_audit_group_is_missing(
 def test_installer_install_implies_verify_live_against_temp_destinations(tmp_path: Path) -> None:
     dest = tmp_path / "apcupsd"
     audit_dir = tmp_path / "hapax-log"
+    installed_source = Path(os.environ["HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"])
+    snapshot_dest = installed_source / "scripts" / "install-apcupsd-power-alerts"
+    snapshot_dest.parent.mkdir(parents=True)
+    snapshot_target = tmp_path / "snapshot-symlink-target"
+    snapshot_target.write_text("do not overwrite\n", encoding="utf-8")
+    snapshot_dest.symlink_to(snapshot_target)
     logrotate_dest = tmp_path / "logrotate.d" / "hapax-ups-power-events"
     upower_dest = tmp_path / "UPower.conf.d" / "90-hapax-apcupsd-owner.conf"
     systemctl_calls = tmp_path / "systemctl-calls.txt"
@@ -932,6 +938,9 @@ def test_installer_install_implies_verify_live_against_temp_destinations(tmp_pat
     )
 
     assert result.returncode == 0, result.stderr
+    assert not snapshot_dest.is_symlink()
+    assert snapshot_dest.read_bytes() == INSTALLER.read_bytes()
+    assert snapshot_target.read_text(encoding="utf-8") == "do not overwrite\n"
     assert (dest / "hapax-power-event.py").is_file()
     assert (dest / "onbattery").stat().st_mode & 0o100
     assert (dest / "doshutdown").stat().st_mode & 0o100

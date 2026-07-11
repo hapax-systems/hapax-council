@@ -430,6 +430,11 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     root_failure_dest = tmp_path / "sbin" / "hapax-root-failure-intake"
     root_defer = tmp_path / "root-required"
     installed_source = tmp_path / "current-source"
+    snapshot_dest = installed_source / "scripts" / "install-p0-oom-containment"
+    snapshot_dest.parent.mkdir(parents=True)
+    snapshot_target = tmp_path / "snapshot-symlink-target"
+    snapshot_target.write_text("do not overwrite\n", encoding="utf-8")
+    snapshot_dest.symlink_to(snapshot_target)
     sibling_dir = root_defer / "other-sha" / "oom-containment"
     sibling_dir.mkdir(parents=True)
     (sibling_dir / "RUNBOOK.txt").write_text("run other installer\n", encoding="utf-8")
@@ -502,6 +507,9 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         tmp_path / "root-state" / "installed-receipts" / "oom-containment.sha"
     ).read_text().strip() == REPO_HEAD
     assert (installed_source / "scripts" / "install-p0-oom-containment").is_file()
+    assert not snapshot_dest.is_symlink()
+    assert snapshot_dest.read_bytes() == INSTALLER.read_bytes()
+    assert snapshot_target.read_text(encoding="utf-8") == "do not overwrite\n"
     user_manager_dropin = (system_dir / "user@1000.service.d" / "oom.conf").read_text(
         encoding="utf-8"
     )

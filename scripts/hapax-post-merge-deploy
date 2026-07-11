@@ -1731,7 +1731,7 @@ validate_co_resident_slice_dropins() {
 }
 
 validate_generic_dropin_activation() {
-    local f="$1" rel dropin_dir unit_name content unsupported invalid_memory old_content old_prop
+    local f="$1" rel dropin_dir unit_name content unsupported invalid_memory old_content old_prop dest deployed_content
     rel="${f#systemd/units/}"
     dropin_dir="$(dirname "$rel")"
     unit_name="${dropin_dir%.d}"
@@ -1777,16 +1777,24 @@ validate_generic_dropin_activation() {
                 return 1
             fi
             validate_co_resident_slice_dropins "$dropin_dir" || return 1
+            old_content=""
             if [ -n "${DROPIN_BASE_REF:-}" ] \
                 && git -C "$REPO" cat-file -e "$DROPIN_BASE_REF:$f" 2>/dev/null; then
                 old_content="$(git -C "$REPO" show "$DROPIN_BASE_REF:$f")"
+            fi
+            dest="$SYSTEMD_USER_DIR/$rel"
+            if [ -f "$dest" ] && [ ! -L "$dest" ]; then
+                deployed_content="$(cat "$dest")"
+                old_content="${old_content}${old_content:+$'\n'}${deployed_content}"
+            fi
+            if [ -n "$old_content" ]; then
                 while IFS= read -r old_prop; do
                     [ -n "$old_prop" ] || continue
                     if ! grep -q "^${old_prop}=" <<< "$content"; then
                         echo "hapax-post-merge-deploy: refusing generic removal of $old_prop from $f because its runtime override would remain stale; next action: use a governed slice-specific transition that resets the removed property" >&2
                         return 1
                     fi
-                done < <(grep -E '^(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)=' <<< "$old_content" | cut -d= -f1 | sort -u || true)
+                done < <(printf '%s\n' "$old_content" | slice_memory_properties_from_content | cut -d= -f1 | sort -u || true)
             fi
             ;;
     esac

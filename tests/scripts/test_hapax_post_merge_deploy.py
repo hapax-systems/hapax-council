@@ -2204,6 +2204,49 @@ def test_generic_slice_dropin_property_removal_fails_before_runtime_drift(
     assert "set-property" not in calls
 
 
+def test_generic_slice_dropin_skipped_release_property_removal_fails(
+    tmp_path: Path,
+) -> None:
+    dropin_path = "systemd/units/demo.slice.d/memory.conf"
+    deployed_content = "[Slice]\nMemoryHigh=1G\nMemoryLow=256M\n"
+    repo, _ = _repo_with_linear_commit(tmp_path, {dropin_path: deployed_content})
+    updated = repo / dropin_path
+    updated.write_text("[Slice]\nMemoryHigh=2G\n", encoding="utf-8")
+    _git(repo, "add", dropin_path)
+    _git(repo, "commit", "-m", "remove reservation in skipped release")
+    updated.write_text("[Slice]\nMemoryHigh=3G\n", encoding="utf-8")
+    _git(repo, "add", dropin_path)
+    _git(repo, "commit", "-m", "change surviving property")
+    sha = _git(repo, "rev-parse", "HEAD")
+    home = tmp_path / "home"
+    deployed = home / ".config/systemd/user/demo.slice.d/memory.conf"
+    deployed.parent.mkdir(parents=True)
+    deployed.write_text(deployed_content, encoding="utf-8")
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "refusing generic removal of MemoryLow" in result.stderr
+    assert deployed.read_text(encoding="utf-8") == deployed_content
+    calls = systemctl_calls.read_text(encoding="utf-8") if systemctl_calls.exists() else ""
+    assert "daemon-reload" not in calls
+    assert "set-property" not in calls
+
+
 def test_generic_scope_dropin_fails_closed_without_restart(tmp_path: Path) -> None:
     dropin_path = "systemd/units/demo.scope.d/memory.conf"
     repo, sha = _repo_with_linear_commit(
