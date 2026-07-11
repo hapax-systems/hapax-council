@@ -342,7 +342,7 @@ def _root_audit_env(
     )
     fake_systemctl.chmod(0o755)
     fake_busctl = tmp_path / "root-audit-busctl"
-    fake_busctl.write_text("#!/bin/sh\nprintf 's \\\"Ignore\\\"\\n'\n", encoding="utf-8")
+    fake_busctl.write_text("#!/bin/sh\nprintf '%s\\n' 's \"Ignore\"'\n", encoding="utf-8")
     fake_busctl.chmod(0o755)
     fake_apcaccess = tmp_path / "root-audit-apcaccess"
     fake_apcaccess.write_text(
@@ -1692,7 +1692,7 @@ def test_root_required_audit_detects_disabled_apcupsd(tmp_path: Path) -> None:
 def test_root_required_audit_detects_stale_loaded_upower_action(tmp_path: Path) -> None:
     env = _root_audit_env(tmp_path)
     fake_busctl = Path(env["HAPAX_ROOT_AUDIT_BUSCTL"])
-    fake_busctl.write_text("#!/bin/sh\nprintf 's \\\"PowerOff\\\"\\n'\n", encoding="utf-8")
+    fake_busctl.write_text("#!/bin/sh\nprintf '%s\\n' 's \"PowerOff\"'\n", encoding="utf-8")
     fake_busctl.chmod(0o755)
 
     result = subprocess.run(

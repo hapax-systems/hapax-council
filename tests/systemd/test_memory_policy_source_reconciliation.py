@@ -57,7 +57,7 @@ def test_stimmung_sync_ceiling_is_evidence_and_role_specific() -> None:
     assert unit["MemoryMax"] == "2G"
 
     for evidence_phrase in [
-        "stimmung-sync | 2G | default | MemoryHigh=1G",
+        "stimmung-sync | 2G | default | unchanged | MemoryHigh=1G",
         "`CONSTRAINT_MEMCG`",
         "old 128M hard ceiling",
         "56.9M peak",

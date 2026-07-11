@@ -53,7 +53,7 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
         "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT", str(tmp_path / "installed-source")
     )
     fake_busctl = tmp_path / "busctl"
-    fake_busctl.write_text("#!/bin/sh\nprintf 's \\\"Ignore\\\"\\n'\n", encoding="utf-8")
+    fake_busctl.write_text("#!/bin/sh\nprintf '%s\\n' 's \"Ignore\"'\n", encoding="utf-8")
     fake_busctl.chmod(0o755)
     monkeypatch.setenv("HAPAX_APCUPSD_BUSCTL", str(fake_busctl))
     fake_apcaccess = tmp_path / "apcaccess"

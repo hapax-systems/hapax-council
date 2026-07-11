@@ -92,6 +92,11 @@ def _copy_oom_package(dest_root: Path) -> None:
 @pytest.fixture(autouse=True)
 def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HAPAX_OOM_ENFORCE_TEST_MODE", "1")
+    monkeypatch.setenv("HAPAX_OOM_TARGET_USER", "hapax")
+    monkeypatch.setenv("HAPAX_OOM_TARGET_UID", "1000")
+    monkeypatch.setenv("HAPAX_OOM_TARGET_GID", "1000")
+    monkeypatch.setenv("HAPAX_OOM_TARGET_HOME", str(tmp_path / "target-home"))
+    monkeypatch.setenv("HAPAX_OOM_EFFECTIVE_UID", "1000")
     monkeypatch.setenv("HAPAX_POST_MERGE_ROOT_DEFER_DIR", str(tmp_path / "root-required"))
     monkeypatch.setenv("HAPAX_ROOT_REQUIRED_STATE_ROOT", str(tmp_path / "root-state"))
     monkeypatch.setenv(
@@ -1647,6 +1652,9 @@ def test_oom_enforcer_hostile_path_cannot_select_attacker_bash(tmp_path: Path) -
         env={
             "HOME": os.environ["HOME"],
             "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "HAPAX_OOM_ENFORCE_TEST_MODE": "1",
+            "HAPAX_OOM_TARGET_USER": "ci-test-user",
+            "HAPAX_OOM_TARGET_UID": str(os.getuid()),
         },
     )
 
