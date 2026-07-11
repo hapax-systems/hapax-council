@@ -606,6 +606,11 @@ log "dispatched $dispatched of $idle_count idle lanes"
 
 # ─── Summary alert if many lanes idle ────────────────────────────────────────
 
+if [ "$SDLC_ADMISSION" = "closed" ]; then
+    log "sdlc-pressure closed: suppressing multiple-lanes-idle summary alert for $idle_count idle lane(s)"
+    exit 0
+fi
+
 if [ "$idle_count" -ge 3 ] && [ "$suppressed_appendix_only" -lt "$idle_count" ]; then
     idle_summary=""
     for session in "${!IDLE_LANES[@]}"; do
