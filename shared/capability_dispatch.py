@@ -71,6 +71,7 @@ CAPABILITY_ALIASES: dict[str, str] = {
     "openrouter": "api.headless.openrouter",
     "openrouter-frontier": "api.headless.openrouter",
     "vibe": "vibe.headless.full",
+    "grok": "grok.headless.full",
     # valid routes, but reached via a different surface (not a spawnable lane):
     "agy": "agy.review.direct",
     "agy-review": "agy.review.direct",

@@ -191,6 +191,15 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         True,
         "JR+ bounded worker path; task fit must exclude governance-critical or off-limits work.",
     ),
+    ("grok", "headless", "full"): PlatformPath(
+        "grok",
+        "headless",
+        "full",
+        "~/.local/bin/hapax-grok --resume-session <session>",
+        "Grok headless full appendix-first SDLC worker",
+        False,
+        "Registry route_state=blocked until receipts; not a mutable launch path. Ad-hoc hapax-grok carrier remains; do not methodology-dispatch-mutate via this route yet.",
+    ),
     ("api", "headless", "api_frontier"): PlatformPath(
         "api",
         "headless",
