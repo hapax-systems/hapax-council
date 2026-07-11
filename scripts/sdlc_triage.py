@@ -29,21 +29,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from agents._axiom_registry import load_axioms
 from sdlc.github import fetch_issue
 from sdlc.trace_export import TraceContext, is_file_export
+from shared.model_route_policy import ROUTINE_DEFAULT_MODEL, sanitize_model_route
 
 # ---------------------------------------------------------------------------
 # Model routing
 # ---------------------------------------------------------------------------
 
-DEFAULT_TRIAGE_MODEL = "balanced"
+DEFAULT_TRIAGE_MODEL = ROUTINE_DEFAULT_MODEL
 
 
 def _litellm_route_name(model_name: str) -> str:
     """Map legacy provider-prefixed model names to local LiteLLM routes."""
-    model_name = model_name.strip()
-    for prefix in ("anthropic:", "anthropic/"):
-        if model_name.startswith(prefix):
-            return model_name.removeprefix(prefix)
-    return model_name
+    return sanitize_model_route(model_name)
 
 
 def _configured_triage_model() -> str:

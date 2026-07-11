@@ -519,7 +519,7 @@ systems:
           The system loses its cognitive layer.
         properties:
           - GET /health/liveliness returns 200
-          - 'model aliases resolve: fast (gemini-flash), balanced (claude-sonnet)'
+          - 'model aliases resolve: fast (gemini-flash), balanced (local-fast)'
           - /v1/models returns available models
         verification: runtime
 

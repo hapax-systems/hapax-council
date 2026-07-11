@@ -394,7 +394,7 @@ def identify_album_vision(image_data: bytes) -> dict | None:
 
     body = json.dumps(
         {
-            "model": "balanced",
+            "model": "vision-fast",
             "messages": [
                 {
                     "role": "user",
@@ -646,7 +646,7 @@ def identify_album_and_track(image_data: bytes) -> tuple[dict | None, str | None
 
     body = json.dumps(
         {
-            "model": "balanced",
+            "model": "vision-fast",
             "messages": [
                 {
                     "role": "user",

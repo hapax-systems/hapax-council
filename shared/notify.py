@@ -326,13 +326,14 @@ def nudges_uri() -> str:
 # ── LLM-Enriched Notifications ──────────────────────────────────────────────
 
 from shared.config import LITELLM_BASE as _LITELLM_BASE_RAW
+from shared.config import LITELLM_KEY as _LITELLM_KEY_RAW
 
 _LITELLM_BASE: str = _LITELLM_BASE_RAW.rstrip("/")
 _LITELLM_OPENAI_BASE: str = (
     _LITELLM_BASE if _LITELLM_BASE.endswith("/v1") else f"{_LITELLM_BASE}/v1"
 )
-_LITELLM_KEY: str = os.environ.get("LITELLM_API_KEY", "changeme")
-_ENRICHMENT_MODEL: str = "claude-haiku"
+_LITELLM_KEY: str = os.environ.get("LITELLM_API_KEY", _LITELLM_KEY_RAW)
+_ENRICHMENT_MODEL: str = "local-fast"
 _ENRICHMENT_TIMEOUT: float = 10.0
 
 _ENRICHMENT_SYSTEM_PROMPT = (
@@ -344,7 +345,7 @@ _ENRICHMENT_SYSTEM_PROMPT = (
 
 
 def _enrich_message(subject: str, raw_context: str) -> str:
-    """Call claude-haiku via LiteLLM to produce an actionable summary."""
+    """Call the local LiteLLM enrichment route for an actionable summary."""
     try:
         from openai import OpenAI
 

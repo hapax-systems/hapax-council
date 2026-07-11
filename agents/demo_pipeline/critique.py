@@ -27,7 +27,7 @@ QUALITY_DIMENSIONS = [
 ]
 
 critique_agent = Agent(
-    get_model("balanced"),
+    get_model("gemini-pro"),
     system_prompt=(
         "You are a rigorous presentation quality reviewer. Given a demo script, "
         "evaluate it against each quality dimension. Be specific about issues found. "
@@ -38,7 +38,7 @@ critique_agent = Agent(
 )
 
 revision_agent = Agent(
-    get_model("balanced"),  # Sonnet — Flash was causing empty responses on large scripts
+    get_model("gemini-pro"),
     system_prompt=(
         "You are revising a demo script based on quality feedback. Fix ONLY the issues "
         "identified in the quality report. Do not rewrite scenes that passed review. "

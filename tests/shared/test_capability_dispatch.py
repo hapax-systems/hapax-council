@@ -110,6 +110,14 @@ def test_resolve_deprecated_antigrav_alias_fails_closed() -> None:
     assert gemini_cli.route_id is None
 
 
+def test_resolve_claude_sonnet_fails_closed_during_no_escape_hold() -> None:
+    res = resolve_capability("claude-sonnet", valid_route_ids=VALID)
+    assert not res.ok
+    assert "disabled" in res.reason
+    assert "no-escape route receipt" in res.reason
+    assert res.route_id is None
+
+
 def test_resolve_unknown_capability() -> None:
     res = resolve_capability("nope", valid_route_ids=VALID)
     assert not res.ok and "unknown capability" in res.reason

@@ -178,7 +178,7 @@ class TextEvalOutput(BaseModel):
 
 
 text_eval_agent = Agent(
-    get_model("balanced"),
+    get_model("gemini-pro"),
     system_prompt=(
         "You are a rigorous presentation quality evaluator. Given a demo script's "
         "narration and metadata, evaluate it against specific quality dimensions. "
@@ -472,7 +472,7 @@ class DiagnosisOutput(BaseModel):
 
 
 diagnosis_agent = Agent(
-    get_model("balanced"),
+    get_model("gemini-pro"),
     system_prompt=(
         "You are a presentation quality improvement specialist. Given evaluation failures, "
         "diagnose root causes and produce specific, actionable planning prompt overrides "

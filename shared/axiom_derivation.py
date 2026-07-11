@@ -188,7 +188,7 @@ async def derive_implications(
     # Run N derivations
     from pydantic_ai import Agent
 
-    agent = Agent(get_model("balanced"))
+    agent = Agent(get_model("gemini-pro"))
 
     runs = []
     for i in range(n):

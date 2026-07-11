@@ -38,7 +38,7 @@ class TestAuditPointDefaults:
             provider="gemini-flash",
             call_site="x.py:1",
             purpose="test",
-            auditor="claude-sonnet",
+            auditor="gemini-pro",
             severity_floor="low",
         )
         assert ap.enabled is False
@@ -49,7 +49,7 @@ class TestAuditPointDefaults:
             provider="gemini-flash",
             call_site="x.py:1",
             purpose="test",
-            auditor="claude-sonnet",
+            auditor="gemini-pro",
             severity_floor="low",
         )
         assert ap.sampling_rate == 1.0
@@ -60,7 +60,7 @@ class TestAuditPointDefaults:
             provider="gemini-flash",
             call_site="x.py:1",
             purpose="test",
-            auditor="claude-sonnet",
+            auditor="gemini-pro",
             severity_floor="low",
         )
         assert ap.dimensions == ()
@@ -71,7 +71,7 @@ class TestAuditPointDefaults:
             provider="gemini-flash",
             call_site="x.py:1",
             purpose="test",
-            auditor="claude-sonnet",
+            auditor="gemini-pro",
             severity_floor="low",
         )
         with pytest.raises(Exception):
@@ -130,10 +130,10 @@ class TestRegistryQueries:
     def test_get_by_id_returns_none_for_unknown(self) -> None:
         assert get_by_id("does-not-exist") is None
 
-    def test_by_auditor_includes_sonnet(self) -> None:
-        sonnet = by_auditor("claude-sonnet")
-        assert len(sonnet) >= 1
-        assert all(p.auditor == "claude-sonnet" for p in sonnet)
+    def test_by_auditor_includes_gemini_pro(self) -> None:
+        gemini_pro = by_auditor("gemini-pro")
+        assert len(gemini_pro) >= 1
+        assert all(p.auditor == "gemini-pro" for p in gemini_pro)
 
     def test_by_severity_floor_includes_critical(self) -> None:
         critical = by_severity_floor("critical")
@@ -192,7 +192,7 @@ class TestDispatcherEnabled:
             provider="gemini-flash",
             call_site="x.py:1",
             purpose="test",
-            auditor="claude-sonnet",
+            auditor="gemini-pro",
             severity_floor="medium",
             enabled=True,
         )
@@ -209,7 +209,7 @@ class TestDispatcherEnabled:
         record = json.loads(lines[0])
         assert record["audit_id"] == "gemini-test-enabled"
         assert record["provider"] == "gemini-flash"
-        assert record["auditor"] == "claude-sonnet"
+        assert record["auditor"] == "gemini-pro"
         assert record["severity_floor"] == "medium"
         assert record["dimensions"] == []
         assert record["input_context"] == {"prompt": "hello", "route": "test"}
@@ -221,7 +221,7 @@ class TestDispatcherEnabled:
             provider="gemini-flash",
             call_site="x.py:1",
             purpose="test",
-            auditor="claude-sonnet",
+            auditor="gemini-pro",
             severity_floor="low",
             enabled=True,
         )
@@ -242,7 +242,7 @@ class TestDispatcherEnabled:
             provider="gemini-flash",
             call_site="x.py:1",
             purpose="test",
-            auditor="claude-sonnet",
+            auditor="gemini-pro",
             severity_floor="low",
             enabled=True,
         )
@@ -262,7 +262,7 @@ class TestDispatcherEnabled:
             provider="gemini-flash",
             call_site="x.py:1",
             purpose="test",
-            auditor="claude-sonnet",
+            auditor="gemini-pro",
             severity_floor="low",
             sampling_rate=0.0,
             enabled=True,
@@ -282,7 +282,7 @@ class TestDispatcherEnabled:
             provider="gemini-flash",
             call_site="x.py:1",
             purpose="test",
-            auditor="claude-sonnet",
+            auditor="gemini-pro",
             severity_floor="low",
             enabled=True,
         )
@@ -309,7 +309,7 @@ class TestRunAuditCycle:
             provider="gemini-flash",
             call_site="x.py:1",
             purpose="test",
-            auditor="claude-sonnet",
+            auditor="gemini-pro",
             severity_floor="medium",
             enabled=True,
         )
@@ -360,7 +360,7 @@ class TestRunAuditCycle:
             provider="gemini-flash",
             call_site="x.py:1",
             purpose="test",
-            auditor="claude-sonnet",
+            auditor="gemini-pro",
             severity_floor="medium",
             enabled=True,
         )
@@ -395,7 +395,7 @@ class TestRunAuditCycle:
             provider="gemini-flash",
             call_site="x.py:1",
             purpose="test",
-            auditor="claude-sonnet",
+            auditor="gemini-pro",
             severity_floor="critical",
             enabled=True,
         )

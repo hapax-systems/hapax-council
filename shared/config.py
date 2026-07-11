@@ -17,6 +17,8 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.litellm import LiteLLMProvider
 from qdrant_client import QdrantClient
 
+from shared.model_route_policy import sanitize_model_route
+
 # ── Environment ──────────────────────────────────────────────────────────────
 
 LITELLM_BASE: str = os.environ.get(
@@ -116,7 +118,10 @@ LOCAL_FAST_SUBSTRATE: str = "Command-R 35B EXL3 5.0bpw (local-fast via TabbyAPI 
 
 MODELS: dict[str, str] = {
     "fast": "gemini-flash",
-    "balanced": "claude-sonnet",
+    # Routine default. High-capability routes must be selected explicitly and
+    # pass gateway/admission controls; ``balanced`` remains only for backwards
+    # compatibility with older call sites.
+    "balanced": "local-fast",
     "long-context": "gemini-flash",  # 1M context, for prompts that exceed 200K
     "reasoning": "reasoning",
     "coding": "coding",
@@ -187,7 +192,7 @@ def get_model(alias_or_id: str = "balanced") -> OpenAIChatModel:
 
     Accepts an alias from MODELS dict or a raw LiteLLM model ID.
     """
-    model_id = MODELS.get(alias_or_id, alias_or_id)
+    model_id = sanitize_model_route(MODELS.get(alias_or_id, alias_or_id))
     return OpenAIChatModel(
         model_id,
         provider=LiteLLMProvider(
@@ -252,8 +257,8 @@ def get_model_adaptive(alias: str = "balanced") -> OpenAIChatModel:
     inference itself is saturated.
 
     Downgrade rules:
-    - llm_cost_pressure > 0.6: balanced→fast, fast stays fast
-    - resource_pressure > 0.7: balanced→fast, fast/reasoning→local-fast
+    - llm_cost_pressure > 0.6: balanced stays local, reasoning→fast
+    - resource_pressure > 0.7: fast/reasoning/balanced→local-fast unless local is saturated
     - local_capacity_pressure > 0.7: local-fast downgrades invert to cloud fast
     - critical stance: everything→local-fast unless local capacity is saturated
     """
@@ -277,7 +282,7 @@ def get_model_adaptive(alias: str = "balanced") -> OpenAIChatModel:
         if resource > 0.7:
             local_sink = "fast" if local_backpressure else "local-fast"
             downgraded = {
-                "balanced": "fast",
+                "balanced": local_sink,
                 "fast": local_sink,
                 "reasoning": local_sink,
                 # Gemini 3 family degradation, per the route-evaluation doc.
@@ -302,7 +307,7 @@ def get_model_adaptive(alias: str = "balanced") -> OpenAIChatModel:
 
         if cost > 0.6:
             downgraded = {
-                "balanced": "fast",
+                "balanced": "local-fast",
                 "reasoning": "fast",
                 "web-deep": "web-scout",
                 "web-research": "web-scout",

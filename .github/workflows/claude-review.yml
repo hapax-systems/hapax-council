@@ -18,7 +18,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      CLAUDE_REVIEW_CONFIGURED: ${{ secrets.ANTHROPIC_API_KEY != '' || secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
       REVIEW_APP_CONFIGURED: ${{ secrets.REVIEW_APP_ID != '' && secrets.REVIEW_APP_KEY != '' }}
     steps:
       - name: Detect auto-fix head commit
@@ -103,39 +102,20 @@ jobs:
         if: steps.auto_fix.outputs.skip != 'true' && steps.docs.outputs.docs_only == 'true'
         run: echo "Docs-only PR; review reports success without invoking Claude."
 
-      - uses: anthropics/claude-code-action@034cbdb008291e7eeeac420d315fc3b45fca3781
+      - name: No-escape review hold
         if: >-
           steps.auto_fix.outputs.skip != 'true' &&
-          env.CLAUDE_REVIEW_CONFIGURED == 'true' &&
           steps.docs.outputs.docs_only != 'true'
         id: claude
-        with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          claude_args: "--model claude-sonnet-4-6 --max-turns 5 --allowedTools Read,Glob,Grep"
-          prompt: |
-            Review this pull request for:
-
-            1. **Bugs**: Logic errors, off-by-one, missing error handling, race conditions.
-            2. **Security**: Hardcoded secrets, injection vectors, unsafe deserialization.
-            3. **Axiom compliance**: Violations of the 4 constitutional axioms (single_user,
-               executive_function, corporate_boundary, management_governance).
-               See axioms/registry.yaml for definitions.
-            4. **Type safety**: Mismatched types, missing annotations on public functions.
-
-            Rules:
-            - Only report HIGH or MEDIUM priority findings.
-            - Do NOT post nitpick, style, or formatting comments (Ruff handles those).
-            - Be concise. One sentence per finding, with a suggested fix if non-obvious.
-
-            At the END of your review, you MUST output exactly one of these lines:
-            VERDICT: APPROVE
-            VERDICT: REQUEST_CHANGES
-
-            Use APPROVE if there are no HIGH findings. Use REQUEST_CHANGES only for HIGH findings.
+        run: |
+          echo "::warning::External Claude review is disabled until a no-escape route receipt exists."
+          echo "review_ready=false" >> "$GITHUB_OUTPUT"
 
       - name: Generate app token
-        if: always() && steps.claude.outcome == 'success' && env.REVIEW_APP_CONFIGURED == 'true'
+        if: >-
+          always() &&
+          steps.claude.outputs.review_ready == 'true' &&
+          env.REVIEW_APP_CONFIGURED == 'true'
         id: app-token
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
         with:
@@ -143,7 +123,10 @@ jobs:
           private-key: ${{ secrets.REVIEW_APP_KEY }}
 
       - name: Submit review verdict
-        if: always() && steps.claude.outcome == 'success' && env.REVIEW_APP_CONFIGURED == 'true'
+        if: >-
+          always() &&
+          steps.claude.outputs.review_ready == 'true' &&
+          env.REVIEW_APP_CONFIGURED == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |

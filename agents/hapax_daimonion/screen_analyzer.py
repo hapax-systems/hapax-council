@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -84,11 +83,9 @@ class ScreenAnalyzer:
     def _get_client(self) -> AsyncOpenAI:
         """Return a lazily-initialized AsyncOpenAI client."""
         if self._client is None:
-            from agents.hapax_daimonion.config import LITELLM_BASE
+            from shared.config import LITELLM_BASE, LITELLM_KEY
 
-            base_url = LITELLM_BASE
-            api_key = os.environ.get("LITELLM_API_KEY", "not-set")
-            self._client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+            self._client = AsyncOpenAI(base_url=LITELLM_BASE, api_key=LITELLM_KEY)
         return self._client
 
     async def _call_vision(

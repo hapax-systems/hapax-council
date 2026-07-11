@@ -9,9 +9,9 @@ premise -> evidence -> complication -> payoff that resolves the opening), or is 
 
 FINDINGS (2026-06-15, validated 2/2 vs the 2x2 anchors in ~/segprep-s2-gate.py):
   - The RESIDENT command-r CANNOT self-assess composability (confabulates an arc onto a tier-list). A
-    CAPABLE model reads the structure correctly. The predictor is the council's ``balanced`` eval route
-    (``shared.config.MODELS['balanced']`` -> ``claude-sonnet``; override with ``HAPAX_COMPOSABILITY_GATE_MODEL``)
-    reached through the SAME authenticated LiteLLM gateway the coherence council uses on this prep run
+    stronger structural judge reads the structure correctly. The predictor uses the
+    explicit structural-judge default; override with ``HAPAX_COMPOSABILITY_GATE_MODEL``.
+    It is reached through the SAME authenticated LiteLLM gateway the coherence council uses on this prep run
     (auth resolved via ``shared.config``, NOT a bare ``os.environ`` read — a raw read 401s in production
     where the key is materialized from the secrets env, which would silently render the gate inert).
   - The verdict MUST be computed deterministically from the structural signals; the model's own verdict
@@ -36,16 +36,15 @@ log = logging.getLogger(__name__)
 
 
 def _default_gate_model() -> str:
-    # Eval-plane precedent: the coherence council already calls the 'balanced' model via THIS gateway
-    # during the SAME prep run (members.py -> get_model('balanced')), so a non-resident structural
-    # pre-filter is PERMITTED — the resident-model invariant is compose-scoped, not run-scoped. Track the
-    # council's alias so this gate and the acceptor stay on the same eval model.
+    # Eval-plane precedent: this gate is a non-resident structural pre-filter
+    # reached through the same authenticated LiteLLM gateway. The resident-model
+    # invariant is compose-scoped, not run-scoped.
     try:
-        from shared import config
+        from shared.model_route_policy import STRUCTURAL_JUDGE_DEFAULT_MODEL, sanitize_model_route
 
-        return config.MODELS.get("balanced", "claude-sonnet")
+        return sanitize_model_route(STRUCTURAL_JUDGE_DEFAULT_MODEL)
     except Exception:  # noqa: BLE001 — config import must never break the gate
-        return "claude-sonnet"
+        return "gemini-pro"
 
 
 GATE_MODEL = os.environ.get("HAPAX_COMPOSABILITY_GATE_MODEL") or _default_gate_model()
@@ -56,9 +55,9 @@ _GATE_OFF_VALUES = {"off", "0", "false", "no", "disabled"}
 # un-assessable and FAIL OPEN rather than reject a whole batch on a bad gateway route.
 _REQUIRED_DECISION_KEYS = ("arc_or_list", "test1_resolves_specific_hook", "test2_reorder_breaks_it")
 # Operator next-action appended to fail-open messages (executive_function axiom: errors carry a recovery).
-_RECOVERY = "check the LiteLLM 'balanced' route on :4000, or disable the gate with HAPAX_COMPOSABILITY_GATE=off"
+_RECOVERY = "check the structural judge route on LiteLLM :4000, or disable the gate with HAPAX_COMPOSABILITY_GATE=off"
 # Output-token floor for the structural verdict JSON. Default 2048 (env-overridable). A REASONING model
-# served via fallback (e.g. gemini-pro for a credit-capped claude-sonnet, the 2026-06-19 incident) burns
+# served via fallback can burn
 # the budget on hidden CoT before the compact JSON; at the old 500 it truncated -> empty parse -> silent
 # fail-open accept on EVERY plan (the gate went inert). Read per-call so an operator flip takes effect live.
 _GATE_MAX_TOKENS_DEFAULT = 2048
@@ -267,10 +266,9 @@ def _reframe_model() -> str:
 
 _REFRAME_MAX_TOKENS_ENV = "HAPAX_S2_REFRAME_MAX_TOKENS"
 # Generous by design: the reframe emits a topic + several beats, and the eval route
-# may serve a REASONING model (the gemini fallback when the Claude seat is down)
-# that burns budget on hidden CoT before the JSON. 2048 truncated gemini-3.1-pro on
-# the live RED-1 input; 8192 completes a gate-passing arc. A non-reasoning model
-# (sonnet) stops early at finish_reason=stop, so this is a ceiling, not a target.
+# may serve a reasoning-heavy model that burns budget on hidden CoT before the
+# JSON. 2048 truncated gemini-3.1-pro on the live RED-1 input; 8192 completes a
+# gate-passing arc. This is a ceiling, not a target.
 _REFRAME_MAX_TOKENS_DEFAULT = 8192
 
 

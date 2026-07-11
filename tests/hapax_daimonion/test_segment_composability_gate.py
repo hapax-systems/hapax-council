@@ -73,13 +73,11 @@ def test_served_model_captured_on_valid_verdict() -> None:
         "arc_or_list": "arc",
         "score": 5,
     }
-    urlopen = _urlopen_full(
-        content=json.dumps(signals), model="claude-sonnet-4-6", finish_reason="stop"
-    )
+    urlopen = _urlopen_full(content=json.dumps(signals), model="gemini-pro", finish_reason="stop")
     with mock.patch("urllib.request.urlopen", urlopen):
         r = assess_composability("rant", "t", ["b1", "b2", "b3"])
     assert r.accept is True
-    assert r.signals.get("served_model") == "claude-sonnet-4-6"
+    assert r.signals.get("served_model") == "gemini-pro"
 
 
 def test_accepts_building_arc() -> None:

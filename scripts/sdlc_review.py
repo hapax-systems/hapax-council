@@ -32,6 +32,7 @@ from sdlc.github import (
     post_pr_comment,
 )
 from sdlc.trace_export import TraceContext, is_file_export
+from shared.model_route_policy import SDLC_DEFAULT_MODEL, sanitize_model_route
 
 # ---------------------------------------------------------------------------
 # Structured output
@@ -113,33 +114,18 @@ def _call_llm(system: str, user: str, *, dry_run: bool = False) -> ReviewResult:
             summary="Dry run — no review performed.",
         )
 
-    try:
-        import anthropic
+    from pydantic_ai import Agent
 
-        client = anthropic.Anthropic()
-        response = client.messages.create(
-            model=os.environ.get("SDLC_REVIEW_MODEL", "claude-sonnet-4-6"),
-            max_tokens=4096,
-            system=system,
-            messages=[{"role": "user", "content": user}],
-        )
-        text = response.content[0].text
-    except ImportError:
-        from pydantic_ai import Agent
+    from shared.config import get_model
 
-        agent = Agent(
-            os.environ.get("SDLC_REVIEW_MODEL", "anthropic:claude-sonnet-4-6"),
-            system_prompt=system,
-            output_type=ReviewResult,
-        )
-        result = agent.run_sync(user)
-        return result.output
-
-    if "```json" in text:
-        text = text.split("```json")[1].split("```")[0]
-    elif "```" in text:
-        text = text.split("```")[1].split("```")[0]
-    return ReviewResult.model_validate_json(text.strip())
+    model = sanitize_model_route(os.environ.get("SDLC_REVIEW_MODEL", SDLC_DEFAULT_MODEL))
+    agent = Agent(
+        get_model(model),
+        system_prompt=system,
+        output_type=ReviewResult,
+    )
+    result = agent.run_sync(user)
+    return result.output
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +150,7 @@ def run_review(pr_number: int, *, dry_run: bool = False) -> ReviewResult:
 ```
 """
 
-    model = os.environ.get("SDLC_REVIEW_MODEL", "claude-sonnet-4-6")
+    model = sanitize_model_route(os.environ.get("SDLC_REVIEW_MODEL", SDLC_DEFAULT_MODEL))
     t0 = time.monotonic()
 
     trace_id = f"sdlc-review-{pr_number}"

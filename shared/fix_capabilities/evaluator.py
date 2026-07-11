@@ -41,7 +41,7 @@ Be conservative. Only propose destructive actions when safe alternatives cannot 
 # ── Agent ────────────────────────────────────────────────────────────────────
 
 _evaluator_agent = Agent(
-    model=get_model("balanced"),
+    model=get_model("gemini-pro"),
     output_type=FixProposal,
     system_prompt=_SYSTEM_PROMPT,
 )

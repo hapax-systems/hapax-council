@@ -16,12 +16,12 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 Severity = Literal["low", "medium", "high", "critical"]
-Auditor = Literal["claude-opus", "claude-sonnet"]
+Auditor = Literal["claude-opus", "gemini-pro"]
 
 
 @dataclass(frozen=True)
 class AuditPoint:
-    """A single Gemini call-site eligible for Claude audit.
+    """A single Gemini call-site eligible for cross-agent audit.
 
     Attributes:
         audit_id: Stable identifier (kebab-case). Used as label in Prometheus
@@ -30,7 +30,7 @@ class AuditPoint:
             resolved at the call-site.
         call_site: Repo-relative path plus line number of the invocation.
         purpose: One-line description of what the call does.
-        auditor: Which Claude tier audits this point.
+        auditor: Which governed audit route audits this point.
         severity_floor: Minimum severity attached to any finding. Individual
             findings can score higher; they cannot score lower.
         sampling_rate: Fraction of calls sampled for audit (0.0..1.0). Only
@@ -64,7 +64,7 @@ AUDIT_POINTS: list[AuditPoint] = [
         provider="gemini-flash",
         call_site="agents/dmn/ollama.py:148",
         purpose="DMN evaluative tick — multimodal pulse seeing the rendered visual surface.",
-        auditor="claude-sonnet",
+        auditor="gemini-pro",
         severity_floor="medium",
     ),
     AuditPoint(
@@ -72,7 +72,7 @@ AUDIT_POINTS: list[AuditPoint] = [
         provider="gemini-flash",
         call_site="agents/vision_observer/__main__.py:61",
         purpose="Vision observer — describes the rendered visual surface for introspection.",
-        auditor="claude-sonnet",
+        auditor="gemini-pro",
         severity_floor="low",
     ),
     AuditPoint(
@@ -80,7 +80,7 @@ AUDIT_POINTS: list[AuditPoint] = [
         provider="gemini-2.0-flash",
         call_site="agents/hapax_daimonion/tools.py:846",
         purpose="On-demand visual analysis tool recruited by the daimonion.",
-        auditor="claude-sonnet",
+        auditor="gemini-pro",
         severity_floor="medium",
     ),
     AuditPoint(
@@ -88,7 +88,7 @@ AUDIT_POINTS: list[AuditPoint] = [
         provider="gemini-flash",
         call_site="agents/hapax_daimonion/workspace_analyzer.py:70",
         purpose="Multi-image workspace-state classification feeding intent routing.",
-        auditor="claude-sonnet",
+        auditor="gemini-pro",
         severity_floor="medium",
     ),
     AuditPoint(
@@ -96,7 +96,7 @@ AUDIT_POINTS: list[AuditPoint] = [
         provider="gemini-flash",
         call_site="agents/hapax_daimonion/screen_analyzer.py:51",
         purpose="Screenshot-based activity classification (corporate-boundary adjacent).",
-        auditor="claude-sonnet",
+        auditor="gemini-pro",
         severity_floor="high",
     ),
     AuditPoint(
@@ -104,7 +104,7 @@ AUDIT_POINTS: list[AuditPoint] = [
         provider="gemini-flash",
         call_site="agents/hapax_daimonion/workspace_monitor.py:53",
         purpose="Workspace monitor orchestration — local/cloud comparison gate.",
-        auditor="claude-sonnet",
+        auditor="gemini-pro",
         severity_floor="medium",
     ),
     AuditPoint(
@@ -112,7 +112,7 @@ AUDIT_POINTS: list[AuditPoint] = [
         provider="gemini-2.5-flash-preview-04-17",
         call_site="agents/hapax_daimonion/conversation_pipeline.py:267",
         purpose="Short atmospheric spontaneous speech (operator-audible).",
-        auditor="claude-sonnet",
+        auditor="gemini-pro",
         severity_floor="high",
     ),
     AuditPoint(
@@ -128,7 +128,7 @@ AUDIT_POINTS: list[AuditPoint] = [
         provider="gemini-flash",
         call_site="agents/studio_compositor/director_loop.py:442",
         purpose="Studio compositor grounded director (fallback Gemini tier only).",
-        auditor="claude-sonnet",
+        auditor="gemini-pro",
         severity_floor="medium",
     ),
     AuditPoint(
@@ -136,7 +136,7 @@ AUDIT_POINTS: list[AuditPoint] = [
         provider="gemini-2.0-flash",
         call_site="agents/hapax_daimonion/session_events.py:194",
         purpose="Session-boundary high-res BRIO frame text extraction (OCR).",
-        auditor="claude-sonnet",
+        auditor="gemini-pro",
         severity_floor="medium",
     ),
     AuditPoint(
@@ -144,7 +144,7 @@ AUDIT_POINTS: list[AuditPoint] = [
         provider="gemini-2.5-flash-preview-04-17",
         call_site="agents/hapax_daimonion/conversation_pipeline.py:259",
         purpose="Gemini daimonion reasoning pass in the conversation pipeline.",
-        auditor="claude-sonnet",
+        auditor="gemini-pro",
         severity_floor="medium",
     ),
 ]

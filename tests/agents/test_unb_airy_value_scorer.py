@@ -117,11 +117,11 @@ def test_litellm_balanced_scoring_requests_json_schema_and_blends_scores() -> No
     )
 
     assert scoring.scoring_mode == "hybrid"
-    assert scoring.scoring_model == "claude-sonnet"
+    assert scoring.scoring_model == "gemini-pro"
     assert scoring.rationale == "Clear, useful, and evidence-bearing assertion."
     assert len(calls) == 1
     call = calls[0]
-    assert call["model"] == "claude-sonnet"
+    assert call["model"] == "gemini-pro"
     assert call["temperature"] == 0.0
     assert call["response_format"]["type"] == "json_schema"  # type: ignore[index]
     assert "programme assertions" in call["messages"][1]["content"]  # type: ignore[index]
@@ -142,7 +142,7 @@ def test_litellm_failure_can_fail_closed_or_use_explicit_heuristic_fallback() ->
         allow_heuristic_fallback=True,
     )
     assert fallback.scoring_mode == "heuristic_fallback"
-    assert fallback.scoring_model == "claude-sonnet"
+    assert fallback.scoring_model == "gemini-pro"
     assert fallback.composite > 0.0
 
 
@@ -169,7 +169,7 @@ def test_store_score_in_assertion_frontmatter(tmp_path: Path) -> None:
         composite=0.55,
         weights={dimension: 0.1 for dimension in VALUE_DIMENSIONS},
         scoring_mode="hybrid",
-        scoring_model="claude-sonnet",
+        scoring_model="gemini-pro",
         rationale="test rationale",
         scored_at=NOW,
     )
@@ -181,7 +181,7 @@ def test_store_score_in_assertion_frontmatter(tmp_path: Path) -> None:
     assert body == "Body stays intact.\n"
     assert frontmatter["value_score"] == 0.55
     assert frontmatter["assertion_value_score"]["dimensions"]["predictive_power"] == 0.9
-    assert frontmatter["assertion_value_score"]["model"] == "claude-sonnet"
+    assert frontmatter["assertion_value_score"]["model"] == "gemini-pro"
 
 
 def test_cli_scores_extraction_output_without_llm(tmp_path: Path) -> None:

@@ -4,7 +4,7 @@
 def test_research_agent_loads():
     from agents.research import agent
 
-    assert agent.model.model_name == "claude-sonnet"
+    assert agent.model.model_name == "local-fast"
 
 
 def test_research_agent_has_tools():
@@ -17,7 +17,7 @@ def test_research_agent_has_tools():
 def test_code_review_agent_loads():
     from agents.code_review import agent
 
-    assert agent.model.model_name == "claude-sonnet"
+    assert agent.model.model_name == "local-fast"
 
 
 def test_research_deps_defaults():

@@ -372,11 +372,12 @@ class TestBatchF:
         Fortress deliberation is Hapax's governance act over its own world
         (T1 common-ground update, T4 Jemeinigkeit) — grounding-act per
         docs/research/2026-04-24-grounding-acts-operative-definition.md.
-        Seasonal deliberation remains cloud-routed pending separate migration.
+        Seasonal deliberation remains a strong route, but not a provider-prefixed
+        escape path.
         """
         config = DeliberationConfig()
         assert config.model_daily == "local-fast"
-        assert "/" in config.model_seasonal
+        assert config.model_seasonal == "gemini-pro"
 
     def test_f2_severity_thresholds_match_chunks(self):
         """Config thresholds match chunk compressor logic."""

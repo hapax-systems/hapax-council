@@ -4,7 +4,7 @@ export interface ChatMessage {
   timestamp: number;
 }
 
-export type LLMProviderType = "litellm" | "openai" | "anthropic";
+export type LLMProviderType = "litellm";
 
 export interface LLMProvider {
   streamChat(
@@ -16,27 +16,13 @@ export interface LLMProvider {
 
 export const PROVIDER_MODELS: Record<LLMProviderType, Array<{ value: string; label: string }>> = {
   litellm: [
-    { value: "claude-sonnet", label: "Claude Sonnet" },
-    { value: "claude-haiku", label: "Claude Haiku" },
-    { value: "claude-opus", label: "Claude Opus" },
+    { value: "local-fast", label: "Local Fast" },
     { value: "gemini-pro", label: "Gemini Pro" },
     { value: "gemini-flash", label: "Gemini Flash" },
+    { value: "coding", label: "Coding" },
+    { value: "reasoning", label: "Reasoning" },
     { value: "qwen-coder-32b", label: "Qwen Coder 32B" },
     { value: "qwen-7b", label: "Qwen 7B" },
-  ],
-  openai: [
-    { value: "gpt-4o", label: "GPT-4o" },
-    { value: "gpt-4o-mini", label: "GPT-4o Mini" },
-    { value: "gpt-4.1", label: "GPT-4.1" },
-    { value: "gpt-4.1-mini", label: "GPT-4.1 Mini" },
-    { value: "gpt-4.1-nano", label: "GPT-4.1 Nano" },
-    { value: "o3", label: "o3" },
-    { value: "o4-mini", label: "o4-mini" },
-  ],
-  anthropic: [
-    { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
-    { value: "claude-opus-4-6", label: "Claude Opus 4.6" },
-    { value: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
   ],
 };
 
@@ -59,11 +45,11 @@ export interface HapaxSettings {
 }
 
 /**
- * Providers sanctioned for use on corporate/work devices.
- * LiteLLM (localhost proxy) is excluded — it requires home network access
- * and routes through infrastructure not visible to corporate security tooling.
+ * Work vault model calls must route through the local gateway boundary.
+ * Direct provider settings are intentionally absent; work-vault enforcement
+ * must not silently fall through to them.
  */
-export const WORK_VAULT_PROVIDERS: LLMProviderType[] = ["openai", "anthropic"];
+export const WORK_VAULT_PROVIDERS: LLMProviderType[] = ["litellm"];
 
 export interface QdrantSearchResult {
   id: string | number;

@@ -24,7 +24,7 @@ class TestAdaptiveModelSelection:
         stimmung = {"overall_stance": "nominal", "llm_cost_pressure": {"value": 0.1}}
         with patch("pathlib.Path.read_text", return_value=json.dumps(stimmung)):
             model = shared_config.get_model_adaptive("balanced")
-        # Should return balanced (claude-sonnet), not downgraded
+        # Should return the routine balanced route, not downgrade.
         assert model.model_name == shared_config.get_model("balanced").model_name
 
     def test_high_cost_downgrades_balanced(self):
@@ -35,7 +35,7 @@ class TestAdaptiveModelSelection:
         }
         with patch("pathlib.Path.read_text", return_value=json.dumps(stimmung)):
             model = shared_config.get_model_adaptive("balanced")
-        assert model.model_name == shared_config.get_model("fast").model_name
+        assert model.model_name == shared_config.get_model("local-fast").model_name
 
     def test_high_cost_keeps_fast(self):
         stimmung = {

@@ -19,7 +19,6 @@ PUBLIC_SECURITY_CONFIG_NAME = "GitHub recommended"
 REQUIRED_ORG_SECRETS = ("CODECOV_TOKEN", "SEMGREP_APP_TOKEN")
 REQUIRED_ACTION_PATTERNS = (
     "actions-rust-lang/audit@*",
-    "anthropics/claude-code-action@*",
     "astral-sh/ruff-action@*",
     "astral-sh/setup-uv@*",
     "codecov/codecov-action@*",

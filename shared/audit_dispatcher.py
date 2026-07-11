@@ -4,7 +4,7 @@ Enqueue-side: ``enqueue_audit`` is callable from any Gemini call-site. It
 appends a JSONL record to ``/dev/shm/hapax-audit-queue.jsonl`` and increments
 a Prometheus counter. Early-returns when the ``AuditPoint`` is disabled.
 
-Cycle-side: ``run_audit_cycle`` drains the queue, invokes the configured Claude
+Cycle-side: ``run_audit_cycle`` drains the queue, invokes the configured
 auditor through the local LiteLLM gateway, and writes a structured markdown
 finding. Auditor failures produce an explicit failure ledger entry instead of
 silently dropping the queued record.
@@ -56,7 +56,7 @@ class AuditDimensionFinding(BaseModel):
 
 
 class AuditFinding(BaseModel):
-    """Structured output produced by the Claude auditor."""
+    """Structured output produced by the governed auditor."""
 
     summary: str = Field(description="One-sentence audit summary.")
     severity: AuditSeverity = Field(description="Aggregate finding severity.")
@@ -89,7 +89,7 @@ AUDIT_QUEUE_MAX_DEPTH: int = int(os.environ.get("HAPAX_AUDIT_QUEUE_MAX_DEPTH", "
 AUDIT_PROMPT_MAX_CHARS: int = int(os.environ.get("HAPAX_AUDIT_PROMPT_MAX_CHARS", "20000"))
 
 _AUDIT_SYSTEM_PROMPT = """\
-You are the Claude-side auditor for Gemini output in a single-operator Hapax
+You are the cross-agent auditor for model output in a single-operator Hapax
 Council runtime.
 
 Assess the queued Gemini call across these dimensions:
@@ -173,7 +173,7 @@ def enqueue_audit(
     input_context: dict[str, Any],
     provider_output: str,
 ) -> None:
-    """Enqueue a Gemini call for asynchronous Claude audit.
+    """Enqueue a Gemini call for asynchronous cross-agent audit.
 
     Early-returns when the audit point is disabled (the default). Early-returns
     when queue depth is at or above ``AUDIT_QUEUE_MAX_DEPTH`` (drops increment
@@ -345,17 +345,19 @@ temporal context are absent, mark uncertainty instead of inferring them.
 
 
 def _auditor_model(record: dict[str, Any]) -> str:
-    """Return the LiteLLM route for the requested auditor."""
-    raw = record.get("auditor") or "claude-sonnet"
+    """Return the governed LiteLLM route for the requested auditor label."""
+    from shared.model_route_policy import STRONG_DEFAULT_MODEL, sanitize_model_route
+
+    raw = record.get("auditor") or STRONG_DEFAULT_MODEL
     model = str(raw)
-    if model in {"claude-sonnet", "claude-opus"}:
-        return model
-    log.warning("Unknown auditor %r, falling back to claude-sonnet", raw)
-    return "claude-sonnet"
+    if model in {"gemini-pro", "claude-sonnet", "claude-opus"}:
+        return sanitize_model_route(model)
+    log.warning("Unknown auditor %r, falling back to %s", raw, STRONG_DEFAULT_MODEL)
+    return sanitize_model_route(STRONG_DEFAULT_MODEL)
 
 
 def _build_auditor_agent(auditor_model: str) -> Any:
-    """Construct a Pydantic-AI agent for the requested Claude auditor route."""
+    """Construct a Pydantic-AI agent for the requested auditor route."""
     from pydantic_ai import Agent
 
     from shared.config import get_model
@@ -368,7 +370,7 @@ def _build_auditor_agent(auditor_model: str) -> Any:
 
 
 async def _invoke_auditor(record: dict[str, Any]) -> AuditFinding:
-    """Invoke the configured Claude auditor through LiteLLM."""
+    """Invoke the configured auditor through LiteLLM."""
     agent = _build_auditor_agent(_auditor_model(record))
     result = await agent.run(_build_audit_prompt(record))
     return result.output

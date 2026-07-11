@@ -813,7 +813,7 @@ LITELLM_URL = "http://localhost:4000/v1/chat/completions"
 # LiteLLM (`local-fast`) — no cloud billing dependency; keeps the stream
 # reacting even when cloud routes are billed-out or denied. Override via
 # HAPAX_DIRECTOR_MODEL env var. If set to a known multimodal route
-# (e.g. "fast"/gemini or "balanced"/claude), images are forwarded; otherwise
+# (e.g. "fast"/gemini or "gemini-pro"), images are forwarded; otherwise
 # the director strips images before the call.
 DIRECTOR_MODEL = os.environ.get("HAPAX_DIRECTOR_MODEL", "local-fast")
 
@@ -847,9 +847,7 @@ _ACTIVITY_LLM_BACKOFF_MAX_S = float(os.environ.get("HAPAX_DIRECTOR_LLM_BACKOFF_M
 MULTIMODAL_ROUTES: frozenset[str] = frozenset(
     {
         "fast",
-        "balanced",
         "claude-opus",
-        "claude-sonnet",
         "claude-haiku",
         "gemini-flash",
         "gemini-pro",

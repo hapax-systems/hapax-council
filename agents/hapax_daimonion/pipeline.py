@@ -9,7 +9,6 @@ Or routes to Gemini Live when config.backend == "gemini".
 from __future__ import annotations
 
 import logging
-import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -95,16 +94,16 @@ def _build_llm(model: str, prompt: str) -> OpenAILLMService:
     """Create an OpenAI-compatible LLM service routed through LiteLLM.
 
     Args:
-        model: Model alias (e.g. "claude-sonnet") routed by LiteLLM.
+        model: Model alias (e.g. "local-fast") routed by LiteLLM.
         prompt: System prompt for the conversation.
 
     Returns:
         Configured OpenAILLMService.
     """
-    from agents.hapax_daimonion.config import LITELLM_BASE
+    from shared.config import LITELLM_BASE, LITELLM_KEY
 
     base_url = LITELLM_BASE
-    api_key = os.environ.get("LITELLM_API_KEY", "not-set")
+    api_key = LITELLM_KEY
 
     return OpenAILLMService(
         model=model,
@@ -142,7 +141,7 @@ def _build_context(prompt: str) -> LLMContext:
 def build_pipeline_task(
     *,
     stt_model: str = "large-v3",
-    llm_model: str = "claude-sonnet",
+    llm_model: str = "local-fast",
     tts_voice: str = "af_heart",
     guest_mode: bool = False,
     config=None,

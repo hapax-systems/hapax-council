@@ -25,14 +25,14 @@ class TestTriageModelRouting:
 
         monkeypatch.delenv("SDLC_TRIAGE_MODEL", raising=False)
 
-        assert sdlc_triage._configured_triage_model() == "balanced"
+        assert sdlc_triage._configured_triage_model() == "local-fast"
 
-    def test_legacy_anthropic_provider_prefix_maps_to_proxy_route(self, monkeypatch):
+    def test_legacy_sonnet_provider_prefix_maps_to_safe_route(self, monkeypatch):
         from scripts import sdlc_triage
 
         monkeypatch.setenv("SDLC_TRIAGE_MODEL", "anthropic:claude-sonnet-4-6")
 
-        assert sdlc_triage._configured_triage_model() == "claude-sonnet-4-6"
+        assert sdlc_triage._configured_triage_model() == "gemini-pro"
 
     def test_call_llm_uses_pydantic_agent_not_direct_anthropic(self, monkeypatch):
         from scripts import sdlc_triage

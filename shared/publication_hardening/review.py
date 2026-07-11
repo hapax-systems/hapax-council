@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from shared.publication_hardening.entity_checker import check_attributions, load_registry
 
-DEFAULT_REVIEW_MODEL = "balanced"
+DEFAULT_REVIEW_MODEL = "gemini-pro"
 DEFAULT_REVIEW_THRESHOLD = 0.7
 
 AXIOM_REVIEW_IDS: tuple[str, ...] = (
@@ -304,7 +304,7 @@ def _call_litellm_gateway(
 
     base = LITELLM_BASE.rstrip("/")
     base_url = base if base.endswith("/v1") else f"{base}/v1"
-    client = OpenAI(base_url=base_url, api_key=LITELLM_KEY or "not-set", timeout=timeout_s)
+    client = OpenAI(base_url=base_url, api_key=LITELLM_KEY, timeout=timeout_s)
     model_id = MODELS.get(model, model)
     response = client.chat.completions.create(
         model=model_id,

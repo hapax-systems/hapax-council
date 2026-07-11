@@ -96,9 +96,7 @@
         "hapax.provider": {
           "type": "string",
           "enum": [
-            "litellm",
-            "openai",
-            "anthropic"
+            "litellm"
           ],
           "default": "litellm",
           "description": "LLM provider"
@@ -110,7 +108,7 @@
         },
         "hapax.model": {
           "type": "string",
-          "default": "claude-sonnet",
+          "default": "local-fast",
           "description": "Model name"
         },
         "hapax.litellmUrl": {
