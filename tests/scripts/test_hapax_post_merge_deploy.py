@@ -1988,17 +1988,17 @@ def test_generic_slice_dropin_rejects_unsafe_co_resident_before_mutation(
     assert "set-property" not in calls
 
 
-def test_generic_slice_dropin_atomically_replaces_changed_destination_symlink(
+def test_generic_service_dropin_atomically_replaces_changed_destination_symlink(
     tmp_path: Path,
 ) -> None:
-    dropin_path = "systemd/units/demo.slice.d/memory.conf"
-    deployed_content = "[Slice]\nMemoryHigh=2G\nMemoryMax=3G\n"
+    dropin_path = "systemd/units/demo.service.d/override.conf"
+    deployed_content = "[Service]\nEnvironment=DEMO=new\n"
     repo, sha = _repo_with_linear_commit(tmp_path, {dropin_path: deployed_content})
     home = tmp_path / "home"
-    mutable_target = tmp_path / "mutable-worktree" / "memory.conf"
+    mutable_target = tmp_path / "mutable-worktree" / "override.conf"
     mutable_target.parent.mkdir()
-    mutable_target.write_text("[Slice]\nMemoryHigh=1G\n", encoding="utf-8")
-    deployed = home / ".config/systemd/user/demo.slice.d/memory.conf"
+    mutable_target.write_text("[Service]\nEnvironment=DEMO=old\n", encoding="utf-8")
+    deployed = home / ".config/systemd/user/demo.service.d/override.conf"
     deployed.parent.mkdir(parents=True)
     deployed.symlink_to(mutable_target)
     bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
@@ -2019,11 +2019,49 @@ def test_generic_slice_dropin_atomically_replaces_changed_destination_symlink(
     )
 
     assert result.returncode == 0, result.stderr
-    assert mutable_target.read_text(encoding="utf-8") == "[Slice]\nMemoryHigh=1G\n"
+    assert mutable_target.read_text(encoding="utf-8") == "[Service]\nEnvironment=DEMO=old\n"
     assert deployed.read_text(encoding="utf-8") == deployed_content
     assert not deployed.is_symlink()
     calls = systemctl_calls.read_text(encoding="utf-8")
-    assert "--user set-property --runtime demo.slice MemoryHigh=2G MemoryMax=3G" in calls
+    assert "--user restart demo.service" in calls
+
+
+def test_generic_slice_dropin_rejects_symlink_with_removed_property(tmp_path: Path) -> None:
+    dropin_path = "systemd/units/demo.slice.d/memory.conf"
+    candidate_content = "[Slice]\nMemoryHigh=2G\nMemoryMax=3G\n"
+    repo, sha = _repo_with_linear_commit(tmp_path, {dropin_path: candidate_content})
+    home = tmp_path / "home"
+    mutable_target = tmp_path / "mutable-worktree" / "memory.conf"
+    mutable_target.parent.mkdir()
+    prior_content = "[Slice]\nMemoryHigh=1G\nMemoryLow=256M\n"
+    mutable_target.write_text(prior_content, encoding="utf-8")
+    deployed = home / ".config/systemd/user/demo.slice.d/memory.conf"
+    deployed.parent.mkdir(parents=True)
+    deployed.symlink_to(mutable_target)
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "unsafe changed generic slice destination" in result.stderr
+    assert deployed.is_symlink()
+    assert mutable_target.read_text(encoding="utf-8") == prior_content
+    calls = systemctl_calls.read_text(encoding="utf-8") if systemctl_calls.exists() else ""
+    assert "daemon-reload" not in calls
+    assert "set-property" not in calls
 
 
 def test_generic_slice_dropin_deletion_fails_before_persistent_or_runtime_drift(

@@ -1776,14 +1776,18 @@ validate_generic_dropin_activation() {
                 echo "hapax-post-merge-deploy: no runtime-safe memory property found in generic slice drop-in $f; next action: use a slice-specific installer for non-memory directives" >&2
                 return 1
             fi
+            dest="$SYSTEMD_USER_DIR/$rel"
+            if [ -L "$dest" ] || { [ -e "$dest" ] && [ ! -f "$dest" ]; }; then
+                echo "hapax-post-merge-deploy: unsafe changed generic slice destination $dest is not a regular file, so prior runtime properties cannot be established; next action: replace the unsafe entry with its last deployed regular content or use a governed slice-specific reconciliation" >&2
+                return 1
+            fi
             validate_co_resident_slice_dropins "$dropin_dir" || return 1
             old_content=""
             if [ -n "${DROPIN_BASE_REF:-}" ] \
                 && git -C "$REPO" cat-file -e "$DROPIN_BASE_REF:$f" 2>/dev/null; then
                 old_content="$(git -C "$REPO" show "$DROPIN_BASE_REF:$f")"
             fi
-            dest="$SYSTEMD_USER_DIR/$rel"
-            if [ -f "$dest" ] && [ ! -L "$dest" ]; then
+            if [ -f "$dest" ]; then
                 deployed_content="$(cat "$dest")"
                 old_content="${old_content}${old_content:+$'\n'}${deployed_content}"
             fi
