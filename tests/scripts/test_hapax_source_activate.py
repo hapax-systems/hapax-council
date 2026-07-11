@@ -4,6 +4,8 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-source-activate"
 
@@ -174,6 +176,38 @@ def _path_with_failing_predeploy_command(
         )
     else:
         raise ValueError(f"unsupported predeploy failure command: {command}")
+    _write(fake_command, body, executable=True)
+    return f"{fake_bin}:{os.environ['PATH']}"
+
+
+def _path_with_failing_config_restore_command(tmp_path: Path, *, command: str) -> str:
+    fake_bin = tmp_path / f"failing-config-restore-{command}"
+    fake_bin.mkdir()
+    fake_command = fake_bin / command
+    if command == "cp":
+        body = textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            source_path="${@: -2:1}"
+            if [[ "$source_path" == *"/launcher-rollback."*"/config-present" ]]; then
+                exit 77
+            fi
+            exec /usr/bin/cp "$@"
+            """
+        )
+    elif command == "mv":
+        body = textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            source_path="${@: -2:1}"
+            if [[ "$source_path" == *"/.usb-topology-policy.json.restore."* ]]; then
+                exit 78
+            fi
+            exec /usr/bin/mv "$@"
+            """
+        )
+    else:
+        raise ValueError(f"unsupported config restore failure command: {command}")
     _write(fake_command, body, executable=True)
     return f"{fake_bin}:{os.environ['PATH']}"
 
@@ -666,6 +700,56 @@ def test_postpublication_deploy_failure_restores_prior_active_config_alias(
     assert receipt["status"] == "failed"
     assert receipt["deploy_status"] == "failed"
     assert receipt["source_cutover"]["rollback_status"] == "success"
+
+
+@pytest.mark.parametrize("command", ["cp", "mv"])
+def test_active_config_restore_failure_preserves_destination_and_snapshot(
+    tmp_path: Path,
+    command: str,
+) -> None:
+    canonical, origin, active_sha = _make_repos(tmp_path)
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    installed_policy = tmp_path / "home" / ".config" / "hapax" / "usb-topology-policy.json"
+    prior_content = installed_policy.read_text(encoding="utf-8")
+    candidate_content = '{"known_absences":{"failed_candidate":true}}\n'
+
+    updater = tmp_path / f"updater-config-restore-{command}-failure"
+    _git(tmp_path, "clone", str(origin), str(updater))
+    _git(updater, "config", "user.email", "source-activate@example.test")
+    _git(updater, "config", "user.name", "Source Activate")
+    _write(updater / "config" / "usb-topology-policy.json", candidate_content)
+    _git(updater, "add", "config/usb-topology-policy.json")
+    _git(updater, "commit", "-m", f"change config before {command} restore failure")
+    _git(updater, "push", "origin", "main")
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        deploy_exit=7,
+        env_overrides={
+            "PATH": _path_with_failing_config_restore_command(tmp_path, command=command)
+        },
+    )
+
+    assert second.returncode == 7
+    expected_error = (
+        "unable to stage saved active config" if command == "cp" else "unable to atomically restore"
+    )
+    assert expected_error in second.stderr
+    assert _git(tmp_path / "active-source", "rev-parse", "HEAD") == active_sha
+    assert installed_policy.is_file()
+    assert not installed_policy.is_symlink()
+    assert installed_policy.read_text(encoding="utf-8") == candidate_content
+    snapshots = list((tmp_path / "state").glob("launcher-rollback.*"))
+    assert len(snapshots) == 1
+    saved = snapshots[0] / "config-present"
+    assert saved.is_file()
+    assert saved.read_text(encoding="utf-8") == prior_content
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["source_cutover"]["rollback_status"] == "failed"
+    assert "config=1" in receipt["source_cutover"]["rollback_message"]
 
 
 def test_launcher_restore_copy_failure_is_reported_without_removing_destination(

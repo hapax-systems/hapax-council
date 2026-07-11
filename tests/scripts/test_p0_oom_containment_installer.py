@@ -1052,6 +1052,67 @@ def test_oom_install_rejects_effective_failure_intake_dropin_before_receipts(
     assert not (tmp_path / "installed-source").exists()
 
 
+@pytest.mark.parametrize(
+    ("property_name", "bad_value", "expected_error"),
+    [
+        ("ExecStart", "{ path=/usr/bin/true ; argv[]=/usr/bin/true ; }", "ExecStart drift"),
+        ("User", "root", "identity/limit drift"),
+        ("Environment", "PATH=/tmp/shadow", "identity/limit drift"),
+        ("StartLimitIntervalUSec", "infinity", "identity/limit drift"),
+        ("StartLimitBurst", "99", "identity/limit drift"),
+    ],
+)
+def test_oom_install_rejects_effective_failure_intake_property_drift_before_receipts(
+    tmp_path: Path,
+    property_name: str,
+    bad_value: str,
+    expected_error: str,
+) -> None:
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    fake_systemctl = tmp_path / "systemctl"
+    failure_unit = "hapax-root-failure-intake@hapax-oom-score-enforce.service.service"
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$*" in\n'
+        f'  *"show {failure_unit} -p {property_name} --value"*) '
+        f"printf '%s\\n' '{bad_value}' ;;\n"
+        f"{_systemctl_system_memory_cases()}\n"
+        f"{_systemctl_user_unit_cases()}\n"
+        f"{_systemctl_app_slice_cases()}\n"
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(tmp_path / "systemd-system"),
+            "HAPAX_OOM_SYSTEMD_USER_DIR": str(tmp_path / "systemd-user"),
+            "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR": str(tmp_path / "systemd-user-control"),
+            "HAPAX_OOM_EARLYOOM_DEST": str(tmp_path / "earlyoom"),
+            "HAPAX_OOM_ENFORCER_DEST": str(tmp_path / "sbin/hapax-oom-score-enforce"),
+            "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(tmp_path / "sbin/hapax-root-failure-intake"),
+            "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_OOM_INSTALL_SUDO": "",
+            "HAPAX_OOM_PROC_ROOT": str(proc_root),
+            "HAPAX_OOM_TARGET_UID": "1000",
+        },
+    )
+
+    assert result.returncode == 1
+    assert f"effective {failure_unit} {expected_error}" in result.stderr
+    state_root = tmp_path / "root-state"
+    assert not (state_root / "installed-receipts/oom-containment.sha").exists()
+    assert not (tmp_path / "installed-source").exists()
+
+
 def test_oom_install_rejects_mutable_loaded_audit_path_before_receipts(tmp_path: Path) -> None:
     proc_root = tmp_path / "proc"
     proc_root.mkdir()

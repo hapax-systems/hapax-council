@@ -1957,6 +1957,50 @@ def test_root_required_audit_rejects_effective_failure_intake_dropin(
 
 
 @pytest.mark.parametrize(
+    ("property_name", "bad_value", "expected_error"),
+    [
+        ("ExecStart", "{ path=/usr/bin/true ; argv[]=/usr/bin/true ; }", "ExecStart drift"),
+        ("User", "root", "identity/limit drift"),
+        ("Environment", "PATH=/tmp/shadow", "identity/limit drift"),
+        ("StartLimitIntervalUSec", "infinity", "identity/limit drift"),
+        ("StartLimitBurst", "99", "identity/limit drift"),
+    ],
+)
+def test_root_required_audit_rejects_effective_failure_intake_property_drift(
+    tmp_path: Path,
+    property_name: str,
+    bad_value: str,
+    expected_error: str,
+) -> None:
+    env = _root_audit_env(tmp_path)
+    fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
+    baseline_systemctl = fake_systemctl.with_name("root-audit-systemctl-baseline")
+    fake_systemctl.rename(baseline_systemctl)
+    failure_unit = "hapax-root-failure-intake@hapax-oom-score-enforce.service.service"
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [ "$*" = "show {failure_unit} -p {property_name} --value" ]; then\n'
+        f"  printf '%s\\n' '{bad_value}'\n"
+        "  exit 0\n"
+        "fi\n"
+        f'exec "{baseline_systemctl!s}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert f"effective {failure_unit} {expected_error}" in result.stderr
+
+
+@pytest.mark.parametrize(
     ("property_name", "loaded_value", "expected_error"),
     (
         ("Unit", "untrusted.service", "target drift"),

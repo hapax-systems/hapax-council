@@ -748,7 +748,7 @@ def test_power_event_helper_keeps_apcaccess_oserror_nonfatal(tmp_path: Path) -> 
     assert "PermissionError" in records[0]["apcaccess_error"]
 
 
-def test_doshutdown_hook_deadlines_blocked_provenance_write(tmp_path: Path) -> None:
+def test_doshutdown_timeout_returns_success_for_apccontrol_continuation(tmp_path: Path) -> None:
     audit_fifo = tmp_path / "blocked-audit.fifo"
     os.mkfifo(audit_fifo)
 
@@ -770,7 +770,7 @@ def test_doshutdown_hook_deadlines_blocked_provenance_write(tmp_path: Path) -> N
     )
     elapsed = time.monotonic() - started
 
-    assert result.returncode == 0
+    assert result.returncode == 0, "a hook timeout must not suppress apccontrol's default shutdown"
     assert elapsed < 2
 
 
