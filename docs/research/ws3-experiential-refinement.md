@@ -269,7 +269,7 @@ Analogical prompting (Yasunaga et al., 2024) draws on relevant past experiences 
 
 LLMs show strong generalization across domains in principle, but experience transfer in agent systems remains limited. The challenge is structural: experiences are typically stored with the context they occurred in, and retrieving them for a different context requires recognizing structural similarity despite surface differences.
 
-**Relevance to Hapax**: Experience gained in one operator context ("coding late at night produces flow state but also leads to hyperfocus where meals are skipped") should transfer to related contexts ("writing late at night may also trigger hyperfocus"). This requires storing experiences with abstracted pattern descriptions, not just raw signal values. The activity mode taxonomy (coding, production, research, meeting, away, idle) already provides one level of abstraction; adding higher-level categories (focused-creative-work, consumptive-activity, social-interaction) would enable cross-context transfer.
+**Relevance to Hapax**: Experience gained in one activity context ("late-night coding can produce deep focus with missed meals") should transfer to related contexts ("late-night writing may carry a similar interruption risk"). This requires storing experiences with abstracted pattern descriptions, not just raw signal values. The activity mode taxonomy (coding, production, research, meeting, away, idle) already provides one level of abstraction; adding higher-level categories (focused-creative-work, consumptive-activity, social-interaction) would enable cross-context transfer.
 
 ### 2.13 Technologies and Frameworks
 
@@ -468,7 +468,7 @@ The system asks for corrections when uncertain, rather than waiting for the oper
 - "Exploration budget" -- a fixed number of queries per day to avoid annoyance
 - Feedback from answers improves both the specific classification and the confidence calibrator
 
-This is where the system transitions from passive learning to active learning. AuDHD accommodations (per operator profile) constrain when and how questions are asked -- never during flow state, prefer quick multiple-choice over open-ended.
+This is where the system transitions from passive learning to active learning. Attention-safety accommodations (per operator profile) constrain when and how questions are asked -- never during flow state, prefer quick multiple-choice over open-ended.
 
 ### Level 5: Cross-Modal Experience Fusion (4-6 months of work)
 

@@ -4,7 +4,7 @@ Fetches current weather from OpenWeatherMap (free tier) and writes
 to rag-sources/weather/ as a markdown file with YAML frontmatter.
 
 Barometric pressure, temperature, humidity, and cloud cover correlate
-with ADHD energy and autism sensory sensitivity. This data feeds the
+with energy and comfort patterns. This data feeds the
 briefing agent and behavioral profiler.
 
 No API key required for the free endpoint. Uses the operator's location

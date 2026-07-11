@@ -7,6 +7,7 @@ Spec: ~/Documents/Personal/30-areas/hapax/pr-review-team-design-2026-06-11.md
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -743,6 +744,7 @@ def _critical(title: str = "named critical", resolved: bool = False) -> dict:
 
 def _synth(rt, reviews: list[dict], *, team_class: str = "t2_standard", **kwargs) -> dict:
     reg = rt.load_lens_registry()
+    release_authorized_head_sha = kwargs.pop("release_authorized_head_sha", "a" * 40)
     return rt.synthesize_dossier(
         task_id="task-x",
         pr_number=99,
@@ -752,6 +754,7 @@ def _synth(rt, reviews: list[dict], *, team_class: str = "t2_standard", **kwargs
         reviews=reviews,
         lenses=ALWAYS_ON_LENSES,
         constituted_at="2026-06-11T20:00:00+00:00",
+        release_authorized_head_sha=release_authorized_head_sha,
         **kwargs,
     )
 
@@ -2331,6 +2334,11 @@ class TestGoGate:
     when the actual file at head refutes it — verified deterministically out-of-model (ast.parse for
     Python; file/line existence otherwise). Non-literal criticals are never touched."""
 
+    @pytest.fixture(autouse=True)
+    def _synthetic_head_bound_worktrees_are_clean(self, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_worktree_clean", lambda root: True)
+
     def _py(self, root: Path, rel: str, src: str) -> None:
         p = root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -2695,6 +2703,7 @@ class TestGoGate:
             dossier,
             pr_head_sha="a" * 40,
             registry=reg,
+            frontmatter={"release_authorized_head_sha": "a" * 40},
         )
 
         assert "review_dossier_quorum_not_met:1/2" not in blockers
@@ -3042,3 +3051,942 @@ class TestClassifyFailureReceipt:
         assert rt.is_reviewer_route_unavailable(text, process_failed=True)
         assert rt.is_provider_outage(text, process_failed=True)
         assert rt.classify_failure(text, process_failed=True).code is FailureCode.ROUTE_UNAVAILABLE
+
+
+class TestOperatorRatificationGate:
+    """Data-owner ratification ledger: criticals whose (lens, file) are named by an
+    active entry are waived with a receipt; everything else blocks. Fail-closed on
+    malformed ledgers and unproven checkouts (go-gate binding rule)."""
+
+    AUTHORITY_ISSUER = "claim-verification-council"
+    AUTHORITY_SECRET = "test-public-gate-authority-secret"
+    LEDGER = """ratifications_schema: 1
+ratification_classes:
+  operator-privacy-residual:
+    authority: operator
+    safety_policy: operator_privacy_residual
+ratifications:
+  - id: RAT-TEST-1
+    ratified: "2026-07-09"
+    authority: operator
+    decision_record: "test decision record"
+    decision_record_path: decision-record.md
+    decision_record_sha256: 72fcd1f631df8627a1cb5bb4c24564b746364d037660811d7b235ae738bdc564
+    class: operator-privacy-residual
+    lenses: [consent-provenance]
+    topics: [residual]
+    files:
+      - docs/research/x.md
+    files_sha256:
+      docs/research/x.md: a35e167cd7816b57ad2e59e7803c15d00a5b7a8629c11a7ea9066a58c3de446c
+"""
+
+    @pytest.fixture(autouse=True)
+    def _synthetic_head_bound_worktrees_are_clean(self, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setenv(
+            rt.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV,
+            self.AUTHORITY_SECRET,
+        )
+        monkeypatch.setattr(rt, "_repo_worktree_clean", lambda root: True)
+
+    def _signed_ledger_text(self, text: str) -> str:
+        rt = _load_review_team_module()
+        try:
+            payload = yaml.safe_load(text)
+        except yaml.YAMLError:
+            return text
+        if not isinstance(payload, dict):
+            return text
+        entries = payload.get("ratifications")
+        if not isinstance(entries, list):
+            return text
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            entry.setdefault("decision_record_authority_issuer", self.AUTHORITY_ISSUER)
+            entry["decision_record_authority_signature"] = (
+                rt.public_gate_receipts.public_gate_authority_signature(
+                    rt._decision_record_authority_payload(entry),
+                    self.AUTHORITY_SECRET,
+                )
+            )
+        return yaml.safe_dump(payload, sort_keys=False)
+
+    def _ledger(self, root: Path, text: str | None = None, *, sign: bool = True) -> None:
+        path = root / "config" / "governance" / "operator-ratifications.yaml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        raw = text if text is not None else self.LEDGER
+        path.write_text(self._signed_ledger_text(raw) if sign else raw, encoding="utf-8")
+        (root / "decision-record.md").write_text("test decision record\n", encoding="utf-8")
+
+    def _critical(self, lens: str = "consent-provenance", file: str = "docs/research/x.md") -> dict:
+        return {
+            "severity": "critical",
+            "lens": lens,
+            "file": file,
+            "line": 1,
+            "title": "residual disclosure",
+            "detail": "semantic privacy claim",
+            "resolved": False,
+        }
+
+    def _blocking_criticals(
+        self,
+        rt,
+        reviews: list[dict],
+        repo_root: Path,
+        *,
+        head_sha: str = "a" * 40,
+        release_authorized_head_sha: str | None = None,
+    ):
+        return rt._blocking_criticals(
+            reviews,
+            repo_root,
+            head_sha=head_sha,
+            release_authorized_head_sha=release_authorized_head_sha or head_sha,
+        )
+
+    def test_ratified_lens_file_critical_is_waived_with_receipt(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, phantoms = self._blocking_criticals(rt, reviews, tmp_path)
+        assert blocking == []
+        assert len(phantoms) == 1
+        assert phantoms[0][1]["_resolution_source"] == "operator-ratification"
+        err = capsys.readouterr().err
+        assert "ratification-gate: waived" in err
+        assert "RAT-TEST-1" in err  # the receipt names the ratification id
+
+    def test_unratified_lens_still_blocks(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        reviews = [
+            _review("codex-1", "codex", "block", findings=[self._critical(lens="correctness")])
+        ]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_unratified_file_still_blocks(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        reviews = [
+            _review("codex-1", "codex", "block", findings=[self._critical(file="docs/other.md")])
+        ]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_malformed_ledger_waives_nothing(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path, "ratifications_schema: 1\nratifications: [{id: 1}]\n")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_ledger_with_empty_topic_waives_nothing(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(
+            tmp_path, self.LEDGER.replace("    topics: [residual]\n", "    topics: ['']\n")
+        )
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_ledger_without_operator_authority_waives_nothing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path, self.LEDGER.replace("    authority: operator\n", ""))
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_configured_class_id_is_not_hardcoded(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(
+            tmp_path,
+            self.LEDGER.replace("operator-privacy-residual", "operator-privacy-residual-next"),
+        )
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert blocking == []
+
+    def test_ledger_with_unknown_class_waives_nothing(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(
+            tmp_path,
+            self.LEDGER.replace(
+                "    class: operator-privacy-residual\n",
+                "    class: undeclared-ratification-class\n",
+            ),
+        )
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_ledger_with_unsupported_class_policy_waives_nothing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(
+            tmp_path,
+            self.LEDGER.replace(
+                "    safety_policy: operator_privacy_residual\n",
+                "    safety_policy: unimplemented_policy\n",
+            ),
+        )
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_operator_privacy_policy_requires_operator_authority(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(
+            tmp_path,
+            self.LEDGER.replace("    authority: operator\n", "    authority: reviewer\n"),
+        )
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_ledger_with_blank_id_waives_nothing(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path, self.LEDGER.replace("  - id: RAT-TEST-1\n", "  - id: ''\n"))
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_ledger_with_blank_decision_record_waives_nothing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(
+            tmp_path,
+            self.LEDGER.replace(
+                '    decision_record: "test decision record"\n',
+                "    decision_record: '  '\n",
+            ),
+        )
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_ledger_without_decision_record_hash_waives_nothing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(
+            tmp_path,
+            self.LEDGER.replace(
+                "    decision_record_sha256: "
+                "72fcd1f631df8627a1cb5bb4c24564b746364d037660811d7b235ae738bdc564\n",
+                "",
+            ),
+        )
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_ledger_without_decision_record_path_waives_nothing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(
+            tmp_path,
+            self.LEDGER.replace("    decision_record_path: decision-record.md\n", ""),
+        )
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_ledger_with_invalid_decision_record_hash_waives_nothing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(
+            tmp_path,
+            self.LEDGER.replace(
+                "    decision_record_sha256: "
+                "72fcd1f631df8627a1cb5bb4c24564b746364d037660811d7b235ae738bdc564\n",
+                "    decision_record_sha256: not-a-sha256\n",
+            ),
+        )
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_ledger_with_decision_record_pin_mismatch_waives_nothing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(
+            tmp_path,
+            self.LEDGER.replace(
+                "    decision_record_sha256: "
+                "72fcd1f631df8627a1cb5bb4c24564b746364d037660811d7b235ae738bdc564\n",
+                "    decision_record_sha256: "
+                "0000000000000000000000000000000000000000000000000000000000000000\n",
+            ),
+        )
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_ledger_without_decision_record_authority_signature_waives_nothing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path, self.LEDGER, sign=False)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_ledger_without_decision_record_authority_issuer_waives_nothing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        payload = yaml.safe_load(self._signed_ledger_text(self.LEDGER))
+        del payload["ratifications"][0]["decision_record_authority_issuer"]
+        self._ledger(tmp_path, yaml.safe_dump(payload, sort_keys=False), sign=False)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_forged_decision_record_authority_signature_waives_nothing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        signed = self._signed_ledger_text(self.LEDGER)
+        self._ledger(
+            tmp_path,
+            signed.replace("hmac-sha256:", "hmac-sha256:0000", 1),
+            sign=False,
+        )
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_signed_ledger_without_authority_secret_waives_nothing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        monkeypatch.delenv(rt.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, raising=False)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_wrong_checkout_ignores_ledger(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        (tmp_path / ".git").mkdir()  # rev-parse fails -> head never matches
+        self._ledger(tmp_path)
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="deadbeef" * 5)
+        assert len(blocking) == 1
+
+    def test_unratified_topic_still_blocks(self, tmp_path: Path, monkeypatch) -> None:
+        # lens+file match but the finding is about something ELSE (e.g. an address leak):
+        # topic keying keeps it blocking — the waiver never covers unrelated privacy classes.
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        finding = self._critical()
+        finding["title"] = "home address disclosed"
+        finding["detail"] = "the doc leaks a street address"
+        reviews = [_review("codex-1", "codex", "block", findings=[finding])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_ledger_without_topics_waives_nothing(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path, self.LEDGER.replace("    topics: [residual]\n", ""))
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_ledger_without_content_pins_waives_nothing(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(
+            tmp_path,
+            self.LEDGER.replace(
+                "    files_sha256:\n"
+                "      docs/research/x.md: "
+                "a35e167cd7816b57ad2e59e7803c15d00a5b7a8629c11a7ea9066a58c3de446c\n",
+                "",
+            ),
+        )
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_enforced_class_regression_in_ratified_file_still_blocks(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The ledger can never waive the ENFORCED class: the ratified file contains a
+        # fresh tier-1 attribution at head, so the (lens+file+topic)-matched finding
+        # stays blocking — it may be reporting exactly that regression.
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        # built by concatenation so THIS source file never carries the attribution string
+        doc.write_text("The operator has " + "AD" + "HD and needs support.\n", encoding="utf-8")
+        finding = self._critical()
+        finding["title"] = "residual disclosure regression"
+        reviews = [_review("codex-1", "codex", "block", findings=[finding])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_ratified_file_pin_mismatch_still_blocks(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Generic design research grounded in literature.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_clean_ratified_file_waives(self, tmp_path: Path, monkeypatch) -> None:
+        # Companion: same ledger + finding, but the cited file is CLEAN under the
+        # enforced-class scan -> waived.
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert blocking == []
+
+    def test_stale_release_authorized_head_disables_ratification_gate(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+
+        blocking, _ = self._blocking_criticals(
+            rt,
+            reviews,
+            tmp_path,
+            head_sha="a" * 40,
+            release_authorized_head_sha="b" * 40,
+        )
+
+        assert len(blocking) == 1
+
+    def test_ratified_critical_counts_for_quorum_with_receipt(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [
+            _review("codex-1", "codex", "block", findings=[self._critical()]),
+            _review("claude-1", "claude", "accept"),
+        ]
+
+        dossier = _synth(rt, reviews, repo_root=tmp_path)
+
+        assert dossier["review_team_verdict"] == rt.QUORUM_ACCEPT
+        assert dossier["accept_count"] == 2
+        assert any(e["kind"] == "operator-ratified-critical" for e in dossier["escalations"])
+        finding = dossier["reviewers"][0]["findings"][0]
+        assert finding["resolved"] is True
+        assert finding["resolution_source"] == "operator-ratification"
+        assert "RAT-TEST-1" in finding["resolution_detail"]
+
+    def test_admission_counts_persisted_ratified_critical_for_quorum(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [
+            _review("codex-1", "codex", "block", findings=[self._critical()]),
+            _review("claude-1", "claude", "accept"),
+        ]
+        dossier = _synth(rt, reviews, repo_root=tmp_path)
+
+        blockers = rt._dossier_validity_blockers(
+            dossier,
+            pr_head_sha="a" * 40,
+            registry=reg,
+        )
+
+        assert "review_dossier_quorum_not_met:1/2" not in blockers
+        assert not any(b.startswith("review_team_verdict_not_quorum_accept:") for b in blockers)
+
+    def test_topical_finding_with_actual_other_pii_in_file_blocks(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # THE collision path: the finding SOUNDS topical ("address disclosed in the
+        # ADHD section") and lens/file/topic all match — but the file really does
+        # contain an address. Waiver safety is decided on file CONTENT: blocked.
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text(
+            "Generic research on residual linkage.\nContact: 123 Maple Street\n",
+            encoding="utf-8",
+        )
+        finding = self._critical()
+        finding["title"] = "address disclosed in the residual section"
+        finding["detail"] = "a street address appears alongside residual research context"
+        reviews = [_review("codex-1", "codex", "block", findings=[finding])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_topical_residual_finding_with_no_datum_allegation_waives(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # Companion: same topic/lens/file match, but the finding alleges only the
+        # ratified residual linkage class — no address/phone/email/etc. datum class.
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        finding = self._critical()
+        finding["title"] = "residual linkage disclosed in the residual section"
+        reviews = [_review("codex-1", "codex", "block", findings=[finding])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert blocking == []
+
+    def test_address_alleging_finding_never_waives_even_on_clean_file(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Generic research on residual linkage only.\n", encoding="utf-8")
+        finding = self._critical()
+        finding["title"] = "address disclosed in the residual section"
+        finding["detail"] = "addresses are alleged near a ratified topic"
+        reviews = [_review("codex-1", "codex", "block", findings=[finding])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_datum_alleging_finding_never_waives_even_on_clean_file(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The un-enumerable-PII leg: a finding alleging a legal-name leak mentions a
+        # ratified topic ("... in the residual section") and the file is content-clean
+        # (names are not pattern-detectable) — it must STILL block, routed to operator
+        # disposition rather than auto-waived.
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Generic research on residual linkage only.\n", encoding="utf-8")
+        finding = self._critical()
+        finding["title"] = "legal name disclosed in the residual section"
+        finding["detail"] = "a third-party legal name appears in the residual research context"
+        reviews = [_review("codex-1", "codex", "block", findings=[finding])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    @pytest.mark.parametrize(
+        ("title", "detail"),
+        [
+            ("PII remains in the residual section", "the finding can stay generic"),
+            (
+                "personal information remains in the residual section",
+                "reviewers need not repeat the private value",
+            ),
+            (
+                "identity details remain in the residual section",
+                "the alleged datum class is non-waivable",
+            ),
+            (
+                "medical information remains in the residual section",
+                "reviewers need not repeat the private health detail",
+            ),
+            (
+                "health data remains in the residual section",
+                "the generic health datum class is non-waivable",
+            ),
+            (
+                "medical details remain in the residual section",
+                "the allegation must route to operator disposition",
+            ),
+        ],
+    )
+    def test_generic_privacy_allegation_never_waives_even_on_clean_file(
+        self, tmp_path: Path, monkeypatch, title: str, detail: str
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Generic research on residual linkage only.\n", encoding="utf-8")
+        finding = self._critical()
+        finding["title"] = title
+        finding["detail"] = detail
+        reviews = [_review("codex-1", "codex", "block", findings=[finding])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_path_alleging_finding_never_waives(self, tmp_path: Path, monkeypatch) -> None:
+        # round-13: the local-path/username privacy class is enumerable — a finding
+        # alleging a private-path leak routes to operator disposition, never auto-waives.
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Generic research on residual linkage only.\n", encoding="utf-8")
+        finding = self._critical()
+        finding["title"] = "private path disclosed in residual paragraph"
+        reviews = [_review("codex-1", "codex", "block", findings=[finding])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_file_containing_local_path_is_not_waiver_safe(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # content leg: a ratified file that actually contains a user-homed path fails
+        # waiver safety, so findings on it block regardless of prose phrasing.
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("See /home/someuser/notes for the residual research.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+    def test_killswitch_disables_ratification_gate(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        monkeypatch.setenv("HAPAX_REVIEW_GO_GATE_OFF", "1")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
+        assert len(blocking) == 1
+
+
+class TestCommittedRatificationLedgerIsHonest:
+    """The COMMITTED ledger must promise only what the production gate delivers.
+
+    Round-16 defect class: the ledger named files that ``file_waiver_safe`` refuses,
+    so a consent-provenance critical on them blocked forever and the ratified
+    disposition was expressible but unreachable. This test loads the real ledger
+    (not a synthetic fixture) and pins BOTH legs: every named file is waiver-safe at
+    head, and every content pin matches the bytes the data owner ratified.
+    """
+
+    def _repo_root(self) -> Path:
+        return Path(__file__).resolve().parents[1]
+
+    def _ledger(self) -> dict:
+        import yaml
+
+        path = self._repo_root() / "config" / "governance" / "operator-ratifications.yaml"
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    def test_every_ledger_file_is_waiver_safe_at_head(self) -> None:
+        from shared.operator_attribution_scan import file_waiver_safe
+
+        root = self._repo_root()
+        deadlocked = [
+            rel
+            for entry in self._ledger()["ratifications"]
+            for rel in entry["files"]
+            if not file_waiver_safe(root, rel)
+        ]
+        assert not deadlocked, (
+            "ledger names files the waiver gate refuses — the ratified disposition "
+            "is unreachable for them (round-16 deadlock class):\n" + "\n".join(deadlocked)
+        )
+
+    def test_every_ledger_content_pin_matches_head(self) -> None:
+        import hashlib
+
+        root = self._repo_root()
+        drifted = []
+        for entry in self._ledger()["ratifications"]:
+            pins = entry.get("files_sha256") or {}
+            assert set(pins) == set(entry["files"]), f"{entry['id']}: pins must cover files exactly"
+            for rel, pin in pins.items():
+                actual = hashlib.sha256((root / rel).read_bytes()).hexdigest()
+                if actual != pin:
+                    drifted.append(f"{rel}: pinned {pin[:12]}… actual {actual[:12]}…")
+        assert not drifted, (
+            "ratified content pin drifted — the data owner ratified different bytes; "
+            "re-ratification required:\n" + "\n".join(drifted)
+        )
+
+    def test_every_ledger_decision_record_pin_matches_record_bytes(self) -> None:
+        for entry in self._ledger()["ratifications"]:
+            record_ref = str(entry["decision_record_path"])
+            if record_ref.startswith("vault://"):
+                vault_root = Path(
+                    os.environ.get("HAPAX_VAULT_ROOT", "~/Documents/Personal")
+                ).expanduser()
+                record_path = vault_root / record_ref.removeprefix("vault://").lstrip("/")
+            else:
+                record_path = Path(record_ref).expanduser()
+            if not record_path.is_absolute():
+                record_path = self._repo_root() / record_path
+            actual = hashlib.sha256(record_path.read_bytes()).hexdigest()
+            assert actual == entry["decision_record_sha256"], entry["id"]
+
+
+class TestHeadBoundRepoRoot:
+    """The production defect: cc-pr-review-dispatch passes the ACTIVATED SOURCE worktree
+    (which tracks main) as repo_root, so ``_repo_head_matches`` never matched a PR head and
+    BOTH head-bound gates — the go-gate's phantom invalidation and the operator-ratification
+    gate — silently no-oped. Every phantom and every waivable critical blocked forever.
+
+    ``_head_bound_repo_root`` accepts a candidate ONLY if its HEAD *is* the reviewed commit,
+    so it strictly widens where the gates may bind and never weakens the guard.
+    """
+
+    def test_returns_none_without_head_sha(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        assert rt._head_bound_repo_root(tmp_path, "") is None
+        assert rt._head_bound_repo_root(tmp_path, None) is None
+
+    def test_prefers_the_caller_root_when_it_matches(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda root, sha: root == tmp_path)
+        monkeypatch.setattr(rt, "_repo_worktree_clean", lambda root: True)
+        monkeypatch.setattr(rt, "_discover_repo_root", lambda: None)
+        assert rt._head_bound_repo_root(tmp_path, "a" * 40) == tmp_path
+
+    def test_finds_the_sibling_worktree_at_the_reviewed_head(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # the real production shape: caller root is main-tracking, the PR head lives in a
+        # sibling worktree of the SAME repository.
+        rt = _load_review_team_module()
+        stale, pr_tree = tmp_path / "activated", tmp_path / "pr"
+        stale.mkdir()
+        pr_tree.mkdir()
+        monkeypatch.setattr(rt, "_discover_repo_root", lambda: None)
+        monkeypatch.setattr(rt, "_worktrees_of", lambda root: [stale, pr_tree])
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda root, sha: root == pr_tree)
+        monkeypatch.setattr(rt, "_repo_worktree_clean", lambda root: root == pr_tree)
+        assert rt._head_bound_repo_root(stale, "b" * 40) == pr_tree
+
+    def test_skips_dirty_matching_worktree_and_uses_clean_matching_worktree(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        stale, dirty, clean = tmp_path / "activated", tmp_path / "a-dirty", tmp_path / "z-clean"
+        stale.mkdir()
+        dirty.mkdir()
+        clean.mkdir()
+        monkeypatch.setattr(rt, "_discover_repo_root", lambda: None)
+        monkeypatch.setattr(rt, "_worktrees_of", lambda root: [clean, dirty])
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda root, sha: root in {dirty, clean})
+        monkeypatch.setattr(rt, "_repo_worktree_clean", lambda root: root == clean)
+        assert rt._head_bound_repo_root(stale, "d" * 40) == clean
+
+    def test_returns_none_when_only_matching_worktree_is_dirty(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        dirty = tmp_path / "dirty"
+        dirty.mkdir()
+        monkeypatch.setattr(rt, "_discover_repo_root", lambda: None)
+        monkeypatch.setattr(rt, "_worktrees_of", lambda root: [dirty])
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda root, sha: root == dirty)
+        monkeypatch.setattr(rt, "_repo_worktree_clean", lambda root: False)
+        assert rt._head_bound_repo_root(tmp_path, "e" * 40) is None
+
+    def test_none_when_no_checkout_is_the_reviewed_commit(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # fail-closed: no tree is the reviewed commit -> every critical keeps blocking
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_discover_repo_root", lambda: None)
+        monkeypatch.setattr(rt, "_worktrees_of", lambda root: [])
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda root, sha: False)
+        monkeypatch.setattr(rt, "_repo_worktree_clean", lambda root: True)
+        assert rt._head_bound_repo_root(tmp_path, "c" * 40) is None
+
+    def test_stale_caller_root_no_longer_disables_the_ratification_gate(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """End-to-end: a waivable critical is waived even though the caller handed us a
+        root that is NOT the reviewed head — the regression that wedged #4472."""
+        import hashlib
+
+        import yaml
+
+        rt = _load_review_team_module()
+        stale, pr_tree = tmp_path / "activated", tmp_path / "pr"
+        stale.mkdir()
+        doc = pr_tree / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True)
+        doc.write_text("Generic residual research.\n", encoding="utf-8")
+        decision_record = pr_tree / "decision-record.md"
+        decision_record.write_text("test", encoding="utf-8")
+        led = pr_tree / "config" / "governance" / "operator-ratifications.yaml"
+        led.parent.mkdir(parents=True)
+        secret = "test-public-gate-authority-secret"
+        monkeypatch.setenv(rt.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, secret)
+        entry = {
+            "id": "RAT-TEST-1",
+            "ratified": "2026-07-09",
+            "authority": "operator",
+            "decision_record": "test",
+            "decision_record_path": "decision-record.md",
+            "decision_record_sha256": hashlib.sha256(b"test").hexdigest(),
+            "class": "operator-privacy-residual",
+            "lenses": ["consent-provenance"],
+            "topics": ["residual"],
+            "files": ["docs/research/x.md"],
+            "files_sha256": {"docs/research/x.md": hashlib.sha256(doc.read_bytes()).hexdigest()},
+            "decision_record_authority_issuer": "claim-verification-council",
+        }
+        entry["decision_record_authority_signature"] = (
+            rt.public_gate_receipts.public_gate_authority_signature(
+                rt._decision_record_authority_payload(entry),
+                secret,
+            )
+        )
+        led.write_text(
+            yaml.safe_dump(
+                {
+                    "ratifications_schema": 1,
+                    "ratification_classes": {
+                        "operator-privacy-residual": {
+                            "authority": "operator",
+                            "safety_policy": "operator_privacy_residual",
+                        }
+                    },
+                    "ratifications": [entry],
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(rt, "_discover_repo_root", lambda: None)
+        monkeypatch.setattr(rt, "_worktrees_of", lambda root: [stale, pr_tree])
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda root, sha: root == pr_tree)
+        monkeypatch.setattr(rt, "_repo_worktree_clean", lambda root: root == pr_tree)
+        finding = {
+            "severity": "critical",
+            "lens": "consent-provenance",
+            "file": "docs/research/x.md",
+            "line": 1,
+            "title": "residual disclosure",
+            "detail": "semantic privacy claim",
+            "resolved": False,
+        }
+        reviews = [_review("codex-1", "codex", "block", findings=[finding])]
+        blocking, phantom = rt._blocking_criticals(
+            reviews,
+            stale,
+            head_sha="d" * 40,
+            release_authorized_head_sha="d" * 40,
+        )
+        assert blocking == [], "waivable critical must not block when a head-bound tree exists"
+        assert len(phantom) == 1, "waived critical must feed the quorum-promotion leg"
+        assert phantom[0][1]["_resolution_source"] == "operator-ratification"

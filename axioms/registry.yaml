@@ -21,9 +21,9 @@ axioms:
   - id: executive_function
     text: >
       This system serves as externalized executive function infrastructure.
-      The operator has ADHD and autism — task initiation, sustained attention,
-      and routine maintenance are genuine cognitive challenges. The system
-      must compensate for these, not add to cognitive load.
+      Task initiation, sustained attention, and routine maintenance are the
+      binding constraints the system exists to support. The system must
+      compensate for these, not add to cognitive load.
     weight: 95
     type: hardcoded
     created: "2026-03-03"

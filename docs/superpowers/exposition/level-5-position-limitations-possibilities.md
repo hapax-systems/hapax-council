@@ -36,7 +36,7 @@ The work crosses at least six research communities. Each sees a different facet:
 
 ### HCI / Ethics
 
-**What they see**: Neurodivergent accommodation as a constitutional requirement, not a UX feature. Single-operator sovereignty. Extended mind governance. Consent contracts for third parties in ambient sensing environments.
+**What they see**: Cognitive accommodation as a constitutional requirement, not a UX feature. Single-operator sovereignty. Extended mind governance. Consent contracts for third parties in ambient sensing environments.
 
 **What they'd scrutinize**: No user study. Self-reported outcomes. The consent model is unilateral — the operator sets terms. Third parties can opt in or out but can't negotiate terms.
 
@@ -72,7 +72,7 @@ The work crosses at least six research communities. Each sees a different facet:
 
 **Core claim**: Externalizing values as weighted axioms evaluated by independent LLM models produces stronger alignment guarantees than Constitutional AI or RLHF, at lower cost, with auditability, amendability, and separation of powers.
 
-**What makes it novel**: Alignment tax inversion. Norm refinement with interpretive canons. Neurodivergent accommodation as governance. Single-operator sovereignty as simplification.
+**What makes it novel**: Alignment tax inversion. Norm refinement with interpretive canons. Accommodation-as-governance. Single-operator sovereignty as simplification.
 
 **What it needs**: Governance overhead measurement (wall-clock, token cost). Axiom violation detection rate. Case study tracing consent through the full lifecycle. Honest limitations section.
 

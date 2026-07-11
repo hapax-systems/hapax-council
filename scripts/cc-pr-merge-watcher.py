@@ -8,6 +8,17 @@ invokes `scripts/cc-close <task_id> --pr N` for each.
 Cursor advances only on success; a failure on one PR does not block
 others, and does not lose them on the next run.
 
+Multi-PR lanes opt out per note: a task whose frontmatter carries
+``close_on_pr_merge: false`` is never auto-closed by this watcher — neither by
+the merged-PR cursor loop nor by the stale-state reconciler — because a lane
+spanning several PRs shares one task note, and auto-closing on the first
+merged PR has killed such lanes mid-flight. The lane owner closes explicitly
+via ``cc-close``. Three-way semantics: an explicit true-ish value (or the
+field's absence) keeps the auto-close default; a false-ish value (false/no/off,
+optionally quoted, optional trailing comment) opts out; any OTHER value on the
+field is an attempted opt-out the watcher cannot read, so it fails closed
+toward NOT closing and warns.
+
 Killswitch: ``HAPAX_CC_HYGIENE_OFF=1`` skips entirely (shared with
 PR1 sweeper + H8 hook).
 
@@ -30,7 +41,7 @@ import os
 import re
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -39,6 +50,9 @@ from typing import Any
 SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from github_pr_status import (  # noqa: E402
     GRAPHQL_BACKOFF_RC,
@@ -50,11 +64,23 @@ from github_pr_status import (  # noqa: E402
     run_graphql_rate_aware,
 )
 
+from shared.frontmatter import parse_frontmatter_with_diagnostics  # noqa: E402
+
 LOG = logging.getLogger("cc-pr-merge-watcher")
 
 DEFAULT_VAULT_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
 DEFAULT_CURSOR_PATH = Path.home() / ".cache" / "hapax" / "cc-pr-merge-watcher-cursor.txt"
 KILLSWITCH_ENV = "HAPAX_CC_HYGIENE_OFF"
+DEFAULT_SOURCE_ACTIVATION_WORKTREE = (
+    Path.home() / ".cache" / "hapax" / "source-activation" / "worktree"
+)
+DEFAULT_SOURCE_ACTIVATION_CURRENT = (
+    Path.home() / ".cache" / "hapax" / "source-activation" / "current.json"
+)
+DEFAULT_SOURCE_FRESHNESS_ALERT_PATH = (
+    Path.home() / ".cache" / "hapax" / "cc-pr-merge-watcher-source-freshness-alert.json"
+)
+SOURCE_FRESHNESS_ALERT_INTERVAL = timedelta(minutes=15)
 
 # Reform ENGINE auto-advance (CASE-SDLC-REFORM-001): after a close, nudge the
 # RTE manifest-drain dispatcher so a freshly-unblocked unit gets picked up
@@ -71,14 +97,211 @@ DEFAULT_REPO = os.environ.get("HAPAX_CC_PR_REPO", "hapax-systems/hapax-council")
 REQUIRED_QUEUE_CHECKS = ("lint", "test", "typecheck", "web-build", "vscode-build")
 
 
+class SourceActivationFreshnessError(RuntimeError):
+    """The deployed source-activation worktree is not fresh enough to mutate cc-task state."""
+
+
+def _resolve_path(path: Path) -> Path:
+    return path.expanduser().resolve(strict=False)
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return _resolve_path(left) == _resolve_path(right)
+
+
 def default_repo_root() -> Path:
     """Resolve cc-task tooling from activated source unless explicitly overridden."""
     raw = (
         os.environ.get("HAPAX_CC_TASK_TOOL_REPO_ROOT")
         or os.environ.get("HAPAX_SOURCE_ACTIVATE_WORKTREE")
-        or str(Path.home() / ".cache" / "hapax" / "source-activation" / "worktree")
+        or str(DEFAULT_SOURCE_ACTIVATION_WORKTREE)
     )
     return Path(raw).expanduser()
+
+
+def _source_activation_current_path() -> Path:
+    return Path(
+        os.environ.get("HAPAX_SOURCE_ACTIVATION_CURRENT") or DEFAULT_SOURCE_ACTIVATION_CURRENT
+    ).expanduser()
+
+
+def _read_source_activation_current(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _activation_worktree_paths(payload: Mapping[str, Any] | None) -> tuple[Path, ...]:
+    paths: list[Path] = [DEFAULT_SOURCE_ACTIVATION_WORKTREE]
+    env_path = os.environ.get("HAPAX_SOURCE_ACTIVATE_WORKTREE")
+    if env_path:
+        paths.append(Path(env_path).expanduser())
+    if isinstance(payload, Mapping):
+        active_path = payload.get("active_source_path")
+        if isinstance(active_path, str) and active_path.strip():
+            paths.append(Path(active_path).expanduser())
+    out: list[Path] = []
+    seen: set[Path] = set()
+    for path in paths:
+        resolved = _resolve_path(path)
+        if resolved not in seen:
+            out.append(path)
+            seen.add(resolved)
+    return tuple(out)
+
+
+def _repo_is_source_activation_worktree(
+    repo_root: Path,
+    payload: Mapping[str, Any] | None,
+) -> bool:
+    return any(_same_path(repo_root, path) for path in _activation_worktree_paths(payload))
+
+
+def _git_rev_parse(repo_root: Path, ref: str) -> str | None:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--verify", "--quiet", ref],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    value = proc.stdout.strip()
+    return value if value else None
+
+
+def _same_sha(left: str | None, right: str | None) -> bool:
+    lhs = str(left or "").strip().lower()
+    rhs = str(right or "").strip().lower()
+    return bool(lhs and rhs) and (lhs == rhs or lhs.startswith(rhs) or rhs.startswith(lhs))
+
+
+def assert_source_activation_fresh(repo_root: Path) -> None:
+    """Fail closed before task mutation when the deployed watcher checkout is stale.
+
+    The systemd watcher runs from the source-activation worktree. If that checkout lags
+    the local ``origin/main`` ref after a PR merges, a stale watcher can close task notes
+    using pre-merge logic before post-merge deploy catches up. Development and test
+    checkouts are intentionally outside this guard; only the activation worktree is bound
+    to the activation receipt and ``origin/main``.
+    """
+
+    current_path = _source_activation_current_path()
+    payload = _read_source_activation_current(current_path)
+    if not _repo_is_source_activation_worktree(repo_root, payload):
+        return
+    if payload is None:
+        raise SourceActivationFreshnessError(
+            f"missing or unreadable source activation receipt at {current_path}"
+        )
+
+    active_path = payload.get("active_source_path")
+    if (
+        isinstance(active_path, str)
+        and active_path.strip()
+        and not _same_path(repo_root, Path(active_path))
+    ):
+        raise SourceActivationFreshnessError(
+            f"repo root {repo_root} is not the active source path {active_path}"
+        )
+
+    active_head = str(payload.get("active_source_head") or "").strip()
+    if not active_head:
+        raise SourceActivationFreshnessError(
+            f"source activation receipt {current_path} lacks active_source_head"
+        )
+
+    repo_head = _git_rev_parse(repo_root, "HEAD")
+    if not _same_sha(repo_head, active_head):
+        raise SourceActivationFreshnessError(
+            f"activation HEAD {repo_head or '<missing>'} does not match active_source_head "
+            f"{active_head}"
+        )
+
+    origin_main = _git_rev_parse(repo_root, "origin/main")
+    if not origin_main:
+        raise SourceActivationFreshnessError(
+            f"source activation worktree {repo_root} cannot resolve origin/main"
+        )
+    if not _same_sha(origin_main, active_head):
+        raise SourceActivationFreshnessError(
+            f"active_source_head {active_head} lags origin/main {origin_main}; "
+            "run source activation/post-merge deploy before auto-closing cc-tasks"
+        )
+
+    receipt_origin_main = str(payload.get("origin_main_sha") or "").strip()
+    if receipt_origin_main and not _same_sha(receipt_origin_main, origin_main):
+        raise SourceActivationFreshnessError(
+            f"source activation receipt origin_main_sha {receipt_origin_main} does not "
+            f"match local origin/main {origin_main}"
+        )
+
+
+def alert_source_activation_freshness_blocked(
+    error: SourceActivationFreshnessError,
+    *,
+    repo_root: Path,
+    alert_path: Path = DEFAULT_SOURCE_FRESHNESS_ALERT_PATH,
+    now: datetime | None = None,
+) -> bool:
+    """Send a rate-limited operator alert when the source guard blocks a watcher tick."""
+
+    checked_now = now or datetime.now(UTC)
+    reason = str(error)
+    try:
+        payload = json.loads(alert_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+    if isinstance(payload, dict) and payload.get("reason") == reason:
+        try:
+            alerted_at = datetime.fromisoformat(
+                str(payload.get("alerted_at")).replace("Z", "+00:00")
+            )
+        except ValueError:
+            alerted_at = None
+        if alerted_at and checked_now - alerted_at <= SOURCE_FRESHNESS_ALERT_INTERVAL:
+            return False
+
+    message = (
+        "cc-pr-merge-watcher refused to close tasks because its source-activation "
+        f"checkout is stale: {reason}\n"
+        "Next action: run `systemctl --user start hapax-post-merge-deploy.service`, "
+        "verify `~/.cache/hapax/source-activation/current.json` names the merged "
+        "origin/main head, and only then restore/start hapax-cc-pr-merge-watcher.timer "
+        "if it is masked."
+    )
+    try:
+        from shared.notify import send_notification
+
+        send_notification(
+            title="cc-pr-merge-watcher source stale",
+            message=message,
+            priority="high",
+            tags=["rotating_light"],
+        )
+    except Exception as exc:  # noqa: BLE001 - alert failure must not hide the guard.
+        LOG.warning("source-freshness alert failed: %s", exc)
+        return False
+    alert_path.parent.mkdir(parents=True, exist_ok=True)
+    alert_path.write_text(
+        json.dumps(
+            {
+                "alerted_at": checked_now.isoformat().replace("+00:00", "Z"),
+                "reason": reason,
+                "repo_root": str(repo_root),
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return True
 
 
 @dataclass
@@ -205,6 +428,69 @@ class LinkedTask:
     pr_number: int
 
 
+# Multi-PR lane opt-out: `close_on_pr_merge: false` in the note frontmatter
+# means the lane owner closes explicitly; the watcher must never auto-close.
+# Three-way semantics, fail-closed toward NOT closing: an explicit true-ish value (or
+# the field's absence) keeps the auto-close default; a false-ish value opts out; any
+# OTHER value on the field — malformed quoting, typos, unexpected spellings — is an
+# attempted opt-out we cannot read, so the watcher declines to close and warns rather
+# than proceeding to cc-close (auto-closing on a malformed opt-out is exactly the
+# lane-killing failure this gate exists to stop).
+_FALSEISH_STRINGS = frozenset({"false", "no", "off"})
+_TRUEISH_STRINGS = frozenset({"true", "yes", "on"})
+
+
+def declines_close_on_pr_merge(text: str) -> bool:
+    """True when the note FRONTMATTER opts out of merge-triggered auto-close.
+
+    Parsed with the repo-canonical frontmatter parser (shared/frontmatter.py) so
+    YAML semantics — quoted spellings, no/off booleans, inline comments, duplicate
+    keys, CRLF, multi-line values containing ``---`` — resolve the way every other
+    consumer resolves them. Scoping to the leading block comes with the parser: a
+    body or session-log line quoting ``close_on_pr_merge: false`` never opts out.
+
+    Failure direction is uniformly SAFE toward not closing: when the note carries
+    the field with an unreadable value, or the frontmatter fails to parse while the
+    raw text mentions the field at all, the watcher treats it as an ATTEMPTED
+    opt-out, declines to close, and warns — auto-closing on a malformed opt-out is
+    exactly the lane-killing failure this gate exists to stop. A cleanly parsed
+    note without the field (or with an explicit true-ish value) keeps the
+    auto-close default.
+    """
+    stripped = text.lstrip("﻿\n\r")  # a BOM/leading blank line must not hide the block
+    result = parse_frontmatter_with_diagnostics(stripped)
+    frontmatter = result.frontmatter if result.ok else None
+    if isinstance(frontmatter, dict):
+        if "close_on_pr_merge" not in frontmatter:
+            return False
+        value = frontmatter["close_on_pr_merge"]
+        if value is False:
+            return True
+        if value is True:
+            return False
+        if isinstance(value, str):
+            token = value.strip().lower()
+            if token in _FALSEISH_STRINGS:
+                return True
+            if token in _TRUEISH_STRINGS:
+                return False
+        LOG.warning(
+            "close_on_pr_merge has unreadable value %r — treating as opt-out (fail "
+            "closed: not auto-closing); fix the note frontmatter to a plain true/false",
+            value,
+        )
+        return True
+    # Frontmatter failed to parse. If the note mentions the field at all, this is an
+    # attempted opt-out we cannot read — fail closed toward not closing.
+    if "close_on_pr_merge" in stripped:
+        LOG.warning(
+            "note frontmatter failed to parse and mentions close_on_pr_merge — "
+            "treating as opt-out (fail closed: not auto-closing); repair the note"
+        )
+        return True
+    return False
+
+
 def read_cursor(cursor_path: Path) -> datetime:
     """Read last-scan timestamp; default to 24h ago when missing."""
     if not cursor_path.is_file():
@@ -282,7 +568,11 @@ def fetch_merged_prs(
 
 
 def find_linked_tasks(pr_number: int, *, vault_root: Path = DEFAULT_VAULT_ROOT) -> list[LinkedTask]:
-    """Locate vault cc-task notes (in ``active/``) whose ``pr: N`` matches."""
+    """Locate vault cc-task notes (in ``active/``) whose ``pr: N`` matches.
+
+    Notes declaring ``close_on_pr_merge: false`` are excluded (multi-PR lane
+    opt-out): the lane owner closes them explicitly, never this watcher.
+    """
     active = vault_root / "active"
     if not active.is_dir():
         return []
@@ -299,8 +589,37 @@ def find_linked_tasks(pr_number: int, *, vault_root: Path = DEFAULT_VAULT_ROOT) 
         m = task_id_pattern.search(text)
         if not m:
             continue
-        tasks.append(LinkedTask(task_id=m.group(1).strip(), note_path=note, pr_number=pr_number))
+        task_id = m.group(1).strip()
+        if declines_close_on_pr_merge(text):
+            LOG.info(
+                "task %s declares close_on_pr_merge: false — lane owner closes explicitly",
+                task_id,
+            )
+            continue
+        tasks.append(LinkedTask(task_id=task_id, note_path=note, pr_number=pr_number))
     return tasks
+
+
+def count_linked_opt_out_tasks(pr_number: int, *, vault_root: Path = DEFAULT_VAULT_ROOT) -> int:
+    """Count linked active notes that explicitly opt out of merge-triggered close."""
+    active = vault_root / "active"
+    if not active.is_dir():
+        return 0
+    pr_pattern = re.compile(rf"^pr:\s*{pr_number}\s*$", flags=re.MULTILINE)
+    task_id_pattern = re.compile(r"^task_id:\s*(.+?)\s*$", flags=re.MULTILINE)
+    count = 0
+    for note in sorted(active.glob("*.md")):
+        try:
+            text = note.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if (
+            pr_pattern.search(text)
+            and task_id_pattern.search(text)
+            and declines_close_on_pr_merge(text)
+        ):
+            count += 1
+    return count
 
 
 def find_linked_task(pr_number: int, *, vault_root: Path = DEFAULT_VAULT_ROOT) -> LinkedTask | None:
@@ -410,13 +729,22 @@ def run_watcher(
 ) -> dict[str, int]:
     """Run one watcher cycle.
 
-    Returns a dict of counters: ``{merged: int, linked: int, closed: int, failed: int}``.
+    Returns a dict of counters:
+    ``{merged: int, linked: int, opted_out: int, closed: int, failed: int}``.
     """
     if os.environ.get(KILLSWITCH_ENV) == "1":
         LOG.info("killswitch %s=1; skipping watcher cycle", KILLSWITCH_ENV)
-        return {"merged": 0, "linked": 0, "closed": 0, "failed": 0, "skipped": 1}
+        return {
+            "merged": 0,
+            "linked": 0,
+            "opted_out": 0,
+            "closed": 0,
+            "failed": 0,
+            "skipped": 1,
+        }
 
     repo_root = repo_root or default_repo_root()
+    assert_source_activation_fresh(repo_root)
     cursor = read_cursor(cursor_path)
     LOG.info("scanning merged PRs since %s", cursor.isoformat())
 
@@ -424,14 +752,25 @@ def run_watcher(
     LOG.info("found %d merged PRs since cursor", len(merged))
 
     linked = 0
+    opted_out = 0
     closed = 0
     failed = 0
     newest_seen = cursor  # start where we were; bump only across a failure-free prefix
     first_failure_at: datetime | None = None
     for pr in sorted(merged, key=lambda p: p.merged_at):
         tasks = find_linked_tasks(pr.number, vault_root=vault_root)
+        pr_opted_out = count_linked_opt_out_tasks(pr.number, vault_root=vault_root)
+        if pr_opted_out:
+            opted_out += pr_opted_out
+            LOG.info(
+                "PR #%d (%s) has %d linked cc-task(s) opted out of auto-close; skipping",
+                pr.number,
+                pr.head_branch,
+                pr_opted_out,
+            )
         if not tasks:
-            LOG.info("PR #%d (%s) has no linked cc-task; skipping", pr.number, pr.head_branch)
+            if not pr_opted_out:
+                LOG.info("PR #%d (%s) has no linked cc-task; skipping", pr.number, pr.head_branch)
             # Still advance cursor for the success prefix — no work to lose.
             if first_failure_at is None and pr.merged_at > newest_seen:
                 newest_seen = pr.merged_at
@@ -473,6 +812,7 @@ def run_watcher(
     return {
         "merged": len(merged),
         "linked": linked,
+        "opted_out": opted_out,
         "closed": closed,
         "failed": failed,
         "skipped": 0,
@@ -567,6 +907,12 @@ def _close_merged_note(
 ) -> bool:
     """cc-close a task whose PR is merged (the cursor loop missed it). True on close."""
     task_id = _task_id_from_note(note, text)
+    if declines_close_on_pr_merge(text):
+        LOG.info(
+            "task %s declares close_on_pr_merge: false — lane owner closes explicitly",
+            task_id,
+        )
+        return False
     if dry_run:
         LOG.info("[dry-run] would cc-close task %s (PR #%s merged)", task_id, pr_num)
         return True
@@ -646,8 +992,16 @@ def _repair_pr_null_note(
         LOG.info(
             "[dry-run] would re-derive PR #%s for %s (branch %s)", pr_number, note.stem, branch
         )
-        if pr_state == "MERGED":
-            counts["closed"] += 1
+        _apply_pr_state(
+            note,
+            text,
+            pr_number,
+            pr_state,
+            repo_root=repo_root,
+            dry_run=dry_run,
+            runner=runner,
+            counts=counts,
+        )
         return
     new_text = re.sub(r"^pr:\s*null\s*$", f"pr: {pr_number}", text, count=1, flags=re.MULTILINE)
     note.write_text(new_text, encoding="utf-8")
@@ -686,6 +1040,7 @@ def reconcile_stale_pr_states(
     """
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
+    assert_source_activation_fresh(repo_root)
     active = vault_root / "active"
     counts = {"scanned": 0, "stale": 0, "closed": 0, "repaired": 0}
     if not active.is_dir():
@@ -922,26 +1277,34 @@ def main(argv: list[str] | None = None) -> int:
         stream=sys.stderr,
     )
 
-    counters = run_watcher(
-        cursor_path=args.cursor_path,
-        vault_root=args.vault_root,
-        repo_root=args.repo_root,
-        dry_run=args.dry_run,
-    )
-    LOG.info("watcher cycle done: %s", counters)
+    try:
+        counters = run_watcher(
+            cursor_path=args.cursor_path,
+            vault_root=args.vault_root,
+            repo_root=args.repo_root,
+            dry_run=args.dry_run,
+        )
+        LOG.info("watcher cycle done: %s", counters)
 
-    # Event-driven complement to the RTE 270s poll: a close may have flipped a
-    # reform dep to MERGED, so nudge the manifest-drain dispatcher to pick up the
-    # next ready unit without waiting for the next poll. Fail-open.
-    if not args.dry_run and counters.get("closed", 0) > 0:
-        if trigger_reform_dispatch(repo_root=args.repo_root):
-            LOG.info("nudged reform auto-advance dispatcher after %d close(s)", counters["closed"])
+        # Event-driven complement to the RTE 270s poll: a close may have flipped a
+        # reform dep to MERGED, so nudge the manifest-drain dispatcher to pick up the
+        # next ready unit without waiting for the next poll. Fail-open.
+        if not args.dry_run and counters.get("closed", 0) > 0:
+            if trigger_reform_dispatch(repo_root=args.repo_root):
+                LOG.info(
+                    "nudged reform auto-advance dispatcher after %d close(s)",
+                    counters["closed"],
+                )
 
-    stale_counters = reconcile_stale_pr_states(
-        vault_root=args.vault_root,
-        repo_root=args.repo_root,
-        dry_run=args.dry_run,
-    )
+        stale_counters = reconcile_stale_pr_states(
+            vault_root=args.vault_root,
+            repo_root=args.repo_root,
+            dry_run=args.dry_run,
+        )
+    except SourceActivationFreshnessError as exc:
+        LOG.error("source-activation freshness guard blocked merge watcher: %s", exc)
+        alert_source_activation_freshness_blocked(exc, repo_root=args.repo_root)
+        return 2
     if stale_counters["stale"]:
         LOG.info("stale PR drain: %s", stale_counters)
 

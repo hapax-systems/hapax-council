@@ -1,0 +1,218 @@
+# cc-pr-merge-watcher opt-out runtime witness
+
+Date: 2026-07-09
+
+Scope: PR #4472 / `cc-task-sdlc-wave3d-20260709`
+
+Purpose: provide a durable live-runtime-composition witness for the merge-watcher
+`close_on_pr_merge: false` path and the source-activation freshness guard. The
+production reconciliation function was invoked against an isolated temporary
+vault fixture containing the reviewed task frontmatter shape. The GitHub runner
+was stubbed to report PR #4472 as `MERGED`; the run used `dry_run=True` and a
+temporary repo root, so it could not mutate the real vault or execute the real
+`scripts/cc-close`. PR-head code now also fails closed before any merge-watcher
+task mutation when the deployed source-activation worktree is stale relative to
+the activation receipt and local `origin/main`.
+
+Recheck command:
+
+```bash
+uv run python - <<'PY'
+from __future__ import annotations
+
+import importlib.util
+import json
+import logging
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+repo = Path(".").resolve()
+script = repo / "scripts" / "cc-pr-merge-watcher.py"
+module_name = "cc_pr_merge_watcher_witness"
+spec = importlib.util.spec_from_file_location(module_name, script)
+watcher = importlib.util.module_from_spec(spec)
+assert spec and spec.loader
+sys.modules[module_name] = watcher
+spec.loader.exec_module(watcher)
+
+note_name = "cc-task-sdlc-wave3d-20260709.md"
+task_note_text = """---
+task_id: cc-task-sdlc-wave3d-20260709
+status: pr_open
+pr: 4472
+close_on_pr_merge: false
+---
+
+fixture body: multi-PR lane remains open until the lane owner closes explicitly
+"""
+
+
+class Runner:
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+        self.cc_close_invocations: list[list[str]] = []
+
+    def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        self.calls.append(list(cmd))
+        if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+            path = cmd[6]
+            match = re.fullmatch(r"repos/hapax-systems/hapax-council/pulls/(\d+)", path)
+            if match:
+                payload = {
+                    "number": int(match.group(1)),
+                    "state": "closed",
+                    "merged": True,
+                    "merged_at": "2026-07-09T12:50:00Z",
+                    "draft": False,
+                }
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        if cmd and str(cmd[0]).endswith("/scripts/cc-close"):
+            self.cc_close_invocations.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, "closed\n", "")
+        return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
+
+
+with tempfile.TemporaryDirectory(prefix="cc-pr-merge-watcher-witness-") as td:
+    root = Path(td)
+    vault = root / "vault"
+    active = vault / "active"
+    active.mkdir(parents=True)
+    note = active / note_name
+    note.write_text(task_note_text, encoding="utf-8")
+
+    fake_repo = root / "repo"
+    (fake_repo / "scripts").mkdir(parents=True)
+    (fake_repo / "scripts" / "cc-close").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (fake_repo / "scripts" / "cc-close").chmod(0o755)
+
+    runner = Runner()
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+    counters = watcher.reconcile_stale_pr_states(
+        vault_root=vault,
+        repo_root=fake_repo,
+        dry_run=True,
+        runner=runner,
+    )
+    print("fixture_frontmatter_pr", "4472")
+    print("fixture_frontmatter_close_on_pr_merge", "false")
+    print("stubbed_pr_state", "MERGED")
+    print("dry_run", True)
+    print("counters", json.dumps(counters, sort_keys=True))
+    print("gh_calls", len([call for call in runner.calls if call[:2] == ["gh", "api"]]))
+    print("cc_close_invocations", len(runner.cc_close_invocations))
+    print("note_still_active_contains_pr_open", "status: pr_open" in note.read_text())
+PY
+```
+
+Observed output:
+
+```text
+INFO:cc-pr-merge-watcher:task cc-task-sdlc-wave3d-20260709 declares close_on_pr_merge: false — lane owner closes explicitly
+fixture_frontmatter_pr 4472
+fixture_frontmatter_close_on_pr_merge false
+stubbed_pr_state MERGED
+dry_run True
+counters {"closed": 0, "repaired": 0, "scanned": 1, "stale": 0}
+gh_calls 1
+cc_close_invocations 0
+note_still_active_contains_pr_open True
+```
+
+Source-freshness guard evidence:
+
+```bash
+uv run pytest tests/test_cc_pr_merge_watcher.py::TestSourceActivationFreshness -q
+```
+
+Observed output:
+
+```text
+..                                                                       [100%]
+2 passed in 3.98s
+```
+
+Guard contract at PR head:
+
+- Applies only when `--repo-root` resolves to the source-activation worktree
+  named by `HAPAX_SOURCE_ACTIVATE_WORKTREE`, the default activation path, or
+  `current.json`'s `active_source_path`.
+- Requires `current.json` to name `active_source_head`.
+- Requires git `HEAD` in the activation worktree to match `active_source_head`.
+- Requires git `origin/main` in the activation worktree to match
+  `active_source_head`; if local main advances after activation, the watcher
+  exits nonzero before merged-PR cursor processing or stale-state reconciliation
+  can invoke `cc-close`.
+- Requires `current.json`'s `origin_main_sha`, when present, to match the local
+  `origin/main` ref.
+- When the guard blocks a watcher tick, the CLI emits a high-priority,
+  rate-limited notification titled `cc-pr-merge-watcher source stale` with the
+  next action: run `hapax-post-merge-deploy.service`, verify source activation
+  now names merged `origin/main`, and restore/start the timer only after that
+  verification.
+
+Live timer composition observation:
+
+```text
+systemctl --user status hapax-cc-pr-merge-watcher.timer hapax-cc-pr-merge-watcher.service --no-pager
+pre-guard observation: timer was active (waiting), enabled; service executed from source activation
+
+systemctl --user cat hapax-cc-pr-merge-watcher.service hapax-cc-pr-merge-watcher.timer --no-pager
+ExecStart=$HOME/.local/bin/uv --directory $HOME/.cache/hapax/source-activation/worktree run python scripts/cc-pr-merge-watcher.py --repo-root $HOME/.cache/hapax/source-activation/worktree
+WorkingDirectory=$HOME/.cache/hapax/source-activation/worktree
+timer: OnBootSec=3min; OnUnitActiveSec=9min; RandomizedDelaySec=45s; AccuracySec=30s
+
+pre-merge deployment-race guard, executed 2026-07-09 09:08 CDT:
+systemctl --user disable --now hapax-cc-pr-merge-watcher.timer
+systemctl --user stop hapax-cc-pr-merge-watcher.service
+systemctl --user is-enabled hapax-cc-pr-merge-watcher.timer
+disabled
+systemctl --user is-active hapax-cc-pr-merge-watcher.timer
+inactive
+systemctl --user is-active hapax-cc-pr-merge-watcher.service
+inactive
+
+review recheck, executed 2026-07-09 11:22 CDT:
+systemctl --user mask --runtime --now hapax-cc-pr-merge-watcher.timer
+Created symlink '/run/user/1000/systemd/user/hapax-cc-pr-merge-watcher.timer' -> '/dev/null'.
+systemctl --user mask --force --now hapax-cc-pr-merge-watcher.timer
+Failed to mask unit: File '~/.config/systemd/user/hapax-cc-pr-merge-watcher.timer' already exists
+mv ~/.config/systemd/user/hapax-cc-pr-merge-watcher.timer ~/.config/systemd/user/hapax-cc-pr-merge-watcher.timer.unmasked-20260709T1622Z
+ln -s /dev/null ~/.config/systemd/user/hapax-cc-pr-merge-watcher.timer
+systemctl --user daemon-reload
+systemctl --user is-enabled hapax-cc-pr-merge-watcher.timer
+masked
+systemctl --user is-active hapax-cc-pr-merge-watcher.timer
+inactive
+systemctl --user status hapax-cc-pr-merge-watcher.timer --no-pager --lines=8
+Loaded: masked (Reason: Unit hapax-cc-pr-merge-watcher.timer is masked.)
+Active: inactive (dead)
+```
+
+Interpretation:
+
+- The production stale-PR reconciliation path reached the merged-PR closure branch.
+- The task note's `close_on_pr_merge: false` frontmatter declined the close.
+- No `cc-close` command was invoked.
+- The fixture note remained `status: pr_open`.
+- The live timer's configured execution path is the source-activation worktree.
+- The live timer is now masked and inactive, and the service is inactive. This
+  prevents the old deployed watcher from processing PR #4472 during the
+  merge-to-deploy window.
+- After this PR head is deployed, the code-level source freshness guard remains
+  in force even when the timer is restored: a stale activation checkout cannot
+  close task notes because the watcher exits before mutation.
+
+Post-merge obligation: after #4472 merges, run `systemctl --user start
+hapax-post-merge-deploy.service`, verify the source-activation worktree contains
+the merged head, `grep -c close_on_pr_merge
+~/.cache/hapax/source-activation/worktree/scripts/cc-pr-merge-watcher.py` returns
+nonzero, and `grep -c assert_source_activation_fresh
+~/.cache/hapax/source-activation/worktree/scripts/cc-pr-merge-watcher.py` returns
+nonzero. Then restore
+`~/.config/systemd/user/hapax-cc-pr-merge-watcher.timer.unmasked-20260709T1622Z`
+to `~/.config/systemd/user/hapax-cc-pr-merge-watcher.timer`, reload systemd,
+and re-enable/start `hapax-cc-pr-merge-watcher.timer`.

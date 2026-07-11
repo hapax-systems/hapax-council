@@ -95,7 +95,7 @@ Source gaps found:
   money-receipt claims.
 - `market/value`: support value propositions, token-capital economics,
   publication strategy, novelty, or external value claims.
-- `personal/operator`: operator biography, neurodivergence, family/dayjob, local
+- `personal/operator`: operator biography, personal-health categories, family/dayjob, local
   paths, or identity/privacy details.
 - `theoretical`: proposed conceptual frameworks, interpretation, or research
   hypotheses.

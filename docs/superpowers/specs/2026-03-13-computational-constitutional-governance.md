@@ -132,7 +132,7 @@ The system is governed by five axioms, weighted by priority, enforced at multipl
 | Axiom | Weight | Scope | Type | Core Constraint |
 |-------|--------|-------|------|-----------------|
 | `single_user` | 100 | constitutional | hardcoded | One operator. No auth, roles, or collaboration. |
-| `executive_function` | 95 | constitutional | hardcoded | System compensates for ADHD/autism, never adds cognitive load. |
+| `executive_function` | 95 | constitutional | hardcoded | System compensates for executive-function constraints, never adds cognitive load. |
 | `corporate_boundary` | 90 | domain:infra | softcoded | Work data stays in employer systems. |
 | `interpersonal_transparency` | 88 | constitutional | hardcoded | No persistent state about non-operator persons without consent contract. |
 | `management_governance` | 85 | domain:mgmt | softcoded | LLMs prepare, humans deliver. No generated feedback about individuals. |
@@ -392,16 +392,16 @@ Sovereignty is architectural, not contractual. The data physically resides on in
 
 **Limits of architectural sovereignty**: Cloud API dependency (LiteLLM routes to Anthropic/Gemini), hardware single point of failure, model quality gap (Ollama < frontier), supply chain dependency (packages, weights). The `corporate_boundary` axiom acknowledges the cloud trade-off explicitly.
 
-### 7.2 Neurodivergent Accommodation as Governance
+### 7.2 Executive-Function Accommodation as Governance
 
-The `executive_function` axiom (weight 95) treats ADHD and autism accommodation not as UX features but as constitutional requirements:
+The `executive_function` axiom (weight 95) treats executive-function accommodation not as a UX feature but as a constitutional requirement:
 
 - Zero-config agents (no setup steps that require sustained attention)
 - Errors include specific next actions (compensate for task initiation difficulty)
 - Routine work automated on schedules (compensate for routine maintenance challenge)
-- Accommodations proposed, not imposed (respect operator autonomy)
+- Accommodations proposed, not imposed (respect explicit confirmation)
 
-This is grounded in the social model of disability: the system adapts to the operator's cognitive architecture, not the reverse. The accommodation engine discovers patterns (time perception, demand sensitivity, energy cycles, task initiation) and proposes specific system adaptations, each requiring explicit operator confirmation.
+This is grounded in the social model of disability: the system adapts to the user's working context, not the reverse. The accommodation engine discovers patterns (time perception, demand sensitivity, energy cycles, task initiation) and proposes specific system adaptations, each requiring explicit confirmation.
 
 Making accommodation a governance axiom rather than a feature means: it cannot be deprioritized when deadlines press (T0 enforcement), it derives 35 implications with enforcement tiers, it governs other features (the axiom judge evaluates new features against it), and it builds precedent through the case law system.
 
@@ -651,7 +651,7 @@ No published system combines:
 2. **Consent contracts as architectural primitives** — working implementation with opt-in, inspection, revocation, scope enumeration, purge, and (planned) invariant threading through all transactional chains via DLM labels and why-provenance
 3. **Alignment tax inversion** — LLM agents as both the governed entities and the governance enforcement mechanism, with empirically measured overhead (~20%) below literature baseline (30-40%)
 4. **Single-operator constitutional sovereignty** — one person, total sovereignty, no aggregation problem, self-authored constitution with democratic legitimacy, architectural not contractual enforcement
-5. **Neurodivergent accommodation as governance axiom** — cognitive accommodation enforced by the same mechanisms as data protection and consent, with 35 derived implications at T0/T1/T2 tiers
+5. **Cognitive accommodation as governance axiom** — accommodation enforced by the same mechanisms as data protection and consent, with 35 derived implications at T0/T1/T2 tiers
 6. **Separation of value enforcement from value internalization** — principles externalized as axioms evaluated by independent models, not embedded in the acting model's weights
 7. **Norm refinement with interpretive canons** — traceability from abstract value through derivation canon to executable enforcement pattern, exceeding the most sophisticated MAS frameworks (OperA, MOISE+, ISLANDER)
 8. **Epistemic carrier dynamics** — bounded cross-domain fact carrying for distributed error correction, with formal grounding in factor graphs, LDPC codes, and network error correction theory, solving a documented lethal problem (cross-domain knowledge silos) that no MAS framework addresses
@@ -698,7 +698,7 @@ Weiser (calm computing, 1991) → Clark & Chalmers (extended mind, 1998) → Ost
 
 11. **Legal lineage documentation**: Each axiom should document which legal concepts it draws from (Kolt et al., "Legal Alignment," arXiv:2601.04175). The `interpersonal_transparency` axiom is essentially data protection law in YAML — making this lineage explicit strengthens both legitimacy and interpretive framework.
 
-12. **Constitutional amendment protocol**: Axioms have the data model for amendment (`supersedes`, `status`, `schema_version`) but no formal process. For `hardcoded` axioms, these function as eternity clauses (unamendable — any change requires a new constitutional moment). For `softcoded` axioms, consider: proposal with rationale → automated impact analysis (affected implications, invalidated precedents) → cooling-off period (minimum 7 days, critical for neurodivergent operator to avoid impulsive governance changes) → explicit ratification → cascade regeneration of affected implications via `axiom_derivation.py`. Constitutional theory (Tsebelis) shows amendment rigidity does not straightforwardly correlate with formal difficulty — interpretive evolution via precedents is already the primary mechanism.
+12. **Constitutional amendment protocol**: Axioms have the data model for amendment (`supersedes`, `status`, `schema_version`) but no formal process. For `hardcoded` axioms, these function as eternity clauses (unamendable — any change requires a new constitutional moment). For `softcoded` axioms, consider: proposal with rationale → automated impact analysis (affected implications, invalidated precedents) → cooling-off period (minimum 7 days, critical for the operator to avoid impulsive governance changes) → explicit ratification → cascade regeneration of affected implications via `axiom_derivation.py`. Constitutional theory (Tsebelis) shows amendment rigidity does not straightforwardly correlate with formal difficulty — interpretive evolution via precedents is already the primary mechanism.
 
 13. **Precedent injection into agent prompts**: Case-augmented deliberative alignment (CADA, arXiv:2601.08000) shows that simple safety codes + precedent cases outperform detailed rule enumeration (0.2 ASR vs 0.3 for SFT-only on StrongREJECT). The system should retrieve the 3-5 most relevant precedents per axiom when initializing agents and include them in system prompts alongside axiom text.
 

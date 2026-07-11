@@ -30,7 +30,7 @@ audiences:
 
       Her interests:
       - The genuine uniqueness of this system in the LLM space
-      - How it helps the operator with ADHD and autism — practical daily impact
+      - How it supports the operator's executive function — practical daily impact
       - How it helps the operator at work and connect with people
       - The nuanced knowledge systems that underlie the architecture
       - Systems design thinking (knowledge flow, partitioning, agent dynamics)
@@ -154,7 +154,7 @@ audiences:
         - operational cadence and scheduling
         - honest limitations and tradeoffs
       skip:
-        - personal context and neurodivergence details (mention briefly as motivation, don't dwell)
+        - personal context and personal-health details (omit entirely; never surface neurotype or health information)
         - music production domain
         - management domain internals (people data, 1:1 prep content)
         - basic explanations of technologies Chris already knows deeply

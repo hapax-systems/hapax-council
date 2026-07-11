@@ -368,7 +368,7 @@ Systemd: `visual-layer-aggregator.service`
 
 **Epistemic status: Working.** Softmax temperature-based content selection.
 
-Selects what to display in the ambient layer from 4 content pools: ambient text (system aphorisms, operator quotes), profile facts, nudge summaries, studio moments. Uses the SEEV attention model (Salience, Effort, Expectancy, Value) adapted for AuDHD attention patterns.
+Selects what to display in the ambient layer from 4 content pools: ambient text (system aphorisms, operator quotes), profile facts, nudge summaries, studio moments. Uses the SEEV attention model (Salience, Effort, Expectancy, Value) adapted for high-variance attention patterns.
 
 ### Stimmung Collector
 

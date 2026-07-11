@@ -8,7 +8,7 @@ When talking to **MAS people**: "We extend OperA's organizational model with two
 
 When talking to **AI Safety people**: "We demonstrate that externalizing values as weighted axioms evaluated by independent models produces governance overhead below the literature baseline, while providing what Constitutional AI cannot: auditability, amendability, separation of powers, and accumulated case law. The key insight: the alignment tax inverts when LLMs serve as both the governed and the governance."
 
-When talking to **HCI/Ethics people**: "We treat neurodivergent accommodation not as a UX feature but as a constitutional requirement, enforced by the same mechanisms as consent. The system is a governed cognitive extension — Clark & Chalmers formalized, with a self-authored constitution protecting the operator's autonomy and the autonomy of people in their environment."
+When talking to **HCI/Ethics people**: "We treat cognitive accommodation not as a UX feature but as a constitutional requirement, enforced by the same mechanisms as consent. The system is a governed cognitive extension — Clark & Chalmers formalized, with a self-authored constitution protecting the operator's autonomy and the autonomy of people in their environment."
 
 When talking to **industry/practitioners**: "We built a personal AI system with ambient sensing that actually enforces consent through the entire pipeline, not just at the front door. Consent labels travel with data. Revocation cascades through the system. The governance overhead is 20%. The code is open and the types are extractable."
 

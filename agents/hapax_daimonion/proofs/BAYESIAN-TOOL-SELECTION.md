@@ -13,7 +13,7 @@ during a conversation about cognitive load and context switching:
 This connects three threads: the tool-call-as-epistemic-act research
 (TOOL-CALLS.md), alpha's Bayesian integration map (5 probabilistic
 systems underutilized by the voice pipeline), and the operator's
-lived experience of ADHD mode-switching difficulty.
+lived experience of mode-switching difficulty.
 
 ## Core Idea
 
@@ -64,8 +64,8 @@ strategy, not just apply one.**
 **ADHD and attentional set shifting**: Adults with ADHD show selective
 impairment in shifting attention between task sets. The difficulty is
 not in performing tasks but in transitioning between them. A Bayesian
-mode system that handles transitions for the operator directly
-addresses this — the system does the set-shifting, not the person.
+mode system that handles transitions automatically directly
+addresses this — the set-shifting moves into the system itself.
 
 **MCP (Model Context Protocol)**: Defines primitives for tool
 integration — Tools (callable), Resources (contextual data), Prompts
