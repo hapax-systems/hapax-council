@@ -14,9 +14,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from agentgov.consent_label import ConsentLabel
-from agentgov.labeled import Labeled
-from agentgov.principal import Principal
+from policyflow.consent_label import ConsentLabel
+from policyflow.labeled import Labeled
+from policyflow.principal import Principal
 
 
 @dataclass(frozen=True)

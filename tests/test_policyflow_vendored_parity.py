@@ -1,8 +1,8 @@
-"""Parity tests: vendored governance modules must export the same types as agentgov."""
+"""Parity tests: vendored governance modules must export the same types as policyflow."""
 
 from __future__ import annotations
 
-import agentgov
+import policyflow
 
 VENDORED_CORE_TYPES = {
     "Veto",
@@ -54,7 +54,7 @@ def test_shared_governance_reexports_core():
     assert not missing, f"shared.governance missing core types: {missing}"
 
 
-def test_agentgov_package_has_full_surface():
-    exported = _exported_names(agentgov)
+def test_policyflow_package_has_full_surface():
+    exported = _exported_names(policyflow)
     missing = FULL_PACKAGE_TYPES - exported
-    assert not missing, f"agentgov package missing: {missing}"
+    assert not missing, f"policyflow package missing: {missing}"

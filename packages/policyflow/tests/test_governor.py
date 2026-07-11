@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import unittest
 
-from agentgov.agent_governor import create_agent_governor
-from agentgov.consent_label import ConsentLabel
-from agentgov.governor import GovernorPolicy, GovernorWrapper, consent_input_policy
-from agentgov.labeled import Labeled
+from policyflow.agent_governor import create_agent_governor
+from policyflow.consent_label import ConsentLabel
+from policyflow.governor import GovernorPolicy, GovernorWrapper, consent_input_policy
+from policyflow.labeled import Labeled
 
 
 class TestGovernorWrapper(unittest.TestCase):

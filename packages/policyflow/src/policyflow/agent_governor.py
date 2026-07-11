@@ -11,14 +11,14 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from agentgov.consent_label import ConsentLabel
-from agentgov.governor import (
+from policyflow.consent_label import ConsentLabel
+from policyflow.governor import (
     GovernorPolicy,
     GovernorWrapper,
     consent_input_policy,
     consent_output_policy,
 )
-from agentgov.labeled import Labeled
+from policyflow.labeled import Labeled
 
 _log = logging.getLogger(__name__)
 

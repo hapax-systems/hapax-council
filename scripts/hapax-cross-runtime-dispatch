@@ -493,7 +493,7 @@ if [[ -x "$METHODOLOGY_DISPATCH" ]]; then
     fi
     echo "  delegating: ${METHODOLOGY_CMD[*]} ${DELEGATE_ARGS[*]}"
     if [[ -z "$METHODOLOGY_DISPATCH_ENV" ]]; then
-        export PYTHONPATH="$REPO_ROOT:$REPO_ROOT/packages/agentgov/src:${PYTHONPATH:-}"
+        export PYTHONPATH="$REPO_ROOT:$REPO_ROOT/packages/policyflow/src:${PYTHONPATH:-}"
     fi
     exec "${METHODOLOGY_CMD[@]}" "${DELEGATE_ARGS[@]}"
 fi

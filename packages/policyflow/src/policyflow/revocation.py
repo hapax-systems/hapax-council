@@ -11,9 +11,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from agentgov.carrier import CarrierRegistry
-from agentgov.consent import ConsentRegistry
-from agentgov.labeled import Labeled
+from policyflow.carrier import CarrierRegistry
+from policyflow.consent import ConsentRegistry
+from policyflow.labeled import Labeled
 
 
 @dataclass(frozen=True)

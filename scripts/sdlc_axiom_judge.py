@@ -245,7 +245,7 @@ def _wrap_says(verdicts: list[SemanticVerdict], model_id: str) -> list[SemanticV
     The Says wrapper is recorded in the verdict's provenance_model field and
     can be reconstructed by consumers who need formal provenance.
     """
-    from agentgov import Principal, PrincipalKind, ProvenanceExpr, Says
+    from policyflow import Principal, PrincipalKind, ProvenanceExpr, Says
 
     principal = Principal(
         id=f"model:{model_id}",

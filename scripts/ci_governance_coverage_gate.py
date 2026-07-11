@@ -20,8 +20,8 @@ MODULES = {
             "tests/test_axiom_enforcement_governance.py",
         ],
     },
-    "agentgov.replay": {
-        "test_paths": ["packages/agentgov/tests/"],
+    "policyflow.replay": {
+        "test_paths": ["packages/policyflow/tests/"],
     },
     "shared.refusal_registry": {
         "test_paths": ["tests/test_refusal_registry.py"],

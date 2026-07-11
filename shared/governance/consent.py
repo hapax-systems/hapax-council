@@ -1,6 +1,6 @@
-"""Consent contract management — extends agentgov.consent with hapax-specific behavior.
+"""Consent contract management — extends policyflow.consent with hapax-specific behavior.
 
-Re-exports ConsentContract and ConsentRegistry from agentgov, then adds:
+Re-exports ConsentContract and ConsentRegistry from policyflow, then adds:
 - REGISTERED_CHILD_PRINCIPALS
 - is_child_principal()
 - Health signal integration (control_signal, notify)
@@ -13,13 +13,13 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from agentgov.consent import (
+from policyflow.consent import (
     ConsentContract,
     ConsentContractLoadError,
     check_consent_state_freshness,
     parse_contract,
 )
-from agentgov.consent import (
+from policyflow.consent import (
     ConsentRegistry as _BaseConsentRegistry,
 )
 

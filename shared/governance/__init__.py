@@ -1,8 +1,8 @@
-"""Governance package — thin wrapper re-exporting from the agentgov package.
+"""Governance package — thin wrapper re-exporting from the policyflow package.
 
 The algebraic governance core (consent labels, principals, provenance,
 governors, carriers, revocation, VetoChain, Says) lives in the standalone
-``agentgov`` package (packages/agentgov/). This module re-exports
+``policyflow`` package (packages/policyflow/). This module re-exports
 everything for backwards compatibility.
 
 Hapax-specific modules (consent_gate, consent_channels, content_risk,
@@ -12,11 +12,11 @@ monetization_safety, etc.) remain here as they depend on council internals.
 import sys
 from pathlib import Path
 
-_AGENTGOV_SRC = Path(__file__).resolve().parents[2] / "packages" / "agentgov" / "src"
-if _AGENTGOV_SRC.is_dir():
-    sys.path.insert(0, str(_AGENTGOV_SRC))
+_POLICYFLOW_SRC = Path(__file__).resolve().parents[2] / "packages" / "policyflow" / "src"
+if _POLICYFLOW_SRC.is_dir():
+    sys.path.insert(0, str(_POLICYFLOW_SRC))
 
-from agentgov import (
+from policyflow import (
     Candidate,
     CarrierFact,
     CarrierRegistry,
@@ -63,7 +63,7 @@ def __getattr__(name: str):
     raise AttributeError(f"module 'shared.governance' has no attribute {name}")
 
 
-from agentgov.revocation import check_provenance  # noqa: F811
+from policyflow.revocation import check_provenance  # noqa: F811
 
 from shared.governance.revocation_wiring import (
     get_revocation_propagator,

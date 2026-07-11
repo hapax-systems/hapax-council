@@ -1,6 +1,6 @@
-"""Thin wrapper — re-exports from agentgov.primitives."""
+"""Thin wrapper — re-exports from policyflow.primitives."""
 
-from agentgov.primitives import (
+from policyflow.primitives import (
     Candidate,
     FallbackChain,
     GatedResult,

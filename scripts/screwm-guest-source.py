@@ -34,9 +34,9 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO / "packages" / "agentgov" / "src"))
+sys.path.insert(0, str(REPO / "packages" / "policyflow" / "src"))
 
-from agentgov.consent import ConsentRegistry  # noqa: E402
+from policyflow.consent import ConsentRegistry  # noqa: E402
 
 SCOPE_CATEGORY = "world_render"
 # Slot 7 (cam_cov) buffer — reused for the guest so no relaunch is needed.

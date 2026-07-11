@@ -65,7 +65,7 @@ dependencies = [
     "atproto>=0.0.65",
     "mastodon-py>=2.2.1",
     "mcp>=1.28.1",
-    "hapax-agentgov",
+    "policyflow",
 ]
 
 [project.optional-dependencies]
@@ -224,7 +224,7 @@ asyncio_mode = "auto"
 addopts = "--import-mode=importlib -m 'not llm and not contract and not e2e and not revocation_drill'"
 pythonpath = [
     ".",
-    "packages/agentgov/src",
+    "packages/policyflow/src",
     "packages/hapax-axioms/src",
     "packages/hapax-refusals/src",
     "packages/hapax-swarm/src",
@@ -286,5 +286,5 @@ override-dependencies = [
 ]
 
 [tool.uv.sources]
-hapax-agentgov = { path = "packages/agentgov", editable = true }
+policyflow = { path = "packages/policyflow", editable = true }
 chatterbox-tts = { git = "https://github.com/resemble-ai/chatterbox.git" }

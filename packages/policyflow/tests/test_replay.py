@@ -5,9 +5,9 @@ from __future__ import annotations
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from agentgov.escalation import EscalationEvent, extract_escalations, format_ntfy_message
-from agentgov.primitives import Veto, VetoChain
-from agentgov.replay import (
+from policyflow.escalation import EscalationEvent, extract_escalations, format_ntfy_message
+from policyflow.primitives import Veto, VetoChain
+from policyflow.replay import (
     DecisionRecord,
     ReplayCertificate,
     ReplayVerdict,

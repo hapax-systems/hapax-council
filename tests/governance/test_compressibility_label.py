@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import itertools
 
-from agentgov.consent_label import ConsentLabel
-from agentgov.labeled import Labeled
+from policyflow.consent_label import ConsentLabel
+from policyflow.labeled import Labeled
 
 from shared.governance.compressibility_label import (
     DEFAULT_OPERATOR_IDS,

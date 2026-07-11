@@ -7,9 +7,9 @@ import unittest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from agentgov.consent_label import ConsentLabel
-from agentgov.principal import Principal, PrincipalKind
-from agentgov.says import Says
+from policyflow.consent_label import ConsentLabel
+from policyflow.principal import Principal, PrincipalKind
+from policyflow.says import Says
 from tests.strategies import st_sovereign
 
 

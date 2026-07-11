@@ -5,7 +5,7 @@ from __future__ import annotations
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from agentgov.provenance import ProvenanceExpr
+from policyflow.provenance import ProvenanceExpr
 
 contract_ids = st.text(alphabet="abcdefghijklmnopqrstuvwxyz0123456789-", min_size=3, max_size=20)
 small_id_sets = st.frozensets(contract_ids, min_size=0, max_size=5)

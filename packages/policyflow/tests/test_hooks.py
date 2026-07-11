@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agentgov.hooks import (
+from policyflow.hooks import (
     scan_attribution_entities,
     scan_management_boundary,
     scan_pii,

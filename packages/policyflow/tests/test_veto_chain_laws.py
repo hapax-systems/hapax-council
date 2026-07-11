@@ -5,7 +5,7 @@ from __future__ import annotations
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from agentgov.primitives import Veto, VetoChain
+from policyflow.primitives import Veto, VetoChain
 
 from .strategies import st_veto, st_veto_chain
 

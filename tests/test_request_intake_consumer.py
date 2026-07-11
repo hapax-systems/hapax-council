@@ -456,8 +456,8 @@ def test_planning_feed_includes_legacy_request_type(tmp_path: Path) -> None:
 def test_planning_feed_pythonpath_includes_agentgov_src() -> None:
     text = SCRIPT.read_text(encoding="utf-8")
 
-    assert 'AGENTGOV_SRC="$REPO_ROOT/packages/agentgov/src"' in text
-    assert 'PYTHONPATH="$REPO_ROOT:$AGENTGOV_SRC:${PYTHONPATH:-}"' in text
+    assert 'POLICYFLOW_SRC="$REPO_ROOT/packages/policyflow/src"' in text
+    assert 'PYTHONPATH="$REPO_ROOT:$POLICYFLOW_SRC:${PYTHONPATH:-}"' in text
 
 
 def test_planning_feed_task_active_coverage(tmp_path: Path) -> None:

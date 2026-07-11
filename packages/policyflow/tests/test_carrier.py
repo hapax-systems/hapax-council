@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import unittest
 
-from agentgov.carrier import CarrierFact, CarrierRegistry
-from agentgov.consent_label import ConsentLabel
-from agentgov.labeled import Labeled
+from policyflow.carrier import CarrierFact, CarrierRegistry
+from policyflow.consent_label import ConsentLabel
+from policyflow.labeled import Labeled
 
 
 def _make_fact(value: str, domain: str = "test", count: int = 1) -> CarrierFact:

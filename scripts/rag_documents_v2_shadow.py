@@ -77,7 +77,7 @@ def default_source_dirs(source_profile: str = "all") -> list[Path]:
         repo / "scripts",
         repo / "agents",
         repo / "shared",
-        repo / "packages" / "agentgov",
+        repo / "packages" / "policyflow",
     ]
     if source_profile == "audit-publication":
         return _dedupe_paths(dirs)
@@ -105,7 +105,7 @@ def classify_source_path(path: Path) -> str:
         ("/hapax-cc-tasks/active/", "cc_task"),
         ("/hapax-cc-tasks/closed/", "cc_task"),
         ("/documents/rag-sources/", "rag_source"),
-        ("/packages/agentgov/", "agentgov"),
+        ("/packages/policyflow/", "policyflow"),
         ("/docs/", "repo_docs"),
         ("/scripts/", "repo_scripts"),
         ("/agents/", "repo_agents"),

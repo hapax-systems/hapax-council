@@ -1,6 +1,6 @@
-"""Thin wrapper — re-exports from agentgov.carrier."""
+"""Thin wrapper — re-exports from policyflow.carrier."""
 
-from agentgov.carrier import (
+from policyflow.carrier import (
     CarrierFact,
     CarrierRegistry,
     DisplacementResult,

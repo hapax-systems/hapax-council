@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from agentgov.primitives import Candidate, FallbackChain, Veto, VetoChain
+from policyflow.primitives import Candidate, FallbackChain, Veto, VetoChain
 
 
 class TestVetoChain(unittest.TestCase):

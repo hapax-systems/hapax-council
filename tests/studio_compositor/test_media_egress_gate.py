@@ -1,6 +1,6 @@
 """Tests for the recruited-media egress gate.
 
-This gate is the FIRST real consumer of agentgov ``Labeled[A]`` in the media
+This gate is the FIRST real consumer of policyflow ``Labeled[A]`` in the media
 dispatch path: a recruited image/YT ref is wrapped in a ``Labeled`` carrying
 its consent label, and may only be unwrapped for broadcast when the label can
 flow to the public broadcast sink. On top of that information-flow check it
@@ -10,7 +10,7 @@ error refuses.
 
 from __future__ import annotations
 
-from agentgov.consent_label import ConsentLabel
+from policyflow.consent_label import ConsentLabel
 
 from agents.studio_compositor.media_egress_gate import (
     MediaEgressOutcome,

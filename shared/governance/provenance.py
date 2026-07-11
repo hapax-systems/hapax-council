@@ -1,5 +1,5 @@
-"""Thin wrapper — re-exports from agentgov.provenance."""
+"""Thin wrapper — re-exports from policyflow.provenance."""
 
-from agentgov.provenance import ProvenanceExpr, ProvenanceOp
+from policyflow.provenance import ProvenanceExpr, ProvenanceOp
 
 __all__ = ["ProvenanceExpr", "ProvenanceOp"]

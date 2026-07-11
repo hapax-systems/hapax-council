@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import unittest
 
-from agentgov.carrier import CarrierFact, CarrierRegistry
-from agentgov.consent import ConsentContract, ConsentRegistry
-from agentgov.consent_label import ConsentLabel
-from agentgov.labeled import Labeled
-from agentgov.revocation import RevocationPropagator, check_provenance
+from policyflow.carrier import CarrierFact, CarrierRegistry
+from policyflow.consent import ConsentContract, ConsentRegistry
+from policyflow.consent_label import ConsentLabel
+from policyflow.labeled import Labeled
+from policyflow.revocation import RevocationPropagator, check_provenance
 
 
 class TestRevocationPropagator(unittest.TestCase):

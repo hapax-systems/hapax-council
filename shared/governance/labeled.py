@@ -1,5 +1,5 @@
-"""Thin wrapper — re-exports from agentgov.labeled."""
+"""Thin wrapper — re-exports from policyflow.labeled."""
 
-from agentgov.labeled import Labeled
+from policyflow.labeled import Labeled
 
 __all__ = ["Labeled"]

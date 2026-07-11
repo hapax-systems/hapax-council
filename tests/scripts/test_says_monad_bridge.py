@@ -7,9 +7,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "packages" / "agentgov" / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "packages" / "policyflow" / "src"))
 
-from agentgov import Principal, PrincipalKind, ProvenanceExpr, Says
+from policyflow import Principal, PrincipalKind, ProvenanceExpr, Says
 from sdlc_axiom_judge import SemanticVerdict, _call_judge, _wrap_says
 
 

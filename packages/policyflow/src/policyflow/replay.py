@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
-from agentgov.primitives import VetoChain, VetoResult
+from policyflow.primitives import VetoChain, VetoResult
 
 log = logging.getLogger(__name__)
 

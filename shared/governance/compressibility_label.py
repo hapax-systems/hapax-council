@@ -1,7 +1,7 @@
 """shared/governance/compressibility_label.py — HACL compressibility lattice.
 
 A NEW 4-element total order classifying how compression-safe a context item
-is, derived from its DLM ``ConsentLabel`` (``agentgov.consent_label``). This
+is, derived from its DLM ``ConsentLabel`` (``policyflow.consent_label``). This
 is the *lattice* organ (organ 2) of the Hapax Adaptive Compression Layer: the
 downstream Compressibility Gate (organ 3) folds these labels over a batch and
 denies lossy compression unless the supremum is ``SAFE``.
@@ -31,8 +31,8 @@ from __future__ import annotations
 import enum
 from collections.abc import Iterable
 
-from agentgov.consent_label import ConsentLabel
-from agentgov.labeled import Labeled
+from policyflow.consent_label import ConsentLabel
+from policyflow.labeled import Labeled
 
 __all__ = [
     "DEFAULT_OPERATOR_IDS",
