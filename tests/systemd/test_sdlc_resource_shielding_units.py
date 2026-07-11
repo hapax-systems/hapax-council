@@ -127,12 +127,15 @@ def test_system_slice_has_reciprocal_recovery_plane_reservation() -> None:
     assert _directive(text, "MemoryMin") == "12G"
 
 
-def test_live_cuepoints_restart_storm_is_bounded() -> None:
+def test_live_cuepoints_is_parked_while_feature_is_disabled() -> None:
     text = (UNITS_DIR / "hapax-live-cuepoints.service").read_text()
-    assert _directive(text, "StartLimitIntervalSec") == "10min"
-    assert _directive(text, "StartLimitBurst") == "3"
-    assert _directive(text, "RestartSec") == "30"
-    assert "OnFailure=notify-failure@%n.service" in text
+    assert "# Hapax-Parked: true" in text
+    assert "Environment=HAPAX_LIVE_CUEPOINTS_ENABLED=0" in text
+    assert _directive(text, "Restart") == "no"
+    assert "PartOf=hapax.target" not in text
+    assert "OnFailure=" not in text
+    assert "[Install]" not in text
+    assert "WantedBy=" not in text
 
 
 def test_live_cuepoints_runs_from_source_activation_worktree() -> None:

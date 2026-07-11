@@ -174,6 +174,10 @@ timer_enable_only() {
     return 0
 }
 
+parked_unit() {
+    grep -Eiq '^[#;][[:space:]]*Hapax-Parked:[[:space:]]*(true|yes|1)[[:space:]]*$' "$1"
+}
+
 dedicated_p0_oom_unit() {
     case "$1" in
         hapax-oom-policy-audit.service|\
@@ -243,6 +247,15 @@ if [ "$changed" -gt 0 ]; then
     systemctl --user daemon-reload
     echo "daemon-reload done ($changed units linked)"
 fi
+
+for parked_file in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.path; do
+    [ -f "$parked_file" ] || continue
+    parked_unit "$parked_file" || continue
+    parked_name="$(basename "$parked_file")"
+    systemctl --user disable --now "$parked_name"
+    systemctl --user reset-failed "$parked_name" >/dev/null 2>&1 || true
+    echo "parked: $parked_name"
+done
 
 # Delta 2026-04-14-systemd-timer-enablement-gap.md identified that 14 of 51
 # council timers had been linked (symlinked into ~/.config/systemd/user/)

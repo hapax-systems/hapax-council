@@ -2316,6 +2316,45 @@ def test_generic_scope_dropin_fails_closed_without_restart(tmp_path: Path) -> No
     assert "restart demo.scope" not in calls
 
 
+def test_parked_service_is_disabled_without_restart(tmp_path: Path) -> None:
+    unit_path = "systemd/units/demo-parked.service"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            unit_path: (
+                "# Hapax-Parked: true\n"
+                "[Unit]\nDescription=Parked test service\n"
+                "[Service]\nType=oneshot\nExecStart=/usr/bin/true\nRestart=no\n"
+            )
+        },
+    )
+    home = tmp_path / "home"
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "parking demo-parked.service" in result.stdout
+    calls = systemctl_calls.read_text(encoding="utf-8")
+    assert "--user disable --now demo-parked.service" in calls
+    assert "--user reset-failed demo-parked.service" in calls
+    assert "--user restart demo-parked.service" not in calls
+    assert "--user enable --now demo-parked.service" not in calls
+
+
 def test_systemd_coverage_includes_slice_units() -> None:
     # hapax-sdlc.slice (the SDLC resource-shielding slice) must be deploy-covered;
     # a .slice falling outside the case-globs is the absence-class deploy bug.

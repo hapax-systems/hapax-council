@@ -1,12 +1,9 @@
+# Hapax-Parked: true
 [Unit]
 Description=Hapax YouTube live cuepoint chapter markers (ytb-004)
 Documentation=https://github.com/ryanklee/hapax-council/blob/main/agents/live_cuepoints/__init__.py
 After=network-online.target hapax-secrets.service
 Wants=network-online.target
-PartOf=hapax.target
-OnFailure=notify-failure@%n.service
-StartLimitIntervalSec=10min
-StartLimitBurst=3
 
 [Service]
 Type=notify
@@ -20,10 +17,6 @@ Environment=HAPAX_CUEPOINT_DEBOUNCE_S=90
 Environment=HAPAX_CUEPOINT_MAX_PER_HOUR=60
 Environment=HAPAX_CUEPOINT_METRICS_PORT=9494
 ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.live_cuepoints
-Restart=on-failure
-RestartSec=30
+Restart=no
 WatchdogSec=60
 MemoryMax=128M
-
-[Install]
-WantedBy=hapax.target

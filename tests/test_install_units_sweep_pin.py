@@ -169,6 +169,14 @@ class TestTimerEnablementSweep:
         )
 
 
+class TestParkedUnits:
+    def test_installer_disables_marker_owned_parked_units(self) -> None:
+        body = INSTALL_SCRIPT.read_text(encoding="utf-8")
+        assert "Hapax-Parked:" in body
+        assert 'systemctl --user disable --now "$parked_name"' in body
+        assert 'systemctl --user reset-failed "$parked_name"' in body
+
+
 class TestServiceDropInInstall:
     """LRR Phase 3 regression pins for the ``*.service.d/`` drop-in
     handling added to install-units.sh.

@@ -318,6 +318,12 @@ unit_content_timer_enable_only() {
     return 0
 }
 
+unit_content_parked() {
+    local content="$1"
+    [ -n "$content" ] || return 1
+    grep -Eiq '^[#;][[:space:]]*Hapax-Parked:[[:space:]]*(true|yes|1)[[:space:]]*$' <<< "$content"
+}
+
 # --verify-auto-enable: post-deploy assertion that every unit in the repo's
 # systemd/units/ carrying `# Hapax-Auto-Enable: true` is actually `enabled`
 # (and, for timers, `active`). Exits 0 if all marked units pass, 1 if any
@@ -1916,7 +1922,14 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
     for f in "${SYSTEMD_INSTALLED[@]}"; do
         base="$(basename "$f")"
         unit_content="$(git show "$SHA:$f" 2>/dev/null || true)"
-        if systemctl --user is-active --quiet "$base"; then
+        if unit_content_parked "$unit_content"; then
+            echo "parking $base (Hapax-Parked marker)"
+            if ! systemctl --user disable --now "$base"; then
+                echo "hapax-post-merge-deploy: unable to disable parked unit $base; next action: inspect systemctl --user status $base and rerun the governed deploy" >&2
+                exit 1
+            fi
+            systemctl --user reset-failed "$base" >/dev/null 2>&1 || true
+        elif systemctl --user is-active --quiet "$base"; then
             if [[ "$base" == *.timer ]] && unit_content_timer_enable_only "$unit_content"; then
                 echo "leaving active $base running (Hapax-Timer-Enable-Only marker; not restarting during deploy)"
                 systemctl --user enable "$base"
