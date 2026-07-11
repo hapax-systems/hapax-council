@@ -1932,8 +1932,8 @@ def _derived_task_demand_payload(
 
     return {
         "authority_class": _authority_class(metadata),
-        "grounding_criticality": _risk_score(
-            risk.governance_sensitive or risk.privacy_or_secret_sensitive
+        "grounding_criticality": _derive_criticality(
+            complexity=complexity, locality=locality, mutation=mutation, risk=risk
         ),
         "governance_claim_risk": _risk_score(risk.governance_sensitive),
         "codebase_locality": locality,
@@ -2170,6 +2170,52 @@ def _execution_environment(
 
 def _risk_score(flag: bool) -> int:
     return 5 if flag else 1
+
+
+def _derive_criticality(
+    *,
+    complexity: int,
+    locality: CodebaseLocality,
+    mutation: MutationSurface | None,
+    risk: RiskFlags,
+) -> int:
+    """Objective two-driver criticality = ``max(GNARL, CONCEPTUAL)`` on 0-5.
+
+    The spine of the proportionality redesign. Reuses the ALREADY-derived
+    objective ``TaskDemand`` signals (complexity / locality / mutation_surface)
+    so there is one criticality derivation, not a parallel gameable path.
+
+    - **GNARL** (mechanical severity): the diff/surface blast radius —
+      ``complexity`` already folds in ``codebase_locality`` + ``mutation_surface``
+      (see ``_derived_task_demand_payload``); cross-repo and runtime/provider-spend
+      surfaces are maximum gnarl.
+    - **CONCEPTUAL** (research sensitivity): TODAY the ``risk_flags`` substring
+      floor (governance / privacy / public-claim). This is the blunt instrument
+      the operator flagged — it is upgraded to a ``CriticalityVector`` fused from
+      the consolidated epistemic/bayesian/retrieval layers (CRAFT +
+      topic_interest_engine + InformationDensityField surprise + ClaimEngine
+      posteriors + retrieval confidence) once those are unified under the HKP
+      interface. Until then the floor is preserved (fail toward more hardening).
+
+    ``max``-not-sum: a low-gnarl request cannot argue "small diff" to offset a
+    governance/apparatus surface, and vice versa. Anti-gaming: the self-attested
+    ``risk_tier`` never enters the score.
+    """
+    gnarl = 1
+    if complexity >= 3:
+        gnarl = max(gnarl, 3)
+    if complexity >= 4 or locality == CodebaseLocality.CROSS_MODULE:
+        gnarl = max(gnarl, 4)
+    if (
+        complexity >= 5
+        or locality == CodebaseLocality.CROSS_REPO
+        or mutation in {MutationSurface.RUNTIME, MutationSurface.PROVIDER_SPEND}
+    ):
+        gnarl = 5
+    conceptual = _risk_score(
+        risk.governance_sensitive or risk.privacy_or_secret_sensitive or risk.public_claim_sensitive
+    )
+    return max(gnarl, conceptual)
 
 
 def _priority_to_urgency(value: object) -> Urgency:
