@@ -322,7 +322,8 @@ SHA state files: `~/.cache/hapax/rebuild/last-{key}-sha`.
 
 `scripts/hapax-post-merge-deploy` covers everything the python-services rebuild
 cascade doesn't: systemd unit files, drop-ins, pipewire/wireplumber confs,
-`scripts/hapax-*` symlinks, and helper watchdog binaries. Until 2026-05-03 it
+release-pinned `scripts/hapax-*` single-link regular copies published by atomic
+rename, and helper watchdog binaries. Until 2026-05-03 it
 was manual-only; the audit in `cc-task deploy-pipeline-canonical-worktree-isolation`
 found 25 systemd units canonical-but-not-installed because nothing fired the
 script after merges.

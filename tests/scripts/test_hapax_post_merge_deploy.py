@@ -1897,6 +1897,51 @@ def test_root_required_audit_rejects_effective_service_dropin(tmp_path: Path) ->
     assert "override.conf" in result.stderr
 
 
+@pytest.mark.parametrize(
+    ("property_name", "loaded_value", "expected_error"),
+    (
+        ("Unit", "untrusted.service", "target drift"),
+        (
+            "TimersMonotonic",
+            "OnBootUSec=2min OnUnitActiveUSec=1d",
+            "cadence drift",
+        ),
+    ),
+)
+def test_root_required_audit_rejects_effective_timer_drift(
+    tmp_path: Path,
+    property_name: str,
+    loaded_value: str,
+    expected_error: str,
+) -> None:
+    env = _root_audit_env(tmp_path)
+    fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
+    baseline_systemctl = fake_systemctl.with_name("root-audit-systemctl-baseline")
+    fake_systemctl.rename(baseline_systemctl)
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [ "$*" = "--user show hapax-oom-policy-audit.timer -p {property_name} --value" ]; then\n'
+        f"  printf '%s\\n' '{loaded_value}'\n"
+        "  exit 0\n"
+        "fi\n"
+        f'exec "{baseline_systemctl!s}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert f"effective hapax-oom-policy-audit.timer {expected_error}" in result.stderr
+    assert loaded_value in result.stderr
+
+
 def test_root_required_audit_legacy_manifest_transition_is_fail_closed(tmp_path: Path) -> None:
     env = _root_audit_env(tmp_path)
     repo = Path(env["HAPAX_ROOT_REQUIRED_GIT_REPO"])
