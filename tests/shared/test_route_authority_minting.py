@@ -151,6 +151,21 @@ def test_build_connector_mutation_receipt_round_trips_with_task_scope() -> None:
     assert receipt.signed_payload_sha256 == route_authority_receipt_payload_hash(receipt)
 
 
+def test_build_local_tool_invocation_receipt_round_trips_with_task_scope() -> None:
+    receipt = build_route_authority_receipt(
+        receipt_type="local_tool_invocation",
+        route_id="codex.headless.full",
+        evidence_refs=["operator-signed:local-tool-systemctl"],
+        task_ids=["cc-task-local-tool-invocation-route-resource-receipts-20260630"],
+        mutation_surfaces=["local_tool", "process_control", "local"],
+    )
+
+    assert receipt.receipt_type == "local_tool_invocation"
+    assert receipt.task_ids == ("cc-task-local-tool-invocation-route-resource-receipts-20260630",)
+    assert receipt.mutation_surfaces == ("local_tool", "process_control", "local")
+    assert receipt.signed_payload_sha256 == route_authority_receipt_payload_hash(receipt)
+
+
 def test_build_quality_equivalence_requires_quality_floors() -> None:
     with pytest.raises((ValidationError, ValueError)):
         build_route_authority_receipt(
@@ -329,6 +344,23 @@ def test_build_connector_mutation_requires_task_and_surface() -> None:
             route_id="codex.headless.full",
             evidence_refs=["operator-signed:gmail-send"],
             task_ids=["cc-task-mcp-mutator-route-resource-receipts-20260630"],
+        )
+
+
+def test_build_local_tool_invocation_requires_task_and_surface() -> None:
+    with pytest.raises((ValidationError, ValueError)):
+        build_route_authority_receipt(
+            receipt_type="local_tool_invocation",
+            route_id="codex.headless.full",
+            evidence_refs=["operator-signed:local-tool"],
+            mutation_surfaces=["local_tool", "process_control"],
+        )
+    with pytest.raises((ValidationError, ValueError)):
+        build_route_authority_receipt(
+            receipt_type="local_tool_invocation",
+            route_id="codex.headless.full",
+            evidence_refs=["operator-signed:local-tool"],
+            task_ids=["cc-task-local-tool-invocation-route-resource-receipts-20260630"],
         )
 
 
