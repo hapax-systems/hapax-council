@@ -530,6 +530,7 @@ verify_executable() {
 
 audit_systemd_state() {
     local failed=0 loaded_upower_action expected_enforcer_timeout loaded_enforcer_timeout
+    local spec unit rel expected_audit_timeout loaded_audit_timeout
     if ! "$SYSTEMCTL" is-enabled --quiet hapax-oom-score-enforce.timer; then
         echo "root-required activation drift: hapax-oom-score-enforce.timer is not enabled" >&2
         echo "  next action: run sudo systemctl enable --now hapax-oom-score-enforce.timer" >&2
@@ -584,6 +585,21 @@ audit_systemd_state() {
         if ! "$SYSTEMCTL" --user is-active --quiet "$timer"; then
             echo "root-required activation drift: $timer is not active" >&2
             echo "  next action: run systemctl --user enable --now $timer" >&2
+            failed=1
+        fi
+    done
+    for spec in \
+        "hapax-oom-policy-audit.service|systemd/units/hapax-oom-policy-audit.service" \
+        "hapax-root-required-deploy-audit.service|systemd/units/hapax-root-required-deploy-audit.service"; do
+        unit="${spec%%|*}"
+        rel="${spec#*|}"
+        expected_audit_timeout="$(awk -F= '$1 == "TimeoutStartSec" {print $2; exit}' "$INSTALLED_SOURCE_ROOT/$rel" 2>/dev/null || true)"
+        if ! loaded_audit_timeout="$("$SYSTEMCTL" --user show "$unit" -p TimeoutStartUSec --value 2>/dev/null)"; then
+            loaded_audit_timeout=""
+        fi
+        if [ -z "$expected_audit_timeout" ] || [ "$loaded_audit_timeout" != "$expected_audit_timeout" ]; then
+            echo "root-required activation drift: $unit loaded TimeoutStartUSec=${loaded_audit_timeout:-unavailable}, expected ${expected_audit_timeout:-source value missing}" >&2
+            echo "  next action: run systemctl --user daemon-reload and scripts/install-p0-oom-containment --install --verify-live" >&2
             failed=1
         fi
     done

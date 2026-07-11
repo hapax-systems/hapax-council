@@ -115,6 +115,32 @@ def _run_activate(
     )
 
 
+def _path_with_failing_launcher_cp(tmp_path: Path, *, phase: str) -> str:
+    fake_bin = tmp_path / f"failing-cp-{phase}"
+    fake_bin.mkdir()
+    fake_cp = fake_bin / "cp"
+    _write(
+        fake_cp,
+        textwrap.dedent(
+            f"""\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            source_path="${{@: -2:1}}"
+            dest_path="${{@: -1}}"
+            if [[ "{phase}" == "snapshot" && "$dest_path" == *"/launcher-rollback."*"/present/"* ]]; then
+                exit 73
+            fi
+            if [[ "{phase}" == "restore" && "$source_path" == *"/launcher-rollback."*"/present/hapax-post-merge-deploy" ]]; then
+                exit 74
+            fi
+            exec /usr/bin/cp "$@"
+            """
+        ),
+        executable=True,
+    )
+    return f"{fake_bin}:{os.environ['PATH']}"
+
+
 def _current_receipt(tmp_path: Path) -> dict:
     return json.loads((tmp_path / "state" / "current.json").read_text(encoding="utf-8"))
 
@@ -433,6 +459,86 @@ def test_failed_deploy_restores_previous_release_launcher(tmp_path: Path) -> Non
     receipt = _current_receipt(tmp_path)
     assert receipt["status"] == "failed"
     assert receipt["source_cutover"]["rollback_status"] == "success"
+
+
+def test_launcher_snapshot_copy_failure_aborts_before_sweep_or_deploy(tmp_path: Path) -> None:
+    canonical, origin, active_sha = _make_repos(tmp_path)
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    latest_sha = _advance_origin(tmp_path, origin, "advance before snapshot failure")
+    assert latest_sha != active_sha
+    launcher = tmp_path / "home" / ".local" / "bin" / "hapax-post-merge-deploy"
+    prior_target = os.readlink(launcher)
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": _path_with_failing_launcher_cp(tmp_path, phase="snapshot")},
+    )
+
+    assert second.returncode == 2
+    assert "unable to snapshot managed launcher" in second.stderr
+    assert _git(tmp_path / "active-source", "rev-parse", "HEAD") == active_sha
+    assert launcher.is_symlink()
+    assert os.readlink(launcher) == prior_target
+    assert (tmp_path / "deploy-record.txt").read_text(encoding="utf-8").splitlines() == [active_sha]
+    assert list((tmp_path / "state").glob("launcher-rollback.*")) == []
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["deploy_status"] == "not_started"
+
+
+def test_launcher_restore_copy_failure_is_reported_without_removing_destination(
+    tmp_path: Path,
+) -> None:
+    canonical, origin, active_sha = _make_repos(tmp_path)
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    launcher = tmp_path / "home" / ".local" / "bin" / "hapax-post-merge-deploy"
+    prior_target = os.readlink(launcher)
+
+    updater = tmp_path / "updater-restore-copy-failure"
+    _git(tmp_path, "clone", str(origin), str(updater))
+    _git(updater, "config", "user.email", "source-activate@example.test")
+    _git(updater, "config", "user.name", "Source Activate")
+    _write(
+        updater / "scripts" / "hapax-post-merge-deploy",
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            rm -f "$HOME/.local/bin/hapax-post-merge-deploy"
+            printf '#!/usr/bin/env bash\necho failed candidate\n' > "$HOME/.local/bin/hapax-post-merge-deploy"
+            chmod 0755 "$HOME/.local/bin/hapax-post-merge-deploy"
+            exit 7
+            """
+        ),
+        executable=True,
+    )
+    _git(updater, "add", "scripts/hapax-post-merge-deploy")
+    _git(updater, "commit", "-m", "fail after replacing launcher")
+    _git(updater, "push", "origin", "main")
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": _path_with_failing_launcher_cp(tmp_path, phase="restore")},
+    )
+
+    assert second.returncode == 7
+    assert "unable to stage saved launcher" in second.stderr
+    assert _git(tmp_path / "active-source", "rev-parse", "HEAD") == active_sha
+    assert launcher.is_file()
+    assert not launcher.is_symlink()
+    assert "failed candidate" in launcher.read_text(encoding="utf-8")
+    snapshots = list((tmp_path / "state").glob("launcher-rollback.*"))
+    assert len(snapshots) == 1
+    saved = snapshots[0] / "present" / "hapax-post-merge-deploy"
+    assert saved.is_symlink()
+    assert os.readlink(saved) == prior_target
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["source_cutover"]["rollback_status"] == "failed"
+    assert "managed launcher restore failed" in receipt["source_cutover"]["rollback_message"]
 
 
 def test_failed_deploy_after_legacy_worktree_migration_does_not_self_link(

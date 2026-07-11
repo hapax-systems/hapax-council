@@ -794,7 +794,7 @@ snapshot_managed_launchers() {
         [[ -d "$root/scripts" ]] || continue
         for script in "$root"/scripts/hapax-*; do
             [[ -f "$script" ]] || continue
-            base="$(basename "$script")"
+            base="${script##*/}"
             [[ "$base" =~ ^hapax-[A-Za-z0-9._-]+$ ]] || {
                 echo "hapax-source-activate: refusing unsafe managed launcher name: $base; next action: rename the source launcher to hapax-[A-Za-z0-9._-]+ and rerun governed source activation" >&2
                 return 1
@@ -806,18 +806,34 @@ snapshot_managed_launchers() {
         done
     done
 
-    launcher_snapshot_dir="$(mktemp -d "$STATE_DIR/launcher-rollback.XXXXXX")"
-    mkdir -p "$launcher_snapshot_dir/present"
-    : > "$launcher_snapshot_dir/names"
+    if ! launcher_snapshot_dir="$(mktemp -d "$STATE_DIR/launcher-rollback.XXXXXX")"; then
+        launcher_snapshot_dir=""
+        echo "hapax-source-activate: unable to reserve managed launcher snapshot; next action: verify $STATE_DIR is writable with free space, then rerun governed source activation" >&2
+        return 1
+    fi
+    if ! mkdir -p "$launcher_snapshot_dir/present"; then
+        echo "hapax-source-activate: unable to create managed launcher snapshot storage at $launcher_snapshot_dir; next action: preserve the path for inspection, repair state-directory permissions or free space, then rerun governed source activation" >&2
+        return 1
+    fi
+    if ! : > "$launcher_snapshot_dir/names"; then
+        echo "hapax-source-activate: unable to initialize managed launcher snapshot inventory at $launcher_snapshot_dir/names; next action: preserve the path for inspection, repair state-directory permissions or free space, then rerun governed source activation" >&2
+        return 1
+    fi
     for base in "${!managed[@]}"; do
-        printf '%s\n' "$base" >> "$launcher_snapshot_dir/names"
+        if ! printf '%s\n' "$base" >> "$launcher_snapshot_dir/names"; then
+            echo "hapax-source-activate: unable to record managed launcher $base in $launcher_snapshot_dir/names; next action: preserve the snapshot path, repair state-directory permissions or free space, then rerun governed source activation" >&2
+            return 1
+        fi
         dest="$LOCAL_BIN/$base"
         if [[ -e "$dest" || -L "$dest" ]]; then
             if [[ ! -f "$dest" && ! -L "$dest" ]]; then
                 echo "hapax-source-activate: refusing non-file managed launcher during snapshot: $dest; next action: move the non-file entry aside without following it and rerun governed source activation" >&2
                 return 1
             fi
-            cp -a -- "$dest" "$launcher_snapshot_dir/present/$base"
+            if ! cp -a -- "$dest" "$launcher_snapshot_dir/present/$base"; then
+                echo "hapax-source-activate: unable to snapshot managed launcher $dest; next action: leave the launcher unchanged, preserve $launcher_snapshot_dir for inspection, repair state-directory permissions or free space, then rerun governed source activation" >&2
+                return 1
+            fi
         fi
     done
     launcher_snapshot_ready=1
@@ -825,7 +841,11 @@ snapshot_managed_launchers() {
 
 restore_managed_launchers() {
     [[ "$launcher_snapshot_ready" == "1" ]] || return 0
-    local base dest saved
+    local base dest saved restore_temp_dir
+    if [[ ! -f "$launcher_snapshot_dir/names" || -L "$launcher_snapshot_dir/names" ]]; then
+        echo "hapax-source-activate: managed launcher snapshot inventory is missing or unsafe at $launcher_snapshot_dir/names; next action: preserve $launcher_snapshot_dir and restore launchers from its present directory before rerunning governed source activation" >&2
+        return 1
+    fi
     while IFS= read -r base; do
         [[ -n "$base" ]] || continue
         dest="$LOCAL_BIN/$base"
@@ -834,18 +854,48 @@ restore_managed_launchers() {
             echo "hapax-source-activate: cannot restore launcher over directory: $dest; next action: move the directory aside, preserve $launcher_snapshot_dir, and rerun governed source activation" >&2
             return 1
         fi
-        rm -f -- "$dest"
         if [[ -e "$saved" || -L "$saved" ]]; then
-            cp -a -- "$saved" "$dest"
+            if [[ ! -f "$saved" && ! -L "$saved" ]]; then
+                echo "hapax-source-activate: refusing unsafe saved launcher during restore: $saved; next action: preserve $launcher_snapshot_dir for inspection and restore $dest manually before rerunning governed source activation" >&2
+                return 1
+            fi
+            if ! restore_temp_dir="$(mktemp -d "$LOCAL_BIN/.${base}.restore.XXXXXX")"; then
+                echo "hapax-source-activate: unable to reserve atomic restore storage for $dest; next action: leave $dest unchanged, preserve $launcher_snapshot_dir, repair $LOCAL_BIN permissions or free space, then restore from $saved" >&2
+                return 1
+            fi
+            if ! cp -a -- "$saved" "$restore_temp_dir/$base"; then
+                echo "hapax-source-activate: unable to stage saved launcher $saved for atomic restore; next action: leave $dest unchanged, preserve $launcher_snapshot_dir, repair $LOCAL_BIN permissions or free space, then restore the saved launcher manually" >&2
+                if ! rm -rf -- "$restore_temp_dir"; then
+                    echo "hapax-source-activate: temporary restore storage also remains at $restore_temp_dir; next action: preserve it until launcher recovery is complete" >&2
+                fi
+                return 1
+            fi
+            if ! mv -fT -- "$restore_temp_dir/$base" "$dest"; then
+                echo "hapax-source-activate: unable to atomically restore $dest from $saved; next action: leave the current launcher unchanged, preserve $launcher_snapshot_dir and $restore_temp_dir, then restore the saved launcher manually" >&2
+                return 1
+            fi
+            if ! rmdir -- "$restore_temp_dir"; then
+                echo "hapax-source-activate: restored $dest but could not remove empty temporary directory $restore_temp_dir; next action: verify the restored launcher, remove only the confirmed empty directory, and rerun governed source activation" >&2
+                return 1
+            fi
+        elif ! rm -f -- "$dest"; then
+            echo "hapax-source-activate: unable to restore the prior absent state for $dest; next action: preserve $launcher_snapshot_dir, remove the failed-candidate launcher without following it, and rerun governed source activation" >&2
+            return 1
         fi
     done < "$launcher_snapshot_dir/names"
-    rm -rf -- "$launcher_snapshot_dir"
+    if ! rm -rf -- "$launcher_snapshot_dir"; then
+        echo "hapax-source-activate: launchers were restored but snapshot cleanup failed at $launcher_snapshot_dir; next action: verify restored launchers, preserve the snapshot until verified, then remove it and rerun governed source activation" >&2
+        return 1
+    fi
     launcher_snapshot_dir=""
     launcher_snapshot_ready=0
 }
 
 discard_launcher_snapshot() {
-    [[ -z "$launcher_snapshot_dir" ]] || rm -rf -- "$launcher_snapshot_dir"
+    if [[ -n "$launcher_snapshot_dir" ]] && ! rm -rf -- "$launcher_snapshot_dir"; then
+        echo "hapax-source-activate: unable to discard managed launcher snapshot at $launcher_snapshot_dir; next action: preserve it until launcher state is verified, then remove it and rerun governed source activation" >&2
+        return 1
+    fi
     launcher_snapshot_dir=""
     launcher_snapshot_ready=0
 }
@@ -888,7 +938,7 @@ if [[ "$SKIP_DEPLOY" != "1" ]] \
     && [[ "$FORCE" == "1" || "$previous_success" != "$origin_sha" ]]; then
     if ! snapshot_managed_launchers; then
         rollback_active_worktree "managed launcher snapshot failed" || true
-        discard_launcher_snapshot
+        discard_launcher_snapshot || true
         write_receipt "failed" "not_started" "2" "managed launcher snapshot failed"
         exit 2
     fi

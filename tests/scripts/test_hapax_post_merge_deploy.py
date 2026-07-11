@@ -47,6 +47,7 @@ P0_OOM_AUDIT_FILES = {
     "scripts/hapax-root-required-deploy-audit": "#!/usr/bin/env bash\n",
     "systemd/units/hapax-oom-policy-audit.service": (
         "[Unit]\nDescription=OOM audit\n[Service]\nType=oneshot\n"
+        "TimeoutStartSec=2min\n"
         "ExecStart=/usr/local/sbin/hapax-oom-policy-audit --json\n"
     ),
     "systemd/units/hapax-oom-policy-audit.timer": (
@@ -54,6 +55,7 @@ P0_OOM_AUDIT_FILES = {
     ),
     "systemd/units/hapax-root-required-deploy-audit.service": (
         "[Unit]\nDescription=Root deploy audit\n[Service]\nType=oneshot\n"
+        "TimeoutStartSec=2min\n"
         "ExecStart=/usr/local/sbin/hapax-root-required-deploy-audit\n"
     ),
     "systemd/units/hapax-root-required-deploy-audit.timer": (
@@ -333,6 +335,8 @@ def _root_audit_env(
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
         'if [ "$*" = "show hapax-oom-score-enforce.service -p TimeoutStartUSec --value" ]; then printf "25s\\n"; fi\n'
+        'if [ "$*" = "--user show hapax-oom-policy-audit.service -p TimeoutStartUSec --value" ]; then printf "2min\\n"; fi\n'
+        'if [ "$*" = "--user show hapax-root-required-deploy-audit.service -p TimeoutStartUSec --value" ]; then printf "2min\\n"; fi\n'
         "exit 0\n",
         encoding="utf-8",
     )
@@ -1606,6 +1610,35 @@ def test_root_required_audit_detects_stale_loaded_enforcer_timeout(tmp_path: Pat
     assert result.returncode == 1
     assert "loaded TimeoutStartUSec=infinity, expected 25s" in result.stderr
     assert "systemctl daemon-reload" in result.stderr
+
+
+def test_root_required_audit_detects_stale_loaded_user_audit_timeout(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$*" = "show hapax-oom-score-enforce.service -p TimeoutStartUSec --value" ]; then printf "25s\\n"; fi\n'
+        'if [ "$*" = "--user show hapax-oom-policy-audit.service -p TimeoutStartUSec --value" ]; then printf "infinity\\n"; fi\n'
+        'if [ "$*" = "--user show hapax-root-required-deploy-audit.service -p TimeoutStartUSec --value" ]; then printf "2min\\n"; fi\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert (
+        "hapax-oom-policy-audit.service loaded TimeoutStartUSec=infinity, expected 2min"
+        in result.stderr
+    )
+    assert "systemctl --user daemon-reload" in result.stderr
 
 
 def test_root_required_audit_detects_inactive_earlyoom(tmp_path: Path) -> None:

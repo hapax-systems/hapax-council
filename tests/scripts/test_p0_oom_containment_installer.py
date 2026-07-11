@@ -161,6 +161,14 @@ def _systemctl_user_unit_cases(
         unit: _unit_cgroup(unit) for unit in unit_pids if unit in PROTECTED_USER_UNIT_SCORES
     }
     cases = []
+    for audit_unit in (
+        "hapax-oom-policy-audit.service",
+        "hapax-root-required-deploy-audit.service",
+    ):
+        cases.append(
+            f"  *--user\\ show\\ {audit_unit}\\ -p\\ TimeoutStartUSec\\ --value*) "
+            "printf '%s\\n' '2min' ;;"
+        )
     for unit in PROTECTED_USER_UNIT_SCORES:
         cases.append(
             f"  *--user\\ show\\ {unit}\\ -p\\ OOMScoreAdjust\\ --value*) printf '%s\\n' '100' ;;"
@@ -278,6 +286,16 @@ def test_oom_enforcer_service_bounds_each_timer_activation() -> None:
 
     assert "Type=oneshot" in service
     assert "TimeoutStartSec=25s" in service
+
+
+def test_recurring_oom_audit_services_bound_each_timer_activation() -> None:
+    for unit in (
+        "hapax-oom-policy-audit.service",
+        "hapax-root-required-deploy-audit.service",
+    ):
+        service = (REPO_ROOT / "systemd" / "units" / unit).read_text(encoding="utf-8")
+        assert "Type=oneshot" in service
+        assert "TimeoutStartSec=2min" in service
 
 
 def test_source_check_rejects_production_sudoers_identity_override(
@@ -595,6 +613,11 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert "--user enable --now hapax-root-required-deploy-audit.timer" in user_calls
     assert "--user is-enabled --quiet hapax-oom-policy-audit.timer" in user_calls
     assert "--user is-active --quiet hapax-root-required-deploy-audit.timer" in user_calls
+    assert "--user show hapax-oom-policy-audit.service -p TimeoutStartUSec --value" in user_calls
+    assert (
+        "--user show hapax-root-required-deploy-audit.service -p TimeoutStartUSec --value"
+        in user_calls
+    )
     for unit in stale_user_system_units:
         assert f"--user disable --now {unit}" in user_calls
 
@@ -774,6 +797,8 @@ def test_oom_install_without_verify_flag_cannot_advance_receipts_after_live_prob
     fake_systemctl = tmp_path / "systemctl"
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
+        'if [[ "$*" == *"show hapax-oom-policy-audit.service -p TimeoutStartUSec --value"* ]]; then printf "2min\\n"; fi\n'
+        'if [[ "$*" == *"show hapax-root-required-deploy-audit.service -p TimeoutStartUSec --value"* ]]; then printf "2min\\n"; fi\n'
         'if [[ "$*" == *"show hapax-oom-score-enforce.service -p TimeoutStartUSec --value"* ]]; then printf "25s\\n"; fi\n'
         'if [[ "$*" == *"show user@1000.service -p OOMScoreAdjust --value"* ]]; then printf "100\\n"; fi\n'
         'if [[ "$*" == *"show user@1000.service -p OOMPolicy --value"* ]]; then printf "continue\\n"; fi\n'
@@ -818,6 +843,8 @@ def test_oom_install_rejects_stale_loaded_enforcer_timeout_before_receipts(
     fake_systemctl = tmp_path / "systemctl"
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
+        'if [[ "$*" == *"show hapax-oom-policy-audit.service -p TimeoutStartUSec --value"* ]]; then printf "2min\\n"; fi\n'
+        'if [[ "$*" == *"show hapax-root-required-deploy-audit.service -p TimeoutStartUSec --value"* ]]; then printf "2min\\n"; fi\n'
         'if [[ "$*" == *"show hapax-oom-score-enforce.service -p TimeoutStartUSec --value"* ]]; then printf "infinity\\n"; fi\n'
         "exit 0\n",
         encoding="utf-8",

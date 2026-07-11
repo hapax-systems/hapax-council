@@ -268,6 +268,7 @@ def test_oom_policy_audit_timer_is_source_controlled() -> None:
     assert "Hapax-Auto-Enable" not in timer
     assert "OnUnitActiveSec=5min" in timer
     assert "ExecStart=/usr/local/sbin/hapax-oom-policy-audit --json" in service
+    assert "TimeoutStartSec=2min" in service
     assert "hapax-systems/hapax-council/blob/main/systemd/README.md" in service
     assert "hapax-systems/hapax-council/blob/main/systemd/README.md" in timer
     assert "source-activation" not in service
@@ -283,6 +284,7 @@ def test_root_required_deploy_audit_timer_is_source_controlled() -> None:
     assert "Hapax-Auto-Enable" not in timer
     assert "OnUnitActiveSec=10min" in timer
     assert "ExecStart=/usr/local/sbin/hapax-root-required-deploy-audit" in service
+    assert "TimeoutStartSec=2min" in service
     assert "hapax-systems/hapax-council/blob/main/systemd/README.md" in service
     assert "hapax-systems/hapax-council/blob/main/systemd/README.md" in timer
     assert "source-activation" not in service

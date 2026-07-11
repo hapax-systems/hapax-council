@@ -6,5 +6,6 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
+TimeoutStartSec=2min
 ExecStart=/usr/local/sbin/hapax-root-required-deploy-audit
 SyslogIdentifier=hapax-root-required-deploy-audit
