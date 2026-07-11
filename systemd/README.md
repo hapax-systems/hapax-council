@@ -328,6 +328,9 @@ was manual-only; the audit in `cc-task deploy-pipeline-canonical-worktree-isolat
 found 25 systemd units canonical-but-not-installed because nothing fired the
 script after merges.
 
+Recheck a release-pinned launcher with
+`test -f ~/.local/bin/hapax-post-merge-deploy && test ! -L ~/.local/bin/hapax-post-merge-deploy && test "$(stat -c '%h:%a' ~/.local/bin/hapax-post-merge-deploy)" = 1:755 && cmp -s ~/.cache/hapax/source-activation/worktree/scripts/hapax-post-merge-deploy ~/.local/bin/hapax-post-merge-deploy`.
+
 `hapax-post-merge-deploy.path` watches the canonical local main ref
 (`/home/hapax/projects/hapax-council/.git/refs/heads/main`). The dedicated
 rebuild worktree shares that ref namespace with the canonical checkout, so when

@@ -141,6 +141,43 @@ def _path_with_failing_launcher_cp(tmp_path: Path, *, phase: str) -> str:
     return f"{fake_bin}:{os.environ['PATH']}"
 
 
+def _path_with_failing_predeploy_command(
+    tmp_path: Path,
+    *,
+    command: str,
+    launcher_name: str = "",
+) -> str:
+    fake_bin = tmp_path / f"failing-predeploy-{command}"
+    fake_bin.mkdir()
+    fake_command = fake_bin / command
+    if command == "ln":
+        body = textwrap.dedent(
+            f"""\
+            #!/usr/bin/env bash
+            destination="${{@: -1}}"
+            if [[ "$destination" == */.local/bin/{launcher_name} ]]; then
+                exit 75
+            fi
+            exec /usr/bin/ln "$@"
+            """
+        )
+    elif command == "install":
+        body = textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            destination="${@: -1}"
+            if [[ "$destination" == */.config/hapax/.usb-topology-policy.json.activate.* ]]; then
+                exit 76
+            fi
+            exec /usr/bin/install "$@"
+            """
+        )
+    else:
+        raise ValueError(f"unsupported predeploy failure command: {command}")
+    _write(fake_command, body, executable=True)
+    return f"{fake_bin}:{os.environ['PATH']}"
+
+
 def _current_receipt(tmp_path: Path) -> dict:
     return json.loads((tmp_path / "state" / "current.json").read_text(encoding="utf-8"))
 
@@ -486,6 +523,106 @@ def test_launcher_snapshot_copy_failure_aborts_before_sweep_or_deploy(tmp_path: 
     receipt = _current_receipt(tmp_path)
     assert receipt["status"] == "failed"
     assert receipt["deploy_status"] == "not_started"
+
+
+def test_launcher_publication_failure_rolls_back_before_deploy(tmp_path: Path) -> None:
+    canonical, origin, active_sha = _make_repos(tmp_path)
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    local_bin = tmp_path / "home" / ".local" / "bin"
+    existing_launcher = local_bin / "hapax-post-merge-deploy"
+    existing_target = os.readlink(existing_launcher)
+    replaced_name = "hapax-a-publication"
+    replaced_launcher = local_bin / replaced_name
+    replaced_content = "#!/usr/bin/env bash\necho prior launcher\n"
+    _write(replaced_launcher, replaced_content, executable=True)
+
+    updater = tmp_path / "updater-launcher-publication-failure"
+    _git(tmp_path, "clone", str(origin), str(updater))
+    _git(updater, "config", "user.email", "source-activate@example.test")
+    _git(updater, "config", "user.name", "Source Activate")
+    failed_name = "hapax-z-publication-failure"
+    _write(
+        updater / "scripts" / replaced_name,
+        "#!/usr/bin/env bash\necho candidate launcher\n",
+        executable=True,
+    )
+    _write(
+        updater / "scripts" / failed_name,
+        "#!/usr/bin/env bash\nexit 0\n",
+        executable=True,
+    )
+    _git(updater, "add", f"scripts/{replaced_name}", f"scripts/{failed_name}")
+    _git(updater, "commit", "-m", "add launcher whose publication fails")
+    _git(updater, "push", "origin", "main")
+    failed_sha = _git(updater, "rev-parse", "HEAD")
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": _path_with_failing_predeploy_command(
+                tmp_path,
+                command="ln",
+                launcher_name=failed_name,
+            )
+        },
+    )
+
+    assert second.returncode == 2
+    assert failed_sha != active_sha
+    assert "unable to publish managed launcher" in second.stderr
+    assert "deployment was not started" in second.stderr
+    assert _git(tmp_path / "active-source", "rev-parse", "HEAD") == active_sha
+    assert existing_launcher.is_symlink()
+    assert os.readlink(existing_launcher) == existing_target
+    assert replaced_launcher.is_file()
+    assert not replaced_launcher.is_symlink()
+    assert replaced_launcher.read_text(encoding="utf-8") == replaced_content
+    assert not (local_bin / failed_name).exists()
+    assert (tmp_path / "deploy-record.txt").read_text(encoding="utf-8").splitlines() == [active_sha]
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["deploy_status"] == "not_started"
+    assert receipt["source_cutover"]["rollback_status"] == "success"
+    assert "managed launcher publication failed" in receipt["message"]
+
+
+def test_active_config_staging_failure_rolls_back_before_deploy(tmp_path: Path) -> None:
+    canonical, origin, active_sha = _make_repos(tmp_path)
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    installed_policy = tmp_path / "home" / ".config" / "hapax" / "usb-topology-policy.json"
+    previous_policy = installed_policy.read_text(encoding="utf-8")
+
+    updater = tmp_path / "updater-config-staging-failure"
+    _git(tmp_path, "clone", str(origin), str(updater))
+    _git(updater, "config", "user.email", "source-activate@example.test")
+    _git(updater, "config", "user.name", "Source Activate")
+    _write(updater / "config" / "usb-topology-policy.json", '{"known_absences":{"new":true}}\n')
+    _git(updater, "add", "config/usb-topology-policy.json")
+    _git(updater, "commit", "-m", "change config whose staging fails")
+    _git(updater, "push", "origin", "main")
+    failed_sha = _git(updater, "rev-parse", "HEAD")
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": _path_with_failing_predeploy_command(tmp_path, command="install")},
+    )
+
+    assert second.returncode == 2
+    assert failed_sha != active_sha
+    assert "unable to stage active config" in second.stderr
+    assert "deployment was not started" in second.stderr
+    assert _git(tmp_path / "active-source", "rev-parse", "HEAD") == active_sha
+    assert installed_policy.read_text(encoding="utf-8") == previous_policy
+    assert (tmp_path / "deploy-record.txt").read_text(encoding="utf-8").splitlines() == [active_sha]
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["deploy_status"] == "not_started"
+    assert receipt["source_cutover"]["rollback_status"] == "success"
+    assert "active config staging failed" in receipt["message"]
 
 
 def test_launcher_restore_copy_failure_is_reported_without_removing_destination(
