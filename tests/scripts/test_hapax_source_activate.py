@@ -434,6 +434,20 @@ def test_activation_sweeps_cc_task_tools_into_local_bin(tmp_path: Path) -> None:
     assert os.readlink(local_bin / "cc-close") == str(active_source / "scripts" / "cc-close")
 
 
+def test_activation_preserves_release_pinned_regular_launcher(tmp_path: Path) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+    local_bin = tmp_path / "home" / ".local" / "bin"
+    pinned = local_bin / "hapax-post-merge-deploy"
+    _write(pinned, "#!/usr/bin/env bash\necho candidate\n", executable=True)
+
+    result = _run_activate(tmp_path, canonical)
+
+    assert result.returncode == 0, result.stderr
+    assert pinned.is_file()
+    assert not pinned.is_symlink()
+    assert pinned.read_text(encoding="utf-8") == "#!/usr/bin/env bash\necho candidate\n"
+
+
 def test_activation_syncs_usb_topology_policy_config(tmp_path: Path) -> None:
     canonical, _origin, _new_sha = _make_repos(tmp_path)
 

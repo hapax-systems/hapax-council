@@ -791,6 +791,12 @@ link_active_script() {
     [[ -x "$script" ]] || chmod +x "$script"
     local base target
     base="$(basename "$script")"
+    # Post-merge deploy installs changed launchers as release-pinned regular
+    # copies. Preserve that ownership; this sweep repairs only absent or
+    # symlink-owned entries.
+    if [[ -e "$LOCAL_BIN/$base" && ! -L "$LOCAL_BIN/$base" ]]; then
+        return 0
+    fi
     target="$(readlink "$LOCAL_BIN/$base" 2>/dev/null || true)"
     if [[ "$target" != "$script" ]]; then
         ln -sf "$script" "$LOCAL_BIN/$base"
