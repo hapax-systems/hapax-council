@@ -690,6 +690,101 @@ source_unit_value() {
     printf '%s\n' "$value"
 }
 
+source_unit_optional_value() {
+    local rel="$1" key="$2" file
+    file="$(src_path "$rel")"
+    awk -v key="$key" '$0 ~ "^" key "=" {sub(/^[^=]*=/, ""); print; exit}' \
+        "$file" 2>/dev/null || true
+}
+
+loaded_unit_property() {
+    local manager="$1" unit="$2" property="$3"
+    if [ "$manager" = "user" ]; then
+        user_systemctl show "$unit" -p "$property" --value 2>/dev/null
+    else
+        "$SYSTEMCTL" show "$unit" -p "$property" --value 2>/dev/null
+    fi
+}
+
+verify_effective_service_unit() {
+    local manager="$1" unit="$2" rel="$3" expected_fragment="$4"
+    local expected_exec expected_failure expected_user actual_fragment actual_dropins
+    local actual_exec actual_failure actual_user
+    expected_exec="$(source_unit_value "$rel" ExecStart)" || return 1
+    expected_failure="$(source_unit_optional_value "$rel" OnFailure)"
+    expected_failure="${expected_failure//%n/$unit}"
+    expected_user="$(source_unit_optional_value "$rel" User)"
+    actual_fragment="$(loaded_unit_property "$manager" "$unit" FragmentPath)" || actual_fragment=""
+    actual_dropins="$(loaded_unit_property "$manager" "$unit" DropInPaths)" || actual_dropins="query-error"
+    actual_exec="$(loaded_unit_property "$manager" "$unit" ExecStart)" || actual_exec=""
+    actual_failure="$(loaded_unit_property "$manager" "$unit" OnFailure)" || actual_failure="query-error"
+    actual_user="$(loaded_unit_property "$manager" "$unit" User)" || actual_user="query-error"
+    if [ "$actual_fragment" != "$expected_fragment" ] || [ -n "$actual_dropins" ]; then
+        echo "effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins; next action: remove unauthorized overrides, reload the manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    case "$actual_exec" in
+        *"argv[]=$expected_exec ;"*) ;;
+        *)
+            echo "effective $unit ExecStart drift: actual=${actual_exec:-unavailable} expected=$expected_exec; next action: remove unauthorized overrides, reload the manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            return 1
+            ;;
+    esac
+    if [ "$actual_failure" != "$expected_failure" ] || [ "$actual_user" != "$expected_user" ]; then
+        echo "effective $unit failure/identity drift: OnFailure=${actual_failure:-none} User=${actual_user:-default} expected OnFailure=${expected_failure:-none} User=${expected_user:-default}; next action: remove unauthorized overrides, reload the manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+}
+
+verify_effective_timer_unit() {
+    local manager="$1" unit="$2" rel="$3" expected_fragment="$4"
+    local expected_target expected_boot expected_active actual_fragment actual_dropins
+    local actual_target actual_timers
+    expected_target="$(source_unit_value "$rel" Unit)" || return 1
+    expected_boot="$(source_unit_value "$rel" OnBootSec)" || return 1
+    expected_active="$(source_unit_value "$rel" OnUnitActiveSec)" || return 1
+    actual_fragment="$(loaded_unit_property "$manager" "$unit" FragmentPath)" || actual_fragment=""
+    actual_dropins="$(loaded_unit_property "$manager" "$unit" DropInPaths)" || actual_dropins="query-error"
+    actual_target="$(loaded_unit_property "$manager" "$unit" Unit)" || actual_target="query-error"
+    actual_timers="$(loaded_unit_property "$manager" "$unit" TimersMonotonic)" || actual_timers="query-error"
+    if [ "$actual_fragment" != "$expected_fragment" ] || [ -n "$actual_dropins" ]; then
+        echo "effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins; next action: remove unauthorized overrides, reload the manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    if [ "$actual_target" != "$expected_target" ]; then
+        echo "effective $unit target drift: actual=${actual_target:-unavailable} expected=$expected_target; next action: remove unauthorized overrides, reload the manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    case "$actual_timers" in
+        *"OnBootUSec=$expected_boot"*"OnUnitActiveUSec=$expected_active"*|*"OnUnitActiveUSec=$expected_active"*"OnBootUSec=$expected_boot"*) ;;
+        *)
+            echo "effective $unit cadence drift: actual=${actual_timers:-unavailable} expected OnBootUSec=$expected_boot and OnUnitActiveUSec=$expected_active; next action: remove unauthorized overrides, reload the manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            return 1
+            ;;
+    esac
+}
+
+verify_effective_safety_units() {
+    verify_effective_service_unit system hapax-oom-score-enforce.service \
+        systemd/units/hapax-oom-score-enforce.service \
+        "$SYSTEMD_SYSTEM_DIR/hapax-oom-score-enforce.service"
+    verify_effective_timer_unit system hapax-oom-score-enforce.timer \
+        systemd/units/hapax-oom-score-enforce.timer \
+        "$SYSTEMD_SYSTEM_DIR/hapax-oom-score-enforce.timer"
+    verify_effective_service_unit user hapax-oom-policy-audit.service \
+        systemd/units/hapax-oom-policy-audit.service \
+        "$SYSTEMD_USER_DIR/hapax-oom-policy-audit.service"
+    verify_effective_timer_unit user hapax-oom-policy-audit.timer \
+        systemd/units/hapax-oom-policy-audit.timer \
+        "$SYSTEMD_USER_DIR/hapax-oom-policy-audit.timer"
+    verify_effective_service_unit user hapax-root-required-deploy-audit.service \
+        systemd/units/hapax-root-required-deploy-audit.service \
+        "$SYSTEMD_USER_DIR/hapax-root-required-deploy-audit.service"
+    verify_effective_timer_unit user hapax-root-required-deploy-audit.timer \
+        systemd/units/hapax-root-required-deploy-audit.timer \
+        "$SYSTEMD_USER_DIR/hapax-root-required-deploy-audit.timer"
+}
+
 memory_to_bytes() {
     local value="$1" number suffix
     case "$value" in
@@ -1379,6 +1474,7 @@ verify_live() {
     done
     verify_user_audit_loaded_timeouts
     verify_enforcer_loaded_timeout
+    verify_effective_safety_units
     verify_user_manager_oom_score
     verify_system_unit_runtime_memory system.slice systemd/system/system.slice.d/oom-containment.conf
     verify_system_unit_runtime_memory user.slice systemd/system/user.slice.d/oom-containment.conf

@@ -46,22 +46,26 @@ P0_OOM_AUDIT_FILES = {
     "scripts/hapax-oom-policy-audit": "#!/usr/bin/env python3\n",
     "scripts/hapax-root-required-deploy-audit": "#!/usr/bin/env bash\n",
     "systemd/units/hapax-oom-policy-audit.service": (
-        "[Unit]\nDescription=OOM audit\n[Service]\nType=oneshot\n"
+        "[Unit]\nDescription=OOM audit\nOnFailure=notify-failure@%n.service\n"
+        "[Service]\nType=oneshot\n"
         "TimeoutStartSec=2min\n"
         "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin\n"
         "ExecStart=/usr/local/sbin/hapax-oom-policy-audit --json\n"
     ),
     "systemd/units/hapax-oom-policy-audit.timer": (
-        "[Unit]\nDescription=OOM audit timer\n[Timer]\nOnUnitActiveSec=5min\n"
+        "[Unit]\nDescription=OOM audit timer\n[Timer]\nOnBootSec=2min\n"
+        "OnUnitActiveSec=5min\nUnit=hapax-oom-policy-audit.service\n"
     ),
     "systemd/units/hapax-root-required-deploy-audit.service": (
-        "[Unit]\nDescription=Root deploy audit\n[Service]\nType=oneshot\n"
+        "[Unit]\nDescription=Root deploy audit\nOnFailure=notify-failure@%n.service\n"
+        "[Service]\nType=oneshot\n"
         "TimeoutStartSec=2min\n"
         "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin\n"
         "ExecStart=/usr/local/sbin/hapax-root-required-deploy-audit\n"
     ),
     "systemd/units/hapax-root-required-deploy-audit.timer": (
-        "[Unit]\nDescription=Root deploy audit timer\n[Timer]\nOnUnitActiveSec=10min\n"
+        "[Unit]\nDescription=Root deploy audit timer\n[Timer]\nOnBootSec=3min\n"
+        "OnUnitActiveSec=10min\nUnit=hapax-root-required-deploy-audit.service\n"
     ),
 }
 ROOT_AUDIT_SOURCE_FILES = {
@@ -110,10 +114,14 @@ ROOT_AUDIT_SOURCE_FILES = {
         "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\n"
     ),
     "systemd/units/hapax-oom-score-enforce.service": (
-        "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\nTimeoutStartSec=25s\n"
+        "[Unit]\n# Hapax-Install-Scope: system\n"
+        "OnFailure=hapax-root-failure-intake@%n.service\n"
+        "[Service]\nType=oneshot\nTimeoutStartSec=25s\n"
+        "ExecStart=/usr/local/sbin/hapax-oom-score-enforce --apply\n"
     ),
     "systemd/units/hapax-oom-score-enforce.timer": (
-        "[Unit]\n# Hapax-Install-Scope: system\n[Timer]\nOnUnitActiveSec=30s\n"
+        "[Unit]\n# Hapax-Install-Scope: system\n[Timer]\nOnBootSec=30s\n"
+        "OnUnitActiveSec=30s\nUnit=hapax-oom-score-enforce.service\n"
     ),
     "systemd/units/app.slice.d/oom-containment.conf": (
         "[Slice]\nMemoryHigh=72G\nMemoryMax=88G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
@@ -307,6 +315,87 @@ def _write_installed_recovery_bundle(dest: Path, source_ref: str, files: dict[st
     )
 
 
+def _effective_safety_unit_show_script(system_dir: Path, user_dir: Path) -> str:
+    lines: list[str] = []
+    services = (
+        (
+            "system",
+            "hapax-oom-score-enforce.service",
+            system_dir / "hapax-oom-score-enforce.service",
+            "/usr/local/sbin/hapax-oom-score-enforce --apply",
+            "hapax-root-failure-intake@hapax-oom-score-enforce.service.service",
+        ),
+        (
+            "user",
+            "hapax-oom-policy-audit.service",
+            user_dir / "hapax-oom-policy-audit.service",
+            "/usr/local/sbin/hapax-oom-policy-audit --json",
+            "notify-failure@hapax-oom-policy-audit.service.service",
+        ),
+        (
+            "user",
+            "hapax-root-required-deploy-audit.service",
+            user_dir / "hapax-root-required-deploy-audit.service",
+            "/usr/local/sbin/hapax-root-required-deploy-audit",
+            "notify-failure@hapax-root-required-deploy-audit.service.service",
+        ),
+    )
+    for manager, unit, fragment, exec_start, on_failure in services:
+        prefix = "--user show" if manager == "user" else "show"
+        properties = {
+            "FragmentPath": str(fragment),
+            "DropInPaths": "",
+            "ExecStart": f"{{ path={exec_start.split()[0]} ; argv[]={exec_start} ; }}",
+            "OnFailure": on_failure,
+            "User": "",
+        }
+        for prop, value in properties.items():
+            lines.append(
+                f'if [ "$*" = "{prefix} {unit} -p {prop} --value" ]; '
+                f"then printf '%s\\n' '{value}'; fi\n"
+            )
+    timers = (
+        (
+            "system",
+            "hapax-oom-score-enforce.timer",
+            system_dir / "hapax-oom-score-enforce.timer",
+            "hapax-oom-score-enforce.service",
+            "30s",
+            "30s",
+        ),
+        (
+            "user",
+            "hapax-oom-policy-audit.timer",
+            user_dir / "hapax-oom-policy-audit.timer",
+            "hapax-oom-policy-audit.service",
+            "2min",
+            "5min",
+        ),
+        (
+            "user",
+            "hapax-root-required-deploy-audit.timer",
+            user_dir / "hapax-root-required-deploy-audit.timer",
+            "hapax-root-required-deploy-audit.service",
+            "3min",
+            "10min",
+        ),
+    )
+    for manager, unit, fragment, target, on_boot, on_active in timers:
+        prefix = "--user show" if manager == "user" else "show"
+        properties = {
+            "FragmentPath": str(fragment),
+            "DropInPaths": "",
+            "Unit": target,
+            "TimersMonotonic": (f"OnBootUSec={on_boot} OnUnitActiveUSec={on_active}"),
+        }
+        for prop, value in properties.items():
+            lines.append(
+                f'if [ "$*" = "{prefix} {unit} -p {prop} --value" ]; '
+                f"then printf '%s\\n' '{value}'; fi\n"
+            )
+    return "".join(lines)
+
+
 def _root_audit_env(
     tmp_path: Path,
     *,
@@ -341,6 +430,7 @@ def _root_audit_env(
         'if [ "$*" = "--user show hapax-root-required-deploy-audit.service -p TimeoutStartUSec --value" ]; then printf "2min\\n"; fi\n'
         'if [ "$*" = "--user show hapax-oom-policy-audit.service -p Environment --value" ]; then printf "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin\\n"; fi\n'
         'if [ "$*" = "--user show hapax-root-required-deploy-audit.service -p Environment --value" ]; then printf "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin\\n"; fi\n'
+        f"{_effective_safety_unit_show_script(system_dir, user_dir)}"
         "exit 0\n",
         encoding="utf-8",
     )
@@ -1772,6 +1862,39 @@ def test_root_required_audit_ignores_hostile_path(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert not marker.exists()
+
+
+def test_root_required_audit_rejects_effective_service_dropin(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
+    baseline_systemctl = fake_systemctl.with_name("root-audit-systemctl-baseline")
+    fake_systemctl.rename(baseline_systemctl)
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$*" = "--user show hapax-oom-policy-audit.service -p DropInPaths --value" ]; then\n'
+        "  printf '%s\\n' '/run/user/1000/systemd/user/hapax-oom-policy-audit.service.d/override.conf'\n"
+        "  exit 0\n"
+        "fi\n"
+        'if [ "$*" = "--user show hapax-oom-policy-audit.service -p ExecStart --value" ]; then\n'
+        "  printf '%s\\n' '{ path=/usr/bin/true ; argv[]=/usr/bin/true ; }'\n"
+        "  exit 0\n"
+        "fi\n"
+        f'exec "{baseline_systemctl!s}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "effective hapax-oom-policy-audit.service unit-source drift" in result.stderr
+    assert "override.conf" in result.stderr
 
 
 def test_root_required_audit_legacy_manifest_transition_is_fail_closed(tmp_path: Path) -> None:

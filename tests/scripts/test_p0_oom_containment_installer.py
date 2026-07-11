@@ -171,6 +171,11 @@ def _systemctl_user_unit_cases(
         "hapax-oom-policy-audit.service",
         "hapax-root-required-deploy-audit.service",
     ):
+        exec_start = (
+            "/usr/local/sbin/hapax-oom-policy-audit --json"
+            if audit_unit == "hapax-oom-policy-audit.service"
+            else "/usr/local/sbin/hapax-root-required-deploy-audit"
+        )
         cases.append(
             f"  *--user\\ show\\ {audit_unit}\\ -p\\ TimeoutStartUSec\\ --value*) "
             "printf '%s\\n' '2min' ;;"
@@ -178,6 +183,42 @@ def _systemctl_user_unit_cases(
         cases.append(
             f"  *--user\\ show\\ {audit_unit}\\ -p\\ Environment\\ --value*) "
             f"printf '%s\\n' '{SAFE_AUDIT_ENVIRONMENT}' ;;"
+        )
+        cases.extend(
+            [
+                f"  *--user\\ show\\ {audit_unit}\\ -p\\ FragmentPath\\ --value*) "
+                f"printf '%s\\n' \"${{HAPAX_OOM_SYSTEMD_USER_DIR:-/home/hapax/.config/systemd/user}}/{audit_unit}\" ;;",
+                f"  *--user\\ show\\ {audit_unit}\\ -p\\ DropInPaths\\ --value*) printf '\\n' ;;",
+                f"  *--user\\ show\\ {audit_unit}\\ -p\\ ExecStart\\ --value*) "
+                f"printf '%s\\n' '{{ path={exec_start.split()[0]} ; argv[]={exec_start} ; }}' ;;",
+                f"  *--user\\ show\\ {audit_unit}\\ -p\\ OnFailure\\ --value*) "
+                f"printf '%s\\n' 'notify-failure@{audit_unit}.service' ;;",
+                f"  *--user\\ show\\ {audit_unit}\\ -p\\ User\\ --value*) printf '\\n' ;;",
+            ]
+        )
+    for timer, target, on_boot, on_active in (
+        (
+            "hapax-oom-policy-audit.timer",
+            "hapax-oom-policy-audit.service",
+            "2min",
+            "5min",
+        ),
+        (
+            "hapax-root-required-deploy-audit.timer",
+            "hapax-root-required-deploy-audit.service",
+            "3min",
+            "10min",
+        ),
+    ):
+        cases.extend(
+            [
+                f"  *--user\\ show\\ {timer}\\ -p\\ FragmentPath\\ --value*) "
+                f"printf '%s\\n' \"${{HAPAX_OOM_SYSTEMD_USER_DIR:-/home/hapax/.config/systemd/user}}/{timer}\" ;;",
+                f"  *--user\\ show\\ {timer}\\ -p\\ DropInPaths\\ --value*) printf '\\n' ;;",
+                f"  *--user\\ show\\ {timer}\\ -p\\ Unit\\ --value*) printf '%s\\n' '{target}' ;;",
+                f"  *--user\\ show\\ {timer}\\ -p\\ TimersMonotonic\\ --value*) "
+                f"printf '%s\\n' 'OnBootUSec={on_boot} OnUnitActiveUSec={on_active}' ;;",
+            ]
         )
     for unit in PROTECTED_USER_UNIT_SCORES:
         cases.append(
@@ -235,6 +276,15 @@ def _systemctl_system_memory_cases(
 ) -> str:
     cases = [
         '  *"show hapax-oom-score-enforce.service -p TimeoutStartUSec --value"*) printf "25s\\n" ;;',
+        '  *"show hapax-oom-score-enforce.service -p FragmentPath --value"*) printf "%s\\n" "${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}/hapax-oom-score-enforce.service" ;;',
+        '  *"show hapax-oom-score-enforce.service -p DropInPaths --value"*) printf "\\n" ;;',
+        '  *"show hapax-oom-score-enforce.service -p ExecStart --value"*) printf "%s\\n" "{ path=/usr/local/sbin/hapax-oom-score-enforce ; argv[]=/usr/local/sbin/hapax-oom-score-enforce --apply ; }" ;;',
+        '  *"show hapax-oom-score-enforce.service -p OnFailure --value"*) printf "%s\\n" "hapax-root-failure-intake@hapax-oom-score-enforce.service.service" ;;',
+        '  *"show hapax-oom-score-enforce.service -p User --value"*) printf "\\n" ;;',
+        '  *"show hapax-oom-score-enforce.timer -p FragmentPath --value"*) printf "%s\\n" "${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}/hapax-oom-score-enforce.timer" ;;',
+        '  *"show hapax-oom-score-enforce.timer -p DropInPaths --value"*) printf "\\n" ;;',
+        '  *"show hapax-oom-score-enforce.timer -p Unit --value"*) printf "hapax-oom-score-enforce.service\\n" ;;',
+        '  *"show hapax-oom-score-enforce.timer -p TimersMonotonic --value"*) printf "%s\\n" "OnBootUSec=30s OnUnitActiveUSec=30s" ;;',
         '  *"show system.slice -p MemoryHigh --value"*) printf "infinity\\n" ;;',
         '  *"show system.slice -p MemoryMax --value"*) printf "infinity\\n" ;;',
         '  *"show system.slice -p MemorySwapMax --value"*) printf "infinity\\n" ;;',
@@ -811,13 +861,11 @@ def test_oom_install_without_verify_flag_cannot_advance_receipts_after_live_prob
     fake_systemctl = tmp_path / "systemctl"
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
-        'if [[ "$*" == *"show hapax-oom-policy-audit.service -p TimeoutStartUSec --value"* ]]; then printf "2min\\n"; fi\n'
-        'if [[ "$*" == *"show hapax-root-required-deploy-audit.service -p TimeoutStartUSec --value"* ]]; then printf "2min\\n"; fi\n'
-        f'if [[ "$*" == *"show hapax-oom-policy-audit.service -p Environment --value"* ]]; then printf "{SAFE_AUDIT_ENVIRONMENT}\\n"; fi\n'
-        f'if [[ "$*" == *"show hapax-root-required-deploy-audit.service -p Environment --value"* ]]; then printf "{SAFE_AUDIT_ENVIRONMENT}\\n"; fi\n'
-        'if [[ "$*" == *"show hapax-oom-score-enforce.service -p TimeoutStartUSec --value"* ]]; then printf "25s\\n"; fi\n'
-        'if [[ "$*" == *"show user@1000.service -p OOMScoreAdjust --value"* ]]; then printf "100\\n"; fi\n'
-        'if [[ "$*" == *"show user@1000.service -p OOMPolicy --value"* ]]; then printf "continue\\n"; fi\n'
+        'case "$*" in\n'
+        f"{_systemctl_system_memory_cases()}\n"
+        f"{_systemctl_user_unit_cases()}\n"
+        f"{_systemctl_app_slice_cases()}\n"
+        "esac\n"
         "exit 0\n",
         encoding="utf-8",
     )
@@ -893,6 +941,54 @@ def test_oom_install_rejects_stale_loaded_enforcer_timeout_before_receipts(
     assert (
         "live hapax-oom-score-enforce.service TimeoutStartUSec drift: actual=infinity expected=25s"
     ) in result.stderr
+    state_root = tmp_path / "root-state"
+    assert not (state_root / "installed-receipts/oom-containment.sha").exists()
+    assert not (tmp_path / "installed-source").exists()
+
+
+def test_oom_install_rejects_stretched_effective_enforcer_timer_before_receipts(
+    tmp_path: Path,
+) -> None:
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$*" in\n'
+        '  *"show hapax-oom-score-enforce.timer -p TimersMonotonic --value"*) '
+        "printf '%s\\n' 'OnBootUSec=30s OnUnitActiveUSec=1d' ;;\n"
+        f"{_systemctl_system_memory_cases()}\n"
+        f"{_systemctl_user_unit_cases()}\n"
+        f"{_systemctl_app_slice_cases()}\n"
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(tmp_path / "systemd-system"),
+            "HAPAX_OOM_SYSTEMD_USER_DIR": str(tmp_path / "systemd-user"),
+            "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR": str(tmp_path / "systemd-user-control"),
+            "HAPAX_OOM_EARLYOOM_DEST": str(tmp_path / "earlyoom"),
+            "HAPAX_OOM_ENFORCER_DEST": str(tmp_path / "sbin/hapax-oom-score-enforce"),
+            "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(tmp_path / "sbin/hapax-root-failure-intake"),
+            "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_OOM_INSTALL_SUDO": "",
+            "HAPAX_OOM_PROC_ROOT": str(proc_root),
+            "HAPAX_OOM_TARGET_UID": "1000",
+        },
+    )
+
+    assert result.returncode == 1
+    assert "effective hapax-oom-score-enforce.timer cadence drift" in result.stderr
+    assert "OnUnitActiveUSec=1d" in result.stderr
     state_root = tmp_path / "root-state"
     assert not (state_root / "installed-receipts/oom-containment.sha").exists()
     assert not (tmp_path / "installed-source").exists()
