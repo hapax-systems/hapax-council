@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""Fail-open / degraded-default audit (derivation-substrate MOVE 6, slice 1 — REPORT mode).
+
+KIND-6 of the boutique atlas — the class the 11 census dimensions were blind to: ~219 sites across
+``shared/`` catch an exception and ``return`` a hand-picked constant. Most are benign degraded defaults;
+a dangerous subset are **fail-OPEN in a governance gate** — a caught exception silently returns a
+*permissive* value (``sdlc_pressure_gate.read_working_mode`` -> ``"research"``; the pressure read ->
+``0.0``, i.e. zero pressure ADMITS EVERYTHING). The cure (later slices) routes the error path through
+one governor (``recovery_governor``) with a single declared fail-open/closed policy instead of 219
+hand-picked ones. This is its first, safe form: DETECT the sites and surface the governance ones.
+
+REPORT mode: lists the sites, always exits 0 — never fails the build. It is a pure read.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# Modules whose return value GATES something (admit/permit/route/allow). A swallowed exception here that
+# returns a permissive default is a fail-OPEN — the highest-severity shape. Extend as gates are found.
+_GOVERNANCE_BASENAMES = frozenset(
+    {
+        "sdlc_pressure_gate.py",
+        "host_confinement.py",
+        "dispatcher_policy.py",
+        "sdlc_dispatch_guards.py",
+        "admission.py",
+        "entitlement.py",
+        "escape_grant.py",
+        "cc_task_gate.py",
+    }
+)
+
+
+def _constant_repr(node: ast.expr | None) -> str | None:
+    """A short repr if ``node`` is a constant / empty-or-constant collection literal, else None."""
+    if node is None:
+        return "None"  # bare ``return``
+    if isinstance(node, ast.Constant):
+        return repr(node.value)
+    if isinstance(node, ast.Dict) and not node.keys:
+        return "{}"
+    if isinstance(node, ast.List) and not node.elts:
+        return "[]"
+    if isinstance(node, ast.Tuple) and not node.elts:
+        return "()"
+    if (
+        isinstance(node, (ast.List, ast.Tuple, ast.Set))
+        and node.elts
+        and all(isinstance(e, ast.Constant) for e in node.elts)
+    ):
+        return f"{type(node).__name__.lower()}[{len(node.elts)} const]"
+    return None
+
+
+def _constant_returns(handler: ast.ExceptHandler) -> list[tuple[int, str]]:
+    """(line, literal) for each ``return <constant>`` reachable in the handler's own scope."""
+    out: list[tuple[int, str]] = []
+
+    def walk(stmts: list[ast.stmt]) -> None:
+        for s in stmts:
+            if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue  # a different scope — its returns are not this handler's swallow
+            if isinstance(s, ast.Return):
+                lit = _constant_repr(s.value)
+                if lit is not None:
+                    out.append((s.lineno, lit))
+            for field in ("body", "orelse", "finalbody"):
+                block = getattr(s, field, None)
+                if isinstance(block, list):
+                    walk(block)
+            for h in getattr(s, "handlers", []) or []:
+                walk(h.body)
+
+    walk(handler.body)
+    return out
+
+
+def _exc_names(handler: ast.ExceptHandler) -> str:
+    t = handler.type
+    if t is None:
+        return "bare-except"
+    if isinstance(t, ast.Name):
+        return t.id
+    if isinstance(t, ast.Tuple):
+        return ",".join(e.id for e in t.elts if isinstance(e, ast.Name))
+    return ast.dump(t)
+
+
+def audit_file(path: Path) -> list[dict]:
+    findings: list[dict] = []
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (SyntaxError, OSError):
+        return findings
+    governance = path.name in _GOVERNANCE_BASENAMES
+
+    def visit(node: ast.AST, func: str) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            func = node.name
+        if isinstance(node, ast.Try):
+            for handler in node.handlers:
+                for line, lit in _constant_returns(handler):
+                    findings.append(
+                        {
+                            "path": str(path),
+                            "line": line,
+                            "func": func,
+                            "excepts": _exc_names(handler),
+                            "returns": lit,
+                            "severity": "governance-fail-open"
+                            if governance
+                            else "degraded-default",
+                        }
+                    )
+        for child in ast.iter_child_nodes(node):
+            visit(child, func)
+
+    visit(tree, "<module>")
+    return findings
+
+
+def audit_tree(root: Path) -> list[dict]:
+    findings: list[dict] = []
+    for p in sorted(root.rglob("*.py")):
+        findings.extend(audit_file(p))
+    return findings
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        description="Fail-open / degraded-default audit (REPORT mode) — derivation-substrate MOVE 6 slice 1"
+    )
+    ap.add_argument("--root", default=str(REPO_ROOT / "shared"))
+    ap.add_argument(
+        "--governance-only", action="store_true", help="show only fail-open governance gates"
+    )
+    args = ap.parse_args()
+    findings = audit_tree(Path(args.root))
+    gov = [f for f in findings if f["severity"] == "governance-fail-open"]
+    shown = gov if args.governance_only else findings
+    for f in sorted(
+        shown, key=lambda f: (f["severity"] != "governance-fail-open", f["path"], f["line"])
+    ):
+        mark = "FAIL-OPEN" if f["severity"] == "governance-fail-open" else "degraded"
+        print(
+            f"[{mark}] {f['path']}:{f['line']}  {f['func']}()  except {f['excepts']} -> return {f['returns']}"
+        )
+    print(
+        f"\nfail-open-audit: {len(findings)} except->constant site(s); {len(gov)} in governance gates "
+        f"(fail-OPEN — highest severity). REPORT mode — never fails the build."
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
