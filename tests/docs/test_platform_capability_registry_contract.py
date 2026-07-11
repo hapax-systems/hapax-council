@@ -328,15 +328,27 @@ def test_seed_registry_records_agy_review_route_as_blocked_review_supply() -> No
         "agy@gpt-oss-120b-medium",
     }
     variants = {variant["variant_id"]: variant for variant in route["descriptor_variants"]}
-    assert variants["agy@gemini-3.5-flash-low"]["blocked_reasons"] == [
-        "engine_exact_token_smoke_failed"
+    # The flash trio carries BOTH blockers: the contingent smoke failure and the
+    # model-boundary inheritance guard (the smoke blocker can lift silently; the
+    # boundary blocker must survive that).
+    for flash_variant in (
+        "agy@gemini-3.5-flash-low",
+        "agy@gemini-3.5-flash-medium",
+        "agy@gemini-3.5-flash-high",
+    ):
+        assert variants[flash_variant]["blocked_reasons"] == [
+            "engine_exact_token_smoke_failed",
+            "scores_inherited_across_model_boundary",
+        ]
+    # M-crossing inheriting variants carry the boundary blocker; the same-model
+    # gemini-3.1-pro leaf does NOT (it stays the selected reachable leaf).
+    assert variants["agy@claude-sonnet-4.6-thinking"]["blocked_reasons"] == [
+        "scores_inherited_across_model_boundary"
     ]
-    assert variants["agy@gemini-3.5-flash-medium"]["blocked_reasons"] == [
-        "engine_exact_token_smoke_failed"
+    assert variants["agy@gpt-oss-120b-medium"]["blocked_reasons"] == [
+        "scores_inherited_across_model_boundary"
     ]
-    assert variants["agy@gemini-3.5-flash-high"]["blocked_reasons"] == [
-        "engine_exact_token_smoke_failed"
-    ]
+    assert variants["agy@gemini-3.1-pro-high"]["blocked_reasons"] == []
 
 
 def test_seed_registry_records_claude_review_route_as_blocked_review_supply() -> None:
