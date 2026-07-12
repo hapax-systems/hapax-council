@@ -25,6 +25,9 @@ DEFAULT_DB_PATH: Path = HAPAX_CACHE_DIR / "hapax" / "relay" / "messages.db"
 BLOB_DIR: Path = HAPAX_CACHE_DIR / "hapax" / "relay" / "blobs"
 
 _DISK_PRESSURE_THRESHOLD = 10 * 1024 * 1024  # 10MB
+COORDINATOR_PREPARED_DISPATCH_REASON = "coordinator_prepared_pending_revalidation"
+COORDINATOR_ABORTED_DISPATCH_REASON_PREFIX = "coordinator_prepare_aborted:"
+COORDINATOR_ACCEPTED_DISPATCH_REASON_PREFIX = "coord_dispatch_accepted:"
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS messages (
@@ -257,7 +260,14 @@ def send_message(
     db_path: Path,
     envelope: Envelope,
     relay_dir: Path | None = None,
+    *,
+    initial_recipient_state: RecipientState = "offered",
+    initial_reason: str | None = None,
 ) -> str:
+    if initial_recipient_state not in {"offered", "deferred"}:
+        raise ValueError("initial recipient state must be offered or deferred")
+    if initial_recipient_state == "deferred" and not initial_reason:
+        raise ValueError("initial_reason is required for a deferred recipient")
     if envelope.payload_path and envelope.payload_hash is None:
         content = Path(envelope.payload_path).read_bytes()
         envelope.payload_hash = compute_payload_hash(content)
@@ -287,13 +297,174 @@ def send_message(
 
         for recipient in recipients:
             conn.execute(
-                "INSERT INTO recipients (message_id, recipient, state, created_at, updated_at) "
-                "VALUES (:message_id, :recipient, 'offered', :now, :now)",
-                {"message_id": envelope.message_id, "recipient": recipient, "now": now},
+                "INSERT INTO recipients "
+                "(message_id, recipient, state, reason, created_at, updated_at) "
+                "VALUES (:message_id, :recipient, :state, :reason, :now, :now)",
+                {
+                    "message_id": envelope.message_id,
+                    "recipient": recipient,
+                    "state": initial_recipient_state,
+                    "reason": initial_reason,
+                    "now": now,
+                },
             )
         conn.commit()
 
     return envelope.message_id
+
+
+@dataclass(frozen=True)
+class CoordinatorDispatchPreparation:
+    message_id: str
+    state: RecipientState
+    reason: str | None
+    created: bool
+
+
+def prepare_coordinator_dispatch(
+    db_path: Path,
+    envelope: Envelope,
+    relay_dir: Path | None = None,
+) -> CoordinatorDispatchPreparation:
+    """Create or reuse the one in-flight coordinator dispatch for task/lane."""
+
+    if envelope.sender != "hapax-coordinator" or envelope.message_type != "dispatch":
+        raise ValueError(
+            "coordinator dispatch preparation requires a coordinator dispatch envelope"
+        )
+    if str(db_path) != ":memory:":
+        free = shutil.disk_usage(db_path.parent).free
+        if free < _DISK_PRESSURE_THRESHOLD:
+            raise DiskPressureError(
+                f"Disk pressure: {free} bytes free at {db_path.parent} (< 10MB)"
+            )
+    recipients = expand_recipients(envelope.recipients_spec, relay_dir)
+    if len(recipients) != 1:
+        raise ValueError("coordinator dispatch preparation requires exactly one recipient")
+    recipient = recipients[0]
+    ensure_schema(db_path)
+    now = _now_iso()
+    with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            """
+            SELECT m.message_id, r.state, r.reason
+            FROM messages m
+            JOIN recipients r ON r.message_id = m.message_id
+            WHERE m.sender = 'hapax-coordinator'
+              AND m.message_type = 'dispatch'
+              AND m.subject = :subject
+              AND r.recipient = :recipient
+              AND (
+                  (r.state = 'deferred' AND r.reason = :prepared_reason)
+                  OR (r.state = 'accepted' AND r.reason LIKE :accepted_pattern)
+              )
+            ORDER BY m.id ASC
+            LIMIT 1
+            """,
+            {
+                "subject": envelope.subject,
+                "recipient": recipient,
+                "prepared_reason": COORDINATOR_PREPARED_DISPATCH_REASON,
+                "accepted_pattern": f"{COORDINATOR_ACCEPTED_DISPATCH_REASON_PREFIX}%",
+            },
+        ).fetchone()
+        if existing is not None:
+            conn.commit()
+            return CoordinatorDispatchPreparation(
+                message_id=str(existing["message_id"]),
+                state=existing["state"],
+                reason=existing["reason"],
+                created=False,
+            )
+
+        row = _envelope_to_row(envelope)
+        cols = ", ".join(row.keys())
+        placeholders = ", ".join(f":{key}" for key in row)
+        conn.execute(f"INSERT INTO messages ({cols}) VALUES ({placeholders})", row)
+        conn.execute(
+            "INSERT INTO recipients "
+            "(message_id, recipient, state, reason, created_at, updated_at) "
+            "VALUES (:message_id, :recipient, 'deferred', :reason, :now, :now)",
+            {
+                "message_id": envelope.message_id,
+                "recipient": recipient,
+                "reason": COORDINATOR_PREPARED_DISPATCH_REASON,
+                "now": now,
+            },
+        )
+        conn.commit()
+    return CoordinatorDispatchPreparation(
+        message_id=envelope.message_id,
+        state="deferred",
+        reason=COORDINATOR_PREPARED_DISPATCH_REASON,
+        created=True,
+    )
+
+
+def coordinator_dispatch_recipient_state(
+    db_path: Path,
+    message_id: str,
+    role: str,
+) -> tuple[RecipientState, str | None] | None:
+    """Read one coordinator dispatch recipient state without changing it."""
+
+    if not db_path.exists():
+        return None
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT state, reason FROM recipients "
+            "WHERE message_id = :message_id AND recipient = :recipient",
+            {
+                "message_id": message_id,
+                "recipient": _normalize_role(role),
+            },
+        ).fetchone()
+    if row is None:
+        return None
+    return row["state"], row["reason"]
+
+
+def abort_coordinator_prepared_dispatch(
+    db_path: Path,
+    message_id: str,
+    role: str,
+    reason: str,
+) -> bool:
+    """Ensure a coordinator preparation is no longer consumable, preserving its row."""
+    role = _normalize_role(role)
+    with _connect(db_path) as conn:
+        cursor = conn.execute(
+            "UPDATE recipients "
+            "SET reason = :reason, updated_at = :now "
+            "WHERE message_id = :mid AND recipient = :role "
+            "AND state = 'deferred' AND reason = :prepared_reason",
+            {
+                "mid": message_id,
+                "role": role,
+                "reason": f"{COORDINATOR_ABORTED_DISPATCH_REASON_PREFIX}{reason}",
+                "prepared_reason": COORDINATOR_PREPARED_DISPATCH_REASON,
+                "now": _now_iso(),
+            },
+        )
+        if cursor.rowcount == 0:
+            row = conn.execute(
+                "SELECT state, reason FROM recipients "
+                "WHERE message_id = :mid AND recipient = :role",
+                {"mid": message_id, "role": role},
+            ).fetchone()
+            if row is None:
+                return False
+            safely_non_consumable = row["state"] in {
+                "processed",
+                "deferred",
+                "escalated",
+            } and not (
+                row["state"] == "deferred" and row["reason"] == COORDINATOR_PREPARED_DISPATCH_REASON
+            )
+            return safely_non_consumable
+        conn.commit()
+    return True
 
 
 @dataclass
@@ -398,7 +569,9 @@ def ack_message(
 
     with _connect(db_path) as conn:
         row = conn.execute(
-            "SELECT state FROM recipients WHERE message_id = :mid AND recipient = :role",
+            "SELECT r.state, r.reason, m.sender "
+            "FROM recipients r JOIN messages m ON m.message_id = r.message_id "
+            "WHERE r.message_id = :mid AND r.recipient = :role",
             {"mid": message_id, "role": role},
         ).fetchone()
 
@@ -406,11 +579,35 @@ def ack_message(
             return False
 
         current_state: RecipientState = row["state"]
+        coordinator_managed = row["sender"] == "hapax-coordinator" and (
+            (
+                current_state == "deferred"
+                and (
+                    row["reason"] == COORDINATOR_PREPARED_DISPATCH_REASON
+                    or str(row["reason"] or "").startswith(
+                        COORDINATOR_ABORTED_DISPATCH_REASON_PREFIX
+                    )
+                )
+            )
+            or (
+                current_state == "accepted"
+                and str(row["reason"] or "").startswith(COORDINATOR_ACCEPTED_DISPATCH_REASON_PREFIX)
+            )
+        )
+        if coordinator_managed:
+            return False
         validate_transition(current_state, new_state, reason)
 
         cursor = conn.execute(
             "UPDATE recipients SET state = :new_state, reason = :reason, updated_at = :now "
-            "WHERE message_id = :mid AND recipient = :role AND state = :current",
+            "WHERE message_id = :mid AND recipient = :role AND state = :current "
+            "AND NOT (EXISTS ("
+            "SELECT 1 FROM messages m WHERE m.message_id = recipients.message_id "
+            "AND m.sender = 'hapax-coordinator') AND ("
+            "(state = 'deferred' AND (reason = :prepared_reason OR "
+            "COALESCE(reason, '') LIKE :aborted_reason_pattern)) OR "
+            "(state = 'accepted' AND "
+            "COALESCE(reason, '') LIKE :accepted_reason_pattern)))",
             {
                 "new_state": new_state,
                 "reason": reason,
@@ -418,6 +615,9 @@ def ack_message(
                 "mid": message_id,
                 "role": role,
                 "current": current_state,
+                "prepared_reason": COORDINATOR_PREPARED_DISPATCH_REASON,
+                "aborted_reason_pattern": f"{COORDINATOR_ABORTED_DISPATCH_REASON_PREFIX}%",
+                "accepted_reason_pattern": f"{COORDINATOR_ACCEPTED_DISPATCH_REASON_PREFIX}%",
             },
         )
 

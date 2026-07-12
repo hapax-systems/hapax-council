@@ -300,6 +300,8 @@ exec bash -c "$remote_cmd"
 printf 'LOGOS_BASE_URL=%s\\n' "${{LOGOS_BASE_URL:-}}" > {env_file}
 printf 'HAPAX_DISPATCH_HOST=%s\\n' "${{HAPAX_DISPATCH_HOST:-}}" >> {env_file}
 printf 'CODEX_ACCESS_TOKEN_PRESENT=%s\\n' "${{CODEX_ACCESS_TOKEN:+yes}}" >> {env_file}
+printf 'HAPAX_DISPATCH_CLAIM_SWEEP=%s\\n' "${{HAPAX_DISPATCH_CLAIM_SWEEP:-}}" >> {env_file}
+printf 'HAPAX_CLAIM_LEASE_TTL_SECS=%s\\n' "${{HAPAX_CLAIM_LEASE_TTL_SECS:-}}" >> {env_file}
 exit 0
 """,
     )
@@ -311,6 +313,8 @@ exit 0
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
+    env["HAPAX_DISPATCH_CLAIM_SWEEP"] = "0"
+    env["HAPAX_CLAIM_LEASE_TTL_SECS"] = str(2**63 - 1)
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
@@ -328,6 +332,8 @@ exit 0
     assert "LOGOS_BASE_URL=http://192.168.68.85:8051/api" in launched_env
     assert "HAPAX_DISPATCH_HOST=local" in launched_env
     assert "CODEX_ACCESS_TOKEN_PRESENT=yes" in launched_env
+    assert "HAPAX_DISPATCH_CLAIM_SWEEP=0" in launched_env
+    assert f"HAPAX_CLAIM_LEASE_TTL_SECS={2**63 - 1}" in launched_env
     proofs = list(
         (home / ".cache" / "hapax" / "orchestration" / "dispatch-host-proofs").glob(
             "*cx-amber-task-x-headless-remote.json"

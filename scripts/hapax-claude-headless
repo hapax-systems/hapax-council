@@ -577,6 +577,8 @@ elif kind == "exec":
         "CLAUDE_ROLE",
         "HAPAX_WORKTREE_ROLE",
         "HAPAX_METHODOLOGY_DISPATCH_TASK",
+        "HAPAX_DISPATCH_CLAIM_SWEEP",
+        "HAPAX_CLAIM_LEASE_TTL_SECS",
     )
     payload["env"].update(
         {k: os.environ[k] for k in identity_keys if os.environ.get(k)}

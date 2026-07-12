@@ -13,10 +13,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-import yaml
-
 from shared.governance.consent_label import ConsentLabel
 from shared.governance.labeled import Labeled
+from shared.strict_yaml import strict_safe_load
 
 FrontmatterErrorKind = Literal[
     "read_error",
@@ -96,8 +95,8 @@ def parse_frontmatter_with_diagnostics(path_or_text: Path | str) -> FrontmatterP
         return FrontmatterParseResult(frontmatter={}, body=body)
 
     try:
-        data = yaml.safe_load(yaml_text)
-    except yaml.YAMLError as exc:
+        data = strict_safe_load(yaml_text)
+    except (ValueError, TypeError) as exc:
         return FrontmatterParseResult(
             frontmatter=None,
             body=text,

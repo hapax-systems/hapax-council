@@ -3,21 +3,28 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 import sqlite3
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
 from shared.coord_event_log import CoordEvent, CoordEventLog, CoordWriter, DuplicateEventError
-from shared.relay_lifecycle import lane_is_retired
-from shared.relay_mq import ensure_schema
+from shared.relay_lifecycle import lane_is_retired, parse_relay_document
+from shared.relay_mq import (
+    COORDINATOR_ACCEPTED_DISPATCH_REASON_PREFIX,
+    COORDINATOR_PREPARED_DISPATCH_REASON,
+    ensure_schema,
+)
 
 TERMINAL_EVENT_TYPES = {
     "coord_dispatch.launch_succeeded",
     "coord_dispatch.launch_failed",
 }
+DISPATCH_PREPARATION_BINDING_SCHEMA = "hapax.coord-dispatch-preparation.v1"
 
 
 class CoordDispatchError(RuntimeError):
@@ -26,6 +33,225 @@ class CoordDispatchError(RuntimeError):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+def _canonical_json_bytes(value: object) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=True,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+
+
+@dataclass(frozen=True)
+class DispatchPreparationBinding:
+    """Exact task/lane preimage carried by the coordinator MQ message."""
+
+    task_id: str
+    task_path: str
+    task_sha256: str
+    lane: str
+    lane_session: str
+    lane_generation: str
+    lane_pid: int | None
+    lane_pid_generation: str
+    claim_projection_sha256: str
+    relay_projection_sha256: str
+    platform: str
+    mode: str
+    authority_case: str
+    authority_item: str
+    parent_spec: str
+
+    def body(self) -> dict[str, object]:
+        return {
+            "authority_case": self.authority_case,
+            "authority_item": self.authority_item,
+            "claim_projection_sha256": self.claim_projection_sha256,
+            "lane": self.lane,
+            "lane_generation": self.lane_generation,
+            "lane_pid": self.lane_pid,
+            "lane_pid_generation": self.lane_pid_generation,
+            "lane_session": self.lane_session,
+            "may_authorize": False,
+            "mode": self.mode,
+            "parent_spec": self.parent_spec,
+            "platform": self.platform,
+            "relay_projection_sha256": self.relay_projection_sha256,
+            "schema": DISPATCH_PREPARATION_BINDING_SCHEMA,
+            "task_id": self.task_id,
+            "task_path": self.task_path,
+            "task_sha256": self.task_sha256,
+        }
+
+    @property
+    def binding_hash(self) -> str:
+        return hashlib.sha256(_canonical_json_bytes(self.body())).hexdigest()
+
+    def to_record(self) -> dict[str, object]:
+        return {**self.body(), "binding_hash": self.binding_hash}
+
+    @classmethod
+    def from_record(cls, value: object) -> DispatchPreparationBinding:
+        if not isinstance(value, dict):
+            raise CoordDispatchError("dispatch_preparation_binding_malformed")
+        exact_keys = {
+            "authority_case",
+            "authority_item",
+            "binding_hash",
+            "claim_projection_sha256",
+            "lane",
+            "lane_generation",
+            "lane_pid",
+            "lane_pid_generation",
+            "lane_session",
+            "may_authorize",
+            "mode",
+            "parent_spec",
+            "platform",
+            "relay_projection_sha256",
+            "schema",
+            "task_id",
+            "task_path",
+            "task_sha256",
+        }
+        if (
+            set(value) != exact_keys
+            or value.get("schema") != DISPATCH_PREPARATION_BINDING_SCHEMA
+            or value.get("may_authorize") is not False
+            or not isinstance(value.get("lane_pid"), int | type(None))
+        ):
+            raise CoordDispatchError("dispatch_preparation_binding_malformed")
+        binding = cls(
+            task_id=str(value["task_id"]),
+            task_path=str(value["task_path"]),
+            task_sha256=str(value["task_sha256"]),
+            lane=str(value["lane"]),
+            lane_session=str(value["lane_session"]),
+            lane_generation=str(value["lane_generation"]),
+            lane_pid=value["lane_pid"],
+            lane_pid_generation=str(value["lane_pid_generation"]),
+            claim_projection_sha256=str(value["claim_projection_sha256"]),
+            relay_projection_sha256=str(value["relay_projection_sha256"]),
+            platform=str(value["platform"]),
+            mode=str(value["mode"]),
+            authority_case=str(value["authority_case"]),
+            authority_item=str(value["authority_item"]),
+            parent_spec=str(value["parent_spec"]),
+        )
+        required = (
+            binding.task_id,
+            binding.task_path,
+            binding.lane,
+            binding.platform,
+            binding.mode,
+            binding.authority_case,
+        )
+        if (
+            any(not item.strip() for item in required)
+            or re.fullmatch(r"[0-9a-f]{64}", binding.task_sha256) is None
+            or re.fullmatch(r"[0-9a-f]{64}", binding.claim_projection_sha256) is None
+            or re.fullmatch(r"[0-9a-f]{64}", binding.relay_projection_sha256) is None
+            or value["binding_hash"] != binding.binding_hash
+        ):
+            raise CoordDispatchError("dispatch_preparation_binding_malformed")
+        return binding
+
+
+def dispatch_preparation_binding_from_payload(payload: object) -> DispatchPreparationBinding:
+    if not isinstance(payload, str):
+        raise CoordDispatchError("dispatch_preparation_payload_missing")
+
+    def unique_pairs(values: list[tuple[str, object]]) -> dict[str, object]:
+        decoded: dict[str, object] = {}
+        for key, value in values:
+            if key in decoded:
+                raise CoordDispatchError("dispatch_preparation_payload_duplicate_key")
+            decoded[key] = value
+        return decoded
+
+    try:
+        decoded = json.loads(payload, object_pairs_hook=unique_pairs)
+    except CoordDispatchError:
+        raise
+    except json.JSONDecodeError as exc:
+        raise CoordDispatchError("dispatch_preparation_payload_malformed") from exc
+    if not isinstance(decoded, dict):
+        raise CoordDispatchError("dispatch_preparation_payload_malformed")
+    return DispatchPreparationBinding.from_record(decoded.get("dispatch_binding"))
+
+
+def lane_ownership_projection_hashes(
+    *,
+    cache_dir: Path,
+    relay_dir: Path,
+    role: str,
+    session: str,
+) -> tuple[str, str]:
+    """Hash ownership-relevant claim and relay projections for mutation recheck."""
+
+    claim_records: list[dict[str, str]] = []
+    try:
+        legacy = cache_dir / f"cc-active-task-{role}"
+        claim_paths = [legacy, *sorted(cache_dir.glob(f"cc-active-task-{role}-*"))]
+        claim_paths = list(dict.fromkeys(path for path in claim_paths if path.exists()))
+    except OSError as exc:
+        raise CoordDispatchError("lane_claim_projection_unreadable") from exc
+    for path in claim_paths:
+        try:
+            if not path.is_file() or path.is_symlink():
+                raise OSError("claim projection is not a regular file")
+            content = path.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError) as exc:
+            raise CoordDispatchError("lane_claim_projection_unreadable") from exc
+        claim_records.append({"name": path.name, "task_id": content})
+
+    relay_names = [
+        f"{role}-status.yaml",
+        f"{role}.yaml",
+        f"status-{role}.yaml",
+        f"peer-status-{role}.yaml",
+    ]
+    if session:
+        relay_names.append(f"peer-status-{session}.yaml")
+    freshest: Path | None = None
+    freshest_key: tuple[float, str] | None = None
+    for name in relay_names:
+        path = relay_dir / name
+        try:
+            key = (path.stat().st_mtime, path.name)
+        except OSError:
+            continue
+        if freshest_key is None or key > freshest_key:
+            freshest = path
+            freshest_key = key
+    relay_record: dict[str, object] = {"name": None, "ownership": {}}
+    if freshest is not None:
+        try:
+            relay = parse_relay_document(freshest.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError) as exc:
+            raise CoordDispatchError("lane_relay_projection_unreadable") from exc
+        ownership_keys = (
+            "current_claim",
+            "current_task",
+            "currently_working_on",
+            "relay_status",
+            "role",
+            "session_state",
+            "session_status",
+            "state",
+            "status",
+        )
+        relay_record = {
+            "name": freshest.name,
+            "ownership": {key: relay.get(key) for key in ownership_keys if key in relay},
+        }
+    return (
+        hashlib.sha256(_canonical_json_bytes(claim_records)).hexdigest(),
+        hashlib.sha256(_canonical_json_bytes(relay_record)).hexdigest(),
+    )
 
 
 @dataclass(frozen=True)
@@ -44,6 +270,7 @@ class DispatchLaunchRequest:
     event_log: CoordEventLog
     idempotency_key: str | None = None
     authority_item: str | None = None
+    binding_hash: str | None = None
     reactivate_retired: bool = False
 
     def __post_init__(self) -> None:
@@ -52,6 +279,11 @@ class DispatchLaunchRequest:
                 raise ValueError(f"{name} is required")
         if not self.message_id.strip():
             raise CoordDispatchError("strict_mq_message_id_required")
+        if (
+            self.binding_hash is not None
+            and re.fullmatch(r"[0-9a-f]{64}", self.binding_hash) is None
+        ):
+            raise CoordDispatchError("dispatch_preparation_binding_hash_invalid")
 
     @property
     def normalized_lane(self) -> str:
@@ -125,6 +357,7 @@ def run_atomic_dispatch_launch(
     replayed = replay_terminal_result(request, idempotency_key=key)
     if replayed is not None:
         return replayed
+    _refuse_inflight_idempotency_key(request, idempotency_key=key)
 
     _accept_dispatch_message(request, idempotency_key=key)
     try:
@@ -187,6 +420,77 @@ def run_atomic_dispatch_launch(
     )
 
 
+def finalize_accepted_dispatch_on_pickup(
+    request: DispatchLaunchRequest,
+) -> DispatchLaunchResult:
+    """Finalize a launch whose synchronous dispatcher timed out after live pickup.
+
+    The coordinator may use this only after exact lane/claim pickup evidence. The
+    MQ row must already be accepted by this request's idempotency key and the
+    canonical event log must contain its launch-started event.
+    """
+    row = _load_and_validate_message(request, write=True)
+    state = str(row["state"])
+    reason = str(row["reason"] or "")
+    if state == "accepted" and reason.startswith(COORDINATOR_ACCEPTED_DISPATCH_REASON_PREFIX):
+        key = reason.removeprefix(COORDINATOR_ACCEPTED_DISPATCH_REASON_PREFIX)
+    elif state == "processed":
+        match = re.fullmatch(r"coord_dispatch_launch_processed:0:(.+)", reason)
+        if match is None:
+            raise CoordDispatchError("pickup_finalize_processed_identity_mismatch")
+        key = match.group(1)
+        replayed = _replay_terminal_result(request, idempotency_key=key, exact_route=False)
+        if replayed is None:
+            raise CoordDispatchError("pickup_finalize_terminal_event_missing")
+        return replayed
+    else:
+        raise CoordDispatchError(f"pickup_finalize_requires_accepted:{state}")
+    if not key:
+        raise CoordDispatchError("pickup_finalize_acceptance_identity_mismatch")
+
+    started = _find_event(request, _event_id(key, "started"))
+    if (
+        started is None
+        or started.event_type != "coord_dispatch.launch_started"
+        or started.payload.get("idempotency_key") != key
+        or not _event_matches_request(started, request, exact_route=False)
+    ):
+        raise CoordDispatchError("pickup_finalize_started_event_missing")
+    route_request = replace(
+        request,
+        platform=str(started.payload.get("platform", "")),
+        mode=str(started.payload.get("mode", "")),
+        profile=str(started.payload.get("profile", "")),
+        idempotency_key=key,
+    )
+    if not all((route_request.platform, route_request.mode, route_request.profile)):
+        raise CoordDispatchError("pickup_finalize_started_route_missing")
+
+    _cleanup_dispatch_message(
+        route_request,
+        idempotency_key=key,
+        state="processed",
+        returncode=0,
+    )
+    event_id = _append_dispatch_event(
+        route_request,
+        idempotency_key=key,
+        outcome="succeeded",
+        returncode=0,
+        completion_source="coordinator_verified_pickup_after_timeout",
+    )
+    return DispatchLaunchResult(
+        launched=True,
+        launch_returncode=0,
+        replayed=False,
+        reason="launch_succeeded_after_pickup",
+        message_id=request.message_id,
+        idempotency_key=key,
+        event_id=event_id,
+        cleanup_state="processed",
+    )
+
+
 def replay_terminal_result(
     request: DispatchLaunchRequest,
     *,
@@ -194,15 +498,24 @@ def replay_terminal_result(
 ) -> DispatchLaunchResult | None:
     """Replay a prior terminal launch result for ``idempotency_key``."""
 
-    result = request.event_log.replay(fail_open=True)
+    return _replay_terminal_result(request, idempotency_key=idempotency_key, exact_route=True)
+
+
+def _replay_terminal_result(
+    request: DispatchLaunchRequest,
+    *,
+    idempotency_key: str,
+    exact_route: bool,
+) -> DispatchLaunchResult | None:
+
+    result = request.event_log.replay(fail_open=False)
     for event in reversed(result.events):
         if event.event_type not in TERMINAL_EVENT_TYPES:
             continue
         if event.payload.get("idempotency_key") != idempotency_key:
             continue
-        event_message_id = str(event.payload.get("message_id", ""))
-        if event_message_id != request.message_id:
-            raise CoordDispatchError("idempotency_key_message_id_mismatch")
+        if not _event_matches_request(event, request, exact_route=exact_route):
+            raise CoordDispatchError("idempotency_key_request_identity_mismatch")
         returncode = int(event.payload.get("returncode", 0))
         outcome = str(event.payload.get("outcome", ""))
         cleanup_state = "processed" if outcome == "succeeded" else "deferred"
@@ -219,12 +532,29 @@ def replay_terminal_result(
     return None
 
 
+def _refuse_inflight_idempotency_key(
+    request: DispatchLaunchRequest,
+    *,
+    idempotency_key: str,
+) -> None:
+    event = _find_event(request, _event_id(idempotency_key, "started"))
+    if event is None:
+        return
+    if not _event_matches_request(event, request, exact_route=True):
+        raise CoordDispatchError("idempotency_key_request_identity_mismatch")
+    raise CoordDispatchError("idempotency_key_in_flight")
+
+
 def _accept_dispatch_message(request: DispatchLaunchRequest, *, idempotency_key: str) -> None:
     row = _load_and_validate_message(request, write=True)
     state = str(row["state"])
+    reason = str(row["reason"] or "")
     if state == "processed":
         raise CoordDispatchError("mq_dispatch_already_processed_without_replay")
-    if state in {"deferred", "escalated"}:
+    if state == "accepted":
+        raise CoordDispatchError("mq_dispatch_already_accepted_without_replay")
+    coordinator_prepared = state == "deferred" and reason == COORDINATOR_PREPARED_DISPATCH_REASON
+    if state in {"deferred", "escalated"} and not coordinator_prepared:
         raise CoordDispatchError(f"mq_dispatch_not_consumable:{state}")
 
     now = _now_iso()
@@ -232,7 +562,7 @@ def _accept_dispatch_message(request: DispatchLaunchRequest, *, idempotency_key:
         conn.execute("PRAGMA busy_timeout = 5000")
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("BEGIN IMMEDIATE")
-        conn.execute(
+        cursor = conn.execute(
             """
             UPDATE recipients
             SET state = 'accepted',
@@ -240,16 +570,20 @@ def _accept_dispatch_message(request: DispatchLaunchRequest, *, idempotency_key:
                 updated_at = :now
             WHERE message_id = :message_id
               AND recipient = :recipient
-              AND state IN ('offered', 'read', 'accepted')
+              AND (
+                  state IN ('offered', 'read')
+                  OR (state = 'deferred' AND reason = :prepared_reason)
+              )
             """,
             {
-                "reason": f"coord_dispatch_accepted:{idempotency_key}",
+                "reason": f"{COORDINATOR_ACCEPTED_DISPATCH_REASON_PREFIX}{idempotency_key}",
+                "prepared_reason": COORDINATOR_PREPARED_DISPATCH_REASON,
                 "now": now,
                 "message_id": request.message_id,
                 "recipient": request.normalized_lane,
             },
         )
-        if conn.total_changes != 1:
+        if cursor.rowcount != 1:
             conn.rollback()
             raise CoordDispatchError("mq_dispatch_consume_race")
         conn.commit()
@@ -277,6 +611,7 @@ def _cleanup_dispatch_message(
             WHERE message_id = :message_id
               AND recipient = :recipient
               AND state = 'accepted'
+              AND reason = :accepted_reason
             """,
             {
                 "state": state,
@@ -284,6 +619,9 @@ def _cleanup_dispatch_message(
                 "now": now,
                 "message_id": request.message_id,
                 "recipient": request.normalized_lane,
+                "accepted_reason": (
+                    f"{COORDINATOR_ACCEPTED_DISPATCH_REASON_PREFIX}{idempotency_key}"
+                ),
             },
         )
         if cursor.rowcount != 1:
@@ -310,14 +648,17 @@ def _load_and_validate_message(
         row = conn.execute(
             """
             SELECT m.message_id,
+                   m.sender,
                    m.message_type,
                    m.authority_case,
                    m.authority_item,
                    m.subject,
+                   m.payload,
                    m.stale_after,
                    m.expires_at,
                    r.recipient,
-                   r.state
+                   r.state,
+                   r.reason
             FROM messages m
             JOIN recipients r ON r.message_id = m.message_id
             WHERE m.message_id = :message_id
@@ -344,8 +685,22 @@ def _validate_message_row(request: DispatchLaunchRequest, row: sqlite3.Row) -> N
         expected_items.add(request.authority_item)
     authority_item = row["authority_item"]
     subject = row["subject"]
-    if authority_item not in expected_items and subject != request.task_id:
+    if subject != request.task_id:
+        raise CoordDispatchError("mq_subject_task_mismatch")
+    if authority_item not in expected_items:
         raise CoordDispatchError("mq_authority_item_mismatch")
+    if request.binding_hash is not None:
+        binding = dispatch_preparation_binding_from_payload(row["payload"])
+        if binding.binding_hash != request.binding_hash:
+            raise CoordDispatchError("dispatch_preparation_binding_hash_mismatch")
+        if (
+            binding.task_id != request.task_id
+            or binding.lane.strip().lower().replace("_", "-") != request.normalized_lane
+            or binding.authority_case != request.authority_case
+            or binding.authority_item != (request.authority_item or request.task_id)
+            or binding.parent_spec != (request.parent_spec or "")
+        ):
+            raise CoordDispatchError("dispatch_preparation_binding_identity_mismatch")
 
     now = datetime.now(UTC)
     expires_at = _parse_datetime(row["expires_at"])
@@ -364,9 +719,22 @@ def _append_dispatch_event(
     idempotency_key: str,
     outcome: Literal["started", "succeeded", "failed"],
     returncode: int | None,
+    completion_source: str | None = None,
 ) -> str:
     event_type = f"coord_dispatch.launch_{outcome}"
     event_id = _event_id(idempotency_key, outcome)
+    payload = {
+        "binding_hash": request.binding_hash,
+        "idempotency_key": idempotency_key,
+        "message_id": request.message_id,
+        "platform": request.platform,
+        "mode": request.mode,
+        "profile": request.profile,
+        "outcome": outcome,
+        "returncode": returncode,
+    }
+    if completion_source:
+        payload["completion_source"] = completion_source
     event = CoordEvent(
         event_id=event_id,
         timestamp=_now_z(),
@@ -375,29 +743,58 @@ def _append_dispatch_event(
         subject=request.task_id,
         authority_case=request.authority_case,
         parent_spec=request.parent_spec,
-        payload={
-            "idempotency_key": idempotency_key,
-            "message_id": request.message_id,
-            "platform": request.platform,
-            "mode": request.mode,
-            "profile": request.profile,
-            "outcome": outcome,
-            "returncode": returncode,
-        },
+        payload=payload,
     )
     try:
         request.event_log.append(
             event,
             writer=CoordWriter.daemon("hapax-methodology-dispatch"),
-            fail_open=True,
+            fail_open=False,
         )
     except DuplicateEventError:
-        pass
+        existing = _find_event(request, event_id)
+        if existing is None or not _event_matches_request(
+            existing,
+            request,
+            exact_route=True,
+        ):
+            raise CoordDispatchError("idempotency_key_request_identity_mismatch") from None
+        if outcome == "started":
+            raise CoordDispatchError("idempotency_key_in_flight") from None
     except Exception as exc:
         raise CoordDispatchError(
             f"coord_event_log_append_failed:{type(exc).__name__}:{exc}"
         ) from exc
     return event_id
+
+
+def _find_event(request: DispatchLaunchRequest, event_id: str) -> CoordEvent | None:
+    replay = request.event_log.replay(fail_open=False)
+    return next((event for event in reversed(replay.events) if event.event_id == event_id), None)
+
+
+def _event_matches_request(
+    event: CoordEvent,
+    request: DispatchLaunchRequest,
+    *,
+    exact_route: bool,
+) -> bool:
+    if (
+        event.actor != request.normalized_lane
+        or event.subject != request.task_id
+        or event.authority_case != request.authority_case
+        or event.parent_spec != request.parent_spec
+        or event.payload.get("message_id") != request.message_id
+        or event.payload.get("binding_hash") != request.binding_hash
+    ):
+        return False
+    if not exact_route:
+        return True
+    return (
+        event.payload.get("platform") == request.platform
+        and event.payload.get("mode") == request.mode
+        and event.payload.get("profile") == request.profile
+    )
 
 
 def _event_id(idempotency_key: str, outcome: str) -> str:
@@ -427,9 +824,13 @@ def _now_z() -> str:
 
 __all__ = [
     "CoordDispatchError",
+    "DispatchPreparationBinding",
     "DispatchLaunchRequest",
     "DispatchLaunchResult",
     "default_idempotency_key",
+    "dispatch_preparation_binding_from_payload",
+    "finalize_accepted_dispatch_on_pickup",
+    "lane_ownership_projection_hashes",
     "replay_terminal_result",
     "run_atomic_dispatch_launch",
 ]

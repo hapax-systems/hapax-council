@@ -50,30 +50,42 @@ if [[ -z "$role" ]] && declare -F hapax_agent_identity >/dev/null 2>&1; then
   role="$(hapax_agent_identity 2>/dev/null || true)"
 fi
 
-vault_root="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
-note_path=""
-# Match `<task_id>-<descriptor>.md` (most tasks).
-for candidate in "$vault_root/active/$task_id-"*.md; do
-  if [[ -f "$candidate" ]]; then
-    note_path="$candidate"
-    break
-  fi
-done
-# Fallback: exact-match `<task_id>.md` for tasks without a descriptor
-# suffix. Mirrors the cc-claim glob; same root-cause (the literal `-`
-# in the original glob misses descriptor-less filenames).
-if [[ -z "$note_path" ]] && [[ -f "$vault_root/active/$task_id.md" ]]; then
-  note_path="$vault_root/active/$task_id.md"
-fi
-if [[ -z "$note_path" ]]; then
-  echo "cc-close: task '$task_id' not in $vault_root/active/ (already closed?)" >&2
-  exit 2
-fi
+command -v flock >/dev/null 2>&1 || {
+  echo "cc-close: flock missing; refusing non-atomic close" >&2
+  exit 3
+}
+mkdir -p "$HOME/.cache/hapax"
+role_lock_key="$(printf '%s' "${role:-roleless}" | sha256sum | cut -d' ' -f1)"
+task_lock_key="$(printf '%s' "$task_id" | sha256sum | cut -d' ' -f1)"
+exec 8>"$HOME/.cache/hapax/cc-claim-role-lock-$role_lock_key"
+flock -x 8
+exec 9>"$HOME/.cache/hapax/cc-claim-task-lock-$task_lock_key"
+flock -x 9
 
 if ! command -v python3 &>/dev/null; then
   echo "cc-close: python3 missing; cannot rewrite frontmatter" >&2
   exit 3
 fi
+
+vault_root="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
+if ! note_path="$(python3 - "$SCRIPT_DIR/.." "$vault_root" "$task_id" <<'PYEOF'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from shared.sdlc_task_store import TaskStoreError, resolve_task_note
+
+try:
+    print(resolve_task_note(Path(sys.argv[2]), sys.argv[3], state="active").path)
+except TaskStoreError as exc:
+    print(f"cc-close: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+PYEOF
+)"; then
+  echo "cc-close: task '$task_id' not in $vault_root/active/ (already closed?)" >&2
+  exit 2
+fi
+note_sha256="$(sha256sum "$note_path" | cut -d' ' -f1)"
 
 frontmatter_task_id() {
   local file="$1"
@@ -216,13 +228,20 @@ if [[ "$final_status" == "done" ]]; then
   fi
 fi
 
-python3 - "$note_path" "$task_id" "$final_status" "$pr" "$role" <<'PYEOF'
+python3 - "$note_path" "$task_id" "$final_status" "$pr" "$role" "$note_sha256" <<'PYEOF'
+import hashlib
 import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-path, task_id, final_status, pr, role = (Path(sys.argv[1]), *sys.argv[2:])
+path, task_id, final_status, pr, role, expected_sha256 = (Path(sys.argv[1]), *sys.argv[2:])
+if hashlib.sha256(path.read_bytes()).hexdigest() != expected_sha256:
+    print(
+        "cc-close: task changed during closure checks; retry from the current exact bytes",
+        file=sys.stderr,
+    )
+    raise SystemExit(9)
 text = path.read_text(encoding="utf-8")
 now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -282,7 +301,10 @@ if [[ -n "$role" ]]; then
       # clear it with its claim file so a stale epoch can never mis-age a
       # future claim. Explicit path construction — substring substitution on
       # the full path would rewrite a parent-directory occurrence instead.
-      rm -f "$claim_file" "$HOME/.cache/hapax/cc-claim-epoch-$claim_key"
+      rm -f \
+        "$claim_file" \
+        "$HOME/.cache/hapax/cc-claim-epoch-$claim_key" \
+        "$HOME/.cache/hapax/cc-claim-dispatch-$claim_key.json"
       echo "cc-close: cleared claim file '$claim_file' (role '$role')"
       cleared_claim=1
     fi

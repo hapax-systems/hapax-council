@@ -8,8 +8,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from shared.relay_mq import (
+    COORDINATOR_ACCEPTED_DISPATCH_REASON_PREFIX,
+    COORDINATOR_PREPARED_DISPATCH_REASON,
     MessageFilters,
     _connect,
+    abort_coordinator_prepared_dispatch,
     ack_message,
     consume_messages,
     dead_letters,
@@ -17,6 +20,7 @@ from shared.relay_mq import (
     expand_recipients,
     inspect_message,
     list_messages,
+    prepare_coordinator_dispatch,
     purge_expired,
     send_message,
 )
@@ -27,6 +31,47 @@ from shared.relay_mq_envelope import (
 )
 
 DB = Path(":memory:")  # only for non-schema tests that use a single function call
+
+
+def test_coordinator_preparation_reuses_accepted_inflight_message(tmp_path: Path) -> None:
+    db_path = tmp_path / "messages.db"
+    first_envelope = _make_envelope(
+        sender="hapax-coordinator",
+        message_type="dispatch",
+        subject="task-1",
+        authority_case="CASE-1",
+        authority_item="task-1",
+        recipients_spec="cx-test",
+        payload="{}",
+    )
+    first = prepare_coordinator_dispatch(db_path, first_envelope)
+    assert first.created is True
+    assert first.reason == COORDINATOR_PREPARED_DISPATCH_REASON
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE recipients SET state = 'accepted', reason = ? WHERE message_id = ?",
+            (f"{COORDINATOR_ACCEPTED_DISPATCH_REASON_PREFIX}key-1", first.message_id),
+        )
+        conn.commit()
+
+    second = prepare_coordinator_dispatch(
+        db_path,
+        _make_envelope(
+            sender="hapax-coordinator",
+            message_type="dispatch",
+            subject="task-1",
+            authority_case="CASE-1",
+            authority_item="task-1",
+            recipients_spec="cx-test",
+            payload="{}",
+        ),
+    )
+
+    assert second.created is False
+    assert second.message_id == first.message_id
+    assert second.state == "accepted"
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
 
 
 def _make_envelope(**overrides) -> Envelope:
@@ -133,6 +178,45 @@ class TestSend(unittest.TestCase):
         self.assertEqual(recipients, {"alpha", "gamma"})
         for r in rows:
             self.assertEqual(r["state"], "offered")
+
+    def test_deferred_send_is_invisible_to_generic_consumers(self) -> None:
+        env = _make_envelope(recipients_spec="alpha")
+        mid = send_message(
+            self.db_path,
+            env,
+            initial_recipient_state="deferred",
+            initial_reason="pending mutation-moment validation",
+        )
+
+        self.assertEqual(consume_messages(self.db_path, "alpha"), [])
+        with _connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT state, reason FROM recipients WHERE message_id = ?", (mid,)
+            ).fetchone()
+        self.assertEqual(row["state"], "deferred")
+        self.assertEqual(row["reason"], "pending mutation-moment validation")
+
+    def test_coordinator_prepared_dispatch_can_be_revoked_without_deleting_audit_row(self) -> None:
+        env = _make_envelope(recipients_spec="alpha")
+        mid = send_message(
+            self.db_path,
+            env,
+            initial_recipient_state="deferred",
+            initial_reason="coordinator_prepared_pending_revalidation",
+        )
+
+        self.assertTrue(
+            abort_coordinator_prepared_dispatch(self.db_path, mid, "alpha", "ownership_changed")
+        )
+        self.assertTrue(
+            abort_coordinator_prepared_dispatch(self.db_path, mid, "alpha", "duplicate_abort")
+        )
+        with _connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT state, reason FROM recipients WHERE message_id = ?", (mid,)
+            ).fetchone()
+        self.assertEqual(row["state"], "deferred")
+        self.assertEqual(row["reason"], "coordinator_prepare_aborted:ownership_changed")
 
     def test_send_broadcast_expansion(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -315,6 +399,19 @@ class TestAck(unittest.TestCase):
         ack_message(self.db_path, mid, "alpha", "accepted")
         ok = ack_message(self.db_path, mid, "alpha", "processed")
         self.assertTrue(ok)
+
+    def test_noncoordinator_reason_prefix_does_not_capture_message(self) -> None:
+        mid = self._send_and_consume()
+        self.assertTrue(
+            ack_message(
+                self.db_path,
+                mid,
+                "alpha",
+                "accepted",
+                reason=f"{COORDINATOR_ACCEPTED_DISPATCH_REASON_PREFIX}ordinary",
+            )
+        )
+        self.assertTrue(ack_message(self.db_path, mid, "alpha", "processed"))
 
     def test_ack_accepted_to_deferred_with_reason(self) -> None:
         mid = self._send_and_consume()

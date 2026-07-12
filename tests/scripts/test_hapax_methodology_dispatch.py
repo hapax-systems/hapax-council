@@ -449,7 +449,12 @@ def test_claim_sweep_reaps_blocked_unassigned_session_claim(tmp_path: Path) -> N
     active.mkdir(parents=True)
     task_id = "p0-incident-blocked-task"
     claim = claims / "cc-active-task-gamma-9b6ba5ca-513c-41aa-9900-d3026b42aad1"
+    claim_key = claim.name.removeprefix("cc-active-task-")
+    epoch = claims / f"cc-claim-epoch-{claim_key}"
+    binding = claims / f"cc-claim-dispatch-{claim_key}.json"
     claim.write_text(f"{task_id}\n", encoding="utf-8")
+    epoch.write_text(f"1000 {task_id}\n", encoding="utf-8")
+    binding.write_text("{}\n", encoding="utf-8")
     (active / f"{task_id}.md").write_text(
         f"---\ntask_id: {task_id}\nstatus: blocked\nassigned_to: unassigned\n---\n",
         encoding="utf-8",
@@ -461,6 +466,8 @@ def test_claim_sweep_reaps_blocked_unassigned_session_claim(tmp_path: Path) -> N
 
     assert reaped == [(claim.name, task_id, "blocked-unassigned")]
     assert not claim.exists()
+    assert not epoch.exists()
+    assert not binding.exists()
 
 
 def test_claim_sweep_ignores_body_status_lines(tmp_path: Path) -> None:
@@ -709,6 +716,119 @@ def _run(
     )
 
 
+def test_read_task_rejects_filename_frontmatter_identity_mismatch(tmp_path: Path) -> None:
+    module = _dispatcher_module()
+    _write(
+        tmp_path / "tasks" / "active" / "requested-id.md",
+        "---\ntask_id: different-id\nstatus: offered\nassigned_to: unassigned\n---\n",
+    )
+
+    assert module.read_task(tmp_path / "tasks", "requested-id") is None
+
+
+def test_read_task_malformed_exact_path_cannot_fall_through_to_prefix_sibling(
+    tmp_path: Path,
+) -> None:
+    module = _dispatcher_module()
+    _write(
+        tmp_path / "tasks" / "active" / "requested-id.md",
+        "---\ntask_id: different-id\nstatus: offered\nassigned_to: unassigned\n---\n",
+    )
+    _write(
+        tmp_path / "tasks" / "active" / "requested-id-followup.md",
+        "---\ntask_id: requested-id\nstatus: offered\nassigned_to: unassigned\n---\n",
+    )
+
+    assert module.read_task(tmp_path / "tasks", "requested-id") is None
+
+
+def test_read_task_exact_path_precedes_valid_prefix_sibling(tmp_path: Path) -> None:
+    module = _dispatcher_module()
+    _write(
+        tmp_path / "tasks" / "active" / "requested-id.md",
+        "---\ntask_id: requested-id\nstatus: offered\nassigned_to: unassigned\n---\n",
+    )
+    _write(
+        tmp_path / "tasks" / "active" / "requested-id-copy.md",
+        "---\ntask_id: requested-id-copy\nstatus: offered\nassigned_to: unassigned\n---\n",
+    )
+
+    task = module.read_task(tmp_path / "tasks", "requested-id")
+    assert task is not None
+    assert task.path.name == "requested-id.md"
+
+
+def test_read_task_rejects_multiple_prefix_notes_for_same_identity(tmp_path: Path) -> None:
+    module = _dispatcher_module()
+    for suffix in ("one", "two"):
+        _write(
+            tmp_path / "tasks" / "active" / f"requested-id-{suffix}.md",
+            "---\ntask_id: requested-id\nstatus: offered\nassigned_to: unassigned\n---\n",
+        )
+
+    assert module.read_task(tmp_path / "tasks", "requested-id") is None
+
+
+@pytest.mark.parametrize(
+    "owner_line",
+    ["", "assigned_to: []\n"],
+)
+def test_read_task_rejects_missing_or_malformed_ownership(
+    tmp_path: Path,
+    owner_line: str,
+) -> None:
+    module = _dispatcher_module()
+    _write(
+        tmp_path / "tasks" / "active" / "requested-id.md",
+        f"---\ntask_id: requested-id\nstatus: offered\n{owner_line}---\n",
+    )
+
+    assert module.read_task(tmp_path / "tasks", "requested-id") is None
+
+
+def test_read_task_accepts_explicit_null_ownership(tmp_path: Path) -> None:
+    module = _dispatcher_module()
+    _write(
+        tmp_path / "tasks" / "active" / "requested-id.md",
+        "---\ntask_id: requested-id\nstatus: offered\nassigned_to: null\n---\n",
+    )
+
+    task = module.read_task(tmp_path / "tasks", "requested-id")
+    assert task is not None
+    assert task.fields["assigned_to"] is None
+
+
+@pytest.mark.parametrize("owner_line", [None, "assigned_to: []"])
+def test_dispatch_blocks_missing_or_malformed_task_ownership(
+    tmp_path: Path,
+    owner_line: str | None,
+) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    task_path = _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    replacement = "" if owner_line is None else f"{owner_line}\n"
+    task_path.write_text(
+        task_path.read_text(encoding="utf-8").replace(
+            "assigned_to: unassigned\n",
+            replacement,
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--task", "governed-build", "--lane", "cx-green")
+
+    assert result.returncode == 10
+    assert "task not found" in result.stderr
+
+
 def test_blocks_mutation_task_with_null_parent_spec(tmp_path: Path) -> None:
     _worktree(tmp_path / "worktree")
     _task(
@@ -728,6 +848,31 @@ def test_blocks_mutation_task_with_null_parent_spec(tmp_path: Path) -> None:
     assert "parent_spec" in result.stderr
     ledger = (tmp_path / "ledger" / "methodology-dispatch.jsonl").read_text(encoding="utf-8")
     assert '"ok": false' in ledger
+
+
+def test_blocks_mutation_task_with_malformed_parent_spec(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _write(tmp_path / "malformed-spec.md", "not frontmatter\n")
+    _task(
+        tmp_path / "tasks",
+        "malformed-parent-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "malformed-parent-build",
+        "--lane",
+        "cx-green",
+    )
+
+    assert result.returncode == 10
+    assert "parent_spec frontmatter is malformed or unreadable" in result.stderr
 
 
 def test_allows_explicit_read_only_intake_without_authority(tmp_path: Path) -> None:
@@ -1599,6 +1744,74 @@ printf '%s\\n' "$@" > {launcher_args}
     assert receipt["launched"] is True
 
 
+def test_dispatch_rejects_task_byte_drift_during_admission_wait(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = _dispatcher_module()
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    task_path = _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    args = (
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+    )
+    mq_db, message_id = _maybe_write_durable_mq_binding(tmp_path, args)
+    assert message_id is not None
+    launch_calls: list[str] = []
+
+    class SpyAdapter(module.CodexAdapter):
+        def launch(self, *, decision, request, launch_callable):
+            launch_calls.append(request.task_id)
+            return super().launch(
+                decision=decision,
+                request=request,
+                launch_callable=launch_callable,
+            )
+
+    def drift_task(_args) -> None:
+        task_path.write_text(
+            task_path.read_text(encoding="utf-8") + "\nconcurrent body change\n",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setitem(module._WORKER_FAILURE_ADAPTERS, "codex", SpyAdapter)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(tmp_path / "tasks"))
+    monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
+    monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_fresh_registry(tmp_path)))
+    monkeypatch.setenv("HAPAX_COORD_LEDGER_DB", str(tmp_path / "coord" / "ledger.db"))
+    monkeypatch.setenv("HAPAX_COORD_JSONL_MIRROR", str(tmp_path / "coord" / "ledger.jsonl"))
+    monkeypatch.setenv("HAPAX_COORD_SPOOL_DIR", str(tmp_path / "coord" / "spool"))
+    monkeypatch.setenv("HAPAX_RELAY_MQ_DB", str(mq_db))
+    monkeypatch.setenv("HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID", message_id)
+    monkeypatch.setenv("HAPAX_DISPATCH_CLAIM_SWEEP", "0")
+    monkeypatch.setattr(module, "_await_sdlc_admission", drift_task)
+
+    rc = module.main(list(args))
+
+    assert rc == 10
+    assert launch_calls == []
+    assert "dispatch task preimage changed before actuation" in capsys.readouterr().err
+
+
 def test_policy_hold_writes_route_decision_before_prompt_or_launch(tmp_path: Path) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
@@ -1946,6 +2159,75 @@ printf '%s\\n' "$@" > {launcher_args}
     )
     assert receipt["durable_mq_dispatch_bound"] is False
     assert receipt["advisory_only"] is True
+
+
+def test_launch_rejects_shared_authority_item_bound_to_different_task(
+    tmp_path: Path,
+) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "task-b",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        authority_item: shared-item
+        parent_spec: {spec}
+        """,
+    )
+    mq_db = tmp_path / "relay" / "messages.db"
+    mq_db.parent.mkdir(parents=True, exist_ok=True)
+    message_id = send_message(
+        mq_db,
+        Envelope(
+            sender="test-dispatcher",
+            message_type="dispatch",
+            priority=0,
+            subject="task-a",
+            authority_case="CASE-TEST-001",
+            authority_item="shared-item",
+            recipients_spec="cx-green",
+            payload="wrong task binding",
+        ),
+    )
+    launcher_args = tmp_path / "launcher-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-codex"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > {launcher_args}\n",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "task-b",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        durable_mq=False,
+        extra_env={
+            "HAPAX_RELAY_MQ_DB": str(mq_db),
+            "HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID": message_id,
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher),
+        },
+    )
+
+    assert result.returncode == 10
+    assert not launcher_args.exists()
+    assert "durable MQ authority binding required" in result.stderr
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["durable_mq_reason"] == "durable_mq_authority_binding_missing"
 
 
 def test_launch_requires_strict_mq_message_id(tmp_path: Path) -> None:

@@ -156,6 +156,10 @@ S1S2_CONSTITUENT_UNITS: dict[str, tuple[str, ...]] = {
 # design reason that covers the failure path instead. An entry here is a
 # reviewed decision, not a hole.
 PROBE_EXEMPT: dict[str, str] = {
+    # The lane reaper is projection-only. notify-failure@ mints P0 task notes,
+    # which would recreate a transitive task writer on this no-effect surface.
+    # Failures remain durable in systemd state and the timer retries next cadence.
+    "hapax-lane-reaper.service": "projection-only; systemd state + timer cadence, no task-minting OnFailure",
     # codex-claim-audit exits 1 BY DESIGN when it detects claim/lane issues
     # it could not auto-release, and posts its own ntfy alert in that path
     # (scripts/codex-claim-audit, detection branch). OnFailure= would

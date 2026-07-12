@@ -44,6 +44,9 @@ from shared.coord_dispatch import (
     CoordDispatchError,
     DispatchLaunchRequest,
     DispatchLaunchResult,
+    DispatchPreparationBinding,
+    dispatch_preparation_binding_from_payload,
+    lane_ownership_projection_hashes,
 )
 from shared.coord_event_log import CoordEventLog, coord_base_dir
 from shared.dispatch_service_time import is_claude_operator_pool_role
@@ -58,7 +61,12 @@ from shared.dispatcher_policy import (
     write_route_decision_receipt,
 )
 from shared.failure_classification import FailureCode, FailureReceipt
-from shared.frontmatter import parse_frontmatter as parse_document_frontmatter
+from shared.frontmatter import (
+    parse_frontmatter as parse_document_frontmatter,
+)
+from shared.frontmatter import (
+    parse_frontmatter_with_diagnostics,
+)
 from shared.gate_event_producer import build_gate_event
 from shared.gate_log import append_gate_event
 from shared.quota_wall import QUOTA_WALL_EXIT_CODE
@@ -75,6 +83,7 @@ from shared.sdlc_pressure_gate import (
     sdlc_slice_wrap,
     wait_until_admitted,
 )
+from shared.sdlc_task_store import TaskStoreError, resolve_task_note
 from shared.worker_failure_witness import (
     append_failure_receipt_record,
     update_worker_family_availability,
@@ -253,6 +262,7 @@ RECEIPT_ONLY_ROUTE = PlatformPath(
 class TaskNote:
     path: Path
     fields: dict[str, Any]
+    source_sha256: str = ""
 
 
 @dataclass
@@ -270,6 +280,7 @@ class DurableDispatchBinding:
     advisory_only: bool
     reason: str
     message_id: str | None = None
+    preparation: DispatchPreparationBinding | None = None
 
 
 def now_utc() -> str:
@@ -532,12 +543,19 @@ def operator_coupled_path_matches(fields: dict[str, Any]) -> tuple[str, ...]:
 
 
 def read_task(task_root: Path, task_id: str) -> TaskNote | None:
-    active = task_root / "active"
-    candidates = [active / f"{task_id}.md", *sorted(active.glob(f"{task_id}-*.md"))]
-    for candidate in candidates:
-        if candidate.is_file():
-            return TaskNote(candidate, parse_frontmatter(candidate.read_text(encoding="utf-8")))
-    return None
+    try:
+        snapshot = resolve_task_note(task_root, task_id, state="active")
+    except TaskStoreError:
+        return None
+    assigned_to = snapshot.frontmatter.get("assigned_to")
+    if "assigned_to" not in snapshot.frontmatter:
+        return None
+    if assigned_to is not None and (not isinstance(assigned_to, str) or not assigned_to.strip()):
+        return None
+    status = snapshot.frontmatter.get("status")
+    if not isinstance(status, str) or not status.strip():
+        return None
+    return TaskNote(snapshot.path, dict(snapshot.frontmatter), snapshot.sha256)
 
 
 def is_authority_exempt(fields: dict[str, Any]) -> bool:
@@ -617,6 +635,74 @@ def normalize_lane_name(lane: str) -> str:
     if "/" in lane:
         lane = lane.rsplit("/", 1)[-1]
     return lane
+
+
+def _pid_generation(pid: int) -> str:
+    try:
+        stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        return f"pid:{pid}:{stat_text.rsplit(')', 1)[1].split()[19]}"
+    except (OSError, IndexError):
+        return f"pid:{pid}"
+
+
+def dispatch_preparation_lane_blocker(binding: DispatchPreparationBinding) -> str | None:
+    """Recheck the exact lane/ownership projection immediately before acceptance."""
+
+    if binding.lane_session:
+        try:
+            proc = subprocess.run(
+                [
+                    "tmux",
+                    "list-sessions",
+                    "-F",
+                    "#{session_name}\t#{session_id}\t#{session_created}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return "dispatch_lane_generation_unreadable"
+        generations = {}
+        for line in proc.stdout.splitlines():
+            fields = line.rstrip().split("\t")
+            if len(fields) >= 3:
+                generations[fields[0].strip()] = ":".join(fields[1:3])
+        if generations.get(binding.lane_session) != binding.lane_generation:
+            return "dispatch_lane_generation_changed"
+    elif binding.lane_generation:
+        generation_parts = binding.lane_generation.split(":", 2)
+        if (
+            len(generation_parts) < 2
+            or generation_parts[0] != "pid"
+            or not generation_parts[1].isdigit()
+            or _pid_generation(int(generation_parts[1])) != binding.lane_generation
+        ):
+            return "dispatch_lane_generation_changed"
+    else:
+        return "dispatch_lane_generation_missing"
+
+    if binding.lane_pid is not None and (
+        _pid_generation(binding.lane_pid) != binding.lane_pid_generation
+    ):
+        return "dispatch_lane_process_changed"
+    cache_dir = Path(os.environ.get("HAPAX_CACHE_DIR", str(Path.home() / ".cache" / "hapax")))
+    relay_dir = Path(os.environ.get("HAPAX_RELAY_DIR", str(cache_dir / "relay")))
+    try:
+        claim_hash, relay_hash = lane_ownership_projection_hashes(
+            cache_dir=cache_dir,
+            relay_dir=relay_dir,
+            role=binding.lane,
+            session=binding.lane_session,
+        )
+    except CoordDispatchError as exc:
+        return exc.reason
+    if claim_hash != binding.claim_projection_sha256:
+        return "dispatch_lane_claim_projection_changed"
+    if relay_hash != binding.relay_projection_sha256:
+        return "dispatch_lane_relay_projection_changed"
+    return None
 
 
 def lane_process_absent(lane: str) -> tuple[bool, str]:
@@ -765,6 +851,15 @@ def sweep_stale_claims(
             f.unlink()
         except OSError:
             continue
+        claim_key = f.name.removeprefix(_CLAIM_PREFIX)
+        for companion in (
+            claims_dir / f"cc-claim-epoch-{claim_key}",
+            claims_dir / f"cc-claim-dispatch-{claim_key}.json",
+        ):
+            try:
+                companion.unlink()
+            except OSError:
+                pass
         reaped.append((f.name, task_id, reason))
     return reaped
 
@@ -889,7 +984,8 @@ def check_durable_dispatch_binding(
             conn.execute("PRAGMA busy_timeout = 1000")
             rows = conn.execute(
                 f"""
-                SELECT m.message_id, m.authority_case, m.authority_item, m.subject,
+                SELECT m.message_id, m.sender, m.authority_case, m.authority_item, m.subject,
+                       m.payload,
                        m.stale_after, m.expires_at, r.recipient, r.state
                 FROM messages m
                 JOIN recipients r ON r.message_id = m.message_id
@@ -897,10 +993,10 @@ def check_durable_dispatch_binding(
                   AND m.authority_case = :authority_case
                   AND r.recipient = :recipient
                   {message_clause}
+                  AND m.subject = :task_id
                   AND (
                       m.authority_item = :task_id
                       OR m.authority_item = :authority_item
-                      OR m.subject = :task_id
                   )
                 ORDER BY m.id DESC
                 LIMIT 5
@@ -926,11 +1022,31 @@ def check_durable_dispatch_binding(
         if stale_after < now:
             fallback_reason = "durable_mq_dispatch_stale"
             continue
+        preparation: DispatchPreparationBinding | None = None
+        if row["sender"] == "hapax-coordinator":
+            try:
+                preparation = dispatch_preparation_binding_from_payload(row["payload"])
+            except CoordDispatchError as exc:
+                fallback_reason = exc.reason
+                continue
+            task = validation.task
+            if task is None or (
+                preparation.task_id != task_id
+                or preparation.lane.strip().lower().replace("_", "-") != recipient
+                or preparation.task_path != str(task.path.resolve())
+                or preparation.task_sha256 != task.source_sha256
+                or preparation.authority_case != authority_case
+                or preparation.authority_item != (authority_item or task_id)
+                or preparation.parent_spec != strip_scalar(str(task.fields.get("parent_spec", "")))
+            ):
+                fallback_reason = "dispatch_preparation_binding_identity_mismatch"
+                continue
         return DurableDispatchBinding(
             True,
             False,
             "durable_mq_dispatch_bound",
             message_id=str(row["message_id"]),
+            preparation=preparation,
         )
     return DurableDispatchBinding(False, True, fallback_reason)
 
@@ -1110,10 +1226,27 @@ def validate_task(
             return Validation(
                 False, f"parent_spec does not exist: {parent_spec_path}", task, parent_spec_path
             )
-        spec_fields = parse_frontmatter(parent_spec_path.read_text(encoding="utf-8"))
-        spec_case = strip_scalar(str(spec_fields.get("case_id", "")))
+        parsed_spec = parse_frontmatter_with_diagnostics(parent_spec_path)
+        if not parsed_spec.ok or parsed_spec.frontmatter is None:
+            return Validation(
+                False,
+                "parent_spec frontmatter is malformed or unreadable",
+                task,
+                parent_spec_path,
+                exempt,
+            )
+        spec_case_raw = parsed_spec.frontmatter.get("case_id")
+        if not isinstance(spec_case_raw, str) or not spec_case_raw.strip():
+            return Validation(
+                False,
+                "parent_spec case_id is missing or malformed",
+                task,
+                parent_spec_path,
+                exempt,
+            )
+        spec_case = strip_scalar(spec_case_raw)
         task_case = strip_scalar(str(fields.get("authority_case", "")))
-        if spec_case and task_case and spec_case != task_case:
+        if spec_case != task_case:
             return Validation(
                 False,
                 f"parent_spec case_id {spec_case!r} does not match task authority_case {task_case!r}",
@@ -1515,7 +1648,13 @@ CLAUDE_PROFILE_MODEL_PIN: dict[str, str] = {
 }
 
 
-def launch_claude_headless(task_id: str, lane: str, prompt: str, route: PlatformPath) -> int:
+def launch_claude_headless(
+    task_id: str,
+    lane: str,
+    prompt: str,
+    route: PlatformPath,
+    dispatch_env: dict[str, str] | None = None,
+) -> int:
     launcher = Path(
         os.environ.get(
             "HAPAX_METHODOLOGY_CLAUDE_HEADLESS",
@@ -1545,10 +1684,16 @@ def launch_claude_headless(task_id: str, lane: str, prompt: str, route: Platform
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
     env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(lane_worktree(lane, "claude"))
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("claude", "headless")
+    env.update(dispatch_env or {})
     return _sliced_call([str(launcher), "--task", task_id, lane, prompt], env)
 
 
-def launch_claude_interactive(task_id: str, lane: str, validation: Validation) -> int:
+def launch_claude_interactive(
+    task_id: str,
+    lane: str,
+    validation: Validation,
+    dispatch_env: dict[str, str] | None = None,
+) -> int:
     launcher = Path(
         os.environ.get(
             "HAPAX_METHODOLOGY_CLAUDE_LAUNCHER",
@@ -1570,6 +1715,7 @@ def launch_claude_interactive(task_id: str, lane: str, validation: Validation) -
     env.pop("HAPAX_SESSION_ID", None)
     if status in {"claimed", "in_progress"}:
         env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
+    env.update(dispatch_env or {})
     return subprocess.call(args, env=env)
 
 
@@ -1778,6 +1924,35 @@ def dispatch_message_id(cli_value: str | None) -> str | None:
     return value or None
 
 
+def claim_dispatch_environment(
+    *,
+    request: DispatchLaunchRequest,
+    preparation: DispatchPreparationBinding,
+) -> dict[str, str]:
+    """Environment consumed by cc-claim for final preimage and lane CAS checks."""
+
+    return {
+        "HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE": request.authority_case,
+        "HAPAX_CLAIM_DISPATCH_BINDING_HASH": preparation.binding_hash,
+        "HAPAX_CLAIM_DISPATCH_CLAIM_PROJECTION_SHA256": (preparation.claim_projection_sha256),
+        "HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY": request.effective_idempotency_key,
+        "HAPAX_CLAIM_DISPATCH_LANE_GENERATION": preparation.lane_generation,
+        "HAPAX_CLAIM_DISPATCH_LANE_PID": (
+            str(preparation.lane_pid) if preparation.lane_pid is not None else ""
+        ),
+        "HAPAX_CLAIM_DISPATCH_LANE_PID_GENERATION": preparation.lane_pid_generation,
+        "HAPAX_CLAIM_DISPATCH_LANE_SESSION": preparation.lane_session,
+        "HAPAX_CLAIM_DISPATCH_MESSAGE_ID": request.message_id,
+        "HAPAX_CLAIM_DISPATCH_MODE": request.mode,
+        "HAPAX_CLAIM_DISPATCH_PARENT_SPEC": preparation.parent_spec,
+        "HAPAX_CLAIM_DISPATCH_PLATFORM": request.platform,
+        "HAPAX_CLAIM_DISPATCH_PROFILE": request.profile,
+        "HAPAX_CLAIM_DISPATCH_RELAY_PROJECTION_SHA256": (preparation.relay_projection_sha256),
+        "HAPAX_CLAIM_DISPATCH_TASK_PATH": preparation.task_path,
+        "HAPAX_CLAIM_DISPATCH_TASK_SHA256": preparation.task_sha256,
+    }
+
+
 def coord_event_log_from_env() -> CoordEventLog:
     # Per-surface overrides still win (test isolation sets them explicitly); the
     # bare default is the single user-writable coord SSOT (coord_base_dir() →
@@ -1846,6 +2021,7 @@ def launch_codex_headless(
     route: PlatformPath,
     *,
     reactivate_retired_relay: bool = False,
+    dispatch_env: dict[str, str] | None = None,
 ) -> int:
     # Genuine headless path (reform §6 P0): `codex exec` via hapax-codex-headless,
     # NOT a tmux pane. The tmux launcher (hapax-codex) remains the interactive
@@ -1887,10 +2063,17 @@ def launch_codex_headless(
         # Preserve a caller/operator-provided fallback value; the P0 drain rule
         # only supplies the default local fallback when the env is otherwise unset.
         env.setdefault("HAPAX_DISPATCH_HOST_FALLBACK", "local")
+    env.update(dispatch_env or {})
     return _sliced_call(args, env)
 
 
-def launch_vibe_headless(task_id: str, lane: str, prompt: str, validation: Validation) -> int:
+def launch_vibe_headless(
+    task_id: str,
+    lane: str,
+    prompt: str,
+    validation: Validation,
+    dispatch_env: dict[str, str] | None = None,
+) -> int:
     launcher = Path(
         os.environ.get(
             "HAPAX_METHODOLOGY_VIBE_LAUNCHER",
@@ -1920,7 +2103,9 @@ def launch_vibe_headless(task_id: str, lane: str, prompt: str, validation: Valid
     ]
     if status in {"claimed", "in_progress"}:
         args.append("--no-claim")
-    return _sliced_call(args)
+    env = os.environ.copy()
+    env.update(dispatch_env or {})
+    return _sliced_call(args, env)
 
 
 def advance_task_stage(task_id: str, stage: str) -> int:
@@ -2507,6 +2692,121 @@ def main(argv: list[str] | None = None) -> int:
         # slows; no dispatch is dropped.
         _await_sdlc_admission(args)
 
+        initial_task = validation.task
+        refreshed_validation = validate_task(
+            task_id=args.task,
+            lane=args.lane,
+            platform=args.platform,
+            task_root=task_root,
+            strict_worktree=not args.skip_worktree_check,
+        )
+        refreshed_task = refreshed_validation.task
+        precondition_reason = ""
+        if not refreshed_validation.ok:
+            precondition_reason = (
+                f"dispatch preimage changed before actuation: {refreshed_validation.reason}"
+            )
+        elif initial_task is None or refreshed_task is None:
+            precondition_reason = "dispatch task preimage missing before actuation"
+        elif (
+            refreshed_task.path != initial_task.path
+            or refreshed_task.source_sha256 != initial_task.source_sha256
+        ):
+            precondition_reason = "dispatch task preimage changed before actuation"
+        if precondition_reason:
+            blocked = Validation(
+                False,
+                precondition_reason,
+                refreshed_task or initial_task,
+                refreshed_validation.parent_spec_path,
+                refreshed_validation.exempt_read_only,
+            )
+            if not args.no_receipt:
+                write_receipt(
+                    task_id=args.task,
+                    lane=args.lane,
+                    platform=args.platform,
+                    mode=args.mode,
+                    profile=args.profile,
+                    route=route,
+                    validation=blocked,
+                    prompt=None,
+                    launched=False,
+                    route_decision=route_decision,
+                    route_decision_receipt_path=route_decision_receipt_path,
+                    durable_binding=durable_binding,
+                )
+            print(f"BLOCKED: {precondition_reason}", file=sys.stderr)
+            return 10
+        validation = refreshed_validation
+        durable_binding = check_durable_dispatch_binding(
+            task_id=args.task,
+            lane=args.lane,
+            validation=validation,
+            message_id=mq_message_id,
+        )
+        if not durable_binding.ok:
+            reason = f"durable MQ binding changed before actuation: {durable_binding.reason}"
+            if not args.no_receipt:
+                write_receipt(
+                    task_id=args.task,
+                    lane=args.lane,
+                    platform=args.platform,
+                    mode=args.mode,
+                    profile=args.profile,
+                    route=route,
+                    validation=Validation(
+                        False,
+                        reason,
+                        validation.task,
+                        validation.parent_spec_path,
+                        validation.exempt_read_only,
+                    ),
+                    prompt=None,
+                    launched=False,
+                    route_decision=route_decision,
+                    route_decision_receipt_path=route_decision_receipt_path,
+                    durable_binding=durable_binding,
+                )
+            print(f"BLOCKED: {reason}", file=sys.stderr)
+            return 10
+        if durable_binding.preparation is not None:
+            lane_blocker = dispatch_preparation_lane_blocker(durable_binding.preparation)
+            if lane_blocker:
+                reason = f"dispatch lane changed before actuation: {lane_blocker}"
+                if not args.no_receipt:
+                    write_receipt(
+                        task_id=args.task,
+                        lane=args.lane,
+                        platform=args.platform,
+                        mode=args.mode,
+                        profile=args.profile,
+                        route=route,
+                        validation=Validation(
+                            False,
+                            reason,
+                            validation.task,
+                            validation.parent_spec_path,
+                            validation.exempt_read_only,
+                        ),
+                        prompt=None,
+                        launched=False,
+                        route_decision=route_decision,
+                        route_decision_receipt_path=route_decision_receipt_path,
+                        durable_binding=durable_binding,
+                    )
+                print(f"BLOCKED: {reason}", file=sys.stderr)
+                return 10
+        prompt = build_prompt(
+            args.task,
+            args.lane,
+            args.platform,
+            args.mode,
+            args.profile,
+            validation,
+            route,
+        )
+
         # Launchable (platform, mode) -> adapter call. Eligibility is decided by
         # the Executor capability registry (supports_route), NOT a hard if-ladder
         # (reform §6 P1) — adding a runtime/mode is a one-line table + registry edit.
@@ -2516,12 +2816,50 @@ def main(argv: list[str] | None = None) -> int:
             durable_binding=durable_binding,
             validation=validation,
         )
+        dispatch_request: DispatchLaunchRequest | None = None
+        dispatch_env: dict[str, str] = {}
+        if route.mutable and not validation.exempt_read_only:
+            assert validation.task is not None
+            assert mq_message_id is not None
+            fields = validation.task.fields
+            dispatch_request = DispatchLaunchRequest(
+                task_id=args.task,
+                lane=args.lane,
+                platform=args.platform,
+                mode=args.mode,
+                profile=args.profile,
+                authority_case=strip_scalar(str(fields.get("authority_case", ""))),
+                authority_item=strip_scalar(str(fields.get("authority_item", ""))),
+                parent_spec=strip_scalar(str(fields.get("parent_spec", ""))),
+                message_id=mq_message_id,
+                mq_db_path=_relay_mq_db_path(),
+                event_log=coord_event_log_from_env(),
+                idempotency_key=args.idempotency_key,
+                binding_hash=(
+                    durable_binding.preparation.binding_hash
+                    if durable_binding.preparation is not None
+                    else None
+                ),
+                reactivate_retired=reactivate_retired_codex_relay,
+            )
+            if durable_binding.preparation is not None:
+                dispatch_env = claim_dispatch_environment(
+                    request=dispatch_request,
+                    preparation=durable_binding.preparation,
+                )
         launchers: dict[tuple[str, str], Any] = {
             ("claude", "headless"): lambda: launch_claude_headless(
-                args.task, args.lane, prompt or "", route
+                args.task,
+                args.lane,
+                prompt or "",
+                route,
+                dispatch_env,
             ),
             ("claude", "interactive"): lambda: launch_claude_interactive(
-                args.task, args.lane, validation
+                args.task,
+                args.lane,
+                validation,
+                dispatch_env,
             ),
             ("codex", "headless"): lambda: launch_codex_headless(
                 args.task,
@@ -2530,9 +2868,14 @@ def main(argv: list[str] | None = None) -> int:
                 validation,
                 route,
                 reactivate_retired_relay=reactivate_retired_codex_relay,
+                dispatch_env=dispatch_env,
             ),
             ("vibe", "headless"): lambda: launch_vibe_headless(
-                args.task, args.lane, prompt or "", validation
+                args.task,
+                args.lane,
+                prompt or "",
+                validation,
+                dispatch_env,
             ),
         }
 
@@ -2561,26 +2904,12 @@ def main(argv: list[str] | None = None) -> int:
         if route.mutable and not validation.exempt_read_only:
             assert validation.task is not None
             assert mq_message_id is not None
-            fields = validation.task.fields
+            assert dispatch_request is not None
             try:
                 launch_adapter = _worker_adapter_for_launch(args.platform)
                 dispatch_launch = launch_adapter.launch(
                     decision=route_decision,
-                    request=DispatchLaunchRequest(
-                        task_id=args.task,
-                        lane=args.lane,
-                        platform=args.platform,
-                        mode=args.mode,
-                        profile=args.profile,
-                        authority_case=strip_scalar(str(fields.get("authority_case", ""))),
-                        authority_item=strip_scalar(str(fields.get("authority_item", ""))),
-                        parent_spec=strip_scalar(str(fields.get("parent_spec", ""))),
-                        message_id=mq_message_id,
-                        mq_db_path=_relay_mq_db_path(),
-                        event_log=coord_event_log_from_env(),
-                        idempotency_key=args.idempotency_key,
-                        reactivate_retired=reactivate_retired_codex_relay,
-                    ),
+                    request=dispatch_request,
                     launch_callable=functools.partial(
                         classify_and_witness_launch,
                         run_platform_launch,

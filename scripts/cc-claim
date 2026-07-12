@@ -34,6 +34,22 @@ fi
 
 force=false
 task_id=""
+dispatch_message_id="${HAPAX_CLAIM_DISPATCH_MESSAGE_ID:-}"
+dispatch_binding_hash="${HAPAX_CLAIM_DISPATCH_BINDING_HASH:-}"
+dispatch_platform="${HAPAX_CLAIM_DISPATCH_PLATFORM:-}"
+dispatch_mode="${HAPAX_CLAIM_DISPATCH_MODE:-}"
+dispatch_profile="${HAPAX_CLAIM_DISPATCH_PROFILE:-}"
+dispatch_authority_case="${HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE:-}"
+dispatch_idempotency_key="${HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY:-}"
+dispatch_task_path="${HAPAX_CLAIM_DISPATCH_TASK_PATH:-}"
+dispatch_task_sha256="${HAPAX_CLAIM_DISPATCH_TASK_SHA256:-}"
+dispatch_parent_spec="${HAPAX_CLAIM_DISPATCH_PARENT_SPEC:-}"
+dispatch_lane_session="${HAPAX_CLAIM_DISPATCH_LANE_SESSION:-}"
+dispatch_lane_generation="${HAPAX_CLAIM_DISPATCH_LANE_GENERATION:-}"
+dispatch_lane_pid="${HAPAX_CLAIM_DISPATCH_LANE_PID:-}"
+dispatch_lane_pid_generation="${HAPAX_CLAIM_DISPATCH_LANE_PID_GENERATION:-}"
+dispatch_claim_projection="${HAPAX_CLAIM_DISPATCH_CLAIM_PROJECTION_SHA256:-}"
+dispatch_relay_projection="${HAPAX_CLAIM_DISPATCH_RELAY_PROJECTION_SHA256:-}"
 for arg in "$@"; do
   case "$arg" in
     --force) force=true ;;
@@ -43,6 +59,22 @@ for arg in "$@"; do
 done
 if [[ -z "$task_id" ]]; then
   echo "usage: cc-claim [--force] <task_id>" >&2
+  exit 1
+fi
+dispatch_values=(
+  "$dispatch_message_id" "$dispatch_binding_hash" "$dispatch_platform"
+  "$dispatch_mode" "$dispatch_profile" "$dispatch_authority_case"
+  "$dispatch_idempotency_key" "$dispatch_task_path" "$dispatch_task_sha256"
+  "$dispatch_parent_spec" "$dispatch_lane_generation"
+  "$dispatch_claim_projection" "$dispatch_relay_projection"
+)
+dispatch_present=0
+dispatch_missing=0
+for value in "${dispatch_values[@]}"; do
+  [[ -n "$value" ]] && dispatch_present=$((dispatch_present + 1)) || dispatch_missing=$((dispatch_missing + 1))
+done
+if [[ "$dispatch_present" -gt 0 && "$dispatch_missing" -gt 0 ]]; then
+  echo "cc-claim: dispatch binding environment is incomplete" >&2
   exit 1
 fi
 # Resolve identity from the SAME source of truth as the gate (agent-role.sh):
@@ -83,6 +115,21 @@ else
 fi
 lease_ttl="${HAPAX_CLAIM_LEASE_TTL_SECS:-21600}"
 
+# Serialize both the role and task identity through note mutation plus cache
+# publication. Different roles cannot race to claim the same note, and one role
+# cannot race two different tasks into separate active claims.
+command -v flock >/dev/null 2>&1 || {
+  echo "cc-claim: flock missing; refusing non-atomic claim" >&2
+  exit 3
+}
+mkdir -p "$HOME/.cache/hapax"
+role_lock_key="$(printf '%s' "$role" | sha256sum | cut -d' ' -f1)"
+task_lock_key="$(printf '%s' "$task_id" | sha256sum | cut -d' ' -f1)"
+exec 8>"$HOME/.cache/hapax/cc-claim-role-lock-$role_lock_key"
+flock -x 8
+exec 9>"$HOME/.cache/hapax/cc-claim-task-lock-$task_lock_key"
+flock -x 9
+
 # --- Multi-claim prevention + lease expiry (reform Phase 1, cluster 6) ---
 # A role must close its current task before claiming a new one. Without this,
 # Codex lanes bulk-claimed dozens of tasks with zero implementation. Scan the
@@ -103,7 +150,14 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
     # Expired lease. Reap session-keyed files (a dead session's lease auto-frees);
     # leave the shared legacy file (it is overwritten below and never blocks once
     # expired) for the out-of-scope consumers that still read it.
-    [[ "$cf" != "$legacy_claim_file" ]] && rm -f "$cf" 2>/dev/null || true
+    if [[ "$cf" != "$legacy_claim_file" ]]; then
+      claim_key="${cf##*/cc-active-task-}"
+      rm -f \
+        "$cf" \
+        "$HOME/.cache/hapax/cc-claim-epoch-$claim_key" \
+        "$HOME/.cache/hapax/cc-claim-dispatch-$claim_key.json" \
+        2>/dev/null || true
+    fi
     continue
   fi
   existing_task="$(head -n1 "$cf" | tr -d '[:space:]')"
@@ -129,35 +183,44 @@ done
 shopt -u nullglob
 
 vault_root="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
-note_path=""
-# Match `<task_id>-<descriptor>.md` (most tasks).
-for candidate in "$vault_root/active/$task_id-"*.md; do
-  if [[ -f "$candidate" ]]; then
-    note_path="$candidate"
-    break
-  fi
-done
-# Fallback: exact-match `<task_id>.md` for tasks without a descriptor
-# suffix (eg. ytb-LEGIBILITY-SMOKE-FOLLOWUP.md, ytb-OBJECTIVES-OVERLAY-
-# RENDER-FOLLOWUP.md). The glob above doesn't match these because it
-# requires a literal `-` after the task_id.
-if [[ -z "$note_path" ]] && [[ -f "$vault_root/active/$task_id.md" ]]; then
-  note_path="$vault_root/active/$task_id.md"
-fi
-if [[ -z "$note_path" ]]; then
-  echo "cc-claim: task '$task_id' not found in $vault_root/active/" >&2
-  echo "browse offered tasks: $vault_root/_dashboard/cc-offered.md" >&2
-  exit 2
-fi
-
 if ! command -v python3 &>/dev/null; then
   echo "cc-claim: python3 missing; cannot rewrite frontmatter" >&2
   exit 3
 fi
+if ! note_path="$(python3 - "$SCRIPT_DIR/.." "$vault_root" "$task_id" <<'PYEOF'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from shared.sdlc_task_store import TaskStoreError, resolve_task_note
+
+try:
+    snapshot = resolve_task_note(Path(sys.argv[2]), sys.argv[3], state="active")
+except TaskStoreError as exc:
+    print(f"cc-claim: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+print(snapshot.path)
+PYEOF
+)"; then
+  echo "cc-claim: No claim caches were written." >&2
+  echo "browse offered tasks: $vault_root/_dashboard/cc-offered.md" >&2
+  exit 2
+fi
+
+claim_epoch="$(date +%s)"
 
 # Verify status/ownership, then either claim offered work or resume owned
 # ready-state work (PR/merge-queue maintenance).
-python3 - "$note_path" "$role" "$task_id" "$SCRIPT_DIR/.." "$session_id" <<'PYEOF'
+python3 - "$note_path" "$role" "$task_id" "$SCRIPT_DIR/.." "$session_id" \
+  "$claim_epoch" "$dispatch_present" "$dispatch_message_id" \
+  "$dispatch_binding_hash" "$dispatch_platform" "$dispatch_mode" \
+  "$dispatch_profile" "$dispatch_authority_case" "$dispatch_idempotency_key" \
+  "$dispatch_task_path" "$dispatch_task_sha256" "$dispatch_parent_spec" \
+  "$dispatch_lane_session" "$dispatch_lane_generation" "$dispatch_lane_pid" \
+  "$dispatch_lane_pid_generation" "$dispatch_claim_projection" \
+  "$dispatch_relay_projection" <<'PYEOF'
+import hashlib
+import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -172,6 +235,26 @@ path, role, task_id, repo_root = (
 # Already validated claim-keyable by the bash caller (empty when not); stamped
 # into the session log so vault forensics join on session_id, never on pid.
 session_id = sys.argv[5] if len(sys.argv) > 5 else ""
+(
+    claim_epoch,
+    dispatch_present,
+    dispatch_message_id,
+    dispatch_binding_hash,
+    dispatch_platform,
+    dispatch_mode,
+    dispatch_profile,
+    dispatch_authority_case,
+    dispatch_idempotency_key,
+    dispatch_task_path,
+    dispatch_task_sha256,
+    dispatch_parent_spec,
+    dispatch_lane_session,
+    dispatch_lane_generation,
+    dispatch_lane_pid,
+    dispatch_lane_pid_generation,
+    dispatch_claim_projection,
+    dispatch_relay_projection,
+) = sys.argv[6:24]
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
@@ -183,8 +266,112 @@ from shared.sdlc_lifecycle import (  # noqa: E402
     frontmatter_from_text,
     task_closure_validity,
 )
+from shared.coord_dispatch import (  # noqa: E402
+    CoordDispatchError,
+    lane_ownership_projection_hashes,
+)
+from shared.sdlc_task_store import (  # noqa: E402
+    ClaimDispatchBinding,
+    TaskStoreError,
+    resolve_task_note,
+    write_claim_dispatch_binding,
+)
 
-text = path.read_text(encoding="utf-8")
+snapshot = resolve_task_note(path.parent.parent, task_id, state="active")
+if snapshot.path != path.resolve():
+    raise TaskStoreError(
+        "claim_task_path_changed",
+        "retry against the exact shared task-note resolution",
+        str(snapshot.path),
+    )
+text = snapshot.content.decode("utf-8")
+if int(dispatch_present):
+    if (
+        str(snapshot.path) != dispatch_task_path
+        or snapshot.sha256 != dispatch_task_sha256
+        or str(snapshot.frontmatter.get("authority_case") or "").strip()
+        != dispatch_authority_case
+        or str(snapshot.frontmatter.get("parent_spec") or "").strip()
+        != dispatch_parent_spec
+    ):
+        raise TaskStoreError(
+            "claim_dispatch_task_preimage_mismatch",
+            "re-dispatch from the current exact task bytes and authority",
+            str(snapshot.path),
+        )
+
+    def pid_generation(pid: int) -> str:
+        try:
+            stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+            return f"pid:{pid}:{stat_text.rsplit(')', 1)[1].split()[19]}"
+        except (OSError, IndexError):
+            return f"pid:{pid}"
+
+    if dispatch_lane_session:
+        import subprocess
+
+        proc = subprocess.run(
+            [
+                "tmux",
+                "list-sessions",
+                "-F",
+                "#{session_name}\t#{session_id}\t#{session_created}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        generations = {}
+        for line in proc.stdout.splitlines():
+            values = line.rstrip().split("\t")
+            if len(values) >= 3:
+                generations[values[0].strip()] = ":".join(values[1:3])
+        if generations.get(dispatch_lane_session) != dispatch_lane_generation:
+            raise TaskStoreError(
+                "claim_dispatch_lane_generation_changed",
+                "re-dispatch to the currently observed lane generation",
+            )
+    else:
+        generation_parts = dispatch_lane_generation.split(":", 2)
+        if (
+            len(generation_parts) < 2
+            or generation_parts[0] != "pid"
+            or not generation_parts[1].isdigit()
+            or pid_generation(int(generation_parts[1])) != dispatch_lane_generation
+        ):
+            raise TaskStoreError(
+                "claim_dispatch_lane_generation_changed",
+                "re-dispatch to the currently observed lane generation",
+            )
+    if dispatch_lane_pid:
+        if (
+            not dispatch_lane_pid.isdigit()
+            or pid_generation(int(dispatch_lane_pid)) != dispatch_lane_pid_generation
+        ):
+            raise TaskStoreError(
+                "claim_dispatch_lane_process_changed",
+                "re-dispatch to the currently observed lane process",
+            )
+    cache_dir = Path.home() / ".cache" / "hapax"
+    relay_dir = Path(os.environ.get("HAPAX_RELAY_DIR", str(cache_dir / "relay")))
+    try:
+        claim_hash, relay_hash = lane_ownership_projection_hashes(
+            cache_dir=cache_dir,
+            relay_dir=relay_dir,
+            role=role,
+            session=dispatch_lane_session,
+        )
+    except CoordDispatchError as exc:
+        raise TaskStoreError(
+            exc.reason,
+            "restore readable claim and relay ownership projections",
+        ) from exc
+    if claim_hash != dispatch_claim_projection or relay_hash != dispatch_relay_projection:
+        raise TaskStoreError(
+            "claim_dispatch_ownership_projection_changed",
+            "re-dispatch after claim and relay ownership state stabilizes",
+        )
 if not text.startswith("---") or text.find("\n---", 4) < 0:
     print(
         f"cc-claim: FATAL — task note {path} has no closing frontmatter "
@@ -435,14 +622,12 @@ if missing_authority_fields:
 
 
 def _locate_task(vault_root: Path, dep_id: str) -> Path | None:
-    for subdir in ("closed", "active"):
-        root = vault_root / subdir
-        exact = root / f"{dep_id}.md"
-        if exact.is_file():
-            return exact
-        for candidate in root.glob(f"{dep_id}-*.md"):
-            if candidate.is_file():
-                return candidate
+    for state in ("closed", "active"):
+        try:
+            return resolve_task_note(vault_root, dep_id, state=state).path
+        except TaskStoreError as exc:
+            if exc.reason_code != "task_note_not_found":
+                raise
     return None
 
 
@@ -636,14 +821,57 @@ text = re.sub(
 )
 text = _insert_session_log(text, log_line)
 
+if hashlib.sha256(path.read_bytes()).hexdigest() != snapshot.sha256:
+    raise TaskStoreError(
+        "claim_task_changed_before_compare_and_swap",
+        "retry against the current exact task bytes",
+        str(path),
+    )
 tmp = path.with_suffix(path.suffix + ".tmp")
 tmp.write_text(text, encoding="utf-8")
 tmp.replace(path)
+if int(dispatch_present):
+    claimed = resolve_task_note(path.parent.parent, task_id, state="active")
+    if (
+        str(claimed.frontmatter.get("assigned_to") or "").strip() != role
+        or str(claimed.frontmatter.get("authority_case") or "").strip()
+        != dispatch_authority_case
+    ):
+        raise TaskStoreError(
+            "claim_dispatch_postimage_mismatch",
+            "repair the task claim before publishing claim caches",
+            str(path),
+        )
+    binding = ClaimDispatchBinding.create(
+        task_id=task_id,
+        lane=role,
+        session_id=session_id,
+        claim_epoch=int(claim_epoch),
+        dispatch_message_id=dispatch_message_id,
+        platform=dispatch_platform,
+        mode=dispatch_mode,
+        profile=dispatch_profile,
+        authority_case=dispatch_authority_case,
+        binding_hash=dispatch_binding_hash,
+        coord_dispatch_idempotency_key=dispatch_idempotency_key,
+    )
+    cache_dir = Path.home() / ".cache" / "hapax"
+    keys = [role]
+    if session_id:
+        keys.append(f"{role}-{session_id}")
+    for key in keys:
+        write_claim_dispatch_binding(cache_dir, key, binding)
 print(result_message)
 PYEOF
 
 # Write the claim file(s) the gate + consumers read.
 mkdir -p "$HOME/.cache/hapax"
+if [[ "$dispatch_present" -eq 0 ]]; then
+  rm -f "$HOME/.cache/hapax/cc-claim-dispatch-$role.json"
+  if [[ -n "$session_id" ]]; then
+    rm -f "$HOME/.cache/hapax/cc-claim-dispatch-$role-$session_id.json"
+  fi
+fi
 # The `cc-claim-epoch-*` SIDECAR records the claim time out-of-band: several
 # consumers read the claim file's FULL content as the task id, so the id file
 # must stay single-line — and the gate touches the claim file as a lease
@@ -657,7 +885,6 @@ mkdir -p "$HOME/.cache/hapax"
 # full path — `${var/cc-active-task/...}` rewrites the FIRST occurrence
 # anywhere, corrupting the target when a parent directory contains the
 # substring).
-claim_epoch="$(date +%s)"
 # Sidecar format: `<epoch> <task_id>` — task-bound so a stale sidecar left by
 # an earlier claim can never age a NEW claim of a different task; consumers
 # ignore a sidecar whose task id does not match the claim cache.

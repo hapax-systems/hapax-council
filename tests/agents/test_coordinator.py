@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.machinery
 import importlib.util
 import json
@@ -19,6 +20,7 @@ import pytest
 from agents.coordinator.core import (
     _DISPATCH_CLAIM_GUARD_MARKERS,
     _DISPATCH_CLOSE_GUARD_MARKERS,
+    TMUX_DISCOVERY_FORMAT,
     Coordinator,
     CoordinatorState,
     LaneDescriptor,
@@ -35,11 +37,16 @@ from agents.coordinator.core import (
     _lane_to_dict,
     _live_headless_launcher,
     _parse_task,
+    _pid_generation,
     _prepare_dispatch_message,
+    _refresh_dispatch_lane,
     _relay_status_is_retired,
     _task_flow_counts,
 )
+from shared.coord_dispatch import DispatchLaunchRequest, _accept_dispatch_message
+from shared.coord_event_log import CoordEventLog
 from shared.sdlc_pressure_gate import AdmissionDecision
+from shared.sdlc_task_store import ClaimDispatchBinding, write_claim_dispatch_binding
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DISPATCHER_SCRIPT = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
@@ -321,6 +328,7 @@ class TestParseTask:
         task_file = tmp_path / "test-task.md"
         task_file.write_text(
             """---
+task_id: test-task
 title: "Fix the widget"
 status: offered
 assigned_to: unassigned
@@ -341,11 +349,27 @@ Fix the broken widget.
         assert task.wsjf == 12.0
         assert "claude" in task.platform_suitability
 
+    def test_rejects_filename_frontmatter_identity_mismatch(self, tmp_path: Path):
+        task_file = tmp_path / "filename-id.md"
+        task_file.write_text(
+            """---
+task_id: different-id
+title: "Mismatched identity"
+status: offered
+assigned_to: unassigned
+---
+""",
+            encoding="utf-8",
+        )
+
+        assert _parse_task(task_file) is None
+
     def test_nullable_or_invalid_wsjf_defaults_to_zero(self, tmp_path: Path):
         for value in ("null", "not-a-number", ".nan"):
-            task_file = tmp_path / f"{value}.md"
+            task_file = tmp_path / f"loose-wsjf-{value}.md"
             task_file.write_text(
                 f"""---
+task_id: loose-wsjf
 title: "Loose WSJF"
 status: offered
 assigned_to: unassigned
@@ -364,6 +388,7 @@ wsjf: {value}
         task_file = tmp_path / "nullable-fields.md"
         task_file.write_text(
             """---
+task_id: nullable-fields
 title: null
 status: offered
 assigned_to: null
@@ -404,6 +429,7 @@ Done.
         blocked = tmp_path / "blocked.md"
         blocked.write_text(
             """---
+task_id: blocked
 title: "Blocked"
 status: blocked
 assigned_to: unassigned
@@ -414,6 +440,7 @@ assigned_to: unassigned
         pr_open = tmp_path / "pr-open.md"
         pr_open.write_text(
             """---
+task_id: pr-open
 title: "PR"
 status: pr_open
 assigned_to: cx-red
@@ -590,6 +617,126 @@ class TestLaneState:
         assert d["pid"] == 12345
         assert d["pid_source"] == "pidfile"
         assert d["claimed_task"] == "fix-bug"
+
+    def test_refresh_dispatch_lane_rebuilds_from_current_discovery(self):
+        original = LaneState(
+            role="cx-red",
+            session="hapax-codex-cx-red",
+            platform="codex",
+            alive=True,
+            idle=True,
+        )
+        descriptor = LaneDescriptor(
+            role="cx-red",
+            session="hapax-codex-cx-red",
+            platform="codex",
+        )
+        refreshed = LaneState(
+            role="cx-red",
+            session="hapax-codex-cx-red",
+            platform="codex",
+            alive=False,
+            idle=True,
+            dispatch_ready=False,
+        )
+
+        with (
+            patch("agents.coordinator.core._discover_lanes", return_value=[descriptor]),
+            patch("agents.coordinator.core._check_lane", return_value=refreshed) as check,
+        ):
+            assert _refresh_dispatch_lane(original) is refreshed
+
+        check.assert_called_once_with(descriptor)
+
+    def test_refresh_dispatch_lane_holds_on_session_replacement(self):
+        original = LaneState(
+            role="cx-red",
+            session="hapax-codex-cx-red",
+            platform="codex",
+            generation="$1:100",
+            alive=True,
+            idle=True,
+        )
+        replacement = LaneDescriptor(
+            role="cx-red",
+            session="hapax-codex-cx-red",
+            platform="codex",
+            generation="$2:101",
+        )
+
+        with patch("agents.coordinator.core._discover_lanes", return_value=[replacement]):
+            refreshed = _refresh_dispatch_lane(original)
+
+        assert refreshed.alive is False
+        assert refreshed.dispatch_ready is False
+        assert refreshed.dispatch_blocked_reason == "lane_disappeared_before_dispatch"
+
+    def test_refresh_dispatch_lane_holds_on_pid_replacement(self):
+        original = LaneState(
+            role="cx-red",
+            session="",
+            platform="codex",
+            generation="pid:100",
+            alive=True,
+            pid=100,
+            idle=True,
+        )
+        descriptor = LaneDescriptor(
+            role="cx-red",
+            session="",
+            platform="codex",
+            generation="pid:100",
+        )
+        replacement = LaneState(
+            role="cx-red",
+            session="",
+            platform="codex",
+            generation="pid:100",
+            alive=True,
+            pid=200,
+            idle=True,
+        )
+
+        with (
+            patch("agents.coordinator.core._discover_lanes", return_value=[descriptor]),
+            patch("agents.coordinator.core._check_lane", return_value=replacement),
+        ):
+            refreshed = _refresh_dispatch_lane(original)
+
+        assert refreshed.alive is False
+        assert refreshed.dispatch_ready is False
+        assert refreshed.dispatch_blocked_reason == "lane_process_replaced_before_dispatch"
+
+    def test_dispatch_pickup_rejects_same_name_replacement_generation(self):
+        lane = LaneState(
+            role="cx-red",
+            session="hapax-codex-cx-red",
+            platform="codex",
+            generation="$1:100",
+            alive=True,
+            idle=True,
+        )
+        replacement = LaneDescriptor(
+            role="cx-red",
+            session="hapax-codex-cx-red",
+            platform="codex",
+            generation="$2:101",
+        )
+        task = Task(
+            task_id="task-1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=1,
+            effort_class="standard",
+            platform_suitability=("codex",),
+            quality_floor="deterministic_ok",
+            path=Path("/tmp/task-1.md"),
+            source_sha256="a" * 64,
+        )
+
+        with patch("agents.coordinator.core._discover_lanes", return_value=[replacement]):
+            assert _dispatch_landed(task, lane, "dispatch-message") is False
 
     def test_peer_status_fallback_marks_queue_dry_lane_idle(self, tmp_path: Path):
         relay_dir = tmp_path / "relay"
@@ -1366,7 +1513,7 @@ retired_reason: clean exit
         completed = subprocess.CompletedProcess(
             args=["tmux"],
             returncode=0,
-            stdout="hapax-claude-alpha\nhapax-codex-cx-red\nwork\n",
+            stdout=("hapax-claude-alpha\t$1\t100\nhapax-codex-cx-red\t$2\t101\nwork\t$3\t102\n"),
             stderr="",
         )
 
@@ -1394,10 +1541,12 @@ retired_reason: clean exit
             "cx-red",
         } <= set(lanes)
         assert lanes["alpha"].alive is True
+        assert lanes["alpha"].generation == "$1:100"
         assert lanes["beta"].alive is False
         assert lanes["alpha"].platform == "claude"
         assert lanes["alpha"].dispatch_ready is True
         assert lanes["cx-red"].alive is True
+        assert lanes["cx-red"].generation == "$2:101"
         assert lanes["cx-red"].platform == "codex"
         assert lanes["cx-red"].dispatch_ready is True
 
@@ -1434,11 +1583,12 @@ retired_reason: clean exit
         gamma = next(lane for lane in descriptors if lane.role == "gamma")
         assert gamma.session == ""
         assert gamma.platform == "claude"
+        assert gamma.generation == _pid_generation(os.getpid())
         assert lanes["gamma"].alive is True
         assert lanes["gamma"].pid == os.getpid()
         assert lanes["gamma"].pid_source == "pidfile"
 
-    def test_codex_pid_backed_headless_lane_is_discovered_and_counts_as_landed(
+    def test_codex_pid_backed_lane_requires_dispatch_binding_to_count_as_landed(
         self, tmp_path: Path
     ):
         role = "cx-blue"
@@ -1483,7 +1633,7 @@ retired_reason: clean exit
                 path=tmp_path / f"{task_id}.md",
             )
 
-            assert _dispatch_landed(task, lanes[role]) is True
+            assert _dispatch_landed(task, lanes[role], "mq-test") is False
 
         descriptor = next(lane for lane in descriptors if lane.role == role)
         assert descriptor.session == ""
@@ -1583,7 +1733,7 @@ class TestDispatchableLaneSelection:
             effort_class="standard",
             platform_suitability=("claude",),
             quality_floor="deterministic_ok",
-            path=Path("/tmp/t1.md"),
+            path=Path("/dev/null"),
         )
         lanes = {
             "dev": LaneState(role="dev", platform="claude", alive=True, idle=True),
@@ -1784,6 +1934,8 @@ class TestDispatch:
         assert result.stdout.strip() == str(override)
 
     def test_prepare_dispatch_message_writes_strict_mq_binding(self, tmp_path: Path):
+        task_path = tmp_path / "t1.md"
+        task_path.write_text("task preimage\n", encoding="utf-8")
         task = Task(
             task_id="t1",
             title="test",
@@ -1793,9 +1945,10 @@ class TestDispatch:
             effort_class="standard",
             platform_suitability=("codex",),
             quality_floor="deterministic_ok",
-            path=Path("/tmp/t1.md"),
+            path=task_path,
             authority_case="CASE-TEST-001",
             parent_spec="/tmp/spec.md",
+            source_sha256=hashlib.sha256(task_path.read_bytes()).hexdigest(),
         )
         lane = LaneState(role="cx-red", platform="codex", alive=True, idle=True)
         db_path = tmp_path / "relay" / "messages.db"
@@ -1809,6 +1962,10 @@ class TestDispatch:
             row = conn.execute(
                 "SELECT subject, authority_case, recipients_spec, payload FROM messages"
             ).fetchone()
+            recipient = conn.execute(
+                "SELECT state, reason FROM recipients WHERE message_id = ?",
+                (message_id,),
+            ).fetchone()
         assert row is not None
         assert row[0] == "t1"
         assert row[1] == "CASE-TEST-001"
@@ -1817,7 +1974,9 @@ class TestDispatch:
         assert payload["task_id"] == "t1"
         assert payload["lane"] == "cx-red"
         assert payload["parent_spec"] == "/tmp/spec.md"
+        assert payload["dispatch_binding"]["task_sha256"] == task.source_sha256
         assert "next_action_on_binding_failure" in payload
+        assert recipient == ("deferred", "coordinator_prepared_pending_revalidation")
 
     def test_dispatch_uses_methodology_dispatcher(self, tmp_path: Path):
         dispatcher = tmp_path / "projects/hapax-council/scripts/hapax-methodology-dispatch"
@@ -1847,7 +2006,9 @@ class TestDispatch:
 
         with (
             patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", dispatcher),
+            patch.object(Coordinator, "_read_task_snapshot", return_value=([task], True)),
             patch("agents.coordinator.core._prepare_dispatch_message", return_value="mq-test-1"),
+            patch("agents.coordinator.core._refresh_dispatch_lane", return_value=lane),
             patch("agents.coordinator.core.DISPATCH_TIMEOUT_S", 42.0),
             patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
         ):
@@ -1870,6 +2031,8 @@ class TestDispatch:
             ]
         ]
         assert run_kwargs[0]["timeout"] == 42.0
+        assert run_kwargs[0]["env"]["HAPAX_DISPATCH_CLAIM_SWEEP"] == "0"
+        assert run_kwargs[0]["env"]["HAPAX_CLAIM_LEASE_TTL_SECS"] == str(2**63 - 1)
 
     def test_dispatch_timeout_with_live_pickup_counts_success(self, tmp_path: Path):
         dispatcher = tmp_path / "hapax-methodology-dispatch"
@@ -1893,6 +2056,8 @@ class TestDispatch:
 
         with (
             patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", dispatcher),
+            patch.object(Coordinator, "_read_task_snapshot", return_value=([task], True)),
+            patch("agents.coordinator.core._refresh_dispatch_lane", return_value=lane),
             patch("agents.coordinator.core.DISPATCH_TIMEOUT_S", 30.0),
             patch("agents.coordinator.core.DISPATCH_TIMEOUT_LANDING_GRACE_S", 0.0),
             patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
@@ -1900,7 +2065,7 @@ class TestDispatch:
         ):
             assert Coordinator()._dispatch(task, lane) == (True, "")
 
-    def test_dispatch_landed_requires_exact_active_claim_lease(self, tmp_path: Path):
+    def test_dispatch_landed_rejects_claim_cache_without_dispatch_sidecar(self, tmp_path: Path):
         relay_dir = tmp_path / "relay"
         relay_dir.mkdir()
         (relay_dir / "cx-red-status.yaml").write_text(
@@ -1935,11 +2100,134 @@ current_claim: p0-task
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core.CACHE_DIR", cache_dir),
             patch("agents.coordinator.core._lane_launcher_process_present", return_value=True),
-            patch("pathlib.Path.home", return_value=tmp_path),
         ):
-            assert _dispatch_landed(task, lane) is False
+            assert _dispatch_landed(task, lane, "mq-test") is False
             (cache_dir / "cc-active-task-cx-red").write_text("p0-task\n", encoding="utf-8")
-            assert _dispatch_landed(task, lane) is True
+            assert _dispatch_landed(task, lane, "mq-test") is False
+
+    def test_dispatch_landed_requires_exact_message_bound_claim_sidecar(self, tmp_path: Path):
+        vault_root = tmp_path / "tasks"
+        active = vault_root / "active"
+        active.mkdir(parents=True)
+        task_path = active / "task-1.md"
+        task_path.write_text(
+            "---\n"
+            "task_id: task-1\n"
+            "status: offered\n"
+            "assigned_to: unassigned\n"
+            "authority_case: CASE-1\n"
+            "parent_spec: /tmp/spec.md\n"
+            "---\n",
+            encoding="utf-8",
+        )
+        task = Task(
+            task_id="task-1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=1,
+            effort_class="standard",
+            platform_suitability=("codex",),
+            quality_floor="deterministic_ok",
+            path=task_path,
+            authority_case="CASE-1",
+            parent_spec="/tmp/spec.md",
+            source_sha256=hashlib.sha256(task_path.read_bytes()).hexdigest(),
+        )
+        generation = _pid_generation(os.getpid())
+        lane = LaneState(
+            role="cx-red",
+            platform="codex",
+            generation=generation,
+            alive=True,
+            pid=os.getpid(),
+            idle=True,
+        )
+        cache_dir = tmp_path / "cache"
+        relay_dir = tmp_path / "relay-state"
+        db_path = tmp_path / "relay" / "messages.db"
+        cache_dir.mkdir()
+        relay_dir.mkdir()
+
+        with (
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.TASKS_DIR", active),
+            patch.dict(os.environ, {"HAPAX_RELAY_MQ_DB": str(db_path)}),
+        ):
+            message_id = _prepare_dispatch_message(task, lane)
+            assert message_id is not None
+            with sqlite3.connect(db_path) as conn:
+                binding_hash = json.loads(
+                    conn.execute("SELECT payload FROM messages").fetchone()[0]
+                )["dispatch_binding"]["binding_hash"]
+            request = DispatchLaunchRequest(
+                task_id=task.task_id,
+                lane=lane.role,
+                platform=lane.platform,
+                mode="headless",
+                profile="full",
+                authority_case=task.authority_case or "",
+                authority_item=task.task_id,
+                parent_spec=task.parent_spec,
+                message_id=message_id,
+                mq_db_path=db_path,
+                event_log=CoordEventLog(
+                    db_path=tmp_path / "coord" / "ledger.db",
+                    jsonl_path=tmp_path / "coord" / "ledger.jsonl",
+                    spool_dir=tmp_path / "coord" / "spool",
+                ),
+                binding_hash=binding_hash,
+            )
+            key = request.effective_idempotency_key
+            _accept_dispatch_message(request, idempotency_key=key)
+            task_path.write_text(
+                "---\n"
+                "task_id: task-1\n"
+                "status: claimed\n"
+                "assigned_to: cx-red\n"
+                "authority_case: CASE-1\n"
+                "parent_spec: /tmp/spec.md\n"
+                "---\n",
+                encoding="utf-8",
+            )
+            epoch = 123
+            (cache_dir / "cc-active-task-cx-red").write_text("task-1\n", encoding="utf-8")
+            (cache_dir / "cc-claim-epoch-cx-red").write_text(f"{epoch} task-1\n", encoding="utf-8")
+            write_claim_dispatch_binding(
+                cache_dir,
+                "cx-red",
+                ClaimDispatchBinding.create(
+                    task_id="task-1",
+                    lane="cx-red",
+                    session_id="",
+                    claim_epoch=epoch,
+                    dispatch_message_id=message_id,
+                    platform="codex",
+                    mode="headless",
+                    profile="full",
+                    authority_case="CASE-1",
+                    binding_hash=binding_hash,
+                    coord_dispatch_idempotency_key=key,
+                ),
+            )
+            observed = LaneState(
+                role="cx-red",
+                platform="codex",
+                generation=generation,
+                alive=True,
+                pid=os.getpid(),
+                idle=False,
+                claimed_task="task-1",
+            )
+            with (
+                patch("agents.coordinator.core._refresh_dispatch_lane", return_value=observed),
+                patch(
+                    "agents.coordinator.core._lane_launcher_process_present",
+                    return_value=True,
+                ),
+            ):
+                assert _dispatch_landed(task, lane, message_id) is True
 
     def test_dispatch_reports_mq_prepare_failure_with_next_action(self, tmp_path: Path):
         dispatcher = tmp_path / "hapax-methodology-dispatch"
@@ -1961,6 +2249,7 @@ current_claim: p0-task
 
         with (
             patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", dispatcher),
+            patch.object(Coordinator, "_read_task_snapshot", return_value=([task], True)),
             patch("agents.coordinator.core._prepare_dispatch_message", side_effect=OSError("disk")),
         ):
             ok, reason = Coordinator()._dispatch(task, lane)
@@ -1993,6 +2282,8 @@ current_claim: p0-task
 
         with (
             patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", dispatcher),
+            patch.object(Coordinator, "_read_task_snapshot", return_value=([task], True)),
+            patch("agents.coordinator.core._refresh_dispatch_lane", return_value=lane),
             patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
         ):
             assert Coordinator()._dispatch(task, lane) == (True, "")
@@ -2013,6 +2304,7 @@ class TestOrphanClaimRecovery:
         path = tmp_path / f"{name}.md"
         path.write_text(
             f"""---
+task_id: {name}
 title: "P0 orphan"
 status: {status}
 assigned_to: {assigned_to}
@@ -2027,37 +2319,35 @@ Body.
         )
         return path
 
-    def test_stale_claimed_p0_without_live_pickup_reoffers(self, tmp_path: Path):
+    def test_stale_claimed_p0_without_live_pickup_holds(self, tmp_path: Path):
         path = self._task_note(tmp_path)
         task = _parse_task(path)
         assert task is not None
-        ledger = tmp_path / "authority-case-ledger.jsonl"
+        before = path.read_bytes()
 
-        with patch("agents.coordinator.core.REOFFER_LEDGER", ledger):
-            count = Coordinator()._reoffer_orphaned_claims([task], {}, now_wall=time.time())
+        count = Coordinator()._reoffer_orphaned_claims([task], {}, now_wall=time.time())
 
-        assert count == 1
+        assert count == 0
+        assert path.read_bytes() == before
         reparsed = _parse_task(path)
         assert reparsed is not None
-        assert reparsed.status == "offered"
-        assert reparsed.assigned_to == "unassigned"
-        assert "orphan_claim_reoffer" in ledger.read_text(encoding="utf-8")
+        assert reparsed.status == "claimed"
+        assert reparsed.assigned_to == "alpha"
 
-    def test_stale_in_progress_p0_without_live_pickup_reoffers(self, tmp_path: Path):
+    def test_stale_in_progress_p0_without_live_pickup_holds(self, tmp_path: Path):
         path = self._task_note(tmp_path, status="in_progress")
         task = _parse_task(path)
         assert task is not None
-        ledger = tmp_path / "authority-case-ledger.jsonl"
+        before = path.read_bytes()
 
-        with patch("agents.coordinator.core.REOFFER_LEDGER", ledger):
-            count = Coordinator()._reoffer_orphaned_claims([task], {}, now_wall=time.time())
+        count = Coordinator()._reoffer_orphaned_claims([task], {}, now_wall=time.time())
 
-        assert count == 1
+        assert count == 0
+        assert path.read_bytes() == before
         reparsed = _parse_task(path)
         assert reparsed is not None
-        assert reparsed.status == "offered"
-        assert reparsed.assigned_to == "unassigned"
-        assert "orphan_claim_reoffer" in ledger.read_text(encoding="utf-8")
+        assert reparsed.status == "in_progress"
+        assert reparsed.assigned_to == "alpha"
 
     def test_orphan_reoffer_preserves_lane_claim_for_different_live_task(self, tmp_path: Path):
         path = self._task_note(tmp_path, assigned_to="delta")
@@ -2067,7 +2357,6 @@ Body.
         cache_dir.mkdir()
         active_claim = cache_dir / "cc-active-task-delta"
         active_claim.write_text("different-task\n", encoding="utf-8")
-        ledger = tmp_path / "authority-case-ledger.jsonl"
         lanes = {
             "delta": LaneState(
                 role="delta",
@@ -2078,13 +2367,11 @@ Body.
             )
         }
 
-        with (
-            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
-            patch("agents.coordinator.core.REOFFER_LEDGER", ledger),
-        ):
+        with patch("agents.coordinator.core.CACHE_DIR", cache_dir):
             count = Coordinator()._reoffer_orphaned_claims([task], lanes, now_wall=time.time())
 
-        assert count == 1
+        assert count == 0
+        assert _parse_task(path).status == "claimed"  # type: ignore[union-attr]
         assert active_claim.read_text(encoding="utf-8") == "different-task\n"
 
     def test_live_lane_pickup_is_not_reoffered(self, tmp_path: Path):
@@ -2185,12 +2472,13 @@ Body.
         )
 
         def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-            if cmd == ["tmux", "list-sessions", "-F", "#{session_name}"]:
+            if cmd == ["tmux", "list-sessions", "-F", TMUX_DISCOVERY_FORMAT]:
                 return completed
             raise AssertionError(f"unexpected dispatch subprocess call: {cmd!r}")
 
         with (
             patch.object(Coordinator, "_scan_tasks", return_value=[task]),
+            patch.object(Coordinator, "_read_task_snapshot", return_value=([task], True)),
             patch.object(Coordinator, "_write_state") as write_state,
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core.CACHE_DIR", cache_dir),
@@ -2257,13 +2545,14 @@ Body.
         dispatch_calls: list[list[str]] = []
 
         def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-            if cmd == ["tmux", "list-sessions", "-F", "#{session_name}"]:
+            if cmd == ["tmux", "list-sessions", "-F", TMUX_DISCOVERY_FORMAT]:
                 return completed
             dispatch_calls.append(cmd)
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
 
         with (
             patch.object(Coordinator, "_scan_tasks", return_value=[task]),
+            patch.object(Coordinator, "_read_task_snapshot", return_value=([task], True)),
             patch.object(Coordinator, "_write_state") as write_state,
             patch(
                 "agents.coordinator.core._discover_lanes",
@@ -2342,7 +2631,7 @@ Body.
         dispatch_calls: list[list[str]] = []
 
         def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-            if cmd == ["tmux", "list-sessions", "-F", "#{session_name}"]:
+            if cmd == ["tmux", "list-sessions", "-F", TMUX_DISCOVERY_FORMAT]:
                 return completed
             dispatch_calls.append(cmd)
             return subprocess.CompletedProcess(
@@ -2354,6 +2643,7 @@ Body.
 
         with (
             patch.object(Coordinator, "_scan_tasks", return_value=[task]),
+            patch.object(Coordinator, "_read_task_snapshot", return_value=([task], True)),
             patch.object(Coordinator, "_write_state") as write_state,
             patch(
                 "agents.coordinator.core._discover_lanes",
@@ -2414,7 +2704,7 @@ Body.
         )
 
         def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-            if cmd == ["tmux", "list-sessions", "-F", "#{session_name}"]:
+            if cmd == ["tmux", "list-sessions", "-F", TMUX_DISCOVERY_FORMAT]:
                 return completed
             raise AssertionError(f"unexpected dispatch subprocess call: {cmd!r}")
 
@@ -2477,7 +2767,7 @@ Body.
         )
 
         def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-            if cmd == ["tmux", "list-sessions", "-F", "#{session_name}"]:
+            if cmd == ["tmux", "list-sessions", "-F", TMUX_DISCOVERY_FORMAT]:
                 return completed
             raise AssertionError(f"unexpected dispatch subprocess call: {cmd!r}")
 
@@ -2521,16 +2811,20 @@ class TestScanTasks:
     def test_scan_with_tasks(self, tmp_path: Path):
         (tmp_path / "high-priority.md").write_text(
             """---
+task_id: high-priority
 title: "High priority"
 status: offered
+assigned_to: unassigned
 wsjf: 20.0
 ---
 """
         )
         (tmp_path / "low-priority.md").write_text(
             """---
+task_id: low-priority
 title: "Low priority"
 status: offered
+assigned_to: unassigned
 wsjf: 5.0
 ---
 """
@@ -2577,27 +2871,18 @@ wsjf: 5.0
         assert counts["no_owner"] == 1
 
 
-def test_escalate_stalled_skips_renotify_for_incident_tasks(tmp_path: Path):
-    """Self-amplification break: a stalled AUTO-MINTED p0-incident task is escalated to
-    `blocked` but must NOT emit the "task stuck" notification (it would re-mint a
-    sdlc_task_stalled P0 → loop). A normal stalled task still notifies."""
+def test_automatic_stalled_escalation_refuses_without_mutation(tmp_path: Path):
     coord = Coordinator()
     lane = LaneState(role="delta", alive=True, pid=111, pid_source="pidfile", claimed_task="x")
     task = tmp_path / "t.md"
     body = "---\nstatus: claimed\nassigned_to: delta\n---\nbody\n"
+    task.write_text(body, encoding="utf-8")
 
-    with (
-        patch("agents.coordinator.core.send_notification") as notify,
-        patch.object(coord, "_clear_claim_signal"),
-        patch.object(coord, "_emit_reoffer_ledger"),
-    ):
-        task.write_text(body, encoding="utf-8")
+    with patch("agents.coordinator.core.send_notification") as notify:
         assert (
             coord._escalate_stalled(lane, "p0-incident-demo-20260617", task, task.read_text())
-            is True
+            is False
         )
-        notify.assert_not_called()
 
-        task.write_text(body, encoding="utf-8")
-        coord._escalate_stalled(lane, "segprep-normal-task-20260617", task, task.read_text())
-        assert notify.called
+    assert task.read_text(encoding="utf-8") == body
+    notify.assert_not_called()

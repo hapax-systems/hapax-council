@@ -45,11 +45,18 @@ def _mocked_internals():
     """Mock the MQ/event internals so the gate is tested in isolation."""
     with (
         mock.patch(f"{MOD}.replay_terminal_result", return_value=None) as replay,
+        mock.patch(f"{MOD}._refuse_inflight_idempotency_key") as inflight,
         mock.patch(f"{MOD}._accept_dispatch_message") as accept,
         mock.patch(f"{MOD}._cleanup_dispatch_message") as cleanup,
         mock.patch(f"{MOD}._append_dispatch_event") as append,
     ):
-        yield {"replay": replay, "accept": accept, "cleanup": cleanup, "append": append}
+        yield {
+            "replay": replay,
+            "inflight": inflight,
+            "accept": accept,
+            "cleanup": cleanup,
+            "append": append,
+        }
 
 
 def test_reactivate_retired_defaults_false() -> None:

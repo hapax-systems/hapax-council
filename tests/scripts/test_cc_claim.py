@@ -1,8 +1,12 @@
+import hashlib
 import os
 import re
 import subprocess
 import textwrap
 from pathlib import Path
+
+from shared.coord_dispatch import lane_ownership_projection_hashes
+from shared.sdlc_task_store import load_claim_dispatch_binding
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "cc-claim"
@@ -93,6 +97,17 @@ def _write_task(
 
 def _claim(home: Path, task_id: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
+    for key in (
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_ROLE",
+        "CODEX_ROLE",
+        "CODEX_SESSION",
+        "CODEX_SESSION_NAME",
+        "CODEX_THREAD_NAME",
+        "HAPAX_AGENT_NAME",
+        "HAPAX_SESSION_ID",
+    ):
+        env.pop(key, None)
     env["HOME"] = str(home)
     env["HAPAX_AGENT_ROLE"] = "cx-test"
     return subprocess.run(
@@ -101,6 +116,110 @@ def _claim(home: Path, task_id: str) -> subprocess.CompletedProcess[str]:
         text=True,
         capture_output=True,
         check=False,
+    )
+
+
+def _dispatch_bound_env(home: Path, note: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    for key in (
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_ROLE",
+        "CODEX_ROLE",
+        "CODEX_SESSION",
+        "CODEX_SESSION_NAME",
+        "CODEX_THREAD_NAME",
+        "HAPAX_AGENT_NAME",
+        "HAPAX_SESSION_ID",
+    ):
+        env.pop(key, None)
+    env["HOME"] = str(home)
+    env["HAPAX_AGENT_ROLE"] = "cx-test"
+    cache_dir = home / ".cache" / "hapax"
+    relay_dir = cache_dir / "relay"
+    claim_hash, relay_hash = lane_ownership_projection_hashes(
+        cache_dir=cache_dir,
+        relay_dir=relay_dir,
+        role="cx-test",
+        session="",
+    )
+    pid = os.getpid()
+    stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    pid_generation = f"pid:{pid}:{stat_text.rsplit(')', 1)[1].split()[19]}"
+    env.update(
+        {
+            "HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE": "CASE-TEST-001",
+            "HAPAX_CLAIM_DISPATCH_BINDING_HASH": "a" * 64,
+            "HAPAX_CLAIM_DISPATCH_CLAIM_PROJECTION_SHA256": claim_hash,
+            "HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY": "dispatch-key",
+            "HAPAX_CLAIM_DISPATCH_LANE_GENERATION": pid_generation,
+            "HAPAX_CLAIM_DISPATCH_LANE_PID": str(pid),
+            "HAPAX_CLAIM_DISPATCH_LANE_PID_GENERATION": pid_generation,
+            "HAPAX_CLAIM_DISPATCH_LANE_SESSION": "",
+            "HAPAX_CLAIM_DISPATCH_MESSAGE_ID": "dispatch-message",
+            "HAPAX_CLAIM_DISPATCH_MODE": "headless",
+            "HAPAX_CLAIM_DISPATCH_PARENT_SPEC": "/tmp/isap-test.md",
+            "HAPAX_CLAIM_DISPATCH_PLATFORM": "codex",
+            "HAPAX_CLAIM_DISPATCH_PROFILE": "full",
+            "HAPAX_CLAIM_DISPATCH_RELAY_PROJECTION_SHA256": relay_hash,
+            "HAPAX_CLAIM_DISPATCH_TASK_PATH": str(note.resolve()),
+            "HAPAX_CLAIM_DISPATCH_TASK_SHA256": hashlib.sha256(note.read_bytes()).hexdigest(),
+        }
+    )
+    return env
+
+
+def test_exact_task_note_precedes_prefix_sibling(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    exact = _write_task(home, "active", "requested-id")
+    sibling = _write_task(home, "active", "requested-id-copy")
+
+    result = _claim(home, "requested-id")
+
+    assert result.returncode == 0, result.stderr
+    assert "status: claimed" in exact.read_text(encoding="utf-8")
+    assert "status: offered" in sibling.read_text(encoding="utf-8")
+
+
+def test_dispatch_bound_claim_rejects_changed_task_preimage(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "claim-target")
+    env = _dispatch_bound_env(home, note)
+    note.write_text(note.read_text(encoding="utf-8") + "\nchanged\n", encoding="utf-8")
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "claim-target"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "claim_dispatch_task_preimage_mismatch" in result.stderr
+    assert not (home / ".cache" / "hapax" / "cc-active-task-cx-test").exists()
+
+
+def test_dispatch_bound_claim_writes_exact_sidecar_before_cache(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "claim-target")
+    env = _dispatch_bound_env(home, note)
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "claim-target"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    cache_dir = home / ".cache" / "hapax"
+    binding = load_claim_dispatch_binding(cache_dir / "cc-claim-dispatch-cx-test.json")
+    assert binding.task_id == "claim-target"
+    assert binding.dispatch_message_id == "dispatch-message"
+    assert binding.coord_dispatch_idempotency_key == "dispatch-key"
+    assert (cache_dir / "cc-active-task-cx-test").read_text(encoding="utf-8").strip() == (
+        "claim-target"
     )
 
 
@@ -752,6 +871,16 @@ def test_claim_writes_session_keyed_epoch_sidecar(tmp_path: Path) -> None:
     _write_task(home, "active", "cc-sidecar-session")
     sid = "0f9f9f9f-1111-2222-3333-444455556666"
     env = os.environ.copy()
+    for key in (
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_ROLE",
+        "CODEX_ROLE",
+        "CODEX_SESSION",
+        "CODEX_SESSION_NAME",
+        "CODEX_THREAD_NAME",
+        "HAPAX_AGENT_NAME",
+    ):
+        env.pop(key, None)
     env["HOME"] = str(home)
     env["HAPAX_AGENT_ROLE"] = "cx-test"
     env["HAPAX_SESSION_ID"] = sid

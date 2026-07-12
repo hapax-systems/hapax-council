@@ -216,6 +216,7 @@ def test_appendix_hop_passes_remote_args_without_shell_interpolation(tmp_path: P
     bin_dir.mkdir()
     exploit = tmp_path / "logos-url-shell-injection"
     claude_args = tmp_path / "claude-args.txt"
+    claude_env = tmp_path / "claude-env.txt"
     _stub_bin(
         bin_dir,
         "ssh",
@@ -241,11 +242,18 @@ exec bash -c "$remote_cmd"
     _stub_bin(
         bin_dir,
         "claude",
-        f'printf "%s\\n" "$@" > {claude_args}\n: > {claim_file}\nexit 0\n',
+        f"""printf "%s\\n" "$@" > {claude_args}
+printf "HAPAX_DISPATCH_CLAIM_SWEEP=%s\\n" "${{HAPAX_DISPATCH_CLAIM_SWEEP:-}}" > {claude_env}
+printf "HAPAX_CLAIM_LEASE_TTL_SECS=%s\\n" "${{HAPAX_CLAIM_LEASE_TTL_SECS:-}}" >> {claude_env}
+: > {claim_file}
+exit 0
+""",
     )
     env = _headless_env(home, bin_dir, tmp_path / "pipe")
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
     env["HAPAX_DISPATCH_LOGOS_URL"] = f"http://podium.invalid/api; touch {exploit}"
+    env["HAPAX_DISPATCH_CLAIM_SWEEP"] = "0"
+    env["HAPAX_CLAIM_LEASE_TTL_SECS"] = str(2**63 - 1)
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
@@ -265,6 +273,10 @@ exec bash -c "$remote_cmd"
         "stream-json",
         "--output-format",
         "stream-json",
+    ]
+    assert claude_env.read_text(encoding="utf-8").splitlines() == [
+        "HAPAX_DISPATCH_CLAIM_SWEEP=0",
+        f"HAPAX_CLAIM_LEASE_TTL_SECS={2**63 - 1}",
     ]
 
 

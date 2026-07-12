@@ -1,4 +1,4 @@
-"""Regression tests for hapax-lane-reaper stuck-lane handling."""
+"""Regression tests for read-only hapax-lane-reaper projections."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def _write_fake_tmux(bin_dir: Path) -> None:
             printf '%s\n' "${TMUX_SESSION:?}"
             ;;
           list-panes)
-            printf '%s\n' "${TMUX_PANE_PID:?}"
+            printf '%s\n' "${TMUX_PANE_PIDS:-${TMUX_PANE_PID:?}}"
             ;;
           capture-pane)
             printf '%s\n' "${TMUX_PANE_TEXT:?}"
@@ -54,6 +54,7 @@ def _base_env(tmp_path: Path, *, pane_pid: int, pane_text: str) -> dict[str, str
         directory.mkdir(parents=True, exist_ok=True)
     cache.write_text("{}\n", encoding="utf-8")
     _write_fake_tmux(bin_dir)
+    (home / "Documents/Personal/20-projects/hapax-cc-tasks/active").mkdir(parents=True)
 
     env = os.environ.copy()
     env.update(
@@ -85,7 +86,7 @@ def _write_claim(env: dict[str, str], *, status: str = "in_progress") -> tuple[P
     task_dir.mkdir(parents=True, exist_ok=True)
     task_file = task_dir / "quota-task.md"
     task_file.write_text(
-        f"---\nstatus: {status}\nassigned_to: cx-red\n---\n# Quota task\n",
+        f"---\ntask_id: quota-task\nstatus: {status}\nassigned_to: cx-red\n---\n# Quota task\n",
         encoding="utf-8",
     )
     return claim_file, task_file
@@ -102,7 +103,23 @@ def _spawn_pane_shell() -> subprocess.Popen[bytes]:
 
 
 def _spawn_dead_pane() -> subprocess.Popen[bytes]:
-    return subprocess.Popen(["sleep", "600"])
+    return subprocess.Popen(
+        ["bash", "--noprofile", "--norc"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _spawn_nested_pane_shell() -> subprocess.Popen[bytes]:
+    return subprocess.Popen(
+        [
+            "bash",
+            "-c",
+            "trap 'kill \"$child\" 2>/dev/null; exit 0' TERM INT; "
+            'bash -c \'sleep 600 & nested=$!; wait "$nested"\' & child=$!; wait "$child"',
+        ]
+    )
 
 
 def _cleanup(proc: subprocess.Popen[bytes]) -> None:
@@ -157,7 +174,7 @@ def test_lane_reaper_requires_threshold_value_without_tmux() -> None:
     assert "Usage: hapax-lane-reaper" in result.stderr
 
 
-def test_lane_reaper_dry_run_does_not_release_quota_stuck_lane(tmp_path: Path) -> None:
+def test_lane_reaper_dry_run_holds_quota_stuck_lane(tmp_path: Path) -> None:
     pane = _spawn_pane_shell()
     try:
         env = _base_env(
@@ -170,7 +187,8 @@ def test_lane_reaper_dry_run_does_not_release_quota_stuck_lane(tmp_path: Path) -
         result = _run(env, "--dry-run")
 
         assert result.returncode == 0, result.stderr
-        assert "DRY RUN: would release task: quota-task" in result.stderr
+        assert "claim detach HOLD task=quota-task" in result.stderr
+        assert "would release" not in result.stderr
         assert claim_file.exists()
         task_text = task_file.read_text(encoding="utf-8")
         assert "status: in_progress" in task_text
@@ -202,7 +220,7 @@ def test_lane_reaper_ignores_quota_receipt_footer_without_real_wall(tmp_path: Pa
         _cleanup(pane)
 
 
-def test_lane_reaper_releases_real_quota_wall_in_live_mode(tmp_path: Path) -> None:
+def test_lane_reaper_holds_real_quota_wall_in_live_mode(tmp_path: Path) -> None:
     pane = _spawn_pane_shell()
     try:
         env = _base_env(
@@ -215,11 +233,11 @@ def test_lane_reaper_releases_real_quota_wall_in_live_mode(tmp_path: Path) -> No
         result = _run(env)
 
         assert result.returncode == 0, result.stderr
-        assert "Released task: quota-task" in result.stderr
-        assert not claim_file.exists()
+        assert "claim detach HOLD task=quota-task" in result.stderr
+        assert claim_file.exists()
         task_text = task_file.read_text(encoding="utf-8")
-        assert "status: offered" in task_text
-        assert "assigned_to: unassigned" in task_text
+        assert "status: in_progress" in task_text
+        assert "assigned_to: cx-red" in task_text
     finally:
         _cleanup(pane)
 
@@ -237,9 +255,10 @@ def test_lane_reaper_dry_run_does_not_release_dead_lane_stale_claim(tmp_path: Pa
         result = _run(env, "--dry-run", "--threshold", "0")
 
         assert result.returncode == 0, result.stderr
-        assert "DRY RUN: would release stale task: quota-task" in result.stderr
-        assert "DRY RUN: would remove stale claim file:" in result.stderr
-        assert "DRY RUN: would os.kill" in result.stderr
+        assert "claim detach HOLD: task=quota-task" in result.stderr
+        assert "would release" not in result.stderr
+        assert "would remove" not in result.stderr
+        assert "DRY RUN: would os.kill" not in result.stderr
         assert claim_file.exists()
         assert pane.poll() is None
         assert not (Path(env["HAPAX_REAP_ATTEMPTS_DIR"]) / "cx-red").exists()
@@ -248,6 +267,192 @@ def test_lane_reaper_dry_run_does_not_release_dead_lane_stale_claim(tmp_path: Pa
         assert "assigned_to: cx-red" in task_text
     finally:
         _cleanup(pane)
+
+
+def test_lane_reaper_live_mode_holds_dead_claimed_lane(tmp_path: Path) -> None:
+    pane = _spawn_dead_pane()
+    try:
+        env = _base_env(tmp_path, pane_pid=pane.pid, pane_text="ready")
+        claim_file, task_file = _write_claim(env)
+        before = task_file.read_bytes()
+
+        result = _run(env, "--threshold", "0")
+
+        assert result.returncode == 0, result.stderr
+        assert "claim detach HOLD: task=quota-task" in result.stderr
+        assert claim_file.exists()
+        assert task_file.read_bytes() == before
+        assert pane.poll() is None
+    finally:
+        _cleanup(pane)
+
+
+def test_lane_reaper_holds_session_keyed_claim_without_legacy_marker(tmp_path: Path) -> None:
+    pane = _spawn_dead_pane()
+    try:
+        env = _base_env(tmp_path, pane_pid=pane.pid, pane_text="ready")
+        legacy_claim, task_file = _write_claim(env)
+        session_claim = legacy_claim.with_name(
+            "cc-active-task-cx-red-019f465c-8137-7a52-9348-5602a988dc3d"
+        )
+        session_claim.write_bytes(legacy_claim.read_bytes())
+        legacy_claim.unlink()
+
+        result = _run(env, "--threshold", "0")
+
+        assert result.returncode == 0, result.stderr
+        assert "claim detach HOLD: task=quota-task" in result.stderr
+        assert session_claim.exists()
+        assert "status: in_progress" in task_file.read_text(encoding="utf-8")
+        assert pane.poll() is None
+    finally:
+        _cleanup(pane)
+
+
+def test_lane_reaper_holds_task_ssot_claim_when_all_claim_markers_are_missing(
+    tmp_path: Path,
+) -> None:
+    pane = _spawn_dead_pane()
+    try:
+        env = _base_env(tmp_path, pane_pid=pane.pid, pane_text="ready")
+        claim_file, task_file = _write_claim(env)
+        claim_file.unlink()
+
+        result = _run(env, "--threshold", "0")
+
+        assert result.returncode == 0, result.stderr
+        assert "claim detach HOLD: task=quota-task" in result.stderr
+        assert "no kill, cleanup, task edit, or claim removal" in result.stderr
+        assert "status: in_progress" in task_file.read_text(encoding="utf-8")
+        assert pane.poll() is None
+    finally:
+        _cleanup(pane)
+
+
+def test_lane_reaper_holds_when_task_ssot_contains_duplicate_ownership(
+    tmp_path: Path,
+) -> None:
+    pane = _spawn_dead_pane()
+    try:
+        env = _base_env(tmp_path, pane_pid=pane.pid, pane_text="ready")
+        claim_file, task_file = _write_claim(env)
+        claim_file.unlink()
+        task_file.write_text(
+            "---\ntask_id: quota-task\nstatus: in_progress\nassigned_to: cx-red\n"
+            "assigned_to: unassigned\n---\n",
+            encoding="utf-8",
+        )
+
+        result = _run(env, "--threshold", "0")
+
+        assert result.returncode == 0, result.stderr
+        assert "recovery HOLD: task SSOT unreadable" in result.stderr
+        assert pane.poll() is None
+    finally:
+        _cleanup(pane)
+
+
+def test_lane_reaper_treats_explicit_null_owner_as_canonical_unassigned(
+    tmp_path: Path,
+) -> None:
+    pane = _spawn_dead_pane()
+    try:
+        env = _base_env(tmp_path, pane_pid=pane.pid, pane_text="ready")
+        claim_file, task_file = _write_claim(env)
+        claim_file.unlink()
+        task_file.write_text(
+            "---\ntask_id: quota-task\nstatus: offered\nassigned_to: null\n---\n",
+            encoding="utf-8",
+        )
+
+        result = _run(env, "--threshold", "0")
+
+        assert result.returncode == 0, result.stderr
+        assert "recovery HOLD: standing effect authority absent" in result.stderr
+        assert "task SSOT unreadable" not in result.stderr
+        assert pane.poll() is None
+    finally:
+        _cleanup(pane)
+
+
+def test_lane_reaper_holds_when_assigned_to_field_is_missing(tmp_path: Path) -> None:
+    pane = _spawn_dead_pane()
+    try:
+        env = _base_env(tmp_path, pane_pid=pane.pid, pane_text="ready")
+        claim_file, task_file = _write_claim(env)
+        claim_file.unlink()
+        task_file.write_text(
+            "---\ntask_id: quota-task\nstatus: offered\n---\n",
+            encoding="utf-8",
+        )
+
+        result = _run(env, "--threshold", "0")
+
+        assert result.returncode == 0, result.stderr
+        assert "recovery HOLD: task SSOT unreadable" in result.stderr
+        assert pane.poll() is None
+    finally:
+        _cleanup(pane)
+
+
+def test_lane_reaper_holds_unclaimed_dead_lane_for_governed_recovery(tmp_path: Path) -> None:
+    pane = _spawn_dead_pane()
+    try:
+        env = _base_env(tmp_path, pane_pid=pane.pid, pane_text="ready")
+
+        result = _run(env, "--dry-run", "--threshold", "0")
+
+        assert result.returncode == 0, result.stderr
+        assert "recovery HOLD: standing effect authority absent" in result.stderr
+        assert "claim detach HOLD" not in result.stderr
+        assert pane.poll() is None
+    finally:
+        _cleanup(pane)
+
+
+def test_lane_reaper_observes_every_pane_before_unclaimed_reap(tmp_path: Path) -> None:
+    idle_pane = _spawn_dead_pane()
+    active_pane = _spawn_pane_shell()
+    try:
+        env = _base_env(tmp_path, pane_pid=idle_pane.pid, pane_text="ready")
+        env["TMUX_PANE_PIDS"] = f"{idle_pane.pid}\n{active_pane.pid}"
+
+        result = _run(env, "--dry-run", "--threshold", "0")
+
+        assert result.returncode == 0, result.stderr
+        assert "DEAD idle" not in result.stderr
+        assert idle_pane.poll() is None
+        assert active_pane.poll() is None
+    finally:
+        _cleanup(idle_pane)
+        _cleanup(active_pane)
+
+
+def test_lane_reaper_observes_nested_worker_before_dead_projection(tmp_path: Path) -> None:
+    pane = _spawn_nested_pane_shell()
+    try:
+        env = _base_env(tmp_path, pane_pid=pane.pid, pane_text="ready")
+
+        result = _run(env, "--threshold", "0")
+
+        assert result.returncode == 0, result.stderr
+        assert "DEAD idle" not in result.stderr
+        assert pane.poll() is None
+    finally:
+        _cleanup(pane)
+
+
+def test_lane_reaper_source_has_no_task_or_claim_detach_writer() -> None:
+    source = REAPER.read_text(encoding="utf-8")
+
+    assert "status: offered" not in source
+    assert "assigned_to: unassigned" not in source
+    assert 'rm -f "$claim_file"' not in source
+    assert "os.kill" not in source
+    assert "worktree remove" not in source
+    assert "systemctl --user start hapax-cc-hygiene.service" not in source
+    assert "hapax-alert" not in source
+    assert "--recompute" not in source
 
 
 def test_lane_reaper_dry_run_does_not_reset_attempt_state(tmp_path: Path) -> None:

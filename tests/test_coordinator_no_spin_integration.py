@@ -145,7 +145,13 @@ class TestTickIntegration:
         codex-1 / claude-1, non-hermetic dispatcher path)."""
         fixture = tmp_path / "hapax-methodology-dispatch"
         fixture.write_text("#!/bin/sh\nexit 0\n")
-        with patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", fixture):
+        with (
+            patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", fixture),
+            patch(
+                "agents.coordinator.core._refresh_dispatch_lane",
+                side_effect=lambda lane: lane,
+            ),
+        ):
             yield
 
     def _make_coordinator(self) -> Coordinator:
@@ -168,6 +174,9 @@ class TestTickIntegration:
         """Run one Coordinator.tick() with mocked internals."""
         with ExitStack() as stack:
             stack.enter_context(patch.object(coord, "_scan_tasks", return_value=tasks))
+            stack.enter_context(
+                patch.object(coord, "_read_task_snapshot", return_value=(tasks, True))
+            )
             stack.enter_context(patch.object(coord, "_check_lanes", return_value=lanes))
             mock_admission = stack.enter_context(patch("agents.coordinator.core.admission_state"))
             stack.enter_context(patch("agents.coordinator.core.SHM_DIR", tmp_path / "shm"))
@@ -222,6 +231,7 @@ class TestTickIntegration:
         # Now run additional ticks — dispatch should NOT be called.
         with (
             patch.object(coord, "_scan_tasks", return_value=tasks),
+            patch.object(coord, "_read_task_snapshot", return_value=(tasks, True)),
             patch.object(coord, "_check_lanes", return_value=lanes),
             patch("agents.coordinator.core.admission_state") as mock_admission,
             patch("agents.coordinator.core.SHM_DIR", tmp_path / "shm"),
@@ -248,6 +258,11 @@ class TestTickIntegration:
         now += 30.0
         with (
             patch.object(coord, "_scan_tasks", return_value=[TASK_A, TASK_B]),
+            patch.object(
+                coord,
+                "_read_task_snapshot",
+                return_value=([TASK_A, TASK_B], True),
+            ),
             patch.object(coord, "_check_lanes", return_value=lanes),
             patch("agents.coordinator.core.admission_state") as mock_admission,
             patch("agents.coordinator.core.SHM_DIR", tmp_path / "shm"),
@@ -312,6 +327,7 @@ class TestTickIntegration:
 
         with (
             patch.object(coord, "_scan_tasks", return_value=tasks),
+            patch.object(coord, "_read_task_snapshot", return_value=(tasks, True)),
             patch.object(coord, "_check_lanes", return_value=lanes),
             patch("agents.coordinator.core.admission_state") as mock_admission,
             patch("agents.coordinator.core.SHM_DIR", shm),
@@ -492,6 +508,11 @@ class TestTickIntegration:
             now += 30.0
             with (
                 patch.object(coord, "_scan_tasks", return_value=[TASK_A, TASK_B]),
+                patch.object(
+                    coord,
+                    "_read_task_snapshot",
+                    return_value=([TASK_A, TASK_B], True),
+                ),
                 patch.object(coord, "_check_lanes", return_value=lanes),
                 patch("agents.coordinator.core.admission_state") as mock_admission,
                 patch("agents.coordinator.core.SHM_DIR", tmp_path / "shm"),
