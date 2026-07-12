@@ -6,8 +6,13 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PATCH_FILE="${HAPAX_DARKPLACES_LIVE_TEXTURE_PATCH:-$REPO_DIR/assets/quake/darkplaces/hapax-live-texture.patch}"
 CACHE_ROOT="${HAPAX_DARKPLACES_LIVE_TEXTURE_ROOT:-$HOME/.cache/hapax/darkplaces-live-texture}"
-SOURCE_REPO="${HAPAX_DARKPLACES_SOURCE_REPO:-/data/cache/paru/clone/darkplaces-git/darkplaces}"
-SOURCE_REV="${HAPAX_DARKPLACES_SOURCE_REV:-}"
+# Pin to a fetchable upstream + the exact rev the live binary was built from
+# (build.stamp source_rev=d93f9c42...). The prior default
+# (/data/cache/paru/clone/darkplaces-git/darkplaces) was deleted, which left the
+# live-texture binary un-rebuildable on a clean host even though the patch is
+# committed and reproducible. 2026-06-20.
+SOURCE_REPO="${HAPAX_DARKPLACES_SOURCE_REPO:-https://github.com/DarkPlacesEngine/darkplaces.git}"
+SOURCE_REV="${HAPAX_DARKPLACES_SOURCE_REV:-d93f9c4292039354a2b8d40d11bc386891e55fe5}"
 BUILD_ROOT="$CACHE_ROOT/src"
 BUILD_TMP="$CACHE_ROOT/src.tmp.$$"
 BIN="$CACHE_ROOT/darkplaces-sdl"

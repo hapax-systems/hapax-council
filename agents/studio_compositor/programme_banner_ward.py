@@ -226,25 +226,8 @@ class ProgrammeBannerWard(HomageTransitionalSource):
         x = padding
         y = canvas_h - padding - (line_h * 3) - padding
 
-        scrim_w = int(canvas_w * 0.6)
-        scrim_h = (line_h * 3) + (padding * 2)
-
-        bg_r, bg_g, bg_b, _ = pkg.resolve_colour("background")
-        accent_r, accent_g, accent_b, accent_a = pkg.resolve_colour("accent_yellow")
         bright = pkg.resolve_colour("bright")
         muted = pkg.resolve_colour("muted")
-
-        cr.save()
-        cr.rectangle(x, y, scrim_w, scrim_h)
-        cr.set_source_rgba(bg_r, bg_g, bg_b, 0.78)
-        cr.fill()
-        cr.restore()
-
-        cr.save()
-        cr.rectangle(x, y, accent_w, scrim_h)
-        cr.set_source_rgba(accent_r, accent_g, accent_b, accent_a)
-        cr.fill()
-        cr.restore()
 
         font_family = pkg.typography.primary_font_family
         cr.save()

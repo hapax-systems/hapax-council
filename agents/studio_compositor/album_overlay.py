@@ -244,41 +244,6 @@ def _pip_fx_package(
        the ALPHA does NOT — this is what ``feedback_no_blinking_homage_wards``
        demands.
     """
-    # Step 3 (scanlines) — package.muted at 3-px cadence.
-    try:
-        mr, mg, mb, _ = package.resolve_colour("muted")
-    except Exception:
-        mr, mg, mb = 0.4, 0.4, 0.4
-    cr.save()
-    cr.set_source_rgba(mr, mg, mb, 0.18)
-    y = 0
-    while y < h:
-        cr.rectangle(0, y, w, 1)
-        y += 3
-    cr.fill()
-    cr.restore()
-
-    # Step 4 (shadow mask) — ordered-dither chequer pattern in
-    # accent_magenta along the bottom 25% of the PiP.
-    try:
-        am_r, am_g, am_b, _ = package.resolve_colour("accent_magenta")
-    except Exception:
-        am_r, am_g, am_b = 0.78, 0.0, 0.78
-    shadow_top = int(h * 0.75)
-    cr.save()
-    cr.set_source_rgba(am_r, am_g, am_b, 0.22)
-    # Bayer-4-ish ordered pattern: hit every 2nd px on alternating rows.
-    row = shadow_top
-    while row < h:
-        xoff = (row // 2) % 2
-        x = xoff
-        while x < w:
-            cr.rectangle(x, row, 1, 1)
-            x += 2
-        row += 1
-    cr.fill()
-    cr.restore()
-
     # Step 5 (chromatic aberration) — 2026-04-23 RETIRED.
     # Operator flagged CBIP as still blinking after the earlier no-flash
     # sweep. The effect gates on ``bass_band > 0.02`` which is a hard

@@ -374,6 +374,13 @@ def _read_daily_notes(
 _PRIORITY_ORDER = {"P0": 0, "p0": 0, "P1": 1, "p1": 1, "P2": 2, "p2": 2, "P3": 3, "p3": 3}
 
 
+# Hot-patch 2026-06-21: TTL-cache. This whole-vault rglob+YAML scan ran
+# synchronously on the daimonion event loop on every narration tick (~7.6s),
+# starving the audio drain. Goals change hourly, so a short TTL is correct.
+_ACTIVE_GOALS_CACHE: dict = {}
+_ACTIVE_GOALS_CACHE_TTL_S = 120.0
+
+
 def _read_active_goals(
     *,
     vault_base: Path,
@@ -383,6 +390,12 @@ def _read_active_goals(
     """Active ``type: goal`` notes, priority-sorted (P0 first)."""
     if not vault_base.is_dir():
         return ()
+    import time as _t  # noqa: PLC0415
+
+    _ck = (str(vault_base), max_goals, tuple(sorted(active_statuses)))
+    _hit = _ACTIVE_GOALS_CACHE.get(_ck)
+    if _hit is not None and (_t.monotonic() - _hit[0]) < _ACTIVE_GOALS_CACHE_TTL_S:
+        return _hit[1]
     try:
         from shared.frontmatter import parse_frontmatter  # noqa: PLC0415
     except ImportError:
@@ -410,7 +423,9 @@ def _read_active_goals(
         found.append((title, priority, status, sort_key))
 
     found.sort(key=lambda t: (t[3], t[0]))
-    return tuple((t[0], t[1], t[2]) for t in found[:max_goals])
+    _result = tuple((t[0], t[1], t[2]) for t in found[:max_goals])
+    _ACTIVE_GOALS_CACHE[_ck] = (_t.monotonic(), _result)
+    return _result
 
 
 def read_recent_vault_context(

@@ -185,6 +185,11 @@ class CBIPSignalDensityCairoSource(HomageTransitionalSource):
         """
         surface = self._refresh_cover()
         if surface is None:
+            # No cover-art feed (album-identifier idle / SHM cover chain absent):
+            # the faint baseline panel that used to draw here was removed per the
+            # operator directive (2026-06-21, "no grid panels at all"). Signal no
+            # cover was painted; the "[CBIP] (no track)" tag (layer 5) renders as
+            # the only content on the void.
             return False
         sw = surface.get_width()
         sh = surface.get_height()
@@ -292,7 +297,7 @@ class CBIPSignalDensityCairoSource(HomageTransitionalSource):
         text = self._format_tag_line(state)
 
         try:
-            from agents.studio_compositor.homage.fonts import (
+            from agents.studio_compositor.homage.rendering import (
                 select_bitchx_font_pango,
             )
             from agents.studio_compositor.text_render import (
@@ -315,12 +320,12 @@ class CBIPSignalDensityCairoSource(HomageTransitionalSource):
             colour = (0.9, 0.9, 0.9, 1.0)
 
         try:
-            font = select_bitchx_font_pango(pkg, size_px=TAG_TEXT_SIZE_PX)
+            font = select_bitchx_font_pango(cr, TAG_TEXT_SIZE_PX)
         except Exception:
             log.debug("cbip Px437 font selection failed", exc_info=True)
             return False
 
-        style = TextStyle(text=text, font=font, colour_rgba=colour)
+        style = TextStyle(text=text, font_description=font, color_rgba=colour)
 
         try:
             render_text(

@@ -443,7 +443,7 @@ for tex_name, code, accent in AOA_PANE_TEXTURES:
     }
 
 for tex_name, code, accent in AOA_SPHERE_TEXTURES:
-    mount = MEDIA_MOUNTS_BY_TEXTURE.get("progs/aoa_sphere.mdl_0", {})
+    mount = MEDIA_MOUNTS_BY_TEXTURE.get("aoa_media_sphere", {})
     texture_width, texture_height = mount.get("texture_size", [256, 128])
     TEXTURES[tex_name] = {
         "color": (76, 68, 74),

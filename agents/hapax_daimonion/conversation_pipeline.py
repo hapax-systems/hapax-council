@@ -921,8 +921,14 @@ class ConversationPipeline:
             except Exception:
                 pass
 
-        # Utterance plausibility: reject likely music/noise bleed-through
-        if self._ambient_fn is not None:
+        # Utterance plausibility: reject likely music/noise bleed-through.
+        # HOT-PATCH 2026-06-21 (DISABLED): _ambient_fn reads the BROADCAST L-12 bus
+        # (MusicPlayingEngine on hapax-livestream-tap.monitor), so the livestream's
+        # music — correctly classified there — was rejecting the operator's short
+        # PRIVATE conversational turns as "music_rejected". A broadcast-bus signal
+        # must NOT gate the operator's own mic. Durable fix (PR): classify the
+        # captured utterance audio here instead of the broadcast ambient.
+        if False and self._ambient_fn is not None:  # noqa: SIM223 — intentional kill-switch (see above)
             try:
                 ambient = self._ambient_fn()
                 if (

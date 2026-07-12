@@ -8,39 +8,47 @@
       "expanded_name": "Ocular Attention Representation Ball",
       "role": "object-of-attention",
       "mount_kind": "live-object-of-attention-sphere",
-      "substrate": "darkplaces_model_skinframe",
-      "surface": "sphere",
-      "texture": "progs/aoa_sphere.mdl_0",
+      "substrate": "darkplaces_bsp_live_texture",
+      "surface": "plane",
+      "texture": "aoa_media_sphere",
       "producer_output": "/dev/shm/hapax-compositor/quake-live-yt.bgra",
       "producer_kind": "live-media",
       "source_id": "youtube-canary",
       "liveness_class": "live-public-media",
       "active_source": "youtube-canary",
-      "native_resolution": [2048, 1024],
+      "native_resolution": [
+        2048,
+        1024
+      ],
       "freshness": "live-producer-heartbeat",
       "consent_or_license": "source-specific-public-media-boundary",
       "purpose": "AoA object-of-attention media projection",
       "material_profile": "spherical-attention-live-media",
-      "intended_view_distance": 949,
+      "intended_view_distance": 1590.2,
       "target_visual_angle_deg": 50.5,
       "target_visual_angle_deg_max": 52.0,
-      "computed_mount_width": 895,
+      "computed_mount_width": 1500,
       "legibility_px_per_degree_floor": 40.0,
       "runtime_scale": 1.3,
       "latency_budget_s": 5.0,
       "anti_parasocial_posture": "object-of-attention-source-material",
-      "projection": "sphere-front",
+      "projection": "flat",
       "gpu_drift_intensity": 1.6,
       "drift_interaction": {
         "substance_role": "attention-object-form",
         "owner": "hapax-compositor-and-darkplaces",
-        "families": ["colorgrade", "bloom", "chromatic_aberration", "feedback-veiled"],
+        "families": [
+          "colorgrade",
+          "bloom",
+          "chromatic_aberration",
+          "feedback-veiled"
+        ],
         "temporal_history_owner": "hapax-compositor",
         "darkplaces_role": "spatialized live sphere, occlusion, light reception",
         "principle": "The OARB is not a passive video ball; drift/compositing gives the attention object its visible substance inside the AoA."
       },
       "hybrid_contract": {
-        "quake_binding": "MDL model skinframe progs/aoa_sphere.mdl_0",
+        "quake_binding": "BSP brush texture aoa_media_spher (y-facing OARB billboard in the AoA void)",
         "producer_binding": "Hapax live-media producer writes raw source frames; screwm_media_drift owns sphere-front BGRA projection when GPU projection is enabled",
         "memory_format": "BGRA8888",
         "update_semantics": "DarkPlaces live-texture slot updates the model skinframe in place",
@@ -60,11 +68,30 @@
       "fractal_face_count": 1024,
       "per_face_surface_atlas": "aoa.mdl skinframe maps one triangular fractal face per atlas cell",
       "occlusion_policy": "OARB origin remains the AoA incenter and is perfectly inscribed in the regular tetrix central void; lattice opacity and face atlas must not depth-veil the live media sphere",
-      "source_aspect": [16, 9],
-      "texture_size": [2048, 1024],
-      "origin": [0, -555, 224],
-      "physical_radius": 447.75,
-      "owner": "AoA"
+      "source_aspect": [
+        16,
+        9
+      ],
+      "texture_size": [
+        2048,
+        1024
+      ],
+      "origin": [
+        0,
+        -555,
+        224
+      ],
+      "physical_radius": 750.0,
+      "owner": "AoA",
+      "physical_width": 1500,
+      "facing": "y",
+      "visible_border": false,
+      "visible_backing_panel": false,
+      "visible_grid_background": false,
+      "physical_chrome": "forbidden",
+      "edge_faces": "hidden_or_zero_contrast",
+      "stale_texture_style": "borderless_quiet_void",
+      "size_policy": "source_aspect_legibility_distance_role"
     },
     {
       "id": "aoa-fractal-face-atlas",
@@ -80,7 +107,10 @@
       "producer_kind": "live-aoa-face-atlas",
       "source_id": "aoa-face-control-atlas",
       "liveness_class": "live-compositor-fractal-face-control",
-      "native_resolution": [2048, 2048],
+      "native_resolution": [
+        2048,
+        2048
+      ],
       "freshness": "aoa-face-atlas-heartbeat",
       "consent_or_license": "system-owned-geometry-control-surface",
       "purpose": "One independently addressable compositor/color/expressivity control cell for every rendered non-negative AoA fractal face",
@@ -98,7 +128,12 @@
       "drift_interaction": {
         "substance_role": "attention-lattice-face-form",
         "owner": "hapax-compositor",
-        "families": ["colorgrade", "chromatic_aberration", "feedback", "edge-reactive-face-jitter"],
+        "families": [
+          "colorgrade",
+          "chromatic_aberration",
+          "feedback",
+          "edge-reactive-face-jitter"
+        ],
         "temporal_history_owner": "screwm_media_drift",
         "darkplaces_role": "regular tetrix geometry, occlusion, light reception, per-face skinframe mapping",
         "principle": "AoA fractal faces are geometric information surfaces; drift acts on the rendered tetrahedral faces, not as a fourth-wall overlay."
@@ -123,9 +158,19 @@
       "face_control_scope": "face_index controls are independent and non-aggregate: no grouping, no bleed into adjacent facets, and no fourth-wall overlay target",
       "atlas_columns": 32,
       "atlas_cell_size": 64,
-      "source_aspect": [1, 1],
-      "texture_size": [2048, 2048],
-      "origin": [0, -555, 224],
+      "source_aspect": [
+        1,
+        1
+      ],
+      "texture_size": [
+        2048,
+        2048
+      ],
+      "origin": [
+        0,
+        -555,
+        224
+      ],
       "owner": "AoA"
     },
     {
@@ -139,7 +184,10 @@
       "producer_kind": "live-reverie-substrate",
       "source_id": "reverie",
       "liveness_class": "live-compositor-drift-field",
-      "native_resolution": [960, 540],
+      "native_resolution": [
+        960,
+        540
+      ],
       "freshness": "reverie-renderer-heartbeat",
       "consent_or_license": "system-owned-reverie-substrate",
       "purpose": "Reverie material field as an in-world Scroom ward, not an atlas reprojection",
@@ -163,7 +211,13 @@
       "drift_interaction": {
         "substance_role": "reverie-material-field-form",
         "owner": "hapax-compositor",
-        "families": ["slotdrift_pool", "colorgrade", "feedback", "chromatic_aberration", "trail"],
+        "families": [
+          "slotdrift_pool",
+          "colorgrade",
+          "feedback",
+          "chromatic_aberration",
+          "trail"
+        ],
         "temporal_history_owner": "hapax-compositor",
         "darkplaces_role": "spatialized receiver, light reception, occlusion",
         "principle": "Reverie is a live material field; atlas storage may proxy it, but the primary ward is a direct live texture."
@@ -176,9 +230,19 @@
         "aspect_policy": "surface height is derived from source_aspect; no atlas cell crop",
         "compositor_role": "Hapax owns Reverie/drift pixels; DarkPlaces owns spatialized ward placement"
       },
-      "source_aspect": [16, 9],
-      "texture_size": [960, 540],
-      "origin": [-1620, 900, 330],
+      "source_aspect": [
+        16,
+        9
+      ],
+      "texture_size": [
+        960,
+        540
+      ],
+      "origin": [
+        -1620,
+        900,
+        330
+      ],
       "facing": "x",
       "texture_transform": {
         "u_sign": 1,
@@ -201,7 +265,10 @@
       "producer_kind": "live-speech-waveform",
       "source_id": "hapax-speech-wave",
       "liveness_class": "live-voice-representation",
-      "native_resolution": [512, 128],
+      "native_resolution": [
+        512,
+        128
+      ],
       "freshness": "live-tts-envelope-ring",
       "consent_or_license": "system-owned-hapax-voice-representation",
       "purpose": "spatial Hapax speech representation as a raw time-domain oscilloscope near the AoA",
@@ -226,7 +293,12 @@
       "drift_interaction": {
         "substance_role": "speech-waveform-field-form",
         "owner": "hapax-daimonion-and-compositor",
-        "families": ["scanlines", "chromatic_aberration", "trail", "source-bound-alpha"],
+        "families": [
+          "scanlines",
+          "chromatic_aberration",
+          "trail",
+          "source-bound-alpha"
+        ],
         "temporal_history_owner": "hapax-daimonion-ring",
         "darkplaces_role": "spatialized receiver, light reception, occlusion",
         "principle": "Hapax speech is represented as a live time-domain waveform; amplitude shapes only the receiver line width/alpha and never a global scene pulse."
@@ -239,8 +311,14 @@
         "aspect_policy": "surface height is derived from the 4:1 oscilloscope aspect; transparent background preserves a floating waveform",
         "compositor_role": "Hapax owns speech waveform pixels; DarkPlaces owns spatialized placement near the AoA"
       },
-      "source_aspect": [4, 1],
-      "texture_size": [512, 128],
+      "source_aspect": [
+        4,
+        1
+      ],
+      "texture_size": [
+        512,
+        128
+      ],
       "texture_transform": {
         "u_sign": 1,
         "v_sign": 1,
@@ -248,7 +326,11 @@
         "surface_local": true,
         "reason": "OARB-depth y-facing waveform uses surface-local mapping so the live oscilloscope spans the receiver once without world-space tiling"
       },
-      "origin": [-80, -555, 104],
+      "origin": [
+        -80,
+        -555,
+        104
+      ],
       "facing": "y",
       "physical_width": 384,
       "domain": "communication"
@@ -264,9 +346,15 @@
       "producer_kind": "live-camera-ir",
       "source_id": "brio-operator-ir",
       "liveness_class": "live-local-ir-camera",
-      "native_resolution": [340, 340],
+      "native_resolution": [
+        360,
+        640
+      ],
       "capture_format": "gray",
-      "capture_resolution": [340, 340],
+      "capture_resolution": [
+        360,
+        640
+      ],
       "capture_fps": 10,
       "texture_fps": 6,
       "resolution_basis": "runtime-contained-ir-greyscale-340p10-live-texture-6fps",
@@ -293,7 +381,12 @@
       "drift_interaction": {
         "substance_role": "presence-instrument-ir-form",
         "owner": "hapax-compositor",
-        "families": ["colorgrade", "scanlines", "chromatic_aberration", "trail"],
+        "families": [
+          "colorgrade",
+          "scanlines",
+          "chromatic_aberration",
+          "trail"
+        ],
         "temporal_history_owner": "screwm_media_drift",
         "darkplaces_role": "spatialized IR receiver, light reception, occlusion",
         "principle": "IR camera wards are live instrument surfaces in the Scroom, not hidden atlas proxies or stale homage placeholders."
@@ -306,8 +399,14 @@
         "aspect_policy": "surface is square greyscale IR; no atlas cell crop",
         "compositor_role": "Hapax owns IR camera pixels and drift; DarkPlaces owns spatialized ward placement"
       },
-      "source_aspect": [1, 1],
-      "texture_size": [340, 340],
+      "source_aspect": [
+        9,
+        16
+      ],
+      "texture_size": [
+        360,
+        640
+      ],
       "texture_transform": {
         "u_sign": 1,
         "v_sign": 1,
@@ -315,7 +414,11 @@
         "surface_local": true,
         "reason": "Left-wall x-facing IR ward uses surface-local mapping so the direct camera frame spans ward 18 once without atlas reprojection"
       },
-      "origin": [-1180, -1320, 650],
+      "origin": [
+        -1180,
+        -1320,
+        650
+      ],
       "facing": "x",
       "physical_width": 1024,
       "domain": "perception"
@@ -331,9 +434,15 @@
       "producer_kind": "live-camera-ir",
       "source_id": "brio-room-ir",
       "liveness_class": "live-local-ir-camera",
-      "native_resolution": [340, 340],
+      "native_resolution": [
+        360,
+        640
+      ],
       "capture_format": "gray",
-      "capture_resolution": [340, 340],
+      "capture_resolution": [
+        360,
+        640
+      ],
       "capture_fps": 10,
       "texture_fps": 6,
       "resolution_basis": "runtime-contained-ir-greyscale-340p10-live-texture-6fps",
@@ -360,7 +469,12 @@
       "drift_interaction": {
         "substance_role": "presence-instrument-ir-form",
         "owner": "hapax-compositor",
-        "families": ["colorgrade", "scanlines", "chromatic_aberration", "trail"],
+        "families": [
+          "colorgrade",
+          "scanlines",
+          "chromatic_aberration",
+          "trail"
+        ],
         "temporal_history_owner": "screwm_media_drift",
         "darkplaces_role": "spatialized IR receiver, light reception, occlusion",
         "principle": "IR camera wards are live instrument surfaces in the Scroom, not hidden atlas proxies or stale homage placeholders."
@@ -373,8 +487,14 @@
         "aspect_policy": "surface is square greyscale IR; no atlas cell crop",
         "compositor_role": "Hapax owns IR camera pixels and drift; DarkPlaces owns spatialized ward placement"
       },
-      "source_aspect": [1, 1],
-      "texture_size": [340, 340],
+      "source_aspect": [
+        9,
+        16
+      ],
+      "texture_size": [
+        360,
+        640
+      ],
       "texture_transform": {
         "u_sign": 1,
         "v_sign": 1,
@@ -382,7 +502,11 @@
         "surface_local": true,
         "reason": "Left-wall x-facing IR ward uses surface-local mapping so the direct camera frame spans ward 19 once without atlas reprojection"
       },
-      "origin": [-1180, 400, 650],
+      "origin": [
+        -1180,
+        400,
+        650
+      ],
       "facing": "x",
       "physical_width": 1024,
       "domain": "perception"
@@ -398,9 +522,15 @@
       "producer_kind": "live-camera-ir",
       "source_id": "brio-synths-ir",
       "liveness_class": "live-local-ir-camera",
-      "native_resolution": [340, 340],
+      "native_resolution": [
+        640,
+        360
+      ],
       "capture_format": "gray",
-      "capture_resolution": [340, 340],
+      "capture_resolution": [
+        640,
+        360
+      ],
       "capture_fps": 10,
       "texture_fps": 6,
       "resolution_basis": "runtime-contained-ir-greyscale-340p10-live-texture-6fps",
@@ -427,7 +557,12 @@
       "drift_interaction": {
         "substance_role": "presence-instrument-ir-form",
         "owner": "hapax-compositor",
-        "families": ["colorgrade", "scanlines", "chromatic_aberration", "trail"],
+        "families": [
+          "colorgrade",
+          "scanlines",
+          "chromatic_aberration",
+          "trail"
+        ],
         "temporal_history_owner": "screwm_media_drift",
         "darkplaces_role": "spatialized IR receiver, light reception, occlusion",
         "principle": "IR camera wards are live instrument surfaces in the Scroom, not hidden atlas proxies or stale homage placeholders."
@@ -440,8 +575,14 @@
         "aspect_policy": "surface is square greyscale IR; no atlas cell crop",
         "compositor_role": "Hapax owns IR camera pixels and drift; DarkPlaces owns spatialized ward placement"
       },
-      "source_aspect": [1, 1],
-      "texture_size": [340, 340],
+      "source_aspect": [
+        16,
+        9
+      ],
+      "texture_size": [
+        640,
+        360
+      ],
       "texture_transform": {
         "u_sign": 1,
         "v_sign": 1,
@@ -449,7 +590,11 @@
         "surface_local": true,
         "reason": "Entry-wall y-facing synths IR ward uses surface-local mapping so the direct camera frame spans ward 35 once without atlas reprojection"
       },
-      "origin": [-1024, -2440, 1180],
+      "origin": [
+        -1024,
+        -2440,
+        1180
+      ],
       "facing": "y",
       "physical_width": 1024,
       "domain": "perception"
@@ -465,9 +610,15 @@
       "producer_kind": "live-camera",
       "source_id": "brio-operator",
       "liveness_class": "live-local-camera",
-      "native_resolution": [1280, 720],
+      "native_resolution": [
+        1280,
+        720
+      ],
       "capture_format": "mjpeg",
-      "capture_resolution": [1280, 720],
+      "capture_resolution": [
+        1280,
+        720
+      ],
       "capture_fps": 10,
       "texture_fps": 5,
       "resolution_basis": "runtime-contained-mjpeg-720p10-live-texture-5fps",
@@ -491,7 +642,13 @@
       "drift_interaction": {
         "substance_role": "presence-instrument-form",
         "owner": "hapax-compositor",
-        "families": ["colorgrade", "vhs", "scanlines", "chromatic_aberration", "trail"],
+        "families": [
+          "colorgrade",
+          "vhs",
+          "scanlines",
+          "chromatic_aberration",
+          "trail"
+        ],
         "temporal_history_owner": "hapax-compositor",
         "darkplaces_role": "spatialized receiver, light reception, occlusion",
         "principle": "Camera wards are shaped by mediated presence and drift, not by a physical frame."
@@ -504,8 +661,14 @@
         "aspect_policy": "surface height is derived from source_aspect; no arbitrary crop",
         "compositor_role": "Hapax owns camera pixels; DarkPlaces owns spatialized instrument placement"
       },
-      "source_aspect": [16, 9],
-      "texture_size": [1280, 720],
+      "source_aspect": [
+        16,
+        9
+      ],
+      "texture_size": [
+        1280,
+        720
+      ],
       "texture_transform": {
         "u_sign": 1,
         "v_sign": 1,
@@ -513,7 +676,11 @@
         "surface_local": true,
         "reason": "Left-wall x-facing inward BSP face must use surface-local UV origin; otherwise world-space coordinates wrap the live camera frame"
       },
-      "origin": [-1580, -1510, 650],
+      "origin": [
+        -1580,
+        -1510,
+        650
+      ],
       "facing": "x",
       "physical_width": 2048,
       "domain": "presence"
@@ -529,9 +696,15 @@
       "producer_kind": "live-camera",
       "source_id": "brio-room",
       "liveness_class": "live-local-camera",
-      "native_resolution": [1280, 720],
+      "native_resolution": [
+        1280,
+        720
+      ],
       "capture_format": "mjpeg",
-      "capture_resolution": [1280, 720],
+      "capture_resolution": [
+        1280,
+        720
+      ],
       "capture_fps": 10,
       "texture_fps": 5,
       "resolution_basis": "runtime-contained-mjpeg-720p10-live-texture-5fps",
@@ -555,7 +728,13 @@
       "drift_interaction": {
         "substance_role": "presence-instrument-form",
         "owner": "hapax-compositor",
-        "families": ["colorgrade", "vhs", "scanlines", "chromatic_aberration", "trail"],
+        "families": [
+          "colorgrade",
+          "vhs",
+          "scanlines",
+          "chromatic_aberration",
+          "trail"
+        ],
         "temporal_history_owner": "hapax-compositor",
         "darkplaces_role": "spatialized receiver, light reception, occlusion",
         "principle": "Camera wards are shaped by mediated presence and drift, not by a physical frame."
@@ -568,8 +747,14 @@
         "aspect_policy": "surface height is derived from source_aspect; no arbitrary crop",
         "compositor_role": "Hapax owns camera pixels; DarkPlaces owns spatialized instrument placement"
       },
-      "source_aspect": [16, 9],
-      "texture_size": [1280, 720],
+      "source_aspect": [
+        16,
+        9
+      ],
+      "texture_size": [
+        1280,
+        720
+      ],
       "texture_transform": {
         "u_sign": 1,
         "v_sign": 1,
@@ -577,7 +762,11 @@
         "surface_local": true,
         "reason": "Left-wall x-facing inward BSP face must use surface-local UV origin; otherwise world-space coordinates wrap the live camera frame"
       },
-      "origin": [-1580, 400, 650],
+      "origin": [
+        -1580,
+        400,
+        650
+      ],
       "facing": "x",
       "physical_width": 2048,
       "domain": "perception"
@@ -593,9 +782,15 @@
       "producer_kind": "live-camera",
       "source_id": "brio-synths",
       "liveness_class": "live-local-camera",
-      "native_resolution": [1280, 720],
+      "native_resolution": [
+        1280,
+        720
+      ],
       "capture_format": "mjpeg",
-      "capture_resolution": [1280, 720],
+      "capture_resolution": [
+        1280,
+        720
+      ],
       "capture_fps": 10,
       "texture_fps": 5,
       "resolution_basis": "runtime-contained-mjpeg-720p10-live-texture-5fps",
@@ -619,7 +814,13 @@
       "drift_interaction": {
         "substance_role": "presence-instrument-form",
         "owner": "hapax-compositor",
-        "families": ["colorgrade", "vhs", "scanlines", "chromatic_aberration", "trail"],
+        "families": [
+          "colorgrade",
+          "vhs",
+          "scanlines",
+          "chromatic_aberration",
+          "trail"
+        ],
         "temporal_history_owner": "hapax-compositor",
         "darkplaces_role": "spatialized receiver, light reception, occlusion",
         "principle": "Camera wards are shaped by mediated presence and drift, not by a physical frame."
@@ -632,8 +833,14 @@
         "aspect_policy": "surface height is derived from source_aspect; no arbitrary crop",
         "compositor_role": "Hapax owns camera pixels; DarkPlaces owns spatialized instrument placement"
       },
-      "source_aspect": [16, 9],
-      "texture_size": [1280, 720],
+      "source_aspect": [
+        16,
+        9
+      ],
+      "texture_size": [
+        1280,
+        720
+      ],
       "texture_transform": {
         "u_sign": 1,
         "v_sign": 1,
@@ -641,7 +848,11 @@
         "surface_local": true,
         "reason": "Entry-wall y-facing inward BSP face must use surface-local mapping so the live camera frame spans the receiver once"
       },
-      "origin": [-1024, -2532, 1180],
+      "origin": [
+        -1024,
+        -2532,
+        1180
+      ],
       "facing": "y",
       "physical_width": 2048,
       "domain": "music"
@@ -657,9 +868,15 @@
       "producer_kind": "live-camera",
       "source_id": "c920-desk",
       "liveness_class": "live-local-camera",
-      "native_resolution": [1280, 720],
+      "native_resolution": [
+        1280,
+        720
+      ],
       "capture_format": "mjpeg",
-      "capture_resolution": [1280, 720],
+      "capture_resolution": [
+        1280,
+        720
+      ],
       "capture_fps": 10,
       "texture_fps": 5,
       "resolution_basis": "runtime-contained-mjpeg-720p10-live-texture-5fps",
@@ -683,7 +900,13 @@
       "drift_interaction": {
         "substance_role": "presence-instrument-form",
         "owner": "hapax-compositor",
-        "families": ["colorgrade", "vhs", "scanlines", "chromatic_aberration", "trail"],
+        "families": [
+          "colorgrade",
+          "vhs",
+          "scanlines",
+          "chromatic_aberration",
+          "trail"
+        ],
         "temporal_history_owner": "hapax-compositor",
         "darkplaces_role": "spatialized receiver, light reception, occlusion",
         "principle": "Camera wards are shaped by mediated presence and drift, not by a physical frame."
@@ -696,16 +919,26 @@
         "aspect_policy": "surface height is derived from source_aspect; no arbitrary crop",
         "compositor_role": "Hapax owns camera pixels; DarkPlaces owns spatialized instrument placement"
       },
-      "source_aspect": [16, 9],
-      "texture_size": [1280, 720],
+      "source_aspect": [
+        16,
+        9
+      ],
+      "texture_size": [
+        1280,
+        720
+      ],
       "texture_transform": {
-        "u_sign": -1,
+        "u_sign": 1,
         "v_sign": 1,
         "rotation": 0,
         "surface_local": true,
-        "reason": "Right-wall x-facing inward BSP face mirrors camera handedness; surface-local u flip preserves the source orientation"
+        "reason": "Canonical source orientation; wall handedness is derived from pane geometry at map-gen (pane_orientation_transform), so u_sign no longer encodes per-wall flips."
       },
-      "origin": [1580, -1510, 650],
+      "origin": [
+        1580,
+        -1510,
+        650
+      ],
       "facing": "x",
       "physical_width": 2048,
       "domain": "cognition"
@@ -721,9 +954,15 @@
       "producer_kind": "live-camera",
       "source_id": "c920-room",
       "liveness_class": "live-local-camera",
-      "native_resolution": [1280, 720],
+      "native_resolution": [
+        1280,
+        720
+      ],
       "capture_format": "mjpeg",
-      "capture_resolution": [1280, 720],
+      "capture_resolution": [
+        1280,
+        720
+      ],
       "capture_fps": 10,
       "texture_fps": 5,
       "resolution_basis": "runtime-contained-mjpeg-720p10-live-texture-5fps",
@@ -747,7 +986,13 @@
       "drift_interaction": {
         "substance_role": "presence-instrument-form",
         "owner": "hapax-compositor",
-        "families": ["colorgrade", "vhs", "scanlines", "chromatic_aberration", "trail"],
+        "families": [
+          "colorgrade",
+          "vhs",
+          "scanlines",
+          "chromatic_aberration",
+          "trail"
+        ],
         "temporal_history_owner": "hapax-compositor",
         "darkplaces_role": "spatialized receiver, light reception, occlusion",
         "principle": "Camera wards are shaped by mediated presence and drift, not by a physical frame."
@@ -760,16 +1005,26 @@
         "aspect_policy": "surface height is derived from source_aspect; no arbitrary crop",
         "compositor_role": "Hapax owns camera pixels; DarkPlaces owns spatialized instrument placement"
       },
-      "source_aspect": [16, 9],
-      "texture_size": [1280, 720],
+      "source_aspect": [
+        16,
+        9
+      ],
+      "texture_size": [
+        1280,
+        720
+      ],
       "texture_transform": {
-        "u_sign": -1,
+        "u_sign": 1,
         "v_sign": 1,
         "rotation": 0,
         "surface_local": true,
-        "reason": "Right-wall x-facing inward BSP face mirrors camera handedness; surface-local u flip preserves the source orientation"
+        "reason": "Canonical source orientation; wall handedness is derived from pane geometry at map-gen (pane_orientation_transform), so u_sign no longer encodes per-wall flips."
       },
-      "origin": [1580, 400, 650],
+      "origin": [
+        1580,
+        400,
+        650
+      ],
       "facing": "x",
       "physical_width": 2048,
       "domain": "perception"
@@ -785,9 +1040,15 @@
       "producer_kind": "live-camera",
       "source_id": "c920-overhead",
       "liveness_class": "live-local-camera",
-      "native_resolution": [1280, 720],
+      "native_resolution": [
+        1280,
+        720
+      ],
       "capture_format": "mjpeg",
-      "capture_resolution": [1280, 720],
+      "capture_resolution": [
+        1280,
+        720
+      ],
       "capture_fps": 10,
       "texture_fps": 5,
       "resolution_basis": "runtime-contained-mjpeg-720p10-live-texture-5fps",
@@ -811,7 +1072,13 @@
       "drift_interaction": {
         "substance_role": "presence-instrument-form",
         "owner": "hapax-compositor",
-        "families": ["colorgrade", "vhs", "scanlines", "chromatic_aberration", "trail"],
+        "families": [
+          "colorgrade",
+          "vhs",
+          "scanlines",
+          "chromatic_aberration",
+          "trail"
+        ],
         "temporal_history_owner": "hapax-compositor",
         "darkplaces_role": "spatialized receiver, light reception, occlusion",
         "principle": "Camera wards are shaped by mediated presence and drift, not by a physical frame."
@@ -824,8 +1091,14 @@
         "aspect_policy": "surface height is derived from source_aspect; no arbitrary crop",
         "compositor_role": "Hapax owns camera pixels; DarkPlaces owns spatialized instrument placement"
       },
-      "source_aspect": [16, 9],
-      "texture_size": [1280, 720],
+      "source_aspect": [
+        16,
+        9
+      ],
+      "texture_size": [
+        1280,
+        720
+      ],
       "texture_transform": {
         "u_sign": 1,
         "v_sign": 1,
@@ -833,7 +1106,11 @@
         "surface_local": true,
         "reason": "Entry-wall y-facing inward BSP face uses surface-local mapping so the overhead camera frame spans the receiver once"
       },
-      "origin": [1024, -2532, 1180],
+      "origin": [
+        1024,
+        -2532,
+        1180
+      ],
       "facing": "y",
       "physical_width": 2048,
       "domain": "perception"
@@ -849,7 +1126,10 @@
       "producer_kind": "live-ticker",
       "source_id": "director-intent-grounding-provenance",
       "liveness_class": "live-system-text",
-      "native_resolution": [1344, 176],
+      "native_resolution": [
+        1344,
+        176
+      ],
       "freshness": "director-intent-tail",
       "consent_or_license": "system-owned-observability",
       "purpose": "operational grounding provenance instrument",
@@ -870,7 +1150,12 @@
       "drift_interaction": {
         "substance_role": "operational-text-field-form",
         "owner": "hapax-compositor",
-        "families": ["scanlines", "chromatic_aberration", "palette_remap", "trail"],
+        "families": [
+          "scanlines",
+          "chromatic_aberration",
+          "palette_remap",
+          "trail"
+        ],
         "temporal_history_owner": "hapax-compositor",
         "darkplaces_role": "spatialized receiver, light reception, occlusion",
         "principle": "Ticker wards are live operational text fields whose apparent form comes from text cadence plus drift."
@@ -883,8 +1168,14 @@
         "aspect_policy": "surface height is derived from source_aspect; text is ellipsized or scrolled by producer",
         "compositor_role": "Hapax owns text layout and drift pixels; DarkPlaces owns the walkable spatial mount"
       },
-      "source_aspect": [84, 11],
-      "texture_size": [1344, 176],
+      "source_aspect": [
+        84,
+        11
+      ],
+      "texture_size": [
+        1344,
+        176
+      ],
       "texture_transform": {
         "u_sign": 1,
         "v_sign": 1,
@@ -896,7 +1187,11 @@
         "flip_y": true,
         "reason": "Mount-space ticker pixels are vertically preflipped so the stable DarkPlaces BSP mapping reads upright"
       },
-      "origin": [-1580, -1860, 220],
+      "origin": [
+        -1580,
+        -1860,
+        220
+      ],
       "facing": "x",
       "physical_width": 768,
       "domain": "director"
@@ -912,7 +1207,10 @@
       "producer_kind": "live-ticker",
       "source_id": "director-precedent-route",
       "liveness_class": "live-system-text",
-      "native_resolution": [1344, 176],
+      "native_resolution": [
+        1344,
+        176
+      ],
       "freshness": "director-intent-tail",
       "consent_or_license": "system-owned-observability",
       "purpose": "operational precedent and ward-emphasis route instrument",
@@ -933,7 +1231,12 @@
       "drift_interaction": {
         "substance_role": "operational-text-field-form",
         "owner": "hapax-compositor",
-        "families": ["scanlines", "chromatic_aberration", "palette_remap", "trail"],
+        "families": [
+          "scanlines",
+          "chromatic_aberration",
+          "palette_remap",
+          "trail"
+        ],
         "temporal_history_owner": "hapax-compositor",
         "darkplaces_role": "spatialized receiver, light reception, occlusion",
         "principle": "Ticker wards are live operational text fields whose apparent form comes from text cadence plus drift."
@@ -946,8 +1249,14 @@
         "aspect_policy": "surface height is derived from source_aspect; text is ellipsized or scrolled by producer",
         "compositor_role": "Hapax owns text layout and drift pixels; DarkPlaces owns the walkable spatial mount"
       },
-      "source_aspect": [84, 11],
-      "texture_size": [1344, 176],
+      "source_aspect": [
+        84,
+        11
+      ],
+      "texture_size": [
+        1344,
+        176
+      ],
       "texture_transform": {
         "u_sign": 1,
         "v_sign": 1,
@@ -959,7 +1268,11 @@
         "flip_y": true,
         "reason": "Mount-space ticker pixels are vertically preflipped so the stable DarkPlaces BSP mapping reads upright"
       },
-      "origin": [1580, -1860, 220],
+      "origin": [
+        1580,
+        -1860,
+        220
+      ],
       "facing": "x",
       "physical_width": 768,
       "domain": "director"
@@ -975,7 +1288,10 @@
       "producer_kind": "live-ticker",
       "source_id": "director-chronicle-event",
       "liveness_class": "live-system-text",
-      "native_resolution": [1344, 176],
+      "native_resolution": [
+        1344,
+        176
+      ],
       "freshness": "director-intent-tail",
       "consent_or_license": "system-owned-observability",
       "purpose": "operational chronicle and current-intent instrument",
@@ -996,7 +1312,12 @@
       "drift_interaction": {
         "substance_role": "operational-text-field-form",
         "owner": "hapax-compositor",
-        "families": ["scanlines", "chromatic_aberration", "palette_remap", "trail"],
+        "families": [
+          "scanlines",
+          "chromatic_aberration",
+          "palette_remap",
+          "trail"
+        ],
         "temporal_history_owner": "hapax-compositor",
         "darkplaces_role": "spatialized receiver, light reception, occlusion",
         "principle": "Ticker wards are live operational text fields whose apparent form comes from text cadence plus drift."
@@ -1009,8 +1330,14 @@
         "aspect_policy": "surface height is derived from source_aspect; text is ellipsized or scrolled by producer",
         "compositor_role": "Hapax owns text layout and drift pixels; DarkPlaces owns the walkable spatial mount"
       },
-      "source_aspect": [84, 11],
-      "texture_size": [1344, 176],
+      "source_aspect": [
+        84,
+        11
+      ],
+      "texture_size": [
+        1344,
+        176
+      ],
       "texture_transform": {
         "u_sign": 1,
         "v_sign": 1,
@@ -1022,7 +1349,11 @@
         "flip_y": true,
         "reason": "Mount-space ticker pixels are vertically preflipped so the stable DarkPlaces BSP mapping reads upright"
       },
-      "origin": [-1580, -980, 360],
+      "origin": [
+        -1580,
+        -980,
+        360
+      ],
       "facing": "x",
       "physical_width": 768,
       "domain": "director"
@@ -1038,7 +1369,10 @@
       "producer_kind": "live-compositor-ward-atlas",
       "source_id": "compositor-default-layout-ward-sources",
       "liveness_class": "live-system-ward-atlas",
-      "native_resolution": [2048, 2304],
+      "native_resolution": [
+        2048,
+        2304
+      ],
       "freshness": "ward-atlas-producer-heartbeat",
       "consent_or_license": "system-owned-operational-state",
       "purpose": "primary compositor-authored pixel layer for all in-world Scroom wards",
@@ -1059,7 +1393,13 @@
       "drift_interaction": {
         "substance_role": "state-ward-field-form",
         "owner": "hapax-compositor",
-        "families": ["slotdrift_pool", "colorgrade", "edge_detect", "chromatic_aberration", "trail"],
+        "families": [
+          "slotdrift_pool",
+          "colorgrade",
+          "edge_detect",
+          "chromatic_aberration",
+          "trail"
+        ],
         "temporal_history_owner": "hapax-compositor",
         "darkplaces_role": "per-ward spatial receiver, light reception, occlusion",
         "principle": "Atlas storage never defines a ward's visible shape; each ward receives visible substance through its source and drift relation."
@@ -1072,14 +1412,64 @@
         "aspect_policy": "atlas cells are storage only; each visible mount derives aspect from its source, purpose, and intended inspection distance",
         "compositor_role": "Hapax owns ward pixels and deep Homage expression; DarkPlaces owns walkable spatial placement, occlusion, and lighting"
       },
-      "source_aspect": [2, 1],
-      "texture_size": [2048, 2304],
-      "cell_size": [512, 256],
+      "source_aspect": [
+        2,
+        1
+      ],
+      "texture_size": [
+        2048,
+        2304
+      ],
+      "cell_size": [
+        512,
+        256
+      ],
       "atlas_columns": 4,
       "atlas_rows": 9,
-      "active_visible_indices": [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36],
+      "active_visible_indices": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36
+      ],
       "activation_policy": "all-wards-spatialized-36-of-36",
-      "origin": [0, -555, 176],
+      "origin": [
+        0,
+        -555,
+        176
+      ],
       "facing": "atlas",
       "physical_width": 320,
       "domain": "cognition"

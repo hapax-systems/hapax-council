@@ -26,7 +26,8 @@ DEFAULT_COMPOSITOR_LAYOUT_PATH = REPO_ROOT / "config" / "compositor-layouts" / "
 UNITS_PER_METER = 32
 TOWER_RADIUS_M = 16.5
 TOWER_FLOOR_M = -2.0
-BASE_TOWER_CEIL_M = 26.5
+# Raised 2026-06-20 so the 2.5x AoA tetrix apex clears the ceiling.
+BASE_TOWER_CEIL_M = 57.0
 TOWER_CEIL_M = TOWER_FLOOR_M + (BASE_TOWER_CEIL_M - TOWER_FLOOR_M) * 2.0
 WALL_THICK = 16
 AOA_HEIGHT_M = 7.0
@@ -39,9 +40,12 @@ CEIL_Z = int(TOWER_CEIL_M * UNITS_PER_METER)
 AOA_X = 0
 AOA_Y = -555
 AOA_Z = int(AOA_HEIGHT_M * UNITS_PER_METER)
-ROOM_X_EXT = 2080
-ROOM_Y_MIN = -2550
-ROOM_Y_MAX = 1440
+# Grown 2026-06-20 to accommodate every homage ward splayed on the walls at a
+# uniform, function-optimal tile size (operator standard). Enlarged again for the
+# 2x ward tiles + (pending) 2.5x AoA.
+ROOM_X_EXT = 3800
+ROOM_Y_MIN = -4100
+ROOM_Y_MAX = 3100
 EXT = ROOM_X_EXT
 HEX_GRID_RADIUS = 384
 HEX_GRID_LINE_WIDTH = 6
@@ -240,7 +244,11 @@ WARD_PURPOSE_RECEIVER_MIN_HEIGHT = 96
 WARD_PURPOSE_RECEIVER_BASE_U = 64
 WARD_PURPOSE_RECEIVER_BASE_V = 56
 WARD_PURPOSE_RECEIVER_THICKNESS_RATIO = 0.20
-MEDIA_RECEIVER_EDGE_TEX = "scroom"
+# No-placard default (operator directive 2026-06-21): a ward must read as its
+# content, not a geometric placard. The non-content faces of every media pane use
+# the no-draw shell so only the single truth-bearing (content) face renders — zero
+# substrate, border, or chrome. NO_DRAW_SHELL_TEX == "skip" (qbsp drops the faces).
+MEDIA_RECEIVER_EDGE_TEX = NO_DRAW_SHELL_TEX
 SYNTHWAVE_TICKER_WARDS = {9, 22, 27}
 SPECIAL_WARD_POSITIONS = {
     36: (0, WARD_Y_TOP + 5 * WARD_Y_STEP, FLOOR_Z + 92),
@@ -251,7 +259,7 @@ REVIEW_FILL_BASE_MULTIPLIER = 1.28
 REVIEW_FILL_SCALES = (1.22, 0.90, 0.92, 1.12, 1.00, 0.94, 1.12, 0.78)
 REVIEW_MEDIA_TARGET_CLEARANCE = 24
 IR_CAMERA_WARD_INDICES = frozenset({18, 19, 35})
-IR_CAMERA_WARD_TARGET_WIDTH = 1024
+IR_CAMERA_WARD_TARGET_WIDTH = 420
 
 GARDEN_CAMERA_STATIONS = [
     ("entry-stone", (0, -2380, 164), (0, AOA_Y, AOA_Z)),
@@ -270,48 +278,10 @@ IR_CAMERA_WARD_STATIONS = [
     ("brio-synths-ir-ward", (-1024, -1900, 1235), (-1024, -2440, 1180)),
 ]
 
-WARD_GARDEN_LAYOUT = {
-    # No-front Scroom garden: ward identity mounts form side groves, an entry
-    # threshold, and a far borrowed-view band around the walking loop. The
-    # doubled room remains open enough that AoA/sphere/media can be read from
-    # multiple positions instead of becoming a fourth-wall theatre.
-    1: (-900, -2360, 130, "y"),
-    2: (-1180, -1780, 150, "x"),
-    3: (-1040, 980, 300, "y"),
-    4: (-1180, -1540, 245, "x"),
-    5: (-700, -1120, 260, "y"),
-    6: (1180, -1780, 315, "x"),
-    7: (-640, 980, 190, "y"),
-    8: (-1180, -760, 260, "x"),
-    9: (-1580, -1860, 220, "x"),
-    10: (-260, 980, 330, "y"),
-    11: (1180, -1540, 230, "x"),
-    12: (80, 980, 215, "y"),
-    13: (420, 980, 140, "y"),
-    14: (1180, -980, 165, "x"),
-    15: (800, 980, 285, "y"),
-    16: (-1180, -420, 150, "x"),
-    17: (1180, -760, 290, "x"),
-    18: (-1180, -1320, 650, "x"),
-    19: (-1180, 400, 650, "x"),
-    20: (520, -2360, 105, "y"),
-    21: (1160, 980, 340, "y"),
-    22: (1580, -1860, 220, "x"),
-    23: (1180, -420, 160, "x"),
-    24: (1180, -150, 300, "x"),
-    25: (-1180, -1180, 350, "x"),
-    26: (-1040, 980, 140, "y"),
-    27: (-1580, -980, 360, "x"),
-    28: (-80, 980, 120, "y"),
-    29: (-1180, 120, 345, "x"),
-    30: (1180, -2020, 115, "x"),
-    31: (1180, -1240, 300, "x"),
-    32: (1180, -580, 110, "x"),
-    33: (1180, -280, 330, "x"),
-    34: (1160, 980, 210, "y"),
-    35: (-1024, -2440, 1180, "y"),
-    36: (-1180, -600, 330, "x"),
-}
+# Populated at module load by _apply_homage_wall_layout(): every homage ward is
+# splayed as a uniform grid across the four walls (operator standard 2026-06-20),
+# replacing the old garden scatter. {idx: (x, y, z, facing)}.
+WARD_GARDEN_LAYOUT = {}
 
 SOURCE_PANE_W = 62
 SOURCE_PANE_H = 38
@@ -499,6 +469,92 @@ SPEECH_WAVE_ANCHOR = source_anchor_from_mount(SPEECH_WAVE_MOUNT) if SPEECH_WAVE_
 # Current visual baseline: the compositor owns the ward pixels through the
 # live atlas; DarkPlaces owns the spatial mount, occlusion, lighting, and camera.
 BASELINE_SOURCE_ROLES = {source["role"] for source in SOURCE_ANCHORS}
+
+
+# --- Uniform homage-ward wall splay (operator standard, 2026-06-20) -----------
+# Every noun in the CNS is a homage ward; impose ONE uniform tile size and splay
+# them evenly across the four walls, non-overlapping, all facing inward, so each
+# is visible from interior vantage points (AoA occlusion excepted). AoA/OARB stays
+# centered; the speech-waveform keeps its validated off-centerline mount.
+HOMAGE_TILE_W = 960
+HOMAGE_TILE_H = 540
+HOMAGE_TILE_GAP = 180
+HOMAGE_WALL_MARGIN = 350
+HOMAGE_ROW_Z = (350, 1000)
+HOMAGE_WALL_INSET = WALL_THICK + 8
+# Vertical band for the content-driven ward shelf packer (operator directive
+# 2026-06-21). Heterogeneous-height wards stack into shelves; the shelf stack is
+# centered vertically within this band so wards sit near eye level, not jammed
+# at the ceiling. Band center ~960u ≈ standing eye height in the hall.
+HOMAGE_WARD_Z_HI = 1800
+HOMAGE_WARD_Z_LO = 120
+
+
+def _even_centers(lo, hi, n):
+    if n <= 0:
+        return []
+    if n == 1:
+        return [(lo + hi) / 2.0]
+    step = (hi - lo) / (n - 1)
+    return [lo + i * step for i in range(n)]
+
+
+def _wall_grid_slots(count, wall):
+    """Return `count` (x, y, z, facing) slots on one wall, stacked in z-rows."""
+    if count <= 0:
+        return []
+    rows = HOMAGE_ROW_Z if count > 1 else (sum(HOMAGE_ROW_Z) / 2.0,)
+    n_rows = len(rows)
+    per_row = [count // n_rows + (1 if r < count % n_rows else 0) for r in range(n_rows)]
+    half = HOMAGE_TILE_W / 2.0
+    slots = []
+    if wall in ("front", "back"):
+        facing = "y"
+        y = (
+            ROOM_Y_MIN + WALL_THICK + HOMAGE_WALL_INSET
+            if wall == "front"
+            else ROOM_Y_MAX - WALL_THICK - HOMAGE_WALL_INSET
+        )
+        lo = -ROOM_X_EXT + HOMAGE_WALL_MARGIN + half
+        hi = ROOM_X_EXT - HOMAGE_WALL_MARGIN - half
+        for r, z in enumerate(rows):
+            for cx in _even_centers(lo, hi, per_row[r]):
+                slots.append((int(round(cx)), int(round(y)), int(round(z)), facing))
+    else:  # left / right
+        facing = "x"
+        x = (
+            -ROOM_X_EXT + WALL_THICK + HOMAGE_WALL_INSET
+            if wall == "left"
+            else ROOM_X_EXT - WALL_THICK - HOMAGE_WALL_INSET
+        )
+        lo = ROOM_Y_MIN + HOMAGE_WALL_MARGIN + half
+        hi = ROOM_Y_MAX - HOMAGE_WALL_MARGIN - half
+        for r, z in enumerate(rows):
+            for cy in _even_centers(lo, hi, per_row[r]):
+                slots.append((int(round(x)), int(round(cy)), int(round(z)), facing))
+    return slots
+
+
+def _apply_homage_wall_layout():
+    """Group all camera-source homage wards on the front wall.
+
+    Cameras keep the 16:9 footprint (camera content IS 16:9, so the uniform tile
+    aspect is already correct for them). Every NON-camera homage ward is packed
+    size-aware — at its own content shape/size — by ``_apply_homage_ward_packing``
+    once the content-driven dimensions are defined further down the module. AoA/OARB
+    stay centered; the speech-waveform keeps its pinned mount. Mutates SOURCE_ANCHORS
+    in place."""
+    n_cams = len(SOURCE_ANCHORS)
+    for ci, slot in enumerate(_wall_grid_slots(n_cams, "front")):
+        x, y, z, facing = slot
+        src = SOURCE_ANCHORS[ci]
+        src["pos"] = (x, y, z)
+        src["facing"] = facing
+        src["w"] = HOMAGE_TILE_W
+        src["h"] = HOMAGE_TILE_H
+
+
+_apply_homage_wall_layout()
 
 
 def validate_spatiotemporal_framework():
@@ -1398,6 +1454,35 @@ def centered_span(center, size):
     return start, start + int(size)
 
 
+# --- Geometry-derived pane orientation (operator directive 2026-06-21) --------
+# Wards are repositioned to arbitrary walls by the packer, so orientation MUST be
+# a pure function of the pane's PLACEMENT, never a value baked per mount (which
+# breaks the moment a ward changes walls). Producers author content in CANONICAL
+# orientation (readable, right-side-up); this derives the per-pane UV signs at
+# map-generation time so the SAME content reads correctly on whichever wall it
+# lands on:
+#   u_sign = the wall's inward-facing normal — handedness flips on opposite walls
+#            (qbsp's axial U is shared by a wall pair, so the far side mirrors).
+#   v_sign = PANE_GEOMETRY_V_SIGN — the engine flips V on these axial faces; a
+#            fixed global convention, independent of which wall.
+# A mount's own u_sign/v_sign now means SOURCE orientation only (canonical = +1)
+# and is composed with the geometry sign, so a natively-inverted source (e.g. an
+# overhead camera) can still be corrected without re-introducing per-wall hacks.
+PANE_GEOMETRY_V_SIGN = -1
+
+
+def pane_orientation_transform(base, facing, x, y):
+    # Empirically calibrated 2026-06-21: at u_sign = +inward_normal content read
+    # MIRRORED (grounding ticker on the right-x wall + the NOMINAL ward both showed
+    # reversed glyphs while upright), so the wall-handedness sign is the NEGATED
+    # inward normal. (V is already correct with PANE_GEOMETRY_V_SIGN.)
+    geo_u = -(inward_x_normal(x) if facing == "x" else inward_y_normal(y))
+    eff = dict(base or {})
+    eff["u_sign"] = int((base or {}).get("u_sign", 1)) * geo_u
+    eff["v_sign"] = int((base or {}).get("v_sign", 1)) * PANE_GEOMETRY_V_SIGN
+    return eff
+
+
 def framed_y_pane(
     comment_prefix,
     idx,
@@ -1419,6 +1504,7 @@ def framed_y_pane(
     map generator only emits the declared receiver surface.
     """
     brushes = []
+    texture_transform = pane_orientation_transform(texture_transform, "y", x, y)
     texture_scale = pane_texture_scale(w, h, texture_size, texture_transform)
     x0, x1 = centered_span(x, w)
     z0, z1 = centered_span(z, h)
@@ -1463,6 +1549,7 @@ def framed_x_pane(
     map generator only emits the declared receiver surface.
     """
     brushes = []
+    texture_transform = pane_orientation_transform(texture_transform, "x", x, y)
     texture_scale = pane_texture_scale(w, h, texture_size, texture_transform)
     y0, y1 = centered_span(y, w)
     z0, z1 = centered_span(z, h)
@@ -1722,21 +1809,138 @@ def ward_live_mount_contract(idx, anchor):
 
 
 def ward_pane_dimensions(idx):
-    """Scale ward identity mounts by role depth without destroying density."""
-    mount = ward_live_mount_contract(idx, WARD_ANCHORS[idx - 1])
-    if mount:
-        width = int(mount["physical_width"])
-        return width, aspect_height(width, mount["source_aspect"])
-    if idx in SYNTHWAVE_TICKER_WARDS:
-        return 320, 42
-    plane = ward_depth_plane(idx)
-    if plane == "hero-presence":
-        return WARD_PANE_W + 28, WARD_PANE_H + 16
-    if plane == "surface-scrim":
-        return WARD_PANE_W + 16, WARD_PANE_H + 8
-    if plane == "beyond-scrim":
-        return WARD_PANE_W + 8, WARD_PANE_H + 6
-    return WARD_PANE_W, WARD_PANE_H
+    """Content-driven, fit-to-purpose ward footprint (operator directive 2026-06-21).
+
+    Shape = the content's source aspect (never forced to 16:9); size = the
+    content-fit width for the ward's purpose. Both come from the already
+    validator-enforced mount contract via ``ward_source_mount_width`` /
+    ``ward_source_aspect`` (direct live mounts carry their declared
+    ``physical_width`` + ``source_aspect``; atlas-cell wards derive an
+    aspect-correct, legibility-bounded footprint from their source dimensions).
+    The truth-bearing face *is* that aspect, so content fills it with no letterbox
+    and the no-draw edges leave no placard.
+    """
+    anchor = WARD_ANCHORS[idx - 1]
+    width = ward_source_mount_width(idx, anchor)
+    aspect_w, aspect_h = ward_source_aspect(idx, anchor)
+    return width, aspect_height(width, (aspect_w, aspect_h))
+
+
+def _apply_homage_ward_packing():
+    """Pack every non-camera homage ward at its own content shape/size.
+
+    Operator directive 2026-06-21: replaces the uniform tile splay. Each ward's
+    footprint is ``ward_pane_dimensions(idx)`` (content aspect + fit-to-purpose
+    width). A shelf bin-packer distributes the wards across the three non-front
+    walls, each facing inward, tallest-first, every shelf centered laterally. It
+    FAILS LOUD (SystemExit) if a ward cannot fit a wall rather than silently
+    clipping, and a final pass asserts no two wards on a wall overlap. Mutates
+    WARD_GARDEN_LAYOUT in place; runs at module load after the dimensions exist."""
+    ward_idxs = sorted(ACTIVE_WARD_INDICES)
+    z_hi, z_lo, gap = HOMAGE_WARD_Z_HI, HOMAGE_WARD_Z_LO, HOMAGE_TILE_GAP
+
+    n = len(ward_idxs)
+    base, rem = divmod(n, 3)
+    counts = [base + (1 if w < rem else 0) for w in range(3)]
+    cursor = 0
+    placed = []  # (idx, wall, lat_lo, lat_hi, z_lo, z_hi) for the overlap gate
+    for count, wall in zip(counts, ("right", "back", "left"), strict=False):
+        wall_idxs = ward_idxs[cursor : cursor + count]
+        cursor += count
+        if wall in ("front", "back"):
+            facing = "y"
+            lat_lo = -ROOM_X_EXT + HOMAGE_WALL_MARGIN
+            lat_hi = ROOM_X_EXT - HOMAGE_WALL_MARGIN
+            plane = (
+                ROOM_Y_MIN + WALL_THICK + HOMAGE_WALL_INSET
+                if wall == "front"
+                else ROOM_Y_MAX - WALL_THICK - HOMAGE_WALL_INSET
+            )
+        else:
+            facing = "x"
+            lat_lo = ROOM_Y_MIN + HOMAGE_WALL_MARGIN
+            lat_hi = ROOM_Y_MAX - HOMAGE_WALL_MARGIN
+            plane = (
+                -ROOM_X_EXT + WALL_THICK + HOMAGE_WALL_INSET
+                if wall == "left"
+                else ROOM_X_EXT - WALL_THICK - HOMAGE_WALL_INSET
+            )
+        usable_w = lat_hi - lat_lo
+
+        items = []
+        for idx in wall_idxs:
+            w, h = ward_pane_dimensions(idx)
+            if w > usable_w:
+                raise SystemExit(
+                    f"homage ward {idx} width {w} exceeds {wall}-wall usable width {usable_w}"
+                )
+            items.append((idx, float(w), float(h)))
+        items.sort(key=lambda t: t[2], reverse=True)
+
+        shelves = []
+        shelf, shelf_w = [], 0.0
+        for item in items:
+            add_w = item[1] if not shelf else shelf_w + gap + item[1]
+            if shelf and add_w > usable_w:
+                shelves.append((shelf, shelf_w))
+                shelf, shelf_w = [item], item[1]
+            else:
+                shelf.append(item)
+                shelf_w = add_w
+        if shelf:
+            shelves.append((shelf, shelf_w))
+
+        total_h = sum(max(it[2] for it in sh) for sh, _ in shelves)
+        total_h += gap * (len(shelves) - 1)
+        z_top = min(float(z_hi), (z_lo + z_hi) / 2.0 + total_h / 2.0)
+        for shelf, shelf_w in shelves:
+            shelf_h = max(it[2] for it in shelf)
+            if z_top - shelf_h < z_lo:
+                raise SystemExit(
+                    f"{wall}-wall homage wards overflow vertical band "
+                    f"(shelf bottom z {z_top - shelf_h:.0f} < {z_lo})"
+                )
+            along = lat_lo + (usable_w - shelf_w) / 2.0
+            z_center = z_top - shelf_h / 2.0
+            for idx, w, h in shelf:
+                lat_center = along + w / 2.0
+                if facing == "y":
+                    WARD_GARDEN_LAYOUT[idx] = (
+                        int(round(lat_center)),
+                        int(round(plane)),
+                        int(round(z_center)),
+                        facing,
+                    )
+                else:
+                    WARD_GARDEN_LAYOUT[idx] = (
+                        int(round(plane)),
+                        int(round(lat_center)),
+                        int(round(z_center)),
+                        facing,
+                    )
+                placed.append(
+                    (
+                        idx,
+                        wall,
+                        lat_center - w / 2.0,
+                        lat_center + w / 2.0,
+                        z_center - h / 2.0,
+                        z_center + h / 2.0,
+                    )
+                )
+                along += w + gap
+            z_top -= shelf_h + gap
+
+    for i in range(len(placed)):
+        for j in range(i + 1, len(placed)):
+            a, b = placed[i], placed[j]
+            if a[1] != b[1]:
+                continue
+            if a[2] < b[3] and b[2] < a[3] and a[4] < b[5] and b[4] < a[5]:
+                raise SystemExit(f"homage wards {a[0]} and {b[0]} overlap on {a[1]} wall")
+
+
+_apply_homage_ward_packing()
 
 
 def static_ward_mount_contract(idx, anchor, texture):
@@ -2063,7 +2267,10 @@ def append_wall_grid_and_stipple(brushes):
 
 
 def scroom_hex_grid_and_stipple(_preset):
-    """Floor/ceiling alignment substrate: low-opacity hex grid plus sparse stipple."""
+    """DISABLED 2026-06-20 for the homage-ward-only surface (operator: no
+    quake/darkplaces garbage). Drops the hex grid, floor/ceiling stipple, and the
+    nested wall grid/stipple; only the room shell, AoA/OARB, and homage wards remain."""
+    return []
     brushes = []
     seen_edges = set()
     row = 0
@@ -2337,8 +2544,38 @@ def aoa_payload_panes(_preset):
 
 
 def aoa_attendant_sphere_face(_preset):
-    """The media sphere is now a live-textured MDL entity, not BSP strips."""
-    return []
+    """OARB live media as a y-facing BSP billboard — the true-color ward path,
+    replacing the format-garbling MDL skin (operator 2026-06-20). The live face
+    points y_min toward the primary review vantage (the review camera sits south
+    of the OARB at y<-555 looking +Y). Sized to the OARB mount's
+    computed_mount_width with the 2:1 live-buffer aspect for a uniform texture
+    scale; the MDL media sphere is hidden in world.qc and slot 1 is rebound to
+    the BSP texture aoa_media_spher."""
+    cx, cz = AOA_X, 224  # aoa-media-sphere mount origin [0, -555, 224]
+    # Fill the AoA inner large volume so the OARB is perfectly held (operator
+    # 2026-06-21). At the room-fitting AOA_DISPLAY_SCALE=0.9 the depth-5 tetrix
+    # central-void insphere is ~806u; the largest inscribed 2:1 plane has corners
+    # on that insphere at w<=1.789*806=1442, so 1440x720 fills the void (half-
+    # diagonal 805u < 806u, corners inside the octahedral void -> no poke-through).
+    # (Earlier 1500x750 was sized to the stale 861u/2.5x void; the void shrank with
+    # the fit-to-room scale, so the OARB is re-sized to the true 806u void.)
+    w = 1440
+    h = 720
+    x0, x1 = centered_span(cx, w)
+    z0, z1 = centered_span(cz, h)
+    pane = media_pane_brush(
+        x0,
+        AOA_Y - 2,
+        z0,
+        x1,
+        AOA_Y + 2,
+        z1,
+        "aoa_media_spher",
+        MEDIA_RECEIVER_EDGE_TEX,
+        "y_min",
+        texture_scale=pane_texture_scale(w, h, (2048, 1024)),
+    )
+    return [f"// aoa-attendant-sphere 01: oarb-yt aoa_media_spher\n{pane}"] if pane else []
 
 
 def scroom_scene_graph_bands(_preset):

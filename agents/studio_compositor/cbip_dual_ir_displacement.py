@@ -602,9 +602,6 @@ class CBIPDualIrDisplacementCairoSource(CairoSource):
         x = max(pad, canvas_w - total_w - pad)
         y = pad
         cr.save()
-        cr.set_source_rgba(0.0, 0.0, 0.0, 0.42)
-        cr.rectangle(x - pad, y - pad, total_w + pad * 2, preview_h + pad * 2)
-        cr.fill()
         for snapshot in fresh:
             assert snapshot.image is not None
             luma = _fit_luma(snapshot.image, preview_w, preview_h)
@@ -620,24 +617,7 @@ class CBIPDualIrDisplacementCairoSource(CairoSource):
         cr.restore()
 
     def _paint_backdrop(self, cr: cairo.Context, canvas_w: int, canvas_h: int, t: float) -> None:
-        pal = _cbip_palette()
-        cr.save()
-        if pal:
-            bg_r, bg_g, bg_b, _bg_a = pal["background"]
-            cr.set_source_rgb(bg_r, bg_g, bg_b)
-        else:
-            cr.set_source_rgb(0.015, 0.018, 0.02)
-        cr.paint()
-        line_opacity = 0.045
-        if pal:
-            sl_r, sl_g, sl_b, _sl_a = pal["accent_cyan"]
-        else:
-            sl_r, sl_g, sl_b = 0.1, 0.55, 0.62
-        for i in range(0, canvas_w, max(12, canvas_w // 40)):
-            cr.set_source_rgba(sl_r, sl_g, sl_b, line_opacity)
-            cr.rectangle(i, 0, 1, canvas_h)
-            cr.fill()
-        cr.restore()
+        del cr, canvas_w, canvas_h, t
 
     def _paint_procedural_pair(
         self,
@@ -701,29 +681,9 @@ class CBIPDualIrDisplacementCairoSource(CairoSource):
             cr.paint_with_alpha(0.70)
         else:
             self._paint_procedural_pair(cr, snapshot, snapshot, canvas_w, canvas_h, t)
-        pal = _cbip_palette()
-        cr.save()
-        if pal:
-            yl_r, yl_g, yl_b, _yl_a = pal["accent_yellow"]
-        else:
-            yl_r, yl_g, yl_b = 0.95, 0.72, 0.18
-        cr.set_source_rgba(yl_r, yl_g, yl_b, 0.18)
-        cr.rectangle(0, 0, canvas_w, canvas_h)
-        cr.fill()
-        cr.restore()
 
     def _paint_offline(self, cr: cairo.Context, canvas_w: int, canvas_h: int) -> None:
-        pal = _cbip_palette()
-        cr.save()
-        if pal:
-            mu_r, mu_g, mu_b, _mu_a = pal["muted"]
-        else:
-            mu_r, mu_g, mu_b = 0.20, 0.24, 0.25
-        cr.set_source_rgba(mu_r, mu_g, mu_b, 0.30)
-        for y in range(0, canvas_h, max(18, canvas_h // 18)):
-            cr.rectangle(0, y, canvas_w, 1)
-            cr.fill()
-        cr.restore()
+        del cr, canvas_w, canvas_h
 
     def _paint_status_line(
         self,

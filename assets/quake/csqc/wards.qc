@@ -766,9 +766,9 @@ void() screwm_apply_review_camera =
         screwm_review_camera_origin = screwm_review_camera_origin + v_forward * input_movevalues_x * frametime * native_speed;
         screwm_review_camera_origin = screwm_review_camera_origin + v_right * input_movevalues_y * frametime * native_speed;
         screwm_review_camera_origin_z = screwm_review_camera_origin_z + input_movevalues_z * frametime * native_speed;
-        screwm_review_camera_origin_x = screwm_clamp(screwm_review_camera_origin_x, -1900, 1900);
-        screwm_review_camera_origin_y = screwm_clamp(screwm_review_camera_origin_y, -2440, 1180);
-        screwm_review_camera_origin_z = screwm_clamp(screwm_review_camera_origin_z, -48, 1710);
+        screwm_review_camera_origin_x = screwm_clamp(screwm_review_camera_origin_x, -3700, 3700);
+        screwm_review_camera_origin_y = screwm_clamp(screwm_review_camera_origin_y, -4000, 3000);
+        screwm_review_camera_origin_z = screwm_clamp(screwm_review_camera_origin_z, -48, 1690);
     }
     else if (cvar("screwm_csqc_manual_camera") > 0 && manual > 0)
     {
@@ -790,72 +790,82 @@ void() screwm_apply_review_camera =
         while (cycle >= 800)
             cycle = cycle - 800;
 
-        // Eight-station roji walk: broad loop, deliberate reveal/conceal, and
-        // no roll/spin. The opening segment holds the AoA centered so OBS
-        // feedback starts from an oriented, critiqueable room view.
+        // Eight-station circumferential witness walk: a slow perimeter loop
+        // giving close-up coverage of all four ward walls plus a distant and a
+        // close view of the AoA. Look-targets are continuous across segment
+        // boundaries (smooth pans, no snap); each wall segment faces the wall it
+        // passes rather than the AoA. Stations stay >=300u off every wall.
         if (cycle < 100)
         {
+            // Up the LEFT wall, facing the left ward register (close-up).
             u = cycle / 100;
-            origin_a = '0 -2360 190';
-            origin_b = '-240 -2200 204';
-            target_a = '0 -555 254';
-            target_b = '0 -555 258';
+            origin_a = '-2900 -3600 600';
+            origin_b = '-2900 -1300 700';
+            target_a = '-3776 -1300 600';
+            target_b = '-3776 1000 700';
         }
         else if (cycle < 200)
         {
+            // Round the back-left corner; pan left wall -> back wall.
             u = (cycle - 100) / 100;
-            origin_a = '-240 -2200 204';
-            origin_b = '-560 -1880 218';
-            target_a = '0 -555 258';
-            target_b = '0 -555 262';
+            origin_a = '-2900 -1300 700';
+            origin_b = '-2900 2200 800';
+            target_a = '-3776 1000 700';
+            target_b = '0 3076 700';
         }
         else if (cycle < 300)
         {
+            // Along the BACK wall; pan back wall -> AoA in the distance.
             u = (cycle - 200) / 100;
-            origin_a = '-560 -1880 218';
-            origin_b = '-720 -1460 230';
-            target_a = '0 -555 262';
-            target_b = '0 -555 262';
+            origin_a = '-2900 2200 800';
+            origin_b = '0 2200 850';
+            target_a = '0 3076 700';
+            target_b = '0 -555 400';
         }
         else if (cycle < 400)
         {
+            // Round the back-right corner; pan distant AoA -> right wall.
             u = (cycle - 300) / 100;
-            origin_a = '-720 -1460 230';
-            origin_b = '-520 -1120 224';
-            target_a = '0 -555 262';
-            target_b = '0 -555 262';
+            origin_a = '0 2200 850';
+            origin_b = '2900 2200 800';
+            target_a = '0 -555 400';
+            target_b = '3776 1000 700';
         }
         else if (cycle < 500)
         {
+            // Down the RIGHT wall, facing the right ward register (close-up).
             u = (cycle - 400) / 100;
-            origin_a = '-520 -1120 224';
-            origin_b = '520 -1120 224';
-            target_a = '0 -555 262';
-            target_b = '0 -555 262';
+            origin_a = '2900 2200 800';
+            origin_b = '2900 -1300 700';
+            target_a = '3776 1000 700';
+            target_b = '3776 -1300 600';
         }
         else if (cycle < 600)
         {
+            // Round the front-right corner; pan right wall -> entry wall.
             u = (cycle - 500) / 100;
-            origin_a = '520 -1120 224';
-            origin_b = '720 -1460 230';
-            target_a = '0 -555 262';
-            target_b = '0 -555 262';
+            origin_a = '2900 -1300 700';
+            origin_b = '2900 -3600 600';
+            target_a = '3776 -1300 600';
+            target_b = '0 -4076 600';
         }
         else if (cycle < 700)
         {
+            // Move IN toward the AoA; pan entry wall -> AoA up-close.
             u = (cycle - 600) / 100;
-            origin_a = '720 -1460 230';
-            origin_b = '560 -1880 218';
-            target_a = '0 -555 262';
-            target_b = '0 -555 262';
+            origin_a = '2900 -3600 600';
+            origin_b = '0 -2000 550';
+            target_a = '0 -4076 600';
+            target_b = '0 -555 224';
         }
         else
         {
+            // Pull back to the front-left start; AoA up-close -> left wall.
             u = (cycle - 700) / 100;
-            origin_a = '560 -1880 218';
-            origin_b = '0 -2360 190';
-            target_a = '0 -555 262';
-            target_b = '0 -555 254';
+            origin_a = '0 -2000 550';
+            origin_b = '-2900 -3600 600';
+            target_a = '0 -555 224';
+            target_b = '-3776 -1300 600';
         }
 
         s = u * u * (3 - 2 * u);
@@ -2880,7 +2890,7 @@ void(float apilevel, string enginename, float engineversion) CSQC_Init =
     screwm_review_camera_angles = vectoangles('0 -555 254' - screwm_review_camera_origin);
     screwm_review_camera_angles_z = 0;
     screwm_review_camera_fov = '92 57.5 0';
-    screwm_review_camera_period = 360.0;
+    screwm_review_camera_period = 150.0;
     screwm_review_camera_two_pi = 6.283185;
     precache_pic("geom_mark");
     precache_pic("drift_c");
