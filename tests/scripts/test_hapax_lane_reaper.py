@@ -287,6 +287,31 @@ def test_lane_reaper_live_mode_holds_dead_claimed_lane(tmp_path: Path) -> None:
         _cleanup(pane)
 
 
+def test_lane_reaper_matches_platform_qualified_codex_owner(tmp_path: Path) -> None:
+    pane = _spawn_dead_pane()
+    try:
+        env = _base_env(tmp_path, pane_pid=pane.pid, pane_text="ready")
+        claim_file, task_file = _write_claim(env)
+        task_file.write_text(
+            task_file.read_text(encoding="utf-8").replace(
+                "assigned_to: cx-red",
+                "assigned_to: codex/cx-red",
+            ),
+            encoding="utf-8",
+        )
+        before = task_file.read_bytes()
+
+        result = _run(env, "--threshold", "0")
+
+        assert result.returncode == 0, result.stderr
+        assert "claim detach HOLD: task=quota-task" in result.stderr
+        assert claim_file.exists()
+        assert task_file.read_bytes() == before
+        assert pane.poll() is None
+    finally:
+        _cleanup(pane)
+
+
 def test_lane_reaper_holds_session_keyed_claim_without_legacy_marker(tmp_path: Path) -> None:
     pane = _spawn_dead_pane()
     try:

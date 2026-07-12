@@ -110,6 +110,22 @@ def _write_relay(relay_dir: Path, role: str, payload: dict[str, Any]) -> Path:
     return path
 
 
+def test_session_state_groups_platform_qualified_owner_by_role() -> None:
+    sweeper = _load_sweeper_module()
+    note = TaskNote(
+        path="/tmp/task.md",
+        task_id="task-qualified",
+        status="in_progress",
+        assigned_to="codex/cx-red",
+    )
+
+    sessions = sweeper._build_session_states({}, [note])
+
+    by_role = {session.role: session for session in sessions}
+    assert by_role["cx-red"].in_progress_count == 1
+    assert "codex/cx-red" not in by_role
+
+
 # ----------------------------------------------------------------------------
 # parse_task_note
 # ----------------------------------------------------------------------------
@@ -824,6 +840,23 @@ def test_wip_limit_at_threshold_no_event() -> None:
         for i in range(WIP_LIMIT)
     ]
     assert check_wip_limit(notes, now=_now()) == []
+
+
+def test_wip_limit_groups_qualified_and_legacy_owner_as_one_lane() -> None:
+    notes = [
+        TaskNote(
+            path=f"x{i}",
+            task_id=f"cc-{i}",
+            status="in_progress",
+            assigned_to="claude/alpha" if i % 2 else "alpha",
+        )
+        for i in range(WIP_LIMIT + 1)
+    ]
+
+    events = check_wip_limit(notes, now=_now())
+
+    assert len(events) == 1
+    assert events[0].session == "alpha"
 
 
 def test_wip_limit_unassigned_ignored() -> None:

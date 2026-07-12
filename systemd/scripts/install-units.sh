@@ -162,11 +162,34 @@ remove_decommissioned_unit() {
     [ "$removed" -eq 1 ]
 }
 
+system_install_scope_unit() {
+    grep -Eq '^[#;][[:space:]]*Hapax-Install-Scope:[[:space:]]*system[[:space:]]*$' "$1" || return 1
+    return 0
+}
+
 timer_enable_only() {
     local timer_file="$1"
     grep -Eiq '^[#;][[:space:]]*Hapax-Timer-Enable-Only:[[:space:]]*(true|yes|1)[[:space:]]*$' "$timer_file" || return 1
     grep -Eq '^\[Install\]' "$timer_file" || return 1
     return 0
+}
+
+parked_unit() {
+    grep -Eiq '^[#;][[:space:]]*Hapax-Parked:[[:space:]]*(true|yes|1)[[:space:]]*$' "$1"
+}
+
+dedicated_p0_oom_unit() {
+    case "$1" in
+        hapax-oom-policy-audit.service|\
+        hapax-oom-policy-audit.timer|\
+        hapax-root-required-deploy-audit.service|\
+        hapax-root-required-deploy-audit.timer)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }
 
 changed=0
@@ -183,6 +206,26 @@ for unit in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.target "$REP
     dest="$DEST_DIR/$name"
     if is_decommissioned_unit "$name"; then
         echo "skipped decommissioned unit: $name"
+        continue
+    fi
+    if dedicated_p0_oom_unit "$name"; then
+        echo "skipped dedicated P0 OOM unit: $name"
+        continue
+    fi
+    if system_install_scope_unit "$unit"; then
+        systemctl --user disable --now "$name" >/dev/null 2>&1 || true
+        if [ -e "$dest" ] || [ -L "$dest" ]; then
+            rm -f "$dest"
+            changed=$((changed + 1))
+            echo "removed stale user-scope system unit: $name"
+        fi
+        for wants_link in "$DEST_DIR"/*.wants/"$name"; do
+            [ -e "$wants_link" ] || [ -L "$wants_link" ] || continue
+            rm -f "$wants_link"
+            changed=$((changed + 1))
+            echo "removed stale user-scope wants link: $wants_link"
+        done
+        echo "skipped system-scope unit: $name"
         continue
     fi
     # Already a correct symlink — skip
@@ -204,6 +247,15 @@ if [ "$changed" -gt 0 ]; then
     systemctl --user daemon-reload
     echo "daemon-reload done ($changed units linked)"
 fi
+
+for parked_file in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.path; do
+    [ -f "$parked_file" ] || continue
+    parked_unit "$parked_file" || continue
+    parked_name="$(basename "$parked_file")"
+    systemctl --user disable --now "$parked_name"
+    systemctl --user reset-failed "$parked_name" >/dev/null 2>&1 || true
+    echo "parked: $parked_name"
+done
 
 # Delta 2026-04-14-systemd-timer-enablement-gap.md identified that 14 of 51
 # council timers had been linked (symlinked into ~/.config/systemd/user/)
@@ -348,20 +400,46 @@ fi
 # partition reconciliation to take effect. Handling this class of
 # file now fixes both the new drop-ins and the latent existing ones.
 #
+# 2026-07-09 P0 follow-up: the same install contract now covers slice/scope
+# drop-ins as well. app.slice/session.slice containment is a host-safety
+# backstop, and it must not be skipped merely because it is not a service unit.
+#
 # Destination layout: ``~/.config/systemd/user/<service>.service.d/``
 # is a REAL directory (not a symlink). Individual ``.conf`` files
-# inside it are symlinks back to the repo. This matches the existing
-# manually-placed ``tabbyapi.service.d/gpu-pin.conf`` file that has
-# been on disk since Sprint 5b Phase 2a.
+# inside it are symlinks back to the repo. P0 OOM containment backstops are
+# skipped here because only scripts/install-p0-oom-containment may install
+# them from a governed, commit-staged source package.
+dedicated_p0_oom_dropin() {
+    case "$1" in
+        app.slice.d/oom-containment.conf|\
+        session.slice.d/oom-containment.conf|\
+        pipewire.service.d/oom-protect.conf|\
+        pipewire-pulse.service.d/oom-protect.conf|\
+        wireplumber.service.d/oom-protect.conf|\
+        hapax-daimonion.service.d/oom-protect.conf|\
+        studio-compositor.service.d/oom-protect.conf|\
+        hapax-imagination.service.d/oom-protect.conf)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 dropin_changed=0
-for dropin_dir in "$REPO_DIR"/*.service.d; do
+for dropin_dir in "$REPO_DIR"/*.service.d "$REPO_DIR"/*.timer.d "$REPO_DIR"/*.slice.d "$REPO_DIR"/*.scope.d; do
     [ -d "$dropin_dir" ] || continue
     svc_name="$(basename "$dropin_dir")"
-    dest_dropin_dir="$DEST_DIR/$svc_name"
-    mkdir -p "$dest_dropin_dir"
     for conf in "$dropin_dir"/*.conf; do
         [ -f "$conf" ] || continue
         conf_name="$(basename "$conf")"
+        if dedicated_p0_oom_dropin "$svc_name/$conf_name"; then
+            echo "dropin-skipped-dedicated-installer: $svc_name/$conf_name"
+            continue
+        fi
+        dest_dropin_dir="$DEST_DIR/$svc_name"
+        mkdir -p "$dest_dropin_dir"
         dest_conf="$dest_dropin_dir/$conf_name"
         if [ -L "$dest_conf" ] && [ "$(readlink "$dest_conf")" = "$conf" ]; then
             continue

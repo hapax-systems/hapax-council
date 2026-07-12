@@ -1,25 +1,37 @@
 [Unit]
-Description=Codex claim audit (phantom + coherence + PR-reality check)
-# v2 makes the run network-dependent (gh pr view, ssh reconcile). Wants= pulls
-# network-online.target in for a timer-launched oneshot so After= actually
-# orders against it (After= alone does not start the target).
-Wants=network-online.target
-After=network-online.target
-# See: scripts/codex-claim-audit --version
+Description=Codex claim coherence projection (no ownership effects)
+After=hapax-source-activate.service
+ConditionFileIsExecutable=%h/.cache/hapax/source-activation/worktree/scripts/codex-claim-audit
 
 [Service]
 Type=oneshot
-WorkingDirectory=%h/.cache/hapax/source-activation/worktree
-# Canonical-root: ExecStart uses the source-activation worktree, not the
-# mutable dev tree. The activation worktree is a governed, reviewed checkout.
-ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/codex-claim-audit --release --stale-hours=6
-Environment=GH_REPO=hapax-systems/hapax-council
-Environment=NTFY_URL=https://ntfy.sh
-Environment=NTFY_TOPIC=hapax-ops
-# Reconcile cleared state to the PEER host (class #4 fix). The preset enables
-# this unit on BOTH hosts, so instead of a single hardcoded target (which would
-# silently no-op to self on the host it names, leaving the peer replica stale)
-# we declare the two-host claim plane and let the audit derive the peer = the
-# plane host that is not the one it runs on. Reconciliation is therefore
-# bidirectional: podium reconciles to appendix, appendix reconciles to podium.
-Environment="HAPAX_CLAIM_PLANE_HOSTS=hapax-podium hapax-appendix"
+WorkingDirectory=%h
+# The installed timer never requests release or host reconciliation.
+ExecStart=/usr/bin/bash -c 'set -euo pipefail; state="%h/.cache/hapax/source-activation"; IFS= read -r sha < "$state/last-success-sha"; case "$sha" in ""|*[!0-9a-f]*) echo "codex-claim-audit: invalid activation receipt" >&2; exit 78;; esac; [ "${#sha}" -eq 40 ] || { echo "codex-claim-audit: invalid activation receipt" >&2; exit 78; }; target="$(/usr/bin/readlink -f "$state/worktree")"; [ "${target##*/}" = "$sha" ] && [ "$(/usr/bin/git -C "$target" rev-parse HEAD)" = "$sha" ] && [ -z "$(/usr/bin/git -C "$target" status --porcelain --untracked-files=no -- scripts/codex-claim-audit shared)" ] || { echo "codex-claim-audit: activated release identity mismatch" >&2; exit 78; }; exec "$target/scripts/codex-claim-audit" --stale-hours=6'
+Environment=HOME=%h
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONDONTWRITEBYTECODE=1
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=codex-claim-audit
+TimeoutStartSec=120
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=%t /tmp /var/tmp
+PrivateNetwork=true
+RestrictAddressFamilies=AF_UNIX
+PrivateTmp=true
+PrivateDevices=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectClock=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=~@network-io kill pidfd_send_signal rt_sigqueueinfo rt_tgsigqueueinfo tkill tgkill

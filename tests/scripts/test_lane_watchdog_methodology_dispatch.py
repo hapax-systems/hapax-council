@@ -390,13 +390,8 @@ def test_rate_limit_watchdog_sends_hold_not_assignment_when_lane_has_no_task(
     assert "cc-claim" not in sent
 
 
-def test_rate_limit_watchdog_delegates_dead_lane_restart_to_supervisor() -> None:
-    """FM-11 clean split (coordination-reform 2026-05-30, Phase 6): dead-lane
-    liveness moved out of the rate-limit watchdog into the dedicated
-    hapax-lane-supervisor. The watchdog no longer carries the task-gated,
-    greek-only "leave dead" logic — a dead lane is ALWAYS respawned by the
-    supervisor regardless of task presence (operator standing mandate).
-    """
+def test_rate_limit_watchdog_leaves_dead_lane_effects_to_governed_recovery() -> None:
+    """Standing watchdogs and supervisors only project dead-lane state."""
     text = RATE_LIMIT_WATCHDOG.read_text(encoding="utf-8")
     # The old leave-dead behaviour and its dead-lane block are gone.
     assert "DEAD with no active task" not in text
@@ -404,10 +399,11 @@ def test_rate_limit_watchdog_delegates_dead_lane_restart_to_supervisor() -> None
     assert "Dead-lane auto-restart" not in text
     assert "EXPECTED_LANES" not in text
 
-    # The supervisor exists and owns dead-lane respawn (asserted in detail by
-    # tests/scripts/test_lane_supervisor.py).
+    # The supervisor exists but cannot launch or detach a lane.
     supervisor = REPO_ROOT / "scripts" / "hapax-lane-supervisor"
-    assert supervisor.exists(), "hapax-lane-supervisor must own lane liveness"
+    assert supervisor.exists(), "hapax-lane-supervisor must project lane health"
     sup_text = supervisor.read_text(encoding="utf-8")
-    assert "respawn" in sup_text
-    assert "no active task" in sup_text  # the always-restart (idle-await) path
+    assert "RECOVERY_CANDIDATE" in sup_text
+    assert "standing effect authority absent" in sup_text
+    assert "respawn_sync" not in sup_text
+    assert "setsid " not in sup_text

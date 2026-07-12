@@ -9,7 +9,8 @@ checked-in ``config/quota-spend-ledger-fixtures.json`` snapshot.
 Each tick does two writes:
 
 1. Refresh the per-provider platform capability receipts (quota / resource /
-   capability surfaces) via ``scripts/hapax-platform-capability-receipts --all``.
+   capability surfaces) via
+   ``scripts/hapax-platform-capability-receipts --all --codex-exec-auth-probe``.
    The registry freshness check reads these; the quota surface carries
    ``stale_after=15m``, so the paired systemd timer fires inside that window to
    keep subscription routes from HOLDing on ``quota_telemetry_stale_or_unknown``.
@@ -27,9 +28,12 @@ Each tick does two writes:
    - subscription ``quota_snapshots``: per-platform state from the quota-wall
      relay receipts (``~/.cache/hapax/relay/receipts/<role>-quota-wall.yaml``,
      written by ``shared.quota_wall`` on observed 429/quota-exhaustion). An
-     unexpired wall marks the platform ``exhausted``; otherwise the established
-     Claude/Codex subscription routes are ``fresh``. GLMCP and agy are stricter:
-     they are ``unknown`` unless a fresh, short-lived admission receipt exists.
+     unexpired wall marks the platform ``exhausted`` on the subscription-wall
+     path; Claude and GLMCP routes are ``unknown`` unless a fresh, short-lived
+     route-specific admission receipt exists. Agy reviewer admission remains
+     bounded to its sanctioned smoke receipt path. Other established subscription
+     platforms remain wall-absence fresh until their route policy requires a
+     receipt-bounded admission plane.
      Coding Plan quota walls block Coding Plan receipts, but a fresh
      endpoint-matched PAYG admission can supersede that subscription wall only
      when it is bound to the active Coding Plan quota-wall witness and a
@@ -40,17 +44,24 @@ Each tick does two writes:
      If a receipt exists but GLMCP remains ``unknown``, read this writer's
      stderr warnings; malformed, stale, mismatched, or unbounded receipts are
      ignored loudly.
-     Recheck agy reviewer admission evidence with
+     Recheck Claude and agy reviewer admission evidence with
+     ``find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '*claude-subscription-quota-admission*.yaml' -print``
+     and
      ``find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '*agy-quota-admission*.yaml' -print``
-     and create fresh short-lived agy admission receipts only after a sanctioned
-     ``scripts/hapax-agy-reviewer`` smoke succeeds.
+     and create fresh short-lived Claude admission receipts only after a genuine
+     account-live subscription observation, or agy admission receipts only after
+     a sanctioned ``scripts/hapax-agy-reviewer`` smoke succeeds.
      Admission receipts with ``stale_after_seconds`` above 3600 seconds are
      intentionally ignored; write a fresh short-lived witness instead.
      The emergency false-negative recovery path is to create a fresh
-     short-lived admission receipt with schema, status, provider, capacity_pool,
-     route_id, supported_tool, endpoint, model, observed_at, stale_after_seconds,
-     evidence_ref, and explicit no-secret/no-content/billing fields, then rerun
-     this writer so the live ledger is refreshed.
+     short-lived admission receipt. Claude receipts must include schema, status,
+     provider, capacity_pool, route_id, auth_surface, observation, observed_at,
+     stale_after_seconds, evidence_ref, secret_source, secret_value_persisted,
+     prompt_or_output_persisted, billing_mode, account_live_quota_observed,
+     lane_presence_used_as_quota_evidence, and positive_admission. GLMCP/agy
+     receipts additionally bind the reviewer tool/model/endpoint or smoke
+     witness fields required by their scanners. Then rerun this writer so the
+     live ledger is refreshed.
      That receipt-plane refresh is the canonical emergency procedure for a
      false negative.
      There is intentionally no environment-variable bypass for stale/unknown
@@ -65,10 +76,15 @@ Each tick does two writes:
 
 The output is validated through ``QuotaSpendLedger.model_validate`` before an
 atomic replace, so a bad tick can never clobber a good live ledger with junk.
-No secrets are persisted. GLMCP capability receipt refresh invokes
-``hapax-glmcp-reviewer --check``, which reads the pass-backed secret only to
-verify availability and records redacted availability metadata; the other probes
-are local files and nvidia-smi.
+No secrets are persisted. Capability receipt refresh performs bounded live route
+probes where the route requires them: GLMCP invokes
+``hapax-glmcp-reviewer --check`` and Codex invokes a saved-login ``codex exec``
+sentinel on the effective dispatch host with inherited Codex auth env stripped. Both
+record redacted availability metadata only; local resource probes remain local
+files and nvidia-smi. If the Codex sentinel reports an invalidated saved login,
+the dispatch host login must be repaired through the documented operator
+credential-transfer fallback and then rechecked; telemetry never mints, copies,
+or refreshes Codex bearer material itself.
 """
 
 from __future__ import annotations
@@ -82,6 +98,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -92,6 +109,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from shared.platform_capability_receipts import (  # noqa: E402
+    DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
+    PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
+    PlatformCapabilityReceiptError,
+    load_platform_capability_receipt,
+    load_platform_capability_receipts,
+    receipt_is_fresh,
+    receipt_reference,
+)
 from shared.quota_spend_ledger import (  # noqa: E402
     DEFAULT_QUOTA_SPEND_LEDGER_LIVE,
     QUOTA_SPEND_LEDGER_FIXTURES,
@@ -120,9 +146,14 @@ SUBSCRIPTION_ROUTES = {
     "codex": "codex.headless.full",
     "glmcp": "glmcp.review.direct",
 }
+CLAUDE_SUBSCRIPTION_ROUTES = ("claude.headless.full", "claude.review.opus")
+CLAUDE_HEADLESS_ROLES = frozenset(
+    {"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"}
+)
 
 SUBSCRIPTION_PROVIDERS = {
     "agy": "google-antigravity-cli-agy",
+    "claude": "anthropic-claude-subscription",
     "glmcp": "z_ai-glm-coding-plan",
 }
 
@@ -171,6 +202,122 @@ AGY_ADMISSION_FIELDS = frozenset(
         "smoke_returncode",
         "smoke_stdout_validated",
         "positive_admission",
+    }
+)
+
+CLAUDE_ADMISSION_SCHEMA = "hapax.claude_quota_admission.v1"
+CLAUDE_ADMISSION_PROVIDER = SUBSCRIPTION_PROVIDERS["claude"]
+CLAUDE_ADMISSION_CAPACITY_POOL = "subscription_quota"
+CLAUDE_ADMISSION_AUTH_SURFACE = "subscription"
+CLAUDE_ADMISSION_SECRET_SOURCE = "claude:operator-session-subscription"
+CLAUDE_ADMISSION_BILLING_MODE = "operator_session_subscription"
+CLAUDE_ADMISSION_OBSERVATIONS = frozenset(
+    {"subscription_quota_headroom_observed", "operator_confirmed_subscription_headroom"}
+)
+CLAUDE_ADMISSION_MAX_STALE_AFTER_SECONDS = 3600
+# The composite ledger evidence ref MUST end with this suffix so the availability guarantor's
+# _account_live_quota_observed_ref attests. Lane/session presence never produces it.
+CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX = "account-live-quota:observed"
+CLAUDE_ADMISSION_RECEIPT_GLOB = "*claude-subscription-quota-admission*.yaml"
+CLAUDE_ADMISSION_SAFE_RECEIPT_NAME_RE = re.compile(
+    r"\A[a-z0-9_.+-]*claude-subscription-quota-admission[a-z0-9_.+-]*\.yaml\Z"
+)
+CLAUDE_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
+CLAUDE_ADMISSION_WITNESS_ALLOWLIST_RE = re.compile(
+    r"\Aclaude-(?:subscription-headroom-observed|operator-confirmed-subscription-headroom)-"
+    r"\d{8}t\d{4}(?:\d{2})?z\Z"
+)
+CLAUDE_ADMISSION_SECRETISH_RE = re.compile(
+    r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
+    re.IGNORECASE,
+)
+CLAUDE_ADMISSION_BILLINGISH_RE = re.compile(
+    r"(?:"
+    r"(?:^|[-_.+:])(?:billing|customer|account|invoice|payment)[a-z0-9]*(?:$|[-_.+:])|"
+    r"(?:^|[-_.+:])subscription[-_.+:]?id[a-z0-9]*(?:$|[-_.+:])|"
+    r"(?:^|[-_.+:])(?:cus|sub|acct|in|ch)[0-9][a-z0-9]*(?:$|[-_.+:])|"
+    r"(?:^|[-_.+:])(?:cus|sub|acct|in|ch)[-_.+:][a-z0-9]+(?:$|[-_.+:])"
+    r")",
+    re.IGNORECASE,
+)
+CLAUDE_ADMISSION_LANE_PRESENCE_RE = re.compile(
+    r"(?:"
+    r"hapax-claude-[a-z0-9-]+|session-present|lane-present|lane-exists|"
+    r"(?:^|[-_.+])"
+    r"(?:(?:tmux|sessions?|lanes?|dev)[0-9]*|"
+    r"(?:alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|"
+    r"lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega)[0-9]*|"
+    r"cx-[a-z0-9-]+|vbe-[0-9]+)"
+    r"(?:$|[-_.+])"
+    r")",
+    re.IGNORECASE,
+)
+CLAUDE_ADMISSION_RECHECK_COMMAND = (
+    f"find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '{CLAUDE_ADMISSION_RECEIPT_GLOB}' -print"
+)
+CLAUDE_ADMISSION_RECOVERY_HINT = (
+    "false-negative recovery: create a fresh short-lived admission receipt with "
+    "scripts/hapax-claude-subscription-quota-admission after a genuine account-live subscription "
+    "observation (never lane/session presence)"
+)
+CLAUDE_ADMISSION_FIELDS = frozenset(
+    {
+        "schema",
+        "status",
+        "provider",
+        "route_id",
+        "capacity_pool",
+        "auth_surface",
+        "observation",
+        "observed_at",
+        "stale_after_seconds",
+        "evidence_ref",
+        "secret_source",
+        "secret_value_persisted",
+        "prompt_or_output_persisted",
+        "billing_mode",
+        "account_live_quota_observed",
+        "lane_presence_used_as_quota_evidence",
+        "positive_admission",
+    }
+)
+
+CODEX_EXEC_AUTH_HOLD_REASONS = frozenset(
+    {
+        "codex_exec_auth_agent_identity_jwt_invalid_json",
+        "codex_exec_auth_binary_missing",
+        "codex_exec_auth_exec_failed",
+        "codex_exec_auth_failed",
+        "codex_exec_auth_login_required",
+        "codex_exec_auth_probe_not_requested",
+        "codex_exec_auth_refresh_token_invalidated",
+        "codex_exec_auth_sentinel_missing",
+        "codex_exec_auth_timeout",
+        "codex_exec_auth_token_invalidated",
+        "codex_exec_auth_witness_absent",
+    }
+)
+CODEX_EXEC_AUTH_NEGATIVE_REF_TOKENS = frozenset(
+    {
+        "absent",
+        "blocked",
+        "denied",
+        "error",
+        "exhausted",
+        "expired",
+        "failed",
+        "failure",
+        "false",
+        "invalid",
+        "missing",
+        "negative",
+        "not",
+        "refused",
+        "stale",
+        "timeout",
+        "unobservable",
+        "unobserved",
+        "zero",
     }
 )
 
@@ -263,6 +410,7 @@ GLMCP_PAYG_SPEND_RECEIPT_GLOB = "*glmcp-payg-spend*.yaml"
 GLMCP_PAYG_SPEND_SAFE_RECEIPT_NAME_RE = re.compile(
     r"\A[a-z0-9_.+-]*glmcp-payg-spend[a-z0-9_.+-]*\.yaml\Z"
 )
+GLMCP_PAYG_SPEND_TASK_HASH_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 GLMCP_PAYG_SPEND_FIELDS = frozenset(
     {
         "auth_surface",
@@ -298,6 +446,7 @@ GLMCP_PAYG_SPEND_FIELDS = frozenset(
         "status",
         "support_artifact_authority",
         "supported_tool",
+        "task_hash",
         "task_id",
     }
 )
@@ -344,6 +493,26 @@ class AgyAdmissionScan:
 
 
 @dataclass(frozen=True)
+class ClaudeAdmission:
+    route_id: str
+    evidence_ref: str
+    observed_at: datetime
+    fresh_until: datetime
+
+
+@dataclass(frozen=True)
+class ClaudeAdmissionScan:
+    admissions: list[ClaudeAdmission]
+    ignored_evidence_refs: list[str]
+
+
+@dataclass(frozen=True)
+class CodexAuthBlocker:
+    reason_codes: list[str]
+    evidence_refs: list[str]
+
+
+@dataclass(frozen=True)
 class GlmcpPaygSpendScan:
     receipts: list[SpendReceipt]
     ignored_evidence_refs: list[str]
@@ -355,6 +524,9 @@ class QuotaWall:
     receipt_label: str
     failure_class: str
     rate_limit_type: str
+    detected_at: datetime | None
+    resets_at: datetime | None
+    route_id: str | None = None
 
 
 LOCAL_COMPUTE_ROUTE = "litellm.local.command-r-35b"
@@ -394,6 +566,13 @@ def role_platform(role: str) -> str:
     if normalized.startswith("vbe-") or normalized.startswith("vibe"):
         return "vibe"
     return "claude"
+
+
+def claude_wall_route_id_for_role(role: str) -> str | None:
+    normalized = role.lower().replace("_", "-")
+    if normalized in CLAUDE_HEADLESS_ROLES:
+        return SUBSCRIPTION_ROUTES["claude"]
+    return None
 
 
 def _parse_flat_yaml(text: str) -> dict[str, str]:
@@ -447,6 +626,14 @@ def _parse_utc(value: str) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
+def _utc_seconds(value: datetime) -> datetime:
+    return value.astimezone(UTC).replace(microsecond=0)
+
+
+def _iso_z_seconds(value: datetime) -> str:
+    return _utc_seconds(value).isoformat().replace("+00:00", "Z")
+
+
 def _reason_code(reason: str) -> str:
     code = re.sub(r"[^a-z0-9]+", "-", reason.lower()).strip("-")
     return code[:80] or "ignored"
@@ -472,6 +659,16 @@ def _warn_ignored_glmcp_payg_spend(path: Path, reason: str) -> str:
         file=sys.stderr,
     )
     return f"relay-receipt:{receipt_label}:ignored:{_reason_code(reason)}"
+
+
+def _warn_stripped_glmcp_payg_spend_task_hash(path: Path, task_hash: str) -> None:
+    receipt_label = _receipt_label(path)
+    print(
+        "hapax-quota-telemetry-writer: stripped malformed optional task_hash from "
+        f"GLMCP PAYG spend receipt {receipt_label}; spend still counts against cap; "
+        f"task_hash={task_hash!r}",
+        file=sys.stderr,
+    )
 
 
 def _glmcp_payg_spend_field_is_nullish(key: str, value: str) -> bool:
@@ -590,6 +787,16 @@ def _payg_admission_has_validated_spend_receipt(
 
 def _receipt_label(path: Path) -> str:
     name = path.name
+    if CLAUDE_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(name) is not None:
+        name_stem = name.removesuffix(".yaml")
+        if (
+            CLAUDE_ADMISSION_SECRETISH_RE.search(name_stem) is None
+            and CLAUDE_ADMISSION_BILLINGISH_RE.search(name_stem) is None
+            and CLAUDE_ADMISSION_LANE_PRESENCE_RE.search(name_stem) is None
+        ):
+            return name
+        digest = hashlib.sha256(name.encode("utf-8", errors="replace")).hexdigest()[:16]
+        return f"unsafe-receipt-name-sha256:{digest}"
     if (
         AGY_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(name)
         or GLMCP_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(name)
@@ -616,11 +823,11 @@ def active_quota_walls(
             continue
         role = fields.get("role") or path.name.removesuffix("-quota-wall.yaml")
         resets_at = _parse_utc(fields.get("resets_at", ""))
+        detected_at = _parse_utc(fields.get("detected_at", ""))
         if resets_at is not None:
             if resets_at <= now:
                 continue
         else:
-            detected_at = _parse_utc(fields.get("detected_at", ""))
             if detected_at is None or now - detected_at > WALL_WITHOUT_RESET_TTL:
                 continue
         platform = role_platform(role)
@@ -633,19 +840,237 @@ def active_quota_walls(
             continue
         failure_class = fields.get("failure_class") or "unknown"
         rate_limit_type = fields.get("rate_limit_type") or "unknown"
+        route_id = fields.get("route_id") or None
+        if platform == "claude":
+            derived_route_id = claude_wall_route_id_for_role(role)
+            if derived_route_id is not None:
+                route_id = derived_route_id
+            elif route_id and route_id not in CLAUDE_SUBSCRIPTION_ROUTES:
+                route_id = None
+        elif route_id and route_id != SUBSCRIPTION_ROUTES.get(platform):
+            route_id = None
+        route_ref = f":route_id:{route_id}" if route_id else ""
         walls.setdefault(platform, []).append(
             QuotaWall(
                 evidence_ref=(
                     f"relay-receipt:{path.name}:failure_class:{failure_class}:"
-                    f"rate_limit_type:{rate_limit_type}:resets_at:"
+                    f"rate_limit_type:{rate_limit_type}{route_ref}:resets_at:"
                     f"{fields.get('resets_at') or 'unknown'}"
                 ),
                 receipt_label=path.name,
                 failure_class=failure_class,
                 rate_limit_type=rate_limit_type,
+                detected_at=detected_at,
+                resets_at=resets_at,
+                route_id=route_id,
             )
         )
     return walls
+
+
+def codex_saved_login_blocker(
+    receipt_dir: Path,
+    *,
+    now: datetime,
+) -> CodexAuthBlocker | None:
+    """Return fail-closed Codex auth blockers from platform capability receipts."""
+
+    try:
+        receipt = load_platform_capability_receipts(receipt_dir, now=now).get("codex")
+    except PlatformCapabilityReceiptError as exc:
+        return CodexAuthBlocker(
+            reason_codes=["codex_platform_capability_receipt_invalid"],
+            evidence_refs=[
+                f"platform-capability-receipt:codex:invalid:{_reason_code(str(exc))}",
+            ],
+        )
+    if receipt is None:
+        return stale_codex_platform_receipt_blocker(receipt_dir, now=now)
+    return codex_auth_blocker_from_receipt(receipt)
+
+
+def stale_codex_platform_receipt_blocker(
+    receipt_dir: Path,
+    *,
+    now: datetime,
+) -> CodexAuthBlocker | None:
+    """Return a fail-closed blocker when the newest Codex receipt aged out."""
+
+    if not receipt_dir.exists():
+        return CodexAuthBlocker(
+            reason_codes=["codex_platform_capability_receipt_absent"],
+            evidence_refs=["platform-capability-receipt:codex:absent:receipt-dir-missing"],
+        )
+    codex_receipts = []
+    for path in sorted(receipt_dir.glob("*.json")):
+        receipt = load_platform_capability_receipt(path)
+        if receipt.platform == "codex":
+            codex_receipts.append(receipt)
+    if not codex_receipts:
+        return CodexAuthBlocker(
+            reason_codes=["codex_platform_capability_receipt_absent"],
+            evidence_refs=["platform-capability-receipt:codex:absent:no-codex-receipt"],
+        )
+    latest = max(codex_receipts, key=lambda item: item.observed_at)
+    if receipt_is_fresh(latest, now=now):
+        return None
+    blocker = codex_auth_blocker_from_receipt(latest)
+    reason_codes = ["codex_platform_capability_receipt_stale"]
+    if blocker is not None:
+        reason_codes.extend(blocker.reason_codes)
+    return CodexAuthBlocker(
+        reason_codes=list(dict.fromkeys(reason_codes)),
+        evidence_refs=[
+            f"platform-capability-receipt:codex:stale:{_reason_code(latest.receipt_id)}",
+            receipt_reference(latest),
+            *(
+                blocker.evidence_refs
+                if blocker is not None
+                else [*latest.capability.evidence_refs, *latest.resource.evidence_refs]
+            ),
+        ],
+    )
+
+
+def codex_auth_blocker_from_receipt(receipt: Any) -> CodexAuthBlocker | None:
+    reason_codes = list(
+        dict.fromkeys(
+            [
+                *receipt.capability.reason_codes,
+                *receipt.resource.reason_codes,
+            ]
+        )
+    )
+    auth_reasons = [
+        reason
+        for reason in reason_codes
+        if reason in CODEX_EXEC_AUTH_HOLD_REASONS or reason.startswith("codex_exec_auth_")
+    ]
+    if not auth_reasons:
+        evidence_refs = [
+            *receipt.capability.evidence_refs,
+            *receipt.resource.evidence_refs,
+        ]
+        if codex_exec_auth_witness_observed(evidence_refs):
+            return None
+        return CodexAuthBlocker(
+            reason_codes=["codex_exec_auth_witness_absent"],
+            evidence_refs=[
+                receipt_reference(receipt),
+                *evidence_refs,
+            ],
+        )
+    return CodexAuthBlocker(
+        reason_codes=auth_reasons,
+        evidence_refs=[
+            receipt_reference(receipt),
+            *receipt.capability.evidence_refs,
+            *receipt.resource.evidence_refs,
+        ],
+    )
+
+
+def codex_exec_auth_witness_observed(evidence_refs: Iterable[str]) -> bool:
+    expected_hosts = expected_codex_exec_auth_hosts()
+    return any(
+        codex_exec_auth_ref_attested(ref, expected_hosts=expected_hosts) for ref in evidence_refs
+    )
+
+
+def codex_exec_auth_ref_attested(
+    evidence_ref: str,
+    *,
+    expected_hosts: frozenset[tuple[str, ...]],
+) -> bool:
+    ref = _ref_tokens(evidence_ref)
+    if any(token in CODEX_EXEC_AUTH_NEGATIVE_REF_TOKENS for token in ref):
+        return False
+    if not (
+        len(ref) >= 8
+        and ref[0] == "host"
+        and ref[-6:] == ("codex", "exec", "auth", "saved", "login", "observed")
+    ):
+        return False
+    return ref[1:-6] in expected_hosts
+
+
+def expected_codex_exec_auth_hosts() -> frozenset[tuple[str, ...]]:
+    dispatch_host = (
+        os.environ.get("HAPAX_CODEX_EXEC_AUTH_HOST")
+        or os.environ.get("HAPAX_DISPATCH_HOST")
+        or os.environ.get("HAPAX_DEFAULT_DISPATCH_HOST")
+        or ""
+    ).strip()
+    if dispatch_host:
+        return host_token_variants(dispatch_host)
+    return host_token_variants("appendix")
+
+
+def host_token_variants(host: str) -> frozenset[tuple[str, ...]]:
+    tokens = _ref_tokens(host)
+    variants = {tokens} if tokens else set()
+    if len(tokens) == 1 and tokens[0] not in {"local", "localhost"}:
+        variants.add(("hapax", tokens[0]))
+    if len(tokens) == 2 and tokens[0] == "hapax":
+        variants.add((tokens[1],))
+    return frozenset(variants)
+
+
+def _ref_tokens(evidence_ref: str) -> tuple[str, ...]:
+    normalized = re.sub(r"[\s_:]+", "-", evidence_ref.strip().lower())
+    if not normalized:
+        return ()
+    return tuple(token for token in normalized.split("-") if token)
+
+
+def _active_quota_wall(wall: QuotaWall, *, now: datetime) -> bool:
+    if wall.resets_at is not None:
+        return wall.resets_at > now
+    return wall.detected_at is not None and now - wall.detected_at <= WALL_WITHOUT_RESET_TTL
+
+
+def _claude_shared_pool_quota_walls(
+    walls: list[QuotaWall],
+    *,
+    now: datetime,
+) -> list[QuotaWall]:
+    """Return active Claude subscription walls that inhibit the shared Claude pool.
+
+    A wall's ``route_id`` remains in the evidence ref to preserve where it was
+    observed, but the Anthropic subscription quota pool is account-level: a live
+    wall on one Claude subscription route inhibits every route in that provider
+    pool until the wall expires or a new account-live headroom receipt is minted
+    after the wall.
+    """
+
+    return [wall for wall in walls if _active_quota_wall(wall, now=now)]
+
+
+def _claude_after_wall_admissions(
+    admissions: list[ClaudeAdmission],
+    walls: list[QuotaWall],
+) -> list[ClaudeAdmission]:
+    """Return admissions observed after every active shared-pool wall."""
+
+    if not admissions or not walls:
+        return []
+    wall_recovery_times: list[datetime] = []
+    for wall in walls:
+        if wall.resets_at is not None:
+            wall_recovery_times.append(wall.resets_at)
+        elif wall.detected_at is not None:
+            wall_recovery_times.append(wall.detected_at)
+        else:
+            return []
+    latest_wall_recovery_at = max(wall_recovery_times)
+    return [
+        admission for admission in admissions if admission.observed_at > latest_wall_recovery_at
+    ]
+
+
+def _claude_ignored_receipts_for_route(ignored_refs: list[str], route_id: str) -> list[str]:
+    route_token = f":route_id:{route_id}"
+    return [ref for ref in ignored_refs if ":route_id:" not in ref or route_token in ref]
 
 
 def _warn_ignored_agy_admission(path: Path, reason: str) -> str:
@@ -657,6 +1082,20 @@ def _warn_ignored_agy_admission(path: Path, reason: str) -> str:
         file=sys.stderr,
     )
     return f"relay-receipt:{receipt_label}:ignored:{_reason_code(reason)}"
+
+
+def _warn_ignored_claude_admission(path: Path, reason: str, route_id: str | None = None) -> str:
+    # Generic stderr (like agy) so a rejected receipt's field names/values never echo; the specific
+    # reason survives only as a slugified code in the returned ignored evidence ref.
+    receipt_label = _receipt_label(path)
+    print(
+        "hapax-quota-telemetry-writer: ignoring claude admission receipt: "
+        f"validation failed; recheck: {CLAUDE_ADMISSION_RECHECK_COMMAND}; "
+        f"{CLAUDE_ADMISSION_RECOVERY_HINT}",
+        file=sys.stderr,
+    )
+    route_ref = f":route_id:{route_id}" if route_id in CLAUDE_SUBSCRIPTION_ROUTES else ""
+    return f"relay-receipt:{receipt_label}:ignored:{_reason_code(reason)}{route_ref}"
 
 
 def active_agy_admission_receipts(
@@ -763,6 +1202,165 @@ def active_agy_admission_receipts(
     return AgyAdmissionScan(admissions=refs, ignored_evidence_refs=ignored_refs)
 
 
+def active_claude_admission_receipts(
+    receipt_dir: Path,
+    *,
+    now: datetime,
+) -> ClaudeAdmissionScan:
+    """Return fresh positive claude subscription-quota admission evidence refs.
+
+    Account-live subscription quota is proven ONLY by a short-lived sanitized admission receipt
+    (scripts/hapax-claude-subscription-quota-admission), NEVER by lane/tmux/session presence. Each
+    fresh receipt yields a composite evidence ref ending in :account-live-quota:observed so the
+    availability guarantor attests; a secretish or lane/session-shaped witness is refused.
+    """
+
+    if not receipt_dir.is_dir():
+        return ClaudeAdmissionScan(admissions=[], ignored_evidence_refs=[])
+    refs: list[ClaudeAdmission] = []
+    ignored_refs: list[str] = []
+
+    def reject(path: Path, reason: str, route_id: str | None = None) -> None:
+        ignored_refs.append(_warn_ignored_claude_admission(path, reason, route_id))
+
+    for path in sorted(receipt_dir.glob(CLAUDE_ADMISSION_RECEIPT_GLOB)):
+        if CLAUDE_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(path.name) is None:
+            reject(path, "unsafe receipt name")
+            continue
+        receipt_name_stem = path.name.removesuffix(".yaml")
+        if CLAUDE_ADMISSION_SECRETISH_RE.search(receipt_name_stem) is not None:
+            reject(path, "receipt name names secretish value")
+            continue
+        if CLAUDE_ADMISSION_BILLINGISH_RE.search(receipt_name_stem) is not None:
+            reject(path, "receipt name names billing or account identifier")
+            continue
+        if CLAUDE_ADMISSION_LANE_PRESENCE_RE.search(receipt_name_stem) is not None:
+            reject(path, "receipt name names lane/session presence")
+            continue
+        try:
+            raw_receipt = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            reject(path, f"unreadable receipt {type(exc).__name__}")
+            continue
+        fields, parse_error = _parse_flat_yaml_strict(
+            raw_receipt,
+            allowed_fields=CLAUDE_ADMISSION_FIELDS,
+        )
+        if parse_error is not None:
+            reject(path, parse_error)
+            continue
+        expected = {
+            "schema": CLAUDE_ADMISSION_SCHEMA,
+            "status": "quota_available",
+            "provider": CLAUDE_ADMISSION_PROVIDER,
+            "capacity_pool": CLAUDE_ADMISSION_CAPACITY_POOL,
+            "auth_surface": CLAUDE_ADMISSION_AUTH_SURFACE,
+            "secret_source": CLAUDE_ADMISSION_SECRET_SOURCE,
+            "secret_value_persisted": "false",
+            "prompt_or_output_persisted": "false",
+            "billing_mode": CLAUDE_ADMISSION_BILLING_MODE,
+            "account_live_quota_observed": "true",
+            "lane_presence_used_as_quota_evidence": "false",
+            "positive_admission": "true",
+        }
+        failed = False
+        for key, value in expected.items():
+            if fields.get(key, "") != value:
+                reject(
+                    path,
+                    f"{key} missing or unsupported; expected {value}",
+                    fields.get("route_id", "").strip(),
+                )
+                failed = True
+                break
+        if failed:
+            continue
+        route_id = fields.get("route_id", "").strip()
+        if route_id not in CLAUDE_SUBSCRIPTION_ROUTES:
+            reject(
+                path,
+                "route_id missing or unsupported; expected one of "
+                + ", ".join(CLAUDE_SUBSCRIPTION_ROUTES),
+                route_id,
+            )
+            continue
+        observation = fields.get("observation", "").strip()
+        if observation not in CLAUDE_ADMISSION_OBSERVATIONS:
+            reject(path, "observation missing or unsupported", route_id)
+            continue
+        receipt_evidence_ref = " ".join(fields.get("evidence_ref", "").strip().split())
+        if (
+            CLAUDE_ADMISSION_EVIDENCE_REF_RE.fullmatch(receipt_evidence_ref) is None
+            or CLAUDE_ADMISSION_SECRETISH_RE.search(receipt_evidence_ref) is not None
+        ):
+            reject(
+                path,
+                "evidence_ref unsafe; expected sanitized account-live observation reference",
+                route_id,
+            )
+            continue
+        if CLAUDE_ADMISSION_BILLINGISH_RE.search(receipt_evidence_ref) is not None:
+            reject(path, "evidence_ref names billing or account identifier", route_id)
+            continue
+        if CLAUDE_ADMISSION_LANE_PRESENCE_RE.search(receipt_evidence_ref) is not None:
+            reject(
+                path,
+                "evidence_ref names lane/session presence; not account-live quota evidence",
+                route_id,
+            )
+            continue
+        if CLAUDE_ADMISSION_WITNESS_ALLOWLIST_RE.fullmatch(receipt_evidence_ref) is None:
+            reject(
+                path,
+                "evidence_ref unsupported; expected claude subscription headroom witness reference",
+                route_id,
+            )
+            continue
+        observed_at = _parse_utc(fields.get("observed_at", "").strip())
+        if observed_at is None:
+            reject(path, "missing or malformed observed_at", route_id)
+            continue
+        if observed_at > now:
+            reject(path, "observed_at is in the future", route_id)
+            continue
+        observed_at = _utc_seconds(observed_at)
+        try:
+            stale_after_seconds = int(fields.get("stale_after_seconds", "").strip())
+        except ValueError:
+            reject(path, "malformed stale_after_seconds", route_id)
+            continue
+        if stale_after_seconds <= 0:
+            reject(path, "non-positive stale_after_seconds", route_id)
+            continue
+        if stale_after_seconds > CLAUDE_ADMISSION_MAX_STALE_AFTER_SECONDS:
+            reject(
+                path,
+                f"stale_after_seconds exceeds maximum {CLAUDE_ADMISSION_MAX_STALE_AFTER_SECONDS}",
+                route_id,
+            )
+            continue
+        fresh_until = observed_at + timedelta(seconds=stale_after_seconds)
+        if now >= fresh_until:
+            reject(path, "receipt expired", route_id)
+            continue
+        refs.append(
+            ClaudeAdmission(
+                route_id=route_id,
+                evidence_ref=(
+                    "relay-receipt:"
+                    f"{_receipt_label(path)}:witness:{receipt_evidence_ref}:"
+                    f"observation:{observation}:"
+                    f"observed_at:{_iso_z_seconds(observed_at)}:"
+                    f"fresh_until:{_iso_z_seconds(fresh_until)}:"
+                    f"{CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX}"
+                ),
+                observed_at=observed_at,
+                fresh_until=fresh_until,
+            )
+        )
+    return ClaudeAdmissionScan(admissions=refs, ignored_evidence_refs=ignored_refs)
+
+
 def active_glmcp_admission_receipts(
     receipt_dir: Path,
     *,
@@ -770,8 +1368,8 @@ def active_glmcp_admission_receipts(
 ) -> GlmcpAdmissionScan:
     """Return fresh positive GLMCP quota/admission receipt evidence refs.
 
-    GLM Coding Plan Max is finite quota. Unlike the older Claude/Codex/Gemini
-    subscription snapshots, absence of a wall is not enough to call GLMCP fresh:
+    GLM Coding Plan Max is finite quota. Unlike wall-absence-fresh subscription
+    snapshots, absence of a wall is not enough to call GLMCP fresh:
     a bakeoff or dispatcher must leave an explicit, time-bounded admission
     witness first. This keeps GLMCP fail-closed until a supported-tool witness
     exists, without making provider calls from this writer.
@@ -1119,10 +1717,15 @@ def active_glmcp_payg_spend_receipts(
                 "spend_id",
                 "spend_reason",
                 "support_artifact_authority",
+                "task_hash",
                 "task_id",
             }
             and not _glmcp_payg_spend_field_is_nullish(key, value)
         }
+        task_hash = receipt_payload.get("task_hash")
+        if isinstance(task_hash, str) and not GLMCP_PAYG_SPEND_TASK_HASH_RE.fullmatch(task_hash):
+            _warn_stripped_glmcp_payg_spend_task_hash(path, task_hash)
+            receipt_payload.pop("task_hash", None)
         receipt_payload["spend_receipt_schema"] = 1
         try:
             receipts.append(SpendReceipt.model_validate(receipt_payload))
@@ -1213,10 +1816,13 @@ def build_live_ledger(
     walls: dict[str, list[QuotaWall]],
     agy_admissions: list[AgyAdmission],
     agy_ignored_receipts: list[str],
+    claude_admissions: list[ClaudeAdmission],
+    claude_ignored_receipts: list[str],
     glmcp_admissions: list[GlmcpAdmission],
     glmcp_ignored_receipts: list[str],
     glmcp_payg_spend_receipts: list[SpendReceipt],
     glmcp_ignored_payg_spend_receipts: list[str],
+    codex_auth_blocker: CodexAuthBlocker | None,
     local_resource_state: str,
     local_resource_evidence: list[str],
 ) -> QuotaSpendLedger:
@@ -1233,6 +1839,9 @@ def build_live_ledger(
         platform_walls = walls.get(platform, [])
         platform_wall_evidence = [wall.evidence_ref for wall in platform_walls]
         agy_platform_admissions = [admission for admission in agy_admissions if platform == "agy"]
+        claude_platform_admissions = [
+            admission for admission in claude_admissions if platform == "claude"
+        ]
         glmcp_payg_admissions = [
             admission
             for admission in glmcp_admissions
@@ -1311,6 +1920,87 @@ def build_live_ledger(
                     "no fresh agy route-specific quota admission receipt; agy.review.direct "
                     "must hold/backoff rather than dispatch blind"
                 )
+        elif platform == "claude":
+            for claude_route_id in CLAUDE_SUBSCRIPTION_ROUTES:
+                route_walls = _claude_shared_pool_quota_walls(platform_walls, now=now)
+                route_wall_evidence = [wall.evidence_ref for wall in route_walls]
+                route_admissions = [
+                    admission
+                    for admission in claude_platform_admissions
+                    if admission.route_id == claude_route_id
+                ]
+                after_wall_admissions = _claude_after_wall_admissions(
+                    route_admissions,
+                    route_walls,
+                )
+                route_ignored = _claude_ignored_receipts_for_route(
+                    claude_ignored_receipts,
+                    claude_route_id,
+                )
+                if route_walls and not after_wall_admissions:
+                    state = "exhausted"
+                    evidence = [*route_wall_evidence, writer_ref]
+                    fresh_until = None
+                    reason = (
+                        f"{claude_route_id} is inhibited by an unexpired Claude subscription "
+                        "quota wall on the shared account-level capacity pool; negative wall "
+                        "evidence outranks stale or earlier positive headroom receipts"
+                    )
+                elif route_admissions:
+                    accepted_admissions = after_wall_admissions or route_admissions
+                    state = "fresh"
+                    evidence = [
+                        *(admission.evidence_ref for admission in accepted_admissions),
+                        writer_ref,
+                    ]
+                    fresh_until = max(admission.fresh_until for admission in accepted_admissions)
+                    if after_wall_admissions:
+                        evidence.extend(route_wall_evidence)
+                        reason = (
+                            "fresh claude subscription-quota admission receipt observed after "
+                            "the active shared-pool wall; "
+                            f"{claude_route_id} account-live quota is receipt-bounded, "
+                            "not lane/session presence"
+                        )
+                    else:
+                        reason = (
+                            "fresh claude subscription-quota admission receipt present; "
+                            f"{claude_route_id} account-live quota is receipt-bounded, "
+                            "not lane/session presence"
+                        )
+                else:
+                    state = "unknown"
+                    evidence = (
+                        [*route_ignored, writer_ref]
+                        if route_ignored
+                        else [
+                            f"relay-receipt:claude:quota-admission:{claude_route_id}:absent",
+                            writer_ref,
+                        ]
+                    )
+                    fresh_until = None
+                    reason = (
+                        "no fresh claude subscription-quota admission receipt; "
+                        f"{claude_route_id} must hold rather than infer availability from "
+                        "lane/session presence"
+                    )
+                snapshot = {
+                    "quota_snapshot_schema": 1,
+                    "snapshot_id": (
+                        f"quota-{claude_route_id.replace('.', '-')}-live-{snapshot_stamp}"
+                    ),
+                    "captured_at": now.isoformat().replace("+00:00", "Z"),
+                    "route_id": claude_route_id,
+                    "provider": SUBSCRIPTION_PROVIDERS["claude"],
+                    "capacity_pool": "subscription_quota",
+                    "subscription_quota_state": state,
+                    "evidence_refs": evidence,
+                    "operator_visible_reason": reason,
+                }
+                if fresh_until is not None:
+                    snapshot["fresh_until"] = _iso_z_seconds(fresh_until)
+                snapshots.append(snapshot)
+            continue
         elif platform_walls and glmcp_eligible_payg_budget_decisions:
             state = "fresh"
             eligible_admissions = [
@@ -1411,6 +2101,21 @@ def build_live_ledger(
                         "and unknown quota must hold/backoff rather than dispatch blind"
                     )
                 fresh_until = None
+        elif platform == "codex" and codex_auth_blocker is not None:
+            state = "unknown"
+            evidence = [
+                *codex_auth_blocker.evidence_refs,
+                *(f"codex-auth-blocker:{reason}" for reason in codex_auth_blocker.reason_codes),
+                writer_ref,
+            ]
+            fresh_until = None
+            reason = (
+                "Codex saved-login exec auth receipt is blocked "
+                f"({', '.join(codex_auth_blocker.reason_codes)}); "
+                "repair saved Codex login on the dispatch host via codex login or the "
+                "documented auth-cache transfer fallback, then rerun platform capability "
+                "receipts before dispatching Codex lanes"
+            )
         else:
             state = "fresh"
             evidence = [f"relay-receipt:{platform}:quota-wall:absent", writer_ref]
@@ -1431,7 +2136,7 @@ def build_live_ledger(
             "operator_visible_reason": reason,
         }
         if fresh_until is not None:
-            snapshot["fresh_until"] = fresh_until.isoformat().replace("+00:00", "Z")
+            snapshot["fresh_until"] = _iso_z_seconds(fresh_until)
         snapshots.append(snapshot)
 
     snapshots.append(
@@ -1492,16 +2197,26 @@ def quota_spend_live_lock(path: Path) -> Any:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
-def refresh_capability_receipts(*, timeout: float) -> bool:
+def refresh_capability_receipts(*, timeout: float, receipt_dir: Path) -> bool:
     """Refresh per-provider capability receipts; failure degrades, not aborts."""
 
     script = REPO_ROOT / "scripts" / "hapax-platform-capability-receipts"
+    outer_timeout = max(timeout * 3, timeout + 15)
     try:
         result = subprocess.run(
-            [sys.executable, str(script), "--all"],
+            [
+                sys.executable,
+                str(script),
+                "--all",
+                "--codex-exec-auth-probe",
+                "--timeout",
+                str(timeout),
+                "--receipt-dir",
+                str(receipt_dir),
+            ],
             capture_output=True,
             text=True,
-            timeout=timeout,
+            timeout=outer_timeout,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         print(
@@ -1542,6 +2257,17 @@ def main(argv: list[str] | None = None) -> int:
         default=RELAY_RECEIPT_DIR,
         help="Quota-wall relay receipt directory",
     )
+    parser.add_argument(
+        "--platform-capability-receipt-dir",
+        type=Path,
+        default=Path(
+            os.environ.get(
+                PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
+                str(DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR),
+            )
+        ),
+        help="Platform capability receipt directory",
+    )
     parser.add_argument("--now", help="Override observation time as ISO-8601 UTC (tests)")
     parser.add_argument(
         "--skip-receipts",
@@ -1563,7 +2289,10 @@ def main(argv: list[str] | None = None) -> int:
 
     receipts_ok = True
     if not args.skip_receipts:
-        receipts_ok = refresh_capability_receipts(timeout=args.receipt_timeout)
+        receipts_ok = refresh_capability_receipts(
+            timeout=args.receipt_timeout,
+            receipt_dir=args.platform_capability_receipt_dir,
+        )
 
     try:
         base = load_quota_spend_ledger(args.base)
@@ -1579,10 +2308,15 @@ def main(argv: list[str] | None = None) -> int:
     with quota_spend_live_lock(out_path):
         walls = active_quota_walls(args.relay_receipt_dir, now=now)
         agy_scan = active_agy_admission_receipts(args.relay_receipt_dir, now=now)
+        claude_scan = active_claude_admission_receipts(args.relay_receipt_dir, now=now)
         glmcp_scan = active_glmcp_admission_receipts(args.relay_receipt_dir, now=now)
         glmcp_payg_spend_scan = active_glmcp_payg_spend_receipts(
             args.relay_receipt_dir,
             base=base,
+            now=now,
+        )
+        codex_auth_blocker = codex_saved_login_blocker(
+            args.platform_capability_receipt_dir,
             now=now,
         )
         resource_state, resource_evidence = probe_local_resource_state(nvidia_smi=args.nvidia_smi)
@@ -1593,10 +2327,13 @@ def main(argv: list[str] | None = None) -> int:
                 walls=walls,
                 agy_admissions=agy_scan.admissions,
                 agy_ignored_receipts=agy_scan.ignored_evidence_refs,
+                claude_admissions=claude_scan.admissions,
+                claude_ignored_receipts=claude_scan.ignored_evidence_refs,
                 glmcp_admissions=glmcp_scan.admissions,
                 glmcp_ignored_receipts=glmcp_scan.ignored_evidence_refs,
                 glmcp_payg_spend_receipts=glmcp_payg_spend_scan.receipts,
                 glmcp_ignored_payg_spend_receipts=glmcp_payg_spend_scan.ignored_evidence_refs,
+                codex_auth_blocker=codex_auth_blocker,
                 local_resource_state=resource_state,
                 local_resource_evidence=resource_evidence,
             )
@@ -1613,6 +2350,8 @@ def main(argv: list[str] | None = None) -> int:
         "local_resource_state": resource_state,
         "agy_admissions": len(agy_scan.admissions),
         "agy_ignored_admissions": len(agy_scan.ignored_evidence_refs),
+        "claude_admissions": len(claude_scan.admissions),
+        "claude_ignored_admissions": len(claude_scan.ignored_evidence_refs),
         "glmcp_admissions": len(glmcp_scan.admissions),
         "glmcp_ignored_admissions": len(glmcp_scan.ignored_evidence_refs),
         "glmcp_payg_spend_receipts": len(glmcp_payg_spend_scan.receipts),

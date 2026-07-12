@@ -1,9 +1,4 @@
-"""FM-11 lane supervisor systemd units (coordination-reform 2026-05-30 Phase 6).
-
-Pins the supervisor oneshot+timer and the Restart=always+StartLimit hardening
-of the claude lane template unit, so the "dead lanes always auto-restart"
-mandate cannot silently regress to the old Restart=no.
-"""
+"""Lane supervisor systemd containment and adjacent lane-unit pins."""
 
 from __future__ import annotations
 
@@ -14,6 +9,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 UNITS_DIR = REPO_ROOT / "systemd" / "units"
 SUPERVISOR_SERVICE = UNITS_DIR / "hapax-lane-supervisor.service"
 SUPERVISOR_TIMER = UNITS_DIR / "hapax-lane-supervisor.timer"
+REAPER_SERVICE = UNITS_DIR / "hapax-lane-reaper.service"
+AUDIT_SERVICE = UNITS_DIR / "codex-claim-audit.service"
 CLAUDE_LANE = UNITS_DIR / "hapax-claude-lane@.service"
 
 
@@ -29,27 +26,41 @@ def test_supervisor_service_is_oneshot_running_the_supervisor() -> None:
     unit = _load(SUPERVISOR_SERVICE)
     assert unit["Service"]["Type"] == "oneshot"
     assert "hapax-lane-supervisor" in unit["Service"]["ExecStart"]
-    # A hung launcher must not wedge the oneshot forever.
+    assert "projection" in unit["Unit"]["Description"].lower()
     assert "TimeoutStartSec" in unit["Service"]
 
 
 def test_supervisor_service_execstart_is_branch_stable() -> None:
-    """A must-always-run supervisor cannot depend on the canonical integrator
-    worktree's transient branch — that worktree floats across feature branches
-    and frequently lacks the supervisor script (it shipped in #3803), so a
-    `%h/projects/hapax-council/scripts/...` ExecStart would fail to start.
-    Point it at the deploy-maintained `~/.local/bin` symlink, which is exactly
-    what the supervisor script itself assumes for its sibling launchers.
-    """
-    exec_start = _load(SUPERVISOR_SERVICE)["Service"]["ExecStart"]
-    assert exec_start.endswith("/.local/bin/hapax-lane-supervisor"), exec_start
-    assert "projects/hapax-council" not in exec_start, exec_start
-
-
-def test_supervisor_service_defaults_to_appendix_only_local_dev_maintenance() -> None:
+    """The supervisor resolves and verifies one exact activated release."""
     unit = _load(SUPERVISOR_SERVICE)
-    environment = unit["Service"].get("Environment", "")
-    assert "HAPAX_LOCAL_DEV_MAINTENANCE_MODE=appendix-only" in environment
+    activated_root = "%h/.cache/hapax/source-activation/worktree"
+    assert unit["Service"]["WorkingDirectory"] == "%h"
+    command = unit["Service"]["ExecStart"]
+    assert command.startswith("/usr/bin/bash -c ")
+    assert "last-success-sha" in command
+    assert "rev-parse HEAD" in command
+    assert "status --porcelain --untracked-files=no" in command
+    assert 'exec "$target/scripts/hapax-lane-supervisor"' in command
+    raw = SUPERVISOR_SERVICE.read_text(encoding="utf-8")
+    assert "projects/hapax-council" not in raw
+    assert f"ConditionFileIsExecutable={activated_root}/scripts/hapax-lane-supervisor" in raw
+
+
+def test_supervisor_service_enforces_read_only_projection() -> None:
+    unit = _load(SUPERVISOR_SERVICE)
+    service = unit["Service"]
+    assert service["ProtectHome"] == "read-only"
+    assert service["ProtectSystem"] == "strict"
+    assert service["NoNewPrivileges"] == "true"
+    assert service["PrivateNetwork"] == "true"
+    assert service["RestrictAddressFamilies"] == "AF_UNIX"
+    assert service["PrivateTmp"] == "true"
+    assert service["CapabilityBoundingSet"] == ""
+    assert service["AmbientCapabilities"] == ""
+    assert service["ReadOnlyPaths"] == "%t /tmp /var/tmp"
+    assert "SystemCallFilter=~@network-io kill " in SUPERVISOR_SERVICE.read_text(encoding="utf-8")
+    assert "HAPAX_SUPERVISOR_METRICS_FILE=" in service.get("Environment", "")
+    assert "OnFailure" not in unit["Unit"]
 
 
 def test_supervisor_timer_ticks_every_60s() -> None:
@@ -60,11 +71,7 @@ def test_supervisor_timer_ticks_every_60s() -> None:
 
 
 def test_supervisor_timer_is_marked_auto_enable() -> None:
-    """reform-improve-deploy-activation: the deploy auto-enables units that
-    carry a `# Hapax-Auto-Enable: true` marker, so a newly-merged supervisor
-    timer is `enable --now`'d instead of installed-but-sleeping (the FM-11
-    live gap). The marker is meaningless without an [Install] section.
-    """
+    """The recurring surface may auto-enable only because it is read-only."""
     markers = [
         line.strip()
         for line in SUPERVISOR_TIMER.read_text(encoding="utf-8").splitlines()
@@ -73,6 +80,49 @@ def test_supervisor_timer_is_marked_auto_enable() -> None:
     assert markers, "lane-supervisor.timer must carry a `# Hapax-Auto-Enable` marker"
     assert any("true" in marker.lower() for marker in markers)
     assert "Install" in _load(SUPERVISOR_TIMER)
+    assert "Project Hapax lane health" in SUPERVISOR_TIMER.read_text(encoding="utf-8")
+
+
+def test_reaper_service_executes_canonical_source_activation() -> None:
+    unit = _load(REAPER_SERVICE)
+    service = unit["Service"]
+    activated_root = "%h/.cache/hapax/source-activation/worktree"
+
+    assert service["WorkingDirectory"] == "%h"
+    assert "last-success-sha" in service["ExecStart"]
+    assert 'exec "$target/scripts/hapax-lane-reaper" --threshold 30' in service["ExecStart"]
+    raw = REAPER_SERVICE.read_text(encoding="utf-8")
+    assert "projects/hapax-council" not in raw
+    assert f"ConditionFileIsExecutable={activated_root}/scripts/hapax-lane-reaper" in raw
+
+
+def test_reaper_service_is_independently_projection_only() -> None:
+    unit = _load(REAPER_SERVICE)
+    service = unit["Service"]
+    raw = REAPER_SERVICE.read_text(encoding="utf-8")
+
+    assert service["ProtectHome"] == "read-only"
+    assert service["ProtectSystem"] == "strict"
+    assert service["NoNewPrivileges"] == "true"
+    assert service["PrivateNetwork"] == "true"
+    assert service["RestrictAddressFamilies"] == "AF_UNIX"
+    assert service["PrivateTmp"] == "true"
+    assert service["CapabilityBoundingSet"] == ""
+    assert service["AmbientCapabilities"] == ""
+    assert service["ReadOnlyPaths"] == "%t /tmp /var/tmp"
+    assert "SystemCallFilter=~@network-io kill " in raw
+    assert "OnFailure=" not in raw
+
+
+def test_all_projection_units_bind_release_and_cannot_reach_control_sockets() -> None:
+    for path in (SUPERVISOR_SERVICE, REAPER_SERVICE, AUDIT_SERVICE):
+        service = _load(path)["Service"]
+        command = service["ExecStart"]
+        assert "last-success-sha" in command
+        assert "rev-parse HEAD" in command
+        assert "status --porcelain --untracked-files=no" in command
+        assert service["PrivateTmp"] == "true"
+        assert "SystemCallFilter=~@network-io" in path.read_text(encoding="utf-8")
 
 
 def test_claude_lane_unit_restarts_always_with_startlimit() -> None:

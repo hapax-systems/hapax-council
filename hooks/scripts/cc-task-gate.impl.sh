@@ -552,6 +552,7 @@ else
       # 127 = python missing, …) is an INFRA signal, never a deny. Mirror INV-5:
       # fail OPEN for a candidate, else fall through. Sanitize the captured output
       # before it enters the JSONL ledger.
+      # shellcheck disable=SC1003  # tr receives literal backslash escapes as one set.
       _bs_det="$(printf '%s' "${_bootstrap_output:-}" | tr '\n\r\t"\\' '     ' | cut -c1-160)"
       _bootstrap_infra_failopen "helper_rc_${_bootstrap_rc}" "$_bs_det"
       ;;
@@ -643,6 +644,25 @@ cc-task-gate: BLOCKED — cannot determine session role (set HAPAX_AGENT_ROLE, C
 EOF
   exit 2
 fi
+
+# Preserve the same platform dimension that cc-claim records in assigned_to.
+# Explicit interface evidence wins; known legacy lane shapes supply only the
+# backwards-compatible fallback needed to interpret old bare owners.
+platform=""
+if declare -F hapax_agent_interface >/dev/null 2>&1; then
+  platform="$(hapax_agent_interface 2>/dev/null || true)"
+fi
+case "$platform" in
+  claude|codex|vibe) ;;
+  *)
+    case "$role" in
+      cx-*) platform="codex" ;;
+      vbe-*) platform="vibe" ;;
+      alpha|beta|gamma|delta|epsilon|zeta|eta|theta|cc-*) platform="claude" ;;
+      *) platform="" ;;
+    esac
+    ;;
+esac
 
 # Session-keyed claim lookup with legacy fallback. cc-claim keys a claim to
 # <role>-<session_id> so two same-role sessions never collide (FM-2); a pre-reform
@@ -835,9 +855,23 @@ runtime_authorized="$(printf '%s' "$parse_output" | cut -f12)"
 mutation_scope_refs="$(printf '%s' "$parse_output" | cut -f13-)"
 
 # --- 8. Check assigned_to ---
-if [[ "$assigned" != "$role" ]]; then
+_owner_matches=false
+if [[ -n "$platform" && "$assigned" == "$platform/$role" ]]; then
+  _owner_matches=true
+elif [[ "$assigned" == "$role" ]]; then
+  _legacy_platform=""
+  case "$role" in
+    cx-*) _legacy_platform="codex" ;;
+    vbe-*) _legacy_platform="vibe" ;;
+    alpha|beta|gamma|delta|epsilon|zeta|eta|theta|cc-*) _legacy_platform="claude" ;;
+  esac
+  if [[ -z "$_legacy_platform" || "$_legacy_platform" == "$platform" ]]; then
+    _owner_matches=true
+  fi
+fi
+if [[ "$_owner_matches" != "true" ]]; then
   _emit_block <<EOF
-cc-task-gate: BLOCKED — task '$task_id' is assigned to '$assigned', not '$role'.
+cc-task-gate: BLOCKED — task '$task_id' is assigned to '$assigned', not '${platform:-unknown}/$role'.
 
   Note: $note_path
   Either this session has the wrong role, or the operator reassigned

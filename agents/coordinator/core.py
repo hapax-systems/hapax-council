@@ -57,15 +57,25 @@ from shared.relay_lifecycle import (
 )
 from shared.relay_mq import (
     COORDINATOR_ACCEPTED_DISPATCH_REASON_PREFIX,
+    CoordinatorDispatchPreparation,
     abort_coordinator_prepared_dispatch,
+    coordinator_dispatch_recipient_state,
+    prepare_coordinator_dispatch,
 )
-from shared.relay_mq_envelope import Envelope
+from shared.relay_mq_envelope import Envelope, compute_payload_hash
 from shared.route_metadata_schema import (
     RouteMetadataStatus,
     assess_route_metadata,
     route_metadata_payload_from_frontmatter,
 )
 from shared.sdlc_lifecycle import TASK_TERMINAL_STATUSES
+from shared.sdlc_owner_identity import (
+    UNASSIGNED_TASK_OWNERS,
+    TaskOwnerIdentity,
+    owner_matches,
+    parse_task_owner,
+    task_owner_is_unassigned,
+)
 from shared.sdlc_pressure_gate import admission_state
 from shared.sdlc_task_store import (
     TaskStoreError,
@@ -273,24 +283,22 @@ def _lane_dispatchable(lane: LaneState) -> bool:
     return not (lane.platform.lower() == "claude" and is_claude_operator_pool_role(lane.role))
 
 
-_UNASSIGNED_TASK_OWNERS = frozenset({"", "null", "none", "~", "unassigned"})
-_QUALIFIED_OWNER_PLATFORMS = frozenset({"claude", "codex", "vibe"})
+_UNASSIGNED_TASK_OWNERS = UNASSIGNED_TASK_OWNERS
 _UNMAPPABLE_OWNER_RESERVATION = "__task_owner_unmappable__"
 
 
-def _normalized_task_owner(owner: str) -> str | None:
-    normalized = owner.strip()
-    if "/" not in normalized:
-        return normalized
-    platform, separator, role = normalized.partition("/")
-    if (
-        separator
-        and platform.strip().lower() in _QUALIFIED_OWNER_PLATFORMS
-        and role.strip()
-        and "/" not in role
-    ):
-        return role.strip()
-    return None
+def _normalized_task_owner(owner: str) -> TaskOwnerIdentity | None:
+    try:
+        return parse_task_owner(owner)
+    except ValueError:
+        return None
+
+
+def _owner_matches_lane(owner: TaskOwnerIdentity | None, lane: LaneState) -> bool:
+    if owner is None:
+        return False
+    raw = owner.reservation_key
+    return owner_matches(raw, lane.role, lane.platform)
 
 
 def _reserve_lanes_from_task_ssot(lanes: dict[str, LaneState], tasks: Sequence[Task]) -> None:
@@ -310,9 +318,14 @@ def _reserve_lanes_from_task_ssot(lanes: dict[str, LaneState], tasks: Sequence[T
             lane.dispatch_blocked_reason = blocker
         return
 
-    for role, claims in reservations.items():
-        lane = lanes.get(role)
-        if lane is None:
+    for lane in lanes.values():
+        claims = tuple(
+            sorted(
+                set(reservations.get(lane.role, ()))
+                | set(reservations.get(f"{lane.platform}/{lane.role}", ()))
+            )
+        )
+        if not claims:
             continue
         lane.task_ssot_claims = claims
         if lane.claimed_task is None:
@@ -326,13 +339,16 @@ def _task_ssot_reservations(tasks: Sequence[Task]) -> dict[str, tuple[str, ...]]
     reservations: dict[str, list[str]] = {}
     for task in tasks:
         owner = task.assigned_to.strip()
-        if owner.lower() in _UNASSIGNED_TASK_OWNERS:
+        if task_owner_is_unassigned(owner):
             continue
-        normalized_owner = _normalized_task_owner(owner)
-        if normalized_owner is None:
+        try:
+            normalized_owner = parse_task_owner(owner)
+        except ValueError:
             reservations.setdefault(_UNMAPPABLE_OWNER_RESERVATION, []).append(task.task_id)
             continue
-        reservations.setdefault(normalized_owner, []).append(task.task_id)
+        if normalized_owner is None:
+            continue
+        reservations.setdefault(normalized_owner.reservation_key, []).append(task.task_id)
     return {role: tuple(sorted(set(task_ids))) for role, task_ids in reservations.items()}
 
 
@@ -767,7 +783,12 @@ class Coordinator:
             reason = "task_ssot_owner_unmappable:" + ",".join(invalid_owners)
             log.warning("dispatch HOLD for %s: %s", lane.role, reason)
             return None, reason
-        lane_reservations = reservations.get(lane.role, ())
+        lane_reservations = tuple(
+            sorted(
+                set(reservations.get(lane.role, ()))
+                | set(reservations.get(f"{lane.platform}/{lane.role}", ()))
+            )
+        )
         if lane_reservations:
             reason = "lane_reserved_by_task_ssot:" + ",".join(lane_reservations)
             log.warning("dispatch HOLD for %s: %s", lane.role, reason)
@@ -1250,7 +1271,7 @@ def _pid_generation(pid: int) -> str:
         tail = stat_text.rsplit(")", 1)[1].split()
         start_ticks = tail[19]
     except (OSError, IndexError):
-        return f"pid:{pid}"
+        return ""
     return f"pid:{pid}:{start_ticks}"
 
 
@@ -1588,9 +1609,30 @@ class _CoordinatorDispatchInFlight(RuntimeError):
         super().__init__(preparation.message_id)
 
 
+def _parent_spec_sha256(raw_path: str) -> str:
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = Path.home() / "Documents" / "Personal" / path
+    try:
+        if path.is_symlink() or not path.is_file():
+            raise OSError("parent spec is not a regular non-symlink file")
+        content = path.read_bytes()
+    except OSError as exc:
+        raise CoordDispatchError("dispatch_parent_spec_preimage_unreadable") from exc
+    return hashlib.sha256(content).hexdigest()
+
+
 def _dispatch_preparation_binding(task: Task, lane: LaneState) -> DispatchPreparationBinding:
     if not task.source_sha256:
         raise CoordDispatchError("dispatch_task_preimage_hash_missing")
+    if not lane.generation:
+        raise CoordDispatchError("dispatch_lane_generation_missing")
+    lane_pid_generation = _pid_generation(lane.pid) if lane.pid is not None else ""
+    if lane.pid is not None and not lane_pid_generation:
+        raise CoordDispatchError("dispatch_lane_pid_generation_unreadable")
+    parent_spec = task.parent_spec or ""
+    if not parent_spec:
+        raise CoordDispatchError("dispatch_parent_spec_missing")
     claim_hash, relay_hash = lane_ownership_projection_hashes(
         cache_dir=CACHE_DIR,
         relay_dir=RELAY_DIR,
@@ -1605,14 +1647,15 @@ def _dispatch_preparation_binding(task: Task, lane: LaneState) -> DispatchPrepar
         lane_session=lane.session,
         lane_generation=lane.generation,
         lane_pid=lane.pid,
-        lane_pid_generation=_pid_generation(lane.pid) if lane.pid is not None else "",
+        lane_pid_generation=lane_pid_generation,
         claim_projection_sha256=claim_hash,
         relay_projection_sha256=relay_hash,
         platform=lane.platform,
         mode=COORDINATOR_DISPATCH_MODE,
         authority_case=task.authority_case or "",
         authority_item=task.authority_item or task.task_id,
-        parent_spec=task.parent_spec or "",
+        parent_spec=parent_spec,
+        parent_spec_sha256=_parent_spec_sha256(parent_spec),
     )
 
 
@@ -1626,7 +1669,7 @@ def _dispatch_binding_for_message(
     with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0) as conn:
         row = conn.execute(
             """
-            SELECT m.payload
+            SELECT m.payload, m.payload_hash
             FROM messages m
             JOIN recipients r ON r.message_id = m.message_id
             WHERE m.message_id = :message_id
@@ -1640,7 +1683,14 @@ def _dispatch_binding_for_message(
         ).fetchone()
     if row is None:
         raise CoordDispatchError("strict_mq_message_id_mismatch")
-    return dispatch_preparation_binding_from_payload(row[0])
+    payload, payload_hash = row
+    if (
+        not isinstance(payload, str)
+        or not isinstance(payload_hash, str)
+        or compute_payload_hash(payload) != payload_hash
+    ):
+        raise CoordDispatchError("mq_payload_hash_mismatch")
+    return dispatch_preparation_binding_from_payload(payload)
 
 
 def _finalize_dispatch_pickup(
@@ -1664,11 +1714,13 @@ def _finalize_dispatch_pickup(
         profile=COORDINATOR_DISPATCH_PROFILE,
         authority_case=task.authority_case,
         authority_item=task.authority_item or task.task_id,
-        parent_spec=task.parent_spec,
+        parent_spec=binding.parent_spec,
         message_id=message_id,
         mq_db_path=_relay_mq_db_path(),
         event_log=_coord_event_log_from_env(),
         binding_hash=binding.binding_hash,
+        prepared_platform=binding.platform,
+        prepared_mode=binding.mode,
     )
     try:
         result = finalize_accepted_dispatch_on_pickup(request)
@@ -1829,7 +1881,6 @@ def _live_headless_launcher(role: str) -> tuple[int, str | None] | None:
 
 COORDINATOR_DISPATCHABLE_PLATFORMS = dispatch_guards.COORDINATOR_HEADLESS_DISPATCHABLE_PLATFORMS
 RETIRED_DISPATCH_PLATFORM_ALIASES = frozenset({"agy", "antigrav", "antigravity", "gemini-cli"})
-_DISPATCH_CLAIM_GUARD_MARKERS = dispatch_guards.DISPATCH_CLAIM_GUARD_MARKERS
 _DISPATCH_CLOSE_GUARD_MARKERS = dispatch_guards.DISPATCH_CLOSE_GUARD_MARKERS
 
 
@@ -1896,19 +1947,9 @@ def _dispatch_tool_blocker(role: str, platform: str) -> str | None:
 
     # Intentionally uncached: these scripts are small, lane count is bounded, and
     # worktree guard repairs should affect dispatch readiness on the next tick.
-    claim = worktree / "scripts" / "cc-claim"
-    if not claim.is_file():
-        return _dispatch_tool_block(f"missing cc-claim at {claim}", worktree)
-    try:
-        claim_text = _read_dispatch_guard(claim)
-    except OSError as exc:
-        return _dispatch_tool_block(f"unreadable cc-claim at {claim}: {exc}", worktree)
-    missing_claim = [marker for marker in _DISPATCH_CLAIM_GUARD_MARKERS if marker not in claim_text]
-    if missing_claim:
-        return _dispatch_tool_block(
-            f"stale cc-claim in {worktree}: missing {', '.join(missing_claim)}",
-            worktree,
-        )
+    claim_ok, claim_reason = dispatch_guards.check_worktree_claim_guard(worktree)
+    if not claim_ok:
+        return _dispatch_tool_block(claim_reason, worktree)
 
     close = worktree / "scripts" / "cc-close"
     if not close.is_file():
@@ -2061,6 +2102,7 @@ def _dispatch_landed(task: Task, lane: LaneState, message_id: str | None = None)
         snapshot = resolve_task_note(TASKS_DIR.parent, task.task_id, state="active")
         binding = load_claim_dispatch_binding(claim_dispatch_binding_path(CACHE_DIR, observed.role))
         expected_binding = _dispatch_binding_for_message(message_id, lane)
+        parent_spec_sha256 = _parent_spec_sha256(expected_binding.parent_spec)
     except (TaskStoreError, CoordDispatchError):
         return False
     fields = snapshot.frontmatter
@@ -2078,9 +2120,10 @@ def _dispatch_landed(task: Task, lane: LaneState, message_id: str | None = None)
         or expected_binding.task_path != str(task.path.resolve())
         or expected_binding.task_sha256 != task.source_sha256
         or status not in {"claimed", "in_progress"}
-        or owner != observed.role
+        or not _owner_matches_lane(owner, observed)
         or authority_case != (task.authority_case or "")
         or parent_spec != (task.parent_spec or "")
+        or parent_spec_sha256 != expected_binding.parent_spec_sha256
         or binding.task_id != task.task_id
         or binding.lane != observed.role
         or binding.dispatch_message_id != message_id

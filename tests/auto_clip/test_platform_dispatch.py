@@ -37,18 +37,21 @@ def test_build_description_contains_attribution():
     canonical = _description_value(desc, "Canonical")
     parsed = urlparse(canonical)
     assert canonical == CITABLE_NEXUS_URL
-    assert (parsed.scheme, parsed.hostname) == ("https", "hapax.github.io")
+    # Attribution must point at an operator-owned surface; hapax.github.io
+    # belongs to an unrelated third-party GitHub account.
+    assert (parsed.scheme, parsed.hostname) == ("https", "hapax.weblog.lol")
+    assert "hapax.github.io" not in desc
     assert "CC-BY-4.0" in desc
 
 
 def test_build_description_contains_rail_pages():
     desc = build_description(_sample_metadata())
-    rail_urls = {
-        _description_value(desc, "Github Sponsors"),
-        _description_value(desc, "Open Collective"),
-    }
+    rail_urls = {_description_value(desc, "Support")}
     assert rail_urls == set(RAIL_PAGES.values())
-    assert {urlparse(url).hostname for url in rail_urls} == {"github.com", "opencollective.com"}
+    # Single no-perk support rail; no personal sponsors or dead rails.
+    assert {urlparse(url).hostname for url in rail_urls} == {"hapax.weblog.lol"}
+    assert "sponsors/ryanklee" not in desc
+    assert "opencollective.com" not in desc
 
 
 def test_youtube_uploader_not_configured_by_default():

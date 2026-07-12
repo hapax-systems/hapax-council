@@ -413,6 +413,23 @@ class TestAck(unittest.TestCase):
         )
         self.assertTrue(ack_message(self.db_path, mid, "alpha", "processed"))
 
+    def test_generic_ack_refuses_offered_coordinator_message_with_arbitrary_reason(self) -> None:
+        env = _make_envelope(
+            sender="hapax-coordinator",
+            message_type="dispatch",
+            authority_case="CASE-1",
+            recipients_spec="alpha",
+        )
+        send_message(self.db_path, env, initial_reason="ordinary coordinator offer")
+
+        self.assertFalse(ack_message(self.db_path, env.message_id, "alpha", "read"))
+        with _connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT state, reason FROM recipients WHERE message_id = ?",
+                (env.message_id,),
+            ).fetchone()
+        self.assertEqual((row["state"], row["reason"]), ("offered", "ordinary coordinator offer"))
+
     def test_ack_accepted_to_deferred_with_reason(self) -> None:
         mid = self._send_and_consume()
         ack_message(self.db_path, mid, "alpha", "accepted")

@@ -45,10 +45,15 @@ def _hook_basename(command: str) -> str:
     if not text:
         return command
     try:
-        token = shlex.split(text)[0]
+        tokens = shlex.split(text)
     except ValueError:
-        token = text.split()[0]
-    return Path(token).name
+        tokens = text.split()
+    if not tokens:
+        return command
+    hook_tokens = [token for token in tokens if Path(token).name.endswith(".sh")]
+    if hook_tokens:
+        return Path(hook_tokens[-1]).name
+    return Path(tokens[0]).name
 
 
 def _literal_list(value: Any, label: str) -> list[str]:

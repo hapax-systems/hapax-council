@@ -20,8 +20,6 @@
 
 set -euo pipefail
 
-COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
-
 usage() {
   cat <<'EOF'
 usage: hapax-claude [--role alpha|…|theta | dev|dev2|…] [--cd DIR]
@@ -45,7 +43,6 @@ EOF
 
 ROLE=""
 WORKDIR=""
-WORKDIR_EXPLICIT=0
 TERMINAL="${HAPAX_CLAUDE_TERMINAL:-none}"
 FORCE=0
 CLAUDE_TASK="${HAPAX_METHODOLOGY_DISPATCH_TASK:-}"
@@ -64,12 +61,10 @@ while [ $# -gt 0 ]; do
       ;;
     --cd|-C)
       WORKDIR="${2:-}"
-      WORKDIR_EXPLICIT=1
       shift 2
       ;;
     --cd=*)
       WORKDIR="${1#--cd=}"
-      WORKDIR_EXPLICIT=1
       shift
       ;;
     --terminal)
@@ -199,6 +194,127 @@ if [ ! -d "$WORKDIR" ]; then
 fi
 WORKDIR="$(cd "$WORKDIR" && pwd)"
 
+resume_session_id_is_safe() {
+  python3 - "$1" <<'PYEOF'
+import re
+import sys
+
+value = sys.argv[1].strip()
+tail = value.rsplit("-", 1)[-1]
+safe = (
+    8 <= len(value) <= 128
+    and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", value) is not None
+    and not value.isdigit()
+    and not (tail.isdigit() and len(tail) <= 7)
+)
+raise SystemExit(0 if safe else 1)
+PYEOF
+}
+
+RESUME_SESSION_UUID="${HAPAX_CLAIM_RESUME_SESSION_ID:-}"
+if [ -n "$RESUME_SESSION_UUID" ]; then
+  if ! resume_session_id_is_safe "$RESUME_SESSION_UUID"; then
+    echo "hapax-claude: refusing unsafe resume-session identity" >&2
+    exit 17
+  fi
+  SESSION_UUID="$RESUME_SESSION_UUID"
+  CLAIM_RESUME=1
+else
+  SESSION_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null \
+    || uuidgen 2>/dev/null \
+    || python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null \
+    || printf 'sid%sx%s%s' "$(date +%s%N)" "$RANDOM" "$RANDOM")"
+  CLAIM_RESUME=0
+fi
+export HAPAX_AGENT_INTERFACE="claude"
+export HAPAX_AGENT_NAME="$ROLE"
+export CLAUDE_ROLE="$ROLE"
+export HAPAX_AGENT_ROLE="$ROLE"
+export HAPAX_WORKTREE_ROLE="$ROLE"
+export HAPAX_SESSION_ID="$SESSION_UUID"
+mkdir -p "$HOME/.cache/hapax" 2>/dev/null || true
+printf '%s\n' "$ROLE" >"$HOME/.cache/hapax/session-role-$SESSION_UUID" 2>/dev/null || true
+export HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-270}"
+
+SOURCE_ACTIVATION_WORKTREE="${HAPAX_SOURCE_ACTIVATION_WORKTREE:-$HOME/.cache/hapax/source-activation/worktree}"
+SOURCE_ACTIVATION_RECEIPT="${HAPAX_SOURCE_ACTIVATION_RECEIPT:-$HOME/.cache/hapax/source-activation/current.json}"
+CC_CLAIM="$SOURCE_ACTIVATION_WORKTREE/scripts/cc-claim"
+CC_CLAIM_PROTOCOL_VERSION="hapax-claim-dispatch-v1"
+CC_CLAIM_PROTOCOL_CHECKED=0
+
+require_checked_cc_claim() {
+  local observed=""
+  if [ "$CC_CLAIM_PROTOCOL_CHECKED" -eq 1 ]; then
+    return 0
+  fi
+  if ! python3 - "$SOURCE_ACTIVATION_WORKTREE" "$SOURCE_ACTIVATION_RECEIPT" <<'PYEOF'
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+try:
+    target = Path(sys.argv[1]).resolve(strict=True)
+    receipt_path = Path(sys.argv[2])
+    receipt_metadata = receipt_path.lstat()
+    if stat.S_ISLNK(receipt_metadata.st_mode) or not stat.S_ISREG(receipt_metadata.st_mode):
+        raise ValueError("activation receipt is not a regular file")
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    head = receipt["active_source_head"]
+    if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise ValueError("malformed activation head")
+    if target != Path(receipt["active_source_target"]).resolve(strict=True):
+        raise ValueError("activation target mismatch")
+    last_success_path = receipt_path.parent / "last-success-sha"
+    last_success_metadata = last_success_path.lstat()
+    if stat.S_ISLNK(last_success_metadata.st_mode) or not stat.S_ISREG(last_success_metadata.st_mode):
+        raise ValueError("last-success-sha is not a regular file")
+    last_success = last_success_path.read_text(encoding="ascii").strip()
+    if last_success != head or target.name != head:
+        raise ValueError("activation release identity mismatch")
+    observed = subprocess.run(["git", "-C", str(target), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    shared_kind = subprocess.run(["git", "-C", str(target), "cat-file", "-t", f"{head}:shared"], check=True, capture_output=True, text=True).stdout.strip()
+    surface_status = subprocess.run(["git", "-C", str(target), "status", "--porcelain=v1", "--untracked-files=all", "--", "scripts/cc-claim", "shared"], check=True, capture_output=True, text=True).stdout
+    claim = target / "scripts" / "cc-claim"
+    metadata = claim.lstat()
+    tracked = subprocess.run(["git", "-C", str(target), "rev-parse", f"{head}:scripts/cc-claim"], check=True, capture_output=True, text=True).stdout.strip()
+    actual = subprocess.run(["git", "-C", str(target), "hash-object", str(claim)], check=True, capture_output=True, text=True).stdout.strip()
+    if observed != head or tracked != actual or shared_kind != "tree" or surface_status:
+        raise ValueError("activated implementation identity mismatch")
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode) or not os.access(claim, os.X_OK):
+        raise ValueError("activated cc-claim is not a regular executable")
+except (KeyError, OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+    print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+PYEOF
+  then
+    echo "hapax-claude: refusing unverified source-activation cc-claim at $CC_CLAIM" >&2
+    exit 14
+  fi
+  if ! observed="$(cd "$WORKDIR" && "$CC_CLAIM" --dispatch-protocol-version)"; then
+    echo "hapax-claude: activated cc-claim protocol probe failed at $CC_CLAIM" >&2
+    exit 14
+  fi
+  if [ "$observed" != "$CC_CLAIM_PROTOCOL_VERSION" ]; then
+    echo "hapax-claude: refusing activated cc-claim with unsupported protocol at $CC_CLAIM (expected $CC_CLAIM_PROTOCOL_VERSION, got ${observed:-<empty>})" >&2
+    exit 14
+  fi
+  CC_CLAIM_PROTOCOL_CHECKED=1
+}
+
+verify_dispatch_binding_if_required() {
+  local task="$1"
+  [ -n "${HAPAX_CLAIM_DISPATCH_MESSAGE_ID:-}" ] || return 0
+  require_checked_cc_claim
+  if ! (cd "$WORKDIR" && "$CC_CLAIM" --verify-dispatch-binding "$task"); then
+    echo "hapax-claude: refusing task '$task'; exact dispatch binding verification failed" >&2
+    exit 18
+  fi
+}
+
 session_is_protected() {
   local role="$1"
   local protection_file="${HAPAX_SESSION_PROTECTION_FILE:-$HOME/.cache/hapax/relay/session-protection.md}"
@@ -241,6 +357,7 @@ if [ -z "$CLAUDE_BIN" ]; then
   echo "hapax-claude: claude not found in PATH" >&2
   exit 4
 fi
+export PATH="$WORKDIR/scripts:$PATH"
 
 # Operator default: spawn lanes at max effort with permission prompts
 # bypassed. Override per-spawn via env: HAPAX_CLAUDE_EFFORT=xhigh,
@@ -279,28 +396,27 @@ if [ "$TERMINAL" != "none" ]; then
   fi
 fi
 
-# Identity wiring (matches scripts/hapax-codex semantics so shared hooks
-# can read either CLAUDE_ROLE or HAPAX_AGENT_NAME).
-# Per-session id (coordination reform Phase 1): a stable uuid so the gate keys a
-# claim lease to THIS session — two same-role sessions never collide (FM-2).
-SESSION_UUID="${HAPAX_SESSION_ID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf '%s-%s' "$ROLE" "$$")}"
-export HAPAX_AGENT_INTERFACE="claude"
-export HAPAX_AGENT_NAME="$ROLE"
-export CLAUDE_ROLE="$ROLE"
-export HAPAX_AGENT_ROLE="$ROLE"
-export HAPAX_WORKTREE_ROLE="$ROLE"
-export HAPAX_SESSION_ID="$SESSION_UUID"
-# Per-session identity marker (reform-identity-coherence, cluster 11): WM-independent
-# identity keyed by the session id (agent-role.sh / hapax-whoami read it; path
-# convention SSOT is hapax_session_role_marker in hooks/scripts/agent-role.sh).
-mkdir -p "$HOME/.cache/hapax" 2>/dev/null || true
-printf '%s\n' "$ROLE" >"$HOME/.cache/hapax/session-role-$SESSION_UUID" 2>/dev/null || true
-export HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-270}"
-
+SESSION_CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-$ROLE-$SESSION_UUID"
 CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-$ROLE"
 CLAIMED_TASK=""
-if [ -s "$CLAIM_FILE" ]; then
-  CLAIMED_TASK="$(head -n1 "$CLAIM_FILE" | tr -d '[:space:]')"
+SESSION_CLAIMED_TASK=""
+LEGACY_CLAIMED_TASK=""
+[ ! -s "$SESSION_CLAIM_FILE" ] || SESSION_CLAIMED_TASK="$(head -n1 "$SESSION_CLAIM_FILE" | tr -d '[:space:]')"
+[ ! -s "$CLAIM_FILE" ] || LEGACY_CLAIMED_TASK="$(head -n1 "$CLAIM_FILE" | tr -d '[:space:]')"
+if [ -n "$SESSION_CLAIMED_TASK" ] || [ -n "$LEGACY_CLAIMED_TASK" ]; then
+  if [ -z "$SESSION_CLAIMED_TASK" ] || [ -z "$LEGACY_CLAIMED_TASK" ] ||
+     [ "$SESSION_CLAIMED_TASK" != "$LEGACY_CLAIMED_TASK" ]; then
+    echo "hapax-claude: refusing incomplete or divergent role/session claim projection for '$ROLE'" >&2
+    exit 16
+  fi
+  CLAIMED_TASK="$SESSION_CLAIMED_TASK"
+fi
+if [ -z "$CLAUDE_TASK" ] && [ -n "$CLAIMED_TASK" ]; then
+  CLAUDE_TASK="$CLAIMED_TASK"
+fi
+if [ -n "${HAPAX_CLAIM_DISPATCH_MESSAGE_ID:-}" ] && [ -z "$CLAUDE_TASK" ]; then
+  echo "hapax-claude: refusing dispatch binding without an exact task id" >&2
+  exit 15
 fi
 if [ "$READONLY" -ne 1 ]; then
   if [ -n "$CLAUDE_TASK" ]; then
@@ -309,16 +425,22 @@ if [ "$READONLY" -ne 1 ]; then
       echo "  Close or resolve the existing claim before launching a new visible lane." >&2
       exit 13
     fi
-    if [ -z "$CLAIMED_TASK" ]; then
-      if [ ! -x "$WORKDIR/scripts/cc-claim" ]; then
-        echo "hapax-claude: refusing mutating launch; missing worktree cc-claim at $WORKDIR/scripts/cc-claim" >&2
-        exit 14
+    export HAPAX_METHODOLOGY_DISPATCH_TASK="$CLAUDE_TASK"
+    if [ -z "$CLAIMED_TASK" ] && [ "$CLAIM_RESUME" -eq 1 ]; then
+      echo "hapax-claude: resume requires an existing exact-session claim for '$ROLE'" >&2
+      exit 17
+    elif [ -z "$CLAIMED_TASK" ]; then
+      require_checked_cc_claim
+      (cd "$WORKDIR" && "$CC_CLAIM" "$CLAUDE_TASK")
+      if [ ! -s "$SESSION_CLAIM_FILE" ] || [ ! -s "$CLAIM_FILE" ] ||
+         [ "$(head -n1 "$SESSION_CLAIM_FILE" | tr -d '[:space:]')" != "$CLAUDE_TASK" ] ||
+         [ "$(head -n1 "$CLAIM_FILE" | tr -d '[:space:]')" != "$CLAUDE_TASK" ]; then
+        echo "hapax-claude: refusing launch; cc-claim did not publish one exact role/session projection" >&2
+        exit 17
       fi
-      (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CLAUDE_TASK")
       CLAIMED_TASK="$CLAUDE_TASK"
     fi
-  elif [ -n "$CLAIMED_TASK" ]; then
-    CLAUDE_TASK="$CLAIMED_TASK"
+    verify_dispatch_binding_if_required "$CLAUDE_TASK"
   elif [ "$IS_DEV_POOL" -eq 1 ]; then
     : # interactive operator dev pool — operator-driven, governed by operator
       # presence; a visible dev lane needs no cc-task binding to launch.
@@ -334,12 +456,12 @@ hapax-claude: refusing mutating visible lane without governed task binding.
 EOF
     exit 13
   fi
-fi
-if [ -n "$CLAUDE_TASK" ]; then
+elif [ -n "$CLAUDE_TASK" ]; then
   export HAPAX_METHODOLOGY_DISPATCH_TASK="$CLAUDE_TASK"
+  verify_dispatch_binding_if_required "$CLAUDE_TASK"
 fi
 
-RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
+RELAY_RETIRE="$WORKDIR/scripts/hapax-relay-retire"
 
 if [ "$TERMINAL" = "none" ]; then
   trap '"$RELAY_RETIRE" "$ROLE" --reason "clean exit (terminal=none)" 2>/dev/null || true' EXIT
@@ -347,9 +469,8 @@ if [ "$TERMINAL" = "none" ]; then
   exec "$CLAUDE_BIN" "${CLAUDE_DEFAULT_ARGS[@]}" "${CLAUDE_EXTRA[@]}"
 fi
 
-# tmux/foot path: build a runner script that re-execs hapax-claude with
-# --terminal none so the inner process inherits identity. Mirrors the
-# codex idiom.
+# tmux/foot path: pin governed identity and dispatch state into a runner so
+# worker startup does not depend on a tmux server's inherited environment.
 SPAWN_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/claude-spawns"
 mkdir -p "$SPAWN_DIR"
 RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
@@ -365,9 +486,38 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
   printf 'export HAPAX_WORKTREE_ROLE=%q\n' "$ROLE"
   printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
   printf 'export HAPAX_IDLE_UPDATE_SECONDS=%q\n' "$HAPAX_IDLE_UPDATE_SECONDS"
+  # $PATH expands when the generated runner starts.
+  # shellcheck disable=SC2016
+  printf 'export PATH=%q:$PATH\n' "$WORKDIR/scripts"
   if [ -n "$CLAUDE_TASK" ]; then
     printf 'export HAPAX_METHODOLOGY_DISPATCH_TASK=%q\n' "$CLAUDE_TASK"
   fi
+  for env_name in \
+    HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID \
+    HAPAX_DISPATCH_CLAIM_SWEEP \
+    HAPAX_CLAIM_LEASE_TTL_SECS \
+    HAPAX_CLAIM_DISPATCH_MESSAGE_ID \
+    HAPAX_CLAIM_DISPATCH_BINDING_HASH \
+    HAPAX_CLAIM_DISPATCH_PLATFORM \
+    HAPAX_CLAIM_DISPATCH_MODE \
+    HAPAX_CLAIM_DISPATCH_PROFILE \
+    HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE \
+    HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY \
+    HAPAX_CLAIM_DISPATCH_TASK_PATH \
+    HAPAX_CLAIM_DISPATCH_TASK_SHA256 \
+    HAPAX_CLAIM_DISPATCH_PARENT_SPEC \
+    HAPAX_CLAIM_DISPATCH_PARENT_SPEC_SHA256 \
+    HAPAX_CLAIM_DISPATCH_LANE_SESSION \
+    HAPAX_CLAIM_DISPATCH_LANE_GENERATION \
+    HAPAX_CLAIM_DISPATCH_LANE_PID \
+    HAPAX_CLAIM_DISPATCH_LANE_PID_GENERATION \
+    HAPAX_CLAIM_DISPATCH_CLAIM_PROJECTION_SHA256 \
+    HAPAX_CLAIM_DISPATCH_RELAY_PROJECTION_SHA256
+  do
+    if [[ -v "$env_name" ]]; then
+      printf 'export %s=%q\n' "$env_name" "${!env_name}"
+    fi
+  done
   printf 'exec %q' "$CLAUDE_BIN"
   for arg in "${CLAUDE_DEFAULT_ARGS[@]}"; do
     printf ' %q' "$arg"

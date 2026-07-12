@@ -2,16 +2,15 @@
   "@context": "https://w3id.org/codemeta/3.0",
   "@type": "SoftwareSourceCode",
   "name": "hapax-council",
-  "description": "Constituent of the Hapax operating environment. Single-operator research apparatus for externalised executive function, built by a neurodivergent solo operator. Stigmergic cognitive mesh with formal constitutional governance, 200+ agents, voice daemon, GPU visual expression, and 24/7 livestream as research instrument. Not a product, not seeking contributors. Research infrastructure published as artifact.",
+  "description": "Source-visible Hapax Systems research/runtime for evidence-bound AI-agent delivery: governed dispatch, route receipts, claim review, refusal, and publication-egress controls in a single-operator estate.",
   "codeRepository": "https://github.com/hapax-systems/hapax-council",
   "url": "https://github.com/hapax-systems/hapax-council",
   "license": "https://polyformproject.org/licenses/strict/1.0.0/",
   "author": [
     {
-      "@type": "Person",
-      "givenName": "Ryan",
-      "familyName": "Kleeberger",
-      "@id": "https://orcid.org/0009-0001-5146-4548"
+      "@type": "Organization",
+      "name": "Hapax Systems",
+      "url": "https://github.com/hapax-systems"
     }
   ],
   "applicationCategory": "ResearchInfrastructure",
@@ -20,16 +19,14 @@
   "keywords": [
     "research-software",
     "single-operator",
-    "stigmergic-cognitive-mesh",
-    "constitutional-governance",
-    "human-ai-collaboration",
-    "externalized-executive-function",
-    "neurodivergent-research-instrument",
-    "philosophy-of-science",
-    "infrastructure-as-argument"
+    "governed-sdlc",
+    "claim-authority",
+    "publication-egress",
+    "refusal-systems"
   ],
+  "identifier": "https://doi.org/10.5281/zenodo.20113515",
   "relatedLink": [
     "https://github.com/hapax-systems/hapax-constitution",
-    "https://hapax.weblog.lol/2026/04/refusal-brief-an-automation-tractability-disclosure"
+    "https://github.com/hapax-systems/hapax-council/blob/main/START_HERE.md"
   ]
 }

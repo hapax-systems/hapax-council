@@ -17,13 +17,13 @@ usage: hapax-vibe --session vbe-N [--task TASK_ID] [--cd DIR]
                   [--prompt PROMPT] [--max-turns N] [--max-price DOLLARS]
                   [--output text|json|streaming]
                   [--resume SESSION_ID] [--continue]
-                  [--no-claim] [--force]
+                  [--no-claim]
                   [--] [vibe args...]
 EOF
 }
 
 SESSION=""
-TASK_ID=""
+TASK_ID="${HAPAX_METHODOLOGY_DISPATCH_TASK:-}"
 WORKDIR=""
 WORKDIR_EXPLICIT=0
 TERMINAL="${HAPAX_VIBE_TERMINAL:-none}"
@@ -35,7 +35,6 @@ HEADLESS_OUTPUT=""
 RESUME_ID=""
 CONTINUE=0
 CLAIM_TASK=1
-FORCE=0
 VIBE_EXTRA=()
 
 while [ $# -gt 0 ]; do
@@ -131,8 +130,8 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --force)
-      FORCE=1
-      shift
+      echo "hapax-vibe: --force replacement is not supported; stop an existing session explicitly before dispatch" >&2
+      exit 2
       ;;
     --help|-h)
       usage
@@ -245,6 +244,187 @@ if [ ! -d "$WORKDIR" ]; then
 fi
 WORKDIR="$(cd "$WORKDIR" && pwd)"
 
+TMUX_NAME="hapax-vibe-$SESSION"
+TMUX_BIN=""
+if [ "$TERMINAL" = "tmux" ] || [ "$TERMINAL" = "foot" ]; then
+  TMUX_BIN="$(command -v tmux || true)"
+  [ -n "$TMUX_BIN" ] || { echo "hapax-vibe: tmux not found" >&2; exit 10; }
+  if "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null; then
+    echo "hapax-vibe: tmux session already exists: $TMUX_NAME; stop it explicitly before dispatch" >&2
+    exit 11
+  fi
+fi
+
+PARENT_INTERFACE="${HAPAX_PARENT_AGENT_INTERFACE:-${HAPAX_AGENT_INTERFACE:-unknown}}"
+PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-unknown}}"
+
+resume_session_id_is_safe() {
+  python3 - "$1" <<'PYEOF'
+import re
+import sys
+
+value = sys.argv[1].strip()
+tail = value.rsplit("-", 1)[-1]
+safe = (
+    8 <= len(value) <= 128
+    and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", value) is not None
+    and not value.isdigit()
+    and not (tail.isdigit() and len(tail) <= 7)
+)
+raise SystemExit(0 if safe else 1)
+PYEOF
+}
+
+RESUME_SESSION_UUID="${HAPAX_CLAIM_RESUME_SESSION_ID:-}"
+if [ "$CLAIM_TASK" -eq 0 ]; then
+  if [ -z "$RESUME_SESSION_UUID" ] || ! resume_session_id_is_safe "$RESUME_SESSION_UUID"; then
+    echo "hapax-vibe: --no-claim requires a safe HAPAX_CLAIM_RESUME_SESSION_ID" >&2
+    exit 17
+  fi
+  SESSION_UUID="$RESUME_SESSION_UUID"
+else
+  if [ -n "$RESUME_SESSION_UUID" ]; then
+    echo "hapax-vibe: fresh claim mode refuses a resume-session identity" >&2
+    exit 17
+  fi
+  SESSION_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null \
+    || uuidgen 2>/dev/null \
+    || python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null \
+    || printf 'sid%sx%s%s' "$(date +%s%N)" "$RANDOM" "$RANDOM")"
+fi
+export HAPAX_AGENT_INTERFACE="vibe"
+export HAPAX_AGENT_NAME="$SESSION"
+export HAPAX_AGENT_SLOT="$SESSION"
+export HAPAX_AGENT_ROLE="$SESSION"
+export HAPAX_WORKTREE_ROLE="$SESSION"
+export HAPAX_SESSION_ID="$SESSION_UUID"
+export HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-270}"
+export CLAUDE_ROLE="$SESSION"
+export HAPAX_PARENT_AGENT_INTERFACE="$PARENT_INTERFACE"
+export HAPAX_PARENT_AGENT_NAME="$PARENT_NAME"
+
+SOURCE_ACTIVATION_WORKTREE="${HAPAX_SOURCE_ACTIVATION_WORKTREE:-$HOME/.cache/hapax/source-activation/worktree}"
+SOURCE_ACTIVATION_RECEIPT="${HAPAX_SOURCE_ACTIVATION_RECEIPT:-$HOME/.cache/hapax/source-activation/current.json}"
+CC_CLAIM="$SOURCE_ACTIVATION_WORKTREE/scripts/cc-claim"
+CC_CLAIM_PROTOCOL_VERSION="hapax-claim-dispatch-v1"
+CC_CLAIM_PROTOCOL_CHECKED=0
+
+require_checked_cc_claim() {
+  local observed=""
+  if [ "$CC_CLAIM_PROTOCOL_CHECKED" -eq 1 ]; then
+    return 0
+  fi
+  if ! python3 - "$SOURCE_ACTIVATION_WORKTREE" "$SOURCE_ACTIVATION_RECEIPT" <<'PYEOF'
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+try:
+    target = Path(sys.argv[1]).resolve(strict=True)
+    receipt_path = Path(sys.argv[2])
+    receipt_metadata = receipt_path.lstat()
+    if stat.S_ISLNK(receipt_metadata.st_mode) or not stat.S_ISREG(receipt_metadata.st_mode):
+        raise ValueError("activation receipt is not a regular file")
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    head = receipt["active_source_head"]
+    if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise ValueError("malformed activation head")
+    if target != Path(receipt["active_source_target"]).resolve(strict=True):
+        raise ValueError("activation target mismatch")
+    last_success_path = receipt_path.parent / "last-success-sha"
+    last_success_metadata = last_success_path.lstat()
+    if stat.S_ISLNK(last_success_metadata.st_mode) or not stat.S_ISREG(last_success_metadata.st_mode):
+        raise ValueError("last-success-sha is not a regular file")
+    last_success = last_success_path.read_text(encoding="ascii").strip()
+    if last_success != head or target.name != head:
+        raise ValueError("activation release identity mismatch")
+    observed = subprocess.run(["git", "-C", str(target), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    shared_kind = subprocess.run(["git", "-C", str(target), "cat-file", "-t", f"{head}:shared"], check=True, capture_output=True, text=True).stdout.strip()
+    surface_status = subprocess.run(["git", "-C", str(target), "status", "--porcelain=v1", "--untracked-files=all", "--", "scripts/cc-claim", "shared"], check=True, capture_output=True, text=True).stdout
+    claim = target / "scripts" / "cc-claim"
+    metadata = claim.lstat()
+    tracked = subprocess.run(["git", "-C", str(target), "rev-parse", f"{head}:scripts/cc-claim"], check=True, capture_output=True, text=True).stdout.strip()
+    actual = subprocess.run(["git", "-C", str(target), "hash-object", str(claim)], check=True, capture_output=True, text=True).stdout.strip()
+    if observed != head or tracked != actual or shared_kind != "tree" or surface_status:
+        raise ValueError("activated implementation identity mismatch")
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode) or not os.access(claim, os.X_OK):
+        raise ValueError("activated cc-claim is not a regular executable")
+except (KeyError, OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+    print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+PYEOF
+  then
+    echo "hapax-vibe: refusing unverified source-activation cc-claim at $CC_CLAIM" >&2
+    exit 14
+  fi
+  if ! observed="$(cd "$WORKDIR" && "$CC_CLAIM" --dispatch-protocol-version)"; then
+    echo "hapax-vibe: activated cc-claim protocol probe failed at $CC_CLAIM" >&2
+    exit 14
+  fi
+  if [ "$observed" != "$CC_CLAIM_PROTOCOL_VERSION" ]; then
+    echo "hapax-vibe: refusing activated cc-claim with unsupported protocol at $CC_CLAIM (expected $CC_CLAIM_PROTOCOL_VERSION, got ${observed:-<empty>})" >&2
+    exit 14
+  fi
+  CC_CLAIM_PROTOCOL_CHECKED=1
+}
+
+verify_dispatch_binding_if_required() {
+  local task="$1"
+  [ -n "${HAPAX_CLAIM_DISPATCH_MESSAGE_ID:-}" ] || return 0
+  require_checked_cc_claim
+  if ! (cd "$WORKDIR" && "$CC_CLAIM" --verify-dispatch-binding "$task"); then
+    echo "hapax-vibe: refusing task '$task'; exact dispatch binding verification failed" >&2
+    exit 18
+  fi
+}
+
+SESSION_CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-$SESSION-$SESSION_UUID"
+CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-$SESSION"
+CLAIMED_TASK=""
+if [ -s "$SESSION_CLAIM_FILE" ]; then
+  CLAIMED_TASK="$(head -n1 "$SESSION_CLAIM_FILE" | tr -d '[:space:]')"
+  if [ ! -s "$CLAIM_FILE" ] \
+    || [ "$(head -n1 "$CLAIM_FILE" | tr -d '[:space:]')" != "$CLAIMED_TASK" ]; then
+    echo "hapax-vibe: refusing incomplete or divergent exact-session claim for '$SESSION'" >&2
+    exit 16
+  fi
+fi
+
+if [ -n "${HAPAX_CLAIM_DISPATCH_MESSAGE_ID:-}" ] && [ -z "$TASK_ID" ]; then
+  echo "hapax-vibe: refusing dispatch binding without an exact task id" >&2
+  exit 15
+fi
+if [ -n "$TASK_ID" ]; then
+  if [ -n "$CLAIMED_TASK" ] && [ "$CLAIMED_TASK" != "$TASK_ID" ]; then
+    echo "hapax-vibe: refusing launch; '$SESSION' already claims '$CLAIMED_TASK', not dispatch task '$TASK_ID'" >&2
+    exit 13
+  fi
+  export HAPAX_METHODOLOGY_DISPATCH_TASK="$TASK_ID"
+  if [ -n "$CLAIMED_TASK" ]; then
+    verify_dispatch_binding_if_required "$TASK_ID"
+  elif [ "$CLAIM_TASK" -eq 1 ]; then
+    require_checked_cc_claim
+    if ! (cd "$WORKDIR" && "$CC_CLAIM" "$TASK_ID"); then
+      echo "hapax-vibe: cc-claim failed for '$TASK_ID' - refusing to launch" >&2
+      exit 8
+    fi
+    if [ ! -s "$SESSION_CLAIM_FILE" ] || [ ! -s "$CLAIM_FILE" ] \
+      || [ "$(head -n1 "$SESSION_CLAIM_FILE" | tr -d '[:space:]')" != "$TASK_ID" ] \
+      || [ "$(head -n1 "$CLAIM_FILE" | tr -d '[:space:]')" != "$TASK_ID" ]; then
+      echo "hapax-vibe: canonical cc-claim did not publish the exact role/session claim" >&2
+      exit 17
+    fi
+    verify_dispatch_binding_if_required "$TASK_ID"
+  else
+    echo "hapax-vibe: --no-claim requires an existing exact-session claim for '$SESSION'" >&2
+    exit 17
+  fi
+fi
+
 WORKTREE_AGENTS="$WORKDIR/AGENTS.md"
 if [ ! -f "$WORKTREE_AGENTS" ] || head -1 "$WORKTREE_AGENTS" 2>/dev/null | grep -qF '<!-- HAPAX-VIBE-MANAGED'; then
   cat > "$WORKTREE_AGENTS" <<EOF_AGENTS
@@ -265,38 +445,6 @@ Active task:
 \$(cat ~/.cache/hapax/cc-active-task-$SESSION 2>/dev/null || echo "no active task")
 EOF_AGENTS
   echo "hapax-vibe: refreshed $WORKTREE_AGENTS" >&2
-fi
-
-PARENT_INTERFACE="${HAPAX_PARENT_AGENT_INTERFACE:-${HAPAX_AGENT_INTERFACE:-unknown}}"
-PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-unknown}}"
-
-# Per-session id (coordination reform Phase 1): stable uuid for FM-2 lease keying.
-SESSION_UUID="${HAPAX_SESSION_ID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf '%s-%s' "$SESSION" "$$")}"
-export HAPAX_AGENT_INTERFACE="vibe"
-export HAPAX_AGENT_NAME="$SESSION"
-export HAPAX_AGENT_SLOT="$SESSION"
-export HAPAX_AGENT_ROLE="$SESSION"
-export HAPAX_WORKTREE_ROLE="$SESSION"
-export HAPAX_SESSION_ID="$SESSION_UUID"
-export HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-270}"
-export CLAUDE_ROLE="$SESSION"
-export HAPAX_PARENT_AGENT_INTERFACE="$PARENT_INTERFACE"
-export HAPAX_PARENT_AGENT_NAME="$PARENT_NAME"
-
-if [ -n "$TASK_ID" ] && [ "$CLAIM_TASK" -eq 1 ]; then
-  CC_CLAIM="$(command -v cc-claim || echo "$COUNCIL_DIR/scripts/cc-claim")"
-  if [ ! -x "$CC_CLAIM" ]; then
-    echo "hapax-vibe: cc-claim not executable at $CC_CLAIM; skipping claim" >&2
-  else
-    HAPAX_AGENT_NAME="$SESSION" \
-      HAPAX_AGENT_ROLE="$SESSION" \
-      HAPAX_SESSION_ID="$SESSION_UUID" \
-      CLAUDE_ROLE="$SESSION" \
-      "$CC_CLAIM" "$TASK_ID" || {
-        echo "hapax-vibe: cc-claim failed for '$TASK_ID' - refusing to launch" >&2
-        exit 8
-      }
-  fi
 fi
 
 export PASSWORD_STORE_DIR="${PASSWORD_STORE_DIR:-$HOME/.password-store}"
@@ -392,10 +540,9 @@ spawn:
   vibe_version: $("$VIBE_BIN" --version 2>/dev/null | head -1 || echo unknown)
 EOF_SPAWN
 
-TMUX_NAME="hapax-vibe-$SESSION"
-
 write_runner() {
   local runner="$1"
+  local env_name=""
   {
     printf '%s\n' '#!/usr/bin/env bash'
     printf '%s\n' 'set -euo pipefail'
@@ -407,6 +554,32 @@ write_runner() {
     printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
     printf 'export HAPAX_PARENT_AGENT_INTERFACE=%q\n' "$PARENT_INTERFACE"
     printf 'export HAPAX_PARENT_AGENT_NAME=%q\n' "$PARENT_NAME"
+    for env_name in \
+      HAPAX_METHODOLOGY_DISPATCH_TASK \
+      HAPAX_DISPATCH_CLAIM_SWEEP \
+      HAPAX_CLAIM_LEASE_TTL_SECS \
+      HAPAX_CLAIM_DISPATCH_MESSAGE_ID \
+      HAPAX_CLAIM_DISPATCH_BINDING_HASH \
+      HAPAX_CLAIM_DISPATCH_PLATFORM \
+      HAPAX_CLAIM_DISPATCH_MODE \
+      HAPAX_CLAIM_DISPATCH_PROFILE \
+      HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE \
+      HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY \
+      HAPAX_CLAIM_DISPATCH_TASK_PATH \
+      HAPAX_CLAIM_DISPATCH_TASK_SHA256 \
+      HAPAX_CLAIM_DISPATCH_PARENT_SPEC \
+      HAPAX_CLAIM_DISPATCH_PARENT_SPEC_SHA256 \
+      HAPAX_CLAIM_DISPATCH_LANE_SESSION \
+      HAPAX_CLAIM_DISPATCH_LANE_GENERATION \
+      HAPAX_CLAIM_DISPATCH_LANE_PID \
+      HAPAX_CLAIM_DISPATCH_LANE_PID_GENERATION \
+      HAPAX_CLAIM_DISPATCH_CLAIM_PROJECTION_SHA256 \
+      HAPAX_CLAIM_DISPATCH_RELAY_PROJECTION_SHA256
+    do
+      if [[ -v "$env_name" ]]; then
+        printf 'export %s=%q\n' "$env_name" "${!env_name}"
+      fi
+    done
     printf 'exec %q' "$VIBE_BIN"
     for arg in "${VIBE_ARGS[@]}"; do
       printf ' %q' "$arg"
@@ -422,15 +595,6 @@ case "$TERMINAL" in
     exec "$VIBE_BIN" "${VIBE_ARGS[@]}"
     ;;
   tmux)
-    TMUX_BIN="$(command -v tmux || true)"
-    [ -n "$TMUX_BIN" ] || { echo "hapax-vibe: tmux not found" >&2; exit 10; }
-    if "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null && [ "$FORCE" -ne 1 ]; then
-      echo "hapax-vibe: tmux session already exists: $TMUX_NAME (use --force to recreate)" >&2
-      exit 11
-    fi
-    if "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null && [ "$FORCE" -eq 1 ]; then
-      "$TMUX_BIN" kill-session -t "$TMUX_NAME"
-    fi
     RUNNER="$SPAWN_DIR/run-$stamp-$slug.sh"
     write_runner "$RUNNER"
     "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
@@ -438,17 +602,10 @@ case "$TERMINAL" in
     ;;
   foot)
     FOOT_BIN="$(command -v footclient || command -v foot || true)"
-    TMUX_BIN="$(command -v tmux || true)"
     [ -n "$FOOT_BIN" ] || { echo "hapax-vibe: foot/footclient not found" >&2; exit 10; }
-    [ -n "$TMUX_BIN" ] || { echo "hapax-vibe: tmux required for foot mode" >&2; exit 10; }
     RUNNER="$SPAWN_DIR/run-$stamp-$slug.sh"
     write_runner "$RUNNER"
-    if "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null && [ "$FORCE" -eq 1 ]; then
-      "$TMUX_BIN" kill-session -t "$TMUX_NAME"
-    fi
-    if ! "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null; then
-      "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
-    fi
+    "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
     "$FOOT_BIN" --app-id "hapax-vibe-$SESSION" --title "$SESSION (vibe)" \
       --working-directory "$WORKDIR" "$TMUX_BIN" attach-session -t "$TMUX_NAME"
     ;;

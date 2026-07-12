@@ -1,5 +1,5 @@
 {
-  "count": 178,
+  "count": 179,
   "fingerprints": {
     "agy.review.direct": "623fdb606d2fa7c7f92b969e951a1367fe58d06a46c57c29ac91402457eeaa6b",
     "anthropic_web_search": "4a84a85c58c98dd5a2a4f10dea7886e399d98ed37b8822b7f956e9577c9d3db0",
@@ -60,6 +60,7 @@
     "claude.headless.opus": "c36f9dfe8f2f61d48ad43b40d9927502a223d5a61ba81d586c1613ac50e3a8ad",
     "claude.headless.sonnet": "16024fc88078a86b102f64b54e6b1c6c89867a3ac18c431fcfc6761594e71d7a",
     "claude.interactive.full": "c760e46d6418c7171c37c9d155ee64831e1c2b017a5d746c40a51b9b834696b1",
+    "claude.review.opus": "8590592522318dfb61fed1ab6502f65c94cf4d2adea71fab26ceae64d978a594",
     "codex.headless.full": "dbfe91cb13cdb3586c721f56d822fe842fbb66757bda7dfc788c32eddd7544c0",
     "codex.headless.spark": "eeb0b7930170431828acafc4c9b93dec3e8f7742a77f6029738a871827e4d17e",
     "context7.query_docs": "9d549b7c27612a8f8e47c6205a143d3a5b16f5b6b36cf2304a99bdd183f20fde",
@@ -153,7 +154,7 @@
     "publication_bus.omg-lol-purl": "b9ede1df3d5bc8ac5a37c7b1779678309bfc4887c598cbb2441e2cc026405f7d",
     "publication_bus.omg-lol-statuslog": "fff70f78568d38c14a280cbdd398c4f86d558e938d8279cf81008a60d9e82668",
     "publication_bus.omg-lol-web": "cb9d89a56176ca8e17279ee761279e24efed410910e12a369befb93f7c9bf5cc",
-    "publication_bus.omg-lol-weblog-bearer-fanout": "18c060dde020c4b71776d7e90a22c90bc9938f88fcaa5f7dee03d5ed8ebfc6f1",
+    "publication_bus.omg-lol-weblog-bearer-fanout": "8eb99a3ce10783a40e1dbcb099a9700e7e6373bac42ccfffb21347eecb5fe194",
     "publication_bus.omg-lol-weblog-delete": "5c39aeb3d593bae81938aa79c8df821ca3f27c17da85d55470abc58547bb2fc6",
     "publication_bus.omg-weblog": "5d285ac16ac4495bba13915c7995f76207f3c5e84c657d45f842f2947ec0295b",
     "publication_bus.open-collective-receiver": "6528a3adb1b786fe195d5125303e55517219297c5db82ab9084c2ea1919b6fd4",

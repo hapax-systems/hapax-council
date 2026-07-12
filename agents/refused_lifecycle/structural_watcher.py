@@ -47,7 +47,7 @@ SNIPPET_HALF_WINDOW = 200  # chars on each side of the keyword match
 # limit if needed, and reach the operator out-of-band. Mailto is the
 # operator's published contact per the cold-contact substrate.
 PROBE_USER_AGENT = (
-    "hapax-refused-lifecycle-watcher/1.0 (+https://github.com/ryanklee/hapax-council)"
+    "hapax-refused-lifecycle-watcher/1.0 (+https://github.com/hapax-systems/hapax-council)"
 )
 
 

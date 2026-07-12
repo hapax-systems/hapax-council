@@ -32,7 +32,7 @@ def test_load_axioms_returns_validated_bundle() -> None:
     assert isinstance(bundle, AxiomBundle)
     assert bundle.schema_version
     assert bundle.snapshot_date
-    assert bundle.source_repo.startswith("https://github.com/ryanklee/")
+    assert bundle.source_repo.startswith("https://github.com/hapax-systems/")
     assert {ax.id for ax in bundle.axioms} == CANONICAL_AXIOM_IDS
 
 

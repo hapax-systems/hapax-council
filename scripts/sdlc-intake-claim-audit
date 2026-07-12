@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import sys
 from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -14,6 +15,12 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.sdlc_owner_identity import parse_task_owner  # noqa: E402
 
 DEFAULT_TASKS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active"
 DEFAULT_CACHE_DIR = Path.home() / ".cache/hapax"
@@ -327,7 +334,13 @@ def pickup_evidence(
         return False, [{"kind": "missing_assigned_lane"}]
 
     aliases = task_aliases(task)
-    role = task.assigned_to
+    try:
+        owner = parse_task_owner(task.assigned_to)
+    except ValueError:
+        owner = None
+    if owner is None:
+        return False, [{"kind": "invalid_assigned_lane", "owner": task.assigned_to}]
+    role = owner.role
     evidence: list[dict[str, Any]] = []
     lanes = (coordinator_state or {}).get("lanes", {})
     lane = lanes.get(role) if isinstance(lanes, dict) else None

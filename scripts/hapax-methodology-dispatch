@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import hashlib
 import json
 import os
 import re
@@ -70,20 +71,27 @@ from shared.frontmatter import (
 from shared.gate_event_producer import build_gate_event
 from shared.gate_log import append_gate_event
 from shared.quota_wall import QUOTA_WALL_EXIT_CODE
+from shared.relay_mq_envelope import compute_payload_hash
 from shared.route_metadata_schema import assess_route_metadata, route_envelope_gate_enforced
 from shared.sdlc_dispatch_guards import (
-    DISPATCH_CLAIM_GUARD_MARKERS,
     DISPATCH_CLOSE_GUARD_MARKERS,
+    check_worktree_claim_guard,
     dispatch_worktree,
 )
 from shared.sdlc_lifecycle import TASK_DISPATCHABLE_STATUSES
+from shared.sdlc_owner_identity import owner_matches, parse_task_owner
 from shared.sdlc_pressure_gate import (
     AdmissionDecision,
     admission_state,
     sdlc_slice_wrap,
     wait_until_admitted,
 )
-from shared.sdlc_task_store import TaskStoreError, resolve_task_note
+from shared.sdlc_task_store import (
+    TaskStoreError,
+    load_claim_dispatch_binding,
+    resolve_task_note,
+)
+from shared.session_identity import is_claim_keyable_session_id
 from shared.worker_failure_witness import (
     append_failure_receipt_record,
     update_worker_family_availability,
@@ -642,7 +650,17 @@ def _pid_generation(pid: int) -> str:
         stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
         return f"pid:{pid}:{stat_text.rsplit(')', 1)[1].split()[19]}"
     except (OSError, IndexError):
-        return f"pid:{pid}"
+        return ""
+
+
+def _parent_spec_sha256(path: Path) -> str:
+    try:
+        if path.is_symlink() or not path.is_file():
+            raise OSError("parent spec is not a regular non-symlink file")
+        content = path.read_bytes()
+    except OSError as exc:
+        raise CoordDispatchError("dispatch_parent_spec_preimage_unreadable") from exc
+    return hashlib.sha256(content).hexdigest()
 
 
 def dispatch_preparation_lane_blocker(binding: DispatchPreparationBinding) -> str | None:
@@ -683,10 +701,22 @@ def dispatch_preparation_lane_blocker(binding: DispatchPreparationBinding) -> st
     else:
         return "dispatch_lane_generation_missing"
 
-    if binding.lane_pid is not None and (
-        _pid_generation(binding.lane_pid) != binding.lane_pid_generation
-    ):
-        return "dispatch_lane_process_changed"
+    if binding.lane_pid is not None:
+        observed_pid_generation = _pid_generation(binding.lane_pid)
+        if not observed_pid_generation or observed_pid_generation != binding.lane_pid_generation:
+            return "dispatch_lane_process_changed"
+    parent_spec_path = resolve_declared_path(
+        binding.parent_spec,
+        base=Path.home() / "Documents" / "Personal",
+    )
+    if parent_spec_path is None:
+        return "dispatch_parent_spec_preimage_unreadable"
+    try:
+        parent_spec_sha256 = _parent_spec_sha256(parent_spec_path)
+    except CoordDispatchError as exc:
+        return exc.reason
+    if parent_spec_sha256 != binding.parent_spec_sha256:
+        return "dispatch_parent_spec_preimage_changed"
     cache_dir = Path(os.environ.get("HAPAX_CACHE_DIR", str(Path.home() / ".cache" / "hapax")))
     relay_dir = Path(os.environ.get("HAPAX_RELAY_DIR", str(cache_dir / "relay")))
     try:
@@ -761,13 +791,9 @@ def lane_active_task_lease(lane: str) -> str | None:
     return None
 
 
-# --- Cross-role stale-claim sweeper (reform-identity-coherence, cluster 11) -----
-# codex-claim-audit reaps phantom cx-*/codex-* claims and cc-claim's lease-expiry
-# only frees a claim when the SAME role re-claims; nothing reaps a greek-slot /
-# test-probe / role-less claim left by a dead or wedged lane (the 12-day
-# council-eqi-phase0-run test-probe slot; the zeta dead-lane stale slot). This
-# sweep closes that gap: it scans EVERY cc-active-task-* file and frees the dead
-# ones independent of any role re-claiming.
+# --- Cross-role stale-claim projection (effect path retired) -------------------
+# Age, missing markers, and task-state projections are support evidence only.
+# They may nominate governed recovery work but may not detach task ownership.
 _CLAIM_PREFIX = "cc-active-task-"
 _UUID_SUFFIX_RE = re.compile(
     r"-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
@@ -783,20 +809,16 @@ def _claim_role(filename: str) -> str:
 
 
 def _claim_task_dead_reason(task_id: str, active_dir: Path) -> str | None:
-    """Reason the claim is dead, if the lane slot can be freed."""
+    """Project a recovery-candidate reason without authorizing claim removal."""
     if not task_id:
         return "terminal-or-missing"
-    note = active_dir / f"{task_id}.md"
-    if not note.exists():
-        variants = sorted(active_dir.glob(f"{task_id}-*.md"))
-        if not variants:
-            return "terminal-or-missing"
-        note = variants[0]
+    if not active_dir.is_dir():
+        return None
     try:
-        text = note.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return None  # unreadable -> do not reap on this basis
-    fields, _body = parse_document_frontmatter(text)
+        snapshot = resolve_task_note(active_dir.parent, task_id, state="active")
+    except TaskStoreError as exc:
+        return "terminal-or-missing" if exc.reason_code == "task_note_not_found" else None
+    fields = snapshot.frontmatter
     status = str(fields.get("status", "")).strip().strip("\"'").lower()
     assigned_to = str(fields.get("assigned_to", "")).strip().strip("\"'").lower()
     if status in _TERMINAL_CLAIM_STATUSES:
@@ -814,11 +836,7 @@ def sweep_stale_claims(
     grace_secs: int = 300,
     now: float | None = None,
 ) -> list[tuple[str, str, str]]:
-    """Reap cc-active-task-* claim files across ALL roles. A file is reaped when its
-    task is terminal/missing (and it has settled past ``grace_secs``, so a mid
-    cc-close transition is not raced) or its lease has expired AND its role has no
-    live sibling lease — a live role whose legacy file aged (the gate heartbeats
-    only the session-keyed file) is preserved. Returns (filename, task_id, reason)."""
+    """Project stale-claim candidates across roles without mutating any claim surface."""
     now = time.time() if now is None else now
     try:
         files = sorted(p for p in claims_dir.glob(f"{_CLAIM_PREFIX}*") if p.is_file())
@@ -836,7 +854,7 @@ def sweep_stale_claims(
         role = _claim_role(f.name)
         freshest_by_role[role] = max(freshest_by_role.get(role, 0.0), mtime)
         metas.append((f, role, mtime, task_id))
-    reaped: list[tuple[str, str, str]] = []
+    candidates: list[tuple[str, str, str]] = []
     for f, role, mtime, task_id in metas:
         age = now - mtime
         role_is_live = (now - freshest_by_role.get(role, 0.0)) <= lease_ttl
@@ -847,54 +865,29 @@ def sweep_stale_claims(
             reason = "lease-expired"
         else:
             continue
-        try:
-            f.unlink()
-        except OSError:
-            continue
-        claim_key = f.name.removeprefix(_CLAIM_PREFIX)
-        for companion in (
-            claims_dir / f"cc-claim-epoch-{claim_key}",
-            claims_dir / f"cc-claim-dispatch-{claim_key}.json",
-        ):
-            try:
-                companion.unlink()
-            except OSError:
-                pass
-        reaped.append((f.name, task_id, reason))
-    return reaped
+        candidates.append((f.name, task_id, reason))
+    return candidates
 
 
 def run_claim_sweep(task_root: Path, *, notify: bool = True) -> list[tuple[str, str, str]]:
-    """Wire the sweep to the live claims dir + vault, reap, and (best-effort) ntfy."""
+    """Project claim recovery candidates and emit a non-authorizing notification."""
     claims_dir = Path(os.environ.get("HAPAX_CC_CLAIMS_DIR", str(Path.home() / ".cache" / "hapax")))
-    reaped = sweep_stale_claims(claims_dir, task_root / "active")
-    if reaped and notify:
+    candidates = sweep_stale_claims(claims_dir, task_root / "active")
+    if candidates and notify:
         try:
             from shared.notify import send_notification
 
             body = "\n".join(
-                f"- {name} → {reason} ({task or '∅'})" for name, task, reason in reaped
+                f"- {name} → {reason} ({task or '∅'})" for name, task, reason in candidates
             )
             send_notification(
-                f"Reaped {len(reaped)} stale cc-task claim(s)",
+                f"Projected {len(candidates)} cc-task recovery candidate(s) (HOLD)",
                 body,
-                tags=["broom", "sdlc"],
+                tags=["sdlc", "hold"],
             )
         except Exception:
             pass
-    return reaped
-
-
-def check_worktree_claim_guard(worktree: Path) -> tuple[bool, str]:
-    script = worktree / "scripts" / "cc-claim"
-    if not script.is_file():
-        return False, f"missing cc-claim at {script}"
-    text = script.read_text(encoding="utf-8", errors="replace")
-    required = DISPATCH_CLAIM_GUARD_MARKERS
-    missing = [needle for needle in required if needle not in text]
-    if missing:
-        return False, f"stale cc-claim in {worktree}: missing {', '.join(missing)}"
-    return True, "worktree cc-claim authority/spec guard present"
+    return candidates
 
 
 def check_worktree_close_guard(worktree: Path) -> tuple[bool, str]:
@@ -985,7 +978,7 @@ def check_durable_dispatch_binding(
             rows = conn.execute(
                 f"""
                 SELECT m.message_id, m.sender, m.authority_case, m.authority_item, m.subject,
-                       m.payload,
+                       m.payload, m.payload_hash,
                        m.stale_after, m.expires_at, r.recipient, r.state
                 FROM messages m
                 JOIN recipients r ON r.message_id = m.message_id
@@ -1011,6 +1004,18 @@ def check_durable_dispatch_binding(
 
     fallback_reason = "durable_mq_freshness_unknown"
     for row in rows:
+        if row["sender"] != "hapax-coordinator":
+            fallback_reason = "coordinator_dispatch_preparation_required"
+            continue
+        payload = row["payload"]
+        payload_hash = row["payload_hash"]
+        if (
+            not isinstance(payload, str)
+            or not isinstance(payload_hash, str)
+            or compute_payload_hash(payload) != payload_hash
+        ):
+            fallback_reason = "durable_mq_payload_hash_mismatch"
+            continue
         stale_after = _parse_mq_datetime(row["stale_after"])
         expires_at = _parse_mq_datetime(row["expires_at"])
         if stale_after is None or expires_at is None:
@@ -1022,25 +1027,33 @@ def check_durable_dispatch_binding(
         if stale_after < now:
             fallback_reason = "durable_mq_dispatch_stale"
             continue
-        preparation: DispatchPreparationBinding | None = None
-        if row["sender"] == "hapax-coordinator":
-            try:
-                preparation = dispatch_preparation_binding_from_payload(row["payload"])
-            except CoordDispatchError as exc:
-                fallback_reason = exc.reason
-                continue
-            task = validation.task
-            if task is None or (
-                preparation.task_id != task_id
-                or preparation.lane.strip().lower().replace("_", "-") != recipient
-                or preparation.task_path != str(task.path.resolve())
-                or preparation.task_sha256 != task.source_sha256
-                or preparation.authority_case != authority_case
-                or preparation.authority_item != (authority_item or task_id)
-                or preparation.parent_spec != strip_scalar(str(task.fields.get("parent_spec", "")))
-            ):
-                fallback_reason = "dispatch_preparation_binding_identity_mismatch"
-                continue
+        try:
+            preparation = dispatch_preparation_binding_from_payload(payload)
+        except CoordDispatchError as exc:
+            fallback_reason = exc.reason
+            continue
+        task = validation.task
+        parent_spec_path = validation.parent_spec_path
+        if task is None or parent_spec_path is None:
+            fallback_reason = "dispatch_preparation_binding_identity_mismatch"
+            continue
+        try:
+            parent_spec_sha256 = _parent_spec_sha256(parent_spec_path)
+        except CoordDispatchError as exc:
+            fallback_reason = exc.reason
+            continue
+        if (
+            preparation.task_id != task_id
+            or preparation.lane.strip().lower().replace("_", "-") != recipient
+            or preparation.task_path != str(task.path.resolve())
+            or preparation.task_sha256 != task.source_sha256
+            or preparation.authority_case != authority_case
+            or preparation.authority_item != (authority_item or task_id)
+            or preparation.parent_spec != strip_scalar(str(task.fields.get("parent_spec", "")))
+            or preparation.parent_spec_sha256 != parent_spec_sha256
+        ):
+            fallback_reason = "dispatch_preparation_binding_identity_mismatch"
+            continue
         return DurableDispatchBinding(
             True,
             False,
@@ -1112,7 +1125,18 @@ def _validate_system_drain(
     if is_nullish(assigned_to) or assigned_to == "unassigned":
         return Validation(False, "system drain refused: task has no assigned lane to verify", task)
 
-    lane_name = normalize_lane_name(assigned_to)
+    try:
+        owner = parse_task_owner(assigned_to)
+    except ValueError:
+        owner = None
+    if owner is None or owner.platform not in {None, "claude"}:
+        return Validation(
+            False,
+            f"system drain refused: assigned owner {assigned_to!r} is not a known "
+            "claude-substrate lane identity",
+            task,
+        )
+    lane_name = normalize_lane_name(owner.role)
     if lane_name not in KNOWN_CLAUDE_LANES:
         return Validation(
             False,
@@ -1196,7 +1220,12 @@ def validate_task(
             "must remain unassigned until cc-claim",
             task,
         )
-    if status in {"claimed", "in_progress"} and assigned_to != lane:
+    if status in {"claimed", "in_progress"} and not owner_matches(
+        assigned_to,
+        lane,
+        platform,
+        allow_unqualified=True,
+    ):
         return Validation(
             False,
             f"task already assigned to {assigned_to!r}; claimed/in_progress "
@@ -1652,6 +1681,7 @@ def launch_claude_headless(
     task_id: str,
     lane: str,
     prompt: str,
+    validation: Validation,
     route: PlatformPath,
     dispatch_env: dict[str, str] | None = None,
 ) -> int:
@@ -1685,6 +1715,14 @@ def launch_claude_headless(
     env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(lane_worktree(lane, "claude"))
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("claude", "headless")
     env.update(dispatch_env or {})
+    if not add_resume_session_environment(
+        env,
+        task_id=task_id,
+        lane=lane,
+        platform="claude",
+        validation=validation,
+    ):
+        return 17
     return _sliced_call([str(launcher), "--task", task_id, lane, prompt], env)
 
 
@@ -1716,6 +1754,14 @@ def launch_claude_interactive(
     if status in {"claimed", "in_progress"}:
         env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
     env.update(dispatch_env or {})
+    if not add_resume_session_environment(
+        env,
+        task_id=task_id,
+        lane=lane,
+        platform="claude",
+        validation=validation,
+    ):
+        return 17
     return subprocess.call(args, env=env)
 
 
@@ -1945,12 +1991,129 @@ def claim_dispatch_environment(
         "HAPAX_CLAIM_DISPATCH_MESSAGE_ID": request.message_id,
         "HAPAX_CLAIM_DISPATCH_MODE": request.mode,
         "HAPAX_CLAIM_DISPATCH_PARENT_SPEC": preparation.parent_spec,
+        "HAPAX_CLAIM_DISPATCH_PARENT_SPEC_SHA256": preparation.parent_spec_sha256,
         "HAPAX_CLAIM_DISPATCH_PLATFORM": request.platform,
         "HAPAX_CLAIM_DISPATCH_PROFILE": request.profile,
         "HAPAX_CLAIM_DISPATCH_RELAY_PROJECTION_SHA256": (preparation.relay_projection_sha256),
         "HAPAX_CLAIM_DISPATCH_TASK_PATH": preparation.task_path,
         "HAPAX_CLAIM_DISPATCH_TASK_SHA256": preparation.task_sha256,
     }
+
+
+def resolve_claim_resume_session(
+    *,
+    task_id: str,
+    lane: str,
+    platform: str,
+) -> str:
+    """Resolve one complete exact-session ownership projection for redispatch."""
+
+    cache_dir = Path(os.environ.get("HAPAX_CACHE_DIR", str(Path.home() / ".cache" / "hapax")))
+    legacy_claim = cache_dir / f"cc-active-task-{lane}"
+    legacy_epoch = cache_dir / f"cc-claim-epoch-{lane}"
+    legacy_binding_path = cache_dir / f"cc-claim-dispatch-{lane}.json"
+
+    def regular_text(path: Path) -> str:
+        try:
+            path.lstat()
+        except FileNotFoundError as exc:
+            raise TaskStoreError(
+                "resume_exact_session_missing",
+                "resume the exact owning session or perform governed owner-only recovery",
+                str(path),
+            ) from exc
+        except OSError as exc:
+            raise TaskStoreError(
+                "resume_claim_projection_unreadable",
+                "restore the exact claim, epoch, and dispatch-binding projections",
+                str(path),
+            ) from exc
+        try:
+            if path.is_symlink() or not path.is_file():
+                raise OSError("not a regular non-symlink file")
+            return path.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError) as exc:
+            raise TaskStoreError(
+                "resume_claim_projection_unreadable",
+                "restore the exact claim, epoch, and dispatch-binding projections",
+                str(path),
+            ) from exc
+
+    if regular_text(legacy_claim) != task_id:
+        raise TaskStoreError(
+            "resume_legacy_claim_mismatch",
+            "resume only the task named by the role claim",
+            lane,
+        )
+    legacy_epoch_text = regular_text(legacy_epoch)
+    legacy_binding = load_claim_dispatch_binding(legacy_binding_path)
+    try:
+        paths = sorted(cache_dir.glob(f"cc-claim-dispatch-{lane}-*.json"))
+    except OSError as exc:
+        raise TaskStoreError(
+            "resume_claim_projection_unreadable",
+            "restore the exact session dispatch-binding projection",
+            lane,
+        ) from exc
+    candidates: list[str] = []
+    for path in paths:
+        prefix = f"cc-claim-dispatch-{lane}-"
+        session_id = path.name.removeprefix(prefix).removesuffix(".json")
+        if not is_claim_keyable_session_id(session_id):
+            continue
+        binding = load_claim_dispatch_binding(path)
+        if (
+            binding.task_id != task_id
+            or binding.lane != lane
+            or binding.session_id != session_id
+            or binding.platform != platform
+        ):
+            continue
+        claim = cache_dir / f"cc-active-task-{lane}-{session_id}"
+        epoch = cache_dir / f"cc-claim-epoch-{lane}-{session_id}"
+        if regular_text(claim) != task_id or regular_text(epoch) != legacy_epoch_text:
+            continue
+        if (
+            binding.receipt_hash != legacy_binding.receipt_hash
+            or legacy_binding.task_id != task_id
+            or legacy_binding.lane != lane
+            or legacy_binding.session_id != session_id
+            or legacy_binding.platform != platform
+        ):
+            continue
+        candidates.append(session_id)
+    if len(candidates) != 1:
+        raise TaskStoreError(
+            "resume_exact_session_ambiguous" if candidates else "resume_exact_session_missing",
+            "resume the exact owning session or perform governed owner-only recovery",
+            f"{lane}:{task_id}",
+        )
+    return candidates[0]
+
+
+def add_resume_session_environment(
+    env: dict[str, str],
+    *,
+    task_id: str,
+    lane: str,
+    platform: str,
+    validation: Validation,
+) -> bool:
+    status = ""
+    if validation.task is not None:
+        status = strip_scalar(str(validation.task.fields.get("status", "")))
+    if status not in {"claimed", "in_progress"}:
+        return True
+    try:
+        env["HAPAX_CLAIM_RESUME_SESSION_ID"] = resolve_claim_resume_session(
+            task_id=task_id,
+            lane=lane,
+            platform=platform,
+        )
+    except TaskStoreError as exc:
+        print(f"BLOCKED: {exc}", file=sys.stderr)
+        return False
+    return True
 
 
 def coord_event_log_from_env() -> CoordEventLog:
@@ -2057,6 +2220,9 @@ def launch_codex_headless(
             ]
         )
     env = os.environ.copy()
+    # Never let the dispatcher's/parent's session identity become the child
+    # lane's resume authority. An exact resume id must be explicit route data.
+    env.pop("HAPAX_SESSION_ID", None)
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("codex", "headless")
     if local_fallback_allowed:
@@ -2064,6 +2230,14 @@ def launch_codex_headless(
         # only supplies the default local fallback when the env is otherwise unset.
         env.setdefault("HAPAX_DISPATCH_HOST_FALLBACK", "local")
     env.update(dispatch_env or {})
+    if not add_resume_session_environment(
+        env,
+        task_id=task_id,
+        lane=lane,
+        platform="codex",
+        validation=validation,
+    ):
+        return 17
     return _sliced_call(args, env)
 
 
@@ -2099,12 +2273,19 @@ def launch_vibe_headless(
         prompt,
         "--output",
         "streaming",
-        "--force",
     ]
     if status in {"claimed", "in_progress"}:
         args.append("--no-claim")
     env = os.environ.copy()
     env.update(dispatch_env or {})
+    if not add_resume_session_environment(
+        env,
+        task_id=task_id,
+        lane=lane,
+        platform="vibe",
+        validation=validation,
+    ):
+        return 17
     return _sliced_call(args, env)
 
 
@@ -2325,10 +2506,13 @@ def main(argv: list[str] | None = None) -> int:
                 str(Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"),
             )
         )
-        reaped = run_claim_sweep(sweep_root)
-        for name, task_id, reason in reaped:
-            print(f"reaped {name} ({reason}: {task_id or '∅'})")
-        print(f"cc-claim sweep: reaped {len(reaped)} stale claim(s)")
+        candidates = run_claim_sweep(sweep_root)
+        for name, task_id, reason in candidates:
+            print(f"candidate {name} ({reason}: {task_id or '∅'})")
+        print(
+            "cc-claim sweep: projected "
+            f"{len(candidates)} recovery candidate(s); ownership unchanged"
+        )
         return 0
 
     if not args.task or not args.lane:
@@ -2343,15 +2527,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
 
-    # Opportunistic cross-role stale-claim sweep: every dispatch frees lease-expired
-    # / terminal claims fleet-wide so a dead or wedged lane never parks a slot
-    # indefinitely (reform-identity-coherence cluster 11). Best-effort — it must
-    # never block a dispatch; opt out with HAPAX_DISPATCH_CLAIM_SWEEP=0.
-    if os.environ.get("HAPAX_DISPATCH_CLAIM_SWEEP", "1") != "0":
-        try:
-            run_claim_sweep(task_root, notify=True)
-        except Exception:
-            pass
+    # Automatic claim recovery is retired. Explicit --sweep-stale-claims is a
+    # projection-only diagnostic; effectful recovery requires a governed writer.
 
     if args.platform in {"agy", "antigrav", "antigravity", "gemini-cli"}:
         if args.platform == "agy":
@@ -2502,6 +2679,12 @@ def main(argv: list[str] | None = None) -> int:
             )
         print(f"eligible: {args.task} -> {args.platform}/{args.mode}/{args.profile}/{args.lane}")
         return 0
+
+    if args.launch:
+        # Pressure admission may wait without a fixed bound. Evaluate mutable
+        # route/quota/authority inputs only after that wait so the decision used
+        # for actuation cannot predate the wait interval.
+        _await_sdlc_admission(args)
 
     policy_sources = load_dispatch_policy_sources(
         registry_path=optional_env_path("HAPAX_PLATFORM_CAPABILITY_REGISTRY"),
@@ -2687,11 +2870,6 @@ def main(argv: list[str] | None = None) -> int:
         print(prompt)
 
     if args.launch:
-        # L3 SDLC pressure admission gate — block-and-wait (QUEUE, never skip)
-        # while the box is under sustained CPU pressure, then proceed. The fleet
-        # slows; no dispatch is dropped.
-        _await_sdlc_admission(args)
-
         initial_task = validation.task
         refreshed_validation = validate_task(
             task_id=args.task,
@@ -2840,6 +3018,16 @@ def main(argv: list[str] | None = None) -> int:
                     if durable_binding.preparation is not None
                     else None
                 ),
+                prepared_platform=(
+                    durable_binding.preparation.platform
+                    if durable_binding.preparation is not None
+                    else None
+                ),
+                prepared_mode=(
+                    durable_binding.preparation.mode
+                    if durable_binding.preparation is not None
+                    else None
+                ),
                 reactivate_retired=reactivate_retired_codex_relay,
             )
             if durable_binding.preparation is not None:
@@ -2852,6 +3040,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.task,
                 args.lane,
                 prompt or "",
+                validation,
                 route,
                 dispatch_env,
             ),

@@ -12,7 +12,7 @@ import json
 import os
 import re
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, Self
@@ -2209,6 +2209,7 @@ def _lower_strings(value: object) -> set[str]:
 #: tasks audio/live/egress sensitive and veto their system auto-arm.
 _RISK_TOKEN_RE = re.compile(r"[a-z0-9]+")
 _GO_LIVE_RE = re.compile(r"\bgo[-_\s]+live\b")
+_ACCOUNT_LIVE_RE = re.compile(r"\baccount[-_\s]+live\b")
 
 
 def _contains_any(value: str, needles: tuple[str, ...]) -> bool:
@@ -2220,7 +2221,9 @@ def _contains_audio_or_live_egress_marker(value: str) -> bool:
     # "go-live" is the SDLC/program milestone phrase, not evidence that the task
     # mutates a live public/audio egress surface.
     without_go_live = _GO_LIVE_RE.sub("golive", value.lower())
-    return _contains_any(without_go_live, ("audio", "egress", "live"))
+    # "account-live" is quota/account evidence vocabulary, not live egress.
+    without_account_live = _ACCOUNT_LIVE_RE.sub("accountlive", without_go_live)
+    return _contains_any(without_account_live, ("audio", "egress", "live"))
 
 
 def _optional_frontmatter_string(value: object) -> str | None:
@@ -2298,6 +2301,8 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, (list, tuple, set, frozenset)):
         return [_jsonable(item) for item in value]
     if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
         return value.isoformat()
     if isinstance(value, Path):
         return str(value)

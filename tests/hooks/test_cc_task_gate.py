@@ -742,6 +742,34 @@ class TestStatusGating:
 
 
 class TestRoleMismatch:
+    def test_platform_qualified_owner_allows_exact_platform(self, tmp_path: Path) -> None:
+        _make_vault(tmp_path, status="in_progress", assigned="codex/cx-red")
+        _write_claim(tmp_path, "cx-red", "test-001")
+
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            role="cx-red",
+            role_env="CODEX_ROLE",
+            home=tmp_path,
+        )
+
+        assert result.returncode == 0, result.stderr
+
+    def test_bare_known_role_rejects_cross_platform_caller(self, tmp_path: Path) -> None:
+        _make_vault(tmp_path, status="in_progress", assigned="eta")
+        _write_claim(tmp_path, "eta", "test-001")
+
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            role="eta",
+            role_env="HAPAX_AGENT_ROLE",
+            home=tmp_path,
+            extra_env={"HAPAX_AGENT_INTERFACE": "codex"},
+        )
+
+        assert result.returncode == 2
+        assert "assigned to 'eta', not 'codex/eta'" in result.stderr
+
     def test_assigned_to_other_role_rejects(self, tmp_path: Path) -> None:
         _make_vault(tmp_path, status="in_progress", assigned="delta")
         _write_claim(tmp_path, "alpha", "test-001")
@@ -1211,7 +1239,7 @@ class TestCcClaimSessionKeyed:
         cache = tmp_path / ".cache" / "hapax"
         assert (cache / f"cc-active-task-roleless-{self._SID}").read_text().strip() == "task-rl"
 
-    def test_expired_lease_is_reaped_and_does_not_block(self, tmp_path: Path) -> None:
+    def test_expired_lease_remains_blocking_until_explicit_recovery(self, tmp_path: Path) -> None:
         _write_claimable_task(tmp_path, "task-new")
         cache = tmp_path / ".cache" / "hapax"
         cache.mkdir(parents=True, exist_ok=True)
@@ -1225,8 +1253,11 @@ class TestCcClaimSessionKeyed:
             role="delta",
             extra_env={"HAPAX_SESSION_ID": "sidNew", "HAPAX_CLAIM_LEASE_TTL_SECS": "21600"},
         )
-        assert r.returncode == 0, r.stderr
-        assert not stale.exists()  # dead session's lease auto-expired (reaped)
+        assert r.returncode == 7
+        assert "claim_slot_occupied" in r.stderr
+        assert stale.read_text(encoding="utf-8").strip() == "task-old"
+        note = tmp_path / "Documents/Personal/20-projects/hapax-cc-tasks/active/task-new.md"
+        assert "status: offered" in note.read_text(encoding="utf-8")
 
 
 _SPAWNERS = [

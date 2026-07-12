@@ -1,12 +1,16 @@
-"""Regression tests for Claude coordinator target selection."""
+"""Regression tests for the visible Claude launcher and coordinator targeting."""
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
 
+from tests.scripts.launcher_activation_fixture import install_launcher_activation
+
 REPO_ROOT = Path(__file__).parent.parent.parent
+LAUNCHER = REPO_ROOT / "scripts" / "hapax-claude"
 SEND = REPO_ROOT / "scripts" / "hapax-claude-send"
 HEALTH = REPO_ROOT / "scripts" / "hapax-claude-health"
 
@@ -22,6 +26,290 @@ def _env(tmp_path: Path, bin_dir: Path) -> dict[str, str]:
     env["XDG_CACHE_HOME"] = str(tmp_path / ".cache")
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     return env
+
+
+def _visible_launcher_fixture(
+    tmp_path: Path,
+) -> tuple[dict[str, str], Path, Path, Path]:
+    bin_dir = tmp_path / "launcher-bin"
+    workdir = tmp_path / "worktree"
+    home = tmp_path / "launcher-home"
+    for path in (bin_dir, workdir / "scripts", home):
+        path.mkdir(parents=True, exist_ok=True)
+
+    env = os.environ.copy()
+    for name in tuple(env):
+        if name.startswith("HAPAX_CLAIM_DISPATCH_") or name in {
+            "CLAUDE_ROLE",
+            "HAPAX_AGENT_INTERFACE",
+            "HAPAX_AGENT_NAME",
+            "HAPAX_AGENT_ROLE",
+            "HAPAX_DISPATCH_CLAIM_SWEEP",
+            "HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID",
+            "HAPAX_METHODOLOGY_DISPATCH_TASK",
+            "HAPAX_SESSION_ID",
+            "HAPAX_WORKTREE_ROLE",
+        }:
+            env.pop(name)
+    env.update(
+        {
+            "HOME": str(home),
+            "XDG_CACHE_HOME": str(tmp_path / "launcher-cache"),
+            "PATH": f"{bin_dir}:{env['PATH']}",
+            "HAPAX_COUNCIL_DIR": str(workdir),
+            "HAPAX_CLAUDE_EFFORT": "",
+            "HAPAX_CLAUDE_SKIP_PERMS": "0",
+            "HAPAX_SESSION_ID": "visible-session-test",
+        }
+    )
+    env.update(install_launcher_activation(home))
+    _write_exe(workdir / "scripts" / "hapax-relay-retire", "#!/usr/bin/env bash\nexit 0\n")
+    return env, bin_dir, workdir, home
+
+
+def _write_visible_claim(workdir: Path, log_path: Path) -> Path:
+    claim = workdir / "scripts" / "cc-claim"
+    _write_exe(
+        claim,
+        f"""#!/usr/bin/env bash
+case "${{1:-}}" in
+  --dispatch-protocol-version)
+    printf '%s\\n' 'hapax-claim-dispatch-v1'
+    exit 0
+    ;;
+  --verify-dispatch-binding)
+    printf 'verify %s\\n' "${{2:-}}" >> {log_path}
+    exit "${{HAPAX_FAKE_CC_CLAIM_VERIFY_RC:-0}}"
+    ;;
+esac
+printf 'claim %s %s %s\\n' "$HAPAX_AGENT_NAME" "$HAPAX_SESSION_ID" "$1" >> {log_path}
+mkdir -p "$HOME/.cache/hapax"
+printf '%s\\n' "$1" > "$HOME/.cache/hapax/cc-active-task-$HAPAX_AGENT_NAME"
+printf '%s\\n' "$1" > "$HOME/.cache/hapax/cc-active-task-$HAPAX_AGENT_NAME-$HAPAX_SESSION_ID"
+""",
+    )
+    return claim
+
+
+def _read_environment(path: Path) -> dict[str, str]:
+    return {
+        key: value
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if "=" in line
+        for key, value in [line.split("=", 1)]
+    }
+
+
+def test_visible_claude_same_task_cache_requires_exact_dispatch_binding(tmp_path: Path) -> None:
+    env, bin_dir, workdir, home = _visible_launcher_fixture(tmp_path)
+    worker_env = tmp_path / "worker-env.txt"
+    claim_log = tmp_path / "claim.log"
+    path_claim_used = tmp_path / "path-claim-used"
+    _write_visible_claim(workdir, claim_log)
+    _write_exe(bin_dir / "claude", f"#!/usr/bin/env bash\nenv | sort > {worker_env}\n")
+    _write_exe(bin_dir / "cc-claim", f"#!/usr/bin/env bash\ntouch {path_claim_used}\nexit 99\n")
+    env["HAPAX_CLAIM_DISPATCH_MESSAGE_ID"] = "dispatch-message"
+    env["HAPAX_FAKE_CC_CLAIM_VERIFY_RC"] = "23"
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--role",
+            "beta",
+            "--cd",
+            str(workdir),
+            "--terminal",
+            "none",
+            "--task",
+            "demo-task",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 18
+    assert "exact dispatch binding verification failed" in result.stderr
+    claim_lines = claim_log.read_text(encoding="utf-8").splitlines()
+    assert claim_lines[-1] == "verify demo-task"
+    claim_parts = claim_lines[0].split()
+    assert claim_parts[:2] == ["claim", "beta"]
+    assert claim_parts[2] != "visible-session-test"
+    assert claim_parts[3] == "demo-task"
+    assert not worker_env.exists()
+    assert not path_claim_used.exists()
+
+
+def test_visible_claude_refuses_legacy_only_claim_inheritance(tmp_path: Path) -> None:
+    env, bin_dir, workdir, home = _visible_launcher_fixture(tmp_path)
+    worker_env = tmp_path / "worker-env.txt"
+    claim_log = tmp_path / "claim.log"
+    _write_visible_claim(workdir, claim_log)
+    _write_exe(bin_dir / "claude", f"#!/usr/bin/env bash\nenv | sort > {worker_env}\n")
+    claim_cache = home / ".cache" / "hapax"
+    claim_cache.mkdir(parents=True, exist_ok=True)
+    (claim_cache / "cc-active-task-beta").write_text("demo-task\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--role",
+            "beta",
+            "--cd",
+            str(workdir),
+            "--terminal",
+            "none",
+            "--task",
+            "demo-task",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 16
+    assert "incomplete or divergent role/session claim projection" in result.stderr
+    assert not claim_log.exists()
+    assert not worker_env.exists()
+
+
+def test_visible_claude_refuses_stale_activation_identity(tmp_path: Path) -> None:
+    env, bin_dir, workdir, _home = _visible_launcher_fixture(tmp_path)
+    worker_env = tmp_path / "worker-env.txt"
+    _write_exe(bin_dir / "claude", f"#!/usr/bin/env bash\nenv | sort > {worker_env}\n")
+    receipt = Path(env["HAPAX_SOURCE_ACTIVATION_RECEIPT"])
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    payload["active_source_head"] = "764a645ba37af239cd1068e6a9fbe4a4467f2876"
+    receipt.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--role",
+            "beta",
+            "--cd",
+            str(workdir),
+            "--terminal",
+            "none",
+            "--task",
+            "demo-task",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 14
+    assert "refusing unverified source-activation cc-claim" in result.stderr
+    assert not worker_env.exists()
+
+
+def test_visible_claude_tmux_runner_propagates_governed_environment(tmp_path: Path) -> None:
+    env, bin_dir, workdir, _home = _visible_launcher_fixture(tmp_path)
+    worker_env = tmp_path / "worker-env.txt"
+    claim_log = tmp_path / "claim.log"
+    path_claim_used = tmp_path / "path-claim-used"
+    _write_visible_claim(workdir, claim_log)
+    _write_exe(
+        bin_dir / "claude", '#!/usr/bin/env bash\nenv | sort > "$HAPAX_TEST_CLAUDE_ENV_LOG"\n'
+    )
+    _write_exe(bin_dir / "cc-claim", f"#!/usr/bin/env bash\ntouch {path_claim_used}\nexit 99\n")
+    _write_exe(
+        bin_dir / "tmux",
+        """#!/usr/bin/env bash
+case "${1:-}" in
+  has-session)
+    exit 1
+    ;;
+  new-session)
+    runner="${@: -1}"
+    env -i \\
+      HOME="$HOME" \\
+      PATH="$PATH" \\
+      XDG_CACHE_HOME="$XDG_CACHE_HOME" \\
+      HAPAX_TEST_CLAUDE_ENV_LOG="$HAPAX_TEST_CLAUDE_ENV_LOG" \\
+      "$runner"
+    ;;
+esac
+""",
+    )
+    binding_env = {
+        "HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE": "CASE-TEST-001",
+        "HAPAX_CLAIM_DISPATCH_BINDING_HASH": "binding-hash",
+        "HAPAX_CLAIM_DISPATCH_CLAIM_PROJECTION_SHA256": "claim-sha",
+        "HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY": "idempotency-key",
+        "HAPAX_CLAIM_DISPATCH_LANE_GENERATION": "lane-generation",
+        "HAPAX_CLAIM_DISPATCH_LANE_PID": "123",
+        "HAPAX_CLAIM_DISPATCH_LANE_PID_GENERATION": "pid-generation",
+        "HAPAX_CLAIM_DISPATCH_LANE_SESSION": "hapax-claude-beta",
+        "HAPAX_CLAIM_DISPATCH_MESSAGE_ID": "dispatch-message",
+        "HAPAX_CLAIM_DISPATCH_MODE": "interactive",
+        "HAPAX_CLAIM_DISPATCH_PARENT_SPEC": "/tmp/parent-spec.md",
+        "HAPAX_CLAIM_DISPATCH_PARENT_SPEC_SHA256": "parent-sha",
+        "HAPAX_CLAIM_DISPATCH_PLATFORM": "claude",
+        "HAPAX_CLAIM_DISPATCH_PROFILE": "full",
+        "HAPAX_CLAIM_DISPATCH_RELAY_PROJECTION_SHA256": "relay-sha",
+        "HAPAX_CLAIM_DISPATCH_TASK_PATH": "/tmp/demo-task.md",
+        "HAPAX_CLAIM_DISPATCH_TASK_SHA256": "task-sha",
+    }
+    env.update(binding_env)
+    env.update(
+        {
+            "HAPAX_CLAIM_LEASE_TTL_SECS": "0",
+            "HAPAX_DISPATCH_CLAIM_SWEEP": "0",
+            "HAPAX_IDLE_UPDATE_SECONDS": "321",
+            "HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID": "dispatch-message",
+            "HAPAX_TEST_CLAUDE_ENV_LOG": str(worker_env),
+        }
+    )
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--role",
+            "beta",
+            "--cd",
+            str(workdir),
+            "--terminal",
+            "tmux",
+            "--task",
+            "demo-task",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "hapax-claude-beta"
+    claim_lines = claim_log.read_text(encoding="utf-8").splitlines()
+    assert claim_lines[-1] == "verify demo-task"
+    claim_parts = claim_lines[0].split()
+    assert claim_parts[:2] == ["claim", "beta"]
+    minted_session_id = claim_parts[2]
+    assert minted_session_id != "visible-session-test"
+    assert claim_parts[3] == "demo-task"
+    assert not path_claim_used.exists()
+
+    observed = _read_environment(worker_env)
+    for name, value in binding_env.items():
+        assert observed[name] == value
+    assert observed["HAPAX_METHODOLOGY_DISPATCH_TASK"] == "demo-task"
+    assert observed["HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID"] == "dispatch-message"
+    assert observed["HAPAX_DISPATCH_CLAIM_SWEEP"] == "0"
+    assert observed["HAPAX_CLAIM_LEASE_TTL_SECS"] == "0"
+    assert observed["HAPAX_AGENT_INTERFACE"] == "claude"
+    assert observed["HAPAX_AGENT_NAME"] == "beta"
+    assert observed["HAPAX_AGENT_ROLE"] == "beta"
+    assert observed["CLAUDE_ROLE"] == "beta"
+    assert observed["HAPAX_WORKTREE_ROLE"] == "beta"
+    assert observed["HAPAX_SESSION_ID"] == minted_session_id
+    assert observed["HAPAX_IDLE_UPDATE_SECONDS"] == "321"
+    assert observed["PATH"].split(":", 1)[0] == str(workdir / "scripts")
 
 
 def test_send_rejects_stale_tmux_shell_as_claude_target(tmp_path: Path) -> None:

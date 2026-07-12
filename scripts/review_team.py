@@ -77,6 +77,7 @@ from shared.quota_spend_ledger import (  # noqa: E402
     load_quota_spend_ledger_resolved,
     subscription_quota_state_for_route,
 )
+from shared.sdlc_owner_identity import parse_task_owner  # noqa: E402
 
 DEFAULT_REGISTRY_PATH = REPO_ROOT / "config" / "review-lenses" / "registry.yaml"
 LENS_DIR = REPO_ROOT / "config" / "review-lenses"
@@ -98,6 +99,8 @@ ACCEPT_VERDICTS = frozenset({"accept", "accept-with-findings"})
 #: hours and t1's require_all_families sealed the merge gate fleet-wide
 #: (postmortem failure class #1). Availability failures must be named so the
 #: constitution can degrade instead of seal, while preserving the true cause.
+#: ``reviewer-internal-error`` is a dispatcher/local runner failure, distinct
+#: from model garbage output and never counted as availability degradation.
 REVIEWER_VERDICTS = frozenset(
     {
         "accept",
@@ -107,6 +110,7 @@ REVIEWER_VERDICTS = frozenset(
         "quota-wall",
         "provider-outage",
         "reviewer-route-unavailable",
+        "reviewer-internal-error",
     }
 )
 FAMILY_OUTAGE_VERDICTS = frozenset({"quota-wall", "provider-outage", "reviewer-route-unavailable"})
@@ -509,7 +513,12 @@ def writer_family_for_lane(lane: str | None, registry: Mapping[str, Any]) -> str
     """Model family of the authoring lane (exact map, then prefixes, then default)."""
 
     lane_families = registry["lane_families"]
-    lane_norm = (lane or "").strip().lower()
+    raw_lane = (lane or "").strip()
+    try:
+        owner = parse_task_owner(raw_lane)
+    except ValueError as exc:
+        raise ValueError(f"malformed authoring lane identity: {raw_lane}") from exc
+    lane_norm = (owner.role if owner is not None else "").lower()
     if not lane_norm:
         return lane_families["default"]
     retired = set(lane_families.get("retired") or [])

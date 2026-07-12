@@ -1,3 +1,7 @@
+External pull requests are not an intake path for this repository. This
+template is for internal, operator-governed PRs that carry an authority
+case.
+
 ## Summary
 
 
@@ -17,4 +21,4 @@
 
 - [ ] If this PR fixes something documented as broken, in-flight, or "currently <X>" in any CLAUDE.md, the CLAUDE.md claim is also deleted.
 - [ ] If this PR closes a documented epic, the CLAUDE.md narrative for that epic is collapsed to a one-line pointer to the handoff doc.
-- [ ] No new `(PR #NNN)` fingerprints, "fixed YYYY-MM-DD" notes, or "currently broken" claims have been added.
+- [ ] This PR adds no new `(PR #NNN)` fingerprints, "fixed YYYY-MM-DD" notes, or "currently broken" claims.

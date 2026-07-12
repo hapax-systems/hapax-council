@@ -72,11 +72,16 @@ KNOWN_PRODUCERS = (
     "hapax-cache-cleanup",
     "hapax-audio-safe-restart",
     "hapax-lane-idle-watchdog",
-    "hapax-lane-reaper",
-    "hapax-lane-supervisor",
     "hapax-post-merge-deploy",
     "hapax-worktree-gc.sh",
     "private-broadcast-echo-probe.py",
+)
+
+# Projection-only standing controllers do not emit high-priority alerts or mint
+# incident tasks. Their findings remain in the journal/systemd result instead.
+PROJECTION_ONLY_PRODUCERS = (
+    "hapax-lane-reaper",
+    "hapax-lane-supervisor",
 )
 
 
@@ -141,6 +146,16 @@ def test_known_producer_routes_through_governed_intake(name: str) -> None:
         f"{name} is a known high-priority alert source but no longer routes "
         "through hapax-alert / hapax-p0-incident-intake"
     )
+
+
+@pytest.mark.parametrize("name", PROJECTION_ONLY_PRODUCERS)
+def test_projection_only_producer_has_no_alert_or_task_writer(name: str) -> None:
+    path = SCRIPTS / name
+    assert path.is_file()
+    text = _read(path) or ""
+    assert not RAW_DESKTOP.search(text)
+    assert not RAW_NTFY.search(text)
+    assert not GOVERNED.search(text)
 
 
 def test_no_unrouted_raw_high_priority_emit_per_emit() -> None:

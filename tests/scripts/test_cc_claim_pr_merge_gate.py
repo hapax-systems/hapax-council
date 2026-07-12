@@ -15,11 +15,18 @@ CLOSE_CHECK = REPO_ROOT / "scripts" / "cc-close-pr-merge-check.py"
 
 
 def _extract_python(script_path: pathlib.Path) -> str:
-    """Extract the embedded Python from the bash heredoc."""
+    """Extract the dependency-gate Python from the script's heredocs."""
     text = script_path.read_text()
-    start = text.index("<<'PYEOF'") + len("<<'PYEOF'") + 1
-    end = text.index("\nPYEOF", start)
-    return text[start:end]
+    marker = "<<'PYEOF'"
+    offset = 0
+    while marker in text[offset:]:
+        start = text.index(marker, offset) + len(marker) + 1
+        end = text.index("\nPYEOF", start)
+        block = text[start:end]
+        if "def _parse_pr_number(" in block:
+            return block
+        offset = end + len("\nPYEOF")
+    raise AssertionError("cc-claim dependency-gate Python heredoc not found")
 
 
 def test_script_exists_and_executable():

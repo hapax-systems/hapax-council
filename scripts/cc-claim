@@ -3,7 +3,7 @@
 #
 # Claim a vault cc-task for the current session. Atomic: rewrites the
 # task note frontmatter (status: offered -> claimed; assigned_to:
-# unassigned -> $HAPAX_AGENT_ROLE/$CODEX_ROLE/$CLAUDE_ROLE; claimed_at: now), then writes the
+# unassigned -> <platform>/<role> when known; claimed_at: now), then writes the
 # session's claim file at ~/.cache/hapax/cc-active-task-{role}.
 #
 # After this, the next file-mutating tool call passes through the
@@ -32,7 +32,10 @@ if [[ -f "$ROLE_HELPER" ]]; then
   . "$ROLE_HELPER"
 fi
 
-force=false
+verify_dispatch_binding=false
+print_post_claim_task_sha256=false
+materialize_remote_projection=false
+retire_terminal_projection=false
 task_id=""
 dispatch_message_id="${HAPAX_CLAIM_DISPATCH_MESSAGE_ID:-}"
 dispatch_binding_hash="${HAPAX_CLAIM_DISPATCH_BINDING_HASH:-}"
@@ -44,6 +47,7 @@ dispatch_idempotency_key="${HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY:-}"
 dispatch_task_path="${HAPAX_CLAIM_DISPATCH_TASK_PATH:-}"
 dispatch_task_sha256="${HAPAX_CLAIM_DISPATCH_TASK_SHA256:-}"
 dispatch_parent_spec="${HAPAX_CLAIM_DISPATCH_PARENT_SPEC:-}"
+dispatch_parent_spec_sha256="${HAPAX_CLAIM_DISPATCH_PARENT_SPEC_SHA256:-}"
 dispatch_lane_session="${HAPAX_CLAIM_DISPATCH_LANE_SESSION:-}"
 dispatch_lane_generation="${HAPAX_CLAIM_DISPATCH_LANE_GENERATION:-}"
 dispatch_lane_pid="${HAPAX_CLAIM_DISPATCH_LANE_PID:-}"
@@ -52,20 +56,40 @@ dispatch_claim_projection="${HAPAX_CLAIM_DISPATCH_CLAIM_PROJECTION_SHA256:-}"
 dispatch_relay_projection="${HAPAX_CLAIM_DISPATCH_RELAY_PROJECTION_SHA256:-}"
 for arg in "$@"; do
   case "$arg" in
-    --force) force=true ;;
+    --dispatch-protocol-version)
+      printf '%s\n' 'hapax-claim-dispatch-v1'
+      exit 0
+      ;;
+    --verify-dispatch-binding) verify_dispatch_binding=true ;;
+    --print-post-claim-task-sha256) print_post_claim_task_sha256=true ;;
+    --materialize-remote-projection) materialize_remote_projection=true ;;
+    --retire-terminal-projection) retire_terminal_projection=true ;;
+    --force)
+      echo "cc-claim: --force ownership replacement is retired; use governed owner-only recovery" >&2
+      exit 8
+      ;;
     -*) echo "cc-claim: unknown flag '$arg'" >&2; exit 1 ;;
     *) task_id="$arg" ;;
   esac
 done
+mode_count=0
+[[ "$verify_dispatch_binding" == "true" ]] && mode_count=$((mode_count + 1))
+[[ "$print_post_claim_task_sha256" == "true" ]] && mode_count=$((mode_count + 1))
+[[ "$materialize_remote_projection" == "true" ]] && mode_count=$((mode_count + 1))
+[[ "$retire_terminal_projection" == "true" ]] && mode_count=$((mode_count + 1))
+if [[ "$mode_count" -gt 1 ]]; then
+  echo "cc-claim: select only one claim operation" >&2
+  exit 1
+fi
 if [[ -z "$task_id" ]]; then
-  echo "usage: cc-claim [--force] <task_id>" >&2
+  echo "usage: cc-claim [--verify-dispatch-binding|--print-post-claim-task-sha256|--materialize-remote-projection|--retire-terminal-projection] <task_id>" >&2
   exit 1
 fi
 dispatch_values=(
   "$dispatch_message_id" "$dispatch_binding_hash" "$dispatch_platform"
   "$dispatch_mode" "$dispatch_profile" "$dispatch_authority_case"
   "$dispatch_idempotency_key" "$dispatch_task_path" "$dispatch_task_sha256"
-  "$dispatch_parent_spec" "$dispatch_lane_generation"
+  "$dispatch_parent_spec" "$dispatch_parent_spec_sha256" "$dispatch_lane_generation"
   "$dispatch_claim_projection" "$dispatch_relay_projection"
 )
 dispatch_present=0
@@ -108,18 +132,15 @@ sys.exit(0 if is_claim_keyable_session_id(sys.argv[1]) else 1)
   echo "cc-claim: session id '$session_id' is not claim-keyable (pid-shaped or malformed) — using legacy role-keyed claim only" >&2
   session_id=""
 fi
-if [[ -n "$session_id" ]]; then
-  session_claim_file="$HOME/.cache/hapax/cc-active-task-$role-$session_id"
-else
-  session_claim_file=""
-fi
-lease_ttl="${HAPAX_CLAIM_LEASE_TTL_SECS:-21600}"
-
 # Serialize both the role and task identity through note mutation plus cache
 # publication. Different roles cannot race to claim the same note, and one role
 # cannot race two different tasks into separate active claims.
 command -v flock >/dev/null 2>&1 || {
   echo "cc-claim: flock missing; refusing non-atomic claim" >&2
+  exit 3
+}
+command -v python3 >/dev/null 2>&1 || {
+  echo "cc-claim: python3 missing; cannot perform ownership transaction" >&2
   exit 3
 }
 mkdir -p "$HOME/.cache/hapax"
@@ -129,64 +150,942 @@ exec 8>"$HOME/.cache/hapax/cc-claim-role-lock-$role_lock_key"
 flock -x 8
 exec 9>"$HOME/.cache/hapax/cc-claim-task-lock-$task_lock_key"
 flock -x 9
-
-# --- Multi-claim prevention + lease expiry (reform Phase 1, cluster 6) ---
-# A role must close its current task before claiming a new one. Without this,
-# Codex lanes bulk-claimed dozens of tasks with zero implementation. Scan the
-# role's claim files — the legacy cc-active-task-<role> AND every session-keyed
-# cc-active-task-<role>-<session_id> (FM-2) — and treat any whose lease has
-# expired (mtime older than HAPAX_CLAIM_LEASE_TTL_SECS) as free: a dead/wedged
-# session's claim auto-frees instead of deadlocking the role forever. The gate
-# refreshes a live session's lease on each mutation, so only stale sessions age
-# out. A live claim on a DIFFERENT non-terminal task blocks (unless --force).
-vault_root_check="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
-now_epoch="$(date +%s 2>/dev/null || echo 0)"
-legacy_claim_file="$HOME/.cache/hapax/cc-active-task-$role"
-shopt -s nullglob
-for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
-  [[ -f "$cf" ]] || continue
-  cf_mtime="$(stat -c %Y "$cf" 2>/dev/null || echo "$now_epoch")"
-  if (( now_epoch - cf_mtime > lease_ttl )); then
-    # Expired lease. Reap session-keyed files (a dead session's lease auto-frees);
-    # leave the shared legacy file (it is overwritten below and never blocks once
-    # expired) for the out-of-scope consumers that still read it.
-    if [[ "$cf" != "$legacy_claim_file" ]]; then
-      claim_key="${cf##*/cc-active-task-}"
-      rm -f \
-        "$cf" \
-        "$HOME/.cache/hapax/cc-claim-epoch-$claim_key" \
-        "$HOME/.cache/hapax/cc-claim-dispatch-$claim_key.json" \
-        2>/dev/null || true
-    fi
-    continue
-  fi
-  existing_task="$(head -n1 "$cf" | tr -d '[:space:]')"
-  [[ -n "$existing_task" && "$existing_task" != "$task_id" ]] || continue
-  existing_note=""
-  for c in "$vault_root_check/active/$existing_task-"*.md "$vault_root_check/active/$existing_task.md"; do
-    [[ -f "$c" ]] && existing_note="$c" && break
-  done
-  [[ -n "$existing_note" ]] || continue
-  existing_status="$(grep -oP '^status:\s*\K\S+' "$existing_note" 2>/dev/null || echo "unknown")"
-  case "$existing_status" in
-    done|completed|closed|withdrawn|superseded) continue ;;
-  esac
-  echo "cc-claim: BLOCKED — role '$role' already has active task '$existing_task' (status: $existing_status)." >&2
-  echo "  Close it first: cc-close $existing_task" >&2
-  echo "  Or force: cc-claim --force $task_id" >&2
-  if [[ "$force" != "true" ]]; then
-    shopt -u nullglob
-    exit 7
-  fi
-  echo "cc-claim: --force override — releasing prior claim on '$existing_task'" >&2
-done
-shopt -u nullglob
-
+transaction_journal="$HOME/.cache/hapax/cc-ownership-txn-$role_lock_key-$task_lock_key.json"
 vault_root="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
-if ! command -v python3 &>/dev/null; then
-  echo "cc-claim: python3 missing; cannot rewrite frontmatter" >&2
-  exit 3
+python3 - "$SCRIPT_DIR/.." "$transaction_journal" "$HOME/.cache/hapax" "$vault_root" <<'PYEOF'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from shared.sdlc_filesystem_transaction import (
+    FilesystemTransactionError,
+    recover_filesystem_transaction,
+)
+
+try:
+    recover_filesystem_transaction(
+        Path(sys.argv[2]),
+        allowed_roots=(Path(sys.argv[3]), Path(sys.argv[4])),
+    )
+except FilesystemTransactionError as exc:
+    print(f"cc-claim: ownership transaction recovery failed: {exc}", file=sys.stderr)
+    raise SystemExit(9)
+PYEOF
+
+if [[ "$retire_terminal_projection" == "true" ]]; then
+  if [[ -z "$session_id" ]]; then
+    echo "cc-claim: terminal projection retirement requires an exact claim-keyable session id" >&2
+    exit 8
+  fi
+  python3 - "$SCRIPT_DIR/.." "$HOME/.cache/hapax" "$vault_root" \
+    "$task_id" "$role" "$session_id" "$transaction_journal" <<'PYEOF'
+import hashlib
+import os
+import stat
+import sys
+from pathlib import Path
+
+(
+    repo_root_raw,
+    cache_dir_raw,
+    vault_root_raw,
+    task_id,
+    role,
+    session_id,
+    transaction_journal_raw,
+) = sys.argv[1:]
+
+repo_root = Path(repo_root_raw).resolve()
+cache_dir = Path(cache_dir_raw)
+vault_root = Path(vault_root_raw)
+transaction_journal = Path(transaction_journal_raw)
+sys.path.insert(0, str(repo_root))
+
+from shared.sdlc_filesystem_transaction import (  # noqa: E402
+    FileMutation,
+    FilesystemTransactionError,
+    execute_filesystem_transaction,
+)
+from shared.sdlc_lifecycle import TASK_TERMINAL_STATUSES  # noqa: E402
+from shared.sdlc_owner_identity import (  # noqa: E402
+    inferred_task_owner_platform,
+    owner_matches,
+)
+from shared.sdlc_task_store import (  # noqa: E402
+    TaskStoreError,
+    assert_close_slot_owned,
+    claim_dispatch_binding_path,
+    resolve_task_note,
+)
+
+
+def fail(reason: str, repair: str, detail: str | None = None) -> None:
+    raise TaskStoreError(reason, repair, detail)
+
+
+def present(path: Path) -> bool:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        fail(
+            "terminal_projection_unreadable",
+            "restore readable ownership projections before retirement",
+            str(path),
+        )
+    return True
+
+
+def deletion(path: Path) -> FileMutation:
+    try:
+        metadata = path.lstat()
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o077
+        ):
+            raise OSError("projection is not an owner-only regular file")
+        content = path.read_bytes()
+    except FileNotFoundError:
+        return FileMutation(path=path, content=None, expected_exists=False)
+    except OSError as exc:
+        fail(
+            "terminal_projection_unreadable",
+            "restore owner-only regular ownership projections before retirement",
+            str(path),
+        )
+    return FileMutation(
+        path=path,
+        content=None,
+        expected_sha256=hashlib.sha256(content).hexdigest(),
+        expected_exists=True,
+    )
+
+
+try:
+    try:
+        active = resolve_task_note(vault_root, task_id, state="active")
+    except TaskStoreError as exc:
+        if exc.reason_code != "task_note_not_found":
+            raise
+    else:
+        print(
+            "cc-claim: terminal_projection_task_active: keep the exact ownership "
+            f"projection while the task remains active ({active.path})",
+            file=sys.stderr,
+        )
+        raise SystemExit(75)
+
+    try:
+        snapshot = resolve_task_note(vault_root, task_id, state="closed")
+    except TaskStoreError as exc:
+        if exc.reason_code != "task_note_not_found":
+            raise
+        print(
+            "cc-claim: terminal_projection_closed_task_pending: keep the exact "
+            "ownership projection until the closed task is visible",
+            file=sys.stderr,
+        )
+        raise SystemExit(75)
+    status = str(snapshot.frontmatter.get("status") or "").strip().lower()
+    owner = str(snapshot.frontmatter.get("assigned_to") or "").strip()
+    platform = os.environ.get("HAPAX_AGENT_INTERFACE", "").strip().lower()
+    if platform not in {"claude", "codex", "vibe"}:
+        platform = inferred_task_owner_platform(role) or ""
+    if status not in TASK_TERMINAL_STATUSES:
+        fail(
+            "terminal_projection_task_not_terminal",
+            "retire only after the authoritative closed task has a terminal status",
+            status or "missing",
+        )
+    if not platform or not owner_matches(owner, role, platform):
+        fail(
+            "terminal_projection_owner_mismatch",
+            "only the exact assigned role and platform may retire its projection",
+            f"assigned_to={owner or '<null>'} caller={platform or 'unknown'}/{role}",
+        )
+
+    keys = (role, f"{role}-{session_id}")
+    required_paths = [
+        path
+        for key in keys
+        for path in (
+            cache_dir / f"cc-active-task-{key}",
+            cache_dir / f"cc-claim-epoch-{key}",
+        )
+    ]
+    binding_paths = [claim_dispatch_binding_path(cache_dir, key) for key in keys]
+    observed_required = [present(path) for path in required_paths]
+    observed_bindings = [present(path) for path in binding_paths]
+    if not any((*observed_required, *observed_bindings)):
+        print(f"cc-claim: terminal projection already retired for '{task_id}'")
+        raise SystemExit(0)
+    if not all(observed_required) or any(observed_bindings) != all(observed_bindings):
+        fail(
+            "terminal_projection_incomplete",
+            "restore the exact role/session claim, epoch, and optional binding pair",
+            role,
+        )
+
+    assert_close_slot_owned(
+        cache_dir=cache_dir,
+        role=role,
+        session_id=session_id,
+        task_id=task_id,
+    )
+    mutations = [
+        FileMutation(
+            path=snapshot.path,
+            content=snapshot.content,
+            mode=snapshot.mode,
+            expected_sha256=snapshot.sha256,
+            expected_exists=True,
+        ),
+        *(deletion(path) for path in (*required_paths, *binding_paths)),
+    ]
+    execute_filesystem_transaction(
+        transaction_journal,
+        mutations,
+        allowed_roots=(vault_root, cache_dir),
+    )
+    if any(present(path) for path in (*required_paths, *binding_paths)):
+        fail(
+            "terminal_projection_retirement_incomplete",
+            "recover the committed terminal projection retirement transaction",
+            role,
+        )
+    current = resolve_task_note(vault_root, task_id, state="closed")
+    if current.sha256 != snapshot.sha256:
+        fail(
+            "terminal_projection_closed_task_changed",
+            "reconcile the exact closed task before further admission",
+            str(current.path),
+        )
+    print(f"cc-claim: retired exact terminal projection for '{task_id}'")
+except TaskStoreError as exc:
+    print(f"cc-claim: {exc}", file=sys.stderr)
+    raise SystemExit(8)
+except FilesystemTransactionError as exc:
+    print(
+        "cc-claim: terminal_projection_filesystem_transaction_failed: "
+        f"recover the durable ownership transaction before retrying ({exc})",
+        file=sys.stderr,
+    )
+    raise SystemExit(9)
+PYEOF
+  exit $?
 fi
+
+if [[ "$print_post_claim_task_sha256" == "true" || "$materialize_remote_projection" == "true" ]]; then
+  if [[ "$dispatch_present" -eq 0 ]]; then
+    echo "cc-claim: post-claim projection operations require the complete dispatch environment" >&2
+    exit 8
+  fi
+  if [[ -z "$session_id" ]]; then
+    echo "cc-claim: post-claim projection operations require an exact claim-keyable session id" >&2
+    exit 8
+  fi
+  projection_operation="print"
+  if [[ "$materialize_remote_projection" == "true" ]]; then
+    projection_operation="materialize"
+  fi
+  python3 - "$SCRIPT_DIR/.." "$HOME/.cache/hapax" "$vault_root" \
+    "$task_id" "$role" "$session_id" "$projection_operation" \
+    "$dispatch_message_id" "$dispatch_binding_hash" "$dispatch_platform" \
+    "$dispatch_mode" "$dispatch_profile" "$dispatch_authority_case" \
+    "$dispatch_idempotency_key" "$dispatch_task_path" \
+    "$dispatch_task_sha256" "$dispatch_parent_spec" \
+    "$dispatch_parent_spec_sha256" \
+    "$transaction_journal" \
+    "${HAPAX_CLAIM_REMOTE_POST_CLAIM_TASK_SHA256:-}" \
+    "${HAPAX_CLAIM_REMOTE_WAIT_SECONDS:-30}" <<'PYEOF'
+import hashlib
+import json
+import os
+import re
+import socket
+import stat
+import sys
+import time
+from pathlib import Path
+
+(
+    repo_root_raw,
+    cache_dir_raw,
+    vault_root_raw,
+    task_id,
+    role,
+    session_id,
+    operation,
+    dispatch_message_id,
+    dispatch_binding_hash,
+    dispatch_platform,
+    dispatch_mode,
+    dispatch_profile,
+    dispatch_authority_case,
+    dispatch_idempotency_key,
+    dispatch_task_path,
+    dispatch_task_sha256,
+    dispatch_parent_spec,
+    dispatch_parent_spec_sha256,
+    transaction_journal_raw,
+    expected_post_claim_sha256,
+    wait_seconds_raw,
+) = sys.argv[1:]
+
+repo_root = Path(repo_root_raw).resolve()
+cache_dir = Path(cache_dir_raw)
+vault_root = Path(vault_root_raw)
+transaction_journal = Path(transaction_journal_raw)
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
+from shared.sdlc_filesystem_transaction import (  # noqa: E402
+    FileMutation,
+    FilesystemTransactionError,
+    execute_filesystem_transaction,
+)
+from shared.sdlc_lifecycle import TASK_MUTABLE_STATUSES  # noqa: E402
+from shared.sdlc_owner_identity import (  # noqa: E402
+    TASK_OWNER_PLATFORMS,
+    canonical_task_owner,
+)
+from shared.sdlc_task_store import (  # noqa: E402
+    ClaimDispatchBinding,
+    TaskStoreError,
+    assert_claim_slot_available,
+    claim_dispatch_binding_bytes,
+    claim_dispatch_binding_path,
+    resolve_task_note,
+    verify_claim_dispatch_state,
+)
+
+
+def fail(reason: str, repair: str, detail: str | None = None) -> None:
+    raise TaskStoreError(reason, repair, detail)
+
+
+def parent_path() -> Path:
+    path = Path(dispatch_parent_spec).expanduser()
+    if not path.is_absolute():
+        path = Path.home() / "Documents" / "Personal" / path
+    return path
+
+
+def validate_authoritative_snapshot(*, expected_sha256: str | None = None):
+    snapshot = resolve_task_note(vault_root, task_id, state="active")
+    if str(snapshot.path) != dispatch_task_path:
+        fail(
+            "claim_remote_task_path_mismatch",
+            "sync the exact dispatched task path before projection materialization",
+            str(snapshot.path),
+        )
+    if expected_sha256 is not None and snapshot.sha256 != expected_sha256:
+        fail(
+            "claim_remote_post_claim_snapshot_changed",
+            "retry with the current exact post-claim task snapshot",
+            snapshot.sha256,
+        )
+    status = str(snapshot.frontmatter.get("status") or "").strip().lower()
+    owner = str(snapshot.frontmatter.get("assigned_to") or "").strip()
+    authority_case = str(snapshot.frontmatter.get("authority_case") or "").strip()
+    parent_spec = str(snapshot.frontmatter.get("parent_spec") or "").strip()
+    try:
+        expected_owner = canonical_task_owner(role, dispatch_platform)
+    except ValueError as exc:
+        fail(
+            "claim_remote_owner_identity_invalid",
+            "use one supported platform and bare role identity",
+            str(exc),
+        )
+    if (
+        status not in TASK_MUTABLE_STATUSES
+        or owner != expected_owner
+        or authority_case != dispatch_authority_case
+        or parent_spec != dispatch_parent_spec
+    ):
+        fail(
+            "claim_remote_authoritative_state_mismatch",
+            "wait for the exact qualified owner, mutable status, AuthorityCase, and parent spec",
+            task_id,
+        )
+    authority_path = parent_path()
+    try:
+        metadata = authority_path.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise OSError("parent spec is not a regular non-symlink file")
+        observed_parent_sha256 = hashlib.sha256(authority_path.read_bytes()).hexdigest()
+    except OSError as exc:
+        fail(
+            "claim_remote_parent_spec_unreadable",
+            "restore the exact parent-spec preimage before projection materialization",
+            str(authority_path),
+        )
+    if (
+        re.fullmatch(r"[0-9a-f]{64}", dispatch_parent_spec_sha256) is None
+        or observed_parent_sha256 != dispatch_parent_spec_sha256
+    ):
+        fail(
+            "claim_remote_parent_spec_preimage_mismatch",
+            "sync the exact dispatched parent-spec preimage before projection materialization",
+            str(authority_path),
+        )
+    return snapshot
+
+
+def verify_exact_projection():
+    return verify_claim_dispatch_state(
+        cache_dir=cache_dir,
+        vault_root=vault_root,
+        task_id=task_id,
+        role=role,
+        session_id=session_id,
+        dispatch_message_id=dispatch_message_id,
+        platform=dispatch_platform,
+        mode=dispatch_mode,
+        profile=dispatch_profile,
+        authority_case=dispatch_authority_case,
+        binding_hash=dispatch_binding_hash,
+        idempotency_key=dispatch_idempotency_key,
+        parent_spec=dispatch_parent_spec,
+        parent_spec_sha256=dispatch_parent_spec_sha256,
+    )
+
+
+def read_projection(path: Path) -> str:
+    try:
+        metadata = path.lstat()
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISREG(metadata.st_mode)
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+        ):
+            raise OSError("projection is not a mode-0600 regular non-symlink file")
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        fail(
+            "claim_remote_projection_unreadable",
+            "restore or remove the unsafe remote ownership projection",
+            str(path),
+        )
+
+
+def ensure_no_other_session_projection() -> None:
+    expected_keys = {role, f"{role}-{session_id}"}
+    for pattern, prefix, suffix in (
+        (f"cc-active-task-{role}*", "cc-active-task-", ""),
+        (f"cc-claim-epoch-{role}*", "cc-claim-epoch-", ""),
+        (f"cc-claim-dispatch-{role}*.json", "cc-claim-dispatch-", ".json"),
+    ):
+        try:
+            paths = sorted(cache_dir.glob(pattern))
+        except OSError as exc:
+            fail(
+                "claim_remote_projection_unreadable",
+                "restore readable remote ownership projections",
+                str(cache_dir),
+            )
+        for path in paths:
+            key = path.name.removeprefix(prefix)
+            if suffix:
+                key = key.removesuffix(suffix)
+            if key != role and not key.startswith(f"{role}-"):
+                continue
+            if key not in expected_keys:
+                fail(
+                    "claim_remote_other_session_projection",
+                    "close or recover the other session before remote materialization",
+                    key,
+                )
+
+
+def projection_write(path: Path, content: bytes) -> FileMutation:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return FileMutation(path=path, content=content, mode=0o600, expected_exists=False)
+    except OSError as exc:
+        fail(
+            "claim_remote_projection_unreadable",
+            "restore readable remote ownership projections",
+            str(path),
+        )
+    fail(
+        "claim_remote_projection_appeared",
+        "retry only after the existing remote projection is verified or recovered",
+        str(path),
+    )
+
+
+def canonical_json_bytes(value: object) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=True,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+
+
+def remote_receipt_path() -> Path:
+    return cache_dir / (
+        f"cc-claim-remote-projection-{role}-{session_id}-"
+        f"{expected_post_claim_sha256}.json"
+    )
+
+
+def new_remote_receipt(binding: ClaimDispatchBinding) -> bytes:
+    body = {
+        "authority_case": dispatch_authority_case,
+        "binding_hash": dispatch_binding_hash,
+        "claim_dispatch_receipt_hash": binding.receipt_hash,
+        "claim_epoch": binding.claim_epoch,
+        "coord_dispatch_idempotency_key": dispatch_idempotency_key or None,
+        "dispatch_message_id": dispatch_message_id,
+        "dispatch_task_path": dispatch_task_path,
+        "dispatch_task_sha256": dispatch_task_sha256,
+        "exec_host": socket.gethostname(),
+        "lane": role,
+        "may_authorize": False,
+        "mode": dispatch_mode,
+        "platform": dispatch_platform,
+        "post_claim_task_sha256": expected_post_claim_sha256,
+        "parent_spec": dispatch_parent_spec,
+        "parent_spec_sha256": dispatch_parent_spec_sha256,
+        "profile": dispatch_profile,
+        "published_at_epoch": int(time.time()),
+        "schema": "hapax.remote-claim-projection.v1",
+        "session_id": session_id,
+        "task_id": task_id,
+    }
+    receipt_hash = hashlib.sha256(canonical_json_bytes(body)).hexdigest()
+    return canonical_json_bytes({**body, "receipt_hash": receipt_hash}) + b"\n"
+
+
+def verified_remote_receipt(path: Path, binding: ClaimDispatchBinding) -> bytes:
+    raw = read_projection(path).encode("utf-8")
+
+    def unique_pairs(pairs):
+        record = {}
+        for key, value in pairs:
+            if key in record:
+                fail(
+                    "claim_remote_receipt_duplicate_key",
+                    "restore the exact self-hashed remote projection receipt",
+                    key,
+                )
+            record[key] = value
+        return record
+
+    try:
+        record = json.loads(raw.decode("ascii"), object_pairs_hook=unique_pairs)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        fail(
+            "claim_remote_receipt_malformed",
+            "restore the exact self-hashed remote projection receipt",
+            str(path),
+        )
+    exact_keys = {
+        "authority_case",
+        "binding_hash",
+        "claim_dispatch_receipt_hash",
+        "claim_epoch",
+        "coord_dispatch_idempotency_key",
+        "dispatch_message_id",
+        "dispatch_task_path",
+        "dispatch_task_sha256",
+        "exec_host",
+        "lane",
+        "may_authorize",
+        "mode",
+        "parent_spec",
+        "parent_spec_sha256",
+        "platform",
+        "post_claim_task_sha256",
+        "profile",
+        "published_at_epoch",
+        "receipt_hash",
+        "schema",
+        "session_id",
+        "task_id",
+    }
+    if not isinstance(record, dict) or set(record) != exact_keys:
+        fail(
+            "claim_remote_receipt_malformed",
+            "restore the exact self-hashed remote projection receipt",
+            str(path),
+        )
+    receipt_hash = record.pop("receipt_hash")
+    expected_identity = (
+        "hapax.remote-claim-projection.v1",
+        False,
+        task_id,
+        role,
+        session_id,
+        dispatch_platform,
+        dispatch_mode,
+        dispatch_profile,
+        dispatch_authority_case,
+        dispatch_binding_hash,
+        dispatch_message_id,
+        dispatch_task_path,
+        dispatch_task_sha256,
+        dispatch_idempotency_key or None,
+        binding.claim_epoch,
+        binding.receipt_hash,
+        expected_post_claim_sha256,
+        dispatch_parent_spec,
+        dispatch_parent_spec_sha256,
+    )
+    observed_identity = (
+        record.get("schema"),
+        record.get("may_authorize"),
+        record.get("task_id"),
+        record.get("lane"),
+        record.get("session_id"),
+        record.get("platform"),
+        record.get("mode"),
+        record.get("profile"),
+        record.get("authority_case"),
+        record.get("binding_hash"),
+        record.get("dispatch_message_id"),
+        record.get("dispatch_task_path"),
+        record.get("dispatch_task_sha256"),
+        record.get("coord_dispatch_idempotency_key"),
+        record.get("claim_epoch"),
+        record.get("claim_dispatch_receipt_hash"),
+        record.get("post_claim_task_sha256"),
+        record.get("parent_spec"),
+        record.get("parent_spec_sha256"),
+    )
+    if (
+        observed_identity != expected_identity
+        or not isinstance(record.get("exec_host"), str)
+        or not record["exec_host"].strip()
+        or not isinstance(record.get("published_at_epoch"), int)
+        or isinstance(record.get("published_at_epoch"), bool)
+        or record["published_at_epoch"] <= 0
+        or receipt_hash != hashlib.sha256(canonical_json_bytes(record)).hexdigest()
+    ):
+        fail(
+            "claim_remote_receipt_identity_mismatch",
+            "restore the exact self-hashed remote projection receipt",
+            str(path),
+        )
+    return raw
+
+
+def task_snapshot_mutation(snapshot) -> FileMutation:
+    if snapshot.sha256 != expected_post_claim_sha256:
+        fail(
+            "claim_remote_post_claim_snapshot_changed",
+            "retry with the current exact post-claim task snapshot",
+            snapshot.sha256,
+        )
+    return FileMutation(
+        path=snapshot.path,
+        content=snapshot.content,
+        mode=snapshot.mode,
+        expected_sha256=expected_post_claim_sha256,
+    )
+
+
+def main() -> None:
+    if dispatch_platform not in TASK_OWNER_PLATFORMS:
+        fail(
+            "claim_remote_platform_invalid",
+            "use one supported dispatch platform",
+            dispatch_platform,
+        )
+    if re.fullmatch(r"[0-9a-f]{64}", dispatch_binding_hash) is None:
+        fail(
+            "claim_remote_binding_hash_invalid",
+            "transport the exact 64-hex dispatch binding hash",
+            dispatch_binding_hash,
+        )
+
+    if operation == "print":
+        verify_exact_projection()
+        snapshot = validate_authoritative_snapshot()
+        try:
+            current = snapshot.path.read_bytes()
+        except OSError as exc:
+            fail(
+                "claim_remote_task_unreadable",
+                "restore the exact task note before snapshot transport",
+                str(snapshot.path),
+            )
+        if hashlib.sha256(current).hexdigest() != snapshot.sha256:
+            fail(
+                "claim_remote_task_changed_during_snapshot",
+                "retry against stable post-claim task bytes",
+                str(snapshot.path),
+            )
+        print(snapshot.sha256)
+        return
+
+    if operation != "materialize":
+        fail("claim_remote_operation_invalid", "use one canonical projection operation")
+    if re.fullmatch(r"[0-9a-f]{64}", expected_post_claim_sha256) is None:
+        fail(
+            "claim_remote_post_claim_sha256_invalid",
+            "transport the exact 64-hex post-claim task snapshot",
+            expected_post_claim_sha256,
+        )
+    try:
+        wait_seconds = int(wait_seconds_raw)
+    except ValueError:
+        wait_seconds = 0
+    if not 1 <= wait_seconds <= 120:
+        fail(
+            "claim_remote_wait_invalid",
+            "set HAPAX_CLAIM_REMOTE_WAIT_SECONDS to an integer from 1 through 120",
+            wait_seconds_raw,
+        )
+
+    deadline = time.monotonic() + wait_seconds
+    last_observation = "task_note_not_observed"
+    while True:
+        try:
+            snapshot = resolve_task_note(vault_root, task_id, state="active")
+            last_observation = snapshot.sha256
+        except TaskStoreError as exc:
+            snapshot = None
+            last_observation = exc.reason_code
+        if snapshot is not None and snapshot.sha256 == expected_post_claim_sha256:
+            break
+        if time.monotonic() >= deadline:
+            fail(
+                "claim_remote_post_claim_sync_timeout",
+                "sync the exact transported post-claim task note and retry",
+                last_observation,
+            )
+        time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
+
+    validate_authoritative_snapshot(expected_sha256=expected_post_claim_sha256)
+    ensure_no_other_session_projection()
+
+    keys = (role, f"{role}-{session_id}")
+    marker_path = cache_dir / f"session-role-{session_id}"
+    target_paths = [marker_path]
+    for key in keys:
+        target_paths.extend(
+            (
+                cache_dir / f"cc-active-task-{key}",
+                cache_dir / f"cc-claim-epoch-{key}",
+                claim_dispatch_binding_path(cache_dir, key),
+            )
+        )
+    present = []
+    for path in target_paths:
+        try:
+            path.lstat()
+            present.append(path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            fail(
+                "claim_remote_projection_unreadable",
+                "restore readable remote ownership projections",
+                str(path),
+            )
+    if present:
+        if len(present) != len(target_paths):
+            fail(
+                "claim_remote_projection_incomplete",
+                "recover the complete remote ownership transaction before retrying",
+                ",".join(path.name for path in present),
+            )
+        binding = verify_exact_projection()
+        if read_projection(marker_path).strip() != role:
+            fail(
+                "claim_remote_session_role_mismatch",
+                "restore the exact session-role projection before retrying",
+                str(marker_path),
+            )
+        for path in target_paths:
+            read_projection(path)
+        receipt_path = remote_receipt_path()
+        try:
+            receipt_path.lstat()
+        except FileNotFoundError:
+            receipt_payload = new_remote_receipt(binding)
+            receipt_mutation = projection_write(receipt_path, receipt_payload)
+        except OSError as exc:
+            fail(
+                "claim_remote_receipt_unreadable",
+                "restore the exact remote projection receipt before retrying",
+                str(receipt_path),
+            )
+        else:
+            receipt_payload = verified_remote_receipt(receipt_path, binding)
+            receipt_mutation = FileMutation(
+                path=receipt_path,
+                content=receipt_payload,
+                mode=0o600,
+                expected_sha256=hashlib.sha256(receipt_payload).hexdigest(),
+            )
+        snapshot = validate_authoritative_snapshot(
+            expected_sha256=expected_post_claim_sha256
+        )
+        execute_filesystem_transaction(
+            transaction_journal,
+            (task_snapshot_mutation(snapshot), receipt_mutation),
+            allowed_roots=(vault_root, cache_dir),
+        )
+        binding = verify_exact_projection()
+        verified_remote_receipt(receipt_path, binding)
+        validate_authoritative_snapshot(expected_sha256=expected_post_claim_sha256)
+        print(f"cc-claim: verified existing exact remote projection for '{task_id}'")
+        print(f"cc-claim: remote projection receipt {receipt_path}")
+        return
+
+    assert_claim_slot_available(
+        cache_dir=cache_dir,
+        role=role,
+        session_id=session_id,
+        task_id=task_id,
+    )
+    claim_epoch = int(time.time())
+    binding = ClaimDispatchBinding.create(
+        task_id=task_id,
+        lane=role,
+        session_id=session_id,
+        claim_epoch=claim_epoch,
+        dispatch_message_id=dispatch_message_id,
+        platform=dispatch_platform,
+        mode=dispatch_mode,
+        profile=dispatch_profile,
+        authority_case=dispatch_authority_case,
+        binding_hash=dispatch_binding_hash,
+        coord_dispatch_idempotency_key=dispatch_idempotency_key,
+    )
+    claim_payload = f"{task_id}\n".encode()
+    epoch_payload = f"{claim_epoch} {task_id}\n".encode()
+    binding_payload = claim_dispatch_binding_bytes(binding)
+    receipt_path = remote_receipt_path()
+    receipt_payload = new_remote_receipt(binding)
+    snapshot = validate_authoritative_snapshot(expected_sha256=expected_post_claim_sha256)
+    mutations = [
+        task_snapshot_mutation(snapshot),
+        projection_write(marker_path, f"{role}\n".encode()),
+    ]
+    for key in keys:
+        mutations.extend(
+            (
+                projection_write(cache_dir / f"cc-active-task-{key}", claim_payload),
+                projection_write(cache_dir / f"cc-claim-epoch-{key}", epoch_payload),
+                projection_write(claim_dispatch_binding_path(cache_dir, key), binding_payload),
+            )
+        )
+    mutations.append(projection_write(receipt_path, receipt_payload))
+
+    # The exact task postimage is a preserving compare-and-swap member of this
+    # transaction. A task-state race therefore aborts the whole projection set.
+    execute_filesystem_transaction(
+        transaction_journal,
+        mutations,
+        allowed_roots=(vault_root, cache_dir),
+    )
+    binding = verify_exact_projection()
+    if read_projection(marker_path).strip() != role:
+        fail(
+            "claim_remote_session_role_mismatch",
+            "recover the complete remote ownership transaction before launch",
+            str(marker_path),
+        )
+    verified_remote_receipt(receipt_path, binding)
+    validate_authoritative_snapshot(expected_sha256=expected_post_claim_sha256)
+    print(f"cc-claim: materialized exact remote projection for '{task_id}'")
+    print(f"cc-claim: remote projection receipt {receipt_path}")
+
+
+try:
+    main()
+except TaskStoreError as exc:
+    print(f"cc-claim: {exc}", file=sys.stderr)
+    raise SystemExit(8)
+except FilesystemTransactionError as exc:
+    print(
+        "cc-claim: claim_remote_filesystem_transaction_failed: "
+        f"recover the durable remote ownership transaction before retrying ({exc})",
+        file=sys.stderr,
+    )
+    raise SystemExit(9)
+PYEOF
+  exit $?
+fi
+
+if [[ "$verify_dispatch_binding" == "true" ]]; then
+  if [[ "$dispatch_present" -eq 0 ]]; then
+    echo "cc-claim: dispatch binding verification requires the complete dispatch environment" >&2
+    exit 8
+  fi
+  command -v python3 >/dev/null 2>&1 || {
+    echo "cc-claim: python3 missing; cannot verify dispatch binding" >&2
+    exit 3
+  }
+  python3 - "$SCRIPT_DIR/.." "$HOME/.cache/hapax" \
+    "$HOME/Documents/Personal/20-projects/hapax-cc-tasks" "$task_id" "$role" \
+    "$session_id" "$dispatch_message_id" "$dispatch_platform" "$dispatch_mode" \
+    "$dispatch_profile" "$dispatch_authority_case" "$dispatch_binding_hash" \
+    "$dispatch_idempotency_key" "$dispatch_parent_spec" \
+    "$dispatch_parent_spec_sha256" <<'PYEOF'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from shared.sdlc_task_store import TaskStoreError, verify_claim_dispatch_state
+
+try:
+    verify_claim_dispatch_state(
+        cache_dir=Path(sys.argv[2]),
+        vault_root=Path(sys.argv[3]),
+        task_id=sys.argv[4],
+        role=sys.argv[5],
+        session_id=sys.argv[6],
+        dispatch_message_id=sys.argv[7],
+        platform=sys.argv[8],
+        mode=sys.argv[9],
+        profile=sys.argv[10],
+        authority_case=sys.argv[11],
+        binding_hash=sys.argv[12],
+        idempotency_key=sys.argv[13],
+        parent_spec=sys.argv[14],
+        parent_spec_sha256=sys.argv[15],
+    )
+except TaskStoreError as exc:
+    print(f"cc-claim: {exc}", file=sys.stderr)
+    raise SystemExit(8)
+print(f"cc-claim: verified exact dispatch binding for '{sys.argv[4]}'")
+PYEOF
+  exit $?
+fi
+
+# Claim age, task terminality, and caller force are not detachment authority.
+# Under the role+task locks, refuse any existing different-task, other-session,
+# incomplete, or already dispatch-bound slot before touching the task note.
+python3 - "$SCRIPT_DIR/.." "$HOME/.cache/hapax" "$role" "$session_id" "$task_id" <<'PYEOF'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from shared.sdlc_task_store import TaskStoreError, assert_claim_slot_available
+
+try:
+    assert_claim_slot_available(
+        cache_dir=Path(sys.argv[2]),
+        role=sys.argv[3],
+        session_id=sys.argv[4],
+        task_id=sys.argv[5],
+    )
+except TaskStoreError as exc:
+    print(f"cc-claim: {exc}", file=sys.stderr)
+    raise SystemExit(7)
+PYEOF
+
 if ! note_path="$(python3 - "$SCRIPT_DIR/.." "$vault_root" "$task_id" <<'PYEOF'
 import sys
 from pathlib import Path
@@ -216,12 +1115,14 @@ python3 - "$note_path" "$role" "$task_id" "$SCRIPT_DIR/.." "$session_id" \
   "$dispatch_binding_hash" "$dispatch_platform" "$dispatch_mode" \
   "$dispatch_profile" "$dispatch_authority_case" "$dispatch_idempotency_key" \
   "$dispatch_task_path" "$dispatch_task_sha256" "$dispatch_parent_spec" \
+  "$dispatch_parent_spec_sha256" \
   "$dispatch_lane_session" "$dispatch_lane_generation" "$dispatch_lane_pid" \
   "$dispatch_lane_pid_generation" "$dispatch_claim_projection" \
-  "$dispatch_relay_projection" <<'PYEOF'
+  "$dispatch_relay_projection" "$transaction_journal" <<'PYEOF'
 import hashlib
 import os
 import re
+import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -248,13 +1149,15 @@ session_id = sys.argv[5] if len(sys.argv) > 5 else ""
     dispatch_task_path,
     dispatch_task_sha256,
     dispatch_parent_spec,
+    dispatch_parent_spec_sha256,
     dispatch_lane_session,
     dispatch_lane_generation,
     dispatch_lane_pid,
     dispatch_lane_pid_generation,
     dispatch_claim_projection,
     dispatch_relay_projection,
-) = sys.argv[6:24]
+) = sys.argv[6:25]
+transaction_journal = Path(sys.argv[25])
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
@@ -273,9 +1176,36 @@ from shared.coord_dispatch import (  # noqa: E402
 from shared.sdlc_task_store import (  # noqa: E402
     ClaimDispatchBinding,
     TaskStoreError,
+    assert_claim_slot_available,
+    claim_dispatch_binding_bytes,
+    claim_dispatch_binding_path,
     resolve_task_note,
-    write_claim_dispatch_binding,
 )
+from shared.sdlc_owner_identity import (  # noqa: E402
+    canonical_task_owner,
+    inferred_task_owner_platform,
+    owner_matches,
+)
+from shared.sdlc_filesystem_transaction import (  # noqa: E402
+    FileMutation,
+    FilesystemTransactionError,
+    execute_filesystem_transaction,
+)
+
+
+def effective_platform() -> str | None:
+    if dispatch_platform in {"claude", "codex", "vibe"}:
+        return dispatch_platform
+    interface = os.environ.get("HAPAX_AGENT_INTERFACE", "").strip().lower()
+    if interface in {"claude", "codex", "vibe"}:
+        return interface
+    if role.startswith("cx-"):
+        return "codex"
+    if role.startswith("vbe-"):
+        return "vibe"
+    if os.environ.get("CLAUDE_ROLE") or os.environ.get("CLAUDECODE"):
+        return "claude"
+    return inferred_task_owner_platform(role)
 
 snapshot = resolve_task_note(path.parent.parent, task_id, state="active")
 if snapshot.path != path.resolve():
@@ -300,12 +1230,35 @@ if int(dispatch_present):
             str(snapshot.path),
         )
 
+    parent_path = Path(dispatch_parent_spec).expanduser()
+    if not parent_path.is_absolute():
+        parent_path = Path.home() / "Documents" / "Personal" / parent_path
+    try:
+        if parent_path.is_symlink() or not parent_path.is_file():
+            raise OSError("parent spec is not a regular non-symlink file")
+        parent_spec_sha256 = hashlib.sha256(parent_path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise TaskStoreError(
+            "claim_dispatch_parent_spec_unreadable",
+            "restore the exact parent-spec preimage before claiming",
+            str(parent_path),
+        ) from exc
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", dispatch_parent_spec_sha256)
+        or parent_spec_sha256 != dispatch_parent_spec_sha256
+    ):
+        raise TaskStoreError(
+            "claim_dispatch_parent_spec_preimage_mismatch",
+            "re-dispatch from the current exact parent-spec bytes",
+            str(parent_path),
+        )
+
     def pid_generation(pid: int) -> str:
         try:
             stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
             return f"pid:{pid}:{stat_text.rsplit(')', 1)[1].split()[19]}"
         except (OSError, IndexError):
-            return f"pid:{pid}"
+            return ""
 
     if dispatch_lane_session:
         import subprocess
@@ -422,9 +1375,10 @@ elif status in READY_STATUSES:
             file=sys.stderr,
         )
         sys.exit(4)
-    if assigned_to != role:
+    if not owner_matches(assigned_to, role, effective_platform()):
         print(
-            f"cc-claim: refusing to resume '{task_id}' — assigned to '{assigned_to}', not '{role}'",
+            f"cc-claim: refusing to resume '{task_id}' — assigned to '{assigned_to}', "
+            f"not '{effective_platform() or 'unknown'}/{role}'",
             file=sys.stderr,
         )
         sys.exit(4)
@@ -714,6 +1668,7 @@ def _insert_session_log(note_text: str, log_line: str) -> str:
 
 unmet: list[str] = []
 if claim_mode == "claim":
+    claim_owner = canonical_task_owner(role, effective_platform())
     for dep_id in _parse_depends_on(text):
         dep_path = _locate_task(vault_root, dep_id)
         if dep_path is None:
@@ -760,14 +1715,18 @@ if claim_mode == "claim":
     _front, _rest = text[:_fm_end], text[_fm_end:]
     _front = re.sub(r"^status:.*$", "status: claimed", _front, count=1, flags=re.MULTILINE)
     _front = re.sub(
-        r"^assigned_to:.*$", f"assigned_to: {role}", _front, count=1, flags=re.MULTILINE
+        r"^assigned_to:.*$",
+        f"assigned_to: {claim_owner}",
+        _front,
+        count=1,
+        flags=re.MULTILINE,
     )
     _front = re.sub(
         r"^claimed_at:.*$", f"claimed_at: {now}", _front, count=1, flags=re.MULTILINE
     )
     _required_stamp = {
         "status": "claimed",
-        "assigned_to": role,
+        "assigned_to": claim_owner,
         "claimed_at": now,
     }
     # Duplicate claim keys are fail-closed: re.sub(count=1) stamps only the
@@ -827,21 +1786,98 @@ if hashlib.sha256(path.read_bytes()).hexdigest() != snapshot.sha256:
         "retry against the current exact task bytes",
         str(path),
     )
-tmp = path.with_suffix(path.suffix + ".tmp")
-tmp.write_text(text, encoding="utf-8")
-tmp.replace(path)
 if int(dispatch_present):
-    claimed = resolve_task_note(path.parent.parent, task_id, state="active")
-    if (
-        str(claimed.frontmatter.get("assigned_to") or "").strip() != role
-        or str(claimed.frontmatter.get("authority_case") or "").strip()
-        != dispatch_authority_case
-    ):
+    try:
+        current_parent_sha256 = hashlib.sha256(parent_path.read_bytes()).hexdigest()
+    except OSError as exc:
         raise TaskStoreError(
-            "claim_dispatch_postimage_mismatch",
-            "repair the task claim before publishing claim caches",
+            "claim_dispatch_parent_spec_unreadable",
+            "restore the exact parent-spec preimage before claim compare-and-swap",
+            str(parent_path),
+        ) from exc
+    if current_parent_sha256 != dispatch_parent_spec_sha256:
+        raise TaskStoreError(
+            "claim_dispatch_parent_spec_changed_before_compare_and_swap",
+            "retry against the current exact parent-spec bytes",
+            str(parent_path),
+        )
+cache_dir = Path.home() / ".cache" / "hapax"
+cache_dir.mkdir(parents=True, exist_ok=True)
+assert_claim_slot_available(
+    cache_dir=cache_dir,
+    role=role,
+    session_id=session_id,
+    task_id=task_id,
+)
+keys = [role]
+if session_id:
+    keys.append(f"{role}-{session_id}")
+postimage = text.encode("utf-8")
+post_frontmatter = frontmatter_from_text(text)
+if int(dispatch_present) and (
+    not owner_matches(
+        str(post_frontmatter.get("assigned_to") or "").strip(),
+        role,
+        effective_platform(),
+    )
+    or str(post_frontmatter.get("authority_case") or "").strip()
+    != dispatch_authority_case
+):
+    raise TaskStoreError(
+        "claim_dispatch_postimage_mismatch",
+        "repair the task claim before publishing claim caches",
+        str(path),
+    )
+
+mutations = [
+    FileMutation(
+        path=path,
+        content=postimage,
+        mode=snapshot.mode,
+        expected_sha256=snapshot.sha256,
+    )
+]
+
+
+def projection_write(path: Path, content: bytes, *, mode: int) -> FileMutation:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return FileMutation(
+            path=path,
+            content=content,
+            mode=mode,
+            expected_exists=False,
+        )
+    except OSError as exc:
+        raise TaskStoreError(
+            "claim_projection_preimage_unreadable",
+            "restore readable ownership projections before claiming",
+            str(path),
+        ) from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise TaskStoreError(
+            "claim_projection_preimage_unsafe",
+            "replace the ownership projection with a regular non-symlink file",
             str(path),
         )
+    try:
+        expected_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise TaskStoreError(
+            "claim_projection_preimage_unreadable",
+            "restore readable ownership projections before claiming",
+            str(path),
+        ) from exc
+    return FileMutation(
+        path=path,
+        content=content,
+        mode=mode,
+        expected_sha256=expected_sha256,
+    )
+
+
+if int(dispatch_present):
     binding = ClaimDispatchBinding.create(
         task_id=task_id,
         lane=role,
@@ -855,52 +1891,56 @@ if int(dispatch_present):
         binding_hash=dispatch_binding_hash,
         coord_dispatch_idempotency_key=dispatch_idempotency_key,
     )
-    cache_dir = Path.home() / ".cache" / "hapax"
-    keys = [role]
-    if session_id:
-        keys.append(f"{role}-{session_id}")
     for key in keys:
-        write_claim_dispatch_binding(cache_dir, key, binding)
-print(result_message)
-PYEOF
+        mutations.append(
+            projection_write(
+                claim_dispatch_binding_path(cache_dir, key),
+                claim_dispatch_binding_bytes(binding),
+                mode=0o600,
+            )
+        )
+epoch_payload = f"{claim_epoch} {task_id}\n".encode()
+claim_payload = f"{task_id}\n".encode()
+for key in keys:
+    mutations.extend(
+        (
+            projection_write(
+                cache_dir / f"cc-claim-epoch-{key}",
+                epoch_payload,
+                mode=0o600,
+            ),
+            projection_write(
+                cache_dir / f"cc-active-task-{key}",
+                claim_payload,
+                mode=0o600,
+            ),
+        )
+    )
+assert_claim_slot_available(
+    cache_dir=cache_dir,
+    role=role,
+    session_id=session_id,
+    task_id=task_id,
+)
+try:
+    execute_filesystem_transaction(
+        transaction_journal,
+        mutations,
+        allowed_roots=(path.parent.parent, cache_dir),
+    )
+except FilesystemTransactionError as exc:
+    raise TaskStoreError(
+        "claim_filesystem_transaction_failed",
+        "recover the durable ownership transaction before retrying",
+        str(exc),
+    ) from exc
 
-# Write the claim file(s) the gate + consumers read.
-mkdir -p "$HOME/.cache/hapax"
-if [[ "$dispatch_present" -eq 0 ]]; then
-  rm -f "$HOME/.cache/hapax/cc-claim-dispatch-$role.json"
-  if [[ -n "$session_id" ]]; then
-    rm -f "$HOME/.cache/hapax/cc-claim-dispatch-$role-$session_id.json"
-  fi
-fi
-# The `cc-claim-epoch-*` SIDECAR records the claim time out-of-band: several
-# consumers read the claim file's FULL content as the task id, so the id file
-# must stay single-line — and the gate touches the claim file as a lease
-# keep-alive before its checks, so its mtime cannot witness claim age.
-# task_is_terminal reads the sidecar as its ONLY heartbeat-immune freshness
-# source (H1-ghost-revert indeterminate shape); there is deliberately no
-# mtime fallback, so every cache writer must keep the sidecar in step. The
-# distinct prefix keeps sidecars out of every `cc-active-task-*` glob
-# (sweeps, terminal checks) so an epoch can never masquerade as a claim.
-# Paths are constructed EXPLICITLY (never by substring substitution on the
-# full path — `${var/cc-active-task/...}` rewrites the FIRST occurrence
-# anywhere, corrupting the target when a parent directory contains the
-# substring).
-# Sidecar format: `<epoch> <task_id>` — task-bound so a stale sidecar left by
-# an earlier claim can never age a NEW claim of a different task; consumers
-# ignore a sidecar whose task id does not match the claim cache.
-# Sidecars are written BEFORE their claim caches: a conforming writer can
-# never expose a matching cache whose sidecar is not yet visible.
-echo "$claim_epoch $task_id" > "$HOME/.cache/hapax/cc-claim-epoch-$role"
-# Legacy role-keyed file: read by cc-close, session-context, the coordinator, the
-# coordination TUI, and other consumers outside this task's scope. Always written.
-echo "$task_id" > "$legacy_claim_file"
-if [[ -n "$session_claim_file" ]]; then
-  # Session-keyed lease (FM-2): the gate reads this FIRST so two same-role
-  # sessions never collide on the shared legacy file. Same task id; the filename
-  # carries the session identity.
-  echo "$claim_epoch $task_id" > "$HOME/.cache/hapax/cc-claim-epoch-$role-$session_id"
-  echo "$task_id" > "$session_claim_file"
-  echo "cc-claim: wrote $session_claim_file (+ legacy cc-active-task-$role)"
-else
-  echo "cc-claim: wrote ~/.cache/hapax/cc-active-task-$role"
-fi
+print(result_message)
+if session_id:
+    print(
+        f"cc-claim: wrote {cache_dir / f'cc-active-task-{role}-{session_id}'} "
+        f"(+ legacy cc-active-task-{role})"
+    )
+else:
+    print(f"cc-claim: wrote {cache_dir / f'cc-active-task-{role}'}")
+PYEOF

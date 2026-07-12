@@ -18,7 +18,6 @@ from unittest.mock import patch
 import pytest
 
 from agents.coordinator.core import (
-    _DISPATCH_CLAIM_GUARD_MARKERS,
     _DISPATCH_CLOSE_GUARD_MARKERS,
     TMUX_DISCOVERY_FORMAT,
     Coordinator,
@@ -43,6 +42,7 @@ from agents.coordinator.core import (
     _relay_status_is_retired,
     _task_flow_counts,
 )
+from shared import sdlc_dispatch_guards as dispatch_guards
 from shared.coord_dispatch import DispatchLaunchRequest, _accept_dispatch_message
 from shared.coord_event_log import CoordEventLog
 from shared.sdlc_pressure_gate import AdmissionDecision
@@ -50,14 +50,26 @@ from shared.sdlc_task_store import ClaimDispatchBinding, write_claim_dispatch_bi
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DISPATCHER_SCRIPT = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
+_REAL_SUBPROCESS_RUN = subprocess.run
+
+
+def _is_claim_protocol_probe(cmd: list[str]) -> bool:
+    return len(cmd) == 2 and cmd[1] == "--dispatch-protocol-version"
 
 
 def _guarded_worktree(path: Path) -> None:
     (path / "scripts").mkdir(parents=True)
-    (path / "scripts" / "cc-claim").write_text(
-        f"#!/bin/sh\n# {' '.join(_DISPATCH_CLAIM_GUARD_MARKERS)}\n",
+    claim = path / "scripts" / "cc-claim"
+    claim.write_text(
+        "#!/bin/sh\n"
+        'if [ "${1:-}" = "--dispatch-protocol-version" ]; then\n'
+        "  printf '%s\\n' hapax-claim-dispatch-v1\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 0\n",
         encoding="utf-8",
     )
+    claim.chmod(0o755)
     (path / "scripts" / "cc-close").write_text(
         f"#!/bin/sh\n# {' '.join(_DISPATCH_CLOSE_GUARD_MARKERS)}\n",
         encoding="utf-8",
@@ -67,6 +79,7 @@ def _guarded_worktree(path: Path) -> None:
 def _stale_worktree(path: Path) -> None:
     (path / "scripts").mkdir(parents=True)
     (path / "scripts" / "cc-claim").write_text("#!/bin/sh\n# legacy cc-claim\n", encoding="utf-8")
+    (path / "scripts" / "cc-claim").chmod(0o755)
     (path / "scripts" / "cc-close").write_text("#!/bin/sh\n# legacy cc-close\n", encoding="utf-8")
 
 
@@ -165,23 +178,18 @@ class TestDispatchWorktreeGuard:
         with patch.dict("os.environ", {"HAPAX_DISPATCH_WORKTREE": str(override)}, clear=False):
             assert _dispatch_worktree("cx-red", "codex") == override
 
-    def test_dispatch_guard_markers_match_methodology_dispatcher(self):
+    def test_dispatch_guards_match_methodology_dispatcher(self):
         dispatcher = _dispatcher_module()
 
-        assert tuple(_DISPATCH_CLAIM_GUARD_MARKERS) == tuple(
-            dispatcher.DISPATCH_CLAIM_GUARD_MARKERS
-        )
+        assert dispatcher.check_worktree_claim_guard is dispatch_guards.check_worktree_claim_guard
         assert tuple(_DISPATCH_CLOSE_GUARD_MARKERS) == tuple(
             dispatcher.DISPATCH_CLOSE_GUARD_MARKERS
         )
 
     def test_dispatch_tool_blocker_reports_missing_close_with_next_action(self, tmp_path: Path):
         worktree = tmp_path / "projects" / "hapax-council--beta"
-        (worktree / "scripts").mkdir(parents=True)
-        (worktree / "scripts" / "cc-claim").write_text(
-            f"#!/bin/sh\n# {' '.join(_DISPATCH_CLAIM_GUARD_MARKERS)}\n",
-            encoding="utf-8",
-        )
+        _guarded_worktree(worktree)
+        (worktree / "scripts" / "cc-close").unlink()
 
         with patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}):
             blocker = _dispatch_tool_blocker("beta", "claude")
@@ -203,24 +211,19 @@ class TestDispatchWorktreeGuard:
         assert "frontmatter_task_id" in blocker
         assert "next_action=" in blocker
 
-    def test_dispatch_tool_blocker_reports_unreadable_claim_with_next_action(self, tmp_path: Path):
+    def test_dispatch_tool_blocker_reports_non_executable_claim_with_next_action(
+        self, tmp_path: Path
+    ):
         worktree = tmp_path / "projects" / "hapax-council--beta"
         _guarded_worktree(worktree)
         claim = worktree / "scripts" / "cc-claim"
+        claim.chmod(0o644)
 
-        def fake_read_guard(path: Path) -> str:
-            if path == claim:
-                raise OSError("permission denied")
-            raise AssertionError(f"unexpected guard read: {path}")
-
-        with (
-            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
-            patch("agents.coordinator.core._read_dispatch_guard", side_effect=fake_read_guard),
-        ):
+        with patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}):
             blocker = _dispatch_tool_blocker("beta", "claude")
 
         assert blocker is not None
-        assert "unreadable cc-claim" in blocker
+        assert "cc-claim is not executable" in blocker
         assert "next_action=" in blocker
 
     def test_dispatch_tool_blocker_reports_unreadable_close_with_next_action(self, tmp_path: Path):
@@ -707,6 +710,9 @@ class TestLaneState:
         assert refreshed.dispatch_ready is False
         assert refreshed.dispatch_blocked_reason == "lane_process_replaced_before_dispatch"
 
+    def test_pid_generation_is_unknown_when_proc_identity_is_unreadable(self):
+        assert _pid_generation(99_999_999) == ""
+
     def test_dispatch_pickup_rejects_same_name_replacement_generation(self):
         lane = LaneState(
             role="cx-red",
@@ -844,7 +850,7 @@ current_claim: null
         assert state.dispatch_ready is False
         assert state.dispatch_blocked_reason is not None
         assert "stale cc-claim" in state.dispatch_blocked_reason
-        assert "authority_case" in state.dispatch_blocked_reason
+        assert "hapax-claim-dispatch-v1" in state.dispatch_blocked_reason
 
     def test_live_lane_with_stale_close_guard_is_not_dispatch_ready(self, tmp_path: Path):
         relay_dir = tmp_path / "relay"
@@ -1517,6 +1523,11 @@ retired_reason: clean exit
             stderr="",
         )
 
+        def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            if _is_claim_protocol_probe(cmd):
+                return _REAL_SUBPROCESS_RUN(cmd, **kwargs)
+            return completed
+
         with (
             patch("agents.coordinator.core.PID_DIR", pid_dir),
             patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
@@ -1525,7 +1536,7 @@ retired_reason: clean exit
             patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
             patch("pathlib.Path.home", return_value=tmp_path),
             patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
-            patch("agents.coordinator.core.subprocess.run", return_value=completed),
+            patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
         ):
             lanes = Coordinator()._check_lanes()
 
@@ -1936,6 +1947,8 @@ class TestDispatch:
     def test_prepare_dispatch_message_writes_strict_mq_binding(self, tmp_path: Path):
         task_path = tmp_path / "t1.md"
         task_path.write_text("task preimage\n", encoding="utf-8")
+        parent_spec = tmp_path / "spec.md"
+        parent_spec.write_text("parent preimage\n", encoding="utf-8")
         task = Task(
             task_id="t1",
             title="test",
@@ -1947,10 +1960,16 @@ class TestDispatch:
             quality_floor="deterministic_ok",
             path=task_path,
             authority_case="CASE-TEST-001",
-            parent_spec="/tmp/spec.md",
+            parent_spec=str(parent_spec),
             source_sha256=hashlib.sha256(task_path.read_bytes()).hexdigest(),
         )
-        lane = LaneState(role="cx-red", platform="codex", alive=True, idle=True)
+        lane = LaneState(
+            role="cx-red",
+            platform="codex",
+            generation="test-generation",
+            alive=True,
+            idle=True,
+        )
         db_path = tmp_path / "relay" / "messages.db"
 
         with patch.dict(os.environ, {"HAPAX_RELAY_MQ_DB": str(db_path)}):
@@ -1973,8 +1992,12 @@ class TestDispatch:
         payload = json.loads(row[3])
         assert payload["task_id"] == "t1"
         assert payload["lane"] == "cx-red"
-        assert payload["parent_spec"] == "/tmp/spec.md"
+        assert payload["parent_spec"] == str(parent_spec)
         assert payload["dispatch_binding"]["task_sha256"] == task.source_sha256
+        assert (
+            payload["dispatch_binding"]["parent_spec_sha256"]
+            == hashlib.sha256(parent_spec.read_bytes()).hexdigest()
+        )
         assert "next_action_on_binding_failure" in payload
         assert recipient == ("deferred", "coordinator_prepared_pending_revalidation")
 
@@ -2110,13 +2133,15 @@ current_claim: p0-task
         active = vault_root / "active"
         active.mkdir(parents=True)
         task_path = active / "task-1.md"
+        parent_spec = tmp_path / "spec.md"
+        parent_spec.write_text("parent preimage\n", encoding="utf-8")
         task_path.write_text(
             "---\n"
             "task_id: task-1\n"
             "status: offered\n"
             "assigned_to: unassigned\n"
             "authority_case: CASE-1\n"
-            "parent_spec: /tmp/spec.md\n"
+            f"parent_spec: {parent_spec}\n"
             "---\n",
             encoding="utf-8",
         )
@@ -2131,7 +2156,7 @@ current_claim: p0-task
             quality_floor="deterministic_ok",
             path=task_path,
             authority_case="CASE-1",
-            parent_spec="/tmp/spec.md",
+            parent_spec=str(parent_spec),
             source_sha256=hashlib.sha256(task_path.read_bytes()).hexdigest(),
         )
         generation = _pid_generation(os.getpid())
@@ -2187,7 +2212,7 @@ current_claim: p0-task
                 "status: claimed\n"
                 "assigned_to: cx-red\n"
                 "authority_case: CASE-1\n"
-                "parent_spec: /tmp/spec.md\n"
+                f"parent_spec: {parent_spec}\n"
                 "---\n",
                 encoding="utf-8",
             )
@@ -2547,6 +2572,8 @@ Body.
         def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
             if cmd == ["tmux", "list-sessions", "-F", TMUX_DISCOVERY_FORMAT]:
                 return completed
+            if _is_claim_protocol_probe(cmd):
+                return _REAL_SUBPROCESS_RUN(cmd, capture_output=True, text=True, check=False)
             dispatch_calls.append(cmd)
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
 
@@ -2633,6 +2660,8 @@ Body.
         def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
             if cmd == ["tmux", "list-sessions", "-F", TMUX_DISCOVERY_FORMAT]:
                 return completed
+            if _is_claim_protocol_probe(cmd):
+                return _REAL_SUBPROCESS_RUN(cmd, capture_output=True, text=True, check=False)
             dispatch_calls.append(cmd)
             return subprocess.CompletedProcess(
                 args=cmd,
@@ -2706,6 +2735,8 @@ Body.
         def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
             if cmd == ["tmux", "list-sessions", "-F", TMUX_DISCOVERY_FORMAT]:
                 return completed
+            if _is_claim_protocol_probe(cmd):
+                return _REAL_SUBPROCESS_RUN(cmd, capture_output=True, text=True, check=False)
             raise AssertionError(f"unexpected dispatch subprocess call: {cmd!r}")
 
         with (
@@ -2735,7 +2766,7 @@ Body.
         assert state.lanes["dev"]["idle"] is True
         assert state.lanes["dev"]["dispatch_ready"] is False
         assert "stale cc-claim" in state.lanes["dev"]["dispatch_blocked_reason"]
-        assert "authority_case" in state.lanes["dev"]["dispatch_blocked_reason"]
+        assert "hapax-claim-dispatch-v1" in state.lanes["dev"]["dispatch_blocked_reason"]
 
     def test_tick_does_not_dispatch_to_stale_close_lane(self, tmp_path: Path):
         coord = Coordinator()
@@ -2769,6 +2800,8 @@ Body.
         def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
             if cmd == ["tmux", "list-sessions", "-F", TMUX_DISCOVERY_FORMAT]:
                 return completed
+            if _is_claim_protocol_probe(cmd):
+                return _REAL_SUBPROCESS_RUN(cmd, capture_output=True, text=True, check=False)
             raise AssertionError(f"unexpected dispatch subprocess call: {cmd!r}")
 
         with (

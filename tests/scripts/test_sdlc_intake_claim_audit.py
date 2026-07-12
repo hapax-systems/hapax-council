@@ -109,7 +109,7 @@ def test_assigned_p0_without_live_lane_pickup_is_silent_stranded(tmp_path: Path)
     _task(
         tasks,
         "assigned-p0",
-        "task_id: assigned-p0\nstatus: claimed\nassigned_to: gamma\npriority: p0\n",
+        "task_id: assigned-p0\nstatus: claimed\nassigned_to: claude/gamma\npriority: p0\n",
     )
     (cache / "cc-active-task-gamma").write_text("assigned-p0\n", encoding="utf-8")
 

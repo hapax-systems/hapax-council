@@ -77,26 +77,38 @@ export CLAUDE_ROLE="$ROLE"
 export HAPAX_AGENT_ROLE="$ROLE"
 export HAPAX_WORKTREE_ROLE="$ROLE"
 
-# Per-spawn session id (reform-identity-coherence, cluster 11): every headless
-# launch is a fresh lane, so MINT a new uuid unconditionally — never inherit one
-# from the dispatcher's environment. launch_claude_headless does os.environ.copy(),
-# so honoring an inherited HAPAX_SESSION_ID would let two same-role re-dispatched
-# lanes share a claim key (defeats FM-2 / AC1). Computed once, before the restart
-# loop below, so it stays stable across in-launcher restarts of this same lane.
-# The fallback chain is NEVER pid-derived (claim-by-pid unrepresentable,
-# taxonomy-a3-session-identity): the retired `<role>-$$` shape minted ids that
-# pid recycling makes ambiguous and that cc-claim now refuses to key. The
-# last-resort mint is alpha-infixed so it stays claim-keyable
-# (shared/session_identity.py::is_claim_keyable_session_id).
-SESSION_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null || printf 'sid%sx%s%s' "$(date +%s%N)" "$RANDOM" "$RANDOM")"
+resume_session_id_is_safe() {
+  python3 - "$1" <<'PYEOF'
+import re
+import sys
+
+value = sys.argv[1].strip()
+tail = value.rsplit("-", 1)[-1]
+safe = (
+    8 <= len(value) <= 128
+    and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", value) is not None
+    and not value.isdigit()
+    and not (tail.isdigit() and len(tail) <= 7)
+)
+raise SystemExit(0 if safe else 1)
+PYEOF
+}
+
+RESUME_SESSION_UUID="${HAPAX_CLAIM_RESUME_SESSION_ID:-}"
+if [[ -n "$RESUME_SESSION_UUID" ]]; then
+  if ! resume_session_id_is_safe "$RESUME_SESSION_UUID"; then
+    echo "hapax-claude-headless: refusing unsafe resume-session identity" >&2
+    exit 17
+  fi
+  SESSION_UUID="$RESUME_SESSION_UUID"
+  CLAIM_RESUME=1
+else
+  SESSION_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null || printf 'sid%sx%s%s' "$(date +%s%N)" "$RANDOM" "$RANDOM")"
+  CLAIM_RESUME=0
+fi
 export HAPAX_SESSION_ID="$SESSION_UUID"
-# Per-session identity marker (WM-independent): record THIS session's role keyed by
-# the session id so agent-role.sh / hapax-whoami resolve identity without a
-# compositor query (dead on niri/KWin). Path convention SSOT:
-# hapax_session_role_marker in hooks/scripts/agent-role.sh.
 mkdir -p "$HOME/.cache/hapax" 2>/dev/null || true
 printf '%s\n' "$ROLE" >"$HOME/.cache/hapax/session-role-$SESSION_UUID" 2>/dev/null || true
-
 WORKDIR="${HAPAX_CLAUDE_HEADLESS_WORKDIR:-}"
 if [[ -n "$WORKDIR" && "$WORKDIR" == \~/* ]]; then
   WORKDIR="$HOME/${WORKDIR#"~/"}"
@@ -106,6 +118,174 @@ if [[ -z "$WORKDIR" ]]; then
   [[ "$ROLE" != "alpha" ]] && WORKDIR="$HOME/projects/hapax-council--$ROLE"
 fi
 [[ -d "$WORKDIR" ]] || { echo "hapax-claude-headless: worktree not found: $WORKDIR" >&2; exit 3; }
+
+SOURCE_ACTIVATION_WORKTREE="${HAPAX_SOURCE_ACTIVATION_WORKTREE:-$HOME/.cache/hapax/source-activation/worktree}"
+SOURCE_ACTIVATION_RECEIPT="${HAPAX_SOURCE_ACTIVATION_RECEIPT:-$HOME/.cache/hapax/source-activation/current.json}"
+CC_CLAIM="$SOURCE_ACTIVATION_WORKTREE/scripts/cc-claim"
+CC_CLAIM_PROTOCOL_VERSION="hapax-claim-dispatch-v1"
+CC_CLAIM_PROTOCOL_CHECKED=0
+CC_CLAIM_SHA256=""
+POST_CLAIM_TASK_SHA256=""
+
+require_checked_cc_claim() {
+  local identity="" observed=""
+  if [[ "$CC_CLAIM_PROTOCOL_CHECKED" -eq 1 ]]; then
+    return 0
+  fi
+  if ! identity="$(python3 - "$SOURCE_ACTIVATION_WORKTREE" "$SOURCE_ACTIVATION_RECEIPT" <<'PYEOF'
+import hashlib
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+receipt_path = Path(sys.argv[2])
+try:
+    target = root.resolve(strict=True)
+    receipt_metadata = receipt_path.lstat()
+    if stat.S_ISLNK(receipt_metadata.st_mode) or not stat.S_ISREG(receipt_metadata.st_mode):
+        raise ValueError("activation receipt is not a regular file")
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    expected_head = receipt["active_source_head"]
+    receipt_target = Path(receipt["active_source_target"]).resolve(strict=True)
+    if target != receipt_target:
+        raise ValueError("activation target does not match receipt")
+    if not isinstance(expected_head, str) or not re.fullmatch(r"[0-9a-f]{40}", expected_head):
+        raise ValueError("activation receipt head is malformed")
+    last_success_path = receipt_path.parent / "last-success-sha"
+    last_success_metadata = last_success_path.lstat()
+    if stat.S_ISLNK(last_success_metadata.st_mode) or not stat.S_ISREG(last_success_metadata.st_mode):
+        raise ValueError("last-success-sha is not a regular file")
+    last_success = last_success_path.read_text(encoding="ascii").strip()
+    if last_success != expected_head or target.name != expected_head:
+        raise ValueError("activation release identity mismatch")
+    observed_head = subprocess.run(
+        ["git", "-C", str(target), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if observed_head != expected_head:
+        raise ValueError("activated checkout head does not match receipt")
+    shared_kind = subprocess.run(
+        ["git", "-C", str(target), "cat-file", "-t", f"{expected_head}:shared"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    surface_status = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(target),
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--",
+            "scripts/cc-claim",
+            "shared",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    if shared_kind != "tree" or surface_status:
+        raise ValueError("activated cc-claim/shared implementation surface is not tracked and clean")
+    claim = target / "scripts" / "cc-claim"
+    metadata = claim.lstat()
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise ValueError("activated cc-claim is not a regular file")
+    if not os.access(claim, os.X_OK):
+        raise ValueError("activated cc-claim is not executable")
+    tracked_blob = subprocess.run(
+        ["git", "-C", str(target), "rev-parse", f"{expected_head}:scripts/cc-claim"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    observed_blob = subprocess.run(
+        ["git", "-C", str(target), "hash-object", str(claim)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if tracked_blob != observed_blob:
+        raise ValueError("activated cc-claim differs from its release commit")
+    print(hashlib.sha256(claim.read_bytes()).hexdigest())
+except (KeyError, OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+    print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+PYEOF
+  )"; then
+    echo "hapax-claude-headless: refusing unverified source-activation cc-claim at $CC_CLAIM" >&2
+    exit 14
+  fi
+  CC_CLAIM_SHA256="$identity"
+  if ! observed="$(cd "$WORKDIR" && "$CC_CLAIM" --dispatch-protocol-version)"; then
+    echo "hapax-claude-headless: activated cc-claim protocol probe failed at $CC_CLAIM" >&2
+    exit 14
+  fi
+  if [[ "$observed" != "$CC_CLAIM_PROTOCOL_VERSION" ]]; then
+    echo "hapax-claude-headless: refusing activated cc-claim with unsupported protocol at $CC_CLAIM (expected $CC_CLAIM_PROTOCOL_VERSION, got ${observed:-<empty>})" >&2
+    exit 14
+  fi
+  CC_CLAIM_PROTOCOL_CHECKED=1
+}
+
+require_complete_dispatch_binding() {
+  local name=""
+  local required=(
+    HAPAX_CLAIM_DISPATCH_MESSAGE_ID HAPAX_CLAIM_DISPATCH_BINDING_HASH
+    HAPAX_CLAIM_DISPATCH_PLATFORM HAPAX_CLAIM_DISPATCH_MODE
+    HAPAX_CLAIM_DISPATCH_PROFILE HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE
+    HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY HAPAX_CLAIM_DISPATCH_TASK_PATH
+    HAPAX_CLAIM_DISPATCH_TASK_SHA256 HAPAX_CLAIM_DISPATCH_PARENT_SPEC
+    HAPAX_CLAIM_DISPATCH_PARENT_SPEC_SHA256 HAPAX_CLAIM_DISPATCH_LANE_GENERATION
+    HAPAX_CLAIM_DISPATCH_CLAIM_PROJECTION_SHA256
+    HAPAX_CLAIM_DISPATCH_RELAY_PROJECTION_SHA256
+  )
+  for name in "${required[@]}"; do
+    if [[ -z "${!name:-}" ]]; then
+      echo "hapax-claude-headless: refusing remote launch without complete dispatch binding ($name missing)" >&2
+      exit 19
+    fi
+  done
+  if [[ -z "${HAPAX_CLAIM_DISPATCH_LANE_SESSION:-}" ]] \
+    && { [[ -z "${HAPAX_CLAIM_DISPATCH_LANE_PID:-}" ]] \
+      || [[ -z "${HAPAX_CLAIM_DISPATCH_LANE_PID_GENERATION:-}" ]]; }; then
+    echo "hapax-claude-headless: refusing remote launch without a bound lane session or process generation" >&2
+    exit 19
+  fi
+}
+
+verify_dispatch_binding_if_required() {
+  local task="$1"
+  [[ -n "${HAPAX_CLAIM_DISPATCH_MESSAGE_ID:-}" ]] || return 0
+  require_checked_cc_claim
+  if ! (cd "$WORKDIR" && "$CC_CLAIM" --verify-dispatch-binding "$task"); then
+    echo "hapax-claude-headless: refusing task '$task'; exact dispatch binding verification failed" >&2
+    exit 18
+  fi
+}
+
+capture_post_claim_task_sha256() {
+  local task="$1" snapshot_sha256=""
+  require_checked_cc_claim
+  if ! snapshot_sha256="$(cd "$WORKDIR" && "$CC_CLAIM" --print-post-claim-task-sha256 "$task")"; then
+    echo "hapax-claude-headless: refusing remote launch; canonical post-claim task snapshot verification failed for '$task'" >&2
+    exit 18
+  fi
+  if [[ ! "$snapshot_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "hapax-claude-headless: refusing malformed canonical post-claim task snapshot for '$task'" >&2
+    exit 18
+  fi
+  POST_CLAIM_TASK_SHA256="$snapshot_sha256"
+  export HAPAX_CLAIM_REMOTE_POST_CLAIM_TASK_SHA256="$POST_CLAIM_TASK_SHA256"
+}
 
 export PATH="$WORKDIR/scripts:$PATH"
 
@@ -152,7 +332,6 @@ printf '%s\n' "$$" > "$LAUNCHER_PIDFILE"
 
 STDIN_PIPE="$PIPE_DIR/$ROLE.stdin"
 PID_FILE="$PIPE_DIR/$ROLE.pid"
-SELF_REAP_FLAG="$PIPE_DIR/$ROLE.self-reap"
 LOG_FILE="$LOG_DIR/output.jsonl"
 
 [[ -p "$STDIN_PIPE" ]] && rm -f "$STDIN_PIPE"
@@ -160,7 +339,23 @@ mkfifo "$STDIN_PIPE"
 
 RELAY_RETIRE="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}/scripts/hapax-relay-retire"
 cleanup() {
-  rm -f "$STDIN_PIPE" "$PID_FILE" "$LAUNCHER_PIDFILE" "$SELF_REAP_FLAG"
+  if [[ -n "${CLAUDE_TASK:-}" && "$CC_CLAIM_PROTOCOL_CHECKED" -eq 1 && -x "$CC_CLAIM" ]]; then
+    local attempts=1 attempt=1 output="" rc=0
+    [[ -n "${DISPATCH_HOST:-}" ]] && attempts=40
+    while [[ "$attempt" -le "$attempts" ]]; do
+      if output="$(cd "$WORKDIR" && "$CC_CLAIM" --retire-terminal-projection "$CLAUDE_TASK" 2>&1)"; then
+        printf '%s\n' "$output" >>"$LOG_FILE"
+        break
+      else
+        rc=$?
+      fi
+      printf '%s\n' "$output" >>"$LOG_FILE"
+      [[ "$rc" -eq 75 && "$attempt" -lt "$attempts" ]] || break
+      sleep 0.25
+      attempt=$((attempt + 1))
+    done
+  fi
+  rm -f "$STDIN_PIPE" "$PID_FILE" "$LAUNCHER_PIDFILE"
   "$RELAY_RETIRE" "$ROLE" --reason "clean exit (headless)" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -215,35 +410,47 @@ if [[ -z "$INITIAL_MSG" ]]; then
   echo "hapax-claude-headless: governed initial message required" >&2
   exit 5
 fi
-# Session-keyed claim FIRST (review #4097-1): the legacy role-keyed file is
-# shared by every session of this role — reading it alone defeats the
-# isolation this PR exists to provide. A fresh launcher has a fresh
-# SESSION_UUID, so its session file cannot exist yet; any hit on the legacy
-# file is informational fallback for --task-less relaunches only.
+# A fresh launcher has a fresh session id. A matching legacy role claim is not
+# authority for this new session and must never bypass cc-claim admission.
 SESSION_CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-$ROLE-$SESSION_UUID"
 CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-$ROLE"
 CLAIMED_TASK=""
 if [[ -s "$SESSION_CLAIM_FILE" ]]; then
   CLAIMED_TASK="$(head -n1 "$SESSION_CLAIM_FILE" | tr -d '[:space:]')"
-elif [[ -s "$CLAIM_FILE" ]]; then
-  CLAIMED_TASK="$(head -n1 "$CLAIM_FILE" | tr -d '[:space:]')"
-fi
-if [[ -z "$CLAUDE_TASK" && -n "$CLAIMED_TASK" ]]; then
-  CLAUDE_TASK="$CLAIMED_TASK"
+  if [[ ! -s "$CLAIM_FILE" ]] \
+    || [[ "$(head -n1 "$CLAIM_FILE" | tr -d '[:space:]')" != "$CLAIMED_TASK" ]]; then
+    echo "hapax-claude-headless: refusing incomplete or divergent exact-session claim for '$ROLE'" >&2
+    exit 16
+  fi
 fi
 if [[ -z "$CLAUDE_TASK" ]]; then
-  echo "hapax-claude-headless: refusing mutating launch without --task <cc-task-id> or existing active claim for role '$ROLE'" >&2
+  echo "hapax-claude-headless: refusing mutating launch without an exact dispatched --task <cc-task-id>" >&2
   exit 15
 fi
 if [[ -n "$CLAIMED_TASK" && "$CLAIMED_TASK" != "$CLAUDE_TASK" ]]; then
   echo "hapax-claude-headless: refusing launch; role '$ROLE' already claims '$CLAIMED_TASK', not dispatch task '$CLAUDE_TASK'" >&2
   exit 13
 fi
-if [[ -z "$CLAIMED_TASK" ]]; then
-  [[ -x "$WORKDIR/scripts/cc-claim" ]] || { echo "hapax-claude-headless: missing cc-claim in $WORKDIR" >&2; exit 14; }
-  (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CLAUDE_TASK")
-fi
 export HAPAX_METHODOLOGY_DISPATCH_TASK="$CLAUDE_TASK"
+if [[ -z "$CLAIMED_TASK" && "$CLAIM_RESUME" -eq 1 ]]; then
+  echo "hapax-claude-headless: resume requires an existing exact-session claim for '$ROLE'" >&2
+  exit 17
+elif [[ -z "$CLAIMED_TASK" ]]; then
+  require_checked_cc_claim
+  if ! (cd "$WORKDIR" && "$CC_CLAIM" "$CLAUDE_TASK"); then
+    echo "hapax-claude-headless: canonical cc-claim refused exact-session admission for '$CLAUDE_TASK'" >&2
+    exit 8
+  fi
+  if [[ ! -s "$SESSION_CLAIM_FILE" || ! -s "$CLAIM_FILE" ]] \
+    || [[ "$(head -n1 "$SESSION_CLAIM_FILE" | tr -d '[:space:]')" != "$CLAUDE_TASK" ]] \
+    || [[ "$(head -n1 "$CLAIM_FILE" | tr -d '[:space:]')" != "$CLAUDE_TASK" ]]; then
+    echo "hapax-claude-headless: canonical cc-claim did not publish the exact role/session claim" >&2
+    exit 17
+  fi
+  verify_dispatch_binding_if_required "$CLAUDE_TASK"
+else
+  verify_dispatch_binding_if_required "$CLAUDE_TASK"
+fi
 
 SDLC_PREAMBLE="SDLC DISCIPLINE (MANDATORY):
 1. Work only on the task named in this dispatch.
@@ -275,226 +482,70 @@ cd "$WORKDIR"
 # and stacked zombies). task_is_terminal decides, before each respawn, whether
 # the task is closed (claim cleared / note left active/ / terminal status) or
 # its PR has merged.
-CC_TASK_ACTIVE="${HAPAX_CC_TASK_ROOT:-$HOME/Documents/Personal/20-projects/hapax-cc-tasks}/active"
-
-find_active_note() {
-  local task="$1" note=""
-  if [[ -f "$CC_TASK_ACTIVE/$task.md" ]]; then
-    note="$CC_TASK_ACTIVE/$task.md"
-  else
-    note="$(find "$CC_TASK_ACTIVE" -maxdepth 1 -name "$task-*.md" -print -quit 2>/dev/null || true)"
-  fi
-  printf '%s' "$note"
-}
+CC_TASK_ROOT="${HAPAX_CC_TASK_ROOT:-$HOME/Documents/Personal/20-projects/hapax-cc-tasks}"
 
 task_is_terminal() {
-  # 0 = terminal (stop the respawn loop); 1 = still live (keep the lane up).
-  #
-  # v2 fix (2026-06-12 postmortem): a MISSING claim file is treated as
-  # INDETERMINATE, not terminal.  The old code returned 0 (terminal) whenever
-  # $claimed != $task, which included the missing-file case.  That killed live
-  # lanes (delta, zeta) when their caches vanished mid-run with no journaled
-  # actor.  Now: if the claim file is absent, fall through to note + PR checks
-  # and also consult the session-keyed claim file as a secondary source.
+  # 0 = terminal (stop future respawns); 1 = live or HOLD. This function is
+  # called only after the Claude child exits. Cache projections are never
+  # terminality witnesses.
   local task="$1"
-  [[ -n "$task" ]] || return 1   # no task binding -> legacy always-on behavior
+  [[ -n "$task" ]] || return 1
 
-  local claimed="" claim_source="primary" claim_file_used=""
-  local primary_claimed="" primary_claim_file_used=""
-  local exact_session_claimed="" exact_session_claim_file_used=""
-  local session_claimed="" session_claim_file_used=""
-  if [[ -s "$CLAIM_FILE" ]]; then
-    primary_claimed="$(head -n1 "$CLAIM_FILE" 2>/dev/null | tr -d '[:space:]' || true)"
-    primary_claim_file_used="$CLAIM_FILE"
-  fi
-  if [[ -n "${SESSION_CLAIM_FILE:-}" && -s "$SESSION_CLAIM_FILE" ]]; then
-    exact_session_claimed="$(head -n1 "$SESSION_CLAIM_FILE" 2>/dev/null | tr -d '[:space:]' || true)"
-    exact_session_claim_file_used="$SESSION_CLAIM_FILE"
-  fi
+  local task_state="" pr=""
+  if ! read -r task_state pr < <(python3 - "$SOURCE_ACTIVATION_WORKTREE" "$CC_TASK_ROOT" "$task" "$ROLE" <<'PYEOF'
+import sys
+from pathlib import Path
 
-  # Prefer this launcher's exact session cache, then the newest task-bound
-  # session-keyed cache, over the shared legacy cache. The legacy
-  # cc-active-task-<role> file is shared by role and can be repointed by a
-  # later session; older same-task session leases can also coexist, so "first
-  # glob match" is not a valid liveness witness for a fresh launch.
-  local session_claim="" newest_mtime=0
-  local match_session_claim="" match_session_mtime=0
-  local valid_match_session_claim="" valid_match_epoch=-1
-  for candidate in "$HOME/.cache/hapax/cc-active-task-${ROLE}-"*; do
-    [[ -s "$candidate" ]] || continue
-    local candidate_claimed="" mtime
-    candidate_claimed="$(head -n1 "$candidate" 2>/dev/null | tr -d '[:space:]' || true)"
-    mtime="$(stat -c %Y "$candidate" 2>/dev/null || echo 0)"
-    if [[ "$candidate_claimed" == "$task" ]]; then
-      local candidate_base="" candidate_epoch_file="" candidate_epoch_line=""
-      local candidate_epoch="" candidate_epoch_task=""
-      candidate_base="$(basename "$candidate")"
-      candidate_epoch_file="$(dirname "$candidate")/cc-claim-epoch-${candidate_base#cc-active-task-}"
-      candidate_epoch_line="$(head -n1 "$candidate_epoch_file" 2>/dev/null || true)"
-      candidate_epoch="${candidate_epoch_line%% *}"
-      candidate_epoch_task="${candidate_epoch_line#* }"
-      candidate_epoch_task="$(printf '%s' "$candidate_epoch_task" | tr -d '[:space:]')"
-      if [[ "$candidate_epoch" =~ ^[0-9]+$ && "$candidate_epoch_task" == "$task" ]] \
-        && (( candidate_epoch > valid_match_epoch )); then
-        valid_match_epoch="$candidate_epoch"
-        valid_match_session_claim="$candidate"
-      fi
-      if (( mtime > match_session_mtime )); then
-        match_session_mtime="$mtime"
-        match_session_claim="$candidate"
-      fi
-      continue
-    fi
-    if (( mtime > newest_mtime )); then
-      newest_mtime="$mtime"
-      session_claim="$candidate"
-    fi
-  done
-  if [[ -n "$exact_session_claimed" ]]; then
-    claimed="$exact_session_claimed"
-    claim_source="session-keyed:$(basename "$exact_session_claim_file_used")"
-    claim_file_used="$exact_session_claim_file_used"
-  elif [[ -n "$valid_match_session_claim" && -s "$valid_match_session_claim" ]]; then
-    session_claimed="$(head -n1 "$valid_match_session_claim" 2>/dev/null | tr -d '[:space:]' || true)"
-    session_claim_file_used="$valid_match_session_claim"
-    claimed="$session_claimed"
-    claim_source="session-keyed:$(basename "$session_claim_file_used")"
-    claim_file_used="$session_claim_file_used"
-  elif [[ -n "$primary_claimed" ]]; then
-    claimed="$primary_claimed"
-    claim_source="primary"
-    claim_file_used="$primary_claim_file_used"
-  elif [[ -n "$match_session_claim" && -s "$match_session_claim" ]]; then
-    session_claimed="$(head -n1 "$match_session_claim" 2>/dev/null | tr -d '[:space:]' || true)"
-    session_claim_file_used="$match_session_claim"
-    claimed="$session_claimed"
-    claim_source="session-keyed:$(basename "$session_claim_file_used")"
-    claim_file_used="$session_claim_file_used"
-  elif [[ -n "$session_claim" && -s "$session_claim" ]]; then
-    session_claimed="$(head -n1 "$session_claim" 2>/dev/null | tr -d '[:space:]' || true)"
-    session_claim_file_used="$session_claim"
-    claimed="$session_claimed"
-    claim_source="session-keyed:$(basename "$session_claim_file_used")"
-    claim_file_used="$session_claim_file_used"
-  fi
+sys.path.insert(0, sys.argv[1])
+from shared.sdlc_lifecycle import TASK_TERMINAL_STATUSES
+from shared.sdlc_owner_identity import owner_matches
+from shared.sdlc_task_store import TaskStoreError, resolve_task_note
 
-  if [[ -z "$claimed" ]]; then
-    # Claim cache MISSING on all sources.  This is INDETERMINATE — do NOT
-    # treat as terminal.  Fall through to note + PR verification.
-    # Log the anomaly for forensic tracing.
-    printf 'hapax-claude-headless[%s]: task_is_terminal: claim cache MISSING for role=%s task=%s — treating as indeterminate (fail-open)\n' "$$" "$ROLE" "$task" >&2
-  elif [[ "$claimed" != "$task" ]]; then
-    # cc-close clears the claim file; a re-point means the lane moved on.
-    # This is a DEFINITIVE terminal signal (the file exists and names a
-    # different task).
-    return 0
+root = Path(sys.argv[2])
+task_id = sys.argv[3]
+role = sys.argv[4]
+try:
+    try:
+        snapshot = resolve_task_note(root, task_id, state="active")
+    except TaskStoreError as exc:
+        if exc.reason_code != "task_note_not_found":
+            raise
+        snapshot = resolve_task_note(root, task_id, state="closed")
+    status = snapshot.frontmatter.get("status")
+    owner = snapshot.frontmatter.get("assigned_to")
+    if not isinstance(status, str) or not status.strip():
+        raise ValueError("status is missing or non-scalar")
+    if not isinstance(owner, str) or not owner_matches(owner.strip(), role, "claude"):
+        raise ValueError("task owner does not exactly match this Claude lane")
+    terminal = status.strip() in TASK_TERMINAL_STATUSES
+    if snapshot.state == "closed" and not terminal:
+        raise ValueError("closed task note has a nonterminal status")
+    raw_pr = snapshot.frontmatter.get("pr")
+    if raw_pr is None:
+        pr = ""
+    elif isinstance(raw_pr, int) and not isinstance(raw_pr, bool) and raw_pr > 0:
+        pr = str(raw_pr)
+    elif isinstance(raw_pr, str) and raw_pr.strip().isdigit() and int(raw_pr.strip()) > 0:
+        pr = str(int(raw_pr.strip()))
+    else:
+        raise ValueError("PR identity is malformed")
+    print("terminal" if terminal else "live", pr)
+except (TaskStoreError, ValueError) as exc:
+    print(f"hapax-claude-headless: terminality HOLD for {task_id}: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+PYEOF
+  ); then
+    return 1
   fi
-  # claimed == task  OR  claimed is missing (indeterminate) — verify via note.
+  [[ "$task_state" == "terminal" ]] && return 0
 
-  local note=""
-  note="$(find_active_note "$task")"
-  [[ -n "$note" ]] || return 0   # note left active/ (moved to closed/) -> closed
-  local status=""
-  status="$(grep -oP '^status:\s*\K\S+' "$note" 2>/dev/null | head -n1 || true)"
-  case "$status" in
-    # Definitively terminal lifecycle states -> the lane's work is over.
-    done | completed | closed | withdrawn | superseded | abandoned) return 0 ;;
-    # Everything else (claimed/in_progress/pr_open/blocked/unknown) is NOT
-    # terminal on status alone: fall through to the assigned + PR-state reality
-    # checks below. A live open-PR lane (status: pr_open) must NEVER be killed
-    # here (class #5: never kill a live open-PR lane); offered/unassigned are
-    # caught by the assigned-mismatch check, and a still-open PR returns live.
-    *) ;;
-  esac
-  local note_assigned=""
-  if grep -qP '^assigned_to:' "$note" 2>/dev/null; then
-    note_assigned="$(
-      grep -oP '^assigned_to:\s*\K.*$' "$note" 2>/dev/null |
-        head -n1 |
-        sed -E "s/^[[:space:]]+|[[:space:]]+$//g; s/^[\"']//; s/[\"']$//" ||
-        true
-    )"
-    case "${note_assigned,,}" in
-      "" | null | none | "~" | "[]") note_assigned="unassigned" ;;
-    esac
-  fi
-  if [[ -n "$note_assigned" && "$note_assigned" != "$ROLE" ]]; then
-    # assigned_to mismatch. Discriminate by the SHAPE of the mismatch, not by
-    # cache mtime — the gate touches the claim cache before any check (lease
-    # keep-alive), so a reassigned old lane attempting gated writes would
-    # keep its own cache "fresh" forever and an mtime bound cannot reap it.
-    #
-    # - assigned_to names ANOTHER ROLE: a genuine (re)claim by a live
-    #   claimant — DEFINITIVE terminal, regardless of our cache. Two lanes
-    #   must never own one task.
-    # - assigned_to is 'unassigned' while OUR claim cache names exactly this
-    #   task: that is the cc-hygiene H1 ghost-revert shape (a revert always
-    #   leaves offered/unassigned/claimed_at:null; 2026-07-01 eta/ndcvb-phase1:
-    #   reverted 13s after claim, healthy worker SIGTERMed). INDETERMINATE —
-    #   fall through to the PR-state check — but only while the cache is
-    #   fresh (HAPAX_CLAIM_STAMP_GRACE_S, default 600s): a lane sitting on a
-    #   long-unassigned task should have re-claimed; reap it.
-    if [[ "$note_assigned" != "unassigned" ]]; then
-      return 0
-    fi
-    # Freshness must be HEARTBEAT-IMMUNE: the gate touches the claim file
-    # before its checks (lease keep-alive), so mtime is refreshed even by a
-    # lane whose writes the gate then blocks — mtime can NEVER witness claim
-    # age here, so there is deliberately no mtime fallback. The claim epoch
-    # comes from the `cc-claim-epoch-*` sidecar (distinct prefix: outside
-    # every cc-active-task-* glob, never gate-touched), and only counts when
-    # its recorded task id matches this claim — a stale sidecar left by an
-    # earlier claim cannot age a fresh materialized cache. Both cc-claim and
-    # the remote-exec claim materializer write the sidecar; a matching cache
-    # with NO valid sidecar is a non-conforming writer and reaps.
-    local _stamp_grace="${HAPAX_CLAIM_STAMP_GRACE_S:-600}" _cache_age=-1
-    local _epoch_line="" _claim_epoch="" _epoch_task="" _epoch_file="" _claim_base=""
-    if [[ "$claimed" == "$task" && -n "$claim_file_used" ]]; then
-      # Basename-anchored derivation: substring substitution on the FULL path
-      # would rewrite the first `cc-active-task` occurrence anywhere (e.g. in
-      # a parent directory name) and read a nonexistent sidecar, falsely
-      # reaping a fresh lane.
-      _claim_base="$(basename "$claim_file_used")"
-      _epoch_file="$(dirname "$claim_file_used")/cc-claim-epoch-${_claim_base#cc-active-task-}"
-      _epoch_line="$(head -n1 "$_epoch_file" 2>/dev/null || true)"
-      _claim_epoch="${_epoch_line%% *}"
-      _epoch_task="${_epoch_line#* }"
-      _epoch_task="$(printf '%s' "$_epoch_task" | tr -d '[:space:]')"
-      if [[ "$_claim_epoch" =~ ^[0-9]+$ && "$_epoch_task" == "$task" ]]; then
-        _cache_age=$(( $(date +%s) - _claim_epoch ))
-      fi
-    fi
-    if [[ "$claimed" == "$task" ]] && (( _cache_age >= 0 && _cache_age <= _stamp_grace )); then
-      printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but fresh %s claim cache (claim age=%ss) names this task — treating as indeterminate (H1 ghost-revert shape)\n' \
-        "$$" "$claim_source" "$_cache_age" >&2
-    else
-      if [[ "$claimed" == "$task" && "${HAPAX_CLAIM_EPOCH_CHECK_BYPASS:-0}" == "1" ]]; then
-        printf 'hapax-claude-headless[%s]: task_is_terminal: HAPAX_CLAIM_EPOCH_CHECK_BYPASS=1 for role=%s task=%s with %s claim cache — treating claim-epoch age as indeterminate and continuing to note/PR terminal checks; next action: repair the writer or recreate cc-claim-epoch sidecar, then unset the bypass\n' "$$" "$ROLE" "$task" "$claim_source" >&2
-      elif [[ "$claimed" == "$task" ]]; then
-        if [[ -z "$claim_file_used" ]]; then
-          printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but matching claim cache path unavailable for role=%s task=%s — treating as terminal (cannot verify claim epoch); next action: rerun cc-claim or the launcher materializer to recreate the claim cache and epoch sidecar\n' "$$" "$ROLE" "$task" >&2
-        elif [[ ! "$_claim_epoch" =~ ^[0-9]+$ ]]; then
-          printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but %s claim cache has no valid task-bound epoch sidecar for task=%s — treating as terminal (non-conforming writer); next action: repair the writer or recreate cc-claim-epoch sidecar, then retry the lane\n' "$$" "$claim_source" "$task" >&2
-        elif [[ "$_epoch_task" != "$task" ]]; then
-          printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but %s claim epoch sidecar names task=%s, not task=%s — treating as terminal (stale sidecar); next action: remove the stale cc-claim-epoch sidecar and re-run cc-claim\n' "$$" "$claim_source" "${_epoch_task:-<empty>}" "$task" >&2
-        else
-          printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but %s claim cache age=%ss exceeds grace=%ss for task=%s — treating as terminal (stale unassigned claim); next action: re-run cc-claim to refresh ownership or clear the stale claim\n' "$$" "$claim_source" "$_cache_age" "$_stamp_grace" "$task" >&2
-        fi
-        return 0
-      else
-        printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned and no matching claim cache for role=%s task=%s — treating as terminal (claim cleared or task reoffered); next action: rerun cc-claim before relaunching this lane\n' "$$" "$ROLE" "$task" >&2
-        return 0
-      fi
-    fi
-  fi
-  # PR merged but the note not yet closed (the dead-lane window): stop now; the
-  # merge-watcher closes the note shortly. Fail-open on any gh hiccup.
-  local pr=""
-  pr="$(grep -oP '^pr:\s*\K[0-9]+' "$note" 2>/dev/null | head -n1 || true)"
+  # The only second terminal witness is an exact REST readback of this task's
+  # numeric PR showing a completed merge. Auth, transport, shape, and state
+  # ambiguity all remain nonterminal.
   if [[ -n "$pr" ]]; then
     local state="" repo="${HAPAX_GH_REPO:-${GH_REPO:-hapax-systems/hapax-council}}"
     state="$(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/${repo}/pulls/${pr}" \
-      --jq 'if .state == "closed" and (.merged == true or .merged_at != null) then "MERGED" elif .state == "closed" then "CLOSED" elif .state == "open" then "OPEN" else "" end' 2>/dev/null || true)"
+      --jq "if .number == ${pr} and .state == \"closed\" and .merged == true and (.merged_at | type) == \"string\" and (.merge_commit_sha | type) == \"string\" then \"MERGED\" else \"\" end" 2>/dev/null || true)"
     [[ "$state" == "MERGED" ]] && return 0
   fi
   return 1
@@ -559,7 +610,12 @@ elif kind == "exec":
         },
         "proof_file": sys.argv[5],
         "requested_host": sys.argv[4],
-        "argv": sys.argv[6:],
+        "cc_claim": sys.argv[6],
+        "cc_claim_sha256": sys.argv[7],
+        "cc_claim_protocol": sys.argv[8],
+        "source_activation_worktree": sys.argv[9],
+        "source_activation_receipt": sys.argv[10],
+        "argv": sys.argv[11:],
     }
     # Session identity must survive the SSH boundary (taxonomy-a3-session-
     # identity): without these the exec-host claude resolves a DIFFERENT
@@ -579,6 +635,25 @@ elif kind == "exec":
         "HAPAX_METHODOLOGY_DISPATCH_TASK",
         "HAPAX_DISPATCH_CLAIM_SWEEP",
         "HAPAX_CLAIM_LEASE_TTL_SECS",
+        "HAPAX_CLAIM_DISPATCH_MESSAGE_ID",
+        "HAPAX_CLAIM_DISPATCH_BINDING_HASH",
+        "HAPAX_CLAIM_DISPATCH_PLATFORM",
+        "HAPAX_CLAIM_DISPATCH_MODE",
+        "HAPAX_CLAIM_DISPATCH_PROFILE",
+        "HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE",
+        "HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY",
+        "HAPAX_CLAIM_DISPATCH_TASK_PATH",
+        "HAPAX_CLAIM_DISPATCH_TASK_SHA256",
+        "HAPAX_CLAIM_DISPATCH_PARENT_SPEC",
+        "HAPAX_CLAIM_DISPATCH_PARENT_SPEC_SHA256",
+        "HAPAX_CLAIM_DISPATCH_LANE_SESSION",
+        "HAPAX_CLAIM_DISPATCH_LANE_GENERATION",
+        "HAPAX_CLAIM_DISPATCH_LANE_PID",
+        "HAPAX_CLAIM_DISPATCH_LANE_PID_GENERATION",
+        "HAPAX_CLAIM_DISPATCH_CLAIM_PROJECTION_SHA256",
+        "HAPAX_CLAIM_DISPATCH_RELAY_PROJECTION_SHA256",
+        "HAPAX_CLAIM_REMOTE_POST_CLAIM_TASK_SHA256",
+        "HAPAX_CLAIM_REMOTE_WAIT_SECONDS",
     )
     payload["env"].update(
         {k: os.environ[k] for k in identity_keys if os.environ.get(k)}
@@ -590,56 +665,73 @@ PYEOF
 }
 
 REMOTE_PREFLIGHT_PY='import base64,json,os,shutil,subprocess,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); ok=os.path.isdir(p["workdir"]) and all(shutil.which(b) for b in p.get("binaries",())); gh_ok=shutil.which("gh") is not None and subprocess.run(["gh","auth","status"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0; sys.exit(0 if ok and gh_ok else 1)'
-REMOTE_EXEC_PY='import base64,json,os,socket,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); os.chdir(p["workdir"]); os.environ.update(p.get("env",{})); proof=p.get("proof_file",""); cgroup="";
+REMOTE_EXEC_PY='import base64,hashlib,json,os,pathlib,re,socket,stat,subprocess,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); os.chdir(p["workdir"]); os.environ.update(p.get("env",{})); proof=p.get("proof_file",""); cgroup="";
 try:
     cgroup=open("/proc/self/cgroup",encoding="utf-8").read()
 except OSError:
     pass
-# Exec-host identity materialization (taxonomy-a3-session-identity): the
-# session-keyed claim + role marker must exist on the host where the lane
-# RUNS, or the gate falls back to a stale legacy file and cc-claim re-binding
-# walls the lane (the recurring appendix claim gap). Best-effort: a failure is
-# recorded in the proof, never allowed to kill the dispatch.
-sid=os.environ.get("HAPAX_SESSION_ID",""); role=os.environ.get("HAPAX_AGENT_ROLE",""); task=os.environ.get("HAPAX_METHODOLOGY_DISPATCH_TASK",""); keyable=False; materialized=False
+bound_env=p.get("env",{}); sid=bound_env.get("HAPAX_SESSION_ID",""); role=bound_env.get("HAPAX_AGENT_ROLE",""); task=bound_env.get("HAPAX_METHODOLOGY_DISPATCH_TASK",""); claim_established=False
+required=("HAPAX_CLAIM_DISPATCH_MESSAGE_ID","HAPAX_CLAIM_DISPATCH_BINDING_HASH","HAPAX_CLAIM_DISPATCH_PLATFORM","HAPAX_CLAIM_DISPATCH_MODE","HAPAX_CLAIM_DISPATCH_PROFILE","HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE","HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY","HAPAX_CLAIM_DISPATCH_TASK_PATH","HAPAX_CLAIM_DISPATCH_TASK_SHA256","HAPAX_CLAIM_DISPATCH_PARENT_SPEC","HAPAX_CLAIM_DISPATCH_PARENT_SPEC_SHA256","HAPAX_CLAIM_DISPATCH_LANE_GENERATION","HAPAX_CLAIM_DISPATCH_CLAIM_PROJECTION_SHA256","HAPAX_CLAIM_DISPATCH_RELAY_PROJECTION_SHA256","HAPAX_CLAIM_REMOTE_POST_CLAIM_TASK_SHA256")
+missing=[name for name in required if not bound_env.get(name)]
+if missing or not sid or not role or not task:
+    print("hapax-claude-headless: refusing remote execution without complete identity and dispatch binding: "+",".join(missing),file=sys.stderr); sys.exit(78)
+cc_claim=os.path.expanduser(p.get("cc_claim","") or "")
 try:
-    sys.path.insert(0, p["workdir"])
-    from shared.session_identity import is_claim_keyable_session_id
-    keyable=is_claim_keyable_session_id(sid)
-except Exception:
-    keyable=bool(sid) and "/" not in sid and not sid.isdigit() and not sid.rsplit("-",1)[-1].isdigit()
+    activation=pathlib.Path(p.get("source_activation_worktree","")).resolve(strict=True); receipt_path=pathlib.Path(p.get("source_activation_receipt","")); receipt_metadata=receipt_path.lstat()
+    if stat.S_ISLNK(receipt_metadata.st_mode) or not stat.S_ISREG(receipt_metadata.st_mode):
+        raise ValueError("remote activation receipt is not a regular file")
+    receipt=json.loads(receipt_path.read_text(encoding="utf-8")); head=receipt["active_source_head"]; receipt_target=pathlib.Path(receipt["active_source_target"]).resolve(strict=True); last_success_path=receipt_path.parent/"last-success-sha"; last_success_metadata=last_success_path.lstat()
+    if stat.S_ISLNK(last_success_metadata.st_mode) or not stat.S_ISREG(last_success_metadata.st_mode):
+        raise ValueError("remote last-success-sha is not a regular file")
+    last_success=last_success_path.read_text(encoding="ascii").strip()
+    if activation != receipt_target or not isinstance(head,str) or re.fullmatch(r"[0-9a-f]{40}",head) is None or last_success != head or activation.name != head:
+        raise ValueError("remote source-activation receipt mismatch")
+    observed_head=subprocess.run(["git","-C",str(activation),"rev-parse","HEAD"],check=True,capture_output=True,text=True).stdout.strip(); shared_kind=subprocess.run(["git","-C",str(activation),"cat-file","-t",head+":shared"],check=True,capture_output=True,text=True).stdout.strip(); surface_status=subprocess.run(["git","-C",str(activation),"status","--porcelain=v1","--untracked-files=all","--","scripts/cc-claim","shared"],check=True,capture_output=True,text=True).stdout; tracked_blob=subprocess.run(["git","-C",str(activation),"rev-parse",head+":scripts/cc-claim"],check=True,capture_output=True,text=True).stdout.strip()
+    metadata=os.lstat(cc_claim)
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode) or not os.access(cc_claim,os.X_OK):
+        raise OSError("canonical cc-claim is not a regular executable")
+    if pathlib.Path(cc_claim).resolve(strict=True) != (activation/"scripts"/"cc-claim").resolve(strict=True):
+        raise ValueError("remote cc-claim is outside the activated target")
+    observed_blob=subprocess.run(["git","-C",str(activation),"hash-object",cc_claim],check=True,capture_output=True,text=True).stdout.strip()
+    if observed_head != head or shared_kind != "tree" or surface_status or observed_blob != tracked_blob:
+        raise ValueError("remote activated cc-claim/shared implementation mismatch")
+    observed_sha=hashlib.sha256(open(cc_claim,"rb").read()).hexdigest()
+except (KeyError,OSError,ValueError,json.JSONDecodeError,subprocess.SubprocessError) as exc:
+    print("hapax-claude-headless: remote canonical cc-claim unavailable: "+str(exc),file=sys.stderr); sys.exit(78)
+if observed_sha != p.get("cc_claim_sha256"):
+    print("hapax-claude-headless: refusing remote stale cc-claim implementation",file=sys.stderr); sys.exit(78)
+probe=subprocess.run([cc_claim,"--dispatch-protocol-version"],cwd=p["workdir"],env=os.environ,text=True,capture_output=True)
+if probe.returncode != 0 or probe.stdout.strip() != p.get("cc_claim_protocol"):
+    print("hapax-claude-headless: remote canonical cc-claim protocol verification failed",file=sys.stderr); sys.exit(78)
+claimed=subprocess.run([cc_claim,"--materialize-remote-projection",task],cwd=p["workdir"],env=os.environ,text=True,capture_output=True)
+if claimed.returncode != 0:
+    print("hapax-claude-headless: remote canonical projection materialization refused ownership: "+claimed.stderr.strip(),file=sys.stderr); sys.exit(78)
+verified=subprocess.run([cc_claim,"--verify-dispatch-binding",task],cwd=p["workdir"],env=os.environ,text=True,capture_output=True)
+if verified.returncode != 0:
+    print("hapax-claude-headless: remote exact claim/binding verification failed: "+verified.stderr.strip(),file=sys.stderr); sys.exit(78)
+post_claim_sha=bound_env["HAPAX_CLAIM_REMOTE_POST_CLAIM_TASK_SHA256"]; cache=os.path.join(os.path.expanduser("~"),".cache","hapax"); remote_receipt=os.path.join(cache,"cc-claim-remote-projection-"+role+"-"+sid+"-"+post_claim_sha+".json")
 try:
-    if keyable and role:
-        cache=os.path.join(os.path.expanduser("~"),".cache","hapax")
-        os.makedirs(cache,exist_ok=True)
-        open(os.path.join(cache,"session-role-"+sid),"w",encoding="utf-8").write(role+"\n")
-        if task:
-            import time as _time
-            epoch_line=str(int(_time.time()))+" "+task+"\n"
-            # Task-bound epoch sidecars are written BEFORE the caches they
-            # vouch for: task_is_terminal trusts a sidecar only when it names
-            # this task and has NO mtime fallback, so a matching cache must
-            # never be visible without its sidecar.
-            open(os.path.join(cache,"cc-claim-epoch-"+role),"w",encoding="utf-8").write(epoch_line)
-            open(os.path.join(cache,"cc-claim-epoch-"+role+"-"+sid),"w",encoding="utf-8").write(epoch_line)
-            open(os.path.join(cache,"cc-active-task-"+role),"w",encoding="utf-8").write(task+"\n")
-            open(os.path.join(cache,"cc-active-task-"+role+"-"+sid),"w",encoding="utf-8").write(task+"\n")
-            materialized=True
-except Exception:
-    pass
+    receipt_metadata=os.lstat(remote_receipt)
+    if not stat.S_ISREG(receipt_metadata.st_mode) or stat.S_ISLNK(receipt_metadata.st_mode):
+        raise OSError("remote projection receipt is not a regular file")
+    remote_receipt_sha256=hashlib.sha256(open(remote_receipt,"rb").read()).hexdigest()
+except OSError as exc:
+    print("hapax-claude-headless: remote projection receipt unavailable: "+str(exc),file=sys.stderr); sys.exit(78)
+claim_established=True
 if proof:
     os.makedirs(os.path.dirname(proof), exist_ok=True)
-    data={"schema_version":1,"event":"dispatch_remote_exec","platform":"claude-headless","requested_host":p.get("requested_host"),"actual_host":socket.gethostname(),"pid":os.getpid(),"cgroup":cgroup,"workdir":p.get("workdir"),"logos_base_url":os.environ.get("LOGOS_BASE_URL"),"argv0":p["argv"][0] if p.get("argv") else None,"argc":len(p.get("argv",[])),"session_id":sid or None,"role":role or None,"task_id":task or None,"claim_materialized":materialized}; open(proof,"w",encoding="utf-8").write(json.dumps(data,sort_keys=True)+"\n")
+    data={"schema_version":1,"event":"dispatch_remote_exec","platform":"claude-headless","requested_host":p.get("requested_host"),"actual_host":socket.gethostname(),"pid":os.getpid(),"cgroup":cgroup,"workdir":p.get("workdir"),"logos_base_url":os.environ.get("LOGOS_BASE_URL"),"argv0":p["argv"][0] if p.get("argv") else None,"argc":len(p.get("argv",[])),"session_id":sid or None,"role":role or None,"task_id":task or None,"claim_established":claim_established,"post_claim_task_sha256":post_claim_sha,"remote_projection_receipt":remote_receipt,"remote_projection_receipt_sha256":remote_receipt_sha256}; open(proof,"w",encoding="utf-8").write(json.dumps(data,sort_keys=True)+"\n")
 argv=p["argv"]; os.execvp(argv[0], argv)'
 
 RESTART_COUNT=0
 MAX_RESTART_BACKOFF="${HAPAX_CLAUDE_HEADLESS_RESTART_BACKOFF_SECONDS:-30}"
+RESPAWN_ENABLED="${HAPAX_CLAUDE_HEADLESS_RESPAWN:-1}"
+if [[ "$RESPAWN_ENABLED" != "0" && "$RESPAWN_ENABLED" != "1" ]]; then
+  echo "hapax-claude-headless: HAPAX_CLAUDE_HEADLESS_RESPAWN must be 0 or 1" >&2
+  exit 2
+fi
 QUOTA_STREAK=0
 QUOTA_BACKOFF_CAP="${HAPAX_HEADLESS_QUOTA_BACKOFF_CAP_SECONDS:-21600}"  # 6h ceiling for quota-wall backoff
-# Out-of-band self-reap poll cadence: how often the teardown watchdog re-checks
-# task terminality while claude is alive (claude never EOFs the held FIFO, so a
-# bare `wait` would block forever — see the watchdog in the loop below).
-TERMINAL_POLL_S="${HAPAX_CLAUDE_HEADLESS_TERMINAL_POLL_SECONDS:-60}"
-
 # ── G2 dispatch-host preflight (appendix migration) ─────────────────────────
 # HAPAX_DISPATCH_HOST set → the inner `claude` exec runs on appendix; the
 # launcher itself (FIFO, PID/lock/relay, cc-claim, restart loop) stays
@@ -659,6 +751,8 @@ if [[ -n "$DISPATCH_HOST" ]]; then
   if dispatch_host_is_local "$DISPATCH_HOST"; then
     DISPATCH_HOST=""
   else
+    require_checked_cc_claim
+    require_complete_dispatch_binding
     PREFLIGHT_PAYLOAD="$(remote_payload_b64 preflight "$WORKDIR" python3 claude)"
     PREFLIGHT_COMMAND="$(remote_python_command "$PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
     if ssh -o BatchMode=yes -o ConnectTimeout=4 -i "$HOME/.ssh/id_ed25519" \
@@ -692,9 +786,12 @@ while true; do
     # stream-json), dedicated connection (ControlPath=none, kept alive) so an
     # idle lane isn't dropped by the shared master's ControlPersist. On drop the
     # remote claude EOFs its stdin and the loop below re-execs it.
+    capture_post_claim_task_sha256 "$CLAUDE_TASK"
     REMOTE_EXEC_PAYLOAD="$(
       remote_payload_b64 exec "$WORKDIR" "$DISPATCH_LOGOS_URL" "$DISPATCH_HOST" \
-        "$DISPATCH_PROOF_FILE" claude "${CLAUDE_ARGS[@]}"
+        "$DISPATCH_PROOF_FILE" "$CC_CLAIM" "$CC_CLAIM_SHA256" \
+        "$CC_CLAIM_PROTOCOL_VERSION" "$SOURCE_ACTIVATION_WORKTREE" \
+        "$SOURCE_ACTIVATION_RECEIPT" claude "${CLAUDE_ARGS[@]}"
     )"
     REMOTE_EXEC_COMMAND="$(remote_python_command "$REMOTE_EXEC_PAYLOAD" "$REMOTE_EXEC_PY")"
     ssh -o BatchMode=yes -o RequestTTY=no -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
@@ -708,49 +805,12 @@ while true; do
   echo "$CLAUDE_PID" > "$PID_FILE"
   echo "hapax-claude-headless: pid=$CLAUDE_PID (restart #$RESTART_COUNT)"
 
-  # Out-of-band teardown watchdog. claude reads its stdin from the FIFO whose
-  # write-end THIS launcher holds open (exec 3<> above), so claude never sees
-  # EOF; a bare `wait` would then block forever and the post-turn
-  # task_is_terminal check below would be unreachable dead code — the
-  # zombie-launcher bug that pinned dozens of lanes on closed/merged tasks. So
-  # run a background poller that, while claude is alive, re-checks task
-  # terminality every $TERMINAL_POLL_S and SIGTERMs the EXACT child pid (a single
-  # positive pid, never a process group) once the task is closed/merged. The main
-  # thread still `wait`s on claude directly, so a claude that exits on its own is
-  # handled immediately below and the watchdog is torn down — the fast-exit path
-  # is unchanged. The watchdog polls AFTER an initial sleep so a fresh turn is
-  # never reaped before it starts. It signals a self-reap via a marker file (not
-  # by echoing) and runs with its std streams detached to /dev/null: a poll
-  # `sleep` that gets orphaned when the watchdog is killed must NOT inherit the
-  # launcher's stdout, or it would hold the pipe open past exit and wedge readers.
-  rm -f "$SELF_REAP_FLAG"
-  (
-    exec 3>&-
-    while kill -0 "$CLAUDE_PID" 2>/dev/null; do
-      sleep "$TERMINAL_POLL_S"
-      kill -0 "$CLAUDE_PID" 2>/dev/null || break
-      if task_is_terminal "$CLAUDE_TASK"; then
-        : > "$SELF_REAP_FLAG"
-        kill -TERM "$CLAUDE_PID" 2>/dev/null || true
-        break
-      fi
-    done
-  ) >/dev/null 2>&1 &
-  TEARDOWN_WATCHDOG_PID=$!
-
+  # Never signal a live worker from task, cache, or PR projections. Terminality
+  # is evaluated only after the child exits on its own.
   if wait "$CLAUDE_PID"; then
     EXIT_CODE=0
   else
     EXIT_CODE=$?
-  fi
-  # claude has exited (on its own or via the watchdog's SIGTERM). Stop the
-  # watchdog subshell and reap it so it leaves no zombie. (Any poll `sleep` it
-  # orphaned is detached to /dev/null and harmless — it is not waited on here.)
-  kill "$TEARDOWN_WATCHDOG_PID" 2>/dev/null || true
-  wait "$TEARDOWN_WATCHDOG_PID" 2>/dev/null || true
-  if [[ -e "$SELF_REAP_FLAG" ]]; then
-    echo "hapax-claude-headless: task $CLAUDE_TASK closed/merged — self-reaping live claude (SIGTERM pid=$CLAUDE_PID)"
-    rm -f "$SELF_REAP_FLAG"
   fi
   RESTART_COUNT=$((RESTART_COUNT + 1))
 
@@ -760,6 +820,10 @@ while true; do
   # next tick — not a forever-respawn zombie.
   if task_is_terminal "$CLAUDE_TASK"; then
     echo "hapax-claude-headless: task $CLAUDE_TASK closed/merged — stopping respawn loop"
+    break
+  fi
+  if [[ "$RESPAWN_ENABLED" == "0" ]]; then
+    echo "hapax-claude-headless: child exited and respawn is disabled"
     break
   fi
 

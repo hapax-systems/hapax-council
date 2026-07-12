@@ -130,6 +130,23 @@ class TestClaimAndIdentity:
         assert d.gate == "assignment"
         assert d.current_value == "alpha"
 
+    def test_platform_qualified_assignment_allows_matching_role(self):
+        d = policy_decide(
+            _edit("shared/policy_decide.py"),
+            _authorized_task(assigned_to="claude/theta"),
+            "theta",
+        )
+        assert d.allowed
+
+    def test_known_bare_assignment_rejects_cross_platform_role_shape(self):
+        d = policy_decide(
+            _edit("shared/policy_decide.py"),
+            _authorized_task(assigned_to="codex/theta"),
+            "theta",
+        )
+        assert d.blocked
+        assert d.gate == "assignment"
+
 
 # --- policy_decide: status gate ----------------------------------------------
 

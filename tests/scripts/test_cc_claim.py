@@ -1,8 +1,10 @@
 import hashlib
+import json
 import os
 import re
 import subprocess
 import textwrap
+import time
 from pathlib import Path
 
 from shared.coord_dispatch import lane_ownership_projection_hashes
@@ -134,6 +136,19 @@ def _dispatch_bound_env(home: Path, note: Path) -> dict[str, str]:
         env.pop(key, None)
     env["HOME"] = str(home)
     env["HAPAX_AGENT_ROLE"] = "cx-test"
+    parent_spec = home / "Documents" / "Personal" / "isap-test.md"
+    parent_spec.parent.mkdir(parents=True, exist_ok=True)
+    parent_spec.write_text(
+        "---\ncase_id: CASE-TEST-001\n---\n\n# Test authority\n",
+        encoding="utf-8",
+    )
+    note.write_text(
+        note.read_text(encoding="utf-8").replace(
+            "parent_spec: /tmp/isap-test.md",
+            f"parent_spec: {parent_spec}",
+        ),
+        encoding="utf-8",
+    )
     cache_dir = home / ".cache" / "hapax"
     relay_dir = cache_dir / "relay"
     claim_hash, relay_hash = lane_ownership_projection_hashes(
@@ -157,7 +172,10 @@ def _dispatch_bound_env(home: Path, note: Path) -> dict[str, str]:
             "HAPAX_CLAIM_DISPATCH_LANE_SESSION": "",
             "HAPAX_CLAIM_DISPATCH_MESSAGE_ID": "dispatch-message",
             "HAPAX_CLAIM_DISPATCH_MODE": "headless",
-            "HAPAX_CLAIM_DISPATCH_PARENT_SPEC": "/tmp/isap-test.md",
+            "HAPAX_CLAIM_DISPATCH_PARENT_SPEC": str(parent_spec),
+            "HAPAX_CLAIM_DISPATCH_PARENT_SPEC_SHA256": hashlib.sha256(
+                parent_spec.read_bytes()
+            ).hexdigest(),
             "HAPAX_CLAIM_DISPATCH_PLATFORM": "codex",
             "HAPAX_CLAIM_DISPATCH_PROFILE": "full",
             "HAPAX_CLAIM_DISPATCH_RELAY_PROJECTION_SHA256": relay_hash,
@@ -180,6 +198,16 @@ def test_exact_task_note_precedes_prefix_sibling(tmp_path: Path) -> None:
     assert "status: offered" in sibling.read_text(encoding="utf-8")
 
 
+def test_initial_claim_persists_platform_qualified_owner(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "qualified-initial")
+
+    result = _claim(home, "qualified-initial")
+
+    assert result.returncode == 0, result.stderr
+    assert "assigned_to: codex/cx-test" in note.read_text(encoding="utf-8")
+
+
 def test_dispatch_bound_claim_rejects_changed_task_preimage(tmp_path: Path) -> None:
     home = tmp_path / "home"
     note = _write_task(home, "active", "claim-target")
@@ -196,6 +224,29 @@ def test_dispatch_bound_claim_rejects_changed_task_preimage(tmp_path: Path) -> N
 
     assert result.returncode != 0
     assert "claim_dispatch_task_preimage_mismatch" in result.stderr
+    assert not (home / ".cache" / "hapax" / "cc-active-task-cx-test").exists()
+
+
+def test_dispatch_bound_claim_rejects_changed_parent_spec_preimage(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "claim-target")
+    env = _dispatch_bound_env(home, note)
+    Path(env["HAPAX_CLAIM_DISPATCH_PARENT_SPEC"]).write_text(
+        "---\ncase_id: CASE-TEST-001\n---\nchanged\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "claim-target"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "claim_dispatch_parent_spec_preimage_mismatch" in result.stderr
+    assert "status: offered" in note.read_text(encoding="utf-8")
     assert not (home / ".cache" / "hapax" / "cc-active-task-cx-test").exists()
 
 
@@ -221,6 +272,88 @@ def test_dispatch_bound_claim_writes_exact_sidecar_before_cache(tmp_path: Path) 
     assert (cache_dir / "cc-active-task-cx-test").read_text(encoding="utf-8").strip() == (
         "claim-target"
     )
+
+    verified = subprocess.run(
+        ["bash", str(SCRIPT), "--verify-dispatch-binding", "claim-target"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert verified.returncode == 0, verified.stderr
+
+
+def test_dispatch_bound_ready_state_resume_verifies_exact_binding(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(
+        home,
+        "active",
+        "claim-target",
+        status="merge_queue",
+        assigned_to="codex/cx-test",
+    )
+    env = _dispatch_bound_env(home, note)
+
+    resumed = subprocess.run(
+        ["bash", str(SCRIPT), "claim-target"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert resumed.returncode == 0, resumed.stderr
+
+    verified = subprocess.run(
+        ["bash", str(SCRIPT), "--verify-dispatch-binding", "claim-target"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert verified.returncode == 0, verified.stderr
+    assert "assigned_to: codex/cx-test" in note.read_text(encoding="utf-8")
+
+
+def test_dispatch_protocol_probe_is_executable_contract() -> None:
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "--dispatch-protocol-version"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "hapax-claim-dispatch-v1"
+
+
+def test_dispatch_binding_verification_rejects_changed_parent_spec(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "claim-target")
+    env = _dispatch_bound_env(home, note)
+    claimed = subprocess.run(
+        ["bash", str(SCRIPT), "claim-target"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert claimed.returncode == 0, claimed.stderr
+    Path(env["HAPAX_CLAIM_DISPATCH_PARENT_SPEC"]).write_text(
+        "---\ncase_id: CASE-TEST-001\n---\nchanged\n",
+        encoding="utf-8",
+    )
+
+    verified = subprocess.run(
+        ["bash", str(SCRIPT), "--verify-dispatch-binding", "claim-target"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert verified.returncode != 0
+    assert "claim_dispatch_authoritative_state_mismatch" in verified.stderr
 
 
 def test_body_bullets_are_not_claim_dependencies(tmp_path: Path) -> None:
@@ -629,7 +762,7 @@ def test_merge_queue_different_assignee_blocks_resume(tmp_path: Path) -> None:
     result = _claim(home, "other-queue")
 
     assert result.returncode == 4
-    assert "assigned to 'cx-other', not 'cx-test'" in result.stderr
+    assert "assigned to 'cx-other', not 'codex/cx-test'" in result.stderr
     assert "status: merge_queue" in note.read_text(encoding="utf-8")
     assert not (home / ".cache" / "hapax" / "cc-active-task-cx-test").exists()
 
@@ -789,7 +922,7 @@ def test_claim_inserts_missing_claim_keys(tmp_path: Path) -> None:
     text = path.read_text(encoding="utf-8")
     frontmatter = text[: text.find("\n---", 4)]
     assert "status: claimed" in frontmatter
-    assert "assigned_to: cx-test" in frontmatter
+    assert "assigned_to: codex/cx-test" in frontmatter
     assert re.search(r"^claimed_at: \d{4}-\d{2}-\d{2}T", frontmatter, flags=re.MULTILINE), (
         "claimed_at must be inserted when the authored note lacks the key:\n" + frontmatter
     )
@@ -977,3 +1110,511 @@ def test_claim_refuses_note_without_closing_frontmatter(tmp_path: Path) -> None:
     cache_dir = home / ".cache" / "hapax"
     leaked = list(cache_dir.glob("cc-active-task-*")) if cache_dir.exists() else []
     assert leaked == [], f"claim caches must not be written on a failed stamp: {leaked}"
+
+
+def test_expired_claim_is_never_deleted_by_failed_new_claim(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    claim = cache / "cc-active-task-cx-test-old-session"
+    epoch = cache / "cc-claim-epoch-cx-test-old-session"
+    binding = cache / "cc-claim-dispatch-cx-test-old-session.json"
+    claim.write_text("existing-task\n", encoding="utf-8")
+    epoch.write_text("1 existing-task\n", encoding="utf-8")
+    binding.write_text("preserve-me\n", encoding="utf-8")
+    os.utime(claim, (1, 1))
+    before = {path: path.read_bytes() for path in (claim, epoch, binding)}
+
+    result = _claim(home, "missing-target")
+
+    assert result.returncode == 7
+    assert "claim_slot_occupied" in result.stderr
+    assert {path: path.read_bytes() for path in before} == before
+
+
+def test_force_cannot_replace_existing_ownership(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    claim = cache / "cc-active-task-cx-test"
+    claim.write_text("existing-task\n", encoding="utf-8")
+    env = os.environ.copy()
+    env.update(HOME=str(home), HAPAX_AGENT_NAME="cx-test", HAPAX_AGENT_ROLE="cx-test")
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "--force", "new-task"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 8
+    assert "ownership replacement is retired" in result.stderr
+    assert claim.read_text(encoding="utf-8") == "existing-task\n"
+
+
+def test_same_task_other_session_cannot_refresh_or_overwrite(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_task(
+        home,
+        "active",
+        "shared-task",
+        status="merge_queue",
+        assigned_to="cx-test",
+    )
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    old_session = "11111111-1111-4111-8111-111111111111"
+    new_session = "22222222-2222-4222-8222-222222222222"
+    legacy = cache / "cc-active-task-cx-test"
+    session_claim = cache / f"cc-active-task-cx-test-{old_session}"
+    legacy.write_text("shared-task\n", encoding="utf-8")
+    session_claim.write_text("shared-task\n", encoding="utf-8")
+    (cache / "cc-claim-epoch-cx-test").write_text("1 shared-task\n", encoding="utf-8")
+    (cache / f"cc-claim-epoch-cx-test-{old_session}").write_text(
+        "1 shared-task\n", encoding="utf-8"
+    )
+    env = os.environ.copy()
+    env.update(
+        HOME=str(home),
+        HAPAX_AGENT_NAME="cx-test",
+        HAPAX_AGENT_ROLE="cx-test",
+        HAPAX_SESSION_ID=new_session,
+    )
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "shared-task"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 7
+    assert "claim_same_task_owned_by_other_session" in result.stderr
+    assert legacy.read_text(encoding="utf-8") == "shared-task\n"
+    assert session_claim.read_text(encoding="utf-8") == "shared-task\n"
+
+
+def test_unbound_refresh_cannot_erase_dispatch_binding(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "bound-task")
+    env = _dispatch_bound_env(home, note)
+    first = subprocess.run(
+        ["bash", str(SCRIPT), "bound-task"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert first.returncode == 0, first.stderr
+    binding = home / ".cache" / "hapax" / "cc-claim-dispatch-cx-test.json"
+    before = binding.read_bytes()
+
+    second = _claim(home, "bound-task")
+
+    assert second.returncode == 7
+    assert "claim_slot_already_dispatch_bound" in second.stderr
+    assert binding.read_bytes() == before
+
+
+def test_platform_qualified_owner_resumes_only_on_exact_platform(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    exact = _write_task(
+        home,
+        "active",
+        "qualified-exact",
+        status="merge_queue",
+        assigned_to="codex/cx-test",
+    )
+
+    accepted = _claim(home, "qualified-exact")
+
+    assert accepted.returncode == 0, accepted.stderr
+    assert "assigned_to: codex/cx-test" in exact.read_text(encoding="utf-8")
+
+    other_home = tmp_path / "other-home"
+    other = _write_task(
+        other_home,
+        "active",
+        "qualified-other",
+        status="merge_queue",
+        assigned_to="claude/cx-test",
+    )
+    rejected = _claim(other_home, "qualified-other")
+
+    assert rejected.returncode == 4
+    assert "not 'codex/cx-test'" in rejected.stderr
+    assert "assigned_to: claude/cx-test" in other.read_text(encoding="utf-8")
+
+
+def test_bare_known_owner_cannot_resume_from_another_platform(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(
+        home,
+        "active",
+        "bare-cross-platform",
+        status="merge_queue",
+        assigned_to="cx-test",
+    )
+    env = os.environ.copy()
+    for key in (
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_ROLE",
+        "CODEX_ROLE",
+        "CODEX_SESSION",
+        "CODEX_SESSION_NAME",
+        "CODEX_THREAD_NAME",
+        "HAPAX_AGENT_NAME",
+        "HAPAX_SESSION_ID",
+    ):
+        env.pop(key, None)
+    env.update(
+        HOME=str(home),
+        HAPAX_AGENT_INTERFACE="claude",
+        HAPAX_AGENT_ROLE="cx-test",
+    )
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "bare-cross-platform"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 4
+    assert "not 'claude/cx-test'" in result.stderr
+    assert "assigned_to: cx-test" in note.read_text(encoding="utf-8")
+
+
+_REMOTE_SESSION_ID = "remote-projection-session"
+
+
+def _dispatch_claim_for_remote_projection(
+    home: Path,
+    note: Path,
+) -> tuple[dict[str, str], bytes, bytes, str]:
+    pre_claim = note.read_bytes()
+    env = _dispatch_bound_env(home, note)
+    env["HAPAX_SESSION_ID"] = _REMOTE_SESSION_ID
+    claimed = subprocess.run(
+        ["bash", str(SCRIPT), note.stem],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert claimed.returncode == 0, claimed.stderr
+    post_claim = note.read_bytes()
+    printed = subprocess.run(
+        ["bash", str(SCRIPT), "--print-post-claim-task-sha256", note.stem],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert printed.returncode == 0, printed.stderr
+    post_claim_sha256 = hashlib.sha256(post_claim).hexdigest()
+    assert printed.stdout.strip() == post_claim_sha256
+    env["HAPAX_CLAIM_REMOTE_POST_CLAIM_TASK_SHA256"] = post_claim_sha256
+    env["HAPAX_CLAIM_REMOTE_WAIT_SECONDS"] = "3"
+    return env, pre_claim, post_claim, post_claim_sha256
+
+
+def _clear_remote_projection_slot(home: Path) -> None:
+    cache = home / ".cache" / "hapax"
+    for pattern in (
+        "cc-active-task-cx-test*",
+        "cc-claim-epoch-cx-test*",
+        "cc-claim-dispatch-cx-test*.json",
+        f"session-role-{_REMOTE_SESSION_ID}",
+        "cc-claim-remote-projection-cx-test-*.json",
+    ):
+        for path in cache.glob(pattern):
+            path.unlink()
+
+
+def _remote_projection_paths(home: Path, post_claim_sha256: str) -> list[Path]:
+    cache = home / ".cache" / "hapax"
+    keys = ("cx-test", f"cx-test-{_REMOTE_SESSION_ID}")
+    paths = [cache / f"session-role-{_REMOTE_SESSION_ID}"]
+    for key in keys:
+        paths.extend(
+            (
+                cache / f"cc-active-task-{key}",
+                cache / f"cc-claim-epoch-{key}",
+                cache / f"cc-claim-dispatch-{key}.json",
+            )
+        )
+    paths.append(
+        cache
+        / (f"cc-claim-remote-projection-cx-test-{_REMOTE_SESSION_ID}-{post_claim_sha256}.json")
+    )
+    return paths
+
+
+def _materialize_remote(env: dict[str, str], task_id: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", str(SCRIPT), "--materialize-remote-projection", task_id],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _move_to_closed(note: Path, *, status: str = "done", owner: str | None = None) -> Path:
+    text = re.sub(r"^status:.*$", f"status: {status}", note.read_text(), count=1, flags=re.M)
+    if owner is not None:
+        text = re.sub(r"^assigned_to:.*$", f"assigned_to: {owner}", text, count=1, flags=re.M)
+    closed = note.parent.parent / "closed" / note.name
+    closed.write_text(text, encoding="utf-8")
+    note.unlink()
+    return closed
+
+
+def _retire_terminal_projection(
+    env: dict[str, str], task_id: str
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", str(SCRIPT), "--retire-terminal-projection", task_id],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_terminal_projection_retirement_clears_only_exact_closed_session(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "remote-terminal-retirement")
+    env, _pre, _post, _sha = _dispatch_claim_for_remote_projection(home, note)
+    closed = _move_to_closed(note)
+    closed_before = closed.read_bytes()
+    cache = home / ".cache" / "hapax"
+    keys = ("cx-test", f"cx-test-{_REMOTE_SESSION_ID}")
+    projection_paths = [
+        path
+        for key in keys
+        for path in (
+            cache / f"cc-active-task-{key}",
+            cache / f"cc-claim-epoch-{key}",
+            cache / f"cc-claim-dispatch-{key}.json",
+        )
+    ]
+    assert all(path.is_file() for path in projection_paths)
+
+    result = _retire_terminal_projection(env, "remote-terminal-retirement")
+
+    assert result.returncode == 0, result.stderr
+    assert "retired exact terminal projection" in result.stdout
+    assert not any(path.exists() for path in projection_paths)
+    assert closed.read_bytes() == closed_before
+
+    replay = _retire_terminal_projection(env, "remote-terminal-retirement")
+    assert replay.returncode == 0, replay.stderr
+    assert "already retired" in replay.stdout
+
+
+def test_terminal_projection_retirement_refuses_active_task(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "remote-still-active")
+    env, _pre, _post, _sha = _dispatch_claim_for_remote_projection(home, note)
+    cache = home / ".cache" / "hapax"
+
+    result = _retire_terminal_projection(env, "remote-still-active")
+
+    assert result.returncode == 75
+    assert "terminal_projection_task_active" in result.stderr
+    assert (cache / "cc-active-task-cx-test").is_file()
+    assert (cache / f"cc-active-task-cx-test-{_REMOTE_SESSION_ID}").is_file()
+
+
+def test_terminal_projection_retirement_refuses_incomplete_or_wrong_owner(
+    tmp_path: Path,
+) -> None:
+    incomplete_home = tmp_path / "incomplete-home"
+    incomplete_note = _write_task(incomplete_home, "active", "remote-terminal-incomplete")
+    incomplete_env, _pre, _post, _sha = _dispatch_claim_for_remote_projection(
+        incomplete_home, incomplete_note
+    )
+    _move_to_closed(incomplete_note)
+    incomplete_cache = incomplete_home / ".cache" / "hapax"
+    missing = incomplete_cache / f"cc-claim-epoch-cx-test-{_REMOTE_SESSION_ID}"
+    missing.unlink()
+
+    incomplete = _retire_terminal_projection(incomplete_env, "remote-terminal-incomplete")
+
+    assert incomplete.returncode == 8
+    assert "terminal_projection_incomplete" in incomplete.stderr
+    assert (incomplete_cache / "cc-active-task-cx-test").is_file()
+
+    owner_home = tmp_path / "owner-home"
+    owner_note = _write_task(owner_home, "active", "remote-terminal-wrong-owner")
+    owner_env, _pre, _post, _sha = _dispatch_claim_for_remote_projection(owner_home, owner_note)
+    _move_to_closed(owner_note, owner="codex/cx-other")
+
+    mismatched = _retire_terminal_projection(owner_env, "remote-terminal-wrong-owner")
+
+    assert mismatched.returncode == 8
+    assert "terminal_projection_owner_mismatch" in mismatched.stderr
+    assert (owner_home / ".cache" / "hapax" / "cc-active-task-cx-test").is_file()
+
+
+def test_standard_claim_replay_cannot_materialize_remote_projection(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "remote-standard-replay")
+    env, _pre_claim, _post_claim, _post_claim_sha256 = _dispatch_claim_for_remote_projection(
+        home, note
+    )
+    _clear_remote_projection_slot(home)
+
+    replay = subprocess.run(
+        ["bash", str(SCRIPT), "remote-standard-replay"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert replay.returncode != 0
+    assert "claim_dispatch_task_preimage_mismatch" in replay.stderr
+    assert not list((home / ".cache" / "hapax").glob("cc-active-task-cx-test*"))
+
+
+def test_remote_projection_materializes_complete_transaction_and_receipt(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "remote-materialize")
+    env, _pre_claim, _post_claim, post_claim_sha256 = _dispatch_claim_for_remote_projection(
+        home, note
+    )
+    _clear_remote_projection_slot(home)
+
+    result = _materialize_remote(env, "remote-materialize")
+
+    assert result.returncode == 0, result.stderr
+    paths = _remote_projection_paths(home, post_claim_sha256)
+    assert all(path.is_file() for path in paths)
+    assert all((path.stat().st_mode & 0o777) == 0o600 for path in paths)
+    assert hashlib.sha256(note.read_bytes()).hexdigest() == post_claim_sha256
+    receipt_path = paths[-1]
+    receipt = json.loads(receipt_path.read_text(encoding="ascii"))
+    assert receipt["schema"] == "hapax.remote-claim-projection.v1"
+    assert receipt["may_authorize"] is False
+    assert receipt["task_id"] == "remote-materialize"
+    assert receipt["lane"] == "cx-test"
+    assert receipt["session_id"] == _REMOTE_SESSION_ID
+    assert receipt["platform"] == "codex"
+    assert receipt["post_claim_task_sha256"] == post_claim_sha256
+    receipt_hash = receipt.pop("receipt_hash")
+    canonical = json.dumps(
+        receipt,
+        ensure_ascii=True,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+    assert receipt_hash == hashlib.sha256(canonical).hexdigest()
+
+    archives = list((home / ".cache" / "hapax").glob(".cc-ownership-txn-*.history-*-committed"))
+    assert archives
+    transaction_path_sets = []
+    for archive in archives:
+        manifest = json.loads((archive / "manifest.json").read_text(encoding="ascii"))
+        transaction_path_sets.append({entry["path"] for entry in manifest["entries"]})
+    assert any(
+        {str(note.resolve()), str(receipt_path.resolve())} <= transaction_paths
+        for transaction_paths in transaction_path_sets
+    )
+
+    before_receipt = receipt_path.read_bytes()
+    idempotent = _materialize_remote(env, "remote-materialize")
+    assert idempotent.returncode == 0, idempotent.stderr
+    assert receipt_path.read_bytes() == before_receipt
+    assert hashlib.sha256(note.read_bytes()).hexdigest() == post_claim_sha256
+
+
+def test_remote_projection_waits_for_exact_synced_post_claim_note(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "remote-sync-wait")
+    env, pre_claim, post_claim, post_claim_sha256 = _dispatch_claim_for_remote_projection(
+        home, note
+    )
+    _clear_remote_projection_slot(home)
+    note.write_bytes(pre_claim)
+
+    process = subprocess.Popen(
+        ["bash", str(SCRIPT), "--materialize-remote-projection", "remote-sync-wait"],
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    time.sleep(0.35)
+    note.write_bytes(post_claim)
+    stdout, stderr = process.communicate(timeout=10)
+
+    assert process.returncode == 0, stderr
+    assert "materialized exact remote projection" in stdout
+    assert all(path.is_file() for path in _remote_projection_paths(home, post_claim_sha256))
+
+
+def test_remote_projection_timeout_and_owner_mismatch_write_nothing(tmp_path: Path) -> None:
+    timeout_home = tmp_path / "timeout-home"
+    timeout_note = _write_task(timeout_home, "active", "remote-sync-timeout")
+    timeout_env, pre_claim, _post_claim, post_claim_sha256 = _dispatch_claim_for_remote_projection(
+        timeout_home, timeout_note
+    )
+    _clear_remote_projection_slot(timeout_home)
+    timeout_note.write_bytes(pre_claim)
+    timeout_env["HAPAX_CLAIM_REMOTE_WAIT_SECONDS"] = "1"
+
+    timed_out = _materialize_remote(timeout_env, "remote-sync-timeout")
+
+    assert timed_out.returncode == 8
+    assert "claim_remote_post_claim_sync_timeout" in timed_out.stderr
+    assert not any(
+        path.exists() for path in _remote_projection_paths(timeout_home, post_claim_sha256)
+    )
+
+    owner_home = tmp_path / "owner-home"
+    owner_note = _write_task(owner_home, "active", "remote-owner-mismatch")
+    owner_env, _pre, _post, _sha = _dispatch_claim_for_remote_projection(owner_home, owner_note)
+    _clear_remote_projection_slot(owner_home)
+    owner_note.write_text(
+        owner_note.read_text(encoding="utf-8").replace(
+            "assigned_to: codex/cx-test", "assigned_to: claude/cx-test"
+        ),
+        encoding="utf-8",
+    )
+    mismatched_sha = hashlib.sha256(owner_note.read_bytes()).hexdigest()
+    owner_env["HAPAX_CLAIM_REMOTE_POST_CLAIM_TASK_SHA256"] = mismatched_sha
+
+    mismatched = _materialize_remote(owner_env, "remote-owner-mismatch")
+
+    assert mismatched.returncode == 8
+    assert "claim_remote_authoritative_state_mismatch" in mismatched.stderr
+    assert not any(path.exists() for path in _remote_projection_paths(owner_home, mismatched_sha))
+
+
+def test_remote_projection_refuses_partial_existing_projection(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "remote-partial")
+    env, _pre, _post, post_claim_sha256 = _dispatch_claim_for_remote_projection(home, note)
+    _clear_remote_projection_slot(home)
+    legacy = home / ".cache" / "hapax" / "cc-active-task-cx-test"
+    legacy.write_text("remote-partial\n", encoding="utf-8")
+    legacy.chmod(0o600)
+
+    result = _materialize_remote(env, "remote-partial")
+
+    assert result.returncode == 8
+    assert "claim_remote_projection_incomplete" in result.stderr
+    assert legacy.read_text(encoding="utf-8") == "remote-partial\n"
+    assert sum(path.exists() for path in _remote_projection_paths(home, post_claim_sha256)) == 1

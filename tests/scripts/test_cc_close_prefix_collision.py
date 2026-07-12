@@ -27,6 +27,7 @@ def _write_task(
             task_id: {task_id}
             title: "{task_id}"
             status: {status}
+            assigned_to: test-role
             completed_at:
             updated_at:
             pr:
@@ -45,6 +46,7 @@ def _write_task(
 def _run_close(home: Path, task_id: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["HOME"] = str(home)
+    env["HAPAX_AGENT_NAME"] = "test-role"
     env["HAPAX_AGENT_ROLE"] = "test-role"
     return subprocess.run(
         ["bash", str(SCRIPT), task_id, "--status", "withdrawn"],

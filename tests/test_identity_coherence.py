@@ -1,8 +1,8 @@
 """Tests for reform-identity-coherence-20260601.
 
-Covers the four hollow identity-recovery paths the final audit (cluster 11) found:
-per-spawn session id (no parent-id reuse), in-session role reassert, a cross-role
-stale-claim sweeper, and retired dead identity fallbacks.
+Covers the identity-recovery paths the final audit (cluster 11) found:
+per-spawn session id (no parent-id reuse), in-session role reassert, cross-role
+stale-claim projection without detachment, and retired dead identity fallbacks.
 
 Self-contained per project convention — no shared conftest fixtures.
 """
@@ -29,12 +29,17 @@ _IDENTITY_ENV = (
     "CLAUDE_ROLE",
     "HAPAX_AGENT_NAME",
     "HAPAX_AGENT_ROLE",
+    "HAPAX_AGENT_INTERFACE",
     "HAPAX_WORKTREE_ROLE",
     "HAPAX_SESSION_ID",
     "CLAUDE_CODE_SESSION_ID",
+    "CLAUDECODE",
     "CODEX_SESSION",
+    "CODEX_SESSION_NAME",
     "CODEX_THREAD_ID",
     "CODEX_THREAD_NAME",
+    "CODEX_ROLE",
+    "CODEX_HOME",
 )
 
 
@@ -76,7 +81,13 @@ class TestSessionIdNotInherited:
             patch.dict(os.environ, {"HAPAX_SESSION_ID": "parent-leaked-id"}),
             patch.object(mod, "_sliced_call", fake_sliced),
         ):
-            rc = mod.launch_claude_headless("task-x", "zeta", "prompt", route)
+            rc = mod.launch_claude_headless(
+                "task-x",
+                "zeta",
+                "prompt",
+                mod.Validation(True, "ok"),
+                route,
+            )
         assert rc == 0
         env = captured["env"]
         assert isinstance(env, dict)
@@ -218,10 +229,10 @@ class TestInSessionReassert:
         assert r.stdout.strip() == "sourced-ok"
 
 
-# --- AC3: cross-role stale-claim sweeper ---------------------------------------
+# --- AC3: cross-role stale-claim projection ------------------------------------
 
 
-class TestStaleClaimSweeper:
+class TestStaleClaimProjection:
     @staticmethod
     def _dirs(tmp_path: Path) -> tuple[Path, Path]:
         claims = tmp_path / "claims"
@@ -237,7 +248,7 @@ class TestStaleClaimSweeper:
 
     _UUID = "12345678-1234-1234-1234-123456789abc"
 
-    def test_reaps_lease_expired_claim(self, tmp_path: Path) -> None:
+    def test_projects_lease_expired_claim_without_detaching(self, tmp_path: Path) -> None:
         mod = _load_dispatch()
         claims, active = self._dirs(tmp_path)
         # The task is still in active/, but the claim file is 14 days stale: a
@@ -246,11 +257,11 @@ class TestStaleClaimSweeper:
         cf = claims / "cc-active-task-test-probe"
         cf.write_text("council-eqi-phase0-run\n")
         self._age(cf, 14 * 86400)
-        reaped = mod.sweep_stale_claims(claims, active, now=time.time())
-        assert not cf.exists()
+        candidates = mod.sweep_stale_claims(claims, active, now=time.time())
+        assert cf.exists()
         assert any(
             name == "cc-active-task-test-probe" and reason == "lease-expired"
-            for name, _task, reason in reaped
+            for name, _task, reason in candidates
         )
 
     def test_keeps_fresh_live_claim(self, tmp_path: Path) -> None:
@@ -259,24 +270,24 @@ class TestStaleClaimSweeper:
         (active / "t.md").write_text("---\nstatus: in_progress\n---\n")
         cf = claims / f"cc-active-task-zeta-{self._UUID}"
         cf.write_text("t\n")
-        reaped = mod.sweep_stale_claims(claims, active, now=time.time())
+        candidates = mod.sweep_stale_claims(claims, active, now=time.time())
         assert cf.exists()
-        assert reaped == []
+        assert candidates == []
 
-    def test_reaps_claim_for_terminal_or_missing_task(self, tmp_path: Path) -> None:
+    def test_projects_terminal_or_missing_task_without_detaching(self, tmp_path: Path) -> None:
         mod = _load_dispatch()
         claims, active = self._dirs(tmp_path)
         # No note in active/ → task closed/withdrawn/missing → the slot is dead.
         cf = claims / f"cc-active-task-eta-{self._UUID}"
         cf.write_text("vanished-task\n")
         self._age(cf, 3600)  # past the settle grace, but well within the lease TTL
-        reaped = mod.sweep_stale_claims(claims, active, now=time.time())
-        assert not cf.exists()
-        assert any(reason == "terminal-or-missing" for _n, _t, reason in reaped)
+        candidates = mod.sweep_stale_claims(claims, active, now=time.time())
+        assert cf.exists()
+        assert any(reason == "terminal-or-missing" for _n, _t, reason in candidates)
 
     def test_live_session_protects_its_roles_stale_legacy_file(self, tmp_path: Path) -> None:
         # The gate refreshes only the session-keyed file, so a live role's LEGACY
-        # file ages out — it must not be reaped while a fresh sibling proves life.
+        # file ages out, but a fresh sibling means it is not even a candidate.
         mod = _load_dispatch()
         claims, active = self._dirs(tmp_path)
         (active / "t.md").write_text("---\nstatus: in_progress\n---\n")
@@ -285,17 +296,17 @@ class TestStaleClaimSweeper:
         self._age(legacy, 14 * 86400)
         sk = claims / f"cc-active-task-delta-{self._UUID}"
         sk.write_text("t\n")  # fresh → role delta is demonstrably live
-        reaped = mod.sweep_stale_claims(claims, active, now=time.time())
-        assert legacy.exists(), "a live role's stale legacy claim must not be reaped"
-        assert reaped == []
+        candidates = mod.sweep_stale_claims(claims, active, now=time.time())
+        assert legacy.exists(), "a live role's stale legacy claim must not be projected"
+        assert candidates == []
 
     def test_does_not_reap_recently_touched_missing_task(self, tmp_path: Path) -> None:
         # A just-written claim for a momentarily-absent note (mid cc-close race) is
-        # left to settle, not reaped.
+        # left to settle, not projected.
         mod = _load_dispatch()
         claims, active = self._dirs(tmp_path)
         cf = claims / f"cc-active-task-theta-{self._UUID}"
         cf.write_text("in-flight-task\n")  # fresh mtime, note absent
-        reaped = mod.sweep_stale_claims(claims, active, now=time.time())
+        candidates = mod.sweep_stale_claims(claims, active, now=time.time())
         assert cf.exists()
-        assert reaped == []
+        assert candidates == []

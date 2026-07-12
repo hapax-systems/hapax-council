@@ -3,22 +3,39 @@
 
 Operator-facing CLI for the FULL_AUTO publish path. Reads a markdown file
 with YAML frontmatter from the Obsidian vault, constructs a
-``PreprintArtifact`` from it, marks it ``APPROVED``, and writes the JSON
-to ``$HAPAX_STATE/publish/inbox/{slug}.json``. The publish_orchestrator
-service picks it up on the next 30s tick and fans out to every surface
-listed in ``surfaces_targeted`` via ``SURFACE_REGISTRY``.
+``PreprintArtifact`` from it, enforces ``Publication-Allowed`` frontmatter,
+marks allowed artifacts ``APPROVED``, and writes the JSON to
+``$HAPAX_STATE/publish/inbox/{slug}.json``. The publish_orchestrator service
+picks it up on the next 30s tick and fans out through the operator-supplied
+``--surfaces`` list, or the CLI default, after policy allowlist validation.
 
 ## Frontmatter contract
 
-The vault file's YAML frontmatter SHOULD include:
+The publication gate requires explicit clearance and durable gate receipts:
 
-  title: str           # used as PreprintArtifact.title
-  slug:  str           # used as filename + omg.lol entry slug
+  Publication-Allowed: true  # explicit Claim Verification Council clearance
+  publication_gate_receipts:
+    source_artifact_public_safe: public-gate:my-artifact/source-safe.yaml
+    source_refs_present: public-gate:my-artifact/source-refs.yaml
+    rights_privacy_redaction_pass: public-gate:my-artifact/rights-privacy.yaml
+    target_surface_allowlist_pass: public-gate:my-artifact/target-surfaces.yaml
+    claim_review_current: public-gate:my-artifact/claim-review.yaml
+    no_direct_public_egress: public-gate:my-artifact/no-direct-egress.yaml
+
+Recommended descriptive fields:
+
+  title: str           # used as PreprintArtifact.title; else heading/Untitled fallback
+  slug:  str           # used as filename + omg.lol entry slug; else title-derived
   type:  str           # informational only
+
+The ``public-gate:...`` values above are examples of durable receipt refs under
+the configured public-gate receipt roots. They are not placeholders: each ref
+must resolve to a real YAML/JSON/Markdown receipt whose gate id, artifact
+binding, and signed authority evidence validate before any inbox artifact is
+written.
 
 Optional:
 
-  surfaces_targeted: list[str]  # else default to [zenodo-doi, omg-weblog]
   attribution_block: str        # else inferred from operator + co-authors
   abstract:          str        # else first ~500 chars of body
   author_model:      str        # reviewer author-model hint
@@ -26,10 +43,15 @@ Optional:
 
 ## Approval semantics
 
-This script marks the artifact ``APPROVED`` directly. The vault is the
-operator's editing surface; once a vault file lands at this script, the
-operator has implicitly approved publication. No separate inbox-review
-step.
+This script marks the artifact ``APPROVED`` directly only when frontmatter
+explicitly allows publication. The vault is the operator's editing surface;
+once an allowed vault file lands at this script, the operator has implicitly
+approved publication. No separate inbox-review step. There is no bypass in
+this CLI for public egress: invalid YAML, missing clearance, malformed
+clearance, unreadable policy, or out-of-allowlist target surfaces must stop
+before an inbox artifact is written. Break-glass correction or takedown is a
+surface-specific operator action outside this approval path and must leave its
+own incident/authority receipt before any replacement artifact is published.
 
 ## Usage
 
@@ -45,19 +67,94 @@ step.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
+import re
+import subprocess
 import sys
+from collections.abc import Iterable, Mapping
+from hashlib import sha256
 from pathlib import Path
 
+import yaml
+
+from agents.publication_bus.surface_registry import dispatch_registry
 from shared.co_author_model import CoAuthor
 from shared.co_author_model import get as get_co_author
 from shared.frontmatter import parse_frontmatter_with_diagnostics
 from shared.preprint_artifact import ApprovalState, PreprintArtifact
+from shared.public_gate_receipts import (
+    PUBLIC_GATE_RECEIPT_PREFIXES as _PUBLIC_GATE_RECEIPT_PREFIXES,
+)
+from shared.public_gate_receipts import (
+    PUBLIC_GATE_REVIEW_HEAD_RE,
+    public_gate_receipt_value_present,
+)
 
 log = logging.getLogger(__name__)
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SURFACES = ["zenodo-doi", "omg-weblog"]
+PUBLICATION_POLICY_PATHS = (
+    REPO_ROOT / "config" / "omg-lol.yaml",
+    REPO_ROOT / "config" / "omg-lol-fanout.yaml",
+)
+PUBLICATION_ALLOWED_TRUE_VALUES = frozenset({"true", "yes", "1", "allowed", "approved"})
+PUBLICATION_ALLOWED_FALSE_VALUES = frozenset({"false", "no", "0", "blocked", "withheld"})
+PUBLICATION_GATE_RECEIPT_KEYS = (
+    "publication_gate_receipts",
+    "Publication-Gate-Receipts",
+    "publication-gate-receipts",
+)
+FANOUT_SURFACE_IDS = frozenset({"omg-lol-weblog-bearer-fanout"})
+PUBLICATION_BASELINE_REQUIRED_GATES = (
+    "source_artifact_public_safe",
+    "source_refs_present",
+    "rights_privacy_redaction_pass",
+    "target_surface_allowlist_pass",
+    "claim_review_current",
+    "no_direct_public_egress",
+)
+PUBLICATION_FANOUT_REQUIRED_GATES = (
+    *PUBLICATION_BASELINE_REQUIRED_GATES,
+    "fanout_loop_prevention_present",
+)
+PUBLICATION_POLICY_ALLOWED_STATUSES = frozenset({"guarded_public_channel", "guarded_public_fanout"})
+PUBLICATION_POLICY_REQUIRED_FIELDS = (
+    "status",
+    "publication_allowed_without_bus",
+    "direct_public_egress_allowed",
+    "review_required",
+    "target_surfaces",
+    "required_gates",
+    "claim_ceiling",
+)
+PUBLICATION_POLICY_CLAIM_CEILING_TERMS = (
+    "source refs",
+    "rights",
+    "privacy",
+    "redaction",
+    "target surfaces",
+)
+PUBLIC_GATE_RECEIPT_PREFIXES = _PUBLIC_GATE_RECEIPT_PREFIXES
+PUBLIC_GATE_RECEIPT_ROOTS = (
+    Path.home() / ".cache" / "hapax" / "relay" / "receipts",
+    REPO_ROOT / "docs" / "research" / "evidence",
+)
+PUBLICATION_SAFE_SEGMENT_RE = re.compile(r"\A[a-z0-9][a-z0-9_.-]{0,119}\Z")
+
+
+class PublicationGateError(ValueError):
+    """Raised when a draft lacks explicit public-publication clearance."""
+
+
+class PublicationFrontmatterError(PublicationGateError):
+    """Raised when publication frontmatter is structurally unsafe."""
+
+
+class SurfaceAllowlistError(PublicationGateError):
+    """Raised when a draft targets a surface outside configured public policy."""
 
 
 def _default_state_root() -> Path:
@@ -134,41 +231,314 @@ def _parse_publication_markdown(path: Path) -> tuple[dict, str]:
     if result.ok:
         return result.frontmatter or {}, result.body
 
-    if result.error_kind != "yaml_error":
-        return {}, result.body
+    if result.error_kind == "yaml_error":
+        raise PublicationFrontmatterError(f"YAML frontmatter is invalid: {path}")
+    return {}, result.body
 
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return {}, result.body
 
-    if not text.startswith("---"):
-        return {}, text
-    end = text.find("\n---", 3)
-    if end == -1:
-        return {}, text
-
-    frontmatter = _parse_lenient_frontmatter_mapping(text[3:end].strip())
-    body = text[end + 4 :].lstrip("\n")
-    log.warning(
-        "YAML frontmatter in %s is invalid; using lenient publication-field parser",
-        path,
+def _publication_allowed(frontmatter: dict) -> bool:
+    value = _frontmatter_value(
+        frontmatter,
+        "Publication-Allowed",
+        "publication_allowed",
+        "publication-allowed",
     )
-    return frontmatter, body
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in PUBLICATION_ALLOWED_TRUE_VALUES:
+            return True
+        if normalized in PUBLICATION_ALLOWED_FALSE_VALUES:
+            return False
+    return False
 
 
-def _parse_lenient_frontmatter_mapping(raw_frontmatter: str) -> dict[str, str]:
-    parsed: dict[str, str] = {}
-    for line in raw_frontmatter.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or ":" not in stripped:
+def _configured_publication_surfaces(paths: Iterable[Path] | None = None) -> set[str]:
+    surfaces: set[str] = set()
+    paths = PUBLICATION_POLICY_PATHS if paths is None else paths
+    for policy in _configured_publication_policies(paths):
+        target_surfaces = policy.get("target_surfaces")
+        if not isinstance(target_surfaces, list) or not target_surfaces:
+            raise SurfaceAllowlistError(
+                "surface policy target_surfaces must be a non-empty list; "
+                "next action: repair config/omg-lol*.yaml before publishing"
+            )
+        non_string = [surface for surface in target_surfaces if not isinstance(surface, str)]
+        if non_string:
+            raise SurfaceAllowlistError(
+                "surface policy target_surfaces must be strings; "
+                "next action: repair config/omg-lol*.yaml before publishing"
+            )
+        surfaces.update(surface for surface in target_surfaces if isinstance(surface, str))
+    if not surfaces:
+        raise SurfaceAllowlistError(
+            "no target surface allowlist configured; next action: repair "
+            "config/omg-lol*.yaml before publishing"
+        )
+    return surfaces
+
+
+def _configured_publication_policies(
+    paths: Iterable[Path] | None = None,
+) -> list[Mapping[str, object]]:
+    policies: list[Mapping[str, object]] = []
+    paths = PUBLICATION_POLICY_PATHS if paths is None else paths
+    for path in paths:
+        try:
+            loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError) as exc:
+            raise SurfaceAllowlistError(
+                f"surface policy unreadable: {path}; next action: repair readable "
+                "YAML policy before publishing"
+            ) from exc
+        if not isinstance(loaded, Mapping):
+            raise SurfaceAllowlistError(
+                f"surface policy must be a mapping: {path}; next action: restore "
+                "the publication_frontmatter_policy mapping"
+            )
+        policy = loaded.get("publication_frontmatter_policy")
+        if not isinstance(policy, Mapping):
+            raise SurfaceAllowlistError(
+                f"surface policy missing publication_frontmatter_policy: {path}; "
+                "next action: restore required public-egress policy fields"
+            )
+        boundary_error = _publication_policy_boundary_error(policy, path=path)
+        if boundary_error is not None:
+            raise SurfaceAllowlistError(boundary_error)
+        policies.append(policy)
+    return policies
+
+
+def _assert_target_surfaces_allowed(surfaces: list[str]) -> None:
+    if not surfaces:
+        raise SurfaceAllowlistError(
+            "target surfaces must be a non-empty list; next action: pass at least one "
+            "publication-bus dispatchable surface"
+        )
+    seen_surfaces: set[str] = set()
+    duplicate_surfaces: set[str] = set()
+    for surface in surfaces:
+        if surface in seen_surfaces:
+            duplicate_surfaces.add(surface)
+        else:
+            seen_surfaces.add(surface)
+    if duplicate_surfaces:
+        raise SurfaceAllowlistError(
+            "target surfaces contain duplicate surface ids: "
+            + ", ".join(sorted(duplicate_surfaces))
+            + "; next action: remove duplicate targets before writing a publish-bus inbox artifact"
+        )
+    allowed = _configured_publication_surfaces()
+    disallowed = sorted(set(surfaces) - allowed)
+    if disallowed:
+        raise SurfaceAllowlistError(
+            "target surfaces outside configured allowlist: "
+            + ", ".join(disallowed)
+            + "; next action: remove those targets from frontmatter or add them to the "
+            "reviewed publication_frontmatter_policy.target_surfaces allowlist"
+        )
+    dispatchable = set(dispatch_registry())
+    unwired = sorted(set(surfaces) - dispatchable)
+    if unwired:
+        raise SurfaceAllowlistError(
+            "target surfaces are not dispatchable by publish_orchestrator: "
+            + ", ".join(unwired)
+            + "; next action: target a dispatchable surface or wire a dispatch_entry first"
+        )
+
+
+def _required_publication_gate_receipts(surfaces: list[str]) -> set[str]:
+    selected = set(surfaces)
+    required: set[str] = set()
+    for policy in _configured_publication_policies():
+        target_surfaces = policy.get("target_surfaces")
+        if not isinstance(target_surfaces, list):
             continue
-        key, value = stripped.split(":", 1)
-        key = key.strip()
-        value = value.strip()
-        if key:
-            parsed[key] = value
-    return parsed
+        policy_targets = {surface for surface in target_surfaces if isinstance(surface, str)}
+        if not selected.intersection(policy_targets):
+            continue
+        fanout_policy = bool(
+            selected.intersection(FANOUT_SURFACE_IDS)
+            and policy_targets.intersection(FANOUT_SURFACE_IDS)
+        )
+        if policy.get("status") == "guarded_public_fanout" and not selected.intersection(
+            FANOUT_SURFACE_IDS
+        ):
+            continue
+        required.update(_policy_required_gate_ids(policy, fanout_policy=fanout_policy))
+    if not required:
+        raise PublicationGateError(
+            "no publication gate policy covers target surfaces; next action: add the "
+            "surface policy before publishing"
+        )
+    return required
+
+
+def _policy_required_gate_ids(
+    policy: Mapping[str, object],
+    *,
+    fanout_policy: bool = False,
+) -> set[str]:
+    boundary_error = _publication_policy_boundary_error(policy)
+    if boundary_error is not None:
+        raise PublicationGateError(boundary_error)
+    status = policy.get("status")
+    if status not in PUBLICATION_POLICY_ALLOWED_STATUSES:
+        raise PublicationGateError(
+            "publication policy status must be guarded_public_channel or "
+            "guarded_public_fanout; next action: repair "
+            "publication_frontmatter_policy.status before publishing"
+        )
+    baseline = (
+        PUBLICATION_FANOUT_REQUIRED_GATES
+        if status == "guarded_public_fanout" or fanout_policy
+        else PUBLICATION_BASELINE_REQUIRED_GATES
+    )
+    if fanout_policy and status != "guarded_public_fanout":
+        raise PublicationGateError(
+            "publication policy targeting fanout surfaces must use status "
+            "guarded_public_fanout; next action: repair publication_frontmatter_policy.status "
+            "before publishing"
+        )
+    gates = policy.get("required_gates")
+    if not isinstance(gates, list) or not gates:
+        raise PublicationGateError(
+            "publication policy has no required_gates; next action: repair "
+            "config/omg-lol*.yaml before publishing"
+        )
+
+    normalized: set[str] = set()
+    malformed = False
+    for gate in gates:
+        if not isinstance(gate, str) or not gate.strip():
+            malformed = True
+            continue
+        normalized.add(gate.strip())
+    if malformed:
+        raise PublicationGateError(
+            "publication policy required_gates contains blank or non-string gate ids; "
+            "next action: repair config/omg-lol*.yaml before publishing"
+        )
+
+    missing = sorted(set(baseline) - normalized)
+    if missing:
+        raise PublicationGateError(
+            "publication policy required_gates missing baseline gate ids: "
+            + ", ".join(missing)
+            + "; next action: restore the baseline publication gate list before publishing"
+        )
+    return set(baseline) | normalized
+
+
+def _publication_policy_boundary_error(
+    policy: Mapping[str, object],
+    *,
+    path: Path | None = None,
+) -> str | None:
+    location = f": {path}" if path is not None else ""
+    errors: list[str] = []
+    for field in PUBLICATION_POLICY_REQUIRED_FIELDS:
+        if field not in policy:
+            errors.append(
+                f"publication policy missing publication_frontmatter_policy.{field}{location}; "
+                "next action: restore required public-egress policy fields"
+            )
+    if policy.get("publication_allowed_without_bus") is not False:
+        errors.append(
+            f"publication policy publication_allowed_without_bus must be false{location}; "
+            "next action: route public egress through the publication bus"
+        )
+    if policy.get("direct_public_egress_allowed") is not False:
+        errors.append(
+            f"publication policy direct_public_egress_allowed must be false{location}; "
+            "next action: keep direct public egress disabled"
+        )
+    if policy.get("review_required") != "Claim Verification Council":
+        errors.append(
+            f"publication policy review_required must be Claim Verification Council{location}; "
+            "next action: require CVC review before public egress"
+        )
+    policy_text = str(policy.get("claim_ceiling") or "").lower()
+    missing_terms = [
+        term for term in PUBLICATION_POLICY_CLAIM_CEILING_TERMS if term not in policy_text
+    ]
+    if missing_terms:
+        errors.append(
+            "publication policy claim_ceiling missing required terms "
+            + ", ".join(missing_terms)
+            + f"{location}; next action: state source-ref, rights/privacy/redaction, "
+            "and target-surface ceilings"
+        )
+    target_surfaces = policy.get("target_surfaces")
+    if not isinstance(target_surfaces, list) or not target_surfaces:
+        errors.append(
+            f"publication policy target_surfaces must be a non-empty list{location}; "
+            "next action: configure target surface ids before publishing"
+        )
+    elif any(not isinstance(surface, str) or not surface.strip() for surface in target_surfaces):
+        errors.append(
+            f"publication policy target_surfaces must contain non-empty strings{location}; "
+            "next action: replace malformed target surface ids"
+        )
+    return "; ".join(errors) if errors else None
+
+
+def _publication_gate_receipts(frontmatter: dict) -> dict[str, object]:
+    raw = _frontmatter_value(frontmatter, *PUBLICATION_GATE_RECEIPT_KEYS)
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise PublicationGateError(
+            "publication_gate_receipts must be a mapping of gate id to receipt refs; "
+            "next action: provide durable public-gate receipt refs keyed by gate id"
+        )
+    return {str(key): value for key, value in raw.items()}
+
+
+def _receipt_value_present(
+    gate: str,
+    value: object,
+    *,
+    bindings: Mapping[str, object] | None = None,
+    expected_head_sha: str | None = None,
+) -> bool:
+    return public_gate_receipt_value_present(
+        value,
+        expected_gate=gate,
+        roots=PUBLIC_GATE_RECEIPT_ROOTS,
+        bindings=bindings,
+        expected_head_sha=expected_head_sha,
+    )
+
+
+def _assert_publication_gate_receipts(
+    frontmatter: dict,
+    surfaces: list[str],
+    *,
+    bindings: Mapping[str, object] | None = None,
+    expected_head_sha: str | None = None,
+) -> None:
+    required = _required_publication_gate_receipts(surfaces)
+    receipts = _publication_gate_receipts(frontmatter)
+    missing = sorted(
+        gate
+        for gate in required
+        if not _receipt_value_present(
+            gate,
+            receipts.get(gate),
+            bindings=bindings,
+            expected_head_sha=expected_head_sha,
+        )
+    )
+    if missing:
+        raise PublicationGateError(
+            "publication_gate_receipts missing, invalid, or not bound to "
+            "artifact_slug, artifact_fingerprint, and target_surfaces for required "
+            "receipt refs: "
+            + ", ".join(missing)
+            + "; next action: hold the draft until durable public-gate receipt refs are recorded"
+        )
 
 
 def _build_artifact(
@@ -179,9 +549,17 @@ def _build_artifact(
     approver: str,
     source_path: Path | None = None,
 ) -> PreprintArtifact:
+    if not _publication_allowed(frontmatter):
+        raise PublicationGateError(
+            "Publication-Allowed must be explicitly true; next action: hold the draft until "
+            "Claim Verification Council clearance is recorded"
+        )
+    _assert_target_surfaces_allowed(surfaces)
+
     title = _optional_string(_frontmatter_value(frontmatter, "title"))
     title = title or _extract_first_heading(body_md) or "Untitled"
     slug = _optional_string(_frontmatter_value(frontmatter, "slug")) or _slugify(title)
+    _assert_safe_artifact_slug(slug)
     abstract = _optional_string(_frontmatter_value(frontmatter, "abstract")) or _summarize(
         body_md, max_chars=500
     )
@@ -193,6 +571,10 @@ def _build_artifact(
     publication_gate_context = _optional_mapping(
         _frontmatter_value(frontmatter, "publication_gate_context")
     )
+    publication_gate_receipts = _publication_gate_receipts(frontmatter)
+    if publication_gate_receipts:
+        publication_gate_context = dict(publication_gate_context or {})
+        publication_gate_context["publication_gate_receipts"] = publication_gate_receipts
     publication_gate_override = _optional_mapping(
         _frontmatter_value(frontmatter, "publication_gate_override")
     )
@@ -220,7 +602,70 @@ def _build_artifact(
 
     artifact = PreprintArtifact(**kwargs)
     artifact.mark_approved(by_referent=approver)
+    _assert_publication_gate_receipts(
+        frontmatter,
+        surfaces,
+        bindings=_publication_gate_receipt_bindings(artifact),
+        expected_head_sha=_current_repo_head_sha(),
+    )
     return artifact
+
+
+def _publication_gate_receipt_bindings(artifact: PreprintArtifact) -> dict[str, object]:
+    return {
+        "artifact_slug": artifact.slug,
+        "artifact_fingerprint": _artifact_fingerprint_for_gate(artifact),
+        "target_surfaces": tuple(sorted(artifact.surfaces_targeted)),
+    }
+
+
+def _artifact_fingerprint_for_gate(artifact: PreprintArtifact) -> str:
+    """Mirror the orchestrator fingerprint used for receipt replay prevention."""
+
+    payload = artifact.model_dump(mode="json")
+    relevant = {
+        key: payload.get(key)
+        for key in (
+            "slug",
+            "title",
+            "abstract",
+            "body_md",
+            "body_html",
+            "doi",
+            "co_authors",
+            "surfaces_targeted",
+            "attribution_block",
+            "embed_image_url",
+        )
+    }
+    encoded = json.dumps(relevant, sort_keys=True, separators=(",", ":")).encode()
+    return sha256(encoded).hexdigest()
+
+
+def _current_repo_head_sha(repo_root: Path = REPO_ROOT) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+    except OSError:
+        return None
+    head_sha = result.stdout.strip()
+    if result.returncode != 0 or PUBLIC_GATE_REVIEW_HEAD_RE.fullmatch(head_sha) is None:
+        return None
+    return head_sha
+
+
+def _assert_safe_artifact_slug(slug: str) -> None:
+    if PUBLICATION_SAFE_SEGMENT_RE.fullmatch(slug):
+        return
+    raise PublicationGateError(
+        "slug must be a single lowercase URL/file-safe path segment; next action: "
+        "replace the draft slug before writing a publish-bus inbox artifact"
+    )
 
 
 def _extract_first_heading(body: str) -> str | None:
@@ -255,7 +700,7 @@ def _slugify(title: str) -> str:
 
 
 def _parse_surfaces(raw: str | None) -> list[str]:
-    if not raw:
+    if raw is None:
         return DEFAULT_SURFACES
     return [s.strip() for s in raw.split(",") if s.strip()]
 
@@ -324,19 +769,38 @@ def main(argv: list[str] | None = None) -> int:
         log.error("vault file not found: %s", args.path)
         return 2
 
-    frontmatter, body = _parse_publication_markdown(args.path)
+    try:
+        frontmatter, body = _parse_publication_markdown(args.path)
+    except PublicationGateError as exc:
+        log.error(
+            "publication not allowed for %s: %s; next action: fix YAML frontmatter "
+            "and clear Publication-Allowed through Claim Verification Council review",
+            args.path,
+            exc,
+        )
+        return 1
     if not body.strip():
         log.error("empty body in %s", args.path)
         return 2
-
     surfaces = _parse_surfaces(args.surfaces)
-    artifact = _build_artifact(
-        body_md=body,
-        frontmatter=frontmatter,
-        surfaces=surfaces,
-        approver=args.approver,
-        source_path=args.path.expanduser().resolve(),
-    )
+    try:
+        _assert_target_surfaces_allowed(surfaces)
+        artifact = _build_artifact(
+            body_md=body,
+            frontmatter=frontmatter,
+            surfaces=surfaces,
+            approver=args.approver,
+            source_path=args.path.expanduser().resolve(),
+        )
+    except PublicationGateError as exc:
+        log.error(
+            "publication not allowed for %s: %s; next action: rewrite and clear "
+            "Publication-Allowed plus target surfaces through Claim Verification "
+            "Council review",
+            args.path,
+            exc,
+        )
+        return 1
 
     payload = artifact.model_dump_json(indent=2)
 
@@ -348,6 +812,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    _assert_safe_artifact_slug(artifact.slug)
     inbox_path = artifact.inbox_path(state_root=args.state_root)
     inbox_path.parent.mkdir(parents=True, exist_ok=True)
     inbox_path.write_text(payload)

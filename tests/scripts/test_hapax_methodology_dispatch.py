@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import importlib.machinery
 import importlib.util
 import json
@@ -7,20 +8,29 @@ import sqlite3
 import subprocess
 import sys
 import textwrap
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from shared.coord_dispatch import DispatchPreparationBinding, lane_ownership_projection_hashes
 from shared.platform_capability_registry import PlatformCapabilityRegistry
-from shared.relay_mq import send_message
+from shared.quota_spend_ledger import QUOTA_SPEND_LEDGER_FIXTURES
+from shared.relay_mq import (
+    COORDINATOR_PREPARED_DISPATCH_REASON,
+    prepare_coordinator_dispatch,
+    send_message,
+)
 from shared.relay_mq_envelope import Envelope
+from shared.sdlc_task_store import ClaimDispatchBinding
+from tests.scripts.launcher_activation_fixture import install_launcher_activation
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
 RECEIPT_SCRIPT = REPO_ROOT / "scripts" / "hapax-platform-capability-receipts"
 REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
+CLAUDE_DISPATCH_ADMISSION_WITNESS = "claude-subscription-headroom-observed-20260709t0710z"
 
 
 def _dispatcher_module() -> ModuleType:
@@ -34,9 +44,14 @@ def _dispatcher_module() -> ModuleType:
     return module
 
 
-def _fresh_registry(tmp_path: Path) -> Path:
+def _fresh_registry(tmp_path: Path, *, codex_exec_auth_host: str = "appendix") -> Path:
     payload = json.loads(REGISTRY.read_text(encoding="utf-8"))
     checked_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    codex_host = (
+        "hapax-appendix"
+        if codex_exec_auth_host in {"appendix", "hapax-appendix"}
+        else codex_exec_auth_host
+    )
     for route in payload["routes"]:
         quota_refs = [f"test:{route['route_id']}:quota"]
         if route.get("capacity_pool") == "subscription_quota":
@@ -65,6 +80,10 @@ def _fresh_registry(tmp_path: Path) -> Path:
                 "blocked_reasons": [],
             },
         }
+        if route.get("platform") == "codex" and route.get("auth_surface") == "oauth":
+            route["freshness"]["evidence"]["capability"]["evidence_refs"].append(
+                f"host:{codex_host}:codex:exec:auth:saved-login:observed"
+            )
         for score in route["capability_scores"].values():
             score["observed_at"] = checked_at
         for tool in route["tool_state"]:
@@ -124,6 +143,71 @@ def _availability_degraded_registry(tmp_path: Path, route_id: str) -> Path:
     return degraded_path
 
 
+def _iso(dt: datetime) -> str:
+    return dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _claude_subscription_quota_ledger(
+    tmp_path: Path,
+    *,
+    state: str,
+    evidence_refs: list[str] | None = None,
+    fresh_until: datetime | None = None,
+) -> Path:
+    now = datetime.now(UTC).replace(microsecond=0)
+    payload = json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))
+    payload["captured_at"] = _iso(now)
+    payload["paid_api_budget_freshness_ttl_s"] = 3600
+    generated_from = list(payload.get("generated_from", []))
+    if "scripts/hapax-quota-telemetry-writer" not in generated_from:
+        generated_from.append("scripts/hapax-quota-telemetry-writer")
+    payload["generated_from"] = generated_from
+    payload["quota_snapshots"] = [
+        snapshot
+        for snapshot in payload.get("quota_snapshots", [])
+        if snapshot.get("route_id") != "claude.headless.full"
+    ]
+    snapshot: dict[str, object] = {
+        "quota_snapshot_schema": 1,
+        "snapshot_id": f"quota-claude-headless-full-{state}-dispatch-test",
+        "captured_at": _iso(now),
+        "route_id": "claude.headless.full",
+        "provider": "anthropic-claude-subscription",
+        "capacity_pool": "subscription_quota",
+        "subscription_quota_state": state,
+        "evidence_refs": evidence_refs
+        if evidence_refs is not None
+        else ["relay-receipt:claude:quota-admission:absent"],
+        "operator_visible_reason": f"dispatch test claude account-live quota {state}",
+    }
+    if fresh_until is not None:
+        snapshot["fresh_until"] = _iso(fresh_until)
+    payload["quota_snapshots"].append(snapshot)
+    path = tmp_path / "fixtures" / f"quota-spend-ledger-claude-{state}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _fresh_claude_subscription_quota_ledger(tmp_path: Path) -> Path:
+    now = datetime.now(UTC).replace(microsecond=0)
+    fresh_until = now + timedelta(minutes=15)
+    evidence_ref = (
+        "relay-receipt:claude-subscription-quota-admission-dispatch-test.yaml:"
+        f"witness:{CLAUDE_DISPATCH_ADMISSION_WITNESS}:"
+        "observation:subscription_quota_headroom_observed:"
+        f"observed_at:{_iso(now)}:"
+        f"fresh_until:{_iso(fresh_until)}:"
+        "account-live-quota:observed"
+    )
+    return _claude_subscription_quota_ledger(
+        tmp_path,
+        state="fresh",
+        evidence_refs=[evidence_ref],
+        fresh_until=fresh_until,
+    )
+
+
 def _registry_from_path(path: Path) -> PlatformCapabilityRegistry:
     return PlatformCapabilityRegistry.model_validate(json.loads(path.read_text(encoding="utf-8")))
 
@@ -153,6 +237,46 @@ def _fake_binary(bin_dir: Path, name: str, output: str) -> None:
     target = bin_dir / name
     target.write_text(f"#!/bin/sh\nprintf '%s\\n' '{output}'\n", encoding="utf-8")
     target.chmod(0o755)
+
+
+def _codex_only_build_frontmatter(spec: Path) -> str:
+    return f"""
+    kind: build
+    authority_case: CASE-TEST-001
+    parent_spec: {spec}
+    route_metadata_schema: 1
+    quality_floor: frontier_required
+    authority_level: authoritative
+    mutation_surface: source
+    mutation_scope_refs: []
+    risk_flags:
+      governance_sensitive: false
+      privacy_or_secret_sensitive: false
+      public_claim_sensitive: false
+      aesthetic_theory_sensitive: false
+      audio_or_live_egress_sensitive: false
+      provider_billing_sensitive: false
+    context_shape:
+      codebase_locality: module
+      vault_context_required: true
+      external_docs_required: false
+      currentness_required: false
+    verification_surface:
+      deterministic_tests: []
+      static_checks: []
+      runtime_observation: []
+      operator_only: false
+    route_constraints:
+      preferred_platforms: [codex]
+      allowed_platforms: [codex]
+      prohibited_platforms: []
+      required_mode: headless
+      required_profile: full
+    review_requirement:
+      support_artifact_allowed: false
+      independent_review_required: false
+      authoritative_acceptor_profile: null
+    """
 
 
 def _default_route_metadata(frontmatter: str) -> str:
@@ -240,6 +364,11 @@ def _governed_source_frontmatter(
     *,
     extra: str = "",
     mutation_scope_refs: str = "[]",
+    preferred_platforms: str = "[]",
+    allowed_platforms: str = "[]",
+    prohibited_platforms: str = "[]",
+    required_mode: str = "null",
+    required_profile: str = "null",
 ) -> str:
     return f"""
     kind: build
@@ -269,11 +398,11 @@ def _governed_source_frontmatter(
       runtime_observation: []
       operator_only: false
     route_constraints:
-      preferred_platforms: []
-      allowed_platforms: []
-      prohibited_platforms: []
-      required_mode: null
-      required_profile: null
+      preferred_platforms: {preferred_platforms}
+      allowed_platforms: {allowed_platforms}
+      prohibited_platforms: {prohibited_platforms}
+      required_mode: {required_mode}
+      required_profile: {required_profile}
     review_requirement:
       support_artifact_allowed: false
       independent_review_required: false
@@ -372,7 +501,19 @@ def _worktree(path: Path, *, guarded: bool = True, close_guarded: bool = True) -
         if close_guarded
         else "legacy cc-close"
     )
-    _write(path / "scripts" / "cc-claim", f"#!/usr/bin/env bash\n# {guard}\n")
+    claim_lines = ["#!/usr/bin/env bash", f"# {guard}"]
+    if guarded:
+        claim_lines.extend(
+            [
+                'if [[ "${1:-}" == "--dispatch-protocol-version" ]]; then',
+                "  echo hapax-claim-dispatch-v1",
+                "  exit 0",
+                "fi",
+            ]
+        )
+    claim_lines.extend(["exit 0", ""])
+    claim = _write(path / "scripts" / "cc-claim", "\n".join(claim_lines))
+    claim.chmod(0o755)
     _write(path / "scripts" / "cc-close", f"#!/usr/bin/env bash\n# {close_guard}\n")
     return path
 
@@ -393,6 +534,40 @@ def _frontmatter_scalar(path: Path, key: str) -> str:
     return ""
 
 
+def _write_resume_projection(
+    cache: Path,
+    *,
+    lane: str,
+    task_id: str,
+    platform: str = "codex",
+    session_id: str = "11111111-2222-4333-8444-555555555555",
+) -> str:
+    cache.mkdir(parents=True, exist_ok=True)
+    binding = ClaimDispatchBinding.create(
+        task_id=task_id,
+        lane=lane,
+        session_id=session_id,
+        claim_epoch=1234,
+        dispatch_message_id="message-1",
+        platform=platform,
+        mode="headless",
+        profile="full",
+        authority_case="CASE-TEST-001",
+        binding_hash="a" * 64,
+    )
+    for key in (lane, f"{lane}-{session_id}"):
+        (cache / f"cc-active-task-{key}").write_text(f"{task_id}\n", encoding="utf-8")
+        (cache / f"cc-claim-epoch-{key}").write_text(
+            f"1234 {task_id}\n",
+            encoding="utf-8",
+        )
+        (cache / f"cc-claim-dispatch-{key}.json").write_text(
+            json.dumps(binding.to_record()),
+            encoding="ascii",
+        )
+    return session_id
+
+
 def _maybe_write_durable_mq_binding(
     tmp_path: Path, args: tuple[str, ...]
 ) -> tuple[Path, str | None]:
@@ -407,21 +582,67 @@ def _maybe_write_durable_mq_binding(
     authority_case = _frontmatter_scalar(task_path, "authority_case")
     if not authority_case or authority_case in {"null", "None", "~"}:
         return db_path, None
+    parent_spec = _frontmatter_scalar(task_path, "parent_spec")
+    parent_spec_path = Path(parent_spec).expanduser()
+    if not parent_spec_path.is_absolute():
+        parent_spec_path = tmp_path / "home" / "Documents" / "Personal" / parent_spec_path
+    if not parent_spec_path.is_file():
+        return db_path, None
+    cache_dir = tmp_path / "home" / ".cache" / "hapax"
+    claim_hash, relay_hash = lane_ownership_projection_hashes(
+        cache_dir=cache_dir,
+        relay_dir=cache_dir / "relay",
+        role=lane,
+        session="",
+    )
+    pid = os.getpid()
+    stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    generation = f"pid:{pid}:{stat_text.rsplit(')', 1)[1].split()[19]}"
+    binding = DispatchPreparationBinding(
+        task_id=task_id,
+        task_path=str(task_path.resolve()),
+        task_sha256=hashlib.sha256(task_path.read_bytes()).hexdigest(),
+        lane=lane,
+        lane_session="",
+        lane_generation=generation,
+        lane_pid=pid,
+        lane_pid_generation=generation,
+        claim_projection_sha256=claim_hash,
+        relay_projection_sha256=relay_hash,
+        platform=_arg_value(args, "--platform") or "claude",
+        mode=_arg_value(args, "--mode") or "headless",
+        authority_case=authority_case,
+        authority_item=_frontmatter_scalar(task_path, "authority_item") or task_id,
+        parent_spec=parent_spec,
+        parent_spec_sha256=hashlib.sha256(parent_spec_path.read_bytes()).hexdigest(),
+    )
+    payload = json.dumps(
+        {
+            "dispatch_binding": binding.to_record(),
+            "kind": "coordinator_dispatch",
+            "task_id": task_id,
+            "lane": lane,
+            "platform": binding.platform,
+            "mode": binding.mode,
+            "parent_spec": parent_spec,
+        },
+        sort_keys=True,
+    )
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    message_id = send_message(
+    preparation = prepare_coordinator_dispatch(
         db_path,
         Envelope(
-            sender="test-dispatcher",
+            sender="hapax-coordinator",
             message_type="dispatch",
             priority=0,
             subject=task_id,
             authority_case=authority_case,
-            authority_item=task_id,
+            authority_item=binding.authority_item,
             recipients_spec=lane,
-            payload="durable dispatch binding",
+            payload=payload,
         ),
     )
-    return db_path, message_id
+    return db_path, preparation.message_id
 
 
 def _recipient_row(db_path: Path, message_id: str, recipient: str) -> sqlite3.Row:
@@ -441,7 +662,7 @@ def _recipient_row(db_path: Path, message_id: str, recipient: str) -> sqlite3.Ro
     return row
 
 
-def test_claim_sweep_reaps_blocked_unassigned_session_claim(tmp_path: Path) -> None:
+def test_claim_sweep_projects_blocked_unassigned_without_detaching(tmp_path: Path) -> None:
     module = _dispatcher_module()
     claims = tmp_path / "claims"
     active = tmp_path / "tasks" / "active"
@@ -462,12 +683,104 @@ def test_claim_sweep_reaps_blocked_unassigned_session_claim(tmp_path: Path) -> N
     old = 1000.0
     os.utime(claim, (old, old))
 
-    reaped = module.sweep_stale_claims(claims, active, now=old + 301, grace_secs=300)
+    candidates = module.sweep_stale_claims(claims, active, now=old + 301, grace_secs=300)
 
-    assert reaped == [(claim.name, task_id, "blocked-unassigned")]
-    assert not claim.exists()
-    assert not epoch.exists()
-    assert not binding.exists()
+    assert candidates == [(claim.name, task_id, "blocked-unassigned")]
+    assert claim.read_text(encoding="utf-8") == f"{task_id}\n"
+    assert epoch.read_text(encoding="utf-8") == f"1000 {task_id}\n"
+    assert binding.read_text(encoding="utf-8") == "{}\n"
+
+
+def test_claim_sweep_holds_when_canonical_task_store_is_unavailable(tmp_path: Path) -> None:
+    module = _dispatcher_module()
+    claims = tmp_path / "claims"
+    claims.mkdir()
+    task_id = "task-on-unavailable-store"
+    claim = claims / "cc-active-task-cx-red"
+    claim.write_text(f"{task_id}\n", encoding="utf-8")
+    old = 1000.0
+    os.utime(claim, (old, old))
+
+    candidates = module.sweep_stale_claims(
+        claims,
+        tmp_path / "missing" / "active",
+        now=old + 301,
+        grace_secs=300,
+    )
+
+    assert candidates == []
+    assert claim.read_text(encoding="utf-8") == f"{task_id}\n"
+
+
+def test_dispatch_lane_blocker_rejects_unreadable_pid_generation(tmp_path: Path) -> None:
+    module = _dispatcher_module()
+    parent_spec = _spec(tmp_path / "spec.md")
+    binding = DispatchPreparationBinding(
+        task_id="task-1",
+        task_path=str(tmp_path / "task-1.md"),
+        task_sha256="1" * 64,
+        lane="cx-red",
+        lane_session="",
+        lane_generation="pid:99999999:1",
+        lane_pid=99_999_999,
+        lane_pid_generation="pid:99999999:1",
+        claim_projection_sha256="2" * 64,
+        relay_projection_sha256="3" * 64,
+        platform="codex",
+        mode="headless",
+        authority_case="CASE-TEST-001",
+        authority_item="task-1",
+        parent_spec=str(parent_spec),
+        parent_spec_sha256=hashlib.sha256(parent_spec.read_bytes()).hexdigest(),
+    )
+
+    assert module.dispatch_preparation_lane_blocker(binding) == ("dispatch_lane_generation_changed")
+
+
+def test_dispatch_lane_blocker_rejects_changed_parent_spec(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _dispatcher_module()
+    home = tmp_path / "home"
+    cache_dir = home / ".cache" / "hapax"
+    relay_dir = cache_dir / "relay"
+    cache_dir.mkdir(parents=True)
+    relay_dir.mkdir()
+    parent_spec = _spec(tmp_path / "spec.md")
+    claim_hash, relay_hash = lane_ownership_projection_hashes(
+        cache_dir=cache_dir,
+        relay_dir=relay_dir,
+        role="cx-red",
+        session="",
+    )
+    pid = os.getpid()
+    stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    generation = f"pid:{pid}:{stat_text.rsplit(')', 1)[1].split()[19]}"
+    binding = DispatchPreparationBinding(
+        task_id="task-1",
+        task_path=str(tmp_path / "task-1.md"),
+        task_sha256="1" * 64,
+        lane="cx-red",
+        lane_session="",
+        lane_generation=generation,
+        lane_pid=pid,
+        lane_pid_generation=generation,
+        claim_projection_sha256=claim_hash,
+        relay_projection_sha256=relay_hash,
+        platform="codex",
+        mode="headless",
+        authority_case="CASE-TEST-001",
+        authority_item="task-1",
+        parent_spec=str(parent_spec),
+        parent_spec_sha256=hashlib.sha256(parent_spec.read_bytes()).hexdigest(),
+    )
+    monkeypatch.setenv("HOME", str(home))
+    parent_spec.write_text(parent_spec.read_text(encoding="utf-8") + "changed\n", encoding="utf-8")
+
+    assert module.dispatch_preparation_lane_blocker(binding) == (
+        "dispatch_parent_spec_preimage_changed"
+    )
 
 
 def test_claim_sweep_ignores_body_status_lines(tmp_path: Path) -> None:
@@ -693,7 +1006,8 @@ def _run(
     env["HAPAX_CC_TASK_ROOT"] = str(tmp_path / "tasks")
     env["HAPAX_DISPATCH_WORKTREE"] = str(tmp_path / "worktree")
     env["HAPAX_ORCHESTRATION_LEDGER_DIR"] = str(tmp_path / "ledger")
-    env["HAPAX_PLATFORM_CAPABILITY_REGISTRY"] = str(_fresh_registry(tmp_path))
+    env["HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR"] = str(tmp_path / "platform-receipts")
+    env["HAPAX_QUOTA_SPEND_LEDGER"] = str(_fresh_claude_subscription_quota_ledger(tmp_path))
     env["HAPAX_COORD_LEDGER_DB"] = str(tmp_path / "coord" / "ledger.db")
     env["HAPAX_COORD_JSONL_MIRROR"] = str(tmp_path / "coord" / "ledger.jsonl")
     env["HAPAX_COORD_SPOOL_DIR"] = str(tmp_path / "coord" / "spool")
@@ -707,6 +1021,16 @@ def _run(
         env["HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID"] = "missing-message-id"
     if extra_env:
         env.update(extra_env)
+    codex_exec_auth_host = (
+        env.get("HAPAX_CODEX_EXEC_AUTH_HOST")
+        or env.get("HAPAX_DISPATCH_HOST")
+        or env.get("HAPAX_DEFAULT_DISPATCH_HOST")
+        or "appendix"
+    )
+    env.setdefault(
+        "HAPAX_PLATFORM_CAPABILITY_REGISTRY",
+        str(_fresh_registry(tmp_path, codex_exec_auth_host=codex_exec_auth_host)),
+    )
     return subprocess.run(
         [str(SCRIPT), *args],
         env=env,
@@ -997,6 +1321,90 @@ def test_allows_claimed_task_assigned_to_target_lane(tmp_path: Path) -> None:
     assert "eligible: claimed-build -> claude/headless/full/beta" in result.stdout
 
 
+@pytest.mark.parametrize(
+    ("assigned_to", "platform", "lane"),
+    [
+        ("claude/beta", "claude", "beta"),
+        ("codex/cx-green", "codex", "cx-green"),
+    ],
+)
+def test_allows_claimed_task_assigned_to_exact_platform_qualified_lane(
+    tmp_path: Path,
+    assigned_to: str,
+    platform: str,
+    lane: str,
+) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "claimed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+        status="claimed",
+        assigned_to=assigned_to,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "claimed-build",
+        "--lane",
+        lane,
+        "--platform",
+        platform,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"eligible: claimed-build -> {platform}/headless/full/{lane}" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("assigned_to", "platform", "lane"),
+    [
+        ("codex/beta", "claude", "beta"),
+        ("claude/cx-green", "codex", "cx-green"),
+        ("claude/delta", "claude", "beta"),
+    ],
+)
+def test_blocks_claimed_task_assigned_to_other_platform_or_role(
+    tmp_path: Path,
+    assigned_to: str,
+    platform: str,
+    lane: str,
+) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "claimed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+        status="claimed",
+        assigned_to=assigned_to,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "claimed-build",
+        "--lane",
+        lane,
+        "--platform",
+        platform,
+    )
+
+    assert result.returncode == 10
+    assert f"task already assigned to '{assigned_to}'" in result.stderr
+    assert "claimed/in_progress tasks may only be dispatched" in result.stderr
+
+
 def test_blocks_claimed_task_assigned_to_unassigned(tmp_path: Path) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
@@ -1056,15 +1464,7 @@ def test_codex_receipt_only_prints_governed_prompt_without_launch_route(
 ) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
-    _task(
-        tmp_path / "tasks",
-        "governed-build",
-        f"""
-        kind: build
-        authority_case: CASE-TEST-001
-        parent_spec: {spec}
-        """,
-    )
+    _task(tmp_path / "tasks", "governed-build", _codex_only_build_frontmatter(spec))
 
     result = _run(
         tmp_path,
@@ -1309,15 +1709,8 @@ def test_dispatch_main_uses_adapter_admit_for_route_decision(
     module = _dispatcher_module()
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
-    _task(
-        tmp_path / "tasks",
-        "governed-build",
-        f"""
-        kind: build
-        authority_case: CASE-TEST-001
-        parent_spec: {spec}
-        """,
-    )
+    _task(tmp_path / "tasks", "governed-build", _codex_only_build_frontmatter(spec))
+    (tmp_path / "home" / ".cache" / "hapax" / "stage0-durable-sink").mkdir(parents=True)
     seen_platforms: list[str] = []
     seen_requests: list[object] = []
     seen_candidate_requests: list[object] = []
@@ -1354,6 +1747,18 @@ def test_dispatch_main_uses_adapter_admit_for_route_decision(
     monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
     monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
     monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_fresh_registry(tmp_path)))
+    monkeypatch.setenv(
+        "HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR",
+        str(tmp_path / "platform-receipts"),
+    )
+    monkeypatch.setenv(
+        "HAPAX_QUOTA_SPEND_LEDGER",
+        str(_fresh_claude_subscription_quota_ledger(tmp_path)),
+    )
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", str(tmp_path / "platform-receipts"))
+    monkeypatch.setenv(
+        "HAPAX_QUOTA_SPEND_LEDGER", str(_fresh_claude_subscription_quota_ledger(tmp_path))
+    )
     monkeypatch.setenv("HAPAX_DISPATCH_CLAIM_SWEEP", "0")
     monkeypatch.setattr(module, "_capability_adapter_for_admission", adapter_for_admission)
 
@@ -1609,12 +2014,15 @@ def test_launch_authority_violation_writes_blocked_receipt(
     _task(
         tmp_path / "tasks",
         "governed-build",
-        f"""
-        kind: build
-        authority_case: CASE-TEST-001
-        parent_spec: {spec}
-        """,
+        _governed_source_frontmatter(
+            spec,
+            allowed_platforms="[codex]",
+            required_mode="headless",
+            required_profile="full",
+        ),
+        route_metadata_defaults=False,
     )
+    (tmp_path / "home" / ".cache" / "hapax" / "stage0-durable-sink").mkdir(parents=True)
     args = (
         "--task",
         "governed-build",
@@ -1634,6 +2042,10 @@ def test_launch_authority_violation_writes_blocked_receipt(
     monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
     monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
     monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_fresh_registry(tmp_path)))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", str(tmp_path / "platform-receipts"))
+    monkeypatch.setenv(
+        "HAPAX_QUOTA_SPEND_LEDGER", str(_fresh_claude_subscription_quota_ledger(tmp_path))
+    )
     monkeypatch.setenv("HAPAX_COORD_LEDGER_DB", str(tmp_path / "coord" / "ledger.db"))
     monkeypatch.setenv("HAPAX_COORD_JSONL_MIRROR", str(tmp_path / "coord" / "ledger.jsonl"))
     monkeypatch.setenv("HAPAX_COORD_SPOOL_DIR", str(tmp_path / "coord" / "spool"))
@@ -1672,15 +2084,8 @@ def test_dispatch_main_launches_through_worker_adapter(
     module = _dispatcher_module()
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
-    _task(
-        tmp_path / "tasks",
-        "governed-build",
-        f"""
-        kind: build
-        authority_case: CASE-TEST-001
-        parent_spec: {spec}
-        """,
-    )
+    _task(tmp_path / "tasks", "governed-build", _codex_only_build_frontmatter(spec))
+    (tmp_path / "home" / ".cache" / "hapax" / "stage0-durable-sink").mkdir(parents=True)
     args = (
         "--task",
         "governed-build",
@@ -1705,6 +2110,8 @@ printf '%s\\n' "$@" > {launcher_args}
     )
     fake_launcher.chmod(0o755)
     launch_calls: list[tuple[str, str]] = []
+    admission_order: list[str] = []
+    original_policy_load = module.load_dispatch_policy_sources
 
     class SpyCodexAdapter(module.CodexAdapter):
         def launch(self, *, decision, request, launch_callable):
@@ -1721,6 +2128,10 @@ printf '%s\\n' "$@" > {launcher_args}
     monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
     monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
     monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_fresh_registry(tmp_path)))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", str(tmp_path / "platform-receipts"))
+    monkeypatch.setenv(
+        "HAPAX_QUOTA_SPEND_LEDGER", str(_fresh_claude_subscription_quota_ledger(tmp_path))
+    )
     monkeypatch.setenv("HAPAX_COORD_LEDGER_DB", str(tmp_path / "coord" / "ledger.db"))
     monkeypatch.setenv("HAPAX_COORD_JSONL_MIRROR", str(tmp_path / "coord" / "ledger.jsonl"))
     monkeypatch.setenv("HAPAX_COORD_SPOOL_DIR", str(tmp_path / "coord" / "spool"))
@@ -1728,11 +2139,22 @@ printf '%s\\n' "$@" > {launcher_args}
     monkeypatch.setenv("HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID", message_id)
     monkeypatch.setenv("HAPAX_DISPATCH_CLAIM_SWEEP", "0")
     monkeypatch.setenv("HAPAX_METHODOLOGY_CODEX_HEADLESS", str(fake_launcher))
-    monkeypatch.setattr(module, "_await_sdlc_admission", lambda args: None)
+    monkeypatch.setattr(
+        module,
+        "_await_sdlc_admission",
+        lambda args: admission_order.append("pressure_wait_complete"),
+    )
+
+    def record_policy_load(**kwargs):
+        admission_order.append("route_authority_loaded")
+        return original_policy_load(**kwargs)
+
+    monkeypatch.setattr(module, "load_dispatch_policy_sources", record_policy_load)
 
     rc = module.main(list(args))
 
     assert rc == 0
+    assert admission_order[:2] == ["pressure_wait_complete", "route_authority_loaded"]
     assert launch_calls == [("launch", "codex")]
     assert launcher_args.exists()
     receipt = json.loads(
@@ -1797,6 +2219,14 @@ def test_dispatch_rejects_task_byte_drift_during_admission_wait(
     monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
     monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
     monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_fresh_registry(tmp_path)))
+    monkeypatch.setenv(
+        "HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR",
+        str(tmp_path / "platform-receipts"),
+    )
+    monkeypatch.setenv(
+        "HAPAX_QUOTA_SPEND_LEDGER",
+        str(_fresh_claude_subscription_quota_ledger(tmp_path)),
+    )
     monkeypatch.setenv("HAPAX_COORD_LEDGER_DB", str(tmp_path / "coord" / "ledger.db"))
     monkeypatch.setenv("HAPAX_COORD_JSONL_MIRROR", str(tmp_path / "coord" / "ledger.jsonl"))
     monkeypatch.setenv("HAPAX_COORD_SPOOL_DIR", str(tmp_path / "coord" / "spool"))
@@ -2161,6 +2591,56 @@ printf '%s\\n' "$@" > {launcher_args}
     assert receipt["advisory_only"] is True
 
 
+def test_launch_rejects_non_coordinator_dispatch_message(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    mq_db = tmp_path / "relay" / "messages.db"
+    mq_db.parent.mkdir(parents=True, exist_ok=True)
+    message_id = send_message(
+        mq_db,
+        Envelope(
+            sender="test-dispatcher",
+            message_type="dispatch",
+            priority=0,
+            subject="governed-build",
+            authority_case="CASE-TEST-001",
+            authority_item="governed-build",
+            recipients_spec="cx-green",
+            payload="non-coordinator dispatch",
+        ),
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        durable_mq=False,
+        extra_env={
+            "HAPAX_RELAY_MQ_DB": str(mq_db),
+            "HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID": message_id,
+        },
+    )
+
+    assert result.returncode == 10
+    assert "coordinator_dispatch_preparation_required" in result.stderr
+
+
 def test_launch_rejects_shared_authority_item_bound_to_different_task(
     tmp_path: Path,
 ) -> None:
@@ -2320,7 +2800,7 @@ printf '%s\\n' "$@" > {launcher_args}
     assert "durable MQ authority binding required" in result.stderr
     with sqlite3.connect(tmp_path / "relay" / "messages.db") as conn:
         states = conn.execute("SELECT state FROM recipients").fetchall()
-    assert states == [("offered",)]
+    assert states == [("deferred",)]
 
 
 def test_launches_codex_headless_through_codex_launcher(tmp_path: Path) -> None:
@@ -2590,8 +3070,8 @@ printf '%s\\n' "$@" > {launcher_args}
     with sqlite3.connect(tmp_path / "relay" / "messages.db") as conn:
         message_id = conn.execute("SELECT message_id FROM messages").fetchone()[0]
     row = _recipient_row(tmp_path / "relay" / "messages.db", message_id, "eta")
-    assert row["state"] == "offered"
-    assert row["reason"] is None
+    assert row["state"] == "deferred"
+    assert row["reason"] == COORDINATOR_PREPARED_DISPATCH_REASON
 
     receipt = json.loads(
         (tmp_path / "ledger" / "methodology-dispatch.jsonl")
@@ -2749,8 +3229,8 @@ printf '%s\\n' "$@" > {launcher_args}
     with sqlite3.connect(tmp_path / "relay" / "messages.db") as conn:
         message_id = conn.execute("SELECT message_id FROM messages").fetchone()[0]
     row = _recipient_row(tmp_path / "relay" / "messages.db", message_id, "cx-green")
-    assert row["state"] == "offered"
-    assert row["reason"] is None
+    assert row["state"] == "deferred"
+    assert row["reason"] == COORDINATOR_PREPARED_DISPATCH_REASON
     receipt = json.loads(
         (tmp_path / "ledger" / "methodology-dispatch.jsonl")
         .read_text(encoding="utf-8")
@@ -2840,8 +3320,8 @@ printf '%s\\n' "$@" > {launcher_args}
     with sqlite3.connect(tmp_path / "relay" / "messages.db") as conn:
         message_id = conn.execute("SELECT message_id FROM messages").fetchone()[0]
     row = _recipient_row(tmp_path / "relay" / "messages.db", message_id, "cx-green")
-    assert row["state"] == "offered"
-    assert row["reason"] is None
+    assert row["state"] == "deferred"
+    assert row["reason"] == COORDINATOR_PREPARED_DISPATCH_REASON
     receipt = json.loads(
         (tmp_path / "ledger" / "methodology-dispatch.jsonl")
         .read_text(encoding="utf-8")
@@ -3080,6 +3560,11 @@ printf '%s\\n' "$@" > {launcher_args}
     assert module.allow_codex_p0_local_dispatch_fallback(
         "p0-incident-sdlc-task-stalled-test", "cx-p0", validation
     )
+    monkeypatch.setattr(
+        module,
+        "resolve_claim_resume_session",
+        lambda **_kwargs: "11111111-2222-4333-8444-555555555555",
+    )
 
     result = module.launch_codex_headless(
         "p0-incident-sdlc-task-stalled-test",
@@ -3101,6 +3586,143 @@ printf '%s\\n' "$@" > {launcher_args}
     )
 
 
+def test_launch_codex_headless_scrubs_ambient_session_before_explicit_dispatch_env(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _dispatcher_module()
+    env_log = tmp_path / "launcher-env.txt"
+    args_log = tmp_path / "launcher-args.txt"
+    launcher = tmp_path / "hapax-codex-headless"
+    launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s|%s\n' "${{HAPAX_SESSION_ID:-<unset>}}" "${{HAPAX_CLAIM_RESUME_SESSION_ID:-<unset>}}" >> {env_log}
+printf '%s\n' "$*" >> {args_log}
+""",
+        encoding="utf-8",
+    )
+    launcher.chmod(0o755)
+    monkeypatch.setenv("HAPAX_METHODOLOGY_CODEX_HEADLESS", str(launcher))
+    monkeypatch.setenv("HAPAX_SESSION_ID", "ambient-parent-session")
+    route = module.PLATFORM_PATHS[("codex", "headless", "full")]
+
+    offered = module.Validation(
+        True,
+        "ok",
+        module.TaskNote(tmp_path / "offered.md", {"status": "offered"}),
+    )
+    claimed = module.Validation(
+        True,
+        "ok",
+        module.TaskNote(tmp_path / "claimed.md", {"status": "claimed"}),
+    )
+
+    assert module.launch_codex_headless("task-new", "cx-amber", "prompt", offered, route) == 0
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            module,
+            "resolve_claim_resume_session",
+            lambda **_kwargs: "explicit-resume-session",
+        )
+        assert (
+            module.launch_codex_headless(
+                "task-resume",
+                "cx-amber",
+                "prompt",
+                claimed,
+                route,
+            )
+            == 0
+        )
+
+    assert env_log.read_text(encoding="utf-8").splitlines() == [
+        "<unset>|<unset>",
+        "<unset>|explicit-resume-session",
+    ]
+    assert "--no-claim" not in args_log.read_text(encoding="utf-8").splitlines()[0]
+    assert "--no-claim" in args_log.read_text(encoding="utf-8").splitlines()[1]
+
+
+def test_resolve_claim_resume_session_requires_one_complete_exact_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _dispatcher_module()
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    lane = "cx-amber"
+    task_id = "task-resume"
+    session_id = "11111111-2222-4333-8444-555555555555"
+    epoch = f"1234 {task_id}\n"
+    binding = ClaimDispatchBinding.create(
+        task_id=task_id,
+        lane=lane,
+        session_id=session_id,
+        claim_epoch=1234,
+        dispatch_message_id="message-1",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        authority_case="CASE-TEST-001",
+        binding_hash="a" * 64,
+    )
+    for key in (lane, f"{lane}-{session_id}"):
+        (cache / f"cc-active-task-{key}").write_text(f"{task_id}\n", encoding="utf-8")
+        (cache / f"cc-claim-epoch-{key}").write_text(epoch, encoding="utf-8")
+        (cache / f"cc-claim-dispatch-{key}.json").write_text(
+            json.dumps(binding.to_record()),
+            encoding="ascii",
+        )
+    monkeypatch.setenv("HAPAX_CACHE_DIR", str(cache))
+
+    assert (
+        module.resolve_claim_resume_session(
+            task_id=task_id,
+            lane=lane,
+            platform="codex",
+        )
+        == session_id
+    )
+
+
+def test_resolve_claim_resume_session_rejects_wrong_platform(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _dispatcher_module()
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    lane = "cx-amber"
+    task_id = "task-resume"
+    session_id = "11111111-2222-4333-8444-555555555555"
+    binding = ClaimDispatchBinding.create(
+        task_id=task_id,
+        lane=lane,
+        session_id=session_id,
+        claim_epoch=1234,
+        dispatch_message_id="message-1",
+        platform="claude",
+        mode="headless",
+        profile="full",
+        authority_case="CASE-TEST-001",
+        binding_hash="a" * 64,
+    )
+    for key in (lane, f"{lane}-{session_id}"):
+        (cache / f"cc-active-task-{key}").write_text(f"{task_id}\n", encoding="utf-8")
+        (cache / f"cc-claim-epoch-{key}").write_text(f"1234 {task_id}\n", encoding="utf-8")
+        (cache / f"cc-claim-dispatch-{key}.json").write_text(
+            json.dumps(binding.to_record()),
+            encoding="ascii",
+        )
+    monkeypatch.setenv("HAPAX_CACHE_DIR", str(cache))
+
+    with pytest.raises(module.TaskStoreError, match="resume_exact_session_missing"):
+        module.resolve_claim_resume_session(
+            task_id=task_id,
+            lane=lane,
+            platform="codex",
+        )
+
+
 def test_governed_relay_reactivation_passes_force_to_headless_launcher(tmp_path: Path) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
@@ -3119,7 +3741,13 @@ def test_governed_relay_reactivation_passes_force_to_headless_launcher(tmp_path:
     home = tmp_path / "home"
     relay = home / ".cache" / "hapax" / "relay"
     relay.mkdir(parents=True)
+    (home / ".cache" / "hapax" / "stage0-durable-sink").mkdir(parents=True)
     (relay / "cx-fugu.yaml").write_text("status: wind_down_idle\n", encoding="utf-8")
+    _write_resume_projection(
+        home / ".cache" / "hapax",
+        lane="cx-fugu",
+        task_id=task_id,
+    )
     launcher_env = tmp_path / "launcher-env.txt"
     launcher_args = tmp_path / "launcher-args.txt"
     fake_launcher = tmp_path / "bin" / "hapax-codex-headless"
@@ -3185,6 +3813,10 @@ def test_codex_p0_incident_drain_lane_force_preserves_live_pid_guard(tmp_path: P
     _write(
         bin_dir / "codex",
         f"""#!/usr/bin/env bash
+if [ "${{1:-}}" = "exec" ] && [[ "$*" == *HAPAX_CODEX_EXEC_AUTH_OK* ]]; then
+  printf '%s\\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":"HAPAX_CODEX_EXEC_AUTH_OK"}}}}'
+  exit 0
+fi
 if [ "${{1:-}}" = "debug" ] && [ "${{2:-}}" = "models" ]; then
   printf '%s\\n' '{{"models":[{{"slug":"gpt-5.5"}}]}}'
   exit 0
@@ -3197,6 +3829,7 @@ printf '%s\\n' "$*" > {codex_args}
     live = subprocess.Popen(["sleep", "60"])
     try:
         (pid_dir / "cx-p0.pid").write_text(f"{live.pid}\n", encoding="utf-8")
+        activation_env = install_launcher_activation(home)
         result = _run(
             tmp_path,
             "--task",
@@ -3218,6 +3851,7 @@ printf '%s\\n' "$*" > {codex_args}
                 "HAPAX_CODEX_HEADLESS_PID_DIR": str(pid_dir),
                 "XDG_CACHE_HOME": str(tmp_path / "cache"),
                 "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                **activation_env,
             },
         )
     finally:
@@ -3237,7 +3871,9 @@ printf '%s\\n' "$*" > {codex_args}
     assert receipt["coord_dispatch_cleanup_state"] == "deferred"
 
 
-def test_governed_codex_dispatch_reactivates_clean_retired_relay(tmp_path: Path) -> None:
+def test_governed_codex_dispatch_refuses_role_only_retired_relay_resume(
+    tmp_path: Path,
+) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
     task_id = "governed-codex-retired-relay"
@@ -3256,6 +3892,7 @@ def test_governed_codex_dispatch_reactivates_clean_retired_relay(tmp_path: Path)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     relay = home / ".cache" / "hapax" / "relay"
     relay.mkdir(parents=True)
+    (home / ".cache" / "hapax" / "stage0-durable-sink").mkdir(parents=True)
     (relay / "cx-fugu.yaml").write_text("status: wind_down_idle\n", encoding="utf-8")
     pid_dir = tmp_path / "pids"
     pid_dir.mkdir()
@@ -3264,6 +3901,10 @@ def test_governed_codex_dispatch_reactivates_clean_retired_relay(tmp_path: Path)
     _write(
         bin_dir / "codex",
         f"""#!/usr/bin/env bash
+if [ "${{1:-}}" = "exec" ] && [[ "$*" == *HAPAX_CODEX_EXEC_AUTH_OK* ]]; then
+  printf '%s\\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":"HAPAX_CODEX_EXEC_AUTH_OK"}}}}'
+  exit 0
+fi
 if [ "${{1:-}}" = "debug" ] && [ "${{2:-}}" = "models" ]; then
   printf '%s\\n' '{{"models":[{{"slug":"gpt-5.5"}}]}}'
   exit 0
@@ -3298,9 +3939,10 @@ printf '%s\\n' "$*" > {codex_args}
         },
     )
 
-    assert result.returncode == 0, result.stderr
-    assert "retired/wound-down" not in result.stderr
-    assert codex_args.exists()
+    assert result.returncode == 17
+    assert "resume_exact_session_missing" in result.stderr
+    assert not codex_args.exists()
+    assert (relay / "cx-fugu.yaml").read_text(encoding="utf-8") == "status: wind_down_idle\n"
 
 
 def test_governed_relay_reactivation_predicate_accepts_bound_mutable_launch(
@@ -3386,6 +4028,11 @@ def test_governed_relay_reactivation_rejects_advisory_or_unbound_binding(
         {"action": module.DispatchAction.LAUNCH},
     )()
     route = module.PLATFORM_PATHS[("codex", "headless", "full")]
+    monkeypatch.setattr(
+        module,
+        "resolve_claim_resume_session",
+        lambda **_kwargs: "11111111-2222-4333-8444-555555555555",
+    )
 
     for binding in (
         module.DurableDispatchBinding(
@@ -3445,6 +4092,11 @@ def test_codex_headless_dispatch_propagates_retired_relay_block(tmp_path: Path) 
     relay = home / ".cache" / "hapax" / "relay"
     relay.mkdir(parents=True)
     (relay / "cx-green.yaml").write_text("status: wind_down_idle\n", encoding="utf-8")
+    _write_resume_projection(
+        home / ".cache" / "hapax",
+        lane="cx-green",
+        task_id="read-only-intake",
+    )
     bin_dir = tmp_path / "bin"
     codex_args = tmp_path / "codex-args.txt"
     _write(
@@ -3503,6 +4155,11 @@ def test_codex_headless_dispatch_blocks_mq_bound_read_only_exempt_retired_relay(
     relay = home / ".cache" / "hapax" / "relay"
     relay.mkdir(parents=True)
     (relay / "cx-green.yaml").write_text("status: wind_down_idle\n", encoding="utf-8")
+    _write_resume_projection(
+        home / ".cache" / "hapax",
+        lane="cx-green",
+        task_id="mq-bound-read-only-intake",
+    )
     bin_dir = tmp_path / "bin"
     codex_args = tmp_path / "codex-args.txt"
     _write(
@@ -4196,9 +4853,67 @@ printf '%s\\n' "$HAPAX_CLAUDE_MODEL" "$@" > {launcher_env}
     assert receipt["route_policy_action"] == "refuse"
 
 
+def test_claude_headless_launch_holds_without_account_live_quota_receipt(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    quota_ledger = _claude_subscription_quota_ledger(tmp_path, state="unknown")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    launcher_args = tmp_path / "claude-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-claude-headless"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "beta",
+        "--platform",
+        "claude",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={
+            "HAPAX_METHODOLOGY_CLAUDE_HEADLESS": str(fake_launcher),
+            "HAPAX_QUOTA_SPEND_LEDGER": str(quota_ledger),
+        },
+    )
+
+    assert result.returncode == 10
+    assert not launcher_args.exists()
+    assert "subscription_route_quota_not_fresh" in result.stderr
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["launched"] is False
+    assert receipt["route_policy_action"] == "hold"
+    reasons = set(receipt["route_policy_reason_codes"])
+    assert "subscription_route_quota_not_fresh" in reasons
+    assert "route_subscription_quota_state:unknown" in reasons
+    assert "relay-receipt:claude:quota-admission:absent" in reasons
+
+
 def test_launches_claude_headless_with_task_binding(tmp_path: Path) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
+    quota_ledger = _fresh_claude_subscription_quota_ledger(tmp_path)
     _task(
         tmp_path / "tasks",
         "governed-build",
@@ -4230,7 +4945,10 @@ printf '%s\\n' "$HAPAX_METHODOLOGY_DISPATCH_TASK" "$HAPAX_CLAUDE_HEADLESS_WORKDI
         "--mode",
         "headless",
         "--launch",
-        extra_env={"HAPAX_METHODOLOGY_CLAUDE_HEADLESS": str(fake_launcher)},
+        extra_env={
+            "HAPAX_METHODOLOGY_CLAUDE_HEADLESS": str(fake_launcher),
+            "HAPAX_QUOTA_SPEND_LEDGER": str(quota_ledger),
+        },
     )
 
     assert result.returncode == 0, result.stderr
@@ -4239,6 +4957,18 @@ printf '%s\\n' "$HAPAX_METHODOLOGY_DISPATCH_TASK" "$HAPAX_CLAUDE_HEADLESS_WORKDI
     assert args[1] == str(tmp_path / "worktree")
     assert args[2:5] == ["--task", "governed-build", "beta"]
     assert "SDLC GOVERNED DISPATCH." in "\n".join(args[5:])
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["route_policy_action"] == "launch"
+    assert receipt["route_policy_launch_allowed"] is True
+    assert receipt["route_policy_quota_freshness_green"] is True
+    assert not any(
+        reason.startswith("route_subscription_quota_state:")
+        for reason in receipt["route_policy_reason_codes"]
+    )
 
 
 def test_sliced_call_preserves_dispatch_env_and_marks_attached(monkeypatch) -> None:
@@ -4452,7 +5182,7 @@ printf '%s\\n' "$@" > {launcher_args}
     args = launcher_args.read_text(encoding="utf-8").splitlines()
     assert args[:6] == ["--session", "vbe-1", "--terminal", "tmux", "--task", "bounded-build"]
     assert "--prompt" in args
-    assert "--force" in args
+    assert "--force" not in args
 
 
 def test_agy_dispatch_remains_route_gated_without_spawnable_route(tmp_path: Path) -> None:

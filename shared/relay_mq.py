@@ -569,7 +569,7 @@ def ack_message(
 
     with _connect(db_path) as conn:
         row = conn.execute(
-            "SELECT r.state, r.reason, m.sender "
+            "SELECT r.state, m.sender "
             "FROM recipients r JOIN messages m ON m.message_id = r.message_id "
             "WHERE r.message_id = :mid AND r.recipient = :role",
             {"mid": message_id, "role": role},
@@ -579,35 +579,16 @@ def ack_message(
             return False
 
         current_state: RecipientState = row["state"]
-        coordinator_managed = row["sender"] == "hapax-coordinator" and (
-            (
-                current_state == "deferred"
-                and (
-                    row["reason"] == COORDINATOR_PREPARED_DISPATCH_REASON
-                    or str(row["reason"] or "").startswith(
-                        COORDINATOR_ABORTED_DISPATCH_REASON_PREFIX
-                    )
-                )
-            )
-            or (
-                current_state == "accepted"
-                and str(row["reason"] or "").startswith(COORDINATOR_ACCEPTED_DISPATCH_REASON_PREFIX)
-            )
-        )
-        if coordinator_managed:
+        if row["sender"] == "hapax-coordinator":
             return False
         validate_transition(current_state, new_state, reason)
 
         cursor = conn.execute(
             "UPDATE recipients SET state = :new_state, reason = :reason, updated_at = :now "
             "WHERE message_id = :mid AND recipient = :role AND state = :current "
-            "AND NOT (EXISTS ("
+            "AND NOT EXISTS ("
             "SELECT 1 FROM messages m WHERE m.message_id = recipients.message_id "
-            "AND m.sender = 'hapax-coordinator') AND ("
-            "(state = 'deferred' AND (reason = :prepared_reason OR "
-            "COALESCE(reason, '') LIKE :aborted_reason_pattern)) OR "
-            "(state = 'accepted' AND "
-            "COALESCE(reason, '') LIKE :accepted_reason_pattern)))",
+            "AND m.sender = 'hapax-coordinator')",
             {
                 "new_state": new_state,
                 "reason": reason,
@@ -615,9 +596,6 @@ def ack_message(
                 "mid": message_id,
                 "role": role,
                 "current": current_state,
-                "prepared_reason": COORDINATOR_PREPARED_DISPATCH_REASON,
-                "aborted_reason_pattern": f"{COORDINATOR_ABORTED_DISPATCH_REASON_PREFIX}%",
-                "accepted_reason_pattern": f"{COORDINATOR_ACCEPTED_DISPATCH_REASON_PREFIX}%",
             },
         )
 

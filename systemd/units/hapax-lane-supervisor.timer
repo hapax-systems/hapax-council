@@ -1,10 +1,8 @@
 # Hapax-Auto-Enable: true
-# reform-improve-deploy-activation: hapax-post-merge-deploy `enable --now`s
-# units carrying this marker, so the FM-11 supervisor goes live on merge
-# instead of installing-but-sleeping (try-restart is a no-op for a never-
-# enabled timer). The marker requires the [Install] section below.
+# The recurring surface is safe to auto-enable because it only projects lane
+# health candidates and cannot launch, signal, or detach ownership.
 [Unit]
-Description=Hapax Lane Supervisor Timer — guarantee lane liveness every 60s (FM-11)
+Description=Project Hapax lane health every 60 seconds
 
 [Timer]
 OnBootSec=60

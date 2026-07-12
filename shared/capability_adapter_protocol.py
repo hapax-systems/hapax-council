@@ -110,6 +110,33 @@ def _require_launch_authority(decision: RouteDecision, *, op: str) -> None:
         )
 
 
+def _require_launch_request_identity(
+    decision: RouteDecision,
+    request: DispatchLaunchRequest,
+) -> None:
+    """Bind a launch decision to the exact request it is authorizing."""
+
+    decision_lane = decision.lane.strip().lower().replace("_", "-")
+    mismatches = tuple(
+        field
+        for field, decision_value, request_value in (
+            ("task_id", decision.task_id.strip(), request.task_id.strip()),
+            ("lane", decision_lane, request.normalized_lane),
+            ("platform", decision.platform.strip(), request.platform.strip()),
+            ("mode", decision.mode.strip(), request.mode.strip()),
+            ("profile", decision.profile.strip(), request.profile.strip()),
+        )
+        if decision_value != request_value
+    )
+    if mismatches:
+        raise AuthorityViolation(
+            "launch request identity does not match its RouteDecision: "
+            f"mismatched={','.join(mismatches)} decision_id={decision.decision_id}. "
+            "Next: rebuild the DispatchLaunchRequest from this exact admitted decision; "
+            "never reuse authority from another task, lane, platform, mode, or profile."
+        )
+
+
 # Worker-CLI (claude/codex) failure signatures -> FailureCode. Minimal + verbatim-derived,
 # NOT invented: the quota shapes are informed by the same documented Claude subscription-wall
 # signatures as scripts/review_team.py:_QUOTA_WALL_SHAPE_RE, but kept deliberately minimal and
@@ -283,6 +310,7 @@ class WorkerAdapter(CapabilityAdapter):
         """
 
         _require_launch_authority(decision, op="launch")
+        _require_launch_request_identity(decision, request)
         return run_atomic_dispatch_launch(request, launch_callable)
 
 

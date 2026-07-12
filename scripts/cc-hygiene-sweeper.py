@@ -43,6 +43,9 @@ from typing import Any
 _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
+_REPO_ROOT = _HERE.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from cc_hygiene.checks import (
     KNOWN_ROLES,
@@ -74,6 +77,8 @@ from cc_hygiene.models import (
 )
 from cc_hygiene.ntfy import DEFAULT_THROTTLE_PATH, dispatch_alerts
 from cc_hygiene.state import DEFAULT_STATE_PATH, write_state
+
+from shared.sdlc_owner_identity import parse_task_owner
 
 LOG = logging.getLogger("cc-hygiene-sweeper")
 
@@ -302,7 +307,11 @@ def _build_session_states(
     in_progress_by_session: Counter[str] = Counter()
     for note in notes:
         if note.status == "in_progress" and note.assigned_to and note.assigned_to != "unassigned":
-            in_progress_by_session[note.assigned_to] += 1
+            try:
+                owner = parse_task_owner(note.assigned_to)
+            except ValueError:
+                owner = None
+            in_progress_by_session[owner.role if owner is not None else note.assigned_to] += 1
     roles = list(KNOWN_ROLES)
     for role in sorted(relay_payloads):
         if role not in roles:

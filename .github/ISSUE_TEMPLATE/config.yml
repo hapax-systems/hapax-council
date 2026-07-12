@@ -6,9 +6,9 @@ contact_links:
 - name: Read the support boundary
   url: https://github.com/hapax-systems/hapax-council/blob/main/SUPPORT.md
   about: GitHub Issues are not a staffed support queue.
-- name: Report a security issue
+- name: Read the security disclosure path
   url: https://github.com/hapax-systems/hapax-council/security/policy
-  about: Use the repository security policy for disclosures.
+  about: Use the repository security policy before sending a disclosure.
 - name: Read Hapax governance
   url: https://github.com/hapax-systems/hapax-constitution
   about: Repository governance is centralized in hapax-constitution.

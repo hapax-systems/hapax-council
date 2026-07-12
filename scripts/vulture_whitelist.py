@@ -4100,6 +4100,12 @@ from shared.world_language import ImageSchemaNode, WorldLanguageNode  # noqa: F4
 ImageSchemaNode._force_requires_efferent_terminus
 WorldLanguageNode._invariants
 
+# Publication freshness envelopes: Pydantic invokes the model validator during
+# construction; vulture cannot trace through @model_validator.
+from shared.publication_freshness import PublicSurfaceFreshnessEnvelope  # noqa: F401, E402
+
+PublicSurfaceFreshnessEnvelope._hash_claims_are_coherent
+
 # HACL Surface Registry — SurfaceSpec policy properties consulted by the Lens +
 # Compressibility Gate (subsequent HACL tasks) and asserted by the registry tests;
 # vulture does not scan tests and the Lens caller doesn't exist on main yet.
@@ -4152,6 +4158,12 @@ synthetic_outbound_determination_packet
 from shared.perception_registry import PerceptionPoint  # noqa: E402
 
 PerceptionPoint._geometry_policy
+
+# pydantic @model_serializer(mode="wrap") — invoked by pydantic during
+# model_dump, not by an explicit static call site.
+from shared.quota_spend_ledger import SpendReceipt as _QuotaSpendLedgerSpendReceipt  # noqa: E402
+
+_QuotaSpendLedgerSpendReceipt._serialize_without_empty_task_hash
 
 # Platform session contract v1: exported adapter-conformance helpers are invoked
 # by fixture suites and future trainyard adapter runners. Pydantic field validators
@@ -4727,3 +4739,32 @@ _ = (_classify_entitlement, _is_routable_supply)
 from github_pr_status import get_pr_status_rest as _get_pr_status_rest  # noqa: E402
 
 _ = (_get_pr_status_rest,)
+
+# SDLC lifecycle helpers are imported by extensionless shell launchers through
+# embedded Python blocks or extensionless Python launchers, which vulture does
+# not follow statically.
+from shared.sdlc_dispatch_guards import (  # noqa: E402
+    check_worktree_claim_guard as _check_worktree_claim_guard,
+)
+from shared.sdlc_filesystem_transaction import (  # noqa: E402
+    execute_filesystem_transaction as _execute_filesystem_transaction,
+)
+from shared.sdlc_owner_identity import canonical_task_owner as _canonical_task_owner  # noqa: E402
+from shared.sdlc_task_store import (  # noqa: E402
+    assert_claim_slot_available as _assert_claim_slot_available,
+)
+from shared.sdlc_task_store import (  # noqa: E402
+    assert_close_slot_owned as _assert_close_slot_owned,
+)
+from shared.sdlc_task_store import (  # noqa: E402
+    verify_claim_dispatch_state as _verify_claim_dispatch_state,
+)
+
+_ = (
+    _check_worktree_claim_guard,
+    _execute_filesystem_transaction,
+    _canonical_task_owner,
+    _assert_claim_slot_available,
+    _assert_close_slot_owned,
+    _verify_claim_dispatch_state,
+)

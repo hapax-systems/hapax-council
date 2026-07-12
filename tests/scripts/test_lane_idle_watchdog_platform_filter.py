@@ -8,6 +8,13 @@ from pathlib import Path
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "hapax-lane-idle-watchdog"
 
 
+def test_claim_lookup_accepts_only_role_appropriate_qualified_owner() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert 'cx-*) platform="codex"' in text
+    assert 'vbe-*) platform="vibe"' in text
+    assert "assigned_to: ${platform}/${assignee}" in text
+
+
 def _run_task_picker(task_dir: Path, platform: str) -> str:
     """Run the find_next_wsjf_task function in isolation."""
     result = subprocess.run(
@@ -29,24 +36,24 @@ best_wsjf = -1.0
 
 for p in task_root.glob('*.md'):
     text = p.read_text(errors='replace')
-    status_m = re.search(r'^status:\s*(\S+)', text, re.MULTILINE)
+    status_m = re.search(r'^status:\\s*(\\S+)', text, re.MULTILINE)
     if not status_m:
         continue
     status = status_m.group(1)
     if status != 'offered':
         continue
-    assigned_m = re.search(r'^assigned_to:\s*(\S+)', text, re.MULTILINE)
+    assigned_m = re.search(r'^assigned_to:\\s*(\\S+)', text, re.MULTILINE)
     if assigned_m and assigned_m.group(1) not in ('unassigned', 'null', 'None', ''):
         continue
     blocked_m = re.search(r'^blocked_reason:', text, re.MULTILINE)
     if blocked_m:
         continue
-    plat_m = re.search(r'^platform_suitability:\s*\\\[([^\\\]]*)\\\]', text, re.MULTILINE)
+    plat_m = re.search(r'^platform_suitability:\\s*\\[([^\\]]*)\\]', text, re.MULTILINE)
     if plat_m:
         platforms = [s.strip() for s in plat_m.group(1).split(',')]
         if 'any' not in platforms and lane_platform not in platforms:
             continue
-    wsjf_m = re.search(r'^wsjf:\s*([0-9.]+)', text, re.MULTILINE)
+    wsjf_m = re.search(r'^wsjf:\\s*([0-9.]+)', text, re.MULTILINE)
     wsjf = float(wsjf_m.group(1)) if wsjf_m else 0.0
     if wsjf > best_wsjf:
         best_wsjf = wsjf

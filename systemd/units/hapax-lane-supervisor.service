@@ -1,34 +1,48 @@
 [Unit]
-Description=Hapax Lane Supervisor — FM-11 one_for_one re-spawn (dead lanes always auto-restart)
+Description=Hapax lane health projection (no process or ownership effects)
 Documentation=file:///home/hapax/.local/bin/hapax-lane-supervisor
-After=network.target
-# The sweep exits 0 even when a lane is down (so one dead lane can't wedge the
-# oneshot) and escalates chronic failures itself via ntfy. This OnFailure is the
-# belt-and-suspenders surface for the supervisor *script* itself failing.
-OnFailure=notify-failure@%n.service
+After=hapax-source-activate.service
+ConditionFileIsExecutable=%h/.cache/hapax/source-activation/worktree/scripts/hapax-lane-supervisor
 
 [Service]
 Type=oneshot
-# Run via the deploy-maintained ~/.local/bin symlink, NOT the canonical
-# integrator worktree (%h/projects/hapax-council): that worktree floats across
-# feature branches and frequently lacks this script (it shipped in #3803), so a
-# canonical-worktree ExecStart would fail to start. The symlink tracks the
-# active source-activation release — the same convention the supervisor script
-# itself uses for its sibling launchers (hapax-claude-headless, hapax-codex…).
-ExecStart=%h/.local/bin/hapax-lane-supervisor
-# ~/.npm-global/bin is where `npm i -g @openai/codex` installs the codex
-# launcher; without it the codex respawn path exits rc=4 "codex not found in
-# PATH" every cycle (FM-11 chronic crash-loop). Keep it first so it shadows
-# nothing important but is always reachable from the oneshot's thin env.
-Environment=PATH=%h/.npm-global/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=%h
+# Resolve the activation target once, bind it to the durable success receipt and
+# clean tracked release image, then execute that exact target. This guard lives
+# in the installed unit rather than in the release it is validating.
+ExecStart=/usr/bin/bash -c 'set -euo pipefail; state="%h/.cache/hapax/source-activation"; IFS= read -r sha < "$state/last-success-sha"; case "$sha" in ""|*[!0-9a-f]*) echo "hapax-lane-supervisor: invalid activation receipt" >&2; exit 78;; esac; [ "${#sha}" -eq 40 ] || { echo "hapax-lane-supervisor: invalid activation receipt" >&2; exit 78; }; target="$(/usr/bin/readlink -f "$state/worktree")"; [ "${target##*/}" = "$sha" ] && [ "$(/usr/bin/git -C "$target" rev-parse HEAD)" = "$sha" ] && [ -z "$(/usr/bin/git -C "$target" status --porcelain --untracked-files=no -- scripts/hapax-lane-supervisor shared)" ] || { echo "hapax-lane-supervisor: activated release identity mismatch" >&2; exit 78; }; exec "$target/scripts/hapax-lane-supervisor"'
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=HOME=%h
-Environment=HAPAX_LOCAL_DEV_MAINTENANCE_MODE=appendix-only
+Environment=PYTHONDONTWRITEBYTECODE=1
+# Journal output is the installed projection surface. Disable the optional
+# textfile write so ProtectHome=read-only is an independent containment layer.
+Environment=HAPAX_SUPERVISOR_METRICS_FILE=
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=hapax-lane-supervisor
-# A hung launcher must never wedge the oneshot; fast launchers are bounded
-# internally too (HAPAX_SUPERVISOR_LAUNCH_TIMEOUT_S).
 TimeoutStartSec=120
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=%t /tmp /var/tmp
+PrivateNetwork=true
+RestrictAddressFamilies=AF_UNIX
+PrivateTmp=true
+PrivateDevices=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectClock=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+# Deny socket I/O as well as process-directed signals. AF_UNIX remains declared
+# for compatibility, but cannot reach tmux or any other host control socket.
+SystemCallFilter=~@network-io kill pidfd_send_signal rt_sigqueueinfo rt_tgsigqueueinfo tkill tgkill
 
 [Install]
 WantedBy=default.target

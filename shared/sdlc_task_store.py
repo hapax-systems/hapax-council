@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 from shared.frontmatter import parse_frontmatter_with_diagnostics
+from shared.sdlc_lifecycle import TASK_MUTABLE_STATUSES
+from shared.sdlc_owner_identity import owner_matches
 
 TaskState = Literal["active", "closed"]
 CLAIM_DISPATCH_BINDING_SCHEMA = "hapax.claim-dispatch-binding.v1"
@@ -268,6 +270,10 @@ def claim_dispatch_binding_path(cache_dir: Path, claim_key: str) -> Path:
     return cache_dir / f"cc-claim-dispatch-{claim_key}.json"
 
 
+def claim_dispatch_binding_bytes(binding: ClaimDispatchBinding) -> bytes:
+    return _canonical_json_bytes(binding.to_record()) + b"\n"
+
+
 def write_claim_dispatch_binding(
     cache_dir: Path,
     claim_key: str,
@@ -275,7 +281,7 @@ def write_claim_dispatch_binding(
 ) -> Path:
     path = claim_dispatch_binding_path(cache_dir, claim_key)
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = _canonical_json_bytes(binding.to_record()) + b"\n"
+    payload = claim_dispatch_binding_bytes(binding)
     temporary = path.parent / f".{path.name}.{os.getpid()}.tmp"
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
@@ -309,6 +315,9 @@ def load_claim_dispatch_binding(path: Path) -> ClaimDispatchBinding:
         return output
 
     try:
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise OSError("not a regular non-symlink file")
         record = json.loads(path.read_text(encoding="ascii"), object_pairs_hook=unique_pairs)
     except TaskStoreError:
         raise
@@ -340,6 +349,7 @@ def load_claim_dispatch_binding(path: Path) -> ClaimDispatchBinding:
         or record.get("schema") != CLAIM_DISPATCH_BINDING_SCHEMA
         or record.get("may_authorize") is not False
         or not isinstance(record.get("claim_epoch"), int)
+        or isinstance(record.get("claim_epoch"), bool)
     ):
         raise TaskStoreError(
             "claim_dispatch_binding_malformed",
@@ -370,3 +380,392 @@ def load_claim_dispatch_binding(path: Path) -> ClaimDispatchBinding:
             str(path),
         )
     return binding
+
+
+def _read_regular_text(path: Path, *, reason_code: str) -> str:
+    try:
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise OSError("not a regular non-symlink file")
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise TaskStoreError(
+            reason_code,
+            "restore the exact claim projection and retry verification",
+            str(path),
+        ) from exc
+
+
+def assert_claim_slot_available(
+    *,
+    cache_dir: Path,
+    role: str,
+    session_id: str,
+    task_id: str,
+) -> None:
+    """Refuse any claim that would replace or inherit existing ownership.
+
+    Claim age, task terminality, and a force flag are not authority to detach a
+    slot. Existing dispatch bindings also require the explicit read-only verify
+    path rather than a mutating claim refresh.
+    """
+
+    legacy_key = role
+    session_key = f"{role}-{session_id}" if session_id else ""
+    try:
+        claim_paths = sorted(cache_dir.glob(f"cc-active-task-{role}*"))
+    except OSError as exc:
+        raise TaskStoreError(
+            "claim_slot_projection_unreadable",
+            "restore readable claim projections before claiming",
+            str(cache_dir),
+        ) from exc
+
+    observed_keys: set[str] = set()
+    for path in claim_paths:
+        prefix = "cc-active-task-"
+        if not path.name.startswith(prefix):
+            continue
+        key = path.name.removeprefix(prefix)
+        if key != legacy_key and not key.startswith(f"{role}-"):
+            continue
+        existing_task = _read_regular_text(
+            path,
+            reason_code="claim_slot_projection_unreadable",
+        ).strip()
+        if not existing_task:
+            raise TaskStoreError(
+                "claim_slot_projection_malformed",
+                "repair the empty claim projection before claiming",
+                str(path),
+            )
+        if existing_task != task_id:
+            raise TaskStoreError(
+                "claim_slot_occupied",
+                "close or explicitly recover the existing owner before claiming new work",
+                f"{key}:{existing_task}",
+            )
+        if key != legacy_key and key != session_key:
+            raise TaskStoreError(
+                "claim_same_task_owned_by_other_session",
+                "resume the owning session or perform governed owner-only recovery",
+                key,
+            )
+        observed_keys.add(key)
+
+    projection_keys = set(observed_keys)
+    for pattern, prefix, suffix in (
+        (f"cc-claim-epoch-{role}*", "cc-claim-epoch-", ""),
+        (f"cc-claim-dispatch-{role}*.json", "cc-claim-dispatch-", ".json"),
+    ):
+        try:
+            paths = sorted(cache_dir.glob(pattern))
+        except OSError as exc:
+            raise TaskStoreError(
+                "claim_slot_projection_unreadable",
+                "restore readable claim projections before claiming",
+                str(cache_dir),
+            ) from exc
+        for path in paths:
+            key = path.name.removeprefix(prefix)
+            if suffix and key.endswith(suffix):
+                key = key.removesuffix(suffix)
+            if key == legacy_key or key.startswith(f"{role}-"):
+                projection_keys.add(key)
+
+    relevant_keys = {legacy_key}
+    if session_key:
+        relevant_keys.add(session_key)
+    for key in relevant_keys | projection_keys:
+        binding_path = claim_dispatch_binding_path(cache_dir, key)
+        epoch_path = cache_dir / f"cc-claim-epoch-{key}"
+        claim_path = cache_dir / f"cc-active-task-{key}"
+        if key != legacy_key and key != session_key:
+            raise TaskStoreError(
+                "claim_slot_projection_incomplete",
+                "repair the other-session projection before claiming",
+                key,
+            )
+        try:
+            binding_present = binding_path.lstat() is not None
+        except FileNotFoundError:
+            binding_present = False
+        except OSError as exc:
+            raise TaskStoreError(
+                "claim_slot_projection_unreadable",
+                "restore readable claim projections before claiming",
+                str(binding_path),
+            ) from exc
+        if binding_present:
+            binding = load_claim_dispatch_binding(binding_path)
+            if binding.task_id != task_id or binding.lane != role:
+                raise TaskStoreError(
+                    "claim_slot_dispatch_binding_mismatch",
+                    "repair the exact claim/binding projection before claiming",
+                    key,
+                )
+            raise TaskStoreError(
+                "claim_slot_already_dispatch_bound",
+                "use cc-claim --verify-dispatch-binding instead of mutating a bound claim",
+                key,
+            )
+        try:
+            claim_present = claim_path.lstat() is not None
+        except FileNotFoundError:
+            claim_present = False
+        try:
+            epoch_present = epoch_path.lstat() is not None
+        except FileNotFoundError:
+            epoch_present = False
+        if claim_present != epoch_present:
+            raise TaskStoreError(
+                "claim_slot_projection_incomplete",
+                "repair the claim and epoch projection before claiming",
+                key,
+            )
+    if observed_keys and (not session_key or session_key not in observed_keys):
+        raise TaskStoreError(
+            "claim_same_task_session_unproven",
+            "use the session that owns the exact session-keyed claim or recover explicitly",
+            role,
+        )
+
+
+def assert_close_slot_owned(
+    *,
+    cache_dir: Path,
+    role: str,
+    session_id: str,
+    task_id: str,
+) -> None:
+    """Verify that any local ownership projection belongs to this closer.
+
+    A task-note owner may close without cache projections, but the presence of
+    any claim projection raises the evidence floor: the claim, epoch, optional
+    dispatch binding, role, task, and session must form one complete identity.
+    """
+
+    legacy_key = role
+    session_key = f"{role}-{session_id}" if session_id else ""
+    allowed_keys = {legacy_key}
+    if session_key:
+        allowed_keys.add(session_key)
+
+    projection_keys: set[str] = set()
+    for pattern, prefix, suffix in (
+        (f"cc-active-task-{role}*", "cc-active-task-", ""),
+        (f"cc-claim-epoch-{role}*", "cc-claim-epoch-", ""),
+        (f"cc-claim-dispatch-{role}*.json", "cc-claim-dispatch-", ".json"),
+    ):
+        try:
+            paths = sorted(cache_dir.glob(pattern))
+        except OSError as exc:
+            raise TaskStoreError(
+                "close_slot_projection_unreadable",
+                "restore readable ownership projections before closing",
+                str(cache_dir),
+            ) from exc
+        for path in paths:
+            key = path.name.removeprefix(prefix)
+            if suffix and key.endswith(suffix):
+                key = key.removesuffix(suffix)
+            if key == legacy_key or key.startswith(f"{role}-"):
+                projection_keys.add(key)
+
+    unexpected = projection_keys - allowed_keys
+    if unexpected:
+        raise TaskStoreError(
+            "close_slot_owned_by_other_session",
+            "resume the session that owns the claim or perform governed owner-only recovery",
+            ",".join(sorted(unexpected)),
+        )
+
+    bindings: list[ClaimDispatchBinding] = []
+    binding_keys: set[str] = set()
+    for key in sorted(projection_keys):
+        claim_path = cache_dir / f"cc-active-task-{key}"
+        epoch_path = cache_dir / f"cc-claim-epoch-{key}"
+        binding_path = claim_dispatch_binding_path(cache_dir, key)
+
+        def present(path: Path) -> bool:
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                return False
+            except OSError as exc:
+                raise TaskStoreError(
+                    "close_slot_projection_unreadable",
+                    "restore readable ownership projections before closing",
+                    str(path),
+                ) from exc
+            return True
+
+        claim_present = present(claim_path)
+        epoch_present = present(epoch_path)
+        binding_present = present(binding_path)
+        if claim_present != epoch_present or (binding_present and not claim_present):
+            raise TaskStoreError(
+                "close_slot_projection_incomplete",
+                "restore the claim, epoch, and dispatch sidecars before closing",
+                key,
+            )
+        if claim_present:
+            claim_task = _read_regular_text(
+                claim_path,
+                reason_code="close_slot_projection_unreadable",
+            ).strip()
+            epoch_parts = _read_regular_text(
+                epoch_path,
+                reason_code="close_slot_projection_unreadable",
+            ).split()
+            if (
+                claim_task != task_id
+                or len(epoch_parts) != 2
+                or not epoch_parts[0].isdigit()
+                or epoch_parts[1] != task_id
+            ):
+                raise TaskStoreError(
+                    "close_slot_projection_identity_mismatch",
+                    "close only the exact task named by the current ownership projection",
+                    key,
+                )
+        if binding_present:
+            binding = load_claim_dispatch_binding(binding_path)
+            if (
+                binding.task_id != task_id
+                or binding.lane != role
+                or binding.session_id != session_id
+            ):
+                raise TaskStoreError(
+                    "close_dispatch_binding_identity_mismatch",
+                    "only the exact dispatch-bound session may close this task",
+                    key,
+                )
+            bindings.append(binding)
+            binding_keys.add(key)
+
+    if bindings:
+        expected_binding_keys = {legacy_key}
+        if session_id:
+            expected_binding_keys.add(session_key)
+        if binding_keys != expected_binding_keys or any(
+            binding.receipt_hash != bindings[0].receipt_hash for binding in bindings
+        ):
+            raise TaskStoreError(
+                "close_dispatch_binding_projection_incomplete",
+                "restore one exact role/session dispatch-binding projection before closing",
+                role,
+            )
+
+
+def verify_claim_dispatch_state(
+    *,
+    cache_dir: Path,
+    vault_root: Path,
+    task_id: str,
+    role: str,
+    session_id: str,
+    dispatch_message_id: str,
+    platform: str,
+    mode: str,
+    profile: str,
+    authority_case: str,
+    binding_hash: str,
+    idempotency_key: str,
+    parent_spec: str,
+    parent_spec_sha256: str,
+) -> ClaimDispatchBinding:
+    """Verify one already-published claim against its exact dispatch environment."""
+
+    keys = [role]
+    if session_id:
+        keys.append(f"{role}-{session_id}")
+    bindings: list[ClaimDispatchBinding] = []
+    for key in keys:
+        binding = load_claim_dispatch_binding(claim_dispatch_binding_path(cache_dir, key))
+        claim_task = _read_regular_text(
+            cache_dir / f"cc-active-task-{key}",
+            reason_code="claim_dispatch_claim_cache_unreadable",
+        ).strip()
+        epoch_parts = _read_regular_text(
+            cache_dir / f"cc-claim-epoch-{key}",
+            reason_code="claim_dispatch_epoch_unreadable",
+        ).split()
+        if (
+            claim_task != task_id
+            or len(epoch_parts) != 2
+            or not epoch_parts[0].isdigit()
+            or int(epoch_parts[0]) != binding.claim_epoch
+            or epoch_parts[1] != task_id
+        ):
+            raise TaskStoreError(
+                "claim_dispatch_projection_mismatch",
+                "restore the claim, epoch, and dispatch sidecars as one projection",
+                key,
+            )
+        bindings.append(binding)
+
+    expected = (
+        task_id,
+        role,
+        session_id,
+        dispatch_message_id,
+        platform,
+        mode,
+        profile,
+        authority_case,
+        binding_hash,
+        idempotency_key,
+    )
+    for binding in bindings:
+        observed = (
+            binding.task_id,
+            binding.lane,
+            binding.session_id,
+            binding.dispatch_message_id,
+            binding.platform,
+            binding.mode,
+            binding.profile,
+            binding.authority_case,
+            binding.binding_hash,
+            binding.coord_dispatch_idempotency_key or "",
+        )
+        if observed != expected or binding.receipt_hash != bindings[0].receipt_hash:
+            raise TaskStoreError(
+                "claim_dispatch_binding_identity_mismatch",
+                "re-run the exact governed dispatch claim before launch",
+                role,
+            )
+
+    snapshot = resolve_task_note(vault_root, task_id, state="active")
+    status = str(snapshot.frontmatter.get("status") or "").strip().lower()
+    owner = str(snapshot.frontmatter.get("assigned_to") or "").strip()
+    observed_authority = str(snapshot.frontmatter.get("authority_case") or "").strip()
+    observed_parent = str(snapshot.frontmatter.get("parent_spec") or "").strip()
+    parent_path = Path(parent_spec).expanduser()
+    if not parent_path.is_absolute():
+        parent_path = Path.home() / "Documents" / "Personal" / parent_path
+    try:
+        if parent_path.is_symlink() or not parent_path.is_file():
+            raise OSError("parent spec is not a regular non-symlink file")
+        observed_parent_hash = hashlib.sha256(parent_path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise TaskStoreError(
+            "claim_dispatch_parent_spec_unreadable",
+            "restore the exact parent-spec preimage before launch",
+            str(parent_path),
+        ) from exc
+    if (
+        status not in TASK_MUTABLE_STATUSES
+        or not owner_matches(owner, role, platform)
+        or observed_authority != authority_case
+        or observed_parent != parent_spec
+        or re.fullmatch(r"[0-9a-f]{64}", parent_spec_sha256) is None
+        or observed_parent_hash != parent_spec_sha256
+    ):
+        raise TaskStoreError(
+            "claim_dispatch_authoritative_state_mismatch",
+            "re-run the governed claim against current task and parent-spec bytes",
+            task_id,
+        )
+    return bindings[0]

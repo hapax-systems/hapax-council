@@ -1,8 +1,8 @@
 # systemd Service Management
 
-All production services run as systemd user units under `user@1000.service` with lingering enabled. No process supervisors (process-compose, supervisord) in the boot chain.
+Application and utility services run as systemd user units under `user@1000.service` with lingering enabled. Narrow host-safety units, including the root OOM enforcer and its failure-intake bridge, run in the system manager. No process supervisors (process-compose, supervisord) are in the boot chain.
 
-**Topology:** <!-- topology-inventory:services -->292<!-- /topology-inventory:services --> services, <!-- topology-inventory:timers -->141<!-- /topology-inventory:timers --> timers, 6 paths, 3 targets. Verify with `uv run python scripts/hapax_topology_inventory.py --check`.
+**Topology:** <!-- topology-inventory:services -->301<!-- /topology-inventory:services --> services, <!-- topology-inventory:timers -->147<!-- /topology-inventory:timers --> timers, 6 paths, 3 targets. Verify with `uv run python scripts/hapax_topology_inventory.py --check`.
 
 `scripts/hapax_topology_inventory.py` is source-only: it verifies the
 git-tracked `systemd/units/` topology and does not prove what the live user
@@ -46,7 +46,7 @@ n8n, open-webui, minio, ntfy       visual-layer-agg  → perception pipeline
                                     studio-compositor → camera tiling (GPU)
 Managed by:                         studio-fx-output  → ffmpeg /dev/video50
   llm-stack.service (oneshot)       hapax-watch-recv  → Wear OS biometrics
-  llm-stack-analytics.service       141 timers        → sync, health, backups
+  llm-stack-analytics.service       147 timers        → sync, health, backups
 ```
 
 ## Grouping Targets
@@ -54,7 +54,7 @@ Managed by:                         studio-fx-output  → ffmpeg /dev/video50
 Two top-level grouping targets organise the application stack:
 
 - **`hapax-visual-stack.target`** — production visual surface pipeline: `hapax-imagination`, `hapax-imagination-loop`, `hapax-dmn`, `hapax-reverie`, `hapax-content-resolver`, `visual-layer-aggregator`, `studio-compositor`. Lists dependents explicitly via `Wants=`. The Tauri/WebKit `hapax-logos` preview is decommissioned and is not pulled in by this target.
-- **`hapax.target`** — non-visual application services: broadcast/audio (`hapax-mastodon-post`, `hapax-bluesky-post`, `hapax-omg-lol-fanout`, `hapax-channel-trailer`, `hapax-live-cuepoints`), awareness (`hapax-operator-awareness`), marketing/observability (`hapax-chronicle-quality-exporter`, `hapax-feedback-loop-detector`, `hapax-impingement-sampler`, `hapax-quota-observability`, `hapax-youtube-telemetry`), mail-monitor (`hapax-mail-monitor-watch-renewal`, `hapax-mail-monitor-weekly-digest`), `hapax-broadcast-orchestrator`. Dependent units declare `WantedBy=hapax.target`; enabling each unit creates a symlink under `~/.config/systemd/user/hapax.target.wants/`, and starting the target pulls the whole stack. The `hapax-discord-webhook` unit was previously listed here but was decommissioned 2026-05-01 — see the `DECOMMISSIONED_UNITS` bullet list below.
+- **`hapax.target`** — non-visual application services: broadcast/audio (`hapax-mastodon-post`, `hapax-bluesky-post`, `hapax-omg-lol-fanout`, `hapax-channel-trailer`), awareness (`hapax-operator-awareness`), marketing/observability (`hapax-chronicle-quality-exporter`, `hapax-feedback-loop-detector`, `hapax-impingement-sampler`, `hapax-quota-observability`, `hapax-youtube-telemetry`), mail-monitor (`hapax-mail-monitor-watch-renewal`, `hapax-mail-monitor-weekly-digest`), `hapax-broadcast-orchestrator`. Dependent units declare `WantedBy=hapax.target`; enabling each unit creates a symlink under `~/.config/systemd/user/hapax.target.wants/`, and starting the target pulls the whole stack. `hapax-live-cuepoints.service` is parked while its feature flag remains disabled, and `hapax-discord-webhook` was decommissioned 2026-05-01.
 
 Both targets are `WantedBy=default.target` so they activate on user login.
 
@@ -86,7 +86,7 @@ Single centralized service (`hapax-secrets.service`) loads all credentials once 
 - `HF_TOKEN` — HuggingFace model downloads
 - `LITELLM_BASE_URL`, `LANGFUSE_HOST` — service endpoints
 
-Written to `/run/user/1000/hapax-secrets.env` (tmpfs, 0600). All services declare `Requires=hapax-secrets.service` and read via `EnvironmentFile=/run/user/1000/hapax-secrets.env`.
+Written to `/run/user/1000/hapax-secrets.env` (tmpfs, 0600). Credential-consuming application services declare `Requires=hapax-secrets.service` and read via `EnvironmentFile=/run/user/1000/hapax-secrets.env`; host-safety audits and recovery bridges intentionally do not load application credentials.
 
 ### Studio Mobile RTMP
 
@@ -101,27 +101,29 @@ write `/dev/shm/hapax-compositor/broadcast-mode.json` through
 
 ## Resource Isolation
 
-**Per-service caps** (MemoryMax / OOMScoreAdjust):
+**Per-service caps** (configured unit score and separately managed live score):
 
-| Service | MemoryMax | OOMScoreAdjust | Notes |
-|---------|-----------|----------------|-------|
-| hapax-daimonion | 16G | -500 | GPU STT models, grows under conversation load |
-| studio-compositor | 6G | -800 | livestream critical |
-| hapax-imagination | 4G | -800 | wgpu visual surface |
-| hapax-rebuild-logos | 12G | default | transient cargo+rustc wgpu build |
-| hapax-rebuild-services | 6G | default | transient python rebuild cascade |
-| album-identifier | 4G | -800 | IR vision + audio track recognition |
-| youtube-player | 2G | default | ffmpeg children |
-| chat-monitor | 2G | -800 | YouTube Live chat analysis |
-| logos-api | 1G | -800 | FastAPI :8051 |
-| visual-layer-aggregator | 1G | -800 | perception pipeline |
-| hapax-reverie | 1G | -800 | visual expression daemon |
-| hapax-dmn | 1G | -800 | cognitive substrate |
-| officium-api | 512M | -800 | FastAPI :8050 |
-| hapax-content-resolver | 512M | -800 | content resolver |
-| hapax-watch-receiver | 256M | -800 | Wear OS biometrics |
-| hapax-recent-impingements | 128M | -800 | salience overlay producer |
-| stimmung-sync | 2G | default | MemoryHigh=1G; role-specific source ceiling after 2026-05-13 `CONSTRAINT_MEMCG` evidence |
+| Service | MemoryMax | Configured OOMScoreAdjust | Managed live oom_score_adj | Notes |
+|---------|-----------|---------------------------|----------------------------|-------|
+| hapax-daimonion | 16G | 100 | -500 | GPU STT models, grows under conversation load |
+| studio-compositor | 6G | 100 | -800 | livestream critical |
+| hapax-imagination | 4G | 100 | -800 | wgpu visual surface |
+| hapax-rebuild-logos | 12G | default | unchanged | transient cargo+rustc wgpu build |
+| hapax-rebuild-services | 6G | default | unchanged | transient python rebuild cascade |
+| album-identifier | 4G | default | unchanged | IR vision + audio track recognition |
+| youtube-player | 2G | default | unchanged | ffmpeg children |
+| chat-monitor | 2G | default | unchanged | YouTube Live chat analysis |
+| logos-api | 8G | default | unchanged | FastAPI :8051 |
+| visual-layer-aggregator | 4G | default | unchanged | perception pipeline |
+| hapax-reverie | 4G | default | unchanged | visual expression daemon |
+| hapax-dmn | 4G | default | unchanged | cognitive substrate |
+| officium-api | 512M | default | unchanged | FastAPI :8050 |
+| hapax-content-resolver | 512M | default | unchanged | content resolver |
+| hapax-watch-receiver | 256M | default | unchanged | Wear OS biometrics |
+| hapax-recent-impingements | 128M | default | unchanged | salience overlay producer |
+| stimmung-sync | 2G | default | unchanged | MemoryHigh=1G; role-specific source ceiling after 2026-05-13 `CONSTRAINT_MEMCG` evidence |
+
+Recheck these four corrected hard limits with `systemctl --user show logos-api.service visual-layer-aggregator.service hapax-reverie.service hapax-dmn.service -p Id -p MemoryMax` and compare them with the corresponding tracked units under `systemd/units/`.
 
 **System-wide memory infrastructure:**
 
@@ -142,10 +144,30 @@ write `/dev/shm/hapax-compositor/broadcast-mode.json` through
   job at `MemoryHigh=1G` and `MemoryMax=2G` to absorb Python import,
   embedding, and persistence bursts while remaining bounded. This is not a
   blanket limit increase for 128M utility timers.
-- **earlyoom** (`/etc/default/earlyoom`): fires SIGTERM @ 5% avail / 5% swap-free, SIGKILL @ 2.5%.
+- **earlyoom** (`/etc/default/earlyoom`, source: `config/earlyoom/default`): fires SIGTERM @ 5% avail / 5% swap-free, SIGKILL @ 2.5%.
   - `--prefer`: `cargo|rustc|ld.lld|chrome|electron|node|claude|next-server|ffmpeg|bwrap` (expendable targets for OOM)
-  - `--avoid`: `Hyprland|pipewire|wireplumber|dockerd|containerd|bluetoothd|systemd|foot|waybar|hapax-imagination|hapax-daimonion|studio-compositor|logos-api|officium-api` (stack protection)
-- **System-level OOM overrides**: earlyoom (-1000), docker (-900), pipewire/wireplumber (-900).
+  - `--avoid`: `Hyprland|pipewire|wireplumber|dockerd|containerd|bluetoothd|systemd|foot|waybar|hapax-imaginati` (best-effort process-comm matching; `hapax-imaginati` is the live-observed `/proc/<pid>/comm` 15-byte truncation. Python-hosted daimonion and currently inactive services are not represented by speculative unit-name tokens; the explicitly enumerated protected units below receive separate memory reservations and root-enforced live OOM scores.)
+  - `--ignore`: `apcupsd|systemd-logind|systemd-resolve|systemd-timesyn|systemd-userdbd|dbus-broker|dbus-daemon|NetworkManager|sshd|sshd-session|getty|agetty` (operator recovery and UPS telemetry must not be earlyoom victims; long names use `/proc/<pid>/comm` 15-byte truncation)
+- **P0 OOM containment package** (`scripts/install-p0-oom-containment`): installs source-controlled recovery policy into `/etc/default/earlyoom`, `/etc/systemd/system/*.service.d/oom-protect.conf`, `/etc/systemd/system/system.slice.d/oom-containment.conf`, `/etc/systemd/system/user.slice.d/oom-containment.conf`, `/etc/systemd/system/user-1000.slice.d/oom-containment.conf`, `/etc/systemd/system/user@1000.service.d/oom.conf`, `~/.config/systemd/user/{app,session}.slice.d/oom-containment.conf`, and the root-side `hapax-oom-score-enforce` service/timer plus the activation-independent `hapax-root-failure-intake@.service` bridge. It also installs `hapax-oom-policy-audit` and `hapax-root-required-deploy-audit` under `/usr/local/sbin` and copies their user services/timers into `~/.config/systemd/user`, so recurring safety audits do not depend on a mutable source-activation alias. Both audit oneshots have a two-minute start deadline so a blocked package lock, user bus, UPS query, sudo probe, or Git read cannot suppress later timer recurrence indefinitely; installer and recurring-audit readback require that deadline to be loaded. This podium package is intentionally bound to account `hapax`, UID 1000, and the corresponding fixed system-unit names; target environment overrides support tests and state-path recovery but do not make the installed unit graph portable to another account.
+  - `user.slice`: `MemoryLow=20G` and `MemoryMin=10G`, with `MemoryHigh`, `MemoryMax`, and `MemorySwapMax` explicitly `infinity`, allocates protection at the required ancestor. The current `app.slice` plus `session.slice` floors (`18G/9G`) leave `2G/1G` headroom. The recurring audit enumerates every immediate child cgroup below `user.slice`, `user-1000.slice`, and `user@1000.service` and sums each child's effective `memory.low`/`memory.min`, so another UID, sibling session scope, or user-manager child floor that would trigger cgroup-v2 proportional dilution turns the audit red.
+  - `user-1000.slice` and `user@1000.service`: `MemoryHigh=80G`, `MemoryMax=96G`, `MemorySwapMax=8G`, `MemoryLow=20G`, `MemoryMin=10G`; `user@1000.service` also carries `OOMScoreAdjust=100`, restoring the packaged kill ordering so the whole user manager does not shield every interactive workload, and explicit `OOMPolicy=continue`, so an OOM kill in a descendant cgroup does not stop the manager and every visible session. The UID-level cap covers both `app.slice` and sibling session scopes, so an app runaway plus a long-lived interactive session cannot recreate the host-wide memory collapse.
+  - `system.slice`: `MemoryLow=24G` and `MemoryMin=12G`, with `MemoryHigh`, `MemoryMax`, and `MemorySwapMax` explicitly `infinity`, provide a deliberate partial recovery-plane floor. The floor is below the observed 24.6 GiB current / 28.8 GiB repair peak so the 128 GiB host retains bounded room for UID 1000 and kernel overhead; it is not a claim that the full peak is unreclaimable. The recurring audit checks all five properties so a finite recovery-plane hard ceiling cannot hide.
+  - Recovery daemons: apcupsd (`-900`), systemd-logind/resolved/timesyncd/NetworkManager (`-800`), and D-Bus (`-900`). `sshd` stays at `OOMScoreAdjust=0` with `OOMPolicy=continue`, so interactive children do not inherit OOM immunity while loss of one session does not stop the recovery daemon. Install verification and the recurring OOM audit require every recovery daemon to have a live main PID, compare each effective loaded `OOMScoreAdjust` with that PID's live `oom_score_adj`, and require effective SSH `OOMPolicy=continue`. The installer writes running main PIDs without restarting login/network.
+  - `hapax-live-cuepoints.service` remains installed for future governed activation but is marked `Hapax-Parked`, has no target membership or `[Install]` enablement, and uses `Restart=no` while `HAPAX_LIVE_CUEPOINTS_ENABLED=0`. Both unit deployment paths enforce `disable --now` and clear stale failed state instead of scheduling an inert watchdog process. Recheck with `systemctl --user show hapax-live-cuepoints.service -p UnitFileState -p ActiveState -p SubState -p MainPID -p NRestarts -p WorkingDirectory -p ExecStart` and require `static` plus `inactive/dead` with `MainPID=0`; the reported venv/script paths remain rooted under `~/.cache/hapax/source-activation/worktree`.
+  - Broadcast-critical user services: pipewire/pipewire-pulse/wireplumber (live target `-900`), hapax-daimonion (`-500`), studio-compositor (`-800`), and hapax-imagination (`-800`) carry source-controlled memory reservations and an explicit valid startup `OOMScoreAdjust=100`. Install verification and the recurring audit require the three audio services to remain in `session.slice` with effective `NoNewPrivileges=yes`, and the three Hapax visual/semantic services to remain in `app.slice`; leaf reservations and all immediate-child ancestor-floor composition are checked so every leaf floor remains effective. An unprivileged user manager cannot lower a child below its own score, so encoding the negative live target as the unit property is ineffective. The three Hapax services run fail-open `/usr/local/bin/hapax-oom-score-trigger %n` from `ExecStartPost=`. The three audio services retain their distro `NoNewPrivileges=yes` sandbox, which makes a sudo-based post-start transition impossible; their negative live scores are applied and repaired by the root timer within its 30-second cadence rather than by a dead startup hook. The manifest-owned trigger pins `/usr/bin/bash` and bounds the compatible user-unit wait on `sudo -n` plus the root-enforcer call to five seconds; sudo implementations may place the privileged child in a separate session, so this is not a claim that killing the waiting client always kills an already-launched root child. `/etc/sudoers.d/hapax-oom-score-enforce` grants account `hapax` the six allowlisted `--apply-unit` commands plus exact read-only `cmp`/`visudo` probes for the recurring drift audit. The grant is installed at mode `0440`, parsed with `visudo`, and explicitly `NOSETENV`; its `cmp` compares the live grant with a separate mode-`0444` root-owned reference under `/usr/local/share/hapax/root-required/`, never the hapax-owned installed-source snapshot. The privileged enforcer pins `/usr/bin/bash` and fixes its production identity, command paths, `/proc`, cgroup root, and secure `PATH`; `HAPAX_OOM_*` overrides work only in non-root test mode and are refused under root or sudo. Podium is deliberately coupled to account `hapax`, UID `1000`, and `/home/hapax`. Trigger startup mode resolves a compatible unit's authoritative cgroup and lowers its stable `MainPID` without enumerating the helper's own short-lived descendants. The system timer repeats the full cgroup-PID enforcement pass every 30 seconds for audio startup, later children, and repair fallback; each oneshot activation has a 25-second start deadline so a stalled manager query cannot suppress later timer runs indefinitely. `After=user@1000.service` only orders a transaction that already contains both units; non-resurrection is provided by an explicit `ActiveState` guard that exits successfully only for `inactive`, proceeds for active/reloading/refreshing, and fails actionably for failed, transitional, unknown, empty, or manager-query states.
+  - Root enforcer failures are accumulated across all attempted PIDs, returned nonzero after the full pass, and routed to `/usr/local/sbin/hapax-root-failure-intake`. That helper calls the stable D2 recovery bundle under `~/.local/lib/hapax-recovery/council/current` and records an emergency JSONL fallback with absolute `/usr/bin/python3` if the bundle is missing. The system-manager failure bridge runs as `User=hapax`, carries a system-owned-only `PATH`, and admits at most one start per hour, preventing a persistent 30-second enforcer failure from creating an incident storm while leaving successful timer runs unrestricted. The two recurring audits use `notify-failure@`, whose `service-failed` intake coalesces repeated observations into one fingerprinted task and consumes desktop notifications by default; timer recurrence therefore updates durable incident evidence without stacking operator alerts.
+  - `app.slice`: `MemoryHigh=72G`, `MemoryMax=88G`, `MemorySwapMax=8G`, `MemoryLow=16G`, `MemoryMin=8G` as an aggregate user-app RAM/swap backstop for units under app.slice; broadcast-critical app.slice members carry per-unit `MemoryLow`/`MemoryMin` reservations so reclaim pressure lands on agent/browser runaways first. The recurring audit sums every immediate child floor beneath `app.slice`, including transient siblings, so the protected leaf reservations cannot be silently diluted. Live activation uses `systemctl --user set-property --runtime` and must not restart the slice. New transient `tmux-spawn-*` scopes outside app.slice fail the audit until their launcher supplies per-scope bounds; the audit reads `Slice=` before treating an unbounded scope as app-slice-backed.
+  - `session.slice`: `MemoryHigh`, `MemoryMax`, and `MemorySwapMax` remain `infinity`, while `MemoryLow=2G` and `MemoryMin=1G` cover the aggregate 1.5G/768M audio leaf floors for PipeWire, PipeWire Pulse, and WirePlumber. The recurring audit also sums every immediate child floor beneath `session.slice`, so a new session sibling cannot dilute those audio floors unnoticed. This modest floor does not exempt the rest of the interactive session from the 96G UID hard cap or 8G UID swap cap. Activation uses runtime `set-property` without restarting the slice or audio services.
+  - `MemoryMax=88G` on app.slice is the app-workload hard stop; `MemoryMax=96G` on `user-1000.slice` is the UID-level stop that includes sibling session scopes. Podium has `134152699904` bytes of RAM by `free -b`, so the UID cap leaves roughly 29 GiB outside UID 1000 while `MemoryHigh=72G`/`80G` starts reclaim earlier and `MemorySwapMax=8G` prevents the 33 GiB swap exhaustion recorded in the incident.
+  - Recheck: `scripts/install-p0-oom-containment --check`, `scripts/install-p0-oom-containment --verify-live`, `/usr/local/sbin/hapax-oom-policy-audit --json`, `systemctl show user@1000.service -p OOMScoreAdjust -p OOMPolicy -p MainPID`, `systemctl is-enabled hapax-oom-score-enforce.timer earlyoom.service`, `systemctl is-active hapax-oom-score-enforce.timer earlyoom.service`, and `systemctl show hapax-oom-score-enforce.service -p TimeoutStartUSec -p Result -p ExecMainStartTimestamp`. Confirm the system-manager bridge with `systemctl cat hapax-root-failure-intake@.service` and `systemctl show 'hapax-root-failure-intake@hapax-oom-score-enforce.service.service' -p User -p StartLimitIntervalUSec -p StartLimitBurst` after a governed failure witness. Also require `systemctl --user is-enabled hapax-oom-policy-audit.timer hapax-root-required-deploy-audit.timer`, `systemctl --user is-active hapax-oom-policy-audit.timer hapax-root-required-deploy-audit.timer`, and `systemctl --user show hapax-oom-policy-audit.service hapax-root-required-deploy-audit.service -p TimeoutStartUSec` with both services loaded at `2min`. The incident no-recurrence closure window begins at the later mtime of the two durable exact-head installed receipts and passes after 15 minutes only if both receipt bodies still equal the worktree head and fingerprint `technical_alert:podium-oom-collapse-with-false-ups-failure-alert` remains at baseline `count=2`, `last_seen=2026-07-10T02:15:38Z`, and `recurrence_count=0`; verify reproducibly from the deployed worktree with `head="$(git rev-parse HEAD)"; receipts=(~/.local/state/hapax/root-required/installed-receipts/{oom-containment,apcupsd-power-alerts}.sha); test "$(cat "${receipts[0]}")" = "$head" && test "$(cat "${receipts[1]}")" = "$head" && installed_epoch="$(stat -c %Y "${receipts[@]}" | sort -nr | head -n 1)" && test "$(date -u +%s)" -ge "$((installed_epoch + 900))" && jq -e '.incidents["technical_alert:podium-oom-collapse-with-false-ups-failure-alert"] | .count == 2 and .last_seen == "2026-07-10T02:15:38Z" and .recurrence_count == 0' ~/.cache/hapax/p0-incident-intake/state.json`. Any same-head repair conservatively restarts the window by refreshing a receipt mtime. Inspect matching history with `jq -c 'select(.fingerprint == "technical_alert:podium-oom-collapse-with-false-ups-failure-alert")' ~/.cache/hapax/p0-incident-intake/events.jsonl`.
+  - Root-required post-merge installers return rc `77` when non-interactive sudo is unavailable; `hapax-post-merge-deploy` derives each package trigger set from the versioned ownership manifests on both sides of the deployed diff and atomically stages reconstructible packages at `~/.cache/hapax/post-merge-root-required/<sha>/`, while desired SHAs, installed source snapshots, installed SHA receipts, and the shared lock live durably under `~/.local/state/hapax/root-required/`. The complete scripts refuse whole-script root execution: run them as UID 1000 after `sudo -v`, so the shared lock is opened only by its owner and only narrow `run_root` commands cross the privilege boundary. `/usr/bin/python3` wrappers in post-merge deploy, both installers, and the recurring root-required audit open the lock with `O_NOFOLLOW`, validate and lock the opened inode, and pass only that descriptor to their child; each child revalidates the descriptor against the current regular path inode and acquires the appropriate exclusive/shared lock itself, so a pre-seeded environment marker or unrelated inherited descriptor cannot bypass serialization. The recurring OOM policy audit independently opens and validates the same inode and holds a shared lock across its complete live readback, so first activation or a timer tick waits for any exclusive APC/OOM install instead of reporting transient package state. When both packages changed, the apcupsd package runs first because the OOM verifier requires the recovery daemon to be enabled and active. The desired SHA is recorded before each install attempt, so loss of a cached RUNBOOK remains audit-failing until that desired package is installed. Desired transitions are monotonic under the shared lock: post-merge and both installers preserve a newer desired descendant, accept a newer candidate, and accept an ancestry-divergent squash/rebase transition only when both versioned ownership manifests are identical and every owned package file is byte-identical. Every install, including a direct repair from a clean worktree, verifies the candidate against both installed and desired receipts, its versioned manifest, and every owned source file before live mutation; `--install` always performs live verification before installed-source snapshots or receipts advance. A manifest may add owned paths, but removing or renaming an installed path fails before mutation until explicit governed live-removal handling exists. Installer verification and the recurring audits require every root artifact to be root-owned with its exact mode beneath a root-owned, non-writable parent; the root-required audit also binds each installed snapshot back to its receipt commit without a source-activation fallback. Installers default commit lookup to the stable source-activation worktree rather than a developer worktree. Run each staged RUNBOOK command after `sudo -v`; a successful or superseded installer marks only the exact validated `<sha>/<package>` source drained by renaming `RUNBOOK.txt` to `DRAINED.txt`, never deleting its own execution tree. A missing receipt/snapshot or non-equivalent divergent, modified, or unverifiable package fails closed. Post-merge deployment never republishes installed source after the owning installer releases its lock and never bulk-deletes deferrals from other SHAs. Recheck these guarantees with `/usr/local/sbin/hapax-root-required-deploy-audit`, `/usr/local/sbin/hapax-oom-policy-audit --json`, `uv run pytest -q tests/scripts/test_hapax_post_merge_deploy.py -k root_required_audit`, and `uv run pytest -q tests/scripts/test_hapax_oom_policy_audit.py -k package_lock`.
+  - Generic user-slice drop-in deployment applies `MemoryHigh`, `MemoryMax`, `MemorySwapMax`, `MemoryLow`, and `MemoryMin` only from a `[Slice]` section through runtime `set-property` without restarting the slice. A wrong section, malformed memory value, generic slice deletion, removal of a previously applied property, unsupported directive, or any transient scope drop-in change fails before persistent/runtime mutation; those transitions require a governed slice- or scope-specific installer that can clear runtime state without restarting attached work. Recheck the fail-closed witnesses with `uv run pytest -q tests/scripts/test_hapax_post_merge_deploy.py -k 'generic_slice or generic_scope'`.
+  - The OOM installer disables and removes stale user-manager copies of the system-scoped root enforcer service/timer and failure-intake template before user-manager reload. Install verification and the recurring root-required audit both fail if any same-named user copy returns.
+- **Other system-level OOM overrides**: docker (-900), pipewire/wireplumber (-900), and hardware/service-specific drop-ins documented beside their installers.
+- **UPS power-alert provenance** (`scripts/install-apcupsd-power-alerts`): installs the apcupsd config/hooks/helper into `/etc/apcupsd`, hard-codes production hooks to `/etc/apcupsd/hapax-power-event.py`, installs `/etc/logrotate.d/hapax-ups-power-events` for `/var/log/hapax/ups-power-events.jsonl`, and enables/starts `apcupsd.service` so the sole shutdown-policy owner survives reboot; live verification requires both enabled and active state. The logrotate stanza uses `su root root` because `/var/log/hapax` is group-writable for local audit writers, atomically renames and recreates the live file as `0640 root:hapax`, and delays compression for one rotation so a helper that opened the old inode before rename can finish appending to the retained `.1` file without losing the receipt. A concurrent real-logrotate regression holds such an in-flight writer across rotation and requires the complete pre-rotation and post-rotation event partition. Battery-transfer receipts say only that the transfer event itself does not request shutdown (`event_requests_shutdown=false`), while global `shutdown_requested` remains unknown; restoration receipts are also neutral because either event can follow a real `doshutdown`. All three hooks fail open so telemetry failure cannot suppress or indefinitely delay apccontrol: `onbattery` and `offbattery` have a hard ten-second whole-helper deadline, while the dedicated `doshutdown` hook has a hard five-second deadline and attempts to record both shutdown fields as true. A blocked helper may therefore complete without a receipt. On the shutdown path, apcaccess and ntfy also have one-second internal ceilings.
+  - The installer safely opens or initializes the JSONL target as a single-link `0640 root:hapax` regular file and refuses symlinked, multiply-linked, or non-regular inodes before ownership/mode repair. Install verification and the recurring root audit enforce that runtime-artifact contract. The root-run helper independently opens the target with `O_NOFOLLOW`, locks and writes through the opened descriptor, and requires a single-link regular inode owned by the hook UID. A group member can therefore rotate/unlink the directory entry but cannot redirect a privileged hook append through a symlink or hard link; an unsafe inode degrades provenance and leaves apccontrol fail-open while the audits turn red.
+  - `apcupsd` is the sole UPS shutdown-policy owner. `/etc/UPower/UPower.conf.d/90-hapax-apcupsd-owner.conf` keeps UPower available for status/history while pinning its critical action to `Ignore`. A normal install restarts apcupsd or reloads UPower only when that daemon's owned files differ or its loaded-policy readback disagrees with source; matching and logrotate-only retries do not interrupt either daemon, while a prior run interrupted after file copy still converges on retry. Live installation and the recurring root audit require UPower's D-Bus `GetCriticalAction` value to be `Ignore` and compare apcupsd's loaded `MBATTCHG`, `MINTIMEL`, and `MAXTIME` values against source `BATTERYLEVEL`, `MINUTES`, and `TIMEOUT` before receipts can advance. apcupsd retains the configured 20% charge / 5-minute runtime shutdown thresholds.
+  - Recheck: `scripts/install-apcupsd-power-alerts --check` and `scripts/install-apcupsd-power-alerts --verify-live`; use `scripts/install-apcupsd-power-alerts --install --verify-live` to repair live drift. Root invocation resolves podium UID 1000's home/group and returns durable state ownership to `hapax`; target overrides support tests and state-path recovery, not a portable alternate-account installation.
 
 **Runtime application / receipt path:** source changes in this directory are
 not host mutation authority. A runtime-authorized follow-on task must first
@@ -160,7 +182,7 @@ record a read-only receipt:
 Only that separate runtime path may perform sysctl writes, zram-generator
 changes, daemon reloads, unit installation, or service restarts.
 
-**Design principle**: prevent global OOM by bounding the transient memory spikers (cargo builds, ffmpeg) and giving kernel reclaim a larger buffer. Critical stack services are additionally protected via `OOMScoreAdjust=-500/-800` so the kernel strongly prefers killing unbounded leaf processes (interactive Claude sessions, transient tools) over the stack in a true crisis. Interactive Claude sessions run in `session-N.scope` under `user-1000.slice` (not `user@1000.service`) and are intentionally left uncapped + unprotected — they are the designated sacrifice target.
+**Design principle**: prevent global OOM by bounding transient memory spikers (cargo builds, ffmpeg) and giving kernel reclaim a larger buffer. Protected user services configure the valid manager-inherited startup score `OOMScoreAdjust=100`; the root enforcer applies their narrow live `oom_score_adj=-500/-800/-900` targets, so the kernel strongly prefers killing leaf processes (interactive agent sessions, transient tools) over the critical stack in a true crisis. Individual `session-N.scope` leaves may have no local limit, but they remain killable and are covered by the aggregate `user-1000.slice` hard ceiling.
 
 ## Ollama GPU Assignment
 
@@ -177,7 +199,7 @@ changes, daemon reloads, unit installation, or service restarts.
 ## Installation
 
 ```bash
-# Symlink all units from this directory (idempotent)
+# Install/symlink all user units and drop-ins from this directory (idempotent)
 systemd/scripts/install-units.sh
 
 # Or manually link a single unit
@@ -185,7 +207,16 @@ ln -sf "$PWD/systemd/units/my-service.service" ~/.config/systemd/user/
 systemctl --user daemon-reload
 ```
 
-**Units are symlinked, not copied.** Edits to `systemd/units/` take effect on `daemon-reload` without re-running the install script. The script covers `.service`, `.timer`, `.target`, and `.path` files.
+Top-level user `.service`, `.timer`, `.target`, `.path`, and `.slice`
+units are normally symlinked, so edits to `systemd/units/` take effect on
+`daemon-reload` without re-running the install script. `install-units.sh`
+also installs drop-ins under `.service.d`, `.timer.d`, `.slice.d`, and
+`.scope.d`; ordinary drop-ins are symlinked, while P0 host-safety OOM
+drop-ins and the two recurring P0 audit service/timer pairs are skipped because
+only `scripts/install-p0-oom-containment` may copy them from a governed staged
+source. System-scoped units marked
+`# Hapax-Install-Scope: system` require their dedicated installer or a
+root-required post-merge deploy path.
 
 `install-units.sh` also removes and masks retired units listed in its
 `DECOMMISSIONED_UNITS` array if stale copies are present under
@@ -291,10 +322,14 @@ SHA state files: `~/.cache/hapax/rebuild/last-{key}-sha`.
 
 `scripts/hapax-post-merge-deploy` covers everything the python-services rebuild
 cascade doesn't: systemd unit files, drop-ins, pipewire/wireplumber confs,
-`scripts/hapax-*` symlinks, and helper watchdog binaries. Until 2026-05-03 it
+release-pinned `scripts/hapax-*` single-link regular copies published by atomic
+rename, and helper watchdog binaries. Until 2026-05-03 it
 was manual-only; the audit in `cc-task deploy-pipeline-canonical-worktree-isolation`
 found 25 systemd units canonical-but-not-installed because nothing fired the
 script after merges.
+
+Recheck a release-pinned launcher with
+`test -f ~/.local/bin/hapax-post-merge-deploy && test ! -L ~/.local/bin/hapax-post-merge-deploy && test "$(stat -c '%h:%a' ~/.local/bin/hapax-post-merge-deploy)" = 1:755 && cmp -s ~/.cache/hapax/source-activation/worktree/scripts/hapax-post-merge-deploy ~/.local/bin/hapax-post-merge-deploy`.
 
 `hapax-post-merge-deploy.path` watches the canonical local main ref
 (`/home/hapax/projects/hapax-council/.git/refs/heads/main`). The dedicated
@@ -334,6 +369,13 @@ queries deterministic. `scripts/check-audio-conf-names.py` enforces the
 rule in pre-commit for top-level PipeWire confs; generated compiler
 artifacts under `config/pipewire/generated/` keep the audio-routing
 compiler's node-id filename convention.
+
+`systemd/overrides/**` contains source/rationale and historical snapshots only;
+`hapax-post-merge-deploy` intentionally does not install it. In particular, the
+three `OOMScoreAdjust=-900` PipeWire override snapshots there are non-deployable
+evidence from the former design. The authoritative deployable drop-ins live
+under `systemd/units/{pipewire,pipewire-pulse,wireplumber}.service.d/`, configure
+the valid startup score `100`, and rely on the root timer for live score `-900`.
 
 ## Storage Management
 

@@ -434,12 +434,19 @@ def _dimensional_request(
     }
     if capability_overrides:
         capability_payload.update(capability_overrides)
+    quota = _quota()
+    if route_id == "claude.headless.full":
+        quota = _quota(
+            route_subscription_quota_state="fresh",
+            route_quota_evidence_refs=("test:claude-headless-full:account-live-quota:observed",),
+        )
     return _request(
         route_id=route_id,
         platform=platform or parts[0],
         mode=parts[1],
         profile=profile or parts[2],
         capability=_capability(**capability_payload),
+        quota=quota,
         demand_vector=demand or _demand(),
         supply_vector=build_supply_vector(
             _route_with_scores(route_id, score=score, confidence=confidence), now=NOW
@@ -1728,6 +1735,52 @@ def test_glmcp_subscription_route_holds_when_route_quota_unknown() -> None:
     assert decision.quota_freshness_green is False
     assert "subscription_route_quota_not_fresh" in decision.reason_codes
     assert "route_subscription_quota_state:unknown" in decision.reason_codes
+
+
+def test_claude_subscription_route_holds_when_route_quota_unknown() -> None:
+    request = _request(
+        platform="claude",
+        mode="headless",
+        profile="full",
+        route_id="claude.headless.full",
+        capability=_capability(route_id="claude.headless.full"),
+        quota=_quota(
+            subscription_quota_state="fresh",
+            route_subscription_quota_state="unknown",
+            route_quota_evidence_refs=("relay-receipt:claude:quota-admission:absent",),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.HOLD
+    assert decision.route_policy_green is False
+    assert decision.quota_freshness_green is False
+    assert "subscription_route_quota_not_fresh" in decision.reason_codes
+    assert "route_subscription_quota_state:unknown" in decision.reason_codes
+
+
+def test_claude_subscription_route_launches_with_fresh_route_quota() -> None:
+    request = _request(
+        platform="claude",
+        mode="headless",
+        profile="full",
+        route_id="claude.headless.full",
+        capability=_capability(route_id="claude.headless.full"),
+        quota=_quota(
+            subscription_quota_state="fresh",
+            route_subscription_quota_state="fresh",
+            route_quota_evidence_refs=("test:claude-headless-full:account-live-quota:observed",),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert decision.route_policy_green is True
+    assert decision.quota_freshness_green is True
+    assert "policy_launch" in decision.reason_codes
+    assert "subscription_route_quota_not_fresh" not in decision.reason_codes
 
 
 def test_glmcp_subscription_route_missing_quota_is_not_fresh_green() -> None:

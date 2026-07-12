@@ -205,6 +205,21 @@ def _validate(mod_, task_root, task_id, cap_path):
 
 
 class TestSystemDrainValidation:
+    def test_platform_qualified_claude_owner_is_admitted(self, tmp_path, monkeypatch):
+        _drain_env(tmp_path, _pid_dir(tmp_path), monkeypatch)
+        task_root = tmp_path / "tasks"
+        _write_task(
+            task_root,
+            "orphan-qualified",
+            status="pr_open",
+            assigned_to="claude/delta",
+        )
+        cap = _mint_cap(tmp_path, "orphan-qualified", mod.SYSTEM_DRAIN_LANE)
+
+        validation = _validate(mod, task_root, "orphan-qualified", cap)
+
+        assert validation.ok is True
+
     def test_pr_open_dead_lane_admitted_and_audited(self, tmp_path, monkeypatch):
         _drain_env(tmp_path, _pid_dir(tmp_path), monkeypatch)
         task_root = tmp_path / "tasks"

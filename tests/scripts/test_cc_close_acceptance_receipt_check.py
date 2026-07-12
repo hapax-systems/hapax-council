@@ -58,6 +58,7 @@ def _write_note(
             task_id: {task_id}
             title: "{task_id}"
             status: {status}
+            assigned_to: test-role
             quality_floor: {quality_floor}
             completed_at:
             updated_at:
@@ -146,6 +147,7 @@ def _run_close(home: Path, task_id: str, **extra_env: str) -> subprocess.Complet
     env.pop("HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF", None)
     env.update(
         HOME=str(home),
+        HAPAX_AGENT_NAME="test-role",
         HAPAX_AGENT_ROLE="test-role",
         # Neutralize unrelated done-path gates so this file tests ONLY the
         # acceptance-receipt gate end-to-end.
@@ -208,7 +210,11 @@ class TestCcCloseEndToEnd:
         vault = _vault(home)
         _write_note(vault / "active", "task-r")
         env = os.environ.copy()
-        env.update(HOME=str(home), HAPAX_AGENT_ROLE="test-role")
+        env.update(
+            HOME=str(home),
+            HAPAX_AGENT_NAME="test-role",
+            HAPAX_AGENT_ROLE="test-role",
+        )
         result = subprocess.run(
             ["bash", str(CC_CLOSE), "task-r", "--status", "withdrawn"],
             env=env,

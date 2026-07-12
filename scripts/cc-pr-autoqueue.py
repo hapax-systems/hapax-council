@@ -82,6 +82,7 @@ from shared.sdlc_lifecycle import (  # noqa: E402
     release_auto_arm_waivers,
     task_closure_validity,
 )
+from shared.sdlc_owner_identity import parse_task_owner  # noqa: E402
 
 LOG = logging.getLogger("cc-pr-autoqueue")
 
@@ -1333,8 +1334,16 @@ def _epic_serialize_key(task: TaskNote) -> str | None:
 
 def _task_lane(task: TaskNote) -> str | None:
     """The lane a task is worked in: the live assignee, else declared affinity."""
-    for candidate in (task.assigned_to, task.lane_affinity):
-        lane = (candidate or "").strip().lower()
+    for index, candidate in enumerate((task.assigned_to, task.lane_affinity)):
+        lane = (candidate or "").strip()
+        if index == 0:
+            try:
+                owner = parse_task_owner(lane)
+            except ValueError:
+                return None
+            if owner is not None:
+                lane = owner.role
+        lane = lane.lower()
         if lane and lane not in EPIC_UNASSIGNED_LANES:
             return lane
     return None

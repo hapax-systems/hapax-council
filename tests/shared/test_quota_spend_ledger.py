@@ -104,6 +104,120 @@ AGY_SECRETISH_WITNESS_EVIDENCE_REF = AGY_ADMISSION_EVIDENCE_REF.replace(
     "witness:agy-gemini31pro-smoke-witness:",
     "witness:sk-live-secret-token-000000000000000000000000:",
 )
+CLAUDE_ADMISSION_EVIDENCE_REF = (
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:"
+    "witness:claude-subscription-headroom-observed-20260708t1400z:"
+    "observation:subscription_quota_headroom_observed:"
+    "observed_at:2026-07-08T14:00:00Z:"
+    "fresh_until:2026-07-08T14:15:00Z:"
+    "account-live-quota:observed"
+)
+CLAUDE_SECRETISH_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:sk-live-secret-token-000000000000000000000000:",
+)
+CLAUDE_LANE_PRESENCE_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:hapax-claude-eta-present-20260708:",
+)
+CLAUDE_BARE_LANE_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:eta:",
+)
+CLAUDE_SESSION_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:claude-session-observed-20260708t1400z:",
+)
+CLAUDE_BILLING_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:claude-billing-cus_123-headroom-20260708:",
+)
+CLAUDE_SUBSCRIPTION_ID_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:claude-subscription-id-123-headroom-20260708:",
+)
+CLAUDE_GREEK_LANE_DIGIT_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:claude-headroom-eta2-observed:",
+)
+CLAUDE_PLUS_LANE_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:eta+present:",
+)
+CLAUDE_PLUS_BILLING_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:billing+cus_123:",
+)
+CLAUDE_DOT_BILLING_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:cus.123:",
+)
+CLAUDE_BARE_BILLING_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:cus123:",
+)
+CLAUDE_UNALLOWLISTED_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:claude-si-1abc-headroom:",
+)
+CLAUDE_BILLING_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:claude-subscription-quota-admission-cus_123.yaml:",
+)
+CLAUDE_SUBSCRIPTION_ID_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:claude-subscription-quota-admission-subscription-id-123.yaml:",
+)
+CLAUDE_LANE_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:claude-subscription-quota-admission-lane2.yaml:",
+)
+CLAUDE_GREEK_LANE_DIGIT_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:claude-subscription-quota-admission-eta2.yaml:",
+)
+CLAUDE_PLUS_LANE_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:claude-subscription-quota-admission-eta+present.yaml:",
+)
+CLAUDE_PLUS_BILLING_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:claude-subscription-quota-admission-billing+cus_123.yaml:",
+)
+CLAUDE_DOT_BILLING_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:claude-subscription-quota-admission-cus.123.yaml:",
+)
+CLAUDE_BARE_BILLING_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:claude-subscription-quota-admission-cus123.yaml:",
+)
+CLAUDE_HASHED_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:unsafe-receipt-name-sha256:0123456789abcdef:",
+)
+CLAUDE_SAFE_HASHED_IGNORED_EVIDENCE_REF = (
+    "relay-receipt:unsafe-receipt-name-sha256:0123456789abcdef:"
+    "ignored:receipt-name-names-billing-or-account-identifier"
+)
+CLAUDE_UNSAFE_HASHED_IGNORED_EVIDENCE_REF = (
+    "relay-receipt:unsafe-receipt-name-sha256:0123456789abcdef:ignored:customer-cus_123"
+)
+CLAUDE_UNSAFE_OBSERVED_AT_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "observed_at:2026-07-08T14:00:00Z:",
+    "observed_at:cus_123:",
+)
+CLAUDE_UNSAFE_FRESH_UNTIL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "fresh_until:2026-07-08T14:15:00Z:",
+    "fresh_until:lane2:",
+)
+CLAUDE_EXTRA_UNSAFE_SEGMENT_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "observed_at:2026-07-08T14:00:00Z:",
+    "billingcus123:observed_at:2026-07-08T14:00:00Z:",
+)
+CLAUDE_PLAIN_UNSAFE_HOLD_EVIDENCE_REF = "claude-billing-cus_123-lane-eta-observed"
+CLAUDE_COLON_UNSAFE_HOLD_EVIDENCE_REF = "customer:cus_123"
+CLAUDE_NOW = datetime(2026, 7, 8, 14, 5, tzinfo=UTC)
 
 
 def _payload() -> dict[str, Any]:
@@ -698,6 +812,52 @@ def test_successful_task_scoped_glmcp_payg_review_spend_witness_is_discovered() 
         "spend-20260517T075900Z-glmcp-payg-review-test"
     ]
     assert has_successful_task_scoped_glmcp_payg_review_spend(ledger, task_id) is True
+
+
+def test_spend_receipt_accepts_gate_event_task_hash_alias() -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    task_id = "cc-task-glmcp-review-seat-glm52-model-contract-20260706"
+    _add_glmcp_payg_spend_receipt(payload, budget_id, task_id=task_id)
+    receipt = payload["spend_receipts"][-1]
+    receipt["task_hash"] = "sha256:" + ("a" * 64)
+
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    assert ledger.spend_receipts[-1].task_hash == "sha256:" + ("a" * 64)
+
+
+def test_spend_receipt_task_hash_is_optional_and_omitted_when_absent() -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    task_id = "cc-task-glmcp-review-seat-glm52-model-contract-20260706"
+    _add_glmcp_payg_spend_receipt(payload, budget_id, task_id=task_id)
+
+    ledger = QuotaSpendLedger.model_validate(payload)
+    dumped_receipt = ledger.spend_receipts[-1].model_dump(mode="json")
+
+    assert ledger.spend_receipts[-1].task_hash is None
+    assert "task_hash" not in dumped_receipt
+
+
+@pytest.mark.parametrize(
+    "task_hash",
+    [
+        "",
+        "sha256:" + ("g" * 64),
+        "sk-live-secret-token-000000000000000000000000",
+        "/home/hapax/private-task-note.md",
+    ],
+)
+def test_spend_receipt_rejects_malformed_task_hash_alias(task_hash: str) -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    task_id = "cc-task-glmcp-review-seat-glm52-model-contract-20260706"
+    _add_glmcp_payg_spend_receipt(payload, budget_id, task_id=task_id)
+    payload["spend_receipts"][-1]["task_hash"] = task_hash
+
+    with pytest.raises(ValidationError):
+        QuotaSpendLedger.model_validate(payload)
 
 
 def test_pending_task_scoped_glmcp_payg_review_spend_is_not_successful_witness() -> None:
@@ -1387,6 +1547,494 @@ def test_agy_receipt_bounded_route_rejects_generic_fresh_quota_snapshot() -> Non
         "quota-snapshot:quota-agy-review-direct-generic-fresh:untrusted_agy_admission_evidence"
         in refs
     )
+
+
+def _claude_snapshot(
+    evidence_ref: str,
+    *,
+    snapshot_id: str = "quota-claude-headless-full-fresh",
+    route_id: str = "claude.headless.full",
+    provider: str = "anthropic-claude-subscription",
+    reason: str = "fixture claude admission",
+) -> dict[str, Any]:
+    return {
+        "quota_snapshot_schema": 1,
+        "snapshot_id": snapshot_id,
+        "captured_at": "2026-07-08T13:59:00Z",
+        "fresh_until": "2026-07-08T14:15:00Z",
+        "route_id": route_id,
+        "provider": provider,
+        "capacity_pool": "subscription_quota",
+        "subscription_quota_state": "fresh",
+        "evidence_refs": [evidence_ref],
+        "operator_visible_reason": reason,
+    }
+
+
+def _claude_ledger(
+    evidence_ref: str,
+    *,
+    snapshot_id: str = "quota-claude-headless-full-fresh",
+    route_id: str = "claude.headless.full",
+    provider: str = "anthropic-claude-subscription",
+    reason: str = "fixture claude admission",
+    with_telemetry_writer: bool = True,
+) -> QuotaSpendLedger:
+    payload = _active_budget_payload()
+    if with_telemetry_writer:
+        payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    # Isolate the claude snapshot under test: the base fixture carries an EXHAUSTED operator
+    # dry-run snapshot for claude.headless.full that would otherwise dominate the aggregate.
+    payload["quota_snapshots"] = [
+        snapshot for snapshot in payload["quota_snapshots"] if snapshot.get("route_id") != route_id
+    ]
+    payload["quota_snapshots"].append(
+        _claude_snapshot(
+            evidence_ref,
+            snapshot_id=snapshot_id,
+            route_id=route_id,
+            provider=provider,
+            reason=reason,
+        )
+    )
+    return QuotaSpendLedger.model_validate(payload)
+
+
+def test_claude_receipt_bounded_route_has_guarded_provider_mapping() -> None:
+    assert "claude.headless.full" in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
+    assert "claude.review.opus" in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
+    assert (
+        RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS["claude.headless.full"]
+        == "anthropic-claude-subscription"
+    )
+    assert (
+        RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS["claude.review.opus"]
+        == "anthropic-claude-subscription"
+    )
+
+
+def test_receipt_bounded_route_accepts_claude_admission_evidence() -> None:
+    ledger = _claude_ledger(CLAUDE_ADMISSION_EVIDENCE_REF)
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.FRESH
+    assert refs == (CLAUDE_ADMISSION_EVIDENCE_REF,)
+    # cross-layer contract: this exact ref is what the availability guarantor attests on.
+    assert CLAUDE_ADMISSION_EVIDENCE_REF.endswith(":account-live-quota:observed")
+
+
+def test_claude_review_receipt_bounded_route_accepts_claude_admission_evidence() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_ADMISSION_EVIDENCE_REF,
+        snapshot_id="quota-claude-review-opus-fresh",
+        route_id="claude.review.opus",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.review.opus", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.FRESH
+    assert refs == (CLAUDE_ADMISSION_EVIDENCE_REF,)
+
+
+def test_receipt_bounded_route_rejects_secretish_claude_witness() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_SECRETISH_WITNESS_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-secretish-witness",
+        reason="fixture claude secretish witness",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert CLAUDE_SECRETISH_WITNESS_EVIDENCE_REF not in refs
+    assert any(ref.startswith("quota-evidence-ref:redacted-secretish-sha256:") for ref in refs)
+    assert (
+        "quota-snapshot:quota-claude-headless-full-secretish-witness:"
+        "untrusted_claude_admission_evidence"
+    ) in refs
+
+
+def test_receipt_bounded_route_rejects_lane_presence_claude_witness() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_LANE_PRESENCE_WITNESS_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-lane-presence-witness",
+        reason="fixture claude lane-presence witness",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert CLAUDE_LANE_PRESENCE_WITNESS_EVIDENCE_REF not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert (
+        "quota-snapshot:quota-claude-headless-full-lane-presence-witness:"
+        "untrusted_claude_admission_evidence"
+    ) in refs
+
+
+def test_receipt_bounded_route_rejects_bare_lane_claude_witness() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_BARE_LANE_WITNESS_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-bare-lane-witness",
+        reason="fixture claude bare-lane witness",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert (
+        "quota-snapshot:quota-claude-headless-full-bare-lane-witness:"
+        "untrusted_claude_admission_evidence"
+    ) in refs
+
+
+def test_receipt_bounded_route_rejects_session_shaped_claude_witness() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_SESSION_WITNESS_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-session-witness",
+        reason="fixture claude session-shaped witness",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert (
+        "quota-snapshot:quota-claude-headless-full-session-witness:"
+        "untrusted_claude_admission_evidence"
+    ) in refs
+
+
+def test_receipt_bounded_route_rejects_billing_identifier_claude_witness() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_BILLING_WITNESS_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-billing-witness",
+        reason="fixture claude billing-shaped witness",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert CLAUDE_BILLING_WITNESS_EVIDENCE_REF not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert (
+        "quota-snapshot:quota-claude-headless-full-billing-witness:"
+        "untrusted_claude_admission_evidence"
+    ) in refs
+
+
+@pytest.mark.parametrize(
+    ("evidence_ref", "snapshot_id", "reason"),
+    [
+        (
+            CLAUDE_SUBSCRIPTION_ID_WITNESS_EVIDENCE_REF,
+            "quota-claude-headless-full-subscription-id-witness",
+            "fixture claude subscription-id witness",
+        ),
+        (
+            CLAUDE_GREEK_LANE_DIGIT_WITNESS_EVIDENCE_REF,
+            "quota-claude-headless-full-greek-lane-digit-witness",
+            "fixture claude digit-tailed greek lane witness",
+        ),
+        (
+            CLAUDE_PLUS_LANE_WITNESS_EVIDENCE_REF,
+            "quota-claude-headless-full-plus-lane-witness",
+            "fixture claude plus-delimited lane witness",
+        ),
+        (
+            CLAUDE_PLUS_BILLING_WITNESS_EVIDENCE_REF,
+            "quota-claude-headless-full-plus-billing-witness",
+            "fixture claude plus-delimited billing witness",
+        ),
+        (
+            CLAUDE_DOT_BILLING_WITNESS_EVIDENCE_REF,
+            "quota-claude-headless-full-dot-billing-witness",
+            "fixture claude dot-delimited billing witness",
+        ),
+        (
+            CLAUDE_BARE_BILLING_WITNESS_EVIDENCE_REF,
+            "quota-claude-headless-full-bare-billing-witness",
+            "fixture claude bare billing witness",
+        ),
+        (
+            CLAUDE_UNALLOWLISTED_WITNESS_EVIDENCE_REF,
+            "quota-claude-headless-full-unallowlisted-witness",
+            "fixture claude unallowlisted witness",
+        ),
+    ],
+)
+def test_receipt_bounded_route_rejects_newly_unsafe_claude_witness_shapes(
+    evidence_ref: str,
+    snapshot_id: str,
+    reason: str,
+) -> None:
+    ledger = _claude_ledger(evidence_ref, snapshot_id=snapshot_id, reason=reason)
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert evidence_ref not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert f"quota-snapshot:{snapshot_id}:untrusted_claude_admission_evidence" in refs
+
+
+def test_receipt_bounded_route_rejects_billing_identifier_claude_receipt_label() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_BILLING_RECEIPT_LABEL_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-billing-label",
+        reason="fixture claude billing-shaped receipt label",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert CLAUDE_BILLING_RECEIPT_LABEL_EVIDENCE_REF not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert (
+        "quota-snapshot:quota-claude-headless-full-billing-label:"
+        "untrusted_claude_admission_evidence"
+    ) in refs
+
+
+@pytest.mark.parametrize(
+    ("evidence_ref", "snapshot_id", "reason"),
+    [
+        (
+            CLAUDE_SUBSCRIPTION_ID_RECEIPT_LABEL_EVIDENCE_REF,
+            "quota-claude-headless-full-subscription-id-label",
+            "fixture claude subscription-id receipt label",
+        ),
+        (
+            CLAUDE_GREEK_LANE_DIGIT_RECEIPT_LABEL_EVIDENCE_REF,
+            "quota-claude-headless-full-greek-lane-digit-label",
+            "fixture claude digit-tailed greek lane receipt label",
+        ),
+        (
+            CLAUDE_PLUS_LANE_RECEIPT_LABEL_EVIDENCE_REF,
+            "quota-claude-headless-full-plus-lane-label",
+            "fixture claude plus-delimited lane receipt label",
+        ),
+        (
+            CLAUDE_PLUS_BILLING_RECEIPT_LABEL_EVIDENCE_REF,
+            "quota-claude-headless-full-plus-billing-label",
+            "fixture claude plus-delimited billing receipt label",
+        ),
+        (
+            CLAUDE_DOT_BILLING_RECEIPT_LABEL_EVIDENCE_REF,
+            "quota-claude-headless-full-dot-billing-label",
+            "fixture claude dot-delimited billing receipt label",
+        ),
+        (
+            CLAUDE_BARE_BILLING_RECEIPT_LABEL_EVIDENCE_REF,
+            "quota-claude-headless-full-bare-billing-label",
+            "fixture claude bare billing receipt label",
+        ),
+    ],
+)
+def test_receipt_bounded_route_rejects_newly_unsafe_claude_receipt_label_shapes(
+    evidence_ref: str,
+    snapshot_id: str,
+    reason: str,
+) -> None:
+    ledger = _claude_ledger(evidence_ref, snapshot_id=snapshot_id, reason=reason)
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert evidence_ref not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert f"quota-snapshot:{snapshot_id}:untrusted_claude_admission_evidence" in refs
+
+
+def test_receipt_bounded_route_rejects_lane_presence_claude_receipt_label() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_LANE_RECEIPT_LABEL_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-lane-label",
+        reason="fixture claude lane-shaped receipt label",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert CLAUDE_LANE_RECEIPT_LABEL_EVIDENCE_REF not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert (
+        "quota-snapshot:quota-claude-headless-full-lane-label:untrusted_claude_admission_evidence"
+    ) in refs
+
+
+def test_receipt_bounded_route_rejects_hashed_unsafe_claude_receipt_label() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_HASHED_RECEIPT_LABEL_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-hashed-label",
+        reason="fixture claude hashed unsafe receipt label",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert CLAUDE_HASHED_RECEIPT_LABEL_EVIDENCE_REF not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert (
+        "quota-snapshot:quota-claude-headless-full-hashed-label:untrusted_claude_admission_evidence"
+    ) in refs
+
+
+def test_receipt_bounded_route_allows_sanitized_hashed_ignored_claude_reason() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_SAFE_HASHED_IGNORED_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-safe-ignored-reason",
+        reason="fixture claude sanitized ignored reason",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert CLAUDE_SAFE_HASHED_IGNORED_EVIDENCE_REF in refs
+
+
+@pytest.mark.parametrize(
+    "evidence_ref",
+    [
+        CLAUDE_UNSAFE_HASHED_IGNORED_EVIDENCE_REF,
+        "relay-receipt:unsafe-receipt-name-sha256:0123456789abcdef:ignored:session-present",
+        "relay-receipt:unsafe-receipt-name-sha256:0123456789abcdef:ignored:lane-present",
+        "relay-receipt:unsafe-receipt-name-sha256:0123456789abcdef:ignored:billingcus123",
+        "relay-receipt:unsafe-receipt-name-sha256:0123456789abcdef:ignored:subscriptionid123",
+    ],
+)
+def test_receipt_bounded_route_redacts_unsafe_hashed_ignored_claude_reason(
+    evidence_ref: str,
+) -> None:
+    ledger = _claude_ledger(
+        evidence_ref,
+        snapshot_id="quota-claude-headless-full-unsafe-ignored-reason",
+        reason="fixture claude unsafe ignored reason",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert evidence_ref not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert (
+        "quota-snapshot:quota-claude-headless-full-unsafe-ignored-reason:"
+        "untrusted_claude_admission_evidence"
+    ) in refs
+
+
+@pytest.mark.parametrize(
+    "evidence_ref",
+    [
+        CLAUDE_UNSAFE_OBSERVED_AT_EVIDENCE_REF,
+        CLAUDE_UNSAFE_FRESH_UNTIL_EVIDENCE_REF,
+        CLAUDE_EXTRA_UNSAFE_SEGMENT_EVIDENCE_REF,
+    ],
+)
+def test_receipt_bounded_route_rejects_unsafe_claude_admission_fields(
+    evidence_ref: str,
+) -> None:
+    ledger = _claude_ledger(
+        evidence_ref,
+        snapshot_id="quota-claude-headless-full-unsafe-fields",
+        reason="fixture claude unsafe field values",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert evidence_ref not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert (
+        "quota-snapshot:quota-claude-headless-full-unsafe-fields:"
+        "untrusted_claude_admission_evidence"
+    ) in refs
+
+
+@pytest.mark.parametrize(
+    "evidence_ref",
+    [
+        CLAUDE_PLAIN_UNSAFE_HOLD_EVIDENCE_REF,
+        CLAUDE_COLON_UNSAFE_HOLD_EVIDENCE_REF,
+    ],
+)
+def test_receipt_bounded_route_redacts_plain_unsafe_claude_hold_evidence(
+    evidence_ref: str,
+) -> None:
+    ledger = _claude_ledger(
+        evidence_ref,
+        snapshot_id="quota-claude-headless-full-plain-unsafe",
+        reason="fixture claude plain unsafe hold evidence",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert evidence_ref not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert (
+        "quota-snapshot:quota-claude-headless-full-plain-unsafe:untrusted_claude_admission_evidence"
+    ) in refs
+
+
+def test_claude_receipt_bounded_route_rejects_lane_presence_generic_snapshot() -> None:
+    # A generic/lane-presence-shaped ref must NOT satisfy account-live subscription evidence.
+    ledger = _claude_ledger(
+        "relay-receipt:hapax-claude-eta-session-present",
+        snapshot_id="quota-claude-headless-full-generic-fresh",
+        reason="fixture generic claude quota snapshot",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert (
+        "quota-snapshot:quota-claude-headless-full-generic-fresh:untrusted_claude_admission_evidence"
+        in refs
+    )
+
+
+def test_claude_admission_requires_matching_provider_and_telemetry_writer() -> None:
+    # fail-closed: correct admission ref but wrong provider, or missing telemetry-writer generator.
+    wrong_provider = _claude_ledger(CLAUDE_ADMISSION_EVIDENCE_REF, provider="claude-subscription")
+    state, _ = subscription_quota_state_for_route(
+        wrong_provider, "claude.headless.full", now=CLAUDE_NOW
+    )
+    assert state is SubscriptionQuotaState.UNKNOWN
+
+    no_writer = _claude_ledger(CLAUDE_ADMISSION_EVIDENCE_REF, with_telemetry_writer=False)
+    state, _ = subscription_quota_state_for_route(no_writer, "claude.headless.full", now=CLAUDE_NOW)
+    assert state is SubscriptionQuotaState.UNKNOWN
 
 
 def test_spend_receipt_meters_effort_and_structured_model_id() -> None:

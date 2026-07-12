@@ -227,6 +227,7 @@ runtimes:
     jobs:
       - post_merge_duplicate_filter
       - docs_only_filter
+      - public_surface_freshness
       - lint
       - capability-surface-delta
       - typecheck

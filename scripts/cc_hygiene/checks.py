@@ -21,7 +21,20 @@ from typing import Any
 
 import yaml
 
+from shared.sdlc_owner_identity import parse_task_owner
+
 from .models import HygieneEvent, Role, TaskNote
+
+
+def _session_role(owner: str | None) -> str | None:
+    if owner is None:
+        return None
+    try:
+        identity = parse_task_owner(owner)
+    except ValueError:
+        return owner
+    return identity.role if identity is not None else None
+
 
 # ----- thresholds (research §2 starting points) -----
 
@@ -322,7 +335,7 @@ def check_stale_in_progress(
                 check_id="stale_in_progress",
                 severity="warning",
                 task_id=note.task_id,
-                session=note.assigned_to,
+                session=_session_role(note.assigned_to),
                 message=(
                     f"task '{note.task_id}' is in_progress with no commit/PR "
                     f"activity in {STALE_IN_PROGRESS_HOURS}h"
@@ -379,7 +392,7 @@ def check_ghost_claimed(
                 check_id="ghost_claimed",
                 severity="violation",
                 task_id=note.task_id,
-                session=note.assigned_to if note.assigned_to != "unassigned" else None,
+                session=_session_role(note.assigned_to),
                 message=(
                     f"task '{note.task_id}' is claimed but assigned_to="
                     f"{note.assigned_to!r} claimed_at={note.claimed_at!r} "
@@ -632,7 +645,9 @@ def check_wip_limit(
         if note.status == "in_progress" and note.assigned_to:
             if note.assigned_to == "unassigned":
                 continue
-            by_session[note.assigned_to] += 1
+            session = _session_role(note.assigned_to)
+            if session is not None:
+                by_session[session] += 1
     events: list[HygieneEvent] = []
     for session, count in by_session.items():
         if count <= WIP_LIMIT:
@@ -1007,9 +1022,7 @@ def check_vault_link_integrity(
                     check_id="vault_link_integrity",
                     severity="warning",
                     task_id=note.task_id,
-                    session=(
-                        note.assigned_to if note.assigned_to not in (None, "unassigned") else None
-                    ),
+                    session=_session_role(note.assigned_to),
                     message=(
                         f"task '{note.task_id}' has dangling {field} -> "
                         f"{target!r} (target not found on disk)"

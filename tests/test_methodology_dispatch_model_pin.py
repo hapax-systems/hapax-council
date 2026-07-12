@@ -46,7 +46,13 @@ def _run_launch(route) -> tuple[int, dict[str, str]]:
         patch.object(mod, "lane_worktree", return_value=Path("/tmp/lane")),
         patch.object(mod, "effective_dispatch_host", return_value="appendix"),
     ):
-        rc = mod.launch_claude_headless("task-x", "lane-x", "prompt", route)
+        rc = mod.launch_claude_headless(
+            "task-x",
+            "lane-x",
+            "prompt",
+            mod.Validation(True, "ok"),
+            route,
+        )
     return rc, captured.get("env", {})
 
 

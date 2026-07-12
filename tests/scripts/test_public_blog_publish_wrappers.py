@@ -109,3 +109,26 @@ def test_public_blog_wrappers_have_no_direct_public_publisher_imports() -> None:
         script = script_path.read_text(encoding="utf-8")
         for forbidden in FORBIDDEN_DIRECT_IMPORTS:
             assert forbidden not in script
+
+
+def test_show_hn_wrapper_refuses_superseded_draft(tmp_path, capsys) -> None:
+    module = _load_script(HN_SCRIPT, "publish_hn_blog_post_real_under_test")
+
+    rc = module.main(["--dry-run", "--state-root", str(tmp_path)])
+
+    assert rc == 1
+    assert capsys.readouterr().out == ""
+    assert not (tmp_path / "publish" / "inbox").exists()
+
+
+def test_constitutional_wrapper_refuses_superseded_draft(tmp_path, capsys) -> None:
+    module = _load_script(
+        CONSTITUTIONAL_SCRIPT,
+        "publish_constitutional_blog_post_real_under_test",
+    )
+
+    rc = module.main(["--dry-run", "--state-root", str(tmp_path)])
+
+    assert rc == 1
+    assert capsys.readouterr().out == ""
+    assert not (tmp_path / "publish" / "inbox").exists()

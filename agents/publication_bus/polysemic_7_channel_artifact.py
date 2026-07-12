@@ -105,8 +105,8 @@ SUPPLEMENT_TO_DOIS: tuple[str, ...] = (
 )
 
 REFERENCE_URLS: tuple[str, ...] = (
-    "https://github.com/ryanklee/hapax-council/blob/main/docs/superpowers/specs/2026-05-01-braid-schema-v11-design.md",
-    "https://github.com/ryanklee/hapax-council/blob/main/docs/published-artifacts/README.md",
+    "https://github.com/hapax-systems/hapax-council/blob/main/docs/superpowers/specs/2026-05-01-braid-schema-v11-design.md",
+    "https://github.com/hapax-systems/hapax-council/blob/main/docs/published-artifacts/README.md",
 )
 
 

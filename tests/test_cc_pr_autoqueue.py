@@ -9,7 +9,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -35,6 +35,12 @@ def _load_module() -> ModuleType:
 
 
 autoqueue = _load_module()
+
+
+def test_task_lane_unwraps_platform_qualified_owner() -> None:
+    task = SimpleNamespace(assigned_to="codex/cx-red", lane_affinity=None)
+    assert autoqueue._task_lane(task) == "cx-red"
+
 
 COMPLETE_ALWAYS_ON_CHECKLIST = {
     "tests-cover-the-diff": {

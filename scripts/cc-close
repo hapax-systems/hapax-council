@@ -49,6 +49,31 @@ role="${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:-${CODEX_SESSION_NAME:-${CODEX_SES
 if [[ -z "$role" ]] && declare -F hapax_agent_identity >/dev/null 2>&1; then
   role="$(hapax_agent_identity 2>/dev/null || true)"
 fi
+if [[ -z "$role" ]]; then
+  echo "cc-close: cannot determine caller identity; refusing task mutation" >&2
+  exit 3
+fi
+platform="${HAPAX_AGENT_INTERFACE:-}"
+case "$platform" in
+  claude|codex|vibe) ;;
+  *)
+    if [[ -n "${CODEX_THREAD_NAME:-${CODEX_SESSION_NAME:-${CODEX_SESSION:-${CODEX_ROLE:-}}}}" || "$role" == cx-* ]]; then
+      platform="codex"
+    elif [[ "$role" == vbe-* ]]; then
+      platform="vibe"
+    elif [[ "$role" == alpha || "$role" == beta || "$role" == gamma || "$role" == delta || "$role" == epsilon || "$role" == zeta || "$role" == eta || "$role" == theta || "$role" == cc-* ]]; then
+      platform="claude"
+    elif [[ -n "${CLAUDE_ROLE:-${CLAUDECODE:-}}" ]]; then
+      platform="claude"
+    else
+      platform=""
+    fi
+    ;;
+esac
+session_id=""
+if declare -F hapax_session_id >/dev/null 2>&1; then
+  session_id="$(hapax_session_id 2>/dev/null || true)"
+fi
 
 command -v flock >/dev/null 2>&1 || {
   echo "cc-close: flock missing; refusing non-atomic close" >&2
@@ -68,15 +93,54 @@ if ! command -v python3 &>/dev/null; then
 fi
 
 vault_root="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
-if ! note_path="$(python3 - "$SCRIPT_DIR/.." "$vault_root" "$task_id" <<'PYEOF'
+transaction_journal="$HOME/.cache/hapax/cc-ownership-txn-$role_lock_key-$task_lock_key.json"
+python3 - "$SCRIPT_DIR/.." "$transaction_journal" "$HOME/.cache/hapax" "$vault_root" <<'PYEOF'
 import sys
 from pathlib import Path
 
 sys.path.insert(0, sys.argv[1])
-from shared.sdlc_task_store import TaskStoreError, resolve_task_note
+from shared.sdlc_filesystem_transaction import (
+    FilesystemTransactionError,
+    recover_filesystem_transaction,
+)
 
 try:
-    print(resolve_task_note(Path(sys.argv[2]), sys.argv[3], state="active").path)
+    recover_filesystem_transaction(
+        Path(sys.argv[2]),
+        allowed_roots=(Path(sys.argv[3]), Path(sys.argv[4])),
+    )
+except FilesystemTransactionError as exc:
+    print(f"cc-close: ownership transaction recovery failed: {exc}", file=sys.stderr)
+    raise SystemExit(9)
+PYEOF
+if ! note_path="$(python3 - "$SCRIPT_DIR/.." "$vault_root" "$task_id" "$role" "$platform" "$session_id" "$HOME/.cache/hapax" <<'PYEOF'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from shared.sdlc_task_store import (
+    TaskStoreError,
+    assert_close_slot_owned,
+    resolve_task_note,
+)
+from shared.sdlc_owner_identity import owner_matches
+
+try:
+    snapshot = resolve_task_note(Path(sys.argv[2]), sys.argv[3], state="active")
+    owner = str(snapshot.frontmatter.get("assigned_to") or "").strip()
+    if not owner_matches(owner, sys.argv[4], sys.argv[5] or None):
+        raise TaskStoreError(
+            "close_task_owner_mismatch",
+            "only the exact assigned role/platform may close this task",
+            f"assigned_to={owner or '<null>'} caller={sys.argv[5] or 'unknown'}/{sys.argv[4]}",
+        )
+    assert_close_slot_owned(
+        cache_dir=Path(sys.argv[7]),
+        role=sys.argv[4],
+        session_id=sys.argv[6],
+        task_id=sys.argv[3],
+    )
+    print(snapshot.path)
 except TaskStoreError as exc:
     print(f"cc-close: {exc}", file=sys.stderr)
     raise SystemExit(2)
@@ -228,21 +292,82 @@ if [[ "$final_status" == "done" ]]; then
   fi
 fi
 
-python3 - "$note_path" "$task_id" "$final_status" "$pr" "$role" "$note_sha256" <<'PYEOF'
+start_hygiene=0
+for claim_key in \
+  "$role" \
+  ${session_id:+"$role-$session_id"}; do
+  claim_file="$HOME/.cache/hapax/cc-active-task-$claim_key"
+  if [[ -f "$claim_file" ]] &&
+     [[ "$(head -n1 "$claim_file" | tr -d '[:space:]')" == "$task_id" ]]; then
+    start_hygiene=1
+  fi
+done
+
+python3 - "$note_path" "$task_id" "$final_status" "$pr" "$role" "$platform" \
+  "$note_sha256" "$SCRIPT_DIR/.." "$session_id" "$HOME/.cache/hapax" \
+  "$transaction_journal" <<'PYEOF'
 import hashlib
 import re
+import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-path, task_id, final_status, pr, role, expected_sha256 = (Path(sys.argv[1]), *sys.argv[2:])
-if hashlib.sha256(path.read_bytes()).hexdigest() != expected_sha256:
+path = Path(sys.argv[1])
+task_id, final_status, pr, role, platform, expected_sha256 = sys.argv[2:8]
+repo_root = Path(sys.argv[8]).resolve()
+session_id = sys.argv[9]
+cache_dir = Path(sys.argv[10])
+transaction_journal = Path(sys.argv[11])
+sys.path.insert(0, str(repo_root))
+
+from shared.sdlc_filesystem_transaction import (  # noqa: E402
+    FileMutation,
+    FilesystemTransactionError,
+    execute_filesystem_transaction,
+)
+from shared.sdlc_task_store import (  # noqa: E402
+    TaskStoreError,
+    assert_close_slot_owned,
+)
+from shared.sdlc_lifecycle import frontmatter_from_text  # noqa: E402
+from shared.sdlc_owner_identity import owner_matches  # noqa: E402
+
+try:
+    task_content = path.read_bytes()
+except OSError as exc:
+    print(f"cc-close: task snapshot unreadable before commit: {exc}", file=sys.stderr)
+    raise SystemExit(9) from exc
+if hashlib.sha256(task_content).hexdigest() != expected_sha256:
     print(
         "cc-close: task changed during closure checks; retry from the current exact bytes",
         file=sys.stderr,
     )
     raise SystemExit(9)
-text = path.read_text(encoding="utf-8")
+try:
+    text = task_content.decode("utf-8")
+    frontmatter = frontmatter_from_text(text)
+except (UnicodeDecodeError, ValueError) as exc:
+    print(f"cc-close: task snapshot malformed before commit: {exc}", file=sys.stderr)
+    raise SystemExit(9) from exc
+owner = str(frontmatter.get("assigned_to") or "").strip()
+if not owner_matches(owner, role, platform or None):
+    print(
+        "cc-close: close_task_owner_mismatch: HOLD; task owner changed before commit "
+        f"(assigned_to={owner or '<null>'} caller={platform or 'unknown'}/{role})",
+        file=sys.stderr,
+    )
+    raise SystemExit(9)
+try:
+    assert_close_slot_owned(
+        cache_dir=cache_dir,
+        role=role,
+        session_id=session_id,
+        task_id=task_id,
+    )
+except TaskStoreError as exc:
+    print(f"cc-close: ownership projection changed before commit: {exc}", file=sys.stderr)
+    raise SystemExit(9)
 now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 text = re.sub(r"^status:.*$", f"status: {final_status}", text, count=1, flags=re.MULTILINE)
@@ -263,55 +388,128 @@ text = text.replace("## Session log\n", f"## Session log\n{log_line}", 1)
 # Move from active/ to closed/.
 new_path = path.parent.parent / "closed" / path.name
 new_path.parent.mkdir(parents=True, exist_ok=True)
-tmp = new_path.with_suffix(new_path.suffix + ".tmp")
-tmp.write_text(text, encoding="utf-8")
-tmp.replace(new_path)
-path.unlink()
-print(f"cc-close: moved '{task_id}' to closed/, status={final_status}")
+mode = path.stat().st_mode & 0o777
+mutations = [
+    FileMutation(
+        path=path,
+        content=None,
+        expected_sha256=expected_sha256,
+        expected_exists=True,
+    ),
+    FileMutation(
+        path=new_path,
+        content=text.encode("utf-8"),
+        mode=mode,
+        expected_exists=False,
+    ),
+]
+
+
+def deletion_precondition(path: Path) -> tuple[FileMutation, bytes | None, int | None]:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return FileMutation(path=path, content=None, expected_exists=False), None, None
+    except OSError as exc:
+        print(f"cc-close: ownership preimage unreadable: {path}: {exc}", file=sys.stderr)
+        raise SystemExit(9)
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        print(f"cc-close: ownership preimage is not a regular file: {path}", file=sys.stderr)
+        raise SystemExit(9)
+    try:
+        content = path.read_bytes()
+    except OSError as exc:
+        print(f"cc-close: ownership preimage unreadable: {path}: {exc}", file=sys.stderr)
+        raise SystemExit(9)
+    return (
+        FileMutation(
+            path=path,
+            content=None,
+            expected_sha256=hashlib.sha256(content).hexdigest(),
+            expected_exists=True,
+        ),
+        content,
+        stat.S_IMODE(metadata.st_mode),
+    )
 
 # The acceptance receipt (routing Phase 0.2) lives ALONGSIDE the note —
 # keep that invariant across the move so closed review-floor tasks stay
 # closure-valid for the autoqueue and audits.
 receipt = path.parent / f"{task_id}.acceptance.yaml"
+receipt_delete, receipt_content, receipt_mode = deletion_precondition(receipt)
+mutations.append(receipt_delete)
+closed_receipt = new_path.parent / receipt.name
+if receipt_content is not None:
+    assert receipt_mode is not None
+    mutations.extend(
+        (
+            FileMutation(
+                path=closed_receipt,
+                content=receipt_content,
+                mode=receipt_mode,
+                expected_exists=False,
+            ),
+        )
+    )
+else:
+    mutations.append(FileMutation(path=closed_receipt, content=None, expected_exists=False))
+
+keys = [role]
+if session_id:
+    keys.append(f"{role}-{session_id}")
+cleared: list[Path] = []
+for claim_key in keys:
+    claim_path = cache_dir / f"cc-active-task-{claim_key}"
+    claim_delete, claim_content, _claim_mode = deletion_precondition(claim_path)
+    mutations.append(claim_delete)
+    if claim_content is not None:
+        cleared.append(claim_path)
+    for projection in (
+        cache_dir / f"cc-claim-epoch-{claim_key}",
+        cache_dir / f"cc-claim-dispatch-{claim_key}.json",
+    ):
+        projection_delete, _content, _mode = deletion_precondition(projection)
+        mutations.append(projection_delete)
+
+try:
+    assert_close_slot_owned(
+        cache_dir=cache_dir,
+        role=role,
+        session_id=session_id,
+        task_id=task_id,
+    )
+except TaskStoreError as exc:
+    print(f"cc-close: ownership projection changed before commit: {exc}", file=sys.stderr)
+    raise SystemExit(9)
+
+try:
+    execute_filesystem_transaction(
+        transaction_journal,
+        mutations,
+        allowed_roots=(path.parent.parent, cache_dir),
+    )
+except FilesystemTransactionError as exc:
+    print(f"cc-close: ownership transaction failed: {exc}", file=sys.stderr)
+    raise SystemExit(9)
+
+print(f"cc-close: moved '{task_id}' to closed/, status={final_status}")
 if receipt.is_file():
-    receipt.replace(new_path.parent / receipt.name)
-    print(f"cc-close: moved acceptance receipt '{receipt.name}' to closed/")
+    raise AssertionError("active receipt remained after committed close")
+if closed_receipt.is_file():
+    print(f"cc-close: moved acceptance receipt '{task_id}.acceptance.yaml' to closed/")
+for claim_path in cleared:
+    print(f"cc-close: cleared claim file '{claim_path}' (role '{role}')")
 PYEOF
 
-# Clear the claim file(s) that still name this task. cc-claim writes BOTH a
-# legacy cc-active-task-<role> AND a session-keyed cc-active-task-<role>-<sid>
-# (agent-role.sh hapax_session_id, reform Phase 1 FM-2). Clearing only the
-# legacy file leaked the session-keyed lease until its 6h TTL — and the gate
-# reads the session-keyed file FIRST, so it kept seeing the just-closed task
-# (reform finding #12/#13). Clear this session's lease forms, each only when its
-# head still names the closed task (never clobber a lease for other work).
-if [[ -n "$role" ]]; then
-  session_id=""
-  if declare -F hapax_session_id >/dev/null 2>&1; then
-    session_id="$(hapax_session_id 2>/dev/null || true)"
-  fi
-  cleared_claim=0
-  for claim_key in \
-    "$role" \
-    ${session_id:+"$role-$session_id"}; do
-    claim_file="$HOME/.cache/hapax/cc-active-task-$claim_key"
-    if [[ -f "$claim_file" ]] &&
-       [[ "$(head -n1 "$claim_file" | tr -d '[:space:]')" == "$task_id" ]]; then
-      # The cc-claim-epoch sidecar carries the claim age for task_is_terminal;
-      # clear it with its claim file so a stale epoch can never mis-age a
-      # future claim. Explicit path construction — substring substitution on
-      # the full path would rewrite a parent-directory occurrence instead.
-      rm -f \
-        "$claim_file" \
-        "$HOME/.cache/hapax/cc-claim-epoch-$claim_key" \
-        "$HOME/.cache/hapax/cc-claim-dispatch-$claim_key.json"
-      echo "cc-close: cleared claim file '$claim_file' (role '$role')"
-      cleared_claim=1
-    fi
-  done
-  if [[ "$cleared_claim" == 1 ]]; then
-    systemctl --user start hapax-cc-hygiene.service 2>/dev/null || true
-  fi
+# The ownership transaction is complete once the note and claim projections
+# agree. Never invoke another writer while holding these locks: hygiene may
+# traverse the same claim plane and otherwise deadlock behind this process.
+flock -u 9
+flock -u 8
+exec 9>&-
+exec 8>&-
+if [[ "$start_hygiene" == 1 && "${HAPAX_CC_HYGIENE_OFF:-0}" != "1" ]]; then
+  systemctl --user start --no-block hapax-cc-hygiene.service 2>/dev/null || true
 fi
 
 # Best-effort request lifecycle reconciliation. `request-intake-consumer`

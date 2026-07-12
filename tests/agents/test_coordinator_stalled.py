@@ -255,6 +255,17 @@ def test_platform_qualified_task_owner_reserves_bare_lane() -> None:
     assert lane.dispatch_blocked_reason == f"lane_reserved_by_task_ssot:{task.task_id}"
 
 
+def test_platform_qualified_task_owner_does_not_reserve_other_platform() -> None:
+    lane = LaneState(role="ut_lane", platform="codex", alive=True, idle=True)
+    task = _task(Path("/tmp/qualified.md"), assigned_to="claude/ut_lane")
+
+    _reserve_lanes_from_task_ssot({lane.role: lane}, [task])
+
+    assert lane.claimed_task is None
+    assert lane.idle is True
+    assert lane.dispatch_ready is True
+
+
 def test_unmappable_qualified_owner_holds_all_lanes() -> None:
     lane = LaneState(role="ut_lane", platform="claude", alive=True, idle=True)
     task = _task(Path("/tmp/unmappable.md"), assigned_to="unknown/ut_lane")
@@ -523,13 +534,22 @@ def test_dispatch_keeps_prepared_mq_invisible_when_post_prepare_validation_holds
     dispatcher.chmod(0o755)
     db_path = tmp_path / "relay" / "messages.db"
     coordinator = Coordinator()
+    parent_spec = tmp_path / "spec.md"
+    parent_spec.write_text("parent preimage\n", encoding="utf-8")
     offered = replace(
         _task(Path("/tmp/target.md"), status="offered", assigned_to="unassigned"),
         authority_case="CASE-P0-TEST",
         authority_item="target",
+        parent_spec=str(parent_spec),
     )
     destination_claim = _task(Path("/tmp/new-claim.md"), assigned_to="ut_lane")
-    lane = LaneState(role="ut_lane", platform="claude", alive=True, idle=True)
+    lane = LaneState(
+        role="ut_lane",
+        platform="claude",
+        generation="test-generation",
+        alive=True,
+        idle=True,
+    )
 
     with (
         patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", dispatcher),
@@ -560,12 +580,21 @@ def test_dispatch_revokes_prepared_mq_when_methodology_spawn_fails(tmp_path: Pat
     dispatcher.chmod(0o755)
     db_path = tmp_path / "relay" / "messages.db"
     coordinator = Coordinator()
+    parent_spec = tmp_path / "spec.md"
+    parent_spec.write_text("parent preimage\n", encoding="utf-8")
     offered = replace(
         _task(Path("/tmp/target.md"), status="offered", assigned_to="unassigned"),
         authority_case="CASE-P0-TEST",
         authority_item="target",
+        parent_spec=str(parent_spec),
     )
-    lane = LaneState(role="ut_lane", platform="claude", alive=True, idle=True)
+    lane = LaneState(
+        role="ut_lane",
+        platform="claude",
+        generation="test-generation",
+        alive=True,
+        idle=True,
+    )
 
     with (
         patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", dispatcher),
@@ -592,13 +621,21 @@ def test_dispatch_timeout_with_pickup_finalizes_mq_and_terminal_event(tmp_path: 
     db_path = tmp_path / "relay" / "messages.db"
     coord_dir = tmp_path / "coord"
     coordinator = Coordinator()
+    parent_spec = tmp_path / "spec.md"
+    parent_spec.write_text("parent preimage\n", encoding="utf-8")
     offered = replace(
         _task(Path("/tmp/target.md"), status="offered", assigned_to="unassigned"),
         authority_case="CASE-P0-TEST",
         authority_item="target",
-        parent_spec="/tmp/spec.md",
+        parent_spec=str(parent_spec),
     )
-    lane = LaneState(role="ut_lane", platform="claude", alive=True, idle=True)
+    lane = LaneState(
+        role="ut_lane",
+        platform="claude",
+        generation="test-generation",
+        alive=True,
+        idle=True,
+    )
 
     def accept_then_timeout(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         message_id = cmd[cmd.index("--mq-message-id") + 1]
@@ -689,13 +726,21 @@ def test_timeout_without_pickup_holds_one_accepted_dispatch_without_retry(
     cache_dir.mkdir()
     relay_dir.mkdir()
     coordinator = Coordinator()
+    parent_spec = tmp_path / "spec.md"
+    parent_spec.write_text("parent preimage\n", encoding="utf-8")
     offered = replace(
         _task(Path("/tmp/target.md"), status="offered", assigned_to="unassigned"),
         authority_case="CASE-P0-TEST",
         authority_item="target",
-        parent_spec="/tmp/spec.md",
+        parent_spec=str(parent_spec),
     )
-    lane = LaneState(role="ut_lane", platform="claude", alive=True, idle=True)
+    lane = LaneState(
+        role="ut_lane",
+        platform="claude",
+        generation="test-generation",
+        alive=True,
+        idle=True,
+    )
     calls = 0
 
     def accept_then_timeout(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:

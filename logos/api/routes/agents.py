@@ -6,6 +6,8 @@ import json
 import os
 import re
 import shlex
+from collections.abc import Mapping
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
@@ -14,6 +16,10 @@ from sse_starlette.sse import EventSourceResponse
 
 from logos.api.cache import cache
 from logos.api.sessions import agent_run_manager
+from shared.cockpit_agent_capabilities import (
+    CockpitAdmissionError,
+    require_cockpit_agent_admission,
+)
 
 # Detect if running inside Docker (/.dockerenv exists or init is not systemd)
 _IN_CONTAINER = os.path.exists("/.dockerenv") or (
@@ -27,6 +33,12 @@ _FLAG_RE = re.compile(r"^--?[a-zA-Z0-9][a-zA-Z0-9_-]*(=\S*)?$")
 
 # Flags that could be used to hijack subprocess behaviour
 _BLOCKED_FLAG_PREFIXES = ("--exec", "--command", "--shell")
+
+
+def _agent_value(agent: object, key: str, default: Any = None) -> Any:
+    if isinstance(agent, Mapping):
+        return agent.get(key, default)
+    return getattr(agent, key, default)
 
 
 def _validate_flags(flags: list[str]) -> list[str]:
@@ -61,7 +73,7 @@ async def run_agent(name: str, req: AgentRunRequest):
     # Find agent in registry
     agent = None
     for a in cache.agents or []:
-        a_name = a.name if hasattr(a, "name") else a.get("name", "")
+        a_name = _agent_value(a, "name", "")
         if a_name == name:
             agent = a
             break
@@ -79,9 +91,27 @@ async def run_agent(name: str, req: AgentRunRequest):
         raise HTTPException(status_code=409, detail="Another agent is already running")
 
     validated_flags = _validate_flags(req.flags)
+    model_alias = _agent_value(agent, "model_alias")
+
+    try:
+        require_cockpit_agent_admission(
+            name,
+            manifest_model=model_alias,
+            flags=validated_flags,
+        )
+    except (CockpitAdmissionError, KeyError) as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
+    except Exception as exc:
+        detail = (
+            "cockpit_agent_capability_admission_refused "
+            f"agent={name} reason_codes=cockpit_admission_unavailable:{type(exc).__name__} "
+            "next_action=inspect cockpit capability admission inputs before retrying guarded "
+            "cockpit execution"
+        )
+        raise HTTPException(status_code=403, detail=detail) from None
 
     # Build command args from agent's base command + validated flags
-    command = agent.command if hasattr(agent, "command") else agent.get("command", "")
+    command = _agent_value(agent, "command", "")
     args = shlex.split(command) + validated_flags
 
     try:

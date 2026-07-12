@@ -7,7 +7,9 @@
 # claim/task mutation authority; every candidate HOLDs for a separately authorized
 # recovery writer. Task-note ownership is authoritative when cache markers are
 # absent. Nested processes in every pane are observed before projecting a lane dead.
-# The tau comes from
+# The installed unit executes this tracked file from the source-activation
+# worktree. Repository-relative helpers resolve that activated release and fail
+# closed; they never fall back to the mutable primary worktree. The tau comes from
 # ~/.cache/hapax/dispatch-service-time.json (shared with the coordinator +
 # idle-watchdog); --threshold/IDLE_THRESHOLD_MIN is the fixed fallback when the
 # cache is absent or HAPAX_DISPATCH_SCHEDULER_LEGACY=1.
@@ -63,10 +65,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 governor_repo() {
-    local repo
-    repo="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
-    [[ -d "$repo/shared" ]] || repo="${HOME}/projects/hapax-council"
-    echo "$repo"
+    local script_path repo
+    script_path="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
+    repo="$(cd "$(dirname "$script_path")/.." 2>/dev/null && pwd)" || return 1
+    if [[ ! -d "$repo/shared" ]]; then
+        log "activated source root unavailable: $repo"
+        return 1
+    fi
+    printf '%s\n' "$repo"
 }
 
 is_quota_wall_output() {
@@ -158,17 +164,20 @@ claim_for_role() {
 
 task_claims_for_role() {
     local role="$1"
+    local platform="$2"
     local active_dir="${HAPAX_CC_TASK_ROOT:-$HOME/Documents/Personal/20-projects/hapax-cc-tasks}/active"
     [[ -d "$active_dir" ]] || return 2
-    (cd "$(governor_repo)" 2>/dev/null && python3 - "$active_dir" "$role" <<'PY'
+    (cd "$(governor_repo)" 2>/dev/null && python3 - "$active_dir" "$role" "$platform" <<'PY'
 import sys
 from pathlib import Path
 
 from shared.sdlc_lifecycle import TASK_TERMINAL_STATUSES
+from shared.sdlc_owner_identity import owner_matches
 from shared.strict_yaml import strict_safe_load
 
 active_dir = Path(sys.argv[1])
 role = sys.argv[2]
+platform = sys.argv[3]
 claims: list[str] = []
 try:
     paths = sorted(active_dir.glob("*.md"))
@@ -199,7 +208,7 @@ for path in paths:
         raise SystemExit(2)
     owner = owner.strip() if isinstance(owner, str) else ""
     status = status.strip().lower()
-    if owner != role or status in TASK_TERMINAL_STATUSES:
+    if not owner_matches(owner, role, platform) or status in TASK_TERMINAL_STATUSES:
         continue
     claims.append(task_id.strip())
 
@@ -219,13 +228,15 @@ for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E "
     mapfile -t pane_pids < <(tmux list-panes -s -t "$session" -F '#{pane_pid}' 2>/dev/null)
     [[ "${#pane_pids[@]}" -gt 0 ]] || continue
 
+    platform=claude
+    [[ "$session" == hapax-codex-* ]] && platform=codex
     role="${session#hapax-codex-}"
     role="${role#hapax-claude-}"
 
     marker_claim="$(claim_for_role "$role" 2>/dev/null || true)"
     task_claims=""
     task_ssot_known=1
-    if ! task_claims="$(task_claims_for_role "$role" 2>/dev/null)"; then
+    if ! task_claims="$(task_claims_for_role "$role" "$platform" 2>/dev/null)"; then
         task_ssot_known=0
     fi
     claim="$marker_claim"

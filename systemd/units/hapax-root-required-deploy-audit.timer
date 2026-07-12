@@ -1,0 +1,12 @@
+# Hapax-Installer-Owner: scripts/install-p0-oom-containment
+[Unit]
+Description=Run deferred root-required deploy audit
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/systemd/README.md
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+Unit=hapax-root-required-deploy-audit.service
+
+[Install]
+WantedBy=timers.target

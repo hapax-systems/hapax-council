@@ -172,6 +172,35 @@ jobs:
             echo "Non-docs changes detected; required jobs will run full checks."
           fi
 
+  public_surface_freshness:
+    needs: [post_merge_duplicate_filter]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post-merge duplicate required-check sentinel
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group == 'true'
+        run: echo "Merge queue already validated this SHA; public-surface freshness reports success."
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        with:
+          enable-cache: true
+          restore-cache: true
+          save-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+      - name: Public surface registry contract verify
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: uv run --no-project --with pydantic==2.13.4 --with pyyaml==6.0.3 python scripts/check-public-surface-claims.py --check-registry-only
+      - name: Value-prop registry contract verify
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: uv run --no-project --with pyyaml==6.0.3 python scripts/check-value-prop-registry.py
+
   lint:
     needs: [docs_only_filter, post_merge_duplicate_filter]
     runs-on: ubuntu-latest
@@ -1372,7 +1401,7 @@ jobs:
     # preserves the fast/slow split: `test-full-shard` is merge_group-only, so it
     # is `skipped` on pull_request events and all-green still passes there.
     name: all-green
-    needs: [lint, capability-surface-delta, typecheck, test, test-full-shard, web-build, vscode-build]
+    needs: [lint, capability-surface-delta, typecheck, test, test-full-shard, web-build, vscode-build, public_surface_freshness]
     if: always()
     runs-on: ubuntu-latest
     steps:

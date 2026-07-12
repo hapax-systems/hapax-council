@@ -39,18 +39,23 @@ def _decision(
     launch_allowed: bool,
     route_id: str = "claude.headless.opus",
     reason_codes: tuple[str, ...] = (),
+    task_id: str = "t",
+    lane: str = "cc-sdlc",
+    platform: str = "claude",
+    mode: str = "headless",
+    profile: str = "opus",
 ) -> RouteDecision:
     """Build a REAL RouteDecision (the type the dispatcher returns) for the authority tests."""
 
     return RouteDecision(
         decision_id="d-test",
         created_at=datetime(2026, 6, 20, tzinfo=UTC),
-        task_id="t",
-        lane="cc-sdlc",
+        task_id=task_id,
+        lane=lane,
         route_id=route_id,
-        platform="claude",
-        mode="headless",
-        profile="opus",
+        platform=platform,
+        mode=mode,
+        profile=profile,
         action=action,
         policy_outcome="test",
         launch_allowed=launch_allowed,
@@ -60,6 +65,20 @@ def _decision(
         reason_codes=reason_codes,
         message="test",
     )
+
+
+def _launch_request(**overrides: str) -> SimpleNamespace:
+    values = {
+        "task_id": "t",
+        "lane": "cc-sdlc",
+        "platform": "claude",
+        "mode": "headless",
+        "profile": "opus",
+    }
+    values.update(overrides)
+    request = SimpleNamespace(**values)
+    request.normalized_lane = request.lane.strip().lower().replace("_", "-")
+    return request
 
 
 # --- criterion 1: admit() returns evaluate_dispatch_policy output UNCHANGED -------------------
@@ -185,7 +204,7 @@ def test_launch_raises_when_action_launch_but_not_allowed() -> None:
 
 def test_launch_happy_path_delegates_to_coord_dispatch() -> None:
     decision = _decision(action=DispatchAction.LAUNCH, launch_allowed=True)
-    request = object()
+    request = _launch_request()
     launch_callable = lambda: 0  # noqa: E731
     sentinel_result = object()
     with mock.patch(f"{_MOD}.run_atomic_dispatch_launch", return_value=sentinel_result) as spawn:
@@ -197,13 +216,39 @@ def test_launch_happy_path_delegates_to_coord_dispatch() -> None:
 @pytest.mark.parametrize("adapter_cls", [AgyAdapter, VibeAdapter])
 def test_new_worker_adapters_inherit_launch_gate(adapter_cls: type[WorkerAdapter]) -> None:
     decision = _decision(action=DispatchAction.LAUNCH, launch_allowed=True)
-    request = object()
+    request = _launch_request()
     launch_callable = lambda: 0  # noqa: E731
     sentinel_result = object()
     with mock.patch(f"{_MOD}.run_atomic_dispatch_launch", return_value=sentinel_result) as spawn:
         result = adapter_cls().launch(decision, request, launch_callable)  # type: ignore[arg-type]
     assert result is sentinel_result
     spawn.assert_called_once_with(request, launch_callable)
+
+
+@pytest.mark.parametrize(
+    ("field", "different"),
+    [
+        ("task_id", "other-task"),
+        ("lane", "other-lane"),
+        ("platform", "codex"),
+        ("mode", "interactive"),
+        ("profile", "full"),
+    ],
+)
+def test_launch_rejects_decision_request_identity_mismatch_before_spawn(
+    field: str,
+    different: str,
+) -> None:
+    decision = _decision(action=DispatchAction.LAUNCH, launch_allowed=True)
+    request = _launch_request(**{field: different})
+    launch_callable = mock.Mock(return_value=0)
+
+    with mock.patch(f"{_MOD}.run_atomic_dispatch_launch") as spawn:
+        with pytest.raises(AuthorityViolation, match=f"mismatched={field}"):
+            ClaudeAdapter().launch(decision, request, launch_callable)  # type: ignore[arg-type]
+
+    launch_callable.assert_not_called()
+    spawn.assert_not_called()
 
 
 def test_vibe_adapter_marks_registered_send_surface() -> None:

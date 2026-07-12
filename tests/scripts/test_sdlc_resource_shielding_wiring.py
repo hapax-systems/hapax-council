@@ -51,12 +51,14 @@ def test_watchdog_respawn_floor_yields_when_closed() -> None:
     assert "appendix-only local-dev maintenance" in text
 
 
-def test_supervisor_appendix_only_suppresses_unclaimed_idle_await_respawn() -> None:
+def test_supervisor_is_projection_only_under_every_maintenance_mode() -> None:
     text = SUPERVISOR.read_text()
     assert "HAPAX_LOCAL_DEV_MAINTENANCE_MODE" in text
-    assert "appendix-only local-dev maintenance" in text
-    assert "suppresses idle-await respawn" in text
-    assert "active claimed-task resumes preserved" in text
+    assert "projection semantics are unchanged" in text
+    assert "RECOVERY_CANDIDATE" in text
+    assert "action=HOLD" in text
+    assert "effects 0" in text
+    assert "respawn_sync" not in text
 
 
 def test_coordinator_paces_dispatch_under_pressure() -> None:

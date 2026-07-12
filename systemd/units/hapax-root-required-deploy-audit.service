@@ -1,0 +1,12 @@
+[Unit]
+Description=Audit deferred root-required post-merge deploy actions
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/systemd/README.md
+OnFailure=notify-failure@%n.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+TimeoutStartSec=2min
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/local/sbin/hapax-root-required-deploy-audit
+SyslogIdentifier=hapax-root-required-deploy-audit

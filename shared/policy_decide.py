@@ -43,6 +43,7 @@ from shared.sdlc_lifecycle import (
     TASK_MUTABLE_STATUSES,
     TASK_TERMINAL_STATUSES,
 )
+from shared.sdlc_owner_identity import inferred_task_owner_platform, owner_matches
 
 #: Bumped independently of the floor whenever this decision logic changes, so a
 #: fleet-wide regression can be bisected to the exact policy_decide version.
@@ -738,7 +739,7 @@ def _decide(
         )
 
     # 6. Assignment.
-    if task.assigned_to != role:
+    if not owner_matches(task.assigned_to, role, inferred_task_owner_platform(role)):
         return _block(
             "assignment",
             f"task assigned to '{task.assigned_to}', not '{role}'",

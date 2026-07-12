@@ -196,6 +196,7 @@ cat > "$CC_VAULT/active/cc-close-fixture.md" <<EOF
 type: cc-task
 task_id: cc-close-fixture
 status: claimed
+assigned_to: test-role
 completed_at:
 updated_at:
 pr:
@@ -207,13 +208,14 @@ pr:
 ## Session log
 EOF
 echo "cc-close-fixture" > "$CC_TMP/.cache/hapax/cc-active-task-test-role"
+echo "1780000000 cc-close-fixture" > "$CC_TMP/.cache/hapax/cc-claim-epoch-test-role"
 
 # Without bypass → exit 2
-cc_close_blocked_rc=$(HOME="$CC_TMP" CLAUDE_ROLE=test-role bash "$CC_CLOSE" cc-close-fixture >/dev/null 2>&1 && echo 0 || echo $?)
+cc_close_blocked_rc=$(HOME="$CC_TMP" HAPAX_AGENT_NAME=test-role HAPAX_AGENT_INTERFACE=claude CLAUDE_ROLE=test-role bash "$CC_CLOSE" cc-close-fixture >/dev/null 2>&1 && echo 0 || echo $?)
 assert_eq "cc-close BLOCKS unchecked → exit 2" 2 "$cc_close_blocked_rc"
 
 # With bypass → exit 0 + actually moves
-cc_close_bypass_rc=$(HOME="$CC_TMP" CLAUDE_ROLE=test-role HAPAX_CC_TASK_CLOSURE_GATE_OFF=1 bash "$CC_CLOSE" cc-close-fixture >/dev/null 2>&1 && echo 0 || echo $?)
+cc_close_bypass_rc=$(HOME="$CC_TMP" HAPAX_AGENT_NAME=test-role HAPAX_AGENT_INTERFACE=claude CLAUDE_ROLE=test-role HAPAX_CC_TASK_CLOSURE_GATE_OFF=1 bash "$CC_CLOSE" cc-close-fixture >/dev/null 2>&1 && echo 0 || echo $?)
 assert_eq "cc-close BYPASS-on succeeds → exit 0" 0 "$cc_close_bypass_rc"
 if [[ -f "$CC_VAULT/closed/cc-close-fixture.md" ]]; then
   PASS=$((PASS + 1))

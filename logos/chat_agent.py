@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -25,6 +26,10 @@ from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
 from logos._config import LLM_STACK_DIR as _LLM_STACK_DIR
 from logos._config import LOGOS_STATE_DIR, embed, get_model, get_qdrant
 from logos._operator import get_system_prompt_fragment
+from shared.cockpit_agent_capabilities import (
+    CockpitAdmissionError,
+    require_cockpit_agent_admission,
+)
 
 log = logging.getLogger("logos.chat_agent")
 
@@ -52,6 +57,43 @@ class ChatDeps:
     project_dir: Path
     snapshot: str = ""
     conversation_summary: str = ""
+
+
+def _prepare_agent_command_for_chat(
+    name: str, agent_info: object, flags: str
+) -> tuple[list[str], str | None]:
+    """Return subprocess argv only after cockpit capability admission succeeds."""
+    flag_args = shlex.split(flags) if flags else []
+    model_alias = getattr(agent_info, "model_alias", None)
+    try:
+        require_cockpit_agent_admission(
+            name,
+            manifest_model=model_alias,
+            flags=flag_args,
+        )
+    except (CockpitAdmissionError, KeyError) as exc:
+        return [], f"Agent admission refused: {exc}"
+    except Exception as exc:
+        detail = (
+            "cockpit_agent_capability_admission_refused "
+            f"agent={name} reason_codes=cockpit_admission_unavailable:{type(exc).__name__} "
+            "next_action=inspect cockpit capability admission inputs before retrying guarded "
+            "chat agent execution"
+        )
+        return [], f"Agent admission refused: {detail}"
+
+    return shlex.split(agent_info.command) + flag_args, None
+
+
+def _shell_agent_invocation(parts: list[str]) -> tuple[str, list[str]] | None:
+    """Return cockpit agent name and flags for any `-m agents.*` command."""
+    for index, part in enumerate(parts[:-1]):
+        if part != "-m":
+            continue
+        module = parts[index + 1]
+        if module.startswith("agents."):
+            return module.removeprefix("agents.").replace("_", "-"), parts[index + 2 :]
+    return None
 
 
 # ── System prompt ────────────────────────────────────────────────────────────
@@ -301,9 +343,9 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
         if not agent_info:
             return f"Unknown agent '{name}'. Available: {', '.join(registry.keys())}"
 
-        cmd = agent_info.command.split()
-        if flags:
-            cmd.extend(flags.split())
+        cmd, admission_error = _prepare_agent_command_for_chat(name, agent_info, flags)
+        if admission_error:
+            return admission_error
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -366,15 +408,17 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
         """
         cmd = command.strip()
 
+        try:
+            parts = shlex.split(cmd)
+        except ValueError as exc:
+            return f"Command rejected: invalid shell syntax: {exc}"
+
+        shell_agent = _shell_agent_invocation(parts)
+
         # Security: reject commands not on the allowlist
         allowed = any(
             cmd == prefix.rstrip() or cmd.startswith(prefix) for prefix in SHELL_COMMAND_ALLOWLIST
         )
-        if not allowed:
-            return (
-                f"Command rejected: not on allowlist. "
-                f"Allowed prefixes: {', '.join(p.strip() for p in SHELL_COMMAND_ALLOWLIST)}"
-            )
 
         # Security: reject shell metacharacters that could bypass the allowlist
         # Allow pipes/redirects for simple composition, but block command chaining
@@ -382,8 +426,34 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
             if dangerous in cmd:
                 return f"Command rejected: shell operator '{dangerous}' not allowed."
 
+        if shell_agent is not None:
+            from logos.data.agents import get_agent_registry
+
+            name, flag_args = shell_agent
+            registry = {a.name: a for a in get_agent_registry()}
+            agent_info = registry.get(name)
+            if not agent_info:
+                return (
+                    f"Agent admission refused: untracked chat shell agent command: {name}; "
+                    "next_action=register cockpit capability metadata before retrying "
+                    "guarded chat shell execution"
+                )
+            admitted_cmd, admission_error = _prepare_agent_command_for_chat(
+                name,
+                agent_info,
+                " ".join(shlex.quote(arg) for arg in flag_args),
+            )
+            if admission_error:
+                return admission_error
+            parts = admitted_cmd
+
+        if not allowed:
+            return (
+                f"Command rejected: not on allowlist. "
+                f"Allowed prefixes: {', '.join(p.strip() for p in SHELL_COMMAND_ALLOWLIST)}"
+            )
+
         try:
-            parts = shlex.split(cmd)
             proc = await asyncio.create_subprocess_exec(
                 *parts,
                 cwd=str(ctx.deps.project_dir),

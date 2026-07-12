@@ -1,5 +1,5 @@
 [Unit]
-Description=Run codex claim audit every 4 hours
+Description=Project Codex claim coherence every 4 hours
 # Hapax-Auto-Enable: true
 
 [Timer]

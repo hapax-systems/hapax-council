@@ -1,1091 +1,581 @@
 #!/usr/bin/env bash
-# codex-claim-audit — detect phantom or blocked task claims.
+# codex-claim-audit - projection-only claim and lane coherence diagnostics.
 #
-# Scans active task claims. For each, checks:
-#   1. Is a cx-*/codex* task claimed/in_progress for > STALE_HOURS without a PR or branch?
-#   2. Does the assigned role have a matching cc-active-task cache marker?
-#   3. Are live resumed lane processes still coherent with active task state?
-#   4. Is the assigned lane quota-blocked by receipt or methodology-dispatch evidence?
-#   5. Is a task's PR still open on GitHub? (never clear a pr_open claim whose PR is open)
-#
-# Reports phantom/quota-blocked claims and optionally releases them (--release).
-#
-# Intended to run as a systemd timer (codex-claim-audit.timer) or ad-hoc.
-#
-# Version: 2
-# Postmortem: 2026-06-12 failure classes #4 (CLAIM-PLANE-HOST-FORK) and
-#   #5 (STATE-ERASING-AUDIT-ON-LIVE-LANES).
-# Changes in v2:
-#   - GitHub PR reality check: before clearing any claim whose task note has a
-#     pr field, check GitHub REST pull state. If the PR is OPEN or DRAFT, the
-#     claim is LIVE — never clear it. When the pr field is null but the task has a
-#     branch, probe the REST pulls head filter — an open branch PR
-#     or an unverifiable lookup both retain the claim (fail-safe). (Fixes class
-#     #5, incl. the gh-pr-create → note-sync race window.)
-#   - Attributed journal logging: every claim-cache mutation emits a structured
-#     journal line via systemd-cat or logger so deletions are forensically
-#     traceable. (Fixes the 2026-06-12T19:00 cache-vanish incident.)
-#   - Host reconciliation: the --reconcile-host flag replicates cleared/released
-#     state to a remote host's claim cache via ssh, using an atomic rename-aside
-#     compare-and-delete so a concurrent re-point cannot erase a live remote
-#     claim. Skips ssh-to-self. (Fixes class #4.)
-#   - Session-keyed lease protection: the cache sweep treats a session-keyed
-#     cc-active-task-<role>-<session> lease as belonging to the note's base
-#     <role>, so a live fallback lease is not misread as a stale foreign role.
-#   - ExecStart changed from mutable primary worktree to repo-relative path
-#     resolved by the unit file. (Fixes canonical-root violation.)
+# The audit reports stale, quota-blocked, cache-incoherent, and process-
+# incoherent candidates. It never rewrites task notes, clears local or remote
+# claim state, or detaches ownership. Legacy release/reconcile options are
+# explicit fail-closed refusals until a separate governed effect mechanism is
+# implemented.
 
 set -euo pipefail
 
-SCRIPT_VERSION=2
-# Exit code for "audit completed; unresolved findings remain". DISTINCT from a
-# set -euo pipefail crash (which exits with the failing command's status, often
-# 1/2/127): the unit drop-in treats ONLY this code as success-with-warning, so a
-# genuine mid-run abort is no longer masked as success for this t1_critical tool.
-# Release-preflight failures still exit 2 (failed unit).
+SCRIPT_VERSION=3
 FINDINGS_EXIT=10
-VAULT_ROOT="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
+REFUSAL_EXIT=2
+
+VAULT_ROOT="${HAPAX_CLAIM_AUDIT_VAULT_ROOT:-$HOME/Documents/Personal/20-projects/hapax-cc-tasks}"
 CLAIM_CACHE_DIR="${HAPAX_CLAIM_CACHE_DIR:-$HOME/.cache/hapax}"
 RELAY_RECEIPT_DIR="${HAPAX_RELAY_RECEIPT_DIR:-$HOME/.cache/hapax/relay/receipts}"
 ORCHESTRATION_LEDGER_DIR="${HAPAX_ORCHESTRATION_LEDGER_DIR:-$HOME/.cache/hapax/orchestration}"
 QUOTA_BLOCKED_LOOKBACK_SECONDS="${HAPAX_QUOTA_BLOCKED_LOOKBACK_SECONDS:-86400}"
 STALE_HOURS="${CODEX_CLAIM_STALE_HOURS:-6}"
-RELEASE=false
-RELEASE_QUOTA_BLOCKED=false
-NTFY_URL="${NTFY_URL:-https://ntfy.sh}"
-NTFY_TOPIC="${NTFY_TOPIC:-hapax-ops}"
-RECONCILE_HOST="${HAPAX_RECONCILE_HOST:-}"
-RECONCILE_CACHE_DIR="${HAPAX_RECONCILE_CACHE_DIR:-$HOME/.cache/hapax}"
-# Two-host claim plane (opt-in; empty = reconciliation off). The reconcile target
-# is the PEER (the plane host that is not the one running the audit) so
-# reconciliation is symmetric/bidirectional — the preset enables this unit on
-# BOTH hosts, so a single hardcoded target would silently no-op to self on the
-# host it names, leaving the peer replica stale. The scheduled unit opts in by
-# setting HAPAX_CLAIM_PLANE_HOSTS to the host pair; ad-hoc runs default to off.
-CLAIM_PLANE_HOSTS="${HAPAX_CLAIM_PLANE_HOSTS:-}"
-DRY_RUN=false
-GH_CMD="${HAPAX_GH_CMD:-gh}"  # overridable for testing
-GH_REPO_SLUG="${HAPAX_GH_REPO:-${GH_REPO:-hapax-systems/hapax-council}}"
+PS_FIXTURE="${HAPAX_CLAIM_AUDIT_PS_FIXTURE:-}"
+EFFECT_OPTIONS=()
+
+usage() {
+  cat <<'EOF'
+Usage: codex-claim-audit [--stale-hours=HOURS] [--dry-run] [--version]
+
+Report claim/lane coherence candidates without changing task, claim, epoch,
+binding, process, or remote-host state.
+
+Legacy effect options are refused:
+  --release
+  --release-quota-blocked
+  --reconcile-host=HOST
+  --reconcile-cache-dir=PATH
+EOF
+}
 
 for arg in "$@"; do
   case "$arg" in
-    --release) RELEASE=true ;;
-    --release-quota-blocked) RELEASE_QUOTA_BLOCKED=true ;;
+    --release|--release-quota-blocked|--reconcile-host=*|--reconcile-cache-dir=*)
+      EFFECT_OPTIONS+=("$arg")
+      ;;
     --stale-hours=*) STALE_HOURS="${arg#*=}" ;;
-    --reconcile-host=*) RECONCILE_HOST="${arg#*=}" ;;
-    --reconcile-cache-dir=*) RECONCILE_CACHE_DIR="${arg#*=}" ;;
-    --dry-run) DRY_RUN=true ;;
-    --version) echo "codex-claim-audit v${SCRIPT_VERSION}"; exit 0 ;;
+    --dry-run) ;;
+    --version)
+      printf 'codex-claim-audit v%s (projection-only)\n' "$SCRIPT_VERSION"
+      exit 0
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      printf 'codex-claim-audit: unknown argument: %s\n' "$arg" >&2
+      usage >&2
+      exit 64
+      ;;
   esac
 done
 
-stale_threshold=$((STALE_HOURS * 3600))
-now_epoch=$(date +%s)
-phantom_count=0
-cache_mismatch_count=0
-stale_cache_count=0
-coherence_count=0
-process_count=0
-quota_blocked_count=0
-pr_protected_count=0
-reconcile_count=0
-release_failure_count=0
-report=""
-cache_report=""
-coherence_report=""
-process_report=""
-quota_report=""
-pr_protected_report=""
-reconcile_report=""
-release_failure_report=""
-release_cache_message=""
+case "$STALE_HOURS" in
+  ''|*[!0-9]*)
+    printf 'codex-claim-audit: --stale-hours must be a non-negative integer\n' >&2
+    exit 64
+    ;;
+esac
+case "$QUOTA_BLOCKED_LOOKBACK_SECONDS" in
+  ''|*[!0-9]*)
+    printf 'codex-claim-audit: HAPAX_QUOTA_BLOCKED_LOOKBACK_SECONDS must be a non-negative integer\n' >&2
+    exit 64
+    ;;
+esac
 
-# ---------------------------------------------------------------------------
-# Journal attribution
-# ---------------------------------------------------------------------------
-_journal_attr() {
-  # Emit a structured log line attributing a claim-cache mutation.
-  # $1 = action (CLEAR|DELETE|RECONCILE|PROTECT)
-  # $2 = claim_file basename
-  # $3 = reason detail
-  local action="$1" file="$2" detail="$3"
-  local msg="codex-claim-audit[v${SCRIPT_VERSION}]: ${action} ${file} -- ${detail}"
-  if command -v systemd-cat >/dev/null 2>&1; then
-    printf '%s\n' "$msg" | systemd-cat -t codex-claim-audit -p info 2>/dev/null || true
-  elif command -v logger >/dev/null 2>&1; then
-    logger -t codex-claim-audit "$msg" 2>/dev/null || true
-  fi
-  # Always also emit to stdout so the unit journal captures it.
-  printf '%s\n' "$msg"
-}
+if [ "${#EFFECT_OPTIONS[@]}" -gt 0 ]; then
+  printf 'codex-claim-audit: REFUSED_EFFECT options=%s\n' "${EFFECT_OPTIONS[*]}" >&2
+  printf 'codex-claim-audit: release/reconciliation authority is absent; this audit is projection-only and performed no effects\n' >&2
+  exit "$REFUSAL_EXIT"
+fi
 
-# ---------------------------------------------------------------------------
-# GitHub PR reality check
-# ---------------------------------------------------------------------------
-_gh_pr_is_open() {
-  # Returns 0 if the PR is open/draft on GitHub OR if the lookup fails (fail-
-  # safe: retain the claim unless GitHub positively confirms the PR is closed/
-  # merged). Returns 1 ONLY when gh succeeds and the state is MERGED or CLOSED.
-  #
-  # Safety invariant (class #5): collapsing a lookup failure into "not open"
-  # would let the audit erase live open-PR claims when gh is unavailable,
-  # unauthenticated, rate-limited, or the network is down.
-  local pr_number="$1"
-  [[ -n "$pr_number" && "$pr_number" != "null" ]] || return 1
-  # gh unavailable → fail-safe (treat as open)
-  command -v "$GH_CMD" >/dev/null 2>&1 || return 0
-  local state=""
-  state="$("$GH_CMD" api --method GET -H 'Accept: application/vnd.github+json' \
-    "repos/${GH_REPO_SLUG}/pulls/${pr_number}" \
-    --jq 'if .state == "closed" and (.merged == true or .merged_at != null) then "MERGED" elif .state == "closed" then "CLOSED" elif .draft == true then "DRAFT" elif .state == "open" then "OPEN" else "" end' \
-    2>/dev/null || true)"
-  case "$state" in
-    MERGED|CLOSED) return 1 ;;  # positively confirmed not-open
-    OPEN|DRAFT) return 0 ;;     # positively confirmed open
-    *)
-      # Empty/unknown state (rate limit, network error, auth failure).
-      # Fail-safe: treat as open to retain the claim.
-      _journal_attr "GH_LOOKUP_FAILED" "pr#${pr_number}" "state=${state:-empty} — treating as open (fail-safe)"
-      return 0
-      ;;
-  esac
-}
+REPO_DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")")/.." 2>/dev/null && pwd || true)"
+if [ -z "$REPO_DIR" ] || [ ! -d "$REPO_DIR/shared" ]; then
+  printf 'codex-claim-audit: AUDIT_ERROR activated source root unavailable: %s\n' "${REPO_DIR:-<unknown>}" >&2
+  exit 2
+fi
 
-_gh_open_pr_for_branch() {
-  # Branch-head PR reality check (class #5, the pr:null race window between
-  # `gh pr create` and the note's pr field syncing). Probes GitHub for an OPEN
-  # PR whose head ref is $1.
-  #   return 0 + echo <number> : a definite OPEN PR exists for this branch
-  #   return 1                 : gh succeeded and there is NO open PR
-  #   return 2                 : gh unavailable / lookup failed (INDETERMINATE)
-  # Callers treat 0 AND 2 as "do not clear" (fail-safe): an unverifiable branch
-  # must not have its live claim erased.
-  local branch="$1"
-  [[ -n "$branch" && "$branch" != "null" ]] || return 1
-  command -v "$GH_CMD" >/dev/null 2>&1 || return 2
-  local out rc owner head_filter
-  owner="${GH_REPO_SLUG%%/*}"
-  head_filter="${owner}:${branch}"
-  set +e
-  out="$("$GH_CMD" api --method GET -H 'Accept: application/vnd.github+json' \
-    "repos/${GH_REPO_SLUG}/pulls" \
-    -f "head=${head_filter}" \
-    -f "state=open" \
-    -f "per_page=1" \
-    --jq '.[0].number // empty' 2>/dev/null)"
-  rc=$?
-  set -e
-  [ "$rc" -eq 0 ] || return 2   # lookup failed -> indeterminate
-  [ -n "$out" ] || return 1      # gh ok, no open PR for this branch
-  printf '%s' "$out"
-  return 0
-}
+exec python3 - \
+  "$REPO_DIR" \
+  "$VAULT_ROOT" \
+  "$CLAIM_CACHE_DIR" \
+  "$RELAY_RECEIPT_DIR" \
+  "$ORCHESTRATION_LEDGER_DIR" \
+  "$((STALE_HOURS * 3600))" \
+  "$QUOTA_BLOCKED_LOOKBACK_SECONDS" \
+  "$PS_FIXTURE" \
+  "$FINDINGS_EXIT" <<'PY'
+from __future__ import annotations
 
-# ---------------------------------------------------------------------------
-# Helpers (unchanged from v1 unless noted)
-# ---------------------------------------------------------------------------
-
-_strip_scalar() {
-  printf '%s' "$1" | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//; s/^['\"]//; s/['\"]$//"
-}
-
-_fm_value() {
-  local key="$1"
-  local path="$2"
-  grep -oP "^${key}:\s*\\K.*" "$path" 2>/dev/null | head -n1 | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//; s/^['\"]//; s/['\"]$//" || true
-}
-
-_is_claim_status() {
-  case "$1" in
-    claimed|in_progress) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-_is_unassigned_role() {
-  case "$(_strip_scalar "$1" | tr '[:upper:]' '[:lower:]')" in
-    ""|null|none|"~"|unassigned|"[]") return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-_is_codexish_role() {
-  case "$1" in
-    cx-*|codex*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-# Does a claim-cache file's role (possibly session-keyed) belong to a note's
-# base role? cc-claim writes both the legacy cc-active-task-<role> AND every
-# session-keyed cc-active-task-<role>-<session_id> (FM-2). The cache sweep
-# derives the cache role from the full filename suffix, so a session-keyed
-# lease yields cache_role=<role>-<session_id> while the note carries the base
-# assigned_to=<role>. Treat the session-keyed lease as belonging to the base
-# role so a live fallback lease is not misread as a stale foreign role (class
-# #4/#5: never erase a live lease).
-_cache_role_matches_note() {
-  local cache_role="$1" note_role="$2"
-  [ -n "$note_role" ] || return 1
-  [ "$cache_role" = "$note_role" ] && return 0
-  case "$cache_role" in
-    "$note_role"-*) return 0 ;;  # session-keyed lease for the note's base role
-    *) return 1 ;;
-  esac
-}
-
-# This host's short name. HAPAX_AUDIT_SELF_HOST overrides it (peer-derivation
-# tests, and any host whose `hostname` does not match its claim-plane name).
-_self_host_short() {
-  if [ -n "${HAPAX_AUDIT_SELF_HOST:-}" ]; then
-    printf '%s' "${HAPAX_AUDIT_SELF_HOST%%.*}"
-    return 0
-  fi
-  hostname -s 2>/dev/null || hostname 2>/dev/null || printf ''
-}
-
-# Is RECONCILE_HOST this same host? Guards against ssh-to-self (the preset
-# auto-enables the unit on both hosts; an unguarded reconcile to self yields a
-# persistent exit 2 / failed unit on the host it names).
-_reconcile_host_is_self() {
-  local target="$1" short fqdn
-  short="$(_self_host_short)"
-  # The override is authoritative when set: do NOT consult the machine's real
-  # hostname, or a dev box named like a plane host would mis-classify the peer.
-  if [ -n "${HAPAX_AUDIT_SELF_HOST:-}" ]; then
-    fqdn="$HAPAX_AUDIT_SELF_HOST"
-  else
-    fqdn="$(hostname -f 2>/dev/null || hostname 2>/dev/null || printf '')"
-  fi
-  case "$target" in
-    "$short"|"$fqdn"|localhost|127.0.0.1) return 0 ;;
-    *) [ -n "$short" ] && [ "${target%%.*}" = "$short" ] && return 0 ;;
-  esac
-  return 1
-}
-
-# Resolve the reconcile peer in the two-host claim plane. The target MUST be the
-# OTHER host so reconciliation is bidirectional regardless of which host runs the
-# audit. An explicit, non-self RECONCILE_HOST (env or --reconcile-host) wins as
-# an override; otherwise derive the peer = the first CLAIM_PLANE_HOSTS entry that
-# is not this host. A self-pointing or unset target falls through to peer
-# derivation rather than silently no-op'ing (which would leave the peer replica
-# stale — the exit-predicate "no single-host reconciler against a two-host
-# plane"). Prints the resolved peer (empty when no non-self peer exists, e.g. a
-# genuinely single-host plane).
-_resolve_reconcile_host() {
-  if [ -n "$RECONCILE_HOST" ] && ! _reconcile_host_is_self "$RECONCILE_HOST"; then
-    printf '%s' "$RECONCILE_HOST"
-    return 0
-  fi
-  local h
-  for h in $CLAIM_PLANE_HOSTS; do
-    if [ -n "$h" ] && ! _reconcile_host_is_self "$h"; then
-      printf '%s' "$h"
-      return 0
-    fi
-  done
-  printf ''
-}
-
-_claim_file_for() {
-  printf '%s/cc-active-task-%s' "$CLAIM_CACHE_DIR" "$1"
-}
-
-_claim_file_task() {
-  local claim_file="$1"
-  [ -f "$claim_file" ] || return 0
-  sed -n '1p' "$claim_file" 2>/dev/null | tr -d '[:space:]' || true
-}
-
-_active_note_for() {
-  local task_id="$1"
-  local exact="$VAULT_ROOT/active/$task_id.md"
-  if [ -f "$exact" ]; then
-    printf '%s' "$exact"
-    return 0
-  fi
-  for candidate in "$VAULT_ROOT/active/$task_id-"*.md; do
-    [ -f "$candidate" ] || continue
-    printf '%s' "$candidate"
-    return 0
-  done
-  return 1
-}
-
-_pr_number_for_task() {
-  local task_id="$1"
-  local note pr_number
-  note="$(_active_note_for "$task_id" 2>/dev/null || true)"
-  if [ -n "$note" ]; then
-    pr_number="$(_fm_value pr "$note")"
-    if [ -n "$pr_number" ] && [ "$pr_number" != "null" ]; then
-      printf '%s' "$pr_number"
-      return 0
-    fi
-  fi
-  for note in "$VAULT_ROOT/closed/$task_id.md" "$VAULT_ROOT/closed/$task_id-"*.md; do
-    [ -f "$note" ] || continue
-    pr_number="$(_fm_value pr "$note")"
-    if [ -n "$pr_number" ] && [ "$pr_number" != "null" ]; then
-      printf '%s' "$pr_number"
-      return 0
-    fi
-  done
-  return 1
-}
-
-_branch_for_task() {
-  # Resolve a task's branch from its active (then closed) note, for the
-  # branch-head PR reality check when the pr field is null.
-  local task_id="$1"
-  local note branch
-  note="$(_active_note_for "$task_id" 2>/dev/null || true)"
-  if [ -n "$note" ]; then
-    branch="$(_fm_value branch "$note")"
-    if [ -n "$branch" ] && [ "$branch" != "null" ]; then
-      printf '%s' "$branch"
-      return 0
-    fi
-  fi
-  for note in "$VAULT_ROOT/closed/$task_id.md" "$VAULT_ROOT/closed/$task_id-"*.md; do
-    [ -f "$note" ] || continue
-    branch="$(_fm_value branch "$note")"
-    if [ -n "$branch" ] && [ "$branch" != "null" ]; then
-      printf '%s' "$branch"
-      return 0
-    fi
-  done
-  return 1
-}
-
-_any_note_status_for() {
-  local task_id="$1"
-  local note=""
-  note="$(_active_note_for "$task_id" 2>/dev/null || true)"
-  if [ -n "$note" ]; then
-    printf 'active:%s' "$(_fm_value status "$note")"
-    return 0
-  fi
-  local exact="$VAULT_ROOT/closed/$task_id.md"
-  if [ -f "$exact" ]; then
-    printf 'closed:%s' "$(_fm_value status "$exact")"
-    return 0
-  fi
-  for candidate in "$VAULT_ROOT/closed/$task_id-"*.md; do
-    [ -f "$candidate" ] || continue
-    printf 'closed:%s' "$(_fm_value status "$candidate")"
-    return 0
-  done
-  printf 'missing:not_found'
-}
-
-_record_coherence() {
-  coherence_count=$((coherence_count + 1))
-  coherence_report="${coherence_report}  $1\n"
-}
-
-_record_process() {
-  process_count=$((process_count + 1))
-  process_report="${process_report}  $1\n"
-}
-
-_receipt_quota_evidence_for() {
-  local role="$1"
-  local receipt="$RELAY_RECEIPT_DIR/${role}-quota-wall.yaml"
-  [ -f "$receipt" ] || return 1
-
-  local status resets reset_epoch
-  status="$(grep -oP '^status:\s*\K.*' "$receipt" 2>/dev/null | head -n1 | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//" || true)"
-  [ -z "$status" ] || [ "$status" = "quota_blocked" ] || return 1
-
-  resets="$(grep -oP '^resets_at:\s*\K.*' "$receipt" 2>/dev/null | head -n1 | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//" || true)"
-  case "$resets" in
-    ""|unknown|null|none|"~")
-      printf 'quota-wall-receipt:%s' "$receipt"
-      return 0
-      ;;
-    *)
-      reset_epoch="$(date -d "$resets" +%s 2>/dev/null || echo 0)"
-      if [ "$reset_epoch" -ge "$now_epoch" ]; then
-        printf 'quota-wall-receipt:%s' "$receipt"
-        return 0
-      fi
-      return 1
-      ;;
-  esac
-}
-
-_dispatch_quota_evidence_for() {
-  local role="$1"
-  local task_id="$2"
-  command -v python3 >/dev/null 2>&1 || return 1
-  local ledger evidence
-  for ledger in "$ORCHESTRATION_LEDGER_DIR/methodology-dispatch.jsonl" "$ORCHESTRATION_LEDGER_DIR/route-decisions.jsonl"; do
-    [ -f "$ledger" ] || continue
-    evidence="$(python3 - "$role" "$task_id" "$ledger" "$QUOTA_BLOCKED_LOOKBACK_SECONDS" <<'PYEOF'
 import json
+import re
+import subprocess
 import sys
-from datetime import UTC, datetime, timedelta
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
-role, task_id, ledger_raw, lookback_raw = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-ledger = Path(ledger_raw)
+repo_root = Path(sys.argv[1])
+vault_root = Path(sys.argv[2])
+cache_dir = Path(sys.argv[3])
+receipt_dir = Path(sys.argv[4])
+ledger_dir = Path(sys.argv[5])
+stale_threshold = int(sys.argv[6])
+quota_lookback = int(sys.argv[7])
+ps_fixture = Path(sys.argv[8]) if sys.argv[8] else None
+findings_exit = int(sys.argv[9])
+
+sys.path.insert(0, str(repo_root))
+
 try:
-    lookback = int(lookback_raw)
-except ValueError:
-    lookback = 86400
-now = datetime.now(UTC)
-cutoff = now - timedelta(seconds=max(0, lookback))
+    from shared.sdlc_owner_identity import owner_matches, parse_task_owner
+    from shared.strict_yaml import strict_safe_load
+except Exception as exc:  # pragma: no cover - deployment failure path
+    print(f"codex-claim-audit: AUDIT_ERROR strict parser unavailable: {exc}", file=sys.stderr)
+    raise SystemExit(2)
 
-try:
-    lines = ledger.read_text(encoding="utf-8").splitlines()
-except OSError:
-    sys.exit(1)
 
-matches: list[tuple[datetime, str]] = []
-for raw in lines[-5000:]:
+CLAIM_STATUSES = {"claimed", "in_progress"}
+UNASSIGNED = {"", "null", "none", "~", "unassigned"}
+
+
+@dataclass(frozen=True)
+class TaskNote:
+    path: Path
+    task_id: str
+    status: str
+    assigned_to: str
+    pr: str
+    branch: str
+    claimed_at: str
+
+
+class TaskStoreError(RuntimeError):
+    """The authoritative active-task snapshot could not be read completely."""
+
+
+findings: list[tuple[str, str]] = []
+
+
+def add(kind: str, detail: str) -> None:
+    findings.append((kind, detail))
+
+
+def scalar_text(value: Any, *, field: str, allow_null: bool = True) -> str:
+    if value is None and allow_null:
+        return ""
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise ValueError(f"{field} must be scalar")
+    return str(value).strip()
+
+
+def timestamp_text(value: Any, *, field: str) -> str:
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    return scalar_text(value, field=field)
+
+
+def read_frontmatter(path: Path) -> dict[str, Any]:
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---"):
+        raise ValueError("missing frontmatter")
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        raise ValueError("unclosed frontmatter")
+    loaded = strict_safe_load(parts[1])
+    if not isinstance(loaded, dict):
+        raise ValueError("frontmatter is not a mapping")
+    return loaded
+
+
+def load_tasks() -> dict[str, TaskNote]:
+    active = vault_root / "active"
+    tasks: dict[str, TaskNote] = {}
+    if not active.is_dir():
+        raise TaskStoreError(f"path={active} error=missing-or-not-directory")
     try:
-        record = json.loads(raw)
-    except json.JSONDecodeError:
-        continue
-    if record.get("lane") != role:
-        continue
-    if record.get("task_id") != task_id:
-        continue
-    ts_raw = str(record.get("timestamp") or record.get("created_at") or "")
+        paths = sorted(path for path in active.iterdir() if path.name.endswith(".md"))
+    except OSError as exc:
+        raise TaskStoreError(f"path={active} error={exc}") from exc
+
+    for path in paths:
+        try:
+            data = read_frontmatter(path)
+            task_id = scalar_text(data.get("task_id"), field="task_id", allow_null=False)
+            status = scalar_text(data.get("status"), field="status", allow_null=False).lower()
+            owner = scalar_text(data.get("assigned_to"), field="assigned_to")
+            if owner and owner.lower() not in UNASSIGNED:
+                parse_task_owner(owner)
+            pr = scalar_text(data.get("pr"), field="pr")
+            branch = scalar_text(data.get("branch"), field="branch")
+            claimed_at = timestamp_text(data.get("claimed_at"), field="claimed_at")
+            if not task_id or not status:
+                raise ValueError("task_id and status must be non-empty strings")
+            if task_id in tasks:
+                raise ValueError(f"duplicate active task_id {task_id}")
+            tasks[task_id] = TaskNote(
+                path=path,
+                task_id=task_id,
+                status=status,
+                assigned_to=owner,
+                pr=pr,
+                branch=branch,
+                claimed_at=claimed_at,
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            raise TaskStoreError(f"path={path} error={exc}") from exc
+    return tasks
+
+
+def read_caches() -> dict[Path, tuple[str, str]]:
+    caches: dict[Path, tuple[str, str]] = {}
+    if not cache_dir.is_dir():
+        return caches
     try:
-        ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00")).astimezone(UTC)
+        paths = sorted(cache_dir.glob("cc-active-task-*"))
+    except OSError as exc:
+        add("CACHE_SCAN_ERROR", f"path={cache_dir} error={exc} action=HOLD")
+        return caches
+    for path in paths:
+        if ".audit-claim." in path.name or not path.is_file():
+            continue
+        role = path.name.removeprefix("cc-active-task-")
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError as exc:
+            add("CACHE_SCAN_ERROR", f"cache={path.name} error={exc} action=HOLD")
+            continue
+        task_id = lines[0].strip() if lines else ""
+        if not task_id:
+            add("CACHE_MALFORMED", f"cache={path.name} task=<empty> action=HOLD")
+            continue
+        caches[path] = (role, task_id)
+    return caches
+
+
+def task_owner_role(owner: str) -> str:
+    identity = parse_task_owner(owner)
+    return identity.role if identity is not None else ""
+
+
+def inferred_platform(role: str) -> str | None:
+    if role.startswith("cx-") or role.startswith("codex"):
+        return "codex"
+    if role.startswith("vbe-"):
+        return "vibe"
+    if role in {"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"}:
+        return "claude"
+    return None
+
+
+def role_matches(cache_role: str, note_owner: str) -> bool:
+    identity = parse_task_owner(note_owner)
+    if identity is None:
+        return False
+    if cache_role != identity.role and not cache_role.startswith(f"{identity.role}-"):
+        return False
+    return identity.platform is None or identity.platform == inferred_platform(identity.role)
+
+
+def parse_timestamp(raw: str) -> datetime | None:
+    if not raw or raw.lower() in UNASSIGNED:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(UTC)
     except ValueError:
-        continue
-    if ts < cutoff:
-        continue
-    reasons = record.get("route_policy_reason_codes") or []
-    if not reasons:
-        reasons = record.get("reason_codes") or []
-    if not isinstance(reasons, list):
-        reasons = [str(reasons)]
-    text = " ".join(
-        [
-            str(record.get("reason") or ""),
-            str(record.get("message") or ""),
-            str(record.get("decision") or ""),
-            str(record.get("policy_outcome") or ""),
-            str(record.get("route_policy_action") or ""),
-            str(record.get("route_policy_outcome") or ""),
-            " ".join(str(item) for item in reasons),
-        ]
-    ).lower()
-    quotaish = (
-        "quota" in text
-        or "account_live_quota" in text
-        or "usage limit" in text
-        or "rate_limit" in text
+        return None
+
+
+def receipt_quota_evidence(role: str, now: datetime) -> str:
+    receipt = receipt_dir / f"{role}-quota-wall.yaml"
+    if not receipt.is_file():
+        return ""
+    try:
+        data = strict_safe_load(receipt.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("receipt is not a mapping")
+        status = scalar_text(data.get("status"), field="status").lower()
+        if status and status != "quota_blocked":
+            return ""
+        resets = timestamp_text(data.get("resets_at"), field="resets_at")
+        if not resets or resets.lower() in UNASSIGNED | {"unknown"}:
+            return f"quota-wall-receipt:{receipt}"
+        reset_at = parse_timestamp(resets)
+        if reset_at is None:
+            add("QUOTA_EVIDENCE_ERROR", f"path={receipt} resets_at={resets!r} action=HOLD")
+            return ""
+        if reset_at >= now:
+            return f"quota-wall-receipt:{receipt}"
+    except (OSError, TypeError, ValueError) as exc:
+        add("QUOTA_EVIDENCE_ERROR", f"path={receipt} error={exc} action=HOLD")
+    return ""
+
+
+def dispatch_quota_evidence(role: str, task_id: str, now: datetime) -> str:
+    cutoff = now - timedelta(seconds=max(0, quota_lookback))
+    matches: list[tuple[datetime, str, str]] = []
+    for ledger in (
+        ledger_dir / "methodology-dispatch.jsonl",
+        ledger_dir / "route-decisions.jsonl",
+    ):
+        if not ledger.is_file():
+            continue
+        try:
+            lines = ledger.read_text(encoding="utf-8").splitlines()[-5000:]
+        except OSError as exc:
+            add("QUOTA_EVIDENCE_ERROR", f"path={ledger} error={exc} action=HOLD")
+            continue
+        for raw in lines:
+            try:
+                record = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            if record.get("lane") != role or record.get("task_id") != task_id:
+                continue
+            timestamp_raw = str(record.get("timestamp") or record.get("created_at") or "")
+            timestamp = parse_timestamp(timestamp_raw)
+            if timestamp is None or timestamp < cutoff:
+                continue
+            reason_codes = record.get("route_policy_reason_codes") or record.get("reason_codes") or []
+            if not isinstance(reason_codes, list):
+                reason_codes = [reason_codes]
+            text = " ".join(
+                str(value)
+                for value in (
+                    record.get("reason"),
+                    record.get("message"),
+                    record.get("decision"),
+                    record.get("policy_outcome"),
+                    record.get("route_policy_action"),
+                    record.get("route_policy_outcome"),
+                    " ".join(str(item) for item in reason_codes),
+                )
+                if value is not None
+            ).lower()
+            quotaish = any(
+                marker in text
+                for marker in ("quota", "account_live_quota", "usage limit", "rate_limit")
+            )
+            blocked = record.get("ok") is False or "hold" in text or "refuse" in text
+            if quotaish and blocked:
+                ident = str(
+                    record.get("route_decision_id")
+                    or record.get("decision_id")
+                    or timestamp_raw
+                )
+                matches.append((timestamp, ledger.stem, ident))
+    if not matches:
+        return ""
+    _timestamp, source, ident = sorted(matches)[-1]
+    return f"{source}:{ident}"
+
+
+def is_codexish(owner: str) -> bool:
+    identity = parse_task_owner(owner)
+    return bool(identity) and (
+        identity.platform == "codex"
+        or identity.role.startswith("cx-")
+        or identity.role.startswith("codex")
     )
-    blocked = record.get("ok") is False or "hold" in text or "refuse" in text
-    if quotaish and blocked:
-        ident = str(record.get("route_decision_id") or record.get("decision_id") or ts_raw)
-        matches.append((ts, ident))
 
-if not matches:
-    sys.exit(1)
 
-_ts, ident = sorted(matches, key=lambda item: item[0])[-1]
-source = ledger.name.removesuffix(".jsonl")
-print(f"{source}:{ident}")
-PYEOF
-)" && {
-      printf '%s' "$evidence"
-      return 0
+def pr_absent(pr: str) -> bool:
+    return not pr or pr.lower() in UNASSIGNED
+
+
+def audit_tasks(
+    tasks: dict[str, TaskNote], caches: dict[Path, tuple[str, str]], now: datetime
+) -> None:
+    for task in tasks.values():
+        if task.status not in CLAIM_STATUSES:
+            continue
+        owner = task.assigned_to
+        if not owner or owner.lower() in UNASSIGNED:
+            add(
+                "CLAIM_OWNER_MISSING",
+                f"task={task.task_id} status={task.status} assigned={owner or '<null>'} action=HOLD",
+            )
+            continue
+
+        matching = [
+            (path, role)
+            for path, (role, cached_task) in caches.items()
+            if cached_task == task.task_id and role_matches(role, owner)
+        ]
+        role = task_owner_role(owner)
+        canonical = cache_dir / f"cc-active-task-{role}"
+        if not matching:
+            if canonical in caches:
+                cached_task = caches[canonical][1]
+                add(
+                    "CACHE_MISMATCH",
+                    f"task={task.task_id} assigned={owner} cache={canonical.name} cache_task={cached_task} action=HOLD",
+                )
+            else:
+                add(
+                    "CACHE_MISSING",
+                    f"task={task.task_id} assigned={owner} status={task.status} expected={canonical.name} action=HOLD",
+                )
+
+        evidence = receipt_quota_evidence(role, now)
+        if not evidence:
+            evidence = dispatch_quota_evidence(role, task.task_id, now)
+        if evidence:
+            add(
+                "QUOTA_BLOCKED",
+                f"task={task.task_id} assigned={owner} status={task.status} evidence={evidence} pr={task.pr or 'null'} branch={task.branch or 'null'} action=HOLD",
+            )
+
+        if not is_codexish(owner):
+            continue
+        claimed = parse_timestamp(task.claimed_at)
+        if claimed is None:
+            age_seconds = stale_threshold + 1
+            age_label = "unknown"
+        else:
+            age_seconds = max(0, int((now - claimed).total_seconds()))
+            age_label = f"{age_seconds // 3600}h"
+        if age_seconds >= stale_threshold and pr_absent(task.pr):
+            add(
+                "PHANTOM_CANDIDATE",
+                f"task={task.task_id} assigned={owner} status={task.status} age={age_label} pr={task.pr or 'null'} branch={task.branch or 'null'} action=HOLD",
+            )
+
+
+def audit_caches(tasks: dict[str, TaskNote], caches: dict[Path, tuple[str, str]]) -> None:
+    for path, (role, task_id) in caches.items():
+        task = tasks.get(task_id)
+        if task is None:
+            add(
+                "CACHE_STALE_CANDIDATE",
+                f"cache={path.name} task={task_id} status=not_active action=HOLD",
+            )
+            continue
+        if task.status not in CLAIM_STATUSES or not role_matches(role, task.assigned_to):
+            add(
+                "CACHE_STALE_CANDIDATE",
+                f"cache={path.name} task={task_id} note_assigned={task.assigned_to or '<null>'} note_status={task.status} action=HOLD",
+            )
+
+
+def process_snapshot() -> str:
+    if ps_fixture is not None:
+        try:
+            return ps_fixture.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            add("PROCESS_SCAN_ERROR", f"fixture={ps_fixture} error={exc} action=HOLD")
+            return ""
+    try:
+        result = subprocess.run(
+            ["ps", "-eo", "pid=,etimes=,args="],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        add("PROCESS_SCAN_ERROR", f"error={exc} action=HOLD")
+        return ""
+    if result.returncode != 0:
+        add("PROCESS_SCAN_ERROR", f"returncode={result.returncode} action=HOLD")
+        return ""
+    return result.stdout
+
+
+def audit_processes(tasks: dict[str, TaskNote], caches: dict[Path, tuple[str, str]]) -> None:
+    seen: set[tuple[str, str, str]] = set()
+    for line in process_snapshot().splitlines():
+        if "Resume governed task " not in line:
+            continue
+        task_match = re.search(r"Resume governed task ([^ ]+)", line)
+        if task_match is None:
+            continue
+        task_id = task_match.group(1)
+        role_match = re.search(r"(HAPAX_AGENT_ROLE|CODEX_ROLE|CLAUDE_ROLE)=([^ ]+)", line)
+        role = role_match.group(2) if role_match else "<unknown>"
+        interface_match = re.search(r"HAPAX_AGENT_INTERFACE=([^ ]+)", line)
+        if interface_match is not None:
+            platform = interface_match.group(1).strip().lower()
+        elif role_match is not None and role_match.group(1) == "CODEX_ROLE":
+            platform = "codex"
+        elif role_match is not None and role_match.group(1) == "CLAUDE_ROLE":
+            platform = "claude"
+        else:
+            platform = inferred_platform(role)
+        columns = line.strip().split(maxsplit=2)
+        pid = columns[0] if columns else "?"
+        age = columns[1] if len(columns) > 1 else "?"
+        task = tasks.get(task_id)
+        reason = ""
+        detail = ""
+        if task is None:
+            reason = "PROCESS_TASK_NOT_ACTIVE"
+            detail = "task_state=missing"
+        elif task.status not in CLAIM_STATUSES:
+            reason = "PROCESS_TASK_NOT_CLAIMED"
+            detail = f"task_status={task.status}"
+        elif role != "<unknown>" and not owner_matches(
+            task.assigned_to,
+            role,
+            platform,
+        ):
+            reason = "PROCESS_ASSIGNEE_MISMATCH"
+            detail = f"note_assigned={task.assigned_to or '<null>'}"
+        elif role != "<unknown>" and not any(
+            cached_task == task_id and role_matches(cache_role, role)
+            for cache_role, cached_task in caches.values()
+        ):
+            reason = "PROCESS_CACHE_MISMATCH"
+            detail = "cache_task=<missing>"
+        if not reason:
+            continue
+        key = (role, task_id, reason)
+        if key in seen:
+            continue
+        seen.add(key)
+        add(
+            reason,
+            f"pid={pid} age_s={age} role={role} task={task_id} {detail} action=HOLD",
+        )
+
+
+def render() -> int:
+    if not findings:
+        print("codex-claim-audit: no claim/lane coherence candidates found")
+        print("codex-claim-audit: projection-only; effects=0")
+        return 0
+
+    labels = {
+        "QUOTA_BLOCKED": "quota-blocked claim candidate(s)",
+        "PHANTOM_CANDIDATE": "phantom claim candidate(s)",
+        "CACHE_STALE_CANDIDATE": "stale claim cache candidate(s)",
     }
-  done
-  return 1
-}
+    grouped: dict[str, list[str]] = defaultdict(list)
+    for kind, detail in findings:
+        grouped[kind].append(detail)
+    for kind in sorted(grouped):
+        label = labels.get(kind, "diagnostic finding(s)")
+        print(f"codex-claim-audit: {len(grouped[kind])} {label} [{kind}]")
+        for detail in grouped[kind]:
+            print(f"  {kind}: {detail}")
+    print(f"codex-claim-audit: findings={len(findings)} effects=0")
+    print(
+        "codex-claim-audit: all candidates HOLD; no task, claim, epoch, binding, process, or remote-host state was changed"
+    )
+    return findings_exit
 
-_quota_evidence_for() {
-  local role="$1"
-  local task_id="$2"
-  _receipt_quota_evidence_for "$role" || _dispatch_quota_evidence_for "$role" "$task_id"
-}
 
-# ---------------------------------------------------------------------------
-# Claim cache clearing — now with PR reality check + journal attribution
-# ---------------------------------------------------------------------------
-
-_reality_check_protects() {
-  # Class #5 reality check. Returns 0 (PROTECT — DO NOT CLEAR) when task_id has
-  # an OPEN PR, derived from EITHER the pr field/note OR the branch head, OR when
-  # the branch probe is indeterminate (gh down → fail-safe retain). Returns 1
-  # only when it is positively safe to clear. Emits the protection report +
-  # journal as a side effect. Args: task_id assigned pr_number(may be empty/null)
-  # cache_label. This is called for EVERY clear path (local-present AND
-  # missing-local-but-remote-present) so a vanished local cache can never let the
-  # remote-reconcile path erase a live open-PR claim.
-  local task_id="$1" assigned="$2" pr_number="${3:-}" cache_label="$4"
-  if [ -z "$pr_number" ] || [ "$pr_number" = "null" ]; then
-    pr_number="$(_pr_number_for_task "$task_id" 2>/dev/null || true)"
-  fi
-  if [ -n "$pr_number" ] && [ "$pr_number" != "null" ] && _gh_pr_is_open "$pr_number"; then
-    pr_protected_count=$((pr_protected_count + 1))
-    pr_protected_report="${pr_protected_report}  PR_OPEN_PROTECTED: ${task_id} assigned=${assigned} pr=#${pr_number} -- claim cache retained (PR is open on GitHub)\n"
-    release_cache_message="    -> KEPT ${cache_label} because PR #${pr_number} is OPEN on GitHub\n"
-    _journal_attr "PROTECT" "${cache_label}" "pr_open pr=#${pr_number} task=${task_id} assigned=${assigned}"
-    return 0
-  fi
-
-  # Branch-head reality check (pr:null race window between `gh pr create` and the
-  # note's pr field syncing). An OPEN branch PR (rc 0) OR an unverifiable lookup
-  # (rc 2, gh down) both retain the claim — never erase a claim we cannot
-  # positively confirm is dead.
-  if [ -z "$pr_number" ] || [ "$pr_number" = "null" ]; then
-    local branch_for_probe branch_open_pr branch_probe_rc
-    branch_for_probe="$(_branch_for_task "$task_id" 2>/dev/null || true)"
-    if [ -n "$branch_for_probe" ] && [ "$branch_for_probe" != "null" ]; then
-      set +e
-      branch_open_pr="$(_gh_open_pr_for_branch "$branch_for_probe")"
-      branch_probe_rc=$?
-      set -e
-      if [ "$branch_probe_rc" -eq 0 ]; then
-        pr_protected_count=$((pr_protected_count + 1))
-        pr_protected_report="${pr_protected_report}  PR_OPEN_PROTECTED: ${task_id} assigned=${assigned} branch=${branch_for_probe} pr=#${branch_open_pr} -- claim cache retained (branch head has an OPEN PR)\n"
-        release_cache_message="    -> KEPT ${cache_label} because branch ${branch_for_probe} has OPEN PR #${branch_open_pr}\n"
-        _journal_attr "PROTECT" "${cache_label}" "branch_open_pr pr=#${branch_open_pr} branch=${branch_for_probe} task=${task_id}"
-        return 0
-      elif [ "$branch_probe_rc" -eq 2 ]; then
-        pr_protected_count=$((pr_protected_count + 1))
-        pr_protected_report="${pr_protected_report}  PR_OPEN_PROTECTED: ${task_id} assigned=${assigned} branch=${branch_for_probe} -- claim cache retained (branch PR state INDETERMINATE; fail-safe)\n"
-        release_cache_message="    -> KEPT ${cache_label} because branch ${branch_for_probe} PR state is indeterminate (gh lookup failed; fail-safe)\n"
-        _journal_attr "PROTECT" "${cache_label}" "branch_pr_indeterminate branch=${branch_for_probe} task=${task_id} — fail-safe retain"
-        return 0
-      fi
-    fi
-  fi
-  return 1
-}
-
-# Restore a rename-aside snapshot WITHOUT clobbering a concurrent fresh write.
-# If a new claim was written to the canonical path while we held the snapshot,
-# that write is newer/live and wins — we discard our stale snapshot. Otherwise
-# the snapshot moves back. (Local mirror of the remote restore in
-# _reconcile_clear_to_host.)
-_restore_local_snapshot() {
-  local snapshot="$1" canonical="$2"
-  if [ -e "$canonical" ]; then
-    rm -f "$snapshot"
-  else
-    mv "$snapshot" "$canonical" 2>/dev/null || rm -f "$snapshot"
-  fi
-}
-
-_clear_claim_cache_for_release() {
-  local assigned="$1"
-  local task_id="$2"
-  local reason="${3:-released}"
-  local pr_number="${4:-}"
-  release_cache_message=""
-  local claim_file claimed_task audit_tmp
-  claim_file="$CLAIM_CACHE_DIR/cc-active-task-$assigned"
-
-  # ── PR + BRANCH-HEAD REALITY CHECK (class #5) — gate ALL clear paths ──
-  # Hoisted above the `[ -f "$claim_file" ]` split so it protects the
-  # missing-local-cache path too: a vanished local cache must NOT let the remote
-  # reconcile erase a live open-PR claim (the delta/zeta + appendix-fork surface).
-  if _reality_check_protects "$task_id" "$assigned" "$pr_number" "claim cache $(basename "$claim_file")"; then
-    return 1
-  fi
-
-  if [ "$DRY_RUN" = true ]; then
-    if [ -f "$claim_file" ]; then
-      claimed_task=$(sed -n '1p' "$claim_file" 2>/dev/null || true)
-      if [ "$claimed_task" = "$task_id" ]; then
-        release_cache_message="    -> [DRY-RUN] WOULD CLEAR stale claim cache $(basename "$claim_file")\n"
-        if [ -n "$RECONCILE_HOST" ]; then
-          _reconcile_clear_to_host "$assigned" "$task_id" || return 1
-        fi
-        return 0
-      fi
-      cache_mismatch_count=$((cache_mismatch_count + 1))
-      release_cache_message="    -> KEPT claim cache $(basename "$claim_file") because it names ${claimed_task:-<empty>}\n"
-      return 1
-    fi
-  elif [ -f "$claim_file" ]; then
-    # ── ATOMIC CAPTURE (class #5 TOCTOU) ──
-    # Snapshot the claim by atomic rename BEFORE the (slow) remote reconcile, so
-    # a concurrent cc-claim that re-points this path to a *different* live task
-    # between our read and our delete cannot be erased: we only ever rm the
-    # private snapshot, never the canonical path. A plain read-then-rm here had
-    # the exact TOCTOU the remote path already guards against — mirror it.
-    audit_tmp="$claim_file.audit-claim.$$"
-    if mv -f "$claim_file" "$audit_tmp" 2>/dev/null; then
-      claimed_task=$(sed -n '1p' "$audit_tmp" 2>/dev/null || true)
-      if [ "$claimed_task" != "$task_id" ]; then
-        _restore_local_snapshot "$audit_tmp" "$claim_file"
-        cache_mismatch_count=$((cache_mismatch_count + 1))
-        release_cache_message="    -> KEPT claim cache $(basename "$claim_file") because it names ${claimed_task:-<empty>}\n"
-        return 1
-      fi
-      # Ours. Reconcile the remote first; on failure restore the snapshot so the
-      # claim plane fails closed (a remote mismatch/ssh failure keeps the claim).
-      if [ -n "$RECONCILE_HOST" ]; then
-        if ! _reconcile_clear_to_host "$assigned" "$task_id"; then
-          _restore_local_snapshot "$audit_tmp" "$claim_file"
-          release_cache_message="    -> KEPT claim cache $(basename "$claim_file") because remote reconciliation failed or found a different live claim\n"
-          release_failure_count=$((release_failure_count + 1))
-          release_failure_report="${release_failure_report}  RELEASE_HELD: $(basename "$claim_file") task=${task_id} assigned=${assigned} reason=reconcile_failed\n"
-          return 1
-        fi
-      fi
-      # Remote reconciled (or no reconcile host). Drop only our private snapshot;
-      # a concurrent re-point created a fresh canonical file that we never touch.
-      rm -f "$audit_tmp"
-      _journal_attr "CLEAR" "$(basename "$claim_file")" "${reason} task=${task_id} assigned=${assigned} pr=${pr_number:-none}"
-      release_cache_message="    -> CLEARED stale claim cache $(basename "$claim_file")\n"
-      return 0
-    fi
-    # mv failed → the local cache vanished concurrently; fall through to the
-    # missing-local reconcile path (it fails closed on remote uncertainty).
-  fi
-  if [ -n "$RECONCILE_HOST" ]; then
-    if ! _reconcile_clear_to_host "$assigned" "$task_id"; then
-      release_cache_message="    -> HELD release for missing local claim cache $(basename "$claim_file") because remote reconciliation failed or found a different live claim\n"
-      release_failure_count=$((release_failure_count + 1))
-      release_failure_report="${release_failure_report}  RELEASE_HELD: $(basename "$claim_file") task=${task_id} assigned=${assigned} reason=missing_local_reconcile_failed\n"
-      return 1
-    fi
-  fi
-  release_cache_message="    -> no claim cache $(basename "$claim_file") present\n"
-  return 0
-}
-
-# ---------------------------------------------------------------------------
-# Host reconciliation (class #4 fix)
-#
-# Two-host plane, vault-note-driven. This audit is driven by the SHARED VAULT
-# NOTES (the claim SSOT under 20-projects/hapax-cc-tasks/), not by any one host's
-# local cache: the sweep iterates every active task note and the local cache, and
-# for each release it clears BOTH the local cache and — via RECONCILE_HOST — the
-# peer replica. Because the vault is the SSOT and is shared, a peer-origin claim
-# still has a vault note, so whichever host runs the audit sees and reconciles it
-# on the other host; there is no class of "peer-only" clear that escapes
-# reconciliation. RECONCILE_HOST is resolved up front to the PEER host
-# (_resolve_reconcile_host derives the CLAIM_PLANE_HOSTS entry that is not self),
-# so reconciliation is bidirectional and correct regardless of which host runs —
-# the preset enables this unit on both. A self-pointing or unset target never
-# silently no-ops to self; it falls through to peer derivation (or off, on a
-# single-host plane).
-# ---------------------------------------------------------------------------
-
-_reconcile_clear_to_host() {
-  local assigned="$1" task_id="$2"
-  local remote_file="$RECONCILE_CACHE_DIR/cc-active-task-$assigned"
-  local caller_host remote_file_q task_id_q caller_host_q remote_result remote_rc
-  caller_host="$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf unknown)"
-  if _reconcile_host_is_self "$RECONCILE_HOST"; then
-    # Reconcile target is this host — the local clear path already owns this
-    # cache. No remote replication needed; do not ssh to self.
-    reconcile_report="${reconcile_report}  RECONCILE_SKIP: cc-active-task-${assigned} target ${RECONCILE_HOST} is this host (self)\n"
-    return 0
-  fi
-  remote_file_q="$(printf '%q' "$remote_file")"
-  task_id_q="$(printf '%q' "$task_id")"
-  caller_host_q="$(printf '%q' "$caller_host")"
-  if [ "$DRY_RUN" = true ]; then
-    reconcile_count=$((reconcile_count + 1))
-    reconcile_report="${reconcile_report}  [DRY-RUN] WOULD RECONCILE ${assigned} task=${task_id} -> ${RECONCILE_HOST}:${remote_file}\n"
-    return 0
-  fi
-
-  # Safety: atomic compare-and-delete via rename-aside. A plain
-  # read-then-rm (even in one remote shell) has a TOCTOU window: if the claim
-  # is re-pointed to a different live task between the read and the rm, the rm
-  # erases that live claim. Instead we atomically `mv` the claim to a private
-  # temp (rename is atomic), then decide from the captured copy: if it is ours,
-  # delete the temp; if it is not, restore it WITHOUT clobbering any claim
-  # written in the meantime. We never `rm` the canonical path directly, so a
-  # concurrent fresh write to it can never be erased. (Bounded cost: an ssh
-  # death between mv and restore can orphan a *.audit-claim.* temp; the sweep
-  # skips those and the next reconcile is a no-op.)
-  set +e
-  remote_result="$(ssh -o ConnectTimeout=5 -o BatchMode=yes "$RECONCILE_HOST" \
-    "remote_file=${remote_file_q}; task_id=${task_id_q}; caller_host=${caller_host_q}; \
-audit_tmp=\"\$remote_file.audit-claim.\$\$\"; \
-if [ ! -s \"\$remote_file\" ]; then printf 'ABSENT\n'; exit 0; fi; \
-if ! mv -f \"\$remote_file\" \"\$audit_tmp\" 2>/dev/null; then \
-  if [ ! -s \"\$remote_file\" ]; then printf 'ABSENT\n'; exit 0; fi; \
-  printf 'RACE\n'; exit 4; fi; \
-remote_task=\$(head -n1 \"\$audit_tmp\" 2>/dev/null | tr -d '[:space:]'); \
-if [ \"\$remote_task\" != \"\$task_id\" ]; then \
-  if [ -e \"\$remote_file\" ]; then rm -f \"\$audit_tmp\"; \
-  else mv \"\$audit_tmp\" \"\$remote_file\" 2>/dev/null || rm -f \"\$audit_tmp\"; fi; \
-  printf 'MISMATCH:%s\n' \"\$remote_task\"; exit 3; fi; \
-rm -f \"\$audit_tmp\"; \
-logger -t codex-claim-audit \"RECONCILE_CLEAR cc-active-task-${assigned} task=\$task_id from=\$caller_host\" 2>/dev/null || true; \
-printf 'CLEARED\n'" 2>/dev/null)"
-  remote_rc=$?
-  set -e
-
-  if [ "$remote_rc" -eq 3 ]; then
-    local remote_task="${remote_result#MISMATCH:}"
-    reconcile_report="${reconcile_report}  RECONCILE_SKIP: cc-active-task-${assigned} on ${RECONCILE_HOST} remote_task=${remote_task} != local_task=${task_id} (remote claim is live for different task)\n"
-    _journal_attr "RECONCILE_SKIP" "cc-active-task-${assigned}" "remote ${RECONCILE_HOST} has different task=${remote_task} (ours=${task_id})"
-    return 1
-  fi
-  if [ "$remote_rc" -ne 0 ]; then
-    reconcile_report="${reconcile_report}  RECONCILE_FAILED: cc-active-task-${assigned} on ${RECONCILE_HOST} task=${task_id} (ssh read failed; check: ssh ${RECONCILE_HOST}, HAPAX_RECONCILE_HOST env, or rerun with --dry-run)\n"
-    _journal_attr "RECONCILE_FAILED" "cc-active-task-${assigned}" "ssh guarded clear on ${RECONCILE_HOST} failed task=${task_id}"
-    return 1
-  fi
-  case "$remote_result" in
-    ABSENT*)
-      # Remote file doesn't exist or is empty — nothing to reconcile.
-      reconcile_count=$((reconcile_count + 1))
-      reconcile_report="${reconcile_report}  RECONCILE_SKIP: cc-active-task-${assigned} on ${RECONCILE_HOST} (remote file absent or empty)\n"
-      return 0
-      ;;
-    CLEARED*)
-      reconcile_count=$((reconcile_count + 1))
-      reconcile_report="${reconcile_report}  RECONCILED: cleared cc-active-task-${assigned} on ${RECONCILE_HOST} task=${task_id}\n"
-      _journal_attr "RECONCILE" "cc-active-task-${assigned}" "cleared on ${RECONCILE_HOST} task=${task_id}"
-      return 0
-      ;;
-  esac
-  if [ -z "$remote_result" ]; then
-    reconcile_count=$((reconcile_count + 1))
-    reconcile_report="${reconcile_report}  RECONCILE_SKIP: cc-active-task-${assigned} on ${RECONCILE_HOST} (remote file absent or empty)\n"
-    return 0
-  fi
-  reconcile_report="${reconcile_report}  RECONCILE_FAILED: cc-active-task-${assigned} on ${RECONCILE_HOST} task=${task_id} (unexpected ssh response: ${remote_result})\n"
-  _journal_attr "RECONCILE_FAILED" "cc-active-task-${assigned}" "unexpected response from ${RECONCILE_HOST}: ${remote_result}"
-  return 1
-}
-
-# ---------------------------------------------------------------------------
-# Main scan: active task notes
-# ---------------------------------------------------------------------------
-
-# Resolve the reconcile target to the PEER host once, up front. After this,
-# RECONCILE_HOST is either a non-self peer or empty (single-host plane) — never
-# self — so every reconcile path replicates to the other host or cleanly no-ops.
-RECONCILE_HOST="$(_resolve_reconcile_host)"
-
-for note in "$VAULT_ROOT/active/"*.md; do
-  [ -f "$note" ] || continue
-
-  assigned="$(_fm_value assigned_to "$note")"
-  status="$(_fm_value status "$note")"
-  _is_claim_status "$status" || continue
-
-  task_id="$(_fm_value task_id "$note")"
-  [ -n "$task_id" ] || task_id="$(basename "$note" .md)"
-  pr="$(_fm_value pr "$note")"
-  branch="$(_fm_value branch "$note")"
-  claimed_at="$(_fm_value claimed_at "$note")"
-  quota_evidence=""
-  claim_matches=false
-
-  if ! _is_unassigned_role "$assigned"; then
-    claim_file="$(_claim_file_for "$assigned")"
-    claimed_task="$(_claim_file_task "$claim_file")"
-    if [ ! -f "$claim_file" ]; then
-      _record_coherence "CACHE_MISSING: ${task_id} assigned=${assigned} status=${status} expected=$(basename "$claim_file")"
-    elif [ "$claimed_task" != "$task_id" ]; then
-      _record_coherence "CACHE_MISMATCH: ${task_id} assigned=${assigned} status=${status} cache=$(basename "$claim_file") cache_task=${claimed_task:-<empty>}"
-    else
-      claim_matches=true
-    fi
-
-    quota_evidence="$(_quota_evidence_for "$assigned" "$task_id" 2>/dev/null || true)"
-    if [ -n "$quota_evidence" ]; then
-      if [ "$claim_matches" != true ]; then
-        continue
-      fi
-      quota_blocked_count=$((quota_blocked_count + 1))
-      quota_report="${quota_report}  QUOTA_BLOCKED: ${task_id} assigned=${assigned} status=${status} evidence=${quota_evidence} pr=${pr} branch=${branch}\n"
-
-      if [ "$RELEASE" = true ] && [ "$RELEASE_QUOTA_BLOCKED" = true ]; then
-        if [ "$DRY_RUN" = true ]; then
-          quota_report="${quota_report}    -> [DRY-RUN] WOULD RELEASE back to offered for governed redispatch\n"
-          _clear_claim_cache_for_release "$assigned" "$task_id" "quota-blocked" "$pr" || true
-          quota_report="${quota_report}${release_cache_message}"
-        else
-          if _clear_claim_cache_for_release "$assigned" "$task_id" "quota-blocked" "$pr"; then
-            now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-            safe_evidence="$(printf '%s' "$quota_evidence" | sed 's/[&\\]/_/g')"
-            sed -i "s/^status:.*/status: offered/" "$note"
-            sed -i "s/^assigned_to:.*/assigned_to: unassigned/" "$note"
-            sed -i "s/^updated_at:.*/updated_at: $now_iso/" "$note"
-            sed -i "/^## Session log$/a\\- $now_iso codex-claim-audit released quota-blocked claim (${assigned}; evidence: ${safe_evidence})" "$note"
-            quota_report="${quota_report}    -> RELEASED back to offered for governed redispatch\n"
-          else
-            quota_report="${quota_report}    -> HELD: claim release preflight failed; task note left claimed\n"
-          fi
-          quota_report="${quota_report}${release_cache_message}"
-        fi
-      elif [ "$RELEASE" = true ]; then
-        quota_report="${quota_report}    -> HELD: pass --release-quota-blocked to release quota-blocked claims\n"
-      fi
-      continue
-    fi
-  fi
-
-  _is_codexish_role "$assigned" || continue
-
-  if [ -n "$claimed_at" ] && [ "$claimed_at" != "null" ]; then
-    claimed_epoch=$(date -d "$claimed_at" +%s 2>/dev/null || echo 0)
-    age=$((now_epoch - claimed_epoch))
-  else
-    age=$((stale_threshold + 1))
-  fi
-
-  has_pr=false
-  [ "$pr" != "null" ] && [ -n "$pr" ] && has_pr=true
-
-  if [ "$age" -ge "$stale_threshold" ] && [ "$has_pr" = false ]; then
-    phantom_count=$((phantom_count + 1))
-    age_h=$((age / 3600))
-    report="${report}  PHANTOM: ${task_id} assigned=${assigned} status=${status} age=${age_h}h pr=${pr} branch=${branch}\n"
-
-    if [ "$RELEASE" = true ]; then
-      if [ "$DRY_RUN" = true ]; then
-        report="${report}    → [DRY-RUN] WOULD RELEASE back to offered\n"
-        _clear_claim_cache_for_release "$assigned" "$task_id" "phantom" "$pr" || true
-        report="${report}${release_cache_message}"
-      else
-        if _clear_claim_cache_for_release "$assigned" "$task_id" "phantom" "$pr"; then
-          now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          sed -i "s/^status:.*/status: offered/" "$note"
-          sed -i "s/^assigned_to:.*/assigned_to: unassigned/" "$note"
-          sed -i "s/^updated_at:.*/updated_at: $now_iso/" "$note"
-          sed -i "/^## Session log$/a\\- $now_iso codex-claim-audit released phantom claim (${assigned}, ${age_h}h stale)" "$note"
-          report="${report}    → RELEASED back to offered\n"
-        else
-          report="${report}    → HELD: claim release preflight failed; task note left claimed\n"
-        fi
-        report="${report}${release_cache_message}"
-      fi
-    fi
-  fi
-done
-
-# ---------------------------------------------------------------------------
-# Cache sweep: orphaned claim caches
-# ---------------------------------------------------------------------------
-
-if [ -d "$CLAIM_CACHE_DIR" ]; then
-  for claim_file in "$CLAIM_CACHE_DIR"/cc-active-task-*; do
-    [ -f "$claim_file" ] || continue
-    # Skip transient reconcile temps (rename-aside artifacts); they are not
-    # real claim caches and self-resolve on the next reconcile.
-    case "$claim_file" in *.audit-claim.*) continue ;; esac
-    assigned="${claim_file##*/cc-active-task-}"
-    claimed_task=$(sed -n '1p' "$claim_file" 2>/dev/null || true)
-    [ -n "$claimed_task" ] || continue
-
-    note="$VAULT_ROOT/active/$claimed_task.md"
-    if [ ! -f "$note" ]; then
-      note="$(_active_note_for "$claimed_task" 2>/dev/null || true)"
-    fi
-    if [ ! -f "$note" ]; then
-      if [ "$RELEASE" = true ]; then
-        # ── PR REALITY CHECK on orphaned caches too ──
-        # Even without an active note, check if a PR exists and is open.
-        # This is defensive — the note might have been moved to closed/ while
-        # the PR is still open waiting for merge-watcher.
-        local_pr=""
-        # Try closed notes for a pr field
-        for closed_candidate in "$VAULT_ROOT/closed/$claimed_task.md" "$VAULT_ROOT/closed/$claimed_task-"*.md; do
-          [ -f "$closed_candidate" ] || continue
-          local_pr="$(_fm_value pr "$closed_candidate")"
-          [ -n "$local_pr" ] && [ "$local_pr" != "null" ] && break
-          local_pr=""
-        done
-        if [ -n "$local_pr" ] && _gh_pr_is_open "$local_pr"; then
-          pr_protected_count=$((pr_protected_count + 1))
-          pr_protected_report="${pr_protected_report}  PR_OPEN_PROTECTED: cache=$(basename "$claim_file") task=${claimed_task} pr=#${local_pr} -- claim cache retained (PR is open on GitHub, note not in active/)\n"
-          _journal_attr "PROTECT" "$(basename "$claim_file")" "pr_open pr=#${local_pr} task=${claimed_task} note=not_active"
-          continue
-        fi
-
-        if _clear_claim_cache_for_release "$assigned" "$claimed_task" "orphan" "$local_pr"; then
-          stale_cache_count=$((stale_cache_count + 1))
-          if [ "$DRY_RUN" = true ]; then
-            cache_report="${cache_report}  [DRY-RUN] WOULD CLEAR stale claim cache $(basename "$claim_file") task=${claimed_task} status=not_active\n"
-          else
-            cache_report="${cache_report}  CLEARED stale claim cache $(basename "$claim_file") task=${claimed_task} status=not_active\n"
-          fi
-        else
-          cache_report="${cache_report}${release_cache_message}"
-        fi
-      else
-        _record_coherence "CACHE_STALE: $(basename "$claim_file") task=${claimed_task} status=not_active"
-      fi
-      continue
-    fi
-
-    note_assigned="$(_fm_value assigned_to "$note")"
-    note_status="$(_fm_value status "$note")"
-    if _is_claim_status "$note_status"; then
-      note_is_active_claim=true
-    else
-      note_is_active_claim=false
-    fi
-
-    if [ "$note_is_active_claim" = false ] || ! _cache_role_matches_note "$assigned" "$note_assigned"; then
-      if [ "$RELEASE" = true ]; then
-        # ── PR REALITY CHECK on stale caches ──
-        local_pr="$(_fm_value pr "$note")"
-        if [ -n "$local_pr" ] && [ "$local_pr" != "null" ] && _gh_pr_is_open "$local_pr"; then
-          pr_protected_count=$((pr_protected_count + 1))
-          pr_protected_report="${pr_protected_report}  PR_OPEN_PROTECTED: cache=$(basename "$claim_file") task=${claimed_task} pr=#${local_pr} assigned=${note_assigned:-<none>} status=${note_status:-<none>} -- claim cache retained\n"
-          _journal_attr "PROTECT" "$(basename "$claim_file")" "pr_open pr=#${local_pr} task=${claimed_task}"
-          continue
-        fi
-
-        if _clear_claim_cache_for_release "$assigned" "$claimed_task" "stale" "$local_pr"; then
-          stale_cache_count=$((stale_cache_count + 1))
-          if [ "$DRY_RUN" = true ]; then
-            cache_report="${cache_report}  [DRY-RUN] WOULD CLEAR stale claim cache $(basename "$claim_file") task=${claimed_task} assigned=${note_assigned:-<none>} status=${note_status:-<none>}\n"
-          else
-            cache_report="${cache_report}  CLEARED stale claim cache $(basename "$claim_file") task=${claimed_task} assigned=${note_assigned:-<none>} status=${note_status:-<none>}\n"
-          fi
-        else
-          cache_report="${cache_report}${release_cache_message}"
-        fi
-      else
-        _record_coherence "CACHE_STALE: $(basename "$claim_file") task=${claimed_task} assigned=${note_assigned:-<none>} status=${note_status:-<none>}"
-      fi
-    fi
-  done
-fi
-
-# ---------------------------------------------------------------------------
-# Process coherence scan
-# ---------------------------------------------------------------------------
-
-process_input=""
-if [ -n "${HAPAX_CLAIM_AUDIT_PS_FIXTURE:-}" ]; then
-  process_input="$(cat "$HAPAX_CLAIM_AUDIT_PS_FIXTURE" 2>/dev/null || true)"
-else
-  process_input="$(ps -eo pid=,etimes=,args= 2>/dev/null || true)"
-fi
-
-declare -A seen_process_issue=()
-while IFS= read -r proc_line; do
-  case "$proc_line" in
-    *"Resume governed task "*) ;;
-    *) continue ;;
-  esac
-  task_id="$(printf '%s\n' "$proc_line" | sed -nE 's/.*Resume governed task ([^ ]+).*/\1/p' | head -n1)"
-  [ -n "$task_id" ] || continue
-  role="$(printf '%s\n' "$proc_line" | grep -oP '(HAPAX_AGENT_ROLE|CODEX_ROLE|CLAUDE_ROLE)=\K[^ ]+' | head -n1 || true)"
-  if [ -z "$role" ]; then
-    role="$(printf '%s\n' "$proc_line" | grep -oP 'cc-active-task-\K[^ /]+' | head -n1 || true)"
-  fi
-  [ -n "$role" ] || role="<unknown>"
-  pid="$(printf '%s\n' "$proc_line" | awk '{print $1}')"
-  age_s="$(printf '%s\n' "$proc_line" | awk '{print $2}')"
-  claim_file="$(_claim_file_for "$role")"
-  claimed_task="$(_claim_file_task "$claim_file")"
-  active_note="$(_active_note_for "$task_id" 2>/dev/null || true)"
-  reason=""
-  detail=""
-
-  if [ -z "$active_note" ]; then
-    reason="PROCESS_TASK_NOT_ACTIVE"
-    detail="task_state=$(_any_note_status_for "$task_id")"
-  elif ! _is_claim_status "$(_fm_value status "$active_note")"; then
-    reason="PROCESS_TASK_NOT_CLAIMED"
-    detail="task_status=$(_fm_value status "$active_note")"
-  elif [ "$role" != "<unknown>" ] && [ "$(_fm_value assigned_to "$active_note")" != "$role" ]; then
-    reason="PROCESS_ASSIGNEE_MISMATCH"
-    detail="note_assigned=$(_fm_value assigned_to "$active_note")"
-  elif [ "$claimed_task" != "$task_id" ]; then
-    reason="PROCESS_CACHE_MISMATCH"
-    detail="cache_task=${claimed_task:-<missing>}"
-  fi
-
-  [ -n "$reason" ] || continue
-  key="${role}|${task_id}|${reason}|${detail}"
-  if [ -n "${seen_process_issue[$key]:-}" ]; then
-    continue
-  fi
-  seen_process_issue[$key]=1
-  _record_process "${reason}: pid=${pid:-?} age_s=${age_s:-?} role=${role} task=${task_id} ${detail}"
-done <<< "$process_input"
-
-# ---------------------------------------------------------------------------
-# Reporting
-# ---------------------------------------------------------------------------
-
-issue_count=$((phantom_count + coherence_count + process_count + quota_blocked_count + release_failure_count))
-
-if [ "$issue_count" -gt 0 ]; then
-  if [ "$quota_blocked_count" -gt 0 ]; then
-    printf "codex-claim-audit: %d quota-blocked claim(s) found\n" "$quota_blocked_count"
-    printf '%b' "$quota_report"
-  fi
-  if [ "$phantom_count" -gt 0 ]; then
-    printf "codex-claim-audit: %d phantom claim(s) found\n" "$phantom_count"
-    printf '%b' "$report"
-  fi
-  if [ "$coherence_count" -gt 0 ]; then
-    printf "codex-claim-audit: %d claim coherence issue(s) found\n" "$coherence_count"
-    printf '%b' "$coherence_report"
-  fi
-  if [ "$process_count" -gt 0 ]; then
-    printf "codex-claim-audit: %d live process coherence issue(s) found\n" "$process_count"
-    printf '%b' "$process_report"
-  fi
-  if [ "$stale_cache_count" -gt 0 ]; then
-    printf "codex-claim-audit: %d stale claim cache file(s) cleared\n" "$stale_cache_count"
-    printf '%b' "$cache_report"
-  fi
-  if [ "$pr_protected_count" -gt 0 ]; then
-    printf "codex-claim-audit: %d claim(s) protected by open PR\n" "$pr_protected_count"
-    printf '%b' "$pr_protected_report"
-  fi
-  if [ "$reconcile_count" -gt 0 ]; then
-    printf "codex-claim-audit: %d cache(s) reconciled to %s\n" "$reconcile_count" "$RECONCILE_HOST"
-    printf '%b' "$reconcile_report"
-  fi
-  if [ "$release_failure_count" -gt 0 ]; then
-    printf "codex-claim-audit: %d release preflight failure(s)\n" "$release_failure_count"
-    printf '%b' "$release_failure_report"
-  fi
-
-  if command -v curl >/dev/null 2>&1; then
-    curl -s \
-      -d "codex-claim-audit: $issue_count claim/lane issue(s) detected" \
-      -H "Title: Codex Claim/Lane Coherence" \
-      -H "Priority: default" \
-      -H "Tags: warning,robot" \
-      "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
-  fi
-  if [ "$release_failure_count" -gt 0 ]; then
-    exit 2
-  fi
-  if [ "$RELEASE" = true ] \
-    && { [ "$quota_blocked_count" -eq 0 ] || [ "$RELEASE_QUOTA_BLOCKED" = true ]; } \
-    && [ "$release_failure_count" -eq 0 ] \
-    && [ "$cache_mismatch_count" -eq 0 ] \
-    && [ "$coherence_count" -eq 0 ] \
-    && [ "$process_count" -eq 0 ]; then
-    exit 0
-  fi
-  exit "$FINDINGS_EXIT"
-else
-  if [ "$stale_cache_count" -gt 0 ]; then
-    printf "codex-claim-audit: %d stale claim cache file(s) cleared\n" "$stale_cache_count"
-    printf '%b' "$cache_report"
-  fi
-  if [ "$pr_protected_count" -gt 0 ]; then
-    printf "codex-claim-audit: %d claim(s) protected by open PR\n" "$pr_protected_count"
-    printf '%b' "$pr_protected_report"
-  fi
-  if [ "$reconcile_count" -gt 0 ]; then
-    printf "codex-claim-audit: %d cache(s) reconciled to %s\n" "$reconcile_count" "$RECONCILE_HOST"
-    printf '%b' "$reconcile_report"
-  fi
-  echo "codex-claim-audit: no phantom claims or claim/lane coherence issues found"
-  exit 0
-fi
+try:
+    now = datetime.now(UTC)
+    tasks = load_tasks()
+    caches = read_caches()
+    audit_tasks(tasks, caches, now)
+    audit_caches(tasks, caches)
+    audit_processes(tasks, caches)
+    raise SystemExit(render())
+except TaskStoreError as exc:
+    print(
+        f"codex-claim-audit: AUDIT_ERROR authoritative task-store input incomplete: {exc}",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+except SystemExit:
+    raise
+except Exception as exc:  # pragma: no cover - unexpected deployment failure
+    print(f"codex-claim-audit: AUDIT_ERROR {type(exc).__name__}: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+PY

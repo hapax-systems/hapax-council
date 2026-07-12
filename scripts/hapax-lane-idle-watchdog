@@ -37,7 +37,6 @@ IDLE_THRESHOLD_S="${HAPAX_IDLE_THRESHOLD_S:-$(_idle_threshold_default)}"  # meas
 COOLDOWN_S="${HAPAX_IDLE_COOLDOWN_S:-120}"              # 2 min between kicks
 STATE_DIR="${HAPAX_IDLE_STATE_DIR:-/tmp/hapax-lane-idle-state}"
 TASK_ROOT="${HOME}/Documents/Personal/20-projects/hapax-cc-tasks/active"
-REQUEST_ROOT="${HOME}/Documents/Personal/20-projects/hapax-requests/active"
 NTFY_TOPIC="${HAPAX_NTFY_TOPIC:-hapax}"
 NTFY_URL="${HAPAX_NTFY_URL:-http://localhost:8092}"
 CLAUDE_SEND="${HOME}/projects/hapax-council/scripts/hapax-claude-send"
@@ -470,8 +469,21 @@ fi
 find_claimed_task() {
     local assignee="$1"
     if [ -d "$TASK_ROOT" ]; then
-        local match
-        match=$(grep -rl "^assigned_to: ${assignee}$" "$TASK_ROOT/" 2>/dev/null | head -1)
+        local match platform=""
+        case "$assignee" in
+            cx-*) platform="codex" ;;
+            vbe-*) platform="vibe" ;;
+            alpha|beta|gamma|delta|epsilon|zeta|eta|theta|cc-*) platform="claude" ;;
+        esac
+        if [ -n "$platform" ]; then
+            match=$(grep -rl --exclude-dir=.hapax-transactions \
+                -e "^assigned_to: ${assignee}$" \
+                -e "^assigned_to: ${platform}/${assignee}$" \
+                "$TASK_ROOT/" 2>/dev/null | head -1)
+        else
+            match=$(grep -rl --exclude-dir=.hapax-transactions \
+                "^assigned_to: ${assignee}$" "$TASK_ROOT/" 2>/dev/null | head -1)
+        fi
         if [ -n "$match" ]; then
             local task_id status
             task_id=$(basename "$match" .md)
