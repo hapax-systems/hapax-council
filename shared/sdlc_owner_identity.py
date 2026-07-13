@@ -85,6 +85,7 @@ def parse_task_owner(owner: str) -> TaskOwnerIdentity | None:
         not separator
         or platform not in TASK_OWNER_PLATFORMS
         or not role
+        or task_owner_is_unassigned(role)
         or "/" in role
         or any(char.isspace() for char in role)
     ):

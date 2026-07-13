@@ -11,6 +11,7 @@ from pathlib import Path
 COORDINATOR_HEADLESS_DISPATCHABLE_PLATFORMS = ("claude", "codex", "vibe")
 
 CLAIM_DISPATCH_PROTOCOL_VERSION = "hapax-claim-dispatch-v1"
+CLOSE_DISPATCH_PROTOCOL_VERSION = "hapax-close-dispatch-v1"
 
 # Compatibility only while every consumer migrates to ``check_worktree_claim_guard``.
 # Text markers are not valid claim-tool evidence.
@@ -61,6 +62,44 @@ def check_worktree_claim_guard(worktree: Path) -> tuple[bool, str]:
             f"{CLAIM_DISPATCH_PROTOCOL_VERSION!r}"
         )
     return True, f"worktree cc-claim dispatch protocol {CLAIM_DISPATCH_PROTOCOL_VERSION} present"
+
+
+def check_worktree_close_guard(worktree: Path) -> tuple[bool, str]:
+    """Execute the exact worktree-local cc-close protocol probe."""
+
+    resolved_worktree = worktree.expanduser().resolve()
+    script = resolved_worktree / "scripts" / "cc-close"
+    if not script.is_file():
+        return False, f"missing cc-close at {script}"
+    if not os.access(script, os.X_OK):
+        return False, f"cc-close is not executable at {script}"
+
+    try:
+        result = subprocess.run(
+            [str(script), "--dispatch-protocol-version"],
+            cwd=resolved_worktree,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"cc-close dispatch protocol probe timed out at {script}"
+    except OSError as exc:
+        return False, f"cc-close dispatch protocol probe failed at {script}: {exc}"
+
+    expected = f"{CLOSE_DISPATCH_PROTOCOL_VERSION}\n"
+    if result.returncode != 0:
+        return (
+            False,
+            f"cc-close dispatch protocol probe failed at {script} (exit {result.returncode})",
+        )
+    if result.stdout != expected:
+        return False, (
+            f"stale cc-close in {resolved_worktree}: expected dispatch protocol "
+            f"{CLOSE_DISPATCH_PROTOCOL_VERSION!r}"
+        )
+    return True, f"worktree cc-close dispatch protocol {CLOSE_DISPATCH_PROTOCOL_VERSION} present"
 
 
 def dispatch_worktree(role: str, platform: str) -> Path:

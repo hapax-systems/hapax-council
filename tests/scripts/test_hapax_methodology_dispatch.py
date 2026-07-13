@@ -496,11 +496,6 @@ def _worktree(path: Path, *, guarded: bool = True, close_guarded: bool = True) -
         if guarded
         else "legacy cc-claim"
     )
-    close_guard = (
-        "frontmatter_task_id closed_duplicate closed task duplicate has task_id"
-        if close_guarded
-        else "legacy cc-close"
-    )
     claim_lines = ["#!/usr/bin/env bash", f"# {guard}"]
     if guarded:
         claim_lines.extend(
@@ -514,7 +509,19 @@ def _worktree(path: Path, *, guarded: bool = True, close_guarded: bool = True) -
     claim_lines.extend(["exit 0", ""])
     claim = _write(path / "scripts" / "cc-claim", "\n".join(claim_lines))
     claim.chmod(0o755)
-    _write(path / "scripts" / "cc-close", f"#!/usr/bin/env bash\n# {close_guard}\n")
+    close_lines = ["#!/usr/bin/env bash"]
+    if close_guarded:
+        close_lines.extend(
+            [
+                'if [[ "${1:-}" == "--dispatch-protocol-version" ]]; then',
+                "  echo hapax-close-dispatch-v1",
+                "  exit 0",
+                "fi",
+            ]
+        )
+    close_lines.extend(["exit 0", ""])
+    close = _write(path / "scripts" / "cc-close", "\n".join(close_lines))
+    close.chmod(0o755)
     return path
 
 

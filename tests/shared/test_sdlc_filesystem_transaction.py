@@ -478,6 +478,205 @@ def test_nfs_fallback_recovers_interrupted_portable_transition(
     assert not journal.exists()
 
 
+def test_nfs_fallback_refuses_raced_auxiliary_without_clobber(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "target"
+    target.write_bytes(b"pre")
+    journal = root / "journal.json"
+
+    def unsupported(_source: Path, _destination: Path, _flags: int) -> None:
+        raise OSError(errno.EINVAL, "NFS rejects rename flags")
+
+    monkeypatch.setattr(transaction, "_renameat2", unsupported)
+    original_link = transaction.os.link
+    injected: Path | None = None
+
+    def race(source: Path, destination: Path, **kwargs: object) -> None:
+        nonlocal injected
+        if injected is None and destination.suffix in {".hold", ".move"}:
+            destination.write_bytes(b"operator-third-image")
+            injected = destination
+        original_link(source, destination, **kwargs)
+
+    monkeypatch.setattr(transaction.os, "link", race)
+
+    with pytest.raises(FilesystemTransactionError, match="third-image conflict"):
+        execute_filesystem_transaction(
+            journal,
+            (FileMutation(target, b"post"),),
+            allowed_roots=(root,),
+        )
+
+    assert injected is not None
+    assert injected.read_bytes() == b"operator-third-image"
+    assert target.read_bytes() == b"pre"
+    assert journal.is_dir()
+
+
+def test_nfs_archive_resumes_empty_reserved_container(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "target"
+    target.write_bytes(b"pre")
+    journal = root / "journal.json"
+    transaction._write_manifest(
+        journal,
+        state="committed",
+        entries=[
+            {
+                "path": str(target),
+                "pre_content": transaction._encoded(b"pre"),
+                "pre_mode": 0o644,
+                "post_content": transaction._encoded(b"post"),
+                "post_mode": 0o644,
+            }
+        ],
+    )
+    record = transaction._load_journal(journal)
+    archive = root / f".journal.json.history-{record.transaction_id}-recovered-post"
+    archive.mkdir(mode=0o700)
+
+    def unsupported(_source: Path, _destination: Path, _flags: int) -> None:
+        raise OSError(errno.EINVAL, "NFS rejects rename flags")
+
+    monkeypatch.setattr(transaction, "_renameat2", unsupported)
+
+    assert recover_filesystem_transaction(journal, allowed_roots=(root,))
+    assert target.read_bytes() == b"post"
+    assert not journal.exists()
+    assert (archive / "journal").is_dir()
+
+
+@pytest.mark.parametrize("interrupt_at", ["intent", "manifest"])
+def test_preparation_interrupt_is_recovered_from_durable_intent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interrupt_at: str,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "target"
+    target.write_bytes(b"pre")
+    journal = root / "journal.json"
+    intent = root / ".journal.json.intent"
+    injected = False
+
+    if interrupt_at == "intent":
+        original_write = transaction._write_exclusive
+
+        def interrupt_write(path: Path, content: bytes, mode: int) -> None:
+            nonlocal injected
+            original_write(path, content, mode)
+            if not injected and path == intent:
+                injected = True
+                raise KeyboardInterrupt
+
+        monkeypatch.setattr(transaction, "_write_exclusive", interrupt_write)
+    else:
+        original_link = transaction.os.link
+
+        def interrupt_link(source: Path, destination: Path, **kwargs: object) -> None:
+            nonlocal injected
+            if not injected and destination == journal / "manifest.json":
+                injected = True
+                raise KeyboardInterrupt
+            original_link(source, destination, **kwargs)
+
+        monkeypatch.setattr(transaction.os, "link", interrupt_link)
+
+    with pytest.raises(KeyboardInterrupt):
+        execute_filesystem_transaction(
+            journal,
+            (FileMutation(target, b"post"),),
+            allowed_roots=(root,),
+        )
+
+    assert injected
+    assert target.read_bytes() == b"pre"
+    assert not journal.exists()
+    assert not intent.exists()
+    assert len(list(root.glob(".journal.json.history-*-recovered-pre"))) == 1
+
+
+def test_journal_substitution_is_rejected_before_entries_can_apply(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "target"
+    target.write_bytes(b"pre")
+    journal = root / "journal.json"
+    transaction._write_manifest(
+        journal,
+        state="prepared",
+        entries=[
+            {
+                "path": str(target),
+                "pre_content": transaction._encoded(b"pre"),
+                "pre_mode": 0o644,
+                "post_content": transaction._encoded(b"post"),
+                "post_mode": 0o644,
+            }
+        ],
+    )
+    displaced = root / "operator-preserved-journal"
+    original_load = transaction._load_json_unique_at
+    injected = False
+
+    def substitute(directory_fd: int, name: str, path: Path) -> object:
+        nonlocal injected
+        if not injected and name == "manifest.json":
+            injected = True
+            journal.rename(displaced)
+            journal.mkdir()
+            (journal / "operator-third-image").write_bytes(b"preserve-me")
+        return original_load(directory_fd, name, path)
+
+    monkeypatch.setattr(transaction, "_load_json_unique_at", substitute)
+
+    with pytest.raises(FilesystemTransactionError, match="identity changed while loading"):
+        transaction._load_journal(journal)
+
+    assert injected
+    assert target.read_bytes() == b"pre"
+    assert displaced.is_dir()
+    assert (journal / "operator-third-image").read_bytes() == b"preserve-me"
+
+
+def test_cross_directory_transition_fsyncs_target_and_stage_parents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "target"
+    target.write_bytes(b"pre")
+    observed: list[Path] = []
+    original_fsync = transaction._fsync_directory
+
+    def record(path: Path) -> None:
+        observed.append(path)
+        original_fsync(path)
+
+    monkeypatch.setattr(transaction, "_fsync_directory", record)
+    execute_filesystem_transaction(
+        root / "journal.json",
+        (FileMutation(target, b"post"),),
+        allowed_roots=(root,),
+    )
+
+    assert root in observed
+    assert root / ".hapax-transactions" in observed
+
+
 @pytest.mark.parametrize("state", ["prepared", "committed"])
 def test_v1_flat_journal_is_recovered_and_archived(
     tmp_path: Path,
@@ -524,3 +723,81 @@ def test_v1_flat_journal_is_recovered_and_archived(
         )
         == 1
     )
+
+
+def test_v1_recovery_refuses_concurrent_third_image_without_replacing_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "target"
+    target.write_bytes(b"post")
+    entries = [
+        {
+            "path": str(target),
+            "pre_content": transaction._encoded(b"pre"),
+            "pre_mode": 0o644,
+            "post_content": transaction._encoded(b"post"),
+            "post_mode": 0o644,
+        }
+    ]
+    body = {"schema": transaction.TRANSACTION_SCHEMA_V1, "state": "prepared", "entries": entries}
+    record = {
+        **body,
+        "manifest_sha256": hashlib.sha256(transaction._canonical_bytes(body)).hexdigest(),
+    }
+    journal = root / "journal.json"
+    journal.write_bytes(transaction._canonical_bytes(record) + b"\n")
+    journal.chmod(0o600)
+    original_execute = transaction.execute_filesystem_transaction
+    injected = False
+
+    def race(
+        conversion_journal: Path,
+        mutations: tuple[FileMutation, ...] | list[FileMutation],
+        *,
+        allowed_roots: tuple[Path, ...],
+    ) -> None:
+        nonlocal injected
+        injected = True
+        target.write_bytes(b"operator-third-image")
+        original_execute(conversion_journal, mutations, allowed_roots=allowed_roots)
+
+    monkeypatch.setattr(transaction, "execute_filesystem_transaction", race)
+
+    with pytest.raises(FilesystemTransactionError, match="preimage changed"):
+        recover_filesystem_transaction(journal, allowed_roots=(root,))
+
+    assert injected
+    assert target.read_bytes() == b"operator-third-image"
+    assert journal.is_file()
+
+
+def test_v1_archive_retry_accepts_existing_link_to_same_journal(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "target"
+    target.write_bytes(b"post")
+    entries = [
+        {
+            "path": str(target),
+            "pre_content": transaction._encoded(b"pre"),
+            "pre_mode": 0o644,
+            "post_content": transaction._encoded(b"post"),
+            "post_mode": 0o644,
+        }
+    ]
+    body = {"schema": transaction.TRANSACTION_SCHEMA_V1, "state": "committed", "entries": entries}
+    digest = hashlib.sha256(transaction._canonical_bytes(body)).hexdigest()
+    record = {**body, "manifest_sha256": digest}
+    journal = root / "journal.json"
+    journal.write_bytes(transaction._canonical_bytes(record) + b"\n")
+    journal.chmod(0o600)
+    archive = root / f".journal.json.history-v1-{digest[:16]}-recovered-post"
+    archive.hardlink_to(journal)
+
+    assert recover_filesystem_transaction(journal, allowed_roots=(root,))
+    assert not journal.exists()
+    assert archive.is_file()
+    assert target.read_bytes() == b"post"

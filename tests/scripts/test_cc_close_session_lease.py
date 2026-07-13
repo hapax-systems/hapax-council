@@ -119,11 +119,11 @@ def test_cc_close_clears_both_legacy_and_session_keyed_lease(tmp_path: Path) -> 
     _write_task(vault, "foo")
     cache = _cache(home)
     legacy = cache / "cc-active-task-eta"
-    session = cache / "cc-active-task-eta-sess123"
+    session = cache / "cc-active-task-eta-session-abc123"
     legacy_sidecar = cache / "cc-claim-epoch-eta"
-    session_sidecar = cache / "cc-claim-epoch-eta-sess123"
+    session_sidecar = cache / "cc-claim-epoch-eta-session-abc123"
     legacy_binding = cache / "cc-claim-dispatch-eta.json"
-    session_binding = cache / "cc-claim-dispatch-eta-sess123.json"
+    session_binding = cache / "cc-claim-dispatch-eta-session-abc123.json"
     legacy.write_text("foo\n", encoding="utf-8")
     session.write_text("foo\n", encoding="utf-8")
     legacy_sidecar.write_text("1780000000 foo\n", encoding="utf-8")
@@ -131,7 +131,7 @@ def test_cc_close_clears_both_legacy_and_session_keyed_lease(tmp_path: Path) -> 
     binding = ClaimDispatchBinding.create(
         task_id="foo",
         lane="eta",
-        session_id="sess123",
+        session_id="session-abc123",
         claim_epoch=1780000000,
         dispatch_message_id="dispatch-message",
         platform="claude",
@@ -142,9 +142,9 @@ def test_cc_close_clears_both_legacy_and_session_keyed_lease(tmp_path: Path) -> 
         coord_dispatch_idempotency_key="dispatch-key",
     )
     write_claim_dispatch_binding(cache, "eta", binding)
-    write_claim_dispatch_binding(cache, "eta-sess123", binding)
+    write_claim_dispatch_binding(cache, "eta-session-abc123", binding)
 
-    result = _run_close(home, "foo", role="eta", session_id="sess123")
+    result = _run_close(home, "foo", role="eta", session_id="session-abc123")
 
     assert result.returncode == 0, result.stderr
     assert not legacy.exists(), f"legacy lease not cleared\nstdout={result.stdout}"
@@ -164,14 +164,14 @@ def test_cc_close_refuses_session_projection_naming_a_different_task(
     vault = _vault(home)
     _write_task(vault, "foo")
     cache = _cache(home)
-    session = cache / "cc-active-task-eta-sess123"
-    sidecar = cache / "cc-claim-epoch-eta-sess123"
-    binding = cache / "cc-claim-dispatch-eta-sess123.json"
+    session = cache / "cc-active-task-eta-session-abc123"
+    sidecar = cache / "cc-claim-epoch-eta-session-abc123"
+    binding = cache / "cc-claim-dispatch-eta-session-abc123.json"
     session.write_text("other-task\n", encoding="utf-8")
     sidecar.write_text("1780000000 other-task\n", encoding="utf-8")
     binding.write_text("{}\n", encoding="utf-8")
 
-    result = _run_close(home, "foo", role="eta", session_id="sess123")
+    result = _run_close(home, "foo", role="eta", session_id="session-abc123")
 
     assert result.returncode == 2
     assert "close_slot_projection_identity_mismatch" in result.stderr

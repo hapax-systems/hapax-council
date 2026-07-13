@@ -74,8 +74,8 @@ from shared.quota_wall import QUOTA_WALL_EXIT_CODE
 from shared.relay_mq_envelope import compute_payload_hash
 from shared.route_metadata_schema import assess_route_metadata, route_envelope_gate_enforced
 from shared.sdlc_dispatch_guards import (
-    DISPATCH_CLOSE_GUARD_MARKERS,
     check_worktree_claim_guard,
+    check_worktree_close_guard,
     dispatch_worktree,
 )
 from shared.sdlc_lifecycle import TASK_DISPATCHABLE_STATUSES
@@ -888,18 +888,6 @@ def run_claim_sweep(task_root: Path, *, notify: bool = True) -> list[tuple[str, 
         except Exception:
             pass
     return candidates
-
-
-def check_worktree_close_guard(worktree: Path) -> tuple[bool, str]:
-    script = worktree / "scripts" / "cc-close"
-    if not script.is_file():
-        return False, f"missing cc-close at {script}"
-    text = script.read_text(encoding="utf-8", errors="replace")
-    required = DISPATCH_CLOSE_GUARD_MARKERS
-    missing = [needle for needle in required if needle not in text]
-    if missing:
-        return False, f"stale cc-close in {worktree}: missing {', '.join(missing)}"
-    return True, "worktree cc-close exact-duplicate guard present"
 
 
 def check_worktree_cc_task_tool_guards(worktree: Path) -> tuple[bool, str]:
@@ -2456,11 +2444,6 @@ def main(argv: list[str] | None = None) -> int:
         "--no-receipt", action="store_true", help="Do not append dispatch ledger receipt"
     )
     parser.add_argument(
-        "--skip-worktree-check",
-        action="store_true",
-        help="Do not require target worktree cc-claim guard",
-    )
-    parser.add_argument(
         "--policy-rollback",
         action="store_true",
         help=(
@@ -2576,7 +2559,7 @@ def main(argv: list[str] | None = None) -> int:
         lane=args.lane,
         platform=args.platform,
         task_root=task_root,
-        strict_worktree=not args.skip_worktree_check,
+        strict_worktree=True,
     )
     route = route_for(args.platform, args.mode, args.profile)
     prompt: str | None = None
@@ -2876,7 +2859,7 @@ def main(argv: list[str] | None = None) -> int:
             lane=args.lane,
             platform=args.platform,
             task_root=task_root,
-            strict_worktree=not args.skip_worktree_check,
+            strict_worktree=True,
         )
         refreshed_task = refreshed_validation.task
         precondition_reason = ""

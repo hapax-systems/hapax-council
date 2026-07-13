@@ -5,12 +5,14 @@ from __future__ import annotations
 import base64
 import ctypes
 import errno
+import fcntl
 import hashlib
 import json
 import os
 import stat
 import uuid
 from collections.abc import Sequence
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -140,6 +142,35 @@ def _snapshot(path: Path) -> tuple[bytes | None, int | None]:
         return path.read_bytes(), stat.S_IMODE(metadata.st_mode)
     except OSError as exc:
         raise FilesystemTransactionError(f"transaction image unreadable: {path}") from exc
+
+
+def _path_identity(path: Path) -> tuple[int, int]:
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise FilesystemTransactionError(f"transaction image identity unavailable: {path}") from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise FilesystemTransactionError(f"transaction path is not a regular file: {path}")
+    return metadata.st_dev, metadata.st_ino
+
+
+def _link_then_unlink(source: Path, destination: Path) -> None:
+    """Move a regular file without ever replacing the destination name."""
+
+    source_identity = _path_identity(source)
+    try:
+        os.link(source, destination, follow_symlinks=False)
+    except OSError as exc:
+        raise FilesystemTransactionError(
+            f"transaction no-clobber link failed: {source} -> {destination}"
+        ) from exc
+    _fsync_directory(destination.parent)
+    if _path_identity(destination) != source_identity or _path_identity(source) != source_identity:
+        raise FilesystemTransactionError(
+            f"transaction source identity changed before preserving unlink: {source}"
+        )
+    source.unlink()
+    _fsync_directory(source.parent)
 
 
 def _encoded(content: bytes | None) -> str | None:
@@ -304,6 +335,11 @@ def _portable_free_auxiliary(
     for auxiliary in (hold, move):
         image = states[auxiliary]
         if image != "absent" and sum(value == image for value in states.values()) > 1:
+            identity = _path_identity(auxiliary)
+            if _path_identity(auxiliary) != identity:
+                raise FilesystemTransactionError(
+                    f"transaction auxiliary identity changed before cleanup: {auxiliary}"
+                )
             auxiliary.unlink()
             _fsync_directory(auxiliary.parent)
             if _snapshot(auxiliary) != (None, None):
@@ -329,12 +365,7 @@ def _portable_set_path(
     if states[destination] != "absent":
         displaced = _portable_free_auxiliary(entry, allowed_roots=allowed_roots)
         before = _snapshot(destination)
-        try:
-            os.rename(destination, displaced)
-        except OSError as exc:
-            raise FilesystemTransactionError(
-                f"transaction portable displacement failed: {destination}"
-            ) from exc
+        _link_then_unlink(destination, displaced)
         _fsync_directory(destination.parent)
         if displaced.parent != destination.parent:
             _fsync_directory(displaced.parent)
@@ -395,7 +426,23 @@ def _portable_transition_entry(
     if states[path] != desired_path or states[stage] != desired_stage:
         raise FilesystemTransactionError(f"transaction portable transition incomplete: {path}")
     for auxiliary in (hold, move):
-        if _snapshot(auxiliary)[0] is not None:
+        auxiliary_image = _snapshot(auxiliary)
+        if auxiliary_image[0] is not None:
+            if (
+                sum(
+                    _snapshot(candidate) == auxiliary_image
+                    for candidate in (path, stage, hold, move)
+                )
+                < 2
+            ):
+                raise FilesystemTransactionError(
+                    f"transaction auxiliary image is not duplicated: {auxiliary}"
+                )
+            identity = _path_identity(auxiliary)
+            if _path_identity(auxiliary) != identity:
+                raise FilesystemTransactionError(
+                    f"transaction auxiliary identity changed before cleanup: {auxiliary}"
+                )
             auxiliary.unlink()
             _fsync_directory(auxiliary.parent)
     observed = _pair_state(entry, allowed_roots=allowed_roots)
@@ -476,6 +523,8 @@ def _transition_entry(
                 f"preserving rename transition failed: {path}"
             ) from exc
     _fsync_directory(path.parent)
+    if stage.parent != path.parent:
+        _fsync_directory(stage.parent)
     observed = _pair_state(entry, allowed_roots=allowed_roots)
     if observed not in {image, "both"}:
         raise FilesystemTransactionError(f"transaction transition incomplete: {path}")
@@ -520,6 +569,71 @@ def _manifest_path(journal_path: Path) -> Path:
 
 def _commit_path(journal_path: Path) -> Path:
     return journal_path / "committed.json"
+
+
+def _intent_path(journal_path: Path) -> Path:
+    return journal_path.with_name(f".{journal_path.name}.intent")
+
+
+@contextmanager
+def _transaction_lock(journal_path: Path):
+    lock_path = journal_path.with_name(f".{journal_path.name}.lock")
+    try:
+        descriptor = os.open(
+            lock_path,
+            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
+            0o600,
+        )
+    except OSError as exc:
+        raise FilesystemTransactionError(f"transaction lock unavailable: {lock_path}") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) & 0o077:
+            raise FilesystemTransactionError(f"transaction lock is unsafe: {lock_path}")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        except OSError as exc:
+            raise FilesystemTransactionError(
+                f"transaction lock acquisition failed: {lock_path}"
+            ) from exc
+        yield
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def _target_locks(paths: Sequence[Path]):
+    """Serialize governed writers on every target filesystem, including NFS."""
+
+    stage_directories = sorted({_ensure_stage_directory(path) for path in paths})
+    descriptors: list[int] = []
+    try:
+        for stage_directory in stage_directories:
+            lock_path = stage_directory / ".hapax-transaction.lock"
+            try:
+                descriptor = os.open(
+                    lock_path,
+                    os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
+                    0o600,
+                )
+            except OSError as exc:
+                raise FilesystemTransactionError(
+                    f"transaction target lock unavailable: {lock_path}"
+                ) from exc
+            descriptors.append(descriptor)
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) & 0o077:
+                raise FilesystemTransactionError(f"transaction target lock is unsafe: {lock_path}")
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+            except OSError as exc:
+                raise FilesystemTransactionError(
+                    f"transaction target lock acquisition failed: {lock_path}"
+                ) from exc
+        yield
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
 
 
 def _new_entry_identity(parent: Path) -> tuple[int, int]:
@@ -613,12 +727,14 @@ def _prepare_journal(
         prepared_entry["move_path"] = str(move)
         _entry_path(prepared_entry, allowed_roots)
         _entry_stage_path(prepared_entry, allowed_roots)
-        post_content, post_mode = _entry_image(prepared_entry, "post")
-        if post_content is not None:
-            assert post_mode is not None
-            _write_exclusive(stage, post_content, post_mode)
         prepared.append(prepared_entry)
 
+    body = _manifest_body(transaction_id=transaction_id, entries=prepared)
+    manifest_sha256 = hashlib.sha256(_canonical_bytes(body)).hexdigest()
+    record = {**body, "manifest_sha256": manifest_sha256}
+    manifest_bytes = _canonical_bytes(record) + b"\n"
+    intent = _intent_path(journal_path)
+    _write_exclusive(intent, manifest_bytes, 0o600)
     try:
         journal_path.mkdir(mode=0o700)
     except OSError as exc:
@@ -626,10 +742,13 @@ def _prepare_journal(
             f"transaction journal create failed without replacement: {journal_path}"
         ) from exc
     _fsync_directory(journal_path.parent)
-    body = _manifest_body(transaction_id=transaction_id, entries=prepared)
-    manifest_sha256 = hashlib.sha256(_canonical_bytes(body)).hexdigest()
-    record = {**body, "manifest_sha256": manifest_sha256}
-    _write_exclusive(_manifest_path(journal_path), _canonical_bytes(record) + b"\n", 0o600)
+    try:
+        os.link(intent, _manifest_path(journal_path), follow_symlinks=False)
+    except OSError as exc:
+        raise FilesystemTransactionError(
+            f"transaction manifest publication failed without replacement: {journal_path}"
+        ) from exc
+    _fsync_directory(journal_path)
     metadata = journal_path.lstat()
     journal_record = _JournalRecord(
         state="prepared",
@@ -639,8 +758,88 @@ def _prepare_journal(
         device=metadata.st_dev,
         inode=metadata.st_ino,
     )
+    _materialize_missing_stages(journal_record, allowed_roots=allowed_roots)
     _validate_current_images(prepared, accepted_images=("pre",), allowed_roots=allowed_roots)
     return journal_record
+
+
+def _materialize_missing_stages(
+    record: _JournalRecord,
+    *,
+    allowed_roots: Sequence[Path],
+) -> None:
+    """Finish durable stage preparation after an interrupted journal publish."""
+
+    for entry in record.entries:
+        path = _entry_path(entry, allowed_roots)
+        stage = _entry_stage_path(entry, allowed_roots)
+        hold, move = _entry_auxiliary_paths(entry, allowed_roots)
+        post_content, post_mode = _entry_image(entry, "post")
+        if post_content is None or _snapshot(stage)[0] is not None:
+            continue
+        if _snapshot(path) != _entry_image(entry, "pre"):
+            continue
+        if any(_snapshot(auxiliary)[0] is not None for auxiliary in (hold, move)):
+            continue
+        assert post_mode is not None
+        _write_exclusive(stage, post_content, post_mode)
+
+
+def _restore_journal_from_intent(journal_path: Path) -> bool:
+    """Publish a complete manifest from the durable sibling intent if needed."""
+
+    intent = _intent_path(journal_path)
+    try:
+        intent_metadata = intent.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise FilesystemTransactionError(f"transaction intent unavailable: {intent}") from exc
+    expected_uid, expected_gid = _new_entry_identity(journal_path.parent)
+    if (
+        stat.S_ISLNK(intent_metadata.st_mode)
+        or not stat.S_ISREG(intent_metadata.st_mode)
+        or (intent_metadata.st_uid, intent_metadata.st_gid) != (expected_uid, expected_gid)
+        or stat.S_IMODE(intent_metadata.st_mode) & 0o077
+    ):
+        raise FilesystemTransactionError(f"transaction intent path is unsafe: {intent}")
+
+    try:
+        journal_metadata = journal_path.lstat()
+    except FileNotFoundError:
+        try:
+            journal_path.mkdir(mode=0o700)
+        except OSError as exc:
+            raise FilesystemTransactionError(
+                f"transaction journal restore failed: {journal_path}"
+            ) from exc
+        _fsync_directory(journal_path.parent)
+        journal_metadata = journal_path.lstat()
+    if stat.S_ISLNK(journal_metadata.st_mode) or not stat.S_ISDIR(journal_metadata.st_mode):
+        raise FilesystemTransactionError(
+            f"transaction intent conflicts with journal path: {journal_path}"
+        )
+
+    manifest = _manifest_path(journal_path)
+    try:
+        manifest_metadata = manifest.lstat()
+    except FileNotFoundError:
+        try:
+            os.link(intent, manifest, follow_symlinks=False)
+        except OSError as exc:
+            raise FilesystemTransactionError(
+                f"transaction manifest restore failed: {manifest}"
+            ) from exc
+        _fsync_directory(journal_path)
+        manifest_metadata = manifest.lstat()
+    if (manifest_metadata.st_dev, manifest_metadata.st_ino) != (
+        intent_metadata.st_dev,
+        intent_metadata.st_ino,
+    ):
+        raise FilesystemTransactionError(
+            f"transaction intent and manifest identities disagree: {journal_path}"
+        )
+    return True
 
 
 def _commit_marker_bytes(record: _JournalRecord) -> bytes:
@@ -661,7 +860,7 @@ def _mark_committed(journal_path: Path, record: _JournalRecord) -> None:
     _fsync_directory(journal_path)
 
 
-def _load_json_unique(path: Path) -> object:
+def _decode_json_unique(raw: bytes, path: Path) -> object:
     def unique_pairs(values: list[tuple[str, object]]) -> dict[str, object]:
         output: dict[str, object] = {}
         for key, value in values:
@@ -670,15 +869,36 @@ def _load_json_unique(path: Path) -> object:
             output[key] = value
         return output
 
-    raw, _mode = _snapshot(path)
-    if raw is None:
-        raise FilesystemTransactionError(f"transaction journal member disappeared: {path}")
     try:
         return json.loads(raw.decode("ascii"), object_pairs_hook=unique_pairs)
     except FilesystemTransactionError:
         raise
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise FilesystemTransactionError(f"transaction journal malformed: {path}") from exc
+
+
+def _load_json_unique(path: Path) -> object:
+    raw, _mode = _snapshot(path)
+    if raw is None:
+        raise FilesystemTransactionError(f"transaction journal member disappeared: {path}")
+    return _decode_json_unique(raw, path)
+
+
+def _load_json_unique_at(directory_fd: int, name: str, path: Path) -> object:
+    try:
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+    except OSError as exc:
+        raise FilesystemTransactionError(f"transaction journal member unavailable: {path}") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise FilesystemTransactionError(f"transaction journal member is unsafe: {path}")
+        chunks: list[bytes] = []
+        while chunk := os.read(descriptor, 1024 * 1024):
+            chunks.append(chunk)
+        return _decode_json_unique(b"".join(chunks), path)
+    finally:
+        os.close(descriptor)
 
 
 def _load_v1_journal(
@@ -719,29 +939,6 @@ def _load_v1_journal(
     return state, entries, manifest_sha256
 
 
-def _replace_compatibility_image(
-    path: Path,
-    content: bytes | None,
-    mode: int | None,
-) -> None:
-    if content is None:
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            return
-        _fsync_directory(path.parent)
-        return
-    assert mode is not None
-    temporary = path.parent / f".{path.name}.v1-recovery-{uuid.uuid4().hex}"
-    _write_exclusive(temporary, content, mode)
-    try:
-        os.replace(temporary, path)
-        _fsync_directory(path.parent)
-    except BaseException:
-        # Retain the temporary image on failure; recovery can safely be retried.
-        raise
-
-
 def _recover_v1_journal(
     journal_path: Path,
     *,
@@ -758,7 +955,7 @@ def _recover_v1_journal(
         raise FilesystemTransactionError(f"transaction journal path is unsafe: {journal_path}")
     state, entries, manifest_sha256 = _load_v1_journal(journal_path)
     image: ImageName = "post" if state == "committed" else "pre"
-    resolved: list[tuple[Path, TransactionEntry]] = []
+    resolved: list[tuple[Path, TransactionEntry, tuple[bytes | None, int | None]]] = []
     seen: set[Path] = set()
     for entry in entries:
         raw_path = entry["path"]
@@ -773,8 +970,9 @@ def _recover_v1_journal(
             raise FilesystemTransactionError(
                 f"transaction third-image conflict; v1 journal and image were preserved: {path}"
             )
-        resolved.append((path, entry))
-    for path, entry in resolved:
+        resolved.append((path, entry, actual))
+    mutations: list[FileMutation] = []
+    for path, entry, expected_actual in resolved:
         actual = _snapshot(path)
         if actual not in {_entry_image(entry, "pre"), _entry_image(entry, "post")}:
             raise FilesystemTransactionError(
@@ -782,16 +980,39 @@ def _recover_v1_journal(
             )
         content, mode = _entry_image(entry, image)
         if actual != (content, mode):
-            _replace_compatibility_image(path, content, mode)
+            expected_content, _expected_mode = expected_actual
+            mutations.append(
+                FileMutation(
+                    path=path,
+                    content=content,
+                    mode=mode,
+                    expected_exists=expected_content is not None,
+                    expected_sha256=(
+                        hashlib.sha256(expected_content).hexdigest()
+                        if expected_content is not None
+                        else None
+                    ),
+                )
+            )
+    if mutations:
+        compatibility_journal = journal_path.with_name(
+            f".{journal_path.name}.v1-conversion-{manifest_sha256[:16]}"
+        )
+        execute_filesystem_transaction(
+            compatibility_journal,
+            mutations,
+            allowed_roots=allowed_roots,
+        )
     archive = journal_path.with_name(
         f".{journal_path.name}.history-v1-{manifest_sha256[:16]}-recovered-{image}"
     )
     try:
         os.link(journal_path, archive, follow_symlinks=False)
     except OSError as exc:
-        raise FilesystemTransactionError(
-            f"transaction v1 journal archive failed without replacement: {journal_path}"
-        ) from exc
+        if exc.errno != errno.EEXIST:
+            raise FilesystemTransactionError(
+                f"transaction v1 journal archive failed without replacement: {journal_path}"
+            ) from exc
     _fsync_directory(journal_path.parent)
     source_metadata = journal_path.lstat()
     archive_metadata = archive.lstat()
@@ -810,20 +1031,54 @@ def _recover_v1_journal(
 
 def _load_journal(journal_path: Path) -> _JournalRecord:
     try:
-        metadata = journal_path.lstat()
+        directory_fd = os.open(
+            journal_path,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
     except OSError as exc:
         raise FilesystemTransactionError(
             f"transaction journal unavailable: {journal_path}"
         ) from exc
-    expected_uid, expected_gid = _new_entry_identity(journal_path.parent)
-    if (
-        stat.S_ISLNK(metadata.st_mode)
-        or not stat.S_ISDIR(metadata.st_mode)
-        or (metadata.st_uid, metadata.st_gid) != (expected_uid, expected_gid)
-        or stat.S_IMODE(metadata.st_mode) & 0o077
-    ):
-        raise FilesystemTransactionError(f"transaction journal path is unsafe: {journal_path}")
-    value = _load_json_unique(_manifest_path(journal_path))
+    try:
+        metadata = os.fstat(directory_fd)
+        expected_uid, expected_gid = _new_entry_identity(journal_path.parent)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or (metadata.st_uid, metadata.st_gid) != (expected_uid, expected_gid)
+            or stat.S_IMODE(metadata.st_mode) & 0o077
+        ):
+            raise FilesystemTransactionError(f"transaction journal path is unsafe: {journal_path}")
+        value = _load_json_unique_at(
+            directory_fd,
+            "manifest.json",
+            _manifest_path(journal_path),
+        )
+        commit_present = False
+        try:
+            commit_metadata = os.stat(
+                "committed.json",
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise FilesystemTransactionError(
+                f"transaction commit marker unavailable: {journal_path}"
+            ) from exc
+        else:
+            if stat.S_ISLNK(commit_metadata.st_mode) or not stat.S_ISREG(commit_metadata.st_mode):
+                raise FilesystemTransactionError(
+                    f"transaction commit marker is unsafe: {journal_path}"
+                )
+            commit_present = True
+            marker = _load_json_unique_at(
+                directory_fd,
+                "committed.json",
+                _commit_path(journal_path),
+            )
+    finally:
+        os.close(directory_fd)
     if not isinstance(value, dict) or set(value) != {
         "schema",
         "transaction_id",
@@ -848,9 +1103,7 @@ def _load_journal(journal_path: Path) -> _JournalRecord:
     if value["manifest_sha256"] != manifest_sha256:
         raise FilesystemTransactionError(f"transaction journal hash mismatch: {journal_path}")
     state: Literal["prepared", "committed"] = "prepared"
-    commit = _commit_path(journal_path)
-    if commit.exists() or commit.is_symlink():
-        marker = _load_json_unique(commit)
+    if commit_present:
         expected = {
             "schema": COMMIT_MARKER_SCHEMA,
             "transaction_id": transaction_id,
@@ -878,6 +1131,16 @@ def _load_journal(journal_path: Path) -> _JournalRecord:
             normalized["hold_path"] = str(stage.with_name(f"{transaction_id}-{index}.hold"))
             normalized["move_path"] = str(stage.with_name(f"{transaction_id}-{index}.move"))
         normalized_entries.append(normalized)
+    try:
+        current_metadata = journal_path.lstat()
+    except OSError as exc:
+        raise FilesystemTransactionError(
+            f"transaction journal identity changed while loading: {journal_path}"
+        ) from exc
+    if (current_metadata.st_dev, current_metadata.st_ino) != (metadata.st_dev, metadata.st_ino):
+        raise FilesystemTransactionError(
+            f"transaction journal identity changed while loading: {journal_path}"
+        )
     return _JournalRecord(
         state=state,
         transaction_id=transaction_id,
@@ -892,6 +1155,35 @@ def _archive_journal(journal_path: Path, record: _JournalRecord, *, outcome: str
     archive = journal_path.with_name(
         f".{journal_path.name}.history-{record.transaction_id}-{outcome}"
     )
+    archived_journal = archive
+    try:
+        current_metadata = journal_path.lstat()
+    except OSError as exc:
+        raise FilesystemTransactionError(
+            f"transaction journal unavailable before archive: {journal_path}"
+        ) from exc
+    if (current_metadata.st_dev, current_metadata.st_ino) != (record.device, record.inode):
+        raise FilesystemTransactionError(
+            f"transaction journal identity changed before archive: {journal_path}"
+        )
+    intent = _intent_path(journal_path)
+    try:
+        intent_metadata = intent.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise FilesystemTransactionError(f"transaction intent unavailable: {intent}") from exc
+    else:
+        manifest_metadata = _manifest_path(journal_path).lstat()
+        if (intent_metadata.st_dev, intent_metadata.st_ino) != (
+            manifest_metadata.st_dev,
+            manifest_metadata.st_ino,
+        ):
+            raise FilesystemTransactionError(
+                f"transaction intent identity changed before archive: {intent}"
+            )
+        intent.unlink()
+        _fsync_directory(intent.parent)
     try:
         _renameat2(journal_path, archive, _RENAME_NOREPLACE)
     except OSError as exc:
@@ -899,33 +1191,59 @@ def _archive_journal(journal_path: Path, record: _JournalRecord, *, outcome: str
             raise FilesystemTransactionError(
                 f"transaction journal archive failed without replacement: {journal_path}"
             ) from exc
-        if archive.exists() or archive.is_symlink():
-            raise FilesystemTransactionError(
-                f"transaction journal archive already exists: {archive}"
-            ) from exc
         try:
-            os.rename(journal_path, archive)
+            archive.mkdir(mode=0o700)
+        except FileExistsError:
+            try:
+                archive_metadata = archive.lstat()
+                archive_entries = list(archive.iterdir())
+            except OSError as fallback_exc:
+                raise FilesystemTransactionError(
+                    f"transaction journal archive reservation unavailable: {archive}"
+                ) from fallback_exc
+            expected_uid, expected_gid = _new_entry_identity(archive.parent)
+            if (
+                stat.S_ISLNK(archive_metadata.st_mode)
+                or not stat.S_ISDIR(archive_metadata.st_mode)
+                or (archive_metadata.st_uid, archive_metadata.st_gid)
+                != (expected_uid, expected_gid)
+                or stat.S_IMODE(archive_metadata.st_mode) & 0o077
+                or archive_entries
+            ):
+                raise FilesystemTransactionError(
+                    f"transaction journal archive reservation is not resumable: {archive}"
+                ) from None
+        except OSError as fallback_exc:
+            raise FilesystemTransactionError(
+                f"transaction journal archive reservation failed: {archive}"
+            ) from fallback_exc
+        archived_journal = archive / "journal"
+        try:
+            os.rename(journal_path, archived_journal)
         except OSError as fallback_exc:
             raise FilesystemTransactionError(
                 f"transaction journal portable archive failed: {journal_path}"
             ) from fallback_exc
+        _fsync_directory(archive)
     _fsync_directory(journal_path.parent)
     try:
-        metadata = archive.lstat()
+        metadata = archived_journal.lstat()
     except OSError as exc:
-        raise FilesystemTransactionError(f"transaction archive disappeared: {archive}") from exc
+        raise FilesystemTransactionError(
+            f"transaction archive disappeared: {archived_journal}"
+        ) from exc
     if metadata.st_dev != record.device or metadata.st_ino != record.inode:
         raise FilesystemTransactionError(
-            f"transaction journal third-image conflict preserved at {archive}"
+            f"transaction journal third-image conflict preserved at {archived_journal}"
         )
-    archived = _load_journal(archive)
+    archived = _load_journal(archived_journal)
     if (
         archived.transaction_id != record.transaction_id
         or archived.manifest_sha256 != record.manifest_sha256
         or archived.state != record.state
     ):
         raise FilesystemTransactionError(
-            f"transaction archived journal identity mismatch preserved at {archive}"
+            f"transaction archived journal identity mismatch preserved at {archived_journal}"
         )
     return archive
 
@@ -946,13 +1264,16 @@ def _write_manifest(
         _mark_committed(journal_path, record)
 
 
-def recover_filesystem_transaction(
+def _recover_filesystem_transaction_unlocked(
     journal_path: Path,
     *,
     allowed_roots: Sequence[Path],
+    target_locks_held: bool = False,
 ) -> bool:
     """Recover a prior interrupted transaction without deleting any image."""
 
+    _allowed(journal_path, allowed_roots)
+    _restore_journal_from_intent(journal_path)
     try:
         metadata = journal_path.lstat()
     except FileNotFoundError:
@@ -961,23 +1282,41 @@ def recover_filesystem_transaction(
         raise FilesystemTransactionError(
             f"transaction journal unavailable: {journal_path}"
         ) from exc
-    _allowed(journal_path, allowed_roots)
     if stat.S_ISREG(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
         _recover_v1_journal(journal_path, allowed_roots=allowed_roots)
         return True
     record = _load_journal(journal_path)
-    image: ImageName = "post" if record.state == "committed" else "pre"
-    _apply(
-        record.entries,
-        image=image,
-        accepted_current_images=("pre", "post"),
-        allowed_roots=allowed_roots,
-    )
-    _archive_journal(journal_path, record, outcome=f"recovered-{image}")
+    target_paths = [_entry_path(entry, allowed_roots) for entry in record.entries]
+    lock_context = nullcontext() if target_locks_held else _target_locks(target_paths)
+    with lock_context:
+        _materialize_missing_stages(record, allowed_roots=allowed_roots)
+        image: ImageName = "post" if record.state == "committed" else "pre"
+        _apply(
+            record.entries,
+            image=image,
+            accepted_current_images=("pre", "post"),
+            allowed_roots=allowed_roots,
+        )
+        _archive_journal(journal_path, record, outcome=f"recovered-{image}")
     return True
 
 
-def execute_filesystem_transaction(
+def recover_filesystem_transaction(
+    journal_path: Path,
+    *,
+    allowed_roots: Sequence[Path],
+) -> bool:
+    """Recover one transaction while excluding cooperating writers."""
+
+    _allowed(journal_path, allowed_roots)
+    with _transaction_lock(journal_path):
+        return _recover_filesystem_transaction_unlocked(
+            journal_path,
+            allowed_roots=allowed_roots,
+        )
+
+
+def _execute_filesystem_transaction_unlocked(
     journal_path: Path,
     mutations: Sequence[FileMutation],
     *,
@@ -987,7 +1326,6 @@ def execute_filesystem_transaction(
 
     if not mutations:
         raise FilesystemTransactionError("transaction requires at least one mutation")
-    recover_filesystem_transaction(journal_path, allowed_roots=allowed_roots)
     _allowed(journal_path, allowed_roots)
 
     entries: list[TransactionEntry] = []
@@ -1022,7 +1360,16 @@ def execute_filesystem_transaction(
             }
         )
 
-    record = _prepare_journal(journal_path, entries, allowed_roots=allowed_roots)
+    try:
+        record = _prepare_journal(journal_path, entries, allowed_roots=allowed_roots)
+    except BaseException:
+        if journal_path.exists() or _intent_path(journal_path).exists():
+            _recover_filesystem_transaction_unlocked(
+                journal_path,
+                allowed_roots=allowed_roots,
+                target_locks_held=True,
+            )
+        raise
     try:
         _apply(
             record.entries,
@@ -1031,12 +1378,40 @@ def execute_filesystem_transaction(
             allowed_roots=allowed_roots,
         )
     except BaseException:
-        recover_filesystem_transaction(journal_path, allowed_roots=allowed_roots)
+        _recover_filesystem_transaction_unlocked(
+            journal_path,
+            allowed_roots=allowed_roots,
+            target_locks_held=True,
+        )
         raise
     try:
         _mark_committed(journal_path, record)
     except BaseException:
-        recover_filesystem_transaction(journal_path, allowed_roots=allowed_roots)
+        _recover_filesystem_transaction_unlocked(
+            journal_path,
+            allowed_roots=allowed_roots,
+            target_locks_held=True,
+        )
         raise
     committed = _load_journal(journal_path)
     _archive_journal(journal_path, committed, outcome="committed")
+
+
+def execute_filesystem_transaction(
+    journal_path: Path,
+    mutations: Sequence[FileMutation],
+    *,
+    allowed_roots: Sequence[Path],
+) -> None:
+    """Apply one transaction while excluding cooperating writers."""
+
+    _allowed(journal_path, allowed_roots)
+    with _transaction_lock(journal_path):
+        _recover_filesystem_transaction_unlocked(journal_path, allowed_roots=allowed_roots)
+        target_paths = [_allowed(mutation.path, allowed_roots) for mutation in mutations]
+        with _target_locks(target_paths):
+            _execute_filesystem_transaction_unlocked(
+                journal_path,
+                mutations,
+                allowed_roots=allowed_roots,
+            )

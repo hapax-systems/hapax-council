@@ -18,7 +18,6 @@ from unittest.mock import patch
 import pytest
 
 from agents.coordinator.core import (
-    _DISPATCH_CLOSE_GUARD_MARKERS,
     TMUX_DISCOVERY_FORMAT,
     Coordinator,
     CoordinatorState,
@@ -70,10 +69,17 @@ def _guarded_worktree(path: Path) -> None:
         encoding="utf-8",
     )
     claim.chmod(0o755)
-    (path / "scripts" / "cc-close").write_text(
-        f"#!/bin/sh\n# {' '.join(_DISPATCH_CLOSE_GUARD_MARKERS)}\n",
+    close = path / "scripts" / "cc-close"
+    close.write_text(
+        "#!/bin/sh\n"
+        'if [ "${1:-}" = "--dispatch-protocol-version" ]; then\n'
+        "  printf '%s\\n' hapax-close-dispatch-v1\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 0\n",
         encoding="utf-8",
     )
+    close.chmod(0o755)
 
 
 def _stale_worktree(path: Path) -> None:
@@ -182,9 +188,7 @@ class TestDispatchWorktreeGuard:
         dispatcher = _dispatcher_module()
 
         assert dispatcher.check_worktree_claim_guard is dispatch_guards.check_worktree_claim_guard
-        assert tuple(_DISPATCH_CLOSE_GUARD_MARKERS) == tuple(
-            dispatcher.DISPATCH_CLOSE_GUARD_MARKERS
-        )
+        assert dispatcher.check_worktree_close_guard is dispatch_guards.check_worktree_close_guard
 
     def test_dispatch_tool_blocker_reports_missing_close_with_next_action(self, tmp_path: Path):
         worktree = tmp_path / "projects" / "hapax-council--beta"
@@ -208,7 +212,7 @@ class TestDispatchWorktreeGuard:
 
         assert blocker is not None
         assert "stale cc-close" in blocker
-        assert "frontmatter_task_id" in blocker
+        assert "expected dispatch protocol" in blocker
         assert "next_action=" in blocker
 
     def test_dispatch_tool_blocker_reports_non_executable_claim_with_next_action(
@@ -229,23 +233,18 @@ class TestDispatchWorktreeGuard:
     def test_dispatch_tool_blocker_reports_unreadable_close_with_next_action(self, tmp_path: Path):
         worktree = tmp_path / "projects" / "hapax-council--beta"
         _guarded_worktree(worktree)
-        close = worktree / "scripts" / "cc-close"
-
-        def fake_read_guard(path: Path) -> str:
-            if path == close:
-                raise OSError("permission denied")
-            if path == worktree / "scripts" / "cc-claim":
-                return path.read_text(encoding="utf-8", errors="replace")
-            raise AssertionError(f"unexpected guard read: {path}")
-
         with (
             patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
-            patch("agents.coordinator.core._read_dispatch_guard", side_effect=fake_read_guard),
+            patch.object(
+                dispatch_guards,
+                "check_worktree_close_guard",
+                return_value=(False, "cc-close dispatch protocol probe failed: permission denied"),
+            ),
         ):
             blocker = _dispatch_tool_blocker("beta", "claude")
 
         assert blocker is not None
-        assert "unreadable cc-close" in blocker
+        assert "permission denied" in blocker
         assert "next_action=" in blocker
 
     def test_dispatch_tool_blocker_rejects_gemini_even_with_guarded_worktree(self, tmp_path: Path):
@@ -269,10 +268,6 @@ class TestDispatchWorktreeGuard:
                 Path,
                 "is_file",
                 side_effect=AssertionError("unsupported platform should not inspect guard files"),
-            ),
-            patch(
-                "agents.coordinator.core._read_dispatch_guard",
-                side_effect=AssertionError("unsupported platform should not read guard files"),
             ),
         ):
             blocker = _dispatch_tool_blocker("gamma", "gemini")
@@ -313,9 +308,10 @@ class TestDispatchWorktreeGuard:
     ):
         with (
             patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
-            patch(
-                "agents.coordinator.core._read_dispatch_guard",
-                side_effect=AssertionError("unsupported platform should not read guard files"),
+            patch.object(
+                dispatch_guards,
+                "check_worktree_claim_guard",
+                side_effect=AssertionError("unsupported platform should not probe guard files"),
             ),
         ):
             blocker = _dispatch_tool_blocker(platform, platform)
@@ -876,7 +872,7 @@ current_claim: null
         assert state.dispatch_ready is False
         assert state.dispatch_blocked_reason is not None
         assert "stale cc-close" in state.dispatch_blocked_reason
-        assert "frontmatter_task_id" in state.dispatch_blocked_reason
+        assert "expected dispatch protocol" in state.dispatch_blocked_reason
 
     def test_gemini_lane_with_guarded_worktree_is_not_dispatch_ready(self, tmp_path: Path):
         relay_dir = tmp_path / "relay"
@@ -2831,7 +2827,7 @@ Body.
         assert state.lanes["dev"]["idle"] is True
         assert state.lanes["dev"]["dispatch_ready"] is False
         assert "stale cc-close" in state.lanes["dev"]["dispatch_blocked_reason"]
-        assert "frontmatter_task_id" in state.lanes["dev"]["dispatch_blocked_reason"]
+        assert "expected dispatch protocol" in state.lanes["dev"]["dispatch_blocked_reason"]
 
 
 class TestScanTasks:

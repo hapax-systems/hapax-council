@@ -181,3 +181,45 @@ def test_close_slot_requires_complete_role_and_session_binding_projection(
             session_id="session-1",
             task_id="task-1",
         )
+
+
+def test_close_slot_refuses_torn_role_and_session_claim_epochs(tmp_path: Path) -> None:
+    for key, epoch in (("cx-red", 1), ("cx-red-session-1", 2)):
+        (tmp_path / f"cc-active-task-{key}").write_text("task-1\n", encoding="utf-8")
+        (tmp_path / f"cc-claim-epoch-{key}").write_text(f"{epoch} task-1\n", encoding="utf-8")
+
+    with pytest.raises(TaskStoreError, match="close_slot_projection_epoch_mismatch"):
+        assert_close_slot_owned(
+            cache_dir=tmp_path,
+            role="cx-red",
+            session_id="session-1",
+            task_id="task-1",
+        )
+
+
+def test_close_slot_refuses_binding_epoch_that_disagrees_with_claim(tmp_path: Path) -> None:
+    binding = ClaimDispatchBinding.create(
+        task_id="task-1",
+        lane="cx-red",
+        session_id="session-1",
+        claim_epoch=2,
+        dispatch_message_id="message-1",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        authority_case="CASE-1",
+        binding_hash="a" * 64,
+        coord_dispatch_idempotency_key="key-1",
+    )
+    for key in ("cx-red", "cx-red-session-1"):
+        (tmp_path / f"cc-active-task-{key}").write_text("task-1\n", encoding="utf-8")
+        (tmp_path / f"cc-claim-epoch-{key}").write_text("1 task-1\n", encoding="utf-8")
+        write_claim_dispatch_binding(tmp_path, key, binding)
+
+    with pytest.raises(TaskStoreError, match="close_dispatch_binding_epoch_mismatch"):
+        assert_close_slot_owned(
+            cache_dir=tmp_path,
+            role="cx-red",
+            session_id="session-1",
+            task_id="task-1",
+        )

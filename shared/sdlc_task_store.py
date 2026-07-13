@@ -582,6 +582,7 @@ def assert_close_slot_owned(
 
     bindings: list[ClaimDispatchBinding] = []
     binding_keys: set[str] = set()
+    claim_epochs: dict[str, int] = {}
     for key in sorted(projection_keys):
         claim_path = cache_dir / f"cc-active-task-{key}"
         epoch_path = cache_dir / f"cc-claim-epoch-{key}"
@@ -629,6 +630,7 @@ def assert_close_slot_owned(
                     "close only the exact task named by the current ownership projection",
                     key,
                 )
+            claim_epochs[key] = int(epoch_parts[0])
         if binding_present:
             binding = load_claim_dispatch_binding(binding_path)
             if (
@@ -641,8 +643,21 @@ def assert_close_slot_owned(
                     "only the exact dispatch-bound session may close this task",
                     key,
                 )
+            if binding.claim_epoch != claim_epochs[key]:
+                raise TaskStoreError(
+                    "close_dispatch_binding_epoch_mismatch",
+                    "restore one exact claim generation before closing",
+                    key,
+                )
             bindings.append(binding)
             binding_keys.add(key)
+
+    if len(set(claim_epochs.values())) > 1:
+        raise TaskStoreError(
+            "close_slot_projection_epoch_mismatch",
+            "restore one exact role/session claim generation before closing",
+            role,
+        )
 
     if bindings:
         expected_binding_keys = {legacy_key}

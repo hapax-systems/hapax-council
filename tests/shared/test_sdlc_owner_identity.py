@@ -79,3 +79,11 @@ def test_known_role_shape_rejects_contradictory_qualified_platform(
 def test_malformed_owner_is_not_silently_normalized(owner: str) -> None:
     with pytest.raises(ValueError):
         parse_task_owner(owner)
+
+
+@pytest.mark.parametrize("owner", ["codex/unassigned", "claude/none", "vibe/null", "codex/~"])
+def test_qualified_unassigned_sentinel_is_malformed(owner: str) -> None:
+    with pytest.raises(ValueError):
+        parse_task_owner(owner)
+    platform, role = owner.split("/", 1)
+    assert not owner_matches(owner, role, platform)

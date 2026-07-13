@@ -488,7 +488,6 @@ def test_cli_drain_advances_stage_via_cc_stage_advance(tmp_path):
             str(cap),
             "--drain-to-stage",
             "S7_RELEASE",
-            "--skip-worktree-check",
         ],
         env=env,
         text=True,
@@ -517,7 +516,6 @@ def test_cli_drain_replay_blocked_no_second_advance(tmp_path):
         str(cap),
         "--drain-to-stage",
         "S7_RELEASE",
-        "--skip-worktree-check",
     ]
 
     first = subprocess.run(args, env=env, text=True, capture_output=True, check=False)
@@ -547,7 +545,6 @@ def test_cli_live_lane_blocked_no_mutation(tmp_path):
             str(cap),
             "--drain-to-stage",
             "S7_RELEASE",
-            "--skip-worktree-check",
         ],
         env=env,
         text=True,
@@ -577,7 +574,6 @@ def test_cli_sentinel_without_capability_blocks_without_launch(tmp_path):
             "--drain-to-stage",
             "S7_RELEASE",
             "--launch",
-            "--skip-worktree-check",
         ],
         env=env,
         text=True,

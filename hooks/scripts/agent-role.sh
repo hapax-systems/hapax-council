@@ -206,6 +206,22 @@ hapax_session_id() {
   return 1
 }
 
+# Bash mirror of shared/session_identity.py::is_claim_keyable_session_id.
+# Claim readers and writers normalize the same ambient identifier before they
+# select a coordination-plane path.
+hapax_claim_keyable_session_id() {
+  local sid="${1:-}" tail
+  [ -n "$sid" ] || return 1
+  [ "${#sid}" -ge 8 ] && [ "${#sid}" -le 128 ] || return 1
+  [[ "$sid" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+  [[ "$sid" =~ ^[0-9]+$ ]] && return 1
+  tail="${sid##*-}"
+  if [[ "$tail" =~ ^[0-9]+$ ]] && [ "${#tail}" -le 7 ]; then
+    return 1
+  fi
+  return 0
+}
+
 # --- Per-session identity marker (reform-identity-coherence, cluster 11) -------
 # A WM-independent identity source keyed by the session id. Spawners write it at
 # launch (so identity resolves even where hapax-whoami's compositor query is dead
@@ -270,7 +286,7 @@ hapax_agent_claim_key() {
   local role sid
   role="$(hapax_effective_role 2>/dev/null || true)"
   [ -n "$role" ] || return 1
-  if sid="$(hapax_session_id 2>/dev/null)" && [ -n "$sid" ]; then
+  if sid="$(hapax_session_id 2>/dev/null)" && hapax_claim_keyable_session_id "$sid"; then
     printf '%s-%s\n' "$role" "$sid"
   else
     printf '%s\n' "$role"

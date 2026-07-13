@@ -14,6 +14,11 @@
 
 set -euo pipefail
 
+if [[ "$#" -eq 1 && "$1" == "--dispatch-protocol-version" ]]; then
+  printf '%s\n' 'hapax-close-dispatch-v1'
+  exit 0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROLE_HELPER="$SCRIPT_DIR/../hooks/scripts/agent-role.sh"
 if [[ -f "$ROLE_HELPER" ]]; then
@@ -73,6 +78,11 @@ esac
 session_id=""
 if declare -F hapax_session_id >/dev/null 2>&1; then
   session_id="$(hapax_session_id 2>/dev/null || true)"
+fi
+if [[ -n "$session_id" ]] && declare -F hapax_claim_keyable_session_id >/dev/null 2>&1 \
+  && ! hapax_claim_keyable_session_id "$session_id"; then
+  echo "cc-close: session id '$session_id' is not claim-keyable; using legacy role-keyed identity" >&2
+  session_id=""
 fi
 
 command -v flock >/dev/null 2>&1 || {

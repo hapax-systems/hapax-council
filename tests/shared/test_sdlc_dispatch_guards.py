@@ -6,14 +6,24 @@ from pathlib import Path
 
 from shared.sdlc_dispatch_guards import (
     CLAIM_DISPATCH_PROTOCOL_VERSION,
+    CLOSE_DISPATCH_PROTOCOL_VERSION,
     DISPATCH_CLAIM_GUARD_MARKERS,
     check_worktree_claim_guard,
+    check_worktree_close_guard,
 )
 
 
 def _write_claim(worktree: Path, body: str, *, executable: bool = True) -> Path:
     script = worktree / "scripts" / "cc-claim"
     script.parent.mkdir(parents=True)
+    script.write_text(f"#!/usr/bin/env bash\n{body}", encoding="utf-8")
+    script.chmod(0o755 if executable else 0o644)
+    return script
+
+
+def _write_close(worktree: Path, body: str, *, executable: bool = True) -> Path:
+    script = worktree / "scripts" / "cc-close"
+    script.parent.mkdir(parents=True, exist_ok=True)
     script.write_text(f"#!/usr/bin/env bash\n{body}", encoding="utf-8")
     script.chmod(0o755 if executable else 0o644)
     return script
@@ -76,3 +86,44 @@ def test_worktree_claim_guard_requires_executable_probe(tmp_path: Path) -> None:
 
     assert ok is False
     assert reason == f"cc-claim is not executable at {script.resolve()}"
+
+
+def test_worktree_close_guard_executes_exact_local_protocol_probe(tmp_path: Path) -> None:
+    worktree = tmp_path / "lane"
+    marker = tmp_path / "close-probe-ran"
+    _write_close(
+        worktree,
+        f"printf '%s' \"$PWD\" > {marker}\nprintf '%s\\n' '{CLOSE_DISPATCH_PROTOCOL_VERSION}'\n",
+    )
+
+    ok, reason = check_worktree_close_guard(worktree)
+
+    assert ok is True
+    assert CLOSE_DISPATCH_PROTOCOL_VERSION in reason
+    assert marker.read_text(encoding="utf-8") == str(worktree.resolve())
+
+
+def test_worktree_close_guard_rejects_comment_only_impersonation(tmp_path: Path) -> None:
+    worktree = tmp_path / "lane"
+    _write_close(
+        worktree, "# frontmatter_task_id closed_duplicate closed task duplicate has task_id\n"
+    )
+
+    ok, reason = check_worktree_close_guard(worktree)
+
+    assert ok is False
+    assert "expected dispatch protocol" in reason
+
+
+def test_worktree_close_guard_requires_executable_probe(tmp_path: Path) -> None:
+    worktree = tmp_path / "lane"
+    script = _write_close(
+        worktree,
+        f"printf '%s\\n' '{CLOSE_DISPATCH_PROTOCOL_VERSION}'\n",
+        executable=False,
+    )
+
+    ok, reason = check_worktree_close_guard(worktree)
+
+    assert ok is False
+    assert reason == f"cc-close is not executable at {script.resolve()}"

@@ -631,6 +631,10 @@ session_id=""
 if declare -F hapax_session_id >/dev/null 2>&1; then
   session_id="$(hapax_session_id 2>/dev/null || true)"
 fi
+if [[ -n "$session_id" ]] && declare -F hapax_claim_keyable_session_id >/dev/null 2>&1 \
+  && ! hapax_claim_keyable_session_id "$session_id"; then
+  session_id=""
+fi
 if declare -F hapax_effective_role >/dev/null 2>&1; then
   role="$(hapax_effective_role 2>/dev/null || true)"
 else
@@ -664,12 +668,12 @@ case "$platform" in
     ;;
 esac
 
-# Session-keyed claim lookup with legacy fallback. cc-claim keys a claim to
-# <role>-<session_id> so two same-role sessions never collide (FM-2); a pre-reform
-# claim at the legacy <role> path is still honoured through the cutover.
+# A claim-keyable session must present its exact claim. Legacy role-only claims
+# remain valid only for runtimes that do not carry a keyable session identity.
 claim_file=""
-if [[ -n "$session_id" ]] && [[ -f "$HOME/.cache/hapax/cc-active-task-$role-$session_id" ]]; then
-  claim_file="$HOME/.cache/hapax/cc-active-task-$role-$session_id"
+if [[ -n "$session_id" ]]; then
+  [[ -f "$HOME/.cache/hapax/cc-active-task-$role-$session_id" ]] \
+    && claim_file="$HOME/.cache/hapax/cc-active-task-$role-$session_id"
 elif [[ -f "$HOME/.cache/hapax/cc-active-task-$role" ]]; then
   claim_file="$HOME/.cache/hapax/cc-active-task-$role"
 fi

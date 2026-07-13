@@ -1881,7 +1881,6 @@ def _live_headless_launcher(role: str) -> tuple[int, str | None] | None:
 
 COORDINATOR_DISPATCHABLE_PLATFORMS = dispatch_guards.COORDINATOR_HEADLESS_DISPATCHABLE_PLATFORMS
 RETIRED_DISPATCH_PLATFORM_ALIASES = frozenset({"agy", "antigrav", "antigravity", "gemini-cli"})
-_DISPATCH_CLOSE_GUARD_MARKERS = dispatch_guards.DISPATCH_CLOSE_GUARD_MARKERS
 
 
 def _dispatch_worktree(role: str, platform: str) -> Path:
@@ -1932,10 +1931,6 @@ def _dispatch_tool_block(reason: str, worktree: Path, *, next_action: str | None
     return f"{reason}; next_action={next_action or _dispatch_tool_next_action(worktree)}"
 
 
-def _read_dispatch_guard(path: Path) -> str:
-    return path.read_text(encoding="utf-8", errors="replace")
-
-
 def _dispatch_tool_blocker(role: str, platform: str) -> str | None:
     worktree = _dispatch_worktree(role, platform)
     if platform not in COORDINATOR_DISPATCHABLE_PLATFORMS:
@@ -1951,19 +1946,9 @@ def _dispatch_tool_blocker(role: str, platform: str) -> str | None:
     if not claim_ok:
         return _dispatch_tool_block(claim_reason, worktree)
 
-    close = worktree / "scripts" / "cc-close"
-    if not close.is_file():
-        return _dispatch_tool_block(f"missing cc-close at {close}", worktree)
-    try:
-        close_text = _read_dispatch_guard(close)
-    except OSError as exc:
-        return _dispatch_tool_block(f"unreadable cc-close at {close}: {exc}", worktree)
-    missing_close = [marker for marker in _DISPATCH_CLOSE_GUARD_MARKERS if marker not in close_text]
-    if missing_close:
-        return _dispatch_tool_block(
-            f"stale cc-close in {worktree}: missing {', '.join(missing_close)}",
-            worktree,
-        )
+    close_ok, close_reason = dispatch_guards.check_worktree_close_guard(worktree)
+    if not close_ok:
+        return _dispatch_tool_block(close_reason, worktree)
     return None
 
 

@@ -4749,6 +4749,9 @@ from shared.sdlc_dispatch_guards import (  # noqa: E402
 from shared.sdlc_filesystem_transaction import (  # noqa: E402
     execute_filesystem_transaction as _execute_filesystem_transaction,
 )
+from shared.sdlc_filesystem_transaction import (  # noqa: E402
+    recover_filesystem_transaction as _recover_filesystem_transaction,
+)
 from shared.sdlc_owner_identity import canonical_task_owner as _canonical_task_owner  # noqa: E402
 from shared.sdlc_task_store import (  # noqa: E402
     assert_claim_slot_available as _assert_claim_slot_available,
@@ -4763,6 +4766,7 @@ from shared.sdlc_task_store import (  # noqa: E402
 _ = (
     _check_worktree_claim_guard,
     _execute_filesystem_transaction,
+    _recover_filesystem_transaction,
     _canonical_task_owner,
     _assert_claim_slot_available,
     _assert_close_slot_owned,

@@ -885,10 +885,10 @@ class TestClaimKey:
     def test_role_and_session_compose(self) -> None:
         r = _role_helper(
             "hapax_agent_claim_key",
-            env={"CLAUDE_ROLE": "theta", "HAPAX_SESSION_ID": "sidA"},
+            env={"CLAUDE_ROLE": "theta", "HAPAX_SESSION_ID": "session-A"},
         )
         assert r.returncode == 0, r.stderr
-        assert r.stdout.strip() == "theta-sidA"
+        assert r.stdout.strip() == "theta-session-A"
 
     def test_role_without_session_is_legacy_keyed(self) -> None:
         r = _role_helper("hapax_agent_claim_key", env={"CLAUDE_ROLE": "theta"})
@@ -897,9 +897,13 @@ class TestClaimKey:
 
     def test_roleless_with_session_is_roleless_keyed(self, tmp_path: Path) -> None:
         # No role env and a non-worktree cwd → role-less but still claimable.
-        r = _role_helper("hapax_agent_claim_key", env={"HAPAX_SESSION_ID": "sidZ"}, cwd=tmp_path)
+        r = _role_helper(
+            "hapax_agent_claim_key",
+            env={"HAPAX_SESSION_ID": "session-Z"},
+            cwd=tmp_path,
+        )
         assert r.returncode == 0, r.stderr
-        assert r.stdout.strip() == "roleless-sidZ"
+        assert r.stdout.strip() == "roleless-session-Z"
 
     def test_no_identity_at_all_returns_nonzero(self, tmp_path: Path) -> None:
         # No role, no session id, non-worktree cwd → unkeyable.
@@ -1036,44 +1040,44 @@ class TestSessionKeyedGate:
 
     def test_session_keyed_claim_found(self, tmp_path: Path) -> None:
         _make_vault(tmp_path, status="in_progress", assigned="delta")
-        _write_session_claim(tmp_path, "delta-sidX", "test-001")
+        _write_session_claim(tmp_path, "delta-session-X", "test-001")
         r = _run_hook(
             {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
             home=tmp_path,
             role="delta",
-            extra_env={"HAPAX_SESSION_ID": "sidX"},
+            extra_env={"HAPAX_SESSION_ID": "session-X"},
         )
         assert r.returncode == 0, r.stderr
 
-    def test_legacy_claim_found_when_session_keyed_absent(self, tmp_path: Path) -> None:
-        # A session id is present but only a pre-reform legacy claim exists.
+    def test_legacy_claim_refused_when_exact_session_claim_absent(self, tmp_path: Path) -> None:
         _make_vault(tmp_path, status="in_progress", assigned="delta")
         _write_claim(tmp_path, "delta", "test-001")  # cc-active-task-delta (legacy)
         r = _run_hook(
             {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
             home=tmp_path,
             role="delta",
-            extra_env={"HAPAX_SESSION_ID": "sidX"},
+            extra_env={"HAPAX_SESSION_ID": "session-X"},
         )
-        assert r.returncode == 0, r.stderr
+        assert r.returncode != 0
+        assert "no claimed task" in r.stderr
 
     def test_two_same_role_sessions_use_own_claims(self, tmp_path: Path) -> None:
         # FM-2: two delta sessions no longer clobber a single cc-active-task-delta.
         _make_vault(tmp_path, status="in_progress", assigned="delta", task_id="task-aaa")
-        _write_session_claim(tmp_path, "delta-sidA", "task-aaa")
-        _write_session_claim(tmp_path, "delta-sidB", "task-bbb")
+        _write_session_claim(tmp_path, "delta-session-A", "task-aaa")
+        _write_session_claim(tmp_path, "delta-session-B", "task-bbb")
         r = _run_hook(
             {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
             home=tmp_path,
             role="delta",
-            extra_env={"HAPAX_SESSION_ID": "sidA"},
+            extra_env={"HAPAX_SESSION_ID": "session-A"},
         )
         assert r.returncode == 0, r.stderr
 
     def test_degraded_roleless_session_can_mutate_its_claim(self, tmp_path: Path) -> None:
         # No role, but a session id + an explicit roleless claim → governed mutation.
         _make_vault(tmp_path, status="in_progress", assigned="roleless")
-        _write_session_claim(tmp_path, "roleless-sidZ", "test-001")
+        _write_session_claim(tmp_path, "roleless-session-Z", "test-001")
         work = tmp_path / "plain-dir"
         work.mkdir()
         r = _run_hook(
@@ -1081,7 +1085,7 @@ class TestSessionKeyedGate:
             home=tmp_path,
             role=None,
             cwd=work,
-            extra_env={"HAPAX_SESSION_ID": "sidZ"},
+            extra_env={"HAPAX_SESSION_ID": "session-Z"},
         )
         assert r.returncode == 0, r.stderr
 
@@ -1136,14 +1140,14 @@ class TestSessionKeyedGate:
         _make_vault(tmp_path, status="done", assigned="alpha", task_id="alpha-task")
         _make_vault(tmp_path, status="in_progress", assigned="roleless", task_id="roleless-task")
         _write_claim(tmp_path, "alpha", "alpha-task")
-        _write_session_claim(tmp_path, "roleless-sidZ", "roleless-task")
+        _write_session_claim(tmp_path, "roleless-session-Z", "roleless-task")
         repo = _git_repo_on_branch(tmp_path, "alpha/scratch")
         r = _run_hook(
             {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
             home=tmp_path,
             role=None,
             cwd=repo,
-            extra_env={"HAPAX_SESSION_ID": "sidZ"},
+            extra_env={"HAPAX_SESSION_ID": "session-Z"},
         )
         assert r.returncode == 0, r.stderr
 
