@@ -110,7 +110,48 @@ except (ValueError, ProcessLookupError, PermissionError):
 
 reap_attempts() { cat "$REAP_ATTEMPTS_DIR/$1" 2>/dev/null || echo 0; }
 bump_reap_attempts() { echo "$(($(reap_attempts "$1") + 1))" >"$REAP_ATTEMPTS_DIR/$1"; }
-reset_reap_attempts() { rm -f "$REAP_ATTEMPTS_DIR/$1" 2>/dev/null || true; }
+reset_reap_attempts() {
+    [[ "$DRY_RUN" -eq 1 ]] && return 0
+    rm -f "$REAP_ATTEMPTS_DIR/$1" 2>/dev/null || true
+}
+
+quota_rate_wall_detected() {
+    # Match terminal provider/account wall phrases, not arbitrary task labels such
+    # as quota-receipt or prose about quota work.
+    local text="$1"
+    printf '%s\n' "$text" | grep -Eiq '(^|[^[:alnum:]_-])((429[[:space:]-]*(too many requests|rate[- ]?limit(ed)?|resource exhausted))|too many requests|rate[- ]?limit(ed)?[[:space:]-]*(exceeded|reached)|usage limit[[:space:]-]*(reached|exceeded)|reached (your )?usage limit|quota[[:space:]-]*(wall|exceeded)|BLOCKED:[[:space:]]*quota wall)([^[:alnum:]_-]|$)'
+}
+
+release_active_claim() {
+    local role="$1" claim_file claim task_file
+    claim_file="$HOME/.cache/hapax/cc-active-task-$role"
+    [[ -f "$claim_file" ]] || return 0
+
+    claim=$(tr -d '[:space:]' <"$claim_file")
+    if [[ -z "$claim" ]]; then
+        if [[ "$DRY_RUN" -eq 1 ]]; then
+            log "  DRY RUN: would remove empty claim marker for $role"
+        else
+            rm -f "$claim_file"
+        fi
+        return 0
+    fi
+
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+        log "  DRY RUN: would release task: $claim -> offered"
+        return 0
+    fi
+
+    for task_file in "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/active/${claim}"*.md; do
+        if [[ -f "$task_file" ]]; then
+            sed -i "s/^status: claimed/status: offered/" "$task_file"
+            sed -i "s/^status: in_progress/status: offered/" "$task_file"
+            sed -i "s/^assigned_to: .*/assigned_to: unassigned/" "$task_file"
+            log "  Released task: $claim -> offered"
+        fi
+    done
+    rm -f "$claim_file"
+}
 
 # Keep the measured service-time cache warm on the reaper's already-scheduled cadence
 # (hourly), so the tau the coordinator + idle-watchdog + this reaper read is current.
@@ -141,12 +182,16 @@ for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E "
     role="${role#hapax-claude-}"
 
     # Count child processes (excluding the shell itself)
-    children=$(ps --ppid "$pane_pid" -o comm= 2>/dev/null | grep -cv "^fish$\|^bash$\|^zsh$\|^sh$" || echo 0)
+    children=$(
+        {
+            ps --ppid "$pane_pid" -o comm= 2>/dev/null || true
+        } | awk '$1 !~ /^(fish|bash|zsh|sh)$/ { count++ } END { print count + 0 }'
+    )
 
     # Check last output for stuck patterns (quota, rate limit, error loops)
     last_output=$(tmux capture-pane -t "$session" -p 2>/dev/null | grep -v "^$" | tail -3)
     is_stuck=0
-    if echo "$last_output" | grep -qi "rate.limit\|quota\|429\|Usage limit\|BLOCKED.*quota"; then
+    if quota_rate_wall_detected "$last_output"; then
         is_stuck=1
     fi
 
@@ -158,21 +203,7 @@ for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E "
     if [[ "$children" -gt 0 && "$is_stuck" -eq 1 ]]; then
         # Stuck lane — release the task but DON'T kill the session
         log "$session: STUCK (quota/rate-limit) — releasing task, keeping session"
-        claim_file="$HOME/.cache/hapax/cc-active-task-$role"
-        if [[ -f "$claim_file" ]]; then
-            claim=$(cat "$claim_file" | tr -d '[:space:]')
-            if [[ -n "$claim" ]]; then
-                for task_file in "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/active/${claim}"*.md; do
-                    if [[ -f "$task_file" ]]; then
-                        sed -i "s/^status: claimed/status: offered/" "$task_file"
-                        sed -i "s/^status: in_progress/status: offered/" "$task_file"
-                        sed -i "s/^assigned_to: .*/assigned_to: unassigned/" "$task_file"
-                        log "  Released task: $claim → offered"
-                    fi
-                done
-            fi
-            rm -f "$claim_file"
-        fi
+        release_active_claim "$role"
         continue  # Don't kill — session may recover
     fi
 
@@ -234,22 +265,7 @@ for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E "
     fi
 
     # Clear stale claim file
-    claim_file="$HOME/.cache/hapax/cc-active-task-$role"
-    if [[ -f "$claim_file" ]]; then
-        claim=$(cat "$claim_file" | tr -d '[:space:]')
-        if [[ -n "$claim" ]]; then
-            # Release the task back to offered
-            for task_file in "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/active/${claim}"*.md; do
-                if [[ -f "$task_file" ]]; then
-                    sed -i "s/^status: claimed/status: offered/" "$task_file"
-                    sed -i "s/^status: in_progress/status: offered/" "$task_file"
-                    sed -i "s/^assigned_to: .*/assigned_to: unassigned/" "$task_file"
-                    log "  Released task: $claim → offered"
-                fi
-            done
-        fi
-        rm -f "$claim_file"
-    fi
+    release_active_claim "$role"
 
     # Reap (governed: a reap is a recovery action). MUST-FIX: the kill is a single
     # PID-targeted os.kill(SIGTERM) of the lane's worker (or its idle shell), NOT a
