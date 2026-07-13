@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# hapax-lane-reaper -- project lane inventory from bounded tmux metadata.
+# hapax-lane-reaper -- project transitional lane inventory from bounded tmux metadata.
 #
 # This compatibility surface is observation-only in every mode. Direct tmux
-# metadata is intentionally not activation-grade; a universal harness observer
-# must replace it before any controller is activated.
+# metadata is intentionally not activation-grade. Reins owns the permanent,
+# runtime-agnostic observer and governed lifecycle successor.
 
 set -euo pipefail
 export LC_ALL=C
@@ -13,12 +13,21 @@ readonly PANE_FORMAT=$'#{session_id}\t#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{p
 readonly CAPTURE_SENTINEL=$'\036'
 
 usage_error() {
-    printf 'lane-reaper: usage_error reason=%s exit=64\n' "$1" >&2
+    printf 'lane-reaper: usage_error reason=%s next_action=run_hapax-lane-reaper_--help exit=64\n' \
+        "$1" >&2
     exit 64
 }
 
+usage() {
+    printf '%s\n' \
+        'Usage: hapax-lane-reaper [--dry-run] [--threshold MINUTES] [--reap-lineage ID]' \
+        'Transitional status: observation-only and non-effectful; compatibility options are inert.' \
+        'Permanent successor: Reins runtime-agnostic observation and governed lifecycle control.' \
+        'Retirement predicate: Reins parity and source activation.'
+}
+
 hold() {
-    printf 'lane-reaper: projection state=HOLD scope=tmux operation=%s context=%s reason=tmux_observation_unavailable detail=%s exit=69 universal_observer_successor=required\n' \
+    printf 'lane-reaper: projection state=HOLD scope=tmux operation=%s context=%s reason=tmux_observation_unavailable detail=%s next_action=verify_tmux_metadata_then_retry universal_observer_successor=required successor=Reins exit=69\n' \
         "$1" "$2" "$3" >&2
     exit 69
 }
@@ -29,6 +38,12 @@ lineage_seen=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --help|-h)
+            [[ $# -eq 1 && "$dry_run_seen" -eq 0 && "$threshold_seen" -eq 0 && \
+                "$lineage_seen" -eq 0 ]] || usage_error help_must_be_only_argument
+            usage
+            exit 0
+            ;;
         --dry-run)
             [[ "$dry_run_seen" -eq 0 ]] || usage_error duplicate_option
             dry_run_seen=1
@@ -61,10 +76,30 @@ capture_tmux() {
     local rc=0
     # tmux 3.6b maps control delimiters to underscores in the C character
     # locale. Keep shell ordering in C while preserving literal TAB argv bytes
-    # for the metadata subprocess.
-    LC_ALL=C.UTF-8 tmux "$@" 2>/dev/null || rc=$?
+    # for the metadata subprocess. The suffix preserves trailing newlines; raw
+    # tmux errors remain in memory for classification and are never emitted.
+    LC_ALL=C.UTF-8 tmux "$@" 2>&1 || rc=$?
     printf '%s' "$CAPTURE_SENTINEL"
     return "$rc"
+}
+
+legacy_tmux_runtime_absent() {
+    local captured="$1" line
+
+    [[ "$captured" == *$'\n' ]] || return 1
+    line=${captured%$'\n'}
+    [[ "$line" != *$'\n'* ]] || return 1
+    case "$line" in
+        'no server running on '?*)
+            return 0
+            ;;
+        'error connecting to '?*' (No such file or directory)')
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }
 
 split_five() {
@@ -94,21 +129,8 @@ canonical_positive_decimal() {
     [[ "$1" =~ ^[1-9][0-9]*$ ]]
 }
 
-normalise_id_suffix() {
-    local value="${1:1}"
-    while [[ "${#value}" -gt 1 && "${value:0:1}" == 0 ]]; do
-        value="${value:1}"
-    done
-    normalised_id_suffix="$value"
-}
-
 numeric_id_less_than() {
-    local left="$1" right="$2" left_number right_number
-
-    normalise_id_suffix "$left"
-    left_number="$normalised_id_suffix"
-    normalise_id_suffix "$right"
-    right_number="$normalised_id_suffix"
+    local left_number="${1:1}" right_number="${2:1}"
 
     if [[ "${#left_number}" -lt "${#right_number}" ]]; then
         return 0
@@ -116,13 +138,7 @@ numeric_id_less_than() {
     if [[ "${#left_number}" -gt "${#right_number}" ]]; then
         return 1
     fi
-    if [[ "$left_number" < "$right_number" ]]; then
-        return 0
-    fi
-    if [[ "$left_number" > "$right_number" ]]; then
-        return 1
-    fi
-    [[ "$left" < "$right" ]]
+    [[ "$left_number" < "$right_number" ]]
 }
 
 swap_eligible_sessions() {
@@ -165,11 +181,17 @@ declare -a all_pane_ids=()
 declare -a lane_lines=()
 
 if session_capture=$(capture_tmux list-sessions -F "$SESSION_FORMAT"); then
-    [[ "$session_capture" == *"$CAPTURE_SENTINEL" ]] || hold list-sessions none malformed
+    session_rows=${session_capture%"$CAPTURE_SENTINEL"}
+    [[ -n "$session_rows" ]] || hold list-sessions none incoherent
 else
+    session_rc=$?
+    session_rows=${session_capture%"$CAPTURE_SENTINEL"}
+    if [[ "$session_rc" -eq 1 ]] && legacy_tmux_runtime_absent "$session_rows"; then
+        printf 'lane-reaper: projection state=UNKNOWN scope=inventory lane_count=unknown reason=legacy_tmux_runtime_absent next_action=none_until_Reins_activation universal_observer_successor=required successor=Reins exit=0\n' >&2
+        exit 0
+    fi
     hold list-sessions none unavailable
 fi
-session_rows=${session_capture%"$CAPTURE_SENTINEL"}
 
 while [[ -n "$session_rows" ]]; do
     if [[ "$session_rows" == *$'\n'* ]]; then
@@ -182,7 +204,7 @@ while [[ -n "$session_rows" ]]; do
 
     [[ -n "$row" ]] || hold list-sessions none malformed
     split_five "$row" || hold list-sessions none malformed
-    [[ "$field_1" =~ ^\$[0-9]+$ ]] || hold list-sessions none malformed
+    [[ "$field_1" =~ ^\$(0|[1-9][0-9]*)$ ]] || hold list-sessions none malformed
     canonical_nonnegative_decimal "$field_3" || hold list-sessions none malformed
     canonical_nonnegative_decimal "$field_4" || hold list-sessions none malformed
     canonical_positive_decimal "$field_5" || hold list-sessions none malformed
@@ -224,12 +246,10 @@ for ((session_index = 0; session_index < session_count; session_index++)); do
     session_role=${eligible_session_roles[session_index]}
 
     if pane_capture=$(capture_tmux list-panes -s -t "$session_id" -F "$PANE_FORMAT"); then
-        [[ "$pane_capture" == *"$CAPTURE_SENTINEL" ]] || \
-            hold list-panes "session_id=$session_id" malformed
+        pane_rows=${pane_capture%"$CAPTURE_SENTINEL"}
     else
         hold list-panes "session_id=$session_id" unavailable
     fi
-    pane_rows=${pane_capture%"$CAPTURE_SENTINEL"}
     [[ -n "$pane_rows" ]] || hold list-panes "session_id=$session_id" incoherent
 
     declare -a pane_ids=()
@@ -248,8 +268,10 @@ for ((session_index = 0; session_index < session_count; session_index++)); do
 
         [[ -n "$row" ]] || hold list-panes "session_id=$session_id" malformed
         split_five "$row" || hold list-panes "session_id=$session_id" malformed
-        [[ "$field_1" =~ ^\$[0-9]+$ ]] || hold list-panes "session_id=$session_id" malformed
-        [[ "$field_2" =~ ^%[0-9]+$ ]] || hold list-panes "session_id=$session_id" malformed
+        [[ "$field_1" =~ ^\$(0|[1-9][0-9]*)$ ]] || \
+            hold list-panes "session_id=$session_id" malformed
+        [[ "$field_2" =~ ^%(0|[1-9][0-9]*)$ ]] || \
+            hold list-panes "session_id=$session_id" malformed
         canonical_positive_decimal "$field_3" || \
             hold list-panes "session_id=$session_id" malformed
         [[ "$field_4" =~ ^[01]$ ]] || hold list-panes "session_id=$session_id" malformed
@@ -286,12 +308,10 @@ for ((session_index = 0; session_index < session_count; session_index++)); do
         active_value=${pane_active[pane_index]}
 
         if display_capture=$(capture_tmux display-message -p -t "$pane_id" "$PANE_FORMAT"); then
-            [[ "$display_capture" == *"$CAPTURE_SENTINEL" ]] || \
-                hold display-message "session_id=$session_id,pane_id=$pane_id" malformed
+            display_rows=${display_capture%"$CAPTURE_SENTINEL"}
         else
             hold display-message "session_id=$session_id,pane_id=$pane_id" unavailable
         fi
-        display_rows=${display_capture%"$CAPTURE_SENTINEL"}
         [[ -n "$display_rows" ]] || \
             hold display-message "session_id=$session_id,pane_id=$pane_id" malformed
 
@@ -308,9 +328,9 @@ for ((session_index = 0; session_index < session_count; session_index++)); do
 
         split_five "$display_row" || \
             hold display-message "session_id=$session_id,pane_id=$pane_id" malformed
-        [[ "$field_1" =~ ^\$[0-9]+$ ]] || \
+        [[ "$field_1" =~ ^\$(0|[1-9][0-9]*)$ ]] || \
             hold display-message "session_id=$session_id,pane_id=$pane_id" malformed
-        [[ "$field_2" =~ ^%[0-9]+$ ]] || \
+        [[ "$field_2" =~ ^%(0|[1-9][0-9]*)$ ]] || \
             hold display-message "session_id=$session_id,pane_id=$pane_id" malformed
         canonical_positive_decimal "$field_3" || \
             hold display-message "session_id=$session_id,pane_id=$pane_id" malformed
@@ -334,7 +354,7 @@ for ((session_index = 0; session_index < session_count; session_index++)); do
     inventory_pane_count=$((inventory_pane_count + pane_count))
     inventory_live_pane_count=$((inventory_live_pane_count + live_pane_count))
     inventory_active_pane_count=$((inventory_active_pane_count + active_pane_count))
-    lane_lines+=("lane-reaper: projection state=UNKNOWN scope=lane session_id=$session_id session_name=$session_name role=$session_role pane_count=$pane_count live_pane_count=$live_pane_count active_pane_count=$active_pane_count reason=direct_tmux_metadata_not_activation_grade universal_observer_successor=required")
+    lane_lines+=("lane-reaper: projection state=UNKNOWN scope=lane session_id=$session_id session_name=$session_name role=$session_role pane_count=$pane_count live_pane_count=$live_pane_count active_pane_count=$active_pane_count reason=direct_tmux_metadata_not_activation_grade universal_observer_successor=required successor=Reins")
 done
 
 for line in "${lane_lines[@]}"; do
@@ -342,9 +362,9 @@ for line in "${lane_lines[@]}"; do
 done
 
 if [[ "$session_count" -eq 0 ]]; then
-    printf 'lane-reaper: projection state=UNKNOWN scope=inventory lane_count=0 reason=valid_empty_inventory universal_observer_successor=required\n' >&2
+    printf 'lane-reaper: projection state=UNKNOWN scope=inventory lane_count=0 reason=valid_empty_inventory universal_observer_successor=required successor=Reins\n' >&2
 else
-    printf 'lane-reaper: projection state=UNKNOWN scope=inventory lane_count=%s pane_count=%s live_pane_count=%s active_pane_count=%s reason=direct_tmux_metadata_not_activation_grade universal_observer_successor=required\n' \
+    printf 'lane-reaper: projection state=UNKNOWN scope=inventory lane_count=%s pane_count=%s live_pane_count=%s active_pane_count=%s reason=direct_tmux_metadata_not_activation_grade universal_observer_successor=required successor=Reins\n' \
         "$session_count" "$inventory_pane_count" "$inventory_live_pane_count" \
         "$inventory_active_pane_count" >&2
 fi
