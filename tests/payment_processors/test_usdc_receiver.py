@@ -20,9 +20,11 @@ from pathlib import Path
 
 import pytest
 
-from agents.payment_processors.event_log import tail_events
+from agents.payment_processors.event_log import append_event, tail_events
 from agents.payment_processors.resource_receipts import (
+    MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
     MoneyRailReceiptOperation,
+    commit_prepared_resource_receipt,
     receipt_reference,
     tail_resource_receipts,
 )
@@ -54,11 +56,10 @@ _SECRET_RPC_URL = f"https://base-rpc.example.invalid/{_SECRET_SENTINEL}/token"
 
 @pytest.fixture(autouse=True)
 def resource_receipt_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    import agents.payment_processors.resource_receipts as resource_receipts
 
     log_path = tmp_path / "resource-receipts.jsonl"
     monkeypatch.setenv(
-        resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+        MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
         str(log_path),
     )
     return log_path
@@ -538,7 +539,6 @@ class TestPollOnce:
         caplog,
         tmp_path: Path,
     ) -> None:
-        import agents.payment_processors.usdc_receiver as usdc_mod
 
         def _call(method: str, _params: list) -> object:
             if method == fail_method:
@@ -551,7 +551,7 @@ class TestPollOnce:
                 return []
             raise AssertionError(f"unexpected RPC method {method}")
 
-        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
+        caplog.set_level(logging.WARNING, logger=USDCReceiver.__module__)
         receiver = USDCReceiver(
             operator_wallet=_OPERATOR_WALLET,
             cursor_path=tmp_path / "cursor.json",
@@ -605,7 +605,6 @@ class TestPollOnce:
         caplog,
         tmp_path: Path,
     ) -> None:
-        import agents.payment_processors.usdc_receiver as usdc_mod
 
         def _call(method: str, _params: list) -> object:
             if method == "eth_chainId":
@@ -619,7 +618,7 @@ class TestPollOnce:
         cursor_path = tmp_path / "cursor.json"
         seen_tx = "0x" + "97" * 32
         _save_cursor(cursor_path, _cursor(last_block=777, seen_keys={(seen_tx, 4)}))
-        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
+        caplog.set_level(logging.WARNING, logger=USDCReceiver.__module__)
         receiver = USDCReceiver(
             operator_wallet=_OPERATOR_WALLET,
             cursor_path=cursor_path,
@@ -668,10 +667,12 @@ class TestPollOnce:
         monkeypatch,
         tmp_path: Path,
     ) -> None:
-        import agents.payment_processors.usdc_receiver as usdc_mod
 
         caller, calls = self._make_caller(tip_block=1000, logs=[_log_row()])
-        monkeypatch.setattr(usdc_mod, "record_external_api_poll_receipt", lambda **_: None)
+        monkeypatch.setattr(
+            "agents.payment_processors.usdc_receiver.record_external_api_poll_receipt",
+            lambda **_: None,
+        )
 
         cursor_path = tmp_path / "cursor.json"
         receiver = USDCReceiver(
@@ -693,15 +694,17 @@ class TestPollOnce:
         tmp_path: Path,
         resource_receipt_log: Path,
     ) -> None:
-        import agents.payment_processors.usdc_receiver as usdc_mod
 
         cursor_path = tmp_path / "cursor.json"
         seen_tx = "0x" + "94" * 32
         _save_cursor(cursor_path, _cursor(last_block=777, seen_keys={(seen_tx, 4)}))
         caller, calls = self._make_caller(tip_block=1000, logs=[_log_row()], chain_id=chain_id)
         appended: list = []
-        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
-        monkeypatch.setattr(usdc_mod, "append_event", lambda event: appended.append(event) or True)
+        caplog.set_level(logging.WARNING, logger=USDCReceiver.__module__)
+        monkeypatch.setattr(
+            "agents.payment_processors.usdc_receiver.append_event",
+            lambda event: appended.append(event) or True,
+        )
 
         receiver = USDCReceiver(
             operator_wallet=_OPERATOR_WALLET,
@@ -727,12 +730,11 @@ class TestPollOnce:
         tmp_path: Path,
         resource_receipt_log: Path,
     ) -> None:
-        import agents.payment_processors.usdc_receiver as usdc_mod
 
         cursor_path = tmp_path / "cursor.json"
         cursor_path.write_text("{not-json", encoding="utf-8")
         caller, calls = self._make_caller(tip_block=1000, logs=[_log_row()])
-        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
+        caplog.set_level(logging.WARNING, logger=USDCReceiver.__module__)
 
         receiver = USDCReceiver(
             operator_wallet=_OPERATOR_WALLET,
@@ -756,13 +758,12 @@ class TestPollOnce:
         tmp_path: Path,
         resource_receipt_log: Path,
     ) -> None:
-        import agents.payment_processors.usdc_receiver as usdc_mod
 
         cursor_path = tmp_path / "cursor.json"
         seen_tx = "0x" + "93" * 32
         _save_cursor(cursor_path, _cursor(last_block=2000, seen_keys={(seen_tx, 4)}))
         caller, calls = self._make_caller(tip_block=1000, logs=[])
-        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
+        caplog.set_level(logging.WARNING, logger=USDCReceiver.__module__)
 
         receiver = USDCReceiver(
             operator_wallet=_OPERATOR_WALLET,
@@ -797,7 +798,6 @@ class TestPollOnce:
         tmp_path: Path,
         resource_receipt_log: Path,
     ) -> None:
-        import agents.payment_processors.usdc_receiver as usdc_mod
 
         calls: list[tuple[str, list]] = []
 
@@ -813,8 +813,11 @@ class TestPollOnce:
         seen_tx = "0x" + "96" * 32
         _save_cursor(cursor_path, _cursor(last_block=777, seen_keys={(seen_tx, 4)}))
         appended: list = []
-        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
-        monkeypatch.setattr(usdc_mod, "append_event", lambda event: appended.append(event) or True)
+        caplog.set_level(logging.WARNING, logger=USDCReceiver.__module__)
+        monkeypatch.setattr(
+            "agents.payment_processors.usdc_receiver.append_event",
+            lambda event: appended.append(event) or True,
+        )
 
         receiver = USDCReceiver(
             operator_wallet=_OPERATOR_WALLET,
@@ -983,7 +986,6 @@ class TestPollOnce:
         monkeypatch,
         tmp_path: Path,
     ) -> None:
-        import agents.payment_processors.event_log as event_log_mod
 
         row = _log_row(tx_hash="0x" + "f1" * 32, log_index=9)
         caller, _ = self._make_caller(tip_block=1000, logs=[row])
@@ -991,7 +993,7 @@ class TestPollOnce:
 
         monkeypatch.setattr(
             "agents.payment_processors.usdc_receiver.append_event",
-            lambda event: event_log_mod.append_event(event, log_path=payment_log),
+            lambda event: append_event(event, log_path=payment_log),
         )
 
         receiver = USDCReceiver(
@@ -1052,14 +1054,16 @@ class TestPollOnce:
         tmp_path: Path,
         resource_receipt_log: Path,
     ) -> None:
-        import agents.payment_processors.usdc_receiver as usdc_mod
 
         wrong_to = _log_row(to_addr=_OTHER_WALLET, tx_hash="0x" + "bb" * 32)
         right_to = _log_row(to_addr=_OPERATOR_WALLET, tx_hash="0x" + "cc" * 32)
         caller, _ = self._make_caller(tip_block=1000, logs=[wrong_to, right_to])
         appended: list = []
-        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
-        monkeypatch.setattr(usdc_mod, "append_event", lambda event: appended.append(event) or True)
+        caplog.set_level(logging.WARNING, logger=USDCReceiver.__module__)
+        monkeypatch.setattr(
+            "agents.payment_processors.usdc_receiver.append_event",
+            lambda event: appended.append(event) or True,
+        )
 
         cursor_path = tmp_path / "cursor.json"
         receiver = USDCReceiver(
@@ -1152,15 +1156,17 @@ class TestPollOnce:
         tmp_path: Path,
         resource_receipt_log: Path,
     ) -> None:
-        import agents.payment_processors.usdc_receiver as usdc_mod
 
         cursor_path = tmp_path / "cursor.json"
         seen_tx = "0x" + "99" * 32
         _save_cursor(cursor_path, _cursor(last_block=777, seen_keys={(seen_tx, 4)}))
         caller, calls = self._make_caller(tip_block=1000, logs=logs_result)
         appended: list = []
-        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
-        monkeypatch.setattr(usdc_mod, "append_event", lambda event: appended.append(event) or True)
+        caplog.set_level(logging.WARNING, logger=USDCReceiver.__module__)
+        monkeypatch.setattr(
+            "agents.payment_processors.usdc_receiver.append_event",
+            lambda event: appended.append(event) or True,
+        )
 
         receiver = USDCReceiver(
             operator_wallet=_OPERATOR_WALLET,
@@ -1234,15 +1240,17 @@ class TestPollOnce:
         tmp_path: Path,
         resource_receipt_log: Path,
     ) -> None:
-        import agents.payment_processors.usdc_receiver as usdc_mod
 
         cursor_path = tmp_path / "cursor.json"
         seen_tx = "0x" + "98" * 32
         _save_cursor(cursor_path, _cursor(last_block=777, seen_keys={(seen_tx, 4)}))
         caller, calls = self._make_caller(tip_block=1000, logs=logs_result)
         appended: list = []
-        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
-        monkeypatch.setattr(usdc_mod, "append_event", lambda event: appended.append(event) or True)
+        caplog.set_level(logging.WARNING, logger=USDCReceiver.__module__)
+        monkeypatch.setattr(
+            "agents.payment_processors.usdc_receiver.append_event",
+            lambda event: appended.append(event) or True,
+        )
 
         receiver = USDCReceiver(
             operator_wallet=_OPERATOR_WALLET,
@@ -1269,13 +1277,15 @@ class TestPollOnce:
         tmp_path: Path,
         resource_receipt_log: Path,
     ) -> None:
-        import agents.payment_processors.usdc_receiver as usdc_mod
 
         row = _log_row(block_number=1000, block_hash="0x" + "55" * 32)
         caller, _ = self._make_caller(tip_block=1000, logs=[row])
         appended: list = []
-        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
-        monkeypatch.setattr(usdc_mod, "append_event", lambda event: appended.append(event) or True)
+        caplog.set_level(logging.WARNING, logger=USDCReceiver.__module__)
+        monkeypatch.setattr(
+            "agents.payment_processors.usdc_receiver.append_event",
+            lambda event: appended.append(event) or True,
+        )
 
         cursor_path = tmp_path / "cursor.json"
         receiver = USDCReceiver(
@@ -1299,14 +1309,16 @@ class TestPollOnce:
         tmp_path: Path,
         resource_receipt_log: Path,
     ) -> None:
-        import agents.payment_processors.usdc_receiver as usdc_mod
 
         first = _log_row(tx_hash="0x" + "71" * 32, block_number=999, block_hash="0x" + "44" * 32)
         second = _log_row(tx_hash="0x" + "72" * 32, block_number=999, block_hash="0x" + "55" * 32)
         caller, _ = self._make_caller(tip_block=1000, logs=[first, second])
         appended: list = []
-        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
-        monkeypatch.setattr(usdc_mod, "append_event", lambda event: appended.append(event) or True)
+        caplog.set_level(logging.WARNING, logger=USDCReceiver.__module__)
+        monkeypatch.setattr(
+            "agents.payment_processors.usdc_receiver.append_event",
+            lambda event: appended.append(event) or True,
+        )
 
         cursor_path = tmp_path / "cursor.json"
         receiver = USDCReceiver(
@@ -1330,7 +1342,6 @@ class TestPollOnce:
         tmp_path: Path,
         resource_receipt_log: Path,
     ) -> None:
-        import agents.payment_processors.usdc_receiver as usdc_mod
 
         first = _log_row(
             tx_hash="0x" + "78" * 32,
@@ -1348,8 +1359,11 @@ class TestPollOnce:
         )
         caller, _ = self._make_caller(tip_block=1000, logs=[first, second])
         appended: list = []
-        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
-        monkeypatch.setattr(usdc_mod, "append_event", lambda event: appended.append(event) or True)
+        caplog.set_level(logging.WARNING, logger=USDCReceiver.__module__)
+        monkeypatch.setattr(
+            "agents.payment_processors.usdc_receiver.append_event",
+            lambda event: appended.append(event) or True,
+        )
 
         cursor_path = tmp_path / "cursor.json"
         receiver = USDCReceiver(
@@ -1373,7 +1387,6 @@ class TestPollOnce:
         tmp_path: Path,
         resource_receipt_log: Path,
     ) -> None:
-        import agents.payment_processors.usdc_receiver as usdc_mod
 
         first = _log_row(
             tx_hash="0x" + "73" * 32,
@@ -1391,8 +1404,11 @@ class TestPollOnce:
         )
         caller, _ = self._make_caller(tip_block=1000, logs=[first, second])
         appended: list = []
-        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
-        monkeypatch.setattr(usdc_mod, "append_event", lambda event: appended.append(event) or True)
+        caplog.set_level(logging.WARNING, logger=USDCReceiver.__module__)
+        monkeypatch.setattr(
+            "agents.payment_processors.usdc_receiver.append_event",
+            lambda event: appended.append(event) or True,
+        )
 
         cursor_path = tmp_path / "cursor.json"
         receiver = USDCReceiver(
@@ -1416,7 +1432,6 @@ class TestPollOnce:
         tmp_path: Path,
         resource_receipt_log: Path,
     ) -> None:
-        import agents.payment_processors.usdc_receiver as usdc_mod
 
         tx_hash = "0x" + "75" * 32
         first = _log_row(
@@ -1435,8 +1450,11 @@ class TestPollOnce:
         )
         caller, _ = self._make_caller(tip_block=1000, logs=[first, second])
         appended: list = []
-        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
-        monkeypatch.setattr(usdc_mod, "append_event", lambda event: appended.append(event) or True)
+        caplog.set_level(logging.WARNING, logger=USDCReceiver.__module__)
+        monkeypatch.setattr(
+            "agents.payment_processors.usdc_receiver.append_event",
+            lambda event: appended.append(event) or True,
+        )
 
         cursor_path = tmp_path / "cursor.json"
         receiver = USDCReceiver(
@@ -1460,7 +1478,6 @@ class TestPollOnce:
         tmp_path: Path,
         resource_receipt_log: Path,
     ) -> None:
-        import agents.payment_processors.usdc_receiver as usdc_mod
 
         first = _log_row(
             tx_hash="0x" + "81" * 32,
@@ -1478,8 +1495,11 @@ class TestPollOnce:
         )
         caller, _ = self._make_caller(tip_block=1000, logs=[first, second])
         appended: list = []
-        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
-        monkeypatch.setattr(usdc_mod, "append_event", lambda event: appended.append(event) or True)
+        caplog.set_level(logging.WARNING, logger=USDCReceiver.__module__)
+        monkeypatch.setattr(
+            "agents.payment_processors.usdc_receiver.append_event",
+            lambda event: appended.append(event) or True,
+        )
 
         cursor_path = tmp_path / "cursor.json"
         receiver = USDCReceiver(
@@ -1586,14 +1606,16 @@ class TestPollOnce:
         tmp_path: Path,
         resource_receipt_log: Path,
     ) -> None:
-        import agents.payment_processors.usdc_receiver as usdc_mod
 
         first = _log_row(tx_hash="0x" + "77" * 32, log_index=4, amount_atomic=1_000_000)
         second = _log_row(tx_hash="0x" + "77" * 32, log_index=4, amount_atomic=2_000_000)
         caller, _ = self._make_caller(tip_block=1000, logs=[first, second])
         appended: list = []
-        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
-        monkeypatch.setattr(usdc_mod, "append_event", lambda event: appended.append(event) or True)
+        caplog.set_level(logging.WARNING, logger=USDCReceiver.__module__)
+        monkeypatch.setattr(
+            "agents.payment_processors.usdc_receiver.append_event",
+            lambda event: appended.append(event) or True,
+        )
 
         cursor_path = tmp_path / "cursor.json"
         seen_tx = "0x" + "95" * 32
@@ -1658,13 +1680,15 @@ class TestPollOnce:
         tmp_path: Path,
         resource_receipt_log: Path,
     ) -> None:
-        import agents.payment_processors.usdc_receiver as usdc_mod
 
         cursor_path = tmp_path / "cursor.json"
         _save_cursor(cursor_path, _cursor(last_block=777))
         caller, calls = self._make_caller(tip_block=1000, logs=[])
         appended: list = []
-        monkeypatch.setattr(usdc_mod, "append_event", lambda event: appended.append(event) or True)
+        monkeypatch.setattr(
+            "agents.payment_processors.usdc_receiver.append_event",
+            lambda event: appended.append(event) or True,
+        )
 
         receiver = USDCReceiver(
             operator_wallet=_OPERATOR_WALLET,
@@ -1688,12 +1712,11 @@ class TestPollOnce:
         tmp_path: Path,
         resource_receipt_log: Path,
     ) -> None:
-        import agents.payment_processors.usdc_receiver as usdc_mod
 
         row = _log_row(tx_hash="0x" + "10" * 32, block_number=500)
         caller, _ = self._make_caller(tip_block=1000, logs=[row])
         appended: list = []
-        original_commit = usdc_mod.commit_prepared_resource_receipt
+        original_commit = commit_prepared_resource_receipt
         commit_attempts = 0
 
         def _flaky_commit(receipt):
@@ -1707,8 +1730,11 @@ class TestPollOnce:
             appended.append(event)
             return True
 
-        monkeypatch.setattr(usdc_mod, "commit_prepared_resource_receipt", _flaky_commit)
-        monkeypatch.setattr(usdc_mod, "append_event", _capture_append)
+        monkeypatch.setattr(
+            "agents.payment_processors.usdc_receiver.commit_prepared_resource_receipt",
+            _flaky_commit,
+        )
+        monkeypatch.setattr("agents.payment_processors.usdc_receiver.append_event", _capture_append)
 
         cursor_path = tmp_path / "cursor.json"
         receiver = USDCReceiver(
@@ -1800,7 +1826,6 @@ class TestPollOnce:
         tmp_path: Path,
         resource_receipt_log: Path,
     ) -> None:
-        import agents.payment_processors.usdc_receiver as usdc_mod
 
         row = _log_row(tx_hash="0x" + "30" * 32, block_number=500)
         caller, _ = self._make_caller(tip_block=1000, logs=[row])
@@ -1811,7 +1836,7 @@ class TestPollOnce:
             append_attempts += 1
             return append_attempts > 1
 
-        monkeypatch.setattr(usdc_mod, "append_event", _flaky_append)
+        monkeypatch.setattr("agents.payment_processors.usdc_receiver.append_event", _flaky_append)
 
         cursor_path = tmp_path / "cursor.json"
         receiver = USDCReceiver(
@@ -1849,7 +1874,6 @@ class TestPollOnce:
         monkeypatch,
         tmp_path: Path,
     ) -> None:
-        import agents.payment_processors.usdc_receiver as usdc_mod
 
         first = _log_row(
             tx_hash="0x" + "41" * 32,
@@ -1865,7 +1889,7 @@ class TestPollOnce:
         )
         caller, _ = self._make_caller(tip_block=1000, logs=[first, second])
         appended: list = []
-        original_commit = usdc_mod.commit_prepared_resource_receipt
+        original_commit = commit_prepared_resource_receipt
         commit_attempts = 0
 
         def _fail_second_commit(receipt):
@@ -1879,8 +1903,11 @@ class TestPollOnce:
             appended.append(event)
             return True
 
-        monkeypatch.setattr(usdc_mod, "commit_prepared_resource_receipt", _fail_second_commit)
-        monkeypatch.setattr(usdc_mod, "append_event", _capture_append)
+        monkeypatch.setattr(
+            "agents.payment_processors.usdc_receiver.commit_prepared_resource_receipt",
+            _fail_second_commit,
+        )
+        monkeypatch.setattr("agents.payment_processors.usdc_receiver.append_event", _capture_append)
 
         cursor_path = tmp_path / "cursor.json"
         receiver = USDCReceiver(
@@ -1900,7 +1927,6 @@ class TestPollOnce:
         monkeypatch,
         tmp_path: Path,
     ) -> None:
-        import agents.payment_processors.usdc_receiver as usdc_mod
 
         first = _log_row(tx_hash="0x" + "43" * 32, log_index=0, block_number=700)
         second = _log_row(
@@ -1911,7 +1937,7 @@ class TestPollOnce:
         )
         caller, _ = self._make_caller(tip_block=1000, logs=[first, second])
         appended: list = []
-        original_commit = usdc_mod.commit_prepared_resource_receipt
+        original_commit = commit_prepared_resource_receipt
         commit_attempts = 0
 
         def _fail_second_commit(receipt):
@@ -1921,8 +1947,14 @@ class TestPollOnce:
                 return None
             return original_commit(receipt)
 
-        monkeypatch.setattr(usdc_mod, "commit_prepared_resource_receipt", _fail_second_commit)
-        monkeypatch.setattr(usdc_mod, "append_event", lambda event: appended.append(event) or True)
+        monkeypatch.setattr(
+            "agents.payment_processors.usdc_receiver.commit_prepared_resource_receipt",
+            _fail_second_commit,
+        )
+        monkeypatch.setattr(
+            "agents.payment_processors.usdc_receiver.append_event",
+            lambda event: appended.append(event) or True,
+        )
 
         cursor_path = tmp_path / "cursor.json"
         receiver = USDCReceiver(
@@ -1979,14 +2011,16 @@ class TestPollOnce:
         tmp_path: Path,
         resource_receipt_log: Path,
     ) -> None:
-        import agents.payment_processors.usdc_receiver as usdc_mod
 
         seen_tx = "0x" + "45" * 32
         pending = _log_row(tx_hash="0x" + "46" * 32, log_index=1, block_number=700)
         caller, _ = self._make_caller(tip_block=1000, logs=[pending])
         appended: list = []
-        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
-        monkeypatch.setattr(usdc_mod, "append_event", lambda event: appended.append(event) or True)
+        caplog.set_level(logging.WARNING, logger=USDCReceiver.__module__)
+        monkeypatch.setattr(
+            "agents.payment_processors.usdc_receiver.append_event",
+            lambda event: appended.append(event) or True,
+        )
 
         cursor_path = tmp_path / "cursor.json"
         _save_cursor(cursor_path, _cursor(last_block=699, seen_keys={(seen_tx, 0)}))
@@ -2014,7 +2048,6 @@ class TestPollOnce:
         tmp_path: Path,
         resource_receipt_log: Path,
     ) -> None:
-        import agents.payment_processors.usdc_receiver as usdc_mod
 
         seen_tx = "0x" + "47" * 32
         pending = _log_row(
@@ -2031,8 +2064,11 @@ class TestPollOnce:
         )
         caller, _ = self._make_caller(tip_block=1000, logs=[pending, later_seen])
         appended: list = []
-        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
-        monkeypatch.setattr(usdc_mod, "append_event", lambda event: appended.append(event) or True)
+        caplog.set_level(logging.WARNING, logger=USDCReceiver.__module__)
+        monkeypatch.setattr(
+            "agents.payment_processors.usdc_receiver.append_event",
+            lambda event: appended.append(event) or True,
+        )
 
         cursor_path = tmp_path / "cursor.json"
         _save_cursor(cursor_path, _cursor(last_block=699, seen_keys={(seen_tx, 0)}))

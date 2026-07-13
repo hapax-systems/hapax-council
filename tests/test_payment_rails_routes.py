@@ -3950,3 +3950,333 @@ async def test_idempotency_not_poisoned_on_durable_sink_failure(
     assert len(rows) == 1
     assert rows[0]["payload"]["sponsor_login"] == "dave"
     assert rows[0]["payload"]["event_kind"] == "created"
+
+
+@pytest.mark.asyncio
+async def test_github_sponsors_publish_transport_error_reopens_seen_then_retry_publishes_once(
+    output_dir: Path,
+    secret_env: str,
+    gh_sponsors_idempotency_isolated: Path,
+    isolated_durable_sink: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Post-durable publish transport failure must be recoverable at the route.
+
+    Proves the failure -> retry -> success -> later-duplicate contract on the
+    route: one Stage-0 row (one projection candidate), two publish attempts, and
+    no post-success republish. This ``created`` event is membership lifecycle,
+    so its projection candidate is NOT an accepted realized-return contribution
+    (measurement is null) — see the Ko-fi donation witness below, which asserts
+    the REFUSED / null-measurement / zero-accepted shape.
+    """
+    import logos.api.routes.payment_rails as mod
+    from shared.mdlc_realized_return import realized_returns_from_durable_payment_events
+
+    calls = {"n": 0}
+    published: list[object] = []
+
+    class _FlakyPublisher:
+        def publish_event(self, event):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return PublisherResult(error=True, detail="simulated transport error")
+            published.append(event)
+            return PublisherResult(ok=True, detail="test-published")
+
+    monkeypatch.setattr(mod, "GitHubSponsorsPublisher", _FlakyPublisher)
+
+    payload = _sponsorship_payload(action="created", sponsor_login="erin")
+    raw = json.dumps(payload).encode("utf-8")
+    headers = {
+        "X-Hub-Signature-256": _sign(raw),
+        "X-GitHub-Delivery": "gh-delivery-flaky",
+        "Content-Type": "application/json",
+    }
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        first = await client.post(
+            "/api/payment-rails/github-sponsors", content=raw, headers=headers
+        )
+        second = await client.post(
+            "/api/payment-rails/github-sponsors", content=raw, headers=headers
+        )
+        third = await client.post(
+            "/api/payment-rails/github-sponsors", content=raw, headers=headers
+        )
+
+    # 1) transport error surfaces as 500 and reopens the seen-key
+    assert first.status_code == 500
+    # 2) retry re-enters (not short-circuited as duplicate) and publishes
+    assert second.status_code == 200, second.text
+    assert second.json()["status"] == "received"
+    # 3) a later identical delivery is a duplicate — no republish
+    assert third.status_code == 200
+    assert third.json()["status"] == "duplicate"
+
+    # exactly two publish attempts (fail + success); no post-success republish
+    assert calls["n"] == 2
+    assert len(published) == 1
+
+    # exactly one Stage-0 durable row -> exactly one projection candidate (the
+    # reader emits one result per row). This membership-lifecycle event is not
+    # accepted, so this asserts row-count uniqueness, not an accepted contribution.
+    stream_path = isolated_durable_sink / "payment-event.jsonl"
+    rows = [
+        json.loads(line)
+        for line in stream_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(rows) == 1
+    assert len(realized_returns_from_durable_payment_events(stream_path)) == 1
+
+
+@pytest.mark.asyncio
+async def test_github_sponsors_publish_refused_does_not_reopen_seen(
+    output_dir: Path,
+    secret_env: str,
+    gh_sponsors_idempotency_isolated: Path,
+    isolated_durable_sink: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused publish is a terminal governance decision, not a transient
+    failure: the seen-key is NOT reopened, so a retry is a duplicate and the
+    publisher is not called again."""
+    import logos.api.routes.payment_rails as mod
+
+    calls = {"n": 0}
+
+    class _RefusingPublisher:
+        def publish_event(self, event):
+            calls["n"] += 1
+            return PublisherResult(refused=True, detail="axiom-refused")
+
+    monkeypatch.setattr(mod, "GitHubSponsorsPublisher", _RefusingPublisher)
+
+    payload = _sponsorship_payload(action="created", sponsor_login="frank")
+    raw = json.dumps(payload).encode("utf-8")
+    headers = {
+        "X-Hub-Signature-256": _sign(raw),
+        "X-GitHub-Delivery": "gh-delivery-refused",
+        "Content-Type": "application/json",
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post(
+            "/api/payment-rails/github-sponsors", content=raw, headers=headers
+        )
+        second = await client.post(
+            "/api/payment-rails/github-sponsors", content=raw, headers=headers
+        )
+
+    assert first.status_code == 200
+    assert first.json()["status"] == "refused"
+    assert second.status_code == 200
+    assert second.json()["status"] == "duplicate"
+    assert calls["n"] == 1  # refused is terminal — no republish on retry
+
+    stream_path = isolated_durable_sink / "payment-event.jsonl"
+    rows = [
+        json.loads(line)
+        for line in stream_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_ko_fi_donation_transport_error_retry_yields_one_non_duplicated_reader_result(
+    ko_fi_output_dir: Path,
+    ko_fi_token_env: str,
+    ko_fi_idempotency_isolated: Path,
+    isolated_durable_sink: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-duplication witness on the realized-return reader.
+
+    A Ko-fi donation's normalized event does not preserve or carry an explicit
+    provider source-sign or inbound-direction witness, so the reader REFUSES it
+    (missing source-amount sign, null measurement) rather than inferring a
+    settlement. Across error -> retry -> later-duplicate the reader
+    still sees exactly one candidate — proving the caught-failure retry path
+    does not append a second Stage-0 row, WITHOUT manufacturing a settlement or
+    return claim. Production sign/direction preservation and settlement
+    acceptance are a separate governed return-intelligence follow-up.
+    """
+    import logos.api.routes.payment_rails as mod
+    from shared.mdlc_realized_return import (
+        RealizedReturnRefusalReason,
+        RealizedReturnStatus,
+        realized_returns_from_durable_payment_events,
+    )
+
+    calls = {"n": 0}
+
+    class _FlakyPublisher:
+        def publish_event(self, event):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return PublisherResult(error=True, detail="simulated transport error")
+            return PublisherResult(ok=True, detail="test-published")
+
+    monkeypatch.setattr(mod, "KoFiPublisher", _FlakyPublisher)
+
+    payload = _ko_fi_payload(
+        kind="Donation",
+        amount="5.00",
+        currency="USD",
+        kofi_transaction_id="tx-missing-sign-witness",
+    )
+    raw = json.dumps(payload).encode("utf-8")
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        first = await client.post("/api/payment-rails/ko-fi", content=raw)
+        second = await client.post("/api/payment-rails/ko-fi", content=raw)
+        third = await client.post("/api/payment-rails/ko-fi", content=raw)
+
+    assert first.status_code == 500
+    assert second.status_code == 200, second.text
+    assert second.json()["status"] == "received"
+    assert third.status_code == 200
+    assert third.json()["status"] == "duplicate"
+    assert calls["n"] == 2
+
+    stream_path = isolated_durable_sink / "payment-event.jsonl"
+    rows = [
+        json.loads(line)
+        for line in stream_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(rows) == 1  # one Stage-0 row despite error -> retry -> duplicate
+
+    # The reader sees exactly one candidate. The normalized Ko-fi event carries
+    # no explicit provider source-sign or inbound-direction witness, so the
+    # donation is REFUSED (missing source-amount sign) with a null measurement.
+    # This proves non-duplication WITHOUT manufacturing a return.
+    results = realized_returns_from_durable_payment_events(stream_path)
+    assert len(results) == 1
+    only = results[0]
+    assert only.status is RealizedReturnStatus.REFUSED
+    assert only.refusal_reason is RealizedReturnRefusalReason.MISSING_SOURCE_AMOUNT_SIGN
+    assert only.measurement is None
+    accepted = [
+        r
+        for r in results
+        if r.status is RealizedReturnStatus.ACCEPTED and r.measurement is not None
+    ]
+    assert accepted == []  # zero accepted non-null contributions
+
+
+@pytest.mark.asyncio
+async def test_github_sponsors_publisher_exception_reopens_seen_then_retry_succeeds(
+    output_dir: Path,
+    secret_env: str,
+    gh_sponsors_idempotency_isolated: Path,
+    isolated_durable_sink: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A raised publisher exception is a caught retryable surface: the seen-key
+    reopens so the retry re-enters and publishes; the Stage-0 row is reused."""
+    import logos.api.routes.payment_rails as mod
+
+    calls = {"n": 0}
+
+    class _RaisingThenOkPublisher:
+        def publish_event(self, event):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("simulated publisher crash")
+            return PublisherResult(ok=True, detail="test-published")
+
+    monkeypatch.setattr(mod, "GitHubSponsorsPublisher", _RaisingThenOkPublisher)
+
+    payload = _sponsorship_payload(action="created", sponsor_login="grace")
+    raw = json.dumps(payload).encode("utf-8")
+    headers = {
+        "X-Hub-Signature-256": _sign(raw),
+        "X-GitHub-Delivery": "gh-delivery-pub-exc",
+        "Content-Type": "application/json",
+    }
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        first = await client.post(
+            "/api/payment-rails/github-sponsors", content=raw, headers=headers
+        )
+        second = await client.post(
+            "/api/payment-rails/github-sponsors", content=raw, headers=headers
+        )
+
+    assert first.status_code == 500
+    assert second.status_code == 200, second.text
+    assert second.json()["status"] == "received"
+    assert calls["n"] == 2
+
+    stream_path = isolated_durable_sink / "payment-event.jsonl"
+    rows = [
+        json.loads(line)
+        for line in stream_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(rows) == 1  # reused durable row across the reopened retry
+
+
+@pytest.mark.asyncio
+async def test_github_sponsors_post_success_render_exception_keeps_seen_terminal(
+    output_dir: Path,
+    secret_env: str,
+    gh_sponsors_idempotency_isolated: Path,
+    isolated_durable_sink: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A render exception AFTER a reported-successful publish must NOT reopen the
+    seen-key: the publisher reported success, so a retry is a duplicate with no
+    republish. This guards the "never reopen after a generic post-success render
+    failure" boundary."""
+    import logos.api.routes.payment_rails as mod
+
+    calls = {"n": 0}
+
+    class _OkPublisher:
+        def publish_event(self, event):
+            calls["n"] += 1
+            return PublisherResult(ok=True, detail="test-published")
+
+    def _raising_dispatch(*_args, **_kwargs):
+        raise RuntimeError("simulated render failure after publisher-reported success")
+
+    monkeypatch.setattr(mod, "GitHubSponsorsPublisher", _OkPublisher)
+    monkeypatch.setattr(mod, "dispatch_publish_result", _raising_dispatch)
+
+    payload = _sponsorship_payload(action="created", sponsor_login="heidi")
+    raw = json.dumps(payload).encode("utf-8")
+    headers = {
+        "X-Hub-Signature-256": _sign(raw),
+        "X-GitHub-Delivery": "gh-delivery-render-exc",
+        "Content-Type": "application/json",
+    }
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        first = await client.post(
+            "/api/payment-rails/github-sponsors", content=raw, headers=headers
+        )
+        second = await client.post(
+            "/api/payment-rails/github-sponsors", content=raw, headers=headers
+        )
+
+    # publisher reported success but rendering raised -> 500; the seen-key remains terminal
+    assert first.status_code == 500
+    # retry is a duplicate (seen-key NOT reopened); the publisher is not called again
+    assert second.status_code == 200
+    assert second.json()["status"] == "duplicate"
+    assert calls["n"] == 1
+
+    stream_path = isolated_durable_sink / "payment-event.jsonl"
+    rows = [
+        json.loads(line)
+        for line in stream_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(rows) == 1

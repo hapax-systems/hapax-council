@@ -8,7 +8,6 @@ import pytest
 from pydantic import ValidationError
 
 import agents.payment_processors.resource_receipts as resource_receipts
-import shared.support_copy_readiness as readiness_module
 from shared.conversion_target_readiness import REQUIRED_GATE_DIMENSIONS, GateDimension
 from shared.monetization_readiness_ledger import (
     GateDimensionEvidence,
@@ -125,8 +124,7 @@ def _public_safe_decision_payload(
 @pytest.fixture(autouse=True)
 def _verified_resource_receipt_refs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        readiness_module,
-        "resource_receipt_matches",
+        "shared.support_copy_readiness.resource_receipt_matches",
         lambda _ref, **_kwargs: True,
     )
 
@@ -238,7 +236,9 @@ def test_public_safe_decision_model_validation_is_receipt_io_free(
     def _unexpected_receipt_io(*_args: object, **_kwargs: object) -> bool:
         raise AssertionError("model validation must not verify the resource receipt ledger")
 
-    monkeypatch.setattr(readiness_module, "resource_receipt_matches", _unexpected_receipt_io)
+    monkeypatch.setattr(
+        "shared.support_copy_readiness.resource_receipt_matches", _unexpected_receipt_io
+    )
 
     decision = SupportCopyReadinessDecision.model_validate(_public_safe_decision_payload())
 
@@ -256,8 +256,7 @@ def test_full_evidence_and_refs_requires_real_resource_receipt(
         str(receipt_log),
     )
     monkeypatch.setattr(
-        readiness_module,
-        "resource_receipt_matches",
+        "shared.support_copy_readiness.resource_receipt_matches",
         resource_receipts.resource_receipt_matches,
     )
     receipt_ref = resource_receipts.record_payment_event_resource_receipt(
@@ -299,8 +298,7 @@ def test_forged_cross_rail_receipt_ref_fails_closed_against_real_ledger(
         str(receipt_log),
     )
     monkeypatch.setattr(
-        readiness_module,
-        "resource_receipt_matches",
+        "shared.support_copy_readiness.resource_receipt_matches",
         resource_receipts.resource_receipt_matches,
     )
     honest_ref = resource_receipts.record_payment_event_resource_receipt(
@@ -349,8 +347,7 @@ def test_unverified_resource_receipt_holds_public_support_copy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        readiness_module,
-        "resource_receipt_matches",
+        "shared.support_copy_readiness.resource_receipt_matches",
         lambda _ref, **_kwargs: False,
     )
 
@@ -374,7 +371,7 @@ def test_support_copy_receipt_verification_requires_payment_event_provenance(
         calls.append({"ref": ref, **kwargs})
         return True
 
-    monkeypatch.setattr(readiness_module, "resource_receipt_matches", _matches)
+    monkeypatch.setattr("shared.support_copy_readiness.resource_receipt_matches", _matches)
 
     decision = evaluate_support_copy_readiness(
         _registry(),
@@ -387,7 +384,7 @@ def test_support_copy_receipt_verification_requires_payment_event_provenance(
         {
             "ref": "money-rail-resource-receipt:liberapay:mrr-test",
             "rail": "liberapay",
-            "operation": readiness_module.MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
+            "operation": resource_receipts.MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
         }
     ]
 

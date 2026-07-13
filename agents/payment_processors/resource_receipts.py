@@ -17,7 +17,7 @@ import sqlite3
 import threading
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -1239,17 +1239,16 @@ def _force_private_mode(path: Path) -> None:
 
 def _discard_sqlite_artifacts(index_path: Path) -> None:
     for artifact in _sqlite_artifact_paths(index_path):
-        try:
+        # Idempotent cleanup: a missing artifact is already the desired end state
+        # (also covers a concurrent unlink). Any other OSError stays loud.
+        with suppress(FileNotFoundError):
             artifact.unlink()
-        except FileNotFoundError:
-            pass
 
 
 def _discard_sqlite_file_set(index_path: Path) -> None:
-    try:
+    # Idempotent cleanup: a missing index file is already the desired end state.
+    with suppress(FileNotFoundError):
         index_path.unlink()
-    except FileNotFoundError:
-        pass
     _discard_sqlite_artifacts(index_path)
 
 
