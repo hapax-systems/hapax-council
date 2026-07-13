@@ -302,7 +302,7 @@ def test_block_scalar_cannot_satisfy_nullish_task_fields(tmp_path: Path) -> None
     )
 
     assert result.returncode == 2
-    assert "`pr` must be null for a new offered task" in result.stderr
+    assert "block scalars are unsupported" in result.stderr
 
 
 def test_transactional_creator_creates_valid_task_and_ledger(tmp_path: Path) -> None:

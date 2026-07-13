@@ -71,6 +71,7 @@ def test_malformed_or_nested_duplicate_is_rejected_by_both_parsers(frontmatter: 
     [
         "defaults: &defaults\n  status: claimed\ncopy: *defaults\n",
         "status: !!str claimed\n",
+        "release_note: |\n  unsupported folded content\n",
     ],
 )
 def test_unproven_yaml_features_fail_closed_even_when_canonical_accepts(
