@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 
 from prometheus_client import CollectorRegistry
 
+from agents.operator_awareness import runner as runner_mod
 from agents.operator_awareness.aggregator import Aggregator
-from agents.operator_awareness.runner import AwarenessRunner
 from agents.operator_awareness.sources.monetization import (
     collect_monetization_block,
 )
 from agents.operator_awareness.state import AwarenessState, PaymentEvent, write_state_atomic
 from agents.payment_processors.event_log import append_event
-from agents.payment_processors.resource_receipts import tail_resource_receipts
+from agents.payment_processors.resource_receipts import (
+    MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+    tail_resource_receipts,
+)
 
 
 def _make(ext: str, *, sats: int = 100) -> PaymentEvent:
@@ -79,17 +83,15 @@ class TestAggregatorWiresMonetization:
 
 class TestAwarenessRunnerReceiptGate:
     def test_run_once_writes_resource_receipt_before_state(self, tmp_path, monkeypatch):
-        import agents.payment_processors.resource_receipts as resource_receipts
-
         receipt_log = tmp_path / "resource-receipts.jsonl"
         monkeypatch.setenv(
-            resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+            MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
             str(receipt_log),
         )
         log_path = tmp_path / "events.jsonl"
         state_path = tmp_path / "state.json"
         append_event(_make("L1", sats=21), log_path=log_path)
-        runner = AwarenessRunner(
+        runner = runner_mod.AwarenessRunner(
             aggregator=Aggregator(
                 refusals_log_path=tmp_path / "refusals.jsonl",
                 infra_snapshot_path=tmp_path / "infra.json",
@@ -114,11 +116,9 @@ class TestAwarenessRunnerReceiptGate:
     def test_run_once_uses_same_monetization_window_for_state_and_receipt(
         self, tmp_path, monkeypatch
     ):
-        import agents.payment_processors.resource_receipts as resource_receipts
-
         receipt_log = tmp_path / "resource-receipts.jsonl"
         monkeypatch.setenv(
-            resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+            MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
             str(receipt_log),
         )
         log_path = tmp_path / "events.jsonl"
@@ -137,7 +137,7 @@ class TestAwarenessRunnerReceiptGate:
                 )
 
         aggregator = _FakeAggregator()
-        runner = AwarenessRunner(
+        runner = runner_mod.AwarenessRunner(
             aggregator=aggregator,  # type: ignore[arg-type]
             state_path=state_path,
             registry=CollectorRegistry(),
@@ -151,8 +151,6 @@ class TestAwarenessRunnerReceiptGate:
         assert "receipt_count:1" in receipt.resource_provenance
 
     def test_run_once_fails_closed_when_resource_receipt_missing(self, tmp_path, monkeypatch):
-        import agents.operator_awareness.runner as runner_mod
-
         monkeypatch.setattr(
             runner_mod,
             "commit_prepared_resource_receipt",
@@ -161,7 +159,7 @@ class TestAwarenessRunnerReceiptGate:
         log_path = tmp_path / "events.jsonl"
         state_path = tmp_path / "state.json"
         append_event(_make("L1", sats=21), log_path=log_path)
-        runner = AwarenessRunner(
+        runner = runner_mod.AwarenessRunner(
             aggregator=Aggregator(
                 refusals_log_path=tmp_path / "refusals.jsonl",
                 infra_snapshot_path=tmp_path / "infra.json",
@@ -175,20 +173,17 @@ class TestAwarenessRunnerReceiptGate:
         assert runner.run_once() == "resource_receipt_error"
         assert not state_path.exists()
 
-    def test_run_once_preserves_receipt_when_state_write_fails(self, tmp_path, monkeypatch):
-        import agents.operator_awareness.runner as runner_mod
-        import agents.payment_processors.resource_receipts as resource_receipts
-
+    def test_run_once_preserves_receipt_when_state_write_fails(self, tmp_path, monkeypatch, caplog):
         receipt_log = tmp_path / "resource-receipts.jsonl"
         monkeypatch.setenv(
-            resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+            MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
             str(receipt_log),
         )
         monkeypatch.setattr(runner_mod, "write_state_atomic", lambda *_args, **_kwargs: False)
         log_path = tmp_path / "events.jsonl"
         state_path = tmp_path / "state.json"
         append_event(_make("L1", sats=21), log_path=log_path)
-        runner = AwarenessRunner(
+        runner = runner_mod.AwarenessRunner(
             aggregator=Aggregator(
                 refusals_log_path=tmp_path / "refusals.jsonl",
                 infra_snapshot_path=tmp_path / "infra.json",
@@ -199,8 +194,20 @@ class TestAwarenessRunnerReceiptGate:
             registry=CollectorRegistry(),
         )
 
-        assert runner.run_once() == "error"
+        with caplog.at_level(logging.WARNING, logger=runner_mod.__name__):
+            assert runner.run_once() == "error"
         assert not state_path.exists()
         receipts = tail_resource_receipts(log_path=receipt_log)
         assert len(receipts) == 1
         assert receipts[0].operation.value == "awareness_state_write"
+        # Post-receipt state-write failure warning is actionable: names the exact
+        # non-secret state target + parent, is not a receipt-log failure, and keeps
+        # the immutable committed-receipt admission-evidence statement.
+        assert "state write failed" in caplog.text
+        assert str(state_path) in caplog.text
+        assert str(state_path.parent) in caplog.text
+        assert "not a receipt-log failure" in caplog.text
+        assert "write permission and free space" in caplog.text
+        assert str(state_path.with_suffix(".json.tmp.*")) in caplog.text
+        assert "retry" in caplog.text
+        assert "immutable admission evidence" in caplog.text

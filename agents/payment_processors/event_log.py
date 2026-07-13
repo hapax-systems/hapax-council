@@ -54,7 +54,7 @@ payment_events_appended_total = Counter(
 
 
 def append_event(event: PaymentEvent, *, log_path: Path | None = None) -> bool:
-    """Append one event to the JSONL log; return True iff written.
+    """Append one event to the JSONL log; return True iff the append was confirmed.
 
     When ``log_path`` is omitted, re-resolves the module-level
     ``DEFAULT_PAYMENT_LOG_PATH`` at call time so monkeypatching that
@@ -62,9 +62,19 @@ def append_event(event: PaymentEvent, *, log_path: Path | None = None) -> bool:
 
     Thread-safe: serialises concurrent appends so concurrent
     Lightning + Liberapay writers never interleave bytes mid-line.
+
     Best-effort: file system errors log and return False rather than
     raise — receive-rail emission must never break the rail's polling
-    loop.
+    loop. A False return means the append was NOT CONFIRMED, not
+    necessarily that no bytes reached disk: an ``OSError`` can surface
+    after a partial write. On False the caller must not advance its
+    seen/cursor state; it must repair, retry, or reconcile per its
+    governed rail contract.
+
+    This function is append-only and never deduplicates. Production
+    receive-rail callers commit or attach a private resource receipt
+    before calling ``append_event``; ``append_event`` itself neither
+    performs nor authenticates that receipt-admission precondition.
     """
     target = log_path if log_path is not None else DEFAULT_PAYMENT_LOG_PATH
     line = event.model_dump_json() + "\n"

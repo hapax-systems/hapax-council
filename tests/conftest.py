@@ -82,12 +82,28 @@ def _isolate_resource_receipt_ledger(tmp_path, monkeypatch):
     restores the value captured before the test, which is the session quarantine
     established by ``pytest_configure`` (never the live default), so teardown
     returns to quarantine rather than the production ledger.
+
+    Teardown adds a leaked-env detector. This fixture yields, and because it
+    depends on ``monkeypatch`` its post-yield finalizer runs *before*
+    ``monkeypatch`` restores the environment. It therefore observes the value the
+    test left in place and asserts the ledger env is still present, non-empty, and
+    resolved away from the canonical live ``/dev/shm`` ledger — catching a test
+    that *persistently* unset or redirected the env toward the production ledger
+    (e.g. an unrestored ``monkeypatch.delenv``) before it can steer a later
+    collection/teardown emission at the live ledger. Ceiling: it cannot prevent a
+    deliberately temporary escape a test restores before returning; the resolver
+    reads the env at call time, so a restored value hides the transient window.
     """
 
     monkeypatch.setenv(
         _RESOURCE_RECEIPT_LOG_ENV,
         str(tmp_path / "resource-receipts.jsonl"),
     )
+    yield
+    from tests.support.ledger_env_guard import resource_receipt_env_leak_reason
+
+    reason = resource_receipt_env_leak_reason(os.environ.get(_RESOURCE_RECEIPT_LOG_ENV))
+    assert reason is None, reason
 
 
 @pytest.fixture(autouse=True)

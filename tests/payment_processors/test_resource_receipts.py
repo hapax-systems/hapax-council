@@ -216,6 +216,11 @@ def test_default_receipt_log_path_resolves_env_at_call_time(tmp_path, monkeypatc
     env transition (or an unset) takes effect immediately.
     """
 
+    # The safe per-test ledger env the autouse isolation fixture bound; this test
+    # deliberately unsets it below, so it must restore it before returning or the
+    # fixture's teardown leak-detector would (correctly) flag a persistent leak.
+    safe_env = os.environ[resource_receipts_mod.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV]
+
     # The canonical fallback constant is the fixed /dev/shm path, not env-derived.
     canonical_fallback = Path("/dev/shm/hapax-monetization/resource-receipts.jsonl")
     assert canonical_fallback == resource_receipts_mod.DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH
@@ -236,6 +241,10 @@ def test_default_receipt_log_path_resolves_env_at_call_time(tmp_path, monkeypatc
         resource_receipts_mod.default_receipt_log_path()
         == resource_receipts_mod.DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH
     )
+
+    # Restore the per-test safe ledger env so the isolation fixture's teardown
+    # leak-detector does not see this deliberate unset as a persistent leak.
+    monkeypatch.setenv(resource_receipts_mod.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV, safe_env)
 
 
 def test_receipt_never_grants_spend_or_public_projection() -> None:

@@ -307,9 +307,11 @@ class DurableJsonlSink:
                     return _row_from_committed(existing[0])
                 raise DurableSinkReuseConflictError(
                     f"durable sink source_receipt_ref {source_receipt_ref!r} already names "
-                    f"{len(existing)} committed row(s) of differing stable identity in "
-                    f"stream {stream_id!r}; next action: refusing to append conflicting "
-                    "Stage-0 evidence — investigate the upstream rail for a "
+                    f"{len(existing)} committed row(s) in stream {stream_id!r} with more "
+                    "than one committed row or a differing stable identity; next action: "
+                    "refusing to append conflicting Stage-0 evidence — append_once will "
+                    "not collapse, pick between, delete, or infer among duplicate "
+                    "committed financial evidence; investigate the upstream rail for a "
                     "source_receipt_ref collision, then repair or quarantine before retry"
                 )
             row = make_row(

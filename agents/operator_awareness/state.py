@@ -396,6 +396,28 @@ def write_state_atomic(state: AwarenessState, path: Path = DEFAULT_STATE_PATH) -
         return False
 
 
+def state_write_failure_guidance(path: Path) -> str:
+    """Operator next action when a post-receipt atomic state write fails.
+
+    This is a *state-file* write failure, not a receipt-log failure: any
+    money-rail resource receipt committed before the write remains append-only,
+    immutable admission evidence. Names the exact state target and its parent,
+    plus the atomic writer's own temp glob (``path.with_suffix('.json.tmp.*')``)
+    so the operator can inspect and clear only a proven-stale temp — never a
+    temp belonging to a live concurrent writer.
+    """
+
+    temp_pattern = path.with_suffix(".json.tmp.*")
+    return (
+        f"state write failed at {path} (a state-file write failure, not a "
+        f"receipt-log failure); next action: check the parent directory "
+        f"{path.parent} for write permission and free space, inspect and remove "
+        f"only a proven-stale atomic-write temp matching {temp_pattern}, then "
+        "retry; the committed money-rail resource receipt is append-only and "
+        "remains immutable admission evidence"
+    )
+
+
 __all__ = [
     "DEFAULT_STATE_PATH",
     "DEFAULT_TTL_S",
@@ -419,5 +441,6 @@ __all__ = [
     "ResearchDispatchBlock",
     "SprintBlock",
     "StreamBlock",
+    "state_write_failure_guidance",
     "write_state_atomic",
 ]

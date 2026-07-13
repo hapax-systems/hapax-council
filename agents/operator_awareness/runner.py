@@ -38,6 +38,7 @@ from prometheus_client import REGISTRY, CollectorRegistry, Counter
 from agents.operator_awareness.aggregator import Aggregator
 from agents.operator_awareness.state import (
     DEFAULT_STATE_PATH,
+    state_write_failure_guidance,
     write_state_atomic,
 )
 from agents.payment_processors.event_log import (
@@ -48,6 +49,7 @@ from agents.payment_processors.monetization_aggregator import build_monetization
 from agents.payment_processors.resource_receipts import (
     commit_prepared_resource_receipt,
     prepare_awareness_write_resource_receipt,
+    resource_receipt_recovery_guidance,
 )
 
 # sd_notify integration — lazy load so unit tests + non-systemd hosts
@@ -155,19 +157,14 @@ class AwarenessRunner:
         )
         if commit_prepared_resource_receipt(receipt) is None:
             log.warning(
-                "awareness runner write blocked: money-rail resource receipt missing; "
-                "check HAPAX_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH, /dev/shm availability, "
-                "and receipt log permissions"
+                "awareness runner write blocked: money-rail resource receipt missing; %s",
+                resource_receipt_recovery_guidance(),
             )
             self.writes_total.labels(result="resource_receipt_error").inc()
             return "resource_receipt_error"
         ok = write_state_atomic(state, self._state_path)
         if not ok:
-            log.warning(
-                "awareness runner state write failed after resource receipt commit; "
-                "committed money-rail resource receipts are append-only and remain "
-                "available as admission evidence"
-            )
+            log.warning("awareness runner %s", state_write_failure_guidance(self._state_path))
         result = "ok" if ok else "error"
         self.writes_total.labels(result=result).inc()
         return result

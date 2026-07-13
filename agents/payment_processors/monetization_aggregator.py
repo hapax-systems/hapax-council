@@ -33,6 +33,7 @@ from agents.operator_awareness.state import (
     AwarenessState,
     MonetizationBlock,
     PaymentEvent,
+    state_write_failure_guidance,
     write_state_atomic,
 )
 from agents.payment_processors.event_log import (
@@ -46,6 +47,7 @@ from agents.payment_processors.nostr_zap_listener import NostrZapListener
 from agents.payment_processors.resource_receipts import (
     commit_prepared_resource_receipt,
     prepare_awareness_write_resource_receipt,
+    resource_receipt_recovery_guidance,
 )
 
 log = logging.getLogger(__name__)
@@ -175,9 +177,8 @@ class MonetizationAggregator:
         )
         if commit_prepared_resource_receipt(receipt) is None:
             log.warning(
-                "monetization awareness write blocked: resource receipt missing; "
-                "check HAPAX_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH, /dev/shm availability, "
-                "and receipt log permissions"
+                "monetization awareness write blocked: resource receipt missing; %s",
+                resource_receipt_recovery_guidance(),
             )
             return False
         block = build_monetization_block_from_events(events)
@@ -190,9 +191,8 @@ class MonetizationAggregator:
         ok = write_state_atomic(state, self._state_path)
         if not ok:
             log.warning(
-                "monetization awareness state write failed after resource receipt commit; "
-                "committed money-rail resource receipts are append-only and remain "
-                "available as admission evidence"
+                "monetization aggregator %s",
+                state_write_failure_guidance(self._state_path),
             )
         return ok
 

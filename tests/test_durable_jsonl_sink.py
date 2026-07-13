@@ -998,6 +998,60 @@ def test_append_once_conflict_on_same_ref_different_timestamp(
     assert _row_count(sink.path_for_stream("payment-event")) == 1
 
 
+def test_append_once_holds_on_two_identical_committed_rows_leaving_stream_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Reachable ambiguous pre-existing state: two plain append() rows share the
+    # same source_receipt_ref AND identical stable semantics, differing only by
+    # chain position (prior_hash/row_hash). A later append_once carrying that same
+    # stable identity must fail closed — append_once cannot collapse, pick, delete,
+    # or infer between duplicate committed financial evidence — and must leave the
+    # ledger byte-for-byte, row-count, and chain-validation unchanged.
+    sink = _trusted_sink(tmp_path, monkeypatch)
+    ref = "receipt://payment/github_sponsors/dup/created"
+    payload = {"rail": "github_sponsors", "amount_usd_cents": 500}
+    ts = "2026-07-01T00:00:00Z"
+    common = dict(
+        stream_id="payment-event",
+        data_class="financial_receipt",
+        source_receipt_ref=ref,
+        payload=payload,
+        timestamp=ts,
+    )
+
+    first = sink.append(**common)
+    second = sink.append(**common)
+    # Same stable identity, differing only by append chain position.
+    assert sink_mod._row_identity(first.as_dict()) == sink_mod._row_identity(second.as_dict())
+    assert second.prior_hash == first.row_hash
+
+    path = sink.path_for_stream("payment-event")
+    before_bytes = path.read_bytes()
+    before_rows = _row_count(path)
+    before_validation = sink_mod.validate_chain(path, stream_id="payment-event")
+    assert before_rows == 2
+    assert before_validation.valid is True
+    assert before_validation.row_count == 2
+
+    with pytest.raises(sink_mod.DurableSinkReuseConflictError) as excinfo:
+        sink.append_once(**common)
+
+    message = str(excinfo.value)
+    # Accurate for this case: the rows do NOT differ in stable identity; the
+    # conflict is that more than one committed row exists for the ref.
+    assert "more than one committed row or a differing stable identity" in message
+    assert "repair or quarantine" in message
+    assert "collapse" in message  # explicit: will not collapse/pick/delete/infer
+
+    # Nothing appended, nothing rewritten: byte-for-byte, row count, and chain hold.
+    assert path.read_bytes() == before_bytes
+    assert _row_count(path) == 2
+    after_validation = sink_mod.validate_chain(path, stream_id="payment-event")
+    assert after_validation.valid is True
+    assert after_validation.row_count == 2
+    assert after_validation.tail_hash == before_validation.tail_hash
+
+
 def test_append_once_concurrent_identical_yields_one_row(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1066,7 +1120,7 @@ def _sink_append_once_worker(
         result_queue.put(("ok", row.row_hash))
     except _sink.DurableSinkReuseConflictError as exc:
         result_queue.put(("conflict", str(exc)))
-    except BaseException as exc:  # pragma: no cover - defensive surface
+    except Exception as exc:  # pragma: no cover - defensive surface
         result_queue.put(("error", repr(exc)))
 
 
