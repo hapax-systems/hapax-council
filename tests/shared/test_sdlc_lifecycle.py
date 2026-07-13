@@ -12,6 +12,7 @@ the live vault showed status->stage is not a function; see
 from __future__ import annotations
 
 import ast
+import hashlib
 from pathlib import Path
 
 from shared.sdlc_lifecycle import (
@@ -251,6 +252,11 @@ class TestAcceptanceReceiptEnforcement:
         path.write_text(body, encoding="utf-8")
         return path
 
+    def _dossier(self, tmp_path: Path, task_id: str, body: str = "dossier-v1\n") -> str:
+        path = tmp_path / f"{task_id}.review-dossier.yaml"
+        path.write_text(body, encoding="utf-8")
+        return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
     VALID_RECEIPT = (
         "acceptor: operator\n"
         "verdict: accepted\n"
@@ -292,6 +298,75 @@ class TestAcceptanceReceiptEnforcement:
         self._receipt(tmp_path, "task-r", self.VALID_RECEIPT)
         frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
         assert acceptance_receipt_blockers(frontmatter, note) == ()
+
+    def test_review_team_receipt_bound_to_dossier_sha_clears_blockers(self, tmp_path: Path) -> None:
+        note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})
+        digest = self._dossier(tmp_path, "task-r")
+        self._receipt(
+            tmp_path,
+            "task-r",
+            self.VALID_RECEIPT.replace("acceptor: operator", "acceptor: review-team:codex,glm")
+            + f"dossier_sha256: sha256:{digest}\n",
+        )
+        frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
+        assert acceptance_receipt_blockers(frontmatter, note) == ()
+
+    def test_operator_receipt_does_not_retroactively_require_dossier_sha(
+        self, tmp_path: Path
+    ) -> None:
+        note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})
+        self._receipt(tmp_path, "task-r", self.VALID_RECEIPT)
+        frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
+        assert acceptance_receipt_blockers(frontmatter, note) == ()
+
+    def test_review_team_receipt_missing_dossier_sha_blocks(self, tmp_path: Path) -> None:
+        note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})
+        self._dossier(tmp_path, "task-r")
+        self._receipt(
+            tmp_path,
+            "task-r",
+            self.VALID_RECEIPT.replace("acceptor: operator", "acceptor: review-team:codex,glm"),
+        )
+        frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
+        assert "acceptance_receipt_missing_field:dossier_sha256" in acceptance_receipt_blockers(
+            frontmatter, note
+        )
+
+    def test_review_team_receipt_blocks_after_dossier_tamper(self, tmp_path: Path) -> None:
+        note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})
+        digest = self._dossier(tmp_path, "task-r")
+        self._receipt(
+            tmp_path,
+            "task-r",
+            self.VALID_RECEIPT.replace("acceptor: operator", "acceptor: review-team:codex,glm")
+            + f"dossier_sha256: sha256:{digest}\n",
+        )
+        (tmp_path / "task-r.review-dossier.yaml").write_text(
+            "dossier-v1 tampered\n",
+            encoding="utf-8",
+        )
+        frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
+        assert "acceptance_receipt_dossier_sha256_mismatch" in acceptance_receipt_blockers(
+            frontmatter, note
+        )
+
+    def test_review_team_receipt_blocks_after_stale_same_head_replacement(
+        self, tmp_path: Path
+    ) -> None:
+        note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})
+        old_digest = self._dossier(tmp_path, "task-r", "head: cccccccc\ndossier: old\n")
+        self._receipt(
+            tmp_path,
+            "task-r",
+            self.VALID_RECEIPT.replace("acceptor: operator", "acceptor: review-team:codex,glm")
+            + "head_sha: cccccccccccccccccccccccccccccccccccccccc\n"
+            + f"dossier_sha256: sha256:{old_digest}\n",
+        )
+        self._dossier(tmp_path, "task-r", "head: cccccccc\ndossier: replacement\n")
+        frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
+        assert "acceptance_receipt_dossier_sha256_mismatch" in acceptance_receipt_blockers(
+            frontmatter, note
+        )
 
     def test_receipt_missing_fields_block(self, tmp_path: Path) -> None:
         note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})

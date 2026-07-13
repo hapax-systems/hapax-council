@@ -14,6 +14,8 @@ import logging
 import os
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from hashlib import sha256
 from pathlib import Path
@@ -132,6 +134,34 @@ findings:
     title: off-by-one in window math
     detail: the ring index wraps one slot early
 checklist: {}
+```
+"""
+
+ACCEPT_WITH_FINDING_REPLY = """```yaml
+verdict: accept-with-findings
+findings:
+  - severity: minor
+    lens: correctness
+    file: shared/foo.py
+    line: 1
+    title: fixture note
+    detail: reviewer recorded a non-blocking finding
+checklist:
+  tests-cover-the-diff:
+    diff-behavior-coverage: pass
+    red-before-green: na
+    new-paths-tested: pass
+    no-coverage-theater: pass
+  exit-predicate-adequacy:
+    predicate-testable: pass
+    predicate-evidenced: pass
+    diff-matches-predicate: pass
+    witness-durability: pass
+  doc-claims-recheck:
+    recheck-cmds-present: pass
+    claims-match-code: pass
+    stale-docs-updated: pass
+    next-actions-on-error: pass
 ```
 """
 
@@ -280,6 +310,27 @@ class RaisingReviewers(RecordingReviewers):
         if seat.family == self.failing_family:
             raise RuntimeError(self.message)
         return self.replies.get(seat.family, self.replies.get(seat.id, GOOD_REPLY))
+
+
+class BlockingReviewers(RecordingReviewers):
+    """Hold the first reviewer call so a second dispatcher can contend on the PR lock."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self._lock = threading.Lock()
+        self._blocked_once = False
+
+    def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+        with self._lock:
+            should_block = not self._blocked_once
+            self._blocked_once = True
+        self.invocations.append((seat.id, seat.family, prompt))
+        if should_block:
+            self.started.set()
+            assert self.release.wait(timeout=5), "test did not release blocked reviewer"
+        return GOOD_REPLY
 
 
 def _review(tmp_path: Path, **overrides: Any) -> tuple[dict, FakeGh, RecordingReviewers, Path]:
@@ -1984,6 +2035,141 @@ checklist:
         assert receipt_path.is_file()
         assert result2["side_effects"]["receipt_path"] == str(receipt_path)
 
+    def test_concurrent_exact_head_review_is_serialized_and_deduped(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        note = _write_task(vault)
+        reviewers = BlockingReviewers()
+        winner_gh = FakeGh()
+        loser_gh = FakeGh()
+
+        def run_review(gh: FakeGh) -> dict:
+            return dispatch.review_pr(
+                42,
+                repo="owner/repo",
+                repo_root=REPO_ROOT,
+                vault_root=vault,
+                apply=True,
+                force=True,
+                gh_runner=gh,
+                reviewer_runner=reviewers,
+                wake_dir=tmp_path / "wake",
+                send_runner=lambda cmd: None,
+                now_iso="2026-06-11T21:00:00+00:00",
+                route_blocked_families={},
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(run_review, winner_gh)
+            assert reviewers.started.wait(timeout=5), "first review did not reach reviewer spend"
+            second = pool.submit(run_review, loser_gh)
+            second_result = second.result(timeout=2)
+            assert second_result["status"] == "review_in_progress"
+            assert second_result["side_effects"] == {}
+            assert second_result["pr"] == 42
+            assert str(vault / "_locks" / "review-team") in second_result["lock_path"]
+            assert loser_gh.calls == []
+            assert not (note.parent / "task-a.review-dossier.yaml").exists()
+            assert not (note.parent / "task-a.acceptance.yaml").exists()
+            assert not (tmp_path / "wake").exists()
+            reviewers.release.set()
+            first_result = first.result(timeout=10)
+
+        assert first_result["status"] == "dispatched"
+        assert len(reviewers.invocations) == 3
+        assert (note.parent / "task-a.review-dossier.yaml").is_file()
+
+    def test_process_lock_loser_spends_no_reviewers_and_writes_no_artifacts(
+        self, tmp_path: Path
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        note = _write_task(vault)
+        release = tmp_path / "release-lock"
+        child_code = f"""
+import importlib.util
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, {str(REPO_ROOT)!r})
+sys.path.insert(0, {str(_SCRIPTS)!r})
+spec = importlib.util.spec_from_file_location(
+    "cc_pr_review_dispatch_child",
+    {str(_SCRIPTS / "cc-pr-review-dispatch.py")!r},
+)
+module = importlib.util.module_from_spec(spec)
+sys.modules["cc_pr_review_dispatch_child"] = module
+assert spec.loader is not None
+spec.loader.exec_module(module)
+with module.review_execution_lock(
+    repo="owner/repo",
+    pr_number=42,
+    vault_root=Path({str(vault)!r}),
+) as lock:
+    assert lock.acquired
+    print("READY", flush=True)
+    release = Path({str(release)!r})
+    while not release.exists():
+        time.sleep(0.05)
+"""
+        proc = subprocess.Popen(
+            [sys.executable, "-c", child_code],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            assert proc.stdout is not None
+            assert proc.stdout.readline().strip() == "READY"
+            gh = FakeGh()
+            reviewers = RecordingReviewers()
+
+            result = dispatch.review_pr(
+                42,
+                repo="owner/repo",
+                repo_root=REPO_ROOT,
+                vault_root=vault,
+                apply=True,
+                force=True,
+                gh_runner=gh,
+                reviewer_runner=reviewers,
+                wake_dir=tmp_path / "wake",
+                send_runner=lambda cmd: None,
+                now_iso="2026-06-11T21:00:00+00:00",
+                route_blocked_families={},
+            )
+
+            assert result["status"] == "review_in_progress"
+            assert result["holder"]["pid"] == proc.pid
+            assert result["side_effects"] == {}
+            assert gh.calls == []
+            assert reviewers.invocations == []
+            assert not (note.parent / "task-a.review-dossier.yaml").exists()
+            assert not (note.parent / "task-a.acceptance.yaml").exists()
+            assert not (tmp_path / "wake").exists()
+            assert not (tmp_path / "degraded-merges.jsonl").exists()
+        finally:
+            release.write_text("done", encoding="utf-8")
+            stdout, stderr = proc.communicate(timeout=5)
+            assert proc.returncode == 0, (stdout, stderr)
+
+    def test_dossier_and_receipt_publication_use_atomic_replace(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        real_replace = dispatch.os.replace
+        replaced: list[str] = []
+
+        def record_replace(src: str | Path, dst: str | Path) -> None:
+            replaced.append(Path(dst).name)
+            real_replace(src, dst)
+
+        monkeypatch.setattr(dispatch.os, "replace", record_replace)
+        result, _, _, _ = _review(
+            tmp_path, task_kwargs={"quality_floor": "frontier_review_required"}
+        )
+        assert result["status"] == "dispatched"
+        assert "task-a.review-dossier.yaml" in replaced
+        assert "task-a.acceptance.yaml" in replaced
+
 
 class TestAllMode:
     def test_review_all_scans_open_prs(self, tmp_path: Path) -> None:
@@ -2091,6 +2277,9 @@ class TestReceiptAndWake:
         assert receipt["pr"] == 42
         assert receipt["head_sha"] == "c" * 40
         assert receipt["review_team_verdict"] == "quorum-accept"
+        assert receipt["dossier_sha256"] == (
+            "sha256:" + dispatch.sha256_file(note.parent / "task-a.review-dossier.yaml")
+        )
         assert len(receipt["reviewers"]) == 3
 
     def test_review_evidence_is_signed_when_public_gate_secret_is_present(
@@ -2332,6 +2521,42 @@ public_gate_authority:
             expected_head_sha="c" * 40,
         )
 
+    def test_receipt_uses_published_dossier_not_stale_memory(self, tmp_path: Path) -> None:
+        result, _, _, note = _review(
+            tmp_path, task_kwargs={"quality_floor": "frontier_review_required"}
+        )
+        receipt_path = note.parent / "task-a.acceptance.yaml"
+        receipt_path.unlink()
+        published = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+        stale = dict(published)
+        stale["reviewers"] = [{"id": "stale-reviewer", "family": "claude", "verdict": "accept"}]
+
+        written = dispatch.write_acceptance_receipt_if_due(
+            {
+                "task_id": "task-a",
+                "quality_floor": "frontier_review_required",
+                "assigned_to": "zeta",
+            },
+            note,
+            "task-a",
+            stale,
+            pr_url="https://github.com/owner/repo/pull/42",
+            now_iso="2026-06-11T22:00:00+00:00",
+            pr_number=42,
+            changed_files=("shared/foo.py", "tests/test_foo.py"),
+            changed_file_count=2,
+            route_blocked_families={},
+        )
+        assert written == receipt_path
+        receipt = yaml.safe_load(receipt_path.read_text(encoding="utf-8"))
+        assert receipt["reviewers"] == [
+            {"id": r.get("id"), "family": r.get("family"), "verdict": r.get("verdict")}
+            for r in published["reviewers"]
+        ]
+        assert "stale-reviewer" not in yaml.safe_dump(receipt)
+
     def test_comment_failure_does_not_skip_acceptance_receipt(self, tmp_path: Path) -> None:
         gh = FakeGh()
         gh.fail_comment = True
@@ -2397,6 +2622,7 @@ public_gate_authority:
             dossier,
             pr_url="https://github.com/owner/repo/pull/42",
             now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={},
         )
         assert receipt is None
         assert not (note.parent / "task-a.acceptance.yaml").exists()
@@ -2471,6 +2697,45 @@ public_gate_authority:
         receipt = yaml.safe_load(receipt_path.read_text(encoding="utf-8"))
         assert receipt["head_sha"] == "c" * 40
         assert receipt["acceptor"].startswith("review-team:")
+
+    def test_forced_same_head_rereview_replaces_stale_review_team_receipt(
+        self, tmp_path: Path
+    ) -> None:
+        result, _, _, note = _review(
+            tmp_path, task_kwargs={"quality_floor": "frontier_review_required"}
+        )
+        assert result["status"] == "dispatched"
+        dossier_path = note.parent / "task-a.review-dossier.yaml"
+        receipt_path = note.parent / "task-a.acceptance.yaml"
+        old_digest = dispatch.sha256_file(dossier_path)
+        old_receipt = yaml.safe_load(receipt_path.read_text(encoding="utf-8"))
+        assert old_receipt["dossier_sha256"] == f"sha256:{old_digest}"
+
+        second = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=note.parent.parent,
+            apply=True,
+            force=True,
+            gh_runner=FakeGh(),
+            reviewer_runner=RecordingReviewers(replies={"codex": ACCEPT_WITH_FINDING_REPLY}),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T22:00:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert second["status"] == "dispatched"
+        new_digest = dispatch.sha256_file(dossier_path)
+        assert new_digest != old_digest
+        new_receipt = yaml.safe_load(receipt_path.read_text(encoding="utf-8"))
+        assert new_receipt["dossier_sha256"] == f"sha256:{new_digest}"
+        assert new_receipt["reviewers"] != old_receipt["reviewers"]
+        archives = sorted(note.parent.glob("task-a.acceptance.cccccccc*.yaml"))
+        assert len(archives) == 1
+        archived_receipt = yaml.safe_load(archives[0].read_text(encoding="utf-8"))
+        assert archived_receipt["dossier_sha256"] == f"sha256:{old_digest}"
 
     def test_no_receipt_for_non_review_floor(self, tmp_path: Path) -> None:
         _, _, _, note = _review(tmp_path)  # frontier_required, not review floor

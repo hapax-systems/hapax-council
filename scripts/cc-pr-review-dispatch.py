@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -40,6 +41,7 @@ import subprocess
 import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -64,6 +66,7 @@ from github_pr_status import (  # noqa: E402
 from shared import public_gate_receipts  # noqa: E402
 from shared.route_metadata_schema import stable_payload_hash  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
+    acceptance_receipt_blockers,
     acceptance_receipt_path,
     requires_acceptance_receipt,
 )
@@ -73,6 +76,7 @@ LOG = logging.getLogger("cc-pr-review-dispatch")
 DEFAULT_REPO = "hapax-systems/hapax-council"
 DEFAULT_VAULT_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
 DEFAULT_WAKE_DIR = Path.home() / ".cache" / "hapax" / "review-team" / "wake"
+DEFAULT_REVIEW_LOCK_DIR = DEFAULT_VAULT_ROOT / "_locks" / "review-team"
 KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_DISPATCH_OFF"
 TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 TASK_HASH_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
@@ -892,6 +896,275 @@ class PRInfo:
     changed_file_count: int | None
     is_draft: bool
     files: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ReviewExecutionLock:
+    path: Path
+    acquired: bool
+    holder: dict[str, Any]
+
+
+def _safe_repo_slug(repo: str) -> str:
+    normalized = repo.strip().lower() or "repo"
+    slug = re.sub(r"[^a-z0-9_.-]+", "_", normalized).strip("._-") or "repo"
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+    return f"{slug}-{digest}"
+
+
+def review_execution_lock_path(
+    *,
+    repo: str,
+    pr_number: int,
+    vault_root: Path | None = None,
+    lock_dir: Path | None = None,
+) -> Path:
+    """Per repository+PR lock path for exact-head review generation."""
+
+    base_dir = lock_dir or ((vault_root / "_locks" / "review-team") if vault_root else None)
+    return (base_dir or DEFAULT_REVIEW_LOCK_DIR) / f"{_safe_repo_slug(repo)}-pr-{pr_number}.lock"
+
+
+def _lock_holder_metadata(*, repo: str, pr_number: int, path: Path) -> dict[str, Any]:
+    return {
+        "schema": "hapax.review_execution_lock.holder.v1",
+        "repo": repo,
+        "pr": pr_number,
+        "pid": os.getpid(),
+        "hostname": os.uname().nodename,
+        "cwd": str(Path.cwd()),
+        "lock_path": str(path),
+        "acquired_at": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+
+
+def _write_lock_holder(lock_file: Any, holder: dict[str, Any]) -> None:
+    lock_file.seek(0)
+    lock_file.truncate()
+    lock_file.write(json.dumps(holder, sort_keys=True, indent=2) + "\n")
+    lock_file.flush()
+    os.fsync(lock_file.fileno())
+
+
+def _read_lock_holder(lock_file: Any) -> dict[str, Any]:
+    try:
+        lock_file.seek(0)
+        loaded = json.loads(lock_file.read() or "{}")
+    except (OSError, json.JSONDecodeError):
+        loaded = {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+@contextmanager
+def review_execution_lock(
+    *,
+    repo: str,
+    pr_number: int,
+    vault_root: Path | None = None,
+    lock_dir: Path | None = None,
+) -> Any:
+    """Serialize reviewer spend and artifact publication for one repository+PR."""
+
+    path = review_execution_lock_path(
+        repo=repo,
+        pr_number=pr_number,
+        vault_root=vault_root,
+        lock_dir=lock_dir,
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+", encoding="utf-8") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            holder = _read_lock_holder(lock_file)
+            LOG.info("review execution already in progress: %s", path)
+            yield ReviewExecutionLock(path=path, acquired=False, holder=holder)
+            return
+        holder = _lock_holder_metadata(repo=repo, pr_number=pr_number, path=path)
+        _write_lock_holder(lock_file, holder)
+        try:
+            yield ReviewExecutionLock(path=path, acquired=True, holder=holder)
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _artifact_mode(path: Path) -> int:
+    try:
+        return path.stat().st_mode & 0o777
+    except OSError:
+        return 0o644
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write text by same-directory temp file and atomic replace."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    mode = _artifact_mode(path)
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp.write(text)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            tmp_path = Path(tmp.name)
+        os.chmod(tmp_path, mode)
+        os.replace(tmp_path, path)
+        tmp_path = None
+        _fsync_directory(path.parent)
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+
+
+def atomic_write_yaml(path: Path, payload: dict[str, Any]) -> None:
+    atomic_write_text(path, yaml.safe_dump(payload, sort_keys=False))
+
+
+def _load_yaml_mapping(path: Path) -> dict[str, Any]:
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise RuntimeError(f"{path} did not round-trip as a YAML mapping")
+    return loaded
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _archive_path(path: Path, *, token: str) -> Path:
+    archive = path.with_name(f"{path.stem}.{token}{path.suffix}")
+    suffix = 1
+    while archive.exists():
+        archive = path.with_name(f"{path.stem}.{token}.{suffix}{path.suffix}")
+        suffix += 1
+    return archive
+
+
+def archive_existing_artifact(path: Path, *, token: str) -> Path | None:
+    if not path.exists():
+        return None
+    archive = _archive_path(path, token=token)
+    os.replace(path, archive)
+    _fsync_directory(path.parent)
+    return archive
+
+
+def _archive_token_from_dossier(dossier: dict[str, Any]) -> str:
+    head = str(dossier.get("head_sha") or "unknown")
+    if re.fullmatch(r"[0-9a-fA-F]{40}", head):
+        return head[:8].lower()
+    return _safe_repo_slug(head)[:24]
+
+
+def _existing_review_team_receipt_is_current(
+    *,
+    receipt_path: Path,
+    frontmatter: dict[str, Any],
+    note_path: Path,
+    expected_head_sha: str,
+) -> bool:
+    blockers = acceptance_receipt_blockers(frontmatter, note_path)
+    if blockers:
+        return False
+    try:
+        receipt = _load_yaml_mapping(receipt_path)
+    except (OSError, RuntimeError, yaml.YAMLError):
+        return False
+    return str(receipt.get("head_sha") or "") == expected_head_sha
+
+
+def publish_review_dossier(
+    dossier_path: Path,
+    dossier: dict[str, Any],
+    *,
+    frontmatter: dict[str, Any],
+    note_path: Path,
+    task_id: str,
+    pr_info: PRInfo,
+    registry: dict[str, Any],
+    route_blocked_families: dict[str, tuple[str, ...]] | None = None,
+) -> dict[str, Any]:
+    """Atomically publish a dossier and round-trip-check its coherent identity."""
+
+    _apply_public_gate_authority_context(dossier, frontmatter)
+    _sign_public_gate_authority_evidence(dossier)
+
+    if dossier_path.exists():
+        try:
+            existing = _load_yaml_mapping(dossier_path)
+        except (OSError, RuntimeError, yaml.YAMLError):
+            existing = {}
+        if existing != dossier:
+            token = _archive_token_from_dossier(existing)
+            try:
+                token = f"{token}.{sha256_file(dossier_path)[:12]}"
+            except OSError:
+                pass
+            archive = archive_existing_artifact(dossier_path, token=token)
+            if archive is not None:
+                LOG.info("archived superseded review-team dossier: %s", archive)
+
+    atomic_write_yaml(dossier_path, dossier)
+    loaded = _load_yaml_mapping(dossier_path)
+    expected = {
+        "task_id": task_id,
+        "pr": pr_info.number,
+        "head_sha": pr_info.head_sha,
+        "review_team_verdict": dossier.get("review_team_verdict"),
+    }
+    mismatches = [
+        f"{field}:{loaded.get(field)!r}!={value!r}"
+        for field, value in expected.items()
+        if loaded.get(field) != value
+    ]
+    if loaded.get("reviewers") != dossier.get("reviewers"):
+        mismatches.append("reviewers_roundtrip_mismatch")
+    if mismatches:
+        raise RuntimeError("published dossier failed coherence check: " + ",".join(mismatches))
+
+    if loaded.get("review_team_verdict") == review_team.QUORUM_ACCEPT:
+        admission_blockers = review_team.review_dossier_validity_blockers(
+            frontmatter,
+            note_path,
+            pr_head_sha=pr_info.head_sha,
+            pr_number=pr_info.number,
+            changed_files=pr_info.files,
+            changed_file_count=pr_info.changed_file_count,
+            registry=registry,
+            outage_state_path=FAMILY_OUTAGE_STATE,
+            admission_time=loaded.get("constituted_at"),
+            route_blocked_families=route_blocked_families,
+        )
+        if admission_blockers:
+            LOG.warning(
+                "publishing quorum-accept dossier with admission blockers; "
+                "acceptance side effects will remain gated: %s",
+                ",".join(admission_blockers),
+            )
+
+    return loaded
 
 
 def _run_gh(cmd: list[str], *, repo_root: Path, runner: Any, timeout: int = 120) -> str:
@@ -2303,6 +2576,10 @@ def write_acceptance_receipt_if_due(
 
     if dossier["review_team_verdict"] != review_team.QUORUM_ACCEPT:
         return None
+    on_disk_dossier_path = review_team.review_dossier_path(note_path, task_id)
+    if not on_disk_dossier_path.is_file():
+        LOG.warning("acceptance receipt withheld; published dossier is missing")
+        return None
     witness_snapshot_path: Path | None = None
     validation_outage_state_path = outage_state_path or FAMILY_OUTAGE_STATE
     degraded_families = [str(f) for f in (dossier.get("degraded_family_outage") or [])]
@@ -2340,12 +2617,25 @@ def write_acceptance_receipt_if_due(
             try:
                 witness_snapshot_path.unlink()
             except OSError:
-                LOG.warning("failed to remove receipt witness snapshot: %s", witness_snapshot_path)
+                LOG.warning(
+                    "failed to remove receipt witness snapshot: %s",
+                    witness_snapshot_path,
+                )
     if blockers:
         LOG.warning("acceptance receipt withheld; review-team gate blocks: %s", ",".join(blockers))
         return None
     if not requires_acceptance_receipt(frontmatter):
         return None
+    on_disk_dossier = _load_yaml_mapping(on_disk_dossier_path)
+    if (
+        on_disk_dossier.get("task_id") != task_id
+        or on_disk_dossier.get("pr") != dossier.get("pr")
+        or on_disk_dossier.get("head_sha") != dossier.get("head_sha")
+        or on_disk_dossier.get("review_team_verdict") != review_team.QUORUM_ACCEPT
+    ):
+        LOG.warning("acceptance receipt withheld; on-disk dossier is incoherent")
+        return None
+    dossier_sha256 = sha256_file(on_disk_dossier_path)
     receipt_path = acceptance_receipt_path(note_path, task_id)
     if receipt_path.exists():
         try:
@@ -2355,41 +2645,53 @@ def write_acceptance_receipt_if_due(
         existing_acceptor = str(existing.get("acceptor") or "")
         existing_head = str(existing.get("head_sha") or "")
         current_head = str(dossier.get("head_sha") or "")
-        if (
-            existing_acceptor.startswith("review-team:")
-            and existing_head
-            and current_head
-            and existing_head != current_head
-        ):
-            archive = receipt_path.with_name(f"{task_id}.acceptance.{existing_head[:8]}.yaml")
-            suffix = 1
-            while archive.exists():
-                archive = receipt_path.with_name(
-                    f"{task_id}.acceptance.{existing_head[:8]}.{suffix}.yaml"
-                )
-                suffix += 1
-            receipt_path.replace(archive)
+        if existing_acceptor.startswith("review-team:"):
+            if _existing_review_team_receipt_is_current(
+                receipt_path=receipt_path,
+                frontmatter=frontmatter,
+                note_path=note_path,
+                expected_head_sha=current_head,
+            ):
+                LOG.info("acceptance receipt already present, not overwriting: %s", receipt_path)
+                return None
+            token = (
+                existing_head[:8].lower()
+                if re.fullmatch(r"[0-9a-fA-F]{40}", existing_head)
+                else "review-team"
+            )
+            existing_digest = str(existing.get("dossier_sha256") or "").removeprefix("sha256:")
+            if existing_head == current_head and re.fullmatch(r"[0-9a-f]{64}", existing_digest):
+                token = f"{token}.{existing_digest[:12]}"
+            archive = archive_existing_artifact(receipt_path, token=token)
             LOG.info("archived stale review-team acceptance receipt: %s", archive)
         else:
             LOG.info("acceptance receipt already present, not overwriting: %s", receipt_path)
             return None
-    families = sorted({str(r["family"]) for r in dossier["reviewers"]})
+    families = sorted({str(r["family"]) for r in on_disk_dossier["reviewers"]})
     receipt = {
         "acceptor": "review-team:" + ",".join(families),
         "verdict": "accepted",
         "timestamp": now_iso,
-        "artifact": f"{review_team.review_dossier_path(note_path, task_id)} ({pr_url})",
-        "pr": dossier.get("pr"),
-        "head_sha": dossier.get("head_sha"),
-        "review_team_verdict": dossier.get("review_team_verdict"),
+        "artifact": f"{on_disk_dossier_path} ({pr_url})",
+        "dossier_path": str(on_disk_dossier_path),
+        "dossier_sha256": f"sha256:{dossier_sha256}",
+        "pr": on_disk_dossier.get("pr"),
+        "head_sha": on_disk_dossier.get("head_sha"),
+        "review_team_verdict": on_disk_dossier.get("review_team_verdict"),
         "reviewers": [
             {"id": r.get("id"), "family": r.get("family"), "verdict": r.get("verdict")}
-            for r in dossier.get("reviewers") or []
+            for r in on_disk_dossier.get("reviewers") or []
         ],
     }
     _apply_public_gate_authority_context(receipt, frontmatter)
     _sign_public_gate_authority_evidence(receipt)
-    receipt_path.write_text(yaml.safe_dump(receipt, sort_keys=False), encoding="utf-8")
+    atomic_write_yaml(receipt_path, receipt)
+    receipt_blockers = acceptance_receipt_blockers(frontmatter, note_path)
+    if receipt_blockers:
+        archive_existing_artifact(receipt_path, token=f"invalid.{dossier_sha256[:12]}")
+        raise RuntimeError(
+            "acceptance receipt failed coherence check: " + ",".join(receipt_blockers)
+        )
     LOG.info("acceptance receipt written: %s", receipt_path)
     return receipt_path
 
@@ -2542,6 +2844,52 @@ def review_pr(
     route_blocked_families: dict[str, tuple[str, ...]] | None = None,
 ) -> dict[str, Any]:
     """Constitute (and with ``apply``, dispatch) the review team for one PR."""
+
+    with review_execution_lock(repo=repo, pr_number=pr_number, vault_root=vault_root) as lock:
+        if not lock.acquired:
+            return {
+                "status": "review_in_progress",
+                "repo": repo,
+                "pr": pr_number,
+                "lock_path": str(lock.path),
+                "holder": lock.holder,
+                "side_effects": {},
+            }
+        result = _review_pr_locked(
+            pr_number,
+            repo=repo,
+            repo_root=repo_root,
+            vault_root=vault_root,
+            apply=apply,
+            force=force,
+            gh_runner=gh_runner,
+            reviewer_runner=reviewer_runner,
+            wake_dir=wake_dir,
+            send_runner=send_runner,
+            registry_path=registry_path,
+            now_iso=now_iso,
+            route_blocked_families=route_blocked_families,
+        )
+        return result
+
+
+def _review_pr_locked(
+    pr_number: int,
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path | None = None,
+    vault_root: Path = DEFAULT_VAULT_ROOT,
+    apply: bool = False,
+    force: bool = False,
+    gh_runner: Any = None,
+    reviewer_runner: Any = None,
+    wake_dir: Path = DEFAULT_WAKE_DIR,
+    send_runner: Any = None,
+    registry_path: Path | None = None,
+    now_iso: str | None = None,
+    route_blocked_families: dict[str, tuple[str, ...]] | None = None,
+) -> dict[str, Any]:
+    """Implementation for :func:`review_pr`; caller must hold the PR lock."""
 
     repo_root = repo_root or REPO_ROOT
     gh_runner = gh_runner or subprocess.run
@@ -2931,9 +3279,16 @@ def review_pr(
                 now_iso=now_iso,
                 outage_witness=outage_witness,
             )
-        _apply_public_gate_authority_context(dossier, target_frontmatter)
-        _sign_public_gate_authority_evidence(dossier)
-        target_dossier_path.write_text(yaml.safe_dump(dossier, sort_keys=False), encoding="utf-8")
+        dossier = publish_review_dossier(
+            target_dossier_path,
+            dossier,
+            frontmatter=target_frontmatter,
+            note_path=target_note_path,
+            task_id=target_task_id,
+            pr_info=pr_info,
+            registry=registry,
+            route_blocked_families=effective_route_blocked_families,
+        )
         LOG.info(
             "dossier written: %s (verdict %s)",
             target_dossier_path,

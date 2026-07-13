@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -287,6 +288,10 @@ ACCEPTANCE_RECEIPT_REQUIRED_FIELDS = ("acceptor", "verdict", "timestamp", "artif
 #: Verdicts that satisfy the gate. A present-but-rejected receipt still blocks.
 ACCEPTANCE_RECEIPT_ACCEPTED_VERDICTS = frozenset({"accepted"})
 
+REVIEW_TEAM_ACCEPTOR_PREFIX = "review-team:"
+REVIEW_DOSSIER_SUFFIX = ".review-dossier.yaml"
+REVIEW_TEAM_DOSSIER_SHA256_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
+
 
 def requires_acceptance_receipt(frontmatter: Mapping[str, Any]) -> bool:
     """True when the task declares the review floor (top-level or nested).
@@ -310,7 +315,20 @@ def acceptance_receipt_path(note_path: Path, task_id: str) -> Path:
     return note_path.parent / f"{task_id}{ACCEPTANCE_RECEIPT_SUFFIX}"
 
 
-def _acceptance_receipt_validity_blockers(receipt_path: Path) -> tuple[str, ...]:
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _acceptance_receipt_validity_blockers(
+    receipt_path: Path,
+    *,
+    note_path: Path | None = None,
+    task_id: str | None = None,
+) -> tuple[str, ...]:
     if not receipt_path.is_file():
         return ("missing_acceptance_receipt",)
     try:
@@ -328,6 +346,26 @@ def _acceptance_receipt_validity_blockers(receipt_path: Path) -> tuple[str, ...]
     verdict = _frontmatter_non_null_scalar(loaded.get("verdict"))
     if verdict and verdict.lower() not in ACCEPTANCE_RECEIPT_ACCEPTED_VERDICTS:
         blockers.append(f"acceptance_receipt_verdict_not_accepted:{verdict.lower()}")
+    acceptor = _frontmatter_non_null_scalar(loaded.get("acceptor")) or ""
+    if acceptor.startswith(REVIEW_TEAM_ACCEPTOR_PREFIX):
+        dossier_sha256 = _frontmatter_non_null_scalar(loaded.get("dossier_sha256"))
+        if not dossier_sha256:
+            blockers.append("acceptance_receipt_missing_field:dossier_sha256")
+        elif REVIEW_TEAM_DOSSIER_SHA256_RE.fullmatch(dossier_sha256) is None:
+            blockers.append("acceptance_receipt_dossier_sha256_malformed")
+        elif note_path is not None and task_id:
+            dossier_path = note_path.parent / f"{task_id}{REVIEW_DOSSIER_SUFFIX}"
+            if not dossier_path.is_file():
+                blockers.append("acceptance_receipt_dossier_missing")
+            else:
+                try:
+                    actual = _sha256_file(dossier_path)
+                except OSError as exc:
+                    blockers.append(f"acceptance_receipt_dossier_unreadable:{type(exc).__name__}")
+                else:
+                    expected = dossier_sha256.removeprefix("sha256:")
+                    if actual != expected:
+                        blockers.append("acceptance_receipt_dossier_sha256_mismatch")
     return tuple(blockers)
 
 
@@ -344,7 +382,11 @@ def acceptance_receipt_blockers(frontmatter: Mapping[str, Any], note_path: Path)
     task_id = _frontmatter_non_null_scalar(frontmatter.get("task_id"))
     if not task_id:
         return ("missing_acceptance_receipt",)
-    return _acceptance_receipt_validity_blockers(acceptance_receipt_path(note_path, task_id))
+    return _acceptance_receipt_validity_blockers(
+        acceptance_receipt_path(note_path, task_id),
+        note_path=note_path,
+        task_id=task_id,
+    )
 
 
 def _frontmatter_pr_number(frontmatter: Mapping[str, Any]) -> str | None:
