@@ -16,8 +16,9 @@ attributed by registry ``scope_hint`` keywords and marked in comments.
 
 Maintenance contract:
 - Adding a new S1/S2-path unit file? Add it here in the same PR.
-- A unit may only drop ``OnFailure=`` by gaining an entry in
-  ``PROBE_EXEMPT`` naming the probe/reason — never silently.
+- A live mapped unit may only drop ``OnFailure=`` by gaining an entry in
+  ``PROBE_EXEMPT`` naming the probe/reason. A parked or retired unit must leave
+  the live map and gain an explicit non-live exclusion — never silently.
 - Deployed-only units (pipewire/wireplumber system-managed; litellm
   container) are out of scope: this pin covers repo-versioned files.
 
@@ -27,6 +28,8 @@ the reviewable freeze. Known deliberate EXCLUSIONS, with rationale:
 - pipewire/wireplumber: system-managed, no repo unit files.
 - litellm/qdrant/prometheus: containers; failure visibility is the
   HapaxExporterDown rule, not systemd OnFailure.
+- hapax-lane-reaper: parked transitional compatibility observer, not a live
+  S1/S2 recovery or notification unit.
 - hapax-claude-lane@/hapax-quake-live-camera@ etc. template instances
   whose parent subsystems are S3 in the registry.
 Units the registry plausibly implies that earlier drafts MISSED were
@@ -135,7 +138,6 @@ S1S2_CONSTITUENT_UNITS: dict[str, tuple[str, ...]] = {
         "hapax-coordinator.service",
         "hapax-coord.service",
         "hapax-lane-idle-watchdog.service",
-        "hapax-lane-reaper.service",
         "hapax-cc-cascade-unblock.service",
         "hapax-cc-hygiene.service",
         "hapax-cc-pr-autoqueue.service",
@@ -164,6 +166,9 @@ PROBE_EXEMPT: dict[str, str] = {
     "codex-claim-audit.service": "self-notifying by design (exit 1 = issues found + own ntfy)",
 }
 
+# Explicitly excluded from the live notification map; parking is not a probe.
+PARKED_NON_LIVE_UNITS = {"hapax-lane-reaper.service"}
+
 
 def _all_mapped_units() -> list[str]:
     return [u for units in S1S2_CONSTITUENT_UNITS.values() for u in units]
@@ -187,6 +192,11 @@ class TestFrozenMapIntegrity:
         mapped = set(_all_mapped_units())
         orphans = set(PROBE_EXEMPT) - mapped
         assert not orphans, f"PROBE_EXEMPT names units not in the frozen map: {sorted(orphans)}"
+
+    def test_parked_units_are_not_counted_as_live_or_probe_exempt(self) -> None:
+        mapped = set(_all_mapped_units())
+        assert PARKED_NON_LIVE_UNITS.isdisjoint(mapped)
+        assert PARKED_NON_LIVE_UNITS.isdisjoint(PROBE_EXEMPT)
 
     def test_notify_failure_handler_exists(self) -> None:
         """The OnFailure target itself must be versioned, or every line

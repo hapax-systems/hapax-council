@@ -1,9 +1,9 @@
+# Hapax-Parked: true
 [Unit]
-Description=Hapax lane reaper — kill dead tmux sessions and clean worktrees
-OnFailure=notify-failure@%n.service
+Description=Hapax Parked legacy tmux lane inventory projection service
 
 [Service]
 Type=oneshot
-ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-lane-reaper --threshold 30
+ExecStart=%h/.local/bin/hapax-lane-reaper --threshold 30
 Environment=HOME=/home/hapax
 TimeoutStartSec=120

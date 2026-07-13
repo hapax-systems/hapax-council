@@ -1,11 +1,9 @@
-"""The recovery scripts route their load-injecting actions through the governor.
+"""Recovery wiring keeps action admission separate from lane observation.
 
-Static assertions that the idle-watchdog and reaper call
-``python3 -m shared.recovery_governor --permit/--record`` around their relaunch
-and reap actions, fail open, and that NO process-group kill exists anywhere in
-the new code or the touched scripts (the bounded-kill acceptance criterion). Plus
-an end-to-end CLI smoke that the governor's permit/record/state verbs actually
-run on this box.
+The idle watchdog retains its governed relaunch action. The legacy lane reaper
+is now an observation-only compatibility surface and must not invoke the
+governor or any process action. The governor CLI smoke tests remain here for the
+idle-watchdog path.
 """
 
 from __future__ import annotations
@@ -21,7 +19,7 @@ REAPER = REPO / "scripts" / "hapax-lane-reaper"
 MODULE = REPO / "shared" / "recovery_governor.py"
 
 
-# ── both scripts invoke the governor around their recovery actions ────────────
+# ── the watchdog governs actions; the reaper only projects metadata ──────────
 
 
 def test_idle_watchdog_permits_and_records_relaunch() -> None:
@@ -32,25 +30,23 @@ def test_idle_watchdog_permits_and_records_relaunch() -> None:
     assert "governor_permit" in text and "$CLAUDE_LAUNCHER" in text
 
 
-def test_reaper_permits_and_records_the_kill() -> None:
+def test_reaper_has_no_governor_or_process_action() -> None:
     text = REAPER.read_text()
-    assert "recovery_governor --permit" in text
-    assert "recovery_governor --record" in text
-    # bb-dispatch-scheduler MUST-FIX: the reap is a bounded PID-targeted os.kill,
-    # NOT tmux kill-session (whole-session teardown = the pane-tree HUP hazard).
-    assert "tmux kill-session" not in text
-    assert "os.kill(" in text
-    # the governor gate still wraps the (now PID-targeted) kill action
-    assert re.search(r"governor_permit[^\n]*\n[^\n]*reap_kill", text)
+    assert "recovery_governor" not in text
+    assert "governor_permit" not in text
+    assert "governor_record" not in text
+    assert "os.kill(" not in text
+    assert "kill-session" not in text
+    assert "projection state=UNKNOWN" in text
+    assert "universal_observer_successor=required" in text
 
 
-def test_both_scripts_fail_open_on_governor_error() -> None:
+def test_idle_watchdog_fails_open_on_governor_error() -> None:
     # The CLI exit-code switch must treat any non-{0,75,2} exit as PERMIT so a
-    # broken governor can never wedge the respawn floor / reaper (NEVER-FREEZE).
-    for script in (IDLE, REAPER):
-        text = script.read_text()
-        assert "HAPAX_RECOVERY_GOVERNOR_OFF" in text  # legacy kill-switch honoured
-        assert re.search(r"\*\)\s*return 0", text)  # default branch = fail-open permit
+    # broken governor can never wedge the respawn floor (NEVER-FREEZE).
+    text = IDLE.read_text()
+    assert "HAPAX_RECOVERY_GOVERNOR_OFF" in text  # legacy switch honoured
+    assert re.search(r"\*\)\s*return 0", text)  # default branch = fail-open permit
 
 
 # ── bounded-kill contract: grep-clean of any process-group kill ───────────────
