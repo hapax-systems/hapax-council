@@ -60,12 +60,19 @@ adapter-normalized argument metadata in payload.
 
 `adapter-claude` covers the current `hapax-claude-headless` artifact shape:
 `~/.cache/hapax/claude-headless/<role>/output.jsonl`, `/run/user/<uid>/hapax-claude/<role>.stdin`,
-`cc-active-task-<role>`, Claude stream-json input and output.
+`cc-active-task-<role>`, `cc-claim-epoch-<role>`, Claude stream-json input and output.
 
 `adapter-codex` covers Codex interactive and headless shapes:
 `tmux:hapax-codex-<cx-session>`, `~/.cache/hapax/codex-headless/<cx-session>/output.jsonl`,
-`cc-active-task-<cx-session>`, Codex `--json` output when headless, and session projection
-events when interactive.
+`cc-active-task-<cx-session>`, `cc-claim-epoch-<cx-session>`, Codex `--json` output when
+headless, and session projection events when interactive.
+
+Claim-cache writers must write the matching epoch sidecar before exposing a
+`cc-active-task-*` cache. The sidecar format is `<epoch> <task_id>` and is
+task-bound: terminal checks ignore a sidecar whose task id does not match the
+claim cache. Session-keyed claim files use matching session-keyed sidecars, for
+example `cc-active-task-<role>-<session_id>` plus
+`cc-claim-epoch-<role>-<session_id>`.
 
 Known Codex divergences are mapped to shims:
 

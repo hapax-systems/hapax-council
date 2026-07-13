@@ -12,6 +12,7 @@
     "capacity_invariant",
     "generated_from",
     "required_route_ids",
+    "omitted_capability_shapes",
     "routes"
   ],
   "properties": {
@@ -30,6 +31,11 @@
       "minItems": 1,
       "items": {"type": "string", "pattern": "^[a-z0-9_]+\\.[a-z0-9_]+\\.[a-z0-9_]+$"}
     },
+    "omitted_capability_shapes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/capability_shape_descriptor"}
+    },
     "routes": {
       "type": "array",
       "minItems": 1,
@@ -38,7 +44,7 @@
   },
   "$defs": {
     "platform": {
-      "enum": ["antigrav", "api", "claude", "codex", "gemini", "glmcp", "local_tool", "vibe"]
+      "enum": ["agy", "api", "claude", "codex", "gemini", "glmcp", "local_tool", "vibe"]
     },
     "mode": {
       "enum": ["headless", "interactive", "local", "receipt_only", "review"]
@@ -53,6 +59,7 @@
         "haiku",
         "jr",
         "lite",
+        "openrouter",
         "opus",
         "provider_gateway",
         "sonnet",
@@ -63,8 +70,28 @@
     "route_state": {
       "enum": ["active", "blocked"]
     },
+    "capability_shape_class": {
+      "enum": [
+        "model_provider",
+        "local_compute",
+        "publication_bus",
+        "money_rail",
+        "mcp_connector",
+        "orchestrator",
+        "subagent",
+        "cockpit_command",
+        "cctv_runner",
+        "self_inline"
+      ]
+    },
+    "capability_shape_state": {
+      "enum": ["evidence_only", "intake_required", "measurement_pending", "deprecated"]
+    },
+    "capability_shape_freshness_state": {
+      "enum": ["fresh", "stale", "missing", "asserted_only", "contradictory"]
+    },
     "auth_surface": {
-      "enum": ["api_key", "local", "operator_session", "subscription", "unknown", "vertex"]
+      "enum": ["api_key", "local", "oauth", "operator_session", "subscription", "unknown", "vertex"]
     },
     "capacity_pool": {
       "enum": ["api_paid_spend", "bootstrap_budget", "local_compute", "subscription_quota"]
@@ -430,15 +457,19 @@
     "model_id": {
       "enum": [
         "claude-opus-4-8",
+        "claude-opus-4-6",
         "claude-sonnet-4-6",
         "claude-haiku-4-5",
         "claude-fable-5",
         "gpt-5.5",
         "gpt-5.3-codex-spark",
+        "gpt-oss-120b",
         "command-r-08-2024",
         "mistral-medium-3.5",
         "gemini-3.1-pro-preview",
+        "gemini-3.5-flash",
         "z_ai-glm-5",
+        "z_ai-glm-5.2",
         "unknown"
       ]
     },
@@ -482,6 +513,88 @@
         },
         "scores_inherited_from": {
           "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
+        },
+        "blocked_reasons": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "capability_shape_descriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "descriptor_schema",
+        "shape_id",
+        "shape_class",
+        "carrier_family",
+        "summary",
+        "harness_shape",
+        "authority_ceiling",
+        "shape_state",
+        "demand_eligible",
+        "route_ids",
+        "resource_semantics",
+        "spend_semantics",
+        "observability",
+        "failure_classes",
+        "measurement_plan_refs",
+        "remediation_refs",
+        "surface_delta_signal",
+        "observed_at",
+        "stale_after",
+        "freshness_state",
+        "evidence_refs",
+        "blocked_reasons"
+      ],
+      "properties": {
+        "descriptor_schema": {"const": 1},
+        "shape_id": {"type": "string", "minLength": 1},
+        "shape_class": {"$ref": "#/$defs/capability_shape_class"},
+        "carrier_family": {"type": "string", "minLength": 1},
+        "summary": {"type": "string", "minLength": 1},
+        "harness_shape": {"type": "string", "minLength": 1},
+        "authority_ceiling": {"$ref": "#/$defs/authority_ceiling"},
+        "shape_state": {"$ref": "#/$defs/capability_shape_state"},
+        "demand_eligible": {"const": false},
+        "route_ids": {"type": "array", "maxItems": 0},
+        "resource_semantics": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "spend_semantics": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "observability": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "failure_classes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "measurement_plan_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "remediation_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "surface_delta_signal": {"type": "string", "minLength": 1},
+        "observed_at": {"$ref": "#/$defs/timestamp_or_null"},
+        "stale_after": {"$ref": "#/$defs/duration"},
+        "freshness_state": {"$ref": "#/$defs/capability_shape_freshness_state"},
+        "evidence_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
         },
         "blocked_reasons": {
           "type": "array",

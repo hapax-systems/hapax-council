@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 
 from shared.capdlc_lifecycle import GateStatus
+from shared.legal_posture_registry import LegalPostureRegistry
+from shared.mdlc_g2_legal import G2LegalRefusal, G2LegalRefusalReason
 from shared.mdlc_m2_freeze import (
     M2BudgetEnvelope,
     M2FreezeArtifact,
     M2FreezeRefusal,
     M2FreezeRefusalReason,
+    require_m2_commit_admission,
     require_m2_freeze_artifact,
     verify_m2_freeze_artifact,
 )
@@ -30,6 +33,7 @@ def _artifact(**overrides: object) -> dict[str, object]:
             "max_notional": 250.0,
             "max_position": 1.0,
             "purpose": "test disposition freeze",
+            "surface": "prediction_market",
             "venue": "test-venue",
             "instrument": "test-instrument",
         },
@@ -51,6 +55,37 @@ def _artifact(**overrides: object) -> dict[str, object]:
     return data
 
 
+def _legal_registry(*rows: dict[str, object]) -> LegalPostureRegistry:
+    return LegalPostureRegistry.from_mapping(
+        {
+            "schema_version": "1.0.0",
+            "schema_doc": "docs/monetization/legal-posture-registry-schema.md",
+            "rows": list(rows),
+        }
+    )
+
+
+def _legal_row(**overrides: object) -> dict[str, object]:
+    row: dict[str, object] = {
+        "surface": "prediction_market",
+        "venue": "test-venue",
+        "instrument": "test-instrument",
+        "g2_verdict": "LIT",
+        "citation": "test legal citation",
+        "authority_basis": "legal_opinion",
+        "review_date": "2026-07-01",
+        "freshness_ttl_days": 90,
+        "operator_signed": True,
+        "operator_sign_date": "2026-07-01",
+        "notes": "fixture row",
+        "open_questions": [],
+        "blocks_surfaces": [],
+        "source_task": "20260628-registry-phase7-mdlc-g2-gate-wire",
+    }
+    row.update(overrides)
+    return row
+
+
 def test_signed_freeze_artifact_records_envelope_ladder_hash_signer_and_time() -> None:
     result = verify_m2_freeze_artifact(_artifact(), ruler_hash_commit=HASH)
 
@@ -64,6 +99,7 @@ def test_signed_freeze_artifact_records_envelope_ladder_hash_signer_and_time() -
     assert result.artifact is not None
     assert result.artifact.budget_envelope.currency == "USD"
     assert result.artifact.budget_envelope.max_notional == 250.0
+    assert result.artifact.budget_envelope.surface == "prediction_market"
     assert result.artifact.ladder.ruler_hash == HASH
     assert result.artifact.signer == "operator:hapax"
     assert result.artifact.signed_at == NOW
@@ -84,6 +120,110 @@ def test_require_success_returns_freeze_artifact() -> None:
     assert artifact.artifact_id == "m2-freeze:test-disposition"
     assert artifact.ruler_hash == HASH
     assert artifact.ladder.ruler_hash == HASH
+
+
+def test_require_m2_commit_admission_requires_g2_lit_before_commit() -> None:
+    with pytest.raises(G2LegalRefusal) as exc:
+        require_m2_commit_admission(
+            _artifact(),
+            ruler_hash_commit=HASH,
+            registry=_legal_registry(),
+            today=date(2026, 7, 1),
+        )
+
+    assert exc.value.verification.refusal_reason is G2LegalRefusalReason.NO_EXACT_ROW
+    assert exc.value.verification.target is not None
+    assert exc.value.verification.target.key == (
+        "prediction_market",
+        "test-venue",
+        "test-instrument",
+    )
+
+
+def test_require_m2_commit_admission_propagates_missing_freeze_refusal() -> None:
+    with pytest.raises(M2FreezeRefusal) as exc:
+        require_m2_commit_admission(
+            None,
+            ruler_hash_commit=HASH,
+            registry=_legal_registry(_legal_row()),
+            today=date(2026, 7, 1),
+        )
+
+    assert exc.value.verification.refusal_reason is M2FreezeRefusalReason.MISSING_ARTIFACT
+
+
+def test_require_m2_commit_admission_returns_freeze_and_legal_row() -> None:
+    admission = require_m2_commit_admission(
+        _artifact(),
+        ruler_hash_commit=HASH,
+        registry=_legal_registry(_legal_row()),
+        today=date(2026, 7, 1),
+    )
+
+    assert admission.freeze_artifact.artifact_id == "m2-freeze:test-disposition"
+    assert admission.legal_row.key == (
+        "prediction_market",
+        "test-venue",
+        "test-instrument",
+    )
+
+
+def test_require_m2_commit_admission_rejects_g2_target_override() -> None:
+    with pytest.raises(M2FreezeRefusal) as exc:
+        require_m2_commit_admission(
+            _artifact(),
+            ruler_hash_commit=HASH,
+            g2_target={
+                "surface": "bug_bounty",
+                "venue": "hackerone",
+                "instrument": "universal_jailbreak_bounty",
+            },
+            registry=_legal_registry(
+                _legal_row(
+                    surface="bug_bounty",
+                    venue="hackerone",
+                    instrument="universal_jailbreak_bounty",
+                )
+            ),
+            today=date(2026, 7, 1),
+        )
+
+    assert exc.value.verification.refusal_reason is M2FreezeRefusalReason.G2_TARGET_MISMATCH
+    assert "differs from the signed freeze envelope" in exc.value.verification.reason
+
+
+def test_require_m2_commit_admission_refuses_when_freeze_cannot_supply_g2_target() -> None:
+    budget = dict(_artifact()["budget_envelope"])
+    budget.pop("surface")
+
+    with pytest.raises(G2LegalRefusal) as exc:
+        require_m2_commit_admission(
+            _artifact(budget_envelope=budget),
+            ruler_hash_commit=HASH,
+            registry=_legal_registry(_legal_row()),
+            today=date(2026, 7, 1),
+        )
+
+    assert exc.value.verification.refusal_reason is G2LegalRefusalReason.INVALID_TARGET
+
+
+def test_require_m2_commit_admission_refuses_legacy_typed_freeze_without_surface() -> None:
+    legacy = _artifact()
+    budget = dict(legacy["budget_envelope"])
+    budget.pop("surface")
+    legacy["budget_envelope"] = budget
+    artifact = M2FreezeArtifact.from_mapping(legacy)
+
+    assert artifact.budget_envelope.surface == ""
+    with pytest.raises(G2LegalRefusal) as exc:
+        require_m2_commit_admission(
+            artifact,
+            ruler_hash_commit=HASH,
+            registry=_legal_registry(_legal_row()),
+            today=date(2026, 7, 1),
+        )
+
+    assert exc.value.verification.refusal_reason is G2LegalRefusalReason.INVALID_TARGET
 
 
 def test_missing_freeze_artifact_refuses() -> None:
@@ -151,6 +291,138 @@ def test_invalid_budget_envelope_is_not_reported_as_ladder_failure() -> None:
     assert result.status is GateStatus.DARK
     assert result.refusal_reason is M2FreezeRefusalReason.INVALID_BUDGET_ENVELOPE
     assert result.next_action == "repair the budget envelope fields before commit"
+
+
+def test_publish_only_without_flood_plan_refuses_at_m2() -> None:
+    budget = dict(_artifact()["budget_envelope"])
+    budget["publish_only"] = True
+
+    result = verify_m2_freeze_artifact(
+        _artifact(budget_envelope=budget),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is M2FreezeRefusalReason.PUBLISH_ONLY_WITHOUT_FLOOD_PLAN
+    assert (
+        result.next_action == "set budget_envelope.flood_plan or mark budget_envelope.non_public/"
+        "budget_envelope.no_audience for the publish-only M2 freeze artifact"
+    )
+
+
+def test_legacy_budget_without_flood_fields_loads_private_default() -> None:
+    budget = dict(_artifact()["budget_envelope"])
+    for field in ("publish_only", "flood_plan", "non_public", "no_audience"):
+        budget.pop(field, None)
+
+    envelope = M2BudgetEnvelope.from_mapping(budget)
+    artifact = M2FreezeArtifact.from_mapping(_artifact(budget_envelope=budget))
+
+    assert envelope.publish_only is False
+    assert envelope.flood_plan == ""
+    assert envelope.non_public is False
+    assert envelope.no_audience is False
+    assert artifact.budget_envelope.flood_plan == ""
+
+    budget["flood_plan"] = None
+    assert M2BudgetEnvelope.from_mapping(budget).flood_plan == ""
+
+
+def test_flood_envelope_fields_are_serialized() -> None:
+    budget = dict(_artifact()["budget_envelope"])
+    budget.update(
+        {
+            "publish_only": True,
+            "flood_plan": "flood-plan:public-audience-generation",
+            "non_public": False,
+            "no_audience": False,
+        }
+    )
+
+    artifact = M2FreezeArtifact.from_mapping(_artifact(budget_envelope=budget))
+
+    serialized_budget = artifact.to_dict()["budget_envelope"]
+    assert serialized_budget["publish_only"] is True
+    assert serialized_budget["flood_plan"] == "flood-plan:public-audience-generation"
+    assert serialized_budget["non_public"] is False
+    assert serialized_budget["no_audience"] is False
+
+
+def test_budget_envelope_from_mapping_accepts_flood_fields() -> None:
+    budget = dict(_artifact()["budget_envelope"])
+    budget.update(
+        {
+            "publish_only": True,
+            "flood_plan": "flood-plan:public-audience-generation",
+            "non_public": False,
+            "no_audience": True,
+        }
+    )
+
+    envelope = M2BudgetEnvelope.from_mapping(budget)
+
+    assert envelope.publish_only is True
+    assert envelope.flood_plan == "flood-plan:public-audience-generation"
+    assert envelope.non_public is False
+    assert envelope.no_audience is True
+
+
+@pytest.mark.parametrize("field", ("publish_only", "non_public", "no_audience"))
+def test_flood_envelope_bool_fields_must_be_boolean(field: str) -> None:
+    budget = dict(_artifact()["budget_envelope"])
+    budget[field] = "yes"
+
+    result = verify_m2_freeze_artifact(
+        _artifact(budget_envelope=budget),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is M2FreezeRefusalReason.INVALID_BUDGET_ENVELOPE
+
+
+def test_non_publish_only_freeze_does_not_require_flood_path() -> None:
+    budget = dict(_artifact()["budget_envelope"])
+    budget["publish_only"] = False
+
+    result = verify_m2_freeze_artifact(
+        _artifact(budget_envelope=budget),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.LIT
+    assert result.refusal_reason is None
+
+
+@pytest.mark.parametrize("exemption", ("flood_plan", "non_public", "no_audience"))
+def test_publish_only_requires_flood_plan_or_no_audience_exemption(exemption: str) -> None:
+    budget = dict(_artifact()["budget_envelope"])
+    budget["publish_only"] = True
+    if exemption == "flood_plan":
+        budget["flood_plan"] = "flood-plan:public-audience-generation"
+    else:
+        budget[exemption] = True
+
+    result = verify_m2_freeze_artifact(
+        _artifact(budget_envelope=budget),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.LIT
+    assert result.refusal_reason is None
+
+
+def test_publish_only_all_private_exemptions_pass() -> None:
+    budget = dict(_artifact()["budget_envelope"])
+    budget.update({"publish_only": True, "non_public": True, "no_audience": True})
+
+    result = verify_m2_freeze_artifact(
+        _artifact(budget_envelope=budget),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.LIT
+    assert result.refusal_reason is None
 
 
 def test_invalid_ladder_refuses_with_ladder_reason() -> None:

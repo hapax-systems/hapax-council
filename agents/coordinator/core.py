@@ -35,12 +35,26 @@ from shared.dispatch_service_time import (
     plan_dispatches,
     wsjf_effective,
 )
+from shared.dispatcher_policy import LOCAL_DEV_TARGET
+from shared.gate_event_producer import build_gate_event
+from shared.gate_log import append_gate_event
+from shared.intake_fit_scorer import composite_rank_key, fit_score
 from shared.jsonl_append import append_jsonl
 from shared.notify import send_notification
 from shared.recovery_governor import converge_action_cap
+from shared.relay_lifecycle import (
+    parse_relay_document,
+    relay_status_values,
+    relay_value_is_retired,
+    relay_values_are_retired,
+)
 from shared.relay_mq import send_message
 from shared.relay_mq_envelope import Envelope
-from shared.route_metadata_schema import assess_route_metadata
+from shared.route_metadata_schema import (
+    RouteMetadataStatus,
+    assess_route_metadata,
+    route_metadata_payload_from_frontmatter,
+)
 from shared.sdlc_lifecycle import TASK_TERMINAL_STATUSES
 from shared.sdlc_pressure_gate import admission_state
 
@@ -53,6 +67,22 @@ def _positive_env_float(name: str, default: float) -> float:
     except (TypeError, ValueError):
         return default
     return value if value > 0 else default
+
+
+def _env_float(name: str, default: float) -> float:
+    """Parse a finite float env var with no sign constraint (allows 0 and negatives).
+
+    For knobs like the intake-fit blend where 0.0 is the default-off golden state and a
+    negative value is a valid operator dial — ``_positive_env_float`` would clamp both.
+    Non-finite values (``nan``/``inf``) fall back to default — a NaN blend would otherwise
+    poison the rank-key's ``max()`` sort (``nan == 0.0`` is False, so it would flow through
+    ``composite_rank_key`` and return NaN).
+    """
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return value if math.isfinite(value) else default
 
 
 def _ntfy_escalate(title: str, body: str) -> None:
@@ -83,6 +113,22 @@ def pressure_dispatch_budget(
 def _queue_task_routable(task: QueueTask, lane: QueueLane) -> bool:
     platforms = {platform.lower() for platform in task.platform_suitability}
     return "any" in platforms or lane.platform.lower() in platforms
+
+
+def _task_fields_for_gate_event(task: Task) -> dict[str, object]:
+    """Project a parsed ``Task`` into the frontmatter-shaped mapping ``build_gate_event``
+    reads (task_id / requirement_vector / routing_class / kind / mutation_surface).
+
+    The coordinator holds a parsed ``Task``, not raw frontmatter; this is the faithful
+    bridge so the producer's classification + hashing logic is reused, not duplicated.
+    """
+    return {
+        "task_id": task.task_id,
+        "requirement_vector": dict(task.requirement_vector) if task.requirement_vector else {},
+        "routing_class": task.routing_class or "",
+        "kind": task.kind,
+        "mutation_surface": task.mutation_surface or "",
+    }
 
 
 TASKS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active"
@@ -118,7 +164,7 @@ ORPHAN_CLAIM_REOFFER_GRACE_S = _positive_env_float(
 MAX_ORPHAN_CLAIM_REOFFERS_PER_TICK = 5
 COORDINATOR_DISPATCH_MODE = "headless"
 COORDINATOR_DISPATCH_PROFILE = "full"
-SUPPORTED_DISPATCH_PLATFORMS = ("claude", "codex", "gemini", "vibe", "antigrav", "api")
+SUPPORTED_DISPATCH_PLATFORMS = ("claude", "codex", "gemini", "vibe", "api")
 
 # Dispatch through the running release checkout by default. A hard-coded primary
 # clone can drift dirty and make the coordinator follow unactivated source.
@@ -146,6 +192,15 @@ MAX_REOFFERS_PER_TASK = 3  # per-lifetime cap: after N, escalate (block + ntfy),
 DISPATCH_SERVICE_TIME_CACHE_NAME = "dispatch-service-time.json"
 # Revert env: restore the exact prior fixed-T, raw-WSJF greedy-global behavior.
 SCHEDULER_LEGACY_ENV = "HAPAX_DISPATCH_SCHEDULER_LEGACY"
+# Intake fit-shadow: blend the demand-shape fit_score into the dispatch rank-key.
+# Default 0.0 => composite short-circuits to wsjf_effective (byte-identical plan, the
+# golden guarantee); a non-zero value (positive OR negative) is the operator's dial.
+INTAKE_FIT_BLEND_ENV = "HAPAX_INTAKE_FIT_BLEND"
+# Convergence contract: emit one admission GateEvent per planned dispatch to the
+# gate-events.jsonl plane reins' :route lens reads (off by default — the shadow-diff
+# discipline; flip to 1 to light the feed). Reuses build_gate_event (no parallel logic)
+# and stamps the spine's fit_score. Fail-open: a lost measurement must never crash tick.
+INTAKE_FIT_OBSERVE_ENV = "HAPAX_INTAKE_FIT_OBSERVE"
 
 
 @dataclass(frozen=True)
@@ -169,6 +224,13 @@ class Task:
     priority: str = ""
     kind: str = ""
     tags: tuple[str, ...] = ()
+    # Demand-shape for intake fit-routing (the (1)<->(2) loop). Written by the
+    # decomposer (request_decomposer/writer.py), read by the SdlcRouter shadow
+    # scorer. None = absent/unparsed -> honest-DARK (no fit influence).
+    requirement_vector: dict[str, int] | None = None
+    routing_class: str | None = None
+    mutation_surface: str | None = None
+    authority_level: str | None = None
 
 
 @dataclass
@@ -222,6 +284,7 @@ class CoordinatorState:
     task_status_counts: dict[str, int] = field(default_factory=dict)
     task_flow_counts: dict[str, int] = field(default_factory=dict)
     lanes: dict[str, dict] = field(default_factory=dict)
+    starvation_pressure_mask: dict[str, object] | None = None
 
 
 class Coordinator:
@@ -241,7 +304,13 @@ class Coordinator:
     def tick(self) -> None:
         tasks = self._scan_tasks()
         lanes = self._check_lanes()
-        admission = admission_state()
+        # Admit on the DISPATCH TARGET's pressure, not the local box: dev/SDLC
+        # execution is confined to appendix (LOCAL_DEV_TARGET), so gating on
+        # podium's PRODUCTION load wrongly closes appendix-bound dispatch — the
+        # documented "raw PSI starved appendix lanes ~4h" incident
+        # (sdlc_pressure_gate.py:176/209/414). read_remote_pressure fails OPEN if
+        # the target is unreachable, so this can only loosen, never re-starve.
+        admission = admission_state(target_host=LOCAL_DEV_TARGET)
         orphan_reoffers = (
             0
             if admission.state == "closed"
@@ -289,7 +358,8 @@ class Coordinator:
         # bb-control-stability: the RecoveryGovernor's per-tick converge ceiling
         # ({open:6, paced:2, closed:0}) bounds how many dispatches the controller
         # may inject per tick — it cannot become the storm it governs.
-        max_dispatches = min(len(idle_lanes), converge_action_cap(admission.state))
+        pressure_cap = converge_action_cap(admission.state)
+        max_dispatches = min(len(idle_lanes), pressure_cap)
         if admission.state != "open":
             log.info(
                 "sdlc-pressure %s: dispatch budget=%d cooldown=%.0fs",
@@ -301,6 +371,11 @@ class Coordinator:
         # bb-dispatch-scheduler: load the measured per-lineage service-time cache once.
         # `legacy` restores the prior fixed-T / raw-WSJF behavior exactly (revert env).
         legacy = os.environ.get(SCHEDULER_LEGACY_ENV) == "1"
+        # bb-intake-fit-shadow: blend the demand-shape fit_score into the dispatch
+        # rank-key. Default 0.0 => byte-identical to pure WSJF (the golden guarantee).
+        fit_blend = _env_float(INTAKE_FIT_BLEND_ENV, 0.0)
+        # Convergence contract: light the gate-events.jsonl feed reins :route reads.
+        observe_fit = os.environ.get(INTAKE_FIT_OBSERVE_ENV) == "1"
         cache = None if legacy else _load_dispatch_cache()
 
         # Project ground-truth `stalled` for every lane, then reoffer held tasks off
@@ -342,6 +417,8 @@ class Coordinator:
                 wsjf=t.wsjf,
                 platform_suitability=t.platform_suitability,
                 age_s=max(0.0, state.timestamp - t.created_at) if t.created_at else 0.0,
+                requirement_vector=t.requirement_vector,
+                routing_class=t.routing_class,
             )
             for t in offered
         ]
@@ -366,9 +443,15 @@ class Coordinator:
             max_dispatches=max_dispatches,
             age_norm_s=age_norm_s,
             legacy=legacy,
+            fit_blend=fit_blend,
         )
         plan, skipped_cooldown = self._repair_cooled_plan(
-            plan, queue_tasks, queue_lanes, age_norm_s=age_norm_s, now_mono=now_mono
+            plan,
+            queue_tasks,
+            queue_lanes,
+            age_norm_s=age_norm_s,
+            now_mono=now_mono,
+            fit_blend=fit_blend,
         )
         task_by_id = {t.task_id: t for t in offered}
         lane_by_role = {l.role: l for l in idle_lanes}
@@ -386,6 +469,10 @@ class Coordinator:
             else:
                 # Every failed dispatch is recorded — no silent retries.
                 self._refusal_ledger.record_refusal(task_id, role, refusal_reason, now=now_mono)
+            # Convergence contract: emit one admission gate-event per planned dispatch
+            # to the gate-events.jsonl plane reins' :route lens reads (flag-gated + fail-open).
+            if observe_fit:
+                self._emit_admission_gate_event(task, lane, accepted=success)
 
         state.dispatches_this_tick = dispatches
         state.lanes = {role: _lane_to_dict(l) for role, l in lanes.items()}
@@ -415,7 +502,29 @@ class Coordinator:
                 t.task_id, escalated_only=True, now=now_mono
             )
         )
-        starvation_offered = (len(offered) - cooled_offered) if idle_lanes else 0
+        # Pressure CLOSED intentionally yields a zero dispatch budget: work remains
+        # queued, but the controller is not failing to use available capacity.
+        starvation_capacity = bool(idle_lanes) and pressure_cap > 0
+        uncooled_offered = max(0, len(offered) - cooled_offered)
+        starvation_offered = uncooled_offered if starvation_capacity else 0
+        if idle_lanes and uncooled_offered > 0 and pressure_cap == 0:
+            state.starvation_pressure_mask = {
+                "active": True,
+                "reason": "sdlc_pressure_closed",
+                "admission_state": admission.state,
+                "admission_reasons": list(getattr(admission, "reasons", []) or []),
+                "offered_tasks": len(offered),
+                "uncooled_offered": uncooled_offered,
+                "idle_lanes": len(idle_lanes),
+                "pressure_cap": pressure_cap,
+                "dispatches_this_tick": dispatches,
+            }
+            log.warning(
+                "starvation masked by closed pressure: offered=%d uncooled=%d idle_lanes=%d",
+                len(offered),
+                uncooled_offered,
+                len(idle_lanes),
+            )
         self._refusal_ledger.tick_starvation(starvation_offered, dispatches, now=now_mono)
 
         # Surface refusal stats in SHM.
@@ -470,6 +579,7 @@ class Coordinator:
         *,
         age_norm_s: float,
         now_mono: float,
+        fit_blend: float = 0.0,
     ) -> tuple[list[tuple[str, str]], int]:
         """No-spin law for the planned dispatches: drop refusal-cooled pairs and
         replan their freed lane to the best eligible non-cooled task.
@@ -508,12 +618,48 @@ class Coordinator:
                 and not cooled(t.task_id, role)
             ]
             if candidates:
-                best = max(candidates, key=lambda t: wsjf_effective(t.wsjf, t.age_s, age_norm_s))
+                best = max(
+                    candidates,
+                    key=lambda t: composite_rank_key(
+                        wsjf_effective(t.wsjf, t.age_s, age_norm_s),
+                        fit_score(t.requirement_vector),
+                        blend=fit_blend,
+                    ),
+                )
                 repaired.append((best.task_id, role))
                 planned.add(best.task_id)
             else:
                 skipped += 1
         return repaired, skipped
+
+    def _emit_admission_gate_event(self, task: Task, lane: LaneState, *, accepted: bool) -> None:
+        """Emit one observational admission ``GateEvent`` for a planned dispatch.
+
+        Reuses ``build_gate_event`` (the designated admission assembler — no parallel
+        logic) for routing_class resolution + requirement_vector + task_hash, then
+        stamps the spine's ``fit_score`` and ``provenance="admission"``. Fail-open: any
+        assembly or I/O error is logged and swallowed — a lost measurement must never
+        crash the dispatch tick (observation is best-effort, the plan is authoritative).
+        Lights the ``gate-events.jsonl`` feed the reins ``:route`` lens reads.
+        """
+        try:
+            event = build_gate_event(
+                _task_fields_for_gate_event(task),
+                route=lane.platform,
+                demand_vector=None,
+                gate_result="accept" if accepted else "reject",
+            )
+            # Stamp the measured score only when the vector was measured-complete: the
+            # producer sets event.requirement_vector non-empty iff the explicit 8-dim
+            # vector was valid, so a DARK/partial task stamps None (no measured demand),
+            # mirroring reins' _measured_reqvec_or_absent honesty (not 0.0-as-measured).
+            event.fit_score = (
+                fit_score(task.requirement_vector) if event.requirement_vector else None
+            )
+            event.provenance = "admission"
+            append_gate_event(event)
+        except Exception:  # noqa: BLE001 - observation is best-effort; never block dispatch.
+            log.warning("admission gate-event emit failed for task=%s", task.task_id, exc_info=True)
 
     def _dispatch(self, task: Task, lane: LaneState) -> tuple[bool, str]:
         """Attempt to dispatch a task to a lane.
@@ -811,6 +957,8 @@ class Coordinator:
             "task_flow_counts": state.task_flow_counts,
             "lanes": state.lanes,
         }
+        if state.starvation_pressure_mask:
+            payload["starvation_pressure_mask"] = state.starvation_pressure_mask
         if refusal_stats:
             payload["refusal_ledger"] = refusal_stats
         tmp = SHM_FILE.with_suffix(".tmp")
@@ -859,7 +1007,28 @@ def _parse_task(path: Path) -> Task | None:
         priority=(_frontmatter_text(meta.get("priority")) or "").lower(),
         kind=(_frontmatter_text(meta.get("kind")) or "").lower(),
         tags=_frontmatter_tags(meta.get("tags")),
+        requirement_vector=_parse_requirement_vector(meta.get("requirement_vector")),
+        routing_class=_frontmatter_text(meta.get("routing_class")),
+        mutation_surface=_frontmatter_text(meta.get("mutation_surface")),
+        authority_level=_frontmatter_text(meta.get("authority_level")),
     )
+
+
+def _parse_requirement_vector(value: object) -> dict[str, int] | None:
+    """Parse the decomposer-written requirement_vector (8-dim, strict int 0..5).
+
+    Returns None when absent/invalid so the fit-scorer treats it as honest-DARK
+    (no fit influence). Strict-int validation mirrors SdlcRoutingRequest's own
+    validator — a bool or non-int score is rejected (not coerced).
+    """
+    if not isinstance(value, dict) or not value:
+        return None
+    parsed: dict[str, int] = {}
+    for key, score in value.items():
+        if not isinstance(key, str) or isinstance(score, bool) or not isinstance(score, int):
+            return None
+        parsed[key] = score
+    return parsed
 
 
 def _frontmatter_text(value: object) -> str | None:
@@ -983,10 +1152,39 @@ def _effective_platform_suitability(platforms: object, frontmatter: dict) -> tup
     base = _platform_tokens(platforms) or ("any",)
     try:
         assessment = assess_route_metadata(frontmatter)
-    except Exception:  # noqa: BLE001 - malformed metadata is still caught by dispatch.
-        return base
+    except Exception:  # noqa: BLE001 - defense-in-depth; assess_route_metadata is fail-safe
+        # Defensive only: assess_route_metadata does NOT raise on malformed input (it returns
+        # status=MALFORMED, metadata=None — handled below). If it ever did raise, fail closed.
+        log.warning(
+            "route metadata assessment raised for task %r; failing scope mask closed",
+            frontmatter.get("task_id"),
+        )
+        return ()
+    mask_declared = "route_constraints" in route_metadata_payload_from_frontmatter(frontmatter)
+    if assessment.status is RouteMetadataStatus.MALFORMED and mask_declared:
+        # FAIL CLOSED (scope-mask R5): a scope NEVER/ONLY mask WAS DECLARED but the metadata is
+        # unparseable, so the mask cannot be trusted/read. Return () (the "nothing suitable / held"
+        # signal), never the unconstrained base — silently dropping a declared-but-unreadable mask
+        # to base is the fail-open that voids the scope regime. This keys on STATUS + mask-presence,
+        # NOT on an exception (assess never raises on malformed) nor on metadata-is-None. Mask
+        # presence is checked via route_metadata_payload_from_frontmatter — the SAME canonical
+        # extractor the schema uses — so it catches route_constraints in BOTH the top-level and the
+        # nested `route_metadata:` mapping forms (a top-level-key check missed the nested form).
+        # Tasks that are MALFORMED only because unrelated fields are missing (e.g. a quality_floor-
+        # only note with no mask) have no mask to drop and fall through to base — normal dispatch
+        # is unaffected.
+        log.warning(
+            "malformed route metadata WITH a declared route_constraints mask for task %r (%s); "
+            "scope suitability failed closed to ()",
+            frontmatter.get("task_id"),
+            "; ".join(assessment.validation_errors) or "unparseable",
+        )
+        return ()
     metadata = assessment.metadata
     if metadata is None:
+        # HOLD / no declared route_metadata / MALFORMED-without-a-mask: no readable scope mask is
+        # in play (the NEVER/ONLY mask lives in route_constraints, absent or maskless here), so the
+        # base suitability stands. A present-but-unparseable mask is handled by the fail-close above.
         return base
 
     constraints = metadata.route_constraints
@@ -1102,8 +1300,8 @@ def _load_freshest_relay(role: str, session: str = "") -> tuple[dict, float | No
     if fresh_path is None:
         return {}, None
     try:
-        relay = yaml.safe_load(fresh_path.read_text(encoding="utf-8"))
-    except (yaml.YAMLError, OSError):
+        relay = parse_relay_document(fresh_path.read_text(encoding="utf-8"))
+    except OSError:
         return {}, fresh_mtime
     return relay if isinstance(relay, dict) else {}, fresh_mtime
 
@@ -1134,6 +1332,8 @@ def _relay_reports_claim_ownership_block(relay: dict) -> bool:
 
 def _relay_status_has_no_active_claim(relay: dict) -> bool:
     status = _normalized_status(relay.get("status") or relay.get("session_status"))
+    if _relay_is_retired(relay):
+        return True
     if not status:
         return False
     if (
@@ -1183,22 +1383,18 @@ def _claim_from_relay(relay: dict) -> str | None:
     return None
 
 
-_RETIRED_RELAY_STATUS_PREFIXES = (
-    "retired",
-    "idle-wound-down",
-    "wind-down-idle",
-    "wound-down",
-    "wind-down",
-    "winding-down",
-)
-
-
 def _relay_status_is_retired(value: object) -> bool:
-    status = _normalized_status(value)
-    return bool(status) and any(
-        status == retired or status.startswith(f"{retired}-")
-        for retired in _RETIRED_RELAY_STATUS_PREFIXES
-    )
+    # Delegate to the single-source predicate (shared.relay_lifecycle) so the
+    # coordinator's capacity projection agrees with the dispatch gate and the
+    # launcher. Closes the SUPERSEDED/CLOSED/ANTIGRAVITY_TAKEOVER vocabulary gap
+    # the coordinator previously missed (it routed them -> launcher refused ->
+    # rc=6) and unifies the canonicalization. See shared/relay_lifecycle +
+    # design-of-record non-boutique-codex-auth-and-lane-liveness-design-2026-07-03.md.
+    return relay_value_is_retired(value)
+
+
+def _relay_is_retired(relay: dict) -> bool:
+    return relay_values_are_retired(relay_status_values(relay))
 
 
 def _relay_status_is_idle(value: object) -> bool | None:
@@ -1368,6 +1564,7 @@ def _live_headless_launcher(role: str) -> tuple[int, str | None] | None:
 
 
 COORDINATOR_DISPATCHABLE_PLATFORMS = dispatch_guards.COORDINATOR_HEADLESS_DISPATCHABLE_PLATFORMS
+RETIRED_DISPATCH_PLATFORM_ALIASES = frozenset({"agy", "antigrav", "antigravity", "gemini-cli"})
 _DISPATCH_CLAIM_GUARD_MARKERS = dispatch_guards.DISPATCH_CLAIM_GUARD_MARKERS
 _DISPATCH_CLOSE_GUARD_MARKERS = dispatch_guards.DISPATCH_CLOSE_GUARD_MARKERS
 
@@ -1404,6 +1601,11 @@ def _lane_not_alive_next_action(role: str, platform: str, worktree: Path) -> str
 
 
 def _unsupported_dispatch_platform_next_action(platform: str) -> str:
+    if platform.strip().lower() in RETIRED_DISPATCH_PLATFORM_ALIASES:
+        return (
+            "route work to Claude, Codex, or Vibe; for agy, mint measured supply-leaf intake "
+            "with route/resource/governance receipts before any future interactive worker path"
+        )
     supported = ", ".join(COORDINATOR_DISPATCHABLE_PLATFORMS)
     return (
         f"route work to a supported coordinator headless platform ({supported}), "
@@ -1505,7 +1707,7 @@ def _check_lane(lane: str | LaneDescriptor) -> LaneState:
 
     if relay:
         relay_status = relay.get("status") or relay.get("session_status")
-        if _relay_status_is_retired(relay_status):
+        if _relay_is_retired(relay):
             state.dispatchable = False
         relay_claim = _claim_from_relay(relay)
         if relay_claim:

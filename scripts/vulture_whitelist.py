@@ -822,6 +822,12 @@ WorldSurfaceHealthFixtureSet.rows_for_fixture_case
 # while projecting model/search/MCP/publication/local routes into WCS rows.
 ProviderToolRouteHealth._validate_route_claim_authority
 
+# Tavily usage telemetry normalizers are Pydantic field validators invoked
+# dynamically when account/key usage payloads are materialized.
+from shared.tavily_client import TavilyAccountUsage as _TavilyAccountUsage  # noqa: E402
+
+_TavilyAccountUsage._normalize_nullable_numeric
+
 # Route authority receipts are Pydantic-validated when loaded from receipt
 # files; vulture cannot see model_validator invocation.
 RouteAuthorityReceipt._valid_signed_receipt
@@ -4094,6 +4100,12 @@ from shared.world_language import ImageSchemaNode, WorldLanguageNode  # noqa: F4
 ImageSchemaNode._force_requires_efferent_terminus
 WorldLanguageNode._invariants
 
+# Publication freshness envelopes: Pydantic invokes the model validator during
+# construction; vulture cannot trace through @model_validator.
+from shared.publication_freshness import PublicSurfaceFreshnessEnvelope  # noqa: F401, E402
+
+PublicSurfaceFreshnessEnvelope._hash_claims_are_coherent
+
 # HACL Surface Registry — SurfaceSpec policy properties consulted by the Lens +
 # Compressibility Gate (subsequent HACL tasks) and asserted by the registry tests;
 # vulture does not scan tests and the Lens caller doesn't exist on main yet.
@@ -4146,6 +4158,12 @@ synthetic_outbound_determination_packet
 from shared.perception_registry import PerceptionPoint  # noqa: E402
 
 PerceptionPoint._geometry_policy
+
+# pydantic @model_serializer(mode="wrap") — invoked by pydantic during
+# model_dump, not by an explicit static call site.
+from shared.quota_spend_ledger import SpendReceipt as _QuotaSpendLedgerSpendReceipt  # noqa: E402
+
+_QuotaSpendLedgerSpendReceipt._serialize_without_empty_task_hash
 
 # Platform session contract v1: exported adapter-conformance helpers are invoked
 # by fixture suites and future trainyard adapter runners. Pydantic field validators
@@ -4489,13 +4507,10 @@ _glmcp_failure_code_for_zai
 
 # CapabilityAdapter protocol surface (capability-adapter-protocol-module). The whole adapter
 # layer is the thin uniform facade the dispatch/worker path WILL consume; this slice lands the
-# protocol + type hierarchy ahead of its consumers (worker-path / antigrav-glue / vibe-glue /
-# glmcp-reviewseat-coordination wire the live call sites). Until then only the test suite
-# exercises the methods, which the production vulture pass does not count. Reference the
+# protocol + type hierarchy ahead of some consumers (worker-path / vibe-glue /
+# glmcp-reviewseat-coordination wire or will wire the live call sites). Until then only the test
+# suite exercises some methods, which the production vulture pass does not count. Reference the
 # consumer-pending surface so the unused-callable gate sees the use.
-from shared.capability_adapter_protocol import (  # noqa: E402
-    AntigravAdapter as _AntigravAdapter,
-)
 from shared.capability_adapter_protocol import (  # noqa: E402
     BudgetAuthorityAdapter as _BudgetAuthorityAdapter,
 )
@@ -4507,6 +4522,9 @@ from shared.capability_adapter_protocol import (  # noqa: E402
 )
 from shared.capability_adapter_protocol import (  # noqa: E402
     CodexAdapter as _CodexAdapter,
+)
+from shared.capability_adapter_protocol import (  # noqa: E402
+    RetiredAntigravFailureClassifier as _RetiredAntigravFailureClassifier,
 )
 from shared.capability_adapter_protocol import (  # noqa: E402
     ReviewSeatAdapter as _ReviewSeatAdapter,
@@ -4526,11 +4544,13 @@ _CapabilityAdapter.preflight
 _CapabilityAdapter.classify_failure
 _WorkerAdapter.launch
 _SendCapableAdapter.send
-_BudgetAuthorityAdapter
-_ReviewSeatAdapter
-_AntigravAdapter
-_ClaudeAdapter
-_CodexAdapter
+_ = (
+    _BudgetAuthorityAdapter,
+    _ReviewSeatAdapter,
+    _RetiredAntigravFailureClassifier,
+    _ClaudeAdapter,
+    _CodexAdapter,
+)
 
 # worker_failure_witness (capability-adapter-worker-path): the receipt-append + guarded
 # family-availability witness are invoked by the extensionless launcher
@@ -4670,3 +4690,52 @@ _ = (
     _Stage0DurableJsonlSink,
     _Stage0DurableJsonlSink.path_for_stream,
 )
+
+# CEI SLICE 4: the transcript execution observer + the attest_transcript close-gate CORE
+# ship in this PR (attest_transcript composes observe + verdict); its remaining consumer —
+# the cc-close wiring + the Yard Crow recomposition attestation — lands in a follow-up
+# slice. Tests exercise these now; the cc-close static call path lands next. Keep the
+# library entrypoints explicit.
+from shared.execution_attestation import (  # noqa: E402
+    attest_transcript as _attest_transcript,
+)
+from shared.execution_attestation import (  # noqa: E402
+    sanctioned_models_for_route as _sanctioned_models_for_route,
+)
+from shared.execution_observer import (  # noqa: E402
+    ExecutionInvariantVerdict as _ExecutionInvariantVerdict,
+)
+from shared.execution_observer import (  # noqa: E402
+    check_execution_invariant as _check_execution_invariant,
+)
+from shared.execution_observer import (  # noqa: E402
+    observe_claude_transcript as _observe_claude_transcript,
+)
+from shared.execution_observer import (  # noqa: E402
+    observe_codex_rollout as _observe_codex_rollout,
+)
+
+_ = (
+    _observe_claude_transcript,
+    _observe_codex_rollout,
+    _check_execution_invariant,
+    _ExecutionInvariantVerdict,
+    _ExecutionInvariantVerdict.admissible,
+    _attest_transcript,
+    _sanctioned_models_for_route,
+)
+
+# Entitlement→capability classifier: the pure core the entitlement reconciler consumes in
+# the follow-up. Tests exercise it now; the static call path lands with the reconciler.
+from shared.entitlement_capability import (
+    classify_entitlement as _classify_entitlement,  # noqa: E402
+)
+from shared.entitlement_capability import is_routable_supply as _is_routable_supply  # noqa: E402
+
+_ = (_classify_entitlement, _is_routable_supply)
+
+# GitHub PR status helper consumed by scripts/hapax-merge-queue-lineage, an
+# extensionless Python CLI that vulture's source scan does not follow.
+from github_pr_status import get_pr_status_rest as _get_pr_status_rest  # noqa: E402
+
+_ = (_get_pr_status_rest,)

@@ -65,17 +65,80 @@ slugify() {
   printf '%s\n' "$1" | tr -cs 'A-Za-z0-9_.-' '-' | sed 's/^-//; s/-$//'
 }
 
+safe_path_component() {
+  local component
+  component="$(printf '%s\n' "$1" | tr -cs 'A-Za-z0-9_-' '-' | sed 's/^-//; s/-$//' | cut -c1-96)"
+  if [ -z "$component" ]; then
+    component="session"
+  fi
+  printf '%s\n' "$component"
+}
+
+session_id_is_safe() {
+  local sid="${1:-}" tail=""
+  [ "${#sid}" -ge 8 ] && [ "${#sid}" -le 128 ] || return 1
+  case "$sid" in
+    [A-Za-z0-9]*) ;;
+    *) return 1 ;;
+  esac
+  case "$sid" in
+    *[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  case "$sid" in
+    *[!0-9]*) ;;
+    *) return 1 ;;
+  esac
+  tail="${sid##*-}"
+  if [[ "$tail" =~ ^[0-9]{1,7}$ ]]; then
+    return 1
+  fi
+  return 0
+}
+
+mint_session_uuid() {
+  cat /proc/sys/kernel/random/uuid 2>/dev/null \
+    || uuidgen 2>/dev/null \
+    || python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null \
+    || printf '%s-%s-p%sx\n' "$(safe_path_component "$SESSION")" "$(date -u +%Y%m%dT%H%M%SZ)" "$$"
+}
+
+normalize_session_uuid() {
+  local raw="${1:-}" minted=""
+  if [ -n "$raw" ] && session_id_is_safe "$raw"; then
+    printf '%s\n' "$raw"
+    return 0
+  fi
+  minted="$(mint_session_uuid)"
+  if [ -n "$raw" ]; then
+    echo "hapax-codex: ignoring unsafe HAPAX_SESSION_ID; minted safe session id for coordination paths" >&2
+  fi
+  printf '%s\n' "$minted"
+}
+
 relay_retired() {
+  # Delegate to the single-source predicate (shared/relay_lifecycle.lane_is_retired)
+  # so the launcher agrees with the dispatch gate + the coordinator: one
+  # broad-9 vocabulary, freshest-of-candidates resolution, multi-doc
+  # latest-wins. The legacy awk (relay_current_values/relay_value_is_retired
+  # below) over-refused SUPERSEDED/CLOSED lane relays (task/claim states that
+  # leaked); it is now dead code retained only for a minimal diff — remove later.
+  # FAIL-OPEN on tooling error (python missing / import fail): the gate at
+  # coord_dispatch.run_atomic_dispatch_launch is authoritative on the governed
+  # path, so a fail-open launcher only ever sees gate-allowed lanes.
   local relay_name="$1"
-  local relay_file="${HAPAX_RELAY_DIR:-$HOME/.cache/hapax/relay}/$relay_name.yaml"
-  local value
-  [ -f "$relay_file" ] || return 1
-  while IFS= read -r value; do
-    if relay_value_is_retired "$value"; then
-      return 0
-    fi
-  done < <(relay_current_values "$relay_file")
-  return 1
+  local council_root
+  local relay_dir="${HAPAX_RELAY_DIR:-$HOME/.cache/hapax/relay}"
+  council_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  PYTHONPATH="$council_root${PYTHONPATH:+:$PYTHONPATH}" python3 -c '
+import sys
+from pathlib import Path
+from shared.relay_lifecycle import lane_is_retired
+sys.exit(0 if lane_is_retired(sys.argv[1], relay_dir=Path(sys.argv[2])) else 1)
+' "$relay_name" "$relay_dir" 2>/dev/null
+  case $? in
+    0) return 0 ;;
+    *) return 1 ;;  # 1 = not retired; any other = tooling error -> fail-open
+  esac
 }
 
 relay_current_values() {
@@ -126,9 +189,10 @@ relay_value_is_retired() {
   normalized="$(printf '%s' "$value" | sed "s/^[[:space:]\"']*//; s/[[:space:]\"']*$//" | tr '[:lower:]' '[:upper:]')"
   first_word="${normalized%%[[:space:]]*}"
   case "$first_word" in
-    # NOTE: the broad ANTIGRAVITY* glob stays out (coordination reform Phase 1):
-    # antigrav is a LIVE interface. The exact ANTIGRAVITY_TAKEOVER terminal
-    # marker remains valid relay history.
+    # NOTE: the broad ANTIGRAVITY* glob stays out because arbitrary relay prose is
+    # not a retirement marker. The exact ANTIGRAVITY_TAKEOVER terminal marker is
+    # retained only to parse older relay wind-down files after the live
+    # Antigrav/agy worker was excised.
     RETIRED*|SUPERSEDED*|CLOSED*|IDLE_WOUND_DOWN*|WIND_DOWN_IDLE*|WOUND_DOWN*|WIND_DOWN*|WINDING_DOWN*|ANTIGRAVITY_TAKEOVER)
       return 0
       ;;
@@ -346,10 +410,159 @@ remote_python_command() {
   printf "bash -c '%s' bash '%s' '%s'" "$quoted_script" "$quoted_payload" "$quoted_code"
 }
 
+strip_inherited_codex_access_token() {
+  if [ -n "${CODEX_ACCESS_TOKEN:-}" ]; then
+    echo "hapax-codex: ignoring inherited CODEX_ACCESS_TOKEN; governed Codex lanes use saved ChatGPT auth on the dispatch host" >&2
+    unset CODEX_ACCESS_TOKEN
+  fi
+  if [ -n "${CODEX_HOME:-}" ]; then
+    echo "hapax-codex: ignoring inherited CODEX_HOME; governed Codex lanes use the dispatch host default saved ChatGPT auth cache" >&2
+    unset CODEX_HOME
+  fi
+  if [ -n "${CODEX_API_KEY:-}" ]; then
+    echo "hapax-codex: ignoring inherited CODEX_API_KEY; governed Codex lanes must not use API-key auth" >&2
+    unset CODEX_API_KEY
+  fi
+  if [ -n "${OPENAI_API_KEY:-}" ]; then
+    echo "hapax-codex: ignoring inherited OPENAI_API_KEY; governed Codex lanes must not use API-key auth" >&2
+    unset OPENAI_API_KEY
+  fi
+  return 0
+}
+
+codex_exec_auth_sentinel_observed() {
+  local output_file="$1"
+  python3 - "$output_file" <<'PYEOF'
+import json
+import sys
+from pathlib import Path
+
+sentinel = "HAPAX_CODEX_EXEC_AUTH_OK"
+
+
+def assistant_content_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        pieces = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    pieces.append(text)
+        return "".join(pieces)
+    return ""
+
+
+def event_text(event):
+    if not isinstance(event, dict):
+        return ""
+    if event.get("type") == "item.completed":
+        item = event.get("item")
+        if isinstance(item, dict) and item.get("type") == "agent_message":
+            text = item.get("text")
+            return text if isinstance(text, str) else ""
+    if event.get("type") == "response.output_text.done":
+        text = event.get("text")
+        return text if isinstance(text, str) else ""
+    if event.get("role") == "assistant":
+        return assistant_content_text(event.get("content"))
+    message = event.get("message")
+    if isinstance(message, dict) and message.get("role") == "assistant":
+        return assistant_content_text(message.get("content"))
+    return ""
+
+
+stdout = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+for line in stdout.splitlines():
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if event_text(event).strip() == sentinel:
+        raise SystemExit(0)
+raise SystemExit(1)
+PYEOF
+}
+
+prove_local_codex_exec_auth() {
+  local codex_bin="$1" output_file="" error_file="" rc=0 timeout_s="" auth_output="" auth_error=""
+  timeout_s="${HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS:-30}"
+  if ! python3 - "$timeout_s" <<'PYEOF' >/dev/null 2>&1
+import math
+import sys
+
+value = float(sys.argv[1])
+if not math.isfinite(value) or value <= 0:
+    raise ValueError("timeout must be positive and finite")
+PYEOF
+  then
+    echo "hapax-codex: invalid HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS='$timeout_s'; using 30s for the saved-login auth witness" >&2
+    timeout_s="30"
+  fi
+  output_file="$(mktemp "${TMPDIR:-/tmp}/hapax-codex-exec-auth.XXXXXX")" || {
+    echo "hapax-codex: failed to create temporary Codex auth witness file; next action: verify TMPDIR or /tmp permissions before retrying" >&2
+    exit 78
+  }
+  error_file="$(mktemp "${TMPDIR:-/tmp}/hapax-codex-exec-auth-err.XXXXXX")" || {
+    rm -f "$output_file"
+    echo "hapax-codex: failed to create temporary Codex auth witness file; next action: verify TMPDIR or /tmp permissions before retrying" >&2
+    exit 78
+  }
+  timeout "${timeout_s}s" env -i \
+    ALL_PROXY="${ALL_PROXY:-}" \
+    HOME="$HOME" \
+    HTTP_PROXY="${HTTP_PROXY:-}" \
+    HTTPS_PROXY="${HTTPS_PROXY:-}" \
+    LANG="${LANG:-C}" \
+    LC_ALL="${LC_ALL:-}" \
+    NO_COLOR=1 \
+    NO_PROXY="${NO_PROXY:-}" \
+    PATH="$PATH" \
+    REQUESTS_CA_BUNDLE="${REQUESTS_CA_BUNDLE:-}" \
+    SSL_CERT_FILE="${SSL_CERT_FILE:-}" \
+    "$codex_bin" exec \
+      --ephemeral \
+      --skip-git-repo-check \
+      --ignore-rules \
+      --sandbox read-only \
+      --json \
+      --cd "$WORKDIR" \
+      "Reply exactly: HAPAX_CODEX_EXEC_AUTH_OK" \
+      >"$output_file" 2>"$error_file" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    auth_output="$(cat "$output_file" "$error_file" 2>/dev/null || true)"
+    auth_output_lc="${auth_output,,}"
+    auth_error="codex_saved_auth_exec_failed:rc=$rc"
+    case "$auth_output_lc" in
+      *refresh_token_invalidated*)
+        auth_error="codex_saved_auth_refresh_token_invalidated"
+        ;;
+      *token_invalidated*)
+        auth_error="codex_saved_auth_token_invalidated"
+        ;;
+      *"login required"*|*"required to log in"*|*"please log in"*|*"not logged in"*)
+        auth_error="codex_saved_auth_login_required"
+        ;;
+    esac
+    echo "hapax-codex: saved Codex auth was rejected by codex exec ($auth_error; rc=$rc); next action: repair saved Codex login on the dispatch host via codex login or the documented auth-cache transfer fallback, then retry governed dispatch" >&2
+    sed -n '1,4p' "$error_file" >&2 || true
+    rm -f "$output_file" "$error_file"
+    exit 78
+  fi
+  if ! codex_exec_auth_sentinel_observed "$output_file"; then
+    echo "hapax-codex: codex exec auth witness did not return the expected sentinel; next action: re-run the Codex auth receipt probe before dispatching Codex lanes" >&2
+    rm -f "$output_file" "$error_file"
+    exit 78
+  fi
+  rm -f "$output_file" "$error_file"
+}
+
 remote_preflight_payload_b64() {
   python3 - "$WORKDIR" "$COUNCIL_DIR" "$HOME/projects/hapax-mcp" <<'PYEOF'
 import base64
 import json
+import os
 import sys
 
 workdir, council_dir, mcp_dir = sys.argv[1:4]
@@ -361,6 +574,9 @@ payload = {
         f"{council_dir}/hooks/scripts/codex-hook-adapter.sh",
     ],
     "binaries": ["python3", "codex"],
+    "codex_bin_path": os.environ.get("HAPAX_CODEX_BIN_PATH", ""),
+    "npm_config_prefix": os.environ.get("NPM_CONFIG_PREFIX", ""),
+    "codex_exec_auth_timeout": os.environ.get("HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS", "30"),
 }
 print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode())
 PYEOF
@@ -403,6 +619,8 @@ for name in (
     "HAPAX_CODEX_WORKTREE_STRATEGY",
     "HAPAX_CC_TASK_GATE",
     "HAPAX_IDLE_UPDATE_SECONDS",
+    "HAPAX_CODEX_BIN_PATH",
+    "NPM_CONFIG_PREFIX",
     "PASSWORD_STORE_DIR",
 ):
     value = os.environ.get(name)
@@ -422,16 +640,141 @@ print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).deco
 PYEOF
 }
 
-REMOTE_PREFLIGHT_PY='import base64,json,os,shutil,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); ok=all(os.path.isdir(path) for path in p.get("required_dirs",())) and all(os.path.isfile(path) and os.access(path, os.X_OK) for path in p.get("executables",())) and all(shutil.which(binary) for binary in p.get("binaries",())); sys.exit(0 if ok else 1)'
-REMOTE_EXEC_PY='import base64,json,os,socket,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); os.chdir(p["workdir"]); os.environ.update(p.get("env",{})); proof=p.get("proof_file",""); cgroup="";
+REMOTE_PREFLIGHT_PY='import base64,json,math,os,shutil,subprocess,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"]));
+missing_dirs=[path for path in p.get("required_dirs",()) if not os.path.isdir(path)]
+missing_exec=[path for path in p.get("executables",()) if not (os.path.isfile(path) and os.access(path, os.X_OK))]
+missing_bins=[binary for binary in p.get("binaries",()) if binary!="codex" and not shutil.which(binary)]
+def _resolve_path(binary):
+    path=os.path.expanduser(binary)
+    if os.path.isabs(path) or os.sep in path:
+        return os.path.abspath(path) if os.path.isfile(path) and os.access(path,os.X_OK) else None
+    return shutil.which(binary)
+def _resolve_codex_bin():
+    codex_bin=shutil.which("codex")
+    if codex_bin:
+        return codex_bin,""
+    npm_prefix=(p.get("npm_config_prefix") or os.environ.get("NPM_CONFIG_PREFIX","")).rstrip("/")
+    for candidate in ((p.get("codex_bin_path") or os.environ.get("HAPAX_CODEX_BIN_PATH") or "").strip(),os.path.expanduser("~/.npm-global/bin/codex"),(npm_prefix+"/bin/codex") if npm_prefix else "",os.path.expanduser("~/.local/share/npm/bin/codex"),"/usr/local/bin/codex"):
+        if candidate:
+            resolved=_resolve_path(candidate)
+            if resolved:
+                return resolved,""
+    return None,"codex_binary_missing"
+def _assistant_content_text(content):
+    if isinstance(content,str):
+        return content
+    if isinstance(content,list):
+        pieces=[]
+        for item in content:
+            if isinstance(item,dict):
+                text=item.get("text")
+                if isinstance(text,str):
+                    pieces.append(text)
+        return "".join(pieces)
+    return ""
+def _auth_event_text(event):
+    if not isinstance(event,dict):
+        return ""
+    if event.get("type")=="item.completed":
+        item=event.get("item")
+        if isinstance(item,dict) and item.get("type")=="agent_message":
+            text=item.get("text")
+            return text if isinstance(text,str) else ""
+    if event.get("type")=="response.output_text.done":
+        text=event.get("text")
+        return text if isinstance(text,str) else ""
+    if event.get("role")=="assistant":
+        return _assistant_content_text(event.get("content"))
+    message=event.get("message")
+    if isinstance(message,dict) and message.get("role")=="assistant":
+        return _assistant_content_text(message.get("content"))
+    return ""
+def _sentinel_observed(stdout):
+    for line in stdout.splitlines():
+        try:
+            event=json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if _auth_event_text(event).strip()==sentinel:
+            return True
+    return False
+def _auth_error(output, default):
+    if "refresh_token_invalidated" in output:
+        return "codex_saved_auth_refresh_token_invalidated"
+    if "token_invalidated" in output:
+        return "codex_saved_auth_token_invalidated"
+    lowered=output.lower()
+    if (
+        "login required" in lowered
+        or "required to log in" in lowered
+        or "please log in" in lowered
+        or "not logged in" in lowered
+    ):
+        return "codex_saved_auth_login_required"
+    return default
+auth_error=""
+codex_bin,codex_resolution_error=_resolve_codex_bin()
+if codex_bin is None:
+    auth_error=codex_resolution_error
+else:
+    env={k:v for k in ("ALL_PROXY","HOME","HTTP_PROXY","HTTPS_PROXY","LANG","LC_ALL","NO_PROXY","PATH","REQUESTS_CA_BUNDLE","SSL_CERT_FILE") if (v:=os.environ.get(k)) is not None}
+    env["NO_COLOR"]="1"
+    env.pop("CODEX_ACCESS_TOKEN",None); env.pop("CODEX_HOME",None); env.pop("CODEX_API_KEY",None); env.pop("OPENAI_API_KEY",None)
+    sentinel="HAPAX_CODEX_EXEC_AUTH_OK"
+    auth_workdir=p.get("workdir") or os.getcwd()
+    if not os.path.isdir(auth_workdir):
+        auth_workdir=os.path.expanduser("~")
+    try:
+        timeout_s=float(p.get("codex_exec_auth_timeout") or 30)
+    except (TypeError,ValueError):
+        timeout_s=30.0
+    if not math.isfinite(timeout_s) or timeout_s <= 0:
+        timeout_s=30.0
+    try:
+        result=subprocess.run([codex_bin,"exec","--ephemeral","--skip-git-repo-check","--ignore-rules","--sandbox","read-only","--json","--cd",auth_workdir,"Reply exactly: "+sentinel],text=True,capture_output=True,timeout=timeout_s,env=env)
+    except subprocess.TimeoutExpired:
+        auth_error="codex_saved_auth_exec_timeout"
+    except OSError as exc:
+        auth_error="codex_saved_auth_exec_failed:"+exc.__class__.__name__
+    else:
+        output=(result.stdout or "")+"\n"+(result.stderr or "")
+        if result.returncode != 0:
+            auth_error=_auth_error(output,"codex_saved_auth_exec_failed:rc="+str(result.returncode))
+        elif not _sentinel_observed(result.stdout):
+            auth_error=_auth_error(output,"codex_saved_auth_sentinel_missing")
+if missing_dirs or missing_exec or missing_bins or auth_error:
+    print("remote preflight failed: missing_dirs="+json.dumps(missing_dirs)+" missing_executables="+json.dumps(missing_exec)+" missing_binaries="+json.dumps(missing_bins)+" auth_error="+json.dumps(auth_error)+"; next action: repair saved Codex login on the dispatch host via codex login or the documented auth-cache transfer fallback, then verify required paths before retrying", file=sys.stderr)
+    sys.exit(1)
+sys.exit(0)'
+REMOTE_EXEC_PY='import base64,json,os,shutil,socket,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); os.chdir(p["workdir"]); os.environ.update(p.get("env",{})); os.environ.pop("CODEX_ACCESS_TOKEN",None); os.environ.pop("CODEX_HOME",None); os.environ.pop("CODEX_API_KEY",None); os.environ.pop("OPENAI_API_KEY",None); proof=p.get("proof_file",""); cgroup="";
 try:
     cgroup=open("/proc/self/cgroup",encoding="utf-8").read()
 except OSError:
     pass
+def _resolve_path(binary):
+    path=os.path.expanduser(binary)
+    if os.path.isabs(path) or os.sep in path:
+        return os.path.abspath(path) if os.path.isfile(path) and os.access(path,os.X_OK) else None
+    return shutil.which(binary)
+def _resolve_codex_bin():
+    codex_bin=shutil.which("codex")
+    if codex_bin:
+        return codex_bin,""
+    npm_prefix=(p.get("npm_config_prefix") or os.environ.get("NPM_CONFIG_PREFIX","")).rstrip("/")
+    for candidate in ((p.get("codex_bin_path") or os.environ.get("HAPAX_CODEX_BIN_PATH") or "").strip(),os.path.expanduser("~/.npm-global/bin/codex"),(npm_prefix+"/bin/codex") if npm_prefix else "",os.path.expanduser("~/.local/share/npm/bin/codex"),"/usr/local/bin/codex"):
+        if candidate:
+            resolved=_resolve_path(candidate)
+            if resolved:
+                return resolved,""
+    return None,"codex_binary_missing"
+codex_bin,codex_resolution_error=_resolve_codex_bin()
+if codex_bin is None:
+    print("hapax-codex: remote Codex binary is unavailable: "+codex_resolution_error+"; next action: repair PATH on the dispatch host or set HAPAX_CODEX_BIN_PATH to the executable before retrying", file=sys.stderr)
+    sys.exit(78)
 if proof:
     os.makedirs(os.path.dirname(proof), exist_ok=True)
-    data={"schema_version":1,"event":"dispatch_remote_exec","platform":"codex","session":p.get("session"),"task_id":p.get("task_id"),"requested_host":p.get("requested_host"),"actual_host":socket.gethostname(),"pid":os.getpid(),"cgroup":cgroup,"tmux_name":p.get("tmux_name"),"workdir":p.get("workdir"),"logos_base_url":os.environ.get("LOGOS_BASE_URL"),"argv0":p["argv"][0] if p.get("argv") else None,"argc":len(p.get("argv",[]))}; open(proof,"w",encoding="utf-8").write(json.dumps(data,sort_keys=True)+"\n")
-argv=p["argv"]; os.execvp(argv[0], argv)'
+    data={"schema_version":1,"event":"dispatch_remote_exec","platform":"codex","session":p.get("session"),"task_id":p.get("task_id"),"requested_host":p.get("requested_host"),"actual_host":socket.gethostname(),"pid":os.getpid(),"cgroup":cgroup,"tmux_name":p.get("tmux_name"),"workdir":p.get("workdir"),"logos_base_url":os.environ.get("LOGOS_BASE_URL"),"argv0":codex_bin,"argc":len(p.get("argv",[]))}; open(proof,"w",encoding="utf-8").write(json.dumps(data,sort_keys=True)+"\n")
+argv=p["argv"]; argv[0]=codex_bin; os.execv(codex_bin, argv)'
 
 write_local_dispatch_proof() {
   local actual_host="$1" fallback="$2" reason="${3:-}" runner="${4:-}" pane_pid="" cgroup=""
@@ -743,6 +1086,12 @@ fi
 WORKDIR="$(cd "$WORKDIR" && pwd)"
 export HAPAX_CODEX_WORKTREE_STRATEGY="$CODEX_WORKTREE_STRATEGY"
 
+PARENT_INTERFACE="${HAPAX_PARENT_AGENT_INTERFACE:-${HAPAX_AGENT_INTERFACE:-unknown}}"
+PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:-${CODEX_ROLE:-unknown}}}}"
+
+# Per-session id (coordination reform Phase 1): stable uuid so the gate keys a
+# claim lease to THIS session — two same-role sessions never collide (FM-2).
+SESSION_UUID="$(normalize_session_uuid "${HAPAX_SESSION_ID:-}")"
 TMUX_NAME="hapax-codex-$SESSION"
 DISPATCH_HOST_REQUESTED="${HAPAX_DISPATCH_HOST:-}"
 DISPATCH_HOST=""
@@ -752,6 +1101,8 @@ DISPATCH_PROOF_BASENAME="$(date -u +%Y%m%dT%H%M%SZ)-$(slugify "$SESSION")-$(slug
 DISPATCH_PROOF_FILE="$DISPATCH_PROOF_DIR/$DISPATCH_PROOF_BASENAME-remote.json"
 DISPATCH_LOCAL_PROOF_FILE="$DISPATCH_PROOF_DIR/$DISPATCH_PROOF_BASENAME-local.json"
 
+strip_inherited_codex_access_token
+
 if [ -n "$DISPATCH_HOST_REQUESTED" ]; then
   if dispatch_host_is_local "$DISPATCH_HOST_REQUESTED"; then
     DISPATCH_HOST_REQUESTED=""
@@ -760,7 +1111,7 @@ if [ -n "$DISPATCH_HOST_REQUESTED" ]; then
     PREFLIGHT_COMMAND="$(remote_python_command "$PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
     if ssh -o BatchMode=yes -o ConnectTimeout=4 -i "$HOME/.ssh/id_ed25519" \
         -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST_REQUESTED" \
-        "$PREFLIGHT_COMMAND" 2>/dev/null; then
+        "$PREFLIGHT_COMMAND"; then
       DISPATCH_HOST="$DISPATCH_HOST_REQUESTED"
       echo "hapax-codex: dispatch -> $DISPATCH_HOST (codex on appendix; tmux/control podium-local)" >&2
     elif [ "${HAPAX_DISPATCH_HOST_FALLBACK:-}" = "local" ]; then
@@ -798,14 +1149,14 @@ if [ -z "$DISPATCH_HOST" ]; then
       "${NPM_CONFIG_PREFIX:+$NPM_CONFIG_PREFIX/bin/codex}" \
       "$HOME/.local/share/npm/bin/codex" \
       "/usr/local/bin/codex"; do
-      if [ -n "$_cand" ] && [ -x "$_cand" ]; then
+      if [ -n "$_cand" ] && [ -f "$_cand" ] && [ -x "$_cand" ]; then
         CODEX_BIN="$_cand"
         break
       fi
     done
   fi
   if [ -z "$CODEX_BIN" ]; then
-    echo "hapax-codex: codex not found in PATH" >&2
+    echo "hapax-codex: codex not found in PATH; next action: install the Codex CLI, repair PATH, or set HAPAX_CODEX_BIN_PATH to the executable before retrying" >&2
     exit 4
   fi
 else
@@ -856,12 +1207,6 @@ if [ "$FORCE" -ne 1 ]; then
   fi
 fi
 
-PARENT_INTERFACE="${HAPAX_PARENT_AGENT_INTERFACE:-${HAPAX_AGENT_INTERFACE:-unknown}}"
-PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:-${CODEX_ROLE:-unknown}}}}"
-
-# Per-session id (coordination reform Phase 1): stable uuid so the gate keys a
-# claim lease to THIS session — two same-role sessions never collide (FM-2).
-SESSION_UUID="${HAPAX_SESSION_ID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf '%s-%s' "$SESSION" "$$")}"
 export HAPAX_AGENT_INTERFACE="codex"
 export HAPAX_AGENT_NAME="$SESSION"
 export CODEX_THREAD_NAME="$SESSION"
@@ -877,6 +1222,41 @@ export LOGOS_BASE_URL
 export COCKPIT_BASE_URL
 export HAPAX_CC_TASK_GATE="$TASK_GATE"
 
+explicit_codex_command=0
+if [ "${#CODEX_EXTRA[@]}" -gt 0 ] && is_codex_subcommand "${CODEX_EXTRA[0]}"; then
+  explicit_codex_command=1
+fi
+
+codex_exec_auth_preflight_required=0
+if [ "$explicit_codex_command" -eq 0 ]; then
+  codex_exec_auth_preflight_required=1
+elif [ "${#CODEX_EXTRA[@]}" -gt 0 ]; then
+  case "${CODEX_EXTRA[0]}" in
+    exec|e)
+      codex_exec_auth_preflight_required=1
+      ;;
+  esac
+fi
+
+LOCAL_CODEX_EXEC_AUTH_PROVEN=0
+if [ "$codex_exec_auth_preflight_required" -eq 1 ]; then
+  if [ -n "$DISPATCH_HOST" ]; then
+    REMOTE_EXEC_PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64)"
+    REMOTE_EXEC_PREFLIGHT_COMMAND="$(remote_python_command "$REMOTE_EXEC_PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=4 -i "$HOME/.ssh/id_ed25519" \
+        -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST" \
+        "$REMOTE_EXEC_PREFLIGHT_COMMAND"; then
+      echo "hapax-codex: remote saved-login auth preflight failed for $DISPATCH_HOST; next action: repair saved Codex login on the dispatch host, then retry" >&2
+      exit 75
+    fi
+  else
+    # Local Codex launches must prove saved-login exec auth before cc-claim,
+    # bootstrap creation, or worker exec can expose a stale/missing login.
+    prove_local_codex_exec_auth "$CODEX_BIN"
+    LOCAL_CODEX_EXEC_AUTH_PROVEN=1
+  fi
+fi
+
 if [ -n "$TASK_ID" ] && [ "$CLAIM_TASK" -eq 1 ]; then
   CLAIM_SCRIPT="$WORKDIR/scripts/cc-claim"
   if [ ! -x "$CLAIM_SCRIPT" ]; then
@@ -885,6 +1265,8 @@ if [ -n "$TASK_ID" ] && [ "$CLAIM_TASK" -eq 1 ]; then
   fi
   if [ "$TERMINAL" = "none" ]; then
     "$CLAIM_SCRIPT" "$TASK_ID"
+  elif [ -n "$DISPATCH_HOST" ]; then
+    "$CLAIM_SCRIPT" "$TASK_ID" >/dev/null
   else
     preflight_claimable_task "$TASK_ID" "$SESSION"
   fi
@@ -893,9 +1275,12 @@ fi
 SPAWN_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/codex-spawns"
 mkdir -p "$SPAWN_DIR"
 
-explicit_codex_command=0
-if [ "${#CODEX_EXTRA[@]}" -gt 0 ] && is_codex_subcommand "${CODEX_EXTRA[0]}"; then
-  explicit_codex_command=1
+if [ "$codex_exec_auth_preflight_required" -eq 1 ] && [ -z "$DISPATCH_HOST" ] && [ "${LOCAL_CODEX_EXEC_AUTH_PROVEN:-0}" != "1" ]; then
+  # Fallback guard: normal local task launches prove saved-login auth before
+  # cc-claim above. If a future refactor skips that path, refuse to bootstrap or
+  # exec Codex until the same sentinel proof succeeds.
+  prove_local_codex_exec_auth "$CODEX_BIN"
+  LOCAL_CODEX_EXEC_AUTH_PROVEN=1
 fi
 
 if [ "${#CODEX_EXTRA[@]}" -gt 0 ]; then
@@ -1050,10 +1435,24 @@ fi
 
 if [ "$TERMINAL" = "none" ]; then
   if [ -n "$DISPATCH_HOST" ]; then
+    REMOTE_EXEC_PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64)"
+    REMOTE_EXEC_PREFLIGHT_COMMAND="$(remote_python_command "$REMOTE_EXEC_PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=4 -i "$HOME/.ssh/id_ed25519" \
+        -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST" \
+        "$REMOTE_EXEC_PREFLIGHT_COMMAND"; then
+      echo "hapax-codex: remote saved-login auth preflight failed for $DISPATCH_HOST; next action: repair saved Codex login on the dispatch host, then retry" >&2
+      exit 75
+    fi
     REMOTE_EXEC_PAYLOAD="$(remote_exec_payload_b64 "$DISPATCH_PROOF_FILE" codex "${CODEX_ARGS[@]}")"
     REMOTE_EXEC_COMMAND="$(remote_python_command "$REMOTE_EXEC_PAYLOAD" "$REMOTE_EXEC_PY")"
-    exec ssh -o BatchMode=yes -o RequestTTY=no -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
+    if ssh -o BatchMode=yes -o RequestTTY=no -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
       -o ControlPath=none -i "$HOME/.ssh/id_ed25519" "$DISPATCH_HOST" "$REMOTE_EXEC_COMMAND"
+    then
+      REMOTE_EXIT_CODE=0
+    else
+      REMOTE_EXIT_CODE=$?
+    fi
+    exit "$REMOTE_EXIT_CODE"
   fi
   if [ -n "$DISPATCH_FALLBACK_REASON" ]; then
     write_local_dispatch_proof "$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf local)" "1" "$DISPATCH_FALLBACK_REASON"
@@ -1066,7 +1465,16 @@ if [ "$TERMINAL" = "foot" ]; then
   FOOT_TARGET_WORKSPACE="$(active_hyprland_workspace_name || true)"
 fi
 
-RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$(slugify "$SESSION").sh"
+RUNNER_TEMPLATE="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$(slugify "$SESSION").XXXXXX.sh"
+RUNNER_UMASK="$(umask)"
+umask 077
+if ! RUNNER="$(mktemp "$RUNNER_TEMPLATE")"; then
+  umask "$RUNNER_UMASK"
+  echo "hapax-codex: failed to create owner-only Codex runner in $SPAWN_DIR" >&2
+  exit 70
+fi
+umask "$RUNNER_UMASK"
+chmod 700 "$RUNNER"
 CHILD_ARGS=(--session "$SESSION" --slot "$SLOT" --cd "$WORKDIR" --terminal none)
 if [ "$FORCE" -eq 1 ]; then
   CHILD_ARGS+=(--force)
@@ -1088,17 +1496,45 @@ CHILD_ARGS+=("${CODEX_EXTRA[@]}")
 
 RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
 if [ -n "$DISPATCH_HOST" ]; then
+  REMOTE_EXEC_PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64)"
+  REMOTE_EXEC_PREFLIGHT_COMMAND="$(remote_python_command "$REMOTE_EXEC_PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
   REMOTE_EXEC_PAYLOAD="$(remote_exec_payload_b64 "$DISPATCH_PROOF_FILE" codex "${CODEX_ARGS[@]}")"
   REMOTE_EXEC_COMMAND="$(remote_python_command "$REMOTE_EXEC_PAYLOAD" "$REMOTE_EXEC_PY")"
   {
     printf '%s\n' '#!/usr/bin/env bash'
     printf '%s\n' 'set -euo pipefail'
-    printf 'trap '\''%q %q --reason "clean exit (codex remote)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$SESSION"
+    printf 'DISPATCH_HOST=%q\n' "$DISPATCH_HOST"
+    printf 'RELAY_RETIRE=%q\n' "$RELAY_RETIRE"
+    printf 'SESSION=%q\n' "$SESSION"
+    cat <<'EOF'
+runner_cleanup() {
+  rc=$?
+  "$RELAY_RETIRE" "$SESSION" --reason "clean exit (codex remote)" 2>/dev/null || true
+  exit "$rc"
+}
+trap runner_cleanup EXIT
+RUNNER_SELF="${BASH_SOURCE[0]:-$0}"
+if ! rm -f -- "$RUNNER_SELF"; then
+  echo "hapax-codex: failed to delete remote Codex runner at $RUNNER_SELF before remote exec; next action: remove the runner file before retrying" >&2
+  exit 70
+fi
+EOF
     printf 'export HAPAX_PARENT_AGENT_INTERFACE=%q\n' "$PARENT_INTERFACE"
     printf 'export HAPAX_PARENT_AGENT_NAME=%q\n' "$PARENT_NAME"
     printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
     printf 'cd %q\n' "$WORKDIR"
-    printf 'exec ssh'
+    printf 'ssh'
+    for arg in \
+      -o BatchMode=yes \
+      -o ConnectTimeout=4 \
+      -i "$HOME/.ssh/id_ed25519" \
+      -o "ControlPath=$HOME/.ssh/cm-%r@%h:%p" \
+      "$DISPATCH_HOST" \
+      "$REMOTE_EXEC_PREFLIGHT_COMMAND"; do
+      printf ' %q' "$arg"
+    done
+    printf '\n'
+    printf 'ssh'
     for arg in \
       -o BatchMode=yes \
       -o RequestTTY=no \

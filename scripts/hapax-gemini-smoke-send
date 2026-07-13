@@ -4,6 +4,8 @@ set -euo pipefail
 cat >&2 <<'EOF'
 hapax-gemini-smoke-send is retired.
 
-The legacy Gemini CLI tmux lane has been removed; use agy-backed Hapax routes.
+The legacy Gemini CLI tmux lane has been removed. Use agy.review.direct through
+scripts/hapax-agy-reviewer for admitted read-only review-plane work; it is not a
+governed interactive worker path.
 EOF
 exit 64

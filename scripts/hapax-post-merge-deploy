@@ -41,16 +41,27 @@
 #   systemd/overrides/**           → source/rationale docs only; no direct deploy
 #   systemd/scripts/*              → installer helper scripts; no direct deploy
 #   systemd/watchdogs/*            → install executable into ~/.local/bin
+#   config/root-required/oom-containment.files and every path it owns
+#                                  → install P0 OOM containment policy into
+#                                    /etc/default, /etc/systemd/system, and
+#                                    ~/.config/systemd/user; apply active
+#                                    app.slice properties without restarting
+#                                    the live slice
 #   systemd/logrotate.d/*          → logrotate configs; require sudo install
-#   systemd/system/**              → system-scoped configs; require sudo install
+#   systemd/system/**              → other system-scoped configs; require sudo install
+#   config/root-required/apcupsd-power-alerts.files and every path it owns
+#                                  → install podium apcupsd config/hooks/helper
+#                                    into /etc/apcupsd from the merge SHA
 #   scripts/hapax-recovery-plane-install, scripts/hapax-p0-incident-intake,
 #   scripts/hapax-coord-deploy, shared/{__init__,jsonl_append,p0_incident_intake}.py
 #                                  → refresh the stable D2 recovery bundle under
 #                                    ~/.local/lib/hapax-recovery/council
-#   scripts/hapax-*                → ensure ~/.local/bin/ symlink
+#   scripts/hapax-*                → publish a release-pinned regular copy in ~/.local/bin/
 #   hooks/scripts/{cc-task-gate.impl.sh,agent-role.sh,escape-grant.sh,
+#                  hapax_check_enable_latch.sh,cc-task-gate-bootstrap.py,
 #                  hooks-doctor.sh,cc-task-gate.sh}
-#                                  → redeploy the ONE canonical gate closure to
+#                                  → reconcile the ONE canonical gate closure
+#                                    on every run and redeploy drift to
 #                                    ~/.local/lib/hapax/hooks via hooks-doctor
 #                                    --deploy-canonical (reform FM-6: every
 #                                    worktree's cc-task-gate.sh is a shim that
@@ -85,6 +96,7 @@
 # Exits non-zero if any deploy step failed (or, in --report-coverage
 # mode, if any systemd/** path is unclassified).
 set -euo pipefail
+ORIGINAL_ARGS=("$@")
 
 DRY_RUN=0
 REPORT_COVERAGE=0
@@ -152,6 +164,15 @@ TRACE_MAX_RECORDS="${HAPAX_POST_MERGE_TRACE_MAX_RECORDS:-200}"
 # isolates it automatically.
 LAST_DEPLOYED_SHA_PATH="${HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH:-$(dirname "$TRACE_PATH")/last-deployed-sha}"
 RECOVERY_INSTALLER_PATH="scripts/hapax-recovery-plane-install"
+OOM_CONTAINMENT_INSTALLER_PATH="scripts/install-p0-oom-containment"
+APCUPSD_INSTALLER_PATH="scripts/install-apcupsd-power-alerts"
+ROOT_REQUIRED_RC=77
+ROOT_DEFER_DIR="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$HOME/.cache/hapax/post-merge-root-required}"
+ROOT_REQUIRED_STATE_ROOT="${HAPAX_ROOT_REQUIRED_STATE_ROOT:-$HOME/.local/state/hapax/root-required}"
+ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$ROOT_REQUIRED_STATE_ROOT/current-source}"
+ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/installed-receipts}"
+ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/desired-receipts}"
+ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_STATE_ROOT/.lock}"
 RECOVERY_BUNDLE_DEST="${HAPAX_RECOVERY_BUNDLE_DEST:-$HOME/.local/lib/hapax-recovery/council/current}"
 RECOVERY_BUNDLE_SOURCE_FILES=(
     scripts/hapax-p0-incident-intake
@@ -164,6 +185,114 @@ RECOVERY_BUNDLE_REQUIRED_FILES=(
     "${RECOVERY_BUNDLE_SOURCE_FILES[@]}"
     manifest.json
 )
+
+acquire_inherited_root_required_lock() {
+    local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
+    if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ]; then
+        echo "hapax-post-merge-deploy: safe shared lock descriptor is absent; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun the package-owned deploy script" >&2
+        return 1
+    fi
+    /usr/bin/python3 - "$lock_fd" "$ROOT_REQUIRED_LOCK_FILE" <<'PY'
+from __future__ import annotations
+
+import fcntl
+import os
+import stat
+import sys
+
+fd = int(sys.argv[1])
+lock_path = sys.argv[2]
+try:
+    inode = os.fstat(fd)
+    path_inode = os.lstat(lock_path)
+except OSError as exc:
+    print(
+        f"hapax-post-merge-deploy: refused invalid shared lock descriptor for {lock_path}: "
+        f"{exc}; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+if (
+    not stat.S_ISREG(inode.st_mode)
+    or not stat.S_ISREG(path_inode.st_mode)
+    or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
+    or inode.st_uid != os.geteuid()
+    or inode.st_nlink != 1
+    or inode.st_mode & 0o022
+):
+    print(
+        f"hapax-post-merge-deploy: refused invalid shared lock descriptor for {lock_path}; "
+        "expected the caller-owned, single-link, non-group-writable regular path inode; "
+        "next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+os.fchmod(fd, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+PY
+}
+
+reexec_with_safe_root_required_lock() {
+    if [ -n "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" ]; then
+        acquire_inherited_root_required_lock
+        return
+    fi
+    exec /usr/bin/python3 - "$ROOT_REQUIRED_LOCK_FILE" "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
+from __future__ import annotations
+
+import fcntl
+import os
+import stat
+import subprocess
+import sys
+
+lock_path, script, *args = sys.argv[1:]
+os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+try:
+    fd = os.open(
+        lock_path,
+        os.O_CLOEXEC | os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR,
+        0o600,
+    )
+except OSError as exc:
+    print(
+        f"hapax-post-merge-deploy: refused unsafe shared lock {lock_path}: {exc}; "
+        "next action: remove only a confirmed symlink/non-regular lock and rerun",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+try:
+    inode = os.fstat(fd)
+    if (
+        not stat.S_ISREG(inode.st_mode)
+        or inode.st_uid != os.geteuid()
+        or inode.st_nlink != 1
+        or inode.st_mode & 0o022
+    ):
+        print(
+            f"hapax-post-merge-deploy: refused unsafe shared lock inode {lock_path}; expected "
+            "one caller-owned, single-link, non-group-writable regular file; next action: "
+            "remove only a confirmed unsafe lock and rerun",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    os.fchmod(fd, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    env = os.environ.copy()
+    env.pop("HAPAX_ROOT_REQUIRED_LOCK_HELD", None)
+    env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
+    env["HAPAX_ROOT_REQUIRED_LOCK_MODE"] = "exclusive"
+    result = subprocess.run(
+        [os.path.abspath(script), *args],
+        env=env,
+        pass_fds=(fd,),
+        check=False,
+    )
+    raise SystemExit(result.returncode)
+finally:
+    os.close(fd)
+PY
+}
 
 # --- auto-enable marker (reform-improve-deploy-activation-20260601) ---
 # A systemd unit may declare it wants to be enabled+started on deploy by
@@ -187,6 +316,12 @@ unit_content_timer_enable_only() {
     grep -Eiq '^[#;][[:space:]]*Hapax-Timer-Enable-Only:[[:space:]]*(true|yes|1)[[:space:]]*$' <<< "$content" || return 1
     grep -Eq '^\[Install\]' <<< "$content" || return 1
     return 0
+}
+
+unit_content_parked() {
+    local content="$1"
+    [ -n "$content" ] || return 1
+    grep -Eiq '^[#;][[:space:]]*Hapax-Parked:[[:space:]]*(true|yes|1)[[:space:]]*$' <<< "$content"
 }
 
 # --verify-auto-enable: post-deploy assertion that every unit in the repo's
@@ -246,9 +381,13 @@ fi
 # so the skew can't recur silently. Returns 1 on drift, 0 when intact.
 #
 # Only deploy-installed `scripts/hapax-*` symlinks are in scope: their target
-# is `<root>/scripts/<name>`. Symlinks to non-worktree install dirs (e.g.
-# hapax-hooks-doctor -> ~/.local/lib/hapax/hooks/...) are not deploy-tree
-# symlinks and are intentionally ignored. Env overrides isolate it for tests:
+# is `<root>/scripts/<name>` and the target basename matches the link name.
+# A link to a different managed hapax-* script is still deploy drift; legacy
+# aliases to non-hapax script names remain outside this check.
+# Symlinks to non-worktree install dirs (e.g. hapax-hooks-doctor ->
+# ~/.local/lib/hapax/hooks/...) or legacy aliases to non-hapax script names
+# (e.g. hapax-request-decompose -> scripts/request-decompose) are not
+# deploy-tree symlinks and are intentionally ignored. Env overrides isolate it for tests:
 # HAPAX_LOCAL_BIN, HAPAX_DEPLOY_SYMLINK_ROOTS, HAPAX_DRIFT_STATE_DIR,
 # HAPAX_DRIFT_NTFY (set 0 to suppress curl).
 check_symlink_drift() {
@@ -264,7 +403,7 @@ check_symlink_drift() {
     origin_main="$(git -C "$REPO" rev-parse --verify --quiet origin/main 2>/dev/null || true)"
 
     local -a dangling=() offtree=()
-    local link base target root ok r
+    local link base target target_base root ok r
     for link in "$bin"/hapax-*; do
         # A literal (no-match) glob is not a symlink, so this also covers the
         # empty-dir case without nullglob.
@@ -277,6 +416,15 @@ check_symlink_drift() {
         fi
         case "$target" in
             */scripts/*)
+                target_base="$(basename "$target")"
+                if [ "$target_base" != "$base" ]; then
+                    case "$target_base" in
+                        hapax-*)
+                            offtree+=("$base -> $target (target name mismatch)")
+                            ;;
+                    esac
+                    continue
+                fi
                 root="${target%/scripts/*}"
                 ok=0
                 for r in $roots; do
@@ -375,12 +523,15 @@ record_post_merge_trace() {
     HAPAX_TRACE_SYSTEMD="$(_trace_join "${SYSTEMD[@]}")" \
     HAPAX_TRACE_SYSTEMD_SYSTEM="$(_trace_join "${SYSTEMD_SYSTEM[@]}")" \
     HAPAX_TRACE_SYSTEMD_DROPINS="$(_trace_join "${SYSTEMD_DROPINS[@]}")" \
+    HAPAX_TRACE_OOM_CONTAINMENT="$(_trace_join "${OOM_CONTAINMENT[@]}")" \
+    HAPAX_TRACE_APCUPSD_POWER_ALERTS="$(_trace_join "${APCUPSD_POWER_ALERTS[@]}")" \
     HAPAX_TRACE_USER_PRESETS="$(_trace_join "${USER_PRESETS[@]}")" \
     HAPAX_TRACE_WATCHDOGS="$(_trace_join "${WATCHDOGS[@]}")" \
     HAPAX_TRACE_RECOVERY_BUNDLE="$(_trace_join "${recovery_bundle_trace[@]}")" \
     HAPAX_TRACE_SCRIPTS="$(_trace_join "${SCRIPTS[@]}")" \
     HAPAX_TRACE_SCRIPT_PY="$(_trace_join "${SCRIPT_PY[@]}")" \
     HAPAX_TRACE_QUAKE_ASSETS="$(_trace_join "${QUAKE_ASSETS[@]}")" \
+    HAPAX_TRACE_CANONICAL_GATE="$(_trace_join "${CANONICAL_GATE[@]}")" \
     HAPAX_TRACE_AUDIO_SAFE_RESTARTS="$(_trace_join "${AUDIO_SAFE_RESTARTS[@]}")" \
     HAPAX_TRACE_SYSTEMD_UNCLASSIFIED="$(_trace_join "${SYSTEMD_UNCLASSIFIED[@]}")" \
     python3 - "$TRACE_PATH" "$TRACE_MAX_RECORDS" "$SHA" "$DRY_RUN" "$status" "$exit_code" \
@@ -418,12 +569,15 @@ deploy_groups = {
     "systemd_units": lines("HAPAX_TRACE_SYSTEMD"),
     "systemd_system_units": lines("HAPAX_TRACE_SYSTEMD_SYSTEM"),
     "systemd_dropins": lines("HAPAX_TRACE_SYSTEMD_DROPINS"),
+    "oom_containment": lines("HAPAX_TRACE_OOM_CONTAINMENT"),
+    "apcupsd_power_alerts": lines("HAPAX_TRACE_APCUPSD_POWER_ALERTS"),
     "systemd_user_presets": lines("HAPAX_TRACE_USER_PRESETS"),
     "systemd_watchdogs": lines("HAPAX_TRACE_WATCHDOGS"),
     "recovery_bundle": lines("HAPAX_TRACE_RECOVERY_BUNDLE"),
     "hapax_scripts": lines("HAPAX_TRACE_SCRIPTS"),
     "unit_backing_scripts": lines("HAPAX_TRACE_SCRIPT_PY"),
     "quake_assets": lines("HAPAX_TRACE_QUAKE_ASSETS"),
+    "canonical_gate_closure": lines("HAPAX_TRACE_CANONICAL_GATE"),
 }
 runtime_media_groups = [
     name
@@ -435,11 +589,14 @@ runtime_media_groups = [
         "systemd_units",
         "systemd_system_units",
         "systemd_dropins",
+        "oom_containment",
+        "apcupsd_power_alerts",
         "systemd_watchdogs",
         "recovery_bundle",
         "hapax_scripts",
         "unit_backing_scripts",
         "quake_assets",
+        "canonical_gate_closure",
     )
     if deploy_groups[name]
 ]
@@ -534,8 +691,23 @@ else
     FILES="$(git diff-tree --root --no-commit-id --name-only -r "$SHA" | sort -u)"
 fi
 
-PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); USER_PRESETS=(); WATCHDOGS=(); RECOVERY_BUNDLE=(); SCRIPTS=(); SCRIPT_PY=(); QUAKE_ASSETS=()
+PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); OOM_CONTAINMENT=(); APCUPSD_POWER_ALERTS=(); USER_PRESETS=(); WATCHDOGS=(); RECOVERY_BUNDLE=(); SCRIPTS=(); SCRIPT_PY=(); QUAKE_ASSETS=(); CANONICAL_GATE=()
+declare -A OOM_PACKAGE_PATHS=()
+declare -A APCUPSD_PACKAGE_PATHS=()
 GATE_CLOSURE=()
+# Must stay a superset of hooks-doctor's CLOSURE_SIBLINGS (+ the impl):
+# deploy_canonical REFUSES an incomplete staged closure, so a missing sibling
+# here would make every drift redeploy fail (and, under set -e, kill the
+# whole post-merge deploy) until the drift resolved itself.
+GATE_CLOSURE_FILES=(
+    hooks/scripts/cc-task-gate.impl.sh
+    hooks/scripts/agent-role.sh
+    hooks/scripts/escape-grant.sh
+    hooks/scripts/hapax_check_enable_latch.sh
+    hooks/scripts/cc-task-gate-bootstrap.py
+    hooks/scripts/hooks-doctor.sh
+)
+CANONICAL_HOOKS_DIR="${HAPAX_CANONICAL_HOOKS:-$HOME/.local/lib/hapax/hooks}"
 SYSTEMD_UNCLASSIFIED=()
 AUDIO_SAFE_RESTARTS=()
 RECOVERY_BUNDLE_SELF_HEAL=0
@@ -545,6 +717,43 @@ GOVERNED_INTAKE_PRESET_UNIT_SETS=(
     "hapax-cc-task-offer-ready.timer hapax-cc-task-offer-ready.service"
 )
 GOVERNED_INTAKE_PRESET_ENABLE=()
+
+load_root_required_manifest_paths() {
+    local manifest="$1" revision="$2" target_name="$3" content rel
+    local -n target="$target_name"
+    if [ "$COVERAGE_FROM_STDIN" = "1" ]; then
+        [ -f "$REPO/$manifest" ] || return 0
+        content="$(cat "$REPO/$manifest")"
+    else
+        content="$(git -C "$REPO" show "$revision:$manifest" 2>/dev/null || true)"
+    fi
+    while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
+        target["$rel"]=1
+    done < <(awk 'NF && $1 !~ /^#/ {print $1}' <<< "$content")
+}
+
+load_root_required_package_paths() {
+    local base_ref=""
+    load_root_required_manifest_paths \
+        config/root-required/oom-containment.files "$SHA" OOM_PACKAGE_PATHS
+    load_root_required_manifest_paths \
+        config/root-required/apcupsd-power-alerts.files "$SHA" APCUPSD_PACKAGE_PATHS
+    [ "$COVERAGE_FROM_STDIN" = "1" ] && return 0
+    if [ -n "$SINCE" ]; then
+        base_ref="$SINCE"
+    else
+        base_ref="$(git -C "$REPO" rev-parse --verify --quiet "$SHA^1" 2>/dev/null || true)"
+    fi
+    [ -n "$base_ref" ] || return 0
+    # Include the old manifest so removals still trigger their owning package.
+    load_root_required_manifest_paths \
+        config/root-required/oom-containment.files "$base_ref" OOM_PACKAGE_PATHS
+    load_root_required_manifest_paths \
+        config/root-required/apcupsd-power-alerts.files "$base_ref" APCUPSD_PACKAGE_PATHS
+}
+
+load_root_required_package_paths
 
 unit_install_scope() {
     local f="$1"
@@ -745,24 +954,130 @@ stage_coord_activation_before_restart() {
     HAPAX_COORD_DEPLOY_RESTART_IF_UP_TO_DATE=1 "$deploy_bin"
 }
 
+gate_closure_source_status() {
+    local present=0
+    local -a missing=()
+    local f
+    for f in "${GATE_CLOSURE_FILES[@]}"; do
+        if git cat-file -e "$SHA:$f" 2>/dev/null; then
+            present=$((present + 1))
+        else
+            missing+=("$f")
+        fi
+    done
+    if [ "$present" -eq 0 ]; then
+        return 1
+    fi
+    if [ "${#missing[@]}" -gt 0 ]; then
+        echo "hapax-post-merge-deploy: incomplete canonical gate closure at $SHA:" >&2
+        for f in "${missing[@]}"; do
+            echo "  missing $f" >&2
+        done
+        echo "hapax-post-merge-deploy: next: ensure every GATE_CLOSURE_FILES member exists at $SHA or remove the partial closure, then rerun hapax-post-merge-deploy for this merge" >&2
+        return 2
+    fi
+    return 0
+}
+
+stage_gate_closure() {
+    local stage="$1"
+    local f
+    mkdir -p "$stage/hooks/scripts"
+    for f in "${GATE_CLOSURE_FILES[@]}"; do
+        if ! git show "$SHA:$f" > "$stage/$f"; then
+            echo "hapax-post-merge-deploy: failed to materialize $f from $SHA; next: verify the source object exists and rerun hapax-post-merge-deploy for this merge" >&2
+            return 2
+        fi
+        chmod +x "$stage/$f" 2>/dev/null || true
+    done
+}
+
+canonical_gate_dest_for_source() {
+    local f="$1"
+    case "$f" in
+        hooks/scripts/cc-task-gate.impl.sh)
+            printf '%s\n' "$CANONICAL_HOOKS_DIR/cc-task-gate.sh"
+            ;;
+        *)
+            printf '%s/%s\n' "$CANONICAL_HOOKS_DIR" "$(basename "$f")"
+            ;;
+    esac
+}
+
+canonical_gate_closure_in_sync() {
+    local stage="$1"
+    local f src dest
+    for f in "${GATE_CLOSURE_FILES[@]}"; do
+        src="$stage/$f"
+        dest="$(canonical_gate_dest_for_source "$f")"
+        [ -r "$dest" ] || return 1
+        cmp -s "$src" "$dest" || return 1
+    done
+    return 0
+}
+
+reconcile_canonical_gate_closure() {
+    local source_status=0
+    local stage rc
+
+    gate_closure_source_status || source_status=$?
+    case "$source_status" in
+        0) ;;
+        1)
+            # Backward-compatible for old/synthetic repos used by tests; the
+            # production council tree always carries the hook closure.
+            return 0
+            ;;
+        *)
+            return "$source_status"
+            ;;
+    esac
+
+    stage="$(mktemp -d)"
+    if stage_gate_closure "$stage"; then
+        :
+    else
+        rc=$?
+        rm -rf "$stage" 2>/dev/null || true
+        return "$rc"
+    fi
+
+    if canonical_gate_closure_in_sync "$stage"; then
+        echo "canonical gate closure already matches $SHA"
+        rm -rf "$stage" 2>/dev/null || true
+        return 0
+    fi
+
+    CANONICAL_GATE+=("hooks/scripts/cc-task-gate.impl.sh")
+    if [ "$DRY_RUN" = "1" ]; then
+        echo "dry-run: canonical gate drift detected; would redeploy via hooks-doctor --deploy-canonical"
+        rm -rf "$stage" 2>/dev/null || true
+        return 0
+    fi
+
+    if [ "${#GATE_CLOSURE[@]}" -gt 0 ]; then
+        echo "gate closure changed (${#GATE_CLOSURE[@]}): redeploying canonical gate"
+    else
+        echo "canonical gate drift detected: redeploying canonical gate"
+    fi
+    if bash "$stage/hooks/scripts/hooks-doctor.sh" --deploy-canonical --from "$stage"; then
+        DID_ANYTHING=1
+        rm -rf "$stage" 2>/dev/null || true
+        return 0
+    else
+        rc=$?
+        rm -rf "$stage" 2>/dev/null || true
+        echo "hapax-post-merge-deploy: canonical gate deploy failed (rc=$rc); refusing to stamp last-deployed-sha; next: inspect hooks-doctor --deploy-canonical output, repair the staged closure, and rerun hapax-post-merge-deploy for this merge" >&2
+        return "$rc"
+    fi
+}
+
 # Per-file deploy uses `git cat-file -e $SHA:$path` + `git show $SHA:$path`
 # to read commit-time content, decoupling the deploy decision from local
 # working-tree state. Prior revision used [ -f $REPO/$f ] which raced the
 # working-tree pull: when the deploy fired BEFORE the main branch had been
 # pulled locally, a deletion commit's [ -f ] returned true (old file still
 # present) and the script mistakenly cp-re-deployed the pre-deletion version.
-if [ -z "$FILES" ]; then
-    if [ "$REPORT_COVERAGE" != "1" ]; then
-        TRACE_READY=1
-        if record_post_merge_trace "no_changes" "0"; then
-            TRACE_WRITTEN=1
-        fi
-        record_last_deployed_sha
-    fi
-    echo "no files changed in $SHA"
-    exit 0
-fi
-
 # Classify the file list. SYSTEMD_UNCLASSIFIED captures systemd/** paths
 # that DON'T match the case-globs below — used by --report-coverage to
 # catch the absence-class deploy bug where a new unit lands at a path
@@ -770,6 +1085,14 @@ fi
 # remediation epic).
 while IFS= read -r f; do
     [ -z "$f" ] && continue
+    if [ -n "${OOM_PACKAGE_PATHS[$f]+present}" ]; then
+        OOM_CONTAINMENT+=("$f")
+        continue
+    fi
+    if [ -n "${APCUPSD_PACKAGE_PATHS[$f]+present}" ]; then
+        APCUPSD_POWER_ALERTS+=("$f")
+        continue
+    fi
     case "$f" in
         # ARCHIVED confs are records, not deployables. Bash case-globs match
         # across slashes, so without this exclusion config/pipewire/archive/**
@@ -797,7 +1120,7 @@ while IFS= read -r f; do
             fi
             ;;
         systemd/*.service|systemd/*.timer|systemd/*.path) SYSTEMD+=("$f") ;;
-        systemd/units/*.service.d/*.conf|systemd/units/*.timer.d/*.conf) SYSTEMD_DROPINS+=("$f") ;;
+        systemd/units/*.service.d/*.conf|systemd/units/*.timer.d/*.conf|systemd/units/*.slice.d/*.conf|systemd/units/*.scope.d/*.conf) SYSTEMD_DROPINS+=("$f") ;;
         systemd/user-preset.d/*.preset)   USER_PRESETS+=("$f") ;;
         systemd/watchdogs/*)              WATCHDOGS+=("$f") ;;
         systemd/scripts/*)                ;; # installer helpers; run manually when needed
@@ -811,7 +1134,7 @@ while IFS= read -r f; do
         shared/__init__.py|shared/jsonl_append.py|shared/p0_incident_intake.py)
             RECOVERY_BUNDLE+=("$f")
             ;;
-        hooks/scripts/cc-task-gate.impl.sh|hooks/scripts/agent-role.sh|hooks/scripts/escape-grant.sh|hooks/scripts/cc-task-gate-bootstrap.py|hooks/scripts/hooks-doctor.sh|hooks/scripts/cc-task-gate.sh)
+        hooks/scripts/cc-task-gate.impl.sh|hooks/scripts/agent-role.sh|hooks/scripts/escape-grant.sh|hooks/scripts/hapax_check_enable_latch.sh|hooks/scripts/cc-task-gate-bootstrap.py|hooks/scripts/hooks-doctor.sh|hooks/scripts/cc-task-gate.sh)
             GATE_CLOSURE+=("$f") ;;
         assets/quake/maps/*|assets/quake/qc/*|assets/quake/csqc/*|assets/quake/models/*|assets/quake/sound/*|assets/quake/glsl/*|assets/quake/scripts/*|assets/quake/config/*|assets/quake/darkplaces/*)
             QUAKE_ASSETS+=("$f") ;;
@@ -842,8 +1165,27 @@ if [ "$REPORT_COVERAGE" = "1" ]; then
     exit 0
 fi
 
+if [ "$DRY_RUN" != "1" ]; then
+    reexec_with_safe_root_required_lock
+fi
+
 TRACE_READY=1
+if [ -z "$FILES" ]; then
+    reconcile_canonical_gate_closure
+    trace_status="no_changes"
+    if [ "$DID_ANYTHING" -ne 0 ]; then
+        trace_status="completed"
+    fi
+    if record_post_merge_trace "$trace_status" "0"; then
+        TRACE_WRITTEN=1
+    fi
+    record_last_deployed_sha
+    echo "no files changed in $SHA"
+    exit 0
+fi
+
 if [ "$DRY_RUN" = "1" ]; then
+    reconcile_canonical_gate_closure
     record_post_merge_trace "dry_run" "0"
     TRACE_WRITTEN=1
     echo "dry-run: post-merge deploy trace written to $TRACE_PATH"
@@ -1086,9 +1428,395 @@ if [ "${#RECOVERY_BUNDLE[@]}" -gt 0 ] || [ "$RECOVERY_BUNDLE_SELF_HEAL" = "1" ];
     DID_ANYTHING=1
 fi
 
+# --- P0 OOM containment system/user policy ---
+stage_root_required_package() {
+    local stage="$1" manifest="$2" label="$3"
+    local rel dest git_mode
+    if ! git cat-file -e "$SHA:$manifest" 2>/dev/null; then
+        echo "hapax-post-merge-deploy: missing $label manifest at $SHA:$manifest; next: restore the versioned ownership manifest and rerun hapax-post-merge-deploy for this merge" >&2
+        return 2
+    fi
+    while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
+        if ! git cat-file -e "$SHA:$rel" 2>/dev/null; then
+            echo "hapax-post-merge-deploy: missing $label source at $SHA:$rel; next: restore every path declared by $manifest and rerun hapax-post-merge-deploy for this merge" >&2
+            return 2
+        fi
+        git_mode="$(git -C "$REPO" ls-tree "$SHA" -- "$rel" | awk 'NR == 1 {print $1}')"
+        case "$git_mode" in
+            100644|100755) ;;
+            *)
+                echo "hapax-post-merge-deploy: unsupported $label Git mode ${git_mode:-missing} at $SHA:$rel; next: replace symlink/submodule entries with regular package files" >&2
+                return 2
+                ;;
+        esac
+        dest="$stage/$rel"
+        mkdir -p "$(dirname "$dest")"
+        git show "$SHA:$rel" > "$dest"
+        if [ "$git_mode" = "100755" ]; then
+            chmod 0755 "$dest"
+        else
+            chmod 0644 "$dest"
+        fi
+    done < <(git -C "$REPO" show "$SHA:$manifest" | awk 'NF && $1 !~ /^#/ {print $1}')
+    printf '%s\n' "$SHA" > "$stage/.hapax-root-required-package-sha"
+}
+
+stage_oom_containment_installer() {
+    stage_root_required_package \
+        "$1" config/root-required/oom-containment.files "OOM containment"
+}
+
+defer_root_required_installer() {
+    local label="$1" stage="$2" installer="$3" dest temp receipt
+    mkdir -p "$ROOT_DEFER_DIR"
+    dest="$ROOT_DEFER_DIR/$SHA/$label"
+    mkdir -p "$(dirname "$dest")"
+    receipt="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/$label.sha"
+    if [ -f "$receipt" ] && [ "$(tr -d '[:space:]' < "$receipt")" = "$SHA" ]; then
+        echo "root-required $label already installed at $SHA; deferral not recreated"
+        return 0
+    fi
+    temp="$ROOT_DEFER_DIR/$SHA/.${label}.tmp.$$"
+    rm -rf "$temp" 2>/dev/null || true
+    cp -a "$stage" "$temp"
+    cat > "$temp/RUNBOOK.txt" <<EOF
+Root-required post-merge deploy action deferred.
+
+Commit: $SHA
+Package: $label
+
+Run from this host after this root-authority preparation:
+
+  sudo -v
+
+Default sudo path after sudo -v:
+
+  HAPAX_ROOT_REQUIRED_PACKAGE_SHA=$SHA HAPAX_ROOT_REQUIRED_DRAIN_DIR=$dest HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT=$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT=$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_GIT_REPO=$REPO $dest/$installer --source $dest --install --verify-live
+
+Post-merge deploy continued after this deferral so unrelated user-scope deploy
+groups for the same merge were not skipped.
+EOF
+    rm -rf "$dest" 2>/dev/null || true
+    mv "$temp" "$dest"
+    echo "root-required $label install deferred to $dest"
+    echo "next action: run HAPAX_ROOT_REQUIRED_PACKAGE_SHA=$SHA HAPAX_ROOT_REQUIRED_DRAIN_DIR=$dest HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT=$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT=$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_GIT_REPO=$REPO $dest/$installer --source $dest --install --verify-live with root authority"
+}
+
+root_required_stage_matches_commit() {
+    local stage="$1" commit="$2" manifest_rel="$3" file rel git_mode stage_mode
+    cmp -s "$stage/$manifest_rel" <(git -C "$REPO" show "$commit:$manifest_rel" 2>/dev/null) || return 1
+    while IFS= read -r rel; do
+        file="$stage/$rel"
+        [ -f "$file" ] || return 1
+        [ ! -L "$file" ] || return 1
+        git -C "$REPO" cat-file -e "$commit:$rel" 2>/dev/null || return 1
+        cmp -s "$file" <(git -C "$REPO" show "$commit:$rel") || return 1
+        git_mode="$(git -C "$REPO" ls-tree "$commit" -- "$rel" | awk 'NR == 1 {print $1}')"
+        stage_mode=100644
+        [ -x "$file" ] && stage_mode=100755
+        [ "$git_mode" = "$stage_mode" ] || return 1
+    done < <(awk 'NF && $1 !~ /^#/ {print $1}' "$stage/$manifest_rel")
+}
+
+validate_root_required_stage_manifest() {
+    local stage="$1" manifest_rel="$2"
+    if ! cmp -s \
+        <(awk 'NF && $1 !~ /^#/ {print $1}' "$stage/$manifest_rel" | sort) \
+        <(find "$stage" -type f ! -name .hapax-root-required-package-sha -printf '%P\n' | sort); then
+        echo "hapax-post-merge-deploy: staged root-required package does not match $manifest_rel; next action: update the versioned ownership manifest and staging list together" >&2
+        return 1
+    fi
+}
+
+record_root_required_desired_sha() {
+    local label="$1" stage="$2" receipt temp current manifest_rel
+    case "$label" in
+        oom-containment) manifest_rel="config/root-required/oom-containment.files" ;;
+        apcupsd-power-alerts) manifest_rel="config/root-required/apcupsd-power-alerts.files" ;;
+        *) echo "hapax-post-merge-deploy: unknown root-required package label: $label; next action: use oom-containment or apcupsd-power-alerts from the governed staging path" >&2; return 2 ;;
+    esac
+    validate_root_required_stage_manifest "$stage" "$manifest_rel" || return 1
+    mkdir -p "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT"
+    receipt="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha"
+    if [ -f "$receipt" ]; then
+        current="$(tr -d '[:space:]' < "$receipt")"
+        if ! [[ "$current" =~ ^[0-9a-f]{40}$ ]] || ! git -C "$REPO" cat-file -e "$current^{commit}" 2>/dev/null; then
+            echo "hapax-post-merge-deploy: invalid or unavailable desired $label receipt $current; next action: restore the latest governed receipt and rerun this deploy" >&2
+            return 1
+        fi
+        if [ "$current" = "$SHA" ]; then
+            return 0
+        fi
+        if git -C "$REPO" merge-base --is-ancestor "$SHA" "$current"; then
+            echo "root-required $label desired state $current supersedes stale deploy $SHA; desired receipt preserved"
+            return 0
+        fi
+        if ! git -C "$REPO" merge-base --is-ancestor "$current" "$SHA"; then
+            if root_required_stage_matches_commit "$stage" "$current" "$manifest_rel"; then
+                echo "root-required $label desired state is ancestry-divergent but package-content equivalent; accepting squash/rebase transition to $SHA"
+            else
+                echo "hapax-post-merge-deploy: refusing divergent desired $label transition current=$current candidate=$SHA; next action: dispatch governed root-package reconciliation" >&2
+                return 1
+            fi
+        fi
+    fi
+    temp="$receipt.tmp.$$"
+    printf '%s\n' "$SHA" > "$temp"
+    mv -f "$temp" "$receipt"
+}
+
+# apcupsd must be active before the OOM package verifies the recovery plane.
+stage_apcupsd_power_alert_installer() {
+    stage_root_required_package \
+        "$1" config/root-required/apcupsd-power-alerts.files "apcupsd power-alert"
+}
+
+if [ "${#APCUPSD_POWER_ALERTS[@]}" -gt 0 ]; then
+    echo "apcupsd power-alert files changed (${#APCUPSD_POWER_ALERTS[@]}):"
+    for f in "${APCUPSD_POWER_ALERTS[@]}"; do
+        echo "  $f"
+    done
+    APCUPSD_STAGE="$(mktemp -d)"
+    set +e
+    stage_apcupsd_power_alert_installer "$APCUPSD_STAGE"
+    stage_apcupsd_rc=$?
+    set -e
+    if [ "$stage_apcupsd_rc" -ne 0 ]; then
+        rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
+        exit "$stage_apcupsd_rc"
+    fi
+    if ! record_root_required_desired_sha "apcupsd-power-alerts" "$APCUPSD_STAGE"; then
+        rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
+        exit 1
+    fi
+    set +e
+    HAPAX_ROOT_REQUIRED_PACKAGE_SHA="$SHA" \
+        HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" \
+        HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" \
+        HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" \
+        HAPAX_ROOT_REQUIRED_GIT_REPO="$REPO" \
+        "$APCUPSD_STAGE/$APCUPSD_INSTALLER_PATH" --source "$APCUPSD_STAGE" --install --verify-live
+    apcupsd_installer_rc=$?
+    set -e
+    if [ "$apcupsd_installer_rc" -eq "$ROOT_REQUIRED_RC" ]; then
+        defer_root_required_installer "apcupsd-power-alerts" "$APCUPSD_STAGE" "$APCUPSD_INSTALLER_PATH"
+    elif [ "$apcupsd_installer_rc" -ne 0 ]; then
+        rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
+        exit "$apcupsd_installer_rc"
+    fi
+    rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
+    DID_ANYTHING=1
+fi
+
+if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
+    echo "P0 OOM containment files changed (${#OOM_CONTAINMENT[@]}):"
+    for f in "${OOM_CONTAINMENT[@]}"; do
+        echo "  $f"
+    done
+    OOM_STAGE="$(mktemp -d)"
+    set +e
+    stage_oom_containment_installer "$OOM_STAGE"
+    stage_oom_rc=$?
+    set -e
+    if [ "$stage_oom_rc" -ne 0 ]; then
+        rm -rf "$OOM_STAGE" 2>/dev/null || true
+        exit "$stage_oom_rc"
+    fi
+    if ! record_root_required_desired_sha "oom-containment" "$OOM_STAGE"; then
+        rm -rf "$OOM_STAGE" 2>/dev/null || true
+        exit 1
+    fi
+    set +e
+    HAPAX_ROOT_REQUIRED_PACKAGE_SHA="$SHA" \
+        HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" \
+        HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" \
+        HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" \
+        HAPAX_ROOT_REQUIRED_GIT_REPO="$REPO" \
+        "$OOM_STAGE/$OOM_CONTAINMENT_INSTALLER_PATH" --source "$OOM_STAGE" --install --verify-live
+    oom_installer_rc=$?
+    set -e
+    if [ "$oom_installer_rc" -eq "$ROOT_REQUIRED_RC" ]; then
+        defer_root_required_installer "oom-containment" "$OOM_STAGE" "$OOM_CONTAINMENT_INSTALLER_PATH"
+    elif [ "$oom_installer_rc" -ne 0 ]; then
+        rm -rf "$OOM_STAGE" 2>/dev/null || true
+        exit "$oom_installer_rc"
+    fi
+    rm -rf "$OOM_STAGE" 2>/dev/null || true
+    DID_ANYTHING=1
+fi
+
+slice_memory_issue_from_content() {
+    awk '
+        function trim(value) {
+            sub(/^[[:space:]]+/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            return value
+        }
+        /^[[:space:]]*[#;]/ || /^[[:space:]]*$/ { next }
+        {
+            line = $0
+            candidate = trim(line)
+            if (candidate ~ /^\[[^]]+\]$/) {
+                section = candidate
+                gsub(/^\[|\]$/, "", section)
+                next
+            }
+            equals = index(line, "=")
+            if (!equals) { next }
+            key = trim(substr(line, 1, equals - 1))
+            value = trim(substr(line, equals + 1))
+            if (key !~ /^(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)$/) { next }
+            if (section != "Slice") {
+                print "memory property outside [Slice]: " candidate
+                exit
+            }
+            if (value !~ /^(infinity|[0-9]+([.][0-9]+)?([KMGTPE](iB|B)?)?|[0-9]+%)$/) {
+                print "invalid memory value: " candidate
+                exit
+            }
+        }
+    '
+}
+
+slice_memory_properties_from_content() {
+    awk '
+        function trim(value) {
+            sub(/^[[:space:]]+/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            return value
+        }
+        /^[[:space:]]*[#;]/ || /^[[:space:]]*$/ { next }
+        {
+            line = $0
+            candidate = trim(line)
+            if (candidate ~ /^\[[^]]+\]$/) {
+                section = candidate
+                gsub(/^\[|\]$/, "", section)
+                next
+            }
+            equals = index(line, "=")
+            if (!equals) { next }
+            key = trim(substr(line, 1, equals - 1))
+            value = trim(substr(line, equals + 1))
+            if (section == "Slice" && key ~ /^(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)$/) {
+                print key "=" value
+            }
+        }
+    '
+}
+
+generic_dropin_destination_is_replaced() {
+    local candidate="$1" changed rel
+    for changed in "${SYSTEMD_DROPINS[@]}"; do
+        rel="${changed#systemd/units/}"
+        if [ "$SYSTEMD_USER_DIR/$rel" = "$candidate" ] \
+            && git -C "$REPO" cat-file -e "$SHA:$changed" 2>/dev/null; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+validate_co_resident_slice_dropins() {
+    local dropin_dir="$1" conf content issue
+    for conf in "$SYSTEMD_USER_DIR/$dropin_dir"/*.conf; do
+        [ -e "$conf" ] || [ -L "$conf" ] || continue
+        generic_dropin_destination_is_replaced "$conf" && continue
+        if [ -L "$conf" ] || [ ! -f "$conf" ]; then
+            echo "hapax-post-merge-deploy: unsafe co-resident generic slice drop-in $conf is not a regular file; next action: remove the unsafe local entry or dispatch a slice-specific reconciliation before retrying activation" >&2
+            return 1
+        fi
+        content="$(cat "$conf")"
+        issue="$(printf '%s\n' "$content" | slice_memory_issue_from_content)"
+        if [ -n "$issue" ]; then
+            echo "hapax-post-merge-deploy: unsafe co-resident generic slice drop-in $conf: $issue; next action: repair or remove the local drift before retrying the governed slice activation" >&2
+            return 1
+        fi
+    done
+}
+
+validate_generic_dropin_activation() {
+    local f="$1" rel dropin_dir unit_name content unsupported invalid_memory old_content old_prop dest deployed_content
+    rel="${f#systemd/units/}"
+    dropin_dir="$(dirname "$rel")"
+    unit_name="${dropin_dir%.d}"
+    case "$unit_name" in
+        *.scope)
+            echo "hapax-post-merge-deploy: refusing generic scope drop-in deploy for $f; next action: use a governed scope-specific installer that updates the transient scope without restarting it" >&2
+            return 1
+            ;;
+        *.slice)
+            if ! git -C "$REPO" cat-file -e "$SHA:$f" 2>/dev/null; then
+                echo "hapax-post-merge-deploy: refusing generic slice drop-in deletion for $f because runtime set-property overrides cannot be safely inferred; next action: use a governed slice-specific removal that clears persistent and runtime policy together" >&2
+                return 1
+            fi
+            content="$(git -C "$REPO" show "$SHA:$f")"
+            invalid_memory="$(printf '%s\n' "$content" | awk -F= '
+                /^(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)=/ {
+                    if ($2 !~ /^(infinity|[0-9]+([.][0-9]+)?([KMGTPE](iB|B)?)?|[0-9]+%)$/) {
+                        print
+                        exit
+                    }
+                }
+            ')"
+            if [ -n "$invalid_memory" ]; then
+                echo "hapax-post-merge-deploy: invalid generic slice memory value in $f: $invalid_memory; next action: use a systemd memory size, percentage, or infinity before retrying activation" >&2
+                return 1
+            fi
+            unsupported="$(printf '%s\n' "$content" | awk '
+                /^[[:space:]]*$/ || /^[[:space:]]*[#;]/ { next }
+                /^[[:space:]]*\[Slice\][[:space:]]*$/ { section = "slice"; next }
+                /^[[:space:]]*\[[^]]+\][[:space:]]*$/ { print; exit }
+                /^(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)=[^[:space:]].*$/ {
+                    if (section != "slice") { print; exit }
+                    next
+                }
+                { print; exit }
+            ')"
+            if [ -n "$unsupported" ]; then
+                echo "hapax-post-merge-deploy: unsupported generic slice directive in $f: $unsupported; next action: use only MemoryHigh/MemoryMax/MemorySwapMax/MemoryLow/MemoryMin or dispatch a slice-specific activation path" >&2
+                return 1
+            fi
+            if ! grep -Eq '^(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)=' <<< "$content"; then
+                echo "hapax-post-merge-deploy: no runtime-safe memory property found in generic slice drop-in $f; next action: use a slice-specific installer for non-memory directives" >&2
+                return 1
+            fi
+            dest="$SYSTEMD_USER_DIR/$rel"
+            if [ -L "$dest" ] || { [ -e "$dest" ] && [ ! -f "$dest" ]; }; then
+                echo "hapax-post-merge-deploy: unsafe changed generic slice destination $dest is not a regular file, so prior runtime properties cannot be established; next action: replace the unsafe entry with its last deployed regular content or use a governed slice-specific reconciliation" >&2
+                return 1
+            fi
+            validate_co_resident_slice_dropins "$dropin_dir" || return 1
+            old_content=""
+            if [ -n "${DROPIN_BASE_REF:-}" ] \
+                && git -C "$REPO" cat-file -e "$DROPIN_BASE_REF:$f" 2>/dev/null; then
+                old_content="$(git -C "$REPO" show "$DROPIN_BASE_REF:$f")"
+            fi
+            if [ -f "$dest" ]; then
+                deployed_content="$(cat "$dest")"
+                old_content="${old_content}${old_content:+$'\n'}${deployed_content}"
+            fi
+            if [ -n "$old_content" ]; then
+                while IFS= read -r old_prop; do
+                    [ -n "$old_prop" ] || continue
+                    if ! grep -q "^${old_prop}=" <<< "$content"; then
+                        echo "hapax-post-merge-deploy: refusing generic removal of $old_prop from $f because its runtime override would remain stale; next action: use a governed slice-specific transition that resets the removed property" >&2
+                        return 1
+                    fi
+                done < <(printf '%s\n' "$old_content" | slice_memory_properties_from_content | cut -d= -f1 | sort -u || true)
+            fi
+            ;;
+    esac
+}
+
 # --- systemd unit drop-ins ---
 if [ "${#SYSTEMD_DROPINS[@]}" -gt 0 ]; then
     echo "systemd drop-ins changed (${#SYSTEMD_DROPINS[@]}):"
+    DROPIN_BASE_REF="${SINCE:-${FIRST_PARENT:-}}"
+    for f in "${SYSTEMD_DROPINS[@]}"; do
+        validate_generic_dropin_activation "$f"
+    done
     mkdir -p "$SYSTEMD_USER_DIR"
     DROPIN_UNITS_TO_RESTART=()
     for f in "${SYSTEMD_DROPINS[@]}"; do
@@ -1100,7 +1828,21 @@ if [ "${#SYSTEMD_DROPINS[@]}" -gt 0 ]; then
         dest="$dest_dir/$conf_name"
         mkdir -p "$dest_dir"
         if git cat-file -e "$SHA:$f" 2>/dev/null; then
-            git show "$SHA:$f" > "$dest"
+            if ! dropin_temp="$(mktemp "$dest_dir/.${conf_name}.tmp.XXXXXX")"; then
+                echo "hapax-post-merge-deploy: unable to reserve a temporary path for $f; next action: verify destination ownership and capacity, then rerun the governed deploy" >&2
+                exit 1
+            fi
+            if ! git show "$SHA:$f" > "$dropin_temp"; then
+                rm -f "$dropin_temp" 2>/dev/null || true
+                echo "hapax-post-merge-deploy: unable to materialize $f before drop-in activation; next action: verify the commit object and rerun the governed deploy" >&2
+                exit 1
+            fi
+            chmod 0644 "$dropin_temp"
+            if ! mv -fT "$dropin_temp" "$dest"; then
+                rm -f "$dropin_temp" 2>/dev/null || true
+                echo "hapax-post-merge-deploy: unable to atomically replace drop-in $dest; next action: remove unsafe destination drift and rerun the governed deploy" >&2
+                exit 1
+            fi
             echo "  '$f' -> '$dest'"
             DROPIN_UNITS_TO_RESTART+=("$unit_name")
         else
@@ -1109,7 +1851,27 @@ if [ "${#SYSTEMD_DROPINS[@]}" -gt 0 ]; then
     done
     systemctl --user daemon-reload
     for u in "${DROPIN_UNITS_TO_RESTART[@]}"; do
-        if systemctl --user is-active --quiet "$u"; then
+        if [[ "$u" == *.slice ]]; then
+            slice_props=()
+            for conf in "$SYSTEMD_USER_DIR/$u.d"/*.conf; do
+                [ -f "$conf" ] || continue
+                content="$(cat "$conf")"
+                issue="$(printf '%s\n' "$content" | slice_memory_issue_from_content)"
+                if [ -n "$issue" ]; then
+                    echo "hapax-post-merge-deploy: refusing runtime promotion from unsafe generic slice drop-in $conf after daemon reload: $issue; next action: repair local slice drift and rerun the governed deploy" >&2
+                    exit 1
+                fi
+                while IFS= read -r prop; do
+                    slice_props+=("$prop")
+                done < <(printf '%s\n' "$content" | slice_memory_properties_from_content)
+            done
+            if [ "${#slice_props[@]}" -gt 0 ]; then
+                echo "applying active slice properties for $u without restart"
+                systemctl --user set-property --runtime "$u" "${slice_props[@]}"
+            else
+                echo "not restarting active slice $u after drop-in deploy; no runtime set-property candidates found"
+            fi
+        elif systemctl --user is-active --quiet "$u"; then
             echo "restarting $u"
             restart_user_unit "$u"
         elif [[ "$u" == *.timer ]]; then
@@ -1160,7 +1922,14 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
     for f in "${SYSTEMD_INSTALLED[@]}"; do
         base="$(basename "$f")"
         unit_content="$(git show "$SHA:$f" 2>/dev/null || true)"
-        if systemctl --user is-active --quiet "$base"; then
+        if unit_content_parked "$unit_content"; then
+            echo "parking $base (Hapax-Parked marker)"
+            if ! systemctl --user disable --now "$base"; then
+                echo "hapax-post-merge-deploy: unable to disable parked unit $base; next action: inspect systemctl --user status $base and rerun the governed deploy" >&2
+                exit 1
+            fi
+            systemctl --user reset-failed "$base" >/dev/null 2>&1 || true
+        elif systemctl --user is-active --quiet "$base"; then
             if [[ "$base" == *.timer ]] && unit_content_timer_enable_only "$unit_content"; then
                 echo "leaving active $base running (Hapax-Timer-Enable-Only marker; not restarting during deploy)"
                 systemctl --user enable "$base"
@@ -1278,7 +2047,28 @@ if [ "${#USER_PRESETS[@]}" -gt 0 ]; then
     DID_ANYTHING=1
 fi
 
-# --- scripts/hapax-* symlinks ---
+publish_git_executable_at_sha() {
+    local source_path="$1" dest="$2" dest_dir base temp
+    dest_dir="$(dirname "$dest")"
+    base="$(basename "$dest")"
+    if ! temp="$(mktemp "$dest_dir/.${base}.tmp.XXXXXX")"; then
+        echo "hapax-post-merge-deploy: unable to reserve a temporary launcher beside $dest; next action: verify destination ownership and capacity, then rerun the governed deploy" >&2
+        return 1
+    fi
+    if ! git -C "$REPO" show "$SHA:$source_path" > "$temp"; then
+        rm -f "$temp" 2>/dev/null || true
+        echo "hapax-post-merge-deploy: unable to materialize $source_path for $dest; next action: verify the commit object and rerun the governed deploy" >&2
+        return 1
+    fi
+    chmod 0755 "$temp"
+    if ! mv -fT -- "$temp" "$dest"; then
+        rm -f "$temp" 2>/dev/null || true
+        echo "hapax-post-merge-deploy: unable to atomically publish launcher $dest; next action: move unsafe destination drift aside and rerun the governed deploy" >&2
+        return 1
+    fi
+}
+
+# --- scripts/hapax-* release copies ---
 if [ "${#SCRIPTS[@]}" -gt 0 ]; then
     echo "scripts changed (${#SCRIPTS[@]}):"
     mkdir -p "$LOCAL_BIN"
@@ -1288,9 +2078,7 @@ if [ "${#SCRIPTS[@]}" -gt 0 ]; then
         if git -C "$REPO" cat-file -e "$SHA:$f" 2>/dev/null; then
             # Copy-from-SHA (the WATCHDOGS pattern): the installed script is the
             # deployed release's content, never a live view of a mutable tree.
-            if [ -L "$dest" ]; then rm -f "$dest"; fi
-            git -C "$REPO" show "$SHA:$f" > "$dest"
-            chmod +x "$dest" 2>/dev/null || true
+            publish_git_executable_at_sha "$f" "$dest"
             echo "  '$f' -> '$dest' (copy @ ${SHA:0:9})"
         else
             rm -fv "$dest" || true
@@ -1358,37 +2146,11 @@ if [ "${#QUAKE_ASSETS[@]}" -gt 0 ]; then
 fi
 
 # --- canonical gate closure (reform FM-6 shim collapse) ---
-# When the gate impl or its sourced siblings change, redeploy the ONE canonical
-# copy that every worktree's cc-task-gate.sh shim resolves to. Materialize the
-# closure from $SHA (commit-time content, decoupled from the working tree like
-# every other deploy here), then hand it to hooks-doctor --deploy-canonical, which
-# renames the impl to cc-task-gate.sh, writes a sha256 MANIFEST, symlinks
-# ~/.local/bin/hapax-hooks-doctor, and REFUSES any impl missing the INV-5
-# is_cognition_path carve-out (so a bad gate never lands fleet-wide).
-if [ "${#GATE_CLOSURE[@]}" -gt 0 ]; then
-    echo "gate closure changed (${#GATE_CLOSURE[@]}): redeploying canonical gate"
-    GATE_STAGE="$(mktemp -d)"
-    mkdir -p "$GATE_STAGE/hooks/scripts"
-    # The full closure the impl needs at runtime: the impl, the files it sources
-    # (agent-role, escape-grant) AND invokes (cc-task-gate-bootstrap.py, §3b), plus
-    # the doctor. Omitting any makes the deployed gate exit 2 on every mutation.
-    for f in hooks/scripts/cc-task-gate.impl.sh hooks/scripts/agent-role.sh \
-             hooks/scripts/escape-grant.sh hooks/scripts/cc-task-gate-bootstrap.py \
-             hooks/scripts/hooks-doctor.sh; do
-        if git cat-file -e "$SHA:$f" 2>/dev/null; then
-            git show "$SHA:$f" > "$GATE_STAGE/$f"
-            chmod +x "$GATE_STAGE/$f" 2>/dev/null || true
-        fi
-    done
-    if [ -x "$GATE_STAGE/hooks/scripts/hooks-doctor.sh" ]; then
-        bash "$GATE_STAGE/hooks/scripts/hooks-doctor.sh" --deploy-canonical --from "$GATE_STAGE" \
-            || echo "warning: canonical gate deploy failed" >&2
-    else
-        echo "warning: hooks-doctor.sh absent at $SHA; skipping canonical gate deploy" >&2
-    fi
-    rm -rf "$GATE_STAGE" 2>/dev/null || true
-    DID_ANYTHING=1
-fi
+# Every real deploy invocation reconciles the canonical hook closure, even when
+# the current diff did not touch gate files. This closes the pre-existing-drift
+# gap where a missed/failed deploy left ~/.local/lib/hapax/hooks stale forever
+# while later merges stamped last-deployed-sha as healthy.
+reconcile_canonical_gate_closure
 
 if [ "$DID_ANYTHING" -eq 0 ]; then
     echo "merge $SHA: no manual deploys needed (only auto-rebuild paths changed)"

@@ -72,11 +72,11 @@ def build_catalog_metadata(
             "Each entry maps a detected highlight to its polysemic decoder channel "
             "and platform upload URLs."
         ),
-        "creators": [{"name": "Hapax System", "affiliation": "hapax.github.io"}],
+        "creators": [{"name": "Hapax System", "affiliation": "hapax.weblog.lol"}],
         "keywords": ["hapax", "auto-clip", "shorts", "livestream", "catalog"],
         "related_identifiers": [
             {
-                "identifier": "https://hapax.github.io",
+                "identifier": "https://hapax.weblog.lol",
                 "relation": "isPartOf",
                 "scheme": "url",
             }

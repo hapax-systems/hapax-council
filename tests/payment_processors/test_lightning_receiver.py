@@ -107,7 +107,7 @@ class TestPollOnce:
         # Subsequent polls are no-ops
         assert receiver.poll_once() == 0
 
-    def test_200_emits_event(self, tmp_path, monkeypatch):
+    def test_200_emits_event(self, tmp_path, monkeypatch, _durable_chronicle):
         log_path = tmp_path / "events.jsonl"
         monkeypatch.setattr(
             "agents.payment_processors.event_log.DEFAULT_PAYMENT_LOG_PATH",

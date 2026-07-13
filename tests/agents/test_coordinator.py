@@ -14,6 +14,8 @@ from pathlib import Path
 from types import ModuleType
 from unittest.mock import patch
 
+import pytest
+
 from agents.coordinator.core import (
     _DISPATCH_CLAIM_GUARD_MARKERS,
     _DISPATCH_CLOSE_GUARD_MARKERS,
@@ -96,7 +98,6 @@ class TestDispatchWorktreeGuard:
             assert _dispatch_worktree("beta", "claude") == root / "hapax-council--beta"
             assert _dispatch_worktree("gamma", "gemini") == root / "hapax-council"
             assert _dispatch_worktree("vbe-1", "vibe") == root / "hapax-council--vbe-1"
-            assert _dispatch_worktree("antigravity", "antigrav") == root / "hapax-council--antigrav"
             assert _dispatch_worktree("other", "unknown") == root / "hapax-council"
 
     def test_dispatch_worktree_expands_project_root_home(self, tmp_path: Path):
@@ -120,7 +121,6 @@ class TestDispatchWorktreeGuard:
             ("beta", "claude"),
             ("gamma", "gemini"),
             ("vbe-1", "vibe"),
-            ("antigravity", "antigrav"),
             ("other", "unknown"),
         )
 
@@ -293,7 +293,27 @@ class TestDispatchWorktreeGuard:
         assert blocker is not None
         assert "unsupported dispatch platform 'antigrav'" in blocker
         assert "next_action=" in blocker
-        assert "add coordinator headless dispatch support for 'antigrav'" in blocker
+        assert "mint measured supply-leaf intake" in blocker
+
+    @pytest.mark.parametrize("platform", ["agy", "antigravity", "gemini-cli"])
+    def test_dispatch_tool_blocker_retired_aliases_keep_intake_next_action(
+        self,
+        tmp_path: Path,
+        platform: str,
+    ):
+        with (
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch(
+                "agents.coordinator.core._read_dispatch_guard",
+                side_effect=AssertionError("unsupported platform should not read guard files"),
+            ),
+        ):
+            blocker = _dispatch_tool_blocker(platform, platform)
+
+        assert blocker is not None
+        assert f"unsupported dispatch platform '{platform}'" in blocker
+        assert "mint measured supply-leaf intake" in blocker
+        assert "add coordinator headless dispatch support" not in blocker
 
 
 class TestParseTask:
@@ -429,6 +449,53 @@ assigned_to: cx-red
         )
 
         assert platforms == ("codex",)
+
+    def test_malformed_route_metadata_fails_closed_not_base(self):
+        """R5 scope-mask fail-close, through the REAL parser (no mock): declared-but-
+        unparseable route metadata means the scope NEVER/ONLY mask cannot be read, so
+        suitability must be () (held) — never the unconstrained base. This is the exact
+        fixture the review flagged: assess_route_metadata does NOT raise on it — it returns
+        status=MALFORMED with metadata=None — so the fail-close must key on status, and a
+        test that mocks the parser to raise would green-light the live fail-open."""
+        # No patch: the real assess_route_metadata classifies this as MALFORMED.
+        platforms = _effective_platform_suitability(
+            ["claude", "codex"],
+            {"route_metadata_schema": 1, "route_constraints": "not-a-dict"},
+        )
+        assert platforms == ()
+
+    def test_nested_route_metadata_malformed_mask_fails_closed(self):
+        """A scope mask declared under the NESTED route_metadata mapping
+        (route_metadata.route_constraints) that is unparseable must ALSO fail closed —
+        a top-level-key-only guard missed this form (review finding). Mask presence is
+        detected with the canonical route_metadata_payload_from_frontmatter extractor."""
+        platforms = _effective_platform_suitability(
+            ["claude", "codex"],
+            {"route_metadata_schema": 1, "route_metadata": {"route_constraints": "not-a-dict"}},
+        )
+        assert platforms == ()
+
+    def test_malformed_explicit_metadata_with_a_mask_fails_closed(self):
+        """A declared explicit block whose OTHER fields are unparseable (invalid quality_floor)
+        is MALFORMED — even though a route_constraints mask is present, it cannot be trusted,
+        so suitability fails closed to () rather than reading a mask off untrusted metadata."""
+        platforms = _effective_platform_suitability(
+            ["claude", "codex"],
+            {
+                "route_metadata_schema": 1,
+                "quality_floor": "not-a-real-floor",
+                "authority_level": "authoritative",
+                "mutation_surface": "source",
+                "route_constraints": {"prohibited_platforms": ["codex"]},
+            },
+        )
+        assert platforms == ()
+
+    def test_no_route_metadata_keeps_base_suitability(self):
+        """Absence of declared constraints (metadata is None) is NOT the same as
+        cannot-determine: with no route_metadata the base suitability stands."""
+        platforms = _effective_platform_suitability(["claude", "codex"], {})
+        assert set(platforms) == {"claude", "codex"}
 
     def test_required_interactive_mode_is_not_coordinator_routable(self):
         platforms = _effective_platform_suitability(
@@ -708,10 +775,7 @@ current_claim: null
         assert state.dispatch_ready is False
         assert state.dispatch_blocked_reason is not None
         assert "unsupported dispatch platform 'antigrav'" in state.dispatch_blocked_reason
-        assert (
-            "add coordinator headless dispatch support for 'antigrav'"
-            in state.dispatch_blocked_reason
-        )
+        assert "mint measured supply-leaf intake" in state.dispatch_blocked_reason
 
     def test_relay_claim_beats_stale_active_claim_file(self, tmp_path: Path):
         relay_dir = tmp_path / "relay"
@@ -1086,8 +1150,76 @@ current_claim: stale-task-{index}
                 assert state.dispatchable is False
 
         assert _relay_status_is_retired("retiring") is False
-        assert _relay_status_is_retired("superseded-by-cx-blue") is False
-        assert _relay_status_is_retired("closed-by-operator") is False
+        # SUPERSEDED/CLOSED are now retired (broad-9: the launcher is the refusal
+        # surface; the coordinator previously under-refused these -> routed -> rc=6).
+        assert _relay_status_is_retired("superseded-by-cx-blue") is True
+        assert _relay_status_is_retired("closed-by-operator") is True
+
+    def test_retired_relay_multidoc_latest_document_suppresses_claim(self, tmp_path: Path):
+        role = "cx-multidoc-retired"
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        (relay_dir / f"{role}.yaml").write_text(
+            """status: active
+current_claim: stale-task
+---
+status: retired
+current_claim: stale-task
+""",
+            encoding="utf-8",
+        )
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role=role,
+                    session=f"hapax-codex-{role}",
+                    platform="codex",
+                )
+            )
+
+        assert state.alive is True
+        assert state.claimed_task is None
+        assert state.idle is True
+        assert state.dispatchable is False
+
+    def test_retired_relay_status_union_suppresses_claim(self, tmp_path: Path):
+        role = "cx-relay-status-retired"
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        (relay_dir / f"{role}.yaml").write_text(
+            """status: active
+relay_status: closed-by-operator
+current_claim: stale-task
+""",
+            encoding="utf-8",
+        )
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role=role,
+                    session=f"hapax-codex-{role}",
+                    platform="codex",
+                )
+            )
+
+        assert state.alive is True
+        assert state.claimed_task is None
+        assert state.idle is False
+        assert state.dispatchable is False
 
     def test_active_task_file_still_beats_retired_role_status(self, tmp_path: Path):
         role = "ut-role"

@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -859,6 +860,10 @@ def test_appendix_hop_threads_session_identity_end_to_end(tmp_path: Path) -> Non
     # materialization path can have written it), single-line format.
     keyed = cache / f"cc-active-task-beta-{sid}"
     assert keyed.read_text(encoding="utf-8") == "task-x\n"
+    epoch_sidecar = cache / f"cc-claim-epoch-beta-{sid}"
+    epoch, _, sidecar_task = epoch_sidecar.read_text(encoding="utf-8").strip().partition(" ")
+    assert epoch.isdigit()
+    assert sidecar_task == "task-x"
 
     # The dispatch proof witnesses the session, not just the pid.
     proofs = sorted((cache / "orchestration" / "dispatch-host-proofs").glob("*.json"))
@@ -868,3 +873,380 @@ def test_appendix_hop_threads_session_identity_end_to_end(tmp_path: Path) -> Non
     assert proof["role"] == "beta"
     assert proof["task_id"] == "task-x"
     assert proof["claim_materialized"] is True
+
+
+# ---------------------------------------------------------------------------
+# task_is_terminal: claim-stamp drift must not reap a fresh live lane.
+# 2026-07-01 eta/ndcvb-phase1 incident: cc-claim's note stamp landed partially
+# (claimed_at key absent in the authored note), cc-hygiene H1 reverted the
+# note to offered/unassigned 13s later, and the assigned-mismatch branch
+# returned terminal — SIGTERMing a healthy freshly-launched worker.
+# ---------------------------------------------------------------------------
+
+
+def _run_task_is_terminal_result(
+    tmp_path: Path,
+    *,
+    cache_task: str | None,
+    note_status: str,
+    note_assigned: str,
+    cache_age_s: int = 0,
+    note_pr: int | None = None,
+    gh_state: str = "",
+    legacy_cache: bool = False,
+    sidecar_task: str | None = None,
+    session_keyed_cache: bool = False,
+    legacy_cache_task: str | None = None,
+    older_matching_session_cache: bool = False,
+    epoch_check_bypass: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    """Extract task_is_terminal() from the launcher and drive it with fixtures.
+
+    Returns the bash exit code: 0 = terminal (lane reaped), 1 = live.
+
+    ``cache_age_s`` ages the claim EPOCH recorded in the task-bound
+    ``cc-claim-epoch-*`` sidecar while the claim file's mtime stays fresh —
+    deliberately simulating the cc-task-gate lease-keep-alive ``touch`` that
+    makes mtime useless as a claim-age witness. ``legacy_cache`` writes no
+    sidecar (non-conforming-writer shape). ``sidecar_task`` overrides the
+    task id recorded in the sidecar (stale-sidecar shape).
+    """
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True, exist_ok=True)
+    note = tmp_path / "note.md"
+    pr_line = f"pr: {note_pr}\n" if note_pr is not None else ""
+    note.write_text(
+        f"---\nstatus: {note_status}\nassigned_to: {note_assigned}\n{pr_line}---\n",
+        encoding="utf-8",
+    )
+    sid = "9b6ba5ca-513c-41aa-9900-d3026b42aad1"
+    old_sid = "00000000-0000-4000-8000-000000000001"
+    claim_file = cache / "cc-active-task-eta"
+    session_claim_file = cache / f"cc-active-task-eta-{sid}"
+    active_claim_file = session_claim_file if session_keyed_cache else claim_file
+    sidecar = (
+        cache / f"cc-claim-epoch-eta-{sid}" if session_keyed_cache else cache / "cc-claim-epoch-eta"
+    )
+    sidecar.unlink(missing_ok=True)
+    if older_matching_session_cache:
+        older_claim = cache / f"cc-active-task-eta-{old_sid}"
+        older_sidecar = cache / f"cc-claim-epoch-eta-{old_sid}"
+        older_claim.write_text("task-under-test\n", encoding="utf-8")
+        older_sidecar.write_text(f"{int(time.time()) - 3600} task-under-test\n", encoding="utf-8")
+    if legacy_cache_task is not None:
+        claim_file.write_text(legacy_cache_task + "\n", encoding="utf-8")
+    if cache_task is not None:
+        active_claim_file.write_text(cache_task + "\n", encoding="utf-8")
+        if legacy_cache:
+            if cache_age_s:
+                aged = time.time() - cache_age_s
+                os.utime(active_claim_file, (aged, aged))
+        else:
+            epoch = int(time.time()) - cache_age_s
+            bound_task = sidecar_task if sidecar_task is not None else cache_task
+            sidecar.write_text(f"{epoch} {bound_task}\n", encoding="utf-8")
+    text = SCRIPT.read_text(encoding="utf-8")
+    start = text.index("task_is_terminal()")
+    end = text.index("\n}\n", start) + 3
+    func = text[start:end]
+    gh_stub = f'gh() {{ echo "{gh_state}"; }}' if gh_state else "gh() { return 1; }"
+    harness = "\n".join(
+        [
+            "set -u",
+            f'HOME="{home}"',
+            'ROLE="eta"',
+            f'CLAIM_FILE="{claim_file}"',
+            f'SESSION_CLAIM_FILE="{session_claim_file}"',
+            f'HAPAX_CLAIM_EPOCH_CHECK_BYPASS="{1 if epoch_check_bypass else 0}"',
+            f'find_active_note() {{ echo "{note}"; }}',
+            gh_stub,
+            func,
+            'task_is_terminal "task-under-test"',
+        ]
+    )
+    result = subprocess.run(["bash", "-c", harness], text=True, capture_output=True, check=False)
+    assert result.returncode in (0, 1), result.stderr
+    return result
+
+
+def _run_task_is_terminal(
+    tmp_path: Path,
+    *,
+    cache_task: str | None,
+    note_status: str,
+    note_assigned: str,
+    cache_age_s: int = 0,
+    note_pr: int | None = None,
+    gh_state: str = "",
+    legacy_cache: bool = False,
+    sidecar_task: str | None = None,
+    session_keyed_cache: bool = False,
+    legacy_cache_task: str | None = None,
+    older_matching_session_cache: bool = False,
+    epoch_check_bypass: bool = False,
+) -> int:
+    """Return the bash exit code: 0 = terminal (lane reaped), 1 = live."""
+    result = _run_task_is_terminal_result(
+        tmp_path,
+        cache_task=cache_task,
+        note_status=note_status,
+        note_assigned=note_assigned,
+        cache_age_s=cache_age_s,
+        note_pr=note_pr,
+        gh_state=gh_state,
+        legacy_cache=legacy_cache,
+        sidecar_task=sidecar_task,
+        session_keyed_cache=session_keyed_cache,
+        legacy_cache_task=legacy_cache_task,
+        older_matching_session_cache=older_matching_session_cache,
+        epoch_check_bypass=epoch_check_bypass,
+    )
+    return result.returncode
+
+
+def test_terminal_check_survives_claim_stamp_drift(tmp_path: Path) -> None:
+    """Matching claim cache + ghost-reverted note (offered/unassigned) = LIVE."""
+    rc = _run_task_is_terminal(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="offered",
+        note_assigned="unassigned",
+    )
+    assert rc == 1
+
+
+def test_terminal_check_reaps_reassignment_even_with_fresh_cache(
+    tmp_path: Path,
+) -> None:
+    """assigned_to naming ANOTHER ROLE is definitive terminal even while our
+    cache is fresh — the gate touches the cache before any check (lease
+    keep-alive), so a reassigned old lane attempting gated writes keeps its
+    own cache fresh; an mtime bound alone could never reap it."""
+    rc = _run_task_is_terminal(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="claimed",
+        note_assigned="some-other-role",
+        cache_age_s=0,
+    )
+    assert rc == 0
+
+
+def test_terminal_check_reaps_long_unassigned_despite_gate_heartbeat(
+    tmp_path: Path,
+) -> None:
+    """The H1-revert indeterminate shape is bounded by the claim EPOCH in the
+    cache content — the harness keeps mtime fresh (the gate's lease
+    keep-alive touch), so this proves the bound is heartbeat-immune: a lane
+    sitting on a long-unassigned task reaps even while it keeps writing."""
+    rc = _run_task_is_terminal(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="offered",
+        note_assigned="unassigned",
+        cache_age_s=3600,
+    )
+    assert rc == 0
+
+
+@pytest.mark.parametrize("note_assigned", ["", "null", "none", "~", "[]", '"null"'])
+def test_terminal_check_treats_nullish_assignee_as_unassigned(
+    tmp_path: Path, note_assigned: str
+) -> None:
+    """Nullish YAML spellings are the unassigned drift shape, not a named role."""
+    rc = _run_task_is_terminal(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="offered",
+        note_assigned=note_assigned,
+        cache_age_s=3600,
+    )
+    assert rc == 0
+
+
+def test_terminal_check_reaps_sidecarless_cache(tmp_path: Path) -> None:
+    """No mtime fallback: mtime is heartbeat-refreshed by the gate, so a
+    matching cache with NO sidecar (non-conforming writer) reaps in the
+    unassigned-drift shape rather than living unbounded."""
+    result = _run_task_is_terminal_result(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="offered",
+        note_assigned="unassigned",
+        legacy_cache=True,
+    )
+    assert result.returncode == 0
+    assert "no valid task-bound epoch sidecar" in result.stderr
+    assert "non-conforming writer" in result.stderr
+
+
+def test_terminal_check_ignores_stale_sidecar_bound_to_other_task(tmp_path: Path) -> None:
+    """A sidecar naming a DIFFERENT task (stale leftover from an earlier
+    claim) must not vouch for this claim — the lane reaps."""
+    result = _run_task_is_terminal_result(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="offered",
+        note_assigned="unassigned",
+        sidecar_task="an-earlier-task",
+    )
+    assert result.returncode == 0
+    assert "sidecar names task=an-earlier-task" in result.stderr
+    assert "stale sidecar" in result.stderr
+
+
+def test_terminal_check_logs_expired_unassigned_claim(tmp_path: Path) -> None:
+    result = _run_task_is_terminal_result(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="offered",
+        note_assigned="unassigned",
+        cache_age_s=3600,
+    )
+    assert result.returncode == 0
+    assert "exceeds grace=600s" in result.stderr
+    assert "stale unassigned claim" in result.stderr
+
+
+def test_terminal_check_uses_session_keyed_epoch_sidecar(tmp_path: Path) -> None:
+    result = _run_task_is_terminal_result(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="offered",
+        note_assigned="unassigned",
+        session_keyed_cache=True,
+    )
+    assert result.returncode == 1
+    assert "session-keyed:cc-active-task-eta-" in result.stderr
+    assert "treating as indeterminate" in result.stderr
+
+
+def test_terminal_check_prefers_matching_session_cache_over_repointed_legacy(
+    tmp_path: Path,
+) -> None:
+    result = _run_task_is_terminal_result(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="offered",
+        note_assigned="unassigned",
+        session_keyed_cache=True,
+        legacy_cache_task="newer-task-on-shared-role",
+    )
+    assert result.returncode == 1
+    assert "session-keyed:cc-active-task-eta-" in result.stderr
+    assert "treating as indeterminate" in result.stderr
+
+
+def test_terminal_check_prefers_exact_session_over_older_same_task_lease(
+    tmp_path: Path,
+) -> None:
+    result = _run_task_is_terminal_result(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="offered",
+        note_assigned="unassigned",
+        session_keyed_cache=True,
+        older_matching_session_cache=True,
+    )
+    assert result.returncode == 1
+    assert "session-keyed:cc-active-task-eta-9b6ba5ca-" in result.stderr
+    assert "treating as indeterminate" in result.stderr
+
+
+def test_terminal_check_epoch_bypass_keeps_matching_cache_live(tmp_path: Path) -> None:
+    result = _run_task_is_terminal_result(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="offered",
+        note_assigned="unassigned",
+        legacy_cache=True,
+        epoch_check_bypass=True,
+    )
+    assert result.returncode == 1
+    assert "HAPAX_CLAIM_EPOCH_CHECK_BYPASS=1" in result.stderr
+    assert "repair the writer" in result.stderr
+
+
+def test_terminal_check_epoch_bypass_still_reaps_merged_pr(tmp_path: Path) -> None:
+    result = _run_task_is_terminal_result(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="offered",
+        note_assigned="unassigned",
+        note_pr=4242,
+        gh_state="MERGED",
+        legacy_cache=True,
+        epoch_check_bypass=True,
+    )
+    assert result.returncode == 0
+    assert "HAPAX_CLAIM_EPOCH_CHECK_BYPASS=1" in result.stderr
+
+
+def test_terminal_check_reaps_when_cache_repointed(tmp_path: Path) -> None:
+    """Cache naming a DIFFERENT task is the definitive moved-on signal."""
+    rc = _run_task_is_terminal(
+        tmp_path,
+        cache_task="a-different-task",
+        note_status="claimed",
+        note_assigned="some-other-role",
+    )
+    assert rc == 0
+
+
+def test_terminal_check_reaps_done_note(tmp_path: Path) -> None:
+    rc = _run_task_is_terminal(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="done",
+        note_assigned="eta",
+    )
+    assert rc == 0
+
+
+def test_terminal_check_reaps_foreign_assignee_when_cache_stale(tmp_path: Path) -> None:
+    """Reassignment to a named role reaps regardless of cache age."""
+    rc = _run_task_is_terminal(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="claimed",
+        note_assigned="some-other-role",
+        cache_age_s=3600,
+    )
+    assert rc == 0
+
+
+def test_terminal_check_reaps_foreign_assignee_with_no_cache(tmp_path: Path) -> None:
+    """Missing cache + foreign assignee is the genuinely-reassigned shape."""
+    rc = _run_task_is_terminal(
+        tmp_path,
+        cache_task=None,
+        note_status="claimed",
+        note_assigned="some-other-role",
+    )
+    assert rc == 0
+
+
+def test_terminal_check_reaps_unassigned_note_with_no_cache(tmp_path: Path) -> None:
+    result = _run_task_is_terminal_result(
+        tmp_path,
+        cache_task=None,
+        note_status="offered",
+        note_assigned="unassigned",
+    )
+    assert result.returncode == 0
+    assert "no matching claim cache" in result.stderr
+    assert "rerun cc-claim" in result.stderr
+
+
+def test_terminal_check_indeterminate_still_reaps_merged_pr(tmp_path: Path) -> None:
+    """The drift-survival fall-through still honors the merged-PR terminal."""
+    rc = _run_task_is_terminal(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="offered",
+        note_assigned="unassigned",
+        note_pr=4242,
+        gh_state="MERGED",
+    )
+    assert rc == 0

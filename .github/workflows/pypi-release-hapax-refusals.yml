@@ -6,8 +6,8 @@ name: PyPI release - hapax-refusals
 # release does not fire workflow runs for unrelated packages.
 #
 # Trusted Publishing (OIDC) - no PyPI token in repo secrets. The
-# package's PyPI project is configured to trust:
-#   repository: ryanklee/hapax-council
+# package's PyPI project must be configured to trust:
+#   repository: hapax-systems/hapax-council
 #   workflow:   .github/workflows/pypi-release-hapax-refusals.yml
 #   environment: pypi
 #

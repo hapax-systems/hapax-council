@@ -16,7 +16,7 @@ regex patterns that gate structural multi-operator scaffolding and
 generated-feedback-language code paths. The canonical, evolving source
 of truth is the constitution repo:
 
-> **Canonical source:** <https://github.com/ryanklee/hapax-constitution>
+> **Canonical source:** <https://github.com/hapax-systems/hapax-constitution>
 
 ## What this is
 
@@ -172,11 +172,11 @@ schema — see the bundled YAMLs in
 ## Provenance
 
 - Axiom bundle: snapshot of `axioms/registry.yaml` from
-  <https://github.com/ryanklee/hapax-constitution> taken on
+  <https://github.com/hapax-systems/hapax-constitution> taken on
   `2026-04-25`.
 - Pattern bundle: snapshot of
   `hooks/scripts/axiom-patterns.sh` and `axioms/enforcement-patterns.yaml`
-  from <https://github.com/ryanklee/hapax-council> taken on `2026-04-25`.
+  from <https://github.com/hapax-systems/hapax-council> taken on `2026-04-25`.
 
 Both upstreams remain canonical. PRs that change the axiom corpus go to
 the constitution repo first; this package republishes a frozen snapshot

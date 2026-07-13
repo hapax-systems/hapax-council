@@ -106,6 +106,7 @@ class PlatformCapabilityReceipt(StrictReceiptModel):
     stale_after: str
     cli: CliEvidence
     wrapper: WrapperEvidence
+    route_wrappers: dict[str, WrapperEvidence] = Field(default_factory=dict)
     config_refs: list[ConfigEvidence] = Field(default_factory=list)
     tool_state: list[ToolEvidence] = Field(default_factory=list)
     mcp_status: list[str] = Field(default_factory=list)
@@ -153,6 +154,8 @@ def receipt_is_fresh(
 ) -> bool:
     checked_now = ensure_utc(now or datetime.now(UTC))
     observed_at = ensure_utc(receipt.observed_at)
+    if observed_at > checked_now + timedelta(minutes=1):
+        return False
     return checked_now - observed_at <= parse_duration_spec(receipt.stale_after)
 
 

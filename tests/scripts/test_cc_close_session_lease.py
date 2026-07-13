@@ -105,16 +105,22 @@ def test_cc_close_clears_both_legacy_and_session_keyed_lease(tmp_path: Path) -> 
     cache = _cache(home)
     legacy = cache / "cc-active-task-eta"
     session = cache / "cc-active-task-eta-sess123"
+    legacy_sidecar = cache / "cc-claim-epoch-eta"
+    session_sidecar = cache / "cc-claim-epoch-eta-sess123"
     legacy.write_text("foo\n", encoding="utf-8")
     session.write_text("foo\n", encoding="utf-8")
+    legacy_sidecar.write_text("1780000000 foo\n", encoding="utf-8")
+    session_sidecar.write_text("1780000000 foo\n", encoding="utf-8")
 
     result = _run_close(home, "foo", role="eta", session_id="sess123")
 
     assert result.returncode == 0, result.stderr
     assert not legacy.exists(), f"legacy lease not cleared\nstdout={result.stdout}"
+    assert not legacy_sidecar.exists(), f"legacy epoch sidecar leaked\nstdout={result.stdout}"
     assert not session.exists(), (
         f"session-keyed lease leaked (finding #12/#13)\nstdout={result.stdout}"
     )
+    assert not session_sidecar.exists(), f"session epoch sidecar leaked\nstdout={result.stdout}"
 
 
 def test_cc_close_preserves_session_lease_naming_a_different_task(
@@ -125,12 +131,15 @@ def test_cc_close_preserves_session_lease_naming_a_different_task(
     _write_task(vault, "foo")
     cache = _cache(home)
     session = cache / "cc-active-task-eta-sess123"
+    sidecar = cache / "cc-claim-epoch-eta-sess123"
     session.write_text("other-task\n", encoding="utf-8")
+    sidecar.write_text("1780000000 other-task\n", encoding="utf-8")
 
     result = _run_close(home, "foo", role="eta", session_id="sess123")
 
     assert result.returncode == 0, result.stderr
     assert session.exists(), "a session lease for different work must not be clobbered"
+    assert sidecar.exists(), "a sidecar for different work must not be clobbered"
     assert session.read_text(encoding="utf-8").strip() == "other-task"
 
 

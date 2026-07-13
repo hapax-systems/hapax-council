@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import ipaddress
 import json
+import logging
 import math
 import os
 import re
@@ -20,7 +21,7 @@ from urllib.parse import urlparse
 
 import httpx
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 API_BASE_URL = "https://api.tavily.com"
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "tavily.yaml"
@@ -29,6 +30,7 @@ DEFAULT_CACHE_DIR = DEFAULT_STATE_DIR / "cache"
 DEFAULT_LEDGER_PATH = DEFAULT_STATE_DIR / "usage.jsonl"
 DEFAULT_LOCK_DIR = DEFAULT_STATE_DIR / "locks"
 PASS_ENTRIES = ("tavily/api-key", "api/tavily")
+logger = logging.getLogger(__name__)
 
 SearchDepth = Literal["basic", "advanced", "fast", "ultra-fast"]
 SearchTopic = Literal["general", "news", "finance"]
@@ -227,6 +229,36 @@ class TavilyAccountUsage(BaseModel):
     paygo_usage: float = 0
     paygo_limit: float = 0
 
+    @field_validator(
+        "usage",
+        "limit",
+        "search_usage",
+        "extract_usage",
+        "crawl_usage",
+        "map_usage",
+        "research_usage",
+        "plan_usage",
+        "plan_limit",
+        "paygo_usage",
+        "paygo_limit",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_nullable_numeric(cls, value: Any, info: ValidationInfo) -> Any:
+        if value is None:
+            logger.warning(
+                "Tavily /usage returned null numeric field; field=%s; normalized_to=0.0",
+                _usage_field_name(info),
+            )
+            return 0.0
+        if isinstance(value, str) and not value.strip():
+            logger.warning(
+                "Tavily /usage returned empty numeric field; field=%s; normalized_to=0.0",
+                _usage_field_name(info),
+            )
+            return 0.0
+        return value
+
 
 class TavilyUsageResponse(BaseModel):
     """Normalized response for Tavily `/usage`."""
@@ -234,6 +266,30 @@ class TavilyUsageResponse(BaseModel):
     key: TavilyAccountUsage = Field(default_factory=TavilyAccountUsage)
     account: TavilyAccountUsage = Field(default_factory=TavilyAccountUsage)
     raw: dict[str, Any] = Field(default_factory=dict)
+
+
+def _usage_field_name(info: ValidationInfo) -> str:
+    section = ""
+    if isinstance(info.context, Mapping):
+        section = str(info.context.get("section") or "").strip()
+    return f"{section}.{info.field_name}" if section else str(info.field_name)
+
+
+def _usage_section_payload(data: Mapping[str, Any], section: str) -> Any:
+    if section not in data:
+        logger.warning(
+            "Tavily /usage omitted usage object; section=%s; normalized_to=zero_defaults",
+            section,
+        )
+        return {}
+    value = data.get(section)
+    if value is None:
+        logger.warning(
+            "Tavily /usage returned null usage object; section=%s; normalized_to=zero_defaults",
+            section,
+        )
+        return {}
+    return value
 
 
 def pass_first_line(name: str) -> str:
@@ -674,10 +730,21 @@ class TavilyClient:
             ) from exc
         except (httpx.RequestError, ValueError) as exc:
             raise TavilyRequestError(f"Tavily usage request failed: {exc}") from exc
+        if not isinstance(data, dict):
+            raise TavilyRequestError(
+                "Tavily usage request failed: response JSON is not an object; "
+                "next action: recheck the provider /usage response shape or proxy logs"
+            )
         return TavilyUsageResponse(
-            key=TavilyAccountUsage.model_validate(data.get("key") or {}),
-            account=TavilyAccountUsage.model_validate(data.get("account") or {}),
-            raw=data if isinstance(data, dict) else {},
+            key=TavilyAccountUsage.model_validate(
+                _usage_section_payload(data, "key"),
+                context={"section": "key"},
+            ),
+            account=TavilyAccountUsage.model_validate(
+                _usage_section_payload(data, "account"),
+                context={"section": "account"},
+            ),
+            raw=data,
         )
 
     def _request(

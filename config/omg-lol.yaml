@@ -2,6 +2,44 @@ schema_version: 1
 service: omg.lol
 address: hapax
 
+publication_frontmatter_policy:
+  status: guarded_public_channel
+  owner_org: hapax-systems
+  publication_allowed_without_bus: false
+  direct_public_egress_allowed: false
+  review_required: Claim Verification Council
+  target_surfaces:
+    - omg-weblog
+    - omg-lol-statuslog
+    - omg-lol-now
+    - omg-lol-pastebin
+    - omg-lol-purl
+    - omg-lol-web
+    - bridgy-webmention-publish
+    - mastodon-post
+    - bluesky-post
+    - arena-post
+    - zenodo-doi
+    - internet-archive-ias3
+  required_gates:
+    - source_artifact_public_safe
+    - source_refs_present
+    - rights_privacy_redaction_pass
+    - target_surface_allowlist_pass
+    - claim_review_current
+    - no_direct_public_egress
+  claim_ceiling: >-
+    omg.lol profile, weblog, /now, statuslog, pastebin, purl, and RSS surfaces
+    may publish only public-safe artifacts whose source refs, rights gate,
+    privacy gate, redaction posture, and target surfaces have been recorded by
+    the publication bus.
+  prohibited_claims:
+    - autonomous write authority
+    - general lifecycle automation
+    - whole-portfolio open-source posture
+    - public support or SLA entitlement
+    - direct publication outside guarded channel routes
+
 last_audit:
   checked_at: "2026-05-11T14:25:23Z"
   checked_by: cx-cobalt

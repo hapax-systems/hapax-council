@@ -1,0 +1,312 @@
+#!/usr/bin/bash
+# Root-side live OOM score enforcer for the P0 podium containment package.
+set -euo pipefail
+
+TEST_MODE="${HAPAX_OOM_ENFORCE_TEST_MODE:-0}"
+if [ "$TEST_MODE" = "1" ]; then
+    if [ "$(id -u)" = "0" ] || [ -n "${SUDO_USER:-}" ]; then
+        echo "refusing OOM enforcer test overrides under root/sudo execution; next action: run the installed enforcer without HAPAX_OOM_ENFORCE_TEST_MODE" >&2
+        exit 2
+    fi
+    TARGET_USER="${HAPAX_OOM_TARGET_USER:-hapax}"
+    TARGET_UID="${HAPAX_OOM_TARGET_UID:-$(id -u "$TARGET_USER")}"
+    SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
+    USER_SYSTEMCTL="${HAPAX_OOM_USER_SYSTEMCTL:-}"
+    PROC_ROOT="${HAPAX_OOM_PROC_ROOT:-/proc}"
+else
+    for override in \
+        HAPAX_OOM_TARGET_USER HAPAX_OOM_TARGET_UID HAPAX_OOM_SYSTEMCTL \
+        HAPAX_OOM_USER_SYSTEMCTL HAPAX_OOM_PROC_ROOT HAPAX_OOM_CGROUP_ROOT; do
+        if declare -p "$override" >/dev/null 2>&1; then
+            echo "refusing production OOM enforcer override $override; next action: remove HAPAX_OOM_* overrides and rerun the package-owned command" >&2
+            exit 2
+        fi
+    done
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+    export PATH
+    TARGET_USER=hapax
+    TARGET_UID=1000
+    SYSTEMCTL=/usr/bin/systemctl
+    USER_SYSTEMCTL=""
+    PROC_ROOT=/proc
+    if [ "$(id -u "$TARGET_USER" 2>/dev/null || true)" != "$TARGET_UID" ]; then
+        echo "refusing OOM enforcer on a host where hapax is not UID 1000; next action: dispatch a host-specific OOM package instead of overriding this podium policy" >&2
+        exit 2
+    fi
+fi
+failed=0
+if [ "$TEST_MODE" = "1" ] && [ -n "${HAPAX_OOM_CGROUP_ROOT:-}" ]; then
+    CGROUP_ROOT="$HAPAX_OOM_CGROUP_ROOT"
+elif [ "$PROC_ROOT" != "/proc" ]; then
+    CGROUP_ROOT="$(dirname "$PROC_ROOT")/cgroup"
+else
+    CGROUP_ROOT="/sys/fs/cgroup"
+fi
+
+usage() {
+    cat <<'USAGE'
+usage: hapax-oom-score-enforce --apply
+       hapax-oom-score-enforce --apply-unit UNIT
+
+Writes live /proc oom_score_adj values that unprivileged user units cannot
+lower by themselves after user@1000.service is made killable. --apply-unit is
+restricted to the package's protected user-unit allowlist and is intended for
+each unit's fail-open ExecStartPost startup trigger.
+USAGE
+}
+
+mode="${1:-}"
+requested_unit="${2:-}"
+case "$mode" in
+    --apply)
+        [ "$#" -eq 1 ] || {
+            usage >&2
+            exit 2
+        }
+        ;;
+    --apply-unit)
+        [ "$#" -eq 2 ] || {
+            usage >&2
+            exit 2
+        }
+        ;;
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac
+
+run_user_systemctl() {
+    if [ -n "$USER_SYSTEMCTL" ]; then
+        "$USER_SYSTEMCTL" "$@"
+    elif [ "$(id -u)" = "$TARGET_UID" ]; then
+        "$SYSTEMCTL" --user "$@"
+    elif [ "$(id -u)" = "0" ]; then
+        /usr/bin/runuser -u "$TARGET_USER" -- /usr/bin/env XDG_RUNTIME_DIR="/run/user/$TARGET_UID" "$SYSTEMCTL" --user "$@"
+    else
+        XDG_RUNTIME_DIR="/run/user/$TARGET_UID" "$SYSTEMCTL" --user "$@"
+    fi
+}
+
+write_oom_score() {
+    local pid score path current
+    pid="$1"
+    score="$2"
+    path="$PROC_ROOT/$pid/oom_score_adj"
+    [ -e "$path" ] || return 0
+    current="$(cat "$path" 2>/dev/null || true)"
+    [ "$current" = "$score" ] && return 0
+    { printf '%s\n' "$score" > "$path"; } 2>/dev/null || {
+        [ ! -e "$path" ] && return 0
+        return 1
+    }
+    printf 'changed\n'
+}
+
+pid_matches_cgroup() {
+    local pid="$1" expected_cgroup="$2" proc_cgroup _hierarchy _controllers path
+    proc_cgroup="$PROC_ROOT/$pid/cgroup"
+    [ -n "$expected_cgroup" ] || return 1
+    [ -r "$proc_cgroup" ] || return 1
+    while IFS=: read -r _hierarchy _controllers path; do
+        if [ "$path" = "$expected_cgroup" ] || [[ "$path" == "$expected_cgroup/"* ]]; then
+            return 0
+        fi
+    done < "$proc_cgroup"
+    return 1
+}
+
+write_oom_score_for_cgroup() {
+    local pid="$1" score="$2" label="$3" expected_cgroup="$4"
+    if ! pid_matches_cgroup "$pid" "$expected_cgroup"; then
+        echo "warn: refusing oom_score_adj write for $label pid=$pid because /proc cgroup is outside expected subtree $expected_cgroup; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    write_oom_score "$pid" "$score"
+}
+
+system_main_pid() {
+    local unit="$1" pid
+    if ! pid="$("$SYSTEMCTL" show "$unit" -p MainPID --value 2>/dev/null)"; then
+        echo "warn: unable to query $unit MainPID; next action: inspect systemctl status $unit and run scripts/hapax-oom-policy-audit --json" >&2
+        return 1
+    fi
+    if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ]; then
+        printf '%s\n' "$pid"
+    fi
+    return 0
+}
+
+system_control_group() {
+    local unit="$1"
+    if ! "$SYSTEMCTL" show "$unit" -p ControlGroup --value 2>/dev/null; then
+        echo "warn: unable to query $unit ControlGroup; next action: inspect systemctl status $unit and run scripts/hapax-oom-policy-audit --json" >&2
+        return 1
+    fi
+}
+
+user_main_pid() {
+    local unit="$1" pid
+    if ! pid="$(run_user_systemctl show "$unit" -p MainPID --value 2>/dev/null)"; then
+        echo "warn: unable to query user unit $unit MainPID; next action: inspect the UID $TARGET_UID user manager and run scripts/hapax-oom-policy-audit --json" >&2
+        return 1
+    fi
+    if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ]; then
+        printf '%s\n' "$pid"
+    fi
+    return 0
+}
+
+user_control_group() {
+    local unit="$1"
+    if ! run_user_systemctl show "$unit" -p ControlGroup --value 2>/dev/null; then
+        echo "warn: unable to query user unit $unit ControlGroup; next action: inspect the UID $TARGET_UID user manager and run scripts/hapax-oom-policy-audit --json" >&2
+        return 1
+    fi
+}
+
+cgroup_pids() {
+    local cgroup="$1" dir
+    [ -n "$cgroup" ] || return 0
+    dir="$CGROUP_ROOT/${cgroup#/}"
+    [ -d "$dir" ] || return 0
+    find "$dir" -name cgroup.procs -type f -print 2>/dev/null |
+        while IFS= read -r procs; do
+            sed -n '/^[0-9][0-9]*$/p' "$procs" 2>/dev/null || true
+        done | sort -u
+}
+
+user_unit_pids() {
+    local unit="$1" cgroup="${2:-}" pid
+    if [ -z "$cgroup" ]; then
+        cgroup="$(user_control_group "$unit")" || return 1
+    fi
+    cgroup_pids "$cgroup"
+    pid="$(user_main_pid "$unit")" || return 1
+    [ -n "$pid" ] && printf '%s\n' "$pid"
+    return 0
+}
+
+apply_unit_score() {
+    local unit="$1" score="$2" require_live="${3:-0}" pid changed output cgroup
+    local -a pids
+    if ! cgroup="$(user_control_group "$unit")"; then
+        failed=1
+        return 0
+    fi
+    if ! output="$(user_unit_pids "$unit" "$cgroup")"; then
+        failed=1
+        return 0
+    fi
+    mapfile -t pids < <(printf '%s\n' "$output" | sed -n '/^[0-9][0-9]*$/p' | sort -u)
+    if [ "${#pids[@]}" -eq 0 ]; then
+        if [ "$require_live" = "1" ]; then
+            echo "warn: protected user unit $unit has no live PID for its startup OOM trigger; next action: inspect systemctl --user status $unit and run scripts/hapax-oom-policy-audit --json" >&2
+            failed=1
+        fi
+        return 0
+    fi
+    for pid in "${pids[@]}"; do
+        if changed="$(write_oom_score_for_cgroup "$pid" "$score" "$unit" "$cgroup")"; then
+            [ -z "$changed" ] || echo "user-unit $unit pid=$pid oom_score_adj=$score"
+        else
+            echo "warn: failed to set oom_score_adj for $unit pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            failed=1
+        fi
+    done
+}
+
+apply_unit_main_score() {
+    local unit="$1" score="$2" pid changed cgroup
+    if ! cgroup="$(user_control_group "$unit")" || [ -z "$cgroup" ]; then
+        echo "warn: protected user unit $unit has no authoritative ControlGroup for its startup OOM trigger; next action: inspect systemctl --user status $unit and run scripts/hapax-oom-policy-audit --json" >&2
+        failed=1
+        return 0
+    fi
+    if ! pid="$(user_main_pid "$unit")" || [ -z "$pid" ]; then
+        echo "warn: protected user unit $unit has no live MainPID for its startup OOM trigger; next action: inspect systemctl --user status $unit and run scripts/hapax-oom-policy-audit --json" >&2
+        failed=1
+        return 0
+    fi
+    if changed="$(write_oom_score_for_cgroup "$pid" "$score" "$unit" "$cgroup")"; then
+        [ -z "$changed" ] || echo "user-unit $unit pid=$pid oom_score_adj=$score"
+    else
+        echo "warn: failed to set startup oom_score_adj for $unit pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        failed=1
+    fi
+}
+
+protected_user_unit_score() {
+    case "$1" in
+        pipewire.service | pipewire-pulse.service | wireplumber.service)
+            printf '%s\n' -900
+            ;;
+        hapax-daimonion.service)
+            printf '%s\n' -500
+            ;;
+        studio-compositor.service | hapax-imagination.service)
+            printf '%s\n' -800
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+requested_score=""
+if [ "$mode" = "--apply-unit" ]; then
+    if ! requested_score="$(protected_user_unit_score "$requested_unit")"; then
+        echo "refusing non-allowlisted protected user unit: $requested_unit; next action: use one of the source-controlled OOM protection drop-ins" >&2
+        exit 2
+    fi
+fi
+
+# A confirmed inactive user manager has no live scores to enforce. Query the
+# state directly so failed/unknown manager and transport errors remain visible.
+user_manager_unit="user@$TARGET_UID.service"
+if ! user_manager_state="$(
+    "$SYSTEMCTL" show "$user_manager_unit" -p ActiveState --value 2>/dev/null
+)"; then
+    echo "warn: unable to query $user_manager_unit ActiveState; next action: inspect systemctl status $user_manager_unit and run scripts/hapax-oom-policy-audit --json" >&2
+    exit 1
+fi
+case "$user_manager_state" in
+    active|reloading|refreshing) ;;
+    inactive) exit 0 ;;
+    *)
+        echo "warn: refusing to skip OOM score enforcement for $user_manager_unit with ActiveState=${user_manager_state:-empty}; next action: inspect systemctl status $user_manager_unit and run scripts/hapax-oom-policy-audit --json" >&2
+        exit 1
+        ;;
+esac
+
+if [ "$mode" = "--apply-unit" ]; then
+    apply_unit_main_score "$requested_unit" "$requested_score"
+    exit "$failed"
+fi
+
+user_manager_unit="user@$TARGET_UID.service"
+if ! user_pid="$(system_main_pid "$user_manager_unit")"; then
+    failed=1
+elif [ -n "$user_pid" ]; then
+    if ! user_cgroup="$(system_control_group "$user_manager_unit")" || [ -z "$user_cgroup" ]; then
+        echo "warn: $user_manager_unit has no live ControlGroup; next action: inspect systemctl status $user_manager_unit and run scripts/hapax-oom-policy-audit --json" >&2
+        failed=1
+    elif changed="$(write_oom_score_for_cgroup "$user_pid" 100 "$user_manager_unit" "$user_cgroup")"; then
+        [ -z "$changed" ] || echo "system user@$TARGET_UID.service pid=$user_pid oom_score_adj=100"
+    else
+        echo "warn: failed to set oom_score_adj for user@$TARGET_UID.service pid=$user_pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        failed=1
+    fi
+else
+    echo "warn: user@$TARGET_UID.service has no live MainPID; next action: inspect systemctl status user@$TARGET_UID.service and run scripts/hapax-oom-policy-audit --json" >&2
+    failed=1
+fi
+
+apply_unit_score pipewire.service -900
+apply_unit_score pipewire-pulse.service -900
+apply_unit_score wireplumber.service -900
+apply_unit_score hapax-daimonion.service -500
+apply_unit_score studio-compositor.service -800
+apply_unit_score hapax-imagination.service -800
+
+exit "$failed"

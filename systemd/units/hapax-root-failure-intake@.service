@@ -1,0 +1,13 @@
+[Unit]
+# Hapax-Install-Scope: system
+Description=Record system-scope Hapax failure for %i
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/systemd/README.md
+StartLimitIntervalSec=1h
+StartLimitBurst=1
+
+[Service]
+Type=oneshot
+User=hapax
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/local/sbin/hapax-root-failure-intake %i
+SyslogIdentifier=hapax-root-failure-intake

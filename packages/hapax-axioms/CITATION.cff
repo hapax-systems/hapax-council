@@ -10,7 +10,7 @@ abstract: >
   axiom-check helpers for source files and commit messages, and a
   commit-scan helper that gates structural multi-user scaffolding before it
   reaches the working tree. Bundles the constitution-published canonical
-  five axioms; the original spec at github.com/ryanklee/hapax-constitution
+  five axioms; the original spec at github.com/hapax-systems/hapax-constitution
   remains the canonical source.
 authors:
 - given-names: Ryan
@@ -18,8 +18,8 @@ authors:
   alias: Hapax (Oudepode)
 - name: Claude Code
   alias: Anthropic Claude Code
-repository-code: https://github.com/ryanklee/hapax-council
-url: https://github.com/ryanklee/hapax-council
+repository-code: https://github.com/hapax-systems/hapax-council
+url: https://github.com/hapax-systems/hapax-council
 license: LicenseRef-PolyForm-Strict-1.0.0
 keywords:
 - axioms
@@ -47,7 +47,7 @@ preferred-citation:
   - name: Claude Code
     alias: Anthropic Claude Code
   year: 2026
-  url: https://github.com/ryanklee/hapax-council
+  url: https://github.com/hapax-systems/hapax-council
   version: 0.1.0
   license: LicenseRef-PolyForm-Strict-1.0.0
 references:
@@ -57,7 +57,7 @@ references:
   - given-names: Ryan
     family-names: Kleeberger
     alias: Hapax (Oudepode)
-  url: https://github.com/ryanklee/hapax-constitution
+  url: https://github.com/hapax-systems/hapax-constitution
   abstract: >
     Canonical source of the Hapax constitutional axioms, derived implications,
     interpretive canon, sufficiency probes, and precedent store. The

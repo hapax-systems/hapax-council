@@ -32,25 +32,27 @@ from executor_contract import (  # noqa: E402
 )
 
 from shared.capability_adapter_protocol import (
-    AntigravAdapter,
+    AgyAdapter,
+    AuthorityViolation,
     CapabilityAdapter,
     ClaudeAdapter,
     CodexAdapter,
+    VibeAdapter,
+    WorkerAdapter,
 )
 from shared.coord_dispatch import (
     CoordDispatchError,
     DispatchLaunchRequest,
     DispatchLaunchResult,
-    run_atomic_dispatch_launch,
 )
 from shared.coord_event_log import CoordEventLog, coord_base_dir
 from shared.dispatch_service_time import is_claude_operator_pool_role
 from shared.dispatcher_policy import (
     DispatchAction,
+    DispatchPolicySources,
     DispatchRequest,
     RouteDecision,
     build_dispatch_request,
-    evaluate_dispatch_policy,
     load_dispatch_policy_sources,
     route_decision_receipt_payload,
     write_route_decision_receipt,
@@ -189,15 +191,6 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         True,
         "JR+ bounded worker path; task fit must exclude governance-critical or off-limits work.",
     ),
-    ("antigrav", "interactive", "full"): PlatformPath(
-        "antigrav",
-        "interactive",
-        "full",
-        "~/.local/bin/hapax-antigrav --session <lane> --task <task> --terminal tmux",
-        "Google Antigravity CLI lane",
-        True,
-        "agy CLI interactive path; requires governed dispatch bootstrap and task claim.",
-    ),
     ("api", "headless", "api_frontier"): PlatformPath(
         "api",
         "headless",
@@ -206,6 +199,15 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         "Cloud-burst API route for spike dev dry-run packets",
         True,
         "Spike-only route; policy requires no-secret egress, public-repo/read-mostly scope, and a matching budget ref before launch eligibility.",
+    ),
+    ("api", "headless", "openrouter"): PlatformPath(
+        "api",
+        "headless",
+        "openrouter",
+        "receipt-only CapabilityIO/BudgetAuthorityAdapter route for LiteLLM alias gpt-5.5-or; no bespoke OpenRouter launcher",
+        "OpenRouter GPT-5.5 frontier substitute route",
+        True,
+        "Provider-spend route; policy requires CapabilityIO wiring, OpenRouter key/route evidence, and a matching paid-budget ledger before launch eligibility.",
     ),
     ("api", "headless", "provider_gateway"): PlatformPath(
         "api",
@@ -1235,6 +1237,7 @@ def write_receipt(
     route_decision_receipt_path: Path | None = None,
     durable_binding: DurableDispatchBinding | None = None,
     dispatch_launch: DispatchLaunchResult | None = None,
+    route_policy_reason_codes: list[str] | None = None,
 ) -> Path:
     ledger_dir = orchestration_ledger_dir()
     ledger_dir.mkdir(parents=True, exist_ok=True)
@@ -1273,6 +1276,8 @@ def write_receipt(
         record["coord_dispatch_reason"] = dispatch_launch.reason
         record["coord_dispatch_event_id"] = dispatch_launch.event_id
         record["coord_dispatch_cleanup_state"] = dispatch_launch.cleanup_state
+    if route_policy_reason_codes is not None:
+        record["route_policy_reason_codes"] = route_policy_reason_codes
     if route_decision is not None:
         record.update(route_decision_receipt_payload(route_decision))
         record["route_decision_receipt_path"] = (
@@ -1386,11 +1391,39 @@ def _await_sdlc_admission(args: argparse.Namespace) -> None:
 # (cc-task capability-adapter-worker-path-classify-failure). Best-effort + strictly FAIL-OPEN:
 # classification NEVER changes the dispatch returncode or outcome. The guard, single-key write, and
 # no-sibling-flip invariants live in shared.worker_failure_witness.
-_WORKER_FAILURE_ADAPTERS: dict[str, type[CapabilityAdapter]] = {
+_WORKER_FAILURE_ADAPTERS: dict[str, type[WorkerAdapter]] = {
+    "agy": AgyAdapter,
     "claude": ClaudeAdapter,
     "codex": CodexAdapter,
-    "antigrav": AntigravAdapter,
+    "vibe": VibeAdapter,
 }
+
+
+def _capability_adapter_for_admission(platform: str) -> CapabilityAdapter:
+    """Return the adapter used for the admission call.
+
+    Worker platforms use the existing worker-adapter map. Non-worker routes still go through the
+    final ``CapabilityAdapter.admit`` delegation so methodology dispatch no longer calls the policy
+    spine directly.
+    """
+
+    adapter_cls = _WORKER_FAILURE_ADAPTERS.get(platform)
+    if adapter_cls is not None:
+        return adapter_cls()
+    return CapabilityAdapter()
+
+
+def _worker_adapter_for_launch(platform: str) -> WorkerAdapter:
+    """Return the launch-capable adapter for ``platform`` or fail closed."""
+
+    adapter_cls = _WORKER_FAILURE_ADAPTERS.get(platform)
+    if adapter_cls is None:
+        raise AuthorityViolation(
+            f"launch not authorized for platform {platform}: no WorkerAdapter registered. "
+            "Next: route mutable dispatch through a governed WorkerAdapter before attempting "
+            "CapabilityAdapter.launch."
+        )
+    return adapter_cls()
 
 
 def _read_worker_failure_text(platform: str, mode: str, lane: str) -> str:
@@ -1418,8 +1451,8 @@ def _classify_and_witness_terminal_failure(
     text = _read_worker_failure_text(platform, mode, lane)
     adapter_cls = _WORKER_FAILURE_ADAPTERS.get(platform)
     if adapter_cls is not None:
-        # exit_code feeds the antigrav launcher exit-code table; text-classifier adapters
-        # (claude/codex) ignore it and classify from the output text.
+        # Text-classifier adapters classify from the output text; exit_code remains
+        # available for adapter-specific launch wrappers that need it.
         receipt = adapter_cls().classify_failure(
             text, process_failed=True, route_id=route_id, exit_code=rc
         )
@@ -1469,6 +1502,19 @@ def classify_and_witness_launch(
     return rc
 
 
+#: Registry-declared model pin per claude dispatch profile — the launch-side half of the
+#: CapabilityExecutionInvariant. Values are Claude Code ``--model`` aliases. Mirrors the
+#: registry ExecutionDescriptors (claude.headless.full/opus -> claude-opus-4-8 => "opus";
+#: claude.headless.sonnet -> claude-sonnet-* => "sonnet"; claude.headless.haiku => "haiku").
+#: A profile absent here fails closed rather than inheriting the CLI default model.
+CLAUDE_PROFILE_MODEL_PIN: dict[str, str] = {
+    "full": "opus",
+    "opus": "opus",
+    "sonnet": "sonnet",
+    "haiku": "haiku",
+}
+
+
 def launch_claude_headless(task_id: str, lane: str, prompt: str, route: PlatformPath) -> int:
     launcher = Path(
         os.environ.get(
@@ -1481,8 +1527,21 @@ def launch_claude_headless(task_id: str, lane: str, prompt: str, route: Platform
     # per-spawn HAPAX_SESSION_ID so two same-role re-dispatched lanes never share a
     # claim key (reform-identity-coherence cluster 11, AC1).
     env.pop("HAPAX_SESSION_ID", None)
-    if route.profile in {"opus", "sonnet"}:
-        env["HAPAX_CLAUDE_MODEL"] = route.profile
+    # CapabilityExecutionInvariant drift guard (R0-pin): pin --model for EVERY claude
+    # profile to its registry-declared model. Never let a profile inherit the Claude Code
+    # CLI default (~/.claude/settings.json model=fable), which can silently drop fable->opus
+    # under indeterminate conditions — an observed != sanctioned execution drift. `full`
+    # declares claude-opus-4-8, so it pins "opus"; unknown profiles FAIL CLOSED rather than
+    # inherit the default.
+    pinned_model = CLAUDE_PROFILE_MODEL_PIN.get(route.profile)
+    if pinned_model is None:
+        print(
+            f"claude profile '{route.profile}' has no declared model pin; refusing to launch "
+            "(CEI drift guard — a launch must never inherit the CLI default model)",
+            file=sys.stderr,
+        )
+        return 9
+    env["HAPAX_CLAUDE_MODEL"] = pinned_model
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
     env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(lane_worktree(lane, "claude"))
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("claude", "headless")
@@ -1518,6 +1577,8 @@ def normalize_profile(platform: str, profile: str) -> str:
     profile = profile.strip().lower().replace("_", "-")
     if platform == "api" and profile in {"api-frontier", "cloud", "cloud-burst", "frontier"}:
         return "api_frontier"
+    if platform == "api" and profile in {"or", "open-router", "openrouter"}:
+        return "openrouter"
     if platform == "api" and profile in {"provider-gateway", "gateway", "provider_spend"}:
         return "provider_gateway"
     if profile in {"default", "max", "pro", "full-capability"}:
@@ -1539,6 +1600,38 @@ def route_for(platform: str, mode: str, profile: str) -> PlatformPath | None:
     ):
         return RECEIPT_ONLY_ROUTE
     return PLATFORM_PATHS.get((platform, mode, normalized_profile))
+
+
+def _route_for_route_id(route_id: str) -> PlatformPath | None:
+    parts = route_id.split(".", 2)
+    if len(parts) != 3:
+        return None
+    return route_for(parts[0], parts[1], parts[2])
+
+
+def _decision_selected_route_id(route_decision: RouteDecision) -> str:
+    return (
+        route_decision.dimensional_receipt.selected_route_id
+        if route_decision.dimensional_receipt is not None
+        else None
+    ) or route_decision.route_id
+
+
+def _decision_selected_route(route_decision: RouteDecision) -> PlatformPath | None:
+    return _route_for_route_id(_decision_selected_route_id(route_decision))
+
+
+def _unsupported_selected_route_reason(route_decision: RouteDecision) -> str | None:
+    selected_route = _decision_selected_route(route_decision)
+    if selected_route is not None:
+        return None
+    unsupported_route_id = _decision_selected_route_id(route_decision)
+    return (
+        f"route policy selected unsupported route: {unsupported_route_id}; "
+        "next action: inspect dimensional_selected_route_id in the route decision receipt "
+        "and either add a matching governed PLATFORM_PATHS launcher entry or constrain "
+        "the candidate set to supported governed routes."
+    )
 
 
 def supported_route_lines() -> list[str]:
@@ -1565,6 +1658,88 @@ def platform_route_validation(
             "mutation tasks must route to a mutable platform profile",
         )
     return True, "eligible platform route"
+
+
+def platform_lane_compatibility_reason(lane: str, route: PlatformPath) -> str | None:
+    """Fail closed when route recomposition changes the platform under a stale lane id."""
+
+    normalized = normalize_lane_name(lane)
+    route_id = f"{route.platform}.{route.mode}.{route.profile}"
+    if route.platform == "codex" and not normalized.startswith("cx-"):
+        return (
+            f"route/lane mismatch: selected route {route_id} requires a Codex cx-* "
+            f"lane/session identity, got lane {lane!r}. Next action: dispatch this "
+            "Codex route to an available cx-* lane/worktree or rerun route selection "
+            "for a route compatible with the requested lane before consuming MQ."
+        )
+    if route.platform == "claude" and normalized not in KNOWN_CLAUDE_LANES:
+        return (
+            f"route/lane mismatch: selected route {route_id} requires a Claude "
+            f"headless role in {sorted(KNOWN_CLAUDE_LANES)!r}, got lane {lane!r}. "
+            "Next action: dispatch this Claude route to a supervised Claude lane or "
+            "rerun route selection for a route compatible with the requested lane "
+            "before consuming MQ."
+        )
+    if route.platform == "vibe" and not (
+        normalized.startswith("vbe") or normalized.startswith("vibe")
+    ):
+        return (
+            f"route/lane mismatch: selected route {route_id} requires a Vibe "
+            f"vbe-* session identity, got lane {lane!r}. Next action: dispatch this "
+            "Vibe route to an available vbe-* lane/worktree or rerun route selection "
+            "for a route compatible with the requested lane before consuming MQ."
+        )
+    return None
+
+
+def _availability_recomposition_candidate_requests(
+    primary: DispatchRequest,
+    *,
+    task_fields: dict[str, Any],
+    policy_sources: DispatchPolicySources,
+    validation: Validation,
+    rollback_mode: bool,
+) -> tuple[DispatchRequest, ...] | None:
+    capability = primary.capability
+    if capability is None or not capability.availability_recomposition_required:
+        return None
+    registry = policy_sources.registry
+    if registry is None:
+        return ()
+
+    candidates: list[DispatchRequest] = []
+    for route_descriptor in sorted(registry.routes, key=lambda item: item.route_id):
+        if route_descriptor.route_id == primary.route_id:
+            continue
+        platform = route_descriptor.platform.value
+        mode = route_descriptor.mode.value
+        profile = route_descriptor.profile.value
+        route = route_for(platform, mode, profile)
+        if route is None or not supports_route(platform, mode):
+            continue
+        if not route.mutable and not validation.exempt_read_only:
+            continue
+        candidates.append(
+            build_dispatch_request(
+                task_id=primary.task_id,
+                lane=primary.lane,
+                platform=platform,
+                mode=mode,
+                profile=profile,
+                task_fields=task_fields,
+                registry=registry,
+                registry_error=policy_sources.registry_error,
+                quota_ledger=policy_sources.quota_ledger,
+                quota_error=policy_sources.quota_error,
+                route_authority_receipts=policy_sources.route_authority_receipts,
+                surface_delta_refs_by_route=policy_sources.surface_delta_refs_by_route,
+                surface_delta_blockers_by_route=policy_sources.surface_delta_blockers_by_route,
+                rollback_mode=rollback_mode,
+                legacy_route_supported=True,
+                legacy_route_mutable=route.mutable,
+            )
+        )
+    return tuple(candidates)
 
 
 def route_metadata_validation_reason(validation: Validation) -> str | None:
@@ -1748,79 +1923,6 @@ def launch_vibe_headless(task_id: str, lane: str, prompt: str, validation: Valid
     return _sliced_call(args)
 
 
-def write_antigrav_inflection(task_id: str, lane: str, prompt: str) -> Path:
-    spawn_dir = Path(
-        os.environ.get(
-            "HAPAX_ANTIGRAV_SPAWN_DIR",
-            str(
-                Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
-                / "hapax"
-                / "antigrav-spawns"
-            ),
-        )
-    )
-    spawn_dir.mkdir(parents=True, exist_ok=True)
-    path = (
-        spawn_dir
-        / f"{now_utc().replace(':', '').replace('-', '')}-{slugify(lane)}-{slugify(task_id)}-dispatch.md"
-    )
-    path.write_text(
-        "\n".join(
-            [
-                "# Hapax Antigrav Methodology Dispatch",
-                "",
-                prompt,
-                "",
-                "Antigrav launch contract:",
-                "",
-                "- This bootstrap was produced by `hapax-methodology-dispatch` after task authority validation.",
-                "- Treat the task note and parent spec named above as the only work authority.",
-                "- Do not choose unrelated queue work from inside Antigravity.",
-                "- Keep relay/status surfaces current while blocked, waiting, or idle.",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    return path
-
-
-def launch_antigrav_interactive(
-    task_id: str,
-    lane: str,
-    validation: Validation,
-    prompt: str,
-) -> int:
-    launcher = Path(
-        os.environ.get(
-            "HAPAX_METHODOLOGY_ANTIGRAV_LAUNCHER",
-            str(Path.home() / ".local" / "bin" / "hapax-antigrav"),
-        )
-    )
-    if not launcher.is_file():
-        print(f"Antigrav launcher not found: {launcher}", file=sys.stderr)
-        return 8
-
-    status = ""
-    if validation.task is not None:
-        status = strip_scalar(str(validation.task.fields.get("status", "")))
-    inflection_path = write_antigrav_inflection(task_id, lane, prompt)
-    args = [
-        str(launcher),
-        "--session",
-        lane,
-        "--task",
-        task_id,
-        "--terminal",
-        "tmux",
-        "--inflection",
-        str(inflection_path),
-    ]
-    if status in {"claimed", "in_progress"}:
-        args.append("--no-claim")
-    return subprocess.call(args)
-
-
 def advance_task_stage(task_id: str, stage: str) -> int:
     """Perform the drain mutation: advance the orphan's stage via the canonical
     governed setter (scripts/cc-stage-advance). Returns its exit code (0 advanced /
@@ -1941,7 +2043,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--platform",
         default="claude",
-        choices=["api", "claude", "codex", "vibe", "antigrav"],
+        type=str.lower,
+        choices=[
+            "agy",
+            "antigrav",
+            "antigravity",
+            "api",
+            "claude",
+            "codex",
+            "gemini-cli",
+            "vibe",
+        ],
     )
     parser.add_argument(
         "--mode", default="headless", choices=["headless", "interactive", "receipt-only"]
@@ -2055,6 +2167,40 @@ def main(argv: list[str] | None = None) -> int:
             run_claim_sweep(task_root, notify=True)
         except Exception:
             pass
+
+    if args.platform in {"agy", "antigrav", "antigravity", "gemini-cli"}:
+        if args.platform == "agy":
+            reason = (
+                "platform 'agy' is the non-launchable read-only agy.review.direct review route, "
+                "not a methodology-dispatch worker lane. Use scripts/hapax-agy-reviewer for "
+                "review-plane work."
+            )
+        else:
+            reason = (
+                f"platform '{args.platform}' is retired/excised; do not dispatch it as live supply. "
+                "Use admitted Claude, Codex, or Vibe routes, or agy.review.direct for the live "
+                "read-only review route."
+            )
+        task_for_receipt = read_task(task_root, args.task)
+        if not args.no_receipt:
+            write_receipt(
+                task_id=args.task,
+                lane=args.lane,
+                platform=args.platform,
+                mode=args.mode,
+                profile=args.profile,
+                route=None,
+                validation=Validation(False, reason, task_for_receipt),
+                prompt=None,
+                launched=False,
+                route_policy_reason_codes=[
+                    "review_route_not_launchable"
+                    if args.platform == "agy"
+                    else "retired_platform_not_dispatchable"
+                ],
+            )
+        print(f"BLOCKED: {reason}", file=sys.stderr)
+        return 10
 
     # SYSTEM drain is a distinct, capability-gated mutation path — it advances an
     # orphaned dead-lane task via cc-stage-advance and returns. It must intercept
@@ -2177,6 +2323,7 @@ def main(argv: list[str] | None = None) -> int:
         quota_ledger_path=optional_env_path("HAPAX_QUOTA_SPEND_LEDGER"),
     )
     task_fields = policy_task_fields(validation)
+    rollback_mode = args.policy_rollback or env_flag("HAPAX_DISPATCH_POLICY_ROLLBACK")
     policy_request = build_dispatch_request(
         task_id=args.task,
         lane=args.lane,
@@ -2191,11 +2338,19 @@ def main(argv: list[str] | None = None) -> int:
         route_authority_receipts=policy_sources.route_authority_receipts,
         surface_delta_refs_by_route=policy_sources.surface_delta_refs_by_route,
         surface_delta_blockers_by_route=policy_sources.surface_delta_blockers_by_route,
-        rollback_mode=args.policy_rollback or env_flag("HAPAX_DISPATCH_POLICY_ROLLBACK"),
+        rollback_mode=rollback_mode,
         legacy_route_supported=route is not None,
         legacy_route_mutable=route.mutable if route else False,
     )
-    route_decision = evaluate_dispatch_policy(policy_request)
+    candidate_requests = _availability_recomposition_candidate_requests(
+        policy_request,
+        task_fields=task_fields,
+        policy_sources=policy_sources,
+        validation=validation,
+        rollback_mode=rollback_mode,
+    )
+    adapter = _capability_adapter_for_admission(args.platform)
+    route_decision = adapter.admit(policy_request, candidate_requests=candidate_requests)
     route_decision_receipt_path = write_route_decision_receipt(
         route_decision,
         ledger_dir=orchestration_ledger_dir(),
@@ -2231,7 +2386,64 @@ def main(argv: list[str] | None = None) -> int:
             print("\n".join(supported_route_lines()), file=sys.stderr)
         return 10
 
-    assert route is not None
+    selected_route = _decision_selected_route(route_decision)
+    if selected_route is None:
+        reason = _unsupported_selected_route_reason(route_decision)
+        assert reason is not None
+        blocked = Validation(
+            False,
+            reason,
+            validation.task,
+            validation.parent_spec_path,
+            validation.exempt_read_only,
+        )
+        if not args.no_receipt:
+            write_receipt(
+                task_id=args.task,
+                lane=args.lane,
+                platform=args.platform,
+                mode=args.mode,
+                profile=args.profile,
+                route=route,
+                validation=blocked,
+                prompt=None,
+                launched=False,
+                route_decision=route_decision,
+                route_decision_receipt_path=route_decision_receipt_path,
+            )
+        print(f"BLOCKED: {reason}", file=sys.stderr)
+        print("Supported governed routes:", file=sys.stderr)
+        print("\n".join(supported_route_lines()), file=sys.stderr)
+        return 10
+    compatibility_reason = platform_lane_compatibility_reason(args.lane, selected_route)
+    if compatibility_reason is not None:
+        blocked = Validation(
+            False,
+            compatibility_reason,
+            validation.task,
+            validation.parent_spec_path,
+            validation.exempt_read_only,
+        )
+        if not args.no_receipt:
+            write_receipt(
+                task_id=args.task,
+                lane=args.lane,
+                platform=selected_route.platform,
+                mode=selected_route.mode,
+                profile=selected_route.profile,
+                route=selected_route,
+                validation=blocked,
+                prompt=None,
+                launched=False,
+                route_decision=route_decision,
+                route_decision_receipt_path=route_decision_receipt_path,
+            )
+        print(f"BLOCKED: {compatibility_reason}", file=sys.stderr)
+        return 10
+    route = selected_route
+    args.platform = route.platform
+    args.mode = route.mode
+    args.profile = route.profile
     _emit_gate_event(route_decision, policy_request, task_fields, gate_result="accept")
     mq_message_id = dispatch_message_id(args.mq_message_id)
     if args.launch and route.mutable and not validation.exempt_read_only and mq_message_id is None:
@@ -2322,9 +2534,6 @@ def main(argv: list[str] | None = None) -> int:
             ("vibe", "headless"): lambda: launch_vibe_headless(
                 args.task, args.lane, prompt or "", validation
             ),
-            ("antigrav", "interactive"): lambda: launch_antigrav_interactive(
-                args.task, args.lane, validation, prompt or ""
-            ),
         }
 
         def run_platform_launch() -> int:
@@ -2354,8 +2563,10 @@ def main(argv: list[str] | None = None) -> int:
             assert mq_message_id is not None
             fields = validation.task.fields
             try:
-                dispatch_launch = run_atomic_dispatch_launch(
-                    DispatchLaunchRequest(
+                launch_adapter = _worker_adapter_for_launch(args.platform)
+                dispatch_launch = launch_adapter.launch(
+                    decision=route_decision,
+                    request=DispatchLaunchRequest(
                         task_id=args.task,
                         lane=args.lane,
                         platform=args.platform,
@@ -2368,8 +2579,9 @@ def main(argv: list[str] | None = None) -> int:
                         mq_db_path=_relay_mq_db_path(),
                         event_log=coord_event_log_from_env(),
                         idempotency_key=args.idempotency_key,
+                        reactivate_retired=reactivate_retired_codex_relay,
                     ),
-                    functools.partial(
+                    launch_callable=functools.partial(
                         classify_and_witness_launch,
                         run_platform_launch,
                         task_id=args.task,
@@ -2380,6 +2592,32 @@ def main(argv: list[str] | None = None) -> int:
                     ),
                 )
                 rc = dispatch_launch.launch_returncode
+            except AuthorityViolation as exc:
+                reason = f"capability adapter launch refused: {exc}"
+                blocked = Validation(
+                    False,
+                    reason,
+                    validation.task,
+                    validation.parent_spec_path,
+                    validation.exempt_read_only,
+                )
+                if not args.no_receipt:
+                    write_receipt(
+                        task_id=args.task,
+                        lane=args.lane,
+                        platform=args.platform,
+                        mode=args.mode,
+                        profile=args.profile,
+                        route=route,
+                        validation=blocked,
+                        prompt=prompt,
+                        launched=False,
+                        route_decision=route_decision,
+                        route_decision_receipt_path=route_decision_receipt_path,
+                        durable_binding=durable_binding,
+                    )
+                print(f"BLOCKED: {reason}", file=sys.stderr)
+                return 10
             except CoordDispatchError as exc:
                 reason = f"atomic dispatch launch failed: {exc.reason}"
                 blocked = Validation(

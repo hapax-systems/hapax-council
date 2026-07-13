@@ -16,7 +16,14 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    model_serializer,
+    model_validator,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 QUOTA_SPEND_LEDGER_FIXTURES = REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json"
@@ -27,13 +34,122 @@ DEFAULT_QUOTA_SPEND_LEDGER_LIVE = (
 )
 
 PAID_CAPACITY_POOLS = frozenset({"api_paid_spend", "bootstrap_budget", "incident_override"})
-RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset({"glmcp.review.direct"})
+CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset(
+    {"claude.headless.full", "claude.review.opus"}
+)
+RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset(
+    {"agy.review.direct", "glmcp.review.direct", *CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES}
+)
 RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS = {
+    "agy.review.direct": "google-antigravity-cli-agy",
     "glmcp.review.direct": "z_ai-glm-coding-plan",
+    "claude.headless.full": "anthropic-claude-subscription",
+    "claude.review.opus": "anthropic-claude-subscription",
 }
 GLMCP_QUOTA_TELEMETRY_WRITER_REF = "scripts/hapax-quota-telemetry-writer"
+AGY_ADMISSION_SUPPORTED_TOOL = "hapax-agy-reviewer"
+AGY_ADMISSION_MODEL = "gemini-3.1-pro-preview"
+AGY_ADMISSION_RECEIPT_LABEL_RE = re.compile(
+    r"\Arelay-receipt:"
+    r"(?:[a-z0-9_.+-]*agy-quota-admission[a-z0-9_.+-]*\.yaml|"
+    r"unsafe-receipt-name-sha256:[0-9a-f]{16})"
+    r":witness:"
+)
+AGY_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
+AGY_ADMISSION_SECRETISH_RE = re.compile(
+    r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
+    re.IGNORECASE,
+)
+AGY_ADMISSION_WITNESS_REF_RE = re.compile(r":witness:([^:]+):supported_tool:")
+# Claude subscription-quota admission (scripts/hapax-claude-subscription-quota-admission →
+# hapax-quota-telemetry-writer). The composite ledger evidence ref MUST end in the account-live
+# suffix so the availability guarantor's _account_live_quota_observed_ref attests; lane/session
+# presence never produces this ref (the writer refuses lane/tmux witnesses).
+CLAUDE_ADMISSION_OBSERVATIONS = frozenset(
+    {
+        "subscription_quota_headroom_observed",
+        "operator_confirmed_subscription_headroom",
+    }
+)
+CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX = ":account-live-quota:observed"
+CLAUDE_ADMISSION_OBSERVATION_PATTERN = "|".join(
+    re.escape(observation) for observation in sorted(CLAUDE_ADMISSION_OBSERVATIONS)
+)
+CLAUDE_ADMISSION_WITNESS_PATTERN = (
+    r"claude-(?:subscription-headroom-observed|operator-confirmed-subscription-headroom)-"
+    r"\d{8}t\d{4}(?:\d{2})?z"
+)
+CLAUDE_ADMISSION_WITNESS_ALLOWLIST_RE = re.compile(rf"\A{CLAUDE_ADMISSION_WITNESS_PATTERN}\Z")
+CLAUDE_ADMISSION_RECEIPT_LABEL_RE = re.compile(
+    r"\Arelay-receipt:"
+    r"(?P<label>[a-z0-9_.+-]*claude-subscription-quota-admission[a-z0-9_.+-]*\.yaml)"
+    r":witness:"
+)
+CLAUDE_ADMISSION_COMPOSITE_REF_RE = re.compile(
+    r"\Arelay-receipt:"
+    r"(?P<label>[a-z0-9_.+-]*claude-subscription-quota-admission[a-z0-9_.+-]*\.yaml):"
+    rf"witness:(?P<witness>{CLAUDE_ADMISSION_WITNESS_PATTERN}):"
+    rf"observation:(?P<observation>{CLAUDE_ADMISSION_OBSERVATION_PATTERN}):"
+    r"observed_at:(?P<observed_at>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z):"
+    r"fresh_until:(?P<fresh_until>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)"
+    rf"{re.escape(CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX)}\Z"
+)
+CLAUDE_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
+CLAUDE_ADMISSION_SECRETISH_RE = re.compile(
+    r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
+    re.IGNORECASE,
+)
+CLAUDE_ADMISSION_BILLINGISH_RE = re.compile(
+    r"(?:"
+    r"(?:^|[-_.+:])(?:billing|customer|account|invoice|payment)[a-z0-9]*(?:$|[-_.+:])|"
+    r"(?:^|[-_.+:])subscription[-_.+:]?id[a-z0-9]*(?:$|[-_.+:])|"
+    r"(?:^|[-_.+:])(?:cus|sub|acct|in|ch)[0-9][a-z0-9]*(?:$|[-_.+:])|"
+    r"(?:^|[-_.+:])(?:cus|sub|acct|in|ch)[-_.+:][a-z0-9]+(?:$|[-_.+:])"
+    r")",
+    re.IGNORECASE,
+)
+CLAUDE_ADMISSION_LANE_PRESENCE_RE = re.compile(
+    r"(?:"
+    r"hapax-claude-[a-z0-9-]+|session-present|lane-present|lane-exists|"
+    r"(?:^|[-_.+])"
+    r"(?:(?:tmux|sessions?|lanes?|dev)[0-9]*|"
+    r"(?:alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|"
+    r"lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega)[0-9]*|"
+    r"cx-[a-z0-9-]+|vbe-[0-9]+)"
+    r"(?:$|[-_.+])"
+    r")",
+    re.IGNORECASE,
+)
+CLAUDE_ADMISSION_IGNORED_REASON_RE = re.compile(r"\A[a-z0-9][a-z0-9-]{0,119}\Z")
+CLAUDE_ADMISSION_IGNORED_UNSAFE_DETAIL_RE = re.compile(
+    r"(?:"
+    r"(?:^|-)(?:cus|sub|acct|in|ch)-[a-z0-9]+(?:$|-)|"
+    r"(?:^|-)subscription-?id-?[a-z0-9]*[0-9][a-z0-9]*(?:$|-)|"
+    r"(?:^|-)(?:customer|account|invoice|payment|billing)[a-z0-9-]*[0-9][a-z0-9-]*(?:$|-)|"
+    r"(?:^|-)(?:session-present|lane-present|lane-exists)(?:$|-)|"
+    r"(?:^|-)(?:tmux|sessions?|lanes?|dev)[0-9]+(?:$|-)|"
+    r"(?:^|-)(?:alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|"
+    r"lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega)[0-9]*(?:$|-)|"
+    r"(?:^|-)(?:cx-[a-z0-9-]+|vbe-[0-9]+|hapax-claude-[a-z0-9-]+)(?:$|-)"
+    r")",
+    re.IGNORECASE,
+)
+CLAUDE_ADMISSION_WITNESS_REF_RE = re.compile(r":witness:([^:]+):observation:")
+GLMCP_ADMISSION_CODING_PLAN_ENDPOINT = "https://api.z.ai/api/coding/paas/v4"
+GLMCP_ADMISSION_PAYG_ENDPOINT = "https://api.z.ai/api/paas/v4"
+GLMCP_PAYG_BUDGET_ROUTE_ID = "glmcp.review.direct"
+GLMCP_PAYG_BUDGET_PROVIDER = "z_ai"
+GLMCP_PAYG_BUDGET_PROFILE = "glmcp-review-direct"
+GLMCP_PAYG_BUDGET_TASK_CLASS = "independent-review"
+GLMCP_PAYG_BUDGET_QUALITY_FLOOR = "frontier_review_required"
+GLMCP_PAYG_ESTIMATED_COST_USD = "0.05"
 GLMCP_ADMISSION_TOOL_ENDPOINTS = {
-    "hapax-glmcp-reviewer": frozenset({"https://api.z.ai/api/coding/paas/v4"}),
+    "hapax-glmcp-reviewer": frozenset(
+        {
+            GLMCP_ADMISSION_CODING_PLAN_ENDPOINT,
+            GLMCP_ADMISSION_PAYG_ENDPOINT,
+        }
+    ),
 }
 GLMCP_ADMISSION_SUPPORTED_TOOLS = frozenset(GLMCP_ADMISSION_TOOL_ENDPOINTS)
 GLMCP_ADMISSION_ENDPOINTS = frozenset(
@@ -41,7 +157,7 @@ GLMCP_ADMISSION_ENDPOINTS = frozenset(
 )
 # Mirrors scripts/hapax-quota-telemetry-writer and the direct
 # scripts/hapax-glmcp-reviewer route metadata.
-GLMCP_ADMISSION_MODELS = frozenset({"glm-5"})
+GLMCP_ADMISSION_MODELS = frozenset({"glm-5.2"})
 GLMCP_ADMISSION_RECEIPT_LABEL_RE = re.compile(
     r"\Arelay-receipt:"
     r"(?:[a-z0-9_.+-]*glmcp-quota-admission[a-z0-9_.+-]*\.yaml|"
@@ -55,6 +171,9 @@ GLMCP_ADMISSION_SECRETISH_RE = re.compile(
 )
 GLMCP_ADMISSION_WITNESS_REF_RE = re.compile(r":witness:([^:]+):supported_tool:")
 GLMCP_ADMISSION_SUPPORTED_TOOL_REF_RE = re.compile(r":supported_tool:([a-z0-9_.+-]+):")
+GLMCP_PAYG_PRIMARY_ERROR_CLASSES = frozenset({"daily_limit_exhausted", "quota_exhausted"})
+GLMCP_PAYG_PRIMARY_ERROR_CLASS_REF_RE = re.compile(r":primary_error_class:([^:]+):")
+GLMCP_PAYG_QUOTA_WALL_REF_RE = re.compile(r":quota_wall_evidence_ref:([^:]+):")
 
 
 class QuotaSpendLedgerError(ValueError):
@@ -106,15 +225,21 @@ class ModelId(StrEnum):
     # mirrored from shared.platform_capability_registry.ModelId — the structured dated identity that
     # replaces the coarse free-text model_or_engine for spend metering; drift-pinned to the registry.
     CLAUDE_OPUS_4_8 = "claude-opus-4-8"
+    CLAUDE_OPUS_4_6 = "claude-opus-4-6"
     CLAUDE_SONNET_4_6 = "claude-sonnet-4-6"
+    CLAUDE_SONNET_5 = "claude-sonnet-5"
     CLAUDE_HAIKU_4_5 = "claude-haiku-4-5"
     CLAUDE_FABLE_5 = "claude-fable-5"
     GPT_5_5 = "gpt-5.5"
     GPT_5_3_CODEX_SPARK = "gpt-5.3-codex-spark"
+    GPT_OSS_120B = "gpt-oss-120b"
     COMMAND_R_08_2024 = "command-r-08-2024"
+    QWEN3_5_9B = "qwen3.5-9b"
     MISTRAL_MEDIUM_3_5 = "mistral-medium-3.5"
     GEMINI_3_1_PRO_PREVIEW = "gemini-3.1-pro-preview"
+    GEMINI_3_5_FLASH = "gemini-3.5-flash"
     Z_AI_GLM_5 = "z_ai-glm-5"
+    Z_AI_GLM_5_2 = "z_ai-glm-5.2"
     UNKNOWN = "unknown"
 
 
@@ -297,6 +422,7 @@ class SpendReceipt(StrictModel):
     spend_receipt_schema: Literal[1] = 1
     spend_id: str = Field(pattern=r"^spend-\d{8}T\d{6}Z-[a-z0-9_.:-]+$")
     task_id: str = Field(min_length=1)
+    task_hash: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     authority_case: str = Field(min_length=1)
     route_id: str = Field(min_length=1)
     capacity_pool: CapacityPool
@@ -363,6 +489,7 @@ class SpendReceipt(StrictModel):
             _refs(
                 self.spend_id,
                 self.task_id,
+                self.task_hash,
                 self.authority_case,
                 self.route_id,
                 self.budget_id,
@@ -380,8 +507,19 @@ class SpendReceipt(StrictModel):
         )
         return self
 
+    @model_serializer(mode="wrap")
+    def _serialize_without_empty_task_hash(self, handler: Any) -> dict[str, Any]:
+        payload = handler(self)
+        if payload.get("task_hash") is None:
+            payload.pop("task_hash", None)
+        return payload
+
     def cost_against_cap(self) -> Decimal:
-        return self.actual_cost_usd or self.estimated_cost_usd or Decimal("0")
+        if self.actual_cost_usd is not None:
+            return self.actual_cost_usd
+        if self.estimated_cost_usd is not None:
+            return self.estimated_cost_usd
+        return Decimal("0")
 
     def is_unreconciled_overdue(self, now: datetime) -> bool:
         return (
@@ -590,6 +728,7 @@ class QuotaSnapshot(StrictModel):
 
 class PaidRouteRequest(StrictModel):
     route_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
     provider: str = Field(min_length=1)
     profile: str = Field(min_length=1)
     task_class: str = Field(min_length=1)
@@ -604,6 +743,7 @@ class PaidRouteRequest(StrictModel):
         _reject_private_or_identity_refs(
             [
                 self.route_id,
+                self.task_id,
                 self.provider,
                 self.profile,
                 self.task_class,
@@ -813,6 +953,16 @@ class QuotaSpendLedger(StrictModel):
             start=Decimal("0"),
         )
 
+    def _budget_spent_for_task_usd(self, budget: TransitionBudget, task_id: str) -> Decimal:
+        return sum(
+            (
+                receipt.cost_against_cap()
+                for receipt in self._budget_receipts(budget)
+                if receipt.task_id == task_id
+            ),
+            start=Decimal("0"),
+        )
+
     def _budget_remaining_usd(self, budget: TransitionBudget) -> Decimal:
         remaining = budget.total_cap_usd - self._budget_spent_usd(budget)
         return max(Decimal("0"), remaining)
@@ -888,13 +1038,18 @@ def evaluate_paid_route_eligibility(
     for budget in unexpired:
         remaining = ledger._budget_remaining_usd(budget)
         daily_remaining = budget.daily_cap_usd - ledger._budget_spent_today_usd(budget, when)
-        if request.estimated_cost_usd > budget.per_task_cap_usd:
+        task_remaining = budget.per_task_cap_usd - ledger._budget_spent_for_task_usd(
+            budget,
+            request.task_id,
+        )
+        limiting_remaining = min(remaining, daily_remaining, task_remaining)
+        if request.estimated_cost_usd > task_remaining:
             continue
         if request.estimated_cost_usd > remaining:
             continue
         if request.estimated_cost_usd > daily_remaining:
             continue
-        cap_eligible.append((budget, remaining - request.estimated_cost_usd))
+        cap_eligible.append((budget, limiting_remaining - request.estimated_cost_usd))
 
     if not cap_eligible:
         blocking.append("matching TransitionBudget cap exhausted")
@@ -1169,7 +1324,7 @@ def subscription_quota_state_for_route(
             (f"quota-snapshot:{normalized_route_id}:missing",),
         )
     evidence_refs = tuple(
-        _redact_secretish_quota_evidence_ref(ref)
+        _redact_quota_evidence_ref(normalized_route_id, ref)
         for snapshot in snapshots
         for ref in snapshot.evidence_refs
     ) or (f"quota-snapshot:{normalized_route_id}:no-evidence",)
@@ -1184,15 +1339,23 @@ def subscription_quota_state_for_route(
         if _subscription_quota_missing_required_fresh_until(snapshot)
     )
     untrusted_fresh_refs = tuple(
-        f"quota-snapshot:{snapshot.snapshot_id}:untrusted_glmcp_admission_evidence"
+        "quota-snapshot:"
+        f"{snapshot.snapshot_id}:"
+        f"{_subscription_quota_untrusted_admission_evidence_reason(snapshot)}"
         for snapshot in snapshots
         if _subscription_quota_missing_required_admission_evidence(ledger, snapshot)
+    )
+    missing_payg_spend_gate_refs = tuple(
+        f"quota-snapshot:{snapshot.snapshot_id}:payg_spend_gate_missing_or_ineligible"
+        for snapshot in snapshots
+        if _subscription_quota_missing_required_payg_spend_gate(ledger, snapshot, now=checked_at)
     )
     return _strict_subscription_quota_state(ledger, snapshots, now=checked_at), (
         *evidence_refs,
         *expired_refs,
         *missing_fresh_until_refs,
         *untrusted_fresh_refs,
+        *missing_payg_spend_gate_refs,
     )
 
 
@@ -1237,6 +1400,8 @@ def _effective_subscription_quota_state(
 ) -> SubscriptionQuotaState:
     if _subscription_quota_missing_required_admission_evidence(ledger, snapshot):
         return SubscriptionQuotaState.UNKNOWN
+    if _subscription_quota_missing_required_payg_spend_gate(ledger, snapshot, now=now):
+        return SubscriptionQuotaState.UNKNOWN
     if _subscription_quota_missing_required_fresh_until(snapshot):
         return SubscriptionQuotaState.UNKNOWN
     if _subscription_quota_fresh_until_expired(snapshot, now=now):
@@ -1259,14 +1424,64 @@ def _subscription_quota_missing_required_admission_evidence(
     if snapshot.subscription_quota_state is not SubscriptionQuotaState.FRESH:
         return False
     normalized_route_id = _normalize_route_id(snapshot.route_id)
+    if normalized_route_id not in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES:
+        return False
     expected_provider = RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS.get(normalized_route_id)
     if expected_provider is None:
-        return False
+        return True
     if GLMCP_QUOTA_TELEMETRY_WRITER_REF not in ledger.generated_from:
         return True
     if snapshot.provider != expected_provider:
         return True
-    return not any(_is_glmcp_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
+    if normalized_route_id == "glmcp.review.direct":
+        return not any(_is_glmcp_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
+    if normalized_route_id == "agy.review.direct":
+        return not any(_is_agy_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
+    if normalized_route_id in CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES:
+        return not any(_is_claude_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
+    return True
+
+
+def _subscription_quota_untrusted_admission_evidence_reason(snapshot: QuotaSnapshot) -> str:
+    normalized_route_id = _normalize_route_id(snapshot.route_id)
+    if normalized_route_id == "glmcp.review.direct":
+        return "untrusted_glmcp_admission_evidence"
+    if normalized_route_id == "agy.review.direct":
+        return "untrusted_agy_admission_evidence"
+    if normalized_route_id in CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES:
+        return "untrusted_claude_admission_evidence"
+    return "untrusted_route_admission_evidence"
+
+
+def _subscription_quota_missing_required_payg_spend_gate(
+    ledger: QuotaSpendLedger,
+    snapshot: QuotaSnapshot,
+    *,
+    now: datetime,
+) -> bool:
+    if snapshot.subscription_quota_state is not SubscriptionQuotaState.FRESH:
+        return False
+    if _normalize_route_id(snapshot.route_id) != GLMCP_PAYG_BUDGET_ROUTE_ID:
+        return False
+    if not any(_is_glmcp_payg_admission_evidence_ref(ref) for ref in snapshot.evidence_refs):
+        return False
+    for receipt in _matching_glmcp_payg_spend_receipts(ledger, snapshot):
+        decision = evaluate_paid_route_eligibility(
+            ledger,
+            _glmcp_payg_budget_request(receipt.task_id),
+            now=now,
+        )
+        required_refs = {
+            f"spend-gate:{GLMCP_PAYG_BUDGET_ROUTE_ID}:eligible_active_budget",
+            f"spend-gate-budget:{decision.budget_id}",
+        }
+        if (
+            decision.eligible
+            and decision.budget_id == receipt.budget_id
+            and required_refs.issubset(set(snapshot.evidence_refs))
+        ):
+            return False
+    return True
 
 
 def _is_glmcp_admission_evidence_ref(ref: str) -> bool:
@@ -1274,9 +1489,231 @@ def _is_glmcp_admission_evidence_ref(ref: str) -> bool:
         GLMCP_ADMISSION_RECEIPT_LABEL_RE.match(ref) is not None
         and _has_safe_glmcp_admission_witness(ref)
         and _has_glmcp_admission_tool_endpoint_pair(ref)
+        and _has_glmcp_payg_witness_fields_for_endpoint(ref)
         and any(f":model:{model}:" in ref for model in GLMCP_ADMISSION_MODELS)
         and ":observed_at:" in ref
         and ":fresh_until:" in ref
+    )
+
+
+def _is_agy_admission_evidence_ref(ref: str) -> bool:
+    return (
+        AGY_ADMISSION_RECEIPT_LABEL_RE.match(ref) is not None
+        and _has_safe_agy_admission_witness(ref)
+        and f":supported_tool:{AGY_ADMISSION_SUPPORTED_TOOL}:" in ref
+        and f":model:{AGY_ADMISSION_MODEL}:" in ref
+        and ":observed_at:" in ref
+        and ":fresh_until:" in ref
+    )
+
+
+def _is_claude_admission_evidence_ref(ref: str) -> bool:
+    if CLAUDE_ADMISSION_COMPOSITE_REF_RE.fullmatch(ref) is None:
+        return False
+    return _has_safe_claude_admission_receipt_label(ref) and _has_safe_claude_admission_witness(ref)
+
+
+def _has_safe_claude_admission_receipt_label(ref: str) -> bool:
+    label_match = CLAUDE_ADMISSION_RECEIPT_LABEL_RE.match(ref)
+    if label_match is None:
+        return False
+    label = label_match.group("label")
+    label_stem = label.removesuffix(".yaml")
+    return (
+        CLAUDE_ADMISSION_SECRETISH_RE.search(label_stem) is None
+        and CLAUDE_ADMISSION_BILLINGISH_RE.search(label_stem) is None
+        and CLAUDE_ADMISSION_LANE_PRESENCE_RE.search(label_stem) is None
+    )
+
+
+def _claude_evidence_receipt_label(ref: str) -> str | None:
+    if not ref.startswith("relay-receipt:"):
+        return None
+    rest = ref.removeprefix("relay-receipt:")
+    if rest.startswith("unsafe-receipt-name-sha256:"):
+        prefix, _, suffix = rest.partition(":")
+        digest, sep, remainder = suffix.partition(":")
+        if not sep:
+            return None
+        label = f"{prefix}:{digest}"
+    else:
+        label, sep, remainder = rest.partition(":")
+        if not sep:
+            return None
+    if remainder.startswith("witness:") or remainder.startswith("ignored:"):
+        return label
+    return None
+
+
+def _is_safe_claude_ignored_evidence_ref(ref: str) -> bool:
+    if ":ignored:" not in ref:
+        return False
+    label = _claude_evidence_receipt_label(ref)
+    if label is None:
+        return False
+    ignored_reason = ref.split(":ignored:", maxsplit=1)[1]
+    if not _is_safe_claude_ignored_reason(ignored_reason):
+        return False
+    if re.fullmatch(r"unsafe-receipt-name-sha256:[0-9a-f]{16}", label) is not None:
+        return True
+    label_stem = label.removesuffix(".yaml")
+    return (
+        CLAUDE_ADMISSION_RECEIPT_LABEL_RE.match(f"relay-receipt:{label}:witness:") is not None
+        and CLAUDE_ADMISSION_SECRETISH_RE.search(label_stem) is None
+        and CLAUDE_ADMISSION_BILLINGISH_RE.search(label_stem) is None
+        and CLAUDE_ADMISSION_LANE_PRESENCE_RE.search(label_stem) is None
+    )
+
+
+def _is_safe_claude_ignored_reason(reason: str) -> bool:
+    return (
+        CLAUDE_ADMISSION_IGNORED_REASON_RE.fullmatch(reason) is not None
+        and CLAUDE_ADMISSION_SECRETISH_RE.search(reason) is None
+        and CLAUDE_ADMISSION_IGNORED_UNSAFE_DETAIL_RE.search(reason) is None
+    )
+
+
+def _is_untrusted_claude_admission_ref_for_evidence(ref: str) -> bool:
+    if _is_claude_admission_evidence_ref(ref) or _is_safe_claude_ignored_evidence_ref(ref):
+        return False
+    if (
+        CLAUDE_ADMISSION_BILLINGISH_RE.search(ref) is not None
+        or CLAUDE_ADMISSION_LANE_PRESENCE_RE.search(ref) is not None
+    ):
+        return True
+    if not ref.startswith("relay-receipt:"):
+        return False
+    return (
+        "claude-subscription-quota-admission" in ref
+        or "unsafe-receipt-name-sha256:" in ref
+        or bool(CLAUDE_ADMISSION_WITNESS_REF_RE.search(ref))
+    )
+
+
+def _is_glmcp_payg_admission_evidence_ref(ref: str) -> bool:
+    return (
+        _is_glmcp_admission_evidence_ref(ref)
+        and f":endpoint:{GLMCP_ADMISSION_PAYG_ENDPOINT}:" in ref
+    )
+
+
+def _glmcp_payg_spend_receipt_witness_refs(receipt: SpendReceipt) -> set[str]:
+    if (
+        _normalize_route_id(receipt.route_id) != GLMCP_PAYG_BUDGET_ROUTE_ID
+        or receipt.capacity_pool is not CapacityPool.API_PAID_SPEND
+        or receipt.provider != GLMCP_PAYG_BUDGET_PROVIDER
+        or receipt.spend_reason is not SpendReason.QUOTA_EXHAUSTION
+    ):
+        return set()
+    refs = {receipt.spend_id}
+    match = re.fullmatch(r"spend-([0-9]{8}T[0-9]{6}Z)-glmcp-payg-review-(.+)", receipt.spend_id)
+    if match is not None:
+        stamp, suffix = match.groups()
+        refs.add(f"glmcp-payg-spend-{stamp.lower()}-{suffix}.yaml")
+    return refs
+
+
+def _matching_glmcp_payg_spend_receipts(
+    ledger: QuotaSpendLedger,
+    snapshot: QuotaSnapshot,
+) -> tuple[SpendReceipt, ...]:
+    witnesses = {
+        match.group(1)
+        for ref in snapshot.evidence_refs
+        if _is_glmcp_payg_admission_evidence_ref(ref)
+        for match in [GLMCP_ADMISSION_WITNESS_REF_RE.search(ref)]
+        if match is not None
+    }
+    if not witnesses:
+        return ()
+    return tuple(
+        receipt
+        for receipt in ledger.spend_receipts
+        if witnesses & _glmcp_payg_spend_receipt_witness_refs(receipt)
+    )
+
+
+def _glmcp_payg_budget_allows_review_spend(
+    budget: TransitionBudget,
+    receipt: SpendReceipt,
+) -> bool:
+    if budget.budget_id != receipt.budget_id:
+        return False
+    if budget.capacity_pool is not CapacityPool.API_PAID_SPEND:
+        return False
+    if receipt.provider not in budget.providers_allowed:
+        return False
+    if GLMCP_PAYG_BUDGET_PROFILE not in budget.profiles_allowed:
+        return False
+    if GLMCP_PAYG_BUDGET_TASK_CLASS not in budget.task_classes_allowed:
+        return False
+    if GLMCP_PAYG_BUDGET_QUALITY_FLOOR not in budget.quality_floors_allowed:
+        return False
+    return budget.created_at <= receipt.created_at < budget.expires_at
+
+
+def successful_task_scoped_glmcp_payg_review_spend_receipts(
+    ledger: QuotaSpendLedger,
+    task_id: str,
+) -> tuple[SpendReceipt, ...]:
+    """Reconciled GLMCP PAYG review spends already consumed for one task."""
+
+    normalized_task_id = task_id.strip()
+    if not normalized_task_id:
+        return ()
+    ledger_budgets = getattr(ledger, "transition_budgets", ())
+    ledger_receipts = getattr(ledger, "spend_receipts", ())
+    budgets = {budget.budget_id: budget for budget in ledger_budgets}
+    receipts: list[SpendReceipt] = []
+    for receipt in ledger_receipts:
+        budget = budgets.get(str(receipt.budget_id or ""))
+        if budget is None:
+            continue
+        if receipt.task_id != normalized_task_id:
+            continue
+        if not _glmcp_payg_spend_receipt_witness_refs(receipt):
+            continue
+        if receipt.auth_surface is not AuthSurface.API_KEY:
+            continue
+        if receipt.quality_floor != GLMCP_PAYG_BUDGET_QUALITY_FLOOR:
+            continue
+        if receipt.reconciliation_state is not SpendReconciliationState.RECONCILED:
+            continue
+        if receipt.actual_cost_usd is None or receipt.actual_cost_usd <= Decimal("0"):
+            continue
+        if receipt.reconciled_at is None or not receipt.reconciliation_reason:
+            continue
+        model_id = receipt.model_id.value if receipt.model_id is not None else None
+        if (
+            receipt.model_or_engine not in GLMCP_ADMISSION_MODELS
+            and model_id != ModelId.Z_AI_GLM_5_2.value
+        ):
+            continue
+        if not _glmcp_payg_budget_allows_review_spend(budget, receipt):
+            continue
+        receipts.append(receipt)
+    return tuple(receipts)
+
+
+def has_successful_task_scoped_glmcp_payg_review_spend(
+    ledger: QuotaSpendLedger,
+    task_id: str,
+) -> bool:
+    return bool(successful_task_scoped_glmcp_payg_review_spend_receipts(ledger, task_id))
+
+
+def _glmcp_payg_budget_request(task_id: str) -> PaidRouteRequest:
+    return PaidRouteRequest.model_validate(
+        {
+            "route_id": GLMCP_PAYG_BUDGET_ROUTE_ID,
+            "task_id": task_id,
+            "provider": GLMCP_PAYG_BUDGET_PROVIDER,
+            "profile": GLMCP_PAYG_BUDGET_PROFILE,
+            "task_class": GLMCP_PAYG_BUDGET_TASK_CLASS,
+            "quality_floor": GLMCP_PAYG_BUDGET_QUALITY_FLOOR,
+            "estimated_cost_usd": GLMCP_PAYG_ESTIMATED_COST_USD,
+            "capacity_pool": CapacityPool.API_PAID_SPEND,
+        }
     )
 
 
@@ -1292,6 +1729,26 @@ def _has_glmcp_admission_tool_endpoint_pair(ref: str) -> bool:
     return endpoint in GLMCP_ADMISSION_TOOL_ENDPOINTS.get(tool, frozenset())
 
 
+def _has_glmcp_payg_witness_fields_for_endpoint(ref: str) -> bool:
+    endpoint_matches = [
+        endpoint for endpoint in GLMCP_ADMISSION_ENDPOINTS if f":endpoint:{endpoint}:" in ref
+    ]
+    primary_error_matches = GLMCP_PAYG_PRIMARY_ERROR_CLASS_REF_RE.findall(ref)
+    wall_ref_matches = GLMCP_PAYG_QUOTA_WALL_REF_RE.findall(ref)
+    if len(endpoint_matches) != 1:
+        return False
+    if endpoint_matches[0] != GLMCP_ADMISSION_PAYG_ENDPOINT:
+        return not primary_error_matches and not wall_ref_matches
+    if len(primary_error_matches) != 1 or len(wall_ref_matches) != 1:
+        return False
+    wall_ref = wall_ref_matches[0]
+    return (
+        primary_error_matches[0] in GLMCP_PAYG_PRIMARY_ERROR_CLASSES
+        and GLMCP_ADMISSION_EVIDENCE_REF_RE.fullmatch(wall_ref) is not None
+        and GLMCP_ADMISSION_SECRETISH_RE.search(wall_ref) is None
+    )
+
+
 def _has_safe_glmcp_admission_witness(ref: str) -> bool:
     witness_matches = GLMCP_ADMISSION_WITNESS_REF_RE.findall(ref)
     if len(witness_matches) != 1:
@@ -1303,11 +1760,49 @@ def _has_safe_glmcp_admission_witness(ref: str) -> bool:
     )
 
 
+def _has_safe_agy_admission_witness(ref: str) -> bool:
+    witness_matches = AGY_ADMISSION_WITNESS_REF_RE.findall(ref)
+    if len(witness_matches) != 1:
+        return False
+    witness = witness_matches[0]
+    return (
+        AGY_ADMISSION_EVIDENCE_REF_RE.fullmatch(witness) is not None
+        and AGY_ADMISSION_SECRETISH_RE.search(witness) is None
+    )
+
+
+def _has_safe_claude_admission_witness(ref: str) -> bool:
+    witness_matches = CLAUDE_ADMISSION_WITNESS_REF_RE.findall(ref)
+    if len(witness_matches) != 1:
+        return False
+    witness = witness_matches[0]
+    return (
+        CLAUDE_ADMISSION_EVIDENCE_REF_RE.fullmatch(witness) is not None
+        and CLAUDE_ADMISSION_WITNESS_ALLOWLIST_RE.fullmatch(witness) is not None
+        and CLAUDE_ADMISSION_SECRETISH_RE.search(witness) is None
+        and CLAUDE_ADMISSION_BILLINGISH_RE.search(witness) is None
+        and CLAUDE_ADMISSION_LANE_PRESENCE_RE.search(witness) is None
+    )
+
+
 def _redact_secretish_quota_evidence_ref(ref: str) -> str:
     if GLMCP_ADMISSION_SECRETISH_RE.search(ref) is None:
         return ref
     digest = hashlib.sha256(ref.encode("utf-8", errors="replace")).hexdigest()[:16]
     return f"quota-evidence-ref:redacted-secretish-sha256:{digest}"
+
+
+def _redact_quota_evidence_ref(route_id: str, ref: str) -> str:
+    redacted = _redact_secretish_quota_evidence_ref(ref)
+    if redacted != ref:
+        return redacted
+    if (
+        route_id in CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
+        and _is_untrusted_claude_admission_ref_for_evidence(ref)
+    ):
+        digest = hashlib.sha256(ref.encode("utf-8", errors="replace")).hexdigest()[:16]
+        return f"quota-evidence-ref:redacted-untrusted-claude-admission-sha256:{digest}"
+    return ref
 
 
 def _subscription_quota_fresh_until_expired(

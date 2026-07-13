@@ -5,19 +5,23 @@ itself: artifact id, budget envelope, ladder, artifact ruler hash, signer,
 timestamp, and signature reference must be present. The artifact ruler hash is
 the authoritative frozen value; callers must pass the commit's carried ruler
 hash so verifier admission proves end-to-end equality. Boolean freeze flags are
-intentionally ignored.
+intentionally ignored, while budget-envelope publication/Flood routing fields
+are part of the signed M2 evidence contract.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from math import isfinite
+from pathlib import Path
 from typing import Any, Final
 
 from shared.capdlc_lifecycle import GateResult, GateStatus
+from shared.legal_posture_registry import G2GateInput, LegalPostureRegistry, LegalPostureRow
+from shared.mdlc_g2_legal import require_g2_legal
 from shared.mdlc_measure import MonDLCLadder
 
 MONDLC_M2_FREEZE_NAME: Final = "mdlc_m2_freeze"
@@ -43,6 +47,8 @@ class M2FreezeRefusalReason(StrEnum):
     INVALID_SIGNED_AT = "invalid_signed_at"
     MISSING_SIGNATURE_REF = "missing_signature_ref"
     INVALID_EVIDENCE_REFS = "invalid_evidence_refs"
+    G2_TARGET_MISMATCH = "g2_target_mismatch"
+    PUBLISH_ONLY_WITHOUT_FLOOD_PLAN = "publish_only_without_flood_plan"
 
 
 _NEXT_ACTIONS: Final[dict[M2FreezeRefusalReason, str]] = {
@@ -78,6 +84,13 @@ _NEXT_ACTIONS: Final[dict[M2FreezeRefusalReason, str]] = {
     M2FreezeRefusalReason.INVALID_EVIDENCE_REFS: (
         "record evidence_refs as a sequence of non-empty strings"
     ),
+    M2FreezeRefusalReason.G2_TARGET_MISMATCH: (
+        "repair the M2 freeze artifact so its surface, venue, and instrument match the G2 target"
+    ),
+    M2FreezeRefusalReason.PUBLISH_ONLY_WITHOUT_FLOOD_PLAN: (
+        "set budget_envelope.flood_plan or mark budget_envelope.non_public/"
+        "budget_envelope.no_audience for the publish-only M2 freeze artifact"
+    ),
 }
 
 
@@ -90,8 +103,13 @@ class M2BudgetEnvelope:
     max_notional: float
     max_position: float
     purpose: str = ""
+    surface: str = ""
     venue: str = ""
     instrument: str = ""
+    publish_only: bool = False
+    flood_plan: str = ""
+    non_public: bool = False
+    no_audience: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "authority_ref", _required_string(self.authority_ref))
@@ -107,8 +125,13 @@ class M2BudgetEnvelope:
             _non_negative_float(self.max_position, field="max_position"),
         )
         object.__setattr__(self, "purpose", _optional_string(self.purpose))
+        object.__setattr__(self, "surface", _optional_string(self.surface))
         object.__setattr__(self, "venue", _optional_string(self.venue))
         object.__setattr__(self, "instrument", _optional_string(self.instrument))
+        object.__setattr__(self, "publish_only", _optional_bool(self.publish_only))
+        object.__setattr__(self, "flood_plan", _optional_string(self.flood_plan))
+        object.__setattr__(self, "non_public", _optional_bool(self.non_public))
+        object.__setattr__(self, "no_audience", _optional_bool(self.no_audience))
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> M2BudgetEnvelope:
@@ -118,9 +141,14 @@ class M2BudgetEnvelope:
                 currency=_required_mapping_string(raw, "currency"),
                 max_notional=_non_negative_float(raw.get("max_notional"), field="max_notional"),
                 max_position=_non_negative_float(raw.get("max_position"), field="max_position"),
-                purpose=_optional_string(raw.get("purpose")),
-                venue=_optional_string(raw.get("venue")),
-                instrument=_optional_string(raw.get("instrument")),
+                purpose=_optional_mapping_string(raw, "purpose"),
+                surface=_optional_mapping_string(raw, "surface"),
+                venue=_optional_mapping_string(raw, "venue"),
+                instrument=_optional_mapping_string(raw, "instrument"),
+                publish_only=_optional_bool(raw.get("publish_only")),
+                flood_plan=_optional_mapping_string(raw, "flood_plan"),
+                non_public=_optional_bool(raw.get("non_public")),
+                no_audience=_optional_bool(raw.get("no_audience")),
             )
         except _FreezeInputError:
             raise
@@ -136,8 +164,13 @@ class M2BudgetEnvelope:
             "max_notional": self.max_notional,
             "max_position": self.max_position,
             "purpose": self.purpose,
+            "surface": self.surface,
             "venue": self.venue,
             "instrument": self.instrument,
+            "publish_only": self.publish_only,
+            "flood_plan": self.flood_plan,
+            "non_public": self.non_public,
+            "no_audience": self.no_audience,
         }
 
 
@@ -261,6 +294,20 @@ class M2FreezeVerification:
         }
 
 
+@dataclass(frozen=True)
+class M2CommitAdmission:
+    """Commit-ready M2 admission after freeze and G2 legal gates both pass."""
+
+    freeze_artifact: M2FreezeArtifact
+    legal_row: LegalPostureRow
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.freeze_artifact, M2FreezeArtifact):
+            raise TypeError("freeze_artifact must be an M2FreezeArtifact")
+        if not isinstance(self.legal_row, LegalPostureRow):
+            raise TypeError("legal_row must be a LegalPostureRow")
+
+
 class M2FreezeRefusal(RuntimeError):
     """Raised when a caller requires M2 freeze admission and verification blocks."""
 
@@ -311,6 +358,13 @@ def verify_m2_freeze_artifact(
             ruler_hash_commit=commit,
             expected_ruler_hash=frozen_artifact.ruler_hash,
         )
+    if _is_publish_only_without_flood_path(frozen_artifact.budget_envelope):
+        return _refused(
+            M2FreezeRefusalReason.PUBLISH_ONLY_WITHOUT_FLOOD_PLAN,
+            artifact=frozen_artifact,
+            ruler_hash_commit=commit,
+            expected_ruler_hash=frozen_artifact.ruler_hash,
+        )
 
     evidence_refs = _freeze_evidence_refs(frozen_artifact)
     return M2FreezeVerification(
@@ -344,6 +398,87 @@ def require_m2_freeze_artifact(
     if verification.status is not GateStatus.LIT or verification.artifact is None:
         raise M2FreezeRefusal(verification)
     return verification.artifact
+
+
+def require_m2_commit_admission(
+    artifact: M2FreezeArtifact | Mapping[str, Any] | None,
+    *,
+    ruler_hash_commit: str | None,
+    g2_target: G2GateInput | Mapping[str, Any] | None = None,
+    registry: LegalPostureRegistry | None = None,
+    registry_path: Path | str | None = None,
+    today: date | None = None,
+) -> M2CommitAdmission:
+    """Require M2 freeze presence and an exact fresh signed LIT G2 row."""
+
+    freeze_artifact = require_m2_freeze_artifact(
+        artifact,
+        ruler_hash_commit=ruler_hash_commit,
+    )
+    legal_row = require_g2_legal(
+        _commit_g2_target(g2_target, freeze_artifact),
+        registry=registry,
+        registry_path=registry_path,
+        today=today,
+    )
+    return M2CommitAdmission(freeze_artifact=freeze_artifact, legal_row=legal_row)
+
+
+def _commit_g2_target(
+    target: G2GateInput | Mapping[str, Any] | None,
+    artifact: M2FreezeArtifact,
+) -> G2GateInput | Mapping[str, Any]:
+    envelope = artifact.budget_envelope
+    envelope_target = G2GateInput(
+        surface=envelope.surface,
+        venue=envelope.venue,
+        instrument=envelope.instrument,
+    )
+    if target is not None:
+        supplied = _supplied_g2_target(target, artifact)
+        if supplied != envelope_target:
+            raise M2FreezeRefusal(
+                _refused(
+                    M2FreezeRefusalReason.G2_TARGET_MISMATCH,
+                    detail="caller-supplied G2 target differs from the signed freeze envelope",
+                    artifact=artifact,
+                )
+            )
+    return envelope_target
+
+
+def _supplied_g2_target(
+    target: G2GateInput | Mapping[str, Any],
+    artifact: M2FreezeArtifact,
+) -> G2GateInput:
+    try:
+        if isinstance(target, G2GateInput):
+            return G2GateInput(
+                surface=_required_string(target.surface),
+                venue=_required_string(target.venue),
+                instrument=_required_string(target.instrument),
+            )
+        if isinstance(target, Mapping):
+            return G2GateInput(
+                surface=_required_mapping_string(target, "surface"),
+                venue=_required_mapping_string(target, "venue"),
+                instrument=_required_mapping_string(target, "instrument"),
+            )
+    except (TypeError, ValueError, _FreezeInputError) as exc:
+        raise M2FreezeRefusal(
+            _refused(
+                M2FreezeRefusalReason.G2_TARGET_MISMATCH,
+                detail=str(exc),
+                artifact=artifact,
+            )
+        ) from exc
+    raise M2FreezeRefusal(
+        _refused(
+            M2FreezeRefusalReason.G2_TARGET_MISMATCH,
+            detail="g2_target must be a G2GateInput or mapping",
+            artifact=artifact,
+        )
+    )
 
 
 def _coerce_artifact(value: M2FreezeArtifact | Mapping[str, Any]) -> M2FreezeArtifact:
@@ -422,6 +557,14 @@ def _freeze_evidence_refs(artifact: M2FreezeArtifact) -> tuple[str, ...]:
             )
         )
     )
+
+
+def _is_publish_only_without_flood_path(envelope: M2BudgetEnvelope) -> bool:
+    if not envelope.publish_only:
+        return False
+    if envelope.flood_plan:
+        return False
+    return not (envelope.non_public or envelope.no_audience)
 
 
 def _required_mapping(raw: Mapping[str, Any], field: str) -> Mapping[str, Any]:
@@ -516,6 +659,20 @@ def _optional_string(value: Any) -> str:
     return value.strip()
 
 
+def _optional_mapping_string(raw: Mapping[str, Any], field: str) -> str:
+    if field not in raw:
+        return ""
+    return _optional_string(raw[field])
+
+
+def _optional_bool(value: Any) -> bool:
+    if value is None:
+        return False
+    if not isinstance(value, bool):
+        raise ValueError("optional field must be a boolean")
+    return value
+
+
 def _finite_float(value: Any, *, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{field} must be numeric")
@@ -585,10 +742,12 @@ __all__ = [
     "MONDLC_M2_FREEZE_NAME",
     "MONDLC_M2_FREEZE_VERSION",
     "M2BudgetEnvelope",
+    "M2CommitAdmission",
     "M2FreezeArtifact",
     "M2FreezeRefusal",
     "M2FreezeRefusalReason",
     "M2FreezeVerification",
+    "require_m2_commit_admission",
     "require_m2_freeze_artifact",
     "verify_m2_freeze_artifact",
 ]

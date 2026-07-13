@@ -15,6 +15,8 @@ from shared.quota_spend_ledger import (
     DEFAULT_QUOTA_SPEND_LEDGER_LIVE,
     QUOTA_SPEND_LEDGER_FIXTURES,
     QUOTA_SPEND_LEDGER_LIVE_ENV,
+    RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS,
+    RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES,
     ArtifactProvenanceRecord,
     BootstrapDependencyState,
     BudgetLifecycleState,
@@ -33,9 +35,11 @@ from shared.quota_spend_ledger import (
     SupportArtifactDisposition,
     build_dashboard,
     evaluate_paid_route_eligibility,
+    has_successful_task_scoped_glmcp_payg_review_spend,
     load_quota_spend_ledger,
     load_quota_spend_ledger_resolved,
     subscription_quota_state_for_route,
+    successful_task_scoped_glmcp_payg_review_spend_receipts,
 )
 
 NOW = datetime(2026, 5, 17, 8, 0, 0, tzinfo=UTC)
@@ -45,9 +49,32 @@ GLMCP_ADMISSION_EVIDENCE_REF = (
     "witness:supported-tool-usage-witness:"
     "supported_tool:hapax-glmcp-reviewer:"
     "endpoint:https://api.z.ai/api/coding/paas/v4:"
-    "model:glm-5:"
+    "model:glm-5.2:"
     "observed_at:2026-05-17T07:59:00Z:"
     "fresh_until:2026-05-17T08:05:00Z"
+)
+GLMCP_PAYG_ADMISSION_EVIDENCE_REF = (
+    GLMCP_ADMISSION_EVIDENCE_REF.replace(
+        "glmcp-quota-admission.yaml",
+        "glmcp-quota-admission-payg.yaml",
+    )
+    .replace(
+        "endpoint:https://api.z.ai/api/coding/paas/v4:",
+        "endpoint:https://api.z.ai/api/paas/v4:",
+    )
+    .replace(
+        "witness:supported-tool-usage-witness:",
+        "witness:glmcp-payg-spend-20260517t075900z-test.yaml:",
+    )
+    .replace(
+        "model:glm-5.2:",
+        "model:glm-5.2:primary_error_class:quota_exhausted:"
+        "quota_wall_evidence_ref:cx-glmcp-quota-wall.yaml:",
+    )
+)
+GLMCP_PAYG_ADMISSION_WITHOUT_WALL_EVIDENCE_REF = GLMCP_PAYG_ADMISSION_EVIDENCE_REF.replace(
+    "primary_error_class:quota_exhausted:quota_wall_evidence_ref:cx-glmcp-quota-wall.yaml:",
+    "",
 )
 GLMCP_REVIEWER_TOOL_CLAUDE_ENDPOINT_EVIDENCE_REF = GLMCP_ADMISSION_EVIDENCE_REF.replace(
     "endpoint:https://api.z.ai/api/coding/paas/v4:",
@@ -65,6 +92,132 @@ GLMCP_SECRETISH_WITNESS_EVIDENCE_REF = GLMCP_ADMISSION_EVIDENCE_REF.replace(
     "witness:supported-tool-usage-witness:",
     "witness:sk-live-secret-token-000000000000000000000000:",
 )
+AGY_ADMISSION_EVIDENCE_REF = (
+    "relay-receipt:agy-quota-admission.yaml:"
+    "witness:agy-gemini31pro-smoke-witness:"
+    "supported_tool:hapax-agy-reviewer:"
+    "model:gemini-3.1-pro-preview:"
+    "observed_at:2026-05-17T07:59:00Z:"
+    "fresh_until:2026-05-17T08:05:00Z"
+)
+AGY_SECRETISH_WITNESS_EVIDENCE_REF = AGY_ADMISSION_EVIDENCE_REF.replace(
+    "witness:agy-gemini31pro-smoke-witness:",
+    "witness:sk-live-secret-token-000000000000000000000000:",
+)
+CLAUDE_ADMISSION_EVIDENCE_REF = (
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:"
+    "witness:claude-subscription-headroom-observed-20260708t1400z:"
+    "observation:subscription_quota_headroom_observed:"
+    "observed_at:2026-07-08T14:00:00Z:"
+    "fresh_until:2026-07-08T14:15:00Z:"
+    "account-live-quota:observed"
+)
+CLAUDE_SECRETISH_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:sk-live-secret-token-000000000000000000000000:",
+)
+CLAUDE_LANE_PRESENCE_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:hapax-claude-eta-present-20260708:",
+)
+CLAUDE_BARE_LANE_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:eta:",
+)
+CLAUDE_SESSION_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:claude-session-observed-20260708t1400z:",
+)
+CLAUDE_BILLING_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:claude-billing-cus_123-headroom-20260708:",
+)
+CLAUDE_SUBSCRIPTION_ID_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:claude-subscription-id-123-headroom-20260708:",
+)
+CLAUDE_GREEK_LANE_DIGIT_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:claude-headroom-eta2-observed:",
+)
+CLAUDE_PLUS_LANE_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:eta+present:",
+)
+CLAUDE_PLUS_BILLING_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:billing+cus_123:",
+)
+CLAUDE_DOT_BILLING_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:cus.123:",
+)
+CLAUDE_BARE_BILLING_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:cus123:",
+)
+CLAUDE_UNALLOWLISTED_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:claude-si-1abc-headroom:",
+)
+CLAUDE_BILLING_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:claude-subscription-quota-admission-cus_123.yaml:",
+)
+CLAUDE_SUBSCRIPTION_ID_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:claude-subscription-quota-admission-subscription-id-123.yaml:",
+)
+CLAUDE_LANE_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:claude-subscription-quota-admission-lane2.yaml:",
+)
+CLAUDE_GREEK_LANE_DIGIT_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:claude-subscription-quota-admission-eta2.yaml:",
+)
+CLAUDE_PLUS_LANE_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:claude-subscription-quota-admission-eta+present.yaml:",
+)
+CLAUDE_PLUS_BILLING_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:claude-subscription-quota-admission-billing+cus_123.yaml:",
+)
+CLAUDE_DOT_BILLING_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:claude-subscription-quota-admission-cus.123.yaml:",
+)
+CLAUDE_BARE_BILLING_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:claude-subscription-quota-admission-cus123.yaml:",
+)
+CLAUDE_HASHED_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:unsafe-receipt-name-sha256:0123456789abcdef:",
+)
+CLAUDE_SAFE_HASHED_IGNORED_EVIDENCE_REF = (
+    "relay-receipt:unsafe-receipt-name-sha256:0123456789abcdef:"
+    "ignored:receipt-name-names-billing-or-account-identifier"
+)
+CLAUDE_UNSAFE_HASHED_IGNORED_EVIDENCE_REF = (
+    "relay-receipt:unsafe-receipt-name-sha256:0123456789abcdef:ignored:customer-cus_123"
+)
+CLAUDE_UNSAFE_OBSERVED_AT_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "observed_at:2026-07-08T14:00:00Z:",
+    "observed_at:cus_123:",
+)
+CLAUDE_UNSAFE_FRESH_UNTIL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "fresh_until:2026-07-08T14:15:00Z:",
+    "fresh_until:lane2:",
+)
+CLAUDE_EXTRA_UNSAFE_SEGMENT_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "observed_at:2026-07-08T14:00:00Z:",
+    "billingcus123:observed_at:2026-07-08T14:00:00Z:",
+)
+CLAUDE_PLAIN_UNSAFE_HOLD_EVIDENCE_REF = "claude-billing-cus_123-lane-eta-observed"
+CLAUDE_COLON_UNSAFE_HOLD_EVIDENCE_REF = "customer:cus_123"
+CLAUDE_NOW = datetime(2026, 7, 8, 14, 5, tzinfo=UTC)
 
 
 def _payload() -> dict[str, Any]:
@@ -97,9 +250,87 @@ def _active_budget_payload() -> dict[str, Any]:
     return payload
 
 
+def _add_glmcp_payg_budget(
+    payload: dict[str, Any],
+    *,
+    expires_at: str = "2026-05-17T09:00:00Z",
+) -> str:
+    budget_id = "tb-20260517-zai-glmcp-payg-review"
+    payload["transition_budgets"].append(
+        {
+            "budget_schema": 1,
+            "budget_id": budget_id,
+            "authority_case": "CASE-CAPACITY-ROUTING-GLMCP-PAYG-TEST",
+            "approved_by": "operator",
+            "created_at": "2026-05-17T07:00:00Z",
+            "expires_at": expires_at,
+            "capacity_pool": "api_paid_spend",
+            "providers_allowed": ["z_ai"],
+            "profiles_allowed": ["glmcp-review-direct"],
+            "task_classes_allowed": ["independent-review"],
+            "quality_floors_allowed": ["frontier_review_required"],
+            "total_cap_usd": "100.00",
+            "per_task_cap_usd": "2.00",
+            "daily_cap_usd": "20.00",
+            "auto_top_up_allowed": False,
+            "subscription_path_checked_at": "2026-05-17T07:00:00Z",
+            "reason_subscription_path_not_used": (
+                "fixture Coding Plan quota exhausted; PAYG spend gate under test"
+            ),
+            "steady_state_replacement": {
+                "target_route_id": None,
+                "blocker_to_remove": None,
+                "exit_criterion": None,
+            },
+            "ledger_owner": "test",
+            "dashboard_visibility": "required",
+            "lifecycle_state": "active",
+        }
+    )
+    return budget_id
+
+
+def _add_glmcp_payg_spend_receipt(
+    payload: dict[str, Any],
+    budget_id: str,
+    *,
+    spend_id: str = "spend-20260517T075900Z-glmcp-payg-review-test",
+    task_id: str = "cc-task-glmcp-review-seat-glm52-model-contract-20260706",
+    estimated_cost_usd: str = "0.05",
+) -> None:
+    payload["spend_receipts"].append(
+        {
+            "spend_receipt_schema": 1,
+            "spend_id": spend_id,
+            "task_id": task_id,
+            "authority_case": "CASE-CAPACITY-ROUTING-GLMCP-PAYG-TEST",
+            "route_id": "glmcp.review.direct",
+            "capacity_pool": "api_paid_spend",
+            "budget_id": budget_id,
+            "provider": "z_ai",
+            "model_or_engine": "glm-5.2",
+            "model_id": "z_ai-glm-5.2",
+            "effort": "none",
+            "quantization": "not_applicable",
+            "auth_surface": "api_key",
+            "quality_floor": "frontier_review_required",
+            "quality_preservation_reason": (
+                "receipt-bounded GLMCP review fallback after Coding Plan quota wall"
+            ),
+            "spend_reason": "quota_exhaustion",
+            "estimated_cost_usd": estimated_cost_usd,
+            "created_at": "2026-05-17T07:59:00Z",
+            "reconcile_by": "2026-05-18T07:59:00Z",
+            "reconciliation_state": "pending",
+            "support_artifact_authority": "none",
+        }
+    )
+
+
 def _request(**overrides: object) -> PaidRouteRequest:
     payload: dict[str, object] = {
         "route_id": "opaque.route.bootstrap",
+        "task_id": "capacity-routing-quota-spend-ledger",
         "provider": "opaque-provider-a",
         "profile": "opaque-profile-full",
         "task_class": "authority-case-implementation",
@@ -234,6 +465,124 @@ def test_cap_exhaustion_refuses_paid_route() -> None:
 
     assert decision.eligible is False
     assert decision.state == "refused_exhausted_budget"
+
+
+def test_per_task_cap_sums_existing_spend_for_same_task_only() -> None:
+    payload = _active_budget_payload()
+    budget = payload["transition_budgets"][0]
+    budget["per_task_cap_usd"] = "2.00"
+    payload["spend_receipts"] = [
+        {
+            "spend_receipt_schema": 1,
+            "spend_id": "spend-20260517T073000Z-task-a-used",
+            "task_id": "capacity-routing-quota-spend-ledger",
+            "authority_case": "CASE-CAPACITY-ROUTING-001",
+            "route_id": "opaque.route.bootstrap",
+            "capacity_pool": "bootstrap_budget",
+            "budget_id": "tb-20260509-bootstrap-expired",
+            "provider": "opaque-provider-a",
+            "model_or_engine": "opaque-engine-a",
+            "auth_surface": "api_key",
+            "quality_floor": "frontier_required",
+            "quality_preservation_reason": "fixture task cap use",
+            "spend_reason": "bootstrap_equilibrium",
+            "estimated_cost_usd": None,
+            "actual_cost_usd": "1.75",
+            "cap_remaining_usd": "8.25",
+            "created_at": "2026-05-17T07:30:00Z",
+            "reconcile_by": None,
+            "reconciliation_state": "reconciled",
+            "reconciled_at": "2026-05-17T07:45:00Z",
+            "reconciliation_reason": "fixture task cap use reconciled",
+            "artifact_refs": [],
+            "support_artifact_authority": "none",
+        },
+        {
+            "spend_receipt_schema": 1,
+            "spend_id": "spend-20260517T073500Z-task-b-used",
+            "task_id": "other-task",
+            "authority_case": "CASE-CAPACITY-ROUTING-001",
+            "route_id": "opaque.route.bootstrap",
+            "capacity_pool": "bootstrap_budget",
+            "budget_id": "tb-20260509-bootstrap-expired",
+            "provider": "opaque-provider-a",
+            "model_or_engine": "opaque-engine-a",
+            "auth_surface": "api_key",
+            "quality_floor": "frontier_required",
+            "quality_preservation_reason": "fixture other task cap use",
+            "spend_reason": "bootstrap_equilibrium",
+            "estimated_cost_usd": None,
+            "actual_cost_usd": "1.75",
+            "cap_remaining_usd": "6.50",
+            "created_at": "2026-05-17T07:35:00Z",
+            "reconcile_by": None,
+            "reconciliation_state": "reconciled",
+            "reconciled_at": "2026-05-17T07:45:00Z",
+            "reconciliation_reason": "fixture other task cap use reconciled",
+            "artifact_refs": [],
+            "support_artifact_authority": "none",
+        },
+    ]
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    exhausted = evaluate_paid_route_eligibility(
+        ledger,
+        _request(estimated_cost_usd="0.30"),
+        now=NOW,
+    )
+    different_task = evaluate_paid_route_eligibility(
+        ledger,
+        _request(task_id="fresh-task", estimated_cost_usd="0.30"),
+        now=NOW,
+    )
+
+    assert exhausted.eligible is False
+    assert exhausted.state == "refused_exhausted_budget"
+    assert different_task.eligible is True
+    assert str(different_task.cap_remaining_usd) == "1.70"
+
+
+def test_reconciled_zero_actual_spend_counts_zero_against_caps() -> None:
+    payload = _active_budget_payload()
+    budget = payload["transition_budgets"][0]
+    budget["per_task_cap_usd"] = "0.05"
+    payload["spend_receipts"] = [
+        {
+            "spend_receipt_schema": 1,
+            "spend_id": "spend-20260517T073000Z-zero-actual",
+            "task_id": "capacity-routing-quota-spend-ledger",
+            "authority_case": "CASE-CAPACITY-ROUTING-001",
+            "route_id": "opaque.route.bootstrap",
+            "capacity_pool": "bootstrap_budget",
+            "budget_id": "tb-20260509-bootstrap-expired",
+            "provider": "opaque-provider-a",
+            "model_or_engine": "opaque-engine-a",
+            "auth_surface": "api_key",
+            "quality_floor": "frontier_required",
+            "quality_preservation_reason": "fixture failed request reconciled to zero cost",
+            "spend_reason": "bootstrap_equilibrium",
+            "estimated_cost_usd": "0.05",
+            "actual_cost_usd": "0.00",
+            "cap_remaining_usd": "0.05",
+            "created_at": "2026-05-17T07:30:00Z",
+            "reconcile_by": "2026-05-18T07:30:00Z",
+            "reconciliation_state": "reconciled",
+            "reconciled_at": "2026-05-17T07:45:00Z",
+            "reconciliation_reason": "fixture failed before billable completion",
+            "artifact_refs": [],
+            "support_artifact_authority": "none",
+        }
+    ]
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    decision = evaluate_paid_route_eligibility(
+        ledger,
+        _request(estimated_cost_usd="0.05"),
+        now=NOW,
+    )
+
+    assert decision.eligible is True
+    assert str(decision.cap_remaining_usd) == "0.00"
 
 
 def test_route_subscription_snapshot_fresh_until_expires_independently() -> None:
@@ -403,6 +752,346 @@ def test_receipt_bounded_route_accepts_writer_hashed_admission_label() -> None:
 
     assert state is SubscriptionQuotaState.FRESH
     assert refs == (GLMCP_HASHED_ADMISSION_EVIDENCE_REF,)
+
+
+def test_receipt_bounded_route_accepts_payg_endpoint_admission_evidence() -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    _add_glmcp_payg_spend_receipt(payload, budget_id)
+    payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-glmcp-review-direct-payg-fresh",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "glmcp.review.direct",
+            "provider": "z_ai-glm-coding-plan",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [
+                GLMCP_PAYG_ADMISSION_EVIDENCE_REF,
+                "spend-gate:glmcp.review.direct:eligible_active_budget",
+                f"spend-gate-budget:{budget_id}",
+            ],
+            "operator_visible_reason": "fixture GLMCP PAYG admission receipt",
+        }
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    state, refs = subscription_quota_state_for_route(
+        ledger,
+        "glmcp.review.direct",
+        now=datetime(2026, 5, 17, 8, 0, tzinfo=UTC),
+    )
+
+    assert state is SubscriptionQuotaState.FRESH
+    assert GLMCP_PAYG_ADMISSION_EVIDENCE_REF in refs
+    assert "spend-gate:glmcp.review.direct:eligible_active_budget" in refs
+    assert f"spend-gate-budget:{budget_id}" in refs
+
+
+def test_successful_task_scoped_glmcp_payg_review_spend_witness_is_discovered() -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    task_id = "cc-task-glmcp-review-seat-glm52-model-contract-20260706"
+    _add_glmcp_payg_spend_receipt(payload, budget_id, task_id=task_id)
+    receipt = payload["spend_receipts"][-1]
+    receipt["actual_cost_usd"] = "0.05"
+    receipt["cap_remaining_usd"] = "1.95"
+    receipt["reconciliation_state"] = "reconciled"
+    receipt["reconciled_at"] = "2026-05-17T08:00:00Z"
+    receipt["reconciliation_reason"] = (
+        "PAYG API call returned model output; provider invoice unavailable"
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    receipts = successful_task_scoped_glmcp_payg_review_spend_receipts(ledger, task_id)
+
+    assert [receipt.spend_id for receipt in receipts] == [
+        "spend-20260517T075900Z-glmcp-payg-review-test"
+    ]
+    assert has_successful_task_scoped_glmcp_payg_review_spend(ledger, task_id) is True
+
+
+def test_spend_receipt_accepts_gate_event_task_hash_alias() -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    task_id = "cc-task-glmcp-review-seat-glm52-model-contract-20260706"
+    _add_glmcp_payg_spend_receipt(payload, budget_id, task_id=task_id)
+    receipt = payload["spend_receipts"][-1]
+    receipt["task_hash"] = "sha256:" + ("a" * 64)
+
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    assert ledger.spend_receipts[-1].task_hash == "sha256:" + ("a" * 64)
+
+
+def test_spend_receipt_task_hash_is_optional_and_omitted_when_absent() -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    task_id = "cc-task-glmcp-review-seat-glm52-model-contract-20260706"
+    _add_glmcp_payg_spend_receipt(payload, budget_id, task_id=task_id)
+
+    ledger = QuotaSpendLedger.model_validate(payload)
+    dumped_receipt = ledger.spend_receipts[-1].model_dump(mode="json")
+
+    assert ledger.spend_receipts[-1].task_hash is None
+    assert "task_hash" not in dumped_receipt
+
+
+@pytest.mark.parametrize(
+    "task_hash",
+    [
+        "",
+        "sha256:" + ("g" * 64),
+        "sk-live-secret-token-000000000000000000000000",
+        "/home/hapax/private-task-note.md",
+    ],
+)
+def test_spend_receipt_rejects_malformed_task_hash_alias(task_hash: str) -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    task_id = "cc-task-glmcp-review-seat-glm52-model-contract-20260706"
+    _add_glmcp_payg_spend_receipt(payload, budget_id, task_id=task_id)
+    payload["spend_receipts"][-1]["task_hash"] = task_hash
+
+    with pytest.raises(ValidationError):
+        QuotaSpendLedger.model_validate(payload)
+
+
+def test_pending_task_scoped_glmcp_payg_review_spend_is_not_successful_witness() -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    task_id = "cc-task-glmcp-review-seat-glm52-model-contract-20260706"
+    _add_glmcp_payg_spend_receipt(payload, budget_id, task_id=task_id)
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    assert successful_task_scoped_glmcp_payg_review_spend_receipts(ledger, task_id) == ()
+    assert has_successful_task_scoped_glmcp_payg_review_spend(ledger, task_id) is False
+
+
+def test_receipt_bounded_route_rejects_payg_when_witness_task_cap_exhausted() -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    _add_glmcp_payg_spend_receipt(payload, budget_id, estimated_cost_usd="2.00")
+    payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-glmcp-review-direct-payg-task-cap-exhausted",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "glmcp.review.direct",
+            "provider": "z_ai-glm-coding-plan",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [
+                GLMCP_PAYG_ADMISSION_EVIDENCE_REF,
+                "spend-gate:glmcp.review.direct:eligible_active_budget",
+                f"spend-gate-budget:{budget_id}",
+            ],
+            "operator_visible_reason": "fixture GLMCP PAYG admission receipt",
+        }
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    state, refs = subscription_quota_state_for_route(
+        ledger,
+        "glmcp.review.direct",
+        now=datetime(2026, 5, 17, 8, 0, tzinfo=UTC),
+    )
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert (
+        "quota-snapshot:quota-glmcp-review-direct-payg-task-cap-exhausted:"
+        "payg_spend_gate_missing_or_ineligible"
+    ) in refs
+
+
+def test_receipt_bounded_route_rejects_payg_without_spend_receipt_witness() -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-glmcp-review-direct-payg-no-spend-receipt",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "glmcp.review.direct",
+            "provider": "z_ai-glm-coding-plan",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [
+                GLMCP_PAYG_ADMISSION_EVIDENCE_REF,
+                "spend-gate:glmcp.review.direct:eligible_active_budget",
+                f"spend-gate-budget:{budget_id}",
+            ],
+            "operator_visible_reason": "fixture GLMCP PAYG admission receipt",
+        }
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    state, refs = subscription_quota_state_for_route(
+        ledger,
+        "glmcp.review.direct",
+        now=datetime(2026, 5, 17, 8, 0, tzinfo=UTC),
+    )
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert (
+        "quota-snapshot:quota-glmcp-review-direct-payg-no-spend-receipt:"
+        "payg_spend_gate_missing_or_ineligible"
+    ) in refs
+
+
+def test_receipt_bounded_route_rejects_payg_spend_receipt_from_wrong_budget() -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    wrong_budget_id = payload["transition_budgets"][0]["budget_id"]
+    _add_glmcp_payg_spend_receipt(payload, wrong_budget_id)
+    payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-glmcp-review-direct-payg-wrong-budget-receipt",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "glmcp.review.direct",
+            "provider": "z_ai-glm-coding-plan",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [
+                GLMCP_PAYG_ADMISSION_EVIDENCE_REF,
+                "spend-gate:glmcp.review.direct:eligible_active_budget",
+                f"spend-gate-budget:{budget_id}",
+            ],
+            "operator_visible_reason": "fixture GLMCP PAYG admission receipt",
+        }
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    state, refs = subscription_quota_state_for_route(
+        ledger,
+        "glmcp.review.direct",
+        now=datetime(2026, 5, 17, 8, 0, tzinfo=UTC),
+    )
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert (
+        "quota-snapshot:quota-glmcp-review-direct-payg-wrong-budget-receipt:"
+        "payg_spend_gate_missing_or_ineligible"
+    ) in refs
+
+
+def test_receipt_bounded_route_rejects_payg_without_quota_wall_witness() -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    _add_glmcp_payg_spend_receipt(payload, budget_id)
+    payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-glmcp-review-direct-payg-no-wall-witness",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "glmcp.review.direct",
+            "provider": "z_ai-glm-coding-plan",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [
+                GLMCP_PAYG_ADMISSION_WITHOUT_WALL_EVIDENCE_REF,
+                "spend-gate:glmcp.review.direct:eligible_active_budget",
+                f"spend-gate-budget:{budget_id}",
+            ],
+            "operator_visible_reason": "fixture GLMCP PAYG admission receipt without wall witness",
+        }
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    state, refs = subscription_quota_state_for_route(
+        ledger,
+        "glmcp.review.direct",
+        now=datetime(2026, 5, 17, 8, 0, tzinfo=UTC),
+    )
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert (
+        "quota-snapshot:quota-glmcp-review-direct-payg-no-wall-witness:"
+        "untrusted_glmcp_admission_evidence"
+    ) in refs
+
+
+def test_receipt_bounded_route_rejects_payg_without_spend_gate_evidence() -> None:
+    payload = _active_budget_payload()
+    _add_glmcp_payg_budget(payload)
+    payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-glmcp-review-direct-payg-no-spend-gate",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "glmcp.review.direct",
+            "provider": "z_ai-glm-coding-plan",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [GLMCP_PAYG_ADMISSION_EVIDENCE_REF],
+            "operator_visible_reason": "fixture GLMCP PAYG admission receipt",
+        }
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    state, refs = subscription_quota_state_for_route(
+        ledger,
+        "glmcp.review.direct",
+        now=datetime(2026, 5, 17, 8, 0, tzinfo=UTC),
+    )
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert (
+        "quota-snapshot:quota-glmcp-review-direct-payg-no-spend-gate:"
+        "payg_spend_gate_missing_or_ineligible"
+    ) in refs
+
+
+def test_receipt_bounded_route_rechecks_payg_budget_at_read_time() -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload, expires_at="2026-05-17T08:01:00Z")
+    _add_glmcp_payg_spend_receipt(payload, budget_id)
+    payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-glmcp-review-direct-payg-expired-budget",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "glmcp.review.direct",
+            "provider": "z_ai-glm-coding-plan",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [
+                GLMCP_PAYG_ADMISSION_EVIDENCE_REF,
+                "spend-gate:glmcp.review.direct:eligible_active_budget",
+                f"spend-gate-budget:{budget_id}",
+            ],
+            "operator_visible_reason": "fixture GLMCP PAYG admission receipt",
+        }
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    state, refs = subscription_quota_state_for_route(
+        ledger,
+        "glmcp.review.direct",
+        now=datetime(2026, 5, 17, 8, 2, tzinfo=UTC),
+    )
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert (
+        "quota-snapshot:quota-glmcp-review-direct-payg-expired-budget:"
+        "payg_spend_gate_missing_or_ineligible"
+    ) in refs
 
 
 def test_receipt_bounded_route_rejects_and_redacts_secretish_witness() -> None:
@@ -755,6 +1444,597 @@ def test_effort_and_model_id_enum_parity_with_registry() -> None:
 
     assert {e.value for e in Effort} == {e.value for e in RegistryEffort}
     assert {m.value for m in ModelId} == {m.value for m in RegistryModelId}
+
+
+def test_agy_receipt_bounded_route_has_guarded_provider_mapping() -> None:
+    assert "agy.review.direct" in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
+    assert (
+        RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS["agy.review.direct"] == "google-antigravity-cli-agy"
+    )
+    assert RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS["glmcp.review.direct"] == "z_ai-glm-coding-plan"
+
+
+def test_receipt_bounded_route_accepts_agy_admission_evidence() -> None:
+    payload = _active_budget_payload()
+    payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-agy-review-direct-fresh",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "agy.review.direct",
+            "provider": "google-antigravity-cli-agy",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [AGY_ADMISSION_EVIDENCE_REF],
+            "operator_visible_reason": "fixture agy admission",
+        }
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    state, refs = subscription_quota_state_for_route(
+        ledger,
+        "agy.review.direct",
+        now=datetime(2026, 5, 17, 8, 0, tzinfo=UTC),
+    )
+
+    assert state is SubscriptionQuotaState.FRESH
+    assert refs == (AGY_ADMISSION_EVIDENCE_REF,)
+
+
+def test_receipt_bounded_route_rejects_secretish_agy_witness() -> None:
+    payload = _active_budget_payload()
+    payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-agy-review-direct-secretish-witness",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "agy.review.direct",
+            "provider": "google-antigravity-cli-agy",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [AGY_SECRETISH_WITNESS_EVIDENCE_REF],
+            "operator_visible_reason": "fixture agy secretish witness",
+        }
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    state, refs = subscription_quota_state_for_route(
+        ledger,
+        "agy.review.direct",
+        now=datetime(2026, 5, 17, 8, 0, tzinfo=UTC),
+    )
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert AGY_SECRETISH_WITNESS_EVIDENCE_REF not in refs
+    assert any(ref.startswith("quota-evidence-ref:redacted-secretish-sha256:") for ref in refs)
+    assert (
+        "quota-snapshot:quota-agy-review-direct-secretish-witness:untrusted_agy_admission_evidence"
+    ) in refs
+
+
+def test_agy_receipt_bounded_route_rejects_generic_fresh_quota_snapshot() -> None:
+    payload = _active_budget_payload()
+    payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-agy-review-direct-generic-fresh",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "agy.review.direct",
+            "provider": "agy-subscription",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": ["relay-receipt:generic-agy-quota-green"],
+            "operator_visible_reason": "fixture generic agy quota snapshot",
+        }
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    state, refs = subscription_quota_state_for_route(
+        ledger,
+        "agy.review.direct",
+        now=datetime(2026, 5, 17, 8, 0, tzinfo=UTC),
+    )
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert "relay-receipt:generic-agy-quota-green" in refs
+    assert (
+        "quota-snapshot:quota-agy-review-direct-generic-fresh:untrusted_agy_admission_evidence"
+        in refs
+    )
+
+
+def _claude_snapshot(
+    evidence_ref: str,
+    *,
+    snapshot_id: str = "quota-claude-headless-full-fresh",
+    route_id: str = "claude.headless.full",
+    provider: str = "anthropic-claude-subscription",
+    reason: str = "fixture claude admission",
+) -> dict[str, Any]:
+    return {
+        "quota_snapshot_schema": 1,
+        "snapshot_id": snapshot_id,
+        "captured_at": "2026-07-08T13:59:00Z",
+        "fresh_until": "2026-07-08T14:15:00Z",
+        "route_id": route_id,
+        "provider": provider,
+        "capacity_pool": "subscription_quota",
+        "subscription_quota_state": "fresh",
+        "evidence_refs": [evidence_ref],
+        "operator_visible_reason": reason,
+    }
+
+
+def _claude_ledger(
+    evidence_ref: str,
+    *,
+    snapshot_id: str = "quota-claude-headless-full-fresh",
+    route_id: str = "claude.headless.full",
+    provider: str = "anthropic-claude-subscription",
+    reason: str = "fixture claude admission",
+    with_telemetry_writer: bool = True,
+) -> QuotaSpendLedger:
+    payload = _active_budget_payload()
+    if with_telemetry_writer:
+        payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    # Isolate the claude snapshot under test: the base fixture carries an EXHAUSTED operator
+    # dry-run snapshot for claude.headless.full that would otherwise dominate the aggregate.
+    payload["quota_snapshots"] = [
+        snapshot for snapshot in payload["quota_snapshots"] if snapshot.get("route_id") != route_id
+    ]
+    payload["quota_snapshots"].append(
+        _claude_snapshot(
+            evidence_ref,
+            snapshot_id=snapshot_id,
+            route_id=route_id,
+            provider=provider,
+            reason=reason,
+        )
+    )
+    return QuotaSpendLedger.model_validate(payload)
+
+
+def test_claude_receipt_bounded_route_has_guarded_provider_mapping() -> None:
+    assert "claude.headless.full" in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
+    assert "claude.review.opus" in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
+    assert (
+        RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS["claude.headless.full"]
+        == "anthropic-claude-subscription"
+    )
+    assert (
+        RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS["claude.review.opus"]
+        == "anthropic-claude-subscription"
+    )
+
+
+def test_receipt_bounded_route_accepts_claude_admission_evidence() -> None:
+    ledger = _claude_ledger(CLAUDE_ADMISSION_EVIDENCE_REF)
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.FRESH
+    assert refs == (CLAUDE_ADMISSION_EVIDENCE_REF,)
+    # cross-layer contract: this exact ref is what the availability guarantor attests on.
+    assert CLAUDE_ADMISSION_EVIDENCE_REF.endswith(":account-live-quota:observed")
+
+
+def test_claude_review_receipt_bounded_route_accepts_claude_admission_evidence() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_ADMISSION_EVIDENCE_REF,
+        snapshot_id="quota-claude-review-opus-fresh",
+        route_id="claude.review.opus",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.review.opus", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.FRESH
+    assert refs == (CLAUDE_ADMISSION_EVIDENCE_REF,)
+
+
+def test_receipt_bounded_route_rejects_secretish_claude_witness() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_SECRETISH_WITNESS_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-secretish-witness",
+        reason="fixture claude secretish witness",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert CLAUDE_SECRETISH_WITNESS_EVIDENCE_REF not in refs
+    assert any(ref.startswith("quota-evidence-ref:redacted-secretish-sha256:") for ref in refs)
+    assert (
+        "quota-snapshot:quota-claude-headless-full-secretish-witness:"
+        "untrusted_claude_admission_evidence"
+    ) in refs
+
+
+def test_receipt_bounded_route_rejects_lane_presence_claude_witness() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_LANE_PRESENCE_WITNESS_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-lane-presence-witness",
+        reason="fixture claude lane-presence witness",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert CLAUDE_LANE_PRESENCE_WITNESS_EVIDENCE_REF not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert (
+        "quota-snapshot:quota-claude-headless-full-lane-presence-witness:"
+        "untrusted_claude_admission_evidence"
+    ) in refs
+
+
+def test_receipt_bounded_route_rejects_bare_lane_claude_witness() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_BARE_LANE_WITNESS_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-bare-lane-witness",
+        reason="fixture claude bare-lane witness",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert (
+        "quota-snapshot:quota-claude-headless-full-bare-lane-witness:"
+        "untrusted_claude_admission_evidence"
+    ) in refs
+
+
+def test_receipt_bounded_route_rejects_session_shaped_claude_witness() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_SESSION_WITNESS_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-session-witness",
+        reason="fixture claude session-shaped witness",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert (
+        "quota-snapshot:quota-claude-headless-full-session-witness:"
+        "untrusted_claude_admission_evidence"
+    ) in refs
+
+
+def test_receipt_bounded_route_rejects_billing_identifier_claude_witness() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_BILLING_WITNESS_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-billing-witness",
+        reason="fixture claude billing-shaped witness",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert CLAUDE_BILLING_WITNESS_EVIDENCE_REF not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert (
+        "quota-snapshot:quota-claude-headless-full-billing-witness:"
+        "untrusted_claude_admission_evidence"
+    ) in refs
+
+
+@pytest.mark.parametrize(
+    ("evidence_ref", "snapshot_id", "reason"),
+    [
+        (
+            CLAUDE_SUBSCRIPTION_ID_WITNESS_EVIDENCE_REF,
+            "quota-claude-headless-full-subscription-id-witness",
+            "fixture claude subscription-id witness",
+        ),
+        (
+            CLAUDE_GREEK_LANE_DIGIT_WITNESS_EVIDENCE_REF,
+            "quota-claude-headless-full-greek-lane-digit-witness",
+            "fixture claude digit-tailed greek lane witness",
+        ),
+        (
+            CLAUDE_PLUS_LANE_WITNESS_EVIDENCE_REF,
+            "quota-claude-headless-full-plus-lane-witness",
+            "fixture claude plus-delimited lane witness",
+        ),
+        (
+            CLAUDE_PLUS_BILLING_WITNESS_EVIDENCE_REF,
+            "quota-claude-headless-full-plus-billing-witness",
+            "fixture claude plus-delimited billing witness",
+        ),
+        (
+            CLAUDE_DOT_BILLING_WITNESS_EVIDENCE_REF,
+            "quota-claude-headless-full-dot-billing-witness",
+            "fixture claude dot-delimited billing witness",
+        ),
+        (
+            CLAUDE_BARE_BILLING_WITNESS_EVIDENCE_REF,
+            "quota-claude-headless-full-bare-billing-witness",
+            "fixture claude bare billing witness",
+        ),
+        (
+            CLAUDE_UNALLOWLISTED_WITNESS_EVIDENCE_REF,
+            "quota-claude-headless-full-unallowlisted-witness",
+            "fixture claude unallowlisted witness",
+        ),
+    ],
+)
+def test_receipt_bounded_route_rejects_newly_unsafe_claude_witness_shapes(
+    evidence_ref: str,
+    snapshot_id: str,
+    reason: str,
+) -> None:
+    ledger = _claude_ledger(evidence_ref, snapshot_id=snapshot_id, reason=reason)
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert evidence_ref not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert f"quota-snapshot:{snapshot_id}:untrusted_claude_admission_evidence" in refs
+
+
+def test_receipt_bounded_route_rejects_billing_identifier_claude_receipt_label() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_BILLING_RECEIPT_LABEL_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-billing-label",
+        reason="fixture claude billing-shaped receipt label",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert CLAUDE_BILLING_RECEIPT_LABEL_EVIDENCE_REF not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert (
+        "quota-snapshot:quota-claude-headless-full-billing-label:"
+        "untrusted_claude_admission_evidence"
+    ) in refs
+
+
+@pytest.mark.parametrize(
+    ("evidence_ref", "snapshot_id", "reason"),
+    [
+        (
+            CLAUDE_SUBSCRIPTION_ID_RECEIPT_LABEL_EVIDENCE_REF,
+            "quota-claude-headless-full-subscription-id-label",
+            "fixture claude subscription-id receipt label",
+        ),
+        (
+            CLAUDE_GREEK_LANE_DIGIT_RECEIPT_LABEL_EVIDENCE_REF,
+            "quota-claude-headless-full-greek-lane-digit-label",
+            "fixture claude digit-tailed greek lane receipt label",
+        ),
+        (
+            CLAUDE_PLUS_LANE_RECEIPT_LABEL_EVIDENCE_REF,
+            "quota-claude-headless-full-plus-lane-label",
+            "fixture claude plus-delimited lane receipt label",
+        ),
+        (
+            CLAUDE_PLUS_BILLING_RECEIPT_LABEL_EVIDENCE_REF,
+            "quota-claude-headless-full-plus-billing-label",
+            "fixture claude plus-delimited billing receipt label",
+        ),
+        (
+            CLAUDE_DOT_BILLING_RECEIPT_LABEL_EVIDENCE_REF,
+            "quota-claude-headless-full-dot-billing-label",
+            "fixture claude dot-delimited billing receipt label",
+        ),
+        (
+            CLAUDE_BARE_BILLING_RECEIPT_LABEL_EVIDENCE_REF,
+            "quota-claude-headless-full-bare-billing-label",
+            "fixture claude bare billing receipt label",
+        ),
+    ],
+)
+def test_receipt_bounded_route_rejects_newly_unsafe_claude_receipt_label_shapes(
+    evidence_ref: str,
+    snapshot_id: str,
+    reason: str,
+) -> None:
+    ledger = _claude_ledger(evidence_ref, snapshot_id=snapshot_id, reason=reason)
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert evidence_ref not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert f"quota-snapshot:{snapshot_id}:untrusted_claude_admission_evidence" in refs
+
+
+def test_receipt_bounded_route_rejects_lane_presence_claude_receipt_label() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_LANE_RECEIPT_LABEL_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-lane-label",
+        reason="fixture claude lane-shaped receipt label",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert CLAUDE_LANE_RECEIPT_LABEL_EVIDENCE_REF not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert (
+        "quota-snapshot:quota-claude-headless-full-lane-label:untrusted_claude_admission_evidence"
+    ) in refs
+
+
+def test_receipt_bounded_route_rejects_hashed_unsafe_claude_receipt_label() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_HASHED_RECEIPT_LABEL_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-hashed-label",
+        reason="fixture claude hashed unsafe receipt label",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert CLAUDE_HASHED_RECEIPT_LABEL_EVIDENCE_REF not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert (
+        "quota-snapshot:quota-claude-headless-full-hashed-label:untrusted_claude_admission_evidence"
+    ) in refs
+
+
+def test_receipt_bounded_route_allows_sanitized_hashed_ignored_claude_reason() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_SAFE_HASHED_IGNORED_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-safe-ignored-reason",
+        reason="fixture claude sanitized ignored reason",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert CLAUDE_SAFE_HASHED_IGNORED_EVIDENCE_REF in refs
+
+
+@pytest.mark.parametrize(
+    "evidence_ref",
+    [
+        CLAUDE_UNSAFE_HASHED_IGNORED_EVIDENCE_REF,
+        "relay-receipt:unsafe-receipt-name-sha256:0123456789abcdef:ignored:session-present",
+        "relay-receipt:unsafe-receipt-name-sha256:0123456789abcdef:ignored:lane-present",
+        "relay-receipt:unsafe-receipt-name-sha256:0123456789abcdef:ignored:billingcus123",
+        "relay-receipt:unsafe-receipt-name-sha256:0123456789abcdef:ignored:subscriptionid123",
+    ],
+)
+def test_receipt_bounded_route_redacts_unsafe_hashed_ignored_claude_reason(
+    evidence_ref: str,
+) -> None:
+    ledger = _claude_ledger(
+        evidence_ref,
+        snapshot_id="quota-claude-headless-full-unsafe-ignored-reason",
+        reason="fixture claude unsafe ignored reason",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert evidence_ref not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert (
+        "quota-snapshot:quota-claude-headless-full-unsafe-ignored-reason:"
+        "untrusted_claude_admission_evidence"
+    ) in refs
+
+
+@pytest.mark.parametrize(
+    "evidence_ref",
+    [
+        CLAUDE_UNSAFE_OBSERVED_AT_EVIDENCE_REF,
+        CLAUDE_UNSAFE_FRESH_UNTIL_EVIDENCE_REF,
+        CLAUDE_EXTRA_UNSAFE_SEGMENT_EVIDENCE_REF,
+    ],
+)
+def test_receipt_bounded_route_rejects_unsafe_claude_admission_fields(
+    evidence_ref: str,
+) -> None:
+    ledger = _claude_ledger(
+        evidence_ref,
+        snapshot_id="quota-claude-headless-full-unsafe-fields",
+        reason="fixture claude unsafe field values",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert evidence_ref not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert (
+        "quota-snapshot:quota-claude-headless-full-unsafe-fields:"
+        "untrusted_claude_admission_evidence"
+    ) in refs
+
+
+@pytest.mark.parametrize(
+    "evidence_ref",
+    [
+        CLAUDE_PLAIN_UNSAFE_HOLD_EVIDENCE_REF,
+        CLAUDE_COLON_UNSAFE_HOLD_EVIDENCE_REF,
+    ],
+)
+def test_receipt_bounded_route_redacts_plain_unsafe_claude_hold_evidence(
+    evidence_ref: str,
+) -> None:
+    ledger = _claude_ledger(
+        evidence_ref,
+        snapshot_id="quota-claude-headless-full-plain-unsafe",
+        reason="fixture claude plain unsafe hold evidence",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert evidence_ref not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert (
+        "quota-snapshot:quota-claude-headless-full-plain-unsafe:untrusted_claude_admission_evidence"
+    ) in refs
+
+
+def test_claude_receipt_bounded_route_rejects_lane_presence_generic_snapshot() -> None:
+    # A generic/lane-presence-shaped ref must NOT satisfy account-live subscription evidence.
+    ledger = _claude_ledger(
+        "relay-receipt:hapax-claude-eta-session-present",
+        snapshot_id="quota-claude-headless-full-generic-fresh",
+        reason="fixture generic claude quota snapshot",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert (
+        "quota-snapshot:quota-claude-headless-full-generic-fresh:untrusted_claude_admission_evidence"
+        in refs
+    )
+
+
+def test_claude_admission_requires_matching_provider_and_telemetry_writer() -> None:
+    # fail-closed: correct admission ref but wrong provider, or missing telemetry-writer generator.
+    wrong_provider = _claude_ledger(CLAUDE_ADMISSION_EVIDENCE_REF, provider="claude-subscription")
+    state, _ = subscription_quota_state_for_route(
+        wrong_provider, "claude.headless.full", now=CLAUDE_NOW
+    )
+    assert state is SubscriptionQuotaState.UNKNOWN
+
+    no_writer = _claude_ledger(CLAUDE_ADMISSION_EVIDENCE_REF, with_telemetry_writer=False)
+    state, _ = subscription_quota_state_for_route(no_writer, "claude.headless.full", now=CLAUDE_NOW)
+    assert state is SubscriptionQuotaState.UNKNOWN
 
 
 def test_spend_receipt_meters_effort_and_structured_model_id() -> None:

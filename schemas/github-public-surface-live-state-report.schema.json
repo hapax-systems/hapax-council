@@ -24,6 +24,17 @@
           "title": "Live Status",
           "type": "string"
         },
+        "live_status_basis": {
+          "title": "Live Status Basis",
+          "type": "string"
+        },
+        "live_witness_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Live Witness Refs",
+          "type": "array"
+        },
         "summary": {
           "title": "Summary",
           "type": "string"
@@ -42,6 +53,8 @@
         "task_path",
         "claimed_status",
         "live_status",
+        "live_status_basis",
+        "live_witness_refs",
         "summary",
         "evidence_refs"
       ],
@@ -189,7 +202,7 @@
           "type": "string"
         },
         "profile_readme_decision": {
-          "const": "user_repo_named_ryanklee_required",
+          "const": "org_repo_named_dot_github_required",
           "title": "Profile Readme Decision",
           "type": "string"
         },
@@ -248,16 +261,19 @@
           "default": null,
           "title": "Registry Assets Policy"
         },
+        "registry_expected_detection_by_repo": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Registry Expected Detection By Repo",
+          "type": "object"
+        },
         "registry_license_by_repo": {
           "additionalProperties": {
             "type": "string"
           },
           "title": "Registry License By Repo",
           "type": "object"
-        },
-        "repo_head": {
-          "title": "Repo Head",
-          "type": "string"
         },
         "root_file_sha256": {
           "additionalProperties": {
@@ -268,7 +284,6 @@
         }
       },
       "required": [
-        "repo_head",
         "registry_license_by_repo",
         "root_file_sha256",
         "notice_links",

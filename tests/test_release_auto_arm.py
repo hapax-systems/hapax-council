@@ -107,6 +107,25 @@ def test_ineligible_when_audio_or_live_egress_sensitive() -> None:
     assert any("audio_or_live_egress" in blocker for blocker in assessment.blockers)
 
 
+def test_account_live_quota_evidence_does_not_false_block_release_auto_arm() -> None:
+    fm = _eligible_frontmatter(
+        title="Claude subscription quota receipts require account-live evidence",
+        risk_flags={
+            "governance_sensitive": True,
+            "privacy_or_secret_sensitive": True,
+        },
+        tags=["cc-task", "quota", "receipt", "subscription"],
+    )
+    verified_checks = set(RELEASE_MITIGATION_CHECKS["governance_sensitive"]) | set(
+        RELEASE_MITIGATION_CHECKS["privacy_or_secret_sensitive"]
+    )
+
+    assessment = assess_release_auto_arm(fm, verified_checks=verified_checks)
+
+    assert assessment.eligible is True
+    assert not any("audio_or_live_egress_sensitive" in blocker for blocker in assessment.blockers)
+
+
 def test_ineligible_when_public_claim_sensitive() -> None:
     fm = _eligible_frontmatter(
         title="Publish public claim to external surface",
@@ -119,7 +138,7 @@ def test_ineligible_when_public_claim_sensitive() -> None:
 
 def test_pass_backed_runtime_secret_subscription_task_is_auto_armable() -> None:
     fm = _eligible_frontmatter(
-        title="Activate GLMCP GLM-5 lane with pass-backed secret",
+        title="Activate GLMCP GLM-5.2 lane with pass-backed secret",
         pass_backed_secret_only=True,
         no_secret_value_storage=True,
         secret_entry="glmcp/api-key",
@@ -135,7 +154,7 @@ def test_pass_backed_runtime_secret_subscription_task_is_auto_armable() -> None:
 
 def test_pass_backed_runtime_secret_requires_no_secret_value_storage() -> None:
     fm = _eligible_frontmatter(
-        title="Activate GLMCP GLM-5 lane with pass-backed secret",
+        title="Activate GLMCP GLM-5.2 lane with pass-backed secret",
         pass_backed_secret_only=True,
         secret_entry="glmcp/api-key",
         subscription_quota_only=True,
@@ -148,7 +167,7 @@ def test_pass_backed_runtime_secret_requires_no_secret_value_storage() -> None:
 
 def test_pass_backed_runtime_secret_rejects_traversing_pass_entry() -> None:
     fm = _eligible_frontmatter(
-        title="Activate GLMCP GLM-5 lane with pass-backed secret",
+        title="Activate GLMCP GLM-5.2 lane with pass-backed secret",
         pass_backed_secret_only=True,
         no_secret_value_storage=True,
         secret_entry="glmcp/../other/api-key",
@@ -162,7 +181,7 @@ def test_pass_backed_runtime_secret_rejects_traversing_pass_entry() -> None:
 
 def test_pass_backed_runtime_secret_rejects_non_glmcp_pass_entry() -> None:
     fm = _eligible_frontmatter(
-        title="Activate GLMCP GLM-5 lane with pass-backed secret",
+        title="Activate GLMCP GLM-5.2 lane with pass-backed secret",
         pass_backed_secret_only=True,
         no_secret_value_storage=True,
         secret_entry="other/api-key",
@@ -176,7 +195,7 @@ def test_pass_backed_runtime_secret_rejects_non_glmcp_pass_entry() -> None:
 
 def test_pass_backed_runtime_secret_does_not_waive_explicit_privacy_flag() -> None:
     fm = _eligible_frontmatter(
-        title="Activate GLMCP GLM-5 lane with pass-backed secret",
+        title="Activate GLMCP GLM-5.2 lane with pass-backed secret",
         pass_backed_secret_only=True,
         no_secret_value_storage=True,
         secret_entry="glmcp/api-key",

@@ -15,7 +15,8 @@ def test_hapax_gemini_help_reports_retirement() -> None:
     assert result.returncode == 0
     assert "retired" in result.stdout
     assert "hapax-gemini-sidecar" in result.stdout
-    assert "hapax-antigrav" in result.stdout
+    assert "agy.review.direct" in result.stdout
+    assert "hapax-antigrav" not in result.stdout
 
 
 def test_hapax_gemini_fails_closed_without_launching_legacy_cli() -> None:
