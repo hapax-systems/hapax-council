@@ -1401,8 +1401,13 @@ def publish_review_dossier(
             token = _archive_token_from_dossier(existing)
             try:
                 token = f"{token}.{sha256_file(dossier_path)[:12]}"
-            except OSError:
-                pass
+            except OSError as exc:
+                LOG.debug(
+                    "could not hash superseded review-team dossier %s; "
+                    "using base archive token: %s",
+                    dossier_path,
+                    exc,
+                )
             archive = archive_existing_artifact(dossier_path, token=token)
             if archive is not None:
                 LOG.info("archived superseded review-team dossier: %s", archive)

@@ -2325,6 +2325,9 @@ with module.review_execution_lock(
             vault_root=vault,
         )
 
+        def fail_inside_lock() -> None:
+            raise RuntimeError("boom")
+
         with pytest.raises(RuntimeError, match="boom"):
             with dispatch.review_execution_lock(
                 repo="owner/repo",
@@ -2332,7 +2335,7 @@ with module.review_execution_lock(
                 vault_root=vault,
             ) as lock:
                 assert lock.acquired
-                raise RuntimeError("boom")
+                fail_inside_lock()
 
         assert not lock_path.exists()
 
