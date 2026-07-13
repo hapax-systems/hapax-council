@@ -44,6 +44,7 @@ _INT_RE = re.compile(r"[-+]?(?:0|[1-9][0-9]*)\Z")
 _FLOAT_RE = re.compile(r"[-+]?(?:(?:0|[1-9][0-9]*)\.[0-9]+)(?:[eE][-+]?[0-9]+)?\Z")
 _BLOCK_SCALAR_RE = re.compile(r"[|>](?:[+-][1-9]?|[1-9][+-]?)?\Z")
 _AMBIGUOUS_BOOL = {"y", "yes", "n", "no", "on", "off"}
+_UNPROVEN_BLOCK_SCALAR = "__HAPAX_UNPROVEN_BLOCK_SCALAR__"
 
 
 def parse_frontmatter_document(content: str) -> ParsedFrontmatter:
@@ -236,11 +237,11 @@ class _BlockParser:
             return None
         if _BLOCK_SCALAR_RE.fullmatch(value):
             # Governance fields never use block scalars. Consume the complete
-            # scalar but project it as empty so any authorization use HOLDs;
-            # reproducing YAML folding here would widen the proven subset.
+            # scalar but project a non-null sentinel so required/nullish checks
+            # both HOLD. Reproducing YAML folding here would widen the subset.
             while self.index < len(self.lines) and self.lines[self.index].indent > indent:
                 self.index += 1
-            return ""
+            return _UNPROVEN_BLOCK_SCALAR
         if self.index < len(self.lines) and self.lines[self.index].indent > indent:
             return self._parse_multiline_inline(value, indent, line_number)
         return _parse_inline_value(value, line_number)

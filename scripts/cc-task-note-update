@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import os
 import re
 import stat
@@ -21,6 +20,7 @@ for root in (REPO_ROOT, HOOKS_ROOT):
 
 from task_frontmatter_stdlib import parse_frontmatter_document, scalar_text  # noqa: E402
 
+from shared.jsonl_append import append_jsonl  # noqa: E402
 from shared.sdlc_filesystem_transaction import (  # noqa: E402
     FilesystemTransactionError,
     read_task_note_snapshot,
@@ -129,9 +129,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     role = _role()
     session_id = resolve_session_id(os.environ)
-    cache_dir = Path.home() / ".cache" / "hapax"
     vault_root = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
     try:
+        resolved_vault, cache_dir = task_note_transaction_context(
+            vault_root / "active" / f"{args.task_id}.md",
+            vault_root=vault_root,
+        )
         if not role:
             raise ValueError("caller role is unavailable")
         if not is_claim_keyable_session_id(session_id):
@@ -148,19 +151,15 @@ def main(argv: list[str] | None = None) -> int:
             )
         proposed = _content_file(args.content_file)
         _assert_body_only(snapshot.content, proposed, args.task_id)
-        resolved_vault, ownership_cache = task_note_transaction_context(
-            note, vault_root=vault_root, cache_dir=cache_dir
-        )
         replace_task_note_transactionally(
             note,
             expected_content=snapshot.content,
             content=proposed,
             expected_mode=snapshot.mode,
-            cache_dir=ownership_cache,
+            cache_dir=cache_dir,
             vault_root=resolved_vault,
         )
-        ledger = cache_dir / "cc-task-note-update.jsonl"
-        record = {
+        ledger_record = {
             "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "task_id": args.task_id,
             "role": role,
@@ -169,11 +168,18 @@ def main(argv: list[str] | None = None) -> int:
             "postimage_sha256": hashlib.sha256(proposed).hexdigest(),
             "path": str(note),
         }
-        with ledger.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, sort_keys=True) + "\n")
     except (OSError, ValueError, FilesystemTransactionError) as exc:
         print(f"cc-task-note-update: REFUSED - {exc}", file=sys.stderr)
         return 2
+    if not append_jsonl(
+        cache_dir / "cc-task-note-update.jsonl",
+        ledger_record,
+        sort_keys=True,
+    ):
+        print(
+            "cc-task-note-update: WARNING - note committed but audit ledger append failed",
+            file=sys.stderr,
+        )
     print(f"cc-task-note-update: updated {args.task_id} transactionally")
     return 0
 

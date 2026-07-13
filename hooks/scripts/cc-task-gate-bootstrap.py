@@ -224,7 +224,12 @@ def write_bootstrap_ledger(kind: str, path: Path, identifier: str) -> None:
             0o600,
         )
         try:
-            os.write(data_fd, blob)
+            offset = 0
+            while offset < len(blob):
+                written = os.write(data_fd, blob[offset:])
+                if written <= 0:
+                    raise OSError("bootstrap ledger append made no progress")
+                offset += written
         finally:
             os.close(data_fd)
     finally:

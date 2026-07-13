@@ -19,6 +19,7 @@ from shared.sdlc_filesystem_transaction import (
     FilesystemTransactionError,
     execute_filesystem_transaction,
     recover_filesystem_transaction,
+    task_note_transaction_context,
 )
 
 
@@ -64,6 +65,110 @@ def test_execute_commits_all_postimages_and_removes_journal(tmp_path: Path) -> N
     assert second.read_bytes() == b"created"
     assert not journal.exists()
     assert len(list(root.glob(".journal.json.history-*-committed"))) == 1
+
+
+@pytest.mark.parametrize(
+    ("first_vault_name", "second_vault_name"),
+    [
+        ("hapax-requests", "hapax-cc-tasks"),
+        ("hapax-cc-tasks", "hapax-requests"),
+    ],
+)
+def test_stable_ownership_journal_recovers_across_governance_vaults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    first_vault_name: str,
+    second_vault_name: str,
+) -> None:
+    projects = tmp_path / "20-projects"
+    first_vault = projects / first_vault_name
+    second_vault = projects / second_vault_name
+    for vault in (first_vault, second_vault):
+        (vault / "active").mkdir(parents=True)
+        (vault / "closed").mkdir()
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    journal = cache / "cc-ownership-txn.json"
+    first_target = first_vault / "active" / "first.md"
+    first_guard = first_vault / "closed" / "first.md"
+    second_target = second_vault / "active" / "second.md"
+    original_archive = transaction._archive_journal
+    interrupted = False
+
+    def interrupt_first_commit(
+        path: Path,
+        record: transaction._JournalRecord,
+        *,
+        outcome: str,
+    ) -> Path:
+        nonlocal interrupted
+        if not interrupted and outcome == "committed":
+            interrupted = True
+            raise RuntimeError("simulated crash before journal archive")
+        return original_archive(path, record, outcome=outcome)
+
+    monkeypatch.setattr(transaction, "_archive_journal", interrupt_first_commit)
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        execute_filesystem_transaction(
+            journal,
+            (
+                FileMutation(first_target, b"first", mode=0o644, expected_exists=False),
+                FileMutation(first_guard, None, expected_exists=False),
+            ),
+            allowed_roots=(cache, first_vault),
+        )
+
+    assert journal.exists()
+    assert first_target.read_bytes() == b"first"
+    execute_filesystem_transaction(
+        journal,
+        (FileMutation(second_target, b"second", mode=0o644, expected_exists=False),),
+        allowed_roots=(cache, second_vault),
+    )
+
+    assert not journal.exists()
+    assert first_target.read_bytes() == b"first"
+    assert second_target.read_bytes() == b"second"
+
+
+def test_canonical_request_vault_uses_shared_ownership_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("HAPAX_CC_OWNERSHIP_CACHE_DIR", raising=False)
+    request_vault = tmp_path / "Documents/Personal/20-projects/hapax-requests"
+    path = request_vault / "active" / "REQ-test.md"
+
+    resolved_vault, cache_dir = task_note_transaction_context(
+        path,
+        vault_root=request_vault,
+    )
+
+    assert resolved_vault == request_vault
+    assert cache_dir == tmp_path / ".cache/hapax"
+
+
+def test_recovery_domain_expands_only_the_named_stable_ownership_journal(
+    tmp_path: Path,
+) -> None:
+    projects = tmp_path / "20-projects"
+    task_vault = projects / "hapax-cc-tasks"
+    request_vault = projects / "hapax-requests"
+    cache = tmp_path / "cache"
+
+    stable_roots = transaction.ownership_transaction_allowed_roots(
+        cache / "cc-ownership-txn.json",
+        (cache, task_vault),
+    )
+    unrelated_roots = transaction.ownership_transaction_allowed_roots(
+        cache / "other-journal.json",
+        (cache, task_vault),
+    )
+
+    assert stable_roots == (cache, task_vault, request_vault)
+    assert unrelated_roots == (cache, task_vault)
 
 
 def test_prepared_journal_rolls_back_partial_postimages(tmp_path: Path) -> None:

@@ -1733,6 +1733,7 @@ def migrate_legacy_filesystem_transactions(
 ) -> None:
     """Drain pre-global journals while one stable ownership lock excludes new writers."""
 
+    allowed_roots = ownership_transaction_allowed_roots(stable_journal, allowed_roots)
     _allowed(stable_journal, allowed_roots)
     with _transaction_lock(stable_journal):
         _recover_stable_and_legacy_filesystem_transactions_unlocked(
@@ -1773,6 +1774,7 @@ def recover_filesystem_transaction(
 ) -> bool:
     """Recover one transaction while excluding cooperating writers."""
 
+    allowed_roots = ownership_transaction_allowed_roots(journal_path, allowed_roots)
     _allowed(journal_path, allowed_roots)
     with _transaction_lock(journal_path):
         return _recover_filesystem_transaction_unlocked(
@@ -1877,6 +1879,7 @@ def execute_filesystem_transaction(
 ) -> None:
     """Apply one transaction while excluding cooperating writers."""
 
+    allowed_roots = ownership_transaction_allowed_roots(journal_path, allowed_roots)
     _allowed(journal_path, allowed_roots)
     with _transaction_lock(journal_path):
         _recover_stable_and_legacy_filesystem_transactions_unlocked(
@@ -1900,6 +1903,33 @@ def ownership_legacy_journals(cache_dir: Path) -> tuple[Path, ...]:
     for intent in cache_dir.glob(".cc-ownership-txn-*.json.intent"):
         legacy.add(cache_dir / intent.name[1 : -len(".intent")])
     return tuple(sorted(legacy))
+
+
+def ownership_transaction_allowed_roots(
+    journal_path: Path,
+    allowed_roots: Sequence[Path],
+) -> tuple[Path, ...]:
+    """Return the complete recovery domain for the stable ownership journal.
+
+    Task lifecycle transactions and request decomposition intentionally share
+    ``cc-ownership-txn.json``. A caller that admits either canonical governance
+    vault must therefore be able to recover crash images spanning both sibling
+    vaults before it starts new work. Other journals and custom vault names keep
+    their caller-supplied boundary unchanged.
+    """
+
+    roots = list(dict.fromkeys(root.expanduser().absolute() for root in allowed_roots))
+    if journal_path.name != "cc-ownership-txn.json":
+        return tuple(roots)
+    governance_names = ("hapax-cc-tasks", "hapax-requests")
+    for root in tuple(roots):
+        if root.name not in governance_names:
+            continue
+        for name in governance_names:
+            sibling = root.parent / name
+            if sibling not in roots:
+                roots.append(sibling)
+    return tuple(roots)
 
 
 def read_task_note_snapshot(path: Path) -> TaskNoteSnapshot:
@@ -1935,12 +1965,14 @@ def task_note_transaction_context(
 
     if cache_dir is None:
         configured = os.environ.get("HAPAX_CC_OWNERSHIP_CACHE_DIR", "").strip()
-        default_vault = (
-            Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
-        ).absolute()
+        default_projects = (Path.home() / "Documents" / "Personal" / "20-projects").absolute()
+        default_vaults = {
+            default_projects / "hapax-cc-tasks",
+            default_projects / "hapax-requests",
+        }
         if configured:
             cache_dir = Path(configured).expanduser().absolute()
-        elif vault_root == default_vault:
+        elif vault_root in default_vaults:
             cache_dir = (Path.home() / ".cache" / "hapax").absolute()
         else:
             cache_dir = vault_root / ".hapax-ownership-cache"

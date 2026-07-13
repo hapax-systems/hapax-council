@@ -287,6 +287,24 @@ def test_nested_bootstrap_identity_fields_are_not_promoted(tmp_path: Path) -> No
     assert "missing non-empty `assigned_to`" in result.stderr
 
 
+def test_block_scalar_cannot_satisfy_nullish_task_fields(tmp_path: Path) -> None:
+    task_root = tmp_path / "Documents/Personal/20-projects/hapax-cc-tasks/active"
+    task_root.mkdir(parents=True)
+    task_path = task_root / "block-scalar-pr.md"
+    content = _task_note("block-scalar-pr", tmp_path / "request.md").replace(
+        "pr: null",
+        "pr: |\n  descriptive-but-non-null-pr",
+    )
+
+    result = _run_hook(
+        tmp_path,
+        {"tool_name": "Write", "tool_input": {"file_path": str(task_path), "content": content}},
+    )
+
+    assert result.returncode == 2
+    assert "`pr` must be null for a new offered task" in result.stderr
+
+
 def test_transactional_creator_creates_valid_task_and_ledger(tmp_path: Path) -> None:
     task_root = tmp_path / "Documents/Personal/20-projects/hapax-cc-tasks/active"
     request_root = tmp_path / "Documents/Personal/20-projects/hapax-requests/active"
