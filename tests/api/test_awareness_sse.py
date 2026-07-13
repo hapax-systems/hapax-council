@@ -18,7 +18,12 @@ from pathlib import Path
 
 import pytest
 
-from agents.operator_awareness.state import AwarenessState, write_state_atomic
+from agents.operator_awareness.state import (
+    AwarenessState,
+    MonetizationBlock,
+    PaymentEvent,
+    write_state_atomic,
+)
 from logos.api.routes.awareness import _awareness_sse_generator
 
 
@@ -197,6 +202,41 @@ async def test_public_filter_applied_when_public_true(tmp_path: Path):
     body = json.loads(events[0]["data"])
     assert body["schema_version"] == 1
     assert "refusals_recent" in body
+
+
+@pytest.mark.asyncio
+async def test_public_sse_redacts_money_rail_resource_receipt_ref(tmp_path: Path):
+    path = tmp_path / "state.json"
+    event = PaymentEvent(
+        timestamp=datetime.now(UTC),
+        rail="liberapay",
+        amount_eur=5.0,
+        external_id="lp-sse-redaction",
+        resource_receipt_ref="money-rail-resource-receipt:liberapay:mrr-private",
+    )
+    state = AwarenessState(
+        timestamp=datetime.now(UTC),
+        ttl_seconds=300,
+        monetization=MonetizationBlock(public=True, last_event=event),
+    )
+    write_state_atomic(state, path)
+
+    async def fake_sleep(_: float) -> None:
+        pass
+
+    events = await _drive(
+        _awareness_sse_generator(
+            public=True,
+            state_path=path,
+            iter_limit=1,
+            sleep_fn=fake_sleep,
+        )
+    )
+
+    body = json.loads(events[0]["data"])
+    last_event = body["monetization"]["last_event"]
+    assert last_event["external_id"] == "lp-sse-redaction"
+    assert last_event["resource_receipt_ref"] is None
 
 
 # ── Route registration ──────────────────────────────────────────────

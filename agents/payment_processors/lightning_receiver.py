@@ -40,6 +40,11 @@ from prometheus_client import Counter
 from agents.operator_awareness.state import PaymentEvent
 from agents.payment_processors.event_log import append_event
 from agents.payment_processors.refusal_annex import emit_rail_refusal
+from agents.payment_processors.resource_receipts import (
+    commit_prepared_resource_receipt,
+    prepare_payment_event_resource_receipt,
+    record_external_api_poll_receipt,
+)
 from agents.payment_processors.secrets import load_alby_token
 from shared.chronicle import ChronicleEvent, current_otel_ids, record
 
@@ -126,6 +131,16 @@ class LightningReceiver:
                 reason="No alby-access-token in pass; rail disabled until pass insert.",
             )
             return 0
+        if (
+            record_external_api_poll_receipt(
+                rail="lightning",
+                endpoint=f"GET {ALBY_INVOICES_PATH}",
+                downstream_action="httpx.Client.get",
+            )
+            is None
+        ):
+            lightning_poll_errors_total.labels(kind="resource_receipt").inc()
+            return 0
         client = self._client()
         try:
             response = client.get(
@@ -174,7 +189,19 @@ class LightningReceiver:
             event = _alby_invoice_to_event(raw, payment_hash)
             if event is None:
                 continue
-            append_event(event)
+            receipt_ref, receipt = prepare_payment_event_resource_receipt(
+                rail="lightning",
+                external_id=payment_hash,
+                event_kind="settled_invoice",
+                downstream_action="payment_event_log.append_event",
+            )
+            if commit_prepared_resource_receipt(receipt) is None:
+                lightning_poll_errors_total.labels(kind="resource_receipt").inc()
+                continue
+            event = event.model_copy(update={"resource_receipt_ref": receipt_ref})
+            if not append_event(event):
+                lightning_poll_errors_total.labels(kind="payment_event_append").inc()
+                continue
             _record_chronicle(event)
             lightning_receipts_total.labels(rail="lightning").inc()
             self._seen_hashes.add(payment_hash)
