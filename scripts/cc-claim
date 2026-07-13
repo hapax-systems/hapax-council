@@ -33,17 +33,65 @@ if [[ -f "$ROLE_HELPER" ]]; then
 fi
 
 force=false
+# Claim publication is an operational effect. It is always bound to the canon,
+# dispatch, admission, and current claim transaction; ambient configuration may
+# not select the retired raw note/cache writer.
+canon_enforced="1"
 task_id=""
-for arg in "$@"; do
-  case "$arg" in
-    --force) force=true ;;
-    -*) echo "cc-claim: unknown flag '$arg'" >&2; exit 1 ;;
-    *) task_id="$arg" ;;
+dispatch_message_id="${HAPAX_CLAIM_DISPATCH_MESSAGE_ID:-}"
+dispatch_binding_hash="${HAPAX_CLAIM_DISPATCH_BINDING_HASH:-}"
+dispatch_platform="${HAPAX_CLAIM_DISPATCH_PLATFORM:-}"
+dispatch_mode="${HAPAX_CLAIM_DISPATCH_MODE:-}"
+dispatch_profile="${HAPAX_CLAIM_DISPATCH_PROFILE:-}"
+dispatch_authority_case="${HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE:-}"
+dispatch_idempotency_key="${HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY:-}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --force) force=true; shift ;;
+    --dispatch-message-id) dispatch_message_id="${2:-}"; shift 2 ;;
+    --dispatch-binding-hash) dispatch_binding_hash="${2:-}"; shift 2 ;;
+    --dispatch-platform) dispatch_platform="${2:-}"; shift 2 ;;
+    --dispatch-mode) dispatch_mode="${2:-}"; shift 2 ;;
+    --dispatch-profile) dispatch_profile="${2:-}"; shift 2 ;;
+    --dispatch-authority-case) dispatch_authority_case="${2:-}"; shift 2 ;;
+    --dispatch-idempotency-key) dispatch_idempotency_key="${2:-}"; shift 2 ;;
+    -*) echo "cc-claim: unknown flag '$1'" >&2; exit 1 ;;
+    *) task_id="$1"; shift ;;
   esac
 done
 if [[ -z "$task_id" ]]; then
-  echo "usage: cc-claim [--force] <task_id>" >&2
+  echo "usage: cc-claim [--force] <task_id> [--dispatch-message-id ID ...]" >&2
   exit 1
+fi
+PROJECT_PYTHON="$SCRIPT_DIR/../.venv/bin/python"
+if [[ ! -x "$PROJECT_PYTHON" ]]; then
+  echo "cc-claim: project_runtime_unprovisioned: expected pinned interpreter at $PROJECT_PYTHON" >&2
+  exit 3
+fi
+dispatch_values=(
+  "$dispatch_message_id"
+  "$dispatch_binding_hash"
+  "$dispatch_platform"
+  "$dispatch_mode"
+  "$dispatch_profile"
+  "$dispatch_authority_case"
+)
+dispatch_present=0
+dispatch_missing=0
+for value in "${dispatch_values[@]}"; do
+  [[ -n "$value" ]] && dispatch_present=$((dispatch_present + 1)) || dispatch_missing=$((dispatch_missing + 1))
+done
+if [[ "$dispatch_present" -gt 0 && "$dispatch_missing" -gt 0 ]]; then
+  echo "cc-claim: dispatch binding flags are all-or-none" >&2
+  exit 1
+fi
+if [[ "$canon_enforced" == "1" && "$dispatch_present" -eq 0 ]]; then
+  echo "cc-claim: canon echo enforcement requires the exact dispatch binding flags" >&2
+  exit 2
+fi
+if [[ "$canon_enforced" == "1" && "$force" == "true" ]]; then
+  echo "cc-claim: --force is retired under canon echo enforcement; release the prior claim through a governed transition" >&2
+  exit 2
 fi
 # Resolve identity from the SAME source of truth as the gate (agent-role.sh):
 # explicit env → agent-role recovery → relay presence → role-less fallback. A
@@ -67,14 +115,22 @@ fi
 # shared/session_identity.py::is_claim_keyable_session_id; a pid-shaped id —
 # the retired `<role>-$$` spawner fallback — degrades to legacy role keying
 # instead of minting an ambiguous key.
-if [[ -n "$session_id" ]] && ! python3 -c '
+if [[ -n "$session_id" ]] && ! "$PROJECT_PYTHON" -I -c '
 import sys
 sys.path.insert(0, sys.argv[2])
 from shared.session_identity import is_claim_keyable_session_id
 sys.exit(0 if is_claim_keyable_session_id(sys.argv[1]) else 1)
 ' "$session_id" "$SCRIPT_DIR/.." 2>/dev/null; then
+  if [[ "$canon_enforced" == "1" ]]; then
+    echo "cc-claim: canon echo enforcement requires a claim-keyable non-PID session id" >&2
+    exit 2
+  fi
   echo "cc-claim: session id '$session_id' is not claim-keyable (pid-shaped or malformed) — using legacy role-keyed claim only" >&2
   session_id=""
+fi
+if [[ "$canon_enforced" == "1" && -z "$session_id" ]]; then
+  echo "cc-claim: canon echo enforcement requires a claim-keyable session id" >&2
+  exit 2
 fi
 if [[ -n "$session_id" ]]; then
   session_claim_file="$HOME/.cache/hapax/cc-active-task-$role-$session_id"
@@ -87,11 +143,8 @@ lease_ttl="${HAPAX_CLAIM_LEASE_TTL_SECS:-21600}"
 # A role must close its current task before claiming a new one. Without this,
 # Codex lanes bulk-claimed dozens of tasks with zero implementation. Scan the
 # role's claim files — the legacy cc-active-task-<role> AND every session-keyed
-# cc-active-task-<role>-<session_id> (FM-2) — and treat any whose lease has
-# expired (mtime older than HAPAX_CLAIM_LEASE_TTL_SECS) as free: a dead/wedged
-# session's claim auto-frees instead of deadlocking the role forever. The gate
-# refreshes a live session's lease on each mutation, so only stale sessions age
-# out. A live claim on a DIFFERENT non-terminal task blocks (unless --force).
+# cc-active-task-<role>-<session_id> (FM-2). Expiry is evidence for a governed
+# release, never permission for this claim attempt to delete another lease.
 vault_root_check="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
 now_epoch="$(date +%s 2>/dev/null || echo 0)"
 legacy_claim_file="$HOME/.cache/hapax/cc-active-task-$role"
@@ -100,11 +153,9 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
   [[ -f "$cf" ]] || continue
   cf_mtime="$(stat -c %Y "$cf" 2>/dev/null || echo "$now_epoch")"
   if (( now_epoch - cf_mtime > lease_ttl )); then
-    # Expired lease. Reap session-keyed files (a dead session's lease auto-frees);
-    # leave the shared legacy file (it is overwritten below and never blocks once
-    # expired) for the out-of-scope consumers that still read it.
-    [[ "$cf" != "$legacy_claim_file" ]] && rm -f "$cf" 2>/dev/null || true
-    continue
+    echo "cc-claim: HOLD — expired claim '$cf' requires governed release before canonical claim publication" >&2
+    shopt -u nullglob
+    exit 7
   fi
   existing_task="$(head -n1 "$cf" | tr -d '[:space:]')"
   [[ -n "$existing_task" && "$existing_task" != "$task_id" ]] || continue
@@ -119,12 +170,8 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
   esac
   echo "cc-claim: BLOCKED — role '$role' already has active task '$existing_task' (status: $existing_status)." >&2
   echo "  Close it first: cc-close $existing_task" >&2
-  echo "  Or force: cc-claim --force $task_id" >&2
-  if [[ "$force" != "true" ]]; then
-    shopt -u nullglob
-    exit 7
-  fi
-  echo "cc-claim: --force override — releasing prior claim on '$existing_task'" >&2
+  shopt -u nullglob
+  exit 7
 done
 shopt -u nullglob
 
@@ -150,14 +197,15 @@ if [[ -z "$note_path" ]]; then
   exit 2
 fi
 
-if ! command -v python3 &>/dev/null; then
-  echo "cc-claim: python3 missing; cannot rewrite frontmatter" >&2
-  exit 3
-fi
-
 # Verify status/ownership, then either claim offered work or resume owned
 # ready-state work (PR/merge-queue maintenance).
-python3 - "$note_path" "$role" "$task_id" "$SCRIPT_DIR/.." "$session_id" <<'PYEOF'
+claim_epoch="$(date +%s)"
+"$PROJECT_PYTHON" -I - \
+  "$note_path" "$role" "$task_id" "$SCRIPT_DIR/.." "$session_id" \
+  "$canon_enforced" "$HOME/.cache/hapax" "$claim_epoch" \
+  "$dispatch_message_id" "$dispatch_binding_hash" "$dispatch_platform" \
+  "$dispatch_mode" "$dispatch_profile" "$dispatch_authority_case" \
+  "$dispatch_idempotency_key" <<'PYEOF'
 import re
 import sys
 from datetime import datetime, timezone
@@ -172,6 +220,18 @@ path, role, task_id, repo_root = (
 # Already validated claim-keyable by the bash caller (empty when not); stamped
 # into the session log so vault forensics join on session_id, never on pid.
 session_id = sys.argv[5] if len(sys.argv) > 5 else ""
+canon_enforced = len(sys.argv) > 6 and sys.argv[6] == "1"
+cache_dir = Path(sys.argv[7]) if len(sys.argv) > 7 else Path.home() / ".cache" / "hapax"
+claim_epoch = int(sys.argv[8]) if len(sys.argv) > 8 and sys.argv[8] else 0
+(
+    dispatch_message_id,
+    dispatch_binding_hash,
+    dispatch_platform,
+    dispatch_mode,
+    dispatch_profile,
+    dispatch_authority_case,
+    dispatch_idempotency_key,
+) = (sys.argv[9:16] if len(sys.argv) >= 16 else ("", "", "", "", "", "", ""))
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
@@ -184,7 +244,82 @@ from shared.sdlc_lifecycle import (  # noqa: E402
     task_closure_validity,
 )
 
-text = path.read_text(encoding="utf-8")
+if canon_enforced:
+    from shared.sdlc_claim import (  # noqa: E402
+        ClaimPublicationError,
+        inspect_claim_publications,
+        resolve_applied_claim_publication,
+    )
+
+    inspections = inspect_claim_publications(cache_dir=cache_dir, task_id=task_id)
+    held = [item for item in inspections if item.disposition == "hold"]
+    if held:
+        print(
+            "cc-claim: HOLD — claim publication inspection requires reconciliation: "
+            + ",".join(f"{item.publication_id}:{item.reason_code}" for item in held),
+            file=sys.stderr,
+        )
+        sys.exit(8)
+    claim_keys = (role, f"{role}-{session_id}")
+    claim_paths = tuple(
+        candidate
+        for key in claim_keys
+        for candidate in (
+            cache_dir / f"cc-active-task-{key}",
+            cache_dir / f"cc-claim-epoch-{key}",
+            cache_dir / f"cc-claim-dispatch-{key}.json",
+        )
+    )
+    if any(candidate.exists() for candidate in claim_paths):
+        try:
+            applied = resolve_applied_claim_publication(
+                vault_root=path.parent.parent,
+                cache_dir=cache_dir,
+                role=role,
+                session_id=session_id,
+                task_id=task_id,
+            )
+        except ClaimPublicationError as exc:
+            print(f"cc-claim: HOLD — {exc}", file=sys.stderr)
+            sys.exit(8)
+        binding = applied.intent.binding
+        expected_dispatch = {
+            "task_id": task_id,
+            "lane": role,
+            "session_id": session_id,
+            "dispatch_message_id": dispatch_message_id,
+            "platform": dispatch_platform,
+            "mode": dispatch_mode,
+            "profile": dispatch_profile,
+            "authority_case": dispatch_authority_case,
+            "binding_hash": dispatch_binding_hash,
+            "coord_dispatch_idempotency_key": dispatch_idempotency_key or None,
+        }
+        observed_dispatch = {
+            key: getattr(binding, key) for key in expected_dispatch
+        }
+        if observed_dispatch != expected_dispatch:
+            print(
+                "cc-claim: HOLD — existing applied claim belongs to a different dispatch vector",
+                file=sys.stderr,
+            )
+            sys.exit(8)
+        if applied.admission_consumption is None:
+            print(
+                "cc-claim: HOLD — execution_admission_prerequisites_unavailable: "
+                "the existing claim is a legacy publication without an admitted "
+                "ClaimAdmissionConsumption",
+                file=sys.stderr,
+            )
+            sys.exit(8)
+        print(
+            f"cc-claim: applied publication already owns task '{task_id}' for role '{role}' "
+            f"(receipt={applied.receipt.receipt_hash})"
+        )
+        sys.exit(0)
+
+note_before = path.read_bytes()
+text = note_before.decode("utf-8")
 if not text.startswith("---") or text.find("\n---", 4) < 0:
     print(
         f"cc-claim: FATAL — task note {path} has no closing frontmatter "
@@ -636,44 +771,61 @@ text = re.sub(
 )
 text = _insert_session_log(text, log_line)
 
-tmp = path.with_suffix(path.suffix + ".tmp")
-tmp.write_text(text, encoding="utf-8")
-tmp.replace(path)
-print(result_message)
+if canon_enforced:
+    from shared.sdlc_claim import (  # noqa: E402
+        ClaimPublicationIntent,
+        publish_claim,
+    )
+    from shared.sdlc_task_store import (  # noqa: E402
+        ClaimDispatchBinding,
+        TaskStoreError,
+        resolve_task_note,
+    )
+
+    try:
+        snapshot = resolve_task_note(
+            path.parent.parent,
+            task_id,
+            state="active",
+            require_no_other_state=True,
+        )
+        if snapshot.path != path.resolve() or snapshot.content != note_before:
+            raise TaskStoreError(
+                "claim_publication_task_changed_during_preflight",
+                "reload the exact active task and repeat claim eligibility checks",
+                task_id,
+            )
+        binding = ClaimDispatchBinding.create(
+            task_id=task_id,
+            lane=role,
+            session_id=session_id,
+            claim_epoch=claim_epoch,
+            dispatch_message_id=dispatch_message_id,
+            platform=dispatch_platform,
+            mode=dispatch_mode,
+            profile=dispatch_profile,
+            authority_case=dispatch_authority_case,
+            binding_hash=dispatch_binding_hash,
+            coord_dispatch_idempotency_key=dispatch_idempotency_key or None,
+        )
+        intent = ClaimPublicationIntent.create(
+            task=snapshot,
+            cache_dir=cache_dir,
+            note_after=text.encode("utf-8"),
+            binding=binding,
+        )
+    except (ClaimPublicationError, TaskStoreError) as exc:
+        print(f"cc-claim: HOLD — {exc}", file=sys.stderr)
+        sys.exit(8)
+    try:
+        publish_claim(intent)
+    except ClaimPublicationError as exc:
+        print(
+            f"cc-claim: HOLD — {exc}; prepared_intent={intent.intent_ref}",
+            file=sys.stderr,
+        )
+        sys.exit(8)
+    raise AssertionError("unadmitted claim publication unexpectedly returned")
 PYEOF
 
-# Write the claim file(s) the gate + consumers read.
-mkdir -p "$HOME/.cache/hapax"
-# The `cc-claim-epoch-*` SIDECAR records the claim time out-of-band: several
-# consumers read the claim file's FULL content as the task id, so the id file
-# must stay single-line — and the gate touches the claim file as a lease
-# keep-alive before its checks, so its mtime cannot witness claim age.
-# task_is_terminal reads the sidecar as its ONLY heartbeat-immune freshness
-# source (H1-ghost-revert indeterminate shape); there is deliberately no
-# mtime fallback, so every cache writer must keep the sidecar in step. The
-# distinct prefix keeps sidecars out of every `cc-active-task-*` glob
-# (sweeps, terminal checks) so an epoch can never masquerade as a claim.
-# Paths are constructed EXPLICITLY (never by substring substitution on the
-# full path — `${var/cc-active-task/...}` rewrites the FIRST occurrence
-# anywhere, corrupting the target when a parent directory contains the
-# substring).
-claim_epoch="$(date +%s)"
-# Sidecar format: `<epoch> <task_id>` — task-bound so a stale sidecar left by
-# an earlier claim can never age a NEW claim of a different task; consumers
-# ignore a sidecar whose task id does not match the claim cache.
-# Sidecars are written BEFORE their claim caches: a conforming writer can
-# never expose a matching cache whose sidecar is not yet visible.
-echo "$claim_epoch $task_id" > "$HOME/.cache/hapax/cc-claim-epoch-$role"
-# Legacy role-keyed file: read by cc-close, session-context, the coordinator, the
-# coordination TUI, and other consumers outside this task's scope. Always written.
-echo "$task_id" > "$legacy_claim_file"
-if [[ -n "$session_claim_file" ]]; then
-  # Session-keyed lease (FM-2): the gate reads this FIRST so two same-role
-  # sessions never collide on the shared legacy file. Same task id; the filename
-  # carries the session identity.
-  echo "$claim_epoch $task_id" > "$HOME/.cache/hapax/cc-claim-epoch-$role-$session_id"
-  echo "$task_id" > "$session_claim_file"
-  echo "cc-claim: wrote $session_claim_file (+ legacy cc-active-task-$role)"
-else
-  echo "cc-claim: wrote ~/.cache/hapax/cc-active-task-$role"
-fi
+exit 0

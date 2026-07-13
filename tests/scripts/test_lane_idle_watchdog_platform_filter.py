@@ -1,137 +1,122 @@
-"""Tests for platform_suitability filtering in the idle watchdog's task picker."""
+"""Platform-bound read-only behavior for the idle watchdog."""
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "hapax-lane-idle-watchdog"
+TMUX_OBSERVER_LITERAL = (
+    "TMUX_OBSERVER=(/usr/bin/env -i HOME=/nonexistent LANG=C.UTF-8 "
+    "PATH=/usr/bin:/bin /usr/bin/tmux -f /dev/null)"
+)
 
 
-def _run_task_picker(task_dir: Path, platform: str) -> str:
-    """Run the find_next_wsjf_task function in isolation."""
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            f"""
-            TASK_ROOT="{task_dir}"
-            find_next_wsjf_task() {{
-                local lane_platform="${{1:-any}}"
-                python3 -c "
-import re
-from pathlib import Path
-
-task_root = Path('$TASK_ROOT')
-lane_platform = '$lane_platform'
-best_id = None
-best_wsjf = -1.0
-
-for p in task_root.glob('*.md'):
-    text = p.read_text(errors='replace')
-    status_m = re.search(r'^status:\s*(\S+)', text, re.MULTILINE)
-    if not status_m:
-        continue
-    status = status_m.group(1)
-    if status != 'offered':
-        continue
-    assigned_m = re.search(r'^assigned_to:\s*(\S+)', text, re.MULTILINE)
-    if assigned_m and assigned_m.group(1) not in ('unassigned', 'null', 'None', ''):
-        continue
-    blocked_m = re.search(r'^blocked_reason:', text, re.MULTILINE)
-    if blocked_m:
-        continue
-    plat_m = re.search(r'^platform_suitability:\s*\\\[([^\\\]]*)\\\]', text, re.MULTILINE)
-    if plat_m:
-        platforms = [s.strip() for s in plat_m.group(1).split(',')]
-        if 'any' not in platforms and lane_platform not in platforms:
-            continue
-    wsjf_m = re.search(r'^wsjf:\s*([0-9.]+)', text, re.MULTILINE)
-    wsjf = float(wsjf_m.group(1)) if wsjf_m else 0.0
-    if wsjf > best_wsjf:
-        best_wsjf = wsjf
-        best_id = p.stem
-
-if best_id:
-    print(best_id)
-"
-            }}
-            find_next_wsjf_task "{platform}"
-            """,
-        ],
-        capture_output=True,
-        text=True,
+def _fake_tmux(tmp_path: Path) -> dict[str, str]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    tmux = bin_dir / "tmux"
+    tmux.write_text(
+        """#!/usr/bin/env bash
+case "$1" in
+  list-sessions) printf '%b' "${SESSIONS:-}" ;;
+  capture-pane) printf '%b\n' "${PANE:-}" ;;
+  display-message) printf '%s\n' "${PANE_CMD:-unknown}" ;;
+  *) printf '%s\n' "$*" >> "${MUTATIONS:?}"; exit 97 ;;
+esac
+""",
+        encoding="utf-8",
     )
-    return result.stdout.strip()
-
-
-def _write_task(task_dir: Path, name: str, wsjf: float, platforms: list[str]) -> None:
-    plat_str = ", ".join(platforms)
-    (task_dir / f"{name}.md").write_text(
-        f"---\n"
-        f"status: offered\n"
-        f"assigned_to: unassigned\n"
-        f"wsjf: {wsjf}\n"
-        f"platform_suitability: [{plat_str}]\n"
-        f"---\n"
-        f"# {name}\n"
+    tmux.chmod(0o755)
+    test_script = tmp_path / "hapax-lane-idle-watchdog"
+    test_script.write_text(
+        SCRIPT.read_text(encoding="utf-8").replace(
+            TMUX_OBSERVER_LITERAL,
+            f"TMUX_OBSERVER=({tmux})",
+        ),
+        encoding="utf-8",
     )
-
-
-def test_ready_status_is_not_directly_pickable(tmp_path: Path) -> None:
-    (tmp_path / "ready-task.md").write_text(
-        "---\nstatus: ready\nassigned_to: unassigned\nwsjf: 99.0\n---\n# task\n"
+    test_script.chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{bin_dir}:{env['PATH']}",
+            "SESSIONS": "",
+            "PANE": "",
+            "PANE_CMD": "unknown",
+            "MUTATIONS": str(tmp_path / "mutations"),
+            "HAPAX_IDLE_SKIP_LANES": "",
+            "HAPAX_REQUIRED_CLAUDE_LANES": "",
+            "HAPAX_REQUIRED_CODEX_LANES": "",
+            "HAPAX_TEST_WATCHDOG": str(test_script),
+        }
     )
-    _write_task(tmp_path, "offered-task", 1.0, ["codex"])
-
-    result = _run_task_picker(tmp_path, "codex")
-
-    assert result == "offered-task"
+    return env
 
 
-def test_claude_lane_skips_codex_only_task(tmp_path: Path) -> None:
-    _write_task(tmp_path, "codex-task", 20.0, ["codex"])
-    _write_task(tmp_path, "claude-task", 10.0, ["claude"])
-    result = _run_task_picker(tmp_path, "claude")
-    assert result == "claude-task"
+def _run(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run([env["HAPAX_TEST_WATCHDOG"]], env=env, capture_output=True, text=True)
 
 
-def test_codex_lane_skips_claude_only_task(tmp_path: Path) -> None:
-    _write_task(tmp_path, "claude-task", 20.0, ["claude"])
-    _write_task(tmp_path, "codex-task", 10.0, ["codex"])
-    result = _run_task_picker(tmp_path, "codex")
-    assert result == "codex-task"
+def test_removed_task_picker_and_platform_suitability_authority() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert TMUX_OBSERVER_LITERAL in text
+    for forbidden in (
+        "find_next_wsjf_task",
+        "platform_suitability",
+        "highest_wsjf",
+        "offered",
+        "claimed",
+        "in_progress",
+        "assigned_to",
+    ):
+        assert forbidden not in text
 
 
-def test_any_platform_matches_all_lanes(tmp_path: Path) -> None:
-    _write_task(tmp_path, "any-task", 15.0, ["any"])
-    result = _run_task_picker(tmp_path, "claude")
-    assert result == "any-task"
-    result = _run_task_picker(tmp_path, "codex")
-    assert result == "any-task"
+def test_only_known_lane_platform_names_are_observed(tmp_path: Path) -> None:
+    env = _fake_tmux(tmp_path)
+    env["SESSIONS"] = "hapax-codex-cx-red\nunrelated-session\n"
+    env["PANE"] = "ready\ngpt-5.5 ~/projects/hapax-council"
+    env["PANE_CMD"] = "codex"
+    result = _run(env)
+    assert result.returncode == 0, result.stderr
+    assert "target=cx-red" in result.stdout
+    assert "unrelated-session" not in result.stdout
+    assert not Path(env["MUTATIONS"]).exists()
 
 
-def test_multi_platform_task_matches_listed_lanes(tmp_path: Path) -> None:
-    _write_task(tmp_path, "multi-task", 15.0, ["claude", "codex"])
-    result = _run_task_picker(tmp_path, "claude")
-    assert result == "multi-task"
-    result = _run_task_picker(tmp_path, "codex")
-    assert result == "multi-task"
-    result = _run_task_picker(tmp_path, "antigrav")
-    assert result == ""
+def test_claude_and_codex_share_same_fail_closed_hold_semantics(tmp_path: Path) -> None:
+    env = _fake_tmux(tmp_path)
+    env["SESSIONS"] = "hapax-claude-beta\nhapax-codex-cx-red\n"
+    env["PANE"] = "❯ ready\ngpt-5.5 ~/projects/hapax-council"
+    env["PANE_CMD"] = "node"
+    result = _run(env)
+    assert result.returncode == 0, result.stderr
+    assert "action=lane.nudge target=beta" in result.stdout
+    assert "action=lane.nudge target=cx-red" in result.stdout
+    assert result.stdout.count("reason=execution_authority_admission_lease_absent") == 2
+    assert not Path(env["MUTATIONS"]).exists()
 
 
-def test_no_platform_field_matches_any_lane(tmp_path: Path) -> None:
-    (tmp_path / "no-plat-task.md").write_text(
-        "---\nstatus: offered\nassigned_to: unassigned\nwsjf: 12.0\n---\n# task\n"
-    )
-    result = _run_task_picker(tmp_path, "claude")
-    assert result == "no-plat-task"
+def test_existing_required_lane_is_not_a_launch_candidate(tmp_path: Path) -> None:
+    env = _fake_tmux(tmp_path)
+    env["SESSIONS"] = "hapax-codex-cx-red\n"
+    env["PANE"] = "Working (3s)\ngpt-5.5 ~/projects/hapax-council"
+    env["PANE_CMD"] = "codex"
+    env["HAPAX_REQUIRED_CODEX_LANES"] = "cx-red"
+    result = _run(env)
+    assert result.returncode == 0, result.stderr
+    assert "action=lane.launch target=cx-red" not in result.stdout
+    assert "action=lane.revive target=cx-red" not in result.stdout
 
 
-def test_highest_wsjf_wins_within_platform(tmp_path: Path) -> None:
-    _write_task(tmp_path, "low-task", 5.0, ["claude"])
-    _write_task(tmp_path, "high-task", 25.0, ["claude"])
-    _write_task(tmp_path, "mid-task", 15.0, ["claude"])
-    result = _run_task_picker(tmp_path, "claude")
-    assert result == "high-task"
+def test_hostile_required_lane_name_cannot_escape_as_command(tmp_path: Path) -> None:
+    env = _fake_tmux(tmp_path)
+    sentinel = tmp_path / "must-not-exist"
+    env["HAPAX_REQUIRED_CODEX_LANES"] = f"$(touch {sentinel})"
+    result = _run(env)
+    assert result.returncode == 0, result.stderr
+    assert "action=lane.launch" in result.stdout
+    assert not sentinel.exists()
+    assert not Path(env["MUTATIONS"]).exists()

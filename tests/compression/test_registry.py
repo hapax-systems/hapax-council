@@ -18,6 +18,7 @@ from shared.compression.registry import (
     Tier,
     get_surface_spec,
     load_registry,
+    parse_registry,
 )
 
 
@@ -36,6 +37,12 @@ def test_real_registry_loads_and_validates() -> None:
     # spot-check the tier assignments from the design
     assert reg["knowledge_search"].tier is Tier.LOSSLESS_OK
     assert reg["axioms_manifest"].tier is Tier.LOSSLESS_ONLY
+    canon = reg["coordination_canon"]
+    assert canon.tier is Tier.LOSSLESS_ONLY
+    assert canon.codec is Codec.TOON
+    assert canon.headroom_enabled is False
+    assert canon.lossless_allowed is True
+    assert canon.lossy_allowed is False
     assert reg["spontaneous_speech_act"].tier is Tier.DENY
     assert reg["veto_chain_marker"].tier is Tier.HOT_PATH
 
@@ -68,6 +75,63 @@ def test_lookup_with_explicit_registry() -> None:
     reg = load_registry()
     assert get_surface_spec("knowledge_search", reg).tier is Tier.LOSSLESS_OK
     assert get_surface_spec("nope", reg) is DENY_DEFAULT
+
+
+def test_already_read_registry_snapshot_parses_without_a_second_file_read() -> None:
+    raw = Path("config/compression-surface-registry.yaml").read_text(encoding="utf-8")
+    assert parse_registry(raw) == load_registry()
+
+
+@pytest.mark.parametrize("raw", ["[]", "surfaces: []", "surfaces:\n  bad: []"])
+def test_registry_structural_type_errors_fail_closed(raw: str) -> None:
+    with pytest.raises(RegistryError):
+        parse_registry(raw)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "version: 1\nversion: 1\ndefault_tier: deny\nsurfaces: {}\n",
+        "version: 1\ndefault_tier: deny\nsurfaces:\n  same: {tier: deny}\n  same: {tier: hot_path}\n",
+        "version: 1\ndefault_tier: deny\nsurfaces:\n  same:\n    tier: deny\n    tier: hot_path\n",
+    ],
+)
+def test_duplicate_yaml_keys_fail_closed(raw: str) -> None:
+    with pytest.raises(RegistryError, match="duplicate YAML key"):
+        parse_registry(raw)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("headroom_enabled", "'false'"),
+        ("max_ratio", "'0.5'"),
+        ("max_ratio", "true"),
+        ("route_constraint", "1"),
+        ("codec", "true"),
+        ("unknown", "value"),
+    ],
+)
+def test_surface_fields_use_strict_types_and_known_keys(field: str, value: str) -> None:
+    raw = textwrap.dedent(
+        f"""
+        version: 1
+        default_tier: deny
+        surfaces:
+          strict:
+            tier: deny
+            codec: passthrough
+            {field}: {value}
+        """
+    )
+    with pytest.raises(RegistryError):
+        parse_registry(raw)
+
+
+@pytest.mark.parametrize("version", ["1.0", "true", "'1'", "2"])
+def test_registry_version_is_exact_integer_one(version: str) -> None:
+    with pytest.raises(RegistryError, match="version"):
+        parse_registry(f"version: {version}\ndefault_tier: deny\nsurfaces: {{}}\n")
 
 
 # ── structural invariants reject bad configs at load (fail-closed) ────────────

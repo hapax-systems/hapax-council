@@ -1,0 +1,56 @@
+{
+  "authority": {
+    "authority_case": "CASE-CAPACITY-ROUTING-001",
+    "governing_task": "cc-task-sdlc-fsm-canon-impingement-lockstep-bootstrap-20260710",
+    "may_authorize": false,
+    "operator_session_id": "019f47f5-9d09-7160-a9b3-4c14a6514876"
+  },
+  "checkpoint": "pre-contract-extension-20260712",
+  "files": {
+    "gate0-compatibility.json": {
+      "bytes": 13948,
+      "sha256": "0f30edaff78a1b67da16c0f4e8eab29442aa1a5b26aa4234c8b485702e3dd998"
+    },
+    "gate0-frame.json": {
+      "bytes": 167200,
+      "sha256": "ba3cf016c0e0a99c9d7f22dcb960711281dd38c2ef1ba6e7dc06c9c8fb61b996"
+    },
+    "gate0-hashes.json": {
+      "bytes": 1336,
+      "sha256": "caf972c20ea4c8634e13cf94b1e6342f3ca8ac244049a738c5b16c322aa3f87d"
+    },
+    "gate0-projections.json": {
+      "bytes": 251299,
+      "sha256": "cf82a5d6f7389972f0176554044bb94b2836b719ab5e42ddac0dd9a4ddb0f61a"
+    },
+    "gate0-source-supersession.json": {
+      "bytes": 77349,
+      "sha256": "b2cb52088003963bc397f6382fe93d84d71f9b75513f0f69af3fa5575b9525d6"
+    }
+  },
+  "historical_scope": {
+    "current_contract_compatible": false,
+    "exact_bytes_preserved": true,
+    "source_supersession_proof_applies_only_inside_checkpoint": true,
+    "wire_schema_ids": "unreleased_gate0_v1_checkpoint"
+  },
+  "replay": {
+    "package_preimage_patch": {
+      "bytes": 594172,
+      "path": "replay/hapax-context-canon-package-preimage-20260711.patch",
+      "sha256": "d239827bb850ca828b999cf43dde99ef7e961d264004282942373c6497c98f81"
+    },
+    "replay_script": {
+      "bytes": 3973,
+      "path": "replay/hapax-context-canon-frozen-fixture-replay-20260711.sh",
+      "sha256": "1f17c5f849a82bc8a491882c189c434be40a90b5188b2efdf82a7128c53ffb04"
+    },
+    "source_head": "f4e97c367ec6467fc4ca516535ecc3be553cb46b",
+    "support_preimage_patch": {
+      "bytes": 44796,
+      "path": "replay/hapax-context-canon-frozen-fixture-support-preimage-20260711.patch",
+      "sha256": "fc0b20bcca3121bac528c1f74c107a75fab72171ea82dc04436a467e7ffc36e8"
+    }
+  },
+  "schema": "hapax.context-canon.checkpoint-manifest.v1"
+}

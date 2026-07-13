@@ -1,10 +1,4 @@
-"""Launcher-wiring tests for the worker-path classify+witness integration in
-hapax-methodology-dispatch (cc-task capability-adapter-worker-path-classify-failure).
-
-Covers the wrapper (classify_and_witness_launch — success no-op / failure-triggers-classify /
-fail-open), the terminal-failure wiring (_classify_and_witness_terminal_failure — the
-rc==QUOTA_WALL_EXIT_CODE override, adapter classification, UNKNOWN default, no-adapter fallback),
-and the lane-output reader (_read_worker_failure_text)."""
+"""Gate-0A retirement and read-only output-tail tests for failure classification."""
 
 from __future__ import annotations
 
@@ -15,7 +9,7 @@ from pathlib import Path
 from types import ModuleType
 from unittest import mock
 
-from shared.failure_classification import FailureCode
+import pytest
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "hapax-methodology-dispatch"
 
@@ -43,126 +37,33 @@ _CTX = {
 }
 
 
-# --- classify_and_witness_launch: the fail-open wrapper -----------------------------------------
+# --- retired effectful classification paths -----------------------------------------------------
 
 
-def test_launch_success_skips_classification() -> None:
-    with mock.patch.object(_MOD, "_classify_and_witness_terminal_failure") as cw:
-        rc = _MOD.classify_and_witness_launch(lambda: 0, **_CTX)
-    assert rc == 0
-    cw.assert_not_called()
+def test_launch_and_witness_holds_before_callback_or_classifier() -> None:
+    callback_called = False
+
+    def callback() -> int:
+        nonlocal callback_called
+        callback_called = True
+        return 0
+
+    with mock.patch.object(_MOD, "_classify_and_witness_terminal_failure") as classifier:
+        with pytest.raises(_MOD.Gate0AEffectHold, match="worker.launch-and-witness"):
+            _MOD.classify_and_witness_launch(callback, **_CTX)
+
+    assert callback_called is False
+    classifier.assert_not_called()
 
 
-def test_launch_failure_triggers_classification_and_returns_rc_verbatim() -> None:
-    with mock.patch.object(_MOD, "_classify_and_witness_terminal_failure") as cw:
-        rc = _MOD.classify_and_witness_launch(lambda: 75, **_CTX)
-    assert rc == 75
-    cw.assert_called_once()
-    assert cw.call_args.args[0] == 75  # rc passed positionally to the classifier
+def test_terminal_failure_holds_before_reader_or_removed_writers() -> None:
+    with mock.patch.object(_MOD, "_read_worker_failure_text") as reader:
+        with pytest.raises(_MOD.Gate0AEffectHold, match="worker-failure.publish"):
+            _MOD._classify_and_witness_terminal_failure(1, **_CTX)
 
-
-def test_launch_is_fail_open_when_classification_raises() -> None:
-    def boom(*_a: object, **_k: object) -> None:
-        raise RuntimeError("classify exploded")
-
-    with mock.patch.object(_MOD, "_classify_and_witness_terminal_failure", side_effect=boom):
-        rc = _MOD.classify_and_witness_launch(lambda: 70, **{**_CTX, "platform": "codex"})
-    assert rc == 70  # a classification failure NEVER changes the dispatch outcome
-
-
-# --- _classify_and_witness_terminal_failure: the wiring -----------------------------------------
-
-
-def test_quota_wall_exit_code_overrides_to_quota_exhaustion() -> None:
-    # rc==QUOTA_WALL_EXIT_CODE forces QUOTA_EXHAUSTION even when the output tail is empty (UNKNOWN).
-    with (
-        mock.patch.object(_MOD, "_read_worker_failure_text", return_value=""),
-        mock.patch.object(_MOD, "append_failure_receipt_record") as rec,
-        mock.patch.object(_MOD, "update_worker_family_availability") as wit,
-    ):
-        _MOD._classify_and_witness_terminal_failure(_MOD.QUOTA_WALL_EXIT_CODE, **_CTX)
-    assert rec.call_args.kwargs["receipt"].code is FailureCode.QUOTA_EXHAUSTION
-    assert wit.call_args.kwargs["code"] is FailureCode.QUOTA_EXHAUSTION
-    assert wit.call_args.kwargs["family"] == "claude"
-
-
-def test_quota_text_classifies_to_quota_via_adapter() -> None:
-    with (
-        mock.patch.object(
-            _MOD, "_read_worker_failure_text", return_value="You've hit your usage limit"
-        ),
-        mock.patch.object(_MOD, "append_failure_receipt_record") as rec,
-        mock.patch.object(_MOD, "update_worker_family_availability") as wit,
-    ):
-        _MOD._classify_and_witness_terminal_failure(1, **_CTX)
-    assert rec.call_args.kwargs["receipt"].code is FailureCode.QUOTA_EXHAUSTION
-    assert wit.call_args.kwargs["code"] is FailureCode.QUOTA_EXHAUSTION
-
-
-def test_unknown_text_stays_unknown() -> None:
-    with (
-        mock.patch.object(
-            _MOD, "_read_worker_failure_text", return_value="ordinary failure, nothing notable"
-        ),
-        mock.patch.object(_MOD, "append_failure_receipt_record") as rec,
-        mock.patch.object(_MOD, "update_worker_family_availability") as wit,
-    ):
-        _MOD._classify_and_witness_terminal_failure(1, **_CTX)
-    assert rec.call_args.kwargs["receipt"].code is FailureCode.UNKNOWN
-    # witness is still CALLED with UNKNOWN; the guard (no-op on UNKNOWN) lives in the witness module
-    assert wit.call_args.kwargs["code"] is FailureCode.UNKNOWN
-
-
-def test_platform_without_adapter_emits_unknown_receipt() -> None:
-    with (
-        mock.patch.object(_MOD, "_read_worker_failure_text", return_value=""),
-        mock.patch.object(_MOD, "append_failure_receipt_record") as rec,
-        mock.patch.object(_MOD, "update_worker_family_availability"),
-    ):
-        _MOD._classify_and_witness_terminal_failure(
-            1,
-            task_id="t",
-            lane="worker-1",
-            platform="unmapped_worker",
-            mode="headless",
-            profile="worker",
-        )
-    assert rec.call_args.kwargs["receipt"].code is FailureCode.UNKNOWN
-    assert rec.call_args.kwargs["receipt"].platform == "unmapped_worker"
-
-
-def test_vibe_quota_text_classifies_via_registered_adapter() -> None:
-    with (
-        mock.patch.object(
-            _MOD, "_read_worker_failure_text", return_value="HTTP 429 Too Many Requests"
-        ),
-        mock.patch.object(_MOD, "append_failure_receipt_record") as rec,
-        mock.patch.object(_MOD, "update_worker_family_availability") as wit,
-    ):
-        _MOD._classify_and_witness_terminal_failure(
-            1, task_id="t", lane="vbe-1", platform="vibe", mode="headless", profile="full"
-        )
-    assert rec.call_args.kwargs["receipt"].code is FailureCode.QUOTA_EXHAUSTION
-    assert rec.call_args.kwargs["receipt"].platform == "vibe"
-    assert rec.call_args.kwargs["receipt"].route_id == "vibe.headless.full"
-    assert wit.call_args.kwargs["family"] == "vibe"
-
-
-def test_deprecated_antigrav_has_no_dispatch_failure_adapter() -> None:
-    with (
-        mock.patch.object(_MOD, "_read_worker_failure_text", return_value="agy failure"),
-        mock.patch.object(_MOD, "append_failure_receipt_record") as rec,
-        mock.patch.object(_MOD, "update_worker_family_availability"),
-    ):
-        _MOD._classify_and_witness_terminal_failure(
-            4,
-            task_id="t",
-            lane="antigrav",
-            platform="antigrav",
-            mode="interactive",
-            profile="full",
-        )
-    assert rec.call_args.kwargs["receipt"].code is FailureCode.UNKNOWN
+    reader.assert_not_called()
+    assert not hasattr(_MOD, "append_failure_receipt_record")
+    assert not hasattr(_MOD, "update_worker_family_availability")
 
 
 # --- _read_worker_failure_text ------------------------------------------------------------------

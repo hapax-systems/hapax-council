@@ -5,12 +5,12 @@ from __future__ import annotations
 import fnmatch
 import functools
 from collections.abc import Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from shared.route_metadata_schema import RouteEnvelope
+from shared.route_metadata_schema import RouteEnvelope, TaskDemand
 
 _GOVERNANCE_SUFFIXES = (".rs", ".wgsl")
 
@@ -76,6 +76,22 @@ def _is_governance_protected_path(path: str) -> bool:
     )
 
 
+def _is_normalized_repo_path(path: str) -> bool:
+    text = path.strip()
+    if (
+        not text
+        or text in {"."}
+        or text != path
+        or "\\" in text
+        or any(character in text for character in "*?[")
+    ):
+        return False
+    candidate = PurePosixPath(text)
+    return (
+        not candidate.is_absolute() and ".." not in candidate.parts and candidate.as_posix() == text
+    )
+
+
 QualityFloorValue = Literal[
     "frontier_required",
     "frontier_review_required",
@@ -116,6 +132,14 @@ CompositionToleranceValue = Literal[
     "sequential_required",
     "decompose_required",
 ]
+DecompositionDependencyKind = Literal[
+    "cc_task",
+    "artifact_receipt",
+    "lifecycle_receipt",
+]
+ScopeStateValue = Literal["exact", "symbolic", "withheld"]
+_SHA256_PATTERN = r"^[0-9a-f]{64}$"
+_TASK_ID_PATTERN = r"^[a-z0-9](?:[a-z0-9._-]{0,158}[a-z0-9])?$"
 REQUIREMENT_VECTOR_DIMENSIONS = (
     "quality_floor",
     "information_scope",
@@ -266,7 +290,7 @@ class TaskSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    task_id: str
+    task_id: str = Field(pattern=_TASK_ID_PATTERN)
     title: str
     kind: Literal[
         "build",
@@ -466,6 +490,234 @@ class TaskSpec(BaseModel):
         return self
 
 
+class DecompositionSourceBinding(BaseModel):
+    """Exact, non-authorizing source input to a decomposition plan."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    path: str = Field(min_length=1)
+    sha256: str = Field(pattern=_SHA256_PATTERN)
+    authority_level: AuthorityLevelValue
+    may_authorize: Literal[False] = False
+
+
+class DecompositionExternalDependency(BaseModel):
+    """A hash-bound dependency owned outside the plan's local task DAG."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    dependency_id: str = Field(min_length=1)
+    kind: DecompositionDependencyKind
+    path: str = Field(min_length=1)
+    sha256: str = Field(pattern=_SHA256_PATTERN)
+    authority_level: AuthorityLevelValue
+    may_authorize: Literal[False] = False
+
+
+class InitialTaskAuthorization(BaseModel):
+    """No-effect creation projection; later authority requires a separate transition."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    may_authorize: Literal[False] = False
+    implementation_authorized: Literal[False] = False
+    source_mutation_authorized: Literal[False] = False
+    docs_mutation_authorized: Literal[False] = False
+    runtime_mutation_authorized: Literal[False] = False
+    release_authorized: Literal[False] = False
+    public_mutation_authorized: Literal[False] = False
+    provider_spend_authorized: Literal[False] = False
+
+
+class InitialTaskProjection(BaseModel):
+    """Immutable initial lifecycle projection emitted by a plan commit."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    stage: Literal["S0"] = "S0"
+    status: Literal["blocked"] = "blocked"
+    claimable: Literal[False] = False
+    assigned_to: Literal["unassigned"] = "unassigned"
+    hold_refs: tuple[str, ...] = Field(min_length=1)
+    authorization: InitialTaskAuthorization = Field(default_factory=InitialTaskAuthorization)
+    may_authorize: Literal[False] = False
+
+
+class PlannedTaskSpec(BaseModel):
+    """Frozen task intent; mutable lifecycle state is only an initial projection."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    task_id: str = Field(pattern=_TASK_ID_PATTERN)
+    title: str = Field(min_length=1)
+    kind: Literal[
+        "build",
+        "operator_action",
+        "recovery_triage",
+        "watcher",
+        "research_packet",
+        "verification",
+    ]
+    priority: Literal["p0", "p1", "p2", "p3"]
+    wsjf: float = Field(ge=0)
+    priority_basis: str = Field(min_length=1)
+    priority_window: str = Field(min_length=1)
+    phase_index: int = Field(ge=0)
+    local_dependencies: tuple[str, ...] = ()
+    external_dependency_ids: tuple[str, ...] = ()
+    intent: str = Field(min_length=1)
+    acceptance_criteria: tuple[str, ...] = Field(min_length=1)
+    effort_class: Literal["standard", "high", "max"]
+    mutation_surface: MutationSurfaceValue
+    scope_state: ScopeStateValue
+    mutation_scope_refs: tuple[str, ...] = ()
+    target_paths: tuple[str, ...] = ()
+    quality_floor: QualityFloorValue
+    routing_class: RoutingClassValue
+    requirement_vector: dict[str, int]
+    composition_tolerance: CompositionToleranceValue
+    requirement_vector_validity_mask: dict[str, bool]
+    task_demand: TaskDemand
+    parent_request: str = Field(min_length=1)
+    parent_spec: str = Field(min_length=1)
+    authority_case: str = Field(pattern=r"^CASE-[A-Z0-9-]+$")
+    authority_level: Literal["support_non_authoritative"] = "support_non_authoritative"
+    requested_authority_level: AuthorityLevelValue | None = None
+    initial_projection: InitialTaskProjection
+    losses: tuple[str, ...] = ()
+    unresolveds: tuple[str, ...] = ()
+    may_authorize: Literal[False] = False
+
+    @field_validator("requirement_vector", mode="before")
+    @classmethod
+    def _planned_requirement_vector(cls, value: object) -> dict[str, int]:
+        return dict(_ordered_dimension_mapping(value, mask=False))
+
+    @field_validator("requirement_vector_validity_mask", mode="before")
+    @classmethod
+    def _planned_requirement_validity_mask(cls, value: object) -> dict[str, bool]:
+        return dict(_ordered_dimension_mapping(value, mask=True))
+
+    @model_validator(mode="after")
+    def _scope_state_is_lossless(self) -> PlannedTaskSpec:
+        if self.scope_state == "exact" and not self.mutation_scope_refs:
+            raise ValueError("exact planned task scope requires mutation_scope_refs")
+        if self.scope_state != "exact" and self.mutation_scope_refs:
+            raise ValueError("symbolic or withheld planned task scope cannot claim exact refs")
+        if self.scope_state != "exact" and not self.unresolveds:
+            raise ValueError("non-exact planned task scope requires explicit unresolveds")
+        if (
+            self.mutation_surface == "source"
+            and self.scope_state == "exact"
+            and not self.target_paths
+        ):
+            raise ValueError("exact planned source scope requires concrete target_paths")
+        protected_paths = (*self.mutation_scope_refs, *self.target_paths)
+        if self.mutation_surface == "source" and any(
+            not _is_normalized_repo_path(path) for path in protected_paths
+        ):
+            raise ValueError("planned source paths must be normalized repo-relative paths")
+        if (
+            self.mutation_surface == "source"
+            and any(_is_governance_protected_path(path) for path in protected_paths)
+            and self.quality_floor != "frontier_required"
+        ):
+            raise ValueError("governance-protected planned source scope requires frontier_required")
+        return self
+
+
+class RequestDecompositionPlan(BaseModel):
+    """Source-bound, non-authorizing, immutable plan for one logical graph commit."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+    schema_id: Literal["hapax.request-decomposition-plan.v2"] = Field(
+        default="hapax.request-decomposition-plan.v2",
+        alias="schema",
+        serialization_alias="schema",
+    )
+    plan_id: str = Field(min_length=1)
+    created_at: str = Field(min_length=1)
+    request_id: str = Field(min_length=1)
+    request_path: str = Field(min_length=1)
+    request_admission_sha256: str = Field(pattern=_SHA256_PATTERN)
+    request_source_path: str = Field(min_length=1)
+    request_source_sha256: str = Field(pattern=_SHA256_PATTERN)
+    decomposition_model: str = Field(min_length=1)
+    generator_refs: tuple[str, ...] = Field(min_length=1)
+    policy_refs: tuple[str, ...] = Field(min_length=1)
+    source_bindings: tuple[DecompositionSourceBinding, ...] = Field(min_length=1)
+    external_dependencies: tuple[DecompositionExternalDependency, ...] = ()
+    expected_existing_downstream_tasks: tuple[str, ...] = ()
+    tasks: tuple[PlannedTaskSpec, ...] = Field(min_length=1)
+    authority_level: Literal["support_non_authoritative"] = "support_non_authoritative"
+    losses: tuple[str, ...] = ()
+    unresolveds: tuple[str, ...] = ()
+    may_authorize: Literal[False] = False
+
+    @model_validator(mode="after")
+    def _validate_graph(self) -> RequestDecompositionPlan:
+        source_keys = [(binding.path, binding.sha256) for binding in self.source_bindings]
+        if len(source_keys) != len(set(source_keys)):
+            raise ValueError("duplicate decomposition source bindings")
+        if (self.request_source_path, self.request_source_sha256) not in source_keys:
+            raise ValueError("request source snapshot must be an exact source binding")
+
+        task_ids = [task.task_id for task in self.tasks]
+        if len(task_ids) != len(set(task_ids)):
+            raise ValueError("duplicate planned task ids")
+
+        binding_ids = [binding.dependency_id for binding in self.external_dependencies]
+        if len(binding_ids) != len(set(binding_ids)):
+            raise ValueError("duplicate external dependency ids")
+        if set(task_ids) & set(binding_ids):
+            raise ValueError("local task ids and external dependency ids must be disjoint")
+
+        local_ids = set(task_ids)
+        external_ids = set(binding_ids)
+        for task in self.tasks:
+            unknown_local = set(task.local_dependencies) - local_ids
+            if unknown_local:
+                raise ValueError(
+                    f"{task.task_id} has unknown local dependencies: {sorted(unknown_local)}"
+                )
+            unknown_external = set(task.external_dependency_ids) - external_ids
+            if unknown_external:
+                raise ValueError(
+                    f"{task.task_id} has unbound external dependencies: {sorted(unknown_external)}"
+                )
+
+        visited: set[str] = set()
+        visiting: set[str] = set()
+        edges = {task.task_id: task.local_dependencies for task in self.tasks}
+
+        def visit(task_id: str) -> None:
+            if task_id in visiting:
+                raise ValueError(f"planned task dependency cycle involving {task_id}")
+            if task_id in visited:
+                return
+            visiting.add(task_id)
+            for dependency_id in edges[task_id]:
+                visit(dependency_id)
+            visiting.remove(task_id)
+            visited.add(task_id)
+
+        for task_id in task_ids:
+            visit(task_id)
+        return self
+
+    @property
+    def materializable(self) -> bool:
+        return (
+            not self.losses
+            and not self.unresolveds
+            and all(
+                task.scope_state == "exact" and not task.losses and not task.unresolveds
+                for task in self.tasks
+            )
+        )
+
+
 class RequestDecomposition(BaseModel):
     """Full decomposition of a request into tasks."""
 
@@ -473,6 +725,7 @@ class RequestDecomposition(BaseModel):
 
     request_id: str
     request_path: str
+    request_source_sha256: str | None = Field(default=None, pattern=_SHA256_PATTERN)
     decomposition_model: str = "balanced"
     tasks: list[TaskSpec] = Field(default_factory=list)
 

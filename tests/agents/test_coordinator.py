@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.machinery
 import importlib.util
 import json
 import os
-import sqlite3
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -19,10 +21,13 @@ import pytest
 from agents.coordinator.core import (
     _DISPATCH_CLAIM_GUARD_MARKERS,
     _DISPATCH_CLOSE_GUARD_MARKERS,
+    TMUX_EXECUTABLE,
     Coordinator,
     CoordinatorState,
+    DispatchDisposition,
     LaneDescriptor,
     LaneState,
+    MethodologyDispatchResult,
     Task,
     _active_task_candidates,
     _check_lane,
@@ -34,15 +39,178 @@ from agents.coordinator.core import (
     _headless_task_from_argv,
     _lane_to_dict,
     _live_headless_launcher,
+    _parse_methodology_dispatch_carrier,
     _parse_task,
-    _prepare_dispatch_message,
+    _reconcile_task_canon_echo,
     _relay_status_is_retired,
     _task_flow_counts,
 )
+from shared.coord_event_log import CoordEvent, CoordEventLog, CoordWriter
+from shared.methodology_dispatch_carrier import (
+    build_dispatch_support_fact,
+    canonical_dispatch_carrier_bytes,
+    seal_methodology_dispatch_carrier,
+)
+from shared.relay_mq import (
+    CanonEchoError,
+    CanonEchoReconciliation,
+    MessageFilters,
+    ack_message,
+    consume_messages,
+    list_messages,
+    load_latest_dispatch_echo_expectation,
+    send_message,
+)
+from shared.relay_mq_envelope import Envelope
 from shared.sdlc_pressure_gate import AdmissionDecision
+from shared.sdlc_task_store import ClaimDispatchBinding, resolve_task_note
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DISPATCHER_SCRIPT = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
+TMUX_LIST_COMMAND = [
+    str(TMUX_EXECUTABLE),
+    "-f",
+    "/dev/null",
+    "list-sessions",
+    "-F",
+    "#{session_name}",
+]
+
+
+def test_daemon_boot_is_support_only_and_never_drains_spool() -> None:
+    source = (REPO_ROOT / "agents/coordinator/__main__.py").read_text(encoding="utf-8")
+
+    assert ".replay(fail_open=True)" in source
+    assert "support_only=true effects=0" in source
+    assert ".boot_reconcile(" not in source
+    assert ".ingest_spool(" not in source
+    assert ".append(" not in source
+    assert ".unlink(" not in source
+    assert "Gemini-backed" not in source
+
+
+def _canonical_hash(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=True,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("ascii")
+    ).hexdigest()
+
+
+def _dispatch_carrier_stdout(
+    *,
+    task_id: str = "t1",
+    lane: str = "cx-red",
+    platform: str = "codex",
+    mode: str = "headless",
+    profile: str = "full",
+    effect_state: str = "held_not_admitted",
+    materialization_state: str = "not_materialized",
+    may_authorize: bool = False,
+    receipt_is_admission: bool = False,
+    reason: str | None = None,
+) -> bytes:
+    payload: dict[str, object] = {
+        "event": "methodology_dispatch",
+        "task_id": task_id,
+        "lane": lane,
+        "platform": platform,
+        "mode": mode,
+        "profile": profile,
+        "requested_operation": "launch",
+        "launched": False,
+        "may_authorize": False,
+        "receipt_is_admission": False,
+    }
+    if reason is not None:
+        payload["support"] = [
+            build_dispatch_support_fact(
+                kind="diagnostic",
+                code="validation.reason",
+                value=reason,
+            )
+        ]
+    carrier = seal_methodology_dispatch_carrier(payload)
+    hostile_overrides = {
+        "effect_state": effect_state,
+        "materialization_state": materialization_state,
+        "may_authorize": may_authorize,
+        "receipt_is_admission": receipt_is_admission,
+    }
+    if any(carrier[field] != value for field, value in hostile_overrides.items()):
+        body = {
+            key: value
+            for key, value in carrier.items()
+            if key not in {"carrier_hash", "carrier_ref"}
+        }
+        body.update(hostile_overrides)
+        digest = hashlib.sha256(canonical_dispatch_carrier_bytes(body)).hexdigest()
+        carrier = {
+            **body,
+            "carrier_hash": digest,
+            "carrier_ref": f"methodology-dispatch-carrier@sha256:{digest}",
+        }
+    return canonical_dispatch_carrier_bytes(carrier) + b"\n"
+
+
+def _echo_dispatch_record(source_message_id: str) -> dict:
+    canon = {
+        "canon_hash": "a" * 64,
+        "canon_version": 1,
+        "image_hash": "b" * 64,
+        "level": "pi0",
+        "payload_sha256": hashlib.sha256(b"exact canon payload").hexdigest(),
+        "stage_token": "S6",
+    }
+    position_body = {
+        "authority_case": "CASE-ECHO-001",
+        "declared_task_constraint_digest": "c" * 64,
+        "effective_constraint_state": "unresolved_scope_chain",
+        "lane": "cx-red",
+        "legal_successors": ["S7", "BLOCKED"],
+        "stage_token": "S6",
+        "task_id": "task-echo",
+    }
+    position_hash = _canonical_hash(position_body)
+    position = {
+        **position_body,
+        "position_hash": position_hash,
+        "position_ref": f"dispatch-position@sha256:{position_hash}",
+    }
+    binding_body = {
+        "advisory_carriage": True,
+        "canon": canon,
+        "may_authorize": False,
+        "position": position,
+        "receipt_is_admission": False,
+        "schema": "hapax.dispatch-canon-binding.v1",
+    }
+    binding_hash = _canonical_hash(binding_body)
+    binding = {
+        **binding_body,
+        "binding_hash": binding_hash,
+        "binding_ref": f"dispatch-canon-binding@sha256:{binding_hash}",
+    }
+    return {
+        "event": "methodology_dispatch",
+        "ok": True,
+        "launched": True,
+        "launch_returncode": 0,
+        "launch_eligible": True,
+        "durable_mq_dispatch_bound": True,
+        "durable_mq_message_id": source_message_id,
+        "may_authorize": False,
+        "receipt_is_admission": False,
+        "canon_binding": binding,
+        "canon_binding_hash": binding_hash,
+        "canon_binding_ref": binding["binding_ref"],
+        "dispatch_position_hash": position_hash,
+        "dispatch_position_ref": position["position_ref"],
+    }
 
 
 def _guarded_worktree(path: Path) -> None:
@@ -207,8 +375,14 @@ class TestDispatchWorktreeGuard:
             raise AssertionError(f"unexpected guard read: {path}")
 
         with (
-            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
-            patch("agents.coordinator.core._read_dispatch_guard", side_effect=fake_read_guard),
+            patch.dict(
+                "os.environ",
+                {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")},
+            ),
+            patch(
+                "agents.coordinator.core._read_dispatch_guard",
+                side_effect=fake_read_guard,
+            ),
         ):
             blocker = _dispatch_tool_blocker("beta", "claude")
 
@@ -229,8 +403,14 @@ class TestDispatchWorktreeGuard:
             raise AssertionError(f"unexpected guard read: {path}")
 
         with (
-            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
-            patch("agents.coordinator.core._read_dispatch_guard", side_effect=fake_read_guard),
+            patch.dict(
+                "os.environ",
+                {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")},
+            ),
+            patch(
+                "agents.coordinator.core._read_dispatch_guard",
+                side_effect=fake_read_guard,
+            ),
         ):
             blocker = _dispatch_tool_blocker("beta", "claude")
 
@@ -254,7 +434,10 @@ class TestDispatchWorktreeGuard:
         tmp_path: Path,
     ):
         with (
-            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch.dict(
+                "os.environ",
+                {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")},
+            ),
             patch.object(
                 Path,
                 "is_file",
@@ -302,7 +485,10 @@ class TestDispatchWorktreeGuard:
         platform: str,
     ):
         with (
-            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch.dict(
+                "os.environ",
+                {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")},
+            ),
             patch(
                 "agents.coordinator.core._read_dispatch_guard",
                 side_effect=AssertionError("unsupported platform should not read guard files"),
@@ -471,7 +657,10 @@ assigned_to: cx-red
         detected with the canonical route_metadata_payload_from_frontmatter extractor."""
         platforms = _effective_platform_suitability(
             ["claude", "codex"],
-            {"route_metadata_schema": 1, "route_metadata": {"route_constraints": "not-a-dict"}},
+            {
+                "route_metadata_schema": 1,
+                "route_metadata": {"route_constraints": "not-a-dict"},
+            },
         )
         assert platforms == ()
 
@@ -568,7 +757,10 @@ class TestLaneState:
             patch("agents.coordinator.core.RELAY_DIR", tmp_path / "relay"),
             patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
             patch("pathlib.Path.home", return_value=tmp_path),
-            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch.dict(
+                "os.environ",
+                {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")},
+            ),
         ):
             state = _check_lane("test_lane")
         assert state.alive is False
@@ -581,7 +773,11 @@ class TestLaneState:
 
     def test_lane_to_dict(self):
         lane = LaneState(
-            role="beta", alive=True, pid=12345, pid_source="pidfile", claimed_task="fix-bug"
+            role="beta",
+            alive=True,
+            pid=12345,
+            pid_source="pidfile",
+            claimed_task="fix-bug",
         )
         d = _lane_to_dict(lane)
         assert d["role"] == "beta"
@@ -608,7 +804,10 @@ current_claim: null
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
             patch("pathlib.Path.home", return_value=tmp_path),
-            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch.dict(
+                "os.environ",
+                {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")},
+            ),
         ):
             state = _check_lane(
                 LaneDescriptor(
@@ -632,7 +831,10 @@ current_claim: null
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
             patch("pathlib.Path.home", return_value=tmp_path),
-            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch.dict(
+                "os.environ",
+                {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")},
+            ),
         ):
             state = _check_lane(
                 LaneDescriptor(
@@ -658,7 +860,10 @@ current_claim: null
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
             patch("pathlib.Path.home", return_value=tmp_path),
-            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch.dict(
+                "os.environ",
+                {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")},
+            ),
         ):
             state = _check_lane(
                 LaneDescriptor(
@@ -682,7 +887,10 @@ current_claim: null
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
             patch("pathlib.Path.home", return_value=tmp_path),
-            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch.dict(
+                "os.environ",
+                {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")},
+            ),
         ):
             state = _check_lane(
                 LaneDescriptor(
@@ -708,7 +916,10 @@ current_claim: null
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
             patch("pathlib.Path.home", return_value=tmp_path),
-            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch.dict(
+                "os.environ",
+                {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")},
+            ),
         ):
             state = _check_lane(
                 LaneDescriptor(
@@ -734,7 +945,10 @@ current_claim: null
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
             patch("pathlib.Path.home", return_value=tmp_path),
-            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch.dict(
+                "os.environ",
+                {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")},
+            ),
         ):
             state = _check_lane(
                 LaneDescriptor(
@@ -760,7 +974,10 @@ current_claim: null
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
             patch("pathlib.Path.home", return_value=tmp_path),
-            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch.dict(
+                "os.environ",
+                {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")},
+            ),
         ):
             state = _check_lane(
                 LaneDescriptor(
@@ -797,7 +1014,10 @@ current_claim: relay-task
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core.CACHE_DIR", claim_dir),
             patch("pathlib.Path.home", return_value=tmp_path),
-            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch.dict(
+                "os.environ",
+                {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")},
+            ),
         ):
             state = _check_lane(
                 LaneDescriptor(
@@ -1377,7 +1597,10 @@ retired_reason: clean exit
             patch("agents.coordinator.core._live_headless_launcher", return_value=None),
             patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
             patch("pathlib.Path.home", return_value=tmp_path),
-            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch.dict(
+                "os.environ",
+                {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")},
+            ),
             patch("agents.coordinator.core.subprocess.run", return_value=completed),
         ):
             lanes = Coordinator()._check_lanes()
@@ -1496,6 +1719,35 @@ retired_reason: clean exit
 
 
 class TestCoordinatorState:
+    def test_tick_holds_before_scan_when_claim_inspection_is_unresolved(self) -> None:
+        coordinator = Coordinator()
+        unresolved = SimpleNamespace(
+            disposition="hold",
+            publication_id="claim-publication-unresolved",
+            reason_code="claim_publication_reconciliation_required",
+        )
+        lifecycle = SimpleNamespace(estate_complete=True, reason_codes=())
+
+        with (
+            patch.dict(os.environ, {"HAPAX_CANON_ECHO_ENFORCEMENT": "1"}),
+            patch(
+                "agents.coordinator.core.capture_coord_replay_snapshot",
+                return_value=object(),
+            ),
+            patch(
+                "agents.coordinator.core.inspect_lifecycle_transactions",
+                return_value=lifecycle,
+            ),
+            patch(
+                "agents.coordinator.core.inspect_claim_publications",
+                return_value=[unresolved],
+            ),
+            patch.object(coordinator, "_scan_tasks") as scan_tasks,
+        ):
+            coordinator.tick()
+
+        scan_tasks.assert_not_called()
+
     def test_write_state(self, tmp_path: Path):
         coordinator = Coordinator()
         state = CoordinatorState(
@@ -1597,11 +1849,17 @@ class TestDispatchableLaneSelection:
             patch.object(
                 Coordinator,
                 "_dispatch",
-                side_effect=lambda t, lane: dispatched.append((t.task_id, lane.role)) or (True, ""),
+                side_effect=lambda t, lane: (
+                    dispatched.append((t.task_id, lane.role))
+                    or MethodologyDispatchResult(
+                        DispatchDisposition.HELD_CANDIDATE,
+                        "methodology_candidate_held_not_admitted",
+                    )
+                ),
             ),
             patch.object(Coordinator, "_write_state"),
             patch(
-                "agents.coordinator.core.admission_state",
+                "agents.coordinator.core.observe_admission_state",
                 return_value=AdmissionDecision(state="open"),
             ),
         ):
@@ -1641,7 +1899,7 @@ class TestDispatchableLaneSelection:
             ),
             patch.object(Coordinator, "_write_state", side_effect=capture_state),
             patch(
-                "agents.coordinator.core.admission_state",
+                "agents.coordinator.core.observe_admission_state",
                 return_value=AdmissionDecision(state="open"),
             ),
         ):
@@ -1689,7 +1947,7 @@ class TestDispatchableLaneSelection:
             ),
             patch.object(Coordinator, "_write_state", side_effect=capture_state),
             patch(
-                "agents.coordinator.core.admission_state",
+                "agents.coordinator.core.observe_admission_state",
                 return_value=AdmissionDecision(state="open"),
             ),
         ):
@@ -1752,7 +2010,7 @@ current_claim: null
             ),
             patch.object(Coordinator, "_write_state", side_effect=capture_state),
             patch(
-                "agents.coordinator.core.admission_state",
+                "agents.coordinator.core.observe_admission_state",
                 return_value=AdmissionDecision(state="open"),
             ),
         ):
@@ -1765,8 +2023,9 @@ current_claim: null
 
 
 class TestDispatch:
-    def test_methodology_dispatcher_honors_environment_override(self, tmp_path: Path):
+    def test_methodology_dispatcher_ignores_environment_override(self, tmp_path: Path):
         override = tmp_path / "hapax-methodology-dispatch"
+        expected = Path(__file__).resolve().parents[2] / "scripts" / "hapax-methodology-dispatch"
 
         result = subprocess.run(
             [
@@ -1781,49 +2040,17 @@ class TestDispatch:
             check=True,
         )
 
-        assert result.stdout.strip() == str(override)
+        assert result.stdout.strip() == str(expected)
 
-    def test_prepare_dispatch_message_writes_strict_mq_binding(self, tmp_path: Path):
-        task = Task(
-            task_id="t1",
-            title="test",
-            status="offered",
-            assigned_to="unassigned",
-            wsjf=10.0,
-            effort_class="standard",
-            platform_suitability=("codex",),
-            quality_floor="deterministic_ok",
-            path=Path("/tmp/t1.md"),
-            authority_case="CASE-TEST-001",
-            parent_spec="/tmp/spec.md",
-        )
-        lane = LaneState(role="cx-red", platform="codex", alive=True, idle=True)
-        db_path = tmp_path / "relay" / "messages.db"
-
-        with patch.dict(os.environ, {"HAPAX_RELAY_MQ_DB": str(db_path)}):
-            message_id = _prepare_dispatch_message(task, lane)
-
-        assert message_id is not None
-        assert db_path.exists()
-        with sqlite3.connect(db_path) as conn:
-            row = conn.execute(
-                "SELECT subject, authority_case, recipients_spec, payload FROM messages"
-            ).fetchone()
-        assert row is not None
-        assert row[0] == "t1"
-        assert row[1] == "CASE-TEST-001"
-        assert row[2] == "cx-red"
-        payload = json.loads(row[3])
-        assert payload["task_id"] == "t1"
-        assert payload["lane"] == "cx-red"
-        assert payload["parent_spec"] == "/tmp/spec.md"
-        assert "next_action_on_binding_failure" in payload
-
-    def test_dispatch_uses_methodology_dispatcher(self, tmp_path: Path):
+    def test_dispatch_uses_methodology_without_pre_admission_mq(self, tmp_path: Path):
         dispatcher = tmp_path / "projects/hapax-council/scripts/hapax-methodology-dispatch"
         dispatcher.parent.mkdir(parents=True)
         dispatcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         dispatcher.chmod(0o755)
+        interpreter = tmp_path / "projects/hapax-council/.venv/bin/python"
+        interpreter.parent.mkdir(parents=True)
+        interpreter.write_text("pinned interpreter fixture\n", encoding="utf-8")
+        interpreter.chmod(0o755)
         task = Task(
             task_id="t1",
             title="test",
@@ -1843,18 +2070,32 @@ class TestDispatch:
         def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
             calls.append(cmd)
             run_kwargs.append(kwargs)
-            return subprocess.CompletedProcess(cmd, 0, "", "")
+            return subprocess.CompletedProcess(cmd, 0, _dispatch_carrier_stdout(), b"")
 
         with (
             patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", dispatcher),
-            patch("agents.coordinator.core._prepare_dispatch_message", return_value="mq-test-1"),
+            patch("agents.coordinator.core.METHODOLOGY_PYTHON", interpreter),
             patch("agents.coordinator.core.DISPATCH_TIMEOUT_S", 42.0),
             patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
+            patch("shared.relay_mq.send_message") as send_mq,
+            patch.dict(
+                os.environ,
+                {
+                    "PATH": "/tmp/hostile-path",
+                    "PYTHONPATH": "/tmp/hostile-pythonpath",
+                    "PYTHONHOME": "/tmp/hostile-pythonhome",
+                },
+            ),
         ):
-            assert Coordinator()._dispatch(task, lane) == (True, "")
+            result = Coordinator()._dispatch(task, lane)
 
+        assert result.disposition is DispatchDisposition.HELD_CANDIDATE
+        assert not hasattr(result, "materialized")
+        send_mq.assert_not_called()
         assert calls == [
             [
+                str(interpreter),
+                "-I",
                 str(dispatcher),
                 "--task",
                 "t1",
@@ -1864,14 +2105,19 @@ class TestDispatch:
                 "codex",
                 "--mode",
                 "headless",
+                "--profile",
+                "full",
                 "--launch",
-                "--mq-message-id",
-                "mq-test-1",
             ]
         ]
+        assert "--mq-message-id" not in calls[0]
         assert run_kwargs[0]["timeout"] == 42.0
+        child_env = run_kwargs[0]["env"]
+        assert isinstance(child_env, dict)
+        assert "PYTHONPATH" not in child_env
+        assert "PYTHONHOME" not in child_env
 
-    def test_dispatch_timeout_with_live_pickup_counts_success(self, tmp_path: Path):
+    def test_dispatch_timeout_with_live_pickup_is_indeterminate(self, tmp_path: Path):
         dispatcher = tmp_path / "hapax-methodology-dispatch"
         dispatcher.write_text("#!/bin/sh\nsleep 60\n", encoding="utf-8")
         dispatcher.chmod(0o755)
@@ -1894,11 +2140,14 @@ class TestDispatch:
         with (
             patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", dispatcher),
             patch("agents.coordinator.core.DISPATCH_TIMEOUT_S", 30.0),
-            patch("agents.coordinator.core.DISPATCH_TIMEOUT_LANDING_GRACE_S", 0.0),
             patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
-            patch("agents.coordinator.core._dispatch_landed", return_value=True),
+            patch("agents.coordinator.core._dispatch_landed", return_value=True) as landed,
         ):
-            assert Coordinator()._dispatch(task, lane) == (True, "")
+            result = Coordinator()._dispatch(task, lane)
+
+        assert result.disposition is DispatchDisposition.INDETERMINATE
+        assert not hasattr(result, "materialized")
+        landed.assert_called_once_with(task, lane)
 
     def test_dispatch_landed_requires_exact_active_claim_lease(self, tmp_path: Path):
         relay_dir = tmp_path / "relay"
@@ -1934,70 +2183,92 @@ current_claim: p0-task
         with (
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core.CACHE_DIR", cache_dir),
-            patch("agents.coordinator.core._lane_launcher_process_present", return_value=True),
+            patch(
+                "agents.coordinator.core._lane_launcher_process_present",
+                return_value=True,
+            ),
             patch("pathlib.Path.home", return_value=tmp_path),
         ):
             assert _dispatch_landed(task, lane) is False
             (cache_dir / "cc-active-task-cx-red").write_text("p0-task\n", encoding="utf-8")
             assert _dispatch_landed(task, lane) is True
 
-    def test_dispatch_reports_mq_prepare_failure_with_next_action(self, tmp_path: Path):
-        dispatcher = tmp_path / "hapax-methodology-dispatch"
-        dispatcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        dispatcher.chmod(0o755)
-        task = Task(
+    def test_carrier_hash_tamper_fails_closed(self):
+        carrier = json.loads(_dispatch_carrier_stdout())
+        carrier["effect_state"] = "admitted"
+        carrier["materialization_state"] = "materialized"
+        carrier["may_authorize"] = True
+        carrier["receipt_is_admission"] = True
+
+        result = _parse_methodology_dispatch_carrier(
+            canonical_dispatch_carrier_bytes(carrier) + b"\n",
             task_id="t1",
-            title="test",
-            status="offered",
-            assigned_to="unassigned",
-            wsjf=10.0,
-            effort_class="standard",
-            platform_suitability=("codex",),
-            quality_floor="deterministic_ok",
-            path=Path("/tmp/t1.md"),
-            authority_case="CASE-TEST-001",
+            lane="cx-red",
+            platform="codex",
+            mode="headless",
+            profile="full",
         )
-        lane = LaneState(role="cx-red", platform="codex", alive=True, idle=True)
 
-        with (
-            patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", dispatcher),
-            patch("agents.coordinator.core._prepare_dispatch_message", side_effect=OSError("disk")),
-        ):
-            ok, reason = Coordinator()._dispatch(task, lane)
+        assert result.disposition is DispatchDisposition.INDETERMINATE
+        assert result.reason == "dispatch_carrier_hash_mismatch"
 
-        assert ok is False
-        assert reason.startswith("durable_mq_prepare_failed:OSError:disk")
-        assert "next_action=check HAPAX_RELAY_MQ_DB" in reason
-
-    def test_dispatch_without_authority_case_omits_mq_message_id(self, tmp_path: Path):
-        dispatcher = tmp_path / "hapax-methodology-dispatch"
-        dispatcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        dispatcher.chmod(0o755)
-        task = Task(
+    @pytest.mark.parametrize("stdout", [b"", b"not json\n", b"{}\n", b"{broken\n"])
+    def test_malformed_or_absent_carrier_is_indeterminate(self, stdout: bytes):
+        result = _parse_methodology_dispatch_carrier(
+            stdout,
             task_id="t1",
-            title="test",
-            status="offered",
-            assigned_to="unassigned",
-            wsjf=10.0,
-            effort_class="standard",
-            platform_suitability=("codex",),
-            quality_floor="deterministic_ok",
-            path=Path("/tmp/t1.md"),
+            lane="cx-red",
+            platform="codex",
+            mode="headless",
+            profile="full",
         )
-        lane = LaneState(role="cx-red", platform="codex", alive=True, idle=True)
-        calls: list[list[str]] = []
 
-        def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-            calls.append(cmd)
-            return subprocess.CompletedProcess(cmd, 0, "", "")
+        assert result.disposition is DispatchDisposition.INDETERMINATE
+        assert not hasattr(result, "materialized")
 
-        with (
-            patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", dispatcher),
-            patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
-        ):
-            assert Coordinator()._dispatch(task, lane) == (True, "")
+    def test_duplicate_carriers_are_indeterminate(self):
+        carrier = _dispatch_carrier_stdout()
 
-        assert "--mq-message-id" not in calls[0]
+        result = _parse_methodology_dispatch_carrier(
+            carrier + carrier,
+            task_id="t1",
+            lane="cx-red",
+            platform="codex",
+            mode="headless",
+            profile="full",
+        )
+
+        assert result.disposition is DispatchDisposition.INDETERMINATE
+        assert result.reason == "dispatch_carrier_raw_line_invalid"
+
+    def test_authorizing_carrier_states_are_indeterminate(self):
+        refused = _parse_methodology_dispatch_carrier(
+            _dispatch_carrier_stdout(effect_state="refused", reason="policy_refused"),
+            task_id="t1",
+            lane="cx-red",
+            platform="codex",
+            mode="headless",
+            profile="full",
+        )
+        materialized = _parse_methodology_dispatch_carrier(
+            _dispatch_carrier_stdout(
+                effect_state="admitted",
+                materialization_state="materialized",
+                may_authorize=True,
+                receipt_is_admission=True,
+            ),
+            task_id="t1",
+            lane="cx-red",
+            platform="codex",
+            mode="headless",
+            profile="full",
+        )
+
+        assert refused.disposition is DispatchDisposition.INDETERMINATE
+        assert refused.reason == "dispatch_carrier_gate0a_invariant_invalid"
+        assert materialized.disposition is DispatchDisposition.INDETERMINATE
+        assert materialized.reason == "dispatch_carrier_gate0a_invariant_invalid"
+        assert not hasattr(materialized, "materialized")
 
 
 class TestOrphanClaimRecovery:
@@ -2027,8 +2298,9 @@ Body.
         )
         return path
 
-    def test_stale_claimed_p0_without_live_pickup_reoffers(self, tmp_path: Path):
+    def test_stale_claimed_p0_without_live_pickup_holds(self, tmp_path: Path):
         path = self._task_note(tmp_path)
+        before = path.read_bytes()
         task = _parse_task(path)
         assert task is not None
         ledger = tmp_path / "authority-case-ledger.jsonl"
@@ -2036,15 +2308,13 @@ Body.
         with patch("agents.coordinator.core.REOFFER_LEDGER", ledger):
             count = Coordinator()._reoffer_orphaned_claims([task], {}, now_wall=time.time())
 
-        assert count == 1
-        reparsed = _parse_task(path)
-        assert reparsed is not None
-        assert reparsed.status == "offered"
-        assert reparsed.assigned_to == "unassigned"
-        assert "orphan_claim_reoffer" in ledger.read_text(encoding="utf-8")
+        assert count == 0
+        assert path.read_bytes() == before
+        assert not ledger.exists()
 
-    def test_stale_in_progress_p0_without_live_pickup_reoffers(self, tmp_path: Path):
+    def test_stale_in_progress_p0_without_live_pickup_holds(self, tmp_path: Path):
         path = self._task_note(tmp_path, status="in_progress")
+        before = path.read_bytes()
         task = _parse_task(path)
         assert task is not None
         ledger = tmp_path / "authority-case-ledger.jsonl"
@@ -2052,15 +2322,52 @@ Body.
         with patch("agents.coordinator.core.REOFFER_LEDGER", ledger):
             count = Coordinator()._reoffer_orphaned_claims([task], {}, now_wall=time.time())
 
-        assert count == 1
-        reparsed = _parse_task(path)
-        assert reparsed is not None
-        assert reparsed.status == "offered"
-        assert reparsed.assigned_to == "unassigned"
-        assert "orphan_claim_reoffer" in ledger.read_text(encoding="utf-8")
+        assert count == 0
+        assert path.read_bytes() == before
+        assert not ledger.exists()
 
-    def test_orphan_reoffer_preserves_lane_claim_for_different_live_task(self, tmp_path: Path):
+    def test_canon_enforcement_holds_orphan_reoffer_without_mutation(self, tmp_path: Path) -> None:
+        path = self._task_note(tmp_path)
+        before = path.read_bytes()
+        task = _parse_task(path)
+        assert task is not None
+        ledger = tmp_path / "authority-case-ledger.jsonl"
+
+        with (
+            patch.dict(os.environ, {"HAPAX_CANON_ECHO_ENFORCEMENT": "1"}),
+            patch("agents.coordinator.core.REOFFER_LEDGER", ledger),
+        ):
+            count = Coordinator()._reoffer_orphaned_claims([task], {}, now_wall=time.time())
+
+        assert count == 0
+        assert path.read_bytes() == before
+        assert not ledger.exists()
+
+    def test_canon_enforcement_holds_stalled_reoffer_without_mutation(self, tmp_path: Path) -> None:
+        path = self._task_note(tmp_path)
+        before = path.read_bytes()
+        lane = LaneState(
+            role="alpha",
+            claimed_task="p0-orphan",
+            stalled=True,
+            output_age_s=3600.0,
+        )
+        cache = tmp_path / "cache"
+        cache.mkdir()
+
+        with (
+            patch.dict(os.environ, {"HAPAX_CANON_ECHO_ENFORCEMENT": "1"}),
+            patch("agents.coordinator.core.CACHE_DIR", cache),
+        ):
+            assert Coordinator()._reoffer_stalled(lane) is False
+
+        assert path.read_bytes() == before
+
+    def test_orphan_hold_preserves_lane_claim_and_task_for_different_live_task(
+        self, tmp_path: Path
+    ):
         path = self._task_note(tmp_path, assigned_to="delta")
+        before = path.read_bytes()
         task = _parse_task(path)
         assert task is not None
         cache_dir = tmp_path / "cache"
@@ -2084,8 +2391,10 @@ Body.
         ):
             count = Coordinator()._reoffer_orphaned_claims([task], lanes, now_wall=time.time())
 
-        assert count == 1
+        assert count == 0
+        assert path.read_bytes() == before
         assert active_claim.read_text(encoding="utf-8") == "different-task\n"
+        assert not ledger.exists()
 
     def test_live_lane_pickup_is_not_reoffered(self, tmp_path: Path):
         path = self._task_note(tmp_path, assigned_to="delta")
@@ -2185,7 +2494,7 @@ Body.
         )
 
         def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-            if cmd == ["tmux", "list-sessions", "-F", "#{session_name}"]:
+            if cmd == TMUX_LIST_COMMAND:
                 return completed
             raise AssertionError(f"unexpected dispatch subprocess call: {cmd!r}")
 
@@ -2199,9 +2508,12 @@ Body.
             patch("agents.coordinator.core._live_headless_launcher", return_value=None),
             patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
             patch("pathlib.Path.home", return_value=tmp_path),
-            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch.dict(
+                "os.environ",
+                {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")},
+            ),
             patch(
-                "agents.coordinator.core.admission_state",
+                "agents.coordinator.core.observe_admission_state",
                 return_value=AdmissionDecision(state="open"),
             ),
         ):
@@ -2221,7 +2533,7 @@ Body.
         assert "lane_not_alive" in state.lanes["alpha"]["dispatch_blocked_reason"]
         assert "start or relaunch lane 'alpha'" in state.lanes["alpha"]["dispatch_blocked_reason"]
 
-    def test_tick_dispatches_to_guarded_ready_lane(self, tmp_path: Path):
+    def test_tick_requests_carrier_without_counting_materialization(self, tmp_path: Path):
         coord = Coordinator()
         task = Task(
             task_id="t1",
@@ -2248,6 +2560,10 @@ Body.
         dispatcher = tmp_path / "hapax-methodology-dispatch"
         dispatcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         dispatcher.chmod(0o755)
+        interpreter = tmp_path / ".venv/bin/python"
+        interpreter.parent.mkdir(parents=True)
+        interpreter.write_text("pinned interpreter fixture\n", encoding="utf-8")
+        interpreter.chmod(0o755)
         completed = subprocess.CompletedProcess(
             args=["tmux"],
             returncode=0,
@@ -2257,10 +2573,19 @@ Body.
         dispatch_calls: list[list[str]] = []
 
         def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-            if cmd == ["tmux", "list-sessions", "-F", "#{session_name}"]:
+            if cmd == TMUX_LIST_COMMAND:
                 return completed
             dispatch_calls.append(cmd)
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout=_dispatch_carrier_stdout(
+                    task_id="t1",
+                    lane="beta",
+                    platform="claude",
+                ),
+                stderr=b"",
+            )
 
         with (
             patch.object(Coordinator, "_scan_tasks", return_value=[task]),
@@ -2272,6 +2597,7 @@ Body.
                 ],
             ),
             patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", dispatcher),
+            patch("agents.coordinator.core.METHODOLOGY_PYTHON", interpreter),
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core.CACHE_DIR", cache_dir),
             patch("agents.coordinator.core.PID_DIR", pid_dir),
@@ -2279,9 +2605,12 @@ Body.
             patch("agents.coordinator.core._live_headless_launcher", return_value=None),
             patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
             patch("pathlib.Path.home", return_value=tmp_path),
-            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch.dict(
+                "os.environ",
+                {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")},
+            ),
             patch(
-                "agents.coordinator.core.admission_state",
+                "agents.coordinator.core.observe_admission_state",
                 return_value=AdmissionDecision(state="open"),
             ),
         ):
@@ -2290,11 +2619,13 @@ Body.
         state = write_state.call_args.args[0]
         assert state.offered_tasks == 1
         assert state.lanes_idle == 1
-        assert state.dispatches_this_tick == 1
+        assert state.dispatches_this_tick == 0
         assert state.lanes["beta"]["alive"] is True
         assert state.lanes["beta"]["dispatch_ready"] is True
         assert dispatch_calls == [
             [
+                str(interpreter),
+                "-I",
                 str(dispatcher),
                 "--task",
                 "t1",
@@ -2304,6 +2635,8 @@ Body.
                 "claude",
                 "--mode",
                 "headless",
+                "--profile",
+                "full",
                 "--launch",
             ]
         ]
@@ -2342,7 +2675,7 @@ Body.
         dispatch_calls: list[list[str]] = []
 
         def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-            if cmd == ["tmux", "list-sessions", "-F", "#{session_name}"]:
+            if cmd == TMUX_LIST_COMMAND:
                 return completed
             dispatch_calls.append(cmd)
             return subprocess.CompletedProcess(
@@ -2369,9 +2702,12 @@ Body.
             patch("agents.coordinator.core._live_headless_launcher", return_value=None),
             patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
             patch("pathlib.Path.home", return_value=tmp_path),
-            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch.dict(
+                "os.environ",
+                {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")},
+            ),
             patch(
-                "agents.coordinator.core.admission_state",
+                "agents.coordinator.core.observe_admission_state",
                 return_value=AdmissionDecision(state="open"),
             ),
         ):
@@ -2414,7 +2750,7 @@ Body.
         )
 
         def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-            if cmd == ["tmux", "list-sessions", "-F", "#{session_name}"]:
+            if cmd == TMUX_LIST_COMMAND:
                 return completed
             raise AssertionError(f"unexpected dispatch subprocess call: {cmd!r}")
 
@@ -2428,9 +2764,12 @@ Body.
             patch("agents.coordinator.core._live_headless_launcher", return_value=None),
             patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
             patch("pathlib.Path.home", return_value=tmp_path),
-            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch.dict(
+                "os.environ",
+                {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")},
+            ),
             patch(
-                "agents.coordinator.core.admission_state",
+                "agents.coordinator.core.observe_admission_state",
                 return_value=AdmissionDecision(state="open"),
             ),
         ):
@@ -2477,7 +2816,7 @@ Body.
         )
 
         def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-            if cmd == ["tmux", "list-sessions", "-F", "#{session_name}"]:
+            if cmd == TMUX_LIST_COMMAND:
                 return completed
             raise AssertionError(f"unexpected dispatch subprocess call: {cmd!r}")
 
@@ -2491,9 +2830,12 @@ Body.
             patch("agents.coordinator.core._live_headless_launcher", return_value=None),
             patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
             patch("pathlib.Path.home", return_value=tmp_path),
-            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch.dict(
+                "os.environ",
+                {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")},
+            ),
             patch(
-                "agents.coordinator.core.admission_state",
+                "agents.coordinator.core.observe_admission_state",
                 return_value=AdmissionDecision(state="open"),
             ),
         ):
@@ -2513,22 +2855,29 @@ Body.
 
 class TestScanTasks:
     def test_scan_empty_dir(self, tmp_path: Path):
+        active = tmp_path / "active"
+        active.mkdir()
         coordinator = Coordinator()
-        with patch("agents.coordinator.core.TASKS_DIR", tmp_path):
+        with patch("agents.coordinator.core.TASKS_DIR", active):
             tasks = coordinator._scan_tasks()
         assert tasks == []
+        assert coordinator._task_store_observation["disposition"] == "current"
 
     def test_scan_with_tasks(self, tmp_path: Path):
-        (tmp_path / "high-priority.md").write_text(
+        active = tmp_path / "active"
+        active.mkdir()
+        (active / "high-priority.md").write_text(
             """---
+task_id: high-priority
 title: "High priority"
 status: offered
 wsjf: 20.0
 ---
 """
         )
-        (tmp_path / "low-priority.md").write_text(
+        (active / "low-priority.md").write_text(
             """---
+task_id: low-priority
 title: "Low priority"
 status: offered
 wsjf: 5.0
@@ -2536,12 +2885,176 @@ wsjf: 5.0
 """
         )
         coordinator = Coordinator()
-        with patch("agents.coordinator.core.TASKS_DIR", tmp_path):
+        with patch("agents.coordinator.core.TASKS_DIR", active):
             tasks = coordinator._scan_tasks()
         assert len(tasks) == 2
         ids = {t.task_id for t in tasks}
         assert "high-priority" in ids
         assert "low-priority" in ids
+        assert coordinator._task_store_observation["disposition"] == "current"
+        assert coordinator._task_store_observation["candidate_count"] == 2
+
+    def test_scan_holds_entire_candidate_set_on_duplicate_identity(self, tmp_path: Path):
+        active = tmp_path / "active"
+        active.mkdir()
+        for name in ("task-a.md", "legacy-name.md"):
+            (active / name).write_text(
+                """---
+task_id: task-a
+title: Duplicate
+status: offered
+---
+"""
+            )
+        coordinator = Coordinator()
+
+        with patch("agents.coordinator.core.TASKS_DIR", active):
+            tasks = coordinator._scan_tasks()
+
+        assert tasks == []
+        assert coordinator._task_store_observation["disposition"] == "hold"
+        assert coordinator._task_store_observation["duplicate_task_ids"] == ["task-a"]
+        assert coordinator._task_store_observation["candidate_count"] == 0
+
+    def test_scan_holds_one_tick_then_rebuilds_a_changed_frontier(self, tmp_path: Path):
+        active = tmp_path / "active"
+        active.mkdir()
+        task_path = active / "task-a.md"
+        task_path.write_text(
+            """---
+task_id: task-a
+title: Current
+status: offered
+---
+"""
+        )
+        coordinator = Coordinator()
+        with patch("agents.coordinator.core.TASKS_DIR", active):
+            assert [task.task_id for task in coordinator._scan_tasks()] == ["task-a"]
+            initial_frontier = coordinator._task_identity_index.frontier_hash
+            task_path.write_text(task_path.read_text() + "\nchanged\n")
+
+            assert coordinator._scan_tasks() == []
+            first_hold = dict(coordinator._task_store_observation)
+            rebuilt = coordinator._scan_tasks()
+
+        assert first_hold["reason_code"] == "task_store_frontier_changed_since_index"
+        assert "active/task-a.md" in first_hold["evidence_refs"][0]
+        assert first_hold["candidate_count"] == 0
+        assert [task.task_id for task in rebuilt] == ["task-a"]
+        assert coordinator._task_store_observation["disposition"] == "current"
+        assert coordinator._task_identity_index.frontier_hash != initial_frontier
+
+    def test_scan_holds_if_task_bytes_change_during_parse(self, tmp_path: Path):
+        active = tmp_path / "active"
+        active.mkdir()
+        task_path = active / "task-a.md"
+        task_path.write_text(
+            """---
+task_id: task-a
+title: Current
+status: offered
+---
+"""
+        )
+        coordinator = Coordinator()
+        original_parse = _parse_task
+
+        def parse_then_mutate(path: Path):
+            task = original_parse(path)
+            path.write_text(path.read_text().replace("status: offered", "status: claimed"))
+            return task
+
+        with (
+            patch("agents.coordinator.core.TASKS_DIR", active),
+            patch("agents.coordinator.core._parse_task", side_effect=parse_then_mutate),
+        ):
+            assert coordinator._scan_tasks() == []
+
+        observation = coordinator._task_store_observation
+        assert observation["disposition"] == "hold"
+        assert observation["reason_code"] == "task_store_frontier_changed_since_index"
+        assert observation["candidate_count"] == 0
+        assert observation["frontier_ref"].startswith(
+            "task-identity-index-frontier@sha256:"
+        )
+
+    def test_scan_holds_on_unbound_artifact(self, tmp_path: Path):
+        active = tmp_path / "active"
+        active.mkdir()
+        (active / "legacy.md").write_text(
+            """---
+title: Missing identity
+status: offered
+---
+"""
+        )
+        coordinator = Coordinator()
+
+        with patch("agents.coordinator.core.TASKS_DIR", active):
+            assert coordinator._scan_tasks() == []
+
+        observation = coordinator._task_store_observation
+        assert observation["disposition"] == "hold"
+        assert observation["unbound_refs"] == ["active/legacy.md"]
+        assert len(observation["blocking_unbound_refs"]) == 1
+        assert observation["blocking_unbound_refs"][0].startswith(
+            "task-artifact:active/legacy.md@content:"
+        )
+        assert observation["legacy_snapshots"] == []
+        assert observation["candidate_count"] == 0
+
+    def test_scan_preserves_terminal_legacy_snapshot_without_holding_candidates(
+        self, tmp_path: Path
+    ):
+        active = tmp_path / "active"
+        closed = tmp_path / "closed"
+        active.mkdir()
+        closed.mkdir()
+        (active / "task-a.md").write_text(
+            """---
+task_id: task-a
+title: Current
+status: offered
+---
+"""
+        )
+        (closed / "legacy-record.md").write_text(
+            """---
+type: cc-task
+title: Historical task without canonical identity
+status: done
+---
+"""
+        )
+        coordinator = Coordinator()
+
+        with patch("agents.coordinator.core.TASKS_DIR", active):
+            assert [task.task_id for task in coordinator._scan_tasks()] == ["task-a"]
+
+        observation = coordinator._task_store_observation
+        assert observation["disposition"] == "current"
+        assert observation["reason_code"] is None
+        assert observation["unbound_refs"] == []
+        assert observation["blocking_unbound_refs"] == []
+        assert observation["candidate_count"] == 1
+        assert observation["assessment_ref"].startswith(
+            "task-store-assessment@sha256:"
+        )
+        assert observation["legacy_snapshots"] == [
+            {
+                "authority_ceiling": "support_non_authoritative",
+                "classification": "legacy_cc_task",
+                "content_sha256": observation["legacy_snapshots"][0]["content_sha256"],
+                "identity_state": "unresolved_candidate",
+                "legacy_locator": "legacy-record",
+                "loss": "canonical_task_identity_absent",
+                "may_authorize": False,
+                "relative_path": "closed/legacy-record.md",
+                "state": "closed",
+                "status": "done",
+            }
+        ]
 
     def test_task_flow_counts_include_remediation_and_no_owner(self):
         tasks = [
@@ -2577,27 +3090,414 @@ wsjf: 5.0
         assert counts["no_owner"] == 1
 
 
-def test_escalate_stalled_skips_renotify_for_incident_tasks(tmp_path: Path):
-    """Self-amplification break: a stalled AUTO-MINTED p0-incident task is escalated to
-    `blocked` but must NOT emit the "task stuck" notification (it would re-mint a
-    sdlc_task_stalled P0 → loop). A normal stalled task still notifies."""
+def test_escalate_stalled_holds_every_task_without_mutation(tmp_path: Path):
     coord = Coordinator()
     lane = LaneState(role="delta", alive=True, pid=111, pid_source="pidfile", claimed_task="x")
     task = tmp_path / "t.md"
     body = "---\nstatus: claimed\nassigned_to: delta\n---\nbody\n"
 
-    with (
-        patch("agents.coordinator.core.send_notification") as notify,
-        patch.object(coord, "_clear_claim_signal"),
-        patch.object(coord, "_emit_reoffer_ledger"),
+    for task_id in (
+        "p0-incident-demo-20260617",
+        "segprep-normal-task-20260617",
     ):
         task.write_text(body, encoding="utf-8")
-        assert (
-            coord._escalate_stalled(lane, "p0-incident-demo-20260617", task, task.read_text())
-            is True
-        )
-        notify.assert_not_called()
+        before = task.read_bytes()
+        assert coord._escalate_stalled(lane, task_id, task, task.read_text()) is False
+        assert task.read_bytes() == before
 
-        task.write_text(body, encoding="utf-8")
-        coord._escalate_stalled(lane, "segprep-normal-task-20260617", task, task.read_text())
-        assert notify.called
+
+@dataclass(frozen=True)
+class CanonEchoFixture:
+    task: Task
+    lane: LaneState
+    db_path: Path
+    ledger_path: Path
+    task_path: Path
+    tasks_dir: Path
+    cache: Path
+    relay_dir: Path
+    relay: Path
+    event_log: CoordEventLog
+    applied_claim: SimpleNamespace
+
+
+class TestCanonEchoCoordinator:
+    def _fixture(self, tmp_path: Path) -> CanonEchoFixture:
+        tasks_dir = tmp_path / "vault" / "active"
+        task_path = tasks_dir / "task-echo.md"
+        task_path.parent.mkdir(parents=True)
+        task_path.write_text(
+            """---
+type: cc-task
+task_id: task-echo
+title: "Echo"
+status: claimed
+assigned_to: cx-red
+authority_case: CASE-ECHO-001
+parent_spec: /tmp/spec.md
+stage: S6_IMPLEMENTATION
+claimable: true
+implementation_authorized: true
+source_mutation_authorized: true
+claimed_at: 2026-07-11T14:00:00Z
+updated_at: 2026-07-11T14:00:00Z
+---
+
+# Echo
+
+## Session log
+""",
+            encoding="utf-8",
+        )
+        frontmatter = {
+            "task_id": "task-echo",
+            "status": "claimed",
+            "assigned_to": "cx-red",
+            "authority_case": "CASE-ECHO-001",
+            "parent_spec": "/tmp/spec.md",
+            "stage": "S6_IMPLEMENTATION",
+            "claimable": True,
+            "implementation_authorized": True,
+            "source_mutation_authorized": True,
+        }
+        task = Task(
+            task_id="task-echo",
+            title="Echo",
+            status="claimed",
+            assigned_to="cx-red",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("codex",),
+            quality_floor="frontier_review_required",
+            path=task_path,
+            authority_case="CASE-ECHO-001",
+            parent_spec="/tmp/spec.md",
+            stage="S6_IMPLEMENTATION",
+            frontmatter=frontmatter,
+        )
+        lane = LaneState(
+            role="cx-red",
+            platform="codex",
+            alive=True,
+            idle=False,
+            claimed_task="task-echo",
+        )
+        db_path = tmp_path / "relay" / "messages.db"
+        db_path.parent.mkdir()
+        source_message_id = "dispatch-echo-source"
+        send_message(
+            db_path,
+            Envelope(
+                message_id=source_message_id,
+                sender="hapax-coordinator",
+                message_type="dispatch",
+                priority=0,
+                subject="task-echo",
+                authority_case="CASE-ECHO-001",
+                authority_item="task-echo",
+                recipients_spec="cx-red",
+                payload='{"task_id":"task-echo"}',
+            ),
+        )
+        consume_messages(db_path, "cx-red")
+        ack_message(db_path, source_message_id, "cx-red", "accepted")
+        ack_message(db_path, source_message_id, "cx-red", "processed")
+        ledger_path = tmp_path / "methodology-dispatch.jsonl"
+        ledger_path.write_text(
+            json.dumps(_echo_dispatch_record(source_message_id), sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        expected = load_latest_dispatch_echo_expectation(
+            ledger_path,
+            task_id="task-echo",
+            lane="cx-red",
+        )
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        binding = ClaimDispatchBinding.create(
+            task_id="task-echo",
+            lane="cx-red",
+            session_id="session-1",
+            claim_epoch=123,
+            dispatch_message_id=source_message_id,
+            platform="codex",
+            mode="headless",
+            profile="full",
+            authority_case="CASE-ECHO-001",
+            binding_hash=expected.binding_hash,
+            coord_dispatch_idempotency_key="coord-dispatch-echo-fixture",
+        )
+        task_snapshot = resolve_task_note(tmp_path / "vault", "task-echo", state="active")
+        applied_claim = SimpleNamespace(
+            current_task=task_snapshot,
+            leases=(SimpleNamespace(binding=binding),),
+        )
+        relay_dir = tmp_path / "relay-status"
+        relay_dir.mkdir()
+        relay = relay_dir / "cx-red.yaml"
+        relay.write_text(
+            "role: cx-red\nstatus: active\ncurrent_claim: task-echo\nstage_token: S6\n",
+            encoding="utf-8",
+        )
+        coord_dir = tmp_path / "coord"
+        event_log = CoordEventLog(
+            db_path=coord_dir / "ledger.db",
+            jsonl_path=coord_dir / "ledger.jsonl",
+            spool_dir=coord_dir / "spool",
+        )
+        event_log.append(
+            CoordEvent(
+                event_id="dispatch-echo-launch-succeeded",
+                timestamp="2026-07-11T14:59:00Z",
+                event_type="coord_dispatch.launch_succeeded",
+                actor="cx-red",
+                subject="task-echo",
+                authority_case="CASE-ECHO-001",
+                payload={
+                    "idempotency_key": "coord-dispatch-echo-fixture",
+                    "message_id": source_message_id,
+                    "mode": "headless",
+                    "outcome": "succeeded",
+                    "platform": "codex",
+                    "profile": "full",
+                    "returncode": 0,
+                },
+            ),
+            writer=CoordWriter.daemon("test-dispatch"),
+        )
+        return CanonEchoFixture(
+            task,
+            lane,
+            db_path,
+            ledger_path,
+            task_path,
+            tasks_dir,
+            cache,
+            relay_dir,
+            relay,
+            event_log,
+            applied_claim,
+        )
+
+    def test_legacy_echo_position_holds_before_repair_or_any_effect(self, tmp_path: Path) -> None:
+        fixture = self._fixture(tmp_path)
+        note_before = fixture.task_path.read_bytes()
+        relay_before = fixture.relay.read_bytes()
+        messages_before = list_messages(fixture.db_path, MessageFilters(limit=100))
+        claim_paths = tuple(
+            path
+            for key in ("cx-red", "cx-red-session-1")
+            for path in (
+                fixture.cache / f"cc-active-task-{key}",
+                fixture.cache / f"cc-claim-epoch-{key}",
+                fixture.cache / f"cc-claim-dispatch-{key}.json",
+            )
+        )
+        claims_before = {path: path.read_bytes() if path.exists() else None for path in claim_paths}
+        events_before = fixture.event_log.replay().events
+        now = datetime(2026, 7, 11, 15, 0, tzinfo=UTC)
+
+        with (
+            patch("agents.coordinator.core.TASKS_DIR", fixture.tasks_dir),
+            patch("agents.coordinator.core.CACHE_DIR", fixture.cache),
+            patch("agents.coordinator.core.RELAY_DIR", fixture.relay_dir),
+            patch(
+                "agents.coordinator.core.default_event_log",
+                return_value=fixture.event_log,
+            ),
+            patch(
+                "agents.coordinator.core.resolve_applied_claim_publication_for_task",
+                return_value=fixture.applied_claim,
+            ),
+            patch("agents.coordinator.core._render_expected_canon_payload") as render,
+        ):
+            with pytest.raises(CanonEchoError) as raised:
+                _reconcile_task_canon_echo(
+                    fixture.task,
+                    fixture.lane,
+                    db_path=fixture.db_path,
+                    ledger_path=fixture.ledger_path,
+                    now=now,
+                )
+
+        assert raised.value.reason_code == "canon_pre_gate0_claim_migration_required"
+        render.assert_not_called()
+        assert fixture.task_path.read_bytes() == note_before
+        assert fixture.relay.read_bytes() == relay_before
+        assert list_messages(fixture.db_path, MessageFilters(limit=100)) == messages_before
+        assert {
+            path: path.read_bytes() if path.exists() else None for path in claim_paths
+        } == claims_before
+        assert fixture.event_log.replay().events == events_before
+
+    def test_echo_pass_projects_migration_hold_without_external_effect(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fixture = self._fixture(tmp_path)
+        monkeypatch.setenv("HAPAX_COORD_DIR", str(fixture.event_log.db_path.parent))
+        monkeypatch.setenv("HAPAX_CANON_ECHO_ENFORCEMENT", "1")
+        note_before = fixture.task_path.read_bytes()
+        relay_before = fixture.relay.read_bytes()
+        messages_before = list_messages(fixture.db_path, MessageFilters(limit=100))
+        claim_paths = tuple(
+            path
+            for key in ("cx-red", "cx-red-session-1")
+            for path in (
+                fixture.cache / f"cc-active-task-{key}",
+                fixture.cache / f"cc-claim-epoch-{key}",
+                fixture.cache / f"cc-claim-dispatch-{key}.json",
+            )
+        )
+        claim_before = {path: path.read_bytes() if path.exists() else None for path in claim_paths}
+        events_before = fixture.event_log.replay().events
+        coordinator = Coordinator()
+
+        with (
+            patch("agents.coordinator.core.TASKS_DIR", fixture.tasks_dir),
+            patch("agents.coordinator.core.CACHE_DIR", fixture.cache),
+            patch("agents.coordinator.core.RELAY_DIR", fixture.relay_dir),
+            patch(
+                "agents.coordinator.core.default_event_log",
+                return_value=fixture.event_log,
+            ),
+            patch(
+                "agents.coordinator.core.resolve_applied_claim_publication_for_task",
+                return_value=fixture.applied_claim,
+            ),
+            patch("agents.coordinator.core._render_expected_canon_payload") as render,
+        ):
+            echo_pass = coordinator._reconcile_canon_echoes(
+                [fixture.task],
+                {fixture.lane.role: fixture.lane},
+            )
+
+        assert echo_pass.held_task_ids == frozenset({"task-echo"})
+        assert echo_pass.blocked_count == 0
+        assert fixture.lane.dispatch_ready is False
+        assert fixture.lane.dispatch_blocked_reason == "canon_pre_gate0_claim_migration_required"
+        render.assert_not_called()
+        assert fixture.task_path.read_bytes() == note_before
+        assert fixture.relay.read_bytes() == relay_before
+        assert list_messages(fixture.db_path, MessageFilters(limit=100)) == messages_before
+        assert {
+            path: path.read_bytes() if path.exists() else None for path in claim_paths
+        } == claim_before
+        assert fixture.event_log.replay().events == events_before
+
+    def test_valid_echo_inspection_holds_without_repair_publication(self, tmp_path: Path) -> None:
+        fixture = self._fixture(tmp_path)
+        expected = load_latest_dispatch_echo_expectation(
+            fixture.ledger_path,
+            task_id=fixture.task.task_id,
+            lane=fixture.lane.role,
+        )
+        messages_before = list_messages(fixture.db_path, MessageFilters(limit=100))
+
+        with (
+            patch(
+                "agents.coordinator.core.inspect_lifecycle_transactions",
+                return_value=SimpleNamespace(scope_complete=True),
+            ),
+            patch(
+                "agents.coordinator.core.resolve_applied_claim_publication_for_task",
+                return_value=fixture.applied_claim,
+            ),
+            patch(
+                "agents.coordinator.core.resolve_claim_bound_canon_position",
+                return_value=expected,
+            ),
+            patch(
+                "agents.coordinator.core._render_expected_canon_payload",
+                return_value="exact canon payload",
+            ),
+        ):
+            reconciliation, transaction_id = _reconcile_task_canon_echo(
+                fixture.task,
+                fixture.lane,
+                db_path=fixture.db_path,
+                now=datetime(2026, 7, 11, 15, 0, tzinfo=UTC),
+            )
+
+        assert reconciliation.action == "hold"
+        assert reconciliation.reason_code == "canon_echo_projection_required"
+        assert transaction_id is None
+        assert list_messages(fixture.db_path, MessageFilters(limit=100)) == messages_before
+
+    def test_echo_pass_holds_dead_lane_repair_without_reoffer_escape(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        path = tmp_path / "p0-incident-echo.md"
+        path.write_text("status: claimed\nassigned_to: cx-red\n", encoding="utf-8")
+        task = Task(
+            task_id="p0-incident-echo",
+            title="Echo hold",
+            status="claimed",
+            assigned_to="cx-red",
+            wsjf=100,
+            effort_class="standard",
+            platform_suitability=("codex",),
+            quality_floor="frontier_review_required",
+            path=path,
+            claimed_at=0.0,
+        )
+        monkeypatch.setenv("HAPAX_CANON_ECHO_ENFORCEMENT", "1")
+        coordinator = Coordinator()
+        with patch(
+            "agents.coordinator.core._reconcile_task_canon_echo",
+            return_value=(
+                CanonEchoReconciliation(
+                    "hold",
+                    "canon_echo_repair_required",
+                ),
+                None,
+            ),
+        ) as reconcile:
+            echo_pass = coordinator._reconcile_canon_echoes([task], {})
+
+        assert echo_pass.held_task_ids == frozenset({task.task_id})
+        assert echo_pass.blocked_count == 0
+        reconcile.assert_called_once()
+        assert (
+            coordinator._reoffer_orphaned_claims(
+                [task],
+                {},
+                now_wall=time.time(),
+                held_task_ids=echo_pass.held_task_ids,
+            )
+            == 0
+        )
+        assert "status: claimed" in path.read_text(encoding="utf-8")
+
+    def test_echo_block_is_held_not_counted_as_transition(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        path = tmp_path / "task-block.md"
+        path.write_text("status: claimed\nassigned_to: cx-red\n", encoding="utf-8")
+        task = Task(
+            task_id="task-block",
+            title="Echo block",
+            status="claimed",
+            assigned_to="cx-red",
+            wsjf=1,
+            effort_class="standard",
+            platform_suitability=("codex",),
+            quality_floor="frontier_review_required",
+            path=path,
+        )
+        lane = LaneState(role="cx-red", claimed_task=task.task_id)
+        monkeypatch.setenv("HAPAX_CANON_ECHO_ENFORCEMENT", "1")
+        with patch(
+            "agents.coordinator.core._reconcile_task_canon_echo",
+            return_value=(
+                CanonEchoReconciliation("block", "canon_echo_failed"),
+                None,
+            ),
+        ):
+            echo_pass = Coordinator()._reconcile_canon_echoes([task], {lane.role: lane})
+
+        assert echo_pass.blocked_count == 0
+        assert echo_pass.held_task_ids == frozenset({task.task_id})

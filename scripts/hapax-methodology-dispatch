@@ -1,20 +1,20 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """Dispatch lanes only through explicit AuthorityCase/ISAP task authority."""
 
 from __future__ import annotations
 
 import argparse
-import functools
+import hashlib
+import importlib.util
 import json
 import os
 import re
 import sqlite3
-import subprocess
 import sys
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Any
 
@@ -25,8 +25,59 @@ _SCRIPTS_DIR_FOR_IMPORTS = Path(__file__).resolve().parent
 if str(_SCRIPTS_DIR_FOR_IMPORTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR_FOR_IMPORTS))
 
+
+def _project_runtime_ready() -> bool:
+    project_root = Path(__file__).resolve().parents[1]
+    expected_prefix = (project_root / ".venv").resolve()
+    expected_executable = str(project_root / ".venv" / "bin" / "python")
+    if Path(sys.prefix).resolve() != expected_prefix:
+        return False
+    if os.path.abspath(sys.executable) != expected_executable or sys.flags.isolated != 1:
+        return False
+    if os.environ.get("PYTHONPATH") or os.environ.get("PYTHONHOME"):
+        return False
+    try:
+        package_present = importlib.util.find_spec("hapax.context_canon") is not None
+        encoder_version = importlib_metadata.version("python-toon")
+    except (ImportError, ModuleNotFoundError, importlib_metadata.PackageNotFoundError):
+        return False
+    return package_present and encoder_version == "0.1.3"
+
+
+def _require_project_runtime() -> None:
+    """Refuse an unpinned interpreter without probing, syncing, or re-execing."""
+
+    if _project_runtime_ready():
+        return
+    project_python = Path(__file__).resolve().parents[1] / ".venv" / "bin" / "python"
+    raise SystemExit(
+        "methodology_dispatch_runtime_unready: invoke the pre-provisioned pinned "
+        f"interpreter directly: {project_python} -I {Path(__file__).resolve()}"
+    )
+
+
+class Gate0AEffectHold(RuntimeError):
+    """Unconditional boundary for every legacy methodology actuation helper."""
+
+    reason_code = "admitted_lifecycle_action_required"
+
+    def __init__(self, operation: str, repair: str) -> None:
+        self.operation = operation
+        self.repair = repair
+        super().__init__(f"{self.reason_code}:{operation}:{repair}")
+
+
+def _hold_gate0a_effect(operation: str) -> None:
+    raise Gate0AEffectHold(
+        operation,
+        "dispatch one exact composition-issued invocation pointer after Gate-0B activation",
+    )
+
+
+if __name__ == "__main__":
+    _require_project_runtime()
+
 from executor_contract import (  # noqa: E402
-    capabilities,
     capabilities_payload,
     supports_route,
 )
@@ -40,12 +91,12 @@ from shared.capability_adapter_protocol import (
     VibeAdapter,
     WorkerAdapter,
 )
-from shared.coord_dispatch import (
-    CoordDispatchError,
-    DispatchLaunchRequest,
-    DispatchLaunchResult,
+from shared.coord_dispatch import DispatchLaunchResult
+from shared.coord_projection import (
+    NO_GO_BOOLEANS,
+    LifecycleTransitionError,
+    LifecycleTransitionIntent,
 )
-from shared.coord_event_log import CoordEventLog, coord_base_dir
 from shared.dispatch_service_time import is_claude_operator_pool_role
 from shared.dispatcher_policy import (
     DispatchAction,
@@ -54,31 +105,28 @@ from shared.dispatcher_policy import (
     RouteDecision,
     build_dispatch_request,
     load_dispatch_policy_sources,
-    route_decision_receipt_payload,
-    write_route_decision_receipt,
 )
-from shared.failure_classification import FailureCode, FailureReceipt
 from shared.frontmatter import parse_frontmatter as parse_document_frontmatter
 from shared.gate_event_producer import build_gate_event
-from shared.gate_log import append_gate_event
-from shared.quota_wall import QUOTA_WALL_EXIT_CODE
-from shared.route_metadata_schema import assess_route_metadata, route_envelope_gate_enforced
+from shared.methodology_dispatch_carrier import (
+    DISPATCH_CORRELATION_SCHEMA,
+    build_dispatch_support_fact,
+    seal_methodology_dispatch_carrier,
+)
+from shared.route_metadata_schema import (
+    assess_route_metadata,
+    route_envelope_gate_enforced,
+)
 from shared.sdlc_dispatch_guards import (
     DISPATCH_CLAIM_GUARD_MARKERS,
     DISPATCH_CLOSE_GUARD_MARKERS,
     dispatch_worktree,
 )
-from shared.sdlc_lifecycle import TASK_DISPATCHABLE_STATUSES
+from shared.sdlc_lifecycle import TASK_DISPATCHABLE_STATUSES, stage_token
 from shared.sdlc_pressure_gate import (
     AdmissionDecision,
-    admission_state,
-    sdlc_slice_wrap,
-    wait_until_admitted,
 )
-from shared.worker_failure_witness import (
-    append_failure_receipt_record,
-    update_worker_family_availability,
-)
+from shared.sdlc_task_store import TaskStoreError, resolve_task_note
 
 MUTATION_TOKENS = {
     "build",
@@ -114,6 +162,62 @@ CAPACITY_INVARIANT = (
 )
 DEFAULT_P0_CODEX_DRAIN_LANES = ("cx-p0", "cx-crit")
 DEFAULT_INVARIANT_MANIFEST = REPO_ROOT_FOR_IMPORTS / "config" / "invariant-manifest.yaml"
+EXPECTED_GATE0_CANON_HASH = "d1377accf6bf499af90261e4fe53bbd80a2716e85b2a5b9d0b38e7b430fe49fa"
+EXPECTED_GATE0_CANON_BUNDLE_HASH = (
+    "c053d02835c29acceeb9e4d9e0f8e01cd6872e3a882a0212ac54e43d356203ba"
+)
+DISPATCH_CANON_LEVEL = "pi0"
+DISPATCH_CANON_CHANNEL = "inline"
+DISPATCH_AUTHORIZATION_FLAGS = tuple(
+    sorted(
+        set(NO_GO_BOOLEANS)
+        | {
+            "decision_minting_authorized",
+            "provider_spend_authorized",
+        }
+    )
+)
+DISPATCH_SCOPED_MUTATION_FLAGS = frozenset(
+    {
+        "axiom_mutation_authorized",
+        "docs_mutation_authorized",
+        "runtime_mutation_authorized",
+        "source_mutation_authorized",
+        "vault_mutation_authorized",
+    }
+)
+DISPATCH_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,255}$")
+DISPATCH_UNSAFE_CODEPOINTS = frozenset(
+    {
+        "\u061c",
+        "\u200e",
+        "\u200f",
+        "\u202a",
+        "\u202b",
+        "\u202c",
+        "\u202d",
+        "\u202e",
+        "\u2066",
+        "\u2067",
+        "\u2068",
+        "\u2069",
+    }
+)
+DISPATCH_CANON_BINDING_SCHEMA = "hapax.dispatch-canon-binding.v1"
+DISPATCH_POSITION_SCHEMA = "hapax.dispatch-position-delta.v1"
+ADMITTED_LIFECYCLE_ACTION_REQUIRED = "admitted_lifecycle_action_required"
+
+
+def _hold_for_admitted_lifecycle_action(operation: str) -> int:
+    repair = (
+        "materialize and consume the exact admitted lifecycle action through the "
+        "Gate-0 spine before retrying; legacy effect ingress is disabled"
+    )
+    print(
+        f"HOLD: {ADMITTED_LIFECYCLE_ACTION_REQUIRED}; operation={operation}; repair={repair}",
+        file=sys.stderr,
+    )
+    return 10
 
 
 @dataclass(frozen=True)
@@ -272,6 +376,21 @@ class DurableDispatchBinding:
     message_id: str | None = None
 
 
+@dataclass(frozen=True)
+class DispatchCanonContext:
+    binding: dict[str, Any]
+    rendered_payload: str
+    expected_canon_identity_hash: str
+    expected_position_hash: str
+
+
+class DispatchCanonError(RuntimeError):
+    def __init__(self, reason_code: str, repair_action: str) -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+        self.repair_action = repair_action
+
+
 def now_utc() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -288,6 +407,8 @@ def is_nullish(value: str | list[str] | None) -> bool:
         return True
     if isinstance(value, list):
         return len(value) == 0
+    if not isinstance(value, str):
+        return False
     return strip_scalar(value).lower() in NULLISH
 
 
@@ -295,7 +416,9 @@ def field_tokens(value: str | list[str] | None) -> set[str]:
     if value is None:
         return set()
     if isinstance(value, list):
-        raw = " ".join(value)
+        raw = " ".join(str(item) for item in value)
+    elif not isinstance(value, str):
+        return set()
     else:
         raw = value
     raw = strip_scalar(raw).lower()
@@ -434,6 +557,656 @@ def _scalar_list(value: Any) -> list[str]:
     return [strip_scalar(str(value))]
 
 
+def _canonical_json_bytes(value: Any) -> bytes:
+    try:
+        rendered = json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    except (TypeError, ValueError) as exc:
+        raise DispatchCanonError(
+            "dispatch_canon_noncanonical_value",
+            "replace the dispatch binding value with canonical JSON data",
+        ) from exc
+    return rendered.encode("ascii")
+
+
+def _content_hash(value: Any) -> str:
+    return hashlib.sha256(_canonical_json_bytes(value)).hexdigest()
+
+
+def _safe_dispatch_scalar(value: Any, *, field: str, allow_blank: bool = False) -> str:
+    text = strip_scalar(str(value))
+    unsafe = any(
+        ord(char) < 32 or 127 <= ord(char) <= 159 or char in DISPATCH_UNSAFE_CODEPOINTS
+        for char in text
+    )
+    if unsafe or (not allow_blank and not text):
+        raise DispatchCanonError(
+            f"dispatch_{field}_unsafe",
+            f"provide a nonblank {field} without control or bidi formatting characters",
+        )
+    return text
+
+
+def _dispatch_identifier(value: Any, *, field: str) -> str:
+    if not isinstance(value, str):
+        raise DispatchCanonError(
+            f"dispatch_{field}_invalid",
+            f"declare {field} as a scalar string",
+        )
+    text = _safe_dispatch_scalar(value, field=field)
+    if DISPATCH_IDENTIFIER_RE.fullmatch(text) is None:
+        raise DispatchCanonError(
+            f"dispatch_{field}_invalid",
+            f"use 1-256 ASCII letters, digits, dot, underscore, or hyphen for {field}",
+        )
+    return text
+
+
+def _declared_bool(fields: dict[str, Any], name: str) -> dict[str, Any]:
+    declared = name in fields
+    raw = fields.get(name, False)
+    if isinstance(raw, bool):
+        value = raw
+    elif raw is None or (isinstance(raw, str) and raw.strip().lower() in NULLISH):
+        value = False
+    elif isinstance(raw, str) and raw.strip().lower() in {"true", "false"}:
+        value = raw.strip().lower() == "true"
+    else:
+        raise DispatchCanonError(
+            "dispatch_authorization_flag_malformed",
+            f"declare {name} as true or false",
+        )
+    return {"declared": declared, "name": name, "value": value}
+
+
+def _declared_mutation_scope_refs(fields: dict[str, Any]) -> tuple[str, ...]:
+    declarations: list[Any] = []
+    if "mutation_scope_refs" in fields:
+        declarations.append(fields["mutation_scope_refs"])
+    nested = fields.get("route_metadata")
+    if isinstance(nested, dict) and "mutation_scope_refs" in nested:
+        declarations.append(nested["mutation_scope_refs"])
+    if len(declarations) > 1 and declarations[0] != declarations[1]:
+        raise DispatchCanonError(
+            "dispatch_mutation_scope_refs_ambiguous",
+            "declare mutation_scope_refs once, or make top-level and nested declarations identical",
+        )
+    raw = declarations[-1] if declarations else []
+    if not isinstance(raw, (list, tuple)) or any(not isinstance(item, str) for item in raw):
+        raise DispatchCanonError(
+            "dispatch_mutation_scope_refs_malformed",
+            "declare mutation_scope_refs as a list of path strings",
+        )
+    refs = tuple(sorted({_safe_dispatch_scalar(item, field="mutation_scope_ref") for item in raw}))
+    if any(".." in Path(ref).parts for ref in refs):
+        raise DispatchCanonError(
+            "dispatch_mutation_scope_ref_escapes_root",
+            "declare mutation scope references without parent-directory traversal",
+        )
+    return refs
+
+
+def _dispatch_source_path() -> Path | None:
+    configured = os.environ.get("HAPAX_COORDINATION_CANON_SOURCE_PATH", "").strip()
+    return Path(configured).expanduser() if configured else None
+
+
+def _build_dispatch_canon_context(
+    *,
+    task_id: str,
+    lane: str,
+    platform: str,
+    mode: str,
+    profile: str,
+    validation: Validation,
+    route: PlatformPath,
+    route_decision: RouteDecision,
+    route_decision_ref: str,
+    requested_route: dict[str, str],
+    policy_requested_route_id: str,
+    dispatch_message_id: str | None = None,
+) -> DispatchCanonContext:
+    try:
+        from shared.session_context_canon import (
+            CanonBundle,
+            build_canon_bundle,
+            checked_bundle_json_schema_bytes,
+        )
+
+        checked_bundle_json_schema_bytes()
+        generated_bundle = build_canon_bundle(source_path=_dispatch_source_path())
+        bundle = CanonBundle.model_validate(generated_bundle.model_dump(mode="json", by_alias=True))
+    except (ImportError, OSError, RuntimeError, ValueError) as exc:
+        reason_code = getattr(exc, "reason_code", "dispatch_canon_unavailable")
+        repair_action = getattr(
+            exc,
+            "repair_action",
+            "restore the checked canon sources, schema, encoder, and package dependencies",
+        )
+        raise DispatchCanonError(str(reason_code), str(repair_action)) from exc
+
+    if bundle.canon_hash != EXPECTED_GATE0_CANON_HASH:
+        raise DispatchCanonError(
+            "dispatch_canon_hash_drift",
+            "reconcile the canon semantic postimage and update its independently accepted pin",
+        )
+    if bundle.bundle_hash != EXPECTED_GATE0_CANON_BUNDLE_HASH:
+        raise DispatchCanonError(
+            "dispatch_canon_bundle_hash_drift",
+            "replay the accepted canon bundle and update its independently accepted pin",
+        )
+    if validation.task is None:
+        raise DispatchCanonError(
+            "dispatch_task_missing_after_validation",
+            "restore the validated task note before constructing dispatch context",
+        )
+
+    fields = validation.task.fields
+    raw_stage = fields.get("stage")
+    if raw_stage is None:
+        raise DispatchCanonError(
+            "dispatch_stage_missing",
+            "declare one exact canonical SDLC stage token in the task frontmatter",
+        )
+    try:
+        canonical_stage = stage_token(_safe_dispatch_scalar(raw_stage, field="stage"))
+    except DispatchCanonError:
+        raise
+    except ValueError as exc:
+        raise DispatchCanonError(
+            getattr(exc, "reason_code", "dispatch_stage_invalid"),
+            getattr(exc, "repair_action", "use an exact canonical SDLC stage token"),
+        ) from exc
+
+    image = next(
+        (
+            candidate
+            for candidate in bundle.images
+            if candidate.stage_token == canonical_stage
+            and candidate.level.value == DISPATCH_CANON_LEVEL
+        ),
+        None,
+    )
+    if image is None:
+        raise DispatchCanonError(
+            "dispatch_canon_image_missing",
+            "materialize the exact stage and projection level in the accepted canon bundle",
+        )
+    if image.kernel.omitted_atom_ids:
+        raise DispatchCanonError(
+            "dispatch_pi0_kernel_not_empty",
+            "restore the lossless pi0 projection with an empty omission kernel",
+        )
+    payload_hash = hashlib.sha256(image.rendered_payload.encode("utf-8")).hexdigest()
+
+    task_id = _dispatch_identifier(task_id, field="task_id")
+    lane = _dispatch_identifier(lane, field="lane")
+    raw_authority_case = fields.get("authority_case")
+    authority_case = _dispatch_identifier(
+        "read-only-exempt" if is_nullish(raw_authority_case) else raw_authority_case,
+        field="authority_case",
+    )
+    authorization_flags = tuple(
+        _declared_bool(fields, name) for name in DISPATCH_AUTHORIZATION_FLAGS
+    )
+    mutation_scope_refs = _declared_mutation_scope_refs(fields)
+    unscoped_authorities = sorted(
+        item["name"]
+        for item in authorization_flags
+        if item["name"] in DISPATCH_SCOPED_MUTATION_FLAGS and item["value"]
+    )
+    if unscoped_authorities and not mutation_scope_refs:
+        raise DispatchCanonError(
+            "dispatch_scoped_authority_scope_empty",
+            "declare at least one mutation_scope_ref or remove scoped mutation authority: "
+            + ",".join(unscoped_authorities),
+        )
+
+    stage_definition = next(
+        stage for stage in bundle.lifecycle_definition.stages if stage.token == canonical_stage
+    )
+    legal_successors = tuple(
+        dict.fromkeys(edge.to for edge in (*stage_definition.next, *stage_definition.fall))
+    )
+    constraints = {
+        "authority_case": authority_case,
+        "authorization_flags": authorization_flags,
+        "mutation_scope_refs": mutation_scope_refs,
+    }
+    constraint_hash = _content_hash(constraints)
+    worktree = _safe_dispatch_scalar(lane_worktree(lane, platform), field="worktree")
+    claim_file = _safe_dispatch_scalar(
+        Path(os.environ.get("HAPAX_CC_CLAIMS_DIR", str(Path.home() / ".cache" / "hapax")))
+        / f"cc-active-task-{lane}",
+        field="claim_file",
+    )
+    claim_command = _safe_dispatch_scalar(
+        Path(worktree) / "scripts" / "cc-claim", field="claim_command"
+    )
+    close_command = _safe_dispatch_scalar(
+        Path(worktree) / "scripts" / "cc-close", field="close_command"
+    )
+    task_status = _safe_dispatch_scalar(fields.get("status", ""), field="task_status")
+    raw_assigned_to = fields.get("assigned_to")
+    assigned_to = _safe_dispatch_scalar(
+        "unassigned" if is_nullish(raw_assigned_to) else raw_assigned_to,
+        field="assigned_to",
+    )
+    claim_state = {
+        "assigned_to": assigned_to,
+        "binding_sidecar_state": "required_on_claim" if dispatch_message_id else "advisory_unbound",
+        "claim_command": claim_command,
+        "claim_file": claim_file,
+        "dispatch_message_id": dispatch_message_id,
+        "expected_task_id": task_id,
+        "state": "absent_preclaim" if task_status == "offered" else "present_declared_must_verify",
+        "task_status": task_status,
+        "verified_active_claim": False,
+    }
+    route_state = {
+        "decision_id": route_decision.decision_id,
+        "decision_ref": _safe_dispatch_scalar(route_decision_ref, field="route_decision_ref"),
+        "final_route": {
+            "mode": route.mode,
+            "platform": route.platform,
+            "profile": route.profile,
+        },
+        "invocation_requested_route": requested_route,
+        "policy_action": route_decision.action.value,
+        "policy_decision_route_id": route_decision.route_id,
+        "policy_requested_route_id": policy_requested_route_id,
+        "requested_state": "requested_receipt_only"
+        if requested_route["mode"] == "receipt-only"
+        else "requested_dispatch_route",
+        "decision_state": "decided",
+        "selected_route_id": _decision_selected_route_id(route_decision),
+        "state": "policy_selected_nonadmitting_carriage",
+    }
+    canon_identity = {
+        "bundle_hash": bundle.bundle_hash,
+        "bundle_ref": bundle.bundle_ref,
+        "canon_hash": bundle.canon_hash,
+        "canon_id": image.canon_id,
+        "canon_version": bundle.canon_version,
+        "channel": DISPATCH_CANON_CHANNEL,
+        "image_hash": image.image_hash,
+        "image_ref": f"canon-image@sha256:{image.image_hash}",
+        "kernel": image.kernel.model_dump(mode="json"),
+        "level": image.level.value,
+        "lifecycle_definition_ref": bundle.lifecycle_definition.definition_ref,
+        "may_authorize": False,
+        "payload_bytes": len(image.rendered_payload.encode("utf-8")),
+        "payload_sha256": payload_hash,
+        "reference_token_count": image.reference_token_count,
+        "selection_state": "bootstrap_lossless_unmeasured_nonadmitting",
+        "stage_token": canonical_stage,
+    }
+    position_body = {
+        "schema": DISPATCH_POSITION_SCHEMA,
+        "authority_case": authority_case,
+        "authorized_flags": authorization_flags,
+        "claim": claim_state,
+        "close": {
+            "command": close_command,
+            "state": "independently_gated_by_worktree_local_cc_close",
+            "terminal_conditions": bundle.lifecycle_definition.terminal_conditions,
+            "terminal_stages": bundle.lifecycle_definition.terminal_stages,
+            "verified_ready": False,
+        },
+        "declared_task_constraint_digest": constraint_hash,
+        "declared_task_constraint_ref": f"task-local-constraints@sha256:{constraint_hash}",
+        "effective_constraint_state": "unresolved_scope_chain",
+        "lane": lane,
+        "legal_successors": legal_successors,
+        "may_authorize": False,
+        "mutation_scope_refs": mutation_scope_refs,
+        "route": route_state,
+        "stage_token": canonical_stage,
+        "task_id": task_id,
+        "task_note": _safe_dispatch_scalar(validation.task.path, field="task_path"),
+        "parent_spec_path": _safe_dispatch_scalar(
+            validation.parent_spec_path, field="parent_spec_path"
+        )
+        if validation.parent_spec_path is not None
+        else None,
+        "worktree": worktree,
+    }
+    position_hash = _content_hash(position_body)
+    position = {
+        **position_body,
+        "position_hash": position_hash,
+        "position_ref": f"dispatch-position@sha256:{position_hash}",
+    }
+    binding_body = {
+        "schema": DISPATCH_CANON_BINDING_SCHEMA,
+        "advisory_carriage": True,
+        "canon": canon_identity,
+        "may_authorize": False,
+        "position": position,
+        "receipt_is_admission": False,
+    }
+    binding_hash = _content_hash(binding_body)
+    binding = {
+        **binding_body,
+        "binding_hash": binding_hash,
+        "binding_ref": f"dispatch-canon-binding@sha256:{binding_hash}",
+    }
+    context = DispatchCanonContext(
+        binding=binding,
+        rendered_payload=image.rendered_payload,
+        expected_canon_identity_hash=_content_hash(canon_identity),
+        expected_position_hash=position_hash,
+    )
+    _verify_dispatch_canon_context(context)
+    return context
+
+
+def _verify_dispatch_canon_context(context: DispatchCanonContext) -> None:
+    binding = context.binding
+    try:
+        binding_hash = str(binding["binding_hash"])
+        binding_ref = str(binding["binding_ref"])
+        binding_body = {
+            key: value
+            for key, value in binding.items()
+            if key not in {"binding_hash", "binding_ref"}
+        }
+        position = dict(binding["position"])
+        position_hash = str(position.pop("position_hash"))
+        position_ref = str(position.pop("position_ref"))
+        canon = binding["canon"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise DispatchCanonError(
+            "dispatch_canon_binding_malformed",
+            "rebuild the dispatch canon binding from checked typed sources",
+        ) from exc
+    binding_keys = {
+        "advisory_carriage",
+        "binding_hash",
+        "binding_ref",
+        "canon",
+        "may_authorize",
+        "position",
+        "receipt_is_admission",
+        "schema",
+    }
+    position_keys = {
+        "authority_case",
+        "authorized_flags",
+        "claim",
+        "close",
+        "declared_task_constraint_digest",
+        "declared_task_constraint_ref",
+        "effective_constraint_state",
+        "lane",
+        "legal_successors",
+        "may_authorize",
+        "mutation_scope_refs",
+        "parent_spec_path",
+        "route",
+        "schema",
+        "stage_token",
+        "task_id",
+        "task_note",
+        "worktree",
+    }
+    canon_keys = {
+        "bundle_hash",
+        "bundle_ref",
+        "canon_hash",
+        "canon_id",
+        "canon_version",
+        "channel",
+        "image_hash",
+        "image_ref",
+        "kernel",
+        "level",
+        "lifecycle_definition_ref",
+        "may_authorize",
+        "payload_bytes",
+        "payload_sha256",
+        "reference_token_count",
+        "selection_state",
+        "stage_token",
+    }
+    claim_keys = {
+        "assigned_to",
+        "binding_sidecar_state",
+        "claim_command",
+        "claim_file",
+        "dispatch_message_id",
+        "expected_task_id",
+        "state",
+        "task_status",
+        "verified_active_claim",
+    }
+    close_keys = {
+        "command",
+        "state",
+        "terminal_conditions",
+        "terminal_stages",
+        "verified_ready",
+    }
+    route_keys = {
+        "decision_id",
+        "decision_ref",
+        "decision_state",
+        "final_route",
+        "invocation_requested_route",
+        "policy_action",
+        "policy_decision_route_id",
+        "policy_requested_route_id",
+        "requested_state",
+        "selected_route_id",
+        "state",
+    }
+    if (
+        set(binding) != binding_keys
+        or set(position) != position_keys
+        or not isinstance(canon, dict)
+        or set(canon) != canon_keys
+        or binding.get("schema") != DISPATCH_CANON_BINDING_SCHEMA
+        or position.get("schema") != DISPATCH_POSITION_SCHEMA
+    ):
+        raise DispatchCanonError(
+            "dispatch_canon_binding_malformed",
+            "rebuild the exact dispatch canon and position schema",
+        )
+    claim = position.get("claim")
+    close = position.get("close")
+    route_state = position.get("route")
+    if (
+        not isinstance(claim, dict)
+        or set(claim) != claim_keys
+        or not isinstance(close, dict)
+        or set(close) != close_keys
+        or not isinstance(route_state, dict)
+        or set(route_state) != route_keys
+    ):
+        raise DispatchCanonError(
+            "dispatch_position_shape_malformed",
+            "rebuild the exact claim, route, and close position states",
+        )
+    final_route = route_state.get("final_route")
+    invocation_route = route_state.get("invocation_requested_route")
+    expected_requested_state = (
+        "requested_receipt_only"
+        if isinstance(invocation_route, dict) and invocation_route.get("mode") == "receipt-only"
+        else "requested_dispatch_route"
+    )
+    position_semantics_ok = (
+        isinstance(final_route, dict)
+        and set(final_route) == {"mode", "platform", "profile"}
+        and isinstance(invocation_route, dict)
+        and set(invocation_route) == {"mode", "platform", "profile"}
+        and position.get("stage_token") == canon.get("stage_token")
+        and claim.get("expected_task_id") == position.get("task_id")
+        and claim.get("state") in {"absent_preclaim", "present_declared_must_verify"}
+        and claim.get("verified_active_claim") is False
+        and close.get("state") == "independently_gated_by_worktree_local_cc_close"
+        and close.get("verified_ready") is False
+        and isinstance(close.get("terminal_stages"), (list, tuple))
+        and tuple(close.get("terminal_stages", ())) == ("S11",)
+        and isinstance(close.get("terminal_conditions"), (list, tuple))
+        and tuple(close.get("terminal_conditions", ()))
+        == ("cc_close_ready", "closure_receipts_present")
+        and route_state.get("decision_state") == "decided"
+        and route_state.get("requested_state") == expected_requested_state
+        and route_state.get("state") == "policy_selected_nonadmitting_carriage"
+        and route_state.get("policy_action") == "launch"
+        and route_state.get("selected_route_id")
+        == ".".join(
+            [
+                str(final_route.get("platform")),
+                str(final_route.get("mode")),
+                str(final_route.get("profile")),
+            ]
+        )
+        and isinstance(position.get("legal_successors"), (list, tuple))
+        and bool(position["legal_successors"])
+        and all(isinstance(item, str) for item in position["legal_successors"])
+    )
+    if not position_semantics_ok:
+        raise DispatchCanonError(
+            "dispatch_position_semantic_mismatch",
+            "rebuild position fields from one validated stage, route decision, claim state, and close gate",
+        )
+    if _content_hash(binding_body) != binding_hash or binding_ref != (
+        f"dispatch-canon-binding@sha256:{binding_hash}"
+    ):
+        raise DispatchCanonError(
+            "dispatch_canon_binding_hash_mismatch",
+            "rebuild the dispatch canon binding without caller mutation",
+        )
+    if (
+        _content_hash(position) != position_hash
+        or position_hash != context.expected_position_hash
+        or position_ref != f"dispatch-position@sha256:{position_hash}"
+    ):
+        raise DispatchCanonError(
+            "dispatch_position_hash_mismatch",
+            "rebuild the dispatch position from the validated task and route decision",
+        )
+    if not isinstance(canon, dict):
+        raise DispatchCanonError(
+            "dispatch_canon_binding_malformed",
+            "rebuild the dispatch canon binding from checked typed sources",
+        )
+    observed_payload_hash = hashlib.sha256(context.rendered_payload.encode("utf-8")).hexdigest()
+    if canon.get("payload_sha256") != observed_payload_hash:
+        raise DispatchCanonError(
+            "dispatch_canon_payload_hash_mismatch",
+            "restore the exact rendered canon payload selected by the image",
+        )
+    try:
+        expected_constraints = {
+            "authority_case": position["authority_case"],
+            "authorization_flags": position["authorized_flags"],
+            "mutation_scope_refs": position["mutation_scope_refs"],
+        }
+    except KeyError as exc:
+        raise DispatchCanonError(
+            "dispatch_canon_binding_malformed",
+            "rebuild the dispatch canon binding from checked typed sources",
+        ) from exc
+    expected_constraint_hash = _content_hash(expected_constraints)
+    if (
+        position.get("declared_task_constraint_digest") != expected_constraint_hash
+        or position.get("declared_task_constraint_ref")
+        != f"task-local-constraints@sha256:{expected_constraint_hash}"
+    ):
+        raise DispatchCanonError(
+            "dispatch_declared_constraint_hash_mismatch",
+            "rebuild the task-local declared constraint binding",
+        )
+    kernel = canon.get("kernel")
+    image_hash = canon.get("image_hash")
+    canon_invariants_ok = (
+        _content_hash(canon) == context.expected_canon_identity_hash
+        and canon.get("canon_hash") == EXPECTED_GATE0_CANON_HASH
+        and canon.get("canon_id") == f"coordination-canon@sha256:{EXPECTED_GATE0_CANON_HASH}"
+        and canon.get("bundle_hash") == EXPECTED_GATE0_CANON_BUNDLE_HASH
+        and canon.get("bundle_ref") == f"canon-bundle@sha256:{EXPECTED_GATE0_CANON_BUNDLE_HASH}"
+        and canon.get("canon_version") == 1
+        and canon.get("level") == DISPATCH_CANON_LEVEL
+        and canon.get("channel") == DISPATCH_CANON_CHANNEL
+        and canon.get("may_authorize") is False
+        and isinstance(image_hash, str)
+        and re.fullmatch(r"[0-9a-f]{64}", image_hash) is not None
+        and canon.get("image_ref") == f"canon-image@sha256:{image_hash}"
+        and isinstance(canon.get("lifecycle_definition_ref"), str)
+        and re.fullmatch(
+            r"lifecycle-definition@sha256:[0-9a-f]{64}",
+            canon["lifecycle_definition_ref"],
+        )
+        is not None
+        and canon.get("payload_bytes") == len(context.rendered_payload.encode("utf-8"))
+        and isinstance(canon.get("reference_token_count"), int)
+        and canon["reference_token_count"] > 0
+        and canon.get("selection_state") == "bootstrap_lossless_unmeasured_nonadmitting"
+        and isinstance(kernel, dict)
+        and kernel.get("name") == "pi0-none"
+        and kernel.get("omitted_atom_ids") == []
+        and kernel.get("omitted_digest") == _content_hash([])
+        and kernel.get("distortion_class") == "none"
+    )
+    authority_invariants_ok = (
+        binding.get("advisory_carriage") is True
+        and binding.get("may_authorize") is False
+        and binding.get("receipt_is_admission") is False
+        and position.get("may_authorize") is False
+        and position.get("effective_constraint_state") == "unresolved_scope_chain"
+        and position.get("claim", {}).get("verified_active_claim") is False
+    )
+    if not canon_invariants_ok:
+        raise DispatchCanonError(
+            "dispatch_canon_invariant_mismatch",
+            "restore the pinned lossless pi0 inline non-authorizing canon identity",
+        )
+    if not authority_invariants_ok:
+        raise DispatchCanonError(
+            "dispatch_canon_authority_escalation",
+            "keep dispatch context carriage explicitly non-authorizing and non-admitting",
+        )
+
+
+def _claim_dispatch_environment(
+    *,
+    task: TaskNote,
+    message_id: str,
+    canon_context: DispatchCanonContext,
+    platform: str,
+    mode: str,
+    profile: str,
+    idempotency_key: str | None,
+) -> dict[str, str]:
+    """Environment consumed by cc-claim to bind the claim to this dispatch root."""
+
+    if os.environ.get("HAPAX_CANON_ECHO_ENFORCEMENT") != "1":
+        return {}
+    authority_case = strip_scalar(str(task.fields.get("authority_case", "")))
+    if not authority_case:
+        raise DispatchCanonError(
+            "claim_dispatch_authority_case_missing",
+            "restore the exact task AuthorityCase before launch",
+        )
+    return {
+        "HAPAX_CANON_ECHO_ENFORCEMENT": "1",
+        "HAPAX_CLAIM_DISPATCH_MESSAGE_ID": message_id,
+        "HAPAX_CLAIM_DISPATCH_BINDING_HASH": str(canon_context.binding["binding_hash"]),
+        "HAPAX_CLAIM_DISPATCH_PLATFORM": platform,
+        "HAPAX_CLAIM_DISPATCH_MODE": mode,
+        "HAPAX_CLAIM_DISPATCH_PROFILE": profile,
+        "HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE": authority_case,
+        "HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY": idempotency_key or "",
+    }
+
+
 def _repo_relative_ref(value: str) -> str:
     text = strip_scalar(value).replace("\\", "/").strip()
     if text.startswith("./"):
@@ -532,12 +1305,20 @@ def operator_coupled_path_matches(fields: dict[str, Any]) -> tuple[str, ...]:
 
 
 def read_task(task_root: Path, task_id: str) -> TaskNote | None:
-    active = task_root / "active"
-    candidates = [active / f"{task_id}.md", *sorted(active.glob(f"{task_id}-*.md"))]
-    for candidate in candidates:
-        if candidate.is_file():
-            return TaskNote(candidate, parse_frontmatter(candidate.read_text(encoding="utf-8")))
-    return None
+    try:
+        snapshot = resolve_task_note(task_root, task_id, state="active")
+    except TaskStoreError as exc:
+        if exc.reason_code == "task_note_not_found":
+            return None
+        raise
+    return TaskNote(snapshot.path, dict(snapshot.frontmatter))
+
+
+def _task_store_hold_reason(exc: TaskStoreError) -> str:
+    detail = f"; detail={exc.detail}" if exc.detail else ""
+    return (
+        f"task identity hold: {exc.reason_code}; repair={exc.repair_action}{detail}"
+    )
 
 
 def is_authority_exempt(fields: dict[str, Any]) -> bool:
@@ -552,7 +1333,7 @@ def is_authority_exempt(fields: dict[str, Any]) -> bool:
 def resolve_declared_path(raw: str | list[str] | None, *, base: Path) -> Path | None:
     if is_nullish(raw):
         return None
-    if isinstance(raw, list):
+    if not isinstance(raw, str):
         return None
     value = strip_scalar(raw)
     path = Path(value).expanduser()
@@ -728,66 +1509,13 @@ def sweep_stale_claims(
     grace_secs: int = 300,
     now: float | None = None,
 ) -> list[tuple[str, str, str]]:
-    """Reap cc-active-task-* claim files across ALL roles. A file is reaped when its
-    task is terminal/missing (and it has settled past ``grace_secs``, so a mid
-    cc-close transition is not raced) or its lease has expired AND its role has no
-    live sibling lease — a live role whose legacy file aged (the gate heartbeats
-    only the session-keyed file) is preserved. Returns (filename, task_id, reason)."""
-    now = time.time() if now is None else now
-    try:
-        files = sorted(p for p in claims_dir.glob(f"{_CLAIM_PREFIX}*") if p.is_file())
-    except OSError:
-        return []
-    metas: list[tuple[Path, str, float, str]] = []
-    freshest_by_role: dict[str, float] = {}
-    for f in files:
-        try:
-            mtime = f.stat().st_mtime
-            raw = f.read_text(encoding="utf-8", errors="ignore").strip()
-        except OSError:
-            continue
-        task_id = raw.splitlines()[0].strip() if raw else ""
-        role = _claim_role(f.name)
-        freshest_by_role[role] = max(freshest_by_role.get(role, 0.0), mtime)
-        metas.append((f, role, mtime, task_id))
-    reaped: list[tuple[str, str, str]] = []
-    for f, role, mtime, task_id in metas:
-        age = now - mtime
-        role_is_live = (now - freshest_by_role.get(role, 0.0)) <= lease_ttl
-        dead_reason = _claim_task_dead_reason(task_id, active_dir)
-        if dead_reason and age > grace_secs:
-            reason = dead_reason
-        elif age > lease_ttl and not role_is_live:
-            reason = "lease-expired"
-        else:
-            continue
-        try:
-            f.unlink()
-        except OSError:
-            continue
-        reaped.append((f.name, task_id, reason))
-    return reaped
+    del claims_dir, active_dir, lease_ttl, grace_secs, now
+    _hold_gate0a_effect("claim.sweep")
 
 
 def run_claim_sweep(task_root: Path, *, notify: bool = True) -> list[tuple[str, str, str]]:
-    """Wire the sweep to the live claims dir + vault, reap, and (best-effort) ntfy."""
-    claims_dir = Path(os.environ.get("HAPAX_CC_CLAIMS_DIR", str(Path.home() / ".cache" / "hapax")))
-    reaped = sweep_stale_claims(claims_dir, task_root / "active")
-    if reaped and notify:
-        try:
-            from shared.notify import send_notification
-
-            body = "\n".join(
-                f"- {name} → {reason} ({task or '∅'})" for name, task, reason in reaped
-            )
-            send_notification(
-                f"Reaped {len(reaped)} stale cc-task claim(s)",
-                body,
-                tags=["broom", "sdlc"],
-            )
-        except Exception:
-            pass
-    return reaped
+    del task_root, notify
+    _hold_gate0a_effect("claim.sweep")
 
 
 def check_worktree_claim_guard(worktree: Path) -> tuple[bool, str]:
@@ -943,26 +1671,52 @@ def _system_drain_audit_path() -> Path:
 
 
 def _write_system_drain_audit(
-    *, task_id: str, drained_from_lane: str, capability_id: str, liveness: str, prior_status: str
-) -> None:
-    """Append-only audit of every admitted system drain. Best-effort: an IO error
-    never blocks a verified drain (the consume + audit chain is the authority trail)."""
-    rec = {
-        "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "task_id": task_id,
-        "drained_from_lane": drained_from_lane,
-        "prior_status": prior_status,
-        "capability_id": capability_id,
-        "liveness_verdict": liveness,
-        "actor": SYSTEM_DRAIN_LANE,
-    }
-    path = _system_drain_audit_path()
+    *,
+    task_id: str,
+    drained_from_lane: str,
+    capability_id: str,
+    liveness: str,
+    prior_status: str,
+    operation_outcome: str,
+    capability_consumed: bool,
+    edge_class: str,
+    guard_evidence: dict[str, tuple[str, ...]],
+) -> bool:
+    del (
+        task_id,
+        drained_from_lane,
+        capability_id,
+        liveness,
+        prior_status,
+        operation_outcome,
+        capability_consumed,
+        edge_class,
+        guard_evidence,
+    )
+    _hold_gate0a_effect("system-drain.audit")
+
+
+def _capability_consumption_count(path: str | Path, capability_id: str) -> int:
+    ledger = Path(path)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(rec) + "\n")
+        text = ledger.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return 0
     except OSError:
-        pass
+        return -1
+    count = 0
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            return -1
+        if not isinstance(record, dict) or not isinstance(record.get("capability_id"), str):
+            return -1
+        if record["capability_id"] == capability_id:
+            count += 1
+    return count
 
 
 def _validate_system_drain(
@@ -974,7 +1728,8 @@ def _validate_system_drain(
     capability_path: Path | None,
 ) -> Validation:
     """Admit an orphaned task for SYSTEM drain IFF its owning lane is verifiably
-    dead AND a single-use ``(task_id, __system__)`` capability verifies and consumes.
+    dead AND a single-use ``(task_id, __system__)`` capability verifies. Consumption
+    occurs only at the mutation boundary after guard and Echo preflight.
 
     Fail-closed at every step: a non-drainable status, no assigned lane, an
     unverifiable substrate lane, a LIVE lane, or an invalid/replayed capability all
@@ -986,7 +1741,6 @@ def _validate_system_drain(
     from shared.coord_event_log import default_grant_key
     from shared.governance.coord_capabilities import (
         DEFAULT_CONSUMPTION_LEDGER,
-        CapabilityConsumptionLedger,
         read_capability_file,
         verify_dispatch_capability,
     )
@@ -995,6 +1749,36 @@ def _validate_system_drain(
         return Validation(False, f"system drain refused: status {status!r} not drainable", task)
     if is_nullish(assigned_to) or assigned_to == "unassigned":
         return Validation(False, "system drain refused: task has no assigned lane to verify", task)
+
+    authority_case = strip_scalar(str(task.fields.get("authority_case", "")))
+    parent_spec_path = resolve_declared_path(
+        task.fields.get("parent_spec"),
+        base=Path.home() / "Documents" / "Personal",
+    )
+    if is_nullish(authority_case) or parent_spec_path is None:
+        return Validation(
+            False,
+            "system drain refused: missing required AuthorityCase/ISAP fields",
+            task,
+            parent_spec_path,
+        )
+    if not parent_spec_path.is_file():
+        return Validation(
+            False,
+            f"system drain refused: parent_spec does not exist: {parent_spec_path}",
+            task,
+            parent_spec_path,
+        )
+    spec_fields = parse_frontmatter(parent_spec_path.read_text(encoding="utf-8"))
+    spec_case = strip_scalar(str(spec_fields.get("case_id", "")))
+    if spec_case and spec_case != authority_case:
+        return Validation(
+            False,
+            f"system drain refused: parent_spec case_id {spec_case!r} does not match "
+            f"task authority_case {authority_case!r}",
+            task,
+            parent_spec_path,
+        )
 
     lane_name = normalize_lane_name(assigned_to)
     if lane_name not in KNOWN_CLAUDE_LANES:
@@ -1021,21 +1805,24 @@ def _validate_system_drain(
         cap, key=key, now=now, task_id=task_id, lane=SYSTEM_DRAIN_LANE
     ):
         return Validation(
-            False, "system drain refused: dispatch capability invalid/expired/mismatched", task
+            False,
+            "system drain refused: dispatch capability invalid/expired/mismatched",
+            task,
         )
     assert cap is not None  # verify_dispatch_capability returns False for None
     ledger_path = os.environ.get("HAPAX_COORD_CONSUMPTION_LEDGER") or DEFAULT_CONSUMPTION_LEDGER
-    if not CapabilityConsumptionLedger(ledger_path).consume(cap.capability_id):
+    consumption_count = _capability_consumption_count(ledger_path, cap.capability_id)
+    if consumption_count < 0:
+        return Validation(False, "system drain refused: consumption ledger unreadable", task)
+    if consumption_count:
         return Validation(False, "system drain refused: capability already consumed (replay)", task)
-
-    _write_system_drain_audit(
-        task_id=task_id,
-        drained_from_lane=lane_name,
-        capability_id=cap.capability_id,
-        liveness=why,
-        prior_status=status,
+    return Validation(
+        True,
+        f"system-drain preflight eligible ({why})",
+        task,
+        parent_spec_path,
+        exempt_read_only=False,
     )
-    return Validation(True, f"system-drain eligible ({why})", task, None, exempt_read_only=True)
 
 
 def validate_task(
@@ -1047,11 +1834,56 @@ def validate_task(
     strict_worktree: bool,
     dispatch_capability_path: Path | None = None,
 ) -> Validation:
-    task = read_task(task_root, task_id)
+    try:
+        task = read_task(task_root, task_id)
+    except TaskStoreError as exc:
+        if exc.reason_code == "task_note_identity_mismatch":
+            return Validation(
+                False,
+                "task frontmatter task_id does not match requested "
+                f"{task_id!r}; repair={exc.repair_action}"
+                + (f"; detail={exc.detail}" if exc.detail else ""),
+            )
+        return Validation(
+            False,
+            _task_store_hold_reason(exc),
+        )
     if task is None:
         return Validation(False, f"task not found in {task_root / 'active'}")
 
     fields = task.fields
+    try:
+        declared_task_id = _dispatch_identifier(fields.get("task_id", ""), field="task_id")
+    except DispatchCanonError as exc:
+        return Validation(
+            False,
+            f"task frontmatter identity invalid: {exc.reason_code}; repair={exc.repair_action}",
+            task,
+        )
+    if declared_task_id != task_id:
+        return Validation(
+            False,
+            f"task frontmatter task_id {declared_task_id!r} does not match requested {task_id!r}",
+            task,
+        )
+    scalar_types = {
+        "status": fields.get("status"),
+        "assigned_to": fields.get("assigned_to"),
+        "authority_case": fields.get("authority_case"),
+        "parent_spec": fields.get("parent_spec"),
+    }
+    malformed_scalars = sorted(
+        name
+        for name, value in scalar_types.items()
+        if value is not None and not isinstance(value, str)
+    )
+    if malformed_scalars:
+        return Validation(
+            False,
+            "task frontmatter fields must be scalar strings or null: "
+            + ", ".join(malformed_scalars),
+            task,
+        )
     status = strip_scalar(str(fields.get("status", "")))
     assigned_to = strip_scalar(str(fields.get("assigned_to", "")))
 
@@ -1108,7 +1940,10 @@ def validate_task(
             )
         if not parent_spec_path.is_file():
             return Validation(
-                False, f"parent_spec does not exist: {parent_spec_path}", task, parent_spec_path
+                False,
+                f"parent_spec does not exist: {parent_spec_path}",
+                task,
+                parent_spec_path,
             )
         spec_fields = parse_frontmatter(parent_spec_path.read_text(encoding="utf-8"))
         spec_case = strip_scalar(str(spec_fields.get("case_id", "")))
@@ -1151,77 +1986,91 @@ def build_prompt(
     profile: str,
     validation: Validation,
     route: PlatformPath,
+    canon_context: DispatchCanonContext | None = None,
+    *,
+    advisory_only: bool = False,
+    requested_mode: str | None = None,
 ) -> str:
     if lane == SYSTEM_DRAIN_LANE:
         raise ValueError(
             "__system__ is the drain sentinel, not a launchable lane; a system drain "
             "advances an orphaned task via cc-stage-advance, never a lane launch"
         )
+    if canon_context is None:
+        raise DispatchCanonError(
+            "dispatch_canon_context_missing",
+            "construct and verify one canon context before building a dispatch prompt",
+        )
     assert validation.task is not None
-    fields = validation.task.fields
-    authority_case = fields.get("authority_case")
-    parent_spec = fields.get("parent_spec")
-    title = fields.get("title")
-    worktree = lane_worktree(lane, platform)
-    claim_cmd = worktree / "scripts" / "cc-claim"
-    close_cmd = worktree / "scripts" / "cc-close"
-    claim_file = (
-        Path(os.environ.get("HAPAX_CC_CLAIMS_DIR", str(Path.home() / ".cache" / "hapax")))
-        / f"cc-active-task-{lane}"
-    )
+    safe_task_id = _dispatch_identifier(task_id, field="task_id")
+    safe_lane = _dispatch_identifier(lane, field="lane")
     claim_instruction = (
         "2. Before mutation, verify this lane owns the task claim. "
-        f"If the task is still offered, run {claim_cmd} {task_id}. "
-        f"If the launcher already claimed it, confirm {claim_file} contains {task_id} "
+        "If the task is still offered, run the exact argv represented by "
+        "position.claim.claim_command and position.task_id in the final canonical data. "
+        "If the launcher already claimed it, confirm position.claim.claim_file contains "
+        f"{safe_task_id} "
         "and the task note is assigned to this lane. "
         "If claim ownership is absent, rejected for another reason, or assigned to another lane, "
         "stop and write a relay receipt."
     )
+    binding = canon_context.binding
+    canon_header = {
+        "advisory_carriage": binding["advisory_carriage"],
+        "canon": binding["canon"],
+        "may_authorize": binding["may_authorize"],
+        "receipt_is_admission": binding["receipt_is_admission"],
+        "schema": binding["schema"],
+    }
+    position_carriage = {
+        "binding_hash": binding["binding_hash"],
+        "binding_ref": binding["binding_ref"],
+        "position": binding["position"],
+    }
+    invocation_effect = (
+        "ADVISORY ONLY; no launch or mutation admission requested"
+        if advisory_only
+        else "launch requested; canon carriage remains non-authorizing"
+    )
     base = "\n".join(
         [
             "SDLC GOVERNED DISPATCH.",
-            f"Lane: {lane}",
+            "DISPATCH CANON STABLE PREFIX (NON-AUTHORIZING).",
+            _canonical_json_bytes(canon_header).decode("ascii"),
+            canon_context.rendered_payload,
+            "END DISPATCH CANON STABLE PREFIX.",
+            "",
+            f"Invocation effect: {invocation_effect}.",
+            f"Requested mode: {requested_mode or mode}",
+            f"Lane: {safe_lane}",
             f"Platform: {platform}",
             f"Mode: {mode}",
             f"Profile: {profile}",
             f"Platform path: {route.summary}",
             f"Capacity invariant: {CAPACITY_INVARIANT}",
-            f"Task: {task_id}",
-            f"Title: {strip_scalar(str(title or task_id))}",
-            f"AuthorityCase: {strip_scalar(str(authority_case or 'read-only-exempt'))}",
-            f"Parent spec: {strip_scalar(str(parent_spec or 'read-only-exempt'))}",
-            f"Task note: {validation.task.path}",
+            f"Task: {safe_task_id}",
             "",
             "Instructions:",
-            f"1. Work only on task {task_id}.",
+            f"1. Work only on task {safe_task_id}.",
             claim_instruction
             if route.mutable
             else "2. This route is read-only. Do not mutate files, claims, PRs, services, or runtime state.",
             "3. Use only the authority and mutation scope in the parent spec.",
             "4. Do not create or claim another task from the pool.",
             "5. Do not select work from the pool. Do not continue after this task without a new dispatch.",
-            f"6. Close this task only with {close_cmd}; do not use bare cc-close or canonical cc-close.",
+            "6. Close this task only with position.close.command from the final canonical data; "
+            "do not use bare cc-close or canonical cc-close.",
             "7. If blocked, report the blocker and idle.",
             "8. Do not downgrade profile or platform unless quota, resource pressure, or explicit operator hold requires it and the resulting route remains quality-equivalent for this task.",
+            "",
+            "DISPATCH POSITION DELTA (NON-AUTHORIZING; FINAL SECTION).",
+            _canonical_json_bytes(position_carriage).decode("ascii"),
         ]
     )
-    # Optional, fail-open HKP support context (projection, not authority). Never
-    # blocks dispatch: any failure yields no section.
-    try:
-        from shared.hkp_prompt_context import context_for_task
-
-        hkp = context_for_task(task_id)
-    except Exception:  # noqa: BLE001 — HKP is optional support; never break dispatch
-        hkp = ""
-    if hkp:
-        base += (
-            "\n\nHKP support context (projection, NOT authority — advisory; verify "
-            "against the cited source before acting):\n" + hkp
-        )
     return base
 
 
-def write_receipt(
+def build_dispatch_carrier(
     *,
     task_id: str,
     lane: str,
@@ -1234,59 +2083,348 @@ def write_receipt(
     launched: bool,
     launch_returncode: int | None = None,
     route_decision: RouteDecision | None = None,
-    route_decision_receipt_path: Path | None = None,
+    route_decision_ref: str | None = None,
     durable_binding: DurableDispatchBinding | None = None,
     dispatch_launch: DispatchLaunchResult | None = None,
     route_policy_reason_codes: list[str] | None = None,
-) -> Path:
-    ledger_dir = orchestration_ledger_dir()
-    ledger_dir.mkdir(parents=True, exist_ok=True)
-    path = ledger_dir / "methodology-dispatch.jsonl"
+    gate_event_candidate: dict[str, Any] | None = None,
+    canon_context: DispatchCanonContext | None = None,
+    canon_failure_code: str | None = None,
+    canon_repair_action: str | None = None,
+    requested_route: dict[str, str] | None = None,
+    launch_requested: bool = False,
+    preview_only: bool = False,
+    system_drain: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if launched:
+        raise ValueError("Gate-0A carriers cannot represent a launched effect")
+    created_at = now_utc()
+
+    def source_sha256(path: Path | None) -> str | None:
+        if path is None:
+            return None
+        try:
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            return None
+
+    def fact(
+        code: str,
+        value: object,
+        *,
+        kind: str = "diagnostic",
+        source_ref: str | None = None,
+        source_sha: str | None = None,
+        freshness_state: str = "not_applicable",
+        loss_state: str = "lossless",
+    ) -> dict[str, object]:
+        return build_dispatch_support_fact(
+            kind=kind,
+            code=code,
+            value=value,
+            source_ref=source_ref,
+            source_sha256=source_sha,
+            observed_at=created_at,
+            freshness_state=freshness_state,
+            loss_state=loss_state,
+        )
+
+    task_path = validation.task.path if validation.task else None
+    support: list[dict[str, object]] = [
+        fact("validation.ok", validation.ok, kind="evidence"),
+        fact("validation.reason", validation.reason),
+        fact(
+            "task.source",
+            None,
+            kind="evidence",
+            source_ref=str(task_path) if task_path else None,
+            source_sha=source_sha256(task_path),
+        ),
+        fact(
+            "task.parent_spec",
+            None,
+            kind="evidence",
+            source_ref=str(validation.parent_spec_path) if validation.parent_spec_path else None,
+            source_sha=source_sha256(validation.parent_spec_path),
+        ),
+        fact("validation.exempt_read_only", validation.exempt_read_only, kind="evidence"),
+        fact(
+            "task.validation_state",
+            "validated" if validation.ok else "held",
+            kind="candidate",
+        ),
+        fact(
+            "route.path_summary",
+            route.summary if route else None,
+            kind="evidence",
+            loss_state="bounded" if route else "unknown",
+        ),
+        fact("capacity.invariant", CAPACITY_INVARIANT, kind="evidence"),
+        fact("prompt.bytes", len(prompt.encode("utf-8")) if prompt else None),
+        fact(
+            "prompt.sha256",
+            hashlib.sha256(prompt.encode("utf-8")).hexdigest() if prompt else None,
+            kind="evidence",
+        ),
+        fact("request.preview_only", preview_only, kind="candidate"),
+        fact(
+            "request.advisory_only",
+            preview_only or bool(durable_binding and durable_binding.advisory_only),
+            kind="candidate",
+        ),
+        fact(
+            "request.route_platform",
+            requested_route.get("platform") if requested_route else platform,
+            kind="candidate",
+        ),
+        fact(
+            "request.route_mode",
+            requested_route.get("mode") if requested_route else mode,
+            kind="candidate",
+        ),
+        fact(
+            "request.route_profile",
+            requested_route.get("profile") if requested_route else profile,
+            kind="candidate",
+        ),
+        fact(
+            "route.target_host_candidate",
+            effective_dispatch_host(platform, mode),
+            kind="candidate",
+        ),
+        fact("canon.failure_code", canon_failure_code),
+        fact("canon.repair_action", canon_repair_action),
+    ]
+    if canon_context is not None:
+        binding_hash = canon_context.binding["binding_hash"]
+        position_hash = canon_context.binding["position"]["position_hash"]
+        support.extend(
+            [
+                fact(
+                    "canon.binding",
+                    None,
+                    kind="evidence",
+                    source_ref=canon_context.binding["binding_ref"],
+                    source_sha=binding_hash,
+                ),
+                fact(
+                    "canon.image_sha256",
+                    canon_context.binding["canon"]["image_hash"],
+                    kind="evidence",
+                ),
+                fact(
+                    "canon.payload_sha256",
+                    canon_context.binding["canon"]["payload_sha256"],
+                    kind="evidence",
+                ),
+                fact(
+                    "canon.position",
+                    None,
+                    kind="evidence",
+                    source_ref=canon_context.binding["position"]["position_ref"],
+                    source_sha=position_hash,
+                ),
+            ]
+        )
+    if durable_binding is not None:
+        support.extend(
+            [
+                fact("durable_mq.bound", durable_binding.ok, kind="evidence"),
+                fact(
+                    "durable_mq.advisory_only",
+                    durable_binding.advisory_only,
+                    kind="evidence",
+                ),
+                fact("durable_mq.reason", durable_binding.reason),
+            ]
+        )
+    if dispatch_launch is not None:
+        support.extend(
+            [
+                fact("coord_dispatch.replayed", dispatch_launch.replayed, kind="evidence"),
+                fact("coord_dispatch.reason", dispatch_launch.reason),
+                fact(
+                    "coord_dispatch.event_ref",
+                    dispatch_launch.event_id,
+                    kind="evidence",
+                ),
+                fact("coord_dispatch.cleanup_state", dispatch_launch.cleanup_state),
+            ]
+        )
+    if route_decision is not None:
+        decision_hash = _content_hash(route_decision.model_dump(mode="json"))
+        support.append(
+            fact(
+                "route.decision",
+                route_decision.decision_id,
+                kind="candidate",
+                source_ref=route_decision_ref,
+                source_sha=decision_hash,
+                freshness_state="current",
+                loss_state="bounded",
+            )
+        )
+        route_facts: tuple[tuple[str, str, object], ...] = (
+            ("route_policy.action", "candidate", route_decision.action.value),
+            ("route_policy.outcome", "candidate", route_decision.policy_outcome),
+            ("route_policy.launch_allowed", "candidate", route_decision.launch_allowed),
+            ("route_policy.green", "candidate", route_decision.route_policy_green),
+            ("route_policy.clog_state", "diagnostic", route_decision.clog_state.value),
+            (
+                "route_policy.compatibility_mode",
+                "diagnostic",
+                route_decision.compatibility_mode,
+            ),
+            ("route_policy.degraded_state", "diagnostic", route_decision.degraded_state),
+            (
+                "route_policy.registry_freshness_green",
+                "evidence",
+                route_decision.registry_freshness_green,
+            ),
+            (
+                "route_policy.quota_freshness_green",
+                "evidence",
+                route_decision.quota_freshness_green,
+            ),
+            (
+                "route_policy.quota_evidence_refs",
+                "evidence",
+                list(route_decision.quota_evidence_refs),
+            ),
+            (
+                "route_policy.resource_freshness_green",
+                "evidence",
+                route_decision.resource_freshness_green,
+            ),
+            (
+                "route_policy.route_selection_authority",
+                "candidate",
+                route_decision.route_selection_authority,
+            ),
+            (
+                "route_policy.quality_floor_satisfied",
+                "evidence",
+                route_decision.quality_floor_satisfied,
+            ),
+            (
+                "route_policy.authority_allowed",
+                "candidate",
+                route_decision.authority_allowed,
+            ),
+            (
+                "route_policy.cloud_burst_eligible",
+                "candidate",
+                route_decision.cloud_burst_eligible,
+            ),
+            (
+                "route_policy.cloud_burst_guard_state",
+                "diagnostic",
+                route_decision.cloud_burst_guard_state,
+            ),
+            (
+                "route_policy.cloud_burst_spike_reasons",
+                "diagnostic",
+                list(route_decision.cloud_burst_spike_reasons),
+            ),
+            (
+                "route_policy.cloud_burst_guard_reasons",
+                "diagnostic",
+                list(route_decision.cloud_burst_guard_reasons),
+            ),
+        )
+        support.extend(
+            fact(code, value, kind=kind, freshness_state="current")
+            for code, kind, value in route_facts
+        )
+        if route_decision.dimensional_receipt is not None:
+            dimensional = route_decision.dimensional_receipt
+            support.extend(
+                [
+                    fact(
+                        "dimensional.route_receipt_schema",
+                        dimensional.dimensional_route_receipt_schema,
+                        kind="evidence",
+                    ),
+                    fact(
+                        "dimensional.selected_route_id",
+                        dimensional.selected_route_id,
+                        kind="candidate",
+                    ),
+                    fact(
+                        "dimensional.candidate_count",
+                        len(dimensional.candidates),
+                        kind="evidence",
+                    ),
+                    fact(
+                        "dimensional.degraded_mode",
+                        dimensional.degraded_mode,
+                        kind="diagnostic",
+                    ),
+                    fact(
+                        "dimensional.evidence_refs",
+                        [
+                            ref
+                            for ref in (
+                                dimensional.demand_vector_ref.artifact_path,
+                                dimensional.candidate_snapshot_ref.artifact_path,
+                            )
+                            if ref
+                        ],
+                        kind="evidence",
+                        loss_state="bounded",
+                    ),
+                ]
+            )
+    effective_reason_codes = (
+        route_policy_reason_codes
+        if route_policy_reason_codes is not None
+        else list(route_decision.reason_codes)
+        if route_decision is not None
+        else None
+    )
+    if effective_reason_codes is not None:
+        support.append(fact("route_policy.reason_codes", effective_reason_codes))
+    if gate_event_candidate is not None:
+        gate_hash = _content_hash(gate_event_candidate)
+        support.append(
+            fact(
+                "gate.candidate",
+                gate_event_candidate.get("gate_result"),
+                kind="candidate",
+                source_ref=f"gate-event-candidate@sha256:{gate_hash}",
+                source_sha=gate_hash,
+                loss_state="bounded",
+            )
+        )
+
     record: dict[str, Any] = {
-        "schema_version": 1,
         "event": "methodology_dispatch",
-        "timestamp": now_utc(),
+        "created_at": created_at,
         "task_id": task_id,
         "lane": lane,
         "platform": platform,
         "mode": mode,
         "profile": profile,
-        "platform_path": route.launcher if route else None,
-        "platform_path_summary": route.summary if route else None,
-        "capacity_invariant": CAPACITY_INVARIANT,
-        "ok": validation.ok,
-        "reason": validation.reason,
-        "task_path": str(validation.task.path) if validation.task else None,
-        "parent_spec_path": str(validation.parent_spec_path)
-        if validation.parent_spec_path
-        else None,
-        "exempt_read_only": validation.exempt_read_only,
-        "launched": launched,
-        "launch_returncode": launch_returncode,
-        "prompt": prompt,
+        "requested_operation": "launch" if launch_requested else "validate",
+        "correlation": {
+            "schema": DISPATCH_CORRELATION_SCHEMA,
+            "mq_message_id": durable_binding.message_id if durable_binding else None,
+            "idempotency_key": dispatch_launch.idempotency_key if dispatch_launch else None,
+        },
+        "support": support,
+        "launched": False,
+        "may_authorize": False,
+        "receipt_is_admission": False,
+        "effect_state": "held_not_admitted",
+        "materialization_state": "not_materialized",
     }
-    if durable_binding is not None:
-        record["durable_mq_dispatch_bound"] = durable_binding.ok
-        record["advisory_only"] = durable_binding.advisory_only
-        record["durable_mq_reason"] = durable_binding.reason
-        record["durable_mq_message_id"] = durable_binding.message_id
-    if dispatch_launch is not None:
-        record["coord_dispatch_idempotency_key"] = dispatch_launch.idempotency_key
-        record["coord_dispatch_replayed"] = dispatch_launch.replayed
-        record["coord_dispatch_reason"] = dispatch_launch.reason
-        record["coord_dispatch_event_id"] = dispatch_launch.event_id
-        record["coord_dispatch_cleanup_state"] = dispatch_launch.cleanup_state
-    if route_policy_reason_codes is not None:
-        record["route_policy_reason_codes"] = route_policy_reason_codes
-    if route_decision is not None:
-        record.update(route_decision_receipt_payload(route_decision))
-        record["route_decision_receipt_path"] = (
-            str(route_decision_receipt_path) if route_decision_receipt_path else None
-        )
-    record["dispatch_host"] = effective_dispatch_host(platform, mode)
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(record, sort_keys=True) + "\n")
-    return path
+    del launch_returncode, requested_route, system_drain
+    return seal_methodology_dispatch_carrier(record)
+
+
+def write_receipt(**kwargs: Any) -> None:
+    del kwargs
+    _hold_gate0a_effect("methodology-receipt.publish")
 
 
 def slugify(value: str) -> str:
@@ -1298,24 +2436,8 @@ def slugify(value: str) -> str:
 
 
 def _sliced_call(args: list[str], env: dict[str, str] | None = None) -> int:
-    """subprocess.call that drops the launched lane — and its git/pytest/cargo
-    grandchildren — into hapax-sdlc.slice (L1 attachment point b) when the fence
-    is available. cpu.idle + the cpuset inherit to every descendant. No-op + run
-    un-sliced when systemd-run/the slice is unavailable, so dispatch never fails
-    on the fence."""
-    base_env = dict(os.environ) if env is None else env
-    if os.environ.get("PYTEST_CURRENT_TEST"):
-        return subprocess.call(list(args), env=base_env)  # don't probe/create scopes in tests
-    explicit_env = {
-        key: value
-        for key, value in base_env.items()
-        if key.startswith(("HAPAX_", "CLAUDE_")) and os.environ.get(key) != value
-    }
-    explicit_env["HAPAX_SDLC_SLICE_ATTACHED"] = "1"
-    wrapped = sdlc_slice_wrap(args, setenv=explicit_env)
-    if wrapped != list(args):
-        base_env = {**base_env, "HAPAX_SDLC_SLICE_ATTACHED": "1"}
-    return subprocess.call(wrapped, env=base_env)
+    del args, env
+    _hold_gate0a_effect("process.launch")
 
 
 def effective_dispatch_host(platform: str, mode: str) -> str:
@@ -1331,60 +2453,13 @@ def effective_dispatch_host(platform: str, mode: str) -> str:
 
 
 def _write_delayed_receipt(args: argparse.Namespace, decision: AdmissionDecision) -> None:
-    """Record that a dispatch is QUEUED (not refused) under CPU pressure."""
-    try:
-        ledger = orchestration_ledger_dir()
-        ledger.mkdir(parents=True, exist_ok=True)
-        (ledger / f"delayed-{slugify(args.lane)}-{slugify(args.task)}.json").write_text(
-            json.dumps(
-                {
-                    "kind": "sdlc-pressure-delayed",
-                    "task_id": args.task,
-                    "lane": args.lane,
-                    "platform": args.platform,
-                    "mode": args.mode,
-                    "profile": args.profile,
-                    "admission_state": decision.state,
-                    "reasons": decision.reasons,
-                    "queued_not_dropped": True,
-                    "ts": now_utc(),
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-    except OSError:
-        pass  # a missing DELAYED receipt must never block the queued dispatch
+    del args, decision
+    _hold_gate0a_effect("dispatch-pressure-receipt.publish")
 
 
 def _await_sdlc_admission(args: argparse.Namespace) -> None:
-    """L3 chokepoint: block-and-wait while CPU pressure has admission CLOSED.
-    The dispatch is QUEUED then RUN — never skipped. Slows the fleet, drops
-    nothing. Disabled via HAPAX_SDLC_PRESSURE_GATE_OFF; also never blocks a test
-    process on the real host's pressure (the wait logic is unit-tested directly
-    via wait_until_admitted)."""
-    if env_flag("HAPAX_SDLC_PRESSURE_GATE_OFF") or os.environ.get("PYTEST_CURRENT_TEST"):
-        return
-    # Admit on the pressure of the host the work will RUN on — a dispatch bound
-    # for appendix must never starve on podium PSI (2026-06-10: 4h silent queue).
-    target = effective_dispatch_host(args.platform, args.mode)
-    gate = functools.partial(admission_state, target_host=target)
-    decision = gate()
-    if decision.state != "closed":
-        return
-    print(
-        f"sdlc-pressure CLOSED for target={target}: queuing dispatch of {args.task} "
-        f"(resumes on clear) — {'; '.join(decision.reasons)}",
-        file=sys.stderr,
-    )
-    final = wait_until_admitted(
-        gate,
-        sleep=time.sleep,
-        on_delay=lambda decision: _write_delayed_receipt(args, decision),
-        poll_interval=float(os.environ.get("HAPAX_SDLC_PRESSURE_POLL_S", "10")),
-        max_wait_s=float(os.environ.get("HAPAX_SDLC_PRESSURE_MAX_WAIT_S", "1800")),
-    )
-    print(f"sdlc-pressure cleared ({final.state}): proceeding with {args.task}", file=sys.stderr)
+    del args
+    _hold_gate0a_effect("dispatch.pressure-wait")
 
 
 # Worker-lane terminal-failure classification -> guarded family-availability witness
@@ -1444,32 +2519,8 @@ def _read_worker_failure_text(platform: str, mode: str, lane: str) -> str:
 def _classify_and_witness_terminal_failure(
     rc: int, *, task_id: str, lane: str, platform: str, mode: str, profile: str
 ) -> None:
-    """Append a classification receipt + a GUARDED family-availability witness for a terminal worker
-    failure. Caller wraps this in try/except (fail-open)."""
-
-    route_id = f"{platform}.{mode}.{profile}"
-    text = _read_worker_failure_text(platform, mode, lane)
-    adapter_cls = _WORKER_FAILURE_ADAPTERS.get(platform)
-    if adapter_cls is not None:
-        # Text-classifier adapters classify from the output text; exit_code remains
-        # available for adapter-specific launch wrappers that need it.
-        receipt = adapter_cls().classify_failure(
-            text, process_failed=True, route_id=route_id, exit_code=rc
-        )
-    else:
-        receipt = FailureReceipt(
-            code=FailureCode.UNKNOWN, raw_signal=text, platform=platform, route_id=route_id
-        )
-    # The headless supervisor's quota-wall exit code is a high-confidence QUOTA signal even when the
-    # output.jsonl tail did not capture the rate-limit line (fast terminal failure).
-    code = FailureCode.QUOTA_EXHAUSTION if rc == QUOTA_WALL_EXIT_CODE else receipt.code
-    if code is not receipt.code:
-        receipt = receipt.model_copy(update={"code": code})
-    now_iso = datetime.now(UTC).isoformat()
-    append_failure_receipt_record(
-        task_id=task_id, lane=lane, returncode=rc, receipt=receipt, now_iso=now_iso
-    )
-    update_worker_family_availability(family=platform, code=code, now_iso=now_iso)
+    del rc, task_id, lane, platform, mode, profile
+    _hold_gate0a_effect("worker-failure.publish")
 
 
 def classify_and_witness_launch(
@@ -1481,25 +2532,8 @@ def classify_and_witness_launch(
     mode: str,
     profile: str,
 ) -> int:
-    """Run the worker spawn ``launch_fn``; on a TERMINAL failure (rc != 0) classify it + write the
-    guarded family-availability witness. Strictly FAIL-OPEN — classification NEVER changes the
-    returncode or the dispatch outcome (coord_dispatch still records the terminal event). Returns
-    ``launch_fn``'s returncode verbatim. Module-level (not nested) so it is unit-testable."""
-
-    rc = launch_fn()
-    if rc != 0:
-        try:
-            _classify_and_witness_terminal_failure(
-                rc,
-                task_id=task_id,
-                lane=lane,
-                platform=platform,
-                mode=mode,
-                profile=profile,
-            )
-        except Exception:  # noqa: BLE001 — classification must never break dispatch
-            pass
-    return rc
+    del launch_fn, task_id, lane, platform, mode, profile
+    _hold_gate0a_effect("worker.launch-and-witness")
 
 
 #: Registry-declared model pin per claude dispatch profile — the launch-side half of the
@@ -1515,7 +2549,13 @@ CLAUDE_PROFILE_MODEL_PIN: dict[str, str] = {
 }
 
 
-def launch_claude_headless(task_id: str, lane: str, prompt: str, route: PlatformPath) -> int:
+def launch_claude_headless(
+    task_id: str,
+    lane: str,
+    prompt: str,
+    route: PlatformPath,
+    claim_dispatch_env: dict[str, str] | None = None,
+) -> int:
     launcher = Path(
         os.environ.get(
             "HAPAX_METHODOLOGY_CLAUDE_HEADLESS",
@@ -1523,6 +2563,7 @@ def launch_claude_headless(task_id: str, lane: str, prompt: str, route: Platform
         )
     )
     env = os.environ.copy()
+    env.update(claim_dispatch_env or {})
     # Never propagate the dispatcher's own session id: each lane mints its own
     # per-spawn HAPAX_SESSION_ID so two same-role re-dispatched lanes never share a
     # claim key (reform-identity-coherence cluster 11, AC1).
@@ -1548,7 +2589,13 @@ def launch_claude_headless(task_id: str, lane: str, prompt: str, route: Platform
     return _sliced_call([str(launcher), "--task", task_id, lane, prompt], env)
 
 
-def launch_claude_interactive(task_id: str, lane: str, validation: Validation) -> int:
+def launch_claude_interactive(
+    task_id: str,
+    lane: str,
+    validation: Validation,
+    prompt: str = "",
+    claim_dispatch_env: dict[str, str] | None = None,
+) -> int:
     launcher = Path(
         os.environ.get(
             "HAPAX_METHODOLOGY_CLAUDE_LAUNCHER",
@@ -1562,24 +2609,44 @@ def launch_claude_interactive(task_id: str, lane: str, validation: Validation) -
     status = ""
     if validation.task is not None:
         status = strip_scalar(str(validation.task.fields.get("status", "")))
-    args = [str(launcher), "--role", lane, "--terminal", "tmux", "--task", task_id]
+    args = [
+        str(launcher),
+        "--role",
+        lane,
+        "--terminal",
+        "tmux",
+        "--task",
+        task_id,
+        "--",
+        prompt,
+    ]
     # Always hand the lane a scrubbed env: drop any inherited HAPAX_SESSION_ID so it
     # mints its own per-spawn id (reform-identity-coherence cluster 11, AC1).
     # hapax-claude pins the freshly minted id into its tmux runner script.
     env = os.environ.copy()
+    env.update(claim_dispatch_env or {})
     env.pop("HAPAX_SESSION_ID", None)
     if status in {"claimed", "in_progress"}:
         env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
-    return subprocess.call(args, env=env)
+    return _sliced_call(args, env=env)
 
 
 def normalize_profile(platform: str, profile: str) -> str:
     profile = profile.strip().lower().replace("_", "-")
-    if platform == "api" and profile in {"api-frontier", "cloud", "cloud-burst", "frontier"}:
+    if platform == "api" and profile in {
+        "api-frontier",
+        "cloud",
+        "cloud-burst",
+        "frontier",
+    }:
         return "api_frontier"
     if platform == "api" and profile in {"or", "open-router", "openrouter"}:
         return "openrouter"
-    if platform == "api" and profile in {"provider-gateway", "gateway", "provider_spend"}:
+    if platform == "api" and profile in {
+        "provider-gateway",
+        "gateway",
+        "provider_spend",
+    }:
         return "provider_gateway"
     if profile in {"default", "max", "pro", "full-capability"}:
         return "full"
@@ -1778,17 +2845,8 @@ def dispatch_message_id(cli_value: str | None) -> str | None:
     return value or None
 
 
-def coord_event_log_from_env() -> CoordEventLog:
-    # Per-surface overrides still win (test isolation sets them explicitly); the
-    # bare default is the single user-writable coord SSOT (coord_base_dir() →
-    # ~/.cache/hapax/coord), NOT the dead root-owned /var/lib tree that uid 1000
-    # could never mkdir — that default HARD-BLOCKED the launch coord write.
-    base = coord_base_dir()
-    return CoordEventLog(
-        db_path=os.environ.get("HAPAX_COORD_LEDGER_DB", str(base / "ledger.db")),
-        jsonl_path=os.environ.get("HAPAX_COORD_JSONL_MIRROR", str(base / "ledger.jsonl")),
-        spool_dir=os.environ.get("HAPAX_COORD_SPOOL_DIR", str(base / "spool")),
-    )
+def coord_event_log_from_env() -> None:
+    _hold_gate0a_effect("coord-event-log.open")
 
 
 def orchestration_ledger_dir() -> Path:
@@ -1818,24 +2876,17 @@ def _emit_gate_event(
     task_fields: dict[str, Any],
     *,
     gate_result: str,
-) -> None:
-    """Fail-safe: emit one observational GateEvent for the dispatch admission decision.
+) -> dict[str, Any]:
+    """Build non-materialized observational GateEvent candidate data."""
 
-    KEYSTONE (cc-task-gate-event-producer-20260626). A gate-event write failure is logged
-    and swallowed — the measurement is best-effort and must NEVER break dispatch.
-    """
-    try:
-        route = route_decision.selected_descriptor_leaf or route_decision.route_id
-        append_gate_event(
-            build_gate_event(
-                task_fields,
-                route=route,
-                demand_vector=policy_request.demand_vector,
-                gate_result=gate_result,
-            )
-        )
-    except Exception as exc:  # noqa: BLE001 - measurement must never break dispatch
-        print(f"gate-event emit failed (non-fatal): {exc}", file=sys.stderr)
+    route = route_decision.selected_descriptor_leaf or route_decision.route_id
+    event = build_gate_event(
+        task_fields,
+        route=route,
+        demand_vector=policy_request.demand_vector,
+        gate_result=gate_result,
+    )
+    return event.model_dump(mode="json")
 
 
 def launch_codex_headless(
@@ -1846,6 +2897,7 @@ def launch_codex_headless(
     route: PlatformPath,
     *,
     reactivate_retired_relay: bool = False,
+    claim_dispatch_env: dict[str, str] | None = None,
 ) -> int:
     # Genuine headless path (reform §6 P0): `codex exec` via hapax-codex-headless,
     # NOT a tmux pane. The tmux launcher (hapax-codex) remains the interactive
@@ -1881,6 +2933,7 @@ def launch_codex_headless(
             ]
         )
     env = os.environ.copy()
+    env.update(claim_dispatch_env or {})
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("codex", "headless")
     if local_fallback_allowed:
@@ -1890,7 +2943,13 @@ def launch_codex_headless(
     return _sliced_call(args, env)
 
 
-def launch_vibe_headless(task_id: str, lane: str, prompt: str, validation: Validation) -> int:
+def launch_vibe_headless(
+    task_id: str,
+    lane: str,
+    prompt: str,
+    validation: Validation,
+    claim_dispatch_env: dict[str, str] | None = None,
+) -> int:
     launcher = Path(
         os.environ.get(
             "HAPAX_METHODOLOGY_VIBE_LAUNCHER",
@@ -1920,15 +2979,70 @@ def launch_vibe_headless(task_id: str, lane: str, prompt: str, validation: Valid
     ]
     if status in {"claimed", "in_progress"}:
         args.append("--no-claim")
-    return _sliced_call(args)
+    env = os.environ.copy()
+    env.update(claim_dispatch_env or {})
+    return _sliced_call(args, env)
 
 
-def advance_task_stage(task_id: str, stage: str) -> int:
-    """Perform the drain mutation: advance the orphan's stage via the canonical
-    governed setter (scripts/cc-stage-advance). Returns its exit code (0 advanced /
-    already-there; 2 refused; 3 not-found/IO). Forward-only — no --allow-backward."""
-    script = Path(__file__).resolve().parent / "cc-stage-advance"
-    return subprocess.call([sys.executable, str(script), task_id, stage])
+def _parse_system_drain_guard_evidence(
+    raw_values: list[str],
+) -> tuple[dict[str, tuple[str, ...]] | None, str | None]:
+    collected: dict[str, list[str]] = {}
+    durable_prefixes = ("coord:", "file:", "mq:", "receipt:", "task:")
+    for raw in raw_values:
+        guard, separator, evidence_ref = raw.partition("=")
+        if not separator or not guard or not evidence_ref:
+            return None, "system_drain_guard_evidence_malformed"
+        if not evidence_ref.startswith(durable_prefixes):
+            return None, "system_drain_guard_evidence_not_durable"
+        collected.setdefault(guard, []).append(evidence_ref)
+    return {key: tuple(value) for key, value in collected.items()}, None
+
+
+def _preflight_system_drain_transition(
+    task: TaskNote,
+    *,
+    target_stage: str,
+    edge_class: str,
+    raw_guard_evidence: list[str],
+) -> tuple[LifecycleTransitionIntent | None, str | None]:
+    guard_evidence, reason = _parse_system_drain_guard_evidence(raw_guard_evidence)
+    if guard_evidence is None:
+        return None, reason
+    fields = task.fields
+    no_go = {
+        key: fields.get(key) is True or strip_scalar(str(fields.get(key, ""))).lower() == "true"
+        for key in NO_GO_BOOLEANS
+    }
+    try:
+        intent = LifecycleTransitionIntent.create(
+            task_id=strip_scalar(str(fields.get("task_id", ""))),
+            from_stage=strip_scalar(str(fields.get("stage", ""))),
+            to_stage=target_stage,
+            edge_class=edge_class,
+            authority_case=strip_scalar(str(fields.get("authority_case", ""))),
+            actor=SYSTEM_DRAIN_LANE,
+            no_go_snapshot=no_go,
+            guard_evidence=guard_evidence,
+            parent_spec=strip_scalar(str(fields.get("parent_spec", ""))) or None,
+            evidence_type="system_drain_capability",
+            evidence_summary="preflight only; capability not consumed",
+            origin="hapax-methodology-dispatch:system-drain",
+        )
+    except (LifecycleTransitionError, ValueError) as exc:
+        return None, getattr(exc, "reason_code", "system_drain_transition_preflight_refused")
+    return intent, None
+
+
+def advance_task_stage(
+    task_id: str,
+    stage: str,
+    *,
+    edge_class: str,
+    guard_evidence: dict[str, tuple[str, ...]],
+) -> int:
+    del task_id, stage, edge_class, guard_evidence
+    _hold_gate0a_effect("lifecycle.advance-stage")
 
 
 def reverify_lane_dead_for_drain(lane: str, task_id: str) -> tuple[bool, str]:
@@ -1954,86 +3068,8 @@ def reverify_lane_dead_for_drain(lane: str, task_id: str) -> tuple[bool, str]:
 
 
 def run_system_drain(args: argparse.Namespace, task_root: Path) -> int:
-    """Capability-gated SYSTEM drain of an orphaned task whose owning lane is
-    verifiably dead. This path NEVER reaches the normal launch ladder (reviewer
-    must-fix #3): the ``__system__`` sentinel is not a launchable lane, so a phantom
-    worktree can never be built. The actual drain is a real mutation — it advances
-    the orphan's stage via cc-stage-advance once liveness + capability pass and a
-    mutation-moment liveness re-check confirms the lane is still dead."""
-    if not args.dispatch_capability:
-        print("BLOCKED: system drain requires --dispatch-capability <file>", file=sys.stderr)
-        return 10
-    if not args.drain_to_stage:
-        print("BLOCKED: system drain requires --drain-to-stage <stage>", file=sys.stderr)
-        return 10
-
-    validation = validate_task(
-        task_id=args.task,
-        lane=SYSTEM_DRAIN_LANE,
-        platform=args.platform,
-        task_root=task_root,
-        strict_worktree=False,
-        dispatch_capability_path=Path(args.dispatch_capability).expanduser(),
-    )
-
-    def _blocked_receipt(reason: str, *, rc: int | None = None) -> None:
-        if args.no_receipt:
-            return
-        write_receipt(
-            task_id=args.task,
-            lane=SYSTEM_DRAIN_LANE,
-            platform=args.platform,
-            mode=args.mode,
-            profile=args.profile,
-            route=None,
-            validation=Validation(
-                False,
-                reason,
-                validation.task,
-                validation.parent_spec_path,
-                validation.exempt_read_only,
-            ),
-            prompt=None,
-            launched=False,
-            launch_returncode=rc,
-        )
-
-    if not validation.ok:
-        _blocked_receipt(validation.reason)
-        print(f"BLOCKED: {validation.reason}", file=sys.stderr)
-        return 10
-
-    assert validation.task is not None
-    drained_lane = normalize_lane_name(str(validation.task.fields.get("assigned_to", "")))
-    safe, why = reverify_lane_dead_for_drain(drained_lane, args.task)
-    if not safe:
-        reason = f"system drain aborted at mutation: {why}"
-        _blocked_receipt(reason)
-        print(f"BLOCKED: {reason}", file=sys.stderr)
-        return 10
-
-    rc = advance_task_stage(args.task, args.drain_to_stage)
-    if rc != 0:
-        reason = f"system drain cc-stage-advance failed (rc={rc})"
-        _blocked_receipt(reason, rc=rc)
-        print(f"BLOCKED: {reason}", file=sys.stderr)
-        return 10
-
-    if not args.no_receipt:
-        write_receipt(
-            task_id=args.task,
-            lane=SYSTEM_DRAIN_LANE,
-            platform=args.platform,
-            mode=args.mode,
-            profile=args.profile,
-            route=None,
-            validation=validation,
-            prompt=None,
-            launched=True,
-            launch_returncode=rc,
-        )
-    print(f"system-drained: {args.task} ({drained_lane} dead) -> stage {args.drain_to_stage}")
-    return 0
+    del args, task_root
+    _hold_gate0a_effect("system-drain.execute")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2056,7 +3092,9 @@ def main(argv: list[str] | None = None) -> int:
         ],
     )
     parser.add_argument(
-        "--mode", default="headless", choices=["headless", "interactive", "receipt-only"]
+        "--mode",
+        default="headless",
+        choices=["headless", "interactive", "receipt-only"],
     )
     parser.add_argument(
         "--profile",
@@ -2081,13 +3119,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--sweep-stale-claims",
         action="store_true",
-        help="Reap lease-expired / terminal cc-task claim files across ALL lanes, then exit",
+        help=(
+            "Legacy claim-maintenance entry point; HOLD until represented by an admitted "
+            "lifecycle action"
+        ),
     )
     parser.add_argument(
         "--print-prompt", action="store_true", help="Print the governed launch prompt"
     )
     parser.add_argument(
-        "--no-receipt", action="store_true", help="Do not append dispatch ledger receipt"
+        "--no-receipt",
+        action="store_true",
+        help="Legacy flag; governed dispatch refuses unwitnessed prompt or launch paths",
     )
     parser.add_argument(
         "--skip-worktree-check",
@@ -2114,15 +3157,30 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--dispatch-capability",
-        help="Path to a single-use DispatchCapability file authorizing a SYSTEM drain "
-        "(--lane __system__) of an orphaned task whose owning lane is verifiably dead.",
+        help=(
+            "Legacy SYSTEM-drain input retained for compatibility; the CLI HOLDs until "
+            "the drain is represented by an admitted lifecycle action"
+        ),
     )
     parser.add_argument(
         "--drain-to-stage",
-        help="Target stage for a SYSTEM drain (--lane __system__); the orphaned task's "
-        "stage is advanced here via cc-stage-advance once liveness + capability pass.",
+        help="Legacy SYSTEM-drain target retained for compatibility; no stage is advanced",
+    )
+    parser.add_argument(
+        "--drain-edge-class",
+        default="auto",
+        choices=["auto", "next", "fall"],
+        help="Legacy SYSTEM-drain edge class retained for compatibility",
+    )
+    parser.add_argument(
+        "--guard-evidence",
+        action="append",
+        default=[],
+        metavar="GUARD=DURABLE_REF",
+        help="Legacy SYSTEM-drain guard evidence retained for compatibility",
     )
     args = parser.parse_args(argv)
+    requested_profile = args.profile
     args.profile = normalize_profile(args.platform, args.profile)
 
     if args.list_platform_paths:
@@ -2134,22 +3192,83 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.sweep_stale_claims:
-        sweep_root = Path(
-            os.environ.get(
-                "HAPAX_CC_TASK_ROOT",
-                str(Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"),
-            )
-        )
-        reaped = run_claim_sweep(sweep_root)
-        for name, task_id, reason in reaped:
-            print(f"reaped {name} ({reason}: {task_id or '∅'})")
-        print(f"cc-claim sweep: reaped {len(reaped)} stale claim(s)")
-        return 0
+        return _hold_for_admitted_lifecycle_action("claim_sweep")
 
     if not args.task or not args.lane:
         parser.error(
             "--task and --lane are required unless --list-platform-paths or --capabilities is used"
         )
+
+    try:
+        args.task = _dispatch_identifier(args.task, field="task_id")
+        if strip_scalar(args.lane) != SYSTEM_DRAIN_LANE:
+            args.lane = _dispatch_identifier(args.lane, field="lane")
+            requested_profile = _dispatch_identifier(requested_profile, field="profile")
+            args.profile = _dispatch_identifier(args.profile, field="profile")
+    except DispatchCanonError as exc:
+        print(
+            f"BLOCKED: {exc.reason_code}; repair={exc.repair_action}",
+            file=sys.stderr,
+        )
+        return 10
+
+    requested_route = {
+        "platform": args.platform,
+        "mode": args.mode,
+        "profile": requested_profile,
+    }
+    requested_mode = args.mode
+    preview_only = not args.launch
+
+    ordinary_dispatch = strip_scalar(args.lane) != SYSTEM_DRAIN_LANE
+    if ordinary_dispatch and args.launch and args.no_receipt:
+        print(
+            "BLOCKED: dispatch_launch_without_receipt_forbidden; "
+            "repair=remove --no-receipt from the launch request",
+            file=sys.stderr,
+        )
+        return 10
+    if ordinary_dispatch and args.no_receipt:
+        print(
+            "BLOCKED: dispatch_preview_without_receipt_forbidden; "
+            "repair=remove --no-receipt so route and canon decisions remain witnessed",
+            file=sys.stderr,
+        )
+        return 10
+    if ordinary_dispatch and args.launch and args.skip_worktree_check:
+        print(
+            "BLOCKED: dispatch_launch_worktree_check_bypass_forbidden; "
+            "repair=remove --skip-worktree-check from the launch request",
+            file=sys.stderr,
+        )
+        return 10
+    if ordinary_dispatch and requested_mode == "receipt-only":
+        if args.launch:
+            print(
+                "BLOCKED: receipt-only is a preview intent and cannot launch; "
+                "repair=use --mode headless with --launch",
+                file=sys.stderr,
+            )
+            return 10
+        if (args.platform, args.profile) != ("codex", "full"):
+            print(
+                "BLOCKED: receipt-only preview is retained only for codex/full; "
+                "repair=use an existing real platform/mode/profile preview route",
+                file=sys.stderr,
+            )
+            return 10
+        args.mode = "headless"
+
+    gate_event_candidate: dict[str, Any] | None = None
+
+    def write_main_receipt(**kwargs: Any) -> dict[str, Any]:
+        kwargs.setdefault("requested_route", requested_route)
+        kwargs.setdefault("launch_requested", args.launch)
+        kwargs.setdefault("preview_only", preview_only)
+        kwargs.setdefault("gate_event_candidate", gate_event_candidate)
+        carrier = build_dispatch_carrier(**kwargs)
+        print(_canonical_json_bytes(carrier).decode("ascii"))
+        return carrier
 
     task_root = Path(
         os.environ.get(
@@ -2158,15 +3277,14 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
 
-    # Opportunistic cross-role stale-claim sweep: every dispatch frees lease-expired
-    # / terminal claims fleet-wide so a dead or wedged lane never parks a slot
-    # indefinitely (reform-identity-coherence cluster 11). Best-effort — it must
-    # never block a dispatch; opt out with HAPAX_DISPATCH_CLAIM_SWEEP=0.
-    if os.environ.get("HAPAX_DISPATCH_CLAIM_SWEEP", "1") != "0":
-        try:
-            run_claim_sweep(task_root, notify=True)
-        except Exception:
-            pass
+    # The legacy SYSTEM drain bypasses admission and is contained until the
+    # lifecycle action is represented and consumed by the Gate-0 spine.
+    if not ordinary_dispatch:
+        return _hold_for_admitted_lifecycle_action("system_drain")
+
+    # Claim maintenance is a lifecycle effect, not launch preflight. Ordinary
+    # dispatch therefore performs no opportunistic sweep; maintenance must enter
+    # through the same admitted lifecycle-action boundary as every other effect.
 
     if args.platform in {"agy", "antigrav", "antigravity", "gemini-cli"}:
         if args.platform == "agy":
@@ -2181,9 +3299,12 @@ def main(argv: list[str] | None = None) -> int:
                 "Use admitted Claude, Codex, or Vibe routes, or agy.review.direct for the live "
                 "read-only review route."
             )
-        task_for_receipt = read_task(task_root, args.task)
+        try:
+            task_for_receipt = read_task(task_root, args.task)
+        except TaskStoreError:
+            task_for_receipt = None
         if not args.no_receipt:
-            write_receipt(
+            write_main_receipt(
                 task_id=args.task,
                 lane=args.lane,
                 platform=args.platform,
@@ -2202,13 +3323,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"BLOCKED: {reason}", file=sys.stderr)
         return 10
 
-    # SYSTEM drain is a distinct, capability-gated mutation path — it advances an
-    # orphaned dead-lane task via cc-stage-advance and returns. It must intercept
-    # BEFORE route_for/build_prompt/the launch ladder so the __system__ sentinel can
-    # never resolve to a phantom lane worktree (reviewer must-fix #3).
-    if strip_scalar(args.lane) == SYSTEM_DRAIN_LANE:
-        return run_system_drain(args, task_root)
-
     validation = validate_task(
         task_id=args.task,
         lane=args.lane,
@@ -2221,7 +3335,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not validation.ok:
         if not args.no_receipt:
-            write_receipt(
+            write_main_receipt(
                 task_id=args.task,
                 lane=args.lane,
                 platform=args.platform,
@@ -2234,89 +3348,6 @@ def main(argv: list[str] | None = None) -> int:
             )
         print(f"BLOCKED: {validation.reason}", file=sys.stderr)
         return 10
-
-    if args.mode == "receipt-only":
-        ok, reason = platform_route_validation(route, validation)
-        if ok:
-            metadata_reason = route_metadata_validation_reason(validation)
-            if metadata_reason is not None:
-                ok = False
-                reason = metadata_reason
-        if not ok:
-            blocked = Validation(
-                False,
-                reason,
-                validation.task,
-                validation.parent_spec_path,
-                validation.exempt_read_only,
-            )
-            if not args.no_receipt:
-                write_receipt(
-                    task_id=args.task,
-                    lane=args.lane,
-                    platform=args.platform,
-                    mode=args.mode,
-                    profile=args.profile,
-                    route=route,
-                    validation=blocked,
-                    prompt=None,
-                    launched=False,
-                )
-            print(f"BLOCKED: {reason}", file=sys.stderr)
-            if route is None:
-                print("Supported governed routes:", file=sys.stderr)
-                print("\n".join(supported_route_lines()), file=sys.stderr)
-            return 10
-        assert route is not None
-        if args.launch:
-            reason = "receipt-only mode does not launch lanes"
-            blocked = Validation(
-                False,
-                reason,
-                validation.task,
-                validation.parent_spec_path,
-                validation.exempt_read_only,
-            )
-            if not args.no_receipt:
-                write_receipt(
-                    task_id=args.task,
-                    lane=args.lane,
-                    platform=args.platform,
-                    mode=args.mode,
-                    profile=args.profile,
-                    route=route,
-                    validation=blocked,
-                    prompt=None,
-                    launched=False,
-                )
-            print(f"BLOCKED: {reason}", file=sys.stderr)
-            return 10
-
-        prompt = build_prompt(
-            args.task,
-            args.lane,
-            args.platform,
-            args.mode,
-            args.profile,
-            validation,
-            route,
-        )
-        if args.print_prompt:
-            print(prompt)
-        if not args.no_receipt:
-            write_receipt(
-                task_id=args.task,
-                lane=args.lane,
-                platform=args.platform,
-                mode=args.mode,
-                profile=args.profile,
-                route=route,
-                validation=validation,
-                prompt=prompt,
-                launched=False,
-            )
-        print(f"eligible: {args.task} -> {args.platform}/{args.mode}/{args.profile}/{args.lane}")
-        return 0
 
     policy_sources = load_dispatch_policy_sources(
         registry_path=optional_env_path("HAPAX_PLATFORM_CAPABILITY_REGISTRY"),
@@ -2350,14 +3381,22 @@ def main(argv: list[str] | None = None) -> int:
         rollback_mode=rollback_mode,
     )
     adapter = _capability_adapter_for_admission(args.platform)
-    route_decision = adapter.admit(policy_request, candidate_requests=candidate_requests)
-    route_decision_receipt_path = write_route_decision_receipt(
-        route_decision,
-        ledger_dir=orchestration_ledger_dir(),
+    route_decision = adapter.admit(
+        policy_request,
+        now=datetime.now(UTC),
+        candidate_requests=candidate_requests,
     )
+    route_decision_hash = _content_hash(route_decision.model_dump(mode="json"))
+    route_decision_ref = f"route-decision@sha256:{route_decision_hash}"
 
     if route_decision.action is not DispatchAction.LAUNCH:
-        _emit_gate_event(route_decision, policy_request, task_fields, gate_result="reject")
+        if args.launch:
+            gate_event_candidate = _emit_gate_event(
+                route_decision,
+                policy_request,
+                task_fields,
+                gate_result="reject",
+            )
         route_reason = f"route policy {route_decision.action.value}: {route_decision.message}"
         blocked = Validation(
             False,
@@ -2367,7 +3406,7 @@ def main(argv: list[str] | None = None) -> int:
             validation.exempt_read_only,
         )
         if not args.no_receipt:
-            write_receipt(
+            write_main_receipt(
                 task_id=args.task,
                 lane=args.lane,
                 platform=args.platform,
@@ -2378,7 +3417,7 @@ def main(argv: list[str] | None = None) -> int:
                 prompt=None,
                 launched=False,
                 route_decision=route_decision,
-                route_decision_receipt_path=route_decision_receipt_path,
+                route_decision_ref=route_decision_ref,
             )
         print(f"BLOCKED: {route_reason}", file=sys.stderr)
         if route is None:
@@ -2398,7 +3437,7 @@ def main(argv: list[str] | None = None) -> int:
             validation.exempt_read_only,
         )
         if not args.no_receipt:
-            write_receipt(
+            write_main_receipt(
                 task_id=args.task,
                 lane=args.lane,
                 platform=args.platform,
@@ -2409,7 +3448,7 @@ def main(argv: list[str] | None = None) -> int:
                 prompt=None,
                 launched=False,
                 route_decision=route_decision,
-                route_decision_receipt_path=route_decision_receipt_path,
+                route_decision_ref=route_decision_ref,
             )
         print(f"BLOCKED: {reason}", file=sys.stderr)
         print("Supported governed routes:", file=sys.stderr)
@@ -2425,7 +3464,7 @@ def main(argv: list[str] | None = None) -> int:
             validation.exempt_read_only,
         )
         if not args.no_receipt:
-            write_receipt(
+            write_main_receipt(
                 task_id=args.task,
                 lane=args.lane,
                 platform=selected_route.platform,
@@ -2436,7 +3475,7 @@ def main(argv: list[str] | None = None) -> int:
                 prompt=None,
                 launched=False,
                 route_decision=route_decision,
-                route_decision_receipt_path=route_decision_receipt_path,
+                route_decision_ref=route_decision_ref,
             )
         print(f"BLOCKED: {compatibility_reason}", file=sys.stderr)
         return 10
@@ -2444,7 +3483,45 @@ def main(argv: list[str] | None = None) -> int:
     args.platform = route.platform
     args.mode = route.mode
     args.profile = route.profile
-    _emit_gate_event(route_decision, policy_request, task_fields, gate_result="accept")
+    selected_validation = validate_task(
+        task_id=args.task,
+        lane=args.lane,
+        platform=args.platform,
+        task_root=task_root,
+        strict_worktree=not args.skip_worktree_check,
+    )
+    if not selected_validation.ok:
+        reason = f"selected route preflight failed: {selected_validation.reason}"
+        if not args.no_receipt:
+            write_main_receipt(
+                task_id=args.task,
+                lane=args.lane,
+                platform=args.platform,
+                mode=args.mode,
+                profile=args.profile,
+                route=route,
+                validation=Validation(
+                    False,
+                    reason,
+                    selected_validation.task,
+                    selected_validation.parent_spec_path,
+                    selected_validation.exempt_read_only,
+                ),
+                prompt=None,
+                launched=False,
+                route_decision=route_decision,
+                route_decision_ref=route_decision_ref,
+            )
+        print(f"BLOCKED: {reason}", file=sys.stderr)
+        return 10
+    validation = selected_validation
+    if args.launch:
+        gate_event_candidate = _emit_gate_event(
+            route_decision,
+            policy_request,
+            task_fields,
+            gate_result="accept",
+        )
     mq_message_id = dispatch_message_id(args.mq_message_id)
     if args.launch and route.mutable and not validation.exempt_read_only and mq_message_id is None:
         durable_binding = DurableDispatchBinding(
@@ -2469,7 +3546,7 @@ def main(argv: list[str] | None = None) -> int:
             validation.exempt_read_only,
         )
         if not args.no_receipt:
-            write_receipt(
+            write_main_receipt(
                 task_id=args.task,
                 lane=args.lane,
                 platform=args.platform,
@@ -2480,194 +3557,276 @@ def main(argv: list[str] | None = None) -> int:
                 prompt=None,
                 launched=False,
                 route_decision=route_decision,
-                route_decision_receipt_path=route_decision_receipt_path,
+                route_decision_ref=route_decision_ref,
                 durable_binding=durable_binding,
             )
         print(f"BLOCKED: {reason}", file=sys.stderr)
         return 10
 
-    prompt = build_prompt(
-        args.task,
-        args.lane,
-        args.platform,
-        args.mode,
-        args.profile,
-        validation,
-        route,
-    )
-
-    if args.print_prompt:
-        if durable_binding.advisory_only:
-            print(f"ADVISORY_ONLY: {durable_binding.reason}")
-        print(prompt)
-
-    if args.launch:
-        # L3 SDLC pressure admission gate — block-and-wait (QUEUE, never skip)
-        # while the box is under sustained CPU pressure, then proceed. The fleet
-        # slows; no dispatch is dropped.
-        _await_sdlc_admission(args)
-
-        # Launchable (platform, mode) -> adapter call. Eligibility is decided by
-        # the Executor capability registry (supports_route), NOT a hard if-ladder
-        # (reform §6 P1) — adding a runtime/mode is a one-line table + registry edit.
-        reactivate_retired_codex_relay = allow_codex_governed_relay_reactivation(
+    try:
+        canon_context = _build_dispatch_canon_context(
+            task_id=args.task,
+            lane=args.lane,
+            platform=args.platform,
+            mode=args.mode,
+            profile=args.profile,
+            validation=validation,
             route=route,
             route_decision=route_decision,
-            durable_binding=durable_binding,
-            validation=validation,
+            route_decision_ref=route_decision_ref,
+            requested_route=requested_route,
+            policy_requested_route_id=policy_request.route_id,
+            dispatch_message_id=mq_message_id,
         )
-        launchers: dict[tuple[str, str], Any] = {
-            ("claude", "headless"): lambda: launch_claude_headless(
-                args.task, args.lane, prompt or "", route
-            ),
-            ("claude", "interactive"): lambda: launch_claude_interactive(
-                args.task, args.lane, validation
-            ),
-            ("codex", "headless"): lambda: launch_codex_headless(
-                args.task,
-                args.lane,
-                prompt or "",
-                validation,
-                route,
-                reactivate_retired_relay=reactivate_retired_codex_relay,
-            ),
-            ("vibe", "headless"): lambda: launch_vibe_headless(
-                args.task, args.lane, prompt or "", validation
-            ),
-        }
-
-        def run_platform_launch() -> int:
-            launch = launchers.get((args.platform, args.mode))
-            if launch is None or not supports_route(args.platform, args.mode):
-                caps = capabilities(args.platform)
-                print(
-                    "launch unsupported for "
-                    f"--platform {args.platform} --mode {args.mode} --profile {args.profile}",
-                    file=sys.stderr,
-                )
-                if caps is not None:
-                    print(
-                        f"  {args.platform} capabilities: modes={list(caps.modes)} "
-                        f"mutates={caps.mutates} hooks_wired={caps.hooks_wired} "
-                        f"headless={caps.headless}",
-                        file=sys.stderr,
-                    )
-                print("Supported governed routes:", file=sys.stderr)
-                print("\n".join(supported_route_lines()), file=sys.stderr)
-                return 2
-            return launch()
-
-        dispatch_launch: DispatchLaunchResult | None = None
-        if route.mutable and not validation.exempt_read_only:
-            assert validation.task is not None
-            assert mq_message_id is not None
-            fields = validation.task.fields
-            try:
-                launch_adapter = _worker_adapter_for_launch(args.platform)
-                dispatch_launch = launch_adapter.launch(
-                    decision=route_decision,
-                    request=DispatchLaunchRequest(
-                        task_id=args.task,
-                        lane=args.lane,
-                        platform=args.platform,
-                        mode=args.mode,
-                        profile=args.profile,
-                        authority_case=strip_scalar(str(fields.get("authority_case", ""))),
-                        authority_item=strip_scalar(str(fields.get("authority_item", ""))),
-                        parent_spec=strip_scalar(str(fields.get("parent_spec", ""))),
-                        message_id=mq_message_id,
-                        mq_db_path=_relay_mq_db_path(),
-                        event_log=coord_event_log_from_env(),
-                        idempotency_key=args.idempotency_key,
-                        reactivate_retired=reactivate_retired_codex_relay,
-                    ),
-                    launch_callable=functools.partial(
-                        classify_and_witness_launch,
-                        run_platform_launch,
-                        task_id=args.task,
-                        lane=args.lane,
-                        platform=args.platform,
-                        mode=args.mode,
-                        profile=args.profile,
-                    ),
-                )
-                rc = dispatch_launch.launch_returncode
-            except AuthorityViolation as exc:
-                reason = f"capability adapter launch refused: {exc}"
-                blocked = Validation(
-                    False,
-                    reason,
-                    validation.task,
-                    validation.parent_spec_path,
-                    validation.exempt_read_only,
-                )
-                if not args.no_receipt:
-                    write_receipt(
-                        task_id=args.task,
-                        lane=args.lane,
-                        platform=args.platform,
-                        mode=args.mode,
-                        profile=args.profile,
-                        route=route,
-                        validation=blocked,
-                        prompt=prompt,
-                        launched=False,
-                        route_decision=route_decision,
-                        route_decision_receipt_path=route_decision_receipt_path,
-                        durable_binding=durable_binding,
-                    )
-                print(f"BLOCKED: {reason}", file=sys.stderr)
-                return 10
-            except CoordDispatchError as exc:
-                reason = f"atomic dispatch launch failed: {exc.reason}"
-                blocked = Validation(
-                    False,
-                    reason,
-                    validation.task,
-                    validation.parent_spec_path,
-                    validation.exempt_read_only,
-                )
-                if not args.no_receipt:
-                    write_receipt(
-                        task_id=args.task,
-                        lane=args.lane,
-                        platform=args.platform,
-                        mode=args.mode,
-                        profile=args.profile,
-                        route=route,
-                        validation=blocked,
-                        prompt=prompt,
-                        launched=False,
-                        route_decision=route_decision,
-                        route_decision_receipt_path=route_decision_receipt_path,
-                        durable_binding=durable_binding,
-                    )
-                print(f"BLOCKED: {reason}", file=sys.stderr)
-                return 10
-        else:
-            rc = run_platform_launch()
-
+        prompt = build_prompt(
+            args.task,
+            args.lane,
+            args.platform,
+            args.mode,
+            args.profile,
+            validation,
+            route,
+            canon_context,
+            advisory_only=preview_only,
+            requested_mode=requested_mode,
+        )
+    except DispatchCanonError as exc:
+        reason = f"canon carriage refused: {exc.reason_code}; repair={exc.repair_action}"
+        blocked = Validation(
+            False,
+            reason,
+            validation.task,
+            validation.parent_spec_path,
+            validation.exempt_read_only,
+        )
         if not args.no_receipt:
-            write_receipt(
+            write_main_receipt(
                 task_id=args.task,
                 lane=args.lane,
                 platform=args.platform,
                 mode=args.mode,
                 profile=args.profile,
                 route=route,
-                validation=validation,
-                prompt=prompt,
-                launched=rc == 0,
-                launch_returncode=rc,
+                validation=blocked,
+                prompt=None,
+                launched=False,
                 route_decision=route_decision,
-                route_decision_receipt_path=route_decision_receipt_path,
+                route_decision_ref=route_decision_ref,
                 durable_binding=durable_binding,
-                dispatch_launch=dispatch_launch,
+                canon_failure_code=exc.reason_code,
+                canon_repair_action=exc.repair_action,
             )
-        return rc
+        print(f"BLOCKED: {reason}", file=sys.stderr)
+        return 10
+
+    if args.print_prompt and preview_only:
+        print("ADVISORY_ONLY: non_launch_invocation")
+        print(prompt)
+
+    if args.launch:
+        _verify_dispatch_canon_context(canon_context)
+
+        refreshed_validation = validate_task(
+            task_id=args.task,
+            lane=args.lane,
+            platform=args.platform,
+            task_root=task_root,
+            strict_worktree=True,
+        )
+        if not refreshed_validation.ok:
+            reason = (
+                f"dispatch context changed during admission wait: {refreshed_validation.reason}"
+            )
+            if not args.no_receipt:
+                write_main_receipt(
+                    task_id=args.task,
+                    lane=args.lane,
+                    platform=args.platform,
+                    mode=args.mode,
+                    profile=args.profile,
+                    route=route,
+                    validation=Validation(
+                        False,
+                        reason,
+                        refreshed_validation.task,
+                        refreshed_validation.parent_spec_path,
+                        refreshed_validation.exempt_read_only,
+                    ),
+                    prompt=None,
+                    launched=False,
+                    route_decision=route_decision,
+                    route_decision_ref=route_decision_ref,
+                    durable_binding=durable_binding,
+                    canon_failure_code="dispatch_context_drift_after_admission",
+                    canon_repair_action="re-dispatch from freshly validated task state",
+                )
+            print(f"BLOCKED: {reason}", file=sys.stderr)
+            return 10
+        try:
+            refreshed_context = _build_dispatch_canon_context(
+                task_id=args.task,
+                lane=args.lane,
+                platform=args.platform,
+                mode=args.mode,
+                profile=args.profile,
+                validation=refreshed_validation,
+                route=route,
+                route_decision=route_decision,
+                route_decision_ref=route_decision_ref,
+                requested_route=requested_route,
+                policy_requested_route_id=policy_request.route_id,
+                dispatch_message_id=mq_message_id,
+            )
+            refreshed_prompt = build_prompt(
+                args.task,
+                args.lane,
+                args.platform,
+                args.mode,
+                args.profile,
+                refreshed_validation,
+                route,
+                refreshed_context,
+                advisory_only=False,
+                requested_mode=requested_mode,
+            )
+        except DispatchCanonError as exc:
+            reason = (
+                f"dispatch context refresh refused: {exc.reason_code}; repair={exc.repair_action}"
+            )
+            if not args.no_receipt:
+                write_main_receipt(
+                    task_id=args.task,
+                    lane=args.lane,
+                    platform=args.platform,
+                    mode=args.mode,
+                    profile=args.profile,
+                    route=route,
+                    validation=Validation(
+                        False,
+                        reason,
+                        refreshed_validation.task,
+                        refreshed_validation.parent_spec_path,
+                        refreshed_validation.exempt_read_only,
+                    ),
+                    prompt=None,
+                    launched=False,
+                    route_decision=route_decision,
+                    route_decision_ref=route_decision_ref,
+                    durable_binding=durable_binding,
+                    canon_failure_code=exc.reason_code,
+                    canon_repair_action=exc.repair_action,
+                )
+            print(f"BLOCKED: {reason}", file=sys.stderr)
+            return 10
+        if (
+            refreshed_context.binding["binding_hash"] != canon_context.binding["binding_hash"]
+            or hashlib.sha256(refreshed_prompt.encode("utf-8")).hexdigest()
+            != hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        ):
+            reason = "dispatch context changed during admission wait"
+            if not args.no_receipt:
+                write_main_receipt(
+                    task_id=args.task,
+                    lane=args.lane,
+                    platform=args.platform,
+                    mode=args.mode,
+                    profile=args.profile,
+                    route=route,
+                    validation=Validation(
+                        False,
+                        reason,
+                        refreshed_validation.task,
+                        refreshed_validation.parent_spec_path,
+                        refreshed_validation.exempt_read_only,
+                    ),
+                    prompt=None,
+                    launched=False,
+                    route_decision=route_decision,
+                    route_decision_ref=route_decision_ref,
+                    durable_binding=durable_binding,
+                    canon_context=refreshed_context,
+                    canon_failure_code="dispatch_context_drift_after_admission",
+                    canon_repair_action="re-dispatch from freshly validated task and canon state",
+                )
+            print(f"BLOCKED: {reason}", file=sys.stderr)
+            return 10
+        validation = refreshed_validation
+        canon_context = refreshed_context
+        prompt = refreshed_prompt
+        if args.print_prompt:
+            print(prompt)
+
+        if route.mutable and not validation.exempt_read_only:
+            hold_code = "execution_admission_prerequisites_unavailable"
+            hold_repair = (
+                "materialize and consume the exact admitted lifecycle action after completing "
+                "the accepted operational-fact ContextSelection/ContextPosition and "
+                "authenticated sovereign-act carriers; atomically consume "
+                "ClaimAdmissionConsumption with publish_admitted_claim before MQ acceptance"
+            )
+            reason = (
+                f"{hold_code}: operational-fact context selection is unavailable; "
+                "authority holds AWAIT_SOVEREIGN_ACT and AUTHORITY_TRUST_UNESTABLISHED"
+            )
+            if not args.no_receipt:
+                write_main_receipt(
+                    task_id=args.task,
+                    lane=args.lane,
+                    platform=args.platform,
+                    mode=args.mode,
+                    profile=args.profile,
+                    route=route,
+                    validation=Validation(
+                        False,
+                        reason,
+                        validation.task,
+                        validation.parent_spec_path,
+                        validation.exempt_read_only,
+                    ),
+                    prompt=None,
+                    launched=False,
+                    route_decision=route_decision,
+                    route_decision_ref=route_decision_ref,
+                    durable_binding=durable_binding,
+                    canon_context=canon_context,
+                    canon_failure_code=hold_code,
+                    canon_repair_action=hold_repair,
+                )
+            print(f"HOLD: {reason}; repair={hold_repair}", file=sys.stderr)
+            return 10
+
+        reason = (
+            "execution_admission_prerequisites_unavailable: process execution cannot "
+            "bypass the composition-issued invocation-pointer boundary"
+        )
+        blocked = Validation(
+            False,
+            reason,
+            validation.task,
+            validation.parent_spec_path,
+            validation.exempt_read_only,
+        )
+        if not args.no_receipt:
+            write_main_receipt(
+                task_id=args.task,
+                lane=args.lane,
+                platform=args.platform,
+                mode=args.mode,
+                profile=args.profile,
+                route=route,
+                validation=blocked,
+                prompt=prompt,
+                launched=False,
+                route_decision=route_decision,
+                route_decision_ref=route_decision_ref,
+                durable_binding=durable_binding,
+                canon_context=canon_context,
+            )
+        print(f"HOLD: {reason}", file=sys.stderr)
+        return 10
 
     if not args.no_receipt:
-        write_receipt(
+        write_main_receipt(
             task_id=args.task,
             lane=args.lane,
             platform=args.platform,
@@ -2678,13 +3837,13 @@ def main(argv: list[str] | None = None) -> int:
             prompt=prompt,
             launched=False,
             route_decision=route_decision,
-            route_decision_receipt_path=route_decision_receipt_path,
+            route_decision_ref=route_decision_ref,
             durable_binding=durable_binding,
+            canon_context=canon_context,
         )
 
-    if durable_binding.advisory_only:
-        print(f"advisory_only: {durable_binding.reason}")
-    print(f"eligible: {args.task} -> {args.platform}/{args.mode}/{args.profile}/{args.lane}")
+    print("advisory_only: non_launch_invocation")
+    print(f"preview: {args.task} -> {args.platform}/{args.mode}/{args.profile}/{args.lane}")
     return 0
 
 

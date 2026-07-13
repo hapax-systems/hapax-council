@@ -24,12 +24,14 @@ NEXT_ACTION = (
 REQUIRED_SPECS = {
     ("project.dependencies", "ollama"): ">=0.6.2",
     ("project.dependencies", "pydantic"): ">=2.13.4",
+    ("project.dependencies", "hapax-context-canon"): "==0.1.0",
     ("project.dependencies", "pydantic-ai"): ">=1.99.0,<2",
     ("project.dependencies", "qdrant-client"): ">=1.18.0",
     ("project.dependencies", "python-json-logger"): ">=3.3.0,<4",
     ("project.dependencies", "litellm"): ">=1.90.3",
     ("project.dependencies", "torchvision"): ">=0.25,<0.26",
     ("project.dependencies", "mistralai"): ">=2.5.2",
+    ("project.dependencies", "python-toon"): "==0.1.3",
     ("project.dependencies", "model2vec"): ">=0.8.2",
     ("project.dependencies", "pillow"): ">=12.3.0",
     ("project.dependencies", "pygobject"): ">=3.56.3",
@@ -300,17 +302,6 @@ def test_logos_and_google_dependency_runtime_smoke_paths() -> None:
         assert discovery.build.__name__ == "build", NEXT_ACTION
         exercised.append("google-api-python-client")
 
-    if _optional_distribution_installed("google-cloud-pubsub"):
-        from google.auth.credentials import AnonymousCredentials
-
-        pubsub_v1 = import_module("google.cloud.pubsub_v1")
-        assert AnonymousCredentials().expired is False, NEXT_ACTION
-        publisher = pubsub_v1.PublisherClient(credentials=AnonymousCredentials())
-        assert publisher.topic_path("project-id", "topic-id") == (
-            "projects/project-id/topics/topic-id"
-        ), NEXT_ACTION
-        exercised.append("google-cloud-pubsub")
-
     if _optional_distribution_installed("google-auth-oauthlib"):
         flow_module = import_module("google_auth_oauthlib.flow")
         flow = flow_module.Flow.from_client_config(
@@ -359,6 +350,20 @@ def test_logos_and_google_dependency_runtime_smoke_paths() -> None:
 
     if not exercised:
         pytest.skip("logos/google optional dependencies are not installed")
+
+
+def test_pubsub_optional_runtime_smoke_path() -> None:
+    if not _optional_distribution_installed("google-cloud-pubsub"):
+        pytest.skip("google-cloud-pubsub is not installed")
+
+    from google.auth.credentials import AnonymousCredentials
+
+    pubsub_v1 = import_module("google.cloud.pubsub_v1")
+    assert AnonymousCredentials().expired is False, NEXT_ACTION
+    publisher = pubsub_v1.PublisherClient(credentials=AnonymousCredentials())
+    assert publisher.topic_path("project-id", "topic-id") == (
+        "projects/project-id/topics/topic-id"
+    ), NEXT_ACTION
 
 
 def test_audio_and_tui_dependency_runtime_smoke_paths() -> None:
@@ -432,14 +437,11 @@ def test_additional_bumped_dependency_runtime_smoke_paths() -> None:
         import importlib.util
 
         from google.auth.credentials import AnonymousCredentials
-        from google.cloud import pubsub_v1
         from google.cloud import monitoring_v3
-        from matplotlib.figure import Figure
         from model2vec import StaticModel
         from ollama import Client as OllamaClient
         from packaging.specifiers import SpecifierSet
         from packaging.version import Version
-        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
         from werkzeug.datastructures import Headers
 
         NEXT_ACTION = {NEXT_ACTION!r}
@@ -451,11 +453,6 @@ def test_additional_bumped_dependency_runtime_smoke_paths() -> None:
             assert gi.version_info >= (3, 56, 3), NEXT_ACTION
         assert OllamaClient(host="http://127.0.0.1:1"), NEXT_ACTION
         assert Headers([("X-Test", "ok")])["X-Test"] == "ok", NEXT_ACTION
-        figure = Figure(figsize=(1, 1))
-        axes = figure.subplots()
-        axes.plot([0, 1], [1, 0])
-        assert len(figure.axes) == 1, NEXT_ACTION
-        assert PlaywrightTimeoutError.__name__ == "TimeoutError", NEXT_ACTION
         monitoring_client = monitoring_v3.MetricServiceClient(
             credentials=AnonymousCredentials()
         )
@@ -464,11 +461,6 @@ def test_additional_bumped_dependency_runtime_smoke_paths() -> None:
         )
         assert type(monitoring_client).__name__ == "MetricServiceClient", NEXT_ACTION
         assert monitoring_request.name == "projects/test-project", NEXT_ACTION
-        publisher = pubsub_v1.PublisherClient(credentials=AnonymousCredentials())
-        assert publisher.topic_path("project-id", "topic-id") == (
-            "projects/project-id/topics/topic-id"
-        ), NEXT_ACTION
-
         if importlib.util.find_spec("pipecat") is not None:
             import pipecat
             from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -535,3 +527,38 @@ def test_optional_studio_and_rerank_dependency_runtime_smoke_paths() -> None:
         assert exercised, NEXT_ACTION
         """
     )
+
+
+def test_matplotlib_optional_runtime_smoke_path() -> None:
+    if not _optional_distribution_installed("matplotlib"):
+        pytest.skip("matplotlib is not installed")
+
+    from matplotlib.figure import Figure
+
+    figure = Figure(figsize=(1, 1))
+    axes = figure.subplots()
+    axes.plot([0, 1], [1, 0])
+    assert len(figure.axes) == 1, NEXT_ACTION
+
+
+def test_playwright_optional_runtime_smoke_path() -> None:
+    if not _optional_distribution_installed("playwright"):
+        pytest.skip("playwright is not installed")
+
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+    assert PlaywrightTimeoutError.__name__ == "TimeoutError", NEXT_ACTION
+
+
+def test_container_dependency_stages_install_local_packages_noneditable() -> None:
+    for relative in ("docker/Dockerfile.logos-api", "docker/Dockerfile.sync-pipeline"):
+        text = (REPO_ROOT / relative).read_text()
+        sync_line = next(line for line in text.splitlines() if line.startswith("RUN uv sync"))
+        prefix = text[: text.index(sync_line)]
+        assert "COPY packages/agentgov/ packages/agentgov/" in prefix
+        assert "COPY packages/hapax-context-canon/ packages/hapax-context-canon/" in prefix
+        assert "apt-get install -y --no-install-recommends git" in prefix
+        assert "--no-install-project" in sync_line
+        assert "--no-editable" in sync_line
+    sync_dockerfile = (REPO_ROOT / "docker/Dockerfile.sync-pipeline").read_text()
+    assert "COPY docker/sync-pipeline/ sync-pipeline/" in sync_dockerfile

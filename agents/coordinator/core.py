@@ -1,31 +1,31 @@
-"""Core coordinator logic — task queue, lane health, dispatch routing.
-
-No-spin law (failure class #9 remediation): the dispatch refusal ledger tracks
-(task_id, lane, reason) triples and enters exponential-backoff cooldown after K
-identical deterministic refusals.  A single ntfy escalation fires at the K
-threshold.  Fleet-wide starvation (offered>0, dispatched=0 for 1h) also triggers
-one escalation.  See agents/coordinator/refusal_ledger.py.
-"""
+"""Core coordinator logic - task queue, lane health, and held dispatch candidates."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
 import os
-import re
 import subprocess
 import time
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import StrEnum
+from functools import lru_cache
 from pathlib import Path
 
 import yaml
 
 from agents.coordinator.refusal_ledger import DispatchRefusalLedger
 from shared import sdlc_dispatch_guards as dispatch_guards
+from shared.coord_event_log import default_event_log
+from shared.coord_projection import (
+    capture_coord_replay_snapshot,
+    inspect_lifecycle_transactions,
+)
 from shared.dispatch_service_time import (
     AGE_NORM_S,
     QueueLane,
@@ -33,30 +33,43 @@ from shared.dispatch_service_time import (
     is_claude_operator_pool_role,
     parse_ts,
     plan_dispatches,
-    wsjf_effective,
 )
 from shared.dispatcher_policy import LOCAL_DEV_TARGET
-from shared.gate_event_producer import build_gate_event
-from shared.gate_log import append_gate_event
-from shared.intake_fit_scorer import composite_rank_key, fit_score
-from shared.jsonl_append import append_jsonl
-from shared.notify import send_notification
-from shared.recovery_governor import converge_action_cap
+from shared.methodology_dispatch_carrier import (
+    MethodologyDispatchCarrierError,
+    validate_methodology_dispatch_carrier_line,
+)
 from shared.relay_lifecycle import (
     parse_relay_document,
     relay_status_values,
     relay_value_is_retired,
     relay_values_are_retired,
 )
-from shared.relay_mq import send_message
-from shared.relay_mq_envelope import Envelope
+from shared.relay_mq import (
+    CanonEchoError,
+    CanonEchoReconciliation,
+    reconcile_canon_echo,
+    resolve_claim_bound_canon_position,
+)
 from shared.route_metadata_schema import (
     RouteMetadataStatus,
     assess_route_metadata,
     route_metadata_payload_from_frontmatter,
 )
-from shared.sdlc_lifecycle import TASK_TERMINAL_STATUSES
-from shared.sdlc_pressure_gate import admission_state
+from shared.sdlc_claim import (
+    ClaimPublicationError,
+    inspect_claim_publications,
+    resolve_applied_claim_publication_for_task,
+)
+from shared.sdlc_lifecycle import TASK_TERMINAL_STATUSES, stage_token
+from shared.sdlc_pressure_gate import observe_admission_state
+from shared.sdlc_task_store import (
+    TaskIdentityIndex,
+    TaskStoreError,
+    assess_task_identity_index,
+    build_task_identity_index,
+    validate_task_identity_index,
+)
 
 log = logging.getLogger(__name__)
 
@@ -86,49 +99,17 @@ def _env_float(name: str, default: float) -> float:
 
 
 def _ntfy_escalate(title: str, body: str) -> None:
-    """Send an ntfy escalation for the no-spin law.  Best-effort; never raises."""
-    try:
-        send_notification(title, body, priority="high", tags=["sdlc", "no-spin"])
-    except Exception:  # noqa: BLE001 — ntfy is best-effort; never block the tick.
-        log.exception("no-spin ntfy escalation failed (continuing)")
-
-
-def pressure_dispatch_budget(
-    state: str, idle_count: int, base_cooldown: float
-) -> tuple[int, float]:
-    """Translate the SDLC pressure admission state into a per-tick dispatch budget.
-
-    'closed' dispatches nothing this tick (offered tasks stay on disk — queued,
-    not dropped); 'paced' caps to one dispatch and stretches the cooldown so the
-    fleet drains slowly; 'open' runs at full throughput. Slows the controller,
-    never abandons work.
-    """
-    if state == "closed":
-        return (0, base_cooldown)
-    if state == "paced":
-        return (1, base_cooldown * 2.0)
-    return (idle_count, base_cooldown)
+    """Hold legacy notification escalation at the protected effect boundary."""
+    log.warning(
+        "notification HOLD: title_length=%d body_length=%d",
+        len(title),
+        len(body),
+    )
 
 
 def _queue_task_routable(task: QueueTask, lane: QueueLane) -> bool:
     platforms = {platform.lower() for platform in task.platform_suitability}
     return "any" in platforms or lane.platform.lower() in platforms
-
-
-def _task_fields_for_gate_event(task: Task) -> dict[str, object]:
-    """Project a parsed ``Task`` into the frontmatter-shaped mapping ``build_gate_event``
-    reads (task_id / requirement_vector / routing_class / kind / mutation_surface).
-
-    The coordinator holds a parsed ``Task``, not raw frontmatter; this is the faithful
-    bridge so the producer's classification + hashing logic is reused, not duplicated.
-    """
-    return {
-        "task_id": task.task_id,
-        "requirement_vector": dict(task.requirement_vector) if task.requirement_vector else {},
-        "routing_class": task.routing_class or "",
-        "kind": task.kind,
-        "mutation_surface": task.mutation_surface or "",
-    }
 
 
 TASKS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active"
@@ -146,7 +127,16 @@ REOFFER_LEDGER = Path(
     os.environ.get("HAPAX_AUTHORITY_CASE_LEDGER", str(CACHE_DIR / "authority-case-ledger.jsonl"))
 ).expanduser()
 
-FALLBACK_LANE_ROLES = ("alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta")
+FALLBACK_LANE_ROLES = (
+    "alpha",
+    "beta",
+    "gamma",
+    "delta",
+    "epsilon",
+    "zeta",
+    "eta",
+    "theta",
+)
 LANE_ROLES = FALLBACK_LANE_ROLES
 SESSION_PREFIXES = (
     ("hapax-claude-", "claude"),
@@ -154,10 +144,8 @@ SESSION_PREFIXES = (
     ("hapax-gemini-", "gemini"),
 )
 DISPATCH_COOLDOWN_S = 120.0
+MAX_HELD_CANDIDATES_PER_TICK = 1
 DISPATCH_TIMEOUT_S = _positive_env_float("HAPAX_COORDINATOR_DISPATCH_TIMEOUT_S", 30.0)
-DISPATCH_TIMEOUT_LANDING_GRACE_S = _positive_env_float(
-    "HAPAX_COORDINATOR_DISPATCH_TIMEOUT_LANDING_GRACE_S", 5.0
-)
 ORPHAN_CLAIM_REOFFER_GRACE_S = _positive_env_float(
     "HAPAX_COORDINATOR_ORPHAN_CLAIM_REOFFER_GRACE_S", 300.0
 )
@@ -166,14 +154,11 @@ COORDINATOR_DISPATCH_MODE = "headless"
 COORDINATOR_DISPATCH_PROFILE = "full"
 SUPPORTED_DISPATCH_PLATFORMS = ("claude", "codex", "gemini", "vibe", "api")
 
-# Dispatch through the running release checkout by default. A hard-coded primary
-# clone can drift dirty and make the coordinator follow unactivated source.
-METHODOLOGY_DISPATCHER = Path(
-    os.environ.get(
-        "HAPAX_METHODOLOGY_DISPATCHER",
-        str(REPO_ROOT / "scripts" / "hapax-methodology-dispatch"),
-    )
-).expanduser()
+# Gate-0A has one repository-bound methodology intake path. Runtime-selected
+# executors belong behind the authenticated Gate-0B registry, never in an env var.
+METHODOLOGY_DISPATCHER = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
+METHODOLOGY_PYTHON = REPO_ROOT / ".venv" / "bin" / "python"
+TMUX_EXECUTABLE = Path("/usr/bin/tmux")
 
 # A lane that owns a non-terminal task but has emitted no progress signal for this
 # long (or whose supervising launcher PID is gone) is projected `stalled` and its
@@ -196,11 +181,7 @@ SCHEDULER_LEGACY_ENV = "HAPAX_DISPATCH_SCHEDULER_LEGACY"
 # Default 0.0 => composite short-circuits to wsjf_effective (byte-identical plan, the
 # golden guarantee); a non-zero value (positive OR negative) is the operator's dial.
 INTAKE_FIT_BLEND_ENV = "HAPAX_INTAKE_FIT_BLEND"
-# Convergence contract: emit one admission GateEvent per planned dispatch to the
-# gate-events.jsonl plane reins' :route lens reads (off by default — the shadow-diff
-# discipline; flip to 1 to light the feed). Reuses build_gate_event (no parallel logic)
-# and stamps the spine's fit_score. Fail-open: a lost measurement must never crash tick.
-INTAKE_FIT_OBSERVE_ENV = "HAPAX_INTAKE_FIT_OBSERVE"
+CANON_ECHO_ENFORCEMENT_ENV = "HAPAX_CANON_ECHO_ENFORCEMENT"
 
 
 @dataclass(frozen=True)
@@ -231,6 +212,8 @@ class Task:
     routing_class: str | None = None
     mutation_surface: str | None = None
     authority_level: str | None = None
+    stage: str | None = None
+    frontmatter: dict[str, object] = field(default_factory=dict, compare=False)
 
 
 @dataclass
@@ -284,14 +267,84 @@ class CoordinatorState:
     task_status_counts: dict[str, int] = field(default_factory=dict)
     task_flow_counts: dict[str, int] = field(default_factory=dict)
     lanes: dict[str, dict] = field(default_factory=dict)
-    starvation_pressure_mask: dict[str, object] | None = None
+    pressure_observation: dict[str, object] | None = None
+    task_store_observation: dict[str, object] | None = None
+
+
+@dataclass(frozen=True)
+class CanonEchoPass:
+    blocked_count: int = 0
+    held_task_ids: frozenset[str] = frozenset()
+
+
+class DispatchDisposition(StrEnum):
+    HELD_CANDIDATE = "held_candidate"
+    REFUSED = "refused"
+    INDETERMINATE = "indeterminate"
+
+
+@dataclass(frozen=True)
+class MethodologyDispatchResult:
+    disposition: DispatchDisposition
+    reason: str
+    carrier_ref: str | None = None
+
+
+def _methodology_dispatch_result(
+    disposition: DispatchDisposition,
+    reason: str,
+    carrier: dict[str, object] | None = None,
+) -> MethodologyDispatchResult:
+    carrier_ref = carrier.get("carrier_ref") if carrier is not None else None
+    return MethodologyDispatchResult(
+        disposition=disposition,
+        reason=reason,
+        carrier_ref=carrier_ref if isinstance(carrier_ref, str) else None,
+    )
+
+
+def _parse_methodology_dispatch_carrier(
+    stdout: bytes,
+    *,
+    task_id: str,
+    lane: str,
+    platform: str,
+    mode: str,
+    profile: str,
+) -> MethodologyDispatchResult:
+    """Validate and classify the dispatcher's sole content-addressed carrier.
+
+    Process status and pickup probes are not admission evidence. Only one carrier
+    with the exact invocation identity and a valid self-hash can classify the
+    result. Unknown state combinations remain indeterminate rather than being
+    inferred as success or refusal.
+    """
+
+    try:
+        carrier = validate_methodology_dispatch_carrier_line(
+            stdout,
+            task_id=task_id,
+            lane=lane,
+            platform=platform,
+            mode=mode,
+            profile=profile,
+        )
+    except MethodologyDispatchCarrierError as exc:
+        return _methodology_dispatch_result(
+            DispatchDisposition.INDETERMINATE,
+            exc.reason_code,
+        )
+    return _methodology_dispatch_result(
+        DispatchDisposition.HELD_CANDIDATE,
+        "methodology_candidate_held_not_admitted",
+        carrier,
+    )
 
 
 class Coordinator:
     """Main coordinator — scans tasks, checks lanes, dispatches work."""
 
     def __init__(self) -> None:
-        self._last_dispatch: dict[str, float] = {}
         # per-task-lifetime reoffer counter (process-local); caps the
         # offered→claim→stall→offered loop and escalates to `blocked` past the cap.
         self._reoffer_counts: dict[str, int] = {}
@@ -300,24 +353,98 @@ class Coordinator:
         self._refusal_ledger = DispatchRefusalLedger(
             _escalate_fn=_ntfy_escalate,
         )
+        self._task_identity_index: TaskIdentityIndex | None = None
+        self._task_store_observation: dict[str, object] | None = None
+
+    def _recover_canon_transactions(self) -> bool:
+        if os.environ.get(CANON_ECHO_ENFORCEMENT_ENV) != "1":
+            return True
+        event_log = default_event_log()
+        lifecycle_inspection = inspect_lifecycle_transactions(
+            event_plane_snapshot=capture_coord_replay_snapshot(event_log)
+        )
+        if not lifecycle_inspection.estate_complete:
+            log.critical(
+                "canonical transition inspection HOLD: %s",
+                ",".join(lifecycle_inspection.reason_codes),
+            )
+            return False
+        claim_inspections = inspect_claim_publications(cache_dir=CACHE_DIR)
+        held_claims = [item for item in claim_inspections if item.disposition == "hold"]
+        if held_claims:
+            log.critical(
+                "canonical claim inspection HOLD: %s",
+                ",".join(f"{item.publication_id}:{item.reason_code}" for item in held_claims),
+            )
+            return False
+        return True
+
+    def _reconcile_canon_echoes(
+        self, tasks: list[Task], lanes: dict[str, LaneState]
+    ) -> CanonEchoPass:
+        if os.environ.get(CANON_ECHO_ENFORCEMENT_ENV) != "1":
+            return CanonEchoPass()
+        blocked = 0
+        held: set[str] = set()
+        for task in tasks:
+            if task.status not in {"claimed", "in_progress"}:
+                continue
+            if not task.assigned_to or task.assigned_to == "unassigned":
+                held.add(task.task_id)
+                continue
+            lane = lanes.get(task.assigned_to) or LaneState(
+                role=task.assigned_to,
+                alive=False,
+                claimed_task=task.task_id,
+                idle=False,
+                dispatchable=False,
+                dispatch_ready=False,
+            )
+            try:
+                reconciliation, transaction_id = _reconcile_task_canon_echo(task, lane)
+            except (CanonEchoError, OSError, RuntimeError, ValueError) as exc:
+                held.add(task.task_id)
+                lane.dispatch_ready = False
+                lane.dispatch_blocked_reason = getattr(
+                    exc, "reason_code", "canon_echo_reconciliation_failed"
+                )
+                log.warning(
+                    "canon echo reconciliation held task=%s lane=%s: %s",
+                    task.task_id,
+                    lane.role,
+                    exc,
+                )
+                continue
+            if reconciliation.action != "grounded":
+                lane.dispatch_ready = False
+                lane.dispatch_blocked_reason = reconciliation.reason_code
+            if transaction_id is not None:
+                blocked += 1
+                log.error(
+                    "canon echo failed twice: task=%s lane=%s transaction=%s -> BLOCKED",
+                    task.task_id,
+                    lane.role,
+                    transaction_id,
+                )
+            elif reconciliation.action != "grounded":
+                held.add(task.task_id)
+        return CanonEchoPass(blocked, frozenset(held))
 
     def tick(self) -> None:
+        if not self._recover_canon_transactions():
+            return
         tasks = self._scan_tasks()
         lanes = self._check_lanes()
-        # Admit on the DISPATCH TARGET's pressure, not the local box: dev/SDLC
-        # execution is confined to appendix (LOCAL_DEV_TARGET), so gating on
-        # podium's PRODUCTION load wrongly closes appendix-bound dispatch — the
-        # documented "raw PSI starved appendix lanes ~4h" incident
-        # (sdlc_pressure_gate.py:176/209/414). read_remote_pressure fails OPEN if
-        # the target is unreachable, so this can only loosen, never re-starve.
-        admission = admission_state(target_host=LOCAL_DEV_TARGET)
-        orphan_reoffers = (
-            0
-            if admission.state == "closed"
-            else self._reoffer_orphaned_claims(tasks, lanes, now_wall=time.time())
-        )
-        if orphan_reoffers:
+        echo_pass = self._reconcile_canon_echoes(tasks, lanes)
+        if echo_pass.blocked_count:
             tasks = self._scan_tasks()
+        # Observe pressure on the dispatch target, not the local box. This is a
+        # read-only support signal and cannot change candidate calculation.
+        admission = observe_admission_state(target_host=LOCAL_DEV_TARGET)
+        # Ambient liveness cannot release ownership. Claim release is a protected
+        # lifecycle operation and remains held until the execution composition
+        # supplies an exact current lease and authenticated outcome path.
+        orphan_reoffers = 0
         offered = [t for t in tasks if t.status == "offered"]
         state = CoordinatorState(
             timestamp=time.time(),
@@ -336,9 +463,9 @@ class Coordinator:
             lanes_total=len(lanes),
             task_status_counts=_task_status_counts(tasks),
             task_flow_counts=_task_flow_counts(tasks),
+            task_store_observation=self._task_store_observation,
         )
 
-        dispatches = 0
         idle_lanes = [
             l
             for l in lanes.values()
@@ -349,34 +476,26 @@ class Coordinator:
             and _lane_dispatchable(l)
         ]
 
-        # L3: pace the dispatch loop under CPU pressure. 'closed' dispatches
-        # nothing this tick (tasks stay offered — queued, not dropped); 'paced'
-        # caps throughput and stretches the cooldown so the fleet drains slowly.
-        _, cooldown_s = pressure_dispatch_budget(
-            admission.state, len(idle_lanes), DISPATCH_COOLDOWN_S
-        )
-        # bb-control-stability: the RecoveryGovernor's per-tick converge ceiling
-        # ({open:6, paced:2, closed:0}) bounds how many dispatches the controller
-        # may inject per tick — it cannot become the storm it governs.
-        pressure_cap = converge_action_cap(admission.state)
-        max_dispatches = min(len(idle_lanes), pressure_cap)
-        if admission.state != "open":
-            log.info(
-                "sdlc-pressure %s: dispatch budget=%d cooldown=%.0fs",
-                admission.state,
-                max_dispatches,
-                cooldown_s,
-            )
+        # Candidate calculation is bounded but effect-pure. Ambient pressure is
+        # support evidence for a later admission decision; it cannot suppress or
+        # authorize intake before a current execution composition exists.
+        cooldown_s = 0.0
+        max_dispatches = min(len(idle_lanes), MAX_HELD_CANDIDATES_PER_TICK)
+        state.pressure_observation = {
+            "admission_state": admission.state,
+            "reasons": list(getattr(admission, "reasons", []) or []),
+            "candidate_influence": "none",
+            "may_authorize": False,
+        }
 
-        # bb-dispatch-scheduler: load the measured per-lineage service-time cache once.
-        # `legacy` restores the prior fixed-T / raw-WSJF behavior exactly (revert env).
-        legacy = os.environ.get(SCHEDULER_LEGACY_ENV) == "1"
+        # Service-time evidence is a support projection, never dispatch authority.
+        # Keep the compatibility planner flag stable while refusing ambient cache
+        # influence over candidate ordering or lifecycle effects.
+        legacy = False
         # bb-intake-fit-shadow: blend the demand-shape fit_score into the dispatch
         # rank-key. Default 0.0 => byte-identical to pure WSJF (the golden guarantee).
         fit_blend = _env_float(INTAKE_FIT_BLEND_ENV, 0.0)
-        # Convergence contract: light the gate-events.jsonl feed reins :route reads.
-        observe_fit = os.environ.get(INTAKE_FIT_OBSERVE_ENV) == "1"
-        cache = None if legacy else _load_dispatch_cache()
+        cache = None
 
         # Project ground-truth `stalled` for every lane, then reoffer held tasks off
         # stalled lanes — bounded, and gated on the SAME #3850 admission read. 'closed'
@@ -385,7 +504,11 @@ class Coordinator:
         # The stall grace is now the MEASURED tau(lineage) when the cache is present
         # (one timeout, not three divergent fixed numbers); 900s fallback when blind.
         reofferable_claim_ids = frozenset(
-            t.task_id for t in tasks if t.status in {"claimed", "in_progress"}
+            alias
+            for task in tasks
+            if task.status in {"claimed", "in_progress"}
+            and task.task_id not in echo_pass.held_task_ids
+            for alias in (task.task_id, task.path.stem)
         )
         for lane in lanes.values():
             lane.stalled = project_stalled(
@@ -395,20 +518,13 @@ class Coordinator:
             )
         state.lanes_stalled = sum(1 for lane in lanes.values() if lane.stalled)
 
-        reoffer_budget = 0 if admission.state == "closed" else MAX_REOFFERS_PER_TICK
-        reoffered = 0
-        for lane in lanes.values():
-            if reoffered >= reoffer_budget:
-                break
-            if lane.stalled and lane.claimed_task and self._reoffer_stalled(lane):
-                reoffered += 1
-        state.reoffers_this_tick = orphan_reoffers + reoffered
+        state.reoffers_this_tick = orphan_reoffers
 
         # bb-dispatch-scheduler: per-lineage virtual queues + WSJF aging. Iterate idle
         # lanes (lane-outer) so a busy/cooled lineage can never head-of-line-block a
         # routable task from a free lane, and let a starved low-WSJF task overtake fresh
         # high-WSJF arrivals (bounded). `legacy` reverts to the prior raw-WSJF task-outer
-        # loop. The converge ceiling (max_dispatches) and cooldown are unchanged.
+        # loop. The Gate-0A candidate ceiling remains fixed and pressure-independent.
         now_mono = time.monotonic()
         age_norm_s = _age_norm_s(cache)
         queue_tasks = [
@@ -426,7 +542,7 @@ class Coordinator:
             QueueLane(
                 role=l.role,
                 platform=l.platform,
-                cooldown_remaining_s=cooldown_s - (now_mono - self._last_dispatch.get(l.role, 0.0)),
+                cooldown_remaining_s=cooldown_s,
                 dispatchable=_lane_dispatchable(l),
             )
             for l in idle_lanes
@@ -455,26 +571,28 @@ class Coordinator:
         )
         task_by_id = {t.task_id: t for t in offered}
         lane_by_role = {l.role: l for l in idle_lanes}
+        non_escalating_dispatch_ids: set[str] = set()
         for task_id, role in plan:
             task = task_by_id.get(task_id)
             lane = lane_by_role.get(role)
             if task is None or lane is None:
                 continue
-            success, refusal_reason = self._dispatch(task, lane)
-            if success:
-                self._last_dispatch[role] = now_mono
-                dispatches += 1
-                # Success clears refusal state for this task (the external issue resolved).
-                self._refusal_ledger.clear(task_id)
+            dispatch_result = self._dispatch(task, lane)
+            if dispatch_result.disposition is DispatchDisposition.REFUSED:
+                self._refusal_ledger.record_refusal(
+                    task_id,
+                    role,
+                    dispatch_result.reason,
+                    now=now_mono,
+                )
             else:
-                # Every failed dispatch is recorded — no silent retries.
-                self._refusal_ledger.record_refusal(task_id, role, refusal_reason, now=now_mono)
-            # Convergence contract: emit one admission gate-event per planned dispatch
-            # to the gate-events.jsonl plane reins' :route lens reads (flag-gated + fail-open).
-            if observe_fit:
-                self._emit_admission_gate_event(task, lane, accepted=success)
+                # A held candidate or an unproven process outcome is neither a
+                # refusal nor an actionable starvation signal.
+                non_escalating_dispatch_ids.add(task_id)
 
-        state.dispatches_this_tick = dispatches
+        # No Gate-0A result can attest a domain effect. Gate-0B must consume an
+        # authenticated OutcomeReceipt before this telemetry can become non-zero.
+        state.dispatches_this_tick = 0
         state.lanes = {role: _lane_to_dict(l) for role, l in lanes.items()}
 
         # No-spin law: fleet-starvation detector (offered>0, dispatched=0 for 1h →
@@ -502,30 +620,16 @@ class Coordinator:
                 t.task_id, escalated_only=True, now=now_mono
             )
         )
-        # Pressure CLOSED intentionally yields a zero dispatch budget: work remains
-        # queued, but the controller is not failing to use available capacity.
-        starvation_capacity = bool(idle_lanes) and pressure_cap > 0
-        uncooled_offered = max(0, len(offered) - cooled_offered)
+        non_escalating_offered = sum(
+            1 for task in offered if task.task_id in non_escalating_dispatch_ids
+        )
+        starvation_capacity = bool(idle_lanes)
+        uncooled_offered = max(
+            0,
+            len(offered) - cooled_offered - non_escalating_offered,
+        )
         starvation_offered = uncooled_offered if starvation_capacity else 0
-        if idle_lanes and uncooled_offered > 0 and pressure_cap == 0:
-            state.starvation_pressure_mask = {
-                "active": True,
-                "reason": "sdlc_pressure_closed",
-                "admission_state": admission.state,
-                "admission_reasons": list(getattr(admission, "reasons", []) or []),
-                "offered_tasks": len(offered),
-                "uncooled_offered": uncooled_offered,
-                "idle_lanes": len(idle_lanes),
-                "pressure_cap": pressure_cap,
-                "dispatches_this_tick": dispatches,
-            }
-            log.warning(
-                "starvation masked by closed pressure: offered=%d uncooled=%d idle_lanes=%d",
-                len(offered),
-                uncooled_offered,
-                len(idle_lanes),
-            )
-        self._refusal_ledger.tick_starvation(starvation_offered, dispatches, now=now_mono)
+        self._refusal_ledger.tick_starvation(starvation_offered, 0, now=now_mono)
 
         # Surface refusal stats in SHM.
         refusal_stats = self._refusal_ledger.stats()
@@ -535,7 +639,7 @@ class Coordinator:
             "tick: offered=%d idle_lanes=%d dispatched=%d alive=%d/%d cooled=%d skipped=%d",
             len(offered),
             state.lanes_idle,
-            dispatches,
+            0,
             state.lanes_alive,
             state.lanes_total,
             refusal_stats.get("cooled_down", 0),
@@ -543,13 +647,109 @@ class Coordinator:
         )
 
     def _scan_tasks(self) -> list[Task]:
-        if not TASKS_DIR.is_dir():
+        def hold_task_store_error(
+            exc: TaskStoreError,
+            *,
+            index: TaskIdentityIndex | None = None,
+        ) -> list[Task]:
+            observation: dict[str, object] = {
+                "disposition": "hold",
+                "reason_code": exc.reason_code,
+                "detail": exc.detail,
+                "evidence_refs": list(exc.evidence_refs),
+                "source_ref": str(TASKS_DIR.parent),
+                "candidate_count": 0,
+                "no_effect": True,
+                "may_authorize": False,
+            }
+            if index is not None:
+                observation["frontier_ref"] = (
+                    f"task-identity-index-frontier@sha256:{index.frontier_hash}"
+                )
+            self._task_store_observation = observation
+            log.critical("task identity index HOLD: %s", exc)
             return []
+
+        if not TASKS_DIR.is_dir():
+            self._task_identity_index = None
+            self._task_store_observation = {
+                "disposition": "hold",
+                "reason_code": "task_store_active_directory_missing",
+                "source_ref": str(TASKS_DIR),
+                "may_authorize": False,
+            }
+            return []
+        vault_root = TASKS_DIR.parent
+        try:
+            if (
+                self._task_identity_index is None
+                or self._task_identity_index.vault_root != vault_root.resolve()
+            ):
+                index = build_task_identity_index(vault_root)
+            else:
+                validate_task_identity_index(self._task_identity_index)
+                index = self._task_identity_index
+        except TaskStoreError as exc:
+            stale_index = self._task_identity_index
+            self._task_identity_index = None
+            return hold_task_store_error(exc, index=stale_index)
+
+        self._task_identity_index = index
+        assessment = assess_task_identity_index(index)
+        classified_legacy_paths = {
+            snapshot.relative_path for snapshot in assessment.legacy_snapshots
+        }
+        duplicate_task_ids = sorted(
+            task_id for task_id, entries in index.by_task_id.items() if len(entries) > 1
+        )
+        unbound_refs = [
+            entry.path.relative_to(index.vault_root).as_posix()
+            for entry in index.unbound_entries
+            if entry.path.relative_to(index.vault_root).as_posix()
+            not in classified_legacy_paths
+        ]
         tasks: list[Task] = []
-        for path in sorted(TASKS_DIR.glob("*.md")):
-            task = _parse_task(path)
-            if task is not None:
-                tasks.append(task)
+        parse_refused_refs: list[str] = []
+        for task_id, entries in index.by_task_id.items():
+            if len(entries) != 1 or entries[0].state != "active":
+                continue
+            task = _parse_task(entries[0].path)
+            if task is None or task.task_id != task_id:
+                parse_refused_refs.append(entries[0].path.relative_to(index.vault_root).as_posix())
+                continue
+            tasks.append(task)
+        try:
+            validate_task_identity_index(index)
+        except TaskStoreError as exc:
+            self._task_identity_index = None
+            return hold_task_store_error(exc, index=index)
+        hold = bool(duplicate_task_ids or unbound_refs or parse_refused_refs)
+        self._task_store_observation = {
+            "disposition": "hold" if hold else "current",
+            "reason_code": "task_store_integrity_hold" if hold else None,
+            "frontier_ref": f"task-identity-index-frontier@sha256:{index.frontier_hash}",
+            "assessment_ref": (
+                f"task-store-assessment@sha256:{assessment.assessment_hash}"
+            ),
+            "blocking_unbound_refs": list(assessment.blocking_unbound_refs),
+            "duplicate_task_ids": duplicate_task_ids,
+            "legacy_snapshots": [
+                snapshot.to_record() for snapshot in assessment.legacy_snapshots
+            ],
+            "unbound_refs": unbound_refs,
+            "parse_refused_refs": parse_refused_refs,
+            "candidate_count": 0 if hold else len(tasks),
+            "no_effect": True,
+            "may_authorize": False,
+        }
+        if hold:
+            log.critical(
+                "task store integrity HOLD: duplicates=%d unbound=%d parse_refused=%d",
+                len(duplicate_task_ids),
+                len(unbound_refs),
+                len(parse_refused_refs),
+            )
+            return []
         return tasks
 
     def _check_lanes(self) -> dict[str, LaneState]:
@@ -581,112 +781,30 @@ class Coordinator:
         now_mono: float,
         fit_blend: float = 0.0,
     ) -> tuple[list[tuple[str, str]], int]:
-        """No-spin law for the planned dispatches: drop refusal-cooled pairs and
-        replan their freed lane to the best eligible non-cooled task.
+        """Preserve pure candidates without refusal-ledger reranking or effects."""
+        del queue_tasks, queue_lanes, age_norm_s, now_mono, fit_blend
+        return list(plan), 0
 
-        ``plan_dispatches`` is cooldown-blind (it only knows the per-lane dispatch
-        rate-limit, not the refusal ledger). This pass enforces the no-spin
-        invariant on top of whatever plan it produced — in both the default and
-        the ``legacy`` scheduler — so a cooled (task, lane) pair never head-of-line-
-        blocks a lane that another offered task could use.
-
-        Returns ``(repaired_plan, skipped_cooldown)`` where ``skipped_cooldown``
-        counts lanes freed by a cooled pair that had no eligible backfill.
-        """
-
-        def cooled(task_id: str, role: str) -> bool:
-            return self._refusal_ledger.any_cooldown_for_pair(task_id, role, now=now_mono)
-
-        lane_by_role = {lane.role: lane for lane in queue_lanes}
-        planned: set[str] = {task_id for task_id, _ in plan}
-        repaired: list[tuple[str, str]] = []
-        skipped = 0
-        for task_id, role in plan:
-            if not cooled(task_id, role):
-                repaired.append((task_id, role))
-                continue
-            # Cooled: free the lane and try to backfill with the best eligible task
-            # (routable, not already planned, not itself in cooldown on this lane).
-            planned.discard(task_id)
-            lane = lane_by_role.get(role)
-            candidates = [
-                t
-                for t in queue_tasks
-                if t.task_id not in planned
-                and lane is not None
-                and _queue_task_routable(t, lane)
-                and not cooled(t.task_id, role)
-            ]
-            if candidates:
-                best = max(
-                    candidates,
-                    key=lambda t: composite_rank_key(
-                        wsjf_effective(t.wsjf, t.age_s, age_norm_s),
-                        fit_score(t.requirement_vector),
-                        blend=fit_blend,
-                    ),
-                )
-                repaired.append((best.task_id, role))
-                planned.add(best.task_id)
-            else:
-                skipped += 1
-        return repaired, skipped
-
-    def _emit_admission_gate_event(self, task: Task, lane: LaneState, *, accepted: bool) -> None:
-        """Emit one observational admission ``GateEvent`` for a planned dispatch.
-
-        Reuses ``build_gate_event`` (the designated admission assembler — no parallel
-        logic) for routing_class resolution + requirement_vector + task_hash, then
-        stamps the spine's ``fit_score`` and ``provenance="admission"``. Fail-open: any
-        assembly or I/O error is logged and swallowed — a lost measurement must never
-        crash the dispatch tick (observation is best-effort, the plan is authoritative).
-        Lights the ``gate-events.jsonl`` feed the reins ``:route`` lens reads.
-        """
-        try:
-            event = build_gate_event(
-                _task_fields_for_gate_event(task),
-                route=lane.platform,
-                demand_vector=None,
-                gate_result="accept" if accepted else "reject",
-            )
-            # Stamp the measured score only when the vector was measured-complete: the
-            # producer sets event.requirement_vector non-empty iff the explicit 8-dim
-            # vector was valid, so a DARK/partial task stamps None (no measured demand),
-            # mirroring reins' _measured_reqvec_or_absent honesty (not 0.0-as-measured).
-            event.fit_score = (
-                fit_score(task.requirement_vector) if event.requirement_vector else None
-            )
-            event.provenance = "admission"
-            append_gate_event(event)
-        except Exception:  # noqa: BLE001 - observation is best-effort; never block dispatch.
-            log.warning("admission gate-event emit failed for task=%s", task.task_id, exc_info=True)
-
-    def _dispatch(self, task: Task, lane: LaneState) -> tuple[bool, str]:
-        """Attempt to dispatch a task to a lane.
-
-        Returns (success, refusal_reason).  On success refusal_reason is empty.
-        On failure refusal_reason is the stderr text (for the refusal ledger).
-        """
+    def _dispatch(self, task: Task, lane: LaneState) -> MethodologyDispatchResult:
+        """Request methodology carriage without inferring an effect from the process."""
         dispatcher = METHODOLOGY_DISPATCHER
-        if not dispatcher.exists():
+        if not dispatcher.is_file() or dispatcher.is_symlink():
             log.warning("hapax-methodology-dispatch not found, cannot dispatch to %s", lane.role)
-            return False, "dispatcher_not_found"
-        try:
-            message_id = _prepare_dispatch_message(task, lane)
-        except Exception as exc:  # noqa: BLE001 - refusal ledger needs the root cause.
-            next_action = (
-                "next_action=check HAPAX_RELAY_MQ_DB path, relay DB parent permissions, "
-                "and disk pressure; then rerun governed dispatch for the same task/lane"
+            return _methodology_dispatch_result(
+                DispatchDisposition.INDETERMINATE,
+                "dispatcher_not_found",
             )
-            log.warning(
-                "Dispatch to %s could not mint durable MQ binding: %s; %s",
-                lane.role,
-                exc,
-                next_action,
+        project_python = METHODOLOGY_PYTHON
+        if not project_python.is_file() or not os.access(project_python, os.X_OK):
+            log.warning("pinned methodology interpreter unavailable")
+            return _methodology_dispatch_result(
+                DispatchDisposition.INDETERMINATE,
+                "methodology_interpreter_not_found",
             )
-            return False, f"durable_mq_prepare_failed:{type(exc).__name__}:{exc}; {next_action}"
 
         cmd = [
+            str(project_python),
+            "-I",
             str(dispatcher),
             "--task",
             task.task_id,
@@ -696,249 +814,145 @@ class Coordinator:
             lane.platform,
             "--mode",
             COORDINATOR_DISPATCH_MODE,
+            "--profile",
+            COORDINATOR_DISPATCH_PROFILE,
             "--launch",
         ]
-        if message_id:
-            cmd.extend(["--mq-message-id", message_id])
 
+        child_env = os.environ.copy()
+        child_env.pop("PYTHONPATH", None)
+        child_env.pop("PYTHONHOME", None)
         try:
             result = subprocess.run(
                 cmd,
                 timeout=DISPATCH_TIMEOUT_S,
                 capture_output=True,
-                text=True,
+                env=child_env,
             )
         except subprocess.TimeoutExpired as exc:
-            step_s = 0.5
-            attempts = max(1, math.ceil(DISPATCH_TIMEOUT_LANDING_GRACE_S / step_s) + 1)
-            for attempt in range(attempts):
-                if _dispatch_landed(task, lane):
-                    log.info(
-                        "Dispatch to %s exceeded %.0fs but lane pickup evidence is live",
-                        lane.role,
-                        DISPATCH_TIMEOUT_S,
-                    )
-                    return True, ""
-                if attempt < attempts - 1:
-                    time.sleep(min(step_s, DISPATCH_TIMEOUT_LANDING_GRACE_S))
-            log.warning("Dispatch to %s timed out: %s", lane.role, exc)
-            return False, f"TimeoutExpired: {exc}"
+            pickup_observed = _dispatch_landed(task, lane)
+            log.warning(
+                "Dispatch to %s timed out; pickup_observed=%s is diagnostic only: %s",
+                lane.role,
+                pickup_observed,
+                exc,
+            )
+            timeout_stdout = exc.stdout or b""
+            return _parse_methodology_dispatch_carrier(
+                timeout_stdout,
+                task_id=task.task_id,
+                lane=lane.role,
+                platform=lane.platform,
+                mode=COORDINATOR_DISPATCH_MODE,
+                profile=COORDINATOR_DISPATCH_PROFILE,
+            )
         except OSError as exc:
             log.warning("Dispatch to %s failed: %s", lane.role, exc)
-            return False, f"OSError: {exc}"
-
-        if result.returncode != 0:
-            reason = result.stderr.strip()
-            if not reason:
-                reason = f"dispatch_exit_{result.returncode}"
-            log.warning(
-                "Dispatch to %s failed via methodology dispatcher: %s",
-                lane.role,
-                reason,
+            return _methodology_dispatch_result(
+                DispatchDisposition.INDETERMINATE,
+                f"dispatcher_oserror:{type(exc).__name__}",
             )
-            return False, reason
 
-        log.info("Dispatched task %s to lane %s", task.task_id, lane.role)
-        return True, ""
+        dispatch_result = _parse_methodology_dispatch_carrier(
+            result.stdout,
+            task_id=task.task_id,
+            lane=lane.role,
+            platform=lane.platform,
+            mode=COORDINATOR_DISPATCH_MODE,
+            profile=COORDINATOR_DISPATCH_PROFILE,
+        )
+        log.warning(
+            "Methodology dispatch task=%s lane=%s disposition=%s reason=%s process_returncode=%d",
+            task.task_id,
+            lane.role,
+            dispatch_result.disposition.value,
+            dispatch_result.reason,
+            result.returncode,
+        )
+        return dispatch_result
 
     def _reoffer_stalled(self, lane: LaneState) -> bool:
-        """Release a stalled lane's held task back to `offered`/`unassigned`, clear the
-        stale claim signal, and emit a ground-truth ledger record. Idempotent: once the
-        note is already `offered` a second call is a no-op. Past the per-task reoffer cap
-        it escalates to `blocked` (+ntfy) instead of looping. NEVER kills a process."""
+        """Hold stalled-claim release before every lifecycle or filesystem effect."""
         claim = lane.claimed_task
         if not claim:
             return False
-        path, match_count = _resolve_task_note(claim)
-        if path is None:
-            if match_count > 1:
-                # ambiguous prefix collision — refuse to guess; emit a visible record
-                self._emit_reoffer_ledger(
-                    lane, claim, kind="lane_stalled_reoffer_ambiguous", to_stage="error"
-                )
-                log.error(
-                    "reoffer: %d notes match claim %s (prefix collision) — aborting",
-                    match_count,
-                    claim,
-                )
-            return False
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
-            return False
-
-        if self._reoffer_counts.get(claim, 0) >= MAX_REOFFERS_PER_TASK:
-            return self._escalate_stalled(lane, claim, path, text)
-
-        new = re.sub(
-            r"^status: (?:claimed|in_progress)\b", "status: offered", text, count=1, flags=re.M
-        )
-        new = re.sub(r"^assigned_to: .*$", "assigned_to: unassigned", new, count=1, flags=re.M)
-        if new == text:
-            return False  # already offered / nothing to release — idempotent no-op
-        _atomic_write(path, new)
-        self._clear_claim_signal(lane)
-        self._reoffer_counts[claim] = self._reoffer_counts.get(claim, 0) + 1
-        self._emit_reoffer_ledger(lane, claim, kind="lane_stalled_reoffer", to_stage="offered")
         log.warning(
-            "reoffer: lane %s stalled on %s -> offered (output_age=%.0fs, reoffer #%d)",
-            lane.role,
+            "claim release HOLD: stalled task=%s lane=%s requires a valid authority "
+            "grant, admission decision, and exact execution lease",
             claim,
-            lane.output_age_s,
-            self._reoffer_counts[claim],
+            lane.role,
         )
-        return True
+        return False
 
     def _escalate_stalled(self, lane: LaneState, claim: str, path: Path, text: str) -> bool:
-        """Past the per-task reoffer cap: block the task and ntfy the operator instead of
-        looping offered→claim→stall→offered forever. Bounded escalation, never a kill."""
-        new = re.sub(
-            r"^status: (?:claimed|in_progress|offered)\b",
-            "status: blocked",
-            text,
-            count=1,
-            flags=re.M,
-        )
-        new = re.sub(r"^assigned_to: .*$", "assigned_to: unassigned", new, count=1, flags=re.M)
-        if new != text:
-            _atomic_write(path, new)
-        self._clear_claim_signal(lane)
-        self._emit_reoffer_ledger(lane, claim, kind="lane_stalled_escalated", to_stage="blocked")
-        reoffers = self._reoffer_counts.get(claim, 0)
-        log.error(
-            "reoffer cap exceeded: %s reoffered %dx without progress -> blocked (lane %s)",
+        """Hold task blocking and notification; liveness never grants either effect."""
+        del path, text
+        log.warning(
+            "stalled escalation HOLD: task=%s lane=%s requires a valid authority "
+            "grant, admission decision, and exact execution lease",
             claim,
-            reoffers,
             lane.role,
         )
-        if claim.startswith("p0-incident-"):
-            # Escalated to blocked above; skip the "task stuck" notification — it
-            # would re-mint a sdlc_task_stalled P0 (self-amplification loop). The
-            # intake also rejects such re-mints as a belt-and-suspenders break.
-            return True
-        try:
-            send_notification(
-                "SDLC: task stuck, blocked",
-                f"{claim} stalled and was reoffered {reoffers}x without progress; set to blocked.",
-                priority="high",
-                tags=["sdlc", "stalled"],
-            )
-        except Exception:  # noqa: BLE001 — ntfy is best-effort; never block the tick.
-            log.exception("stall-escalation ntfy failed (continuing)")
-        return True
+        return False
 
-    def _clear_claim_signal(self, lane: LaneState) -> None:
-        """Remove the per-lane cc-active-task signal so the next tick sees the lane idle."""
-        for signal in _active_task_candidates(lane.role, lane.session):
-            try:
-                signal.unlink()
-            except OSError:
-                pass
+    def _clear_claim_signal(self, lane: LaneState, task_id: str) -> None:
+        """Hold claim-file deletion; only the admitted claim adapter may clear it."""
+        log.warning(
+            "claim signal clear HOLD: task=%s lane=%s",
+            task_id,
+            lane.role,
+        )
 
     def _clear_claim_signal_for_task(self, role: str, session: str, aliases: set[str]) -> None:
-        """Remove only claim files that still point at the orphaned task.
-
-        If the lane has already claimed different work, its active lease is live
-        evidence and must not be erased while repairing the old task note.
-        """
-        for signal in _active_task_candidates(role, session):
-            try:
-                claimed = signal.read_text(encoding="utf-8").strip()
-            except OSError:
-                continue
-            if claimed not in aliases:
-                continue
-            try:
-                signal.unlink()
-            except OSError:
-                pass
+        """Hold orphan claim-file deletion at the same protected boundary."""
+        log.warning(
+            "claim signal clear HOLD: aliases=%s lane=%s session=%s",
+            ",".join(sorted(aliases)),
+            role,
+            session,
+        )
 
     def _reoffer_orphaned_claims(
-        self, tasks: Sequence[Task], lanes: dict[str, LaneState], *, now_wall: float
+        self,
+        tasks: Sequence[Task],
+        lanes: dict[str, LaneState],
+        *,
+        now_wall: float,
+        held_task_ids: frozenset[str] = frozenset(),
     ) -> int:
-        reoffered = 0
-        for task in tasks:
-            if reoffered >= MAX_ORPHAN_CLAIM_REOFFERS_PER_TICK:
-                break
-            if task.status not in {"claimed", "in_progress"} or not _is_p0_or_remediation_task(
-                task
-            ):
-                continue
-            if _task_claim_age_s(task, now_wall=now_wall) < ORPHAN_CLAIM_REOFFER_GRACE_S:
-                continue
-            if _task_has_live_pickup(task, lanes):
-                continue
-            if self._reoffer_orphaned_claim(task, lanes):
-                reoffered += 1
-        return reoffered
+        """Expose no release effect from orphan observations at Gate-0A."""
+        del tasks, lanes, now_wall, held_task_ids
+        log.warning(
+            "orphan claim release HOLD: valid authority, admission, and an exact "
+            "execution lease are required"
+        )
+        return 0
 
     def _reoffer_orphaned_claim(self, task: Task, lanes: dict[str, LaneState]) -> bool:
-        current = _parse_task(task.path)
-        if current is None or current.status not in {"claimed", "in_progress"}:
-            return False
-        lane = lanes.get(current.assigned_to) or LaneState(role=current.assigned_to)
-        if _task_has_live_pickup(current, {current.assigned_to: lane}):
-            return False
-        try:
-            text = task.path.read_text(encoding="utf-8")
-        except OSError:
-            return False
-        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        new = re.sub(
-            r"^status:\s*['\"]?(?:claimed|in_progress)['\"]?\s*$",
-            "status: offered",
-            text,
-            count=1,
-            flags=re.M,
-        )
-        new = re.sub(r"^assigned_to: .*$", "assigned_to: unassigned", new, count=1, flags=re.M)
-        new = re.sub(r"^claimed_at: .*$", "claimed_at: null", new, count=1, flags=re.M)
-        new = re.sub(r"^updated_at: .*$", f"updated_at: {now}", new, count=1, flags=re.M)
-        if new == text:
-            return False
-        _atomic_write(task.path, new)
-        self._clear_claim_signal_for_task(
-            current.assigned_to,
-            lane.session,
-            {current.task_id, current.path.stem},
-        )
-        self._emit_reoffer_ledger(
-            lane,
-            current.task_id,
-            kind="orphan_claim_reoffer",
-            to_stage="offered",
-        )
+        """Hold one orphan release without reading or mutating its task note."""
+        del lanes
         log.warning(
-            "orphan-claim reoffer: %s assigned_to=%s had no live pickup -> offered",
-            current.task_id,
-            current.assigned_to,
+            "orphan claim release HOLD: task=%s lane=%s",
+            task.task_id,
+            task.assigned_to,
         )
+        return False
+
+    @staticmethod
+    def _claim_release_requires_governance(role: str) -> bool:
+        del role
         return True
 
     def _emit_reoffer_ledger(
         self, lane: LaneState, task_id: str, *, kind: str, to_stage: str
     ) -> None:
-        """Append a `ts`-keyed record to the SAME ledger cc-stage-advance writes, so the
-        real stuck case is finally visible to INV-2. `ts` is an ISO-8601 STRING matching the
-        producer byte-for-byte — a float epoch would `fromisoformat`-fail to ~56yr-stale and
-        self-generate the exact false 'stuck' finding this projection exists to cure."""
-        append_jsonl(
-            REOFFER_LEDGER,
-            {
-                "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "kind": kind,
-                "tool": "coordinator",
-                "role": lane.role,
-                "task_id": task_id,
-                "to_stage": to_stage,
-                "reason": "launcher_pid_gone"
-                if not _launcher_pid_present(lane.role)
-                else "output_stale",
-                "output_age_s": round(lane.output_age_s, 1)
-                if lane.output_age_s != float("inf")
-                else None,
-            },
-            sort_keys=True,
+        """Hold legacy transition publication; observations cannot append events."""
+        log.warning(
+            "reoffer event HOLD: task=%s lane=%s kind=%s requested_stage=%s",
+            task_id,
+            lane.role,
+            kind,
+            to_stage,
         )
 
     def _write_state(self, state: CoordinatorState, *, refusal_stats: dict | None = None) -> None:
@@ -957,8 +971,10 @@ class Coordinator:
             "task_flow_counts": state.task_flow_counts,
             "lanes": state.lanes,
         }
-        if state.starvation_pressure_mask:
-            payload["starvation_pressure_mask"] = state.starvation_pressure_mask
+        if state.pressure_observation:
+            payload["pressure_observation"] = state.pressure_observation
+        if state.task_store_observation:
+            payload["task_store_observation"] = state.task_store_observation
         if refusal_stats:
             payload["refusal_ledger"] = refusal_stats
         tmp = SHM_FILE.with_suffix(".tmp")
@@ -990,7 +1006,7 @@ def _parse_task(path: Path) -> Task | None:
         platforms = [platforms]
     platforms = _effective_platform_suitability(platforms, meta)
     return Task(
-        task_id=path.stem,
+        task_id=_frontmatter_text(meta.get("task_id")) or path.stem,
         title=_frontmatter_text(meta.get("title")) or path.stem,
         status=status,
         assigned_to=_frontmatter_text(meta.get("assigned_to")) or "unassigned",
@@ -1011,6 +1027,8 @@ def _parse_task(path: Path) -> Task | None:
         routing_class=_frontmatter_text(meta.get("routing_class")),
         mutation_surface=_frontmatter_text(meta.get("mutation_surface")),
         authority_level=_frontmatter_text(meta.get("authority_level")),
+        stage=_frontmatter_text(meta.get("stage")),
+        frontmatter={str(key): value for key, value in meta.items()},
     )
 
 
@@ -1237,16 +1255,26 @@ def _discover_lanes() -> list[LaneDescriptor]:
         role: LaneDescriptor(role=role, session="", platform="claude")
         for role in FALLBACK_LANE_ROLES
     }
-    try:
-        proc = subprocess.run(
-            ["tmux", "list-sessions", "-F", "#{session_name}"],
-            timeout=5,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        proc = None
+    proc = None
+    if TMUX_EXECUTABLE.is_file() and os.access(TMUX_EXECUTABLE, os.X_OK):
+        try:
+            proc = subprocess.run(
+                [
+                    str(TMUX_EXECUTABLE),
+                    "-f",
+                    "/dev/null",
+                    "list-sessions",
+                    "-F",
+                    "#{session_name}",
+                ],
+                timeout=5,
+                capture_output=True,
+                text=True,
+                check=False,
+                env={"HOME": "/nonexistent", "LANG": "C.UTF-8", "PATH": "/usr/bin:/bin"},
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            proc = None
     if proc is not None and proc.returncode == 0:
         for line in proc.stdout.splitlines():
             descriptor = _lane_from_tmux_session(line.strip())
@@ -1354,9 +1382,13 @@ def _relay_status_supports_task_id_claim(relay: dict) -> bool:
     status = _normalized_status(relay.get("status") or relay.get("session_status"))
     if not status:
         return False
-    return status in {"active", "executing", "claimed", "in-progress", "working"} or any(
-        token in status for token in ("active-claim", "in-progress", "working")
-    )
+    return status in {
+        "active",
+        "executing",
+        "claimed",
+        "in-progress",
+        "working",
+    } or any(token in status for token in ("active-claim", "in-progress", "working"))
 
 
 def _diagnostic_claim_text(value: object) -> bool:
@@ -1411,7 +1443,14 @@ def _relay_status_is_idle(value: object) -> bool | None:
         return True
     if status.startswith("resolved-") or "no-active-claim" in status or "no-task" in status:
         return True
-    if status in {"active", "executing", "claimed", "in-progress", "working", "retiring"}:
+    if status in {
+        "active",
+        "executing",
+        "claimed",
+        "in-progress",
+        "working",
+        "retiring",
+    }:
         return False
     return None
 
@@ -1452,40 +1491,122 @@ def _relay_mq_db_path() -> Path:
     ).expanduser()
 
 
-def _prepare_dispatch_message(task: Task, lane: LaneState) -> str | None:
-    if not task.authority_case:
-        return None
-    db_path = _relay_mq_db_path()
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(
-        {
-            "kind": "coordinator_dispatch",
-            "task_id": task.task_id,
-            "lane": lane.role,
-            "platform": lane.platform,
-            "mode": COORDINATOR_DISPATCH_MODE,
-            "parent_spec": task.parent_spec,
-            "next_action_on_binding_failure": (
-                "Check HAPAX_RELAY_MQ_DB, relay DB parent permissions, and disk "
-                "pressure; then rerun governed methodology dispatch for this task/lane."
-            ),
-        },
-        sort_keys=True,
+@lru_cache(maxsize=16)
+def _render_expected_canon_payload(
+    canon_hash: str,
+    image_hash: str,
+    stage: str,
+    level: str,
+    payload_sha256: str,
+) -> str:
+    try:
+        from shared.session_context_canon import build_canon_bundle
+
+        bundle = build_canon_bundle()
+    except (ImportError, OSError, RuntimeError, ValueError) as exc:
+        raise CanonEchoError(
+            "canon_echo_repair_materialization_failed",
+            "restore the checked canon sources, encoder, and package dependencies",
+            str(exc),
+        ) from exc
+    if bundle.canon_hash != canon_hash:
+        raise CanonEchoError(
+            "canon_echo_repair_canon_hash_mismatch",
+            "restore the canon committed by the dispatch receipt",
+        )
+    image = next(
+        (item for item in bundle.images if item.stage_token == stage and item.level.value == level),
+        None,
     )
-    return send_message(
-        db_path,
-        Envelope(
-            sender="hapax-coordinator",
-            message_type="dispatch",
-            priority=0,
-            subject=task.task_id,
-            authority_case=task.authority_case,
-            authority_item=task.authority_item or task.task_id,
-            recipients_spec=lane.role,
-            payload=payload,
-            tags=["sdlc", "coordinator", "dispatch"],
-        ),
+    if (
+        image is None
+        or image.image_hash != image_hash
+        or hashlib.sha256(image.rendered_payload.encode("utf-8")).hexdigest() != payload_sha256
+    ):
+        raise CanonEchoError(
+            "canon_echo_repair_image_mismatch",
+            "restore the exact same-level image committed by the dispatch receipt",
+        )
+    return image.rendered_payload
+
+
+def _reconcile_task_canon_echo(
+    task: Task,
+    lane: LaneState,
+    *,
+    db_path: Path | None = None,
+    ledger_path: Path | None = None,
+    now: datetime | None = None,
+) -> tuple[CanonEchoReconciliation, str | None]:
+    del ledger_path
+    relay_db = db_path or _relay_mq_db_path()
+    event_log = default_event_log()
+    lifecycle_inspection = inspect_lifecycle_transactions(
+        task_id=task.task_id,
+        event_plane_snapshot=capture_coord_replay_snapshot(event_log),
     )
+    if not lifecycle_inspection.scope_complete:
+        raise CanonEchoError(
+            "canon_transition_inspection_hold",
+            "reconcile the inspected transition frontier before Echo reconciliation",
+            ",".join(lifecycle_inspection.reason_codes),
+        )
+    try:
+        applied_claim = resolve_applied_claim_publication_for_task(
+            vault_root=TASKS_DIR.parent,
+            cache_dir=CACHE_DIR,
+            role=lane.role,
+            task_id=task.task_id,
+        )
+        snapshot = applied_claim.current_task
+        leases = applied_claim.leases
+    except (ClaimPublicationError, TaskStoreError) as exc:
+        raise CanonEchoError(exc.reason_code, exc.repair_action, exc.detail) from exc
+    frontmatter = snapshot.frontmatter
+    snapshot_stage = str(frontmatter.get("stage") or "")
+    canonical_stage = stage_token(snapshot_stage) if snapshot_stage else None
+    if (
+        snapshot.path != task.path.resolve()
+        or str(frontmatter.get("status") or "") not in {"claimed", "in_progress"}
+        or str(frontmatter.get("assigned_to") or "") != lane.role
+        or not canonical_stage
+        or leases[0].binding.authority_case != str(frontmatter.get("authority_case") or "")
+    ):
+        raise CanonEchoError(
+            "canon_echo_claim_position_mismatch",
+            "make the exact task, claim, lane, session, stage, and AuthorityCase agree",
+            task.task_id,
+        )
+    expected = resolve_claim_bound_canon_position(
+        leases[0].binding,
+        stage_token=canonical_stage,
+    )
+    if canonical_stage != expected.stage_token:
+        raise CanonEchoError(
+            "canon_echo_dispatch_position_stale",
+            "reinject and receipt the exact current successor position before reconciliation",
+            task.task_id,
+        )
+    rendered_payload = _render_expected_canon_payload(
+        expected.canon_hash,
+        expected.canon_image_hash,
+        expected.stage_token,
+        expected.canon_level,
+        expected.canon_payload_sha256,
+    )
+    observed_at = (now or datetime.now(UTC)).astimezone(UTC)
+    reconciliation = reconcile_canon_echo(
+        relay_db,
+        expected,
+        rendered_payload=rendered_payload,
+        now=observed_at,
+        expected_sender=lane.role,
+        expected_session_id=leases[0].binding.session_id,
+    )
+    # A failed Echo is support evidence, not unilateral transition authority.
+    # Until the failure can be fenced in Relay MQ and bound to the applied claim
+    # publication inside one transaction, the only lawful action is HOLD.
+    return reconciliation, None
 
 
 def _headless_launcher_matches(argv: list[str], role: str) -> bool:
@@ -1799,41 +1920,19 @@ def _dispatch_landed(task: Task, lane: LaneState) -> bool:
 
 
 def _load_dispatch_cache() -> dict | None:
-    """The measured service-time cache (`dispatch_service_time --recompute`). None when
-    absent/corrupt — callers fall back to the fixed defaults. Path resolves through
-    CACHE_DIR at call-time so tests that patch CACHE_DIR stay isolated."""
-    try:
-        data = json.loads(
-            (CACHE_DIR / DISPATCH_SERVICE_TIME_CACHE_NAME).read_text(encoding="utf-8")
-        )
-    except (OSError, json.JSONDecodeError):
-        return None
-    return data if isinstance(data, dict) else None
+    """Retired authority consumer; the cache remains support-only elsewhere."""
+    return None
 
 
 def _stall_grace_for(role: str, cache: dict | None) -> float:
-    """Per-lineage stall grace = measured tau(role) when the cache is present, else the
-    fixed STALL_OUTPUT_GRACE_S. Reoffer is non-destructive, so the blind fallback stays
-    aggressive (unlike the reaper's conservative ceiling fallback when it cannot measure)."""
-    if not cache:
-        return STALL_OUTPUT_GRACE_S
-    per_lineage = cache.get("per_lineage")
-    if isinstance(per_lineage, dict):
-        entry = per_lineage.get(role)
-        if isinstance(entry, dict) and isinstance(entry.get("tau_s"), int | float):
-            return float(entry["tau_s"])
-    glob = cache.get("global")
-    if isinstance(glob, dict) and isinstance(glob.get("tau_s"), int | float):
-        return float(glob["tau_s"])
+    """Return a fixed diagnostic threshold without consuming support data."""
+    del role, cache
     return STALL_OUTPUT_GRACE_S
 
 
 def _age_norm_s(cache: dict | None) -> float:
-    """One service-epoch for WSJF aging — the measured p90 service span when known."""
-    if cache:
-        value = cache.get("age_norm_s")
-        if isinstance(value, int | float) and value > 0:
-            return float(value)
+    """Return the static support baseline; cache data cannot rank effect candidates."""
+    del cache
     return AGE_NORM_S
 
 
@@ -1856,19 +1955,6 @@ def project_stalled(
     if lane.platform == "claude" and lane.pid_source == "proc":
         return False  # pidfile-free launcher is live; supervisor owns any later reap.
     return lane.output_age_s > output_grace_s
-
-
-def _resolve_task_note(task_id: str) -> tuple[Path | None, int]:
-    """Locate the single cc-task note for `task_id`, mirroring cc-stage-advance `_find_note`:
-    exact `{id}.md` wins, else `{id}-*.md`. Returns (path, match_count). A match_count > 1 is
-    a prefix collision the caller MUST refuse to act on — never silently take matches[0]."""
-    exact = TASKS_DIR / f"{task_id}.md"
-    if exact.exists():
-        return exact, 1
-    matches = sorted(TASKS_DIR.glob(f"{task_id}-*.md"))
-    if len(matches) == 1:
-        return matches[0], 1
-    return None, len(matches)
 
 
 def _atomic_write(path: Path, text: str) -> None:

@@ -1,277 +1,136 @@
-#!/usr/bin/env bash
-# hapax-lane-reaper — recover dead lanes (bounded PID-kill) and clean worktrees.
+#!/usr/bin/bash
+# hapax-lane-reaper - read-only lane recovery inspection.
 #
-# Scans hapax-codex-cx-* and hapax-claude-* tmux sessions. A dead lane (shell
-# prompt, no worker process) silent past the MEASURED per-lineage tau is reaped
-# via a single PID-targeted os.kill(SIGTERM) — never a whole-session teardown —
-# and its merged worktree cleaned. Recovery is bounded: after a per-lane attempt cap the
-# reaper escalates (ntfy) and STOPS rather than looping. The tau comes from
-# ~/.cache/hapax/dispatch-service-time.json (shared with the coordinator +
-# idle-watchdog); --threshold/IDLE_THRESHOLD_MIN is the fixed fallback when the
-# cache is absent or HAPAX_DISPATCH_SCHEDULER_LEGACY=1.
-#
-# Usage:
-#   hapax-lane-reaper [--dry-run] [--threshold MINUTES]
-#
-# Run via timer: systemd/units/hapax-lane-reaper.timer (every 30 min)
+# Liveness, quota text, tmux state, service-time estimates, and pressure are
+# support signals. They cannot authorize task/claim mutation, worktree removal,
+# process termination, task minting, notification, or service activation. This
+# command therefore discovers candidates and emits visible HOLD diagnostics only.
+# Effects remain held until a ValidAuthorityGrant, AdmissionDecision, and exact
+# ExecutionLease are validated at an execution adapter.
 
 set -euo pipefail
 
-# Fixed-threshold fallback (minutes) for legacy / no-cache mode; --threshold overrides.
-# (Previously `${1:-30}` which wrongly captured flags like --dry-run into the number.)
+TMUX_OBSERVER=(/usr/bin/env -i HOME=/nonexistent LANG=C.UTF-8 PATH=/usr/bin:/bin /usr/bin/tmux -f /dev/null)
+readonly -a TMUX_OBSERVER
+
 IDLE_THRESHOLD_MIN=30
 DRY_RUN=0
 COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
+HOLD_REASON="missing-valid-authority-grant-admission-decision-exact-execution-lease"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --dry-run) DRY_RUN=1; shift ;;
-        --threshold) IDLE_THRESHOLD_MIN="$2"; shift 2 ;;
-        *) shift ;;
+        --dry-run | --check)
+            DRY_RUN=1
+            shift
+            ;;
+        --threshold)
+            if [[ $# -lt 2 ]]; then
+                printf 'lane-reaper: --threshold requires minutes\n' >&2
+                exit 2
+            fi
+            IDLE_THRESHOLD_MIN="$2"
+            shift 2
+            ;;
+        *)
+            printf 'lane-reaper: unknown argument: %s\n' "$1" >&2
+            exit 2
+            ;;
     esac
 done
 
-log() { printf 'lane-reaper: %s\n' "$*" >&2; }
-
-# ─── RecoveryGovernor admission for the load-injecting reap action ────────────
-# bb-control-stability: the kill + worktree-cleanup + hygiene-sweep a reap
-# triggers is a recovery action; route it through the shared governor so a wave
-# of reaps can't storm the box, and so a session that keeps needing reaping
-# escalates via AIMD. The release-task path (load-free) stays ungated. Fail-open:
-# any non-{0,75,2} exit → PERMIT (the reaper never wedges on the governor).
-governor_repo() {
-    local repo
-    repo="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
-    [[ -d "$repo/shared" ]] || repo="${HOME}/projects/hapax-council"
-    echo "$repo"
-}
-governor_permit() {
-    [[ "${HAPAX_RECOVERY_GOVERNOR_OFF:-}" == "1" ]] && return 0
-    local rc
-    (cd "$(governor_repo)" 2>/dev/null && python3 -m shared.recovery_governor --permit "$1" >/dev/null 2>&1)
-    rc=$?
-    case "$rc" in
-        0) return 0 ;;
-        75 | 2) return 1 ;;
-        *) return 0 ;;
-    esac
-}
-governor_record() {
-    [[ "${HAPAX_RECOVERY_GOVERNOR_OFF:-}" == "1" ]] && return 0
-    (cd "$(governor_repo)" 2>/dev/null && python3 -m shared.recovery_governor --record "$1" "$2" >/dev/null 2>&1) || true
-}
-
-# ─── bb-dispatch-scheduler: measured tau timeout + bounded PID-targeted kill ───
-# The reap threshold is no longer a fixed 30m; it is the MEASURED per-lineage tau
-# the coordinator + idle-watchdog also read (one timeout, not three divergent
-# constants). The kill is a single PID-targeted SIGTERM (os.kill) — never a
-# whole-session or whole-process-group teardown, so the worker shuts down and
-# reaps its own children instead of the entire pane tree taking a HUP (the
-# exit-144 cascade lesson). HAPAX_DISPATCH_SCHEDULER_LEGACY=1 (or a missing cache)
-# reverts the THRESHOLD to the fixed minutes; the bounded-kill fix is permanent.
-DISPATCH_CACHE="${HAPAX_DISPATCH_SERVICE_TIME_CACHE:-$HOME/.cache/hapax/dispatch-service-time.json}"
-REAP_ATTEMPTS_DIR="${HAPAX_REAP_ATTEMPTS_DIR:-$HOME/.cache/hapax/lane-reap-attempts}"
-mkdir -p "$REAP_ATTEMPTS_DIR"
-
-reap_decide() {
-    # echo skip|reap|escalate for (role, progress_age_s, attempts). Legacy or an
-    # absent cache fall back to the fixed minutes so behavior is preserved until
-    # the recompute populates measured tau.
-    local role="$1" age="$2" attempts="$3"
-    local extra=()
-    if [[ "${HAPAX_DISPATCH_SCHEDULER_LEGACY:-}" == "1" || ! -f "$DISPATCH_CACHE" ]]; then
-        extra=(--tau-override "$((IDLE_THRESHOLD_MIN * 60))")
-    fi
-    (cd "$(governor_repo)" 2>/dev/null && python3 -m shared.dispatch_service_time \
-        --reap-decision --lineage "$role" --progress-age "$age" --attempts "$attempts" \
-        --cache "$DISPATCH_CACHE" "${extra[@]}" 2>/dev/null) || echo skip
-}
-
-target_pid_for() {
-    # the lane's worker process (deepest claude/node/codex child) or the pane shell.
-    local pane="$1" found="" cpid comm
-    for cpid in $(pgrep -P "$pane" 2>/dev/null || true); do
-        comm=$(ps -o comm= -p "$cpid" 2>/dev/null || true)
-        case "$comm" in claude | node | codex) found="$cpid" ;; esac
-    done
-    echo "${found:-$pane}"
-}
-
-reap_kill() {
-    # bounded recovery: a single PID-targeted SIGTERM via os.kill. Never a session
-    # or process-group teardown. ProcessLookupError == already gone (fine).
-    local pid="$1"
-    python3 -c "import os, signal, sys
-try:
-    os.kill(int(sys.argv[1]), signal.SIGTERM)
-except (ValueError, ProcessLookupError, PermissionError):
-    pass" "$pid" 2>/dev/null || true
-}
-
-reap_attempts() { cat "$REAP_ATTEMPTS_DIR/$1" 2>/dev/null || echo 0; }
-bump_reap_attempts() { echo "$(($(reap_attempts "$1") + 1))" >"$REAP_ATTEMPTS_DIR/$1"; }
-reset_reap_attempts() { rm -f "$REAP_ATTEMPTS_DIR/$1" 2>/dev/null || true; }
-
-# Keep the measured service-time cache warm on the reaper's already-scheduled cadence
-# (hourly), so the tau the coordinator + idle-watchdog + this reaper read is current.
-# Best-effort and bounded: a fold failure or slowness never blocks a reap. (A dedicated
-# Slice=hapax-sdlc.slice oneshot is the deploy follow-up; this populates it meanwhile.)
-recompute_cache_if_stale() {
-    local cache="$DISPATCH_CACHE" age=999999
-    if [[ -f "$cache" ]]; then
-        age=$(($(date +%s) - $(stat -c %Y "$cache" 2>/dev/null || echo 0)))
-        [[ "$age" -lt 3600 ]] && return 0
-    fi
-    (cd "$(governor_repo)" 2>/dev/null &&
-        timeout 60 python3 -m shared.dispatch_service_time --recompute --cache "$cache" >/dev/null 2>&1) || true
-}
-if [[ "$DRY_RUN" -eq 0 ]]; then
-    recompute_cache_if_stale
+if [[ ! "$IDLE_THRESHOLD_MIN" =~ ^[0-9]+$ ]]; then
+    printf 'lane-reaper: threshold must be a non-negative integer\n' >&2
+    exit 2
 fi
 
-killed=0
-cleaned=0
+log() { printf 'lane-reaper: %s\n' "$*" >&2; }
 
-for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E "^hapax-(codex-cx-|claude-)"); do
-    # Check if session has an active process beyond the shell
-    pane_pid=$(tmux list-panes -t "$session" -F '#{pane_pid}' 2>/dev/null | head -1)
-    [[ -z "$pane_pid" ]] && continue
+held=0
+inspected=0
+
+hold_effect() {
+    local role="$1" effect="$2" detail="${3:-candidate}"
+    log "HOLD lane=$role effect=$effect reason=$HOLD_REASON detail=$detail"
+    held=$((held + 1))
+}
+
+inspect_worktree() {
+    local role="$1" worktree="$COUNCIL_DIR--$role"
+    [[ -d "$worktree" ]] || return 0
+
+    local uncommitted branch ahead
+    uncommitted=$(/usr/bin/git -C "$worktree" status --porcelain 2>/dev/null | /usr/bin/wc -l) || uncommitted="unknown"
+    branch=$(/usr/bin/git -C "$worktree" symbolic-ref --short HEAD 2>/dev/null) || branch="detached-or-unknown"
+    ahead=$(/usr/bin/git -C "$worktree" rev-list --count main..HEAD 2>/dev/null) || ahead="unknown"
+    log "INSPECT lane=$role worktree=$worktree branch=$branch uncommitted=$uncommitted ahead=$ahead"
+    hold_effect "$role" "remove-worktree" "$worktree"
+}
+
+inspect_claim() {
+    local role="$1" claim_file="$HOME/.cache/hapax/cc-active-task-$role" claim
+    [[ -f "$claim_file" ]] || return 0
+    claim=$(/usr/bin/tr -d '[:space:]' <"$claim_file" 2>/dev/null) || claim="unreadable"
+    log "INSPECT lane=$role claim=${claim:-empty} pointer=$claim_file"
+    hold_effect "$role" "release-task" "${claim:-empty}"
+    hold_effect "$role" "clear-claim" "$claim_file"
+}
+
+sessions=$("${TMUX_OBSERVER[@]}" list-sessions -F '#{session_name}' 2>/dev/null | /usr/bin/grep -E '^hapax-(codex-cx-|claude-)' || true)
+while IFS= read -r session; do
+    [[ -n "$session" ]] || continue
+    inspected=$((inspected + 1))
+
+    pane_pid=$("${TMUX_OBSERVER[@]}" list-panes -t "$session" -F '#{pane_pid}' 2>/dev/null | /usr/bin/head -1) || pane_pid=""
+    if [[ -z "$pane_pid" || ! "$pane_pid" =~ ^[0-9]+$ ]]; then
+        log "INSPECT session=$session state=indeterminate reason=missing-pane-pid"
+        continue
+    fi
 
     role="${session#hapax-codex-}"
     role="${role#hapax-claude-}"
 
-    # Count child processes (excluding the shell itself)
-    children=$(ps --ppid "$pane_pid" -o comm= 2>/dev/null | grep -cv "^fish$\|^bash$\|^zsh$\|^sh$" || echo 0)
-
-    # Check last output for stuck patterns (quota, rate limit, error loops)
-    last_output=$(tmux capture-pane -t "$session" -p 2>/dev/null | grep -v "^$" | tail -3)
+    children=$(/usr/bin/ps --ppid "$pane_pid" -o comm= 2>/dev/null | /usr/bin/grep -Ecv '^(fish|bash|zsh|sh)$') || children=0
+    last_output=$("${TMUX_OBSERVER[@]}" capture-pane -t "$session" -p 2>/dev/null | /usr/bin/grep -v '^$' | /usr/bin/tail -3) || last_output=""
     is_stuck=0
-    if echo "$last_output" | grep -qi "rate.limit\|quota\|429\|Usage limit\|BLOCKED.*quota"; then
+    if printf '%s\n' "$last_output" | /usr/bin/grep -Eqi 'rate.limit|quota|429|Usage limit|BLOCKED.*quota'; then
         is_stuck=1
     fi
 
     if [[ "$children" -gt 0 && "$is_stuck" -eq 0 ]]; then
-        reset_reap_attempts "$role"  # lane is working again — clear the reap counter
-        continue  # Active process making progress — skip
+        log "INSPECT lane=$role state=active children=$children"
+        continue
     fi
 
     if [[ "$children" -gt 0 && "$is_stuck" -eq 1 ]]; then
-        # Stuck lane — release the task but DON'T kill the session
-        log "$session: STUCK (quota/rate-limit) — releasing task, keeping session"
-        claim_file="$HOME/.cache/hapax/cc-active-task-$role"
-        if [[ -f "$claim_file" ]]; then
-            claim=$(cat "$claim_file" | tr -d '[:space:]')
-            if [[ -n "$claim" ]]; then
-                for task_file in "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/active/${claim}"*.md; do
-                    if [[ -f "$task_file" ]]; then
-                        sed -i "s/^status: claimed/status: offered/" "$task_file"
-                        sed -i "s/^status: in_progress/status: offered/" "$task_file"
-                        sed -i "s/^assigned_to: .*/assigned_to: unassigned/" "$task_file"
-                        log "  Released task: $claim → offered"
-                    fi
-                done
-            fi
-            rm -f "$claim_file"
-        fi
-        continue  # Don't kill — session may recover
+        log "INSPECT lane=$role state=quota-signal children=$children"
+        inspect_claim "$role"
+        hold_effect "$role" "notify" "quota-signal"
+        continue
     fi
 
-    # Dead lane — shell prompt, no worker process. Reap candidacy is governed by the
-    # MEASURED per-lineage tau (not a fixed 30m): silence within tau -> skip (slow-but-
-    # live); past tau -> reap; past tau with attempts exhausted -> escalate + STOP so a
-    # genuinely-wedged lane is surfaced once, never reaped in an infinite loop.
-    last_activity=$(tmux display-message -t "$session" -p '#{session_activity}' 2>/dev/null || echo 0)
-    now=$(date +%s)
-    idle_sec=$(( now - last_activity ))
-
-    attempts=$(reap_attempts "$role")
-    decision=$(reap_decide "$role" "$idle_sec" "$attempts")
-    case "$decision" in
-        skip)
-            continue  # silence within tau — not a reap candidate this cycle
-            ;;
-        escalate)
-            log "$session: WEDGED — reaped ${attempts}x past tau without recovery; escalate + STOP"
-            curl -sf \
-                -d "lane-reaper: $role wedged — reaped ${attempts}x past tau without recovery; STOP (needs attention)" \
-                -H "Title: Lane wedged (reap cap)" -H "Priority: high" -H "Tags: warning,robot" \
-                "${HAPAX_NTFY_URL:-http://localhost:8092}/${HAPAX_NTFY_TOPIC:-hapax}" >/dev/null 2>&1 || true
-            # Governed incident record alongside the ntfy channel.
-            "$(dirname "$(readlink -f "$0")")/hapax-alert" high "Lane wedged (reap cap)" "$role wedged — reaped ${attempts}x past tau without recovery; STOP (needs attention)" --tag lane --record-only
-            continue
-            ;;
-    esac
-
-    log "$session: DEAD idle ${idle_sec}s (tau-governed reap, attempt $((attempts + 1)))"
-
-    # Check for uncommitted work in the session's worktree
-    worktree="$COUNCIL_DIR--$role"
-
-    if [[ -d "$worktree" ]]; then
-        uncommitted=$(git -C "$worktree" status --porcelain 2>/dev/null | wc -l)
-        branch=$(git -C "$worktree" symbolic-ref --short HEAD 2>/dev/null || echo "detached")
-        ahead=$(git -C "$worktree" rev-list --count main..HEAD 2>/dev/null || echo 0)
-
-        if [[ "$uncommitted" -gt 0 ]]; then
-            log "  WARNING: $worktree has $uncommitted uncommitted changes — NOT cleaning"
-        elif [[ "$ahead" -gt 0 ]]; then
-            # Check if branch was merged
-            merged=$(git -C "$COUNCIL_DIR" branch --merged main 2>/dev/null | grep -c "$branch" || echo 0)
-            if [[ "$merged" -gt 0 ]]; then
-                log "  Worktree $worktree: branch $branch merged, cleaning"
-                if [[ "$DRY_RUN" -eq 0 ]]; then
-                    git -C "$COUNCIL_DIR" worktree remove --force "$worktree" 2>/dev/null && ((cleaned++)) || true
-                fi
-            else
-                log "  Worktree $worktree: branch $branch has $ahead unpushed commits — NOT cleaning"
-            fi
-        else
-            log "  Worktree $worktree: clean, removing"
-            if [[ "$DRY_RUN" -eq 0 ]]; then
-                git -C "$COUNCIL_DIR" worktree remove --force "$worktree" 2>/dev/null && ((cleaned++)) || true
-            fi
-        fi
+    last_activity=$("${TMUX_OBSERVER[@]}" display-message -t "$session" -p '#{session_activity}' 2>/dev/null) || last_activity=""
+    now=$(/usr/bin/date +%s)
+    if [[ ! "$last_activity" =~ ^[0-9]+$ || "$last_activity" -gt "$now" ]]; then
+        log "INSPECT lane=$role state=indeterminate reason=invalid-session-activity"
+        continue
     fi
 
-    # Clear stale claim file
-    claim_file="$HOME/.cache/hapax/cc-active-task-$role"
-    if [[ -f "$claim_file" ]]; then
-        claim=$(cat "$claim_file" | tr -d '[:space:]')
-        if [[ -n "$claim" ]]; then
-            # Release the task back to offered
-            for task_file in "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/active/${claim}"*.md; do
-                if [[ -f "$task_file" ]]; then
-                    sed -i "s/^status: claimed/status: offered/" "$task_file"
-                    sed -i "s/^status: in_progress/status: offered/" "$task_file"
-                    sed -i "s/^assigned_to: .*/assigned_to: unassigned/" "$task_file"
-                    log "  Released task: $claim → offered"
-                fi
-            done
-        fi
-        rm -f "$claim_file"
+    idle_sec=$((now - last_activity))
+    threshold_sec=$((IDLE_THRESHOLD_MIN * 60))
+    if [[ "$idle_sec" -lt "$threshold_sec" ]]; then
+        log "INSPECT lane=$role state=idle-within-threshold idle_seconds=$idle_sec"
+        continue
     fi
 
-    # Reap (governed: a reap is a recovery action). MUST-FIX: the kill is a single
-    # PID-targeted os.kill(SIGTERM) of the lane's worker (or its idle shell), NOT a
-    # whole-session teardown — the worker terminates gracefully and reaps its own
-    # children rather than the entire pane tree taking a HUP (bounded, no tree-kill).
-    if [[ "$DRY_RUN" -eq 0 ]]; then
-        if governor_permit "lane:$role"; then
-            reap_kill "$(target_pid_for "$pane_pid")" && ((killed++)) || true
-            bump_reap_attempts "$role"
-            governor_record "lane:$role" ok
-            log "  Reaped lane $session via os.kill (pid $(target_pid_for "$pane_pid"))"
-        else
-            log "  RecoveryGovernor deferred reap of $session (backoff/pressure); retry next cycle"
-        fi
-    else
-        log "  DRY RUN: would os.kill $(target_pid_for "$pane_pid") (lane $session)"
-    fi
-done
+    log "INSPECT lane=$role state=recovery-candidate idle_seconds=$idle_sec dry_run=$DRY_RUN"
+    inspect_worktree "$role"
+    inspect_claim "$role"
+    hold_effect "$role" "terminate-process" "pane-pid=$pane_pid"
+    hold_effect "$role" "record-recovery-attempt" "idle-seconds=$idle_sec"
+    hold_effect "$role" "mint-escalation-task" "recovery-candidate"
+    hold_effect "$role" "notify" "recovery-candidate"
+    hold_effect "$role" "start-hygiene-service" "post-recovery"
+done <<<"$sessions"
 
-log "Done: killed=$killed cleaned=$cleaned"
-
-if [[ "$DRY_RUN" -eq 0 && $(( killed + cleaned )) -gt 0 ]]; then
-    systemctl --user start hapax-cc-hygiene.service 2>/dev/null || true
-    log "Triggered hygiene sweep after cleanup"
-fi
+log "Done: inspected=$inspected held_effects=$held effects_executed=0"

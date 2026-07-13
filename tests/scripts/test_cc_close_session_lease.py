@@ -1,14 +1,4 @@
-"""cc-close must clear the session-keyed lease, not just the legacy one.
-
-cc-claim (reform Phase 1, cluster 6) writes TWO claim files for a session:
-the legacy ``cc-active-task-<role>`` and the session-keyed
-``cc-active-task-<role>-<session_id>`` (agent-role.sh ``hapax_session_id``).
-cc-close historically removed only the legacy file, leaking the session-keyed
-lease until its 6h TTL — and the gate reads the session-keyed file FIRST, so it
-kept seeing the just-closed task. Regression coverage for reform finding
-#12/#13: cc-close must clear BOTH lease forms (the current session's only, and
-only when the file still names the task being closed).
-"""
+"""cc-close has no shell-level lease or note mutation path."""
 
 from __future__ import annotations
 
@@ -98,7 +88,7 @@ def _run_close(
     )
 
 
-def test_cc_close_clears_both_legacy_and_session_keyed_lease(tmp_path: Path) -> None:
+def test_unadmitted_withdrawal_preserves_all_claim_state(tmp_path: Path) -> None:
     home = tmp_path / "home"
     vault = _vault(home)
     _write_task(vault, "foo")
@@ -114,16 +104,17 @@ def test_cc_close_clears_both_legacy_and_session_keyed_lease(tmp_path: Path) -> 
 
     result = _run_close(home, "foo", role="eta", session_id="sess123")
 
-    assert result.returncode == 0, result.stderr
-    assert not legacy.exists(), f"legacy lease not cleared\nstdout={result.stdout}"
-    assert not legacy_sidecar.exists(), f"legacy epoch sidecar leaked\nstdout={result.stdout}"
-    assert not session.exists(), (
-        f"session-keyed lease leaked (finding #12/#13)\nstdout={result.stdout}"
-    )
-    assert not session_sidecar.exists(), f"session epoch sidecar leaked\nstdout={result.stdout}"
+    assert result.returncode == 2
+    assert "terminal_close_operator_disposition_receipt_required" in result.stderr
+    assert legacy.read_text(encoding="utf-8") == "foo\n"
+    assert session.read_text(encoding="utf-8") == "foo\n"
+    assert legacy_sidecar.read_text(encoding="utf-8") == "1780000000 foo\n"
+    assert session_sidecar.read_text(encoding="utf-8") == "1780000000 foo\n"
+    assert (vault / "active" / "foo.md").exists()
+    assert not (vault / "closed" / "foo.md").exists()
 
 
-def test_cc_close_preserves_session_lease_naming_a_different_task(
+def test_unadmitted_close_preserves_lease_naming_a_different_task(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -137,13 +128,13 @@ def test_cc_close_preserves_session_lease_naming_a_different_task(
 
     result = _run_close(home, "foo", role="eta", session_id="sess123")
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 2
     assert session.exists(), "a session lease for different work must not be clobbered"
     assert sidecar.exists(), "a sidecar for different work must not be clobbered"
     assert session.read_text(encoding="utf-8").strip() == "other-task"
 
 
-def test_cc_close_without_session_id_still_clears_legacy(tmp_path: Path) -> None:
+def test_close_without_session_id_preserves_legacy_claim(tmp_path: Path) -> None:
     home = tmp_path / "home"
     vault = _vault(home)
     _write_task(vault, "foo")
@@ -153,5 +144,40 @@ def test_cc_close_without_session_id_still_clears_legacy(tmp_path: Path) -> None
 
     result = _run_close(home, "foo", role="eta", session_id=None)
 
-    assert result.returncode == 0, result.stderr
-    assert not legacy.exists(), f"legacy lease not cleared\nstdout={result.stdout}"
+    assert result.returncode == 2
+    assert legacy.read_text(encoding="utf-8") == "foo\n"
+    assert (vault / "active" / "foo.md").exists()
+
+
+def test_raw_retroactive_and_bypass_environment_cannot_mutate(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    vault = _vault(home)
+    note = _write_task(vault, "foo")
+    cache = _cache(home)
+    claim = cache / "cc-active-task-eta"
+    claim.write_text("foo\n", encoding="utf-8")
+    before_note = note.read_bytes()
+    before_claim = claim.read_bytes()
+    env = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
+    env.update(
+        HOME=str(home),
+        HAPAX_AGENT_ROLE="eta",
+        HAPAX_SESSION_ID="sess123",
+        HAPAX_CANON_ECHO_ENFORCEMENT="0",
+        HAPAX_CANON_BOUND_CLOSE_ENFORCEMENT="0",
+        HAPAX_RAPID_CLOSE_OFF="1",
+        HAPAX_CC_TASK_CLOSURE_GATE_OFF="1",
+        HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF="1",
+        HAPAX_PR_MERGE_GATE_OFF="1",
+    )
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "foo", "--retroactive"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "raw --retroactive is retired" in result.stderr
+    assert note.read_bytes() == before_note
+    assert claim.read_bytes() == before_claim

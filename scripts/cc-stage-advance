@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""cc-stage-advance <task_id> <stage> [--allow-backward] — council AVSDLC stage-setter.
+"""cc-stage-advance <task_id> <stage> [--edge-class next|fall].
 
 Sets the ``stage:`` field on a cc-task note and appends the transition to the
 authority-case ledger, so a task can move S6 (implementation) -> S7 (release)
@@ -12,17 +12,16 @@ The cc-tasks vault is writable by sanctioned tooling (the gate classifies by
 command head, and ``python3`` is not a mutation verb); every advance appends a
 ``kind="stage_transition"`` record to the authority-case ledger for audit.
 
-Coordination reform Phase 2 (CASE-SDLC-REFORM-001; master design section 8). The
-guard for a forward transition (e.g. implementation complete + CI green for
-S6->S7) is the caller's responsibility; this tool enforces only stage shape,
-authority-case presence, and forward-only ordering (unless --allow-backward).
+The checked lifecycle definition decides legality. Every accepted transition is
+prepared in the canonical coordination log, projected with byte-and-mode CAS,
+then committed by an applied receipt. Projection or applied-receipt failure
+restores the exact preimage without overwriting third-party bytes.
 
 Usage:
-    cc-stage-advance <task_id> <stage e.g. S7_RELEASE>
-    cc-stage-advance <task_id> S6_IMPLEMENTATION --allow-backward
+    cc-stage-advance <task_id> <stage e.g. S7_RUNTIME_VERIFICATION>
+    cc-stage-advance <task_id> BLOCKED --edge-class fall
 
-Exit: 0 advanced (or already at stage), 2 refused (bad stage / no authority_case
-/ backward without flag), 3 not found / IO / usage.
+Exit: 0 applied, 2 refused, 3 not found / IO / usage.
 """
 
 from __future__ import annotations
@@ -51,32 +50,34 @@ LEDGER = Path(
 
 #: The six no-go booleans snapshotted into each stage_transition coord event.
 NO_GO_FIELDS = (
-    "source_mutation_authorized",
+    "axiom_mutation_authorized",
     "docs_mutation_authorized",
     "implementation_authorized",
-    "release_authorized",
     "public_current",
-    "axiom_mutation_authorized",
+    "release_authorized",
+    "runtime_mutation_authorized",
+    "source_mutation_authorized",
+    "vault_mutation_authorized",
 )
 
-_STAGE_RE = re.compile(r"^S(\d{1,2})(?:_[A-Z][A-Z0-9_]*)?$")
 _CASE_RE = re.compile(r"^CASE-[A-Z0-9-]+$")
 _NULLISH = {"", "null", "none", "~"}
 
 
 def _find_note(task_id: str) -> Path | None:
     for sub in ("active", "closed"):
-        for cand in sorted((VAULT / sub).glob(f"{task_id}-*.md")):
-            return cand
         exact = VAULT / sub / f"{task_id}.md"
         if exact.is_file():
             return exact
+        matches = sorted((VAULT / sub).glob(f"{task_id}-*.md"))
+        if len(matches) > 1:
+            raise RuntimeError(
+                f"task '{task_id}' is ambiguous under {VAULT / sub}: "
+                + ", ".join(str(path) for path in matches)
+            )
+        if matches:
+            return matches[0]
     return None
-
-
-def _stage_num(stage: str) -> int | None:
-    m = _STAGE_RE.match(stage)
-    return int(m.group(1)) if m else None
 
 
 def _scalar(front: str, key: str) -> str:
@@ -92,63 +93,206 @@ def _role() -> str:
     return "unknown"
 
 
+def _session_id() -> str:
+    return os.environ.get("HAPAX_SESSION_ID", "").strip()
+
+
 def _refuse(msg: str) -> int:
     print(f"cc-stage-advance: REFUSED — {msg}", file=sys.stderr)
     return REFUSED
 
 
 def _no_go_snapshot(front: str) -> dict[str, bool]:
-    """Read the six no-go booleans from frontmatter (absent → False)."""
+    """Read the exact canonical no-go vector (absent declarations are false)."""
     return {key: _scalar(front, key).lower() == "true" for key in NO_GO_FIELDS}
 
 
-def _emit_coord_event(
-    task_id: str,
-    from_stage: str,
-    new_stage: str,
-    authority_case: str,
-    parent_spec: str | None,
-    no_go: dict[str, bool],
-    now: str,
-) -> None:
-    """Record the stage transition in the coord SSOT log (coordination reform §4.3).
-
-    ``fail_open`` routes a daemon-down append to the spool for boot
-    reconciliation; a hard failure is warned, never fatal — the stage advance and
-    its advisory cache-ledger record have already succeeded.
-    """
+def _validate_guard_evidence(
+    evidence: dict[str, tuple[str, ...]],
+) -> dict[str, tuple[str, ...]]:
+    durable_prefixes = ("coord:", "file:", "mq:", "receipt:", "task:")
+    for guard, refs in evidence.items():
+        if any(not ref.startswith(durable_prefixes) for ref in refs):
+            raise RuntimeError(
+                f"guard {guard} evidence must use a durable coord/file/mq/receipt/task ref"
+            )
+    escape_refs = evidence.get("escape_grant_valid")
+    if escape_refs is None:
+        return evidence
+    if len(escape_refs) != 1 or not escape_refs[0].startswith("file:"):
+        raise RuntimeError("escape_grant_valid requires one content-addressed file ref")
+    raw = escape_refs[0].removeprefix("file:")
+    path_text, marker, expected_hash = raw.rpartition("@sha256:")
+    if not marker or re.fullmatch(r"[0-9a-f]{64}", expected_hash) is None:
+        raise RuntimeError("escape grant ref must end in @sha256:<64-hex>")
+    path = Path(path_text).expanduser()
     try:
-        if str(REPO_ROOT) not in sys.path:
-            sys.path.insert(0, str(REPO_ROOT))
-        from shared.coord_event_log import default_event_log
-        from shared.coord_projection import emit_stage_transition
+        content = path.read_bytes()
+    except OSError as exc:
+        raise RuntimeError(f"escape grant unreadable: {path}") from exc
+    import hashlib
+    import time
 
-        emit_stage_transition(
-            event_log=default_event_log(),
-            task_id=task_id,
-            from_stage=from_stage,
-            to_stage=new_stage,
-            authority_case=authority_case,
-            actor=_role(),
-            no_go_snapshot=no_go,
-            parent_spec=parent_spec,
-            timestamp=now,
-            evidence_type="stage_advance",
-            evidence_summary=f"{from_stage} -> {new_stage}",
-            origin="cli",
+    if hashlib.sha256(content).hexdigest() != expected_hash:
+        raise RuntimeError("escape grant content hash mismatch")
+    from shared.coord_event_log import default_grant_key
+    from shared.governance.coord_capabilities import (
+        read_grant_file,
+        verify_escape_grant,
+    )
+
+    try:
+        key = default_grant_key().read_bytes()
+    except OSError as exc:
+        raise RuntimeError("escape grant verification key unavailable") from exc
+    if not verify_escape_grant(
+        read_grant_file(path), key=key, now=time.time(), gate="sdlc-stage-transition"
+    ):
+        raise RuntimeError("escape grant signature, scope, or freshness is invalid")
+    for guard in ("resume_authorized", "restart_authorized"):
+        if guard in evidence and evidence[guard] != escape_refs:
+            raise RuntimeError(f"{guard} must bind the same verified EscapeGrant")
+    return evidence
+
+
+def _set_scalar(text: str, key: str, rendered_value: str) -> str:
+    pattern = rf"(?m)^{re.escape(key)}:\s*.*$"
+    if re.search(pattern, text):
+        return re.sub(pattern, f"{key}: {rendered_value}", text, count=1)
+    close = text.find("\n---", 3) if text.startswith("---") else -1
+    if close < 0:
+        raise RuntimeError("task frontmatter is missing or unclosed")
+    return text[:close] + f"\n{key}: {rendered_value}" + text[close:]
+
+
+def _claim_files(task_id: str, role: str) -> tuple[Path, ...]:
+    if not role:
+        return ()
+    cache = Path.home() / ".cache" / "hapax"
+    candidates = [cache / f"cc-active-task-{role}"]
+    session_id = os.environ.get("HAPAX_SESSION_ID", "").strip()
+    if session_id:
+        candidates.append(cache / f"cc-active-task-{role}-{session_id}")
+    candidates.extend(sorted(cache.glob(f"cc-active-task-{role}-*")))
+    selected: list[Path] = []
+    for path in dict.fromkeys(candidates):
+        try:
+            observed = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if observed != task_id:
+            continue
+        selected.append(path)
+        claim_key = path.name.removeprefix("cc-active-task-")
+        epoch = cache / f"cc-claim-epoch-{claim_key}"
+        if epoch.exists():
+            selected.append(epoch)
+    return tuple(dict.fromkeys(selected))
+
+
+def _relay_path(role: str) -> Path:
+    relay_dir = Path.home() / ".cache" / "hapax" / "relay"
+    session_id = os.environ.get("HAPAX_SESSION_ID", "").strip()
+    candidates = [
+        relay_dir / f"{role}-status.yaml",
+        relay_dir / f"{role}.yaml",
+        relay_dir / f"status-{role}.yaml",
+        relay_dir / f"peer-status-{role}.yaml",
+    ]
+    if session_id:
+        candidates.append(relay_dir / f"peer-status-{session_id}.yaml")
+    existing: list[tuple[float, Path]] = []
+    for path in candidates:
+        try:
+            existing.append((path.stat().st_mtime, path))
+        except OSError:
+            continue
+    return max(existing)[1] if existing else relay_dir / f"{role}.yaml"
+
+
+def advance(
+    task_id: str,
+    new_stage: str,
+    edge_class: str,
+    *,
+    predecessor_position_ref: str | None = None,
+    echo_receipt_ref: str | None = None,
+    guard_evidence: dict[str, tuple[str, ...]] | None = None,
+) -> int:
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from shared.sdlc_lifecycle import stage_token
+    from shared.sdlc_task_store import (
+        TaskStoreError,
+        resolve_task_note,
+    )
+
+    try:
+        if stage_token(new_stage) == "S11":
+            return _refuse("terminal_edge_requires_cc_close: use the governed cc-close path")
+    except ValueError:
+        pass
+
+    # Lifecycle progression always consumes the exact current canon, claim,
+    # Echo, and successor projection. Ambient configuration cannot select the
+    # retired partial preflight.
+    echo_enforced = True
+    if echo_enforced:
+        from shared.coord_event_log import coord_base_dir, default_event_log
+        from shared.coord_projection import (
+            capture_coord_replay_snapshot,
+            inspect_lifecycle_transactions,
         )
-    except Exception as exc:  # noqa: BLE001 — coord emit must not fail the advance.
-        print(f"cc-stage-advance: WARNING coord event emit failed: {exc}", file=sys.stderr)
+        from shared.relay_mq import (
+            CanonEchoError,
+            successor_outbox_task_directory,
+        )
+        from shared.sdlc_claim import inspect_claim_publications
 
+        recovery_log = default_event_log()
+        lifecycle_inspection = inspect_lifecycle_transactions(
+            task_id=task_id,
+            event_plane_snapshot=capture_coord_replay_snapshot(recovery_log),
+        )
+        if not lifecycle_inspection.scope_complete:
+            return _refuse(
+                "canon_transition_inspection_hold: " + ",".join(lifecycle_inspection.reason_codes)
+            )
+        claim_inspection = inspect_claim_publications(
+            cache_dir=Path.home() / ".cache" / "hapax",
+            task_id=task_id,
+        )
+        held_claims = [item for item in claim_inspection if item.disposition == "hold"]
+        if held_claims:
+            return _refuse(
+                "claim_publication_inspection_hold: "
+                + ",".join(f"{item.publication_id}:{item.reason_code}" for item in held_claims)
+            )
+        relay_db = Path(
+            os.environ.get(
+                "HAPAX_RELAY_MQ_DB",
+                str(Path.home() / ".cache" / "hapax" / "relay" / "messages.db"),
+            )
+        ).expanduser()
+        outbox_root = Path(
+            os.environ.get(
+                "HAPAX_TRANSITION_OUTBOX_DIR",
+                str(coord_base_dir() / "successor-outbox"),
+            )
+        ).expanduser()
+        outbox_dir = successor_outbox_task_directory(outbox_root, task_id)
 
-def advance(task_id: str, new_stage: str, allow_backward: bool) -> int:
-    if _stage_num(new_stage) is None:
-        return _refuse(f"'{new_stage}' is not a valid stage (expected S0..S11[_LABEL])")
-    note = _find_note(task_id)
-    if note is None:
-        print(f"cc-stage-advance: task '{task_id}' not found under {VAULT}", file=sys.stderr)
-        return ERROR
-    text = note.read_text(encoding="utf-8")
+    try:
+        snapshot = resolve_task_note(
+            VAULT,
+            task_id,
+            state="active",
+            require_no_other_state=True,
+        )
+    except TaskStoreError as exc:
+        return _refuse(str(exc))
+    note = snapshot.path
+    text = snapshot.content.decode("utf-8")
     if not text.startswith("---"):
         print("cc-stage-advance: note has no frontmatter", file=sys.stderr)
         return ERROR
@@ -165,64 +309,439 @@ def advance(task_id: str, new_stage: str, allow_backward: bool) -> int:
             "transition must be anchored to an authority case"
         )
 
-    from_stage = _scalar(front, "stage") or "(none)"
-    if from_stage == new_stage:
-        print(f"cc-stage-advance: '{task_id}' already at {new_stage}", file=sys.stderr)
-        return OK
+    from_stage = _scalar(front, "stage")
+    if not from_stage:
+        return _refuse("transition_stage_missing: declare the exact current stage before advancing")
     parent_spec = _scalar(front, "parent_spec") or None
     no_go = _no_go_snapshot(front)
-    from_num = _stage_num(from_stage)
-    to_num = _stage_num(new_stage)
-    if from_num is not None and to_num is not None and to_num < from_num and not allow_backward:
+    role = _role()
+    if role == "unknown":
+        return _refuse("transition_actor_missing: bind one real lane identity")
+    try:
+        checked_guard_evidence = _validate_guard_evidence(guard_evidence or {})
+    except RuntimeError as exc:
+        return _refuse(f"transition_guard_evidence_invalid: {exc}")
+    if echo_enforced and (not predecessor_position_ref or not echo_receipt_ref):
         return _refuse(
-            f"backward transition {from_stage} -> {new_stage} (use --allow-backward to override)"
+            "canon_echo_required: pass --position-ref and --echo-receipt-ref from the "
+            "fresh matching canon echo"
         )
+
+    from shared.coord_event_log import coord_base_dir, default_event_log
+    from shared.coord_projection import (
+        FileProjection,
+        LifecycleTransitionError,
+        LifecycleTransitionIntent,
+        execute_lifecycle_transition,
+        lifecycle_transition_intent_ref,
+    )
+    from shared.relay_mq import (
+        CanonEchoError,
+        build_successor_canon_position,
+        build_successor_outbox,
+        deliver_successor_outbox,
+        ensure_successor_outbox_task_directory,
+        require_matching_canon_echo,
+        resolve_claim_bound_canon_position,
+    )
+
+    event_log = default_event_log()
+    expected_echo = None
+    claim_leases = ()
+    applied_claim = None
+    relay_db = Path(
+        os.environ.get(
+            "HAPAX_RELAY_MQ_DB",
+            str(Path.home() / ".cache" / "hapax" / "relay" / "messages.db"),
+        )
+    ).expanduser()
+    if echo_enforced:
+        from shared.sdlc_claim import (
+            ClaimPublicationError,
+            resolve_applied_claim_publication,
+        )
+
+        session_id = _session_id()
+        if not session_id:
+            return _refuse("canon_echo_session_missing: bind the exact claim session id")
+        try:
+            applied_claim = resolve_applied_claim_publication(
+                vault_root=VAULT,
+                cache_dir=Path.home() / ".cache" / "hapax",
+                role=role,
+                session_id=session_id,
+                task_id=task_id,
+            )
+            claim_leases = applied_claim.leases
+            if applied_claim.current_task != snapshot:
+                return _refuse(
+                    "claim_publication_task_position_changed: reload the exact applied task"
+                )
+            binding = claim_leases[0].binding
+            if _scalar(front, "assigned_to") != role or binding.authority_case != authority_case:
+                return _refuse(
+                    "canon_echo_claim_identity_mismatch: task, claim, lane, and AuthorityCase must agree"
+                )
+            expected_echo = resolve_claim_bound_canon_position(
+                binding,
+                stage_token=from_stage,
+            )
+            if predecessor_position_ref != expected_echo.position_ref:
+                raise CanonEchoError(
+                    "canon_echo_position_ref_mismatch",
+                    "use the exact current position_ref from the claim-bound causal leaf",
+                )
+            if not echo_receipt_ref or not echo_receipt_ref.startswith("mq:"):
+                raise CanonEchoError(
+                    "canon_echo_receipt_ref_malformed",
+                    "pass the echo receipt as mq:<message_id>",
+                )
+            require_matching_canon_echo(
+                relay_db,
+                expected_echo,
+                echo_message_id=echo_receipt_ref.removeprefix("mq:"),
+                now=datetime.now(UTC),
+                expected_sender=role,
+                expected_session_id=session_id,
+            )
+        except (CanonEchoError, ClaimPublicationError, TaskStoreError) as exc:
+            return _refuse(str(exc))
+
+    try:
+        intent = LifecycleTransitionIntent.create(
+            task_id=task_id,
+            from_stage=from_stage,
+            to_stage=new_stage,
+            edge_class=edge_class,
+            authority_case=authority_case,
+            actor=role,
+            no_go_snapshot=no_go,
+            guard_evidence=checked_guard_evidence,
+            parent_spec=parent_spec,
+            predecessor_position_ref=predecessor_position_ref,
+            echo_receipt_ref=echo_receipt_ref,
+            evidence_type="stage_advance",
+            evidence_summary=f"{from_stage} -> {new_stage}",
+            origin="cli",
+        )
+    except LifecycleTransitionError as exc:
+        return _refuse(str(exc))
+    if intent.to_stage == "S11":
+        return _refuse("terminal_edge_requires_cc_close: use the governed cc-close path")
+
+    from shared.execution_admission import (
+        ExecutionAdmissionError,
+        require_protected_action,
+    )
+
+    try:
+        require_protected_action("lifecycle.transition")
+    except ExecutionAdmissionError as exc:
+        return _refuse(str(exc))
 
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     if re.search(r"(?m)^stage:", front):
-        front = re.sub(r"(?m)^stage:\s*.*$", f"stage: {new_stage}", front)
+        front = re.sub(r"(?m)^stage:\s*.*$", f"stage: {intent.to_stage}", front)
     else:
-        front = front.rstrip("\n") + f"\nstage: {new_stage}\n"
+        return _refuse("transition_stage_missing: stage backfill is not a lifecycle edge")
     if re.search(r"(?m)^updated_at:", front):
         front = re.sub(r"(?m)^updated_at:\s*.*$", f"updated_at: {now}", front)
 
-    log = f"- {now} {_role()}: stage {from_stage} -> {new_stage} (cc-stage-advance)."
+    log = (
+        f"- {now} {_role()}: stage {intent.from_stage} -> {intent.to_stage} "
+        f"({intent.edge_class}; cc-stage-advance)."
+    )
     body = body.rstrip("\n") + "\n" + log + "\n"
-    note.write_text(front + body, encoding="utf-8")
+    postimage = (front + body).encode("utf-8")
+
+    projections: list[FileProjection] = [
+        FileProjection.from_snapshot(
+            note,
+            before=snapshot.content,
+            before_mode=snapshot.mode,
+            after=postimage,
+        )
+    ]
+    successor_outbox = None
+    successor_outbox_path: Path | None = None
+    successor_message_id: str | None = None
+    if echo_enforced:
+        assert expected_echo is not None
+        try:
+            from shared.relay_lifecycle import (
+                parse_relay_document,
+                relay_status_values,
+                relay_values_are_retired,
+            )
+            from shared.session_context_canon import build_canon_bundle
+
+            bundle = build_canon_bundle()
+            if bundle.canon_hash != expected_echo.canon_hash:
+                raise CanonEchoError(
+                    "canon_successor_canon_hash_mismatch",
+                    "restore the canon committed by the predecessor echo",
+                )
+            image = next(
+                (
+                    item
+                    for item in bundle.images
+                    if item.stage_token == intent.to_stage
+                    and item.level.value == expected_echo.canon_level
+                ),
+                None,
+            )
+            stage_definition = next(
+                item for item in bundle.lifecycle_definition.stages if item.token == intent.to_stage
+            )
+            if image is None:
+                raise CanonEchoError(
+                    "canon_successor_image_missing",
+                    "restore the exact successor image at the predecessor projection level",
+                )
+            legal_successors = tuple(
+                dict.fromkeys(edge.to for edge in (*stage_definition.next, *stage_definition.fall))
+            )
+            transition_ref = lifecycle_transition_intent_ref(intent)
+            successor_expected, successor_envelope = build_successor_canon_position(
+                expected_echo,
+                transition_id=transition_ref,
+                stage_token=intent.to_stage,
+                legal_successors=legal_successors,
+                canon_hash=bundle.canon_hash,
+                canon_version=bundle.canon_version,
+                canon_image_hash=image.image_hash,
+                canon_level=image.level.value,
+                rendered_payload=image.rendered_payload,
+                now=datetime.now(UTC),
+            )
+            successor_outbox = build_successor_outbox(
+                expected_echo,
+                successor_expected,
+                successor_envelope,
+                transition_ref=transition_ref,
+            )
+            outbox_root = Path(
+                os.environ.get(
+                    "HAPAX_TRANSITION_OUTBOX_DIR",
+                    str(coord_base_dir() / "successor-outbox"),
+                )
+            ).expanduser()
+            outbox_dir = ensure_successor_outbox_task_directory(outbox_root, task_id)
+            successor_outbox_path = outbox_dir / f"{successor_outbox.action_id}.json"
+            projections.append(
+                FileProjection.from_snapshot(
+                    successor_outbox_path,
+                    before=None,
+                    before_mode=None,
+                    after=successor_outbox.payload,
+                    after_mode=0o600,
+                )
+            )
+            for lease in claim_leases:
+                for path, content, mode in (
+                    (lease.claim_path, lease.claim_content, lease.claim_mode),
+                    (lease.epoch_path, lease.epoch_content, lease.epoch_mode),
+                    (lease.binding_path, lease.binding_content, lease.binding_mode),
+                ):
+                    projections.append(
+                        FileProjection.from_snapshot(
+                            path,
+                            before=content,
+                            before_mode=mode,
+                            after=content,
+                            after_mode=mode,
+                        )
+                    )
+            assert applied_claim is not None
+            projections.extend(applied_claim.proof_projections())
+            relay_path = _relay_path(role)
+            relay_before = relay_path.read_bytes()
+            relay_mode = relay_path.stat().st_mode & 0o777
+            relay = parse_relay_document(relay_before.decode("utf-8"))
+            if not relay or relay_values_are_retired(relay_status_values(relay)):
+                raise CanonEchoError(
+                    "canon_transition_relay_unusable",
+                    "restore one live current-state relay mapping for the owning lane",
+                )
+            relay_claim = relay.get("current_claim") or relay.get("task_id")
+            if str(relay.get("role") or role) != role or str(relay_claim or "") != task_id:
+                raise CanonEchoError(
+                    "canon_transition_relay_claim_mismatch",
+                    "make relay role and current claim agree with the exact claim lease",
+                )
+            relay.update(
+                {
+                    "role": role,
+                    "current_claim": task_id,
+                    "task_id": task_id,
+                    "stage_token": intent.to_stage,
+                    "updated": now,
+                    "canon_position": {
+                        "binding_ref": successor_expected.binding_ref,
+                        "position_ref": successor_expected.position_ref,
+                        "source_message_id": successor_expected.source_message_id,
+                        "state": "successor_outbox_prepared",
+                    },
+                }
+            )
+            import yaml
+
+            relay_after = yaml.safe_dump(relay, sort_keys=False).encode("utf-8")
+            projections.append(
+                FileProjection.from_snapshot(
+                    relay_path,
+                    before=relay_before,
+                    before_mode=relay_mode,
+                    after=relay_after,
+                    after_mode=relay_mode,
+                )
+            )
+        except (CanonEchoError, OSError, RuntimeError, ValueError) as exc:
+            return _refuse(f"canon_successor_prepare_failed: {exc}")
+
+    successor_message_id: str | None = None
+    try:
+        receipt = execute_lifecycle_transition(
+            event_log=event_log,
+            intent=intent,
+            projections=projections,
+            timestamp=now,
+        )
+    except LifecycleTransitionError as exc:
+        return _refuse(str(exc))
+    except (OSError, RuntimeError) as exc:
+        print(
+            f"cc-stage-advance: ERROR — transition transaction failed: {exc}",
+            file=sys.stderr,
+        )
+        return ERROR
+
+    if successor_outbox is not None:
+        assert successor_outbox_path is not None
+        try:
+            deliver_successor_outbox(
+                relay_db,
+                event_log,
+                successor_outbox,
+                outbox_path=successor_outbox_path,
+                timestamp=now,
+            )
+            successor_message_id = successor_outbox.envelope.message_id
+        except (CanonEchoError, ImportError, OSError, RuntimeError, ValueError) as exc:
+            print(
+                "cc-stage-advance: HOLD — transition applied with durable successor outbox "
+                f"pending delivery: {exc}",
+                file=sys.stderr,
+            )
+            return ERROR
 
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
     from shared.jsonl_append import append_jsonl
 
-    # Single-writer-safe advisory ledger append (flock + O_APPEND); fail-open —
-    # the SSOT is the coord event log emitted below (dn-ledger-flock).
-    append_jsonl(
-        LEDGER,
-        {
-            "ts": now,
-            "kind": "stage_transition",
-            "tool": "cc-stage-advance",
-            "role": _role(),
-            "task_id": task_id,
-            "authority_case": authority_case,
-            "from_stage": from_stage,
-            "to_stage": new_stage,
-            "note": str(note),
-        },
-        sort_keys=True,
+    try:
+        append_jsonl(
+            LEDGER,
+            {
+                "ts": now,
+                "kind": "stage_transition",
+                "tool": "cc-stage-advance",
+                "role": _role(),
+                "task_id": task_id,
+                "authority_case": authority_case,
+                "from_stage": intent.from_stage,
+                "to_stage": intent.to_stage,
+                "edge_class": intent.edge_class,
+                "transaction_id": receipt.transaction_id,
+                "applied_event_id": receipt.applied_event_id,
+                "successor_message_id": successor_message_id,
+                "note": str(note),
+            },
+            sort_keys=True,
+        )
+    except OSError as exc:
+        print(
+            f"cc-stage-advance: WARNING advisory ledger append failed: {exc}",
+            file=sys.stderr,
+        )
+    print(
+        f"cc-stage-advance: {task_id} stage {intent.from_stage} -> {intent.to_stage} "
+        f"({intent.edge_class}; transaction={receipt.transaction_id})"
+        + (f" successor={successor_message_id}" if successor_message_id else "")
     )
-    _emit_coord_event(task_id, from_stage, new_stage, authority_case, parent_spec, no_go, now)
-    print(f"cc-stage-advance: {task_id} stage {from_stage} -> {new_stage} (ledgered)")
     return OK
 
 
+def close_transaction(
+    task_id: str,
+    *,
+    final_status: str,
+    pr: str,
+    predecessor_position_ref: str | None = None,
+    echo_receipt_ref: str | None = None,
+) -> int:
+    return _refuse("terminal_edge_requires_cc_close: direct close mode was removed")
+
+
 def main(argv: list[str]) -> int:
-    args = [a for a in argv[1:] if a != "--allow-backward"]
-    allow_backward = "--allow-backward" in argv[1:]
-    if len(args) != 2:
-        print("usage: cc-stage-advance <task_id> <stage> [--allow-backward]", file=sys.stderr)
+    args = argv[1:]
+    if "--close-status" in args or "--pr" in args:
+        return _refuse("terminal_edge_requires_cc_close: direct close mode was removed")
+    positional: list[str] = []
+    edge_class = "auto"
+    position_ref: str | None = None
+    echo_receipt_ref: str | None = None
+    guard_evidence: dict[str, list[str]] = {}
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg in {
+            "--edge-class",
+            "--position-ref",
+            "--echo-receipt-ref",
+            "--guard-evidence",
+        }:
+            if index + 1 >= len(args):
+                print(f"cc-stage-advance: {arg} requires a value", file=sys.stderr)
+                return ERROR
+            value = args[index + 1]
+            if arg == "--edge-class":
+                edge_class = value
+            elif arg == "--position-ref":
+                position_ref = value
+            elif arg == "--guard-evidence":
+                guard, separator, evidence_ref = value.partition("=")
+                if not separator or not guard or not evidence_ref:
+                    return _refuse("--guard-evidence must be GUARD=DURABLE_REF")
+                guard_evidence.setdefault(guard, []).append(evidence_ref)
+            else:
+                echo_receipt_ref = value
+            index += 2
+            continue
+        if arg == "--allow-backward":
+            return _refuse(
+                "--allow-backward was removed; use an exact declared repair or fall edge"
+            )
+        if arg.startswith("--"):
+            print(f"cc-stage-advance: unknown argument {arg}", file=sys.stderr)
+            return ERROR
+        positional.append(arg)
+        index += 1
+    if len(positional) != 2:
+        print(
+            "usage: cc-stage-advance <task_id> <stage> "
+            "[--edge-class next|fall] [--position-ref REF --echo-receipt-ref REF]",
+            file=sys.stderr,
+        )
         return ERROR
-    return advance(args[0], args[1], allow_backward)
+    return advance(
+        positional[0],
+        positional[1],
+        edge_class,
+        predecessor_position_ref=position_ref,
+        echo_receipt_ref=echo_receipt_ref,
+        guard_evidence={key: tuple(value) for key, value in guard_evidence.items()},
+    )
 
 
 if __name__ == "__main__":

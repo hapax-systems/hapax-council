@@ -1,0 +1,15 @@
+{
+  "historical_receipt": {
+    "bytes": 77349,
+    "path": "checkpoints/pre-contract-extension-20260712/gate0-source-supersession.json",
+    "sha256": "b2cb52088003963bc397f6382fe93d84d71f9b75513f0f69af3fa5575b9525d6"
+  },
+  "may_authorize": false,
+  "reason": "source-only semantic equivalence ended at the pre-contract-extension checkpoint",
+  "schema": "hapax.context-canon.source-supersession-retirement.v1",
+  "superseded_by": {
+    "bytes": 4106,
+    "path": "gate0-contract-semantic-supersession.json",
+    "sha256": "d28e5206e51caebf6b8d56459886c951a8f620b3c8e2303aa67cdcc4716816b2"
+  }
+}

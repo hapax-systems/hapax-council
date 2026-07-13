@@ -5,22 +5,19 @@ as ``done`` unless a signed acceptance receipt — acceptor, verdict,
 timestamp, artifact — exists beside the note as ``<task_id>.acceptance.yaml``
 with verdict ``accepted``. Non-review-floor closures are untouched.
 
-Covers both surfaces:
-- ``scripts/cc-close-acceptance-receipt-check.py`` gate() unit behavior
-- ``scripts/cc-close`` end-to-end (the demonstrated acceptance criterion)
+This module covers the pure checker. Governed terminal-close integration is
+tested through ``shared.sdlc_close``; the retired shell mutation path is not a
+valid acceptance-receipt integration surface.
 """
 
 from __future__ import annotations
 
 import importlib.util
-import os
-import subprocess
 import textwrap
 from pathlib import Path
 from types import ModuleType
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CC_CLOSE = REPO_ROOT / "scripts" / "cc-close"
 CHECKER = REPO_ROOT / "scripts" / "cc-close-acceptance-receipt-check.py"
 
 VALID_RECEIPT = textwrap.dedent(
@@ -133,89 +130,55 @@ class TestCheckerGate:
         assert code == 0
         assert "fail-OPEN" in message
 
-
-def _vault(home: Path) -> Path:
-    root = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
-    (root / "active").mkdir(parents=True, exist_ok=True)
-    (root / "closed").mkdir(parents=True, exist_ok=True)
-    return root
-
-
-def _run_close(home: Path, task_id: str, **extra_env: str) -> subprocess.CompletedProcess[str]:
-    env = os.environ.copy()
-    env.pop("HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF", None)
-    env.update(
-        HOME=str(home),
-        HAPAX_AGENT_ROLE="test-role",
-        # Neutralize unrelated done-path gates so this file tests ONLY the
-        # acceptance-receipt gate end-to-end.
-        HAPAX_RAPID_CLOSE_OFF="1",
-        HAPAX_PR_MERGE_GATE_OFF="1",
-        HAPAX_ARTIFACT_DISPOSITION_GATE_OFF="1",
-        HAPAX_CC_HYGIENE_OFF="1",
-        **extra_env,
-    )
-    return subprocess.run(
-        ["bash", str(CC_CLOSE), task_id, "--status", "done"],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-
-class TestCcCloseEndToEnd:
-    def test_cc_close_blocks_review_floor_task_without_receipt(self, tmp_path: Path) -> None:
-        home = tmp_path / "home"
-        vault = _vault(home)
-        _write_note(vault / "active", "task-r")
-
-        result = _run_close(home, "task-r")
-
-        assert result.returncode != 0
-        assert "missing_acceptance_receipt" in result.stderr
-        assert (vault / "active" / "task-r.md").exists()
-        assert not (vault / "closed" / "task-r.md").exists()
-
-    def test_cc_close_closes_review_floor_task_with_receipt_and_moves_it(
-        self, tmp_path: Path
+    def test_canon_bound_close_uses_the_ordinary_acceptance_receipt_contract(
+        self, tmp_path: Path, monkeypatch: object
     ) -> None:
-        home = tmp_path / "home"
-        vault = _vault(home)
-        _write_note(vault / "active", "task-r")
-        (vault / "active" / "task-r.acceptance.yaml").write_text(VALID_RECEIPT, encoding="utf-8")
-
-        result = _run_close(home, "task-r")
-
-        assert result.returncode == 0, result.stderr
-        assert (vault / "closed" / "task-r.md").exists()
-        # The receipt travels with the note so it stays "alongside".
-        assert (vault / "closed" / "task-r.acceptance.yaml").exists()
-        assert not (vault / "active" / "task-r.acceptance.yaml").exists()
-
-    def test_cc_close_unaffected_for_non_review_floor_task(self, tmp_path: Path) -> None:
-        home = tmp_path / "home"
-        vault = _vault(home)
-        _write_note(vault / "active", "task-n", quality_floor="frontier_required")
-
-        result = _run_close(home, "task-n")
-
-        assert result.returncode == 0, result.stderr
-        assert (vault / "closed" / "task-n.md").exists()
-
-    def test_cc_close_withdrawn_skips_receipt_gate(self, tmp_path: Path) -> None:
-        home = tmp_path / "home"
-        vault = _vault(home)
-        _write_note(vault / "active", "task-r")
-        env = os.environ.copy()
-        env.update(HOME=str(home), HAPAX_AGENT_ROLE="test-role")
-        result = subprocess.run(
-            ["bash", str(CC_CLOSE), "task-r", "--status", "withdrawn"],
-            env=env,
-            text=True,
-            capture_output=True,
-            check=False,
+        checker = _load_checker()
+        note = _write_note(tmp_path, "task-close")
+        (tmp_path / "task-close.acceptance.yaml").write_text(
+            VALID_RECEIPT,
+            encoding="utf-8",
         )
+        monkeypatch.setenv("HAPAX_CANON_BOUND_CLOSE_ENFORCEMENT", "1")  # type: ignore[attr-defined]
 
-        assert result.returncode == 0, result.stderr
-        assert (vault / "closed" / "task-r.md").exists()
+        code, message = checker.gate(note)
+
+        assert code == 0, message
+        assert "valid acceptance receipt" in message
+
+    def test_canon_bound_close_ignores_raw_bypass(
+        self, tmp_path: Path, monkeypatch: object
+    ) -> None:
+        checker = _load_checker()
+        note = _write_note(tmp_path, "task-close")
+        monkeypatch.setenv("HAPAX_CANON_BOUND_CLOSE_ENFORCEMENT", "1")  # type: ignore[attr-defined]
+        monkeypatch.setenv("HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF", "1")  # type: ignore[attr-defined]
+
+        code, message = checker.gate(note)
+
+        assert code == 2
+        assert "missing_acceptance_receipt" in message
+        assert "raw bypass is ignored" in message
+
+    def test_canon_bound_non_review_floor_does_not_invent_a_receipt_contract(
+        self, tmp_path: Path, monkeypatch: object
+    ) -> None:
+        checker = _load_checker()
+        note = _write_note(tmp_path, "task-close", quality_floor="frontier_required")
+        monkeypatch.setenv("HAPAX_CANON_BOUND_CLOSE_ENFORCEMENT", "1")  # type: ignore[attr-defined]
+
+        code, message = checker.gate(note)
+
+        assert code == 0
+        assert "does not apply" in message
+
+    def test_canon_bound_close_fails_closed_on_missing_note(
+        self, tmp_path: Path, monkeypatch: object
+    ) -> None:
+        checker = _load_checker()
+        monkeypatch.setenv("HAPAX_CANON_BOUND_CLOSE_ENFORCEMENT", "1")  # type: ignore[attr-defined]
+
+        code, message = checker.gate(tmp_path / "absent.md")
+
+        assert code == 2
+        assert "fail-CLOSED" in message

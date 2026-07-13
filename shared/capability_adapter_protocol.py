@@ -37,7 +37,6 @@ already taken by the unrelated ``PerceptionBackendAdapter``.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
 from datetime import datetime
 from typing import ClassVar, final
 
@@ -52,6 +51,14 @@ from shared.dispatcher_policy import (
     DispatchRequest,
     RouteDecision,
     evaluate_dispatch_policy,
+)
+from shared.execution_admission import (
+    ContentAddress,
+    ExecutionAdmissionError,
+    ExecutionCompositionRoot,
+    ExecutionInvocationBundlePointer,
+    ExecutionInvocationContext,
+    ExecutionLease,
 )
 from shared.failure_classification import (
     FailureCode,
@@ -90,7 +97,7 @@ class AuthorityViolation(RuntimeError):
     """
 
 
-def _require_launch_authority(decision: RouteDecision, *, op: str) -> None:
+def _require_launch_authority(decision: RouteDecision, *, op: str) -> RouteDecision:
     """Fail-closed authority gate shared by ``launch`` and ``send``.
 
     Both conditions are asserted defensively. ``launch_allowed`` is a DERIVED field
@@ -99,15 +106,106 @@ def _require_launch_authority(decision: RouteDecision, *, op: str) -> None:
     non-``LAUNCH`` action. Identity (``is``) matches the canonical dispatcher idiom, not ``==``.
     """
 
-    if decision.action is not DispatchAction.LAUNCH or not decision.launch_allowed:
+    if type(decision) is not RouteDecision:
+        raise AuthorityViolation(f"{op} not authorized: exact route decision is required")
+    checked = RouteDecision.model_validate(decision.model_dump(mode="json"))
+    if checked.action is not DispatchAction.LAUNCH or not checked.launch_allowed:
         raise AuthorityViolation(
-            f"{op} not authorized for route {decision.route_id}: "
-            f"action={decision.action} launch_allowed={decision.launch_allowed} "
-            f"reason_codes={decision.reason_codes}. "
+            f"{op} not authorized for route {checked.route_id}: "
+            f"action={checked.action} launch_allowed={checked.launch_allowed} "
+            f"reason_codes={checked.reason_codes}. "
             f"Next: only a LAUNCH decision with launch_allowed=True may {op}; confirm this "
             "RouteDecision came straight from evaluate_dispatch_policy (via .admit) and was not "
             "mutated, then re-evaluate rather than forcing the call."
         )
+    return checked
+
+
+def _require_composition_pointer(
+    composition: ExecutionCompositionRoot,
+    invocation_pointer: ExecutionInvocationBundlePointer,
+    *,
+    op: str,
+) -> None:
+    if type(composition) is not ExecutionCompositionRoot:
+        raise AuthorityViolation(f"{op} not authorized: exact execution composition is required")
+    if type(invocation_pointer) is not ExecutionInvocationBundlePointer:
+        raise AuthorityViolation(
+            f"{op} not authorized: exact execution invocation bundle pointer is required"
+        )
+
+
+def _require_composition_invocation(
+    composition: ExecutionCompositionRoot,
+    invocation_pointer: ExecutionInvocationBundlePointer,
+    *,
+    op: str,
+    queried_at: str | datetime,
+) -> tuple[ExecutionInvocationContext, ExecutionLease]:
+    _require_composition_pointer(composition, invocation_pointer, op=op)
+    try:
+        invocation = composition.resolve_structural_invocation(
+            invocation_pointer,
+            queried_at=queried_at,
+        )
+        if type(invocation) is not ExecutionInvocationContext:
+            raise TypeError("composition returned a non-canonical invocation")
+        lease = invocation.require_admitted(queried_at=queried_at)
+        return invocation, lease
+    except ExecutionAdmissionError as exc:
+        raise AuthorityViolation(f"{op} not authorized: {exc}") from exc
+    except Exception as exc:
+        raise AuthorityViolation(
+            f"{op} not authorized: malformed execution invocation ({type(exc).__name__})"
+        ) from exc
+
+
+def _require_worker_request_binding(
+    *,
+    platform: Platform,
+    decision: RouteDecision,
+    request: DispatchLaunchRequest,
+) -> None:
+    if type(request) is not DispatchLaunchRequest:
+        raise AuthorityViolation("launch not authorized: exact dispatch request is required")
+    mismatches: list[str] = []
+    if decision.task_id != request.task_id:
+        mismatches.append("task")
+    if decision.lane.strip().lower().replace("_", "-") != request.normalized_lane:
+        mismatches.append("lane")
+    if decision.platform != request.platform or decision.platform != platform.value:
+        mismatches.append("platform")
+    if decision.mode != request.mode or decision.profile != request.profile:
+        mismatches.append("mode_profile")
+    if mismatches:
+        raise AuthorityViolation(
+            "launch not authorized: dispatch request binding mismatch "
+            + ",".join(sorted(mismatches))
+        )
+
+
+def _require_send_invocation_binding(
+    *,
+    platform: Platform,
+    decision: RouteDecision,
+    invocation: ExecutionInvocationContext,
+    lease: ExecutionLease,
+    message: ContentAddress,
+) -> None:
+    checked_decision = RouteDecision.model_validate(decision.model_dump(mode="json"))
+    invocation_decision = RouteDecision.model_validate(
+        invocation.route_decision.model_dump(mode="json")
+    )
+    selected_leaf = checked_decision.selected_descriptor_leaf or f"{checked_decision.route_id}#base"
+    if (
+        checked_decision != invocation_decision
+        or checked_decision.platform != platform.value
+        or selected_leaf != lease.selected_descriptor_leaf
+        or invocation.protected_request.operation != "relay.send"
+        or lease.bound_call.operation != "relay.send"
+        or message not in lease.bound_call.requested_effect_targets
+    ):
+        raise AuthorityViolation("send not authorized: execution invocation route binding mismatch")
 
 
 # Worker-CLI (claude/codex) failure signatures -> FailureCode. Minimal + verbatim-derived,
@@ -189,6 +287,8 @@ class CapabilityAdapter:
         (``ValueError``), not an authority breach.
         """
 
+        if type(registry) is not PlatformCapabilityRegistry:
+            raise TypeError("exact platform capability registry is required")
         route = registry.require(route_id)
         if route.platform is not self.PLATFORM:
             raise ValueError(
@@ -202,34 +302,64 @@ class CapabilityAdapter:
         self,
         request: DispatchRequest,
         *,
-        now: datetime | None = None,
+        now: datetime,
         candidate_requests: tuple[DispatchRequest, ...] | None = None,
     ) -> RouteDecision:
         """FINAL. Return ``evaluate_dispatch_policy`` output UNCHANGED — zero widening, zero added
         reason_codes. The adapter is a pure pass-through; it never mutates or re-wraps the decision.
         """
 
-        return evaluate_dispatch_policy(request, now=now, candidate_requests=candidate_requests)
+        if type(request) is not DispatchRequest:
+            raise TypeError("exact dispatch request is required")
+        checked_request = DispatchRequest.model_validate(request.model_dump(mode="json"))
+        if type(now) is not datetime or now.tzinfo is None:
+            raise TypeError("explicit timezone-aware dispatch decision time is required")
+        checked_candidates = None
+        if candidate_requests is not None:
+            if type(candidate_requests) is not tuple or any(
+                type(item) is not DispatchRequest for item in candidate_requests
+            ):
+                raise TypeError("candidate requests must be an exact tuple of dispatch requests")
+            checked_candidates = tuple(
+                DispatchRequest.model_validate(item.model_dump(mode="json"))
+                for item in candidate_requests
+            )
+        return evaluate_dispatch_policy(
+            checked_request,
+            now=now,
+            candidate_requests=checked_candidates,
+        )
 
     @final
     def observe(
-        self, registry: PlatformCapabilityRegistry, *, now: datetime | None = None
+        self, registry: PlatformCapabilityRegistry, *, now: datetime
     ) -> RegistryFreshnessCheck:
         """FINAL. Read-only freshness observation; pure delegation to the registry's checker."""
 
+        if type(registry) is not PlatformCapabilityRegistry:
+            raise TypeError("exact platform capability registry is required")
+        if type(now) is not datetime or now.tzinfo is None:
+            raise TypeError("explicit timezone-aware registry observation time is required")
         return check_registry_freshness(registry, now=now)
 
     @final
     def collect_receipts(
-        self, request: DispatchLaunchRequest, *, idempotency_key: str | None = None
+        self,
+        request: DispatchLaunchRequest,
+        *,
+        composition: ExecutionCompositionRoot,
+        invocation_pointer: ExecutionInvocationBundlePointer,
+        queried_at: str | datetime,
+        idempotency_key: str | None = None,
     ) -> DispatchLaunchResult | None:
-        """FINAL. Read the terminal launch result (if any) from the coord event log. Reads a
-        receipt regardless of LAUNCH/REFUSE outcome; defaults the key to the request's own.
-        """
+        """FINAL. Inspect canonical outcome truth without projecting operational state."""
 
         return replay_terminal_result(
             request,
-            idempotency_key=idempotency_key or request.effective_idempotency_key,
+            composition=composition,
+            invocation_pointer=invocation_pointer,
+            queried_at=queried_at,
+            idempotency_key=idempotency_key,
         )
 
     def preflight(self, request: DispatchRequest) -> tuple[str, ...]:
@@ -271,19 +401,46 @@ class WorkerAdapter(CapabilityAdapter):
     ``WorkerAdapter`` (so ``hasattr(adapter, "launch")`` is honest).
     """
 
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        if "launch" in cls.__dict__:
+            raise TypeError(
+                f"{cls.__name__} may not override WorkerAdapter.launch; "
+                "platform variability belongs behind the executor registry"
+            )
+
+    @final
     def launch(
         self,
         decision: RouteDecision,
         request: DispatchLaunchRequest,
-        launch_callable: Callable[[], int],
+        *,
+        composition: ExecutionCompositionRoot,
+        invocation_pointer: ExecutionInvocationBundlePointer,
+        queried_at: str | datetime,
     ) -> DispatchLaunchResult:
         """Assert authority FIRST (the sole re-check point — coord_dispatch does not re-check),
         then delegate the atomic spawn. Overrides MUST preserve the authority assert (call
         ``super().launch`` or re-assert); the pure-reuse adapters below inherit this verbatim.
         """
 
-        _require_launch_authority(decision, op="launch")
-        return run_atomic_dispatch_launch(request, launch_callable)
+        checked_decision = _require_launch_authority(decision, op="launch")
+        _require_worker_request_binding(
+            platform=self.PLATFORM,
+            decision=checked_decision,
+            request=request,
+        )
+        _require_composition_pointer(
+            composition,
+            invocation_pointer,
+            op="launch",
+        )
+        return run_atomic_dispatch_launch(
+            request,
+            composition=composition,
+            invocation_pointer=invocation_pointer,
+            queried_at=queried_at,
+        )
 
 
 class SendCapableAdapter:
@@ -296,8 +453,47 @@ class SendCapableAdapter:
     per-platform in glue slices (for example ``scripts/hapax-claude-send`` for Claude lanes).
     """
 
-    def send(self, decision: RouteDecision, message: str) -> str:
-        _require_launch_authority(decision, op="send")
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        if "send" in cls.__dict__:
+            raise TypeError(
+                f"{cls.__name__} may not override SendCapableAdapter.send; "
+                "platform variability belongs behind the executor registry"
+            )
+
+    @final
+    def send(
+        self,
+        decision: RouteDecision,
+        message: ContentAddress,
+        *,
+        composition: ExecutionCompositionRoot,
+        invocation_pointer: ExecutionInvocationBundlePointer,
+        queried_at: str | datetime,
+    ) -> str:
+        checked_decision = _require_launch_authority(decision, op="send")
+        if type(message) is not ContentAddress:
+            raise AuthorityViolation(
+                "send not authorized: exact content-addressed relay payload is required"
+            )
+        checked_message = ContentAddress.model_validate(message.model_dump(mode="json"))
+        invocation, lease = _require_composition_invocation(
+            composition,
+            invocation_pointer,
+            op="send",
+            queried_at=queried_at,
+        )
+        _require_send_invocation_binding(
+            platform=self.PLATFORM,  # type: ignore[attr-defined]
+            decision=checked_decision,
+            invocation=invocation,
+            lease=lease,
+            message=checked_message,
+        )
+        try:
+            composition.require_effect_activation()
+        except ExecutionAdmissionError as exc:
+            raise AuthorityViolation(f"send not authorized: {exc}") from exc
         raise NotImplementedError(
             "relay send is wired per-platform in the glue slices; the protocol layer only marks "
             "the capability and gates authority."

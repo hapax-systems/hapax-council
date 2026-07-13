@@ -1,22 +1,9 @@
-"""Tests for the capability-gated SYSTEM drain of an orphaned cc-task whose owning
-lane process is verifiably dead (``dn-validate-task-relax``; CASE-SDLC-REFORM-001).
+"""Characterize the legacy SYSTEM-drain helpers and seal their CLI effect ingress.
 
-The drain admits a ``pr_open`` (or ``claimed``/``in_progress``) task for advancement
-through the reserved ``__system__`` lane sentinel IFF:
-
-1. the task's ``assigned_to`` lane process is verifiably ABSENT (no pid file, or a
-   dead/stale pid — ``os.kill(pid, 0)`` raises ``ProcessLookupError``), and
-2. a single-use ``DispatchCapability`` bound to ``(task_id, "__system__")``
-   verifies against the live signing key and consumes against the replay ledger.
-
-A LIVE lane (its pid answers ``os.kill(pid, 0)``) is NEVER drainable — that is the
-load-bearing critical-failure guard. Normal-lane dispatch is byte-for-byte
-unchanged: the ``__system__`` branch short-circuits before the legacy status gate.
-
-These tests inject every external path via env (``HAPAX_LANE_PID_DIR``,
-``HAPAX_COORD_GRANT_KEY``, ``HAPAX_COORD_CONSUMPTION_LEDGER``,
-``HAPAX_SYSTEM_DRAIN_AUDIT``, ``HAPAX_CC_CLAIMS_DIR``) so no live lane pid file or
-real ledger is ever touched.
+The read-only liveness, normalization, and transition-preflight helpers remain
+covered while the ``--lane __system__`` CLI entry point is contained. A drain may
+not consume a capability, write a receipt/audit, or advance a task until it is an
+exact action admitted and consumed by the Gate-0 lifecycle spine.
 """
 
 from __future__ import annotations
@@ -36,6 +23,7 @@ from shared.governance.coord_capabilities import mint_dispatch_capability, seria
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
+PROJECT_PYTHON = REPO_ROOT / ".venv" / "bin" / "python"
 
 KEY = b"test-operator-key-0123456789abcdef0123"
 
@@ -106,6 +94,13 @@ def _write_task(
 ) -> Path:
     path = task_root / "active" / f"{task_id}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
+    parent_spec = task_root / "specs" / f"{authority_case}.md"
+    parent_spec.parent.mkdir(parents=True, exist_ok=True)
+    if not parent_spec.exists():
+        parent_spec.write_text(
+            f"---\ncase_id: {authority_case}\n---\n\n# Parent spec\n",
+            encoding="utf-8",
+        )
     path.write_text(
         textwrap.dedent(
             f"""\
@@ -116,7 +111,7 @@ def _write_task(
             status: {status}
             assigned_to: {assigned_to}
             authority_case: {authority_case}
-            parent_spec: null
+            parent_spec: {parent_spec}
             kind: {kind}
             stage: {stage}
             updated_at: 2026-06-02T00:00:00Z
@@ -205,7 +200,7 @@ def _validate(mod_, task_root, task_id, cap_path):
 
 
 class TestSystemDrainValidation:
-    def test_pr_open_dead_lane_admitted_and_audited(self, tmp_path, monkeypatch):
+    def test_pr_open_dead_lane_preflight_does_not_consume_or_audit(self, tmp_path, monkeypatch):
         _drain_env(tmp_path, _pid_dir(tmp_path), monkeypatch)
         task_root = tmp_path / "tasks"
         _write_task(task_root, "orphan-1", status="pr_open", assigned_to="delta")
@@ -214,26 +209,29 @@ class TestSystemDrainValidation:
         v = _validate(mod, task_root, "orphan-1", cap)
 
         assert v.ok is True
-        assert v.reason.startswith("system-drain eligible")
-        audit_lines = (tmp_path / "audit.jsonl").read_text(encoding="utf-8").strip().splitlines()
-        assert len(audit_lines) == 1
-        rec = json.loads(audit_lines[0])
-        assert rec["task_id"] == "orphan-1"
-        assert rec["drained_from_lane"] == "delta"
-        assert rec["actor"] == mod.SYSTEM_DRAIN_LANE
+        assert v.reason.startswith("system-drain preflight eligible")
+        assert v.exempt_read_only is False
+        assert not (tmp_path / "audit.jsonl").exists()
+        assert not (tmp_path / "consumption.jsonl").exists()
 
-    def test_same_capability_replay_rejected(self, tmp_path, monkeypatch):
+    def test_consumed_capability_replay_rejected_without_second_consume(
+        self, tmp_path, monkeypatch
+    ):
         _drain_env(tmp_path, _pid_dir(tmp_path), monkeypatch)
         task_root = tmp_path / "tasks"
         _write_task(task_root, "orphan-2", status="pr_open", assigned_to="delta")
         cap = _mint_cap(tmp_path, "orphan-2", mod.SYSTEM_DRAIN_LANE)
 
-        first = _validate(mod, task_root, "orphan-2", cap)
-        second = _validate(mod, task_root, "orphan-2", cap)
+        capability_id = json.loads(cap.read_text(encoding="utf-8"))["capability_id"]
+        (tmp_path / "consumption.jsonl").write_text(
+            json.dumps({"capability_id": capability_id}) + "\n",
+            encoding="utf-8",
+        )
+        result = _validate(mod, task_root, "orphan-2", cap)
 
-        assert first.ok is True
-        assert second.ok is False
-        assert "already consumed (replay)" in second.reason
+        assert result.ok is False
+        assert "already consumed (replay)" in result.reason
+        assert len((tmp_path / "consumption.jsonl").read_text().splitlines()) == 1
 
     def test_live_lane_refused_critical_guard(self, tmp_path, monkeypatch):
         pid_dir = _pid_dir(tmp_path)
@@ -425,13 +423,11 @@ class TestSentinelRejectedForLaunch:
             raise AssertionError("build_prompt must refuse the __system__ sentinel lane")
 
 
-# --- end-to-end CLI: the drain actually MUTATES via cc-stage-advance ----------
+# --- CLI containment: no legacy drain effect may cross Gate 0 -----------------
 
 
 def _cli_env(tmp_path: Path, pid_dir: Path) -> tuple[dict[str, str], Path, Path]:
-    """Env where validate_task's task root and cc-stage-advance's hardcoded VAULT
-    (``$HOME/Documents/Personal/20-projects/hapax-cc-tasks``) coincide, so the real
-    cc-stage-advance subprocess mutates the same note the drain validated."""
+    """Isolate every path the retired drain could have mutated."""
     home = tmp_path / "home"
     vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
     vault.mkdir(parents=True, exist_ok=True)
@@ -446,24 +442,42 @@ def _cli_env(tmp_path: Path, pid_dir: Path) -> tuple[dict[str, str], Path, Path]
     env["HAPAX_ORCHESTRATION_LEDGER_DIR"] = str(tmp_path / "ledger")
     env["HAPAX_COORD_DIR"] = str(tmp_path / "coord")
     env["HAPAX_AUTHORITY_CASE_LEDGER"] = str(tmp_path / "authority-case-ledger.jsonl")
+    env.pop("HAPAX_CANON_ECHO_ENFORCEMENT", None)
+    env.pop("PYTHONPATH", None)
+    env.pop("PYTHONHOME", None)
     return env, home, vault
 
 
-def _stage(note: Path) -> str:
-    for line in note.read_text(encoding="utf-8").splitlines():
-        if line.startswith("stage:"):
-            return line.split(":", 1)[1].strip()
-    return ""
-
-
-def test_cli_drain_advances_stage_via_cc_stage_advance(tmp_path):
-    pid_dir = _pid_dir(tmp_path)  # empty -> delta absent
+def test_cli_system_drain_holds_before_every_legacy_effect(tmp_path: Path) -> None:
+    pid_dir = _pid_dir(tmp_path)  # empty: the legacy drain would consider delta dead
     env, _home, vault = _cli_env(tmp_path, pid_dir)
     note = _write_task(vault, "orphan-cli-1", status="pr_open", assigned_to="delta")
     cap = _mint_cap(tmp_path, "orphan-cli-1", "__system__")
+    claims = tmp_path / "claims"
+    claims.mkdir()
+    claim = claims / "cc-active-task-delta"
+    epoch = claims / "cc-claim-epoch-delta"
+    sidecar = claims / "cc-claim-dispatch-delta.json"
+    claim.write_text("orphan-cli-1\n", encoding="utf-8")
+    epoch.write_text("epoch-sentinel\n", encoding="utf-8")
+    sidecar.write_text('{"sentinel": true}\n', encoding="utf-8")
+
+    consumption = tmp_path / "consumption.jsonl"
+    audit = tmp_path / "audit.jsonl"
+    receipt = tmp_path / "ledger" / "methodology-dispatch.jsonl"
+    receipt.parent.mkdir(parents=True)
+    consumption.write_text("consumption-sentinel\n", encoding="utf-8")
+    audit.write_text("audit-sentinel\n", encoding="utf-8")
+    receipt.write_text("receipt-sentinel\n", encoding="utf-8")
+    before = {
+        path: path.read_bytes()
+        for path in (note, cap, claim, epoch, sidecar, consumption, audit, receipt)
+    }
 
     result = subprocess.run(
         [
+            str(PROJECT_PYTHON),
+            "-I",
             str(SCRIPT),
             "--task",
             "orphan-cli-1",
@@ -473,94 +487,10 @@ def test_cli_drain_advances_stage_via_cc_stage_advance(tmp_path):
             str(cap),
             "--drain-to-stage",
             "S7_RELEASE",
-            "--skip-worktree-check",
-        ],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert _stage(note) == "S7_RELEASE"
-    consumed = (tmp_path / "consumption.jsonl").read_text(encoding="utf-8")
-    assert json.loads(consumed.strip().splitlines()[0])["capability_id"]
-
-
-def test_cli_drain_replay_blocked_no_second_advance(tmp_path):
-    pid_dir = _pid_dir(tmp_path)
-    env, _home, vault = _cli_env(tmp_path, pid_dir)
-    note = _write_task(vault, "orphan-cli-2", status="pr_open", assigned_to="delta")
-    cap = _mint_cap(tmp_path, "orphan-cli-2", "__system__")
-    args = [
-        str(SCRIPT),
-        "--task",
-        "orphan-cli-2",
-        "--lane",
-        "__system__",
-        "--dispatch-capability",
-        str(cap),
-        "--drain-to-stage",
-        "S7_RELEASE",
-        "--skip-worktree-check",
-    ]
-
-    first = subprocess.run(args, env=env, text=True, capture_output=True, check=False)
-    second = subprocess.run(args, env=env, text=True, capture_output=True, check=False)
-
-    assert first.returncode == 0, first.stderr
-    assert second.returncode == 10
-    assert "replay" in second.stderr or "already consumed" in second.stderr
-    assert _stage(note) == "S7_RELEASE"
-
-
-def test_cli_live_lane_blocked_no_mutation(tmp_path):
-    pid_dir = _pid_dir(tmp_path)
-    (pid_dir / "delta.pid").write_text(str(os.getpid()), encoding="utf-8")  # delta ALIVE
-    env, _home, vault = _cli_env(tmp_path, pid_dir)
-    note = _write_task(vault, "orphan-cli-3", status="pr_open", assigned_to="delta")
-    cap = _mint_cap(tmp_path, "orphan-cli-3", "__system__")
-
-    result = subprocess.run(
-        [
-            str(SCRIPT),
-            "--task",
-            "orphan-cli-3",
-            "--lane",
-            "__system__",
-            "--dispatch-capability",
-            str(cap),
-            "--drain-to-stage",
-            "S7_RELEASE",
-            "--skip-worktree-check",
-        ],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 10
-    assert "ALIVE" in result.stderr
-    assert _stage(note) == "S6_IMPLEMENTATION"  # untouched
-
-
-def test_cli_sentinel_without_capability_blocks_without_launch(tmp_path):
-    """``--lane __system__`` must route to the drain (never launch a phantom
-    ``hapax-council--__system__`` worktree) and refuse cleanly without a cap."""
-    pid_dir = _pid_dir(tmp_path)
-    env, _home, vault = _cli_env(tmp_path, pid_dir)
-    _write_task(vault, "orphan-cli-4", status="pr_open", assigned_to="delta")
-
-    result = subprocess.run(
-        [
-            str(SCRIPT),
-            "--task",
-            "orphan-cli-4",
-            "--lane",
-            "__system__",
-            "--drain-to-stage",
-            "S7_RELEASE",
+            "--guard-evidence",
+            "implementation_complete=task:orphan-cli-1:implementation",
+            "--guard-evidence",
+            "evidence_present=task:orphan-cli-1:evidence",
             "--launch",
             "--skip-worktree-check",
         ],
@@ -571,5 +501,44 @@ def test_cli_sentinel_without_capability_blocks_without_launch(tmp_path):
     )
 
     assert result.returncode == 10
-    assert "requires --dispatch-capability" in result.stderr
-    assert "hapax-council--__system__" not in result.stderr
+    assert result.stdout == ""
+    assert "HOLD: admitted_lifecycle_action_required" in result.stderr
+    assert "operation=system_drain" in result.stderr
+    assert "materialize and consume the exact admitted lifecycle action" in result.stderr
+    assert "system-drained" not in result.stderr
+    for path, expected in before.items():
+        assert path.read_bytes() == expected
+
+
+def test_cli_system_drain_hold_precedes_legacy_precondition_checks(tmp_path: Path) -> None:
+    env, _home, vault = _cli_env(tmp_path, _pid_dir(tmp_path))
+    note = _write_task(vault, "orphan-cli-2", status="pr_open", assigned_to="delta")
+    before = note.read_bytes()
+
+    result = subprocess.run(
+        [
+            str(PROJECT_PYTHON),
+            "-I",
+            str(SCRIPT),
+            "--task",
+            "orphan-cli-2",
+            "--lane",
+            "__system__",
+            "--launch",
+            "--no-receipt",
+            "--skip-worktree-check",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 10
+    assert "operation=system_drain" in result.stderr
+    assert "requires --dispatch-capability" not in result.stderr
+    assert "refuses --no-receipt" not in result.stderr
+    assert note.read_bytes() == before
+    assert not (tmp_path / "consumption.jsonl").exists()
+    assert not (tmp_path / "audit.jsonl").exists()
+    assert not (tmp_path / "ledger").exists()

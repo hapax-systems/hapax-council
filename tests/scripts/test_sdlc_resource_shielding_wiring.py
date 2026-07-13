@@ -17,20 +17,22 @@ SUPERVISOR = REPO_ROOT / "scripts" / "hapax-lane-supervisor"
 COORDINATOR = REPO_ROOT / "agents" / "coordinator" / "core.py"
 
 
-def test_dispatch_wraps_lane_launches_into_the_slice() -> None:
+def test_dispatch_holds_before_slice_attachment_or_process_launch() -> None:
     text = DISPATCH.read_text()
-    assert "from shared.sdlc_pressure_gate import" in text
-    # All four headless launchers route through the slice-wrapping call.
+    assert "    sdlc_slice_wrap," not in text
+    assert "    wait_until_admitted," not in text
     assert text.count("_sliced_call(") >= 4
-    assert "sdlc_slice_wrap" in text
+    assert '_hold_gate0a_effect("process.launch")' in text
+    assert "sdlc_slice_wrap" not in text
 
 
-def test_dispatch_has_the_pressure_chokepoint() -> None:
+def test_dispatch_holds_before_pressure_wait_or_delayed_receipt() -> None:
     text = DISPATCH.read_text()
-    assert "_await_sdlc_admission(args)" in text
-    # The chokepoint queues (DELAYED receipt), never refuses.
-    assert "sdlc-pressure-delayed" in text
-    assert "queued_not_dropped" in text
+    assert "_await_sdlc_admission(args)" not in text
+    assert "def _await_sdlc_admission" in text
+    assert '_hold_gate0a_effect("dispatch.pressure-wait")' in text
+    assert "sdlc-pressure-delayed" not in text
+    assert "queued_not_dropped" not in text
 
 
 def test_claude_headless_self_attaches_to_slice() -> None:
@@ -41,14 +43,21 @@ def test_claude_headless_self_attaches_to_slice() -> None:
     assert "ORIG_ARGS" in text
 
 
-def test_watchdog_respawn_floor_yields_when_closed() -> None:
+def test_watchdog_is_observation_only_without_respawn_or_pressure_gate() -> None:
     text = WATCHDOG.read_text()
-    assert "sdlc_admission_state" in text
-    assert "shared.sdlc_pressure_gate --state" in text
-    # Both the Claude and Codex respawn floors gate on admission.
-    assert text.count('"$SDLC_ADMISSION" != "closed"') >= 2
-    assert "HAPAX_LOCAL_DEV_MAINTENANCE_MODE" in text
-    assert "appendix-only local-dev maintenance" in text
+    assert "support_only=true effects=0" in text
+    for forbidden in (
+        "sdlc_admission_state",
+        "shared.sdlc_pressure_gate",
+        "tmux send-keys",
+        "hapax-methodology-dispatch",
+        "hapax-codex-headless",
+        "hapax-claude-headless",
+        "hapax-codex --",
+        "hapax-claude --",
+        "HAPAX_LOCAL_DEV_MAINTENANCE_MODE",
+    ):
+        assert forbidden not in text
 
 
 def test_supervisor_appendix_only_suppresses_unclaimed_idle_await_respawn() -> None:
@@ -59,7 +68,10 @@ def test_supervisor_appendix_only_suppresses_unclaimed_idle_await_respawn() -> N
     assert "active claimed-task resumes preserved" in text
 
 
-def test_coordinator_paces_dispatch_under_pressure() -> None:
+def test_coordinator_records_pressure_without_candidate_influence() -> None:
     text = COORDINATOR.read_text()
-    assert "from shared.sdlc_pressure_gate import admission_state" in text
-    assert "pressure_dispatch_budget(" in text
+    assert "from shared.sdlc_pressure_gate import observe_admission_state" in text
+    assert '"candidate_influence": "none"' in text
+    assert "MAX_HELD_CANDIDATES_PER_TICK" in text
+    assert "pressure_dispatch_budget(" not in text
+    assert "converge_action_cap(" not in text

@@ -10,9 +10,12 @@ False)`` + the cognition carve-out, proving escape survives a dead kernel.
 
 import json
 import os
+import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
+
+import pytest
 
 from shared.policy_decide import ToolCall, policy_decide
 from shared.sdlc_invariants import (
@@ -28,6 +31,7 @@ from shared.sdlc_invariants import (
     check_inv5_cognition_writable,
     record_invariant_findings,
 )
+from shared.sdlc_lifecycle import SDLC_STAGE_METADATA
 
 # --- ladder shape -------------------------------------------------------------
 
@@ -47,6 +51,103 @@ class TestLadderShape:
     def test_blocked_has_escape_edges(self):
         for b in SDLC_LADDER.blocked:
             assert SDLC_LADDER.transitions.get(b)  # escape exists
+
+    def test_runtime_ladder_is_derived_from_stage_metadata(self) -> None:
+        assert SDLC_LADDER.stages == SDLC_STAGE_METADATA.tokens
+        assert SDLC_LADDER.transitions == {
+            stage.token: frozenset(edge.to for edge in stage.next_edges)
+            for stage in SDLC_STAGE_METADATA.stages
+        }
+        assert SDLC_LADDER.fall_transitions == {
+            stage.token: frozenset(edge.to for edge in stage.fall_edges)
+            for stage in SDLC_STAGE_METADATA.stages
+        }
+        assert SDLC_LADDER.terminal == frozenset(
+            stage.token for stage in SDLC_STAGE_METADATA.stages if stage.terminal
+        )
+        assert SDLC_LADDER.blocked == frozenset(
+            stage.token for stage in SDLC_STAGE_METADATA.stages if stage.blocked
+        )
+
+    def test_runtime_ladder_mappings_are_immutable(self) -> None:
+        with pytest.raises(TypeError):
+            SDLC_LADDER.transitions["S0"] = frozenset({"S11"})  # type: ignore[index]
+        with pytest.raises(TypeError):
+            SDLC_LADDER.fall_transitions["S0"] = frozenset()  # type: ignore[index]
+
+    def test_tla_topology_matches_stage_metadata_exactly(self) -> None:
+        tla = (
+            Path(__file__).resolve().parents[1] / "docs" / "formal" / "sdlc-ladder.tla"
+        ).read_text(encoding="utf-8")
+        tla_code = re.sub(r"\(\*.*?\*\)", "", tla, flags=re.DOTALL)
+        tla_code = "\n".join(line.split(r"\*", 1)[0] for line in tla_code.splitlines())
+
+        def quoted_set(name: str, following: str) -> frozenset[str]:
+            match = re.search(
+                rf"(?ms)^\s*{name}\s*==(?P<body>.*?)(?=^\s*{following}\s*==)", tla_code
+            )
+            assert match, name
+            compact = re.sub(r"\s+", "", match.group("body"))
+            assert re.fullmatch(r'\{(?:"[A-Z0-9_]+"(?:,"[A-Z0-9_]+")*)?\}', compact), compact
+            return frozenset(re.findall(r'"([A-Z0-9_]+)"', compact))
+
+        assert quoted_set("Stages", "Terminal") == frozenset(SDLC_STAGE_METADATA.tokens)
+        assert quoted_set("Terminal", "Blocked") == SDLC_LADDER.terminal
+        assert quoted_set("Blocked", r"Next\(s\)") == SDLC_LADDER.blocked
+
+        next_block = re.search(
+            r"Next\(s\)\s*==(?P<body>.*?)\n\s*\nVARIABLE", tla_code, flags=re.DOTALL
+        )
+        assert next_block
+        arm_lines = [
+            line.split(r"\*", 1)[0].strip()
+            for line in next_block.group("body").splitlines()
+            if line.split(r"\*", 1)[0].strip()
+        ]
+        assert len(arm_lines) == len(SDLC_STAGE_METADATA.tokens) + 1
+        assert arm_lines[-1] == "[] OTHER         -> {}"
+        parsed_next: dict[str, frozenset[str]] = {}
+        for index, line in enumerate(arm_lines[:-1]):
+            arm = re.fullmatch(r'(CASE|\[\])\s+s\s*=\s*"([A-Z0-9_]+)"\s*->\s*\{([^}]*)\}', line)
+            assert arm, line
+            assert arm.group(1) == ("CASE" if index == 0 else "[]")
+            token = arm.group(2)
+            assert token not in parsed_next, f"duplicate Next arm: {token}"
+            destinations = arm.group(3)
+            compact_destinations = re.sub(r"\s+", "", destinations)
+            assert re.fullmatch(r'(?:"[A-Z0-9_]+"(?:,"[A-Z0-9_]+")*)?', compact_destinations), (
+                destinations
+            )
+            parsed_next[token] = frozenset(re.findall(r'"([A-Z0-9_]+)"', compact_destinations))
+        assert parsed_next == SDLC_LADDER.transitions
+
+        fall_block = re.search(
+            r"Fall\(t\)\s*==(?P<body>.*?)\n\s*\nNxt\s*==", tla_code, flags=re.DOTALL
+        )
+        assert fall_block
+        normalized_fall = " ".join(
+            line.split(r"\*", 1)[0].strip()
+            for line in fall_block.group("body").splitlines()
+            if line.split(r"\*", 1)[0].strip()
+        )
+        assert normalized_fall == (
+            "/\\ stage[t] \\notin (Terminal \\cup Blocked) "
+            '/\\ stage\' = [stage EXCEPT ![t] = "BLOCKED"]'
+        )
+        for stage in SDLC_STAGE_METADATA.stages:
+            expected = (
+                frozenset({"BLOCKED"}) if not stage.terminal and not stage.blocked else frozenset()
+            )
+            assert SDLC_LADDER.fall_transitions[stage.token] == expected
+
+    def test_custom_ladder_remains_compatible_without_fall_map(self) -> None:
+        ladder = Ladder(
+            stages=("S0", "S11"),
+            transitions={"S0": frozenset({"S11"}), "S11": frozenset()},
+            terminal=frozenset({"S11"}),
+            blocked=frozenset(),
+        )
+        assert ladder.fall_transitions == {}
 
 
 # --- INV-1 deadlock-freedom ---------------------------------------------------
@@ -130,25 +231,46 @@ class TestInv2Liveness:
         r = check_inv2_liveness([], now=1_000_000.0, stale_after_s=3600)
         assert r.holds
 
-    def test_s7_release_is_operational_terminal_not_stuck(self):
-        # S7_RELEASE (token "S7") is the OPERATIONAL terminal: a released/merged task
-        # is done, not stuck — even when its last ledger stamp is long past. This is
-        # the false positive INV-2 fired on ~47 released tasks (the bug this fixes).
-        trace = [{"task_id": "released", "to_stage": "S7", "timestamp": 100.0}]
+    def test_stale_s8_release_without_completion_status_is_stuck(self):
+        trace = [{"task_id": "released", "to_stage": "S8", "timestamp": 100.0}]
         r = check_inv2_liveness(trace, now=1_000_000.0, stale_after_s=3600)
-        assert r.holds, r.violations
+        assert not r.holds
+        assert any("released:stuck:S8" in violation for violation in r.violations)
 
-    def test_stale_s6_stuck_while_released_s7_is_live(self):
-        # Discrimination: a stale mid-implementation S6 IS stuck (a real signal), but
-        # a stale released S7 is NOT — recognizing S7 must not silence a genuine S6.
+    def test_stale_s7_runtime_verification_and_s8_release_are_both_stuck(self):
         trace = [
-            {"task_id": "mid", "to_stage": "S6", "timestamp": 100.0},
-            {"task_id": "released", "to_stage": "S7", "timestamp": 100.0},
+            {"task_id": "runtime", "to_stage": "S7", "timestamp": 100.0},
+            {"task_id": "released", "to_stage": "S8", "timestamp": 100.0},
         ]
         r = check_inv2_liveness(trace, now=1_000_000.0, stale_after_s=3600)
         assert not r.holds
-        assert any("mid:stuck:S6" in v for v in r.violations)
-        assert not any(v.startswith("released") for v in r.violations)
+        assert any("runtime:stuck:S7" in v for v in r.violations)
+        assert any("released:stuck:S8" in v for v in r.violations)
+
+    @pytest.mark.parametrize(
+        "status_fields",
+        [
+            {"task_status": "done"},
+            {
+                "task_status": "blocked",
+                "blocked_reason": "awaiting_independent_review",
+                "blocked_witness": "/tmp/review-packet.md",
+            },
+        ],
+    )
+    def test_stage_resolution_error_cannot_be_hidden_by_task_status(
+        self, status_fields: dict[str, str]
+    ) -> None:
+        record = {
+            "task_id": "invalid-stage",
+            "to_stage": "S6_UNKNOWN",
+            "timestamp": 999_999.0,
+            "stage_resolution_error": "stage_alias_unknown",
+            **status_fields,
+        }
+        result = check_inv2_liveness([record], now=1_000_000.0, stale_after_s=3600)
+        assert not result.holds
+        assert result.violations == ("invalid-stage:stage_alias_unknown:S6_UNKNOWN",)
 
     def test_terminal_task_status_is_operational_terminal_not_stuck(self):
         # Closed task notes are the work-state surface. A done task whose historical
@@ -242,6 +364,33 @@ class TestLoadLedgerTrace:
         assert float(trace[0]["timestamp"]) > 0.0
         assert abs(float(trace[0]["timestamp"]) - expected) < 1.0
 
+    def test_undeclared_stage_alias_becomes_typed_violation(self):
+        iso = "2026-06-02T01:43:51Z"
+        expected = datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+        path = self._write([{"ts": iso, "task_id": "t1", "to_stage": "S6_UNKNOWN"}])
+        try:
+            trace = _load_ledger_trace(path)
+            result = check_inv2_liveness(trace, now=expected + 60.0, stale_after_s=3600)
+        finally:
+            path.unlink(missing_ok=True)
+        assert trace[0]["stage_resolution_error"] == "stage_alias_unknown"
+        assert not result.holds
+        assert result.violations == ("t1:stage_alias_unknown:S6_UNKNOWN",)
+
+    def test_stage_whitespace_drift_becomes_typed_violation(self):
+        iso = "2026-06-02T01:43:51Z"
+        expected = datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+        path = self._write([{"ts": iso, "task_id": "t1", "to_stage": " S8_RELEASE "}])
+        try:
+            trace = _load_ledger_trace(path)
+            result = check_inv2_liveness(trace, now=expected + 60.0, stale_after_s=3600)
+        finally:
+            path.unlink(missing_ok=True)
+        assert trace[0]["to_stage"] == " S8_RELEASE "
+        assert trace[0]["stage_resolution_error"] == "stage_whitespace_drift"
+        assert not result.holds
+        assert result.violations == ("t1:stage_whitespace_drift:S8_RELEASE",)
+
     def test_fresh_ts_record_is_live_not_decades_stale(self):
         iso = "2026-06-02T01:43:51Z"
         ref = datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
@@ -264,19 +413,31 @@ class TestLoadLedgerTrace:
             path.unlink(missing_ok=True)
         assert abs(float(trace[0]["timestamp"]) - expected) < 1.0
 
-    def test_released_s7_release_record_is_live_via_loader(self):
-        # End-to-end: the live ledger writes the full token "S7_RELEASE"; the loader
-        # tokenizes it to "S7", which INV-2 must read as the operational terminal
-        # (done, not stuck) even for a release stamped days ago.
+    def test_s8_release_record_without_completion_status_is_stuck_via_loader(self):
         iso = "2026-05-25T00:00:00Z"
         ref = datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
-        path = self._write([{"ts": iso, "task_id": "released", "to_stage": "S7_RELEASE"}])
+        path = self._write([{"ts": iso, "task_id": "released", "to_stage": "S8_RELEASE"}])
         try:
             trace = _load_ledger_trace(path)
             r = check_inv2_liveness(trace, now=ref + 7 * 86400.0, stale_after_s=86400.0)
         finally:
             path.unlink(missing_ok=True)
-        assert r.holds, r.violations
+        assert trace[0]["to_stage"] == "S8"
+        assert not r.holds
+        assert any("released:stuck:S8" in violation for violation in r.violations)
+
+    def test_deprecated_s7_release_alias_does_not_hide_stuck_runtime_verification(self):
+        iso = "2026-05-25T00:00:00Z"
+        ref = datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+        path = self._write([{"ts": iso, "task_id": "runtime", "to_stage": "S7_RELEASE"}])
+        try:
+            trace = _load_ledger_trace(path)
+            r = check_inv2_liveness(trace, now=ref + 7 * 86400.0, stale_after_s=86400.0)
+        finally:
+            path.unlink(missing_ok=True)
+        assert trace[0]["to_stage"] == "S7"
+        assert not r.holds
+        assert any("runtime:stuck:S7" in violation for violation in r.violations)
 
     def test_non_stage_event_without_to_stage_does_not_override_latest_stage(self):
         iso_stage = "2026-05-25T00:00:00Z"
@@ -288,7 +449,7 @@ class TestLoadLedgerTrace:
                     "kind": "stage_transition",
                     "ts": iso_stage,
                     "task_id": "released",
-                    "to_stage": "S7_RELEASE",
+                    "to_stage": "S8_RELEASE",
                 },
                 {
                     "kind": "release_authorization",
@@ -304,8 +465,9 @@ class TestLoadLedgerTrace:
         finally:
             path.unlink(missing_ok=True)
         assert len(trace) == 1
-        assert trace[0]["to_stage"] == "S7"
-        assert r.holds, r.violations
+        assert trace[0]["to_stage"] == "S8"
+        assert not r.holds
+        assert any("released:stuck:S8" in violation for violation in r.violations)
 
     def test_non_stage_reoffer_event_with_status_like_to_stage_is_ignored(self):
         iso_stage = "2026-06-02T00:00:00Z"
@@ -348,7 +510,7 @@ class TestLoadLedgerTrace:
             path.unlink(missing_ok=True)
         assert len(trace) == 1
         assert not r.holds
-        assert any("bad:unknown_stage:<blank>" in v for v in r.violations)
+        assert any("bad:stage_blank:<blank>" in v for v in r.violations)
 
     def test_vault_done_status_suppresses_stale_s6_false_positive(self, tmp_path):
         iso = "2026-06-02T00:00:00Z"

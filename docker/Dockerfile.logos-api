@@ -5,9 +5,14 @@ WORKDIR /app
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install only logos-api extras (no audio/video/vision deps)
 COPY pyproject.toml uv.lock README.md ./
-RUN uv sync --frozen --no-dev --extra logos-api
+COPY packages/agentgov/ packages/agentgov/
+COPY packages/hapax-context-canon/ packages/hapax-context-canon/
+RUN uv sync --frozen --no-dev --extra logos-api --no-install-project --no-editable
 
 # ── Stage 2: Runtime ────────────────────────────────────────────────────
 FROM python:3.12-slim
@@ -26,6 +31,12 @@ COPY pyproject.toml README.md ./
 COPY agents/ agents/
 COPY logos/ logos/
 COPY shared/ shared/
+COPY docs/formal/sdlc-stage-metadata.yaml docs/formal/sdlc-stage-metadata.yaml
+COPY docs/formal/sdlc-ladder.tla docs/formal/sdlc-ladder.tla
+COPY config/compression-surface-registry.yaml config/compression-surface-registry.yaml
+COPY config/coordination-canon/source.yaml config/coordination-canon/source.yaml
+COPY config/coordination-canon/runtime-dependency-release-set.json config/coordination-canon/runtime-dependency-release-set.json
+COPY schemas/coordination-canon.schema.json schemas/coordination-canon.schema.json
 
 EXPOSE 8051
 

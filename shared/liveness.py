@@ -1,57 +1,43 @@
-"""shared/liveness.py — the unified liveness + recovery substrate.
+"""Support-only liveness observation and protected-action HOLD projection.
 
-The entire SDLC reform wave has been fixing instances of ONE class: a
-long-running operation enters an intermediate state, has no liveness signal, no
-staleness watchdog, and no automatic recovery, so it sits wedged until a human
-intervenes (deploy froze silently #3840; armed PRs stranded #3849; output-stalled
-lanes #3852; …). Each was patched with its own bespoke loop, state files and
-bound. This module is the shared contract so the *next* stuck-state surface gets
-liveness by **registering**, not by writing yet another watchdog.
-
-Three composable parts (design: docs/superpowers/specs/
-2026-06-03-liveness-recovery-substrate-design.md):
-
-1. **Heartbeat** — an op writes ``<op_id>.beat`` (``{op_id, ts, token, meta}``)
-   to a canonical dir. ``ts`` is the last-progress time; ``token`` is a *monotonic
-   progress token* that separates *stalled* (silent AND token unmoved) from
-   *legitimately long-quiet* (token advanced ⇒ progressing — never recover it).
-2. **Registry** — an op declares a :class:`LivenessSpec` (``op_id``,
-   ``recovery_cmd`` argv, ``max_quiet_s`` or measured tau, optional ``lineage``).
-   It carries **no bound** — every limit is the shared governor's.
-3. **Watchdog** — :meth:`LivenessWatchdog.scan` reads every registered op's beat,
-   classifies it, and for a confirmed stall routes the recovery through the shared
-   :class:`~shared.recovery_governor.RecoveryGovernor` (the one bounding +
-   pressure-gate + escalation engine), executes the declared ``recovery_cmd``,
-   records the outcome, and ledgers a ``recovery-action`` ``CoordEvent``.
-
-NEVER-FREEZE: the substrate can only *slow* recovery (via the governor), never
-halt it; a progressing op (token advancing) is never recovered.
-
-CLI::
-    python -m shared.liveness --beat lane:epsilon:progress --token 4213
-    python -m shared.liveness --scan        # the unified watchdog tick (timer)
-    python -m shared.liveness --list
+Heartbeat and registry data are evidence. They never authorize recovery. A
+registry entry may name a frozen symbolic adapter descriptor, but it cannot
+carry executable argv, a callable, or an execution lease. ``scan`` is
+read-only: candidates that would require an effect are represented with the
+shared :class:`~shared.execution_admission.ProtectedActionHold` contract.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import re
-import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
-# ── verdict statuses ──────────────────────────────────────────────────────────
+from shared.execution_admission import (
+    PROTECTED_ACTION_HOLD_SCHEMA,
+    ProtectedActionHold,
+    build_protected_action_hold,
+    content_address,
+)
 
-ALIVE = "alive"  # progress token advanced since last scan → never recover
-QUIET = "quiet"  # token unchanged but within max_quiet → within budget
-STALLED = "stalled"  # token unchanged AND quiet past threshold → recover
-MISSING = "missing"  # no heartbeat (never-started / torn down)
+ALIVE = "alive"
+QUIET = "quiet"
+STALLED = "stalled"
+MISSING = "missing"
+INDETERMINATE = "indeterminate"
 
-AUTHORITY_CASE = "CASE-SDLC-REFORM-001"
+SUPPORT_ONLY = "support_only"
+HELD_NOT_ADMITTED = "held_not_admitted"
+EFFECT_HOLD_REASON = "execution_authority_admission_lease_absent"
+
+_ADAPTER_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{2,127}$")
+_ACTION_KIND_RE = re.compile(r"^[a-z][a-z0-9]*(?:\.[a-z][a-z0-9_-]*)+$")
 
 
 def _liveness_root() -> Path:
@@ -66,41 +52,49 @@ def _default_registry_dir() -> Path:
     return _liveness_root() / "registry"
 
 
-def _default_scan_state_path() -> Path:
-    return _liveness_root() / "scan-state.json"
-
-
 def _sanitize(op_id: str) -> str:
-    """A filename-safe slug for an ``op_id`` (``lane:epsilon:progress`` →
-    ``lane_epsilon_progress``). Collapses any non ``[A-Za-z0-9._-]`` run so a
-    ``/`` in an op_id can never traverse out of the beat/registry dir."""
     return re.sub(r"[^A-Za-z0-9._-]+", "_", op_id).strip("_") or "op"
 
 
-def _iso_now() -> str:
-    from datetime import UTC, datetime
-
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def _atomic_write(path: Path, text: str) -> None:
+    """Persist explicit support-plane input; operational scans never call this."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(path)
 
 
-# ── 1. Heartbeat ──────────────────────────────────────────────────────────────
+def _finite_number(value: object, label: str, *, nonnegative: bool = False) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{label} must be a finite number")
+    number = float(value)
+    if not math.isfinite(number) or (nonnegative and number < 0):
+        raise ValueError(f"{label} must be finite" + (" and nonnegative" if nonnegative else ""))
+    return number
+
+
+def _nonblank(value: object, label: str) -> str:
+    if type(value) is not str or not value or value != value.strip():
+        raise ValueError(f"{label} must be a nonblank canonical string")
+    return value
 
 
 @dataclass(frozen=True)
 class Heartbeat:
-    """One progress signal emitted by an operation."""
+    """One untrusted support-plane progress observation."""
 
     op_id: str
     ts: float
     token: str
     meta: dict = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        _nonblank(self.op_id, "op_id")
+        object.__setattr__(self, "ts", _finite_number(self.ts, "heartbeat timestamp"))
+        if type(self.token) is not str:
+            raise TypeError("heartbeat token must be a string")
+        if type(self.meta) is not dict:
+            raise TypeError("heartbeat meta must be an exact dictionary")
 
 
 def emit_heartbeat(
@@ -111,83 +105,131 @@ def emit_heartbeat(
     meta: dict | None = None,
     beat_dir: Path | None = None,
 ) -> Path:
-    """Write ``op_id``'s heartbeat atomically. ``token`` is coerced to ``str`` so
-    a caller may pass a line count / byte offset / sequence directly."""
-    beat_dir = Path(beat_dir) if beat_dir is not None else _default_beat_dir()
-    ts = time.time() if ts is None else ts
-    path = beat_dir / f"{_sanitize(op_id)}.beat"
-    payload = {"op_id": op_id, "ts": float(ts), "token": str(token), "meta": meta or {}}
-    _atomic_write(path, json.dumps(payload))
+    """Atomically persist an explicit support observation, never authority."""
+    observed_at = time.time() if ts is None else ts
+    heartbeat = Heartbeat(
+        op_id=_nonblank(op_id, "op_id"),
+        ts=_finite_number(observed_at, "heartbeat timestamp"),
+        token=str(token),
+        meta={} if meta is None else meta,
+    )
+    root = Path(beat_dir) if beat_dir is not None else _default_beat_dir()
+    path = root / f"{_sanitize(heartbeat.op_id)}.beat"
+    _atomic_write(
+        path,
+        json.dumps(dataclasses.asdict(heartbeat), allow_nan=False, sort_keys=True),
+    )
     return path
 
 
 def read_heartbeat(op_id: str, *, beat_dir: Path | None = None) -> Heartbeat | None:
-    """Read ``op_id``'s heartbeat, or ``None`` if absent/corrupt."""
-    beat_dir = Path(beat_dir) if beat_dir is not None else _default_beat_dir()
-    path = beat_dir / f"{_sanitize(op_id)}.beat"
+    """Read an exact heartbeat for ``op_id``; hostile or corrupt data is absent."""
+    expected_op_id = _nonblank(op_id, "op_id")
+    root = Path(beat_dir) if beat_dir is not None else _default_beat_dir()
+    path = root / f"{_sanitize(expected_op_id)}.beat"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    try:
-        return Heartbeat(
-            op_id=str(data["op_id"]),
-            ts=float(data["ts"]),
-            token=str(data["token"]),
-            meta=dict(data.get("meta") or {}),
+        if type(data) is not dict or set(data) != {"meta", "op_id", "token", "ts"}:
+            return None
+        heartbeat = Heartbeat(
+            op_id=data["op_id"],
+            ts=data["ts"],
+            token=data["token"],
+            meta=data["meta"],
         )
-    except (KeyError, TypeError, ValueError):
+    except (OSError, TypeError, ValueError):
         return None
+    return heartbeat if heartbeat.op_id == expected_op_id else None
 
 
-# ── 2. Registry ───────────────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class EffectAdapterDescriptor:
+    """Immutable symbolic adapter identity; it is not executable or authorizing."""
+
+    adapter_id: str
+    action_kind: str
+    target_id: str
+    version: int = 1
+
+    def __post_init__(self) -> None:
+        adapter_id = _nonblank(self.adapter_id, "adapter_id")
+        action_kind = _nonblank(self.action_kind, "action_kind")
+        _nonblank(self.target_id, "target_id")
+        if not _ADAPTER_ID_RE.fullmatch(adapter_id):
+            raise ValueError("adapter_id is not canonical")
+        if not _ACTION_KIND_RE.fullmatch(action_kind):
+            raise ValueError("action_kind is not canonical")
+        if type(self.version) is not int or self.version != 1:
+            raise ValueError("only adapter descriptor version 1 is supported")
 
 
 @dataclass(frozen=True)
 class LivenessSpec:
-    """An operation's liveness declaration.
-
-    No ``max_attempts``/backoff knobs live here — bounding is entirely the shared
-    :class:`RecoveryGovernor`'s, so a surface can never drift its own bound from
-    the fleet's. ``recovery_cmd`` is an argv (not an in-process callable) because
-    the surfaces are independent processes/timers.
-    """
+    """A support observation declaration with an optional symbolic effect adapter."""
 
     op_id: str
-    recovery_cmd: list[str]
-    max_quiet_s: float | None = None  # None ⇒ measured tau via dispatch_service_time
-    lineage: str | None = None  # tau lookup + governor target grouping
-    critical: bool = False  # routes to the governor critical reserve
+    adapter: EffectAdapterDescriptor | None = None
+    max_quiet_s: float | None = None
+    lineage: str | None = None
     recover_when_missing: bool = False
     description: str = ""
 
+    def __post_init__(self) -> None:
+        _nonblank(self.op_id, "op_id")
+        if self.adapter is not None and type(self.adapter) is not EffectAdapterDescriptor:
+            raise TypeError("adapter must be an exact EffectAdapterDescriptor")
+        if self.max_quiet_s is not None:
+            object.__setattr__(
+                self,
+                "max_quiet_s",
+                _finite_number(self.max_quiet_s, "max_quiet_s", nonnegative=True),
+            )
+        if self.lineage is not None:
+            _nonblank(self.lineage, "lineage")
+        if type(self.recover_when_missing) is not bool:
+            raise TypeError("liveness flags must be exact booleans")
+        if type(self.description) is not str:
+            raise TypeError("description must be a string")
+
 
 def register(spec: LivenessSpec, *, registry_dir: Path | None = None) -> Path:
-    """Persist ``spec`` to the registry (one JSON per op_id; idempotent)."""
-    registry_dir = Path(registry_dir) if registry_dir is not None else _default_registry_dir()
-    path = registry_dir / f"{_sanitize(spec.op_id)}.json"
-    _atomic_write(path, json.dumps(dataclasses.asdict(spec)))
+    """Persist an explicit support declaration containing no executable material."""
+    if type(spec) is not LivenessSpec:
+        raise TypeError("spec must be an exact LivenessSpec")
+    root = Path(registry_dir) if registry_dir is not None else _default_registry_dir()
+    path = root / f"{_sanitize(spec.op_id)}.json"
+    _atomic_write(path, json.dumps(dataclasses.asdict(spec), allow_nan=False, sort_keys=True))
     return path
 
 
+def _decode_spec(data: object) -> LivenessSpec:
+    if type(data) is not dict:
+        raise TypeError("registry entry must be an exact dictionary")
+    known = {item.name for item in dataclasses.fields(LivenessSpec)}
+    if not set(data).issubset(known) or "op_id" not in data:
+        raise ValueError("registry entry contains unknown or legacy fields")
+    values = dict(data)
+    adapter_data = values.get("adapter")
+    if adapter_data is not None:
+        adapter_fields = {item.name for item in dataclasses.fields(EffectAdapterDescriptor)}
+        if type(adapter_data) is not dict or set(adapter_data) != adapter_fields:
+            raise ValueError("adapter descriptor must contain its exact fields")
+        values["adapter"] = EffectAdapterDescriptor(**adapter_data)
+    return LivenessSpec(**values)
+
+
 def load_registry(*, registry_dir: Path | None = None) -> list[LivenessSpec]:
-    """Load every registered :class:`LivenessSpec` (sorted by op_id), skipping any
-    corrupt/unparseable entry rather than failing the whole scan."""
-    registry_dir = Path(registry_dir) if registry_dir is not None else _default_registry_dir()
-    if not registry_dir.exists():
+    """Read valid symbolic declarations, rejecting legacy executable entries."""
+    root = Path(registry_dir) if registry_dir is not None else _default_registry_dir()
+    if not root.exists():
         return []
-    known = {f.name for f in dataclasses.fields(LivenessSpec)}
-    out: list[LivenessSpec] = []
-    for entry in sorted(registry_dir.glob("*.json")):
+    result: list[LivenessSpec] = []
+    for entry in sorted(root.glob("*.json")):
         try:
-            data = json.loads(entry.read_text(encoding="utf-8"))
-            out.append(LivenessSpec(**{k: v for k, v in data.items() if k in known}))
-        except (OSError, ValueError, TypeError):
+            result.append(_decode_spec(json.loads(entry.read_text(encoding="utf-8"))))
+        except (OSError, TypeError, ValueError):
             continue
-    return out
-
-
-# ── 3. Classification (pure: progress-token, not wall-clock) ─────────────────
+    return result
 
 
 @dataclass(frozen=True)
@@ -197,6 +239,7 @@ class LivenessVerdict:
     quiet_s: float
     threshold_s: float
     token: str | None
+    reason: str
 
 
 def classify(
@@ -207,78 +250,88 @@ def classify(
     now: float,
     threshold_s: float,
 ) -> LivenessVerdict:
-    """Stalled-vs-quiet-vs-alive, deciding on the *progress token* first.
-
-    A token that advanced since the previous scan means the op did work between
-    scans → ``alive``, regardless of how long its beat looks quiet (the Gittins
-    move: rank by silence-against-hazard, never raw wall-clock). On the first scan
-    (no ``prev_token``) only the beat age is available, so a beat already stale
-    past ``threshold_s`` is ``stalled``.
-    """
+    """Classify support evidence without converting it into action authority."""
+    current_time = _finite_number(now, "now")
+    threshold = _finite_number(threshold_s, "threshold_s", nonnegative=True)
     if heartbeat is None:
-        return LivenessVerdict(spec.op_id, MISSING, 0.0, threshold_s, None)
-    advanced = prev_token is not None and heartbeat.token != prev_token
-    quiet_s = now - heartbeat.ts
-    if advanced:
-        status = ALIVE
-    elif quiet_s <= threshold_s:
-        status = QUIET
+        return LivenessVerdict(spec.op_id, MISSING, 0.0, threshold, None, "heartbeat_missing")
+    if type(heartbeat) is not Heartbeat or heartbeat.op_id != spec.op_id:
+        return LivenessVerdict(
+            spec.op_id,
+            INDETERMINATE,
+            0.0,
+            threshold,
+            None,
+            "heartbeat_identity_invalid",
+        )
+    if heartbeat.ts > current_time:
+        return LivenessVerdict(
+            spec.op_id,
+            INDETERMINATE,
+            0.0,
+            threshold,
+            heartbeat.token,
+            "heartbeat_from_future",
+        )
+    quiet_s = current_time - heartbeat.ts
+    if prev_token is not None and heartbeat.token != str(prev_token):
+        status, reason = ALIVE, "progress_token_advanced"
+    elif quiet_s <= threshold:
+        status, reason = QUIET, "within_quiet_threshold"
     else:
-        status = STALLED
-    return LivenessVerdict(spec.op_id, status, quiet_s, threshold_s, heartbeat.token)
-
-
-# ── default collaborators (prod; tests inject) ───────────────────────────────
-
-
-def _default_exec(cmd: list[str], *, timeout_s: float = 120.0) -> bool:
-    """Run a recovery argv; True iff it exits 0. Bounded by a timeout; any
-    failure is False (the governor then counts it as a failed attempt)."""
-    try:
-        return subprocess.run(cmd, timeout=timeout_s).returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        return False
+        status, reason = STALLED, "quiet_threshold_exceeded"
+    return LivenessVerdict(spec.op_id, status, quiet_s, threshold, heartbeat.token, reason)
 
 
 def _default_tau(lineage: str | None) -> float:
-    """Measured per-lineage progress-timeout from ``dispatch_service_time``. Falls
-    back to the 1800s floor (the safe, less-aggressive bound) if the fold fails."""
+    """Read measured service time only as support; invalid values use a safe floor."""
     try:
         from shared.dispatch_service_time import load_service_time_distribution, tau_for_lineage
 
-        return tau_for_lineage(load_service_time_distribution(), lineage or "")
+        value = tau_for_lineage(load_service_time_distribution(), lineage or "")
+        return _finite_number(value, "measured tau", nonnegative=True)
     except Exception:
         return 1800.0
 
 
-def _default_ledger(event: dict) -> None:
-    """Append a ``recovery-action`` :class:`CoordEvent` to the coord ledger
-    (daemon writer, fail-open spool). Best-effort: a ledger failure must never
-    break recovery, so any error falls back to a local JSONL."""
-    try:
-        from shared.coord_event_log import CoordEvent, CoordEventLog, CoordWriter
-
-        ev = CoordEvent(
-            event_id=event["event_id"],
-            timestamp=event["ts"],
-            event_type=event.get("event_type", "recovery-action"),
-            actor=event["op_id"],
-            subject=str(event.get("lineage") or event["op_id"]),
-            authority_case=AUTHORITY_CASE,
-            payload=event,
-        )
-        CoordEventLog().append(ev, writer=CoordWriter.daemon("hapax-liveness"), fail_open=True)
-    except Exception:
-        try:
-            path = _liveness_root() / "recovery-ledger.jsonl"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(event) + "\n")
-        except OSError:
-            pass
-
-
-# ── Watchdog (the one scan that replaces N bespoke loops) ────────────────────
+def _hold_for_candidate(
+    spec: LivenessSpec,
+    verdict: LivenessVerdict,
+    *,
+    checked_at: float,
+) -> ProtectedActionHold:
+    assert spec.adapter is not None
+    observation = {
+        "adapter": dataclasses.asdict(spec.adapter),
+        "op_id": spec.op_id,
+        "quiet_s": verdict.quiet_s,
+        "reason": verdict.reason,
+        "status": verdict.status,
+        "threshold_s": verdict.threshold_s,
+        "token": verdict.token,
+    }
+    reasons = {
+        "execution_admission_absent",
+        "execution_authority_absent",
+        "execution_lease_absent",
+    }
+    if verdict.status == INDETERMINATE:
+        reasons.add(verdict.reason)
+    return build_protected_action_hold(
+        raw_invocation=content_address(f"liveness-observation:{spec.op_id}", observation),
+        operation=spec.adapter.action_kind,
+        ingress_surface="shared.liveness.LivenessWatchdog.scan",
+        ingress_module=content_address(
+            "python:shared.liveness",
+            {"contract": "gate0a-support-only", "module": "shared.liveness"},
+        ),
+        admission_module=content_address(
+            "python:shared.execution_admission",
+            {"schema": PROTECTED_ACTION_HOLD_SCHEMA},
+        ),
+        checked_at=datetime.fromtimestamp(checked_at, UTC),
+        reason_codes=tuple(sorted(reasons)),
+    )
 
 
 @dataclass(frozen=True)
@@ -288,147 +341,118 @@ class ScanResult:
     recovered: bool
     permit_reason: str
     quiet_s: float
+    effect_state: str
+    hold: ProtectedActionHold | None
 
 
 class LivenessWatchdog:
-    """Scans every registered op once per tick and drives bounded recovery.
-
-    All collaborators are injectable so the decision path is deterministic under
-    test and fail-open in prod. ``governor`` is the shared RecoveryGovernor — the
-    watchdog owns *when/whether* to recover; the governor owns *how-bounded*
-    (AIMD backoff, token bucket, concurrency cap, PSI throttle, escalation).
-    """
+    """Read-only observer. No collaborator can inject authority or execution."""
 
     def __init__(
         self,
         *,
-        governor,
         registry_dir: Path | None = None,
         beat_dir: Path | None = None,
-        scan_state_path: Path | None = None,
         now_fn=time.time,
-        exec_fn=None,
-        ledger_fn=None,
         tau_fn=None,
     ) -> None:
-        self._governor = governor
         self._registry_dir = (
             Path(registry_dir) if registry_dir is not None else _default_registry_dir()
         )
         self._beat_dir = Path(beat_dir) if beat_dir is not None else _default_beat_dir()
-        self._scan_state_path = (
-            Path(scan_state_path) if scan_state_path is not None else _default_scan_state_path()
-        )
         self._now_fn = now_fn
-        self._exec_fn = exec_fn or _default_exec
-        self._ledger_fn = ledger_fn or _default_ledger
         self._tau_fn = tau_fn or _default_tau
 
-    def scan(self) -> list[ScanResult]:
-        specs = load_registry(registry_dir=self._registry_dir)
-        prev = self._load_scan_state()
-        now = self._now_fn()
-        new_tokens: dict[str, str] = {}
+    def scan(self, *, previous_tokens: dict[str, str] | None = None) -> list[ScanResult]:
+        """Return support verdicts and generic HOLDs without writing or acting."""
+        if previous_tokens is not None and type(previous_tokens) is not dict:
+            raise TypeError("previous_tokens must be an exact dictionary")
+        previous = {} if previous_tokens is None else dict(previous_tokens)
+        if any(type(key) is not str or type(value) is not str for key, value in previous.items()):
+            raise TypeError("previous_tokens must map exact strings to exact strings")
+        now = _finite_number(self._now_fn(), "now")
         results: list[ScanResult] = []
-
-        for spec in specs:
-            hb = read_heartbeat(spec.op_id, beat_dir=self._beat_dir)
-            if hb is not None:
-                new_tokens[spec.op_id] = hb.token
-            threshold = (
-                spec.max_quiet_s
-                if spec.max_quiet_s is not None
-                else float(self._tau_fn(spec.lineage))
+        for spec in load_registry(registry_dir=self._registry_dir):
+            heartbeat = read_heartbeat(spec.op_id, beat_dir=self._beat_dir)
+            try:
+                threshold = (
+                    spec.max_quiet_s
+                    if spec.max_quiet_s is not None
+                    else _finite_number(
+                        self._tau_fn(spec.lineage),
+                        "measured tau",
+                        nonnegative=True,
+                    )
+                )
+                verdict = classify(
+                    spec,
+                    heartbeat,
+                    prev_token=previous.get(spec.op_id),
+                    now=now,
+                    threshold_s=threshold,
+                )
+            except (TypeError, ValueError):
+                verdict = LivenessVerdict(
+                    spec.op_id,
+                    INDETERMINATE,
+                    0.0,
+                    0.0,
+                    None if heartbeat is None else heartbeat.token,
+                    "liveness_threshold_invalid",
+                )
+            candidate = spec.adapter is not None and (
+                verdict.status in {STALLED, INDETERMINATE}
+                or (verdict.status == MISSING and spec.recover_when_missing)
             )
-            verdict = classify(
-                spec, hb, prev_token=prev.get(spec.op_id), now=now, threshold_s=threshold
-            )
-            recovered, reason = self._maybe_recover(spec, verdict, now)
+            hold = _hold_for_candidate(spec, verdict, checked_at=now) if candidate else None
             results.append(
-                ScanResult(spec.op_id, verdict.status, recovered, reason, verdict.quiet_s)
+                ScanResult(
+                    op_id=spec.op_id,
+                    status=verdict.status,
+                    recovered=False,
+                    permit_reason=EFFECT_HOLD_REASON if candidate else verdict.reason,
+                    quiet_s=verdict.quiet_s,
+                    effect_state=HELD_NOT_ADMITTED if candidate else SUPPORT_ONLY,
+                    hold=hold,
+                )
             )
-
-        self._store_scan_state(new_tokens)
         return results
 
-    def _maybe_recover(self, spec: LivenessSpec, verdict: LivenessVerdict, now: float):
-        recover = verdict.status == STALLED or (
-            verdict.status == MISSING and spec.recover_when_missing
-        )
-        if not recover:
-            return False, ""
-        target_id = spec.lineage or spec.op_id
-        grant = self._governor.permit(target_id, critical=spec.critical, now=now)
-        if not grant.permitted:
-            return False, grant.reason
-        ok = bool(self._exec_fn(list(spec.recovery_cmd)))
-        self._governor.record_outcome(target_id, ok, now=now)
-        self._ledger_fn(self._build_event(spec, verdict, ok))
-        return ok, grant.reason
 
-    def _build_event(self, spec: LivenessSpec, verdict: LivenessVerdict, ok: bool) -> dict:
-        iso = _iso_now()
-        return {
-            "event_id": f"liveness-recovery-{_sanitize(spec.op_id)}-{iso}-{'ok' if ok else 'fail'}",
-            "event_type": "recovery-action",
-            "op_id": spec.op_id,
-            "lineage": spec.lineage,
-            "status": verdict.status,
-            "quiet_s": round(verdict.quiet_s, 1),
-            "threshold_s": round(verdict.threshold_s, 1),
-            "recovery_cmd": list(spec.recovery_cmd),
-            "result": "ok" if ok else "fail",
-            "ts": iso,
-        }
-
-    def _load_scan_state(self) -> dict[str, str]:
-        try:
-            data = json.loads(self._scan_state_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {}
-        return {str(k): str(v) for k, v in (data or {}).items()}
-
-    def _store_scan_state(self, tokens: dict[str, str]) -> None:
-        try:
-            _atomic_write(self._scan_state_path, json.dumps(tokens))
-        except OSError:
-            pass
-
-
-# ── CLI ───────────────────────────────────────────────────────────────────────
+def _format_adapter(adapter: EffectAdapterDescriptor | None) -> str:
+    if adapter is None:
+        return "observation-only"
+    return f"{adapter.adapter_id}:{adapter.action_kind}:{adapter.target_id}"
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-
     if "--beat" in argv:
         op_id = argv[argv.index("--beat") + 1]
         token = argv[argv.index("--token") + 1] if "--token" in argv else str(int(time.time()))
         meta = json.loads(argv[argv.index("--meta") + 1]) if "--meta" in argv else None
         emit_heartbeat(op_id, token, meta=meta)
         return 0
-
     if "--list" in argv:
         for spec in load_registry():
-            thr = "tau" if spec.max_quiet_s is None else f"{spec.max_quiet_s:.0f}s"
-            print(f"{spec.op_id}\t{thr}\t{' '.join(spec.recovery_cmd)}")
+            threshold = "tau" if spec.max_quiet_s is None else f"{spec.max_quiet_s:.0f}s"
+            print(f"{spec.op_id}\t{threshold}\t{_format_adapter(spec.adapter)}\tsupport-only")
         return 0
-
     if "--scan" in argv:
-        from shared.recovery_governor import RecoveryGovernor
-
-        wd = LivenessWatchdog(governor=RecoveryGovernor())
-        recovered = 0
-        for r in wd.scan():
-            if r.recovered:
-                recovered += 1
-            if r.status in (STALLED, MISSING):
-                print(f"{r.status}\t{r.op_id}\tquiet={r.quiet_s:.0f}s\t{r.permit_reason}")
-        print(f"# liveness scan: {recovered} recovered")
+        held = 0
+        for result in LivenessWatchdog().scan():
+            if result.hold is not None:
+                held += 1
+                print(result.hold.model_dump_json(by_alias=True))
+            else:
+                print(
+                    f"OBSERVE status={result.status} op_id={result.op_id} "
+                    f"effect_state={result.effect_state} reason={result.permit_reason}"
+                )
+        print(f"# liveness scan: effects=0 held={held} support_only=true")
         return 0
-
     print("usage: liveness --beat <op_id> --token <t> | --scan | --list", file=sys.stderr)
-    return 0
+    return 2
 
 
 if __name__ == "__main__":

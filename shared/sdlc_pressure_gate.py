@@ -204,37 +204,14 @@ def local_hostname() -> str:
 
 
 def read_remote_pressure(host: str, timeout_s: float = 4.0) -> tuple[PsiReading, float] | None:
-    """Pressure of the REMOTE dispatch target (one cheap ssh; fail-open on error).
+    """Hold live remote execution until a current source-local projection exists.
 
-    A dispatch bound for appendix must be admitted on APPENDIX's pressure —
-    gating it on podium PSI starves idle remote cores (2026-06-10 incident).
-    Returns (psi, load_per_core) or None when unreachable (caller fails OPEN:
-    the dispatch itself surfaces a clear error if the host is truly down).
+    Shelling through ambient SSH configuration is executable code, not a pure
+    pressure observation. Gate-0A therefore reports the signal unavailable;
+    Gate-0B must consume an authenticated, frontier-bound host projection.
     """
-    try:
-        proc = subprocess.run(
-            [
-                "ssh",
-                "-o",
-                "ConnectTimeout=3",
-                "-o",
-                "BatchMode=yes",
-                host,
-                "cat /proc/pressure/cpu; cat /proc/loadavg; nproc",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-        )
-        if proc.returncode != 0:
-            return None
-        lines = proc.stdout.strip().splitlines()
-        psi = parse_psi_some("\n".join(lines))
-        load1 = float(lines[-2].split()[0])
-        cores = max(int(lines[-1]), 1)
-        return psi, load1 / cores
-    except (subprocess.SubprocessError, OSError, ValueError, IndexError):
-        return None
+    del host, timeout_s
+    return None
 
 
 # ── Pure decision ────────────────────────────────────────────────────────────
@@ -316,6 +293,13 @@ def default_state_path() -> Path:
         fallback = Path.home() / ".cache" / "hapax" / "sdlc-pressure"
         fallback.mkdir(parents=True, exist_ok=True)
         return fallback / "state.json"
+
+
+def _default_state_path_readonly() -> Path:
+    primary = Path("/dev/shm/hapax/sdlc-pressure/state.json")
+    if primary.parent.is_dir():
+        return primary
+    return Path.home() / ".cache" / "hapax" / "sdlc-pressure" / "state.json"
 
 
 def _load_state(state_path: Path) -> GateState | None:
@@ -428,13 +412,14 @@ def session_limit_until(
     return best
 
 
-def admission_state(
+def _admission_state(
     now: float | None = None,
     *,
     reading: PressureReading | None = None,
     state_path: Path | None = None,
     fold_team_load: bool = False,
     target_host: str | None = None,
+    persist_state: bool,
 ) -> AdmissionDecision:
     """Read pressure, apply hysteresis+dwell against persisted state, return a decision.
 
@@ -466,10 +451,10 @@ def admission_state(
     if state_path is not None:
         path = state_path
     elif is_remote:
-        base = default_state_path()
+        base = default_state_path() if persist_state else _default_state_path_readonly()
         path = base.with_name(f"state-{target_host.split('.')[0]}.json")
     else:
-        path = default_state_path()
+        path = default_state_path() if persist_state else _default_state_path_readonly()
 
     if reading is None:
         mode = read_working_mode()
@@ -508,7 +493,8 @@ def admission_state(
 
     prev = _load_state(path)
     new = decide(reading, prev, now)
-    _store_state(path, new)
+    if persist_state:
+        _store_state(path, new)
 
     dwell_remaining = max(0.0, MIN_DWELL_S[new.state] - (now - new.since))
     changed = prev is None or prev.state != new.state
@@ -518,6 +504,46 @@ def admission_state(
         reading=reading,
         dwell_remaining_s=dwell_remaining,
         changed=changed,
+    )
+
+
+def admission_state(
+    now: float | None = None,
+    *,
+    reading: PressureReading | None = None,
+    state_path: Path | None = None,
+    fold_team_load: bool = False,
+    target_host: str | None = None,
+) -> AdmissionDecision:
+    """Evaluate admission and persist hysteresis for an admitted pressure controller."""
+
+    return _admission_state(
+        now,
+        reading=reading,
+        state_path=state_path,
+        fold_team_load=fold_team_load,
+        target_host=target_host,
+        persist_state=True,
+    )
+
+
+def observe_admission_state(
+    now: float | None = None,
+    *,
+    reading: PressureReading | None = None,
+    state_path: Path | None = None,
+    fold_team_load: bool = False,
+    target_host: str | None = None,
+) -> AdmissionDecision:
+    """Evaluate pressure against persisted hysteresis without writing any state."""
+
+    return _admission_state(
+        now,
+        reading=reading,
+        state_path=state_path,
+        fold_team_load=fold_team_load,
+        target_host=target_host,
+        persist_state=False,
     )
 
 

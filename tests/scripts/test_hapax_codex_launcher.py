@@ -2056,8 +2056,8 @@ printf '%s\\n' "$@" > {tmux_args}
     assert "--no-claim" not in runner_text
 
 
-def test_terminal_tmux_can_be_podium_thin_client_for_appendix_codex(tmp_path: Path) -> None:
-    env, args_file, env_file = _env_with_fake_codex(tmp_path)
+def test_terminal_tmux_refuses_podium_claim_without_dispatch_binding(tmp_path: Path) -> None:
+    env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
     _write_codex_access_token(Path(env["HOME"]), exp=int(time.time()) + 3600)
     task_note = _write_active_task(env, "demo-task")
     (Path(env["HOME"]) / "projects" / "hapax-mcp").mkdir(parents=True)
@@ -2105,35 +2105,12 @@ esac
         timeout=5,
     )
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 2
+    assert "canon echo enforcement requires the exact dispatch binding flags" in result.stderr
     task_text = task_note.read_text(encoding="utf-8")
-    assert "status: claimed" in task_text
-    assert "assigned_to: cx-amber" in task_text
-    assert result.stdout.strip() == "hapax-codex-cx-amber"
-    tmux_lines = tmux_args.read_text(encoding="utf-8").splitlines()
-    assert tmux_lines[:4] == ["new-session", "-d", "-s", "hapax-codex-cx-amber"]
-    runner = Path(tmux_lines[-1])
-    runner_text = runner.read_text(encoding="utf-8")
-    assert "\nssh " in runner_text
-    assert "bash" in runner_text
-    assert "exec /" not in runner_text
-
-    runner_result = subprocess.run(
-        [str(runner)],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=5,
-    )
-
-    assert runner_result.returncode == 0, runner_result.stderr
-    assert not runner.exists()
-    assert "Bootstrap file:" in args_file.read_text(encoding="utf-8")
-    launched_env = env_file.read_text(encoding="utf-8")
-    assert "LOGOS_BASE_URL=http://192.168.68.85:8051/api" in launched_env
-    proof_root = Path(env["HOME"]) / ".cache" / "hapax" / "orchestration" / "dispatch-host-proofs"
-    assert list(proof_root.glob("*cx-amber-demo-task-local.json"))
-    assert list(proof_root.glob("*cx-amber-demo-task-remote.json"))
+    assert "status: offered" in task_text
+    assert "assigned_to: unassigned" in task_text
+    assert not tmux_args.exists()
 
 
 def test_terminal_none_remote_reruns_saved_auth_preflight_after_claim(tmp_path: Path) -> None:
@@ -2235,6 +2212,7 @@ esac
             str(REPO_ROOT),
             "--task",
             "demo-task",
+            "--no-claim",
             "--terminal",
             "tmux",
             "--force",

@@ -1,18 +1,10 @@
-"""Dispatch refusal ledger — the no-spin law (failure class #9 remediation).
+"""Support-only observations of dispatch refusal candidates.
 
-Tracks (task_id, lane, refusal_reason) triples with per-triple attempt counts.
-After K identical *deterministic* refusals the triple enters exponential-backoff
-cooldown and a single ntfy escalation fires with the reason text.
-
-Deterministic reasons (route policy refusals, validation blocks) are distinguished
-from transient reasons (timeouts, OSError).  Transient reasons get backoff but a
-*higher* K and no escalation — they are expected to self-resolve.
-
-Thread-safety: the coordinator daemon is single-threaded; no locking needed.
-
-Process-lifetime scope: the ledger is ephemeral (in-process dict).  A daemon
-restart resets all cooldowns — which is the right behavior since the external
-state that caused the refusal may have changed.
+Refusal text, repetition, and elapsed time are ambient signals.  They are not an
+authority grant, an admission decision, or an execution lease, so this ledger
+cannot cool a route, suppress work, notify, escalate, or otherwise affect the
+dispatch plane.  It retains bounded process-local counts solely for an
+inspectable ``held_not_admitted`` diagnostic projection.
 """
 
 from __future__ import annotations
@@ -24,22 +16,26 @@ from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
 
+SUPPORT_EFFECT_STATE = "held_not_admitted"
+SUPPORT_HOLD_REASON = "dispatch_refusal_support_has_no_admission_or_execution_lease"
+SUPPORT_MAY_AUTHORIZE = False
+MAX_ID_LENGTH = 256
+MAX_REASON_LENGTH = 4096
+
 
 # ── configuration ─────────────────────────────────────────────────────────────
 
-# K: how many identical deterministic refusals before cooldown + escalation.
+# K: how many identical deterministic observations make the HOLD visible.
 DEFAULT_K = 3
 
-# Transient refusals (timeouts) get a higher K before backoff kicks in, and
-# no escalation (they're expected to self-heal).
+# Transient observations use a higher visibility threshold.
 TRANSIENT_K = 10
 
-# Exponential backoff: base * 2^(attempts - K), capped at max.
+# Compatibility configuration retained for callers; no backoff is materialized.
 BACKOFF_BASE_S = 60.0
 BACKOFF_MAX_S = 3600.0  # 1 hour cap
 
-# Starvation detector: if offered>0 and dispatched=0 for this long, fire ONE
-# escalation (not 120 ticks of silence).
+# Starvation-shaped support becomes a visible HOLD after this horizon.
 STARVATION_HORIZON_S = 3600.0  # 1 hour
 
 
@@ -91,6 +87,30 @@ def is_transient_reason(reason: str) -> bool:
     return any(marker.lower() in reason_lower for marker in _TRANSIENT_MARKERS)
 
 
+def _bounded_text(value: object, field_name: str, limit: int) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or "\x00" in value
+        or len(value) > limit
+    ):
+        raise ValueError(f"dispatch_refusal_{field_name}_invalid")
+    return value
+
+
+def _finite_now(value: float | None) -> float:
+    observed = time.monotonic() if value is None else value
+    if (
+        isinstance(observed, bool)
+        or not isinstance(observed, (int, float))
+        or not math.isfinite(observed)
+        or observed < 0
+    ):
+        raise ValueError("dispatch_refusal_observed_at_invalid")
+    return float(observed)
+
+
 # ── data structures ───────────────────────────────────────────────────────────
 
 
@@ -105,26 +125,26 @@ class RefusalEntry:
     first_seen: float = 0.0  # monotonic
     last_seen: float = 0.0  # monotonic
     cooldown_until: float = 0.0  # monotonic; 0 = not in cooldown
-    escalated: bool = False  # True after the ntfy escalation has fired
+    escalated: bool = False  # compatibility field; effects are always held
     transient: bool = False  # True if this is a transient reason
+    effect_state: str = SUPPORT_EFFECT_STATE
+    hold_reason: str = SUPPORT_HOLD_REASON
+    may_authorize: bool = SUPPORT_MAY_AUTHORIZE
+    hold_visible: bool = False
 
 
 @dataclass
 class StarvationState:
-    """Tracks the starvation detector: offered>0 and dispatched=0 continuously."""
+    """Tracks starvation-shaped support without triggering an escalation."""
 
     starved_since: float = 0.0  # monotonic; 0 = not starved
-    escalated: bool = False  # True after the single starvation escalation fired
+    escalated: bool = False  # compatibility field; effects are always held
+    hold_visible: bool = False
 
 
 @dataclass
 class DispatchRefusalLedger:
-    """Process-local ledger of dispatch refusals, keyed by (task_id, lane, reason).
-
-    The coordinator calls ``record_refusal`` on every dispatch failure, and
-    ``is_cooled_down`` before attempting a dispatch.  The tick loop calls
-    ``tick_starvation`` at the end to detect fleet-wide dispatch starvation.
-    """
+    """Process-local, non-authorizing refusal support keyed by signal identity."""
 
     k: int = DEFAULT_K
     transient_k: int = TRANSIENT_K
@@ -133,18 +153,18 @@ class DispatchRefusalLedger:
     starvation_horizon_s: float = STARVATION_HORIZON_S
     _entries: dict[tuple[str, str, str], RefusalEntry] = field(default_factory=dict)
     _starvation: StarvationState = field(default_factory=StarvationState)
-    # Callback for escalation (ntfy).  Injected so tests don't send real notifications.
+    # Compatibility callback slot. It is deliberately never invoked.
     _escalate_fn: object = None  # Callable[[str, str], None] | None
 
     def record_refusal(
         self, task_id: str, lane: str, reason: str, *, now: float | None = None
     ) -> RefusalEntry:
-        """Record a dispatch refusal and return the updated entry.
+        """Record a bounded observation without producing a dispatch effect."""
 
-        If the entry crosses the K threshold, enters cooldown and fires a SINGLE
-        ntfy escalation.
-        """
-        now = now if now is not None else time.monotonic()
+        task_id = _bounded_text(task_id, "task_id", MAX_ID_LENGTH)
+        lane = _bounded_text(lane, "lane", MAX_ID_LENGTH)
+        reason = _bounded_text(reason, "reason", MAX_REASON_LENGTH)
+        now = _finite_now(now)
         key = (task_id, lane, reason)
         entry = self._entries.get(key)
         if entry is None:
@@ -159,81 +179,41 @@ class DispatchRefusalLedger:
 
         entry.attempts += 1
         entry.last_seen = now
-
         threshold = self.transient_k if entry.transient else self.k
         if entry.attempts >= threshold:
-            # Enter exponential-backoff cooldown.
-            exponent = entry.attempts - threshold
-            if self.backoff_base_s <= 0:
-                backoff = 0.0
-            elif self.backoff_base_s >= self.backoff_max_s:
-                backoff = self.backoff_max_s
-            else:
-                exponent_to_cap = math.ceil(math.log2(self.backoff_max_s / self.backoff_base_s))
-                backoff = (
-                    self.backoff_max_s
-                    if exponent >= exponent_to_cap
-                    else self.backoff_base_s * (2**exponent)
+            first_visible_hold = not entry.hold_visible
+            entry.hold_visible = True
+            if first_visible_hold:
+                log.warning(
+                    "dispatch refusal support HOLD: (%s, %s) observation #%d (%s)",
+                    task_id,
+                    lane,
+                    entry.attempts,
+                    reason[:80],
                 )
-            entry.cooldown_until = now + backoff
-            log.warning(
-                "no-spin: (%s, %s) refusal #%d (%s) -> cooldown %.0fs",
-                task_id,
-                lane,
-                entry.attempts,
-                reason[:80],
-                backoff,
-            )
-
-            # Fire ONE escalation (never repeats for the same triple).
-            if not entry.escalated and not entry.transient:
-                entry.escalated = True
-                self._fire_escalation(task_id, lane, reason, entry.attempts)
 
         return entry
 
     def is_cooled_down(
         self, task_id: str, lane: str, reason: str | None = None, *, now: float | None = None
     ) -> bool:
-        """True if ANY (task_id, lane, *) triple is currently in cooldown.
+        """Always false: support observations cannot suppress a dispatch pair."""
 
-        When ``reason`` is given, only checks that specific triple.  When None,
-        checks ALL triples for this (task_id, lane) pair — the coordinator can't
-        predict which reason will come back, so ANY active cooldown blocks.
-        """
-        now = now if now is not None else time.monotonic()
-        if reason is not None:
-            entry = self._entries.get((task_id, lane, reason))
-            return entry is not None and entry.cooldown_until > now
-
-        # Check all triples for this (task_id, lane) pair.
-        for key, entry in self._entries.items():
-            if key[0] == task_id and key[1] == lane and entry.cooldown_until > now:
-                return True
+        del task_id, lane, reason, now
         return False
 
     def any_cooldown_for_pair(self, task_id: str, lane: str, *, now: float | None = None) -> bool:
-        """True if any refusal triple for this (task_id, lane) is in cooldown."""
-        return self.is_cooled_down(task_id, lane, now=now)
+        """Always false: there is no admitted cooldown effect."""
+
+        del task_id, lane, now
+        return False
 
     def any_cooldown_for_task(
         self, task_id: str, *, escalated_only: bool = False, now: float | None = None
     ) -> bool:
-        """True if a (task_id, *, *) triple is in cooldown on any lane.
+        """Always false: observations cannot discount or reorder offered work."""
 
-        With ``escalated_only=True`` only cooldowns that have already fired their
-        circuit-breaker escalation count. This is what the starvation detector
-        uses to discount offered work: a deterministic refusal past K already
-        paged the operator, so counting it as starvation would double-escalate.
-        A *transient* cooldown (timeouts: K=10, no escalation) does NOT qualify —
-        nobody was paged, so a task stuck transiently must still drive the
-        starvation horizon rather than being silently discounted.
-        """
-        now = now if now is not None else time.monotonic()
-        for key, entry in self._entries.items():
-            if key[0] == task_id and entry.cooldown_until > now:
-                if not escalated_only or entry.escalated:
-                    return True
+        del task_id, escalated_only, now
         return False
 
     def clear(self, task_id: str | None = None) -> None:
@@ -250,70 +230,55 @@ class DispatchRefusalLedger:
         *,
         now: float | None = None,
     ) -> bool:
-        """Track the starvation detector.  Returns True if a starvation escalation
-        just fired (for test assertions)."""
-        now = now if now is not None else time.monotonic()
+        """Track a starvation-shaped signal and hold every escalation effect."""
+
+        now = _finite_now(now)
+        if isinstance(offered, bool) or not isinstance(offered, int) or offered < 0:
+            raise ValueError("dispatch_refusal_offered_invalid")
+        if isinstance(dispatched, bool) or not isinstance(dispatched, int) or dispatched < 0:
+            raise ValueError("dispatch_refusal_dispatched_invalid")
         if offered > 0 and dispatched == 0:
             if self._starvation.starved_since == 0.0:
                 self._starvation.starved_since = now
             elif (
-                not self._starvation.escalated
+                not self._starvation.hold_visible
                 and (now - self._starvation.starved_since) >= self.starvation_horizon_s
             ):
-                self._starvation.escalated = True
-                self._fire_starvation_escalation(offered, now - self._starvation.starved_since)
-                return True
+                self._starvation.hold_visible = True
+                log.warning(
+                    "dispatch starvation support HOLD: offered=%d observed_for=%.0fs",
+                    offered,
+                    now - self._starvation.starved_since,
+                )
         else:
-            # Reset: we dispatched at least one, or the queue is empty.
             self._starvation.starved_since = 0.0
             self._starvation.escalated = False
+            self._starvation.hold_visible = False
         return False
 
     def stats(self, *, now: float | None = None) -> dict:
         """Diagnostic snapshot for the SHM state file."""
-        cooled = 0
-        escalated = 0
-        now = now if now is not None else time.monotonic()
-        for entry in self._entries.values():
-            if entry.cooldown_until > now:
-                cooled += 1
-            if entry.escalated:
-                escalated += 1
+        del now
         return {
+            "effect_state": SUPPORT_EFFECT_STATE,
+            "hold_reason": SUPPORT_HOLD_REASON,
+            "may_authorize": SUPPORT_MAY_AUTHORIZE,
             "refusal_triples": len(self._entries),
-            "cooled_down": cooled,
-            "escalated": escalated,
+            "observations": sum(entry.attempts for entry in self._entries.values()),
+            "visible_holds": sum(entry.hold_visible for entry in self._entries.values()),
+            "cooled_down": 0,
+            "escalated": 0,
             "starvation_active": self._starvation.starved_since > 0,
-            "starvation_escalated": self._starvation.escalated,
+            "starvation_escalated": False,
+            "starvation_hold_visible": self._starvation.hold_visible,
         }
 
     def _fire_escalation(self, task_id: str, lane: str, reason: str, attempts: int) -> None:
-        """Send a single ntfy escalation for a deterministic refusal that crossed K."""
-        title = "SDLC: dispatch refusal circuit breaker"
-        body = (
-            f"Task {task_id} refused {attempts}x on lane {lane}.\n"
-            f"Reason: {reason}\n"
-            f"Action: pair entered cooldown with exponential backoff. "
-            f"Resolve the underlying issue or manually clear the cooldown."
-        )
-        log.error("no-spin escalation: %s → %s (×%d): %s", task_id, lane, attempts, reason)
-        if callable(self._escalate_fn):
-            try:
-                self._escalate_fn(title, body)
-            except Exception:  # noqa: BLE001 — ntfy is best-effort
-                log.exception("no-spin ntfy escalation failed (continuing)")
+        """Compatibility no-op: notification requires admitted execution."""
+
+        del task_id, lane, reason, attempts
 
     def _fire_starvation_escalation(self, offered: int, duration_s: float) -> None:
-        """Send a single ntfy escalation for fleet-wide dispatch starvation."""
-        title = "SDLC: dispatch starvation detected"
-        body = (
-            f"offered={offered} tasks, dispatched=0 for {duration_s / 60:.0f} minutes.\n"
-            f"All dispatch attempts are failing or in cooldown. "
-            f"Check lane health and route policy."
-        )
-        log.error("no-spin starvation: offered=%d, starved %.0fs", offered, duration_s)
-        if callable(self._escalate_fn):
-            try:
-                self._escalate_fn(title, body)
-            except Exception:  # noqa: BLE001
-                log.exception("no-spin starvation ntfy failed (continuing)")
+        """Compatibility no-op: notification requires admitted execution."""
+
+        del offered, duration_s
