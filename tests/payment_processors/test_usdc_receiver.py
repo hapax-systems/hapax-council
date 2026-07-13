@@ -15,6 +15,7 @@ Coverage:
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -638,6 +639,7 @@ class TestPollOnce:
 
     def test_event_append_failure_preserves_receipt_and_keeps_cursor_retryable(
         self,
+        caplog,
         monkeypatch,
         tmp_path: Path,
         resource_receipt_log: Path,
@@ -645,6 +647,7 @@ class TestPollOnce:
         row = _log_row(tx_hash="0x" + "20" * 32, block_number=500)
         caller, _ = self._make_caller(tip_block=1000, logs=[row])
         append_attempts = 0
+        caplog.set_level(logging.WARNING, logger="agents.payment_processors.usdc_receiver")
 
         def _flaky_append(_event):
             nonlocal append_attempts
@@ -670,6 +673,10 @@ class TestPollOnce:
         loaded = json.loads(cursor_path.read_text())
         assert loaded["last_block"] == 0
         assert loaded["seen_keys"] == []
+        assert str(cursor_path) in caplog.text
+        assert "x402 USDC event " + "0x" + "20" * 32 + ":0" in caplog.text
+        assert "fix payment-event log" in caplog.text
+        assert "do not manually advance the cursor" in caplog.text
 
         assert receiver.poll_once() == 1
         assert (

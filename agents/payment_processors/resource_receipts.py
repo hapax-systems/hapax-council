@@ -276,29 +276,21 @@ def load_resource_receipt(
     if _prefix != RECEIPT_REF_PREFIX.rstrip(":"):
         return None
     target = log_path if log_path is not None else default_receipt_log_path()
-    if not target.exists():
-        return None
     try:
-        with target.open("r", encoding="utf-8") as fh:
-            for raw in fh:
-                text = raw.strip()
-                if not text:
-                    continue
-                try:
-                    receipt = MoneyRailResourceReceipt.model_validate_json(text)
-                except (ValidationError, ValueError, TypeError):
-                    log.debug("malformed money-rail resource receipt skipped")
-                    continue
-                if receipt.rail == rail and receipt.receipt_id == receipt_id:
-                    return receipt
-    except OSError:
+        with _lock:
+            with _locked_receipt_log(target):
+                receipt = _existing_receipts_by_id(target).get(receipt_id)
+    except (MoneyRailResourceReceiptError, OSError):
         log.warning(
-            "money-rail resource receipt read failed at %s; %s",
+            "money-rail resource receipt admission lookup failed at %s; %s",
             target,
             resource_receipt_recovery_guidance(log_path=target),
             exc_info=True,
         )
         return None
+    if receipt is not None and receipt.rail == rail:
+        return receipt
+    return None
 
 
 def resource_receipt_matches(

@@ -70,7 +70,7 @@ from typing import Any
 from prometheus_client import Counter
 
 from agents.operator_awareness.state import PaymentEvent
-from agents.payment_processors.event_log import append_event
+from agents.payment_processors.event_log import DEFAULT_PAYMENT_LOG_PATH, append_event
 from agents.payment_processors.resource_receipts import (
     commit_prepared_resource_receipt,
     prepare_payment_event_resource_receipt,
@@ -97,6 +97,7 @@ DEFAULT_BLOCK_LOOKBACK: int = 1000  # ~30 min at 2s blocks; safe rewind on resta
 OPERATOR_WALLET_ENV: str = "HAPAX_X402_OPERATOR_WALLET"
 BASE_RPC_URL_ENV: str = "HAPAX_BASE_RPC_URL"
 CURSOR_PATH_ENV: str = "HAPAX_X402_USDC_CURSOR_PATH"
+PAYMENT_LOG_ENV: str = "HAPAX_MONETIZATION_LOG_PATH"
 DEFAULT_CURSOR_PATH: Path = Path.home() / ".cache/hapax/x402-usdc-cursor.json"
 
 # Allowed JSON-RPC methods. Any deviation is a contract violation —
@@ -496,18 +497,26 @@ class USDCReceiver:
         )
         if commit_prepared_resource_receipt(resource_receipt) is None:
             log.warning(
-                "usdc payment event blocked: resource receipt append failed; %s",
+                "usdc payment event blocked: resource receipt append failed; %s; %s",
                 _resource_receipt_recovery_action(),
+                self._payment_event_retry_action(receipt),
             )
             return False
         event = event.model_copy(update={"resource_receipt_ref": receipt_ref})
         try:
             event_appended = append_event(event)
         except Exception:  # noqa: BLE001
-            log.warning("usdc payment event append raised", exc_info=True)
+            log.warning(
+                "usdc payment event append raised; %s",
+                self._payment_event_retry_action(receipt),
+                exc_info=True,
+            )
             return False
         if not event_appended:
-            log.warning("usdc payment event append failed")
+            log.warning(
+                "usdc payment event append failed; %s",
+                self._payment_event_retry_action(receipt),
+            )
             return False
         usdc_receipts_total.labels(rail=RAIL_LABEL).inc()
         return True
@@ -545,6 +554,16 @@ class USDCReceiver:
             )
         caller = self._rpc_caller or _default_rpc_caller(self._rpc_url)
         return caller(method, params)
+
+    def _payment_event_retry_action(self, receipt: TransferReceipt) -> str:
+        payment_log = os.environ.get(PAYMENT_LOG_ENV, str(DEFAULT_PAYMENT_LOG_PATH))
+        event_id = f"{receipt.tx_hash}:{receipt.log_index}"
+        return (
+            f"cursor {self._cursor_path} remains before x402 USDC event {event_id} "
+            f"at block {receipt.block_number}; fix payment-event log {payment_log} "
+            "and wait for the next poll or restart the daemon; do not manually advance "
+            "the cursor"
+        )
 
 
 def _default_rpc_caller(rpc_url: str) -> Any:

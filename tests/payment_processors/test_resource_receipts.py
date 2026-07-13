@@ -20,6 +20,7 @@ from agents.payment_processors.resource_receipts import (
     append_resource_receipt,
     build_resource_receipt,
     commit_prepared_resource_receipt,
+    load_resource_receipt,
     receipt_reference,
     record_payment_event_resource_receipt,
     require_resource_receipt,
@@ -67,6 +68,11 @@ def _child_commit_receipt(log_path: str, receipt_json: str) -> None:
 def _child_commit_receipt_after_marker(log_path: str, receipt_json: str, start_marker: str) -> None:
     _wait_for_marker(Path(start_marker))
     _child_commit_receipt(log_path, receipt_json)
+
+
+def _child_expect_receipt_absent(log_path: str, ref: str) -> None:
+    if resource_receipt_exists(ref, log_path=Path(log_path)):
+        raise SystemExit(1)
 
 
 def _child_commit_then_crash(log_path: str, receipt_json: str) -> None:
@@ -255,6 +261,52 @@ def test_append_fails_closed_on_torn_final_line_with_quarantine_guidance(tmp_pat
     assert "torn final money-rail resource receipt line" in caplog.text
     assert "repair or quarantine" in caplog.text
     assert "preserve valid committed receipts" in caplog.text
+
+
+def test_admission_rejects_complete_json_without_commit_newline(tmp_path) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    receipt = _receipt(external_id="delivery-complete-json-torn", raw_payload_sha256="9" * 64)
+    ref = receipt_reference(receipt)
+    log_path.write_text(receipt.model_dump_json(), encoding="utf-8")
+
+    assert load_resource_receipt(ref, log_path=log_path) is None
+    assert not resource_receipt_exists(ref, log_path=log_path)
+    assert not resource_receipt_matches(
+        ref,
+        rail=receipt.rail,
+        operation=receipt.operation,
+        external_id="delivery-complete-json-torn",
+        log_path=log_path,
+    )
+
+
+def test_admission_lookup_waits_for_lock_and_rejects_uncommitted_json_line(tmp_path) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    lock_path = log_path.with_name(f"{log_path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    receipt = _receipt(external_id="delivery-locked-torn", raw_payload_sha256="a" * 64)
+    ref = receipt_reference(receipt)
+    log_path.write_text(receipt.model_dump_json(), encoding="utf-8")
+
+    ctx = get_context("spawn")
+    with lock_path.open("a", encoding="utf-8") as lock_fh:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+        proc = ctx.Process(
+            target=_child_expect_receipt_absent,
+            args=(str(log_path), ref),
+        )
+        proc.start()
+        try:
+            proc.join(timeout=0.5)
+            assert proc.is_alive()
+        finally:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+
+    proc.join(timeout=5)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(timeout=5)
+    assert proc.exitcode == 0
 
 
 def test_append_waits_on_process_receipt_log_lock(tmp_path) -> None:
