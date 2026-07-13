@@ -28,6 +28,7 @@ from agents.payment_processors.resource_receipts import (
 )
 from agents.payment_processors.usdc_receiver import (
     BASE_CHAIN_ID,
+    BASE_RPC_URL_ENV,
     BASE_USDC_CONTRACT_ADDRESS,
     CURSOR_SCHEMA_VERSION,
     ERC20_TRANSFER_TOPIC,
@@ -47,6 +48,8 @@ from agents.payment_processors.usdc_receiver import (
 
 _OPERATOR_WALLET = "0x" + "ab" * 20  # 0xabab...ab; 40 hex chars
 _OTHER_WALLET = "0x" + "cd" * 20
+_SECRET_SENTINEL = "rpc-secret-sentinel-7c8f1a"
+_SECRET_RPC_URL = f"https://base-rpc.example.invalid/{_SECRET_SENTINEL}/token"
 
 
 @pytest.fixture(autouse=True)
@@ -122,6 +125,19 @@ def _cursor(
         seen_keys=seen_keys or set(),
         operator_wallet=operator_wallet.lower(),
     )
+
+
+def _assert_rpc_recovery_guidance(caplog: pytest.LogCaptureFixture, *, method: str) -> None:
+    text = caplog.text
+    assert BASE_RPC_URL_ENV in text
+    assert "provider health" in text
+    assert f"expected {method} response shape" in text
+    assert "preserve the cursor and seen state" in text
+    assert "next poll" in text
+    assert "restarting the daemon" in text
+    assert "never manually advance the cursor" in text
+    assert _SECRET_RPC_URL not in text
+    assert _SECRET_SENTINEL not in text
 
 
 # ── address normalisation ─────────────────────────────────────────────
@@ -507,6 +523,117 @@ class TestPollOnce:
             raise RuntimeError(f"unexpected method {method!r}")
 
         return _call, calls
+
+    @pytest.mark.parametrize(
+        ("fail_method", "guidance_method"),
+        [
+            ("eth_chainId", "eth_chainId"),
+            ("eth_getBlockByNumber", "eth_getBlockByNumber(finalized)"),
+            ("eth_getLogs", "eth_getLogs"),
+        ],
+    )
+    def test_rpc_exception_warnings_include_non_secret_recovery_guidance(
+        self,
+        fail_method: str,
+        guidance_method: str,
+        caplog,
+        tmp_path: Path,
+    ) -> None:
+        import agents.payment_processors.usdc_receiver as usdc_mod
+
+        def _call(method: str, _params: list) -> object:
+            if method == fail_method:
+                raise RuntimeError(f"provider unavailable at {_SECRET_RPC_URL}")
+            if method == "eth_chainId":
+                return hex(BASE_CHAIN_ID)
+            if method == "eth_getBlockByNumber":
+                return {"number": hex(1000), "hash": "0x" + "44" * 32}
+            if method == "eth_getLogs":
+                return []
+            raise AssertionError(f"unexpected RPC method {method}")
+
+        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
+        receiver = USDCReceiver(
+            operator_wallet=_OPERATOR_WALLET,
+            cursor_path=tmp_path / "cursor.json",
+            rpc_url=_SECRET_RPC_URL,
+            rpc_caller=_call,
+        )
+
+        assert receiver.poll_once() == 0
+
+        _assert_rpc_recovery_guidance(caplog, method=guidance_method)
+        assert "RuntimeError" in caplog.text
+        assert "provider unavailable" not in caplog.text
+        assert "Traceback" not in caplog.text
+
+    @pytest.mark.parametrize(
+        ("chain_id", "finalized_head", "logs_raw", "guidance_method"),
+        [
+            (None, {"number": hex(1000), "hash": "0x" + "44" * 32}, [], "eth_chainId"),
+            (
+                _SECRET_RPC_URL,
+                {"number": hex(1000), "hash": "0x" + "44" * 32},
+                [],
+                "eth_chainId",
+            ),
+            (
+                hex(BASE_CHAIN_ID),
+                {},
+                [],
+                "eth_getBlockByNumber(finalized)",
+            ),
+            (
+                hex(BASE_CHAIN_ID),
+                {"number": hex(1000), "hash": "0x" + "44" * 32},
+                {"not": "a list"},
+                "eth_getLogs",
+            ),
+            (
+                hex(BASE_CHAIN_ID),
+                {"number": hex(1000), "hash": "0x" + "44" * 32},
+                [{"not": "a transfer log"}],
+                "eth_getLogs",
+            ),
+        ],
+    )
+    def test_malformed_rpc_response_warnings_include_non_secret_recovery_guidance(
+        self,
+        chain_id: object,
+        finalized_head: object,
+        logs_raw: object,
+        guidance_method: str,
+        caplog,
+        tmp_path: Path,
+    ) -> None:
+        import agents.payment_processors.usdc_receiver as usdc_mod
+
+        def _call(method: str, _params: list) -> object:
+            if method == "eth_chainId":
+                return chain_id
+            if method == "eth_getBlockByNumber":
+                return finalized_head
+            if method == "eth_getLogs":
+                return logs_raw
+            raise AssertionError(f"unexpected RPC method {method}")
+
+        cursor_path = tmp_path / "cursor.json"
+        seen_tx = "0x" + "97" * 32
+        _save_cursor(cursor_path, _cursor(last_block=777, seen_keys={(seen_tx, 4)}))
+        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
+        receiver = USDCReceiver(
+            operator_wallet=_OPERATOR_WALLET,
+            cursor_path=cursor_path,
+            rpc_url=_SECRET_RPC_URL,
+            rpc_caller=_call,
+        )
+
+        assert receiver.poll_once() == 0
+
+        loaded = json.loads(cursor_path.read_text())
+        assert loaded["last_block"] == 777
+        assert loaded["seen_keys"] == [[seen_tx, 4]]
+        _assert_rpc_recovery_guidance(caplog, method=guidance_method)
 
     def test_records_poll_resource_receipt_before_rpc(
         self,

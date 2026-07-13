@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import logging
 import os
+import sqlite3
 import time
 from datetime import UTC, datetime
 from multiprocessing import get_context
@@ -30,6 +31,8 @@ from agents.payment_processors.resource_receipts import (
     retract_prepared_resource_receipt,
     tail_resource_receipts,
 )
+
+_SQLITE_MAX_POSITIVE_INTEGER = 9_223_372_036_854_775_807
 
 
 def _receipt(
@@ -119,6 +122,91 @@ def _wait_for_marker(path: Path) -> None:
     raise SystemExit(2)
 
 
+def _index_metadata(log_path: Path) -> dict[str, str]:
+    with sqlite3.connect(resource_receipts_mod._receipt_index_path(log_path)) as conn:
+        return dict(conn.execute("SELECT key, value FROM metadata"))
+
+
+def _sqlite_master_objects(log_path: Path) -> tuple[tuple[str, str, str], ...]:
+    with sqlite3.connect(resource_receipts_mod._receipt_index_path(log_path)) as conn:
+        return tuple(
+            conn.execute(
+                "SELECT type, name, tbl_name FROM sqlite_master "
+                "WHERE name NOT GLOB 'sqlite_*' ORDER BY type, name, tbl_name"
+            )
+        )
+
+
+def _indexed_locator(log_path: Path, receipt_id: str) -> tuple[int, int, str]:
+    with sqlite3.connect(resource_receipts_mod._receipt_index_path(log_path)) as conn:
+        row = conn.execute(
+            "SELECT row_offset, row_length, raw_line_sha256 FROM receipts WHERE receipt_id = ?",
+            (receipt_id,),
+        ).fetchone()
+    assert row is not None
+    return row
+
+
+def _mode(path: Path) -> int:
+    return path.stat().st_mode & 0o777
+
+
+def _record_invalid_locator_pread(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    invalid_offset: int,
+    invalid_length: int,
+) -> list[tuple[int, int]]:
+    invalid_calls: list[tuple[int, int]] = []
+    real_pread = resource_receipts_mod.os.pread
+
+    def _recording_pread(fd: int, length: int, offset: int) -> bytes:
+        if offset == invalid_offset and length == invalid_length:
+            invalid_calls.append((offset, length))
+            raise OverflowError("byte string is too large")
+        return real_pread(fd, length, offset)
+
+    monkeypatch.setattr(resource_receipts_mod.os, "pread", _recording_pread)
+    return invalid_calls
+
+
+def _zero_receipts_table_root_page(log_path: Path) -> None:
+    index_path = resource_receipts_mod._receipt_index_path(log_path)
+    with sqlite3.connect(index_path) as conn:
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+        row = conn.execute(
+            "SELECT rootpage FROM sqlite_master WHERE type = 'table' AND name = 'receipts'"
+        ).fetchone()
+    assert row is not None
+    root_page = row[0]
+    assert root_page > 1
+    with index_path.open("r+b") as fh:
+        fh.seek((root_page - 1) * page_size)
+        fh.write(b"\0" * page_size)
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+class _TrackingConnection:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        self.closed = False
+
+    def __getattr__(self, name: str):
+        return getattr(self._conn, name)
+
+    def __enter__(self):
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return self._conn.__exit__(exc_type, exc, traceback)
+
+    def close(self) -> None:
+        self.closed = True
+        self._conn.close()
+
+
 def test_receipt_never_grants_spend_or_public_projection() -> None:
     receipt = _receipt()
 
@@ -192,11 +280,18 @@ def test_append_conflict_logs_quarantine_guidance(tmp_path, caplog) -> None:
 
 def test_recovery_guidance_names_quarantine_and_sidecar_lock(tmp_path) -> None:
     log_path = tmp_path / "resource-receipts.jsonl"
+    index_path = resource_receipts_mod._receipt_index_path(log_path)
 
     guidance = resource_receipt_recovery_guidance(log_path=log_path)
 
     assert str(log_path) in guidance
+    assert str(index_path) in guidance
+    for artifact in resource_receipts_mod._sqlite_artifact_paths(index_path):
+        assert str(artifact) in guidance
     assert str(log_path.with_name(f"{log_path.name}.lock")) in guidance
+    assert "preserve or copy the JSONL unchanged" in guidance
+    assert "quarantine or rebuild only the derived index" in guidance
+    assert "reserve ledger-row repair for independently proven ledger corruption" in guidance
     assert "repair or quarantine" in guidance
     assert "preserve valid committed receipts" in guidance
 
@@ -608,3 +703,893 @@ def test_resource_receipt_exists_scans_beyond_tail_window(tmp_path) -> None:
         assert append_resource_receipt(receipt, log_path=log_path)
 
     assert resource_receipt_exists(receipt_reference(first), log_path=log_path)
+
+
+def test_steady_state_append_reconciles_only_from_verified_size(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    first = _receipt(external_id="delivery-index-1", raw_payload_sha256="1" * 64)
+    second = _receipt(external_id="delivery-index-2", raw_payload_sha256="2" * 64)
+    third = _receipt(external_id="delivery-index-3", raw_payload_sha256="3" * 64)
+    assert append_resource_receipt(first, log_path=log_path)
+    assert append_resource_receipt(second, log_path=log_path)
+    verified_size = log_path.stat().st_size
+    starts: list[int] = []
+    real_iter = resource_receipts_mod._iter_ledger_receipt_rows
+
+    def _recording_iter(target: Path, *, start_offset: int, fail_closed: bool):
+        starts.append(start_offset)
+        yield from real_iter(target, start_offset=start_offset, fail_closed=fail_closed)
+
+    monkeypatch.setattr(resource_receipts_mod, "_iter_ledger_receipt_rows", _recording_iter)
+
+    assert append_resource_receipt(third, log_path=log_path)
+
+    assert starts == [verified_size]
+    assert 0 not in starts
+    assert int(_index_metadata(log_path)["line_count"]) == 3
+
+
+def test_old_row_lookup_uses_index_locator_without_zero_offset_scan(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    first = _receipt(external_id="delivery-lookup-1", raw_payload_sha256="1" * 64)
+    old = _receipt(external_id="delivery-lookup-2", raw_payload_sha256="2" * 64)
+    latest = _receipt(external_id="delivery-lookup-3", raw_payload_sha256="3" * 64)
+    for receipt in (first, old, latest):
+        assert append_resource_receipt(receipt, log_path=log_path)
+    old_offset, _old_length, _old_hash = _indexed_locator(log_path, old.receipt_id)
+    assert old_offset > 0
+    iter_starts: list[int] = []
+    pread_offsets: list[int] = []
+    real_iter = resource_receipts_mod._iter_ledger_receipt_rows
+    real_read = resource_receipts_mod._read_exact_ledger_row
+
+    def _recording_iter(target: Path, *, start_offset: int, fail_closed: bool):
+        iter_starts.append(start_offset)
+        yield from real_iter(target, start_offset=start_offset, fail_closed=fail_closed)
+
+    def _recording_read(target: Path, *, row_offset: int, row_length: int) -> bytes:
+        pread_offsets.append(row_offset)
+        return real_read(target, row_offset=row_offset, row_length=row_length)
+
+    monkeypatch.setattr(resource_receipts_mod, "_iter_ledger_receipt_rows", _recording_iter)
+    monkeypatch.setattr(resource_receipts_mod, "_read_exact_ledger_row", _recording_read)
+
+    assert load_resource_receipt(receipt_reference(old), log_path=log_path) == old
+
+    assert iter_starts == []
+    assert old_offset in pread_offsets
+    assert 0 not in pread_offsets
+
+
+def test_old_row_lookup_does_not_permission_chmod_or_fsync_private_files(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    first = _receipt(external_id="delivery-permission-lookup-1", raw_payload_sha256="1" * 64)
+    old = _receipt(external_id="delivery-permission-lookup-2", raw_payload_sha256="2" * 64)
+    latest = _receipt(external_id="delivery-permission-lookup-3", raw_payload_sha256="3" * 64)
+    for receipt in (first, old, latest):
+        assert append_resource_receipt(receipt, log_path=log_path)
+    assert _mode(log_path) == 0o600
+    assert _mode(resource_receipts_mod._receipt_index_path(log_path)) == 0o600
+    chmod_calls: list[int] = []
+    fsync_calls: list[int] = []
+    real_fchmod = resource_receipts_mod.os.fchmod
+    real_fsync = resource_receipts_mod.os.fsync
+
+    def _recording_fchmod(fd: int, mode: int) -> None:
+        chmod_calls.append(mode)
+        real_fchmod(fd, mode)
+
+    def _recording_fsync(fd: int) -> None:
+        fsync_calls.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr(resource_receipts_mod.os, "fchmod", _recording_fchmod)
+    monkeypatch.setattr(resource_receipts_mod.os, "fsync", _recording_fsync)
+
+    assert load_resource_receipt(receipt_reference(old), log_path=log_path) == old
+
+    assert chmod_calls == []
+    assert fsync_calls == []
+
+
+def test_preexisting_world_readable_ledger_indexed_public_lookup_repairs_mode(
+    tmp_path,
+) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    receipt = _receipt(external_id="delivery-world-readable-indexed", raw_payload_sha256="1" * 64)
+    assert append_resource_receipt(receipt, log_path=log_path)
+    os.chmod(log_path, 0o644)
+
+    assert resource_receipt_exists(receipt_reference(receipt), log_path=log_path)
+    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) == receipt
+
+    assert _mode(log_path) == 0o600
+    assert _mode(resource_receipts_mod._receipt_index_path(log_path)) == 0o600
+
+
+def test_preexisting_world_readable_ledger_durable_append_repairs_mode_and_succeeds(
+    tmp_path,
+) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    first = _receipt(external_id="delivery-world-readable-append-1", raw_payload_sha256="1" * 64)
+    second = _receipt(external_id="delivery-world-readable-append-2", raw_payload_sha256="2" * 64)
+    log_path.write_bytes((first.model_dump_json() + "\n").encode())
+    os.chmod(log_path, 0o644)
+
+    resource_receipts_mod._append_line_durable(
+        log_path,
+        (second.model_dump_json() + "\n").encode(),
+    )
+
+    assert _mode(log_path) == 0o600
+    assert [row.receipt_id for row in tail_resource_receipts(log_path=log_path)] == [
+        first.receipt_id,
+        second.receipt_id,
+    ]
+
+
+def test_preexisting_world_readable_ledger_tail_stream_repairs_mode_and_loads(
+    tmp_path,
+) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    receipts = [
+        _receipt(
+            external_id=f"delivery-world-readable-tail-{idx}", raw_payload_sha256=f"{idx:064x}"
+        )
+        for idx in range(2)
+    ]
+    log_path.write_bytes(
+        b"".join((receipt.model_dump_json() + "\n").encode() for receipt in receipts)
+    )
+    os.chmod(log_path, 0o644)
+
+    assert [row.receipt_id for row in tail_resource_receipts(log_path=log_path)] == [
+        receipt.receipt_id for receipt in receipts
+    ]
+    assert _mode(log_path) == 0o600
+
+
+def test_missing_index_bootstraps_by_streaming_authoritative_jsonl(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    receipts = [
+        _receipt(external_id=f"delivery-bootstrap-{idx}", raw_payload_sha256=f"{idx:064x}"[-64:])
+        for idx in range(12)
+    ]
+    log_path.write_bytes(b"".join((r.model_dump_json() + "\n").encode() for r in receipts))
+    starts: list[int] = []
+    real_iter = resource_receipts_mod._iter_ledger_receipt_rows
+
+    def _recording_iter(target: Path, *, start_offset: int, fail_closed: bool):
+        starts.append(start_offset)
+        yield from real_iter(target, start_offset=start_offset, fail_closed=fail_closed)
+
+    monkeypatch.setattr(resource_receipts_mod, "_iter_ledger_receipt_rows", _recording_iter)
+
+    assert load_resource_receipt(receipt_reference(receipts[-1]), log_path=log_path) == receipts[-1]
+
+    metadata = _index_metadata(log_path)
+    assert starts == [0]
+    assert int(metadata["verified_size"]) == log_path.stat().st_size
+    assert int(metadata["line_count"]) == len(receipts)
+
+
+def test_valid_external_tail_is_indexed_from_verified_size(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    first = _receipt(external_id="delivery-external-before", raw_payload_sha256="1" * 64)
+    external = _receipt(external_id="delivery-external-tail", raw_payload_sha256="2" * 64)
+    assert append_resource_receipt(first, log_path=log_path)
+    verified_size = log_path.stat().st_size
+    resource_receipts_mod._append_line_durable(
+        log_path,
+        (external.model_dump_json() + "\n").encode(),
+    )
+    starts: list[int] = []
+    real_iter = resource_receipts_mod._iter_ledger_receipt_rows
+
+    def _recording_iter(target: Path, *, start_offset: int, fail_closed: bool):
+        starts.append(start_offset)
+        yield from real_iter(target, start_offset=start_offset, fail_closed=fail_closed)
+
+    monkeypatch.setattr(resource_receipts_mod, "_iter_ledger_receipt_rows", _recording_iter)
+
+    assert load_resource_receipt(receipt_reference(external), log_path=log_path) == external
+
+    assert starts == [verified_size]
+    assert int(_index_metadata(log_path)["line_count"]) == 2
+
+
+def test_failure_after_log_fsync_before_index_commit_recovers_on_retry(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    receipt = _receipt(external_id="delivery-index-crash", raw_payload_sha256="4" * 64)
+    calls = 0
+    real_reconcile = resource_receipts_mod._reconcile_receipt_index
+
+    def _fail_second_reconcile(conn, target):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise MoneyRailResourceReceiptError("simulated index commit failure")
+        return real_reconcile(conn, target)
+
+    monkeypatch.setattr(resource_receipts_mod, "_reconcile_receipt_index", _fail_second_reconcile)
+
+    assert not append_resource_receipt(receipt, log_path=log_path)
+    assert [row.receipt_id for row in tail_resource_receipts(log_path=log_path)] == [
+        receipt.receipt_id
+    ]
+
+    monkeypatch.setattr(resource_receipts_mod, "_reconcile_receipt_index", real_reconcile)
+
+    assert append_resource_receipt(receipt, log_path=log_path)
+    assert [row.receipt_id for row in tail_resource_receipts(log_path=log_path)] == [
+        receipt.receipt_id
+    ]
+    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) == receipt
+
+
+def test_index_tail_reconcile_fails_closed_on_torn_tail(tmp_path) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    first = _receipt(external_id="delivery-torn-index-before", raw_payload_sha256="1" * 64)
+    after = _receipt(external_id="delivery-torn-index-after", raw_payload_sha256="2" * 64)
+    assert append_resource_receipt(first, log_path=log_path)
+    with log_path.open("ab") as fh:
+        fh.write(b'{"receipt_schema":1')
+
+    assert not append_resource_receipt(after, log_path=log_path)
+    assert load_resource_receipt(receipt_reference(after), log_path=log_path) is None
+
+
+def test_index_tail_reconcile_fails_closed_on_conflicting_tail(tmp_path) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    receipt = _receipt(external_id="delivery-conflicting-tail", raw_payload_sha256="1" * 64)
+    conflicting = receipt.model_copy(update={"downstream_action": "other.action"})
+    unrelated = _receipt(external_id="delivery-conflicting-tail-after", raw_payload_sha256="2" * 64)
+    assert append_resource_receipt(receipt, log_path=log_path)
+    resource_receipts_mod._append_line_durable(
+        log_path,
+        (conflicting.model_dump_json() + "\n").encode(),
+    )
+
+    assert not append_resource_receipt(unrelated, log_path=log_path)
+    assert load_resource_receipt(receipt_reference(unrelated), log_path=log_path) is None
+
+
+def test_index_tail_reconcile_accepts_identical_tail_without_new_locator(tmp_path) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    receipt = _receipt(external_id="delivery-identical-tail", raw_payload_sha256="1" * 64)
+    unrelated = _receipt(external_id="delivery-identical-tail-after", raw_payload_sha256="2" * 64)
+    assert append_resource_receipt(receipt, log_path=log_path)
+    first_offset, _first_length, _first_hash = _indexed_locator(log_path, receipt.receipt_id)
+    resource_receipts_mod._append_line_durable(
+        log_path,
+        (receipt.model_dump_json() + "\n").encode(),
+    )
+
+    assert append_resource_receipt(unrelated, log_path=log_path)
+
+    assert _indexed_locator(log_path, receipt.receipt_id)[0] == first_offset
+    assert int(_index_metadata(log_path)["line_count"]) == 3
+
+
+def test_index_fails_closed_on_truncated_ledger(tmp_path) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    first = _receipt(external_id="delivery-truncate-before", raw_payload_sha256="1" * 64)
+    after = _receipt(external_id="delivery-truncate-after", raw_payload_sha256="2" * 64)
+    assert append_resource_receipt(first, log_path=log_path)
+    with log_path.open("r+b") as fh:
+        fh.truncate(log_path.stat().st_size - 1)
+
+    assert not append_resource_receipt(after, log_path=log_path)
+    assert load_resource_receipt(receipt_reference(first), log_path=log_path) is None
+
+
+def test_corrupt_index_is_replaced_by_full_stream_validation(tmp_path) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    first = _receipt(external_id="delivery-corrupt-index-1", raw_payload_sha256="1" * 64)
+    second = _receipt(external_id="delivery-corrupt-index-2", raw_payload_sha256="2" * 64)
+    assert append_resource_receipt(first, log_path=log_path)
+    assert append_resource_receipt(second, log_path=log_path)
+    resource_receipts_mod._receipt_index_path(log_path).write_bytes(b"not sqlite")
+
+    assert load_resource_receipt(receipt_reference(first), log_path=log_path) == first
+
+    metadata = _index_metadata(log_path)
+    assert int(metadata["verified_size"]) == log_path.stat().st_size
+    assert int(metadata["line_count"]) == 2
+
+
+def test_lookup_fails_closed_on_stale_locator(tmp_path) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    first = _receipt(external_id="delivery-stale-locator-1", raw_payload_sha256="1" * 64)
+    second = _receipt(external_id="delivery-stale-locator-2", raw_payload_sha256="2" * 64)
+    assert append_resource_receipt(first, log_path=log_path)
+    assert append_resource_receipt(second, log_path=log_path)
+    second_offset, second_length, second_hash = _indexed_locator(log_path, second.receipt_id)
+    with sqlite3.connect(resource_receipts_mod._receipt_index_path(log_path)) as conn:
+        conn.execute(
+            "UPDATE receipts SET row_offset = ?, row_length = ?, raw_line_sha256 = ? "
+            "WHERE receipt_id = ?",
+            (second_offset, second_length, second_hash, first.receipt_id),
+        )
+
+    assert load_resource_receipt(receipt_reference(first), log_path=log_path) is None
+
+
+@pytest.mark.parametrize(
+    "locator_case",
+    ("huge_row_length", "huge_row_offset", "length_beyond_eof"),
+)
+def test_lookup_fails_closed_on_out_of_bounds_index_locator_without_invalid_pread(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    locator_case: str,
+) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    receipt = _receipt(
+        external_id=f"delivery-out-of-bounds-{locator_case}",
+        raw_payload_sha256="1" * 64,
+    )
+    assert append_resource_receipt(receipt, log_path=log_path)
+    row_offset, row_length, _row_hash = _indexed_locator(log_path, receipt.receipt_id)
+
+    if locator_case == "huge_row_length":
+        invalid_offset = row_offset
+        invalid_length = _SQLITE_MAX_POSITIVE_INTEGER
+        update_sql = "UPDATE receipts SET row_length = ? WHERE receipt_id = ?"
+        update_values = (invalid_length, receipt.receipt_id)
+    elif locator_case == "huge_row_offset":
+        invalid_offset = _SQLITE_MAX_POSITIVE_INTEGER
+        invalid_length = row_length
+        update_sql = "UPDATE receipts SET row_offset = ? WHERE receipt_id = ?"
+        update_values = (invalid_offset, receipt.receipt_id)
+    else:
+        invalid_offset = row_offset
+        invalid_length = log_path.stat().st_size - row_offset + 1
+        update_sql = "UPDATE receipts SET row_length = ? WHERE receipt_id = ?"
+        update_values = (invalid_length, receipt.receipt_id)
+
+    with sqlite3.connect(resource_receipts_mod._receipt_index_path(log_path)) as conn:
+        conn.execute(update_sql, update_values)
+    invalid_pread_calls = _record_invalid_locator_pread(
+        monkeypatch,
+        invalid_offset=invalid_offset,
+        invalid_length=invalid_length,
+    )
+
+    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) is None
+    assert invalid_pread_calls == []
+
+
+def test_append_lookup_refuses_out_of_bounds_locator_without_duplicate_append(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    receipt = _receipt(
+        external_id="delivery-append-out-of-bounds-locator",
+        raw_payload_sha256="1" * 64,
+    )
+    assert append_resource_receipt(receipt, log_path=log_path)
+    before = log_path.read_bytes()
+    row_offset, _row_length, _row_hash = _indexed_locator(log_path, receipt.receipt_id)
+    invalid_length = _SQLITE_MAX_POSITIVE_INTEGER
+    with sqlite3.connect(resource_receipts_mod._receipt_index_path(log_path)) as conn:
+        conn.execute(
+            "UPDATE receipts SET row_length = ? WHERE receipt_id = ?",
+            (invalid_length, receipt.receipt_id),
+        )
+    invalid_pread_calls = _record_invalid_locator_pread(
+        monkeypatch,
+        invalid_offset=row_offset,
+        invalid_length=invalid_length,
+    )
+
+    assert not append_resource_receipt(receipt, log_path=log_path)
+    assert invalid_pread_calls == []
+    assert log_path.read_bytes() == before
+    assert [row.receipt_id for row in tail_resource_receipts(log_path=log_path)] == [
+        receipt.receipt_id
+    ]
+
+
+def test_lookup_fails_closed_on_raw_hash_mismatch(tmp_path) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    receipt = _receipt(external_id="delivery-raw-hash-mismatch", raw_payload_sha256="1" * 64)
+    assert append_resource_receipt(receipt, log_path=log_path)
+    with sqlite3.connect(resource_receipts_mod._receipt_index_path(log_path)) as conn:
+        conn.execute(
+            "UPDATE receipts SET raw_line_sha256 = ? WHERE receipt_id = ?",
+            ("0" * 64, receipt.receipt_id),
+        )
+
+    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) is None
+
+
+def test_receipt_index_sidecar_is_private_under_permissive_umask(tmp_path) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    receipt = _receipt(external_id="delivery-private-index", raw_payload_sha256="1" * 64)
+    original_umask = os.umask(0o022)
+    try:
+        assert append_resource_receipt(receipt, log_path=log_path)
+    finally:
+        os.umask(original_umask)
+    index_path = resource_receipts_mod._receipt_index_path(log_path)
+
+    assert _mode(log_path) == 0o600
+    assert _mode(index_path) == 0o600
+
+    index_path.write_bytes(b"not sqlite")
+    os.chmod(index_path, 0o644)
+
+    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) == receipt
+    assert _mode(index_path) == 0o600
+
+
+def test_corrupt_index_rebuild_neutralizes_stale_rollback_journal(tmp_path) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    first = _receipt(external_id="delivery-stale-journal-1", raw_payload_sha256="1" * 64)
+    second = _receipt(external_id="delivery-stale-journal-2", raw_payload_sha256="2" * 64)
+    log_path.write_bytes(
+        b"".join((receipt.model_dump_json() + "\n").encode() for receipt in (first, second))
+    )
+    index_path = resource_receipts_mod._receipt_index_path(log_path)
+    index_path.write_bytes(b"not sqlite")
+    journal_path = index_path.with_name(f"{index_path.name}-journal")
+    journal_path.write_bytes(b"stale rollback journal from old derived index")
+
+    assert load_resource_receipt(receipt_reference(second), log_path=log_path) == second
+
+    assert not journal_path.exists()
+    assert _mode(index_path) == 0o600
+    assert load_resource_receipt(receipt_reference(first), log_path=log_path) == first
+    assert _index_metadata(log_path)["final_row_sha256"]
+
+
+def test_receipt_index_replacement_durably_removes_stale_artifacts_before_replace(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    index_path = tmp_path / "resource-receipts.jsonl.index.sqlite3"
+    tmp_index_path = tmp_path / ".resource-receipts.jsonl.index.sqlite3.tmp-test"
+    tmp_index_path.write_bytes(b"replacement")
+    artifacts = set(resource_receipts_mod._sqlite_artifact_paths(index_path))
+    for artifact in artifacts:
+        artifact.write_bytes(b"stale")
+    calls: list[str] = []
+    real_unlink = Path.unlink
+    real_replace = resource_receipts_mod.os.replace
+
+    def _recording_unlink(self: Path) -> None:
+        if self in artifacts:
+            calls.append(f"delete:{self.name}")
+        real_unlink(self)
+
+    def _recording_fsync(path: Path) -> None:
+        calls.append(f"fsync:{path}")
+
+    def _recording_replace(src: Path, dst: Path) -> None:
+        calls.append(f"replace:{src}->{dst}")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(Path, "unlink", _recording_unlink)
+    monkeypatch.setattr(resource_receipts_mod, "_fsync_directory", _recording_fsync)
+    monkeypatch.setattr(resource_receipts_mod.os, "replace", _recording_replace)
+
+    resource_receipts_mod._install_receipt_index_replacement(tmp_index_path, index_path)
+
+    assert calls == [
+        f"delete:{index_path.name}-journal",
+        f"delete:{index_path.name}-wal",
+        f"delete:{index_path.name}-shm",
+        f"fsync:{tmp_path}",
+        f"replace:{tmp_index_path}->{index_path}",
+        f"fsync:{tmp_path}",
+    ]
+    assert index_path.read_bytes() == b"replacement"
+    assert _mode(index_path) == 0o600
+    assert all(not artifact.exists() for artifact in artifacts)
+
+
+def test_receipts_table_root_page_corruption_rebuilds_once_on_lookup(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    receipt = _receipt(external_id="delivery-root-page-corrupt", raw_payload_sha256="1" * 64)
+    assert append_resource_receipt(receipt, log_path=log_path)
+    _zero_receipts_table_root_page(log_path)
+    index_path = resource_receipts_mod._receipt_index_path(log_path)
+    with sqlite3.connect(index_path) as conn:
+        assert tuple(conn.execute("PRAGMA table_info(receipts)")) == (
+            resource_receipts_mod._EXPECTED_RECEIPTS_TABLE_INFO
+        )
+        assert dict(conn.execute("SELECT key, value FROM metadata"))["line_count"] == "1"
+        with pytest.raises(sqlite3.DatabaseError, match="malformed"):
+            conn.execute(
+                "SELECT row_offset FROM receipts WHERE receipt_id = ?",
+                (receipt.receipt_id,),
+            ).fetchone()
+    starts: list[int] = []
+    replacement_targets: list[Path] = []
+    real_iter = resource_receipts_mod._iter_ledger_receipt_rows
+    real_replace = resource_receipts_mod._replace_receipt_index_from_ledger
+
+    def _recording_iter(target: Path, *, start_offset: int, fail_closed: bool):
+        starts.append(start_offset)
+        yield from real_iter(target, start_offset=start_offset, fail_closed=fail_closed)
+
+    def _recording_replace(target: Path) -> None:
+        replacement_targets.append(target)
+        real_replace(target)
+
+    monkeypatch.setattr(resource_receipts_mod, "_iter_ledger_receipt_rows", _recording_iter)
+    monkeypatch.setattr(
+        resource_receipts_mod, "_replace_receipt_index_from_ledger", _recording_replace
+    )
+
+    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) == receipt
+    assert replacement_targets == [log_path]
+    assert starts == [0]
+
+    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) == receipt
+    assert replacement_targets == [log_path]
+    assert starts == [0]
+
+
+@pytest.mark.parametrize("failure_point", ("connect", "reconcile", "query"))
+def test_persistent_second_attempt_index_failure_fails_closed_with_one_rebuild(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_point: str,
+) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    receipt = _receipt(
+        external_id=f"delivery-persistent-{failure_point}", raw_payload_sha256="1" * 64
+    )
+    assert append_resource_receipt(receipt, log_path=log_path)
+    _zero_receipts_table_root_page(log_path)
+    expected_index_path = resource_receipts_mod._receipt_index_path(log_path)
+    replacement_targets: list[Path] = []
+    tracked_connections: list[_TrackingConnection] = []
+    real_replace = resource_receipts_mod._replace_receipt_index_from_ledger
+    real_connect = resource_receipts_mod._connect_receipt_index
+    real_reconcile = resource_receipts_mod._reconcile_receipt_index
+
+    def _recording_replace(target: Path) -> None:
+        replacement_targets.append(target)
+        real_replace(target)
+        if failure_point == "query":
+            _zero_receipts_table_root_page(target)
+
+    def _tracking_connect(index_path: Path):
+        if failure_point == "connect" and replacement_targets and index_path == expected_index_path:
+            raise sqlite3.DatabaseError("persistent connect corruption")
+        conn = _TrackingConnection(real_connect(index_path))
+        tracked_connections.append(conn)
+        return conn
+
+    def _maybe_failing_reconcile(conn, target: Path) -> None:
+        if failure_point == "reconcile" and replacement_targets and target == log_path:
+            raise sqlite3.DatabaseError("persistent reconcile corruption")
+        real_reconcile(conn, target)
+
+    monkeypatch.setattr(
+        resource_receipts_mod, "_replace_receipt_index_from_ledger", _recording_replace
+    )
+    monkeypatch.setattr(resource_receipts_mod, "_connect_receipt_index", _tracking_connect)
+    monkeypatch.setattr(resource_receipts_mod, "_reconcile_receipt_index", _maybe_failing_reconcile)
+
+    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) is None
+
+    assert replacement_targets == [log_path]
+    assert tracked_connections
+    assert all(conn.closed for conn in tracked_connections)
+
+
+def test_sqlite_interface_error_fails_closed_without_rebuild_and_closes(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    receipt = _receipt(external_id="delivery-interface-error", raw_payload_sha256="1" * 64)
+    assert append_resource_receipt(receipt, log_path=log_path)
+    tracked_connections: list[_TrackingConnection] = []
+    replacement_targets: list[Path] = []
+    real_connect = resource_receipts_mod._connect_receipt_index
+
+    def _tracking_connect(index_path: Path):
+        conn = _TrackingConnection(real_connect(index_path))
+        tracked_connections.append(conn)
+        return conn
+
+    def _interface_error_reconcile(conn, target: Path) -> None:
+        raise sqlite3.InterfaceError("simulated sqlite interface fault")
+
+    def _recording_replace(target: Path) -> None:
+        replacement_targets.append(target)
+
+    monkeypatch.setattr(resource_receipts_mod, "_connect_receipt_index", _tracking_connect)
+    monkeypatch.setattr(
+        resource_receipts_mod, "_reconcile_receipt_index", _interface_error_reconcile
+    )
+    monkeypatch.setattr(
+        resource_receipts_mod, "_replace_receipt_index_from_ledger", _recording_replace
+    )
+
+    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) is None
+
+    assert replacement_targets == []
+    assert tracked_connections
+    assert all(conn.closed for conn in tracked_connections)
+
+
+def test_append_post_jsonl_interface_error_is_retryable_without_rebuild(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    existing = _receipt(
+        external_id="delivery-append-interface-before",
+        raw_payload_sha256="1" * 64,
+    )
+    appended = _receipt(
+        external_id="delivery-append-interface-after",
+        raw_payload_sha256="2" * 64,
+    )
+    assert append_resource_receipt(existing, log_path=log_path)
+    tracked_connections: list[_TrackingConnection] = []
+    replacement_targets: list[Path] = []
+    real_connect = resource_receipts_mod._connect_receipt_index
+    real_reconcile = resource_receipts_mod._reconcile_receipt_index
+
+    def _tracking_connect(index_path: Path):
+        conn = _TrackingConnection(real_connect(index_path))
+        tracked_connections.append(conn)
+        return conn
+
+    def _post_jsonl_interface_error_reconcile(conn, target: Path) -> None:
+        metadata = dict(conn.execute("SELECT key, value FROM metadata"))
+        if target == log_path and target.stat().st_size > int(metadata["verified_size"]):
+            raise sqlite3.InterfaceError("simulated post-jsonl reconcile interface fault")
+        real_reconcile(conn, target)
+
+    def _recording_replace(target: Path) -> None:
+        replacement_targets.append(target)
+
+    monkeypatch.setattr(resource_receipts_mod, "_connect_receipt_index", _tracking_connect)
+    monkeypatch.setattr(
+        resource_receipts_mod,
+        "_reconcile_receipt_index",
+        _post_jsonl_interface_error_reconcile,
+    )
+    monkeypatch.setattr(
+        resource_receipts_mod, "_replace_receipt_index_from_ledger", _recording_replace
+    )
+
+    assert not append_resource_receipt(appended, log_path=log_path)
+
+    assert replacement_targets == []
+    assert tracked_connections
+    assert all(conn.closed for conn in tracked_connections)
+    assert int(_index_metadata(log_path)["line_count"]) == 1
+    assert [row.receipt_id for row in tail_resource_receipts(log_path=log_path)] == [
+        existing.receipt_id,
+        appended.receipt_id,
+    ]
+
+    monkeypatch.setattr(resource_receipts_mod, "_reconcile_receipt_index", real_reconcile)
+    monkeypatch.setattr(resource_receipts_mod, "_connect_receipt_index", real_connect)
+
+    assert append_resource_receipt(appended, log_path=log_path)
+    assert int(_index_metadata(log_path)["line_count"]) == 2
+    assert load_resource_receipt(receipt_reference(appended), log_path=log_path) == appended
+
+
+def test_replacement_sqlite_interface_error_fails_closed_at_public_boundary(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    receipt = _receipt(
+        external_id="delivery-replacement-interface-error",
+        raw_payload_sha256="1" * 64,
+    )
+    log_path.write_bytes((receipt.model_dump_json() + "\n").encode())
+
+    def _interface_error_replace(target: Path) -> None:
+        raise sqlite3.InterfaceError("simulated replacement interface fault")
+
+    monkeypatch.setattr(
+        resource_receipts_mod,
+        "_replace_receipt_index_from_ledger",
+        _interface_error_replace,
+    )
+
+    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) is None
+
+
+def test_persistent_sqliteevil_trigger_rebuilds_before_append_result_can_succeed(
+    tmp_path,
+) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    existing = _receipt(external_id="delivery-trigger-before", raw_payload_sha256="1" * 64)
+    appended = _receipt(external_id="delivery-trigger-after", raw_payload_sha256="2" * 64)
+    assert append_resource_receipt(existing, log_path=log_path)
+    with sqlite3.connect(resource_receipts_mod._receipt_index_path(log_path)) as conn:
+        conn.executescript(
+            """
+            CREATE TRIGGER sqliteEvil
+            AFTER INSERT ON receipts
+            BEGIN
+                DELETE FROM receipts WHERE receipt_id = NEW.receipt_id;
+            END;
+            """
+        )
+    assert any(obj[0] == "trigger" for obj in _sqlite_master_objects(log_path))
+
+    assert append_resource_receipt(appended, log_path=log_path)
+
+    assert load_resource_receipt(receipt_reference(appended), log_path=log_path) == appended
+    assert [row.receipt_id for row in tail_resource_receipts(log_path=log_path)] == [
+        existing.receipt_id,
+        appended.receipt_id,
+    ]
+    assert _sqlite_master_objects(log_path) == resource_receipts_mod._EXPECTED_SQLITE_MASTER_OBJECTS
+
+
+def test_unexpected_index_view_rebuilds_from_authoritative_jsonl(tmp_path) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    receipt = _receipt(external_id="delivery-extra-view", raw_payload_sha256="1" * 64)
+    assert append_resource_receipt(receipt, log_path=log_path)
+    with sqlite3.connect(resource_receipts_mod._receipt_index_path(log_path)) as conn:
+        conn.execute("CREATE VIEW receipt_ids AS SELECT receipt_id FROM receipts")
+    assert any(obj[0] == "view" for obj in _sqlite_master_objects(log_path))
+
+    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) == receipt
+
+    assert _sqlite_master_objects(log_path) == resource_receipts_mod._EXPECTED_SQLITE_MASTER_OBJECTS
+
+
+def test_append_lookup_recovers_receipts_table_root_page_corruption(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    receipt = _receipt(external_id="delivery-append-root-corrupt", raw_payload_sha256="1" * 64)
+    assert append_resource_receipt(receipt, log_path=log_path)
+    _zero_receipts_table_root_page(log_path)
+    starts: list[int] = []
+    real_iter = resource_receipts_mod._iter_ledger_receipt_rows
+
+    def _recording_iter(target: Path, *, start_offset: int, fail_closed: bool):
+        starts.append(start_offset)
+        yield from real_iter(target, start_offset=start_offset, fail_closed=fail_closed)
+
+    monkeypatch.setattr(resource_receipts_mod, "_iter_ledger_receipt_rows", _recording_iter)
+
+    assert append_resource_receipt(receipt, log_path=log_path)
+
+    assert starts == [0]
+    assert [row.receipt_id for row in tail_resource_receipts(log_path=log_path)] == [
+        receipt.receipt_id
+    ]
+
+
+def test_append_nested_index_recovery_budget_allows_only_one_replacement(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    existing = _receipt(external_id="delivery-append-budget-existing", raw_payload_sha256="1" * 64)
+    appended = _receipt(external_id="delivery-append-budget-new", raw_payload_sha256="2" * 64)
+    assert append_resource_receipt(existing, log_path=log_path)
+    _zero_receipts_table_root_page(log_path)
+    replacement_targets: list[Path] = []
+    reconcile_calls = 0
+    real_replace = resource_receipts_mod._replace_receipt_index_from_ledger
+    real_reconcile = resource_receipts_mod._reconcile_receipt_index
+
+    def _recording_replace(target: Path) -> None:
+        replacement_targets.append(target)
+        real_replace(target)
+
+    def _fail_post_append_reconcile(conn, target: Path) -> None:
+        nonlocal reconcile_calls
+        reconcile_calls += 1
+        if target == log_path and reconcile_calls == 3:
+            raise sqlite3.DatabaseError("persistent post-append reconcile corruption")
+        real_reconcile(conn, target)
+
+    monkeypatch.setattr(
+        resource_receipts_mod, "_replace_receipt_index_from_ledger", _recording_replace
+    )
+    monkeypatch.setattr(
+        resource_receipts_mod, "_reconcile_receipt_index", _fail_post_append_reconcile
+    )
+
+    assert not append_resource_receipt(appended, log_path=log_path)
+
+    assert replacement_targets == [log_path]
+    assert [row.receipt_id for row in tail_resource_receipts(log_path=log_path)] == [
+        existing.receipt_id,
+        appended.receipt_id,
+    ]
+
+
+def test_same_column_weak_receipts_and_metadata_schema_rebuilds(tmp_path) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    receipt = _receipt(external_id="delivery-weak-schema", raw_payload_sha256="1" * 64)
+    log_path.write_bytes((receipt.model_dump_json() + "\n").encode())
+    index_path = resource_receipts_mod._receipt_index_path(log_path)
+    with sqlite3.connect(index_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE receipts (
+                receipt_id TEXT,
+                row_offset TEXT,
+                row_length INTEGER,
+                rail TEXT,
+                raw_line_sha256 TEXT,
+                stable_semantics_sha256 TEXT
+            );
+            CREATE TABLE metadata (
+                key TEXT,
+                value TEXT
+            );
+            INSERT INTO metadata(key, value) VALUES ('schema_version', '1');
+            """
+        )
+
+    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) == receipt
+
+    with sqlite3.connect(index_path) as conn:
+        assert tuple(conn.execute("PRAGMA table_info(receipts)")) == (
+            resource_receipts_mod._EXPECTED_RECEIPTS_TABLE_INFO
+        )
+        assert tuple(conn.execute("PRAGMA table_info(metadata)")) == (
+            resource_receipts_mod._EXPECTED_METADATA_TABLE_INFO
+        )
+
+
+def test_malformed_index_row_fails_closed_without_type_error(tmp_path) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    receipt = _receipt(external_id="delivery-malformed-index-row", raw_payload_sha256="1" * 64)
+    assert append_resource_receipt(receipt, log_path=log_path)
+    with sqlite3.connect(resource_receipts_mod._receipt_index_path(log_path)) as conn:
+        conn.execute("PRAGMA ignore_check_constraints=ON")
+        conn.execute(
+            "UPDATE receipts SET row_offset = ? WHERE receipt_id = ?",
+            ("not-an-integer", receipt.receipt_id),
+        )
+
+    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) is None
+
+
+def test_ledger_inode_identity_change_fails_closed(tmp_path) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    first = _receipt(external_id="delivery-inode-before", raw_payload_sha256="1" * 64)
+    replacement = _receipt(external_id="delivery-inode-after", raw_payload_sha256="2" * 64)
+    assert append_resource_receipt(first, log_path=log_path)
+    replacement_path = tmp_path / "replacement.jsonl"
+    replacement_path.write_bytes((replacement.model_dump_json() + "\n").encode())
+    os.replace(replacement_path, log_path)
+
+    assert load_resource_receipt(receipt_reference(first), log_path=log_path) is None

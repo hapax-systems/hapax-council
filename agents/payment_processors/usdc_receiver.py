@@ -104,6 +104,12 @@ CURSOR_PATH_ENV: str = "HAPAX_X402_USDC_CURSOR_PATH"
 PAYMENT_LOG_ENV: str = "HAPAX_MONETIZATION_LOG_PATH"
 DEFAULT_CURSOR_PATH: Path = Path.home() / ".cache/hapax/x402-usdc-cursor.json"
 CURSOR_SCHEMA_VERSION: int = 2
+_ETH_CHAIN_ID_EXPECTED_SHAPE: str = "hex quantity string equal to Base chain 0x2105"
+_FINALIZED_BLOCK_EXPECTED_SHAPE: str = "object with hex quantity number and 32-byte block hash"
+_ETH_GET_LOGS_EXPECTED_SHAPE: str = (
+    "list of non-removed Base USDC ERC-20 Transfer log objects matching the requested "
+    "block interval, contract address, destination topic, hashes, and hex quantities"
+)
 
 # Allowed JSON-RPC methods. Any deviation is a contract violation —
 # the runtime test pins this set.
@@ -583,33 +589,58 @@ class USDCReceiver:
 
         try:
             chain_id_raw = self._call_rpc("eth_chainId", [])
-        except Exception:  # noqa: BLE001
-            log.warning("eth_chainId failed; skipping tick", exc_info=True)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "eth_chainId failed with %s; skipping tick without advancing cursor %s; %s",
+                exc.__class__.__name__,
+                self._cursor_path,
+                _rpc_recovery_guidance(
+                    method="eth_chainId",
+                    expected_shape=_ETH_CHAIN_ID_EXPECTED_SHAPE,
+                ),
+            )
             return 0
         chain_id = _quantity_to_int(chain_id_raw)
         if chain_id != BASE_CHAIN_ID:
             log.warning(
-                "eth_chainId returned %r, expected Base chain %s (%s); "
-                "skipping tick without advancing cursor %s; %s",
-                chain_id_raw,
+                "eth_chainId returned result type %s outside expected Base chain shape; "
+                "expected Base chain %s (%s); skipping tick without advancing cursor %s; %s; %s",
+                type(chain_id_raw).__name__,
                 BASE_CHAIN_ID,
                 hex(BASE_CHAIN_ID),
                 self._cursor_path,
                 self._cursor_recovery_action(),
+                _rpc_recovery_guidance(
+                    method="eth_chainId",
+                    expected_shape=_ETH_CHAIN_ID_EXPECTED_SHAPE,
+                ),
             )
             return 0
 
         try:
             finalized_raw = self._call_rpc("eth_getBlockByNumber", ["finalized", False])
-        except Exception:  # noqa: BLE001
-            log.warning("eth_getBlockByNumber(finalized) failed; skipping tick", exc_info=True)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "eth_getBlockByNumber(finalized) failed with %s; skipping tick without "
+                "advancing cursor %s; %s",
+                exc.__class__.__name__,
+                self._cursor_path,
+                _rpc_recovery_guidance(
+                    method="eth_getBlockByNumber(finalized)",
+                    expected_shape=_FINALIZED_BLOCK_EXPECTED_SHAPE,
+                ),
+            )
             return 0
         finalized = _parse_finalized_block(finalized_raw)
         if finalized is None:
             log.warning(
                 "eth_getBlockByNumber(finalized) returned invalid finalized head; "
-                "skipping tick without advancing cursor %s",
+                "skipping tick without advancing cursor %s; %s",
                 self._cursor_path,
+                _rpc_recovery_guidance(
+                    method="eth_getBlockByNumber(finalized)",
+                    expected_shape=_FINALIZED_BLOCK_EXPECTED_SHAPE,
+                ),
             )
             return 0
 
@@ -643,15 +674,27 @@ class USDCReceiver:
                     }
                 ],
             )
-        except Exception:  # noqa: BLE001
-            log.warning("eth_getLogs failed; skipping tick", exc_info=True)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "eth_getLogs failed with %s; skipping tick without advancing cursor %s; %s",
+                exc.__class__.__name__,
+                self._cursor_path,
+                _rpc_recovery_guidance(
+                    method="eth_getLogs",
+                    expected_shape=_ETH_GET_LOGS_EXPECTED_SHAPE,
+                ),
+            )
             return 0
         if not isinstance(logs_raw, list):
             log.warning(
                 "eth_getLogs returned invalid top-level result type %s; "
-                "skipping tick without advancing cursor %s",
+                "skipping tick without advancing cursor %s; %s",
                 type(logs_raw).__name__,
                 self._cursor_path,
+                _rpc_recovery_guidance(
+                    method="eth_getLogs",
+                    expected_shape=_ETH_GET_LOGS_EXPECTED_SHAPE,
+                ),
             )
             return 0
 
@@ -748,6 +791,10 @@ class USDCReceiver:
         finalized: _FinalizedBlock,
     ) -> list[TransferReceipt] | None:
         assert self._operator_wallet is not None  # gated by self.enabled
+        eth_get_logs_recovery = _rpc_recovery_guidance(
+            method="eth_getLogs",
+            expected_shape=_ETH_GET_LOGS_EXPECTED_SHAPE,
+        )
         receipts_by_key: dict[tuple[str, int], TransferReceipt] = {}
         block_hash_by_number: dict[int, str] = {}
         block_number_by_hash: dict[str, int] = {}
@@ -758,29 +805,32 @@ class USDCReceiver:
             if not isinstance(row, dict):
                 log.warning(
                     "eth_getLogs returned invalid row %s type %s; "
-                    "skipping tick without advancing cursor %s",
+                    "skipping tick without advancing cursor %s; %s",
                     index,
                     type(row).__name__,
                     self._cursor_path,
+                    eth_get_logs_recovery,
                 )
                 return None
             receipt = _parse_log_to_receipt(row)
             if receipt is None:
                 log.warning(
                     "eth_getLogs returned malformed row %s; "
-                    "skipping tick without advancing cursor %s",
+                    "skipping tick without advancing cursor %s; %s",
                     index,
                     self._cursor_path,
+                    eth_get_logs_recovery,
                 )
                 return None
             if not from_block <= receipt.block_number <= to_block:
                 log.warning(
                     "eth_getLogs returned row %s outside requested interval "
-                    "[%s, %s]; skipping tick without advancing cursor %s",
+                    "[%s, %s]; skipping tick without advancing cursor %s; %s",
                     index,
                     from_block,
                     to_block,
                     self._cursor_path,
+                    eth_get_logs_recovery,
                 )
                 return None
             if (
@@ -790,21 +840,23 @@ class USDCReceiver:
                 log.warning(
                     "eth_getLogs returned row %s with finalized block hash %s but "
                     "eth_getBlockByNumber(finalized) returned %s for block %s; "
-                    "skipping tick without advancing cursor %s",
+                    "skipping tick without advancing cursor %s; %s",
                     index,
                     receipt.block_hash,
                     finalized.block_hash,
                     finalized.number,
                     self._cursor_path,
+                    eth_get_logs_recovery,
                 )
                 return None
             prior_block_hash = block_hash_by_number.get(receipt.block_number)
             if prior_block_hash is not None and prior_block_hash != receipt.block_hash:
                 log.warning(
                     "eth_getLogs returned multiple block hashes for block %s; "
-                    "skipping tick without advancing cursor %s",
+                    "skipping tick without advancing cursor %s; %s",
                     receipt.block_number,
                     self._cursor_path,
+                    eth_get_logs_recovery,
                 )
                 return None
             block_hash_by_number[receipt.block_number] = receipt.block_hash
@@ -812,18 +864,20 @@ class USDCReceiver:
             if prior_block_number is not None and prior_block_number != receipt.block_number:
                 log.warning(
                     "eth_getLogs returned block hash %s for multiple block numbers; "
-                    "skipping tick without advancing cursor %s",
+                    "skipping tick without advancing cursor %s; %s",
                     receipt.block_hash,
                     self._cursor_path,
+                    eth_get_logs_recovery,
                 )
                 return None
             block_number_by_hash[receipt.block_hash] = receipt.block_number
             if receipt.to_address != self._operator_wallet:
                 log.warning(
                     "eth_getLogs returned row %s outside requested destination topic; "
-                    "skipping tick without advancing cursor %s",
+                    "skipping tick without advancing cursor %s; %s",
                     index,
                     self._cursor_path,
+                    eth_get_logs_recovery,
                 )
                 return None
             key = (receipt.tx_hash, receipt.log_index)
@@ -833,11 +887,12 @@ class USDCReceiver:
                     continue
                 log.warning(
                     "eth_getLogs returned conflicting duplicate row %s for %s:%s; "
-                    "skipping tick without advancing cursor %s",
+                    "skipping tick without advancing cursor %s; %s",
                     index,
                     receipt.tx_hash,
                     receipt.log_index,
                     self._cursor_path,
+                    eth_get_logs_recovery,
                 )
                 return None
             block_log_key = (receipt.block_hash, receipt.log_index)
@@ -849,10 +904,11 @@ class USDCReceiver:
                     continue
                 log.warning(
                     "eth_getLogs returned conflicting semantic rows for block_hash/log_index "
-                    "%s:%s; skipping tick without advancing cursor %s",
+                    "%s:%s; skipping tick without advancing cursor %s; %s",
                     receipt.block_hash,
                     receipt.log_index,
                     self._cursor_path,
+                    eth_get_logs_recovery,
                 )
                 return None
             tx_location = (receipt.block_number, receipt.block_hash, receipt.transaction_index)
@@ -860,9 +916,10 @@ class USDCReceiver:
             if prior_tx_location is not None and prior_tx_location != tx_location:
                 log.warning(
                     "eth_getLogs returned transaction hash %s at multiple locations; "
-                    "skipping tick without advancing cursor %s",
+                    "skipping tick without advancing cursor %s; %s",
                     receipt.tx_hash,
                     self._cursor_path,
+                    eth_get_logs_recovery,
                 )
                 return None
             tx_locations[receipt.tx_hash] = tx_location
@@ -871,10 +928,11 @@ class USDCReceiver:
             if prior_tx_hash is not None and prior_tx_hash != receipt.tx_hash:
                 log.warning(
                     "eth_getLogs returned block hash %s transaction index %s for "
-                    "multiple transaction hashes; skipping tick without advancing cursor %s",
+                    "multiple transaction hashes; skipping tick without advancing cursor %s; %s",
                     receipt.block_hash,
                     receipt.transaction_index,
                     self._cursor_path,
+                    eth_get_logs_recovery,
                 )
                 return None
             tx_hash_by_block_position[block_position] = receipt.tx_hash
@@ -1084,6 +1142,15 @@ def _default_rpc_caller(rpc_url: str) -> Any:
 
 def _resource_receipt_recovery_action() -> str:
     return resource_receipt_recovery_guidance()
+
+
+def _rpc_recovery_guidance(*, method: str, expected_shape: str) -> str:
+    return (
+        f"check {BASE_RPC_URL_ENV} configuration without logging its value, Base RPC "
+        f"provider health, and expected {method} response shape: {expected_shape}; "
+        "preserve the cursor and seen state, then retry by waiting for the next poll "
+        "or restarting the daemon; never manually advance the cursor"
+    )
 
 
 def _transfer_receipt_semantics(receipt: TransferReceipt) -> tuple[object, ...]:

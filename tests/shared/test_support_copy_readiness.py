@@ -20,6 +20,7 @@ from shared.support_copy_readiness import (
     PROHIBITED_SUPPORT_COPY_SHAPES,
     PUBLIC_TRUTH_DIMENSIONS,
     SupportCopyConsumerReadiness,
+    SupportCopyReadinessDecision,
     evaluate_support_copy_readiness,
 )
 from shared.support_surface_registry import SupportSurfaceRegistry, load_support_surface_registry
@@ -94,6 +95,30 @@ def _refs(*, money: bool = True, no_perk: bool = True) -> dict[str, bool]:
     return {
         "support_surface_registry.no_perk_copy_valid": no_perk,
         "MonetizationReadiness.safe_to_publish_offer": money,
+    }
+
+
+def _public_safe_decision_payload(
+    *,
+    resource_receipt_refs: tuple[str, ...] = ("money-rail-resource-receipt:liberapay:mrr-test",),
+) -> dict[str, object]:
+    return {
+        "state": "public-safe",
+        "target_family_id": "support_prompt",
+        "surface_id": "sponsor_support_copy",
+        "public_copy_allowed": True,
+        "allowed_public_copy": ("No access, perks, priority, or service is promised.",),
+        "resource_receipt_refs": resource_receipt_refs,
+        "aggregate_receipts_public_only": True,
+        "per_receipt_public_state_allowed": False,
+        "consumer_states": (
+            SupportCopyConsumerReadiness(
+                consumer="public_offer_page",
+                readiness_state="public-safe",
+                public_copy_allowed=True,
+                support_invitation_allowed=True,
+            ),
+        ),
     }
 
 
@@ -193,6 +218,32 @@ def test_full_evidence_and_refs_returns_public_safe_machine_state() -> None:
         assert state.issue_invitation_allowed is False
         assert state.licensing_negotiation_allowed is False
         assert state.customer_service_expectation_allowed is False
+
+
+def test_public_safe_decision_direct_construction_requires_resource_receipt_refs() -> None:
+    with pytest.raises(ValidationError, match="resource receipt refs"):
+        SupportCopyReadinessDecision(**_public_safe_decision_payload(resource_receipt_refs=()))
+
+
+def test_public_safe_decision_model_validate_requires_resource_receipt_refs() -> None:
+    with pytest.raises(ValidationError, match="resource receipt refs"):
+        SupportCopyReadinessDecision.model_validate(
+            _public_safe_decision_payload(resource_receipt_refs=())
+        )
+
+
+def test_public_safe_decision_model_validation_is_receipt_io_free(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _unexpected_receipt_io(*_args: object, **_kwargs: object) -> bool:
+        raise AssertionError("model validation must not verify the resource receipt ledger")
+
+    monkeypatch.setattr(readiness_module, "resource_receipt_matches", _unexpected_receipt_io)
+
+    decision = SupportCopyReadinessDecision.model_validate(_public_safe_decision_payload())
+
+    assert decision.state == "public-safe"
+    assert decision.resource_receipt_refs == ("money-rail-resource-receipt:liberapay:mrr-test",)
 
 
 def test_full_evidence_and_refs_requires_real_resource_receipt(

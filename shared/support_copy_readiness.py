@@ -154,6 +154,8 @@ class SupportCopyReadinessDecision(SupportCopyModel):
                 raise ValueError("public-safe decision cannot carry missing evidence")
             if not self.allowed_public_copy:
                 raise ValueError("public-safe decision must carry allowed public copy")
+            if not self.resource_receipt_refs:
+                raise ValueError("public-safe decision must carry resource receipt refs")
         else:
             if self.allowed_public_copy:
                 raise ValueError("non-public-safe decision cannot emit public support copy")
