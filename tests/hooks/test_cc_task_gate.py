@@ -1036,7 +1036,7 @@ class TestGeneralizedPathRecovery:
 
 
 class TestSessionKeyedGate:
-    """Gate claim-resolution: session-keyed lookup with legacy fallback (FM-2)."""
+    """Gate claim-resolution requires exact session identity when one is present."""
 
     def test_session_keyed_claim_found(self, tmp_path: Path) -> None:
         _make_vault(tmp_path, status="in_progress", assigned="delta")
@@ -1060,6 +1060,52 @@ class TestSessionKeyedGate:
         )
         assert r.returncode != 0
         assert "no claimed task" in r.stderr
+
+    def test_invalid_session_cannot_downgrade_to_legacy_claim(self, tmp_path: Path) -> None:
+        _make_vault(tmp_path, status="in_progress", assigned="delta")
+        _write_claim(tmp_path, "delta", "test-001")
+
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            role="delta",
+            extra_env={"HAPAX_SESSION_ID": "1234"},
+        )
+
+        assert result.returncode == 2
+        assert "not claim-keyable" in result.stderr
+
+    def test_heartbeat_does_not_recreate_claim_deleted_by_close(self, tmp_path: Path) -> None:
+        _make_vault(tmp_path, status="in_progress", assigned="delta")
+        session_id = "11111111-2222-4333-8444-5555aaaa6666"
+        _write_session_claim(tmp_path, f"delta-{session_id}", "test-001")
+        claim = tmp_path / ".cache" / "hapax" / f"cc-active-task-delta-{session_id}"
+        wrapper_dir = tmp_path / "race-bin"
+        wrapper_dir.mkdir()
+        wrapper = wrapper_dir / "touch"
+        wrapper.write_text(
+            '#!/usr/bin/env bash\nrm -f -- "$HAPAX_RACE_CLAIM"\nexec "$HAPAX_REAL_TOUCH" "$@"\n',
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+        real_touch = shutil.which("touch")
+        assert real_touch is not None
+
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            role="delta",
+            extra_env={
+                "HAPAX_SESSION_ID": session_id,
+                "HAPAX_RACE_CLAIM": str(claim),
+                "HAPAX_REAL_TOUCH": real_touch,
+                "PATH": f"{wrapper_dir}:{os.environ['PATH']}",
+            },
+        )
+
+        assert result.returncode == 2
+        assert "claim ownership changed" in result.stderr
+        assert not claim.exists()
 
     def test_two_same_role_sessions_use_own_claims(self, tmp_path: Path) -> None:
         # FM-2: two delta sessions no longer clobber a single cc-active-task-delta.
@@ -1099,7 +1145,7 @@ class TestSessionKeyedGate:
             home=tmp_path,
             role=None,
             cwd=work,
-            extra_env={"HAPAX_SESSION_ID": "sidZ"},
+            extra_env={"HAPAX_SESSION_ID": "session-Z"},
         )
         assert r.returncode == 2
         assert "cannot determine session role" not in r.stderr
@@ -1255,7 +1301,10 @@ class TestCcClaimSessionKeyed:
             tmp_path,
             "task-new",
             role="delta",
-            extra_env={"HAPAX_SESSION_ID": "sidNew", "HAPAX_CLAIM_LEASE_TTL_SECS": "21600"},
+            extra_env={
+                "HAPAX_SESSION_ID": self._SID,
+                "HAPAX_CLAIM_LEASE_TTL_SECS": "21600",
+            },
         )
         assert r.returncode == 7
         assert "claim_slot_occupied" in r.stderr

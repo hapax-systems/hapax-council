@@ -633,7 +633,11 @@ if declare -F hapax_session_id >/dev/null 2>&1; then
 fi
 if [[ -n "$session_id" ]] && declare -F hapax_claim_keyable_session_id >/dev/null 2>&1 \
   && ! hapax_claim_keyable_session_id "$session_id"; then
-  session_id=""
+  _emit_block <<EOF
+cc-task-gate: BLOCKED — session id '$session_id' is not claim-keyable.
+  A malformed or pid-shaped session may not downgrade into a shared role claim.
+EOF
+  exit 2
 fi
 if declare -F hapax_effective_role >/dev/null 2>&1; then
   role="$(hapax_effective_role 2>/dev/null || true)"
@@ -703,9 +707,16 @@ fi
 # valid claim). cc-claim treats a claim older than the lease TTL as free, so this
 # keeps a live session's lease from aging out and being reaped while a dead
 # session's lease still expires. Best-effort; never blocks the decision below.
-touch "$claim_file" 2>/dev/null || true
+touch -c -- "$claim_file" 2>/dev/null || true
 
-task_id="$(head -n1 "$claim_file" | tr -d '[:space:]')"
+if [[ ! -f "$claim_file" ]]; then
+  _emit_block <<EOF
+cc-task-gate: BLOCKED — claim ownership changed during lease heartbeat for role '$role'.
+  Re-read the current exact claim before retrying the mutation.
+EOF
+  exit 2
+fi
+task_id="$(head -n1 "$claim_file" 2>/dev/null | tr -d '[:space:]' || true)"
 if [[ -z "$task_id" ]]; then
   _emit_block <<EOF
 cc-task-gate: BLOCKED — claim file is empty for role '$role'.

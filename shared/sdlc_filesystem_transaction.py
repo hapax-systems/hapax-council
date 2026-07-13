@@ -40,6 +40,7 @@ class FileMutation:
     mode: int | None = None
     expected_sha256: str | None = None
     expected_exists: bool | None = None
+    expected_mode: int | None = None
 
 
 @dataclass(frozen=True)
@@ -65,24 +66,97 @@ def _fsync_directory(path: Path) -> None:
 
 
 def _write_exclusive(path: Path, content: bytes, mode: int) -> None:
-    """Create one durable file without replacing any pathname occupant."""
+    """Publish one complete durable file without exposing a partial final name."""
 
+    temporary = path.parent / f".hapax-write-{uuid.uuid4().hex}"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
     try:
-        fd = os.open(path, flags, mode)
+        fd = os.open(temporary, flags, mode)
     except OSError as exc:
-        raise FilesystemTransactionError(f"transaction exclusive create failed: {path}") from exc
+        raise FilesystemTransactionError(
+            f"transaction temporary create failed: {temporary}"
+        ) from exc
     try:
         os.fchmod(fd, mode)
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
+        offset = 0
+        while offset < len(content):
+            written = os.write(fd, content[offset:])
+            if written <= 0:
+                raise OSError(errno.EIO, "transaction temporary write made no progress")
+            offset += written
+        os.fsync(fd)
     except BaseException:
-        # The path is deliberately retained on failure. Removing it could erase
-        # a non-cooperating writer that replaced it after creation.
+        # A failed temporary is retained for diagnosis. The authoritative final
+        # pathname was never published and therefore cannot be mistaken as valid.
         raise
+    finally:
+        os.close(fd)
+    _fsync_directory(temporary.parent)
+    try:
+        _renameat2(temporary, path, _RENAME_NOREPLACE)
+    except OSError as exc:
+        if exc.errno not in {errno.ENOSYS, errno.EINVAL, errno.EXDEV, errno.EOPNOTSUPP}:
+            raise FilesystemTransactionError(
+                f"transaction final publication failed without replacement: {path}"
+            ) from exc
+        try:
+            os.link(temporary, path, follow_symlinks=False)
+        except OSError as fallback_exc:
+            raise FilesystemTransactionError(
+                f"transaction final link publication failed without replacement: {path}"
+            ) from fallback_exc
+        # Portable publication deliberately retains the complete temporary
+        # hardlink. POSIX has no compare-and-unlink primitive, so deleting it
+        # would reopen the no-clobber race this fallback exists to avoid.
     _fsync_directory(path.parent)
+
+
+def _preserve_pathname_removal(
+    path: Path,
+    expected_identity: tuple[int, int],
+    *,
+    quarantine_parent: Path | None = None,
+) -> Path:
+    """Remove a visible name by moving its occupant into a private quarantine."""
+
+    quarantine_root = quarantine_parent or path.parent
+    if quarantine_root.stat().st_dev != path.parent.stat().st_dev:
+        raise FilesystemTransactionError(
+            f"transaction preservation directory is on another filesystem: {quarantine_root}"
+        )
+    quarantine = quarantine_root / f".hapax-preserved-{uuid.uuid4().hex}"
+    try:
+        quarantine.mkdir(mode=0o700)
+    except OSError as exc:
+        raise FilesystemTransactionError(
+            f"transaction preservation directory create failed: {quarantine}"
+        ) from exc
+    _fsync_directory(quarantine.parent)
+    preserved = quarantine / "image"
+    try:
+        _renameat2(path, preserved, _RENAME_NOREPLACE)
+    except OSError as exc:
+        if exc.errno not in {errno.ENOSYS, errno.EINVAL, errno.EXDEV, errno.EOPNOTSUPP}:
+            raise FilesystemTransactionError(f"transaction preserving move failed: {path}") from exc
+        try:
+            # The destination is inside a freshly-created private directory. A
+            # portable rename preserves whichever source image occupies the name
+            # at the syscall boundary instead of deleting it with unlink(2).
+            os.rename(path, preserved)
+        except OSError as fallback_exc:
+            raise FilesystemTransactionError(
+                f"transaction portable preserving move failed: {path}"
+            ) from fallback_exc
+    _fsync_directory(quarantine)
+    _fsync_directory(path.parent)
+    if quarantine.parent != path.parent:
+        _fsync_directory(quarantine.parent)
+    if _path_identity(preserved) != expected_identity:
+        raise FilesystemTransactionError(
+            f"transaction source identity changed during preserving move: {path}; "
+            f"the competing image is preserved at {preserved}"
+        )
+    return preserved
 
 
 def _renameat2(source: Path, destination: Path, flags: int) -> None:
@@ -154,7 +228,7 @@ def _path_identity(path: Path) -> tuple[int, int]:
     return metadata.st_dev, metadata.st_ino
 
 
-def _link_then_unlink(source: Path, destination: Path) -> None:
+def _link_then_preserve(source: Path, destination: Path) -> None:
     """Move a regular file without ever replacing the destination name."""
 
     source_identity = _path_identity(source)
@@ -165,12 +239,18 @@ def _link_then_unlink(source: Path, destination: Path) -> None:
             f"transaction no-clobber link failed: {source} -> {destination}"
         ) from exc
     _fsync_directory(destination.parent)
-    if _path_identity(destination) != source_identity or _path_identity(source) != source_identity:
+    if _path_identity(destination) != source_identity:
         raise FilesystemTransactionError(
-            f"transaction source identity changed before preserving unlink: {source}"
+            f"transaction destination identity changed before preserving move: {destination}"
         )
-    source.unlink()
-    _fsync_directory(source.parent)
+    quarantine_parent = (
+        source.parent if source.parent.name == ".hapax-transactions" else destination.parent
+    )
+    _preserve_pathname_removal(
+        source,
+        source_identity,
+        quarantine_parent=quarantine_parent,
+    )
 
 
 def _encoded(content: bytes | None) -> str | None:
@@ -336,12 +416,7 @@ def _portable_free_auxiliary(
         image = states[auxiliary]
         if image != "absent" and sum(value == image for value in states.values()) > 1:
             identity = _path_identity(auxiliary)
-            if _path_identity(auxiliary) != identity:
-                raise FilesystemTransactionError(
-                    f"transaction auxiliary identity changed before cleanup: {auxiliary}"
-                )
-            auxiliary.unlink()
-            _fsync_directory(auxiliary.parent)
+            _preserve_pathname_removal(auxiliary, identity)
             if _snapshot(auxiliary) != (None, None):
                 raise FilesystemTransactionError(
                     f"transaction auxiliary cleanup incomplete: {auxiliary}"
@@ -365,7 +440,7 @@ def _portable_set_path(
     if states[destination] != "absent":
         displaced = _portable_free_auxiliary(entry, allowed_roots=allowed_roots)
         before = _snapshot(destination)
-        _link_then_unlink(destination, displaced)
+        _link_then_preserve(destination, displaced)
         _fsync_directory(destination.parent)
         if displaced.parent != destination.parent:
             _fsync_directory(displaced.parent)
@@ -439,12 +514,7 @@ def _portable_transition_entry(
                     f"transaction auxiliary image is not duplicated: {auxiliary}"
                 )
             identity = _path_identity(auxiliary)
-            if _path_identity(auxiliary) != identity:
-                raise FilesystemTransactionError(
-                    f"transaction auxiliary identity changed before cleanup: {auxiliary}"
-                )
-            auxiliary.unlink()
-            _fsync_directory(auxiliary.parent)
+            _preserve_pathname_removal(auxiliary, identity)
     observed = _pair_state(entry, allowed_roots=allowed_roots)
     if observed not in {image, "both"}:
         raise FilesystemTransactionError(f"transaction portable transition incomplete: {path}")
@@ -980,7 +1050,7 @@ def _recover_v1_journal(
             )
         content, mode = _entry_image(entry, image)
         if actual != (content, mode):
-            expected_content, _expected_mode = expected_actual
+            expected_content, expected_mode = expected_actual
             mutations.append(
                 FileMutation(
                     path=path,
@@ -992,6 +1062,7 @@ def _recover_v1_journal(
                         if expected_content is not None
                         else None
                     ),
+                    expected_mode=expected_mode,
                 )
             )
     if mutations:
@@ -1007,26 +1078,36 @@ def _recover_v1_journal(
         f".{journal_path.name}.history-v1-{manifest_sha256[:16]}-recovered-{image}"
     )
     try:
-        os.link(journal_path, archive, follow_symlinks=False)
+        _renameat2(journal_path, archive, _RENAME_NOREPLACE)
     except OSError as exc:
         if exc.errno != errno.EEXIST:
             raise FilesystemTransactionError(
                 f"transaction v1 journal archive failed without replacement: {journal_path}"
             ) from exc
+        archive_metadata = archive.lstat()
+        if (archive_metadata.st_dev, archive_metadata.st_ino) != (
+            metadata.st_dev,
+            metadata.st_ino,
+        ):
+            raise FilesystemTransactionError(
+                f"transaction v1 archive third-image conflict: {archive}"
+            ) from exc
+        duplicate = archive.with_name(f"{archive.name}.duplicate-{uuid.uuid4().hex}")
+        try:
+            _renameat2(journal_path, duplicate, _RENAME_NOREPLACE)
+        except OSError as duplicate_exc:
+            raise FilesystemTransactionError(
+                f"transaction v1 duplicate archive failed without replacement: {journal_path}"
+            ) from duplicate_exc
     _fsync_directory(journal_path.parent)
-    source_metadata = journal_path.lstat()
     archive_metadata = archive.lstat()
-    if (
-        source_metadata.st_dev != metadata.st_dev
-        or source_metadata.st_ino != metadata.st_ino
-        or archive_metadata.st_dev != metadata.st_dev
-        or archive_metadata.st_ino != metadata.st_ino
+    if (archive_metadata.st_dev, archive_metadata.st_ino) != (
+        metadata.st_dev,
+        metadata.st_ino,
     ):
         raise FilesystemTransactionError(
-            f"transaction v1 journal identity changed; all images were preserved: {journal_path}"
+            f"transaction v1 journal identity changed; all images were preserved: {archive}"
         )
-    journal_path.unlink()
-    _fsync_directory(journal_path.parent)
 
 
 def _load_journal(journal_path: Path) -> _JournalRecord:
@@ -1155,7 +1236,6 @@ def _archive_journal(journal_path: Path, record: _JournalRecord, *, outcome: str
     archive = journal_path.with_name(
         f".{journal_path.name}.history-{record.transaction_id}-{outcome}"
     )
-    archived_journal = archive
     try:
         current_metadata = journal_path.lstat()
     except OSError as exc:
@@ -1182,68 +1262,37 @@ def _archive_journal(journal_path: Path, record: _JournalRecord, *, outcome: str
             raise FilesystemTransactionError(
                 f"transaction intent identity changed before archive: {intent}"
             )
-        intent.unlink()
+        try:
+            _renameat2(intent, journal_path / "intent.json", _RENAME_NOREPLACE)
+        except OSError as exc:
+            raise FilesystemTransactionError(
+                f"transaction intent preservation failed without replacement: {intent}"
+            ) from exc
+        _fsync_directory(journal_path)
         _fsync_directory(intent.parent)
     try:
         _renameat2(journal_path, archive, _RENAME_NOREPLACE)
     except OSError as exc:
-        if exc.errno not in {errno.ENOSYS, errno.EINVAL, errno.EXDEV, errno.EOPNOTSUPP}:
-            raise FilesystemTransactionError(
-                f"transaction journal archive failed without replacement: {journal_path}"
-            ) from exc
-        try:
-            archive.mkdir(mode=0o700)
-        except FileExistsError:
-            try:
-                archive_metadata = archive.lstat()
-                archive_entries = list(archive.iterdir())
-            except OSError as fallback_exc:
-                raise FilesystemTransactionError(
-                    f"transaction journal archive reservation unavailable: {archive}"
-                ) from fallback_exc
-            expected_uid, expected_gid = _new_entry_identity(archive.parent)
-            if (
-                stat.S_ISLNK(archive_metadata.st_mode)
-                or not stat.S_ISDIR(archive_metadata.st_mode)
-                or (archive_metadata.st_uid, archive_metadata.st_gid)
-                != (expected_uid, expected_gid)
-                or stat.S_IMODE(archive_metadata.st_mode) & 0o077
-                or archive_entries
-            ):
-                raise FilesystemTransactionError(
-                    f"transaction journal archive reservation is not resumable: {archive}"
-                ) from None
-        except OSError as fallback_exc:
-            raise FilesystemTransactionError(
-                f"transaction journal archive reservation failed: {archive}"
-            ) from fallback_exc
-        archived_journal = archive / "journal"
-        try:
-            os.rename(journal_path, archived_journal)
-        except OSError as fallback_exc:
-            raise FilesystemTransactionError(
-                f"transaction journal portable archive failed: {journal_path}"
-            ) from fallback_exc
-        _fsync_directory(archive)
+        raise FilesystemTransactionError(
+            f"transaction journal archive requires atomic no-replace support: {journal_path}"
+        ) from exc
     _fsync_directory(journal_path.parent)
     try:
-        metadata = archived_journal.lstat()
+        metadata = archive.lstat()
     except OSError as exc:
-        raise FilesystemTransactionError(
-            f"transaction archive disappeared: {archived_journal}"
-        ) from exc
+        raise FilesystemTransactionError(f"transaction archive disappeared: {archive}") from exc
     if metadata.st_dev != record.device or metadata.st_ino != record.inode:
         raise FilesystemTransactionError(
-            f"transaction journal third-image conflict preserved at {archived_journal}"
+            f"transaction journal third-image conflict preserved at {archive}"
         )
-    archived = _load_journal(archived_journal)
+    archived = _load_journal(archive)
     if (
         archived.transaction_id != record.transaction_id
         or archived.manifest_sha256 != record.manifest_sha256
         or archived.state != record.state
     ):
         raise FilesystemTransactionError(
-            f"transaction archived journal identity mismatch preserved at {archived_journal}"
+            f"transaction archived journal identity mismatch preserved at {archive}"
         )
     return archive
 
@@ -1289,6 +1338,18 @@ def _recover_filesystem_transaction_unlocked(
     target_paths = [_entry_path(entry, allowed_roots) for entry in record.entries]
     lock_context = nullcontext() if target_locks_held else _target_locks(target_paths)
     with lock_context:
+        locked_record = _load_journal(journal_path)
+        if (
+            locked_record.transaction_id != record.transaction_id
+            or locked_record.manifest_sha256 != record.manifest_sha256
+            or locked_record.state != record.state
+            or locked_record.device != record.device
+            or locked_record.inode != record.inode
+        ):
+            raise FilesystemTransactionError(
+                f"transaction journal identity changed while acquiring target locks: {journal_path}"
+            )
+        record = locked_record
         _materialize_missing_stages(record, allowed_roots=allowed_roots)
         image: ImageName = "post" if record.state == "committed" else "pre"
         _apply(
@@ -1345,6 +1406,8 @@ def _execute_filesystem_transaction_unlocked(
             or hashlib.sha256(pre_content).hexdigest() != mutation.expected_sha256
         ):
             raise FilesystemTransactionError(f"transaction preimage changed: {path}")
+        if mutation.expected_mode is not None and pre_mode != mutation.expected_mode:
+            raise FilesystemTransactionError(f"transaction mode precondition changed: {path}")
         post_mode = mutation.mode
         if mutation.content is not None and post_mode is None:
             post_mode = pre_mode if pre_mode is not None else 0o600

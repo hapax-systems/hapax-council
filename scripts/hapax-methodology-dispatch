@@ -2218,6 +2218,10 @@ def launch_codex_headless(
         # only supplies the default local fallback when the env is otherwise unset.
         env.setdefault("HAPAX_DISPATCH_HOST_FALLBACK", "local")
     env.update(dispatch_env or {})
+    # Bind actuation to the exact checkout whose local claim/close protocols
+    # passed admission. This prevents a worktree mapping override from checking
+    # one tree while the launcher independently selects another.
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(lane_worktree(lane, "codex").resolve())
     if not add_resume_session_environment(
         env,
         task_id=task_id,

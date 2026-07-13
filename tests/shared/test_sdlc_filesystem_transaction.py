@@ -3,6 +3,11 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import os
+import shutil
+import stat
+from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
 
@@ -20,6 +25,22 @@ from shared.sdlc_filesystem_transaction import (
 def _load_manifest(journal_path: Path) -> tuple[str, list[transaction.TransactionEntry]]:
     record = transaction._load_journal(journal_path)
     return record.state, record.entries
+
+
+def _target_nfs_rename(
+    original: Callable[[Path, Path, int], None],
+    target: Path,
+) -> Callable[[Path, Path, int], None]:
+    def rename(source: Path, destination: Path, flags: int) -> None:
+        if (
+            target in {source, destination}
+            or source.parent.name == ".hapax-transactions"
+            or destination.parent.name == ".hapax-transactions"
+        ):
+            raise OSError(errno.EINVAL, "target NFS rejects rename flags")
+        original(source, destination, flags)
+
+    return rename
 
 
 def test_execute_commits_all_postimages_and_removes_journal(tmp_path: Path) -> None:
@@ -271,7 +292,15 @@ def test_noreplace_race_preserves_every_image(
 
     def race(source: Path, destination: Path, flags: int) -> None:
         nonlocal injected
-        if not injected and flags == transaction._RENAME_NOREPLACE:
+        if (
+            not injected
+            and flags == transaction._RENAME_NOREPLACE
+            and target
+            in {
+                source,
+                destination,
+            }
+        ):
             injected = True
             target.write_bytes(b"operator-third-image")
         original(source, destination, flags)
@@ -415,10 +444,8 @@ def test_nfs_fallback_updates_existing_file_and_archives_journal(
     target.write_bytes(b"pre")
     journal = root / "journal.json"
 
-    def unsupported(_source: Path, _destination: Path, _flags: int) -> None:
-        raise OSError(errno.EINVAL, "NFS rejects rename flags")
-
-    monkeypatch.setattr(transaction, "_renameat2", unsupported)
+    original_rename = transaction._renameat2
+    monkeypatch.setattr(transaction, "_renameat2", _target_nfs_rename(original_rename, target))
 
     execute_filesystem_transaction(
         journal,
@@ -454,10 +481,8 @@ def test_nfs_fallback_recovers_interrupted_portable_transition(
     transaction._write_manifest(journal, state="prepared", entries=entries)
     _state, prepared = _load_manifest(journal)
 
-    def unsupported(_source: Path, _destination: Path, _flags: int) -> None:
-        raise OSError(errno.EINVAL, "NFS rejects rename flags")
-
-    monkeypatch.setattr(transaction, "_renameat2", unsupported)
+    original_rename = transaction._renameat2
+    monkeypatch.setattr(transaction, "_renameat2", _target_nfs_rename(original_rename, target))
     original_link = transaction.os.link
     calls = 0
 
@@ -517,7 +542,7 @@ def test_nfs_fallback_refuses_raced_auxiliary_without_clobber(
     assert journal.is_dir()
 
 
-def test_nfs_archive_resumes_empty_reserved_container(
+def test_archive_without_no_replace_support_preserves_active_journal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -539,19 +564,196 @@ def test_nfs_archive_resumes_empty_reserved_container(
             }
         ],
     )
-    record = transaction._load_journal(journal)
-    archive = root / f".journal.json.history-{record.transaction_id}-recovered-post"
-    archive.mkdir(mode=0o700)
+    original_rename = transaction._renameat2
 
-    def unsupported(_source: Path, _destination: Path, _flags: int) -> None:
-        raise OSError(errno.EINVAL, "NFS rejects rename flags")
+    def unsupported_archive(source: Path, destination: Path, flags: int) -> None:
+        if source == journal:
+            raise OSError(errno.EINVAL, "journal filesystem rejects rename flags")
+        original_rename(source, destination, flags)
 
-    monkeypatch.setattr(transaction, "_renameat2", unsupported)
+    monkeypatch.setattr(transaction, "_renameat2", unsupported_archive)
 
-    assert recover_filesystem_transaction(journal, allowed_roots=(root,))
+    with pytest.raises(FilesystemTransactionError, match="requires atomic no-replace"):
+        recover_filesystem_transaction(journal, allowed_roots=(root,))
+
     assert target.read_bytes() == b"post"
+    assert journal.is_dir()
+    assert (journal / "intent.json").is_file()
+    assert not list(root.glob(".journal.json.history-*-recovered-post"))
+
+
+def test_torn_temporary_write_never_publishes_authoritative_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "target"
+    target.write_bytes(b"pre")
+    journal = root / "journal.json"
+    original_write = os.write
+    injected = False
+
+    def tear(descriptor: int, content: bytes) -> int:
+        nonlocal injected
+        if not injected and len(content) > 1:
+            injected = True
+            original_write(descriptor, content[: len(content) // 2])
+            raise OSError(errno.ENOSPC, "simulated torn write")
+        return original_write(descriptor, content)
+
+    monkeypatch.setattr(transaction.os, "write", tear)
+
+    with pytest.raises(OSError, match="simulated torn write"):
+        execute_filesystem_transaction(
+            journal,
+            (FileMutation(target, b"post"),),
+            allowed_roots=(root,),
+        )
+
+    assert injected
+    assert target.read_bytes() == b"pre"
     assert not journal.exists()
-    assert (archive / "journal").is_dir()
+    assert not transaction._intent_path(journal).exists()
+    assert list(root.glob(".hapax-write-*")), "the non-authoritative torn temp is preserved"
+
+
+def test_portable_displacement_preserves_source_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "target"
+    target.write_bytes(b"pre")
+    journal = root / "journal.json"
+    original_renameat2 = transaction._renameat2
+    original_rename = os.rename
+    injected = False
+
+    monkeypatch.setattr(
+        transaction,
+        "_renameat2",
+        _target_nfs_rename(original_renameat2, target),
+    )
+
+    def replace_before_preserving_move(source: Path, destination: Path) -> None:
+        nonlocal injected
+        if not injected and source == target:
+            injected = True
+            source.unlink()
+            source.write_bytes(b"operator-third-image")
+        original_rename(source, destination)
+
+    monkeypatch.setattr(transaction.os, "rename", replace_before_preserving_move)
+
+    with pytest.raises(FilesystemTransactionError, match="source identity changed"):
+        execute_filesystem_transaction(
+            journal,
+            (FileMutation(target, b"post"),),
+            allowed_roots=(root,),
+        )
+
+    assert injected
+    preserved = [
+        path.read_bytes()
+        for path in (root / ".hapax-transactions").glob(".hapax-preserved-*/image")
+    ]
+    assert b"operator-third-image" in preserved
+
+
+def test_journal_substitution_while_waiting_for_target_locks_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "target"
+    target.write_bytes(b"pre")
+    journal = root / "journal.json"
+    transaction._write_manifest(
+        journal,
+        state="committed",
+        entries=[
+            {
+                "path": str(target),
+                "pre_content": transaction._encoded(b"pre"),
+                "pre_mode": 0o644,
+                "post_content": transaction._encoded(b"post"),
+                "post_mode": 0o644,
+            }
+        ],
+    )
+    displaced = root / "operator-preserved-journal"
+    original_target_locks = transaction._target_locks
+
+    @contextmanager
+    def substitute(paths: list[Path]):
+        with original_target_locks(paths):
+            journal.rename(displaced)
+            shutil.copytree(displaced, journal)
+            yield
+
+    monkeypatch.setattr(transaction, "_target_locks", substitute)
+
+    with pytest.raises(FilesystemTransactionError, match="acquiring target locks"):
+        recover_filesystem_transaction(journal, allowed_roots=(root,))
+
+    assert target.read_bytes() == b"pre"
+    assert displaced.is_dir()
+    assert journal.is_dir()
+
+
+def test_v1_conversion_rejects_mode_only_third_image(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "target"
+    target.write_bytes(b"same-bytes")
+    target.chmod(0o600)
+    entries = [
+        {
+            "path": str(target),
+            "pre_content": transaction._encoded(b"same-bytes"),
+            "pre_mode": 0o644,
+            "post_content": transaction._encoded(b"same-bytes"),
+            "post_mode": 0o600,
+        }
+    ]
+    body = {"schema": transaction.TRANSACTION_SCHEMA_V1, "state": "prepared", "entries": entries}
+    record = {
+        **body,
+        "manifest_sha256": hashlib.sha256(transaction._canonical_bytes(body)).hexdigest(),
+    }
+    journal = root / "journal.json"
+    journal.write_bytes(transaction._canonical_bytes(record) + b"\n")
+    journal.chmod(0o600)
+    original_execute = transaction.execute_filesystem_transaction
+
+    def change_mode_before_conversion(
+        compatibility_journal: Path,
+        mutations: tuple[FileMutation, ...] | list[FileMutation],
+        *,
+        allowed_roots: tuple[Path, ...],
+    ) -> None:
+        target.chmod(0o640)
+        original_execute(
+            compatibility_journal,
+            mutations,
+            allowed_roots=allowed_roots,
+        )
+
+    monkeypatch.setattr(
+        transaction, "execute_filesystem_transaction", change_mode_before_conversion
+    )
+
+    with pytest.raises(FilesystemTransactionError, match="mode precondition changed"):
+        recover_filesystem_transaction(journal, allowed_roots=(root,))
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
+    assert journal.is_file()
 
 
 @pytest.mark.parametrize("interrupt_at", ["intent", "manifest"])

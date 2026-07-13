@@ -81,8 +81,8 @@ if declare -F hapax_session_id >/dev/null 2>&1; then
 fi
 if [[ -n "$session_id" ]] && declare -F hapax_claim_keyable_session_id >/dev/null 2>&1 \
   && ! hapax_claim_keyable_session_id "$session_id"; then
-  echo "cc-close: session id '$session_id' is not claim-keyable; using legacy role-keyed identity" >&2
-  session_id=""
+  echo "cc-close: session id '$session_id' is not claim-keyable; refusing legacy-role downgrade" >&2
+  exit 3
 fi
 
 command -v flock >/dev/null 2>&1 || {
@@ -103,7 +103,7 @@ if ! command -v python3 &>/dev/null; then
 fi
 
 vault_root="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
-transaction_journal="$HOME/.cache/hapax/cc-ownership-txn-$role_lock_key-$task_lock_key.json"
+transaction_journal="$HOME/.cache/hapax/cc-ownership-txn.json"
 python3 - "$SCRIPT_DIR/.." "$transaction_journal" "$HOME/.cache/hapax" "$vault_root" <<'PYEOF'
 import sys
 from pathlib import Path
@@ -114,10 +114,23 @@ from shared.sdlc_filesystem_transaction import (
     recover_filesystem_transaction,
 )
 
+stable_journal = Path(sys.argv[2])
+cache_dir = Path(sys.argv[3])
+vault_root = Path(sys.argv[4])
+legacy_journals = set(cache_dir.glob("cc-ownership-txn-*.json"))
+for intent in cache_dir.glob(".cc-ownership-txn-*.json.intent"):
+    legacy_journals.add(cache_dir / intent.name[1 : -len(".intent")])
+
 try:
+    for journal in sorted(legacy_journals):
+        if journal != stable_journal:
+            recover_filesystem_transaction(
+                journal,
+                allowed_roots=(cache_dir, vault_root),
+            )
     recover_filesystem_transaction(
-        Path(sys.argv[2]),
-        allowed_roots=(Path(sys.argv[3]), Path(sys.argv[4])),
+        stable_journal,
+        allowed_roots=(cache_dir, vault_root),
     )
 except FilesystemTransactionError as exc:
     print(f"cc-close: ownership transaction recovery failed: {exc}", file=sys.stderr)

@@ -121,16 +121,16 @@ fi
 # Claim-by-pid unrepresentable (taxonomy-a3-session-identity): only an id with
 # per-session entropy may key a claim. The predicate SSOT is
 # shared/session_identity.py::is_claim_keyable_session_id; a pid-shaped id —
-# the retired `<role>-$$` spawner fallback — degrades to legacy role keying
-# instead of minting an ambiguous key.
+# the retired `<role>-$$` spawner fallback — is rejected instead of silently
+# downgrading into another session's shared role claim.
 if [[ -n "$session_id" ]] && ! python3 -c '
 import sys
 sys.path.insert(0, sys.argv[2])
 from shared.session_identity import is_claim_keyable_session_id
 sys.exit(0 if is_claim_keyable_session_id(sys.argv[1]) else 1)
 ' "$session_id" "$SCRIPT_DIR/.." 2>/dev/null; then
-  echo "cc-claim: session id '$session_id' is not claim-keyable (pid-shaped or malformed) — using legacy role-keyed claim only" >&2
-  session_id=""
+  echo "cc-claim: session id '$session_id' is not claim-keyable (pid-shaped or malformed); refusing legacy-role downgrade" >&2
+  exit 8
 fi
 # Serialize both the role and task identity through note mutation plus cache
 # publication. Different roles cannot race to claim the same note, and one role
@@ -150,7 +150,7 @@ exec 8>"$HOME/.cache/hapax/cc-claim-role-lock-$role_lock_key"
 flock -x 8
 exec 9>"$HOME/.cache/hapax/cc-claim-task-lock-$task_lock_key"
 flock -x 9
-transaction_journal="$HOME/.cache/hapax/cc-ownership-txn-$role_lock_key-$task_lock_key.json"
+transaction_journal="$HOME/.cache/hapax/cc-ownership-txn.json"
 vault_root="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
 python3 - "$SCRIPT_DIR/.." "$transaction_journal" "$HOME/.cache/hapax" "$vault_root" <<'PYEOF'
 import sys
@@ -162,10 +162,23 @@ from shared.sdlc_filesystem_transaction import (
     recover_filesystem_transaction,
 )
 
+stable_journal = Path(sys.argv[2])
+cache_dir = Path(sys.argv[3])
+vault_root = Path(sys.argv[4])
+legacy_journals = set(cache_dir.glob("cc-ownership-txn-*.json"))
+for intent in cache_dir.glob(".cc-ownership-txn-*.json.intent"):
+    legacy_journals.add(cache_dir / intent.name[1 : -len(".intent")])
+
 try:
+    for journal in sorted(legacy_journals):
+        if journal != stable_journal:
+            recover_filesystem_transaction(
+                journal,
+                allowed_roots=(cache_dir, vault_root),
+            )
     recover_filesystem_transaction(
-        Path(sys.argv[2]),
-        allowed_roots=(Path(sys.argv[3]), Path(sys.argv[4])),
+        stable_journal,
+        allowed_roots=(cache_dir, vault_root),
     )
 except FilesystemTransactionError as exc:
     print(f"cc-claim: ownership transaction recovery failed: {exc}", file=sys.stderr)

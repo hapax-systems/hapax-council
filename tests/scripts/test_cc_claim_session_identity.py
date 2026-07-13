@@ -125,13 +125,10 @@ def test_pid_shaped_session_id_is_refused_as_claim_key(tmp_path: Path) -> None:
     _write_task(home, "task-pid")
     # The exact shape the pre-fix launcher fallback minted: <role>-$$.
     result = _claim(home, "task-pid", session_id="epsilon-12345")
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 8
 
     cache = home / ".cache" / "hapax"
-    assert (cache / "cc-active-task-epsilon").read_text(encoding="utf-8") == "task-pid\n"
-    assert not list(cache.glob("cc-active-task-epsilon-*")), (
-        "a pid-shaped session id must never key a claim file"
-    )
+    assert not list(cache.glob("cc-active-task-epsilon*"))
     assert "not claim-keyable" in result.stderr
     # An unkeyable id must not be stamped into the session log either.
     note_text = (

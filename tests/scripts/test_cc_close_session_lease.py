@@ -199,6 +199,21 @@ def test_cc_close_without_session_id_still_clears_legacy(tmp_path: Path) -> None
     assert not epoch.exists(), f"legacy epoch not cleared\nstdout={result.stdout}"
 
 
+def test_cc_close_refuses_invalid_session_instead_of_legacy_downgrade(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    vault = _vault(home)
+    note = _write_task(vault, "foo")
+
+    result = _run_close(home, "foo", role="eta", session_id="1234")
+
+    assert result.returncode == 3
+    assert "refusing legacy-role downgrade" in result.stderr
+    assert note.is_file()
+    assert not (vault / "closed" / "foo.md").exists()
+
+
 def test_cc_close_refuses_dispatch_bound_task_from_wrong_session(tmp_path: Path) -> None:
     home = tmp_path / "home"
     vault = _vault(home)

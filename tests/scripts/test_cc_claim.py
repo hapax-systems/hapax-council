@@ -7,6 +7,7 @@ import textwrap
 import time
 from pathlib import Path
 
+from shared import sdlc_filesystem_transaction as transaction
 from shared.coord_dispatch import lane_ownership_projection_hashes
 from shared.sdlc_task_store import load_claim_dispatch_binding
 
@@ -206,6 +207,72 @@ def test_initial_claim_persists_platform_qualified_owner(tmp_path: Path) -> None
 
     assert result.returncode == 0, result.stderr
     assert "assigned_to: codex/cx-test" in note.read_text(encoding="utf-8")
+
+
+def test_claim_refuses_invalid_session_instead_of_legacy_downgrade(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "invalid-session")
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["HAPAX_AGENT_ROLE"] = "cx-test"
+    env["HAPAX_SESSION_ID"] = "1234"
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "invalid-session"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 8
+    assert "refusing legacy-role downgrade" in result.stderr
+    assert "status: offered" in note.read_text(encoding="utf-8")
+    assert not (home / ".cache" / "hapax" / "cc-active-task-cx-test").exists()
+
+
+def test_claim_recovers_interrupted_legacy_journal_before_other_task(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    first = _write_task(home, "active", "first-task")
+    second = _write_task(home, "active", "second-task")
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    role_key = hashlib.sha256(b"cx-test").hexdigest()
+    task_key = hashlib.sha256(b"first-task").hexdigest()
+    legacy_journal = cache / f"cc-ownership-txn-{role_key}-{task_key}.json"
+    preimage = first.read_bytes()
+    postimage = preimage.replace(b"status: offered", b"status: claimed", 1)
+    record = transaction._prepare_journal(
+        legacy_journal,
+        [
+            {
+                "path": str(first),
+                "pre_content": transaction._encoded(preimage),
+                "pre_mode": first.stat().st_mode & 0o777,
+                "post_content": transaction._encoded(postimage),
+                "post_mode": first.stat().st_mode & 0o777,
+            }
+        ],
+        allowed_roots=(cache, _task_root(home)),
+    )
+    transaction._apply(
+        record.entries,
+        image="post",
+        accepted_current_images=("pre",),
+        allowed_roots=(cache, _task_root(home)),
+    )
+    assert "status: claimed" in first.read_text(encoding="utf-8")
+
+    result = _claim(home, "second-task")
+
+    assert result.returncode == 0, result.stderr
+    assert "status: offered" in first.read_text(encoding="utf-8")
+    assert "status: claimed" in second.read_text(encoding="utf-8")
+    assert (cache / "cc-active-task-cx-test").read_text(encoding="utf-8").strip() == "second-task"
+    assert not legacy_journal.exists()
+    assert list(cache.glob(f".{legacy_journal.name}.history-*-recovered-pre"))
 
 
 def test_dispatch_bound_claim_rejects_changed_task_preimage(tmp_path: Path) -> None:
@@ -1522,7 +1589,7 @@ def test_remote_projection_materializes_complete_transaction_and_receipt(
     ).encode("ascii")
     assert receipt_hash == hashlib.sha256(canonical).hexdigest()
 
-    archives = list((home / ".cache" / "hapax").glob(".cc-ownership-txn-*.history-*-committed"))
+    archives = list((home / ".cache" / "hapax").glob(".cc-ownership-txn*.history-*-committed"))
     assert archives
     transaction_path_sets = []
     for archive in archives:

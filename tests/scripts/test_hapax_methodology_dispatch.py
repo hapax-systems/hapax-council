@@ -3602,7 +3602,7 @@ def test_launch_codex_headless_scrubs_ambient_session_before_explicit_dispatch_e
     launcher = tmp_path / "hapax-codex-headless"
     launcher.write_text(
         f"""#!/usr/bin/env bash
-printf '%s|%s\n' "${{HAPAX_SESSION_ID:-<unset>}}" "${{HAPAX_CLAIM_RESUME_SESSION_ID:-<unset>}}" >> {env_log}
+printf '%s|%s|%s\n' "${{HAPAX_SESSION_ID:-<unset>}}" "${{HAPAX_CLAIM_RESUME_SESSION_ID:-<unset>}}" "${{HAPAX_CODEX_HEADLESS_WORKDIR:-<unset>}}" >> {env_log}
 printf '%s\n' "$*" >> {args_log}
 """,
         encoding="utf-8",
@@ -3610,6 +3610,9 @@ printf '%s\n' "$*" >> {args_log}
     launcher.chmod(0o755)
     monkeypatch.setenv("HAPAX_METHODOLOGY_CODEX_HEADLESS", str(launcher))
     monkeypatch.setenv("HAPAX_SESSION_ID", "ambient-parent-session")
+    monkeypatch.setenv("HAPAX_CODEX_HEADLESS_WORKDIR", str(tmp_path / "unvalidated-worktree"))
+    validated_worktree = tmp_path / "validated-worktree"
+    monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(validated_worktree))
     route = module.PLATFORM_PATHS[("codex", "headless", "full")]
 
     offered = module.Validation(
@@ -3642,8 +3645,8 @@ printf '%s\n' "$*" >> {args_log}
         )
 
     assert env_log.read_text(encoding="utf-8").splitlines() == [
-        "<unset>|<unset>",
-        "<unset>|explicit-resume-session",
+        f"<unset>|<unset>|{validated_worktree}",
+        f"<unset>|explicit-resume-session|{validated_worktree}",
     ]
     assert "--no-claim" not in args_log.read_text(encoding="utf-8").splitlines()[0]
     assert "--no-claim" in args_log.read_text(encoding="utf-8").splitlines()[1]
