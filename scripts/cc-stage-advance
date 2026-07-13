@@ -74,12 +74,12 @@ _NULLISH = {"", "null", "none", "~"}
 
 
 def _find_note(task_id: str) -> Path | None:
-    for sub in ("active", "closed"):
-        for cand in sorted((VAULT / sub).glob(f"{task_id}-*.md")):
-            return cand
-        exact = VAULT / sub / f"{task_id}.md"
-        if exact.is_file():
-            return exact
+    active = VAULT / "active"
+    for cand in sorted(active.glob(f"{task_id}-*.md")):
+        return cand
+    exact = active / f"{task_id}.md"
+    if exact.is_file():
+        return exact
     return None
 
 

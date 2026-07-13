@@ -8,6 +8,22 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "cc-close"
 
+_IDENTITY_ENV = (
+    "HAPAX_AGENT_NAME",
+    "HAPAX_AGENT_ROLE",
+    "HAPAX_AGENT_INTERFACE",
+    "HAPAX_SESSION_ID",
+    "HAPAX_CLAIM_RESUME_SESSION_ID",
+    "CLAUDE_ROLE",
+    "CLAUDECODE",
+    "CLAUDE_CODE_SESSION_ID",
+    "CODEX_THREAD_ID",
+    "CODEX_THREAD_NAME",
+    "CODEX_SESSION_NAME",
+    "CODEX_SESSION",
+    "CODEX_ROLE",
+)
+
 
 def _write_task(
     vault_root: Path,
@@ -44,7 +60,7 @@ def _write_task(
 
 
 def _run_close(home: Path, task_id: str) -> subprocess.CompletedProcess[str]:
-    env = os.environ.copy()
+    env = {key: value for key, value in os.environ.items() if key not in _IDENTITY_ENV}
     env["HOME"] = str(home)
     env["HAPAX_AGENT_NAME"] = "test-role"
     env["HAPAX_AGENT_ROLE"] = "test-role"

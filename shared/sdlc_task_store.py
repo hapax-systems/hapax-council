@@ -579,6 +579,12 @@ def assert_close_slot_owned(
             "resume the session that owns the claim or perform governed owner-only recovery",
             ",".join(sorted(unexpected)),
         )
+    if session_id and session_key not in projection_keys:
+        raise TaskStoreError(
+            "close_exact_session_projection_absent",
+            "restore the exact session-keyed claim and epoch before closing",
+            session_key,
+        )
 
     bindings: list[ClaimDispatchBinding] = []
     binding_keys: set[str] = set()

@@ -117,6 +117,18 @@ class TestStageAdvance:
         r = _run(tmp_path, "nope", "S7_RELEASE")
         assert r.returncode == 3
 
+    def test_already_closed_task_is_not_mutated(self, tmp_path: Path) -> None:
+        note = _make_task(tmp_path, "closed-task")
+        closed = note.parent.parent / "closed" / note.name
+        closed.parent.mkdir(parents=True)
+        note.rename(closed)
+        before = closed.read_bytes()
+
+        result = _run(tmp_path, "closed-task", "S7_RELEASE")
+
+        assert result.returncode == 3
+        assert closed.read_bytes() == before
+
     def test_concurrent_close_cannot_be_recreated_by_stage_advance(self, tmp_path: Path) -> None:
         note = _make_task(tmp_path, "race")
         stage = note.parent / ".hapax-transactions"

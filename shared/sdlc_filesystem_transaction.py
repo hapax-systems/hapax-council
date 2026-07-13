@@ -44,6 +44,14 @@ class FileMutation:
 
 
 @dataclass(frozen=True)
+class TaskNoteSnapshot:
+    """One inode-consistent task-note image for decision-bound CAS writes."""
+
+    content: bytes
+    mode: int
+
+
+@dataclass(frozen=True)
 class _JournalRecord:
     state: Literal["prepared", "committed"]
     transaction_id: str
@@ -692,22 +700,6 @@ def _apply(
     _validate_current_images(entries, accepted_images=(image,), allowed_roots=allowed_roots)
 
 
-def _entries_require_transition(
-    entries: list[TransactionEntry],
-    *,
-    image: ImageName,
-    allowed_roots: Sequence[Path],
-) -> bool:
-    for entry in entries:
-        try:
-            state = _pair_state(entry, allowed_roots=allowed_roots)
-        except FilesystemTransactionError:
-            return True
-        if state not in {image, "both"}:
-            return True
-    return False
-
-
 def _manifest_body(
     *,
     transaction_id: str,
@@ -1235,7 +1227,7 @@ def _recover_v1_journal(
                 raise FilesystemTransactionError(
                     f"transaction v1 compatibility identity changed: {journal_path}"
                 )
-            _require_atomic_no_replace_support((journal_path,))
+            _require_atomic_no_replace_support((journal_path, *target_paths))
             image: ImageName = "post" if record.state == "committed" else "pre"
             # This deterministic child journal may survive a crash after it
             # applied an image but before v1 was archived. Drain it on every
@@ -1323,7 +1315,7 @@ def _retire_v1_compatibility_for_superseded_parent(
             raise FilesystemTransactionError(
                 f"v1 compatibility journal lacks superseding target evidence: {compatibility}"
             )
-        _require_atomic_no_replace_support((compatibility,))
+        _require_atomic_no_replace_support((compatibility, *child_targets))
         locked_record = _load_journal(compatibility)
         if not _same_journal(locked_record, record):
             raise FilesystemTransactionError(
@@ -1584,13 +1576,7 @@ def _recover_filesystem_transaction_unlocked(
         record = locked_record
         _materialize_missing_stages(record, allowed_roots=allowed_roots)
         image: ImageName = "post" if record.state == "committed" else "pre"
-        requires_transition = _entries_require_transition(
-            record.entries,
-            image=image,
-            allowed_roots=allowed_roots,
-        )
-        capability_paths = (journal_path, *target_paths) if requires_transition else (journal_path,)
-        _require_atomic_no_replace_support(capability_paths)
+        _require_atomic_no_replace_support((journal_path, *target_paths))
         _apply(
             record.entries,
             image=image,
@@ -1621,7 +1607,13 @@ def _entries_have_superseding_target_image(
         pre = _entry_image(entry, "pre")
         post = _entry_image(entry, "post")
         target, stage, hold, move = _portable_paths(entry, allowed_roots)
-        if _snapshot(target) not in {(None, None), pre, post}:
+        actual_target = _snapshot(target)
+        valid_targets = {pre, post}
+        if actual_target == (None, None) and actual_target not in valid_targets:
+            raise FilesystemTransactionError(
+                f"legacy transaction target image is missing: {target}"
+            )
+        if actual_target not in valid_targets:
             superseded = True
         for candidate in (stage, hold, move):
             actual = _snapshot(candidate)
@@ -1665,13 +1657,18 @@ def _recover_legacy_filesystem_transaction_unlocked(
                         "legacy v1 transaction journal identity changed while acquiring "
                         f"target locks: {journal_path}"
                     )
-                for path, entry in zip(target_paths, locked_record.entries, strict=True):
-                    actual = _snapshot(path)
+                target_states = [
+                    (path, entry, _snapshot(path))
+                    for path, entry in zip(target_paths, locked_record.entries, strict=True)
+                ]
+                for path, entry, actual in target_states:
                     valid_images = {_entry_image(entry, "pre"), _entry_image(entry, "post")}
                     if actual == (None, None) and actual not in valid_images:
                         raise FilesystemTransactionError(
                             f"legacy v1 transaction target image is missing: {path}"
                         )
+                for _path, entry, actual in target_states:
+                    valid_images = {_entry_image(entry, "pre"), _entry_image(entry, "post")}
                     if actual not in valid_images:
                         _retire_v1_compatibility_for_superseded_parent(
                             journal_path,
@@ -1791,12 +1788,13 @@ def _execute_filesystem_transaction_unlocked(
 
     entries: list[TransactionEntry] = []
     seen: set[Path] = set()
-    transition_paths: list[Path] = []
+    target_paths: list[Path] = []
     for mutation in mutations:
         path = _allowed(mutation.path, allowed_roots)
         if path in seen:
             raise FilesystemTransactionError(f"duplicate transaction path: {path}")
         seen.add(path)
+        target_paths.append(path)
         pre_content, pre_mode = _snapshot(path)
         if mutation.expected_exists is not None and (pre_content is not None) != (
             mutation.expected_exists
@@ -1814,8 +1812,6 @@ def _execute_filesystem_transaction_unlocked(
             post_mode = pre_mode if pre_mode is not None else 0o600
         if mutation.content is None:
             post_mode = None
-        if (pre_content, pre_mode) != (mutation.content, post_mode):
-            transition_paths.append(path)
         entries.append(
             {
                 "path": str(path),
@@ -1826,7 +1822,7 @@ def _execute_filesystem_transaction_unlocked(
             }
         )
 
-    _require_atomic_no_replace_support((journal_path, *transition_paths))
+    _require_atomic_no_replace_support((journal_path, *target_paths))
 
     try:
         record = _prepare_journal(journal_path, entries, allowed_roots=allowed_roots)
@@ -1899,6 +1895,53 @@ def ownership_legacy_journals(cache_dir: Path) -> tuple[Path, ...]:
     return tuple(sorted(legacy))
 
 
+def read_task_note_snapshot(path: Path) -> TaskNoteSnapshot:
+    """Read bytes and mode from the same opened inode.
+
+    If another writer replaces ``path`` after it is opened, the later CAS sees a
+    different pathname image and refuses the write. Decisions therefore remain
+    bound to exactly the bytes returned here.
+    """
+
+    descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "rb") as stream:
+        metadata = os.fstat(stream.fileno())
+        if not stat.S_ISREG(metadata.st_mode):
+            raise FilesystemTransactionError(f"task note is not a regular file: {path}")
+        return TaskNoteSnapshot(content=stream.read(), mode=stat.S_IMODE(metadata.st_mode))
+
+
+def task_note_transaction_context(
+    path: Path,
+    *,
+    vault_root: Path | None = None,
+    cache_dir: Path | None = None,
+) -> tuple[Path, Path]:
+    """Resolve the vault and stable-journal roots for an official note writer."""
+
+    absolute_path = path.expanduser().absolute()
+    if vault_root is None:
+        parent = absolute_path.parent
+        vault_root = parent.parent if parent.name in {"active", "closed", "refused"} else parent
+    else:
+        vault_root = vault_root.expanduser().absolute()
+
+    if cache_dir is None:
+        configured = os.environ.get("HAPAX_CC_OWNERSHIP_CACHE_DIR", "").strip()
+        default_vault = (
+            Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+        ).absolute()
+        if configured:
+            cache_dir = Path(configured).expanduser().absolute()
+        elif vault_root == default_vault:
+            cache_dir = (Path.home() / ".cache" / "hapax").absolute()
+        else:
+            cache_dir = vault_root / ".hapax-ownership-cache"
+    else:
+        cache_dir = cache_dir.expanduser().absolute()
+    return vault_root, cache_dir
+
+
 def replace_task_note_transactionally(
     path: Path,
     *,
@@ -1924,6 +1967,38 @@ def replace_task_note_transactionally(
                 expected_mode=expected_mode,
             ),
         ),
+        allowed_roots=(cache_dir, vault_root),
+        legacy_journals=ownership_legacy_journals(cache_dir),
+    )
+
+
+def create_task_note_transactionally(
+    path: Path,
+    *,
+    content: bytes,
+    mode: int,
+    cache_dir: Path,
+    vault_root: Path,
+    absent_guard_paths: Sequence[Path] = (),
+) -> None:
+    """Create one task note without clobbering active or terminal identities."""
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    mutations = [
+        FileMutation(
+            path=path,
+            content=content,
+            mode=mode,
+            expected_exists=False,
+        )
+    ]
+    mutations.extend(
+        FileMutation(path=guard, content=None, expected_exists=False)
+        for guard in absent_guard_paths
+    )
+    execute_filesystem_transaction(
+        cache_dir / "cc-ownership-txn.json",
+        mutations,
         allowed_roots=(cache_dir, vault_root),
         legacy_journals=ownership_legacy_journals(cache_dir),
     )

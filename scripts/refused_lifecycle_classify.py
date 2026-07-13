@@ -22,12 +22,22 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.sdlc_filesystem_transaction import (  # noqa: E402
+    TaskNoteSnapshot,
+    read_task_note_snapshot,
+    replace_task_note_transactionally,
+    task_note_transaction_context,
+)
 
 log = logging.getLogger(__name__)
 
@@ -244,16 +254,17 @@ def _split_frontmatter(text: str) -> tuple[dict, str] | None:
     return fm, body
 
 
-def _atomic_write(path: Path, fm: dict, body: str) -> None:
+def _transactional_write(path: Path, fm: dict, body: str, snapshot: TaskNoteSnapshot) -> None:
     text = "---\n" + yaml.safe_dump(fm, sort_keys=False) + "---\n" + body
-    tmp = path.with_suffix(f".md.tmp.{os.getpid()}")
-    try:
-        tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, path)
-    except OSError:
-        if tmp.exists():
-            tmp.unlink(missing_ok=True)
-        raise
+    vault_root, cache_dir = task_note_transaction_context(path)
+    replace_task_note_transactionally(
+        path,
+        expected_content=snapshot.content,
+        content=text.encode("utf-8"),
+        expected_mode=snapshot.mode,
+        cache_dir=cache_dir,
+        vault_root=vault_root,
+    )
 
 
 def _find_slug(vault_base: Path, slug: str) -> Path | None:
@@ -287,8 +298,9 @@ def classify(vault_base: Path, now: datetime) -> list[Path]:
             continue
 
         try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
+            snapshot = read_task_note_snapshot(path)
+            text = snapshot.content.decode("utf-8")
+        except (OSError, UnicodeDecodeError):
             log.warning("Could not read %s", path)
             continue
 
@@ -306,7 +318,7 @@ def classify(vault_base: Path, now: datetime) -> list[Path]:
         next_eval = now + timedelta(days=classification["next_evaluation_offset_days"])
         fm["next_evaluation_at"] = next_eval.isoformat()
 
-        _atomic_write(path, fm, body)
+        _transactional_write(path, fm, body, snapshot)
         modified.append(path)
 
     return modified

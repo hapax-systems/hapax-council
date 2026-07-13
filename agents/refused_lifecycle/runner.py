@@ -1,8 +1,8 @@
-"""Runner — parse cc-task frontmatter, dispatch decisions, atomically rewrite.
+"""Runner — parse cc-task frontmatter, dispatch decisions, transactionally rewrite.
 
 Orchestration layer: pulls REFUSED tasks from the active vault directory,
-calls the pure evaluator, then commits the transition by rewriting
-frontmatter via tmp+rename. Body of the cc-task markdown is preserved
+calls the pure evaluator, then commits the transition through the shared stable
+ownership journal. Body of the cc-task markdown is preserved
 verbatim — the runner only mutates the YAML header.
 
 Refusal-brief integration is a stub here: ``_to_refusal_event`` adapts a
@@ -31,6 +31,11 @@ from agents.refused_lifecycle.state import (
     RefusalHistoryEntry,
     RefusalTask,
     TransitionEvent,
+)
+from shared.sdlc_filesystem_transaction import (
+    read_task_note_snapshot,
+    replace_task_note_transactionally,
+    task_note_transaction_context,
 )
 
 log = logging.getLogger(__name__)
@@ -66,7 +71,8 @@ def _split_frontmatter(text: str) -> tuple[dict, str]:
 
 def parse_frontmatter(path: Path) -> RefusalTask:
     """Parse a cc-task markdown file into a RefusalTask."""
-    text = path.read_text(encoding="utf-8")
+    snapshot = read_task_note_snapshot(path)
+    text = snapshot.content.decode("utf-8")
     metadata, _ = _split_frontmatter(text)
 
     history_raw = metadata.get("refusal_history") or []
@@ -88,6 +94,8 @@ def parse_frontmatter(path: Path) -> RefusalTask:
         refusal_history=history,
         superseded_by=metadata.get("superseded_by"),
         acceptance_evidence=metadata.get("acceptance_evidence"),
+        source_content=snapshot.content,
+        source_mode=snapshot.mode,
     )
 
 
@@ -174,7 +182,7 @@ def apply_transition(
     *,
     refusal_log_path: Path | None = None,
 ) -> None:
-    """Atomically commit a transition by rewriting frontmatter.
+    """Commit a transition against the exact evaluator source snapshot.
 
     Body after the closing ``---`` delimiter is preserved verbatim. Mutation
     rules per transition:
@@ -185,7 +193,14 @@ def apply_transition(
       append history
     - removed: status → REMOVED, populate ``removed_reason``, append history
     """
-    text = path.read_text(encoding="utf-8")
+    if task.source_content is None or task.source_mode is None:
+        snapshot = read_task_note_snapshot(path)
+        source_content = snapshot.content
+        source_mode = snapshot.mode
+    else:
+        source_content = task.source_content
+        source_mode = task.source_mode
+    text = source_content.decode("utf-8")
     metadata, body = _split_frontmatter(text)
 
     history = metadata.get("refusal_history") or []
@@ -222,14 +237,15 @@ def apply_transition(
     # re-affirmed: status unchanged
 
     new_text = "---\n" + yaml.safe_dump(metadata, sort_keys=False) + "---\n" + body
-    tmp = path.with_suffix(f".md.tmp.{os.getpid()}")
-    try:
-        tmp.write_text(new_text, encoding="utf-8")
-        os.replace(tmp, path)
-    except OSError:
-        if tmp.exists():
-            tmp.unlink(missing_ok=True)
-        raise
+    vault_root, cache_dir = task_note_transaction_context(path)
+    replace_task_note_transactionally(
+        path,
+        expected_content=source_content,
+        content=new_text.encode("utf-8"),
+        expected_mode=source_mode,
+        cache_dir=cache_dir,
+        vault_root=vault_root,
+    )
 
     transitions_total.labels(
         from_state=event.from_state, to_state=event.to_state, slug=task.slug

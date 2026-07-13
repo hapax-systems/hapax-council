@@ -1,12 +1,28 @@
 from __future__ import annotations
 
 import fcntl
+import importlib.util
 import os
 import subprocess
+import sys
 import time
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
+from types import ModuleType
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "cc-task-offer-ready"
+
+
+def _load_module() -> ModuleType:
+    name = "cc_task_offer_ready_test_module"
+    sys.modules.pop(name, None)
+    loader = SourceFileLoader(name, str(SCRIPT))
+    spec = importlib.util.spec_from_loader(name, loader)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _write(path: Path, text: str) -> Path:
@@ -130,6 +146,31 @@ def test_concurrent_close_cannot_be_recreated_by_offer_ready(tmp_path: Path) -> 
 
     assert not task.exists()
     assert "status: ready" in closed.read_text(encoding="utf-8")
+
+
+def test_claim_between_validation_and_write_causes_preimage_hold(tmp_path: Path) -> None:
+    module = _load_module()
+    vault = tmp_path / "tasks"
+    task = _write_ready_task(vault)
+    _write_dep(vault)
+    module.OWNERSHIP_CACHE = tmp_path / ".cache" / "hapax"
+
+    def claim_during_dependency_check(_vault: Path, _fields: dict) -> list[str]:
+        task.write_text(
+            task.read_text(encoding="utf-8")
+            .replace("status: ready", "status: claimed")
+            .replace("assigned_to: null", "assigned_to: cx-racer"),
+            encoding="utf-8",
+        )
+        return []
+
+    module.dependency_blockers = claim_during_dependency_check
+
+    assert module.promote("ready-task", vault_root=vault, dry_run=False) == 8
+    text = task.read_text(encoding="utf-8")
+    assert "status: claimed" in text
+    assert "assigned_to: cx-racer" in text
+    assert "promoted ready -> offered" not in text
 
 
 def test_blocks_ready_task_with_nonterminal_dependency(tmp_path: Path) -> None:

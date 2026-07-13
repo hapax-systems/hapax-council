@@ -1428,7 +1428,7 @@ def test_main_runs_clean_on_empty_world(tmp_path: Path) -> None:
 
 
 # ----------------------------------------------------------------------------
-# main() ghost-claim self-heal (effect-based auto-action wiring)
+# main() ghost-claim HOLD projection
 # ----------------------------------------------------------------------------
 
 
@@ -1450,10 +1450,8 @@ def _main_args(tmp_path: Path, vault: Path) -> list[str]:
     ]
 
 
-def test_main_auto_reverts_ghost_claimed(tmp_path: Path) -> None:
-    """A ghost-claimed note (status: claimed, assigned but claimed_at=null) is
-    self-healed back to `offered` in one sweep — the effect-based repair that
-    stops the violation re-firing (P0 incident 2026-06-13, 39x storm)."""
+def test_main_holds_ghost_claimed_for_governed_recovery(tmp_path: Path) -> None:
+    """A standing hygiene sweep must not detach even an apparently ghost claim."""
     sweeper = _load_sweeper_module()
     vault = _build_vault(tmp_path)
     note_path = _write_note(
@@ -1467,15 +1465,15 @@ def test_main_auto_reverts_ghost_claimed(tmp_path: Path) -> None:
     with patch("cc_hygiene.checks._gh_pr_list", return_value=[]):
         rc = sweeper.main(_main_args(tmp_path, vault))
     assert rc == 0
-    healed = parse_task_note(note_path)
-    assert healed is not None
-    assert healed.status == "offered"
-    assert healed.assigned_to == "unassigned"
-    assert healed.claimed_at is None
+    held = parse_task_note(note_path)
+    assert held is not None
+    assert held.status == "claimed"
+    assert held.assigned_to == "epsilon"
+    assert held.claimed_at is None
 
 
-def test_main_ghost_claim_does_not_recur_after_heal(tmp_path: Path) -> None:
-    """Storm-stop canary: sweep 1 detects + heals; sweep 2 finds NO ghost event."""
+def test_main_ghost_claim_remains_visible_while_hold_is_unresolved(tmp_path: Path) -> None:
+    """A repeated projection remains visible until governed recovery resolves it."""
     sweeper = _load_sweeper_module()
     vault = _build_vault(tmp_path)
     recur_ghost_path = _write_note(
@@ -1491,11 +1489,11 @@ def test_main_ghost_claim_does_not_recur_after_heal(tmp_path: Path) -> None:
         assert sweeper.main(args) == 0
         assert sweeper.main(args) == 0
     payload = json.loads((tmp_path / "state.json").read_text())
-    assert not any(e["check_id"] == "ghost_claimed" for e in payload["events"])
+    assert any(e["check_id"] == "ghost_claimed" for e in payload["events"])
 
 
 def test_main_no_actions_flag_preserves_ghost(tmp_path: Path) -> None:
-    """--no-actions keeps the sweeper observational (no auto-revert) for diagnosis."""
+    """--no-actions keeps every hygiene class observational for diagnosis."""
     sweeper = _load_sweeper_module()
     vault = _build_vault(tmp_path)
     note_path = _write_note(
@@ -1515,8 +1513,7 @@ def test_main_no_actions_flag_preserves_ghost(tmp_path: Path) -> None:
 
 
 def test_main_does_not_touch_healthy_claim(tmp_path: Path) -> None:
-    """No-op canary (parent-spec watch-list #2): a legitimately claimed task
-    (assigned + claimed_at) is never reverted by the self-heal."""
+    """No-op canary: a legitimately claimed task is never treated as a ghost."""
     sweeper = _load_sweeper_module()
     vault = _build_vault(tmp_path)
     note_path = _write_note(
@@ -1537,7 +1534,7 @@ def test_main_does_not_touch_healthy_claim(tmp_path: Path) -> None:
 
 
 # ----------------------------------------------------------------------------
-# main() ghost-claim self-heal — notification suppression (post-#4140 recurrence)
+# main() ghost-claim HOLD notification
 # ----------------------------------------------------------------------------
 
 
@@ -1564,18 +1561,8 @@ def _main_args_with_ntfy(tmp_path: Path, vault: Path) -> list[str]:
     ]
 
 
-def test_main_does_not_page_for_self_healed_ghost(tmp_path: Path) -> None:
-    """Post-#4140 recurrence fix: a ghost-claimed note self-healed in THIS sweep
-    must NOT dispatch an ntfy alert.
-
-    #4140 wired the heal (storm stops re-firing) but left ``dispatch_alerts``
-    running over the un-filtered sweep events, so the FIRST detection still sent
-    a ``violation`` ntfy -> ``p0-incident-intake`` minted a fresh P0 task for
-    every transient ghost (one per task_id; observed 2026-06-15/16, ledger
-    fingerprints ``...segprep-s2-compo`` et al.). The heal already remediated the
-    violation; paging the operator (and minting a task) for an auto-fixed
-    transient is noise. Detection stays in the event log (asserted below), so
-    this is severity-routing, not detection-avoidance."""
+def test_main_pages_for_unresolved_ghost_hold(tmp_path: Path) -> None:
+    """A held ownership anomaly remains operator-visible without being detached."""
     sweeper = _load_sweeper_module()
     vault = _build_vault(tmp_path)
     note_path = _write_note(
@@ -1593,20 +1580,15 @@ def test_main_does_not_page_for_self_healed_ghost(tmp_path: Path) -> None:
     ):
         rc = sweeper.main(_main_args_with_ntfy(tmp_path, vault))
     assert rc == 0
-    # Healed on disk...
-    healed = parse_task_note(note_path)
-    assert healed is not None
-    assert healed.status == "offered"
-    # ...and NOT paged (this is the regression #4140 left open).
-    assert sender.call_count == 0
-    # Detection is still durably recorded — no detection-avoidance.
+    held = parse_task_note(note_path)
+    assert held is not None
+    assert held.status == "claimed"
+    assert sender.call_count == 1
     assert "ghost_claimed" in (tmp_path / "log.md").read_text()
 
 
 def test_main_still_pages_unhealed_ghost_under_no_actions(tmp_path: Path) -> None:
-    """Contrast / over-suppression guard: with ``--no-actions`` the ghost is NOT
-    healed, so the violation persists and MUST still page. Suppression is keyed
-    strictly to a *successful* heal, never to the mere presence of a ghost."""
+    """Explicit observational mode also keeps the unresolved HOLD visible."""
     sweeper = _load_sweeper_module()
     vault = _build_vault(tmp_path)
     note_path = _write_note(
@@ -1624,9 +1606,9 @@ def test_main_still_pages_unhealed_ghost_under_no_actions(tmp_path: Path) -> Non
     ):
         rc = sweeper.main(_main_args_with_ntfy(tmp_path, vault) + ["--no-actions"])
     assert rc == 0
-    # Not healed (observational mode)...
+    # Ownership remains untouched in observational mode.
     same = parse_task_note(note_path)
     assert same is not None
     assert same.status == "claimed"
-    # ...so the live violation still pages.
+    # The live violation still pages.
     assert sender.call_count == 1

@@ -71,8 +71,23 @@ if [ -z "$role" ]; then
   exit 0
 fi
 
-claim_file="$HOME/.cache/hapax/cc-active-task-$role"
+session_id=""
+claim_key="$role"
+if declare -F hapax_session_id_into >/dev/null 2>&1 \
+   && hapax_session_id_into session_id 2>/dev/null; then
+  if ! hapax_claim_keyable_session_id "$session_id"; then
+    echo "pr-release-gate: BLOCKED — present session id is not claim-keyable; refusing legacy-claim downgrade." >&2
+    exit 2
+  fi
+  claim_key="$role-$session_id"
+fi
+
+claim_file="$HOME/.cache/hapax/cc-active-task-$claim_key"
 if [ ! -f "$claim_file" ]; then
+  if [ -n "$session_id" ]; then
+    echo "pr-release-gate: BLOCKED — exact session claim '$claim_key' is absent." >&2
+    exit 2
+  fi
   echo "pr-release-gate: ADVISORY — no claimed task for '$role'; skipping release precheck." >&2
   exit 0
 fi

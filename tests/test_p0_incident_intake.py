@@ -11,6 +11,8 @@ from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
 
+import pytest
+
 import shared.p0_incident_intake as p0_intake
 from shared.p0_incident_intake import (
     DEFAULT_AUTHORITY_CASE,
@@ -20,6 +22,7 @@ from shared.p0_incident_intake import (
     record_notification,
     replace_id_for_fingerprint,
 )
+from shared.sdlc_filesystem_transaction import FilesystemTransactionError
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INTAKE_SCRIPT = REPO_ROOT / "scripts" / "hapax-p0-incident-intake"
@@ -142,6 +145,44 @@ def test_same_incident_updates_existing_task(tmp_path):
     assert "p0-incident-intake updated" in task
 
 
+def test_existing_task_update_cannot_overwrite_concurrent_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "tasks" / "active" / "incident.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "---\ntask_id: incident\nupdated_at: old\nincident_count: 1\n"
+        "last_incident_at: old\nlast_incident_fingerprint: old\n---\n"
+        "## Evidence\n",
+        encoding="utf-8",
+    )
+    real_replace = p0_intake.replace_task_note_transactionally
+
+    def concurrent_replace(*args, **kwargs):
+        path.write_text("concurrent owner update\n", encoding="utf-8")
+        return real_replace(*args, **kwargs)
+
+    monkeypatch.setattr(p0_intake, "replace_task_note_transactionally", concurrent_replace)
+
+    with pytest.raises(FilesystemTransactionError, match="preimage changed"):
+        p0_intake._update_existing_task(
+            path,
+            {
+                "count": 2,
+                "fingerprint": "incident:test",
+                "kind": "systemd_service_failed",
+                "first_seen": "2026-06-12T20:00:00Z",
+                "last_seen": "2026-06-12T20:05:00Z",
+            },
+            title="Service Failed: demo.service",
+            message="still failed",
+            now=datetime(2026, 6, 12, 20, 5, tzinfo=UTC),
+        )
+
+    assert path.read_text(encoding="utf-8") == "concurrent owner update\n"
+
+
 def test_recurrence_after_closed_task_mints_new_active_task_with_prior_context(tmp_path):
     task_root = tmp_path / "tasks"
     state_path = tmp_path / "state.json"
@@ -174,7 +215,7 @@ def test_recurrence_after_closed_task_mints_new_active_task_with_prior_context(t
         """
     )
     closed_dir = task_root / "closed"
-    closed_dir.mkdir(parents=True)
+    closed_dir.mkdir(parents=True, exist_ok=True)
     closed_path = closed_dir / first_result.task_path.name
     closed_path.write_text(first_task, encoding="utf-8")
     first_result.task_path.unlink()

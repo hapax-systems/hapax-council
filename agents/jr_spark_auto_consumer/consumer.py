@@ -25,6 +25,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from shared.sdlc_filesystem_transaction import (
+    create_task_note_transactionally,
+    task_note_transaction_context,
+)
+
 DEFAULT_PACKET_ROOT = Path.home() / ".cache/hapax/gemini-jr-team/packets"
 DEFAULT_STATE_ROOT = Path.home() / ".cache/hapax/jr-spark-auto-consumer"
 DEFAULT_VAULT_ROOT = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks"
@@ -658,9 +663,18 @@ def _write_offered_task(packet: Packet, vault_root: Path, *, task_id: str) -> Pa
             "",
         ]
     )
-    tmp = path.with_suffix(".md.tmp")
-    tmp.write_text(body, encoding="utf-8")
-    tmp.replace(path)
+    guards = tuple(vault_root / state / path.name for state in ("closed", "refused"))
+    for guard in guards:
+        guard.parent.mkdir(parents=True, exist_ok=True)
+    resolved_vault, cache_dir = task_note_transaction_context(path, vault_root=vault_root)
+    create_task_note_transactionally(
+        path,
+        content=body.encode("utf-8"),
+        mode=0o644,
+        cache_dir=cache_dir,
+        vault_root=resolved_vault,
+        absent_guard_paths=guards,
+    )
     return path
 
 

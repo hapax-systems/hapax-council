@@ -552,6 +552,50 @@ def test_nfs_noop_prepared_recovery_refuses_before_journal_archive(
     assert not list(root.glob(".journal.json.history-*-recovered-pre"))
 
 
+def test_noop_recovery_probes_distinct_target_filesystem_before_archive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journal_root = tmp_path / "journal-root"
+    target_root = tmp_path / "target-root"
+    journal_root.mkdir()
+    target_root.mkdir()
+    target = target_root / "target"
+    target.write_bytes(b"pre")
+    journal = journal_root / "journal.json"
+    transaction._write_manifest(
+        journal,
+        state="prepared",
+        entries=[
+            {
+                "path": str(target),
+                "pre_content": transaction._encoded(b"pre"),
+                "pre_mode": 0o644,
+                "post_content": transaction._encoded(b"post"),
+                "post_mode": 0o644,
+            }
+        ],
+    )
+    original_rename = transaction._renameat2
+
+    def unsupported_target(source: Path, destination: Path, flags: int) -> None:
+        if source.is_relative_to(target_root) or destination.is_relative_to(target_root):
+            raise OSError(errno.EINVAL, "target filesystem rejects rename flags")
+        original_rename(source, destination, flags)
+
+    monkeypatch.setattr(transaction, "_renameat2", unsupported_target)
+
+    with pytest.raises(FilesystemTransactionError, match="atomic no-replace support"):
+        recover_filesystem_transaction(
+            journal,
+            allowed_roots=(journal_root, target_root),
+        )
+
+    assert journal.is_dir()
+    assert target.read_bytes() == b"pre"
+    assert not list(journal_root.glob(".journal.json.history-*"))
+
+
 def test_no_replace_capability_probe_preserves_raced_destination(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1559,6 +1603,49 @@ def test_legacy_v1_missing_target_holds_instead_of_evidencing_supersession(
             allowed_roots=(root,),
         )
 
+    assert legacy.is_file()
+    assert not list(root.glob(f".{legacy.name}.history-v1-*-legacy-superseded*"))
+
+
+def test_legacy_v1_checks_all_missing_targets_before_retiring_on_third_image(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    first = root / "first"
+    second = root / "second"
+    first.write_bytes(b"operator-third-image")
+    entries = [
+        {
+            "path": str(first),
+            "pre_content": transaction._encoded(b"first-pre"),
+            "pre_mode": 0o644,
+            "post_content": transaction._encoded(b"first-post"),
+            "post_mode": 0o644,
+        },
+        {
+            "path": str(second),
+            "pre_content": transaction._encoded(b"second-pre"),
+            "pre_mode": 0o644,
+            "post_content": transaction._encoded(b"second-post"),
+            "post_mode": 0o644,
+        },
+    ]
+    body = {"schema": transaction.TRANSACTION_SCHEMA_V1, "state": "prepared", "entries": entries}
+    digest = hashlib.sha256(transaction._canonical_bytes(body)).hexdigest()
+    legacy = root / "cc-ownership-txn-task.json"
+    legacy.write_bytes(transaction._canonical_bytes({**body, "manifest_sha256": digest}) + b"\n")
+    legacy.chmod(0o600)
+
+    with pytest.raises(FilesystemTransactionError, match="target image is missing"):
+        transaction.migrate_legacy_filesystem_transactions(
+            root / "cc-ownership-txn.json",
+            (legacy,),
+            allowed_roots=(root,),
+        )
+
+    assert first.read_bytes() == b"operator-third-image"
+    assert not second.exists()
     assert legacy.is_file()
     assert not list(root.glob(f".{legacy.name}.history-v1-*-legacy-superseded*"))
 

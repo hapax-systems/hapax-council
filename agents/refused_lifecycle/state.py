@@ -81,6 +81,8 @@ class RefusalTask(BaseModel):
     refusal_history: list[RefusalHistoryEntry] = Field(default_factory=list)
     superseded_by: str | None = None
     acceptance_evidence: dict | None = None
+    source_content: bytes | None = Field(default=None, exclude=True, repr=False)
+    source_mode: int | None = Field(default=None, exclude=True)
 
 
 class RemovalSignal(BaseModel):

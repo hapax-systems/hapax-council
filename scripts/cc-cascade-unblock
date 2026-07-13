@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -20,6 +21,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from shared.sdlc_filesystem_transaction import (  # noqa: E402
+    FilesystemTransactionError,
+    replace_task_note_transactionally,
+)
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_NON_FULFILLING_CLOSED_STATUSES,
     frontmatter_from_text,
@@ -27,9 +32,42 @@ from shared.sdlc_lifecycle import (  # noqa: E402
     task_closure_validity,
 )
 
-VAULT = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks"
+DEFAULT_VAULT = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks"
+VAULT = DEFAULT_VAULT
 ACTIVE = VAULT / "active"
 CLOSED = VAULT / "closed"
+OWNERSHIP_CACHE = Path.home() / ".cache/hapax"
+
+
+def _ownership_cache() -> Path:
+    return OWNERSHIP_CACHE if VAULT == DEFAULT_VAULT else VAULT / ".hapax-ownership-cache"
+
+
+def _safe_read_snapshot(path: Path) -> tuple[bytes, str, int] | None:
+    try:
+        metadata = path.lstat()
+        raw = path.read_bytes()
+        return raw, raw.decode("utf-8", errors="replace"), stat.S_IMODE(metadata.st_mode)
+    except OSError:
+        return None
+
+
+def _replace_snapshot(path: Path, raw: bytes, mode: int, text: str) -> bool:
+    try:
+        replace_task_note_transactionally(
+            path,
+            expected_content=raw,
+            content=text.encode("utf-8"),
+            expected_mode=mode,
+            cache_dir=_ownership_cache(),
+            vault_root=VAULT,
+        )
+    except (OSError, FilesystemTransactionError) as exc:
+        print(
+            f"cc-cascade-unblock: task note changed before commit: {path}: {exc}", file=sys.stderr
+        )
+        return False
+    return True
 
 
 def _safe_read_text(path: Path) -> str | None:
@@ -211,17 +249,20 @@ def _yaml_scalar(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def _blocked_candidates(trigger_task_id: str | None) -> list[tuple[Path, str, list[str]]]:
+def _blocked_candidates(
+    trigger_task_id: str | None,
+) -> list[tuple[Path, bytes, str, int, list[str]]]:
     if not ACTIVE.is_dir():
         return []
 
     trigger_aliases = _trigger_aliases(trigger_task_id)
-    candidates: list[tuple[Path, str, list[str]]] = []
+    candidates: list[tuple[Path, bytes, str, int, list[str]]] = []
 
     for f in sorted(ACTIVE.glob("*.md")):
-        text = _safe_read_text(f)
-        if text is None:
+        snapshot = _safe_read_snapshot(f)
+        if snapshot is None:
             continue
+        raw, text, mode = snapshot
         status_m = re.search(r"^status:\s*(\S+)", text, re.M)
         if not status_m or status_m.group(1) != "blocked":
             continue
@@ -231,7 +272,7 @@ def _blocked_candidates(trigger_task_id: str | None) -> list[tuple[Path, str, li
             continue
         if trigger_aliases and not trigger_aliases.intersection(deps):
             continue
-        candidates.append((f, text, deps))
+        candidates.append((f, raw, text, mode, deps))
 
     return candidates
 
@@ -241,11 +282,11 @@ def cascade_unblock(trigger_task_id: str | None = None) -> int:
     if not candidates:
         return 0
 
-    required_dep_ids = {dep for _, _, deps in candidates for dep in deps}
+    required_dep_ids = {dep for _, _, _, _, deps in candidates for dep in deps}
     satisfied_ids, blockers_by_id = _dependency_validity(required_dep_ids)
     unblocked = 0
 
-    for f, text, deps in candidates:
+    for f, raw, text, mode, deps in candidates:
         frontmatter = frontmatter_from_text(text)
         if is_active_blocked_with_evidence(frontmatter):
             print(
@@ -264,13 +305,14 @@ def cascade_unblock(trigger_task_id: str | None = None) -> int:
                     reasons.append(f"{dep} (not found or not closure-valid)")
             blocked_reason = "waiting_for_closure_valid_dependencies: " + "; ".join(reasons)
             new = _set_frontmatter_scalar(text, "blocked_reason", blocked_reason)
-            if new != text:
-                f.write_text(new, encoding="utf-8")
+            if new != text and not _replace_snapshot(f, raw, mode, new):
+                continue
             continue
 
         new = re.sub(r"^status: blocked", "status: offered", text, count=1, flags=re.M)
         new = _set_frontmatter_scalar(new, "blocked_reason", "null")
-        f.write_text(new)
+        if not _replace_snapshot(f, raw, mode, new):
+            continue
         unblocked += 1
         print(f"cc-cascade-unblock: {f.stem} -> offered (all deps satisfied)")
 
@@ -295,9 +337,10 @@ def cascade_withdraw() -> int:
 
     withdrawn = 0
     for f in sorted(ACTIVE.glob("*.md")):
-        text = _safe_read_text(f)
-        if text is None:
+        snapshot = _safe_read_snapshot(f)
+        if snapshot is None:
             continue
+        raw, text, mode = snapshot
         status_m = re.search(r"^status:\s*(\S+)", text, re.M)
         if not status_m or status_m.group(1) in TASK_NON_FULFILLING_CLOSED_STATUSES:
             continue
@@ -324,7 +367,8 @@ def cascade_withdraw() -> int:
             count=1,
             flags=re.M,
         )
-        f.write_text(new, encoding="utf-8")
+        if not _replace_snapshot(f, raw, mode, new):
+            continue
         withdrawn += 1
         print(f"cc-cascade-unblock: {f.stem} -> withdrawn (all deps non-fulfilling)")
 

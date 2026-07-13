@@ -345,6 +345,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import yaml
+
 path = Path(sys.argv[1])
 release_kind = sys.argv[2]
 text = path.read_text(encoding="utf-8")
@@ -357,18 +359,49 @@ if end < 0:
     sys.exit(0)
 front = text[4:end]
 fields = {}
-for line in front.splitlines():
-    line = line.strip()
-    if ":" in line:
-        key, _, val = line.partition(":")
-        fields[key.strip()] = val.strip().strip('"').strip("'")
+try:
+    loader = yaml.SafeLoader(front)
+    try:
+        node = loader.get_single_node()
+        if node is not None and not isinstance(node, yaml.MappingNode):
+            raise ValueError("frontmatter is not a mapping")
+        for key_node, value_node in node.value if node is not None else []:
+            key = loader.construct_object(key_node, deep=True)
+            try:
+                duplicate = key in fields
+            except TypeError as exc:
+                raise ValueError("frontmatter has an unhashable top-level key") from exc
+            if duplicate:
+                raise ValueError(f"duplicate top-level key {key!r}")
+            value = loader.construct_object(value_node, deep=True)
+            if value is None:
+                fields[key] = ""
+            elif isinstance(value, bool):
+                fields[key] = "true" if value else "false"
+            elif isinstance(value, (dict, list)):
+                fields[key] = value
+            else:
+                fields[key] = str(value).strip()
+    finally:
+        loader.dispose()
+except (ValueError, yaml.YAMLError) as exc:
+    print(f"malformed_frontmatter:{str(exc).replace(chr(9), ' ')}")
+    sys.exit(0)
 
-authority_case = (fields.get("authority_case") or fields.get("case_id", "")).strip()
+
+def scalar(name, default=""):
+    value = fields.get(name, default)
+    if isinstance(value, (dict, list)):
+        return ""
+    return str(value or "").strip()
+
+
+authority_case = scalar("authority_case") or scalar("case_id")
 if authority_case.lower() in {"", "null", "none", "~", "[]"}:
     print("no_authority_case")
     sys.exit(0)
 
-parent_spec = fields.get("parent_spec", "")
+parent_spec = scalar("parent_spec")
 if parent_spec.lower() in {"", "null", "none", "~", "[]"}:
     print("missing_parent_spec")
     sys.exit(0)
@@ -410,9 +443,9 @@ if defaulted:
     except OSError:
         pass
 
-impl = fields.get("implementation_authorized", "false")
-release = fields.get("release_authorized", "false")
-stage = fields.get("stage", "")
+impl = scalar("implementation_authorized", "false")
+release = scalar("release_authorized", "false")
+stage = scalar("stage")
 
 # For push: implementation must be authorized
 if impl != "true":

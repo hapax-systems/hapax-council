@@ -74,6 +74,26 @@ def test_run_triage_pass_updates_bounded_candidates_and_writes_state(tmp_path: P
     assert second["annotation_source"] == "deterministic_fallback"
 
 
+def test_run_triage_pass_cannot_overwrite_change_during_model_call(tmp_path: Path) -> None:
+    root = tmp_path / "tasks"
+    state = tmp_path / "state" / "officer-state.json"
+    path = _write_task(root, "race", annotation_source="deterministic_fallback")
+
+    run = run_triage_pass(
+        task_root=root,
+        state_path=state,
+        model_name="balanced",
+        write=True,
+        limit=1,
+        agent_factory=lambda _model: _MutatingFakeAgent(path),
+    )
+
+    assert run.updated == 0
+    assert run.failed == 1
+    frontmatter, _body = parse_frontmatter(path)
+    assert frontmatter["annotation_source"] == "operator_override"
+
+
 class _RunResult:
     output = None
 
@@ -84,6 +104,22 @@ class _RunResult:
 class _FakeAgent:
     def run_sync(self, prompt: str) -> _RunResult:
         assert "Hapax frontier triage officer" in prompt
+        return _RunResult(_annotation())
+
+
+class _MutatingFakeAgent:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def run_sync(self, prompt: str) -> _RunResult:
+        assert "Hapax frontier triage officer" in prompt
+        text = self.path.read_text(encoding="utf-8")
+        self.path.write_text(
+            text.replace(
+                "annotation_source: deterministic_fallback", "annotation_source: operator_override"
+            ),
+            encoding="utf-8",
+        )
         return _RunResult(_annotation())
 
 

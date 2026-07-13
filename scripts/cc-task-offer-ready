@@ -96,7 +96,11 @@ def locate_task(
 
 
 def parse_fields(path: Path) -> dict[str, Any]:
-    lines, _suffix = split_frontmatter(path.read_text(encoding="utf-8"))
+    return parse_fields_text(path.read_text(encoding="utf-8"))
+
+
+def parse_fields_text(text: str) -> dict[str, Any]:
+    lines, _suffix = split_frontmatter(text)
     loaded = yaml.safe_load("\n".join(lines)) or {}
     if not isinstance(loaded, dict):
         return {}
@@ -261,10 +265,10 @@ def rewrite_note(
     task_id: str,
     dry_run: bool,
     vault_root: Path,
+    expected_content: bytes,
+    expected_mode: int,
 ) -> None:
-    metadata = path.lstat()
-    raw = path.read_bytes()
-    text = raw.decode("utf-8")
+    text = expected_content.decode("utf-8")
     lines, suffix = split_frontmatter(text)
     replace_or_insert_scalar(lines, "status", status)
     replace_or_insert_scalar(lines, "assigned_to", "unassigned")
@@ -284,9 +288,9 @@ def rewrite_note(
         return
     replace_task_note_transactionally(
         path,
-        expected_content=raw,
+        expected_content=expected_content,
         content=next_text.encode("utf-8"),
-        expected_mode=stat.S_IMODE(metadata.st_mode),
+        expected_mode=expected_mode,
         cache_dir=OWNERSHIP_CACHE,
         vault_root=vault_root,
     )
@@ -301,7 +305,9 @@ def promote(task_id: str, *, vault_root: Path, dry_run: bool) -> int:
         )
         return 2
 
-    fields = parse_fields(task_path)
+    metadata = task_path.lstat()
+    raw = task_path.read_bytes()
+    fields = parse_fields_text(raw.decode("utf-8"))
     status = strip_scalar(fields.get("status", ""))
     if status == "offered":
         print(f"cc-task-offer-ready: task '{task_id}' is already offered")
@@ -366,6 +372,8 @@ def promote(task_id: str, *, vault_root: Path, dry_run: bool) -> int:
             task_id=task_id,
             dry_run=dry_run,
             vault_root=vault_root,
+            expected_content=raw,
+            expected_mode=stat.S_IMODE(metadata.st_mode),
         )
     except (OSError, UnicodeDecodeError, FilesystemTransactionError) as exc:
         print(f"cc-task-offer-ready: task note changed before commit: {exc}", file=sys.stderr)

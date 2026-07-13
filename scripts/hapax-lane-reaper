@@ -78,15 +78,18 @@ governor_repo() {
 is_quota_wall_output() {
     local text="$1"
     [[ -z "$text" ]] && return 1
-    printf '%s\n' "$text" | grep -Eiq 'HTTP[[:space:]]*429[[:space:]:-]+Too Many Requests' && return 0
-    printf '%s\n' "$text" | grep -Eiq '(^|[^[:alnum:]])429[[:space:]]+Too Many Requests([^[:alnum:]]|$)' && return 0
-    printf '%s\n' "$text" | grep -Eiq 'rate[-_.[:space:]]*limit(ed)?[-_.[:space:]]+(exceeded|reached)' && return 0
-    printf '%s\n' "$text" | grep -Eiq '(exceeded|reached)[[:space:]]+rate[-_.[:space:]]*limit' && return 0
-    printf '%s\n' "$text" | grep -Eiq 'Usage limit[[:space:]]+(reached|exceeded|hit)' && return 0
-    printf '%s\n' "$text" | grep -Eiq 'weekly[[:space:]]+limit[[:space:]]+(reached|exceeded|hit)' && return 0
-    printf '%s\n' "$text" | grep -Eiq 'hit[[:space:]]+(your[[:space:]]+)?weekly[[:space:]]+limit' && return 0
-    printf '%s\n' "$text" | grep -Eiq 'quota[-_[:space:]]+(wall|exceeded|reached|blocked|exhausted)' && return 0
-    printf '%s\n' "$text" | grep -Eiq 'quota[-_[:space:]]+limit[-_[:space:]]+(reached|exceeded|hit)' && return 0
+    # Provider walls are terminal, line-shaped evidence. Never infer a wall from
+    # an identifier, taxonomy label, prose sentence, or underscored classifier.
+    local prefix='[[:space:]]*((error|fatal|blocked|provider error)[[:space:]]*:[[:space:]]*)?'
+    local suffix='[.!]?[[:space:]]*$'
+    printf '%s\n' "$text" | grep -Eiq "^${prefix}(HTTP[[:space:]]*)?429[[:space:]:-]+Too Many Requests${suffix}" && return 0
+    printf '%s\n' "$text" | grep -Eiq "^${prefix}rate[-[:space:]]*limit(ed)?[-[:space:]]+(exceeded|reached)${suffix}" && return 0
+    printf '%s\n' "$text" | grep -Eiq "^${prefix}(exceeded|reached)[[:space:]]+rate[-[:space:]]*limit${suffix}" && return 0
+    printf '%s\n' "$text" | grep -Eiq "^${prefix}Usage[[:space:]]+limit[[:space:]]+(reached|exceeded|hit)${suffix}" && return 0
+    printf '%s\n' "$text" | grep -Eiq "^${prefix}weekly[[:space:]]+limit[[:space:]]+(reached|exceeded|hit)${suffix}" && return 0
+    printf '%s\n' "$text" | grep -Eiq "^${prefix}(you have|you've|youve)?[[:space:]]*hit[[:space:]]+(your[[:space:]]+)?weekly[[:space:]]+limit${suffix}" && return 0
+    printf '%s\n' "$text" | grep -Eiq "^${prefix}quota[-[:space:]]+(wall|exceeded|reached|blocked|exhausted)${suffix}" && return 0
+    printf '%s\n' "$text" | grep -Eiq "^${prefix}quota[[:space:]]+limit[[:space:]]+(reached|exceeded|hit)${suffix}" && return 0
     return 1
 }
 

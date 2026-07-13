@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,6 +12,14 @@ import yaml
 
 from agents.request_decomposer.models import RequestDecomposition, TaskSpec
 from shared.frontmatter import parse_frontmatter
+from shared.sdlc_filesystem_transaction import (
+    FileMutation,
+    TaskNoteSnapshot,
+    execute_filesystem_transaction,
+    ownership_legacy_journals,
+    read_task_note_snapshot,
+    task_note_transaction_context,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -112,13 +121,15 @@ def _render_note(frontmatter: dict[str, Any], body: str) -> str:
     return f"---\n{yaml_text}\n---\n\n{body.rstrip()}\n"
 
 
-def _render_parent_request_update(decomposition: RequestDecomposition) -> tuple[Path, str] | None:
+def _render_parent_request_update(
+    decomposition: RequestDecomposition,
+) -> tuple[Path, str, TaskNoteSnapshot] | None:
     request_path = Path(decomposition.request_path).expanduser()
     if not request_path.is_file():
         return None
 
-    raw = request_path.read_text(encoding="utf-8")
-    frontmatter, body = parse_frontmatter(raw)
+    snapshot = read_task_note_snapshot(request_path)
+    frontmatter, body = parse_frontmatter(snapshot.content.decode("utf-8"))
     if not frontmatter:
         _log.warning(
             "parent request %s has no parseable frontmatter; not linking tasks", request_path
@@ -148,7 +159,7 @@ def _render_parent_request_update(decomposition: RequestDecomposition) -> tuple[
     updated["decomposition_task_count"] = len(task_ids)
     updated["updated_at"] = now
 
-    return request_path, _render_note(updated, body)
+    return request_path, _render_note(updated, body), snapshot
 
 
 def write_decomposition(
@@ -159,6 +170,8 @@ def write_decomposition(
 ) -> list[Path]:
     active_dir = task_root / "active"
     active_dir.mkdir(parents=True, exist_ok=True)
+    for state in ("closed", "refused"):
+        (task_root / state).mkdir(parents=True, exist_ok=True)
 
     blocks_map = _compute_blocks(decomposition.tasks)
 
@@ -176,41 +189,47 @@ def write_decomposition(
     if dry_run:
         return list(staged.keys())
 
-    tmp_paths: list[tuple[Path, Path]] = []
-    request_tmp: tuple[Path, Path] | None = None
-    try:
-        request_update = _render_parent_request_update(decomposition)
-        if request_update is not None:
-            request_path, request_content = request_update
-            tmp = request_path.with_suffix(request_path.suffix + ".decompose-tmp")
-            tmp.write_text(request_content, encoding="utf-8")
-            request_tmp = (tmp, request_path)
+    request_update = _render_parent_request_update(decomposition)
+    mutations: list[FileMutation] = []
+    for path, content in staged.items():
+        mutations.append(
+            FileMutation(
+                path=path, content=content.encode("utf-8"), mode=0o644, expected_exists=False
+            )
+        )
+        mutations.extend(
+            FileMutation(
+                path=task_root / state / path.name,
+                content=None,
+                expected_exists=False,
+            )
+            for state in ("closed", "refused")
+        )
 
-        for path, content in staged.items():
-            tmp = path.with_suffix(".md.decompose-tmp")
-            tmp.write_text(content, encoding="utf-8")
-            tmp_paths.append((tmp, path))
+    allowed_roots = [task_root]
+    if request_update is not None:
+        request_path, request_content, request_snapshot = request_update
+        mutations.append(
+            FileMutation(
+                path=request_path,
+                content=request_content.encode("utf-8"),
+                mode=request_snapshot.mode,
+                expected_sha256=hashlib.sha256(request_snapshot.content).hexdigest(),
+                expected_mode=request_snapshot.mode,
+            )
+        )
+        allowed_roots.append(request_path.parent)
 
-        written: list[Path] = []
-        for tmp, final in tmp_paths:
-            tmp.rename(final)
-            written.append(final)
-
-        if request_tmp is not None:
-            tmp, final = request_tmp
-            tmp.replace(final)
-
-    except Exception:
-        for tmp, final in tmp_paths:
-            if final.exists():
-                final.unlink()
-            if tmp.exists():
-                tmp.unlink()
-        if request_tmp is not None:
-            tmp, _final = request_tmp
-            if tmp.exists():
-                tmp.unlink()
-        raise
+    first_path = next(iter(staged))
+    _vault_root, cache_dir = task_note_transaction_context(first_path, vault_root=task_root)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    execute_filesystem_transaction(
+        cache_dir / "cc-ownership-txn.json",
+        mutations,
+        allowed_roots=(cache_dir, *allowed_roots),
+        legacy_journals=ownership_legacy_journals(cache_dir),
+    )
+    written = list(staged)
 
     _log.info(
         "Wrote %d tasks for request %s",

@@ -174,3 +174,16 @@ def test_widen_ledgers_the_change(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert ledger.exists()
     body = ledger.read_text(encoding="utf-8")
     assert "scope_widen" in body and "shared/coord_projection.py" in body
+
+
+def test_widen_refuses_already_closed_task(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    note, _ = _setup(tmp_path, monkeypatch, "closed-task")
+    closed = note.parent.parent / "closed" / note.name
+    closed.parent.mkdir(parents=True)
+    note.rename(closed)
+    before = closed.read_bytes()
+
+    rc = cc_scope_widen.widen("closed-task", ["shared/coord_projection.py"])
+
+    assert rc == cc_scope_widen.ERROR
+    assert closed.read_bytes() == before

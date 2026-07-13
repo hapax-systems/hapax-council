@@ -10,6 +10,7 @@ Exit 0 always — advisory, never blocks cc-close.
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from datetime import UTC, datetime
@@ -17,6 +18,17 @@ from pathlib import Path
 
 TASKS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks"
 REQUESTS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-requests/active"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from shared.sdlc_filesystem_transaction import (  # noqa: E402
+    FilesystemTransactionError,
+    create_task_note_transactionally,
+)
+
+OWNERSHIP_CACHE = Path(
+    os.environ.get("HAPAX_CC_OWNERSHIP_CACHE_DIR", str(Path.home() / ".cache/hapax"))
+).expanduser()
 
 
 def _extract_phase(task_id: str, title: str) -> int | None:
@@ -154,7 +166,20 @@ Auto-created by cc-phase-advance after Phase {current_phase} closed.
         print(f"cc-phase-advance: {slug} already exists")
         return
 
-    out_path.write_text(content, encoding="utf-8")
+    closed_path = TASKS_DIR / "closed" / out_path.name
+    closed_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        create_task_note_transactionally(
+            out_path,
+            content=content.encode("utf-8"),
+            mode=0o644,
+            cache_dir=OWNERSHIP_CACHE,
+            vault_root=TASKS_DIR,
+            absent_guard_paths=(closed_path,),
+        )
+    except (OSError, FilesystemTransactionError) as exc:
+        print(f"cc-phase-advance: create lost identity race for {slug}: {exc}")
+        return
     print(f"cc-phase-advance: created Phase {next_phase} task: {slug} (WSJF {wsjf:.1f})")
 
 

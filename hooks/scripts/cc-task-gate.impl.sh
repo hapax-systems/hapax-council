@@ -781,11 +781,14 @@ fi
 # Output format:
 # status assigned blocked authority parent_spec route_schema stage impl src docs runtime scope_refs
 parse_output="$(python3 - "$note_path" <<'PYEOF'
+import hashlib
+import json
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
-text = path.read_text(encoding="utf-8")
+raw = path.read_bytes()
+text = raw.decode("utf-8")
 if not text.startswith("---"):
     print("\t\t\t\t\t\t\t")
     sys.exit(0)
@@ -795,51 +798,165 @@ if end < 0:
     sys.exit(0)
 front = text[4:end]
 fields = {}
-lines = front.splitlines()
-idx = 0
-def normalize_value(key, val):
-    val = val.strip().strip('"').strip("'")
-    if key == "mutation_scope_refs" and val.startswith("[") and val.endswith("]"):
-        inner = val[1:-1].strip()
-        if not inner:
-            return ""
-        items = [
-            part.strip().strip('"').strip("'")
-            for part in inner.split(",")
-            if part.strip()
-        ]
-        return "\x1f".join(items)
-    return val
-while idx < len(lines):
-    raw = lines[idx]
-    if not raw or raw[0].isspace() or raw.startswith(("#", "-")):
-        idx += 1
-        continue
-    line = raw.strip()
-    idx += 1
-    if ":" not in line:
-        continue
-    key, _, val = line.partition(":")
-    key = key.strip()
-    val = normalize_value(key, val)
-    if key in fields:
-        print(f"__HAPAX_DUPLICATE_TOP_LEVEL__\t{key}")
-        sys.exit(0)
-    if val:
-        fields[key] = val
-        continue
-    items = []
-    while idx < len(lines):
-        child = lines[idx].strip()
-        if child.startswith("- "):
-            items.append(child[2:].strip().strip('"').strip("'"))
-            idx += 1
+
+
+def decode_quoted(value: str) -> str:
+    value = value.strip()
+    if value.startswith('"'):
+        decoded = json.loads(value)
+        if not isinstance(decoded, str):
+            raise ValueError("quoted YAML scalar is not a string")
+        return decoded
+    if value.startswith("'"):
+        if len(value) < 2 or not value.endswith("'"):
+            raise ValueError("unterminated single-quoted YAML scalar")
+        return value[1:-1].replace("''", "'")
+    return value
+
+
+def split_mapping_line(line: str) -> tuple[str, str] | None:
+    quote = ""
+    escaped = False
+    for index, character in enumerate(line):
+        if quote == '"':
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = ""
+        elif quote == "'":
+            if character == quote:
+                if index + 1 < len(line) and line[index + 1] == quote:
+                    continue
+                quote = ""
+        elif character in {'"', "'"}:
+            quote = character
+        elif character == ":":
+            key = decode_quoted(line[:index].strip())
+            if not key:
+                raise ValueError("empty top-level key")
+            return key, line[index + 1 :]
+    if quote:
+        raise ValueError("unterminated quoted YAML key")
+    return None
+
+
+def strip_comment(value: str) -> str:
+    quote = ""
+    escaped = False
+    for index, character in enumerate(value):
+        if quote == '"':
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = ""
+        elif quote == "'":
+            if character == quote:
+                if index + 1 < len(value) and value[index + 1] == quote:
+                    continue
+                quote = ""
+        elif character in {'"', "'"}:
+            quote = character
+        elif character == "#" and (index == 0 or value[index - 1].isspace()):
+            return value[:index].rstrip()
+    if quote:
+        raise ValueError("unterminated quoted YAML value")
+    return value.strip()
+
+
+def split_inline_list(value: str) -> list[str]:
+    inner = value[1:-1]
+    items: list[str] = []
+    start = 0
+    quote = ""
+    escaped = False
+    for index, character in enumerate(inner):
+        if quote == '"':
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = ""
+        elif quote == "'":
+            if character == quote:
+                quote = ""
+        elif character in {'"', "'"}:
+            quote = character
+        elif character == ",":
+            item = strip_comment(inner[start:index]).strip()
+            if item:
+                items.append(decode_quoted(item))
+            start = index + 1
+    item = strip_comment(inner[start:]).strip()
+    if item:
+        items.append(decode_quoted(item))
+    return items
+
+
+def normalize_value(key: str, value: str) -> str:
+    value = strip_comment(value).strip()
+    if not value or value in {"|", ">", "|-", ">-", "|+", ">+"}:
+        return ""
+    if value.startswith("["):
+        if not value.endswith("]"):
+            raise ValueError(f"unterminated inline list for {key}")
+        items = split_inline_list(value)
+        return "\x1f".join(items) if key == "mutation_scope_refs" else ""
+    if value.startswith(("{", "&", "*", "!")):
+        return ""
+    normalized = decode_quoted(value)
+    lowered = normalized.lower()
+    if lowered in {"true", "false"}:
+        return lowered
+    if lowered in {"null", "none", "~"}:
+        return ""
+    return normalized
+
+
+try:
+    lines = front.splitlines()
+    index = 0
+    while index < len(lines):
+        raw_line = lines[index]
+        index += 1
+        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
             continue
-        if not child:
-            idx += 1
+        if raw_line[0].isspace():
             continue
-        break
-    fields[key] = "\x1f".join(items)
+        if raw_line.startswith("-"):
+            raise ValueError("frontmatter is not a top-level mapping")
+        pair = split_mapping_line(raw_line)
+        if pair is None:
+            raise ValueError("malformed top-level mapping entry")
+        key, raw_value = pair
+        if key in fields:
+            print(f"__HAPAX_DUPLICATE_TOP_LEVEL__\t{key}")
+            sys.exit(0)
+        value = normalize_value(key, raw_value)
+        if not value and key == "mutation_scope_refs":
+            items = []
+            child_index = index
+            while child_index < len(lines):
+                child = lines[child_index]
+                if not child.strip() or child.lstrip().startswith("#"):
+                    child_index += 1
+                    continue
+                if not child[0].isspace():
+                    break
+                stripped = child.strip()
+                if stripped.startswith("- "):
+                    items.append(decode_quoted(strip_comment(stripped[2:]).strip()))
+                child_index += 1
+            value = "\x1f".join(item for item in items if item)
+        fields[key] = value
+except (ValueError, json.JSONDecodeError) as exc:
+    print(f"__HAPAX_STRICT_YAML_ERROR__\t{str(exc).replace(chr(9), ' ')}")
+    sys.exit(0)
+
 status = fields.get("status", "")
 assigned = fields.get("assigned_to", "")
 blocked_reason = fields.get("blocked_reason", "")
@@ -853,10 +970,12 @@ src_auth = fields.get("source_mutation_authorized", "")
 docs_auth = fields.get("docs_mutation_authorized", "")
 runtime_auth = fields.get("runtime_mutation_authorized", "")
 scope_refs = fields.get("mutation_scope_refs", "")
+preimage_sha256 = hashlib.sha256(raw).hexdigest()
 print(
     f"{status}\t{assigned}\t{blocked_reason}\t{blocked_witness}\t"
     f"{authority_case}\t{parent_spec}\t{route_schema}\t{stage}\t"
-    f"{impl_auth}\t{src_auth}\t{docs_auth}\t{runtime_auth}\t{scope_refs}"
+    f"{impl_auth}\t{src_auth}\t{docs_auth}\t{runtime_auth}\t"
+    f"{preimage_sha256}\t{scope_refs}"
 )
 PYEOF
 )"
@@ -866,6 +985,15 @@ if [[ "$parse_output" == __HAPAX_DUPLICATE_TOP_LEVEL__* ]]; then
   _emit_block <<EOF
 cc-task-gate: BLOCKED — task '$task_id' has duplicate top-level frontmatter key '$_duplicate_key'.
   Repair the task note with the strict canonical parser before mutating files.
+EOF
+  exit 2
+fi
+if [[ "$parse_output" == __HAPAX_STRICT_YAML_ERROR__* ]]; then
+  _yaml_error="${parse_output#*$'\t'}"
+  _emit_block <<EOF
+cc-task-gate: BLOCKED — task '$task_id' has malformed or ambiguous YAML frontmatter.
+  Detail: $_yaml_error
+  Repair the task note with the canonical parser before mutating files.
 EOF
   exit 2
 fi
@@ -882,7 +1010,8 @@ impl_authorized="$(printf '%s' "$parse_output" | cut -f9)"
 src_authorized="$(printf '%s' "$parse_output" | cut -f10)"
 docs_authorized="$(printf '%s' "$parse_output" | cut -f11)"
 runtime_authorized="$(printf '%s' "$parse_output" | cut -f12)"
-mutation_scope_refs="$(printf '%s' "$parse_output" | cut -f13-)"
+note_preimage_sha256="$(printf '%s' "$parse_output" | cut -f13)"
+mutation_scope_refs="$(printf '%s' "$parse_output" | cut -f14-)"
 
 # --- 8. Check assigned_to ---
 _owner_matches=false
@@ -993,7 +1122,7 @@ _task_note_transaction() {
   local note="$1" operation="$2" key="${3:-}" value="${4:-}"
   python3 - "$SCRIPT_DIR/../.." "$HOME/.cache/hapax/cc-ownership-txn.json" \
     "$HOME/.cache/hapax" "$note" "$operation" "$key" "$value" \
-    "$task_id" "$assigned" "$status" <<'PYEOF' 2>/dev/null
+    "$task_id" "$assigned" "$status" "$note_preimage_sha256" <<'PYEOF' 2>/dev/null
 import hashlib
 import re
 import stat
@@ -1005,7 +1134,7 @@ repo_root = Path(sys.argv[1]).resolve()
 journal = Path(sys.argv[2])
 cache_dir = Path(sys.argv[3])
 path = Path(sys.argv[4])
-operation, key, value, task_id, assigned, expected_status = sys.argv[5:11]
+operation, key, value, task_id, assigned, expected_status, expected_sha256 = sys.argv[5:12]
 sys.path.insert(0, str(repo_root))
 
 from shared.sdlc_filesystem_transaction import (  # noqa: E402
@@ -1017,6 +1146,8 @@ metadata = path.lstat()
 if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
     raise ValueError("task note is not a regular file")
 raw = path.read_bytes()
+if hashlib.sha256(raw).hexdigest() != expected_sha256:
+    raise ValueError("task note changed after gate decision")
 text = raw.decode("utf-8")
 if not text.startswith("---"):
     raise ValueError("task note frontmatter missing")
@@ -1024,26 +1155,7 @@ end = text.find("\n---", 4)
 if end < 0:
     raise ValueError("task note frontmatter unclosed")
 front = text[4:end]
-
-
-def scalar(field: str) -> str:
-    value = None
-    for line in front.splitlines():
-        if not line or line[0].isspace() or line.startswith(("#", "-")):
-            continue
-        key, separator, raw_value = line.partition(":")
-        if separator and key.strip() == field:
-            if value is not None:
-                raise ValueError(f"task note {field} is duplicated")
-            value = raw_value.strip().strip('"').strip("'")
-    if value is None:
-        raise ValueError(f"task note {field} is missing")
-    return value
-
-
-current_status = scalar("status")
-if scalar("task_id") != task_id or scalar("assigned_to") != assigned:
-    raise ValueError("task note identity changed")
+current_status = expected_status
 
 if operation == "transition-claimed" and current_status == "in_progress":
     raise SystemExit(0)
@@ -1055,14 +1167,8 @@ if operation == "stamp":
     output: list[str] = []
     found = False
     for line in front.splitlines():
-        line_key, separator, _ = line.partition(":")
-        if (
-            line
-            and not line[0].isspace()
-            and not line.startswith(("#", "-"))
-            and separator
-            and line_key.strip() == key
-        ):
+        field_pattern = rf'''^(?:{re.escape(key)}|"{re.escape(key)}"|'{re.escape(key)}')\s*:'''
+        if line and not line[0].isspace() and re.match(field_pattern, line):
             output.append(f"{key}: {value}")
             found = True
         else:
@@ -1073,14 +1179,14 @@ if operation == "stamp":
 elif operation == "transition-claimed":
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     updated = re.sub(
-        r"^updated_at:.*$",
+        r'''^(?:updated_at|"updated_at"|'updated_at')\s*:.*$''',
         f"updated_at: {now}",
         text,
         count=1,
         flags=re.MULTILINE,
     )
     updated, replacements = re.subn(
-        r'''^status:\s*(?:claimed|"claimed"|'claimed')\s*$''',
+        r'''^(?:status|"status"|'status')\s*:\s*(?:claimed|"claimed"|'claimed')\s*$''',
         "status: in_progress",
         updated,
         count=1,

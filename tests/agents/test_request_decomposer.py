@@ -1991,7 +1991,7 @@ planning_case: CASE-TEST-001
         assert frontmatter["parent_spec"] == "SPEC-parent"
         assert frontmatter["authority_case"] == "CASE-ENV-001"
 
-    def test_closed_remediation_does_not_suppress_active_remediation(self, tmp_path, monkeypatch):
+    def test_closed_remediation_is_not_recreated_in_active(self, tmp_path, monkeypatch):
         script = _load_request_decompose_module()
         requests = tmp_path / "requests" / "active"
         tasks = tmp_path / "tasks"
@@ -2026,9 +2026,9 @@ planning_case: CASE-TEST-001
         assert script.main() == 0
 
         assert closed_remediation.exists()
-        assert (tasks / "active" / closed_remediation.name).exists()
+        assert not (tasks / "active" / closed_remediation.name).exists()
 
-    def test_terminal_active_remediation_is_reopened(self, tmp_path, monkeypatch):
+    def test_terminal_active_remediation_is_not_reopened(self, tmp_path, monkeypatch):
         script = _load_request_decompose_module()
         requests = tmp_path / "requests" / "active"
         tasks = tmp_path / "tasks"
@@ -2066,7 +2066,7 @@ planning_case: CASE-TEST-001
         assert script.main() == 0
 
         frontmatter, _body = parse_frontmatter(active_remediation)
-        assert frontmatter["status"] == "offered"
+        assert frontmatter["status"] == "done"
         assert frontmatter["remediates_request_id"] == "REQ-blocked"
 
     def test_scan_writes_llm_failure_remediation_task(self, tmp_path, monkeypatch):

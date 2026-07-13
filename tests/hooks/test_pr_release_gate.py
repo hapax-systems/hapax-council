@@ -20,7 +20,16 @@ HOOK = REPO_ROOT / "hooks" / "scripts" / "pr-release-gate.sh"
 
 def _run(payload: dict, *, env_extra: dict | None = None) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
-    for key in ("HAPAX_AGENT_ROLE", "CODEX_ROLE", "CLAUDE_ROLE"):
+    for key in (
+        "HAPAX_AGENT_ROLE",
+        "CODEX_ROLE",
+        "CLAUDE_ROLE",
+        "HAPAX_SESSION_ID",
+        "CLAUDE_CODE_SESSION_ID",
+        "CODEX_SESSION",
+        "CODEX_THREAD_ID",
+        "CODEX_THREAD_NAME",
+    ):
         env.pop(key, None)
     if env_extra:
         env.update(env_extra)
@@ -73,6 +82,38 @@ def test_merge_without_claim_is_advisory(tmp_path: Path) -> None:
     )
     assert result.returncode == 0
     assert "ADVISORY" in result.stderr
+
+
+def test_present_valid_session_requires_exact_claim(tmp_path: Path) -> None:
+    cache = tmp_path / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (cache / "cc-active-task-gamma").write_text("legacy-task\n", encoding="utf-8")
+
+    result = _run(
+        _bash("gh pr create --fill"),
+        env_extra={
+            "HOME": str(tmp_path),
+            "CLAUDE_ROLE": "gamma",
+            "HAPAX_SESSION_ID": "12345678-1234-4321-8765-123456789abc",
+        },
+    )
+
+    assert result.returncode == 2
+    assert "exact session claim" in result.stderr
+
+
+def test_present_invalid_session_refuses_legacy_claim_downgrade(tmp_path: Path) -> None:
+    result = _run(
+        _bash("gh pr merge 123"),
+        env_extra={
+            "HOME": str(tmp_path),
+            "CLAUDE_ROLE": "gamma",
+            "HAPAX_SESSION_ID": "gamma-123",
+        },
+    )
+
+    assert result.returncode == 2
+    assert "not claim-keyable" in result.stderr
 
 
 def test_hook_uses_strict_bash() -> None:

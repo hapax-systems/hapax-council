@@ -20,6 +20,11 @@ from shared.route_metadata_schema import (
     QualityFloor,
     RouteMetadata,
 )
+from shared.sdlc_filesystem_transaction import (
+    read_task_note_snapshot,
+    replace_task_note_transactionally,
+    task_note_transaction_context,
+)
 
 DEFAULT_TASK_ROOT = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks"
 DEFAULT_STATE_PATH = Path("/dev/shm/hapax-triage/officer-state.json")
@@ -149,6 +154,8 @@ class TriageCandidate:
     title: str
     status: str
     annotation_source: str | None
+    source_content: bytes = field(repr=False)
+    source_mode: int
 
 
 @dataclass(frozen=True)
@@ -218,10 +225,20 @@ def run_triage_pass(
                 continue
 
             annotation = annotate_task(
-                candidate.path, model_name=model, agent_factory=agent_factory
+                candidate.path,
+                model_name=model,
+                agent_factory=agent_factory,
+                expected_content=candidate.source_content,
             )
             if write:
-                apply_annotation(candidate.path, annotation, model_name=model)
+                apply_annotation(
+                    candidate.path,
+                    annotation,
+                    model_name=model,
+                    expected_content=candidate.source_content,
+                    expected_mode=candidate.source_mode,
+                    vault_root=task_root,
+                )
                 action: Literal["updated", "would_update"] = "updated"
                 run.updated += 1
             else:
@@ -260,7 +277,12 @@ def iter_candidates(
 ) -> list[TriageCandidate]:
     candidates: list[TriageCandidate] = []
     for path in _iter_task_notes(task_root):
-        frontmatter, _body = parse_frontmatter(path)
+        try:
+            snapshot = read_task_note_snapshot(path)
+            text = snapshot.content.decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        frontmatter, _body = parse_frontmatter(text)
         if not frontmatter:
             continue
         status = str(frontmatter.get("status", "")).strip()
@@ -275,6 +297,8 @@ def iter_candidates(
                     title=str(frontmatter.get("title") or path.stem),
                     status=status,
                     annotation_source=source,
+                    source_content=snapshot.content,
+                    source_mode=snapshot.mode,
                 )
             )
     return candidates
@@ -285,8 +309,12 @@ def annotate_task(
     *,
     model_name: str | None = None,
     agent_factory: Any | None = None,
+    expected_content: bytes | None = None,
 ) -> TaskTriageAnnotation:
-    frontmatter, body = parse_frontmatter(path)
+    raw = expected_content
+    if raw is None:
+        raw = read_task_note_snapshot(path).content
+    frontmatter, body = parse_frontmatter(raw.decode("utf-8"))
     if not frontmatter:
         raise ValueError("task note has no valid frontmatter")
     model = _configured_model(model_name)
@@ -304,8 +332,18 @@ def apply_annotation(
     *,
     model_name: str | None = None,
     now: datetime | None = None,
+    expected_content: bytes | None = None,
+    expected_mode: int | None = None,
+    vault_root: Path | None = None,
 ) -> None:
-    frontmatter, body = parse_frontmatter(path)
+    if (expected_content is None) != (expected_mode is None):
+        raise ValueError("expected_content and expected_mode must be supplied together")
+    if expected_content is None:
+        snapshot = read_task_note_snapshot(path)
+        expected_content = snapshot.content
+        expected_mode = snapshot.mode
+    assert expected_mode is not None
+    frontmatter, body = parse_frontmatter(expected_content.decode("utf-8"))
     if not frontmatter:
         raise ValueError("task note has no valid frontmatter")
 
@@ -332,7 +370,15 @@ def apply_annotation(
         "updated_at": timestamp,
     }
     frontmatter.update(updates)
-    path.write_text(_render_note(frontmatter, body), encoding="utf-8")
+    resolved_vault, cache_dir = task_note_transaction_context(path, vault_root=vault_root)
+    replace_task_note_transactionally(
+        path,
+        expected_content=expected_content,
+        content=_render_note(frontmatter, body).encode("utf-8"),
+        expected_mode=expected_mode,
+        cache_dir=cache_dir,
+        vault_root=resolved_vault,
+    )
 
 
 def write_state(run: TriageRun, state_path: Path = DEFAULT_STATE_PATH) -> None:
@@ -342,13 +388,22 @@ def write_state(run: TriageRun, state_path: Path = DEFAULT_STATE_PATH) -> None:
     tmp.replace(state_path)
 
 
-def repair_required_frontmatter(path: Path) -> None:
+def repair_required_frontmatter(path: Path, *, vault_root: Path | None = None) -> None:
     """Add missing required cc-task housekeeping keys without model calls."""
-    frontmatter, body = parse_frontmatter(path)
+    snapshot = read_task_note_snapshot(path)
+    frontmatter, body = parse_frontmatter(snapshot.content.decode("utf-8"))
     if not frontmatter:
         raise ValueError("task note has no valid frontmatter")
     _ensure_required_task_frontmatter(frontmatter, path)
-    path.write_text(_render_note(frontmatter, body), encoding="utf-8")
+    resolved_vault, cache_dir = task_note_transaction_context(path, vault_root=vault_root)
+    replace_task_note_transactionally(
+        path,
+        expected_content=snapshot.content,
+        content=_render_note(frontmatter, body).encode("utf-8"),
+        expected_mode=snapshot.mode,
+        cache_dir=cache_dir,
+        vault_root=resolved_vault,
+    )
 
 
 def _build_agent(model_name: str):

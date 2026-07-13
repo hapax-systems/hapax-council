@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import stat
 import subprocess
@@ -9,11 +10,25 @@ import sys
 from pathlib import Path
 from textwrap import dedent
 
+import pytest
 import yaml
+
+from shared import sdlc_filesystem_transaction as transaction
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "protected-lane-revive-reconcile.py"
 NOW = "2026-04-30T11:05:00Z"
+
+
+def _load_module():
+    name = "protected_lane_revive_reconcile_test_module"
+    sys.modules.pop(name, None)
+    spec = importlib.util.spec_from_file_location(name, SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _write_task(
@@ -166,7 +181,7 @@ def test_relay_null_claim_file_present_archives_marker_restores_task_and_dashboa
     assert frontmatter["status"] == "offered"
     assert frontmatter["assigned_to"] == "unassigned"
     assert frontmatter["claimed_at"] is None
-    assert "revive-reconcile guard archived stale claim marker" in text
+    assert "revive-reconcile guard atomically archived stale claim marker" in text
     assert "claim_file_without_relay_current_claim" not in dashboard.read_text(encoding="utf-8")
     relay = yaml.safe_load((tmp_path / "relay" / "cx-violet.yaml").read_text(encoding="utf-8"))
     assert relay["revive_checkpoint"]["ack_token"] == "ack-fixture"
@@ -175,6 +190,47 @@ def test_relay_null_claim_file_present_archives_marker_restores_task_and_dashboa
     assert audit.exists()
     assert json.loads(audit.read_text(encoding="utf-8"))["resolution"] == payload["resolution"]
     assert relay["revive_checkpoint"]["audit_path"] == str(audit)
+
+
+def test_prepare_failure_cannot_split_note_and_claim_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    task_id = "protected-race"
+    vault = tmp_path / "vault"
+    cache = tmp_path / "cache"
+    task = _write_task(vault, task_id)
+    claim = cache / "cc-active-task-cx-violet"
+    claim.parent.mkdir(parents=True)
+    claim.write_text(f"{task_id}\n", encoding="utf-8")
+    archive = cache / "stale-claims" / "claim.archive"
+    note = module._read_task(task)
+    assert note is not None
+    restored = module._restore_task_to_offered(
+        module._append_session_log(note, "- atomic revive"),
+        module._parse_now(NOW),
+    )
+    before = task.read_bytes()
+
+    def fail_prepare(*_args, **_kwargs):
+        raise RuntimeError("prepare crash")
+
+    monkeypatch.setattr(transaction, "_prepare_journal", fail_prepare)
+
+    with pytest.raises(RuntimeError, match="prepare crash"):
+        module._archive_claim_and_restore(
+            claim,
+            archive,
+            restored,
+            task_id=task_id,
+            cache_dir=cache,
+            vault_root=vault,
+        )
+
+    assert task.read_bytes() == before
+    assert claim.read_text(encoding="utf-8") == f"{task_id}\n"
+    assert not archive.exists()
 
 
 def test_relay_claim_matches_marker_makes_no_cleanup(tmp_path: Path) -> None:

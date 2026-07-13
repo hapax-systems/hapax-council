@@ -48,6 +48,12 @@ import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from shared.sdlc_filesystem_transaction import (
+    FilesystemTransactionError,
+    create_task_note_transactionally,
+    task_note_transaction_context,
+)
+
 # ── States (mirror sdlc_pressure_gate) ───────────────────────────────────────
 
 PERMIT, BACKOFF, CLOSED = 0, 75, 2  # CLI exit codes
@@ -182,6 +188,13 @@ def _mint_escalation_task(target_id: str, detail: str, *, tasks_dir: Path | None
     tasks_dir.mkdir(parents=True, exist_ok=True)
     slug = re.sub(r"[^a-z0-9]+", "-", target_id.lower()).strip("-") or "target"
     path = tasks_dir / f"recovery-escalation-{slug}.md"
+    vault_root = tasks_dir.parent if tasks_dir.name == "active" else tasks_dir
+    guards = tuple(vault_root / state / path.name for state in ("closed", "refused"))
+    for candidate in (path, *guards):
+        if candidate.exists():
+            return candidate
+    for guard in guards:
+        guard.parent.mkdir(parents=True, exist_ok=True)
     body = (
         "---\n"
         "type: cc-task\n"
@@ -202,7 +215,21 @@ def _mint_escalation_task(target_id: str, detail: str, *, tasks_dir: Path | None
         f"- **Detail:** {detail}\n"
         f"- **Minted:** {_iso_now()}\n"
     )
-    path.write_text(body, encoding="utf-8")
+    resolved_vault, cache_dir = task_note_transaction_context(path, vault_root=vault_root)
+    try:
+        create_task_note_transactionally(
+            path,
+            content=body.encode("utf-8"),
+            mode=0o644,
+            cache_dir=cache_dir,
+            vault_root=resolved_vault,
+            absent_guard_paths=guards,
+        )
+    except FilesystemTransactionError:
+        for candidate in (path, *guards):
+            if candidate.exists():
+                return candidate
+        raise
     return path
 
 

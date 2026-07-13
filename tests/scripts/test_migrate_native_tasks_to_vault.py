@@ -196,7 +196,7 @@ class TestMigrate:
         counts = migrate(native_root=tmp_path / "native", vault_root=vault, apply=True)
         assert counts["written"] == 2
         # Both files exist with distinct prefixes.
-        active = sorted((vault / "active").iterdir())
+        active = sorted((vault / "active").glob("*.md"))
         assert len(active) == 2
         names = [p.name for p in active]
         assert any(n.startswith("list-001-") for n in names)

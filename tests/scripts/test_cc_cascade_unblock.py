@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import fcntl
 import importlib.util
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from types import ModuleType
@@ -430,18 +433,48 @@ def test_blocked_candidates_survives_concurrent_close(tmp_path: Path, monkeypatc
     )
     survivor = _write_task(vault, "active", "survivor", status="blocked", depends_on=["valid-dep"])
 
-    real_read_text = Path.read_text
+    real_read_bytes = Path.read_bytes
 
-    def racing_read_text(self: Path, *args, **kwargs):
+    def racing_read_bytes(self: Path, *args, **kwargs):
         # Simulate cc-close moving the note to closed/ between glob and read.
         if self == vanishing and vanishing.exists():
             vanishing.unlink()
-        return real_read_text(self, *args, **kwargs)
+        return real_read_bytes(self, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_text", racing_read_text)
+    monkeypatch.setattr(Path, "read_bytes", racing_read_bytes)
 
     # Must not raise FileNotFoundError; survivor still gets processed.
     assert module.cascade_unblock("valid-dep") == 1
     monkeypatch.undo()
     assert "status: offered" in survivor.read_text(encoding="utf-8")
     assert not vanishing.exists()
+
+
+def test_concurrent_close_cannot_be_recreated_by_cascade(tmp_path: Path) -> None:
+    module = _load_module()
+    vault = _make_vault(tmp_path, module)
+    module._check_pr_merged = lambda _pr: "merged"
+    _write_task(vault, "closed", "valid-dep", status="done")
+    target = _write_task(
+        vault,
+        "active",
+        "target",
+        status="blocked",
+        depends_on=["valid-dep"],
+    )
+    stage = target.parent / ".hapax-transactions"
+    stage.mkdir(mode=0o700)
+    lock_path = stage / ".hapax-transaction.lock"
+    lock_path.touch(mode=0o600)
+
+    with ThreadPoolExecutor(max_workers=1) as executor, lock_path.open("r+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        future = executor.submit(module.cascade_unblock, "valid-dep")
+        time.sleep(0.25)
+        closed = vault / "closed" / target.name
+        target.rename(closed)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        assert future.result(timeout=10) == 0
+
+    assert not target.exists()
+    assert "status: blocked" in closed.read_text(encoding="utf-8")

@@ -31,6 +31,10 @@ from shared.case_migration import (
     generate_stub,
     scan_tasks,
 )
+from shared.sdlc_filesystem_transaction import (
+    replace_task_note_transactionally,
+    task_note_transaction_context,
+)
 
 DEFAULT_TASK_DIR = (
     Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
@@ -106,13 +110,27 @@ def cmd_convert(task_dir: Path, dry_run: bool) -> None:
         if not t.source_path:
             continue
         try:
-            new_content = annotate_task_file(t.source_path, stub)
+            if t.source_content is None or t.source_mode is None:
+                raise ValueError("task scan did not retain an exact source snapshot")
+            new_content = annotate_task_file(
+                t.source_path,
+                stub,
+                source_content=t.source_content,
+            )
             if dry_run:
                 print(
                     f"  [DRY] {t.task_id:50s} -> {stub.case_id} ({stub.authority_case_stage}, {stub.risk_tier}, {stub.migration_decision})"
                 )
             else:
-                t.source_path.write_text(new_content, encoding="utf-8")
+                vault_root, cache_dir = task_note_transaction_context(t.source_path)
+                replace_task_note_transactionally(
+                    t.source_path,
+                    expected_content=t.source_content,
+                    content=new_content.encode("utf-8"),
+                    expected_mode=t.source_mode,
+                    cache_dir=cache_dir,
+                    vault_root=vault_root,
+                )
                 print(f"  [OK]  {t.task_id:50s} -> {stub.case_id}")
                 _append_ledger(t, stub)
             converted += 1

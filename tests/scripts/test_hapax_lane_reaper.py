@@ -7,6 +7,8 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REAPER = REPO_ROOT / "scripts" / "hapax-lane-reaper"
 
@@ -701,6 +703,52 @@ def test_lane_reaper_classifier_accepts_rate_limit_exceeded_wall() -> None:
     result = subprocess.run(
         [str(REAPER)],
         input="rate limit exceeded\n",
+        env={**os.environ, "HAPAX_LANE_REAPER_CLASSIFY_STDIN": "1"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "stuck"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "test_rate_limit_exceeded_handler",
+        "Map quota-wall classifier",
+        "document quota_exceeded response",
+        "rate_limit_reached taxonomy",
+    ],
+)
+def test_lane_reaper_classifier_rejects_descriptive_identifiers(text: str) -> None:
+    result = subprocess.run(
+        [str(REAPER)],
+        input=f"{text}\n",
+        env={**os.environ, "HAPAX_LANE_REAPER_CLASSIFY_STDIN": "1"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "active"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "exceeded rate limit",
+        "weekly limit reached",
+        "quota limit reached",
+        "429 Too Many Requests",
+    ],
+)
+def test_lane_reaper_classifier_accepts_each_terminal_wall_shape(text: str) -> None:
+    result = subprocess.run(
+        [str(REAPER)],
+        input=f"{text}\n",
         env={**os.environ, "HAPAX_LANE_REAPER_CLASSIFY_STDIN": "1"},
         capture_output=True,
         text=True,

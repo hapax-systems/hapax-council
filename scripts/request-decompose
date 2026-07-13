@@ -33,6 +33,11 @@ sys.path.insert(0, str(ROOT))
 from agents.request_decomposer.models import RequestDecomposition, TaskSpec
 from agents.request_decomposer.writer import write_decomposition
 from shared.frontmatter import parse_frontmatter
+from shared.sdlc_filesystem_transaction import (
+    FilesystemTransactionError,
+    create_task_note_transactionally,
+    task_note_transaction_context,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -48,7 +53,6 @@ DEFAULT_REMEDIATION_PARENT_SPEC = str(
 )
 AUTHORITY_CASE_RE = re.compile(r"^CASE-[A-Z0-9-]+$")
 CCTV_READY_ADMISSION_VALUES = {"ready_to_plan", "advance", "admitted"}
-TERMINAL_REMEDIATION_STATUSES = {"done", "closed", "complete", "withdrawn", "superseded"}
 CCTV_INTAKE_RECEIPT_FIELDS = (
     "cctv_intake_receipt",
     "cctv_intake_receipt_path",
@@ -240,15 +244,10 @@ def _render_note(frontmatter: dict[str, Any], body: str) -> str:
 
 
 def _existing_task_path(task_id: str) -> Path | None:
-    candidate = TASKS_DIR / "active" / f"{task_id}.md"
-    if candidate.is_file():
-        fm, _body = parse_frontmatter(candidate)
-        if (
-            _scalar(fm.get("remediates_request_id"))
-            and _scalar(fm.get("status")) in TERMINAL_REMEDIATION_STATUSES
-        ):
-            return None
-        return candidate
+    for state in ("active", "closed", "refused"):
+        candidate = TASKS_DIR / state / f"{task_id}.md"
+        if candidate.is_file():
+            return candidate
     return None
 
 
@@ -394,9 +393,23 @@ instead of becoming an orphaned warning in the timer journal.
 - [ ] The original request receives its real `downstream_tasks`; this remediation
       task alone is not treated as fulfillment of the request.
 """
-    tmp = path.with_suffix(".md.decompose-remediation-tmp")
-    tmp.write_text(_render_note(frontmatter, body), encoding="utf-8")
-    tmp.replace(path)
+    guards = tuple(TASKS_DIR / state / path.name for state in ("closed", "refused"))
+    for guard in guards:
+        guard.parent.mkdir(parents=True, exist_ok=True)
+    vault_root, cache_dir = task_note_transaction_context(path, vault_root=TASKS_DIR)
+    try:
+        create_task_note_transactionally(
+            path,
+            content=_render_note(frontmatter, body).encode("utf-8"),
+            mode=0o644,
+            cache_dir=cache_dir,
+            vault_root=vault_root,
+            absent_guard_paths=guards,
+        )
+    except FilesystemTransactionError:
+        if path.exists():
+            return "existing"
+        raise
     return "created"
 
 

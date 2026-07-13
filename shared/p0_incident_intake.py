@@ -24,6 +24,12 @@ from typing import Any
 from urllib.parse import quote
 
 from shared.jsonl_append import append_jsonl
+from shared.sdlc_filesystem_transaction import (
+    create_task_note_transactionally,
+    read_task_note_snapshot,
+    replace_task_note_transactionally,
+    task_note_transaction_context,
+)
 
 DEFAULT_STATE_PATH = Path.home() / ".cache" / "hapax" / "p0-incident-intake" / "state.json"
 DEFAULT_LEDGER_PATH = Path.home() / ".cache" / "hapax" / "p0-incident-intake" / "events.jsonl"
@@ -673,15 +679,24 @@ def _write_new_task(
         ledger_path=ledger_path,
         state_path=state_path,
     )
-    tmp = _tmp_path_for(path)
-    tmp.write_text(content, encoding="utf-8")
-    tmp.replace(path)
+    vault_root, cache_dir = task_note_transaction_context(path)
+    closed_path = vault_root / "closed" / path.name
+    closed_path.parent.mkdir(parents=True, exist_ok=True)
+    create_task_note_transactionally(
+        path,
+        content=content.encode("utf-8"),
+        mode=0o644,
+        cache_dir=cache_dir,
+        vault_root=vault_root,
+        absent_guard_paths=(closed_path,),
+    )
 
 
 def _update_existing_task(
     path: Path, record: dict[str, Any], *, title: str, message: str, now: datetime
 ) -> None:
-    text = path.read_text(encoding="utf-8")
+    snapshot = read_task_note_snapshot(path)
+    text = snapshot.content.decode("utf-8")
     text = _set_frontmatter_scalar(text, "updated_at", _iso(now))
     text = _set_frontmatter_scalar(text, "last_incident_at", _iso(now))
     text = _set_frontmatter_scalar(text, "incident_count", str(record["count"]))
@@ -696,9 +711,15 @@ def _update_existing_task(
         text = text.replace("## Session Log\n", f"## Session Log\n{log_line}\n", 1)
     else:
         text = text.rstrip() + f"\n\n## Session Log\n{log_line}\n"
-    tmp = _tmp_path_for(path)
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
+    vault_root, cache_dir = task_note_transaction_context(path)
+    replace_task_note_transactionally(
+        path,
+        expected_content=snapshot.content,
+        content=text.encode("utf-8"),
+        expected_mode=snapshot.mode,
+        cache_dir=cache_dir,
+        vault_root=vault_root,
+    )
 
 
 def _set_frontmatter_scalar(text: str, key: str, value: str) -> str:

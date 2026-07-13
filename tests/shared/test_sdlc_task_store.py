@@ -122,6 +122,19 @@ def test_claim_slot_refuses_legacy_only_same_task_for_new_session(tmp_path: Path
         )
 
 
+def test_close_slot_refuses_legacy_only_claim_for_present_session(tmp_path: Path) -> None:
+    (tmp_path / "cc-active-task-cx-red").write_text("task-1\n", encoding="utf-8")
+    (tmp_path / "cc-claim-epoch-cx-red").write_text("1 task-1\n", encoding="utf-8")
+
+    with pytest.raises(TaskStoreError, match="close_exact_session_projection_absent"):
+        assert_close_slot_owned(
+            cache_dir=tmp_path,
+            role="cx-red",
+            session_id="session-1",
+            task_id="task-1",
+        )
+
+
 def test_close_slot_refuses_dispatch_binding_from_other_session(tmp_path: Path) -> None:
     binding = ClaimDispatchBinding.create(
         task_id="task-1",

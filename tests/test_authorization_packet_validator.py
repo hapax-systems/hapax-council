@@ -136,6 +136,43 @@ def test_absent_impl_blocks_on_value_not_presence(tmp_path: Path) -> None:
     assert "missing required no-go fields" not in result.stderr
 
 
+def test_nested_authorization_cannot_override_top_level_false(tmp_path: Path) -> None:
+    note = _make_note(tmp_path)
+    note.write_text(
+        note.read_text(encoding="utf-8")
+        .replace("implementation_authorized: true", "implementation_authorized: false")
+        .replace(
+            "parent_spec: ~/projects/hapax-council/docs/specs/x.md",
+            "parent_spec: ~/projects/hapax-council/docs/specs/x.md\n"
+            "route_metadata:\n  implementation_authorized: true\n  release_authorized: true",
+        ),
+        encoding="utf-8",
+    )
+    _write_claim(tmp_path, "beta", "pkt-001")
+
+    result = _run("git push -u origin HEAD", tmp_path=tmp_path)
+
+    assert result.returncode == 2
+    assert "implementation_authorized is not true" in result.stderr
+
+
+def test_semantically_duplicate_quoted_authorization_key_is_rejected(tmp_path: Path) -> None:
+    note = _make_note(tmp_path)
+    note.write_text(
+        note.read_text(encoding="utf-8").replace(
+            "source_mutation_authorized: true",
+            'source_mutation_authorized: true\n"source_mutation_authorized": false',
+        ),
+        encoding="utf-8",
+    )
+    _write_claim(tmp_path, "beta", "pkt-001")
+
+    result = _run("git push -u origin HEAD", tmp_path=tmp_path)
+
+    assert result.returncode == 2
+    assert "unexpected validation result 'malformed_frontmatter:" in result.stderr
+
+
 def test_fully_present_valid_packet_passes_without_ledger(tmp_path: Path) -> None:
     _make_note(tmp_path)  # all fields present
     _write_claim(tmp_path, "beta", "pkt-001")

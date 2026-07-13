@@ -853,6 +853,34 @@ class TestAutoTransitionClaimed:
         assert "duplicate top-level frontmatter key 'assigned_to'" in result.stderr
         assert "\nstatus: claimed\n" in note.read_text(encoding="utf-8")
 
+    def test_claimed_transition_rejects_semantically_duplicate_quoted_key(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        _, note = _make_vault(tmp_path, status="claimed", assigned="alpha")
+        note.write_text(
+            note.read_text(encoding="utf-8").replace(
+                "source_mutation_authorized: true",
+                'source_mutation_authorized: true\n"source_mutation_authorized": false',
+            ),
+            encoding="utf-8",
+        )
+        _write_claim(tmp_path, "alpha", "test-001")
+
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+        )
+
+        assert result.returncode == 2
+        assert "duplicate top-level frontmatter key 'source_mutation_authorized'" in result.stderr
+        assert "\nstatus: claimed\n" in note.read_text(encoding="utf-8")
+
+    def test_gate_frontmatter_parser_remains_stdlib_only(self) -> None:
+        source = HOOK.read_text(encoding="utf-8")
+
+        assert "import yaml" not in source
+
     def test_claimed_transition_handles_quoted_status(self, tmp_path: Path) -> None:
         _, note = _make_vault(tmp_path, status="claimed", assigned="alpha")
         note.write_text(

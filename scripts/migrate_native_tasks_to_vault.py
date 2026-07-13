@@ -45,6 +45,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.sdlc_filesystem_transaction import (  # noqa: E402
+    FilesystemTransactionError,
+    create_task_note_transactionally,
+    task_note_transaction_context,
+)
+
 log = logging.getLogger(__name__)
 
 DEFAULT_NATIVE_TASKS_ROOT: Path = Path.home() / ".claude" / "tasks"
@@ -221,11 +231,27 @@ def migrate(
             continue
         try:
             out_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = out_path.with_suffix(out_path.suffix + ".tmp")
-            tmp.write_text(body, encoding="utf-8")
-            tmp.replace(out_path)
+            guards = tuple(
+                vault_root / state / out_path.name
+                for state in ("active", "closed", "refused")
+                if state != task.folder
+            )
+            for guard in guards:
+                guard.parent.mkdir(parents=True, exist_ok=True)
+            resolved_vault, cache_dir = task_note_transaction_context(
+                out_path,
+                vault_root=vault_root,
+            )
+            create_task_note_transactionally(
+                out_path,
+                content=body.encode("utf-8"),
+                mode=0o644,
+                cache_dir=cache_dir,
+                vault_root=resolved_vault,
+                absent_guard_paths=guards,
+            )
             counts["written"] += 1
-        except OSError as exc:
+        except (OSError, FilesystemTransactionError) as exc:
             log.warning("failed to write %s: %s", out_path, exc)
             counts["errors"] += 1
     return counts

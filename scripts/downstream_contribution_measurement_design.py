@@ -6,12 +6,21 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.sdlc_filesystem_transaction import (  # noqa: E402
+    create_task_note_transactionally,
+    task_note_transaction_context,
+)
+
 DEFAULT_GENERATED_AT = "2026-05-13T00:00:00Z"
 AUTHORITY_CASE = "REQ-20260513-token-capital-public-surface-regate-v2"
 TASK_ID = "downstream-contribution-measurement-design"
@@ -840,7 +849,21 @@ def write_design(
         vault_markdown_path.write_text(markdown, encoding="utf-8")
     if followup_task_path is not None:
         followup_task_path.parent.mkdir(parents=True, exist_ok=True)
-        followup_task_path.write_text(render_followup_task(report), encoding="utf-8")
+        if not followup_task_path.exists():
+            vault_root, cache_dir = task_note_transaction_context(followup_task_path)
+            guards = tuple(
+                vault_root / state / followup_task_path.name for state in ("closed", "refused")
+            )
+            for guard in guards:
+                guard.parent.mkdir(parents=True, exist_ok=True)
+            create_task_note_transactionally(
+                followup_task_path,
+                content=render_followup_task(report).encode("utf-8"),
+                mode=0o644,
+                cache_dir=cache_dir,
+                vault_root=vault_root,
+                absent_guard_paths=guards,
+            )
     return json_path, markdown_path, vault_markdown_path, followup_task_path
 
 

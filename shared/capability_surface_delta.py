@@ -20,6 +20,12 @@ from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from shared.sdlc_filesystem_transaction import (
+    FilesystemTransactionError,
+    create_task_note_transactionally,
+    task_note_transaction_context,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CAPABILITY_SURFACE_DELTA_FIXTURES = REPO_ROOT / "config" / "capability-surface-delta-fixtures.json"
 CAPABILITY_SURFACE_DELTA_SCHEMA_REF = "schemas/capability-surface-delta.schema.json"
@@ -624,11 +630,20 @@ def write_capability_surface_delta_tasks(
         rendered = render_capability_surface_delta_task(delta, generated_at=generated_at)
         try:
             active_root.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(path.suffix + ".tmp")
-            tmp.write_text(rendered, encoding="utf-8")
-            tmp.replace(path)
+            guards = tuple(task_root / state / filename for state in ("closed", "refused"))
+            for guard in guards:
+                guard.parent.mkdir(parents=True, exist_ok=True)
+            vault_root, cache_dir = task_note_transaction_context(path, vault_root=task_root)
+            create_task_note_transactionally(
+                path,
+                content=rendered.encode("utf-8"),
+                mode=0o644,
+                cache_dir=cache_dir,
+                vault_root=vault_root,
+                absent_guard_paths=guards,
+            )
             written.append(str(path))
-        except OSError as exc:
+        except (OSError, FilesystemTransactionError) as exc:
             errors.append(
                 f"{path}: {exc}; next action: repair task-root permissions or "
                 "filesystem availability, then rerun this intake command"

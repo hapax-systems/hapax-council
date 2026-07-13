@@ -23,6 +23,22 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CC_CLOSE = REPO_ROOT / "scripts" / "cc-close"
 CHECKER = REPO_ROOT / "scripts" / "cc-close-acceptance-receipt-check.py"
 
+_IDENTITY_ENV = (
+    "HAPAX_AGENT_NAME",
+    "HAPAX_AGENT_ROLE",
+    "HAPAX_AGENT_INTERFACE",
+    "HAPAX_SESSION_ID",
+    "HAPAX_CLAIM_RESUME_SESSION_ID",
+    "CLAUDE_ROLE",
+    "CLAUDECODE",
+    "CLAUDE_CODE_SESSION_ID",
+    "CODEX_THREAD_ID",
+    "CODEX_THREAD_NAME",
+    "CODEX_SESSION_NAME",
+    "CODEX_SESSION",
+    "CODEX_ROLE",
+)
+
 VALID_RECEIPT = textwrap.dedent(
     """\
     acceptor: operator
@@ -142,8 +158,14 @@ def _vault(home: Path) -> Path:
     return root
 
 
-def _run_close(home: Path, task_id: str, **extra_env: str) -> subprocess.CompletedProcess[str]:
-    env = os.environ.copy()
+def _run_close(
+    home: Path,
+    task_id: str,
+    *,
+    status: str = "done",
+    **extra_env: str,
+) -> subprocess.CompletedProcess[str]:
+    env = {key: value for key, value in os.environ.items() if key not in _IDENTITY_ENV}
     env.pop("HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF", None)
     env.update(
         HOME=str(home),
@@ -158,7 +180,7 @@ def _run_close(home: Path, task_id: str, **extra_env: str) -> subprocess.Complet
         **extra_env,
     )
     return subprocess.run(
-        ["bash", str(CC_CLOSE), task_id, "--status", "done"],
+        ["bash", str(CC_CLOSE), task_id, "--status", status],
         env=env,
         text=True,
         capture_output=True,
@@ -209,19 +231,7 @@ class TestCcCloseEndToEnd:
         home = tmp_path / "home"
         vault = _vault(home)
         _write_note(vault / "active", "task-r")
-        env = os.environ.copy()
-        env.update(
-            HOME=str(home),
-            HAPAX_AGENT_NAME="test-role",
-            HAPAX_AGENT_ROLE="test-role",
-        )
-        result = subprocess.run(
-            ["bash", str(CC_CLOSE), "task-r", "--status", "withdrawn"],
-            env=env,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
+        result = _run_close(home, "task-r", status="withdrawn")
 
         assert result.returncode == 0, result.stderr
         assert (vault / "closed" / "task-r.md").exists()

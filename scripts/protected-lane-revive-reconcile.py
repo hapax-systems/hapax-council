@@ -10,11 +10,11 @@ explicitly confirmed the protected lane is not actively being worked.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import shlex
-import shutil
 import stat
 import subprocess
 import sys
@@ -28,7 +28,11 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-from shared.sdlc_filesystem_transaction import replace_task_note_transactionally  # noqa: E402
+from shared.sdlc_filesystem_transaction import (  # noqa: E402
+    FileMutation,
+    execute_filesystem_transaction,
+    ownership_legacy_journals,
+)
 
 DEFAULT_VAULT_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "hapax"
@@ -153,17 +157,6 @@ def _read_task(path: Path) -> TaskNote | None:
 def _serialize_task(note: TaskNote) -> str:
     frontmatter = yaml.safe_dump(note.frontmatter, sort_keys=False)
     return f"---\n{frontmatter}---{note.body}"
-
-
-def _write_task(note: TaskNote, *, cache_dir: Path, vault_root: Path) -> None:
-    replace_task_note_transactionally(
-        note.path,
-        expected_content=note.source_content,
-        content=_serialize_task(note).encode("utf-8"),
-        expected_mode=note.source_mode,
-        cache_dir=cache_dir,
-        vault_root=vault_root,
-    )
 
 
 def _find_task_note(vault_root: Path, task_id: str | None) -> TaskNote | None:
@@ -401,8 +394,8 @@ def _research_agents(payload: dict[str, Any]) -> list[dict[str, str]]:
 
 def _coordination_note(now: datetime, session: str, archive_path: Path, task_id: str) -> str:
     return (
-        f"- {_utc_iso(now)} {session} revive-reconcile guard archived stale claim marker "
-        f"for `{task_id}` to `{archive_path}` before restoring the task to offered."
+        f"- {_utc_iso(now)} {session} revive-reconcile guard atomically archived stale claim "
+        f"marker for `{task_id}` to `{archive_path}` and restored the task to offered."
     )
 
 
@@ -448,11 +441,47 @@ def _unique_archive_path(cache_dir: Path, session: str, now: datetime) -> Path:
     return candidate
 
 
-def _archive_claim_marker(source: Path, archive_path: Path, *, dry_run: bool) -> str:
-    if dry_run:
-        return str(archive_path)
+def _archive_claim_and_restore(
+    source: Path,
+    archive_path: Path,
+    note: TaskNote,
+    *,
+    task_id: str,
+    cache_dir: Path,
+    vault_root: Path,
+) -> str:
     archive_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(source), str(archive_path))
+    marker_metadata = source.lstat()
+    marker_content = source.read_bytes()
+    marker_lines = marker_content.decode("utf-8").splitlines()
+    if not marker_lines or marker_lines[0].strip() != task_id:
+        raise ValueError("claim marker changed before revive transaction")
+    execute_filesystem_transaction(
+        cache_dir / "cc-ownership-txn.json",
+        (
+            FileMutation(
+                path=note.path,
+                content=_serialize_task(note).encode("utf-8"),
+                mode=note.source_mode,
+                expected_sha256=hashlib.sha256(note.source_content).hexdigest(),
+                expected_mode=note.source_mode,
+            ),
+            FileMutation(
+                path=source,
+                content=None,
+                expected_sha256=hashlib.sha256(marker_content).hexdigest(),
+                expected_mode=stat.S_IMODE(marker_metadata.st_mode),
+            ),
+            FileMutation(
+                path=archive_path,
+                content=marker_content,
+                mode=stat.S_IMODE(marker_metadata.st_mode),
+                expected_exists=False,
+            ),
+        ),
+        allowed_roots=(cache_dir, vault_root),
+        legacy_journals=ownership_legacy_journals(cache_dir),
+    )
     return str(archive_path)
 
 
@@ -590,13 +619,20 @@ def reconcile(config: ReconcileConfig) -> dict[str, Any]:
         else:
             archive = _unique_archive_path(config.cache_dir, config.session, config.now)
             note_line = _coordination_note(config.now, config.session, archive, marker_claim)
-            if not config.dry_run:
-                noted = _append_session_log(task_note, note_line)
-                _write_task(noted, cache_dir=config.cache_dir, vault_root=config.vault_root)
-                reread = _read_task(task_note.path) or noted
-                restored = _restore_task_to_offered(reread, config.now)
-                _write_task(restored, cache_dir=config.cache_dir, vault_root=config.vault_root)
-            archive_path = _archive_claim_marker(claim_path, archive, dry_run=config.dry_run)
+            restored = _restore_task_to_offered(
+                _append_session_log(task_note, note_line), config.now
+            )
+            if config.dry_run:
+                archive_path = str(archive)
+            else:
+                archive_path = _archive_claim_and_restore(
+                    claim_path,
+                    archive,
+                    restored,
+                    task_id=marker_claim,
+                    cache_dir=config.cache_dir,
+                    vault_root=config.vault_root,
+                )
             resolution = "stale_claim_archived_task_restored"
             next_safe_action = "regenerate dashboard and offer the task for a fresh claim"
     elif not marker_claim and relay_claim:

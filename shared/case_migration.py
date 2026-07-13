@@ -22,6 +22,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 from shared.coord_event_log import CoordEvent, CoordWriter, DuplicateEventError, default_event_log
+from shared.sdlc_filesystem_transaction import read_task_note_snapshot
 
 TransitionStage = Literal["S0", "S1", "S6", "S7", "S11"]
 RiskTier = Literal["T0", "T1", "T2", "T3"]
@@ -94,6 +95,8 @@ class CcTask(BaseModel):
     train: str | None = None
     tags: list[str] = Field(default_factory=list)
     source_path: Path | None = None
+    source_content: bytes | None = Field(default=None, exclude=True, repr=False)
+    source_mode: int | None = Field(default=None, exclude=True)
 
     model_config = {"extra": "allow"}
 
@@ -117,8 +120,9 @@ class MigrationStub(BaseModel):
 def parse_cc_task(path: Path) -> CcTask | None:
     """Parse a cc-task markdown file, returning None if unparseable."""
     try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
+        snapshot = read_task_note_snapshot(path)
+        text = snapshot.content.decode("utf-8")
+    except (OSError, UnicodeDecodeError):
         return None
     m = _FRONTMATTER_RE.match(text)
     if not m:
@@ -134,6 +138,8 @@ def parse_cc_task(path: Path) -> CcTask | None:
     if "task_id" not in data:
         return None
     data["source_path"] = path
+    data["source_content"] = snapshot.content
+    data["source_mode"] = snapshot.mode
     try:
         return CcTask(**data)
     except Exception:
@@ -224,12 +230,21 @@ def scan_tasks(task_dir: Path) -> list[CcTask]:
     return tasks
 
 
-def annotate_task_file(path: Path, stub: MigrationStub) -> str:
+def annotate_task_file(
+    path: Path,
+    stub: MigrationStub,
+    *,
+    source_content: bytes | None = None,
+) -> str:
     """Return the task file content with case_id fields injected into frontmatter.
 
     Does NOT write to disk — caller decides whether to write.
     """
-    text = path.read_text(encoding="utf-8")
+    text = (
+        source_content.decode("utf-8")
+        if source_content is not None
+        else path.read_text(encoding="utf-8")
+    )
     m = _FRONTMATTER_RE.match(text)
     if not m:
         raise ValueError(f"No frontmatter in {path}")

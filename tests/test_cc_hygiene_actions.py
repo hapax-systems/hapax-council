@@ -9,10 +9,13 @@ from __future__ import annotations
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 import yaml
+
+if TYPE_CHECKING:
+    import pytest
 
 # Ensure the script-side package is importable in tests.
 _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
@@ -237,6 +240,30 @@ class TestRevertGhostClaim:
         assert preserved.assigned_to == "alpha"
         assert preserved.claimed_at is not None
 
+    def test_concurrent_close_cannot_recreate_active_note(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _, active, closed = _build_vault(tmp_path)
+        note = _ghost_claimed_note(active, task_id="closing")
+        path = Path(note.path)
+        destination = closed / path.name
+        real_replace = actions.replace_task_note_transactionally
+
+        def close_before_commit(*args, **kwargs):
+            destination.write_bytes(path.read_bytes())
+            path.unlink()
+            return real_replace(*args, **kwargs)
+
+        monkeypatch.setattr(actions, "replace_task_note_transactionally", close_before_commit)
+
+        result = actions.revert_ghost_claim(note)
+
+        assert result.success is False
+        assert not path.exists()
+        assert destination.exists()
+
 
 # ─────────────────── H2 — stale in-progress revert ─────────────────────────
 
@@ -336,7 +363,7 @@ class TestArchiveOfferedStale:
 
 
 class TestApplyActions:
-    def test_dispatches_h1_h2_h7(self, tmp_path: Path) -> None:
+    def test_holds_h1_h2_and_dispatches_h7(self, tmp_path: Path) -> None:
         vault_root, active, _ = _build_vault(tmp_path)
         ghost = _ghost_claimed_note(active, task_id="g1")
         wip = _in_progress_note(active, task_id="w1")
@@ -373,7 +400,14 @@ class TestApplyActions:
             notifier=lambda **kw: True,
         )
         assert len(results) == 3
-        assert all(r.success for r in results), [r.message for r in results]
+        by_action = {result.action_id: result for result in results}
+        assert by_action["ghost_claimed_revert"].success is False
+        assert by_action["stale_in_progress_revert"].success is False
+        assert "HOLD" in by_action["ghost_claimed_revert"].message
+        assert "HOLD" in by_action["stale_in_progress_revert"].message
+        assert by_action["offered_stale_archive"].success is True
+        assert parse_task_note(Path(ghost.path)).status == "claimed"  # type: ignore[union-attr]
+        assert parse_task_note(Path(wip.path)).status == "in_progress"  # type: ignore[union-attr]
         action_ids = {r.action_id for r in results}
         assert action_ids == {
             "ghost_claimed_revert",

@@ -1,6 +1,6 @@
 """Auto-actions for the cc-hygiene sweeper (PR2).
 
-Implements three reversible auto-actions per research §4:
+Implements three explicit repair actions and standing-controller HOLD projection:
 
 * **H1** ``ghost_claimed`` → revert ``status: claimed → offered`` and clear
   ``assigned_to`` / ``claimed_at`` / ``branch`` / ``pr``.
@@ -10,9 +10,9 @@ Implements three reversible auto-actions per research §4:
   and rewrite ``status: offered → superseded`` with annex
   ``superseded_reason: auto-archived-via-staleness``.
 
-All actions are gated by the same killswitch as the sweeper
-(``HAPAX_CC_HYGIENE_OFF=1`` short-circuits both checks AND actions).
-Defaults ON per ``feedback_features_on_by_default``.
+The standing sweeper never executes H1/H2 ownership detachment. It emits a HOLD
+result for governed recovery instead. Explicit callers retain the repair functions,
+which commit through the shared stable ownership journal.
 
 Per research §4: "no operator-approval prompts", "revert > stall", all
 reversible. Each rewrite preserves operator-authored note body unchanged
@@ -21,6 +21,7 @@ and appends a single annex line below the YAML closing fence.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from collections.abc import Iterable
@@ -30,6 +31,17 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+from shared.sdlc_filesystem_transaction import (
+    FileMutation,
+    FilesystemTransactionError,
+    TaskNoteSnapshot,
+    execute_filesystem_transaction,
+    ownership_legacy_journals,
+    read_task_note_snapshot,
+    replace_task_note_transactionally,
+    task_note_transaction_context,
+)
 
 from .models import HygieneEvent, TaskNote
 
@@ -91,12 +103,53 @@ def _serialize_note(frontmatter: dict[str, Any], body: str, annex_line: str | No
     return out
 
 
-def _atomic_write(path: Path, text: str) -> None:
-    """Write ``text`` to ``path`` atomically via tmp + replace."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".cc-hygiene.tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
+def _replace_snapshot(
+    path: Path,
+    snapshot: TaskNoteSnapshot,
+    text: str,
+    *,
+    vault_root: Path | None = None,
+) -> None:
+    resolved_vault, cache_dir = task_note_transaction_context(path, vault_root=vault_root)
+    replace_task_note_transactionally(
+        path,
+        expected_content=snapshot.content,
+        content=text.encode("utf-8"),
+        expected_mode=snapshot.mode,
+        cache_dir=cache_dir,
+        vault_root=resolved_vault,
+    )
+
+
+def _archive_snapshot(
+    src: Path,
+    dst: Path,
+    snapshot: TaskNoteSnapshot,
+    text: str,
+    *,
+    vault_root: Path,
+) -> None:
+    resolved_vault, cache_dir = task_note_transaction_context(src, vault_root=vault_root)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    execute_filesystem_transaction(
+        cache_dir / "cc-ownership-txn.json",
+        (
+            FileMutation(
+                path=src,
+                content=None,
+                expected_sha256=hashlib.sha256(snapshot.content).hexdigest(),
+                expected_mode=snapshot.mode,
+            ),
+            FileMutation(
+                path=dst,
+                content=text.encode("utf-8"),
+                mode=snapshot.mode,
+                expected_exists=False,
+            ),
+        ),
+        allowed_roots=(cache_dir, resolved_vault),
+        legacy_journals=ownership_legacy_journals(cache_dir),
+    )
 
 
 # ───────────────────────── H1 — ghost-claim revert ──────────────────────────
@@ -112,8 +165,9 @@ def revert_ghost_claim(note: TaskNote, *, now: datetime | None = None) -> Action
     now = now or datetime.now(UTC)
     path = Path(note.path)
     try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
+        snapshot = read_task_note_snapshot(path)
+        text = snapshot.content.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
         return ActionResult(
             action_id="ghost_claimed_revert",
             task_id=note.task_id,
@@ -168,8 +222,8 @@ def revert_ghost_claim(note: TaskNote, *, now: datetime | None = None) -> Action
     fm["updated_at"] = _utc_iso(now)
     annex = f"<!-- auto-reverted-from-ghost-claim {_utc_iso(now)} -->"
     try:
-        _atomic_write(path, _serialize_note(fm, body, annex_line=annex))
-    except OSError as exc:
+        _replace_snapshot(path, snapshot, _serialize_note(fm, body, annex_line=annex))
+    except (OSError, FilesystemTransactionError) as exc:
         return ActionResult(
             action_id="ghost_claimed_revert",
             task_id=note.task_id,
@@ -206,12 +260,10 @@ def revert_stale_in_progress(
     """
     now = now or datetime.now(UTC)
     path = Path(note.path)
-    previous_session = note.assigned_to or "unassigned"
-    previous_branch = note.branch or ""
-    previous_pr = str(note.pr) if note.pr else ""
     try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
+        snapshot = read_task_note_snapshot(path)
+        text = snapshot.content.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
         return ActionResult(
             action_id="stale_in_progress_revert",
             task_id=note.task_id,
@@ -237,6 +289,9 @@ def revert_stale_in_progress(
             message=f"skip: status is {fm.get('status')!r} not 'in_progress' (race?)",
             metadata={"observed_status": str(fm.get("status"))},
         )
+    previous_session = str(fm.get("assigned_to") or "unassigned")
+    previous_branch = str(fm.get("branch") or "")
+    previous_pr = str(fm.get("pr") or "")
     fm["status"] = "offered"
     fm["assigned_to"] = "unassigned"
     fm["claimed_at"] = None
@@ -248,8 +303,8 @@ def revert_stale_in_progress(
         f"prev-session={previous_session} prev-branch={previous_branch} prev-pr={previous_pr} -->"
     )
     try:
-        _atomic_write(path, _serialize_note(fm, body, annex_line=annex))
-    except OSError as exc:
+        _replace_snapshot(path, snapshot, _serialize_note(fm, body, annex_line=annex))
+    except (OSError, FilesystemTransactionError) as exc:
         return ActionResult(
             action_id="stale_in_progress_revert",
             task_id=note.task_id,
@@ -302,8 +357,9 @@ def archive_offered_stale(
     closed_dir = vault_root / "closed"
     dst = closed_dir / src.name
     try:
-        text = src.read_text(encoding="utf-8")
-    except OSError as exc:
+        snapshot = read_task_note_snapshot(src)
+        text = snapshot.content.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
         return ActionResult(
             action_id="offered_stale_archive",
             task_id=note.task_id,
@@ -336,9 +392,14 @@ def archive_offered_stale(
     annex = f"<!-- auto-archived-via-staleness {_utc_iso(now)} -->"
     try:
         closed_dir.mkdir(parents=True, exist_ok=True)
-        _atomic_write(dst, _serialize_note(fm, body, annex_line=annex))
-        src.unlink()
-    except OSError as exc:
+        _archive_snapshot(
+            src,
+            dst,
+            snapshot,
+            _serialize_note(fm, body, annex_line=annex),
+            vault_root=vault_root,
+        )
+    except (OSError, FilesystemTransactionError) as exc:
         return ActionResult(
             action_id="offered_stale_archive",
             task_id=note.task_id,
@@ -420,6 +481,17 @@ def apply_actions(
                     success=False,
                     message="skip: note not found in current sweep",
                     metadata={},
+                )
+            )
+            continue
+        if action_id in {"ghost_claimed_revert", "stale_in_progress_revert"}:
+            results.append(
+                ActionResult(
+                    action_id=action_id,
+                    task_id=event.task_id,
+                    success=False,
+                    message="HOLD: standing ownership detachment is not authorized",
+                    metadata={"path": note.path},
                 )
             )
             continue

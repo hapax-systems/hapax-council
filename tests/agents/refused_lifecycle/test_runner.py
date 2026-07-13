@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 import yaml
 
 from agents.refused_lifecycle.runner import (
@@ -19,6 +20,7 @@ from agents.refused_lifecycle.runner import (
 from agents.refused_lifecycle.state import (
     TransitionEvent,
 )
+from shared.sdlc_filesystem_transaction import FilesystemTransactionError
 
 _NOW = datetime(2026, 4, 26, 21, 30, tzinfo=UTC)
 
@@ -313,9 +315,32 @@ class TestAtomicWrite:
             reason="x",
         )
         apply_transition(f, task, event, _NOW)
-        # Only the original file should remain — no .md.tmp.* leftover
-        files = list(tmp_path.iterdir())
-        assert files == [f]
+        assert f.exists()
+        assert not list(tmp_path.rglob("*.tmp.*"))
+
+    def test_stale_evaluator_snapshot_cannot_overwrite_concurrent_change(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        f = tmp_path / "race.md"
+        _write_task_file(f)
+        task = parse_frontmatter(f)
+        event = TransitionEvent(
+            timestamp=_NOW,
+            cc_task_slug=task.slug,
+            from_state="REFUSED",
+            to_state="REFUSED",
+            transition="re-affirmed",
+            trigger=["constitutional"],
+            reason="stale decision",
+        )
+        f.write_text(f.read_text(encoding="utf-8").replace("REFUSED", "OFFERED"), encoding="utf-8")
+        concurrent = f.read_bytes()
+
+        with pytest.raises(FilesystemTransactionError, match="preimage changed"):
+            apply_transition(f, task, event, _NOW)
+
+        assert f.read_bytes() == concurrent
 
 
 # ── Prometheus counter ───────────────────────────────────────────────
