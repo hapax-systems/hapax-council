@@ -18,7 +18,8 @@ import subprocess
 import textwrap
 from pathlib import Path
 
-from shared.sdlc_task_store import ClaimDispatchBinding, write_claim_dispatch_binding
+from shared.sdlc_task_store import ClaimDispatchBinding
+from tests.shared.sdlc_task_store_support import write_claim_dispatch_binding_fixture
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "cc-close"
@@ -143,8 +144,8 @@ def test_cc_close_clears_both_legacy_and_session_keyed_lease(tmp_path: Path) -> 
         binding_hash="1" * 64,
         coord_dispatch_idempotency_key="dispatch-key",
     )
-    write_claim_dispatch_binding(cache, "eta", binding)
-    write_claim_dispatch_binding(cache, "eta-session-abc123", binding)
+    write_claim_dispatch_binding_fixture(cache, "eta", binding)
+    write_claim_dispatch_binding_fixture(cache, "eta-session-abc123", binding)
 
     result = _run_close(home, "foo", role="eta", session_id="session-abc123")
 
@@ -255,7 +256,7 @@ def test_cc_close_refuses_dispatch_bound_task_from_wrong_session(tmp_path: Path)
             "1780000000 foo\n",
             encoding="utf-8",
         )
-        write_claim_dispatch_binding(cache, key, binding)
+        write_claim_dispatch_binding_fixture(cache, key, binding)
 
     result = _run_close(home, "foo", role="eta", session_id="other-session")
 

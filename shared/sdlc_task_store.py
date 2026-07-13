@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import stat
 from dataclasses import dataclass
@@ -272,33 +271,6 @@ def claim_dispatch_binding_path(cache_dir: Path, claim_key: str) -> Path:
 
 def claim_dispatch_binding_bytes(binding: ClaimDispatchBinding) -> bytes:
     return _canonical_json_bytes(binding.to_record()) + b"\n"
-
-
-def write_claim_dispatch_binding(
-    cache_dir: Path,
-    claim_key: str,
-    binding: ClaimDispatchBinding,
-) -> Path:
-    path = claim_dispatch_binding_path(cache_dir, claim_key)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = claim_dispatch_binding_bytes(binding)
-    temporary = path.parent / f".{path.name}.{os.getpid()}.tmp"
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
-    return path
 
 
 def load_claim_dispatch_binding(path: Path) -> ClaimDispatchBinding:

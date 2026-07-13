@@ -16,8 +16,8 @@ from shared.sdlc_task_store import (
     assert_close_slot_owned,
     load_claim_dispatch_binding,
     resolve_task_note,
-    write_claim_dispatch_binding,
 )
+from tests.shared.sdlc_task_store_support import write_claim_dispatch_binding_fixture
 
 
 def _note(path: Path, task_id: str) -> Path:
@@ -75,7 +75,7 @@ def test_claim_dispatch_binding_rejects_tampered_receipt(tmp_path: Path) -> None
         binding_hash="a" * 64,
         coord_dispatch_idempotency_key="key-1",
     )
-    path = write_claim_dispatch_binding(tmp_path, "cx-red", binding)
+    path = write_claim_dispatch_binding_fixture(tmp_path, "cx-red", binding)
     record = json.loads(path.read_text(encoding="ascii"))
     record["task_id"] = "task-2"
     path.write_text(json.dumps(record), encoding="ascii")
@@ -152,7 +152,7 @@ def test_close_slot_refuses_dispatch_binding_from_other_session(tmp_path: Path) 
     for key in ("cx-red", "cx-red-old-session"):
         (tmp_path / f"cc-active-task-{key}").write_text("task-1\n", encoding="utf-8")
         (tmp_path / f"cc-claim-epoch-{key}").write_text("1 task-1\n", encoding="utf-8")
-        write_claim_dispatch_binding(tmp_path, key, binding)
+        write_claim_dispatch_binding_fixture(tmp_path, key, binding)
 
     with pytest.raises(TaskStoreError, match="close_slot_owned_by_other_session"):
         assert_close_slot_owned(
@@ -182,7 +182,7 @@ def test_close_slot_requires_complete_role_and_session_binding_projection(
     for key in ("cx-red", "cx-red-session-1"):
         (tmp_path / f"cc-active-task-{key}").write_text("task-1\n", encoding="utf-8")
         (tmp_path / f"cc-claim-epoch-{key}").write_text("1 task-1\n", encoding="utf-8")
-    write_claim_dispatch_binding(tmp_path, "cx-red", binding)
+    write_claim_dispatch_binding_fixture(tmp_path, "cx-red", binding)
 
     with pytest.raises(
         TaskStoreError,
@@ -227,7 +227,7 @@ def test_close_slot_refuses_binding_epoch_that_disagrees_with_claim(tmp_path: Pa
     for key in ("cx-red", "cx-red-session-1"):
         (tmp_path / f"cc-active-task-{key}").write_text("task-1\n", encoding="utf-8")
         (tmp_path / f"cc-claim-epoch-{key}").write_text("1 task-1\n", encoding="utf-8")
-        write_claim_dispatch_binding(tmp_path, key, binding)
+        write_claim_dispatch_binding_fixture(tmp_path, key, binding)
 
     with pytest.raises(TaskStoreError, match="close_dispatch_binding_epoch_mismatch"):
         assert_close_slot_owned(

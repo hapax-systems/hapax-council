@@ -38,6 +38,7 @@ _DISPATCH_BINDING_ENV = {
 
 @pytest.fixture(autouse=True)
 def _activated_claim(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("HAPAX_CLAIM_RESUME_SESSION_ID", raising=False)
     for name, value in install_launcher_activation(tmp_path / "activation-home").items():
         monkeypatch.setenv(name, value)
     for name, value in _DISPATCH_BINDING_ENV.items():

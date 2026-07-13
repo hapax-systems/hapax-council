@@ -41,6 +41,7 @@ _DISPATCH_BINDING_ENV = {
 
 @pytest.fixture(autouse=True)
 def _isolate_headless_pid_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("HAPAX_CLAIM_RESUME_SESSION_ID", raising=False)
     monkeypatch.setenv("HAPAX_CODEX_HEADLESS_PID_DIR", str(tmp_path / "headless-pids"))
     monkeypatch.setenv(
         "HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE",
@@ -525,9 +526,9 @@ def test_codex_headless_no_claim_requires_explicit_safe_resume_session(
         }
     )
     if resume_session_id is None:
-        env.pop("HAPAX_SESSION_ID", None)
+        env.pop("HAPAX_CLAIM_RESUME_SESSION_ID", None)
     else:
-        env["HAPAX_SESSION_ID"] = resume_session_id
+        env["HAPAX_CLAIM_RESUME_SESSION_ID"] = resume_session_id
 
     result = subprocess.run(
         [
@@ -886,6 +887,7 @@ exit 0
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
+    _bind_resume_session(env)
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
@@ -896,7 +898,7 @@ exit 0
     )
 
     assert result.returncode == 17
-    assert "--no-claim resume requires" in result.stderr
+    assert "--no-claim requires an existing exact-session claim" in result.stderr
     assert not ssh_log.exists()
     assert not args_file.exists()
     assert not list((cache / "orchestration" / "dispatch-host-proofs").glob("*remote.json"))
@@ -936,6 +938,7 @@ exit 0
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
+    _bind_resume_session(env)
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
@@ -946,7 +949,7 @@ exit 0
     )
 
     assert result.returncode == 17
-    assert "--no-claim resume requires" in result.stderr
+    assert "--no-claim requires an existing exact-session claim" in result.stderr
     assert not ssh_log.exists()
     assert not args_file.exists()
     assert not list((cache / "orchestration" / "dispatch-host-proofs").glob("*remote.json"))

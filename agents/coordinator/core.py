@@ -635,7 +635,11 @@ class Coordinator:
                 complete = False
                 log.error("task SSOT parse HOLD: unreadable or malformed note %s", path)
                 continue
-            task = _task_from_frontmatter(path, frontmatter, source_sha256=source_sha256)
+            task = _parse_task(
+                path,
+                frontmatter=frontmatter,
+                source_sha256=source_sha256,
+            )
             if task is not None:
                 tasks.append(task)
         return tasks, complete
@@ -1035,11 +1039,17 @@ def _load_task_frontmatter(path: Path) -> tuple[dict | None, bool, str]:
     return meta, True, hashlib.sha256(raw).hexdigest()
 
 
-def _parse_task(path: Path) -> Task | None:
-    meta, valid, source_sha256 = _load_task_frontmatter(path)
-    if not valid or meta is None:
-        return None
-    return _task_from_frontmatter(path, meta, source_sha256=source_sha256)
+def _parse_task(
+    path: Path,
+    *,
+    frontmatter: dict | None = None,
+    source_sha256: str = "",
+) -> Task | None:
+    if frontmatter is None:
+        frontmatter, valid, source_sha256 = _load_task_frontmatter(path)
+        if not valid or frontmatter is None:
+            return None
+    return _task_from_frontmatter(path, frontmatter, source_sha256=source_sha256)
 
 
 def _task_from_frontmatter(path: Path, meta: dict, *, source_sha256: str = "") -> Task | None:

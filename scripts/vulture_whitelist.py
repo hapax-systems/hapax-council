@@ -4763,6 +4763,9 @@ from shared.sdlc_task_store import (  # noqa: E402
     assert_close_slot_owned as _assert_close_slot_owned,
 )
 from shared.sdlc_task_store import (  # noqa: E402
+    claim_dispatch_binding_bytes as _claim_dispatch_binding_bytes,
+)
+from shared.sdlc_task_store import (  # noqa: E402
     verify_claim_dispatch_state as _verify_claim_dispatch_state,
 )
 
@@ -4774,5 +4777,6 @@ _ = (
     _canonical_task_owner,
     _assert_claim_slot_available,
     _assert_close_slot_owned,
+    _claim_dispatch_binding_bytes,
     _verify_claim_dispatch_state,
 )

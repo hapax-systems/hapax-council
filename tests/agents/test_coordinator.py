@@ -45,7 +45,8 @@ from shared import sdlc_dispatch_guards as dispatch_guards
 from shared.coord_dispatch import DispatchLaunchRequest, _accept_dispatch_message
 from shared.coord_event_log import CoordEventLog
 from shared.sdlc_pressure_gate import AdmissionDecision
-from shared.sdlc_task_store import ClaimDispatchBinding, write_claim_dispatch_binding
+from shared.sdlc_task_store import ClaimDispatchBinding
+from tests.shared.sdlc_task_store_support import write_claim_dispatch_binding_fixture
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DISPATCHER_SCRIPT = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
@@ -2215,7 +2216,7 @@ current_claim: p0-task
             epoch = 123
             (cache_dir / "cc-active-task-cx-red").write_text("task-1\n", encoding="utf-8")
             (cache_dir / "cc-claim-epoch-cx-red").write_text(f"{epoch} task-1\n", encoding="utf-8")
-            write_claim_dispatch_binding(
+            write_claim_dispatch_binding_fixture(
                 cache_dir,
                 "cx-red",
                 ClaimDispatchBinding.create(

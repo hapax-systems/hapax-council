@@ -1028,13 +1028,6 @@ def _decode_json_unique(raw: bytes, path: Path) -> object:
         raise FilesystemTransactionError(f"transaction journal malformed: {path}") from exc
 
 
-def _load_json_unique(path: Path) -> object:
-    raw, _mode = _snapshot(path)
-    if raw is None:
-        raise FilesystemTransactionError(f"transaction journal member disappeared: {path}")
-    return _decode_json_unique(raw, path)
-
-
 def _load_json_unique_at(directory_fd: int, name: str, path: Path) -> object:
     try:
         descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
@@ -1734,7 +1727,8 @@ def migrate_legacy_filesystem_transactions(
     """Drain pre-global journals while one stable ownership lock excludes new writers."""
 
     allowed_roots = ownership_transaction_allowed_roots(stable_journal, allowed_roots)
-    _allowed(stable_journal, allowed_roots)
+    stable_journal = _allowed(stable_journal, allowed_roots)
+    legacy_journals = tuple(_allowed(path, allowed_roots) for path in legacy_journals)
     with _transaction_lock(stable_journal):
         _recover_stable_and_legacy_filesystem_transactions_unlocked(
             stable_journal,
@@ -1775,7 +1769,7 @@ def recover_filesystem_transaction(
     """Recover one transaction while excluding cooperating writers."""
 
     allowed_roots = ownership_transaction_allowed_roots(journal_path, allowed_roots)
-    _allowed(journal_path, allowed_roots)
+    journal_path = _allowed(journal_path, allowed_roots)
     with _transaction_lock(journal_path):
         return _recover_filesystem_transaction_unlocked(
             journal_path,
@@ -1880,7 +1874,8 @@ def execute_filesystem_transaction(
     """Apply one transaction while excluding cooperating writers."""
 
     allowed_roots = ownership_transaction_allowed_roots(journal_path, allowed_roots)
-    _allowed(journal_path, allowed_roots)
+    journal_path = _allowed(journal_path, allowed_roots)
+    legacy_journals = tuple(_allowed(path, allowed_roots) for path in legacy_journals)
     with _transaction_lock(journal_path):
         _recover_stable_and_legacy_filesystem_transactions_unlocked(
             journal_path,

@@ -6,6 +6,8 @@ import json
 import os
 import shutil
 import stat
+import subprocess
+import sys
 from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
@@ -65,6 +67,51 @@ def test_execute_commits_all_postimages_and_removes_journal(tmp_path: Path) -> N
     assert second.read_bytes() == b"created"
     assert not journal.exists()
     assert len(list(root.glob(".journal.json.history-*-committed"))) == 1
+
+
+def test_execute_canonicalizes_symlinked_journal_root_before_locking(tmp_path: Path) -> None:
+    physical_cache = tmp_path / "physical-cache"
+    physical_cache.mkdir()
+    cache_alias = tmp_path / "home" / ".cache" / "hapax"
+    cache_alias.parent.mkdir(parents=True)
+    cache_alias.symlink_to(physical_cache, target_is_directory=True)
+    target = cache_alias / "cc-active-task-cx-test"
+    journal = cache_alias / "cc-ownership-txn.json"
+    code = """
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from shared.sdlc_filesystem_transaction import FileMutation, execute_filesystem_transaction
+
+journal = Path(sys.argv[2])
+target = Path(sys.argv[3])
+cache = Path(sys.argv[4])
+execute_filesystem_transaction(
+    journal,
+    (FileMutation(target, b"task-x\\n", mode=0o600, expected_exists=False),),
+    allowed_roots=(cache,),
+)
+"""
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            code,
+            str(Path(__file__).resolve().parents[2]),
+            str(journal),
+            str(target),
+            str(cache_alias),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert target.read_bytes() == b"task-x\n"
+    assert not journal.exists()
 
 
 @pytest.mark.parametrize(
