@@ -474,18 +474,18 @@ fi
 # through to the ordinary claim/authority gate.
 _bootstrap_helper="$SCRIPT_DIR/cc-task-gate-bootstrap.py"
 
-# _bootstrap_is_candidate_target — mirror the helper's candidate test in pure bash
-# so the fail-OPEN stays narrow: only a Write of a .md note under the governance
-# intake roots (hapax-requests/active or hapax-cc-tasks/active) fails open when the
-# helper can't run. Any other mutation falls through to the normal gate — an infra
-# error must never widen what a non-bootstrap mutation may do.
+# _bootstrap_is_candidate_target — mirror the helper's direct-child candidate
+# test in pure bash. Nested paths are not valid governance identities and must
+# fall through to the ordinary claim gate even when the helper is unavailable.
 _bootstrap_is_candidate_target() {
   [[ "$tool_name" == "Write" ]] || return 1
-  local p="${edit_path/#\~/$HOME}"
+  local p="${edit_path/#\~/$HOME}" parent
   [[ -n "$p" && "$p" == *.md ]] || return 1
-  case "$p" in
-    "$HOME"/Documents/Personal/20-projects/hapax-requests/active/*) return 0 ;;
-    "$HOME"/Documents/Personal/20-projects/hapax-cc-tasks/active/*) return 0 ;;
+  p="$(realpath -m -- "$p" 2>/dev/null)" || return 1
+  parent="$(dirname -- "$p")"
+  case "$parent" in
+    "$HOME"/Documents/Personal/20-projects/hapax-requests/active) return 0 ;;
+    "$HOME"/Documents/Personal/20-projects/hapax-cc-tasks/active) return 0 ;;
   esac
   return 1
 }

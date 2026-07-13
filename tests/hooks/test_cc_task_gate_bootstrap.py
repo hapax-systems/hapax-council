@@ -245,6 +245,28 @@ def test_no_claim_blocks_bash_heredoc_task_creation(tmp_path: Path) -> None:
     assert "no claimed task" in result.stderr
 
 
+def test_nested_governance_path_falls_through_without_dead_end_remediation(
+    tmp_path: Path,
+) -> None:
+    nested = tmp_path / "Documents/Personal/20-projects/hapax-requests/active/nested/REQ-nested.md"
+
+    result = _run_hook(
+        tmp_path,
+        {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": str(nested),
+                "content": _request_note("REQ-nested"),
+            },
+        },
+        role=None,
+    )
+
+    assert result.returncode == 2
+    assert "no claimed task" in result.stderr
+    assert "cc-governance-intake-create" not in result.stderr
+
+
 def test_nested_bootstrap_identity_fields_are_not_promoted(tmp_path: Path) -> None:
     task_root = tmp_path / "Documents/Personal/20-projects/hapax-cc-tasks/active"
     task_root.mkdir(parents=True)
@@ -337,3 +359,70 @@ def test_transactional_creator_refuses_terminal_identity(tmp_path: Path) -> None
     assert "existence precondition changed" in result.stderr
     assert terminal.exists()
     assert not (active / f"{task_id}.md").exists()
+
+
+def test_request_creator_uses_shared_stable_ownership_journal(tmp_path: Path) -> None:
+    active = tmp_path / "Documents/Personal/20-projects/hapax-requests/active"
+    active.mkdir(parents=True)
+    request_id = "REQ-shared-journal"
+    target = active / f"{request_id}.md"
+    payload = tmp_path / "payload.json"
+    payload.write_text(
+        json.dumps({"path": str(target), "content": _request_note(request_id)}),
+        encoding="utf-8",
+    )
+    shared_cache = tmp_path / "shared-ownership"
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),
+        "HAPAX_CC_OWNERSHIP_CACHE_DIR": str(shared_cache),
+        "HAPAX_CC_TASK_GATE_BOOTSTRAP_LEDGER": str(tmp_path / "ledger.jsonl"),
+    }
+
+    result = subprocess.run(
+        [str(CREATOR), "--payload", str(payload)],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=15,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert target.exists()
+    assert list(shared_cache.glob(".cc-ownership-txn.json.history-*-committed"))
+    assert not (tmp_path / ".cache/hapax/request-ownership").exists()
+
+
+def test_postcommit_ledger_failure_reports_warning_without_false_refusal(
+    tmp_path: Path,
+) -> None:
+    active = tmp_path / "Documents/Personal/20-projects/hapax-requests/active"
+    active.mkdir(parents=True)
+    request_id = "REQ-ledger-warning"
+    target = active / f"{request_id}.md"
+    payload = tmp_path / "payload.json"
+    payload.write_text(
+        json.dumps({"path": str(target), "content": _request_note(request_id)}),
+        encoding="utf-8",
+    )
+    ledger_directory = tmp_path / "ledger-directory"
+    ledger_directory.mkdir()
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),
+        "HAPAX_CC_TASK_GATE_BOOTSTRAP_LEDGER": str(ledger_directory),
+    }
+
+    result = subprocess.run(
+        [str(CREATOR), "--payload", str(payload)],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=15,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "note committed but audit ledger append failed" in result.stderr
+    assert target.exists()

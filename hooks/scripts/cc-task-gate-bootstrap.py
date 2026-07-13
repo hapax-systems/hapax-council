@@ -12,6 +12,7 @@ would make a safety gate depend on optional runtime packaging.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -212,8 +213,23 @@ def write_bootstrap_ledger(kind: str, path: Path, identifier: str) -> None:
         "path": str(path),
         "reason": "unclaimed_governance_intake_bootstrap",
     }
-    with ledger.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, sort_keys=True) + "\n")
+    blob = (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
+    lock_path = ledger.with_name(ledger.name + ".lock")
+    lock_fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        data_fd = os.open(
+            ledger,
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC,
+            0o600,
+        )
+        try:
+            os.write(data_fd, blob)
+        finally:
+            os.close(data_fd)
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
 
 
 def _block(message: str, details: list[str] | None = None) -> int:
@@ -257,17 +273,10 @@ def main() -> int:
     target = Path(raw_path).expanduser().resolve(strict=False)
 
     kind: str | None = None
-    try:
-        if (
-            target.suffix == ".md"
-            and target.is_relative_to(request_root)
-            and target != request_root
-        ):
-            kind = "request"
-        elif target.suffix == ".md" and target.is_relative_to(task_root) and target != task_root:
-            kind = "cc-task"
-    except ValueError:
-        return NOT_CANDIDATE
+    if target.suffix == ".md" and target.parent == request_root:
+        kind = "request"
+    elif target.suffix == ".md" and target.parent == task_root:
+        kind = "cc-task"
 
     if kind is None:
         return NOT_CANDIDATE

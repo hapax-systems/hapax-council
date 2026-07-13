@@ -235,6 +235,9 @@ class _BlockParser:
                     return self._parse_multiline_inline("", indent, line_number)
             return None
         if _BLOCK_SCALAR_RE.fullmatch(value):
+            # Governance fields never use block scalars. Consume the complete
+            # scalar but project it as empty so any authorization use HOLDs;
+            # reproducing YAML folding here would widen the proven subset.
             while self.index < len(self.lines) and self.lines[self.index].indent > indent:
                 self.index += 1
             return ""

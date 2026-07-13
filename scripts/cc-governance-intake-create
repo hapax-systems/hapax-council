@@ -115,15 +115,19 @@ def main(argv: list[str] | None = None) -> int:
         for state in states:
             (vault_root / state).mkdir(parents=True, exist_ok=True)
         guards = _identity_guards(vault_root, states, target, kind, identifier)
-        if kind == "cc-task":
-            cache_dir = Path(
+        # Request decomposition CAS-updates parent request notes through this
+        # same stable journal. A per-tool journal would share target locks but
+        # could not drain or recover the other writer's crash image.
+        cache_dir = (
+            Path(
                 os.environ.get(
                     "HAPAX_CC_OWNERSHIP_CACHE_DIR",
                     str(Path.home() / ".cache" / "hapax"),
                 )
-            ).expanduser()
-        else:
-            cache_dir = Path.home() / ".cache" / "hapax" / "request-ownership"
+            )
+            .expanduser()
+            .absolute()
+        )
         create_task_note_transactionally(
             target,
             content=content.encode("utf-8"),
@@ -132,10 +136,19 @@ def main(argv: list[str] | None = None) -> int:
             vault_root=vault_root,
             absent_guard_paths=guards,
         )
-        validator.write_bootstrap_ledger(kind, target, identifier)
     except (OSError, RuntimeError, ValueError, FilesystemTransactionError) as exc:
         print(f"cc-governance-intake-create: REFUSED - {exc}", file=sys.stderr)
         return 2
+    try:
+        validator.write_bootstrap_ledger(kind, target, identifier)
+    except OSError as exc:
+        # The governance note is already committed. Report audit degradation
+        # without falsely claiming that creation rolled back.
+        print(
+            f"cc-governance-intake-create: WARNING - note committed but audit ledger "
+            f"append failed: {exc}",
+            file=sys.stderr,
+        )
     print(f"cc-governance-intake-create: created {kind} {identifier}: {target}")
     return 0
 

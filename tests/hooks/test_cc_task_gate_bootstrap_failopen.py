@@ -223,6 +223,17 @@ def test_helper_unavailable_noncandidate_unclaimed_still_blocks(tmp_path: Path, 
     assert "no claimed task" in result.stderr.lower()
 
 
+def test_helper_unavailable_nested_governance_path_is_not_a_candidate(tmp_path: Path):
+    gate = _stage_gate(tmp_path, helper="absent")
+    nested = tmp_path / "Documents/Personal/20-projects/hapax-requests/active/nested/REQ-nested.md"
+
+    result = _run(gate, _candidate_write(nested), tmp_path, role=None)
+
+    assert result.returncode == 2
+    assert "cannot determine session role" in result.stderr.lower()
+    assert "cc-governance-intake-create" not in result.stderr
+
+
 # --- The coordinator unblock: a CLAIMED in-scope edit is not blocked by a bad helper
 
 
