@@ -2035,6 +2035,98 @@ checklist:
         assert receipt_path.is_file()
         assert result2["side_effects"]["receipt_path"] == str(receipt_path)
 
+    def test_replay_only_rebinds_fresh_dossier_without_reviewer_spend(self, tmp_path: Path) -> None:
+        result, _, _, note = _review(
+            tmp_path, task_kwargs={"quality_floor": "frontier_review_required"}
+        )
+        assert result["status"] == "dispatched"
+        receipt_path = note.parent / "task-a.acceptance.yaml"
+        receipt_path.unlink()
+        reviewers = RecordingReviewers()
+
+        replay = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=note.parent.parent,
+            apply=True,
+            replay_only=True,
+            gh_runner=FakeGh(),
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T22:00:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert replay["status"] == "replayed_fresh"
+        assert replay["side_effects"]["receipt_path"] == str(receipt_path)
+        assert reviewers.invocations == []
+        receipt = yaml.safe_load(receipt_path.read_text(encoding="utf-8"))
+        assert receipt["dossier_sha256"] == (
+            "sha256:" + dispatch.sha256_file(note.parent / "task-a.review-dossier.yaml")
+        )
+
+    def test_replay_only_blocks_stale_dossier_without_any_effect(self, tmp_path: Path) -> None:
+        result, _, _, note = _review(
+            tmp_path, task_kwargs={"quality_floor": "frontier_review_required"}
+        )
+        assert result["status"] == "dispatched"
+        receipt_path = note.parent / "task-a.acceptance.yaml"
+        receipt_path.unlink()
+        dossier_path = note.parent / "task-a.review-dossier.yaml"
+        stale = yaml.safe_load(dossier_path.read_text(encoding="utf-8"))
+        stale["head_sha"] = "d" * 40
+        dossier_path.write_text(yaml.safe_dump(stale, sort_keys=False), encoding="utf-8")
+        reviewers = RecordingReviewers()
+        gh = FakeGh()
+
+        replay = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=note.parent.parent,
+            apply=True,
+            replay_only=True,
+            gh_runner=gh,
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T22:00:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert replay["status"] == "replay_blocked"
+        assert replay["blocked_reasons"] == ["task-a:missing_or_stale"]
+        assert replay["side_effects"] == {}
+        assert reviewers.invocations == []
+        assert not receipt_path.exists()
+        assert yaml.safe_load(dossier_path.read_text(encoding="utf-8")) == stale
+        assert gh.comments == []
+
+    def test_replay_only_refuses_force_before_lock_or_github_effect(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        gh = FakeGh()
+        reviewers = RecordingReviewers()
+
+        result = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            force=True,
+            replay_only=True,
+            gh_runner=gh,
+            reviewer_runner=reviewers,
+        )
+
+        assert result["status"] == "replay_force_conflict"
+        assert result["side_effects"] == {}
+        assert gh.calls == []
+        assert reviewers.invocations == []
+        assert not (vault / "_locks").exists()
+
     def test_review_execution_lock_uses_o_excl_claim_file(self, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)
         lock_path = dispatch.review_execution_lock_path(
@@ -2686,6 +2778,12 @@ class TestAllMode:
             route_blocked_families={},
         )
         assert [r["status"] for r in results] == ["error", "dispatched"]
+
+    def test_cli_refuses_replay_only_with_force(self) -> None:
+        with pytest.raises(SystemExit) as excinfo:
+            dispatch.main(["--pr", "42", "--apply", "--replay-only", "--force"])
+
+        assert excinfo.value.code == 2
 
 
 class TestReceiptAndWake:

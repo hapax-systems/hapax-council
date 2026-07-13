@@ -20,6 +20,8 @@ Usage::
     uv run python scripts/cc-pr-review-dispatch.py --pr 123           # dry-run plan
     uv run python scripts/cc-pr-review-dispatch.py --pr 123 --apply
     uv run python scripts/cc-pr-review-dispatch.py --all --apply      # timer-ready scan
+    uv run python scripts/cc-pr-review-dispatch.py --all --apply --replay-only
+                                                                    # no-review migration
     HAPAX_REVIEW_TEAM_DISPATCH_OFF=1 ...                              # killswitch
 
 Default mode is a dry-run constitution plan. ``--apply`` dispatches reviewers
@@ -3121,6 +3123,7 @@ def review_pr(
     vault_root: Path = DEFAULT_VAULT_ROOT,
     apply: bool = False,
     force: bool = False,
+    replay_only: bool = False,
     gh_runner: Any = None,
     reviewer_runner: Any = None,
     wake_dir: Path = DEFAULT_WAKE_DIR,
@@ -3130,6 +3133,15 @@ def review_pr(
     route_blocked_families: dict[str, tuple[str, ...]] | None = None,
 ) -> dict[str, Any]:
     """Constitute (and with ``apply``, dispatch) the review team for one PR."""
+
+    if replay_only and force:
+        return {
+            "status": "replay_force_conflict",
+            "repo": repo,
+            "pr": pr_number,
+            "reason": "replay-only never forces or dispatches a review",
+            "side_effects": {},
+        }
 
     with review_execution_lock(repo=repo, pr_number=pr_number, vault_root=vault_root) as lock:
         if not lock.acquired:
@@ -3149,6 +3161,7 @@ def review_pr(
             vault_root=vault_root,
             apply=apply,
             force=force,
+            replay_only=replay_only,
             gh_runner=gh_runner,
             reviewer_runner=reviewer_runner,
             wake_dir=wake_dir,
@@ -3168,6 +3181,7 @@ def _review_pr_locked(
     vault_root: Path = DEFAULT_VAULT_ROOT,
     apply: bool = False,
     force: bool = False,
+    replay_only: bool = False,
     gh_runner: Any = None,
     reviewer_runner: Any = None,
     wake_dir: Path = DEFAULT_WAKE_DIR,
@@ -3247,7 +3261,7 @@ def _review_pr_locked(
         )
 
     outage_witness = load_family_outage_witness(now_iso)
-    if apply:
+    if apply and not replay_only:
         outage_witness = clear_route_recovered_family_outage(
             outage_witness,
             registry=registry,
@@ -3255,6 +3269,95 @@ def _review_pr_locked(
             now_iso=now_iso,
         )
     outage_families = frozenset(outage_witness)
+
+    if replay_only:
+        replay_candidates: list[tuple[Path, dict[str, Any], str, dict[str, Any]]] = []
+        replay_blockers: list[str] = []
+        for target_note_path, target_frontmatter, target_task_id in keyed_matches:
+            target_dossier_path = review_team.review_dossier_path(target_note_path, target_task_id)
+            try:
+                existing = yaml.safe_load(target_dossier_path.read_text(encoding="utf-8"))
+            except (OSError, yaml.YAMLError):
+                existing = None
+            if not isinstance(existing, dict) or existing.get("head_sha") != pr_info.head_sha:
+                replay_blockers.append(f"{target_task_id}:missing_or_stale")
+                continue
+            blockers = review_team.review_dossier_validity_blockers(
+                target_frontmatter,
+                target_note_path,
+                pr_head_sha=pr_info.head_sha,
+                pr_number=pr_info.number,
+                changed_files=pr_info.files,
+                changed_file_count=pr_info.changed_file_count,
+                registry=registry,
+                outage_state_path=FAMILY_OUTAGE_STATE,
+                route_blocked_families=effective_route_blocked_families,
+            )
+            if blockers:
+                replay_blockers.append(f"{target_task_id}:{','.join(blockers)}")
+                continue
+            replay_candidates.append(
+                (target_note_path, target_frontmatter, target_task_id, existing)
+            )
+
+        if replay_blockers or len(replay_candidates) != len(keyed_matches):
+            return {
+                "status": "replay_blocked",
+                "repo": repo,
+                "pr": pr_number,
+                "head_sha": pr_info.head_sha,
+                "blocked_reasons": replay_blockers or ["incomplete_replay_candidate_set"],
+                "side_effects": {},
+            }
+
+        replay_results: list[dict[str, Any]] = []
+        for target_note_path, target_frontmatter, target_task_id, existing in replay_candidates:
+            target_dossier_path = review_team.review_dossier_path(target_note_path, target_task_id)
+            side_effects = {}
+            if apply:
+                side_effects = replay_dossier_side_effects(
+                    target_frontmatter,
+                    target_note_path,
+                    target_task_id,
+                    existing,
+                    repo=repo,
+                    now_iso=now_iso,
+                    registry=registry,
+                    wake_dir=wake_dir,
+                    send_runner=send_runner,
+                    pr_number=pr_info.number,
+                    changed_files=pr_info.files,
+                    changed_file_count=pr_info.changed_file_count,
+                    route_blocked_families=effective_route_blocked_families,
+                )
+            replay_results.append(
+                {
+                    "task_id": target_task_id,
+                    "dossier_path": str(target_dossier_path),
+                    "review_team_verdict": existing.get("review_team_verdict"),
+                    "side_effects": side_effects,
+                }
+            )
+
+        status = "replayed_fresh" if apply else "replay_ready"
+        if len(replay_results) == 1:
+            only = replay_results[0]
+            return {
+                "status": status,
+                "repo": repo,
+                "pr": pr_number,
+                "head_sha": pr_info.head_sha,
+                "dossier_path": only["dossier_path"],
+                "review_team_verdict": only["review_team_verdict"],
+                "side_effects": only["side_effects"],
+            }
+        return {
+            "status": f"multi_{status}",
+            "repo": repo,
+            "pr": pr_number,
+            "head_sha": pr_info.head_sha,
+            "results": replay_results,
+        }
 
     if not force:
         fresh_results: list[dict[str, Any]] = []
@@ -3637,6 +3740,7 @@ def review_all_open_prs(
     vault_root: Path = DEFAULT_VAULT_ROOT,
     apply: bool = False,
     force: bool = False,
+    replay_only: bool = False,
     gh_runner: Any = None,
     reviewer_runner: Any = None,
     wake_dir: Path = DEFAULT_WAKE_DIR,
@@ -3665,6 +3769,7 @@ def review_all_open_prs(
                     vault_root=vault_root,
                     apply=apply,
                     force=force,
+                    replay_only=replay_only,
                     gh_runner=gh_runner,
                     reviewer_runner=reviewer_runner,
                     wake_dir=wake_dir,
@@ -3685,6 +3790,11 @@ def main(argv: list[str] | None = None) -> int:
     target.add_argument("--all", action="store_true", help="scan all open PRs")
     parser.add_argument("--apply", action="store_true", help="dispatch reviewers (default: plan)")
     parser.add_argument("--force", action="store_true", help="re-review an already-reviewed sha")
+    parser.add_argument(
+        "--replay-only",
+        action="store_true",
+        help="validate current dossiers and replay side effects without dispatching reviewers",
+    )
     parser.add_argument("--repo", default=DEFAULT_REPO)
     parser.add_argument("--vault-root", type=Path, default=DEFAULT_VAULT_ROOT)
     parser.add_argument("--verbose", action="store_true")
@@ -3696,9 +3806,15 @@ def main(argv: list[str] | None = None) -> int:
     if os.environ.get(KILLSWITCH_ENV, "").strip().lower() in TRUTHY_ENV_VALUES:
         LOG.warning("%s set — dispatcher disabled, exiting without action", KILLSWITCH_ENV)
         return 0
+    if args.force and args.replay_only:
+        parser.error("--replay-only cannot be combined with --force")
     if args.all:
         results: Any = review_all_open_prs(
-            repo=args.repo, vault_root=args.vault_root, apply=args.apply, force=args.force
+            repo=args.repo,
+            vault_root=args.vault_root,
+            apply=args.apply,
+            force=args.force,
+            replay_only=args.replay_only,
         )
     else:
         results = review_pr(
@@ -3707,6 +3823,7 @@ def main(argv: list[str] | None = None) -> int:
             vault_root=args.vault_root,
             apply=args.apply,
             force=args.force,
+            replay_only=args.replay_only,
         )
     json.dump(results, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
