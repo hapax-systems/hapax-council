@@ -264,6 +264,50 @@ def test_recurrence_after_closed_task_mints_new_active_task_with_prior_context(t
     assert events[-1]["recurrence_of_task_id"] == first_result.task_id
 
 
+def test_recurrence_after_refused_task_mints_new_identity(tmp_path):
+    task_root = tmp_path / "tasks"
+    state_path = tmp_path / "state.json"
+    ledger_path = tmp_path / "events.jsonl"
+    first = datetime(2026, 6, 12, 20, 0, tzinfo=UTC)
+    first_result = record_notification(
+        "Service Failed: refused-demo.service",
+        "first failure text",
+        priority="urgent",
+        tags=["skull"],
+        task_root=task_root,
+        state_path=state_path,
+        ledger_path=ledger_path,
+        now=first,
+    )
+    assert first_result.task_path is not None
+    refused_dir = task_root / "refused"
+    refused_dir.mkdir(parents=True, exist_ok=True)
+    refused_path = refused_dir / first_result.task_path.name
+    refused_text = first_result.task_path.read_text(encoding="utf-8").replace(
+        "status: offered", "status: refused", 1
+    )
+    refused_path.write_text(refused_text, encoding="utf-8")
+    first_result.task_path.unlink()
+
+    second_result = record_notification(
+        "Service Failed: refused-demo.service",
+        "second failure after refusal",
+        priority="urgent",
+        tags=["skull"],
+        task_root=task_root,
+        state_path=state_path,
+        ledger_path=ledger_path,
+        now=first + timedelta(hours=1),
+    )
+
+    assert second_result.created is True
+    assert second_result.recurrence is True
+    assert second_result.task_id == f"{first_result.task_id}-r1"
+    assert second_result.recurrence_of_task_path == refused_path
+    assert refused_path.exists()
+    assert second_result.task_path is not None and second_result.task_path.exists()
+
+
 def test_existing_task_without_latest_alert_gets_repaired(tmp_path):
     task_root = tmp_path / "tasks"
     state_path = tmp_path / "state.json"

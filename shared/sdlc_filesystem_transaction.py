@@ -1657,6 +1657,10 @@ def _recover_legacy_filesystem_transaction_unlocked(
                         "legacy v1 transaction journal identity changed while acquiring "
                         f"target locks: {journal_path}"
                     )
+                # Supersession archives evidence. Prove no-replace support on
+                # both journal locations and every target before any retirement,
+                # even when the compatibility journal was never materialized.
+                _require_atomic_no_replace_support((journal_path, compatibility, *target_paths))
                 target_states = [
                     (path, entry, _snapshot(path))
                     for path, entry in zip(target_paths, locked_record.entries, strict=True)
@@ -1700,6 +1704,9 @@ def _recover_legacy_filesystem_transaction_unlocked(
                 "legacy transaction journal identity changed while acquiring target locks: "
                 f"{journal_path}"
             )
+        # A third target image may be legitimate supersession, but retirement
+        # still requires atomic no-replace on every evidence/target filesystem.
+        _require_atomic_no_replace_support((journal_path, *target_paths))
         _materialize_missing_stages(locked_record, allowed_roots=allowed_roots)
         if _entries_have_superseding_target_image(
             locked_record.entries,

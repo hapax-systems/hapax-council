@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Validate unclaimed cc-task gate intake bootstrap writes.
+"""Validate and route unclaimed governance-intake bootstrap writes.
 
-This helper is intentionally narrow. It lets a session create the governance
-object that makes ordinary work claimable, but only as a new request or offered
-cc-task note in the Obsidian governance vault.
+This helper is intentionally narrow. Direct editor writes are denied after
+validation; the reported remediation performs creation under the stable
+ownership transaction.
 
 Keep this dependency-light: hooks run under the system Python before repo
 PYTHONPATH or the project venv is guaranteed, so importing shared.frontmatter
@@ -20,96 +20,34 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from task_frontmatter_stdlib import (
+    DuplicateKeyError,
+    FrontmatterSubsetError,
+    parse_frontmatter_document,
+    scalar_text,
+    string_list,
+)
+
 NOT_CANDIDATE = 10
 BLOCKED = 12
 
 NULLISH = {"", "null", "none", "~", "[]"}
 
 
-def _strip_scalar(value: str) -> str:
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
-        return value[1:-1].strip()
-    return value
-
-
-def _parse_inline_list(value: str) -> list[str]:
-    value = value.strip()
-    if value == "[]":
-        return []
-    if not (value.startswith("[") and value.endswith("]")):
-        scalar = _strip_scalar(value)
-        return [scalar] if scalar else []
-    inner = value[1:-1].strip()
-    if not inner:
-        return []
-    return [_strip_scalar(item) for item in inner.split(",") if _strip_scalar(item)]
-
-
 def _split_frontmatter(content: str) -> tuple[dict[str, Any], set[str], str, list[str]]:
-    errors: list[str] = []
-    if not content.startswith("---\n"):
-        return {}, set(), "", ["note must start with YAML frontmatter"]
-    end = content.find("\n---", 4)
-    if end < 0:
-        return {}, set(), "", ["note frontmatter must close with ---"]
-
-    frontmatter = content[4:end]
-    body = content[end + 4 :]
-    fields: dict[str, Any] = {}
-    present: set[str] = set()
-    lines = frontmatter.splitlines()
-    idx = 0
-    while idx < len(lines):
-        line = lines[idx]
-        stripped = line.strip()
-        idx += 1
-        if not stripped or stripped.startswith("#") or ":" not in stripped:
-            continue
-        key, raw_value = stripped.split(":", 1)
-        key = key.strip()
-        value = raw_value.strip()
-        present.add(key)
-        if value:
-            if value.startswith("[") and value.endswith("]"):
-                fields[key] = _parse_inline_list(value)
-            else:
-                fields[key] = _strip_scalar(value)
-            continue
-
-        items: list[str] = []
-        while idx < len(lines):
-            child = lines[idx].strip()
-            if not child:
-                idx += 1
-                continue
-            if child.startswith("- "):
-                item = _strip_scalar(child[2:])
-                if item:
-                    items.append(item)
-                idx += 1
-                continue
-            break
-        fields[key] = items
-
-    return fields, present, body, errors
+    try:
+        parsed = parse_frontmatter_document(content)
+    except (DuplicateKeyError, FrontmatterSubsetError, UnicodeDecodeError) as exc:
+        return {}, set(), "", [f"strict YAML validation failed: {exc}"]
+    return parsed.fields, set(parsed.fields), parsed.body, []
 
 
 def _as_scalar(fields: dict[str, Any], key: str) -> str:
-    value = fields.get(key, "")
-    if isinstance(value, list):
-        return ""
-    return str(value).strip()
+    return scalar_text(fields.get(key)).strip()
 
 
 def _as_list(fields: dict[str, Any], key: str) -> list[str]:
-    value = fields.get(key, [])
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    text = str(value).strip()
-    if not text or text.lower() in NULLISH:
-        return []
-    return _parse_inline_list(text)
+    return string_list(fields.get(key))
 
 
 def _is_nullish(value: Any) -> bool:
@@ -121,7 +59,7 @@ def _is_nullish(value: Any) -> bool:
 
 
 def _require_scalar(fields: dict[str, Any], key: str, errors: list[str]) -> None:
-    if _is_nullish(fields.get(key)):
+    if _is_nullish(fields.get(key)) or not _as_scalar(fields, key):
         errors.append(f"missing non-empty `{key}`")
 
 
@@ -154,8 +92,8 @@ def _validate_request(path: Path, fields: dict[str, Any], present: set[str]) -> 
     request_id = _as_scalar(fields, "request_id")
     if request_id and not request_id.startswith("REQ-"):
         errors.append("`request_id` must start with REQ-")
-    if request_id and not path.name.startswith(request_id):
-        errors.append("request filename must start with `request_id`")
+    if request_id and path.stem != request_id:
+        errors.append("request filename must be exactly `<request_id>.md`")
 
     status = _as_scalar(fields, "status")
     if status not in {"captured", "accepted_for_planning"}:
@@ -196,8 +134,8 @@ def _validate_task(path: Path, fields: dict[str, Any], present: set[str], body: 
     task_id = _as_scalar(fields, "task_id")
     if task_id and not re.match(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$", task_id):
         errors.append("`task_id` contains unsupported characters")
-    if task_id and not (path.stem == task_id or path.stem.startswith(f"{task_id}-")):
-        errors.append("cc-task filename must match `task_id` or start with `task_id-`")
+    if task_id and path.stem != task_id:
+        errors.append("cc-task filename must be exactly `<task_id>.md`")
 
     if _as_scalar(fields, "status") != "offered":
         errors.append("new cc-task bootstrap notes must use `status: offered`")
@@ -228,6 +166,27 @@ def _validate_task(path: Path, fields: dict[str, Any], present: set[str], body: 
     return errors
 
 
+def validate_bootstrap_candidate(
+    target: Path,
+    content: str,
+    kind: str,
+) -> tuple[str, list[str]]:
+    """Return the canonical identifier and every validation error."""
+
+    fields, present, body, errors = _split_frontmatter(content)
+    if errors:
+        return target.stem, errors
+    if kind == "request":
+        errors.extend(_validate_request(target, fields, present))
+        identifier = _as_scalar(fields, "request_id") or target.stem
+    elif kind == "cc-task":
+        errors.extend(_validate_task(target, fields, present, body))
+        identifier = _as_scalar(fields, "task_id") or target.stem
+    else:
+        return target.stem, [f"unsupported bootstrap kind: {kind}"]
+    return identifier, errors
+
+
 def _role_for_ledger() -> str:
     for key in ("HAPAX_AGENT_ROLE", "CODEX_ROLE", "CLAUDE_ROLE", "HAPAX_AGENT_NAME"):
         value = os.environ.get(key, "").strip()
@@ -236,7 +195,7 @@ def _role_for_ledger() -> str:
     return "unknown"
 
 
-def _write_ledger(kind: str, path: Path, identifier: str) -> None:
+def write_bootstrap_ledger(kind: str, path: Path, identifier: str) -> None:
     ledger = Path(
         os.environ.get(
             "HAPAX_CC_TASK_GATE_BOOTSTRAP_LEDGER",
@@ -317,25 +276,19 @@ def main() -> int:
     if not isinstance(content, str) or not content.strip():
         return _block("Write content is missing or empty", [str(target)])
 
-    fields, present, body, errors = _split_frontmatter(content)
-    if not errors:
-        if kind == "request":
-            errors.extend(_validate_request(target, fields, present))
-            identifier = _as_scalar(fields, "request_id") or target.stem
-        else:
-            errors.extend(_validate_task(target, fields, present, body))
-            identifier = _as_scalar(fields, "task_id") or target.stem
+    identifier, errors = validate_bootstrap_candidate(target, content, kind)
 
     if errors:
         return _block(str(target), errors)
 
-    try:
-        _write_ledger(kind, target, identifier)
-    except OSError as exc:
-        return _block("could not write bootstrap ledger", [str(exc)])
-
-    print(f"cc-task-gate: intake bootstrap allowed — {kind} {identifier} logged", file=sys.stderr)
-    return 0
+    return _block(
+        "direct Write cannot serialize a governance identity",
+        [
+            f"validated {kind} identity: {identifier}",
+            "write a JSON payload under /tmp/hapax-* and run "
+            "`scripts/cc-governance-intake-create --payload <path>`",
+        ],
+    )
 
 
 if __name__ == "__main__":

@@ -850,7 +850,7 @@ class TestAutoTransitionClaimed:
         )
 
         assert result.returncode == 2
-        assert "duplicate top-level frontmatter key 'assigned_to'" in result.stderr
+        assert "duplicate frontmatter mapping key 'assigned_to'" in result.stderr
         assert "\nstatus: claimed\n" in note.read_text(encoding="utf-8")
 
     def test_claimed_transition_rejects_semantically_duplicate_quoted_key(
@@ -873,8 +873,51 @@ class TestAutoTransitionClaimed:
         )
 
         assert result.returncode == 2
-        assert "duplicate top-level frontmatter key 'source_mutation_authorized'" in result.stderr
+        assert "duplicate frontmatter mapping key 'source_mutation_authorized'" in result.stderr
         assert "\nstatus: claimed\n" in note.read_text(encoding="utf-8")
+
+    def test_claimed_transition_rejects_nested_duplicate_mapping_key(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        _, note = _make_vault(tmp_path, status="claimed", assigned="alpha")
+        note.write_text(
+            note.read_text(encoding="utf-8").replace(
+                "priority: normal",
+                "priority: normal\nroute_metadata:\n  quality_floor: one\n  quality_floor: two",
+            ),
+            encoding="utf-8",
+        )
+        _write_claim(tmp_path, "alpha", "test-001")
+
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+        )
+
+        assert result.returncode == 2
+        assert "duplicate frontmatter mapping key 'quality_floor'" in result.stderr
+
+    def test_claimed_transition_rejects_unclosed_flow_mapping(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        _, note = _make_vault(tmp_path, status="claimed", assigned="alpha")
+        note.write_text(
+            note.read_text(encoding="utf-8").replace(
+                "priority: normal", "priority: normal\nroute_metadata: {"
+            ),
+            encoding="utf-8",
+        )
+        _write_claim(tmp_path, "alpha", "test-001")
+
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+        )
+
+        assert result.returncode == 2
+        assert "malformed or ambiguous YAML frontmatter" in result.stderr
 
     def test_gate_frontmatter_parser_remains_stdlib_only(self) -> None:
         source = HOOK.read_text(encoding="utf-8")
@@ -2206,21 +2249,21 @@ class TestVaultScopeAnchoringAndOwnNote:
     session cwd only — never the git repo toplevel or the personal vault root — so a
     vault cc-task's own ``20-projects/hapax-cc-tasks/`` scope resolved to a nonexistent
     repo-relative path and the fully-authorized owner was scope-denied. A claimer must
-    always be able to edit its own claimed note, and a vault-/repo-relative ref must
-    resolve against the vault / repo toplevel."""
+    update its own note only through the ownership transaction, and a
+    vault-/repo-relative ref must resolve against the vault / repo toplevel."""
 
-    def test_claimer_can_edit_its_own_claimed_note_when_not_in_scope_refs(
+    def test_direct_own_claimed_note_edit_requires_transactional_writer(
         self, tmp_path: Path
     ) -> None:
-        # Default scope is /tmp/x (does NOT cover the note); editing the OWN claimed
-        # note must still be allowed (governance bookkeeping — session log, AC boxes).
         _, note = _make_vault(tmp_path, status="in_progress", assigned="alpha")
         _write_claim(tmp_path, "alpha", "test-001")
         result = _run_hook(
             {"tool_name": "Edit", "tool_input": {"file_path": str(note)}},
             home=tmp_path,
         )
-        assert result.returncode == 0, f"own-note edit blocked: {result.stderr}"
+        assert result.returncode == 2
+        assert "direct editor mutation" in result.stderr
+        assert "cc-task-note-update" in result.stderr
 
     def test_vault_relative_scope_ref_resolves_against_vault_root(self, tmp_path: Path) -> None:
         # A vault-relative scope ref (`20-projects/hapax-cc-tasks/`) must resolve

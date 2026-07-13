@@ -726,16 +726,13 @@ def _decide(
             "claim", "no claimed task for this session", remediation_verb="cc-claim <task_id>"
         )
 
-    # 5b. The session's OWN claimed cc-task / request note (``<task_id>.md``) is
-    #     governance bookkeeping — session log, stage transitions, AC checkboxes —
-    #     allowed regardless of assignment/scope, the way the legacy content-validated
-    #     bootstrap allows it (the note is rarely listed in its own
-    #     mutation_scope_refs). A DIFFERENT task's note stays fully gated. This also
-    #     survives a reconciler-unassign race (the note's assigned_to flips to
-    #     'unassigned' mid-session while the session still holds the claim).
+    # 5b. Direct editor writes cannot retain the ownership lock across execution.
+    #     Route own-note bookkeeping through the transactional writer instead.
     if path and _is_own_task_note(path, task.task_id):
-        return _allow(
-            "own-task-note", "session's own claimed cc-task note — governance bookkeeping"
+        return _block(
+            "own-task-note:transaction",
+            "direct claimed-task note mutation is not transaction-safe",
+            remediation_verb="cc-task-note-update",
         )
 
     # 6. Assignment.

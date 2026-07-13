@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""CAS-update the body/updated_at of the caller's exact claimed task note."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import stat
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+HOOKS_ROOT = REPO_ROOT / "hooks" / "scripts"
+for root in (REPO_ROOT, HOOKS_ROOT):
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+
+from task_frontmatter_stdlib import parse_frontmatter_document, scalar_text  # noqa: E402
+
+from shared.sdlc_filesystem_transaction import (  # noqa: E402
+    FilesystemTransactionError,
+    read_task_note_snapshot,
+    replace_task_note_transactionally,
+    task_note_transaction_context,
+)
+from shared.session_identity import (  # noqa: E402
+    claim_paths,
+    is_claim_keyable_session_id,
+    resolve_session_id,
+)
+
+
+def _role() -> str:
+    for key in (
+        "HAPAX_AGENT_NAME",
+        "HAPAX_AGENT_ROLE",
+        "CODEX_ROLE",
+        "CLAUDE_ROLE",
+        "CODEX_THREAD_NAME",
+        "CODEX_SESSION_NAME",
+    ):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _content_file(path: Path) -> bytes:
+    resolved = path.expanduser().resolve(strict=True)
+    if not (
+        str(resolved).startswith("/tmp/hapax-")
+        or str(resolved).startswith("/tmp/hapax/")
+        or str(resolved).startswith("/dev/shm/")
+    ):
+        raise ValueError("content file must be under /tmp/hapax-* or /dev/shm")
+    descriptor = os.open(resolved, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "rb") as stream:
+        metadata = os.fstat(stream.fileno())
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("content file must be regular")
+        return stream.read()
+
+
+def _active_note(vault_root: Path, task_id: str) -> Path:
+    matches: list[Path] = []
+    for candidate in sorted((vault_root / "active").glob(f"{task_id}*.md")):
+        try:
+            parsed = parse_frontmatter_document(candidate.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            continue
+        if scalar_text(parsed.fields.get("task_id")) == task_id:
+            matches.append(candidate)
+    if len(matches) != 1:
+        raise ValueError(f"expected one active note for {task_id}, found {len(matches)}")
+    return matches[0]
+
+
+def _frontmatter_without_updated_at(content: str) -> str:
+    lines = content.splitlines(keepends=True)
+    closing = next(
+        (index for index, line in enumerate(lines[1:], start=1) if line.rstrip("\r\n") == "---"),
+        None,
+    )
+    if closing is None:
+        raise ValueError("task note frontmatter is unclosed")
+    updated_at_lines = [
+        index
+        for index, line in enumerate(lines[1:closing], start=1)
+        if re.match(r"^updated_at[ \t]*:", line.rstrip("\r\n"))
+    ]
+    if len(updated_at_lines) != 1:
+        raise ValueError("task note must contain exactly one plain top-level updated_at field")
+    omitted = updated_at_lines[0]
+    return "".join((*lines[:omitted], *lines[omitted + 1 : closing + 1]))
+
+
+def _assert_body_only(current: bytes, proposed: bytes, task_id: str) -> None:
+    try:
+        before = parse_frontmatter_document(current.decode("utf-8"))
+        after = parse_frontmatter_document(proposed.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError(f"strict frontmatter validation failed: {exc}") from exc
+    if scalar_text(before.fields.get("task_id")) != task_id:
+        raise ValueError("current note task_id does not match the claim")
+    if scalar_text(after.fields.get("task_id")) != task_id:
+        raise ValueError("proposed note changes task_id")
+    if not scalar_text(after.fields.get("updated_at")):
+        raise ValueError("proposed note must retain a non-empty updated_at")
+    current_text = current.decode("utf-8")
+    proposed_text = proposed.decode("utf-8")
+    if _frontmatter_without_updated_at(current_text) != _frontmatter_without_updated_at(
+        proposed_text
+    ):
+        raise ValueError(
+            "only the Markdown body and exact top-level updated_at line may change; use a "
+            "dedicated cc-* lifecycle writer for frontmatter"
+        )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--task-id", required=True)
+    parser.add_argument("--expected-sha256", required=True)
+    parser.add_argument("--content-file", required=True, type=Path)
+    args = parser.parse_args(argv)
+    role = _role()
+    session_id = resolve_session_id(os.environ)
+    cache_dir = Path.home() / ".cache" / "hapax"
+    vault_root = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+    try:
+        if not role:
+            raise ValueError("caller role is unavailable")
+        if not is_claim_keyable_session_id(session_id):
+            raise ValueError("an exact claim-keyable session id is required")
+        _legacy, exact_claim = claim_paths(role, session_id, cache_dir=cache_dir)
+        if exact_claim is None or exact_claim.read_text(encoding="utf-8").strip() != args.task_id:
+            raise ValueError("exact-session claim does not own the requested task")
+        note = _active_note(vault_root, args.task_id)
+        snapshot = read_task_note_snapshot(note)
+        actual_sha = hashlib.sha256(snapshot.content).hexdigest()
+        if actual_sha != args.expected_sha256:
+            raise ValueError(
+                f"task-note preimage changed: expected {args.expected_sha256}, got {actual_sha}"
+            )
+        proposed = _content_file(args.content_file)
+        _assert_body_only(snapshot.content, proposed, args.task_id)
+        resolved_vault, ownership_cache = task_note_transaction_context(
+            note, vault_root=vault_root, cache_dir=cache_dir
+        )
+        replace_task_note_transactionally(
+            note,
+            expected_content=snapshot.content,
+            content=proposed,
+            expected_mode=snapshot.mode,
+            cache_dir=ownership_cache,
+            vault_root=resolved_vault,
+        )
+        ledger = cache_dir / "cc-task-note-update.jsonl"
+        record = {
+            "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "task_id": args.task_id,
+            "role": role,
+            "session_id": session_id,
+            "preimage_sha256": actual_sha,
+            "postimage_sha256": hashlib.sha256(proposed).hexdigest(),
+            "path": str(note),
+        }
+        with ledger.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+    except (OSError, ValueError, FilesystemTransactionError) as exc:
+        print(f"cc-task-note-update: REFUSED - {exc}", file=sys.stderr)
+        return 2
+    print(f"cc-task-note-update: updated {args.task_id} transactionally")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

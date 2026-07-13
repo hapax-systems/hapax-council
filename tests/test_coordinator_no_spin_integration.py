@@ -145,8 +145,14 @@ class TestTickIntegration:
         codex-1 / claude-1, non-hermetic dispatcher path)."""
         fixture = tmp_path / "hapax-methodology-dispatch"
         fixture.write_text("#!/bin/sh\nexit 0\n")
+        isolated_cache = tmp_path / "cache"
+        isolated_cache.mkdir()
+        isolated_relay = isolated_cache / "relay"
+        isolated_relay.mkdir()
         with (
             patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", fixture),
+            patch("agents.coordinator.core.CACHE_DIR", isolated_cache),
+            patch("agents.coordinator.core.RELAY_DIR", isolated_relay),
             patch(
                 "agents.coordinator.core._refresh_dispatch_lane",
                 side_effect=lambda lane: lane,

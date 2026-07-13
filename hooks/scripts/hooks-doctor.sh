@@ -37,7 +37,7 @@ COGNITION_MARKER="is_cognition_path()"
 # (cc-task-gate-bootstrap.py, section 3b), plus the doctor itself. SINGLE source
 # of truth for deploy + health-check, so a new impl dependency is registered in
 # exactly one place and can never be silently dropped from the deployed gate.
-CLOSURE_SIBLINGS=(agent-role.sh escape-grant.sh hapax_check_enable_latch.sh cc-task-gate-bootstrap.py hooks-doctor.sh)
+CLOSURE_SIBLINGS=(agent-role.sh escape-grant.sh hapax_check_enable_latch.sh task_frontmatter_stdlib.py cc-task-gate-bootstrap.py hooks-doctor.sh)
 
 MODE=session
 FROM=""
@@ -92,9 +92,9 @@ check_canonical() {
   if [[ ! -r "$c" ]]; then echo "CRITICAL canonical impl missing: $c"; return 3; fi
   if grep -q "$SHIM_MARKER" "$c" 2>/dev/null; then echo "CRITICAL canonical is a shim, not the impl: $c"; return 3; fi
   if ! grep -q "$COGNITION_MARKER" "$c" 2>/dev/null; then echo "CRITICAL canonical impl lacks INV-5 is_cognition_path: $c"; return 3; fi
-  # The impl SOURCES agent-role.sh + escape-grant.sh and INVOKES
-  # cc-task-gate-bootstrap.py (section 3b) — all from its own dir. A missing one
-  # makes the gate exit 2 on every mutation, so the whole closure must be present.
+  # The impl SOURCES shell helpers and loads the stdlib parser/bootstrap helper
+  # from its own dir. A missing dependency makes the gate exit 2 on mutation, so
+  # the whole closure must be present.
   for s in "${CLOSURE_SIBLINGS[@]}"; do
     [[ -r "$CANONICAL_DIR/$s" ]] || { echo "CRITICAL canonical closure missing sibling: $CANONICAL_DIR/$s"; return 3; }
   done

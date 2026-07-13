@@ -944,6 +944,52 @@ def test_legacy_prepared_journal_is_retired_after_later_committed_image(
     )
 
 
+def test_legacy_v3_supersession_probes_target_before_archiving(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "target"
+    target.write_bytes(b"pre")
+    legacy = root / "cc-ownership-txn-a.json"
+    transaction._write_manifest(
+        legacy,
+        state="prepared",
+        entries=[
+            {
+                "path": str(target),
+                "pre_content": transaction._encoded(b"pre"),
+                "pre_mode": 0o644,
+                "post_content": transaction._encoded(b"post"),
+                "post_mode": 0o644,
+            }
+        ],
+    )
+    target.write_bytes(b"operator-third-image")
+    probes: list[tuple[Path, ...]] = []
+
+    def refuse_target(paths: list[Path] | tuple[Path, ...]) -> None:
+        probe = tuple(paths)
+        probes.append(probe)
+        if target in probe:
+            raise FilesystemTransactionError("atomic no-replace support unavailable")
+
+    monkeypatch.setattr(transaction, "_require_atomic_no_replace_support", refuse_target)
+
+    with pytest.raises(FilesystemTransactionError, match="atomic no-replace support"):
+        transaction.migrate_legacy_filesystem_transactions(
+            root / "cc-ownership-txn.json",
+            (legacy,),
+            allowed_roots=(root,),
+        )
+
+    assert any(legacy in probe and target in probe for probe in probes)
+    assert target.read_bytes() == b"operator-third-image"
+    assert legacy.is_dir()
+    assert not list(root.glob(".cc-ownership-txn-a.json.history-*-legacy-superseded*"))
+
+
 def test_stable_prepared_journal_recovers_before_legacy_classification(
     tmp_path: Path,
 ) -> None:
@@ -1520,6 +1566,53 @@ def test_legacy_v1_supersession_retires_active_compatibility_journal(
     assert not compatibility.exists()
     assert list(root.glob(f".{compatibility.name}.history-*-legacy-parent-superseded"))
     assert list(root.glob(f".{legacy.name}.history-v1-*-legacy-superseded-third-image"))
+
+
+def test_legacy_v1_supersession_without_child_probes_all_filesystems(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "target"
+    target.write_bytes(b"operator-third-image")
+    entries = [
+        {
+            "path": str(target),
+            "pre_content": transaction._encoded(b"pre"),
+            "pre_mode": 0o644,
+            "post_content": transaction._encoded(b"post"),
+            "post_mode": 0o644,
+        }
+    ]
+    body = {"schema": transaction.TRANSACTION_SCHEMA_V1, "state": "prepared", "entries": entries}
+    digest = hashlib.sha256(transaction._canonical_bytes(body)).hexdigest()
+    legacy = root / "cc-ownership-txn-task.json"
+    legacy.write_bytes(transaction._canonical_bytes({**body, "manifest_sha256": digest}) + b"\n")
+    legacy.chmod(0o600)
+    compatibility = root / f".{legacy.name}.v1-conversion-{digest[:16]}"
+    probes: list[tuple[Path, ...]] = []
+
+    def refuse_target(paths: list[Path] | tuple[Path, ...]) -> None:
+        probe = tuple(paths)
+        probes.append(probe)
+        if target in probe:
+            raise FilesystemTransactionError("atomic no-replace support unavailable")
+
+    monkeypatch.setattr(transaction, "_require_atomic_no_replace_support", refuse_target)
+
+    with pytest.raises(FilesystemTransactionError, match="atomic no-replace support"):
+        transaction.migrate_legacy_filesystem_transactions(
+            root / "cc-ownership-txn.json",
+            (legacy,),
+            allowed_roots=(root,),
+        )
+
+    assert any(legacy in probe and compatibility in probe and target in probe for probe in probes)
+    assert target.read_bytes() == b"operator-third-image"
+    assert legacy.is_file()
+    assert not compatibility.exists()
+    assert not list(root.glob(f".{legacy.name}.history-v1-*-legacy-superseded*"))
 
 
 def test_legacy_v1_supersession_holds_on_compatibility_auxiliary_third_image(

@@ -964,16 +964,12 @@ class TestScopeCommandScratchAndReadConvergence:
 
 
 class TestOwnTaskNoteBookkeeping:
-    """A session's OWN claimed cc-task note (``<task_id>.md``) is governance bookkeeping
-    (session log, stage, AC checks) the legacy content-validated bootstrap allows
-    regardless of scope/assignment. policy_decide blocked it at scope:denied (the note
-    is rarely listed in its own mutation_scope_refs) — the single largest residual
-    tightening class in the replayed decision log."""
+    """Direct own-note edits route through the stable ownership transaction."""
 
     def _note(self, task_id):
         return f"{_HOME}/Documents/Personal/20-projects/hapax-cc-tasks/active/{task_id}.md"
 
-    def test_own_note_write_allows_when_not_in_scope_refs(self):
+    def test_own_note_write_requires_transactional_writer(self):
         tid = "reform-coord-eventlog-path-unify-20260601"
         task = _authorized_task(
             task_id=tid,
@@ -981,10 +977,11 @@ class TestOwnTaskNoteBookkeeping:
             docs_mutation_authorized=True,
         )
         d = policy_decide(ToolCall(tool_name="Edit", file_path=self._note(tid)), task, "theta")
-        assert d.allowed, d.gate
-        assert d.gate == "own-task-note"
+        assert d.blocked
+        assert d.gate == "own-task-note:transaction"
+        assert d.remediation_verb == "cc-task-note-update"
 
-    def test_own_note_write_allows_even_when_reconciler_unassigned(self):
+    def test_own_note_write_still_requires_transaction_after_reconciler_unassign(self):
         # reconciler-unassign race: the note's assigned_to flipped to 'unassigned'
         # mid-session but the session still holds the claim and updates its own note.
         tid = "reform-clog-dispatch-hardening-20260601"
@@ -995,8 +992,8 @@ class TestOwnTaskNoteBookkeeping:
             docs_mutation_authorized=True,
         )
         d = policy_decide(ToolCall(tool_name="Edit", file_path=self._note(tid)), task, "epsilon")
-        assert d.allowed, d.gate
-        assert d.gate == "own-task-note"
+        assert d.blocked
+        assert d.gate == "own-task-note:transaction"
 
     def test_other_task_note_out_of_scope_still_blocks(self):
         # A DIFFERENT task's note (not the claimed one) stays fully gated by scope.

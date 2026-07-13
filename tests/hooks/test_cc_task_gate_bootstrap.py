@@ -10,6 +10,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # Gate logic lives in the impl behind the shim (reform FM-6); exec it directly.
 HOOK = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.impl.sh"
+CREATOR = REPO_ROOT / "scripts" / "cc-governance-intake-create"
 
 
 def _run_hook(
@@ -109,7 +110,7 @@ tags:
 """
 
 
-def test_no_claim_allows_valid_new_request_note_and_audits(tmp_path: Path) -> None:
+def test_no_claim_routes_valid_request_write_to_transactional_creator(tmp_path: Path) -> None:
     request_root = tmp_path / "Documents/Personal/20-projects/hapax-requests/active"
     request_root.mkdir(parents=True)
     request_path = request_root / "REQ-20260517150000-perspective-merge-remediation.md"
@@ -120,21 +121,18 @@ def test_no_claim_allows_valid_new_request_note_and_audits(tmp_path: Path) -> No
             "tool_name": "Write",
             "tool_input": {
                 "file_path": str(request_path),
-                "content": _request_note("REQ-20260517150000"),
+                "content": _request_note("REQ-20260517150000-perspective-merge-remediation"),
             },
         },
         role=None,
     )
 
-    assert result.returncode == 0, result.stderr
-    ledger = tmp_path / "ledger.jsonl"
-    records = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
-    assert records[0]["kind"] == "request"
-    assert records[0]["id"] == "REQ-20260517150000"
-    assert records[0]["role"] == "unknown"
+    assert result.returncode == 2
+    assert "direct Write cannot serialize" in result.stderr
+    assert "cc-governance-intake-create" in result.stderr
 
 
-def test_no_claim_allows_valid_new_offered_task_note_and_audits(tmp_path: Path) -> None:
+def test_no_claim_routes_valid_task_write_to_transactional_creator(tmp_path: Path) -> None:
     task_root = tmp_path / "Documents/Personal/20-projects/hapax-cc-tasks/active"
     request_root = tmp_path / "Documents/Personal/20-projects/hapax-requests/active"
     task_root.mkdir(parents=True)
@@ -153,14 +151,9 @@ def test_no_claim_allows_valid_new_offered_task_note_and_audits(tmp_path: Path) 
         },
     )
 
-    assert result.returncode == 0, result.stderr
-    records = [
-        json.loads(line)
-        for line in (tmp_path / "ledger.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
-    assert records[0]["kind"] == "cc-task"
-    assert records[0]["id"] == "perspective-pr-merge-to-main"
-    assert records[0]["role"] == "alpha"
+    assert result.returncode == 2
+    assert "direct Write cannot serialize" in result.stderr
+    assert "cc-governance-intake-create" in result.stderr
 
 
 def test_no_claim_blocks_invalid_task_bootstrap(tmp_path: Path) -> None:
@@ -188,7 +181,9 @@ def test_no_claim_blocks_existing_governance_note_edit(tmp_path: Path) -> None:
     request_root = tmp_path / "Documents/Personal/20-projects/hapax-requests/active"
     request_root.mkdir(parents=True)
     request_path = request_root / "REQ-20260517150000-perspective-merge-remediation.md"
-    request_path.write_text(_request_note("REQ-20260517150000"), encoding="utf-8")
+    request_path.write_text(
+        _request_note("REQ-20260517150000-perspective-merge-remediation"), encoding="utf-8"
+    )
 
     result = _run_hook(
         tmp_path,
@@ -196,7 +191,7 @@ def test_no_claim_blocks_existing_governance_note_edit(tmp_path: Path) -> None:
             "tool_name": "Write",
             "tool_input": {
                 "file_path": str(request_path),
-                "content": _request_note("REQ-20260517150000"),
+                "content": _request_note("REQ-20260517150000-perspective-merge-remediation"),
             },
         },
     )
@@ -248,3 +243,97 @@ def test_no_claim_blocks_bash_heredoc_task_creation(tmp_path: Path) -> None:
 
     assert result.returncode == 2
     assert "no claimed task" in result.stderr
+
+
+def test_nested_bootstrap_identity_fields_are_not_promoted(tmp_path: Path) -> None:
+    task_root = tmp_path / "Documents/Personal/20-projects/hapax-cc-tasks/active"
+    task_root.mkdir(parents=True)
+    task_path = task_root / "nested-auth.md"
+    content = _task_note("nested-auth", tmp_path / "request.md")
+    content = content.replace("assigned_to: unassigned\n", "", 1).replace(
+        "status: offered\n",
+        "route_metadata:\n  status: offered\n  assigned_to: unassigned\n",
+    )
+
+    result = _run_hook(
+        tmp_path,
+        {"tool_name": "Write", "tool_input": {"file_path": str(task_path), "content": content}},
+    )
+
+    assert result.returncode == 2
+    assert "missing non-empty `status`" in result.stderr
+    assert "missing non-empty `assigned_to`" in result.stderr
+
+
+def test_transactional_creator_creates_valid_task_and_ledger(tmp_path: Path) -> None:
+    task_root = tmp_path / "Documents/Personal/20-projects/hapax-cc-tasks/active"
+    request_root = tmp_path / "Documents/Personal/20-projects/hapax-requests/active"
+    task_root.mkdir(parents=True)
+    request_root.mkdir(parents=True)
+    target = task_root / "perspective-pr-merge-to-main.md"
+    payload = tmp_path / "payload.json"
+    payload.write_text(
+        json.dumps(
+            {
+                "path": str(target),
+                "content": _task_note(
+                    "perspective-pr-merge-to-main", request_root / "REQ-parent.md"
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),
+        "HAPAX_CC_TASK_GATE_BOOTSTRAP_LEDGER": str(tmp_path / "ledger.jsonl"),
+    }
+
+    result = subprocess.run(
+        [str(CREATOR), "--payload", str(payload)],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=15,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert target.exists()
+    records = [json.loads(line) for line in (tmp_path / "ledger.jsonl").read_text().splitlines()]
+    assert records[0]["id"] == "perspective-pr-merge-to-main"
+
+
+def test_transactional_creator_refuses_terminal_identity(tmp_path: Path) -> None:
+    task_vault = tmp_path / "Documents/Personal/20-projects/hapax-cc-tasks"
+    active = task_vault / "active"
+    refused = task_vault / "refused"
+    active.mkdir(parents=True)
+    refused.mkdir(parents=True)
+    task_id = "perspective-pr-merge-to-main"
+    terminal = refused / f"{task_id}.md"
+    terminal.write_text(f"---\ntype: cc-task\ntask_id: {task_id}\nstatus: refused\n---\n")
+    payload = tmp_path / "payload.json"
+    payload.write_text(
+        json.dumps(
+            {
+                "path": str(active / f"{task_id}.md"),
+                "content": _task_note(task_id, tmp_path / "request.md"),
+            }
+        )
+    )
+    env = {**os.environ, "HOME": str(tmp_path)}
+
+    result = subprocess.run(
+        [str(CREATOR), "--payload", str(payload)],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=15,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "existence precondition changed" in result.stderr
+    assert terminal.exists()
+    assert not (active / f"{task_id}.md").exists()

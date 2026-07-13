@@ -62,3 +62,49 @@ def test_concurrent_phase_creator_is_not_truncated(tmp_path: Path) -> None:
     assert "lost identity race" in stdout
     assert target.read_text(encoding="utf-8") == "concurrent authoritative task\n"
     assert not (closed / "demo-phase2.md").exists()
+
+
+def test_refused_next_phase_identity_is_not_recreated(tmp_path: Path) -> None:
+    tasks = tmp_path / "Documents/Personal/20-projects/hapax-cc-tasks"
+    closed = tasks / "closed"
+    refused = tasks / "refused"
+    requests = tmp_path / "Documents/Personal/20-projects/hapax-requests/active"
+    for directory in (closed, refused, requests):
+        directory.mkdir(parents=True)
+    request = requests / "REQ-phase.md"
+    request.write_text("# Request\n\n## Phase 1\n\n## Phase 2\n", encoding="utf-8")
+    current = closed / "demo-phase1.md"
+    current.write_text(
+        "---\n"
+        "task_id: demo-phase1\n"
+        'title: "Demo Phase 1"\n'
+        "status: done\n"
+        "priority: p1\n"
+        "wsjf: 10\n"
+        "kind: build\n"
+        "parent_request: REQ-phase.md\n"
+        "authority_case: CASE-TEST-001\n"
+        "parent_spec: spec.md\n"
+        "---\n",
+        encoding="utf-8",
+    )
+    refused_note = refused / "demo-phase2.md"
+    refused_note.write_text(
+        "---\ntask_id: demo-phase2\nstatus: refused\nparent_request: REQ-phase.md\n---\n",
+        encoding="utf-8",
+    )
+    env = {**os.environ, "HOME": str(tmp_path)}
+
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), str(current), "demo-phase1"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "already exists" in result.stdout
+    assert not (tasks / "active" / "demo-phase2.md").exists()
+    assert refused_note.read_text(encoding="utf-8").startswith("---\n")

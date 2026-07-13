@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""Create one validated governance intake note through the ownership journal."""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import os
+import sys
+from pathlib import Path
+from types import ModuleType
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+HOOK_HELPER = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate-bootstrap.py"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+if str(HOOK_HELPER.parent) not in sys.path:
+    sys.path.insert(0, str(HOOK_HELPER.parent))
+
+from task_frontmatter_stdlib import (  # noqa: E402
+    FrontmatterSubsetError,
+    parse_frontmatter_document,
+    scalar_text,
+)
+
+from shared.sdlc_filesystem_transaction import (  # noqa: E402
+    FilesystemTransactionError,
+    create_task_note_transactionally,
+)
+
+
+def _validator() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("cc_task_gate_bootstrap", HOOK_HELPER)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load bootstrap validator: {HOOK_HELPER}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _payload(path: Path) -> tuple[Path, str]:
+    try:
+        raw = path.read_text(encoding="utf-8")
+        value = json.loads(raw)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"payload is unreadable or invalid JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ValueError("payload must be a JSON object")
+    target_raw = value.get("path")
+    content = value.get("content")
+    if not isinstance(target_raw, str) or not target_raw.strip():
+        raise ValueError("payload.path must be a non-empty string")
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("payload.content must be a non-empty string")
+    return Path(target_raw).expanduser().resolve(strict=False), content
+
+
+def _classify_target(target: Path) -> tuple[str, Path, tuple[str, ...]]:
+    home = Path.home()
+    request_root = (home / "Documents" / "Personal" / "20-projects" / "hapax-requests").resolve(
+        strict=False
+    )
+    task_root = (home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks").resolve(
+        strict=False
+    )
+    if target.parent == request_root / "active" and target.suffix == ".md":
+        return "request", request_root, ("active", "closed")
+    if target.parent == task_root / "active" and target.suffix == ".md":
+        return "cc-task", task_root, ("active", "closed", "refused")
+    raise ValueError("target must be a direct .md child of a governance active/ directory")
+
+
+def _identity_guards(
+    vault_root: Path,
+    states: tuple[str, ...],
+    target: Path,
+    kind: str,
+    identifier: str,
+) -> tuple[Path, ...]:
+    key = "task_id" if kind == "cc-task" else "request_id"
+    guards: set[Path] = set()
+    for state in states:
+        root = vault_root / state
+        guards.add(root / target.name)
+        if not root.is_dir():
+            continue
+        for candidate in root.glob("*.md"):
+            if candidate == target:
+                continue
+            try:
+                fields = parse_frontmatter_document(candidate.read_text(encoding="utf-8")).fields
+            except (OSError, UnicodeDecodeError, FrontmatterSubsetError):
+                if candidate.stem == identifier or candidate.stem.startswith(f"{identifier}-"):
+                    guards.add(candidate)
+                continue
+            if scalar_text(fields.get(key)) == identifier:
+                guards.add(candidate)
+    guards.discard(target)
+    return tuple(sorted(guards))
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--payload", required=True, type=Path)
+    args = parser.parse_args(argv)
+    try:
+        target, content = _payload(args.payload.expanduser())
+        kind, vault_root, states = _classify_target(target)
+        validator = _validator()
+        identifier, errors = validator.validate_bootstrap_candidate(target, content, kind)
+        if errors:
+            raise ValueError("; ".join(errors))
+        for state in states:
+            (vault_root / state).mkdir(parents=True, exist_ok=True)
+        guards = _identity_guards(vault_root, states, target, kind, identifier)
+        if kind == "cc-task":
+            cache_dir = Path(
+                os.environ.get(
+                    "HAPAX_CC_OWNERSHIP_CACHE_DIR",
+                    str(Path.home() / ".cache" / "hapax"),
+                )
+            ).expanduser()
+        else:
+            cache_dir = Path.home() / ".cache" / "hapax" / "request-ownership"
+        create_task_note_transactionally(
+            target,
+            content=content.encode("utf-8"),
+            mode=0o644,
+            cache_dir=cache_dir,
+            vault_root=vault_root,
+            absent_guard_paths=guards,
+        )
+        validator.write_bootstrap_ledger(kind, target, identifier)
+    except (OSError, RuntimeError, ValueError, FilesystemTransactionError) as exc:
+        print(f"cc-governance-intake-create: REFUSED - {exc}", file=sys.stderr)
+        return 2
+    print(f"cc-governance-intake-create: created {kind} {identifier}: {target}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

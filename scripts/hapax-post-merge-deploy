@@ -58,8 +58,8 @@
 #                                    ~/.local/lib/hapax-recovery/council
 #   scripts/hapax-*                → publish a release-pinned regular copy in ~/.local/bin/
 #   hooks/scripts/{cc-task-gate.impl.sh,agent-role.sh,escape-grant.sh,
-#                  hapax_check_enable_latch.sh,cc-task-gate-bootstrap.py,
-#                  hooks-doctor.sh,cc-task-gate.sh}
+#                  hapax_check_enable_latch.sh,task_frontmatter_stdlib.py,
+#                  cc-task-gate-bootstrap.py,hooks-doctor.sh,cc-task-gate.sh}
 #                                  → reconcile the ONE canonical gate closure
 #                                    on every run and redeploy drift to
 #                                    ~/.local/lib/hapax/hooks via hooks-doctor
@@ -704,6 +704,7 @@ GATE_CLOSURE_FILES=(
     hooks/scripts/agent-role.sh
     hooks/scripts/escape-grant.sh
     hooks/scripts/hapax_check_enable_latch.sh
+    hooks/scripts/task_frontmatter_stdlib.py
     hooks/scripts/cc-task-gate-bootstrap.py
     hooks/scripts/hooks-doctor.sh
 )
@@ -1134,7 +1135,7 @@ while IFS= read -r f; do
         shared/__init__.py|shared/jsonl_append.py|shared/p0_incident_intake.py)
             RECOVERY_BUNDLE+=("$f")
             ;;
-        hooks/scripts/cc-task-gate.impl.sh|hooks/scripts/agent-role.sh|hooks/scripts/escape-grant.sh|hooks/scripts/hapax_check_enable_latch.sh|hooks/scripts/cc-task-gate-bootstrap.py|hooks/scripts/hooks-doctor.sh|hooks/scripts/cc-task-gate.sh)
+        hooks/scripts/cc-task-gate.impl.sh|hooks/scripts/agent-role.sh|hooks/scripts/escape-grant.sh|hooks/scripts/hapax_check_enable_latch.sh|hooks/scripts/task_frontmatter_stdlib.py|hooks/scripts/cc-task-gate-bootstrap.py|hooks/scripts/hooks-doctor.sh|hooks/scripts/cc-task-gate.sh)
             GATE_CLOSURE+=("$f") ;;
         assets/quake/maps/*|assets/quake/qc/*|assets/quake/csqc/*|assets/quake/models/*|assets/quake/sound/*|assets/quake/glsl/*|assets/quake/scripts/*|assets/quake/config/*|assets/quake/darkplaces/*)
             QUAKE_ASSETS+=("$f") ;;

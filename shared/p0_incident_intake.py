@@ -139,7 +139,15 @@ class IntakeResult:
 @dataclass(frozen=True)
 class _TaskMatch:
     path: Path
-    closed: bool
+    state: str
+
+    @property
+    def terminal(self) -> bool:
+        return self.state in {"closed", "refused"}
+
+    @property
+    def closed(self) -> bool:
+        return self.state == "closed"
 
 
 def classify_notification(
@@ -324,7 +332,7 @@ def _record_notification_locked(
     recurrence = False
     recurrence_of_task_id = None
     recurrence_of_task_path = None
-    if task_match is not None and task_match.closed:
+    if task_match is not None and task_match.terminal:
         recurrence = True
         recurrence_count += 1
         recurrence_of_task_id = task_id
@@ -535,10 +543,10 @@ def _store_state(path: Path, state: dict[str, Any]) -> None:
 
 
 def _find_task(task_root: Path, task_id: str) -> _TaskMatch | None:
-    for subdir in ("active", "closed"):
+    for subdir in ("active", "closed", "refused"):
         root = task_root / subdir
         for path in sorted(root.glob(f"{task_id}*.md")):
-            return _TaskMatch(path=path, closed=subdir == "closed")
+            return _TaskMatch(path=path, state=subdir)
     return None
 
 
@@ -680,15 +688,16 @@ def _write_new_task(
         state_path=state_path,
     )
     vault_root, cache_dir = task_note_transaction_context(path)
-    closed_path = vault_root / "closed" / path.name
-    closed_path.parent.mkdir(parents=True, exist_ok=True)
+    terminal_paths = tuple(vault_root / state / path.name for state in ("closed", "refused"))
+    for terminal_path in terminal_paths:
+        terminal_path.parent.mkdir(parents=True, exist_ok=True)
     create_task_note_transactionally(
         path,
         content=content.encode("utf-8"),
         mode=0o644,
         cache_dir=cache_dir,
         vault_root=vault_root,
-        absent_guard_paths=(closed_path,),
+        absent_guard_paths=terminal_paths,
     )
 
 

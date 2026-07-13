@@ -28,6 +28,7 @@ IMPL = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.impl.sh"
 CLOSURE_SIBLINGS = (
     "agent-role.sh",
     "escape-grant.sh",
+    "task_frontmatter_stdlib.py",
     "cc-task-gate-bootstrap.py",
     "hooks-doctor.sh",
 )
@@ -163,6 +164,7 @@ def test_deploy_canonical_lands_healthy_closure(tmp_path):
     for sibling in (
         "agent-role.sh",
         "escape-grant.sh",
+        "task_frontmatter_stdlib.py",
         "cc-task-gate-bootstrap.py",
         "hooks-doctor.sh",
     ):
@@ -196,6 +198,7 @@ def test_canonical_closure_covers_all_impl_dependencies(tmp_path):
     impl_text = IMPL.read_text(encoding="utf-8")
     refs = set(re.findall(r"\$\{?SCRIPT_DIR\}?/([A-Za-z0-9._-]+)", impl_text))
     assert "cc-task-gate-bootstrap.py" in refs, "expected the impl to invoke the bootstrap"
+    assert "task_frontmatter_stdlib.py" in refs, "expected the impl to load the stdlib parser"
     canon = tmp_path / "canon"
     result = _run(
         "--deploy-canonical",

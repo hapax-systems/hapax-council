@@ -61,7 +61,7 @@ def _request_has_phase(request_path: Path, phase_num: int) -> bool:
 
 
 def _phase_task_exists(phase_num: int, parent_request: str) -> bool:
-    for d in [TASKS_DIR / "active", TASKS_DIR / "closed"]:
+    for d in [TASKS_DIR / "active", TASKS_DIR / "closed", TASKS_DIR / "refused"]:
         if not d.is_dir():
             continue
         for f in d.iterdir():
@@ -166,8 +166,9 @@ Auto-created by cc-phase-advance after Phase {current_phase} closed.
         print(f"cc-phase-advance: {slug} already exists")
         return
 
-    closed_path = TASKS_DIR / "closed" / out_path.name
-    closed_path.parent.mkdir(parents=True, exist_ok=True)
+    terminal_paths = tuple(TASKS_DIR / state / out_path.name for state in ("closed", "refused"))
+    for terminal_path in terminal_paths:
+        terminal_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         create_task_note_transactionally(
             out_path,
@@ -175,7 +176,7 @@ Auto-created by cc-phase-advance after Phase {current_phase} closed.
             mode=0o644,
             cache_dir=OWNERSHIP_CACHE,
             vault_root=TASKS_DIR,
-            absent_guard_paths=(closed_path,),
+            absent_guard_paths=terminal_paths,
         )
     except (OSError, FilesystemTransactionError) as exc:
         print(f"cc-phase-advance: create lost identity race for {slug}: {exc}")

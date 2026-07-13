@@ -466,23 +466,12 @@ if [[ "${HAPAX_METHODOLOGY_EMERGENCY:-0}" == "1" ]]; then
   exit 0
 fi
 
-# --- 3b. Unclaimed governance-intake bootstrap allowance ---
-# The task gate must not deadlock the lifecycle it enforces. A session without
-# a claim may create a new request or offered cc-task note, but only through a
-# path-scoped, content-validated Write event. Ordinary source/runtime/system
-# mutation and manual claim-file writes still fail closed below.
-#
-# FAIL-OPEN ON INFRA ERROR (reform — bootstrap-failopen-atomic-swap). This is the
-# roleless session's ONLY sanctioned write path, so it MUST mirror the shim's
-# INV-5 posture (master design §2.2 / FM-15 / NEW-2): when the validator helper
-# itself cannot run — unreadable, mid atomic-swap, or it crashes — a bootstrap
-# CANDIDATE write fails OPEN (advisory + ledger) instead of fail-closed-blocking,
-# and any other mutation falls through to the normal claim/authority gate. ONLY a
-# genuine BLOCKED verdict (rc==12) from a helper that actually ran blocks; python's
-# own "can't open file" rc==2 and every other non-{0,10} code are infra signals,
-# never a deny. Before this fix the case mapped EVERY non-{0,10} code to exit 2, so
-# a redeploy that briefly unlinked the helper fail-closed even a properly CLAIMED
-# session (the S2 incident).
+# --- 3b. Governance-intake bootstrap routing ---
+# Direct Write cannot hold the ownership lock across the later editor process.
+# The helper therefore validates candidate content only to return a useful deny;
+# creation goes through scripts/cc-governance-intake-create, which owns the stable
+# journal, terminal-identity guards, and atomic write. Non-candidates still fall
+# through to the ordinary claim/authority gate.
 _bootstrap_helper="$SCRIPT_DIR/cc-task-gate-bootstrap.py"
 
 # _bootstrap_is_candidate_target — mirror the helper's candidate test in pure bash
@@ -501,9 +490,9 @@ _bootstrap_is_candidate_target() {
   return 1
 }
 
-# _bootstrap_infra_failopen — shared "the validator could not run" handler: emit a
-# loud ledger line + stderr advisory, then mirror INV-5 — fail OPEN (exit 0) for a
-# candidate, else return so the caller falls through to the normal claim gate.
+# A missing validator cannot prove a direct identity write safe. Candidate writes
+# fail closed with a transactional remediation; unrelated writes still fall
+# through so a deploy race cannot block an already-claimed source mutation.
 _bootstrap_infra_failopen() {
   local reason="$1" detail="$2" is_cand="false"
   if _bootstrap_is_candidate_target; then is_cand="true"; fi
@@ -514,17 +503,17 @@ _bootstrap_infra_failopen() {
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$reason" "$detail" "$_bs_role" "$tool_name" "${edit_path:-}" "$is_cand" \
     >> "$_bs_ledger" 2>/dev/null || true
   if [[ "$is_cand" == "true" ]]; then
-    echo "cc-task-gate: bootstrap validator unavailable ($reason) — FAILING OPEN for governance-intake write (advisory, ledgered, INV-5): ${edit_path:-}" >&2
-    exit 0
+    echo "cc-task-gate: bootstrap validator unavailable ($reason) — BLOCKED direct governance Write: ${edit_path:-}" >&2
+    echo "  Use scripts/cc-governance-intake-create --payload <path>; it performs the ownership transaction." >&2
+    exit 2
   fi
   echo "cc-task-gate: bootstrap validator unavailable ($reason) — non-candidate mutation falls through to the normal gate (advisory, ledgered)." >&2
   return 0
 }
 
 if [[ ! -r "$_bootstrap_helper" ]]; then
-  # Absent/unreadable (e.g. a concurrent hooks-doctor redeploy briefly unlinked
-  # it). Don't exec python on it — that would surface as rc==2 and historically
-  # fail closed. Go straight to the INV-5 fail-open handler.
+  # Absent/unreadable during a redeploy: direct candidate creation cannot prove
+  # identity serialization; unrelated mutations continue to the normal gate.
   _bootstrap_infra_failopen "helper_unreadable" "$_bootstrap_helper"
 else
   set +e
@@ -536,7 +525,11 @@ else
   case "$_bootstrap_rc" in
     0)
       [[ -n "$_bootstrap_output" ]] && printf '%s\n' "$_bootstrap_output" >&2
-      exit 0
+      if _bootstrap_is_candidate_target; then
+        echo "cc-task-gate: BLOCKED — legacy bootstrap helper attempted to authorize a direct Write." >&2
+        echo "  Use scripts/cc-governance-intake-create --payload <path>." >&2
+        exit 2
+      fi
       ;;
     10)
       # NOT_CANDIDATE — fall through to the normal claim/authority gate.
@@ -548,9 +541,8 @@ else
       exit 2
       ;;
     *)
-      # Any other code (python rc 2 = can't open file, 1 = uncaught exception,
-      # 127 = python missing, …) is an INFRA signal, never a deny. Mirror INV-5:
-      # fail OPEN for a candidate, else fall through. Sanitize the captured output
+      # Any other code is infrastructure failure. Candidate identity writes fail
+      # closed; non-candidates continue to the normal gate. Sanitize the output
       # before it enters the JSONL ledger.
       # shellcheck disable=SC1003  # tr receives literal backslash escapes as one set.
       _bs_det="$(printf '%s' "${_bootstrap_output:-}" | tr '\n\r\t"\\' '     ' | cut -c1-160)"
@@ -751,20 +743,22 @@ EOF
   exit 2
 fi
 
-# --- 6b. Own claimed-task note: always editable by its claimer (fix-cc-gate-fps
-# Fix 2). A session's OWN claimed cc-task note is governance bookkeeping (session
-# log, AC checkboxes, stage) and is rarely listed in its own mutation_scope_refs, so
-# the fully-authorized owner was scope-DENIED editing it. Allow it here, matched
-# against the RESOLVED note_path for THIS claimed task only — a DIFFERENT task's note
-# stays fully gated. Mirrors policy_decide's _is_own_task_note allow (section 5b) and
-# precedes status/authority/scope so a claimer can maintain its own note even across
-# a reconciler-unassign race or a terminal status.
+# --- 6b. Direct own-note writes are not transaction-capable ---
+# A PreToolUse hook cannot retain the ownership lock while the editor later writes.
+# Letting the editor proceed can therefore recreate a note that cc-close moved to a
+# terminal directory. Official lifecycle writers and cc-task-note-update perform
+# the mutation inside the stable ownership transaction instead.
 if [[ -n "$edit_path" ]]; then
   _edit_real="$(realpath -m -- "$edit_path" 2>/dev/null || echo "$edit_path")"
   _note_real="$(realpath -m -- "$note_path" 2>/dev/null || echo "$note_path")"
   if [[ "$_edit_real" == "$_note_real" ]]; then
-    echo "cc-task-gate: own claimed-task note — allowed (governance bookkeeping): $edit_path" >&2
-    exit 0
+    _emit_block <<EOF
+cc-task-gate: BLOCKED — direct editor mutation of the claimed task note is not transaction-safe.
+  Write the desired note to /tmp/hapax-* and run:
+    scripts/cc-task-note-update --task-id '$task_id' --expected-sha256 <sha256> --content-file <path>
+  Lifecycle fields must continue through their dedicated cc-* writers.
+EOF
+    exit 2
   fi
 fi
 
@@ -774,202 +768,60 @@ if ! command -v python3 &>/dev/null; then
   echo "  Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
   exit 2
 fi
+_frontmatter_parser="$SCRIPT_DIR/task_frontmatter_stdlib.py"
+if [[ ! -r "$_frontmatter_parser" ]]; then
+  _emit_block <<EOF
+cc-task-gate: BLOCKED — stdlib frontmatter parser is unavailable: $_frontmatter_parser
+  Run hapax-hooks-doctor --deploy-canonical, then retry.
+EOF
+  exit 2
+fi
 
-# Use a tiny inline python to extract status + assignment + AuthorityCase
-# fields. `authority_case` is canonical; `case_id` is accepted only as a
-# backwards-compatible alias.
+# The sibling parser is stdlib-only and conservative: it validates the complete
+# YAML structure, including nested mappings, before returning any authority
+# field. `authority_case` is canonical; `case_id` is a compatibility alias.
 # Output format:
 # status assigned blocked authority parent_spec route_schema stage impl src docs runtime scope_refs
-parse_output="$(python3 - "$note_path" <<'PYEOF'
+parse_output="$(python3 - "$note_path" "$SCRIPT_DIR" <<'PYEOF'
 import hashlib
-import json
 import sys
 from pathlib import Path
 
+sys.path.insert(0, sys.argv[2])
+from task_frontmatter_stdlib import (
+    DuplicateKeyError,
+    FrontmatterSubsetError,
+    parse_frontmatter_document,
+    scalar_text,
+    string_list,
+)
+
 path = Path(sys.argv[1])
 raw = path.read_bytes()
-text = raw.decode("utf-8")
-if not text.startswith("---"):
-    print("\t\t\t\t\t\t\t")
-    sys.exit(0)
-end = text.find("\n---", 4)
-if end < 0:
-    print("\t\t\t\t\t\t\t")
-    sys.exit(0)
-front = text[4:end]
-fields = {}
-
-
-def decode_quoted(value: str) -> str:
-    value = value.strip()
-    if value.startswith('"'):
-        decoded = json.loads(value)
-        if not isinstance(decoded, str):
-            raise ValueError("quoted YAML scalar is not a string")
-        return decoded
-    if value.startswith("'"):
-        if len(value) < 2 or not value.endswith("'"):
-            raise ValueError("unterminated single-quoted YAML scalar")
-        return value[1:-1].replace("''", "'")
-    return value
-
-
-def split_mapping_line(line: str) -> tuple[str, str] | None:
-    quote = ""
-    escaped = False
-    for index, character in enumerate(line):
-        if quote == '"':
-            if escaped:
-                escaped = False
-            elif character == "\\":
-                escaped = True
-            elif character == quote:
-                quote = ""
-        elif quote == "'":
-            if character == quote:
-                if index + 1 < len(line) and line[index + 1] == quote:
-                    continue
-                quote = ""
-        elif character in {'"', "'"}:
-            quote = character
-        elif character == ":":
-            key = decode_quoted(line[:index].strip())
-            if not key:
-                raise ValueError("empty top-level key")
-            return key, line[index + 1 :]
-    if quote:
-        raise ValueError("unterminated quoted YAML key")
-    return None
-
-
-def strip_comment(value: str) -> str:
-    quote = ""
-    escaped = False
-    for index, character in enumerate(value):
-        if quote == '"':
-            if escaped:
-                escaped = False
-            elif character == "\\":
-                escaped = True
-            elif character == quote:
-                quote = ""
-        elif quote == "'":
-            if character == quote:
-                if index + 1 < len(value) and value[index + 1] == quote:
-                    continue
-                quote = ""
-        elif character in {'"', "'"}:
-            quote = character
-        elif character == "#" and (index == 0 or value[index - 1].isspace()):
-            return value[:index].rstrip()
-    if quote:
-        raise ValueError("unterminated quoted YAML value")
-    return value.strip()
-
-
-def split_inline_list(value: str) -> list[str]:
-    inner = value[1:-1]
-    items: list[str] = []
-    start = 0
-    quote = ""
-    escaped = False
-    for index, character in enumerate(inner):
-        if quote == '"':
-            if escaped:
-                escaped = False
-            elif character == "\\":
-                escaped = True
-            elif character == quote:
-                quote = ""
-        elif quote == "'":
-            if character == quote:
-                quote = ""
-        elif character in {'"', "'"}:
-            quote = character
-        elif character == ",":
-            item = strip_comment(inner[start:index]).strip()
-            if item:
-                items.append(decode_quoted(item))
-            start = index + 1
-    item = strip_comment(inner[start:]).strip()
-    if item:
-        items.append(decode_quoted(item))
-    return items
-
-
-def normalize_value(key: str, value: str) -> str:
-    value = strip_comment(value).strip()
-    if not value or value in {"|", ">", "|-", ">-", "|+", ">+"}:
-        return ""
-    if value.startswith("["):
-        if not value.endswith("]"):
-            raise ValueError(f"unterminated inline list for {key}")
-        items = split_inline_list(value)
-        return "\x1f".join(items) if key == "mutation_scope_refs" else ""
-    if value.startswith(("{", "&", "*", "!")):
-        return ""
-    normalized = decode_quoted(value)
-    lowered = normalized.lower()
-    if lowered in {"true", "false"}:
-        return lowered
-    if lowered in {"null", "none", "~"}:
-        return ""
-    return normalized
-
-
 try:
-    lines = front.splitlines()
-    index = 0
-    while index < len(lines):
-        raw_line = lines[index]
-        index += 1
-        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
-            continue
-        if raw_line[0].isspace():
-            continue
-        if raw_line.startswith("-"):
-            raise ValueError("frontmatter is not a top-level mapping")
-        pair = split_mapping_line(raw_line)
-        if pair is None:
-            raise ValueError("malformed top-level mapping entry")
-        key, raw_value = pair
-        if key in fields:
-            print(f"__HAPAX_DUPLICATE_TOP_LEVEL__\t{key}")
-            sys.exit(0)
-        value = normalize_value(key, raw_value)
-        if not value and key == "mutation_scope_refs":
-            items = []
-            child_index = index
-            while child_index < len(lines):
-                child = lines[child_index]
-                if not child.strip() or child.lstrip().startswith("#"):
-                    child_index += 1
-                    continue
-                if not child[0].isspace():
-                    break
-                stripped = child.strip()
-                if stripped.startswith("- "):
-                    items.append(decode_quoted(strip_comment(stripped[2:]).strip()))
-                child_index += 1
-            value = "\x1f".join(item for item in items if item)
-        fields[key] = value
-except (ValueError, json.JSONDecodeError) as exc:
+    fields = parse_frontmatter_document(raw.decode("utf-8")).fields
+except DuplicateKeyError as exc:
+    print(f"__HAPAX_DUPLICATE_MAPPING__\t{exc.key}")
+    sys.exit(0)
+except (FrontmatterSubsetError, UnicodeDecodeError) as exc:
     print(f"__HAPAX_STRICT_YAML_ERROR__\t{str(exc).replace(chr(9), ' ')}")
     sys.exit(0)
 
-status = fields.get("status", "")
-assigned = fields.get("assigned_to", "")
-blocked_reason = fields.get("blocked_reason", "")
-blocked_witness = fields.get("blocked_witness", "") or fields.get("blocked_witness_path", "")
-authority_case = fields.get("authority_case") or fields.get("case_id", "")
-parent_spec = fields.get("parent_spec", "")
-route_schema = fields.get("route_metadata_schema", "")
-stage = fields.get("stage", "")
-impl_auth = fields.get("implementation_authorized", "")
-src_auth = fields.get("source_mutation_authorized", "")
-docs_auth = fields.get("docs_mutation_authorized", "")
-runtime_auth = fields.get("runtime_mutation_authorized", "")
-scope_refs = fields.get("mutation_scope_refs", "")
+status = scalar_text(fields.get("status"))
+assigned = scalar_text(fields.get("assigned_to"))
+blocked_reason = scalar_text(fields.get("blocked_reason"))
+blocked_witness = scalar_text(
+    fields.get("blocked_witness") or fields.get("blocked_witness_path")
+)
+authority_case = scalar_text(fields.get("authority_case") or fields.get("case_id"))
+parent_spec = scalar_text(fields.get("parent_spec"))
+route_schema = scalar_text(fields.get("route_metadata_schema"))
+stage = scalar_text(fields.get("stage"))
+impl_auth = scalar_text(fields.get("implementation_authorized"))
+src_auth = scalar_text(fields.get("source_mutation_authorized"))
+docs_auth = scalar_text(fields.get("docs_mutation_authorized"))
+runtime_auth = scalar_text(fields.get("runtime_mutation_authorized"))
+scope_refs = "\x1f".join(string_list(fields.get("mutation_scope_refs")))
 preimage_sha256 = hashlib.sha256(raw).hexdigest()
 print(
     f"{status}\t{assigned}\t{blocked_reason}\t{blocked_witness}\t"
@@ -980,10 +832,10 @@ print(
 PYEOF
 )"
 
-if [[ "$parse_output" == __HAPAX_DUPLICATE_TOP_LEVEL__* ]]; then
+if [[ "$parse_output" == __HAPAX_DUPLICATE_MAPPING__* ]]; then
   _duplicate_key="${parse_output#*$'\t'}"
   _emit_block <<EOF
-cc-task-gate: BLOCKED — task '$task_id' has duplicate top-level frontmatter key '$_duplicate_key'.
+cc-task-gate: BLOCKED — task '$task_id' has duplicate frontmatter mapping key '$_duplicate_key'.
   Repair the task note with the strict canonical parser before mutating files.
 EOF
   exit 2

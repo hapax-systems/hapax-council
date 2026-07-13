@@ -1,15 +1,8 @@
-"""Regression tests: the cc-task-gate bootstrap invocation must FAIL OPEN on infra
-error (reform — bootstrap-failopen-atomic-swap, CASE-SDLC-REFORM-001).
+"""Regression tests for transaction-routed governance bootstrap handling.
 
-The unclaimed governance-intake bootstrap (section 3b of cc-task-gate.impl.sh) is
-the roleless session's ONLY sanctioned write path. Historically it mapped EVERY
-non-{0,10} helper exit to a hard BLOCK (exit 2) — so python3's own "can't open
-file" rc==2 (an unreadable / mid-atomic-swap helper) was indistinguishable from a
-genuine BLOCKED verdict, fail-closing even a properly CLAIMED session during a
-hooks-doctor redeploy (the S2 incident). The fix mirrors the shim's INV-5 posture
-(master design §2.2 / FM-15 / NEW-2): only rc==12 blocks; a candidate write fails
-OPEN when the helper cannot run; every other mutation falls through to the normal
-gate.
+Direct Write cannot retain the ownership transaction while the editor runs, so
+every candidate is denied with the transactional creator as remediation. Helper
+deployment failures must still fall through for unrelated claimed mutations.
 
 These run a STAGED copy of the gate closure in a temp dir so the bootstrap helper's
 readability / exit code can be controlled (the real helper is always present in the
@@ -30,7 +23,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 HOOKS_SRC = REPO_ROOT / "hooks" / "scripts"
 # Everything the impl SOURCES; the bootstrap helper is staged separately so each
 # test controls its presence / exit code.
-_CLOSURE = ("cc-task-gate.impl.sh", "agent-role.sh", "escape-grant.sh")
+_PARSER = "task_frontmatter_stdlib.py"
+_CLOSURE = ("cc-task-gate.impl.sh", "agent-role.sh", "escape-grant.sh", _PARSER)
 _HELPER = "cc-task-gate-bootstrap.py"
 
 _IDENTITY_ENV = (
@@ -165,26 +159,22 @@ def _claim(home: Path, role: str, task_id: str) -> None:
     (cache / f"cc-active-task-{role}").write_text(task_id + "\n")
 
 
-# --- AC1: helper unreadable/missing → roleless intake creation FALLS OPEN --------
+# --- Candidate identity writes always route to the transactional creator ---------
 
 
 @pytest.mark.parametrize("helper", ["absent", "unreadable"])
 @pytest.mark.parametrize("kind", ["cc-tasks", "requests"])
-def test_helper_unavailable_candidate_write_fails_open(tmp_path: Path, helper: str, kind: str):
+def test_helper_unavailable_candidate_write_fails_closed(tmp_path: Path, helper: str, kind: str):
     gate = _stage_gate(tmp_path, helper=helper)
     note = _intake_note(tmp_path, kind)
     result = _run(gate, _candidate_write(note), tmp_path, role=None)
-    assert result.returncode == 0, (
-        f"helper={helper} kind={kind}: roleless intake creation must FAIL OPEN, "
-        f"not block; stderr={result.stderr}"
-    )
-    assert "FAILING OPEN" in result.stderr
-    assert "bootstrap_helper_infra_failopen" in _ledger_text(tmp_path), (
-        "the fail-open must be loudly ledgered"
-    )
+    assert result.returncode == 2, result.stderr
+    assert "BLOCKED direct governance Write" in result.stderr
+    assert "cc-governance-intake-create" in result.stderr
+    assert "bootstrap_helper_infra_failopen" in _ledger_text(tmp_path)
 
 
-# --- AC2: only rc==12 blocks; rc==2 (+ other infra codes) fall open --------------
+# --- Every helper verdict refuses direct candidate creation -----------------------
 
 
 def test_rc12_blocks_a_candidate(tmp_path: Path):
@@ -196,20 +186,19 @@ def test_rc12_blocks_a_candidate(tmp_path: Path):
 
 
 @pytest.mark.parametrize("rc", [1, 2, 3, 127])
-def test_other_rc_fails_open_for_candidate(tmp_path: Path, rc: int):
-    # python rc 2 == can't open file (mid-swap helper); 1 == uncaught exception;
-    # 127 == python missing. None is a deny — a candidate write must fail OPEN.
+def test_other_rc_blocks_candidate(tmp_path: Path, rc: int):
     gate = _stage_gate(tmp_path, helper=rc)
     note = _intake_note(tmp_path, "cc-tasks")
     result = _run(gate, _candidate_write(note), tmp_path, role=None)
-    assert result.returncode == 0, f"rc=={rc} (infra) must fail open; stderr={result.stderr}"
+    assert result.returncode == 2, result.stderr
 
 
-def test_rc0_still_allows_candidate(tmp_path: Path):
+def test_legacy_rc0_cannot_authorize_direct_candidate(tmp_path: Path):
     gate = _stage_gate(tmp_path, helper=0)
     note = _intake_note(tmp_path, "cc-tasks")
     result = _run(gate, _candidate_write(note), tmp_path, role=None)
-    assert result.returncode == 0, f"rc==0 (valid) must allow; stderr={result.stderr}"
+    assert result.returncode == 2, result.stderr
+    assert "legacy bootstrap helper" in result.stderr
 
 
 # --- Narrowness: an infra error must NOT widen what a non-bootstrap mutation does -
@@ -217,8 +206,7 @@ def test_rc0_still_allows_candidate(tmp_path: Path):
 
 @pytest.mark.parametrize("helper", ["absent", 2])
 def test_helper_unavailable_noncandidate_unclaimed_still_blocks(tmp_path: Path, helper):
-    # A source Edit by an unclaimed (roleless) session is NOT a bootstrap candidate:
-    # the infra fail-open must not wave it through — it falls to the normal claim gate.
+    # A source Edit is not a bootstrap candidate and falls to the normal claim gate.
     gate = _stage_gate(tmp_path, helper=helper)
     src = tmp_path / "project" / "app.py"
     result = _run(
@@ -226,7 +214,7 @@ def test_helper_unavailable_noncandidate_unclaimed_still_blocks(tmp_path: Path, 
         {"tool_name": "Edit", "tool_input": {"file_path": str(src)}},
         tmp_path,
         role=None,
-        extra_env={"HAPAX_SESSION_ID": "sidX"},
+        extra_env={"HAPAX_SESSION_ID": "019f465c-8137-7a52-9348-5602a988dc3d"},
     )
     assert result.returncode == 2, (
         f"helper={helper}: a non-candidate unclaimed edit must NOT fail open; "
@@ -258,10 +246,10 @@ def test_helper_unavailable_does_not_block_claimed_inscope_edit(tmp_path: Path, 
     )
 
 
-# --- Sanity: with the REAL helper present, behaviour is unchanged -----------------
+# --- The real helper validates, then routes to the transactional writer ------------
 
 
-def test_real_helper_valid_candidate_still_allowed(tmp_path: Path):
+def test_real_helper_valid_candidate_routes_to_transactional_writer(tmp_path: Path):
     gate = _stage_gate(tmp_path, helper="real")
     request_root = tmp_path / "Documents/Personal/20-projects/hapax-requests/active"
     request_root.mkdir(parents=True)
@@ -269,7 +257,7 @@ def test_real_helper_valid_candidate_still_allowed(tmp_path: Path):
     content = (
         "---\n"
         "type: hapax-request\n"
-        "request_id: REQ-20260601120000\n"
+        "request_id: REQ-20260601120000-x\n"
         "title: x\n"
         "status: captured\n"
         "requester: delta\n"
@@ -289,4 +277,6 @@ def test_real_helper_valid_candidate_still_allowed(tmp_path: Path):
         tmp_path,
         role=None,
     )
-    assert result.returncode == 0, f"real helper valid intake must allow; stderr={result.stderr}"
+    assert result.returncode == 2
+    assert "direct Write cannot serialize" in result.stderr
+    assert "cc-governance-intake-create" in result.stderr
