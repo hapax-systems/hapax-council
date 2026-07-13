@@ -450,9 +450,10 @@ def _decode_double_quoted(inner: str, line_number: int) -> str:
 
 
 def _parse_plain(value: str, line_number: int) -> Any:
-    if value[0] in "&*!@`" or value in {"---", "..."}:
+    if value[0] in "&*!|>@`" or value in {"---", "..."}:
         raise FrontmatterSubsetError(
-            f"anchors, aliases, tags, and directives are unsupported at line {line_number}"
+            "anchors, aliases, tags, block scalars, and directives are unsupported "
+            f"at line {line_number}"
         )
     if re.search(r":(?:\s|$)", value):
         raise FrontmatterSubsetError(f"mapping syntax in plain scalar at line {line_number}")

@@ -56,6 +56,8 @@ implementation_authorized: true
     [
         "status: claimed\nroute_metadata: {\n",
         "status: claimed\nroute_metadata:\n  quality: one\n  quality: two\n",
+        "parent_spec: |foo\n",
+        "tags: [|]\n",
     ],
 )
 def test_malformed_or_nested_duplicate_is_rejected_by_both_parsers(frontmatter: str) -> None:
@@ -72,6 +74,9 @@ def test_malformed_or_nested_duplicate_is_rejected_by_both_parsers(frontmatter: 
         "defaults: &defaults\n  status: claimed\ncopy: *defaults\n",
         "status: !!str claimed\n",
         "release_note: |\n  unsupported folded content\n",
+        "release_note: |\n",
+        "release_note: >-\n  unsupported folded content\n",
+        "tags:\n  - |\n",
     ],
 )
 def test_unproven_yaml_features_fail_closed_even_when_canonical_accepts(
