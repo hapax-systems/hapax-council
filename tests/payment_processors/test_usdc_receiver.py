@@ -19,6 +19,11 @@ from pathlib import Path
 
 import pytest
 
+from agents.payment_processors.resource_receipts import (
+    MoneyRailReceiptOperation,
+    receipt_reference,
+    tail_resource_receipts,
+)
 from agents.payment_processors.usdc_receiver import (
     BASE_USDC_CONTRACT_ADDRESS,
     ERC20_TRANSFER_TOPIC,
@@ -37,6 +42,19 @@ from agents.payment_processors.usdc_receiver import (
 
 _OPERATOR_WALLET = "0x" + "ab" * 20  # 0xabab...ab; 40 hex chars
 _OTHER_WALLET = "0x" + "cd" * 20
+
+
+@pytest.fixture(autouse=True)
+def resource_receipt_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    import agents.payment_processors.resource_receipts as resource_receipts
+
+    log_path = tmp_path / "resource-receipts.jsonl"
+    monkeypatch.setattr(
+        resource_receipts,
+        "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
+        log_path,
+    )
+    return log_path
 
 
 def _log_row(
@@ -305,6 +323,7 @@ class TestPollOnce:
 
         def _capture_append(event):
             appended.append(event)
+            return True
 
         monkeypatch.setattr("agents.payment_processors.usdc_receiver.append_event", _capture_append)
 
@@ -320,11 +339,60 @@ class TestPollOnce:
         assert evt.rail == "x402_usdc_base"
         assert evt.amount_usd == 1.0  # 1_000_000 atomic = 1 USDC
         assert evt.external_id is not None and ":0" in evt.external_id
+        assert evt.resource_receipt_ref is not None
 
-    def test_dedup_across_ticks(self, monkeypatch, tmp_path: Path) -> None:
+    def test_payment_event_receipt_binds_hashed_external_identity(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+        resource_receipt_log: Path,
+    ) -> None:
+        row = _log_row(tx_hash="0x" + "ef" * 32, log_index=5)
+        caller, _ = self._make_caller(tip_block=1000, logs=[row])
+
+        appended: list = []
+
+        def _capture_append(event):
+            receipts = tail_resource_receipts(log_path=resource_receipt_log)
+            assert len(receipts) == 1
+            appended.append(event)
+            return True
+
+        monkeypatch.setattr("agents.payment_processors.usdc_receiver.append_event", _capture_append)
+
+        receiver = USDCReceiver(
+            operator_wallet=_OPERATOR_WALLET,
+            cursor_path=tmp_path / "cursor.json",
+            rpc_caller=caller,
+        )
+
+        assert receiver.poll_once() == 1
+        receipts = tail_resource_receipts(log_path=resource_receipt_log)
+        assert len(receipts) == 1
+        receipt = receipts[0]
+        assert receipt.rail == "x402_usdc_base"
+        assert receipt.operation is MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND
+        assert receipt.event_kind == "erc20_transfer"
+        assert receipt.external_id_sha256 is not None
+        assert receipt.downstream_action == "payment_event_log.append_event"
+        assert "route:agents.payment_processors.event_log" in receipt.route_provenance
+        assert "resource:payment_event_log" in receipt.resource_provenance
+        assert appended[0].resource_receipt_ref == receipt_reference(receipt)
+        receipt_json = receipt.model_dump_json()
+        assert appended[0].external_id not in receipt_json
+        assert row["transactionHash"] not in receipt_json
+        assert _OPERATOR_WALLET.lower() not in receipt_json
+        assert row["topics"][1][-40:].lower() not in receipt_json
+
+    def test_dedup_across_ticks(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+        resource_receipt_log: Path,
+    ) -> None:
         same_log = _log_row(tx_hash="0x" + "aa" * 32, log_index=7)
         caller, _ = self._make_caller(tip_block=1000, logs=[same_log])
-        monkeypatch.setattr("agents.payment_processors.usdc_receiver.append_event", lambda e: None)
+        monkeypatch.setattr("agents.payment_processors.usdc_receiver.append_event", lambda e: True)
 
         receiver = USDCReceiver(
             operator_wallet=_OPERATOR_WALLET,
@@ -334,6 +402,7 @@ class TestPollOnce:
         # First tick emits 1; second tick (same log returned) emits 0.
         assert receiver.poll_once() == 1
         assert receiver.poll_once() == 0
+        assert len(tail_resource_receipts(log_path=resource_receipt_log)) == 1
 
     def test_filters_logs_to_other_addresses(self, monkeypatch, tmp_path: Path) -> None:
         # eth_getLogs server may return rows with the operator's
@@ -342,7 +411,7 @@ class TestPollOnce:
         wrong_to = _log_row(to_addr=_OTHER_WALLET, tx_hash="0x" + "bb" * 32)
         right_to = _log_row(to_addr=_OPERATOR_WALLET, tx_hash="0x" + "cc" * 32)
         caller, _ = self._make_caller(tip_block=1000, logs=[wrong_to, right_to])
-        monkeypatch.setattr("agents.payment_processors.usdc_receiver.append_event", lambda e: None)
+        monkeypatch.setattr("agents.payment_processors.usdc_receiver.append_event", lambda e: True)
 
         receiver = USDCReceiver(
             operator_wallet=_OPERATOR_WALLET,
@@ -351,23 +420,40 @@ class TestPollOnce:
         )
         assert receiver.poll_once() == 1
 
-    def test_min_amount_filter_drops_dust(self, monkeypatch, tmp_path: Path) -> None:
+    def test_min_amount_filter_drops_dust(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+        resource_receipt_log: Path,
+    ) -> None:
         dust = _log_row(amount_atomic=100, tx_hash="0x" + "dd" * 32)  # 0.0001 USDC
         ok = _log_row(amount_atomic=5_000_000, tx_hash="0x" + "ee" * 32)
         caller, _ = self._make_caller(tip_block=1000, logs=[dust, ok])
-        monkeypatch.setattr("agents.payment_processors.usdc_receiver.append_event", lambda e: None)
+        appended: list = []
 
+        def _capture_append(event):
+            appended.append(event)
+            return True
+
+        monkeypatch.setattr("agents.payment_processors.usdc_receiver.append_event", _capture_append)
+
+        cursor_path = tmp_path / "cursor.json"
         receiver = USDCReceiver(
             operator_wallet=_OPERATOR_WALLET,
-            cursor_path=tmp_path / "cursor.json",
+            cursor_path=cursor_path,
             rpc_caller=caller,
             min_amount_atomic=1_000_000,  # drop sub-1-USDC
         )
         assert receiver.poll_once() == 1
+        assert [event.external_id for event in appended] == ["0x" + "ee" * 32 + ":0"]
+        assert len(tail_resource_receipts(log_path=resource_receipt_log)) == 1
+        loaded = json.loads(cursor_path.read_text())
+        assert loaded["last_block"] == 1000
+        assert loaded["seen_keys"] == [["0x" + "ee" * 32, 0]]
 
     def test_persists_cursor_after_tick(self, monkeypatch, tmp_path: Path) -> None:
         caller, _ = self._make_caller(tip_block=12345, logs=[_log_row()])
-        monkeypatch.setattr("agents.payment_processors.usdc_receiver.append_event", lambda e: None)
+        monkeypatch.setattr("agents.payment_processors.usdc_receiver.append_event", lambda e: True)
 
         cursor_path = tmp_path / "cursor.json"
         receiver = USDCReceiver(
@@ -379,6 +465,167 @@ class TestPollOnce:
         assert cursor_path.exists()
         loaded = json.loads(cursor_path.read_text())
         assert loaded["last_block"] == 12345
+
+    def test_receipt_append_failure_blocks_event_and_keeps_cursor_retryable(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+        resource_receipt_log: Path,
+    ) -> None:
+        import agents.payment_processors.usdc_receiver as usdc_mod
+
+        row = _log_row(tx_hash="0x" + "10" * 32, block_number=500)
+        caller, _ = self._make_caller(tip_block=1000, logs=[row])
+        appended: list = []
+        original_commit = usdc_mod.commit_prepared_resource_receipt
+        commit_attempts = 0
+
+        def _flaky_commit(receipt):
+            nonlocal commit_attempts
+            commit_attempts += 1
+            if commit_attempts == 1:
+                return None
+            return original_commit(receipt)
+
+        def _capture_append(event):
+            appended.append(event)
+            return True
+
+        monkeypatch.setattr(usdc_mod, "commit_prepared_resource_receipt", _flaky_commit)
+        monkeypatch.setattr(usdc_mod, "append_event", _capture_append)
+
+        cursor_path = tmp_path / "cursor.json"
+        receiver = USDCReceiver(
+            operator_wallet=_OPERATOR_WALLET,
+            cursor_path=cursor_path,
+            rpc_caller=caller,
+        )
+
+        assert receiver.poll_once() == 0
+        assert appended == []
+        assert tail_resource_receipts(log_path=resource_receipt_log) == []
+        loaded = json.loads(cursor_path.read_text())
+        assert loaded["last_block"] == 0
+        assert loaded["seen_keys"] == []
+
+        assert receiver.poll_once() == 1
+        assert [event.external_id for event in appended] == ["0x" + "10" * 32 + ":0"]
+        loaded = json.loads(cursor_path.read_text())
+        assert loaded["last_block"] == 1000
+        assert loaded["seen_keys"] == [["0x" + "10" * 32, 0]]
+
+    def test_event_append_failure_retracts_new_receipt_and_keeps_cursor_retryable(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+        resource_receipt_log: Path,
+    ) -> None:
+        row = _log_row(tx_hash="0x" + "20" * 32, block_number=500)
+        caller, _ = self._make_caller(tip_block=1000, logs=[row])
+        append_attempts = 0
+
+        def _flaky_append(_event):
+            nonlocal append_attempts
+            append_attempts += 1
+            return append_attempts > 1
+
+        monkeypatch.setattr("agents.payment_processors.usdc_receiver.append_event", _flaky_append)
+
+        cursor_path = tmp_path / "cursor.json"
+        receiver = USDCReceiver(
+            operator_wallet=_OPERATOR_WALLET,
+            cursor_path=cursor_path,
+            rpc_caller=caller,
+        )
+
+        assert receiver.poll_once() == 0
+        assert tail_resource_receipts(log_path=resource_receipt_log) == []
+        loaded = json.loads(cursor_path.read_text())
+        assert loaded["last_block"] == 0
+        assert loaded["seen_keys"] == []
+
+        assert receiver.poll_once() == 1
+        assert len(tail_resource_receipts(log_path=resource_receipt_log)) == 1
+        loaded = json.loads(cursor_path.read_text())
+        assert loaded["last_block"] == 1000
+        assert loaded["seen_keys"] == [["0x" + "20" * 32, 0]]
+
+    def test_event_append_retry_recovers_preexisting_receipt(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+        resource_receipt_log: Path,
+    ) -> None:
+        import agents.payment_processors.usdc_receiver as usdc_mod
+
+        row = _log_row(tx_hash="0x" + "30" * 32, block_number=500)
+        caller, _ = self._make_caller(tip_block=1000, logs=[row])
+        append_attempts = 0
+
+        def _flaky_append(_event):
+            nonlocal append_attempts
+            append_attempts += 1
+            return append_attempts > 1
+
+        monkeypatch.setattr(usdc_mod, "append_event", _flaky_append)
+        monkeypatch.setattr(usdc_mod, "retract_prepared_resource_receipt", lambda _receipt: False)
+
+        cursor_path = tmp_path / "cursor.json"
+        receiver = USDCReceiver(
+            operator_wallet=_OPERATOR_WALLET,
+            cursor_path=cursor_path,
+            rpc_caller=caller,
+        )
+
+        assert receiver.poll_once() == 0
+        receipts_after_failure = tail_resource_receipts(log_path=resource_receipt_log)
+        assert len(receipts_after_failure) == 1
+
+        assert receiver.poll_once() == 1
+        receipts_after_retry = tail_resource_receipts(log_path=resource_receipt_log)
+        assert len(receipts_after_retry) == 1
+        assert receipts_after_retry[0].receipt_id == receipts_after_failure[0].receipt_id
+
+    def test_cursor_advances_only_to_success_before_failed_receipt(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+    ) -> None:
+        import agents.payment_processors.usdc_receiver as usdc_mod
+
+        first = _log_row(tx_hash="0x" + "41" * 32, log_index=0, block_number=700)
+        second = _log_row(tx_hash="0x" + "42" * 32, log_index=1, block_number=701)
+        caller, _ = self._make_caller(tip_block=1000, logs=[first, second])
+        appended: list = []
+        original_commit = usdc_mod.commit_prepared_resource_receipt
+        commit_attempts = 0
+
+        def _fail_second_commit(receipt):
+            nonlocal commit_attempts
+            commit_attempts += 1
+            if commit_attempts == 2:
+                return None
+            return original_commit(receipt)
+
+        def _capture_append(event):
+            appended.append(event)
+            return True
+
+        monkeypatch.setattr(usdc_mod, "commit_prepared_resource_receipt", _fail_second_commit)
+        monkeypatch.setattr(usdc_mod, "append_event", _capture_append)
+
+        cursor_path = tmp_path / "cursor.json"
+        receiver = USDCReceiver(
+            operator_wallet=_OPERATOR_WALLET,
+            cursor_path=cursor_path,
+            rpc_caller=caller,
+        )
+
+        assert receiver.poll_once() == 1
+        loaded = json.loads(cursor_path.read_text())
+        assert loaded["last_block"] == 700
+        assert loaded["seen_keys"] == [["0x" + "41" * 32, 0]]
+        assert [event.external_id for event in appended] == ["0x" + "41" * 32 + ":0"]
 
     def test_rpc_failure_returns_zero_no_crash(self, monkeypatch, tmp_path: Path) -> None:
         def _raises(method: str, params: list):

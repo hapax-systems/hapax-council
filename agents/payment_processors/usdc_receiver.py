@@ -71,6 +71,12 @@ from prometheus_client import Counter
 
 from agents.operator_awareness.state import PaymentEvent
 from agents.payment_processors.event_log import append_event
+from agents.payment_processors.resource_receipts import (
+    commit_prepared_resource_receipt,
+    prepare_payment_event_resource_receipt,
+    resource_receipt_exists,
+    retract_prepared_resource_receipt,
+)
 
 log = logging.getLogger(__name__)
 
@@ -386,12 +392,21 @@ class USDCReceiver:
             return 0
 
         emitted = 0
+        highest_successful_block = self._cursor.last_block
         for receipt in self._parse_and_filter(logs_raw):
             key = (receipt.tx_hash, receipt.log_index)
             if key in self._cursor.seen_keys:
+                highest_successful_block = max(highest_successful_block, receipt.block_number)
                 continue
+            if not self._emit_payment_event(receipt, now=now):
+                self._cursor.last_block = min(
+                    highest_successful_block,
+                    max(self._cursor.last_block, receipt.block_number - 1),
+                )
+                _save_cursor(self._cursor_path, self._cursor)
+                return emitted
             self._cursor.seen_keys.add(key)
-            self._emit_payment_event(receipt, now=now)
+            highest_successful_block = max(highest_successful_block, receipt.block_number)
             emitted += 1
 
         self._cursor.last_block = tip_int
@@ -452,7 +467,7 @@ class USDCReceiver:
                 continue
             yield receipt
 
-    def _emit_payment_event(self, receipt: TransferReceipt, *, now: datetime | None = None) -> None:
+    def _emit_payment_event(self, receipt: TransferReceipt, *, now: datetime | None = None) -> bool:
         """Append one PaymentEvent to the canonical event log.
 
         ``rail`` carries the ``x402_usdc_base`` literal; the
@@ -466,11 +481,31 @@ class USDCReceiver:
         # Literal validation only at the receiver boundary; the
         # follow-up cc-task widens the Literal.
         event = self._build_payment_event(receipt, ts)
+        receipt_ref, resource_receipt = prepare_payment_event_resource_receipt(
+            rail=RAIL_LABEL,
+            external_id=event.external_id,
+            event_kind="erc20_transfer",
+            downstream_action="payment_event_log.append_event",
+        )
+        receipt_preexisting = resource_receipt_exists(receipt_ref)
+        if commit_prepared_resource_receipt(resource_receipt) is None:
+            log.warning("usdc payment event blocked: resource receipt append failed")
+            return False
+        event = event.model_copy(update={"resource_receipt_ref": receipt_ref})
         try:
-            append_event(event)
-            usdc_receipts_total.labels(rail=RAIL_LABEL).inc()
+            event_appended = append_event(event)
         except Exception:  # noqa: BLE001
-            log.warning("usdc payment event append failed", exc_info=True)
+            if not receipt_preexisting:
+                retract_prepared_resource_receipt(resource_receipt)
+            log.warning("usdc payment event append raised", exc_info=True)
+            return False
+        if not event_appended:
+            if not receipt_preexisting:
+                retract_prepared_resource_receipt(resource_receipt)
+            log.warning("usdc payment event append failed")
+            return False
+        usdc_receipts_total.labels(rail=RAIL_LABEL).inc()
+        return True
 
     def _build_payment_event(self, receipt: TransferReceipt, ts: datetime) -> PaymentEvent:
         """Construct a PaymentEvent for emission.
