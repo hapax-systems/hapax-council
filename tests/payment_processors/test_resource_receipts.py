@@ -14,23 +14,6 @@ from pathlib import Path
 import pytest
 
 from agents.payment_processors import resource_receipts as resource_receipts_mod
-from agents.payment_processors.resource_receipts import (
-    MoneyRailReceiptOperation,
-    MoneyRailResourceReceipt,
-    MoneyRailResourceReceiptError,
-    append_resource_receipt,
-    build_resource_receipt,
-    commit_prepared_resource_receipt,
-    load_resource_receipt,
-    receipt_reference,
-    record_payment_event_resource_receipt,
-    require_resource_receipt,
-    resource_receipt_exists,
-    resource_receipt_matches,
-    resource_receipt_recovery_guidance,
-    retract_prepared_resource_receipt,
-    tail_resource_receipts,
-)
 
 _SQLITE_MAX_POSITIVE_INTEGER = 9_223_372_036_854_775_807
 
@@ -41,9 +24,9 @@ def _receipt(
     raw_payload_sha256: str = "a" * 64,
     created_at: datetime = datetime(2026, 6, 30, 4, 0, tzinfo=UTC),
 ):
-    return build_resource_receipt(
+    return resource_receipts_mod.build_resource_receipt(
         rail="github-sponsors",
-        operation=MoneyRailReceiptOperation.INGRESS,
+        operation=resource_receipts_mod.MoneyRailReceiptOperation.INGRESS,
         route_path="/api/payment-rails/github-sponsors",
         external_id=external_id,
         event_kind="created",
@@ -58,14 +41,40 @@ def _child_append_receipt(log_path: str, external_id: str) -> None:
         external_id=external_id,
         raw_payload_sha256=f"{abs(hash(external_id)):064x}"[-64:],
     )
-    if not append_resource_receipt(receipt, log_path=Path(log_path)):
+    if not resource_receipts_mod.append_resource_receipt(receipt, log_path=Path(log_path)):
         raise SystemExit(1)
 
 
 def _child_commit_receipt(log_path: str, receipt_json: str) -> None:
-    receipt = MoneyRailResourceReceipt.model_validate_json(receipt_json)
-    if commit_prepared_resource_receipt(receipt, log_path=Path(log_path)) is None:
+    receipt = resource_receipts_mod.MoneyRailResourceReceipt.model_validate_json(receipt_json)
+    if (
+        resource_receipts_mod.commit_prepared_resource_receipt(receipt, log_path=Path(log_path))
+        is None
+    ):
         raise SystemExit(1)
+
+
+def _child_assert_env_unset_falls_back_to_canonical() -> None:
+    # Runs in a spawned child so the PARENT never unsets its safe per-test env.
+    # The child drops the ledger env itself and proves the resolver falls back to
+    # the canonical constant at call time. It only *resolves* the path — it never
+    # writes — so no production ledger emission occurs. The child restores its own
+    # inherited safe env in ``finally`` so a child shutdown/atexit emission cannot
+    # run while the env is unset.
+    import os as _os
+
+    env = resource_receipts_mod.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV
+    saved = _os.environ.get(env)
+    try:
+        _os.environ.pop(env, None)
+        if (
+            resource_receipts_mod.default_receipt_log_path()
+            != resource_receipts_mod.DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH
+        ):
+            raise SystemExit(1)
+    finally:
+        if saved is not None:
+            _os.environ[env] = saved
 
 
 def _child_commit_receipt_after_marker(log_path: str, receipt_json: str, start_marker: str) -> None:
@@ -74,13 +83,16 @@ def _child_commit_receipt_after_marker(log_path: str, receipt_json: str, start_m
 
 
 def _child_expect_receipt_absent(log_path: str, ref: str) -> None:
-    if resource_receipt_exists(ref, log_path=Path(log_path)):
+    if resource_receipts_mod.resource_receipt_exists(ref, log_path=Path(log_path)):
         raise SystemExit(1)
 
 
 def _child_commit_then_crash(log_path: str, receipt_json: str) -> None:
-    receipt = MoneyRailResourceReceipt.model_validate_json(receipt_json)
-    if commit_prepared_resource_receipt(receipt, log_path=Path(log_path)) is None:
+    receipt = resource_receipts_mod.MoneyRailResourceReceipt.model_validate_json(receipt_json)
+    if (
+        resource_receipts_mod.commit_prepared_resource_receipt(receipt, log_path=Path(log_path))
+        is None
+    ):
         os._exit(2)
     os._exit(19)
 
@@ -91,12 +103,17 @@ def _child_duplicate_fail_after_success(
     committed_marker: str,
     success_marker: str,
 ) -> None:
-    receipt = MoneyRailResourceReceipt.model_validate_json(receipt_json)
-    if commit_prepared_resource_receipt(receipt, log_path=Path(log_path)) is None:
+    receipt = resource_receipts_mod.MoneyRailResourceReceipt.model_validate_json(receipt_json)
+    if (
+        resource_receipts_mod.commit_prepared_resource_receipt(receipt, log_path=Path(log_path))
+        is None
+    ):
         raise SystemExit(1)
     Path(committed_marker).write_text("committed", encoding="utf-8")
     _wait_for_marker(Path(success_marker))
-    if not retract_prepared_resource_receipt(receipt, log_path=Path(log_path)):
+    if not resource_receipts_mod.retract_prepared_resource_receipt(
+        receipt, log_path=Path(log_path)
+    ):
         raise SystemExit(1)
 
 
@@ -107,8 +124,11 @@ def _child_duplicate_success_after_failure_commit(
     success_marker: str,
 ) -> None:
     _wait_for_marker(Path(committed_marker))
-    receipt = MoneyRailResourceReceipt.model_validate_json(receipt_json)
-    if commit_prepared_resource_receipt(receipt, log_path=Path(log_path)) is None:
+    receipt = resource_receipts_mod.MoneyRailResourceReceipt.model_validate_json(receipt_json)
+    if (
+        resource_receipts_mod.commit_prepared_resource_receipt(receipt, log_path=Path(log_path))
+        is None
+    ):
         raise SystemExit(1)
     Path(success_marker).write_text("success", encoding="utf-8")
 
@@ -216,35 +236,45 @@ def test_default_receipt_log_path_resolves_env_at_call_time(tmp_path, monkeypatc
     env transition (or an unset) takes effect immediately.
     """
 
-    # The safe per-test ledger env the autouse isolation fixture bound; this test
-    # deliberately unsets it below, so it must restore it before returning or the
-    # fixture's teardown leak-detector would (correctly) flag a persistent leak.
+    # The safe per-test ledger env the autouse isolation fixture bound.
     safe_env = os.environ[resource_receipts_mod.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV]
 
     # The canonical fallback constant is the fixed /dev/shm path, not env-derived.
     canonical_fallback = Path("/dev/shm/hapax-monetization/resource-receipts.jsonl")
     assert canonical_fallback == resource_receipts_mod.DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH
 
+    # Env-transition proof stays in-process, but only ever moves between per-test
+    # paths inside tmp_path (never unset here). The ``finally`` restores the safe
+    # per-test env unconditionally, so restoration is NOT contingent on the asserts
+    # passing — a failed assert can never leave the parent env unsafe for teardown.
     path_a = tmp_path / "ledger-a.jsonl"
     path_b = tmp_path / "ledger-b.jsonl"
+    try:
+        monkeypatch.setenv(resource_receipts_mod.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV, str(path_a))
+        assert resource_receipts_mod.default_receipt_log_path() == path_a
 
-    monkeypatch.setenv(resource_receipts_mod.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV, str(path_a))
-    assert resource_receipts_mod.default_receipt_log_path() == path_a
+        # A later env transition is honored at call time — no import-time capture.
+        monkeypatch.setenv(resource_receipts_mod.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV, str(path_b))
+        assert resource_receipts_mod.default_receipt_log_path() == path_b
+    finally:
+        monkeypatch.setenv(resource_receipts_mod.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV, safe_env)
 
-    # A later env transition is honored at call time — no import-time capture.
-    monkeypatch.setenv(resource_receipts_mod.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV, str(path_b))
-    assert resource_receipts_mod.default_receipt_log_path() == path_b
+    # The unset -> canonical-fallback branch requires *unsetting* the env. Prove it
+    # in a spawned child so the PARENT never unsets its safe per-test env: a parent
+    # unset would open a window where a concurrent/late default-path emission could
+    # reach the live ledger. The child drops the env itself and only resolves the
+    # path (never writes), so no production ledger emission occurs.
+    ctx = get_context("spawn")
+    proc = ctx.Process(target=_child_assert_env_unset_falls_back_to_canonical)
+    proc.start()
+    proc.join(timeout=30)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(timeout=5)
+    assert proc.exitcode == 0
 
-    # With the env unset, the resolver falls back to the canonical constant.
-    monkeypatch.delenv(resource_receipts_mod.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV, raising=False)
-    assert (
-        resource_receipts_mod.default_receipt_log_path()
-        == resource_receipts_mod.DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH
-    )
-
-    # Restore the per-test safe ledger env so the isolation fixture's teardown
-    # leak-detector does not see this deliberate unset as a persistent leak.
-    monkeypatch.setenv(resource_receipts_mod.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV, safe_env)
+    # The parent's safe per-test env was never unset by this test.
+    assert os.environ[resource_receipts_mod.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV] == safe_env
 
 
 def test_receipt_never_grants_spend_or_public_projection() -> None:
@@ -261,10 +291,10 @@ def test_append_is_idempotent_by_receipt_id(tmp_path) -> None:
     log_path = tmp_path / "resource-receipts.jsonl"
     receipt = _receipt()
 
-    assert append_resource_receipt(receipt, log_path=log_path)
-    assert append_resource_receipt(receipt, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
 
-    rows = tail_resource_receipts(log_path=log_path)
+    rows = resource_receipts_mod.tail_resource_receipts(log_path=log_path)
     assert len(rows) == 1
     assert rows[0].receipt_id == receipt.receipt_id
 
@@ -283,10 +313,10 @@ def test_append_reuses_duplicate_with_matching_stable_semantics(tmp_path) -> Non
     )
 
     assert first.receipt_id == duplicate.receipt_id
-    assert append_resource_receipt(first, log_path=log_path)
-    assert append_resource_receipt(duplicate, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(first, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(duplicate, log_path=log_path)
 
-    rows = tail_resource_receipts(log_path=log_path)
+    rows = resource_receipts_mod.tail_resource_receipts(log_path=log_path)
     assert len(rows) == 1
     assert rows[0].created_at == first.created_at
 
@@ -296,10 +326,10 @@ def test_append_refuses_duplicate_id_with_conflicting_semantics(tmp_path) -> Non
     receipt = _receipt(external_id="delivery-conflict", raw_payload_sha256="c" * 64)
     conflicting = receipt.model_copy(update={"downstream_action": "other.action"})
 
-    assert append_resource_receipt(receipt, log_path=log_path)
-    assert not append_resource_receipt(conflicting, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
+    assert not resource_receipts_mod.append_resource_receipt(conflicting, log_path=log_path)
 
-    rows = tail_resource_receipts(log_path=log_path)
+    rows = resource_receipts_mod.tail_resource_receipts(log_path=log_path)
     assert len(rows) == 1
     assert rows[0].downstream_action == "publication_bus.publish_event"
 
@@ -310,8 +340,8 @@ def test_append_conflict_logs_quarantine_guidance(tmp_path, caplog) -> None:
     conflicting = receipt.model_copy(update={"downstream_action": "other.action"})
     caplog.set_level(logging.WARNING, logger=resource_receipts_mod.__name__)
 
-    assert append_resource_receipt(receipt, log_path=log_path)
-    assert not append_resource_receipt(conflicting, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
+    assert not resource_receipts_mod.append_resource_receipt(conflicting, log_path=log_path)
 
     assert "repair or quarantine" in caplog.text
     assert str(log_path.with_name(f"{log_path.name}.lock")) in caplog.text
@@ -322,7 +352,7 @@ def test_recovery_guidance_names_quarantine_and_sidecar_lock(tmp_path) -> None:
     log_path = tmp_path / "resource-receipts.jsonl"
     index_path = resource_receipts_mod._receipt_index_path(log_path)
 
-    guidance = resource_receipt_recovery_guidance(log_path=log_path)
+    guidance = resource_receipts_mod.resource_receipt_recovery_guidance(log_path=log_path)
 
     assert str(log_path) in guidance
     assert str(index_path) in guidance
@@ -350,9 +380,9 @@ def test_append_completes_short_os_writes(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(resource_receipts_mod.os, "write", short_write)
 
-    assert append_resource_receipt(receipt, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
     assert len(writes) > 1
-    rows = tail_resource_receipts(log_path=log_path)
+    rows = resource_receipts_mod.tail_resource_receipts(log_path=log_path)
     assert [row.receipt_id for row in rows] == [receipt.receipt_id]
 
 
@@ -362,8 +392,8 @@ def test_append_refuses_zero_progress_write(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(resource_receipts_mod.os, "write", lambda _fd, _data: 0)
 
-    assert not append_resource_receipt(receipt, log_path=log_path)
-    assert tail_resource_receipts(log_path=log_path) == []
+    assert not resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
+    assert resource_receipts_mod.tail_resource_receipts(log_path=log_path) == []
 
 
 def test_append_fails_closed_on_torn_final_line(tmp_path) -> None:
@@ -375,10 +405,12 @@ def test_append_fails_closed_on_torn_final_line(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    assert not append_resource_receipt(after_torn, log_path=log_path)
-    rows = tail_resource_receipts(log_path=log_path)
+    assert not resource_receipts_mod.append_resource_receipt(after_torn, log_path=log_path)
+    rows = resource_receipts_mod.tail_resource_receipts(log_path=log_path)
     assert [row.receipt_id for row in rows] == [existing.receipt_id]
-    assert not resource_receipt_exists(receipt_reference(after_torn), log_path=log_path)
+    assert not resource_receipts_mod.resource_receipt_exists(
+        resource_receipts_mod.receipt_reference(after_torn), log_path=log_path
+    )
 
 
 def test_append_fails_closed_on_torn_final_line_with_quarantine_guidance(tmp_path, caplog) -> None:
@@ -391,7 +423,7 @@ def test_append_fails_closed_on_torn_final_line_with_quarantine_guidance(tmp_pat
     )
     caplog.set_level(logging.WARNING, logger=resource_receipts_mod.__name__)
 
-    assert not append_resource_receipt(after_torn, log_path=log_path)
+    assert not resource_receipts_mod.append_resource_receipt(after_torn, log_path=log_path)
 
     assert "torn final money-rail resource receipt line" in caplog.text
     assert "repair or quarantine" in caplog.text
@@ -401,12 +433,12 @@ def test_append_fails_closed_on_torn_final_line_with_quarantine_guidance(tmp_pat
 def test_admission_rejects_complete_json_without_commit_newline(tmp_path) -> None:
     log_path = tmp_path / "resource-receipts.jsonl"
     receipt = _receipt(external_id="delivery-complete-json-torn", raw_payload_sha256="9" * 64)
-    ref = receipt_reference(receipt)
+    ref = resource_receipts_mod.receipt_reference(receipt)
     log_path.write_text(receipt.model_dump_json(), encoding="utf-8")
 
-    assert load_resource_receipt(ref, log_path=log_path) is None
-    assert not resource_receipt_exists(ref, log_path=log_path)
-    assert not resource_receipt_matches(
+    assert resource_receipts_mod.load_resource_receipt(ref, log_path=log_path) is None
+    assert not resource_receipts_mod.resource_receipt_exists(ref, log_path=log_path)
+    assert not resource_receipts_mod.resource_receipt_matches(
         ref,
         rail=receipt.rail,
         operation=receipt.operation,
@@ -420,7 +452,7 @@ def test_admission_lookup_waits_for_lock_and_rejects_uncommitted_json_line(tmp_p
     lock_path = log_path.with_name(f"{log_path.name}.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     receipt = _receipt(external_id="delivery-locked-torn", raw_payload_sha256="a" * 64)
-    ref = receipt_reference(receipt)
+    ref = resource_receipts_mod.receipt_reference(receipt)
     log_path.write_text(receipt.model_dump_json(), encoding="utf-8")
 
     ctx = get_context("spawn")
@@ -460,7 +492,7 @@ def test_append_waits_on_process_receipt_log_lock(tmp_path) -> None:
         try:
             proc.join(timeout=0.5)
             assert proc.is_alive()
-            assert tail_resource_receipts(log_path=log_path) == []
+            assert resource_receipts_mod.tail_resource_receipts(log_path=log_path) == []
         finally:
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
 
@@ -469,7 +501,7 @@ def test_append_waits_on_process_receipt_log_lock(tmp_path) -> None:
         proc.terminate()
         proc.join(timeout=5)
     assert proc.exitcode == 0
-    rows = tail_resource_receipts(log_path=log_path)
+    rows = resource_receipts_mod.tail_resource_receipts(log_path=log_path)
     assert len(rows) == 1
     assert rows[0].external_id_sha256 is not None
 
@@ -494,9 +526,10 @@ def test_multi_process_distinct_receipts_survive_concurrent_appends(tmp_path) ->
             proc.join(timeout=5)
         assert proc.exitcode == 0
 
-    assert {receipt.receipt_id for receipt in tail_resource_receipts(log_path=log_path)} == {
-        receipt.receipt_id for receipt in receipts
-    }
+    assert {
+        receipt.receipt_id
+        for receipt in resource_receipts_mod.tail_resource_receipts(log_path=log_path)
+    } == {receipt.receipt_id for receipt in receipts}
 
 
 def test_multi_process_identical_receipts_reuse_one_row(tmp_path) -> None:
@@ -516,7 +549,7 @@ def test_multi_process_identical_receipts_reuse_one_row(tmp_path) -> None:
             proc.join(timeout=5)
         assert proc.exitcode == 0
 
-    rows = tail_resource_receipts(log_path=log_path)
+    rows = resource_receipts_mod.tail_resource_receipts(log_path=log_path)
     assert [row.receipt_id for row in rows] == [receipt.receipt_id]
 
 
@@ -557,7 +590,7 @@ def test_multi_process_conflicting_receipt_identity_fails_closed(tmp_path) -> No
 
     assert exitcodes.count(0) == 8
     assert exitcodes.count(1) == 8
-    rows = tail_resource_receipts(log_path=log_path)
+    rows = resource_receipts_mod.tail_resource_receipts(log_path=log_path)
     assert len(rows) == 1
     assert rows[0].receipt_id == receipt.receipt_id
     assert resource_receipts_mod._stable_receipt_semantics(rows[0]) in (
@@ -570,12 +603,15 @@ def test_retract_compat_hook_does_not_remove_committed_receipts(tmp_path) -> Non
     log_path = tmp_path / "resource-receipts.jsonl"
     target = _receipt(external_id="delivery-target", raw_payload_sha256="1" * 64)
     unrelated = _receipt(external_id="delivery-other", raw_payload_sha256="2" * 64)
-    assert append_resource_receipt(target, log_path=log_path)
-    assert append_resource_receipt(unrelated, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(target, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(unrelated, log_path=log_path)
 
-    assert retract_prepared_resource_receipt(target, log_path=log_path)
+    assert resource_receipts_mod.retract_prepared_resource_receipt(target, log_path=log_path)
 
-    assert {receipt.receipt_id for receipt in tail_resource_receipts(log_path=log_path)} == {
+    assert {
+        receipt.receipt_id
+        for receipt in resource_receipts_mod.tail_resource_receipts(log_path=log_path)
+    } == {
         target.receipt_id,
         unrelated.receipt_id,
     }
@@ -615,7 +651,7 @@ def test_multi_process_duplicate_receipt_survives_failed_worker_retract(tmp_path
             proc.join(timeout=5)
         assert proc.exitcode == 0
 
-    rows = tail_resource_receipts(log_path=log_path)
+    rows = resource_receipts_mod.tail_resource_receipts(log_path=log_path)
     assert [row.receipt_id for row in rows] == [receipt.receipt_id]
 
 
@@ -635,40 +671,43 @@ def test_multi_process_crash_after_commit_leaves_retryable_receipt(tmp_path) -> 
         proc.join(timeout=5)
     assert proc.exitcode == 19
 
-    assert [row.receipt_id for row in tail_resource_receipts(log_path=log_path)] == [
-        receipt.receipt_id
-    ]
-    assert commit_prepared_resource_receipt(receipt, log_path=log_path) == receipt_reference(
-        receipt
-    )
-    assert [row.receipt_id for row in tail_resource_receipts(log_path=log_path)] == [
-        receipt.receipt_id
-    ]
+    assert [
+        row.receipt_id for row in resource_receipts_mod.tail_resource_receipts(log_path=log_path)
+    ] == [receipt.receipt_id]
+    assert resource_receipts_mod.commit_prepared_resource_receipt(
+        receipt, log_path=log_path
+    ) == resource_receipts_mod.receipt_reference(receipt)
+    assert [
+        row.receipt_id for row in resource_receipts_mod.tail_resource_receipts(log_path=log_path)
+    ] == [receipt.receipt_id]
 
 
 def test_require_resource_receipt_fails_closed_when_missing(tmp_path) -> None:
     receipt = _receipt()
-    ref = receipt_reference(receipt)
+    ref = resource_receipts_mod.receipt_reference(receipt)
 
-    assert resource_receipt_exists(ref, log_path=tmp_path / "missing.jsonl") is False
+    assert (
+        resource_receipts_mod.resource_receipt_exists(ref, log_path=tmp_path / "missing.jsonl")
+        is False
+    )
     with pytest.raises(
-        MoneyRailResourceReceiptError,
+        resource_receipts_mod.MoneyRailResourceReceiptError,
         match="missing money-rail resource receipt.*repair or quarantine",
     ):
-        require_resource_receipt(ref, log_path=tmp_path / "missing.jsonl")
+        resource_receipts_mod.require_resource_receipt(ref, log_path=tmp_path / "missing.jsonl")
 
 
 def test_payment_event_receipt_ref_is_idempotent_for_same_event(tmp_path) -> None:
     log_path = tmp_path / "resource-receipts.jsonl"
 
-    first = record_payment_event_resource_receipt(
+    first = resource_receipts_mod.record_payment_event_resource_receipt(
         rail="lightning",
         external_id="invoice-1",
         event_kind="settled",
         downstream_action="lightning.poll_once",
         log_path=log_path,
     )
-    second = record_payment_event_resource_receipt(
+    second = resource_receipts_mod.record_payment_event_resource_receipt(
         rail="lightning",
         external_id="invoice-1",
         event_kind="settled",
@@ -677,14 +716,14 @@ def test_payment_event_receipt_ref_is_idempotent_for_same_event(tmp_path) -> Non
     )
 
     assert second == first
-    rows = tail_resource_receipts(log_path=log_path)
+    rows = resource_receipts_mod.tail_resource_receipts(log_path=log_path)
     assert len(rows) == 1
-    assert receipt_reference(rows[0]) == first
+    assert resource_receipts_mod.receipt_reference(rows[0]) == first
 
 
 def test_resource_receipt_matches_rail_operation_and_external_id(tmp_path) -> None:
     log_path = tmp_path / "resource-receipts.jsonl"
-    ref = record_payment_event_resource_receipt(
+    ref = resource_receipts_mod.record_payment_event_resource_receipt(
         rail="liberapay",
         external_id="r-liberapay-001",
         event_kind="payin_succeeded",
@@ -693,24 +732,24 @@ def test_resource_receipt_matches_rail_operation_and_external_id(tmp_path) -> No
     )
 
     assert ref is not None
-    assert resource_receipt_matches(
+    assert resource_receipts_mod.resource_receipt_matches(
         ref,
         rail="liberapay",
-        operation=MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
+        operation=resource_receipts_mod.MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
         external_id="r-liberapay-001",
         log_path=log_path,
     )
-    assert not resource_receipt_matches(
+    assert not resource_receipts_mod.resource_receipt_matches(
         ref,
         rail="lightning",
-        operation=MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
+        operation=resource_receipts_mod.MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
         external_id="r-liberapay-001",
         log_path=log_path,
     )
-    assert not resource_receipt_matches(
+    assert not resource_receipts_mod.resource_receipt_matches(
         ref,
         rail="liberapay",
-        operation=MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
+        operation=resource_receipts_mod.MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
         external_id="different-receipt",
         log_path=log_path,
     )
@@ -718,9 +757,9 @@ def test_resource_receipt_matches_rail_operation_and_external_id(tmp_path) -> No
 
 def test_resource_receipt_exists_scans_beyond_tail_window(tmp_path) -> None:
     log_path = tmp_path / "resource-receipts.jsonl"
-    first = build_resource_receipt(
+    first = resource_receipts_mod.build_resource_receipt(
         rail="github-sponsors",
-        operation=MoneyRailReceiptOperation.INGRESS,
+        operation=resource_receipts_mod.MoneyRailReceiptOperation.INGRESS,
         route_path="/api/payment-rails/github-sponsors",
         external_id="delivery-0",
         event_kind="created",
@@ -730,9 +769,9 @@ def test_resource_receipt_exists_scans_beyond_tail_window(tmp_path) -> None:
     )
 
     for idx in range(250):
-        receipt = build_resource_receipt(
+        receipt = resource_receipts_mod.build_resource_receipt(
             rail="github-sponsors",
-            operation=MoneyRailReceiptOperation.INGRESS,
+            operation=resource_receipts_mod.MoneyRailReceiptOperation.INGRESS,
             route_path="/api/payment-rails/github-sponsors",
             external_id=f"delivery-{idx}",
             event_kind="created",
@@ -740,9 +779,11 @@ def test_resource_receipt_exists_scans_beyond_tail_window(tmp_path) -> None:
             downstream_action="publication_bus.publish_event",
             created_at=datetime(2026, 6, 30, 4, 0, tzinfo=UTC),
         )
-        assert append_resource_receipt(receipt, log_path=log_path)
+        assert resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
 
-    assert resource_receipt_exists(receipt_reference(first), log_path=log_path)
+    assert resource_receipts_mod.resource_receipt_exists(
+        resource_receipts_mod.receipt_reference(first), log_path=log_path
+    )
 
 
 def test_steady_state_append_reconciles_only_from_verified_size(
@@ -753,8 +794,8 @@ def test_steady_state_append_reconciles_only_from_verified_size(
     first = _receipt(external_id="delivery-index-1", raw_payload_sha256="1" * 64)
     second = _receipt(external_id="delivery-index-2", raw_payload_sha256="2" * 64)
     third = _receipt(external_id="delivery-index-3", raw_payload_sha256="3" * 64)
-    assert append_resource_receipt(first, log_path=log_path)
-    assert append_resource_receipt(second, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(first, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(second, log_path=log_path)
     verified_size = log_path.stat().st_size
     starts: list[int] = []
     real_iter = resource_receipts_mod._iter_ledger_receipt_rows
@@ -765,7 +806,7 @@ def test_steady_state_append_reconciles_only_from_verified_size(
 
     monkeypatch.setattr(resource_receipts_mod, "_iter_ledger_receipt_rows", _recording_iter)
 
-    assert append_resource_receipt(third, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(third, log_path=log_path)
 
     assert starts == [verified_size]
     assert 0 not in starts
@@ -781,7 +822,7 @@ def test_old_row_lookup_uses_index_locator_without_zero_offset_scan(
     old = _receipt(external_id="delivery-lookup-2", raw_payload_sha256="2" * 64)
     latest = _receipt(external_id="delivery-lookup-3", raw_payload_sha256="3" * 64)
     for receipt in (first, old, latest):
-        assert append_resource_receipt(receipt, log_path=log_path)
+        assert resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
     old_offset, _old_length, _old_hash = _indexed_locator(log_path, old.receipt_id)
     assert old_offset > 0
     iter_starts: list[int] = []
@@ -800,7 +841,12 @@ def test_old_row_lookup_uses_index_locator_without_zero_offset_scan(
     monkeypatch.setattr(resource_receipts_mod, "_iter_ledger_receipt_rows", _recording_iter)
     monkeypatch.setattr(resource_receipts_mod, "_read_exact_ledger_row", _recording_read)
 
-    assert load_resource_receipt(receipt_reference(old), log_path=log_path) == old
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(old), log_path=log_path
+        )
+        == old
+    )
 
     assert iter_starts == []
     assert old_offset in pread_offsets
@@ -816,7 +862,7 @@ def test_old_row_lookup_does_not_permission_chmod_or_fsync_private_files(
     old = _receipt(external_id="delivery-permission-lookup-2", raw_payload_sha256="2" * 64)
     latest = _receipt(external_id="delivery-permission-lookup-3", raw_payload_sha256="3" * 64)
     for receipt in (first, old, latest):
-        assert append_resource_receipt(receipt, log_path=log_path)
+        assert resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
     assert _mode(log_path) == 0o600
     assert _mode(resource_receipts_mod._receipt_index_path(log_path)) == 0o600
     chmod_calls: list[int] = []
@@ -835,7 +881,12 @@ def test_old_row_lookup_does_not_permission_chmod_or_fsync_private_files(
     monkeypatch.setattr(resource_receipts_mod.os, "fchmod", _recording_fchmod)
     monkeypatch.setattr(resource_receipts_mod.os, "fsync", _recording_fsync)
 
-    assert load_resource_receipt(receipt_reference(old), log_path=log_path) == old
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(old), log_path=log_path
+        )
+        == old
+    )
 
     assert chmod_calls == []
     assert fsync_calls == []
@@ -846,11 +897,18 @@ def test_preexisting_world_readable_ledger_indexed_public_lookup_repairs_mode(
 ) -> None:
     log_path = tmp_path / "resource-receipts.jsonl"
     receipt = _receipt(external_id="delivery-world-readable-indexed", raw_payload_sha256="1" * 64)
-    assert append_resource_receipt(receipt, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
     os.chmod(log_path, 0o644)
 
-    assert resource_receipt_exists(receipt_reference(receipt), log_path=log_path)
-    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) == receipt
+    assert resource_receipts_mod.resource_receipt_exists(
+        resource_receipts_mod.receipt_reference(receipt), log_path=log_path
+    )
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(receipt), log_path=log_path
+        )
+        == receipt
+    )
 
     assert _mode(log_path) == 0o600
     assert _mode(resource_receipts_mod._receipt_index_path(log_path)) == 0o600
@@ -871,7 +929,9 @@ def test_preexisting_world_readable_ledger_durable_append_repairs_mode_and_succe
     )
 
     assert _mode(log_path) == 0o600
-    assert [row.receipt_id for row in tail_resource_receipts(log_path=log_path)] == [
+    assert [
+        row.receipt_id for row in resource_receipts_mod.tail_resource_receipts(log_path=log_path)
+    ] == [
         first.receipt_id,
         second.receipt_id,
     ]
@@ -892,9 +952,9 @@ def test_preexisting_world_readable_ledger_tail_stream_repairs_mode_and_loads(
     )
     os.chmod(log_path, 0o644)
 
-    assert [row.receipt_id for row in tail_resource_receipts(log_path=log_path)] == [
-        receipt.receipt_id for receipt in receipts
-    ]
+    assert [
+        row.receipt_id for row in resource_receipts_mod.tail_resource_receipts(log_path=log_path)
+    ] == [receipt.receipt_id for receipt in receipts]
     assert _mode(log_path) == 0o600
 
 
@@ -917,7 +977,12 @@ def test_missing_index_bootstraps_by_streaming_authoritative_jsonl(
 
     monkeypatch.setattr(resource_receipts_mod, "_iter_ledger_receipt_rows", _recording_iter)
 
-    assert load_resource_receipt(receipt_reference(receipts[-1]), log_path=log_path) == receipts[-1]
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(receipts[-1]), log_path=log_path
+        )
+        == receipts[-1]
+    )
 
     metadata = _index_metadata(log_path)
     assert starts == [0]
@@ -932,7 +997,7 @@ def test_valid_external_tail_is_indexed_from_verified_size(
     log_path = tmp_path / "resource-receipts.jsonl"
     first = _receipt(external_id="delivery-external-before", raw_payload_sha256="1" * 64)
     external = _receipt(external_id="delivery-external-tail", raw_payload_sha256="2" * 64)
-    assert append_resource_receipt(first, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(first, log_path=log_path)
     verified_size = log_path.stat().st_size
     resource_receipts_mod._append_line_durable(
         log_path,
@@ -947,7 +1012,12 @@ def test_valid_external_tail_is_indexed_from_verified_size(
 
     monkeypatch.setattr(resource_receipts_mod, "_iter_ledger_receipt_rows", _recording_iter)
 
-    assert load_resource_receipt(receipt_reference(external), log_path=log_path) == external
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(external), log_path=log_path
+        )
+        == external
+    )
 
     assert starts == [verified_size]
     assert int(_index_metadata(log_path)["line_count"]) == 2
@@ -966,35 +1036,47 @@ def test_failure_after_log_fsync_before_index_commit_recovers_on_retry(
         nonlocal calls
         calls += 1
         if calls == 2:
-            raise MoneyRailResourceReceiptError("simulated index commit failure")
+            raise resource_receipts_mod.MoneyRailResourceReceiptError(
+                "simulated index commit failure"
+            )
         return real_reconcile(conn, target)
 
     monkeypatch.setattr(resource_receipts_mod, "_reconcile_receipt_index", _fail_second_reconcile)
 
-    assert not append_resource_receipt(receipt, log_path=log_path)
-    assert [row.receipt_id for row in tail_resource_receipts(log_path=log_path)] == [
-        receipt.receipt_id
-    ]
+    assert not resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
+    assert [
+        row.receipt_id for row in resource_receipts_mod.tail_resource_receipts(log_path=log_path)
+    ] == [receipt.receipt_id]
 
     monkeypatch.setattr(resource_receipts_mod, "_reconcile_receipt_index", real_reconcile)
 
-    assert append_resource_receipt(receipt, log_path=log_path)
-    assert [row.receipt_id for row in tail_resource_receipts(log_path=log_path)] == [
-        receipt.receipt_id
-    ]
-    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) == receipt
+    assert resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
+    assert [
+        row.receipt_id for row in resource_receipts_mod.tail_resource_receipts(log_path=log_path)
+    ] == [receipt.receipt_id]
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(receipt), log_path=log_path
+        )
+        == receipt
+    )
 
 
 def test_index_tail_reconcile_fails_closed_on_torn_tail(tmp_path) -> None:
     log_path = tmp_path / "resource-receipts.jsonl"
     first = _receipt(external_id="delivery-torn-index-before", raw_payload_sha256="1" * 64)
     after = _receipt(external_id="delivery-torn-index-after", raw_payload_sha256="2" * 64)
-    assert append_resource_receipt(first, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(first, log_path=log_path)
     with log_path.open("ab") as fh:
         fh.write(b'{"receipt_schema":1')
 
-    assert not append_resource_receipt(after, log_path=log_path)
-    assert load_resource_receipt(receipt_reference(after), log_path=log_path) is None
+    assert not resource_receipts_mod.append_resource_receipt(after, log_path=log_path)
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(after), log_path=log_path
+        )
+        is None
+    )
 
 
 def test_index_tail_reconcile_fails_closed_on_conflicting_tail(tmp_path) -> None:
@@ -1002,28 +1084,33 @@ def test_index_tail_reconcile_fails_closed_on_conflicting_tail(tmp_path) -> None
     receipt = _receipt(external_id="delivery-conflicting-tail", raw_payload_sha256="1" * 64)
     conflicting = receipt.model_copy(update={"downstream_action": "other.action"})
     unrelated = _receipt(external_id="delivery-conflicting-tail-after", raw_payload_sha256="2" * 64)
-    assert append_resource_receipt(receipt, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
     resource_receipts_mod._append_line_durable(
         log_path,
         (conflicting.model_dump_json() + "\n").encode(),
     )
 
-    assert not append_resource_receipt(unrelated, log_path=log_path)
-    assert load_resource_receipt(receipt_reference(unrelated), log_path=log_path) is None
+    assert not resource_receipts_mod.append_resource_receipt(unrelated, log_path=log_path)
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(unrelated), log_path=log_path
+        )
+        is None
+    )
 
 
 def test_index_tail_reconcile_accepts_identical_tail_without_new_locator(tmp_path) -> None:
     log_path = tmp_path / "resource-receipts.jsonl"
     receipt = _receipt(external_id="delivery-identical-tail", raw_payload_sha256="1" * 64)
     unrelated = _receipt(external_id="delivery-identical-tail-after", raw_payload_sha256="2" * 64)
-    assert append_resource_receipt(receipt, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
     first_offset, _first_length, _first_hash = _indexed_locator(log_path, receipt.receipt_id)
     resource_receipts_mod._append_line_durable(
         log_path,
         (receipt.model_dump_json() + "\n").encode(),
     )
 
-    assert append_resource_receipt(unrelated, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(unrelated, log_path=log_path)
 
     assert _indexed_locator(log_path, receipt.receipt_id)[0] == first_offset
     assert int(_index_metadata(log_path)["line_count"]) == 3
@@ -1033,23 +1120,33 @@ def test_index_fails_closed_on_truncated_ledger(tmp_path) -> None:
     log_path = tmp_path / "resource-receipts.jsonl"
     first = _receipt(external_id="delivery-truncate-before", raw_payload_sha256="1" * 64)
     after = _receipt(external_id="delivery-truncate-after", raw_payload_sha256="2" * 64)
-    assert append_resource_receipt(first, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(first, log_path=log_path)
     with log_path.open("r+b") as fh:
         fh.truncate(log_path.stat().st_size - 1)
 
-    assert not append_resource_receipt(after, log_path=log_path)
-    assert load_resource_receipt(receipt_reference(first), log_path=log_path) is None
+    assert not resource_receipts_mod.append_resource_receipt(after, log_path=log_path)
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(first), log_path=log_path
+        )
+        is None
+    )
 
 
 def test_corrupt_index_is_replaced_by_full_stream_validation(tmp_path) -> None:
     log_path = tmp_path / "resource-receipts.jsonl"
     first = _receipt(external_id="delivery-corrupt-index-1", raw_payload_sha256="1" * 64)
     second = _receipt(external_id="delivery-corrupt-index-2", raw_payload_sha256="2" * 64)
-    assert append_resource_receipt(first, log_path=log_path)
-    assert append_resource_receipt(second, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(first, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(second, log_path=log_path)
     resource_receipts_mod._receipt_index_path(log_path).write_bytes(b"not sqlite")
 
-    assert load_resource_receipt(receipt_reference(first), log_path=log_path) == first
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(first), log_path=log_path
+        )
+        == first
+    )
 
     metadata = _index_metadata(log_path)
     assert int(metadata["verified_size"]) == log_path.stat().st_size
@@ -1060,8 +1157,8 @@ def test_lookup_fails_closed_on_stale_locator(tmp_path) -> None:
     log_path = tmp_path / "resource-receipts.jsonl"
     first = _receipt(external_id="delivery-stale-locator-1", raw_payload_sha256="1" * 64)
     second = _receipt(external_id="delivery-stale-locator-2", raw_payload_sha256="2" * 64)
-    assert append_resource_receipt(first, log_path=log_path)
-    assert append_resource_receipt(second, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(first, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(second, log_path=log_path)
     second_offset, second_length, second_hash = _indexed_locator(log_path, second.receipt_id)
     with sqlite3.connect(resource_receipts_mod._receipt_index_path(log_path)) as conn:
         conn.execute(
@@ -1070,7 +1167,12 @@ def test_lookup_fails_closed_on_stale_locator(tmp_path) -> None:
             (second_offset, second_length, second_hash, first.receipt_id),
         )
 
-    assert load_resource_receipt(receipt_reference(first), log_path=log_path) is None
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(first), log_path=log_path
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize(
@@ -1087,7 +1189,7 @@ def test_lookup_fails_closed_on_out_of_bounds_index_locator_without_invalid_prea
         external_id=f"delivery-out-of-bounds-{locator_case}",
         raw_payload_sha256="1" * 64,
     )
-    assert append_resource_receipt(receipt, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
     row_offset, row_length, _row_hash = _indexed_locator(log_path, receipt.receipt_id)
 
     if locator_case == "huge_row_length":
@@ -1114,7 +1216,12 @@ def test_lookup_fails_closed_on_out_of_bounds_index_locator_without_invalid_prea
         invalid_length=invalid_length,
     )
 
-    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) is None
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(receipt), log_path=log_path
+        )
+        is None
+    )
     assert invalid_pread_calls == []
 
 
@@ -1127,7 +1234,7 @@ def test_append_lookup_refuses_out_of_bounds_locator_without_duplicate_append(
         external_id="delivery-append-out-of-bounds-locator",
         raw_payload_sha256="1" * 64,
     )
-    assert append_resource_receipt(receipt, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
     before = log_path.read_bytes()
     row_offset, _row_length, _row_hash = _indexed_locator(log_path, receipt.receipt_id)
     invalid_length = _SQLITE_MAX_POSITIVE_INTEGER
@@ -1142,25 +1249,30 @@ def test_append_lookup_refuses_out_of_bounds_locator_without_duplicate_append(
         invalid_length=invalid_length,
     )
 
-    assert not append_resource_receipt(receipt, log_path=log_path)
+    assert not resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
     assert invalid_pread_calls == []
     assert log_path.read_bytes() == before
-    assert [row.receipt_id for row in tail_resource_receipts(log_path=log_path)] == [
-        receipt.receipt_id
-    ]
+    assert [
+        row.receipt_id for row in resource_receipts_mod.tail_resource_receipts(log_path=log_path)
+    ] == [receipt.receipt_id]
 
 
 def test_lookup_fails_closed_on_raw_hash_mismatch(tmp_path) -> None:
     log_path = tmp_path / "resource-receipts.jsonl"
     receipt = _receipt(external_id="delivery-raw-hash-mismatch", raw_payload_sha256="1" * 64)
-    assert append_resource_receipt(receipt, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
     with sqlite3.connect(resource_receipts_mod._receipt_index_path(log_path)) as conn:
         conn.execute(
             "UPDATE receipts SET raw_line_sha256 = ? WHERE receipt_id = ?",
             ("0" * 64, receipt.receipt_id),
         )
 
-    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) is None
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(receipt), log_path=log_path
+        )
+        is None
+    )
 
 
 def test_receipt_index_sidecar_is_private_under_permissive_umask(tmp_path) -> None:
@@ -1168,7 +1280,7 @@ def test_receipt_index_sidecar_is_private_under_permissive_umask(tmp_path) -> No
     receipt = _receipt(external_id="delivery-private-index", raw_payload_sha256="1" * 64)
     original_umask = os.umask(0o022)
     try:
-        assert append_resource_receipt(receipt, log_path=log_path)
+        assert resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
     finally:
         os.umask(original_umask)
     index_path = resource_receipts_mod._receipt_index_path(log_path)
@@ -1179,7 +1291,12 @@ def test_receipt_index_sidecar_is_private_under_permissive_umask(tmp_path) -> No
     index_path.write_bytes(b"not sqlite")
     os.chmod(index_path, 0o644)
 
-    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) == receipt
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(receipt), log_path=log_path
+        )
+        == receipt
+    )
     assert _mode(index_path) == 0o600
 
 
@@ -1195,11 +1312,21 @@ def test_corrupt_index_rebuild_neutralizes_stale_rollback_journal(tmp_path) -> N
     journal_path = index_path.with_name(f"{index_path.name}-journal")
     journal_path.write_bytes(b"stale rollback journal from old derived index")
 
-    assert load_resource_receipt(receipt_reference(second), log_path=log_path) == second
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(second), log_path=log_path
+        )
+        == second
+    )
 
     assert not journal_path.exists()
     assert _mode(index_path) == 0o600
-    assert load_resource_receipt(receipt_reference(first), log_path=log_path) == first
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(first), log_path=log_path
+        )
+        == first
+    )
     assert _index_metadata(log_path)["final_row_sha256"]
 
 
@@ -1254,7 +1381,7 @@ def test_receipts_table_root_page_corruption_rebuilds_once_on_lookup(
 ) -> None:
     log_path = tmp_path / "resource-receipts.jsonl"
     receipt = _receipt(external_id="delivery-root-page-corrupt", raw_payload_sha256="1" * 64)
-    assert append_resource_receipt(receipt, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
     _zero_receipts_table_root_page(log_path)
     index_path = resource_receipts_mod._receipt_index_path(log_path)
     with sqlite3.connect(index_path) as conn:
@@ -1285,11 +1412,21 @@ def test_receipts_table_root_page_corruption_rebuilds_once_on_lookup(
         resource_receipts_mod, "_replace_receipt_index_from_ledger", _recording_replace
     )
 
-    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) == receipt
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(receipt), log_path=log_path
+        )
+        == receipt
+    )
     assert replacement_targets == [log_path]
     assert starts == [0]
 
-    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) == receipt
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(receipt), log_path=log_path
+        )
+        == receipt
+    )
     assert replacement_targets == [log_path]
     assert starts == [0]
 
@@ -1304,7 +1441,7 @@ def test_persistent_second_attempt_index_failure_fails_closed_with_one_rebuild(
     receipt = _receipt(
         external_id=f"delivery-persistent-{failure_point}", raw_payload_sha256="1" * 64
     )
-    assert append_resource_receipt(receipt, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
     _zero_receipts_table_root_page(log_path)
     expected_index_path = resource_receipts_mod._receipt_index_path(log_path)
     replacement_targets: list[Path] = []
@@ -1337,7 +1474,12 @@ def test_persistent_second_attempt_index_failure_fails_closed_with_one_rebuild(
     monkeypatch.setattr(resource_receipts_mod, "_connect_receipt_index", _tracking_connect)
     monkeypatch.setattr(resource_receipts_mod, "_reconcile_receipt_index", _maybe_failing_reconcile)
 
-    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) is None
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(receipt), log_path=log_path
+        )
+        is None
+    )
 
     assert replacement_targets == [log_path]
     assert tracked_connections
@@ -1350,7 +1492,7 @@ def test_sqlite_interface_error_fails_closed_without_rebuild_and_closes(
 ) -> None:
     log_path = tmp_path / "resource-receipts.jsonl"
     receipt = _receipt(external_id="delivery-interface-error", raw_payload_sha256="1" * 64)
-    assert append_resource_receipt(receipt, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
     tracked_connections: list[_TrackingConnection] = []
     replacement_targets: list[Path] = []
     real_connect = resource_receipts_mod._connect_receipt_index
@@ -1374,7 +1516,12 @@ def test_sqlite_interface_error_fails_closed_without_rebuild_and_closes(
         resource_receipts_mod, "_replace_receipt_index_from_ledger", _recording_replace
     )
 
-    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) is None
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(receipt), log_path=log_path
+        )
+        is None
+    )
 
     assert replacement_targets == []
     assert tracked_connections
@@ -1394,7 +1541,7 @@ def test_append_post_jsonl_interface_error_is_retryable_without_rebuild(
         external_id="delivery-append-interface-after",
         raw_payload_sha256="2" * 64,
     )
-    assert append_resource_receipt(existing, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(existing, log_path=log_path)
     tracked_connections: list[_TrackingConnection] = []
     replacement_targets: list[Path] = []
     real_connect = resource_receipts_mod._connect_receipt_index
@@ -1424,13 +1571,15 @@ def test_append_post_jsonl_interface_error_is_retryable_without_rebuild(
         resource_receipts_mod, "_replace_receipt_index_from_ledger", _recording_replace
     )
 
-    assert not append_resource_receipt(appended, log_path=log_path)
+    assert not resource_receipts_mod.append_resource_receipt(appended, log_path=log_path)
 
     assert replacement_targets == []
     assert tracked_connections
     assert all(conn.closed for conn in tracked_connections)
     assert int(_index_metadata(log_path)["line_count"]) == 1
-    assert [row.receipt_id for row in tail_resource_receipts(log_path=log_path)] == [
+    assert [
+        row.receipt_id for row in resource_receipts_mod.tail_resource_receipts(log_path=log_path)
+    ] == [
         existing.receipt_id,
         appended.receipt_id,
     ]
@@ -1438,9 +1587,14 @@ def test_append_post_jsonl_interface_error_is_retryable_without_rebuild(
     monkeypatch.setattr(resource_receipts_mod, "_reconcile_receipt_index", real_reconcile)
     monkeypatch.setattr(resource_receipts_mod, "_connect_receipt_index", real_connect)
 
-    assert append_resource_receipt(appended, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(appended, log_path=log_path)
     assert int(_index_metadata(log_path)["line_count"]) == 2
-    assert load_resource_receipt(receipt_reference(appended), log_path=log_path) == appended
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(appended), log_path=log_path
+        )
+        == appended
+    )
 
 
 def test_replacement_sqlite_interface_error_fails_closed_at_public_boundary(
@@ -1463,7 +1617,12 @@ def test_replacement_sqlite_interface_error_fails_closed_at_public_boundary(
         _interface_error_replace,
     )
 
-    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) is None
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(receipt), log_path=log_path
+        )
+        is None
+    )
 
 
 def test_persistent_sqliteevil_trigger_rebuilds_before_append_result_can_succeed(
@@ -1472,7 +1631,7 @@ def test_persistent_sqliteevil_trigger_rebuilds_before_append_result_can_succeed
     log_path = tmp_path / "resource-receipts.jsonl"
     existing = _receipt(external_id="delivery-trigger-before", raw_payload_sha256="1" * 64)
     appended = _receipt(external_id="delivery-trigger-after", raw_payload_sha256="2" * 64)
-    assert append_resource_receipt(existing, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(existing, log_path=log_path)
     with sqlite3.connect(resource_receipts_mod._receipt_index_path(log_path)) as conn:
         conn.executescript(
             """
@@ -1485,10 +1644,17 @@ def test_persistent_sqliteevil_trigger_rebuilds_before_append_result_can_succeed
         )
     assert any(obj[0] == "trigger" for obj in _sqlite_master_objects(log_path))
 
-    assert append_resource_receipt(appended, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(appended, log_path=log_path)
 
-    assert load_resource_receipt(receipt_reference(appended), log_path=log_path) == appended
-    assert [row.receipt_id for row in tail_resource_receipts(log_path=log_path)] == [
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(appended), log_path=log_path
+        )
+        == appended
+    )
+    assert [
+        row.receipt_id for row in resource_receipts_mod.tail_resource_receipts(log_path=log_path)
+    ] == [
         existing.receipt_id,
         appended.receipt_id,
     ]
@@ -1498,12 +1664,17 @@ def test_persistent_sqliteevil_trigger_rebuilds_before_append_result_can_succeed
 def test_unexpected_index_view_rebuilds_from_authoritative_jsonl(tmp_path) -> None:
     log_path = tmp_path / "resource-receipts.jsonl"
     receipt = _receipt(external_id="delivery-extra-view", raw_payload_sha256="1" * 64)
-    assert append_resource_receipt(receipt, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
     with sqlite3.connect(resource_receipts_mod._receipt_index_path(log_path)) as conn:
         conn.execute("CREATE VIEW receipt_ids AS SELECT receipt_id FROM receipts")
     assert any(obj[0] == "view" for obj in _sqlite_master_objects(log_path))
 
-    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) == receipt
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(receipt), log_path=log_path
+        )
+        == receipt
+    )
 
     assert _sqlite_master_objects(log_path) == resource_receipts_mod._EXPECTED_SQLITE_MASTER_OBJECTS
 
@@ -1514,7 +1685,7 @@ def test_append_lookup_recovers_receipts_table_root_page_corruption(
 ) -> None:
     log_path = tmp_path / "resource-receipts.jsonl"
     receipt = _receipt(external_id="delivery-append-root-corrupt", raw_payload_sha256="1" * 64)
-    assert append_resource_receipt(receipt, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
     _zero_receipts_table_root_page(log_path)
     starts: list[int] = []
     real_iter = resource_receipts_mod._iter_ledger_receipt_rows
@@ -1525,12 +1696,12 @@ def test_append_lookup_recovers_receipts_table_root_page_corruption(
 
     monkeypatch.setattr(resource_receipts_mod, "_iter_ledger_receipt_rows", _recording_iter)
 
-    assert append_resource_receipt(receipt, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
 
     assert starts == [0]
-    assert [row.receipt_id for row in tail_resource_receipts(log_path=log_path)] == [
-        receipt.receipt_id
-    ]
+    assert [
+        row.receipt_id for row in resource_receipts_mod.tail_resource_receipts(log_path=log_path)
+    ] == [receipt.receipt_id]
 
 
 def test_append_nested_index_recovery_budget_allows_only_one_replacement(
@@ -1540,7 +1711,7 @@ def test_append_nested_index_recovery_budget_allows_only_one_replacement(
     log_path = tmp_path / "resource-receipts.jsonl"
     existing = _receipt(external_id="delivery-append-budget-existing", raw_payload_sha256="1" * 64)
     appended = _receipt(external_id="delivery-append-budget-new", raw_payload_sha256="2" * 64)
-    assert append_resource_receipt(existing, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(existing, log_path=log_path)
     _zero_receipts_table_root_page(log_path)
     replacement_targets: list[Path] = []
     reconcile_calls = 0
@@ -1565,10 +1736,12 @@ def test_append_nested_index_recovery_budget_allows_only_one_replacement(
         resource_receipts_mod, "_reconcile_receipt_index", _fail_post_append_reconcile
     )
 
-    assert not append_resource_receipt(appended, log_path=log_path)
+    assert not resource_receipts_mod.append_resource_receipt(appended, log_path=log_path)
 
     assert replacement_targets == [log_path]
-    assert [row.receipt_id for row in tail_resource_receipts(log_path=log_path)] == [
+    assert [
+        row.receipt_id for row in resource_receipts_mod.tail_resource_receipts(log_path=log_path)
+    ] == [
         existing.receipt_id,
         appended.receipt_id,
     ]
@@ -1598,7 +1771,12 @@ def test_same_column_weak_receipts_and_metadata_schema_rebuilds(tmp_path) -> Non
             """
         )
 
-    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) == receipt
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(receipt), log_path=log_path
+        )
+        == receipt
+    )
 
     with sqlite3.connect(index_path) as conn:
         assert tuple(conn.execute("PRAGMA table_info(receipts)")) == (
@@ -1612,7 +1790,7 @@ def test_same_column_weak_receipts_and_metadata_schema_rebuilds(tmp_path) -> Non
 def test_malformed_index_row_fails_closed_without_type_error(tmp_path) -> None:
     log_path = tmp_path / "resource-receipts.jsonl"
     receipt = _receipt(external_id="delivery-malformed-index-row", raw_payload_sha256="1" * 64)
-    assert append_resource_receipt(receipt, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(receipt, log_path=log_path)
     with sqlite3.connect(resource_receipts_mod._receipt_index_path(log_path)) as conn:
         conn.execute("PRAGMA ignore_check_constraints=ON")
         conn.execute(
@@ -1620,16 +1798,26 @@ def test_malformed_index_row_fails_closed_without_type_error(tmp_path) -> None:
             ("not-an-integer", receipt.receipt_id),
         )
 
-    assert load_resource_receipt(receipt_reference(receipt), log_path=log_path) is None
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(receipt), log_path=log_path
+        )
+        is None
+    )
 
 
 def test_ledger_inode_identity_change_fails_closed(tmp_path) -> None:
     log_path = tmp_path / "resource-receipts.jsonl"
     first = _receipt(external_id="delivery-inode-before", raw_payload_sha256="1" * 64)
     replacement = _receipt(external_id="delivery-inode-after", raw_payload_sha256="2" * 64)
-    assert append_resource_receipt(first, log_path=log_path)
+    assert resource_receipts_mod.append_resource_receipt(first, log_path=log_path)
     replacement_path = tmp_path / "replacement.jsonl"
     replacement_path.write_bytes((replacement.model_dump_json() + "\n").encode())
     os.replace(replacement_path, log_path)
 
-    assert load_resource_receipt(receipt_reference(first), log_path=log_path) is None
+    assert (
+        resource_receipts_mod.load_resource_receipt(
+            resource_receipts_mod.receipt_reference(first), log_path=log_path
+        )
+        is None
+    )

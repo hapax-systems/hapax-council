@@ -43,7 +43,7 @@ from agents.operator_awareness.state import (
 )
 from agents.payment_processors.event_log import (
     event_window_sha256,
-    tail_events,
+    read_payment_events,
 )
 from agents.payment_processors.monetization_aggregator import build_monetization_block_from_events
 from agents.payment_processors.resource_receipts import (
@@ -140,7 +140,22 @@ class AwarenessRunner:
         # this as a Path and always supplies one, so a non-Path here is a
         # misconfiguration that must surface, not be masked by reading live data.
         monetization_log_path = self._aggregator.monetization_log_path
-        events = tail_events(log_path=monetization_log_path)
+        # A HELD (append in-flight) or UNREADABLE payment-event log is UNKNOWN, not
+        # zero: preserve prior state.json and refuse to receipt+write so a transient
+        # HOLD/unreadable ledger never erases last-known monetization truth. Only a
+        # verified-empty/missing log ("ok" with no events) legitimately yields zero.
+        read = read_payment_events(log_path=monetization_log_path)
+        if read.status != "ok":
+            log.warning(
+                "awareness runner preserving prior state: payment-event log %s is %s "
+                "(not a verified-empty zero); refusing receipt+write so a HOLD/"
+                "unreadable ledger does not erase last-known monetization truth",
+                monetization_log_path,
+                read.status,
+            )
+            self.writes_total.labels(result="payment_log_unavailable").inc()
+            return "payment_log_unavailable"
+        events = list(read.events)
         monetization_block = build_monetization_block_from_events(events)
         try:
             state = self._aggregator.collect(monetization_block=monetization_block)

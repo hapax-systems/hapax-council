@@ -11,10 +11,12 @@ Two roles in the wider system:
    awareness state aggregator's ``collect()`` cycle.
 
 2. **Long-running daemon.** ``MonetizationAggregator`` runs the three
-   receiver loops (Lightning, Nostr Zap, Liberapay) concurrently and
-   keeps the awareness state's monetization block fresh by writing
-   it to disk between awareness ticks. The systemd unit
-   ``hapax-money-rails.service`` runs this daemon.
+   receiver loops (Lightning, Nostr Zap, Liberapay) concurrently so they
+   append confirmed events to the canonical payment-event log. It does
+   NOT write the top-level ``AwarenessState``: ``AwarenessRunner`` is the
+   single canonical ``DEFAULT_STATE_PATH`` writer and reads this log via
+   the monetization source each tick. The systemd unit
+   ``hapax-money-rails.service`` runs this daemon for its receivers/health.
 
 Read-only contract: this module computes counts and emits awareness
 data only. There is no method that initiates payment.
@@ -29,30 +31,18 @@ from collections import defaultdict
 from pathlib import Path
 
 from agents.operator_awareness.state import (
-    DEFAULT_STATE_PATH,
-    AwarenessState,
     MonetizationBlock,
     PaymentEvent,
-    state_write_failure_guidance,
-    write_state_atomic,
 )
 from agents.payment_processors.event_log import (
     DEFAULT_PAYMENT_LOG_PATH,
-    event_window_sha256,
     tail_events,
 )
 from agents.payment_processors.liberapay_receiver import LiberapayReceiver
 from agents.payment_processors.lightning_receiver import LightningReceiver
 from agents.payment_processors.nostr_zap_listener import NostrZapListener
-from agents.payment_processors.resource_receipts import (
-    commit_prepared_resource_receipt,
-    prepare_awareness_write_resource_receipt,
-    resource_receipt_recovery_guidance,
-)
 
 log = logging.getLogger(__name__)
-
-DEFAULT_AGGREGATE_TICK_S: float = 30.0
 
 
 def build_monetization_block(
@@ -108,19 +98,19 @@ def build_monetization_block_from_events(
 
 
 class MonetizationAggregator:
-    """Daemon that runs the 3 receivers + flushes the awareness block.
+    """Daemon that runs the 3 receive rails (events + health only).
+
+    It appends confirmed events to the canonical payment-event log; it does NOT
+    write the top-level ``AwarenessState`` (``AwarenessRunner`` is the sole
+    canonical writer — see the module docstring).
 
     Constructor parameters
     ----------------------
     lightning, nostr, liberapay:
         Pre-built receiver instances (tests inject mocks). Production
         wires defaults from ``pass`` credentials.
-    state_path:
-        Awareness state JSON output path.
     log_path:
         Canonical payment-event log.
-    aggregate_tick_s:
-        Cadence for re-reading the log and writing the awareness block.
     """
 
     def __init__(
@@ -129,16 +119,12 @@ class MonetizationAggregator:
         lightning: LightningReceiver | None = None,
         nostr: NostrZapListener | None = None,
         liberapay: LiberapayReceiver | None = None,
-        state_path: Path = DEFAULT_STATE_PATH,
         log_path: Path = DEFAULT_PAYMENT_LOG_PATH,
-        aggregate_tick_s: float = DEFAULT_AGGREGATE_TICK_S,
     ) -> None:
         self._lightning = lightning if lightning is not None else LightningReceiver()
         self._nostr = nostr if nostr is not None else NostrZapListener()
         self._liberapay = liberapay if liberapay is not None else LiberapayReceiver()
-        self._state_path = state_path
         self._log_path = log_path
-        self._aggregate_tick_s = max(5.0, aggregate_tick_s)
         self._stop_evt = threading.Event()
 
     def stop(self) -> None:
@@ -162,59 +148,20 @@ class MonetizationAggregator:
     def _run_liberapay(self) -> None:
         self._liberapay.run_forever()
 
-    def flush_awareness_block(self) -> bool:
-        """Write a fresh AwarenessState carrying the latest monetization block.
-
-        Returns True iff the write succeeded. Called periodically by
-        ``run_aggregate_loop``; can also be invoked from tests.
-        """
-        events = tail_events(log_path=self._log_path)
-        _receipt_ref, receipt = prepare_awareness_write_resource_receipt(
-            state_path=self._state_path,
-            source_log_path=self._log_path,
-            receipt_count=len(events),
-            source_window_sha256=event_window_sha256(events),
-        )
-        if commit_prepared_resource_receipt(receipt) is None:
-            log.warning(
-                "monetization awareness write blocked: resource receipt missing; %s",
-                resource_receipt_recovery_guidance(),
-            )
-            return False
-        block = build_monetization_block_from_events(events)
-        from datetime import UTC, datetime
-
-        state = AwarenessState(
-            timestamp=datetime.now(UTC),
-            monetization=block,
-        )
-        ok = write_state_atomic(state, self._state_path)
-        if not ok:
-            log.warning(
-                "monetization aggregator %s",
-                state_write_failure_guidance(self._state_path),
-            )
-        return ok
-
-    def run_aggregate_loop(self) -> None:
-        """30s tick: rebuild the block + flush to /dev/shm."""
-        while not self._stop_evt.is_set():
-            try:
-                self.flush_awareness_block()
-            except Exception:  # noqa: BLE001
-                log.exception("monetization aggregate flush failed; continuing")
-            self._stop_evt.wait(self._aggregate_tick_s)
-
     def run_forever(self) -> None:
-        """Spawn rails in dedicated threads, then run nostr + aggregate.
+        """Spawn the receive rails; expose events (and health) only.
 
-        This is the systemd-driven entry point. It blocks until SIGTERM
-        / SIGINT.
+        This is the systemd-driven entry point (``hapax-money-rails.service``). It
+        runs the three receivers so they append confirmed events to the canonical
+        payment-event log; it does NOT write the top-level ``AwarenessState``.
+        ``AwarenessRunner`` (``hapax-operator-awareness.service``) is the single
+        canonical writer of ``DEFAULT_STATE_PATH``; it reads this log through the
+        monetization source each tick, so this daemon replacing top-level state would
+        race and default unrelated blocks. Blocks until SIGTERM / SIGINT.
         """
         threads = [
             threading.Thread(target=self._run_lightning, name="lightning", daemon=True),
             threading.Thread(target=self._run_liberapay, name="liberapay", daemon=True),
-            threading.Thread(target=self.run_aggregate_loop, name="aggregate", daemon=True),
         ]
         for t in threads:
             t.start()
@@ -229,7 +176,6 @@ class MonetizationAggregator:
 
 
 __all__ = [
-    "DEFAULT_AGGREGATE_TICK_S",
     "MonetizationAggregator",
     "build_monetization_block",
     "build_monetization_block_from_events",

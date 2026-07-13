@@ -11,8 +11,9 @@ from prometheus_client import CollectorRegistry
 
 from agents.operator_awareness import runner as runner_mod
 from agents.operator_awareness.aggregator import Aggregator
-from agents.operator_awareness.state import AwarenessState
+from agents.operator_awareness.state import AwarenessState, PaymentEvent
 from agents.payment_processors import resource_receipts
+from agents.payment_processors.event_log import append_event
 
 
 def _now() -> datetime:
@@ -95,6 +96,82 @@ class TestRunOnce:
         assert str(state_path.with_suffix(".json.tmp.*")) in caplog.text
         assert "retry" in caplog.text
         assert "immutable admission evidence" in caplog.text
+
+    def test_resource_receipt_missing_yields_error_label(self, tmp_path, monkeypatch, caplog):
+
+        state = AwarenessState(timestamp=_now())
+        agg = mock.Mock(spec=Aggregator)
+        agg.collect.return_value = state
+        agg.monetization_log_path = tmp_path / "events.jsonl"
+        receipt_log = tmp_path / "resource-receipts.jsonl"
+        monkeypatch.setenv(
+            resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+            str(receipt_log),
+        )
+        state_path = tmp_path / "state.json"
+        runner = runner_mod.AwarenessRunner(
+            aggregator=agg, state_path=state_path, registry=CollectorRegistry()
+        )
+        # Force the committed-receipt precondition to fail so the block path runs.
+        monkeypatch.setattr(
+            runner_mod, "commit_prepared_resource_receipt", lambda _receipt, **_kwargs: None
+        )
+        with caplog.at_level(logging.WARNING, logger=runner_mod.__name__):
+            result = runner.run_once()
+        assert result == "resource_receipt_error"
+        assert runner.writes_total.labels(result="resource_receipt_error")._value.get() == 1.0
+        assert not state_path.exists()
+        # The receipt-missing block warning emits the canonical resource-receipt
+        # recovery guidance verbatim: exact target ledger path, env var, and the
+        # action/claim ceiling (preserve valid committed receipts). It is distinct
+        # from the state-write-failure guidance asserted above.
+        assert "resource receipt missing" in caplog.text
+        guidance = resource_receipts.resource_receipt_recovery_guidance(log_path=receipt_log)
+        assert guidance in caplog.text
+        assert str(receipt_log) in caplog.text
+        assert "preserve valid committed receipts" in caplog.text
+        assert "state write failed" not in caplog.text
+
+    def test_held_payment_log_preserves_prior_state(self, tmp_path, monkeypatch, caplog):
+        # A HELD (append in-flight) payment-event log is UNKNOWN, not zero: the
+        # canonical writer must preserve the prior state.json and refuse to
+        # receipt+write, so a transient HOLD never erases last-known money truth.
+        state = AwarenessState(timestamp=_now())
+        events_log = tmp_path / "events.jsonl"
+        append_event(
+            PaymentEvent(timestamp=_now(), rail="lightning", amount_sats=42, external_id="L1"),
+            log_path=events_log,
+        )
+        # Inject a valid pre-append WAL/HOLD marker (start_offset at the confirmed
+        # newline boundary) so the read is classified HELD, not empty.
+        size = events_log.stat().st_size
+        header = json.dumps(
+            {
+                "marker_version": 1,
+                "target": str(events_log),
+                "start_offset": size,
+                "line_sha256": "a" * 64,
+            }
+        )
+        events_log.with_name(events_log.name + ".hold").write_bytes((header + "\n").encode("utf-8"))
+
+        agg = mock.Mock(spec=Aggregator)
+        agg.collect.return_value = state
+        agg.monetization_log_path = events_log
+        receipt_log = tmp_path / "resource-receipts.jsonl"
+        monkeypatch.setenv(resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV, str(receipt_log))
+        out = tmp_path / "state.json"
+        runner = runner_mod.AwarenessRunner(
+            aggregator=agg, state_path=out, registry=CollectorRegistry()
+        )
+        with caplog.at_level(logging.WARNING, logger=runner_mod.__name__):
+            result = runner.run_once()
+        assert result == "payment_log_unavailable"
+        assert not out.exists()  # prior state preserved (nothing written)
+        # no awareness-write receipt committed on HOLD
+        assert resource_receipts.tail_resource_receipts(log_path=receipt_log) == []
+        assert runner.writes_total.labels(result="payment_log_unavailable")._value.get() == 1.0
+        assert "preserving prior state" in caplog.text
 
 
 class TestTickFloor:

@@ -50,15 +50,20 @@ def pytest_configure(config: pytest.Config) -> None:
 def pytest_unconfigure(config: pytest.Config) -> None:
     """Remove the quarantine, then restore inherited process state.
 
-    Ordered fail-closed. ``trylast=True`` runs this after every other
-    ``pytest_unconfigure`` hook, so no later teardown can emit at the live ledger
-    behind our back. The session quarantine directory is removed *strictly*
-    (errors propagate, never swallowed) while
-    ``HAPAX_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH`` still points inside it, so any
-    stray teardown emission lands in quarantine rather than the production
-    ledger. Only after the quarantine has been removed successfully is the
-    inherited environment value restored; if removal fails the error propagates
-    (fail-visible) and the safe env stays in place (fail-closed).
+    Best-effort, ordered fail-closed within its phase. ``trylast=True`` orders
+    this after other *plain* ``pytest_unconfigure`` implementations, so a stray
+    emission from one of those lands in the still-pointed-at quarantine rather
+    than the production ledger. It is NOT a total emission barrier: it does not
+    run after ``hookwrapper``/``wrapper`` post-yield resumptions of
+    ``pytest_unconfigure``, nor after ``atexit`` handlers, background threads, or
+    unjoined child processes — any of those can still emit at the live ledger
+    after the quarantine is torn down and the inherited env is restored. Within
+    its own phase it stays fail-closed: the session quarantine directory is
+    removed *strictly* (errors propagate, never swallowed) while
+    ``HAPAX_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH`` still points inside it; only
+    after successful removal is the inherited environment value restored; if
+    removal fails the error propagates (fail-visible) and the safe env stays in
+    place (fail-closed).
     """
 
     quarantine_dir = getattr(config, _RESOURCE_RECEIPT_QUARANTINE_DIR_ATTR, None)
@@ -83,26 +88,49 @@ def _isolate_resource_receipt_ledger(tmp_path, monkeypatch):
     established by ``pytest_configure`` (never the live default), so teardown
     returns to quarantine rather than the production ledger.
 
-    Teardown adds a leaked-env detector. This fixture yields, and because it
-    depends on ``monkeypatch`` its post-yield finalizer runs *before*
-    ``monkeypatch`` restores the environment. It therefore observes the value the
-    test left in place and asserts the ledger env is still present, non-empty, and
-    resolved away from the canonical live ``/dev/shm`` ledger — catching a test
-    that *persistently* unset or redirected the env toward the production ledger
-    (e.g. an unrestored ``monkeypatch.delenv``) before it can steer a later
-    collection/teardown emission at the live ledger. Ceiling: it cannot prevent a
-    deliberately temporary escape a test restores before returning; the resolver
-    reads the env at call time, so a restored value hides the transient window.
+    Teardown adds a leaked-env detector (a post-hoc state check, not a
+    write-admission guard). Because this fixture depends on ``monkeypatch`` its
+    post-yield finalizer runs *before* ``monkeypatch`` restores the environment,
+    so it observes the value the test left in place and asserts, via
+    ``resource_receipt_env_leak_reason``, that the ledger env still resolves
+    *within this test's own* ``tmp_path`` root. The root is resolved and captured
+    at setup (``allowed_root``) and passed verbatim, immutable: resolving it at
+    teardown instead would let a test swap the tmp root for a symlink so the env
+    value and a late-resolved root escape together and falsely pass. Containment
+    (not exact equality) is used because tests legitimately bind different
+    within-root ledger filenames. This catches a test that *persistently* unset
+    the env or redirected it toward the canonical live ledger, another
+    ``/dev/shm`` path, or an inherited production path (e.g. an unrestored
+    ``monkeypatch.delenv``/``setenv``).
+
+    Exact ceiling — this detects end-of-test *state*; it neither prevents nor
+    detects:
+
+    * a transient escape a test unsets/redirects and restores *within its body*
+      (the resolver reads the env at call time, so a restored value hides the
+      window);
+    * an emission from a finalizer that unwinds *before* this one — an explicit
+      fixture set up after this autouse fixture tears down first (LIFO) and may
+      emit while holding an unsafe env, and ``monkeypatch``'s own env restore
+      (plus any fixture set up before this one) finalizes *after* this detector
+      has already run;
+    * any child-process or collection-time emission — only the parent-process
+      env value is inspected.
     """
 
     monkeypatch.setenv(
         _RESOURCE_RECEIPT_LOG_ENV,
         str(tmp_path / "resource-receipts.jsonl"),
     )
+    # Capture the immutable resolved baseline at SETUP, before the test body can
+    # mutate the tree (e.g. swap the tmp root for a symlink).
+    allowed_root = tmp_path.resolve(strict=False)
     yield
     from tests.support.ledger_env_guard import resource_receipt_env_leak_reason
 
-    reason = resource_receipt_env_leak_reason(os.environ.get(_RESOURCE_RECEIPT_LOG_ENV))
+    reason = resource_receipt_env_leak_reason(
+        os.environ.get(_RESOURCE_RECEIPT_LOG_ENV), allowed_root=allowed_root
+    )
     assert reason is None, reason
 
 
