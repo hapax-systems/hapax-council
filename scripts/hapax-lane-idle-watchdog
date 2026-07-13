@@ -1,623 +1,174 @@
-#!/usr/bin/env bash
-# hapax-lane-idle-watchdog — pane-content idle detection + governed reminders.
+#!/usr/bin/bash
+# hapax-lane-idle-watchdog - read-only lane liveness observation.
 #
-# Problem: lanes finish tasks and sit at their prompt producing nothing.
-# Existing monitoring (systemd, tmux has-session, process alive) all say
-# "fine" because the process IS running — it's just not working.
-#
-# Solution: capture each lane's pane, detect platform-specific idle state,
-# track how long each lane has been idle, and remind already-claimed lanes.
-# New work assignment is intentionally outside this watchdog; it must flow
-# through hapax-methodology-dispatch --launch.
-#
-# Platforms:
-#   Claude:  idle = "❯" prompt visible + no active tool indicators
-#   Codex:   idle = "gpt-5.5" model line at bottom, NO "Working (" indicator
-#
-# Runs as systemd oneshot (hapax-lane-idle-watchdog.timer, every 2 min).
-# Nudges ALL idle lanes per tick. Cooldown: 120s per lane between kicks.
+# Pane and session observations are support evidence only. This surface cannot
+# select claims, launch or revive lanes, clear context, send prompts, notify, or
+# mutate cooldown state. Any observation that suggests an effect is printed as
+# a visible HOLD until the generic authority, admission, and execution-lease
+# composition can dispatch an exact machine adapter.
 set -euo pipefail
 
-# bb-dispatch-scheduler: source the idle threshold from the SAME measured tau the
-# reaper + coordinator read, so the fleet stops hardcoding divergent stall constants
-# (this 600, the reaper's 1800, the coordinator's 900). The env override always wins;
-# a missing cache falls back to the prior 600 (10 min).
-_idle_threshold_default() {
-    local cache="${HAPAX_DISPATCH_SERVICE_TIME_CACHE:-$HOME/.cache/hapax/dispatch-service-time.json}"
-    [[ -f "$cache" ]] || { echo 600; return; }
-    local repo
-    repo="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
-    [[ -d "$repo/shared" ]] || repo="${HOME}/projects/hapax-council"
-    (cd "$repo" 2>/dev/null && python3 -m shared.dispatch_service_time \
-        --tau --lineage "" --cache "$cache" 2>/dev/null) || echo 600
+TMUX_OBSERVER=(/usr/bin/env -i HOME=/nonexistent LANG=C.UTF-8 PATH=/usr/bin:/bin /usr/bin/tmux -f /dev/null)
+readonly -a TMUX_OBSERVER
+
+SKIP_LANES="${HAPAX_IDLE_SKIP_LANES-alpha}"
+REQUIRED_CLAUDE_LANES="${HAPAX_REQUIRED_CLAUDE_LANES-beta gamma delta epsilon}"
+REQUIRED_CODEX_LANES="${HAPAX_REQUIRED_CODEX_LANES-cx-cpu-bridge cx-effect-drift-current cx-preset-storm cx-visual-bandwidth}"
+
+safe_field() {
+    local value="$1"
+    value="${value//[^A-Za-z0-9._:-]/_}"
+    printf '%s' "${value:-unknown}"
 }
 
-# ─── Configuration ───────────────────────────────────────────────────────────
-IDLE_THRESHOLD_S="${HAPAX_IDLE_THRESHOLD_S:-$(_idle_threshold_default)}"  # measured tau; 600 fallback
-COOLDOWN_S="${HAPAX_IDLE_COOLDOWN_S:-120}"              # 2 min between kicks
-STATE_DIR="${HAPAX_IDLE_STATE_DIR:-/tmp/hapax-lane-idle-state}"
-TASK_ROOT="${HOME}/Documents/Personal/20-projects/hapax-cc-tasks/active"
-REQUEST_ROOT="${HOME}/Documents/Personal/20-projects/hapax-requests/active"
-NTFY_TOPIC="${HAPAX_NTFY_TOPIC:-hapax}"
-NTFY_URL="${HAPAX_NTFY_URL:-http://localhost:8092}"
-CLAUDE_SEND="${HOME}/projects/hapax-council/scripts/hapax-claude-send"
-CODEX_SEND="${HOME}/projects/hapax-council/scripts/hapax-codex-send"
-
-# Skip alpha (integrator, always has operator) and RTE
-SKIP_LANES="${HAPAX_IDLE_SKIP_LANES:-alpha}"
-
-# Lanes that must always be running (operator directive: 4 of each at all times)
-REQUIRED_CLAUDE_LANES="${HAPAX_REQUIRED_CLAUDE_LANES:-beta gamma delta epsilon}"
-REQUIRED_CODEX_LANES="${HAPAX_REQUIRED_CODEX_LANES:-cx-cpu-bridge cx-effect-drift-current cx-preset-storm cx-visual-bandwidth}"
-CLAUDE_LAUNCHER="${HOME}/.local/bin/hapax-claude"
-CODEX_LAUNCHER="${HOME}/projects/hapax-council/scripts/hapax-codex"
-
-log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) lane-idle: $*"; }
-
-local_dev_maintenance_mode() {
-    local mode="${HAPAX_LOCAL_DEV_MAINTENANCE_MODE:-}"
-    if [ -z "$mode" ]; then
-        mode="${HAPAX_DEFAULT_DISPATCH_HOST:-${HAPAX_DISPATCH_HOST:-local}}"
-    fi
-    case "$mode" in
-        appendix | hapax-appendix | appendix-only | appendix_only | remote | thin-client | thin_client)
-            echo "appendix-only"
-            ;;
-        *)
-            echo "local"
-            ;;
-    esac
+observe() {
+    local status="$1" target="$2" detail="$3"
+    printf 'OBSERVE support_only=true status=%s target=%s detail=%s\n' \
+        "$(safe_field "$status")" "$(safe_field "$target")" "$(safe_field "$detail")"
 }
 
-LOCAL_DEV_MAINTENANCE_MODE="$(local_dev_maintenance_mode)"
-if [ "$LOCAL_DEV_MAINTENANCE_MODE" = "appendix-only" ]; then
-    log "appendix-only local-dev maintenance: local required-lane launch/revive and unclaimed idle nudges disabled"
-fi
-
-mkdir -p "$STATE_DIR"
-now=$(date +%s)
-
-# ─── L3/L4 SDLC pressure admission ────────────────────────────────────────────
-# The respawn FLOOR must yield under CPU pressure. When admission is 'closed'
-# this watchdog defers launching/reviving/nudging lanes — skipping a respawn
-# only DELAYS it (the cc-task stays claimed/offered; the next 2-min tick
-# relaunches once pressure clears), so no work is abandoned. Fail-open: any
-# error returns 'open' so the floor never wedges on the gate.
-sdlc_admission_state() {
-    [[ "${HAPAX_SDLC_PRESSURE_GATE_OFF:-}" == "1" ]] && { echo open; return; }
-    local repo state
-    repo="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
-    [[ -d "$repo/shared" ]] || repo="${HOME}/projects/hapax-council"
-    state="$(cd "$repo" 2>/dev/null && python3 -m shared.sdlc_pressure_gate --state 2>/dev/null || true)"
-    case "$state" in
-        open | paced | closed) echo "$state" ;;
-        *) echo open ;;
-    esac
-}
-SDLC_ADMISSION="$(sdlc_admission_state)"
-if [ "$SDLC_ADMISSION" = "closed" ]; then
-    log "sdlc-pressure CLOSED: respawn floor yields this tick (lanes stay as-is; cc-tasks unaffected)"
-fi
-
-# ─── RecoveryGovernor admission for the load-injecting relaunch ───────────────
-# bb-control-stability: each lane relaunch (~1.5 cores for 60-180s) passes
-# through the shared governor (per-target AIMD backoff × global token-bucket ×
-# PSI throttle × in-flight concurrency cap) so N stale lanes can no longer fire
-# N simultaneous relaunches. In shadow mode the CLI exits 0 (this floor acts as
-# today, gated by the fixed cooldown below); under enforce the grant is binding.
-# Fail-open: any non-{0,75,2} exit (import error, traceback) is treated as PERMIT
-# so the governor can never wedge the respawn floor (NEVER-FREEZE).
-_governor_repo() {
-    local repo
-    repo="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
-    [[ -d "$repo/shared" ]] || repo="${HOME}/projects/hapax-council"
-    echo "$repo"
-}
-governor_permit() {
-    [[ "${HAPAX_RECOVERY_GOVERNOR_OFF:-}" == "1" ]] && return 0
-    local target="$1" rc
-    (cd "$(_governor_repo)" 2>/dev/null && python3 -m shared.recovery_governor --permit "$target" >/dev/null 2>&1)
-    rc=$?
-    case "$rc" in
-        0) return 0 ;;      # permit
-        75 | 2) return 1 ;; # backoff / closed → defer this tick (retried next tick)
-        *) return 0 ;;      # error → fail-open PERMIT, never a deny-sink
-    esac
-}
-governor_record() {
-    [[ "${HAPAX_RECOVERY_GOVERNOR_OFF:-}" == "1" ]] && return 0
-    (cd "$(_governor_repo)" 2>/dev/null && python3 -m shared.recovery_governor --record "$1" "$2" >/dev/null 2>&1) || true
+hold() {
+    local action="$1" target="$2" reason="$3"
+    printf 'HOLD effect_state=held_not_admitted action=%s target=%s reason=%s may_authorize=false\n' \
+        "$(safe_field "$action")" "$(safe_field "$target")" "$(safe_field "$reason")"
 }
 
-# ─── Platform detection functions ────────────────────────────────────────────
+should_skip_lane() {
+    local lane="$1" skipped
+    for skipped in $SKIP_LANES; do
+        if [ "$lane" = "$skipped" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
 
-# Claude: idle when "❯" prompt visible in last few lines.
-# When Claude is actively working, output streams and the prompt scrolls out.
-# When idle, ❯ sits in the last 5 lines with status bar below.
-# Context-full lanes (showing "/clear to save") are ALSO idle — they finished
-# work and need /clear + new task dispatch.
 is_claude_idle() {
     local pane="$1"
-    local tail5
-    tail5=$(echo "$pane" | tail -5)
-
-    # Idle: the ❯ prompt OR ⏵⏵ (bypass-mode prompt) in the last 5 lines
-    if echo "$tail5" | grep -qE '❯|⏵⏵'; then
-        return 0
-    fi
-
-    # Permission prompts in the tail — blocked, not idle-done
-    if echo "$tail5" | grep -qE '(Allow|Deny)'; then
+    if printf '%s\n' "$pane" | /usr/bin/tail -5 | /usr/bin/grep -qE '(Allow|Deny)'; then
         return 1
     fi
-
-    return 1  # prompt not visible, assume working
+    printf '%s\n' "$pane" | /usr/bin/tail -5 | /usr/bin/grep -qE '(❯|⏵⏵|bypass permissions)'
 }
 
 is_claude_context_full() {
-    local pane="$1"
-    echo "$pane" | tail -10 | grep -q "/clear to save"
+    printf '%s\n' "$1" | /usr/bin/tail -10 | /usr/bin/grep -q '/clear to save'
 }
 
-# Codex: idle when model line visible at bottom, no "Working" indicator
 is_codex_idle() {
     local pane="$1"
-    # Active: "Working (Xm Ys" or "Working (Xs"
-    if echo "$pane" | grep -qE 'Working \([0-9]'; then
-        return 1  # actively working
+    if printf '%s\n' "$pane" | /usr/bin/grep -qE 'Working \([0-9]'; then
+        return 1
     fi
-    # Idle: shows model string at bottom (gpt-5.5/gpt-4.1/o3/etc)
-    if echo "$pane" | tail -5 | grep -qE '(gpt-[0-9]|o[0-9]|codex-).*~/projects/'; then
-        return 0  # idle at prompt
+    if printf '%s\n' "$pane" | /usr/bin/tail -5 | /usr/bin/grep -qE '(gpt-[0-9]|o[0-9]|codex-).*~/projects/'; then
+        return 0
     fi
-    # Also idle if we see the "› " prompt line without Working above it
-    if echo "$pane" | tail -10 | grep -qE '^› '; then
-        if ! echo "$pane" | grep -qE 'Working \('; then
-            return 0
-        fi
-    fi
-    return 1
+    printf '%s\n' "$pane" | /usr/bin/tail -10 | /usr/bin/grep -qE '^› '
 }
 
-# ─── Quota-wall skip ─────────────────────────────────────────────────────────
-# A lane walled until a known future reset is intentionally paused — the headless
-# wrapper backs off until the quota frees, so this watchdog must NOT relaunch /
-# revive / nudge it in the meantime (that would re-hit the wall every tick).
-# Echoes a backoff reason iff the lane is still walled; else returns 1.
-#
-# Freshness fallback (quota-wall-backoff-freshness): the original check honored
-# ONLY a known FUTURE resets_at. But a server-side throttle can carry no reset
-# time (resets_at: unknown), and the reset-boundary parser can emit a PAST
-# timestamp (observed: detected_at 03:38Z with resets_at 03:00Z — the prior 5h
-# boundary, not the next). In both cases the future-only check returns "not
-# walled" and the lane is re-nudged on the very next tick → re-walls → thrash.
-# So when resets_at is unusable, fall back to detected_at + a backoff floor: a
-# freshly detected wall means the lane is actively quota-blocked with an unknown
-# end, and must not be nudged yet. A stale receipt (old detection, no future
-# reset) correctly falls through to allow legitimate revival.
-QUOTA_WALL_BACKOFF_FLOOR_S="${HAPAX_QUOTA_WALL_BACKOFF_FLOOR_S:-900}"
-
-quota_walled_until() {
-    local role="$1"
-    local receipt="$HOME/.cache/hapax/relay/receipts/${role}-quota-wall.yaml"
-    [ -f "$receipt" ] || return 1
-    local now_epoch="${now:-$(date +%s)}"
-
-    # (1) Honor a concrete FUTURE reset time when present.
-    local resets_at reset_epoch
-    resets_at="$(sed -n 's/^resets_at:[[:space:]]*//p' "$receipt" | head -n1)"
-    if [ -n "$resets_at" ] && [ "$resets_at" != "unknown" ]; then
-        reset_epoch="$(date -d "$resets_at" +%s 2>/dev/null || echo 0)"
-        if [ "$reset_epoch" -gt "$now_epoch" ]; then
-            printf '%s\n' "$resets_at"
-            return 0
-        fi
-    fi
-
-    # (2) Freshness fallback: resets_at missing / unknown / in the past. If the
-    # wall was detected within the backoff floor, treat it as still active with an
-    # unknown end so a fresh wall is not immediately re-nudged.
-    local detected_at det_epoch
-    detected_at="$(sed -n 's/^detected_at:[[:space:]]*//p' "$receipt" | head -n1)"
-    if [ -n "$detected_at" ]; then
-        det_epoch="$(date -d "$detected_at" +%s 2>/dev/null || echo 0)"
-        if [ "$det_epoch" -gt 0 ] && [ "$((now_epoch - det_epoch))" -lt "$QUOTA_WALL_BACKOFF_FLOOR_S" ]; then
-            printf 'fresh-wall (detected %s, end unknown)\n' "$detected_at"
-            return 0
-        fi
-    fi
-
-    return 1
-}
-
-# ─── Lane discovery ──────────────────────────────────────────────────────────
-
-declare -A LANES  # session_name -> platform
-lane_count=0
-
-for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | sort); do
+platform_and_lane() {
+    local session="$1"
     case "$session" in
         hapax-claude-*)
-            lane="${session#hapax-claude-}"
-            # Skip configured lanes
-            for skip in $SKIP_LANES; do
-                [ "$lane" = "$skip" ] && continue 2
-            done
-            LANES["$session"]="claude"
-            lane_count=$((lane_count + 1))
+            printf 'claude\t%s\n' "${session#hapax-claude-}"
             ;;
         hapax-codex-*)
-            lane="${session#hapax-codex-}"
-            LANES["$session"]="codex"
-            lane_count=$((lane_count + 1))
+            printf 'codex\t%s\n' "${session#hapax-codex-}"
+            ;;
+        *)
+            return 1
             ;;
     esac
-done
-
-# ─── Ensure required Claude lanes are alive ─────────────────────────────────
-
-launched_lanes=0
-revived_lanes=0
-
-# L4: the respawn floor yields under 'closed' and under appendix-only local-dev
-# mode. Appendix-only mode keeps podium as a thin client; explicit governed
-# dispatch remains available through hapax-methodology-dispatch.
-if [ "$LOCAL_DEV_MAINTENANCE_MODE" != "appendix-only" ] && [ "$SDLC_ADMISSION" != "closed" ] && [ -x "$CLAUDE_LAUNCHER" ]; then
-    for role in $REQUIRED_CLAUDE_LANES; do
-        session="hapax-claude-${role}"
-        worktree="${HOME}/projects/hapax-council--${role}"
-
-        # Skip a quota-walled lane until its quota frees (no launch/revive thrash).
-        if walled_until="$(quota_walled_until "$role")"; then
-            log "SKIP $role: quota-walled until $walled_until"
-            continue
-        fi
-
-        cooldown_file="$STATE_DIR/_lane_launch_${role}.last"
-        launch_cooldown=300  # 5 min between launch attempts per lane
-        if [ -f "$cooldown_file" ]; then
-            last_attempt=$(cat "$cooldown_file")
-            elapsed=$((now - last_attempt))
-            if [ "$elapsed" -lt "$launch_cooldown" ]; then
-                continue
-            fi
-        fi
-
-        if ! tmux has-session -t "$session" 2>/dev/null; then
-            # Session doesn't exist — launch it
-            if [ -d "$worktree" ]; then
-                if ! governor_permit "lane:$role"; then
-                    log "RecoveryGovernor deferred launch of $role (backoff/pressure); retry next tick"
-                    continue
-                fi
-                log "LAUNCHING missing lane: $role"
-                echo "$now" > "$cooldown_file"
-                launch_err="$STATE_DIR/${session}.launch.err"
-                if "$CLAUDE_LAUNCHER" --role "$role" --terminal tmux --readonly >"$launch_err" 2>&1; then
-                    launched_lanes=$((launched_lanes + 1))
-                    governor_record "lane:$role" ok
-                    curl -sf -d "Lane idle watchdog: launched $role (session missing)" \
-                        -H "Title: Lane auto-launched" \
-                        -H "Priority: default" \
-                        -H "Tags: rocket" \
-                        "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
-                else
-                    governor_record "lane:$role" fail
-                    launch_reason="$(tr '\n' ' ' <"$launch_err" 2>/dev/null | head -c 240 || true)"
-                    log "FAILED to launch lane $role: ${launch_reason:-unknown launcher failure}"
-                fi
-                rm -f "$launch_err" 2>/dev/null || true
-            else
-                log "WARN: worktree missing for $role at $worktree"
-            fi
-        else
-            # Session exists — check if Claude is actually running in it.
-            # pane_current_command reports "fish" even when Claude (node) is
-            # running as a child process, so also check pane content for
-            # Claude's TUI indicators (❯ prompt, bypass permissions bar).
-            pane_cmd=$(tmux display-message -t "$session" -p '#{pane_current_command}' 2>/dev/null) || continue
-            pane_check=$(tmux capture-pane -t "$session" -p -S -5 2>/dev/null)
-            claude_tui=false
-            if echo "$pane_check" | grep -qE '(❯|bypass permissions|tokens)'; then
-                claude_tui=true
-            fi
-
-            case "$pane_cmd" in
-                claude|claude-code|node)
-                    ;; # running
-                *)
-                    if [ "$claude_tui" = true ]; then
-                        : # Claude runs as node child of fish — TUI visible, not dead
-                    elif ! governor_permit "lane:$role"; then
-                        log "RecoveryGovernor deferred revive of $role (backoff/pressure); retry next tick"
-                    else
-                        log "REVIVING dead Claude in $session (pane_cmd=$pane_cmd)"
-                        echo "$now" > "$cooldown_file"
-                        tmux send-keys -t "$session" "$CLAUDE_LAUNCHER --role $role --readonly" Enter 2>/dev/null || true
-                        governor_record "lane:$role" ok
-                        revived_lanes=$((revived_lanes + 1))
-                        curl -sf -d "Lane idle watchdog: revived $role (Claude had exited, pane was $pane_cmd)" \
-                            -H "Title: Lane revived" \
-                            -H "Priority: default" \
-                            -H "Tags: recycle" \
-                            "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
-                    fi
-                    ;;
-            esac
-        fi
-    done
-fi
-
-# ─── Ensure required Codex lanes are alive ─────────────────────────────────
-
-# L4: the respawn floor yields under 'closed' and under appendix-only local-dev
-# mode. Codex auto-launch is already governed-only; this also suppresses local
-# dead-session revive checks/noise while appendix is the dev execution host.
-if [ "$LOCAL_DEV_MAINTENANCE_MODE" != "appendix-only" ] && [ "$SDLC_ADMISSION" != "closed" ] && [ -x "$CODEX_LAUNCHER" ]; then
-    for color in $REQUIRED_CODEX_LANES; do
-        session="hapax-codex-${color}"
-        worktree="${HOME}/projects/hapax-council--${color}"
-
-        cooldown_file="$STATE_DIR/_lane_launch_codex_${color}.last"
-        launch_cooldown=300
-        if [ -f "$cooldown_file" ]; then
-            last_attempt=$(cat "$cooldown_file")
-            elapsed=$((now - last_attempt))
-            if [ "$elapsed" -lt "$launch_cooldown" ]; then
-                continue
-            fi
-        fi
-
-        if ! tmux has-session -t "$session" 2>/dev/null; then
-            if [ -d "$worktree" ]; then
-                log "SKIPPING missing Codex lane $color: governed task binding required for auto-launch"
-                echo "$now" > "$cooldown_file"
-            else
-                log "WARN: Codex worktree missing for $color at $worktree"
-            fi
-        else
-            pane_cmd=$(tmux display-message -t "$session" -p '#{pane_current_command}' 2>/dev/null) || continue
-            pane_check=$(tmux capture-pane -t "$session" -p -S -5 2>/dev/null)
-            codex_tui=false
-            if echo "$pane_check" | grep -qE '(Working|gpt-[0-9]|codex-|context left|› )'; then
-                codex_tui=true
-            fi
-
-            case "$pane_cmd" in
-                codex|node)
-                    ;;
-                *)
-                    if [ "$codex_tui" = true ]; then
-                        : # Codex runs as node child — TUI visible, not dead
-                    else
-                        log "SKIPPING dead Codex revive in $session (pane_cmd=$pane_cmd): governed task binding required"
-                        echo "$now" > "$cooldown_file"
-                    fi
-                    ;;
-            esac
-        fi
-    done
-fi
-
-if [ "$launched_lanes" -gt 0 ] || [ "$revived_lanes" -gt 0 ]; then
-    log "lane maintenance: launched=$launched_lanes revived=$revived_lanes"
-fi
-
-if [ "$lane_count" -eq 0 ]; then
-    log "no active lanes found after maintenance pass"
-    exit 0
-fi
-
-# ─── Idle detection pass ─────────────────────────────────────────────────────
-
-declare -A IDLE_LANES=()   # session_name -> idle_duration_s
-declare -A CTX_FULL=()     # session_name -> 1 if context-full (needs /clear before dispatch)
-active_count=0
-idle_observed_count=0
-idle_count=0
-
-for session in "${!LANES[@]}"; do
-    platform="${LANES[$session]}"
-
-    # Capture pane content
-    pane_text=$(tmux capture-pane -t "$session" -p -S -30 2>/dev/null) || continue
-
-    # Check if idle based on platform
-    is_idle=false
-    case "$platform" in
-        claude)
-            is_claude_idle "$pane_text" && is_idle=true
-            if [ "$is_idle" = true ] && is_claude_context_full "$pane_text"; then
-                CTX_FULL["$session"]=1
-            fi
-            ;;
-        codex)   is_codex_idle "$pane_text"  && is_idle=true ;;
-    esac
-
-    state_file="$STATE_DIR/${session}.idle_since"
-
-    if [ "$is_idle" = true ]; then
-        idle_observed_count=$((idle_observed_count + 1))
-        # Record when we first saw this lane idle
-        if [ -f "$state_file" ]; then
-            idle_since=$(cat "$state_file")
-        else
-            echo "$now" > "$state_file"
-            idle_since=$now
-        fi
-        idle_duration=$((now - idle_since))
-        if [ "$idle_duration" -ge "$IDLE_THRESHOLD_S" ]; then
-            IDLE_LANES["$session"]=$idle_duration
-            idle_count=$((idle_count + 1))
-        fi
-    else
-        # Lane is active — clear idle tracking
-        rm -f "$state_file" 2>/dev/null
-        rm -f "$STATE_DIR/${session}.dispatch_failure_alerted" 2>/dev/null
-        active_count=$((active_count + 1))
-    fi
-done
-
-idle_below_threshold=$((idle_observed_count - idle_count))
-log "scan: $lane_count lanes, $active_count active, $idle_below_threshold idle below threshold, $idle_count idle past threshold"
-
-if [ "$idle_count" -eq 0 ]; then
-    exit 0
-fi
-
-# ─── Nudge ALL idle lanes past cooldown ──────────────────────────────────────
-
-find_claimed_task() {
-    local assignee="$1"
-    if [ -d "$TASK_ROOT" ]; then
-        local match
-        match=$(grep -rl "^assigned_to: ${assignee}$" "$TASK_ROOT/" 2>/dev/null | head -1)
-        if [ -n "$match" ]; then
-            local task_id status
-            task_id=$(basename "$match" .md)
-            status=$(grep -m1 "^status:" "$match" 2>/dev/null | awk '{print $2}')
-            if [ "$status" = "claimed" ] || [ "$status" = "in_progress" ]; then
-                echo "$task_id"
-                return 0
-            fi
-        fi
-    fi
-    return 1
 }
 
-dispatched=0
-skipped_cooldown=0
-suppressed_appendix_only=0
-
-# L4: under 'closed' the floor yields — defer nudges (don't re-kick paused lanes).
-if [ "$SDLC_ADMISSION" = "closed" ]; then
-    log "sdlc-pressure closed: deferring idle nudges for $idle_count lane(s) this tick"
-else
-for session in "${!IDLE_LANES[@]}"; do
-    idle_s="${IDLE_LANES[$session]}"
-
-    cooldown_file="$STATE_DIR/${session}.last_kick"
-    if [ -f "$cooldown_file" ]; then
-        last_kick=$(cat "$cooldown_file")
-        elapsed=$((now - last_kick))
-        if [ "$elapsed" -lt "$COOLDOWN_S" ]; then
-            skipped_cooldown=$((skipped_cooldown + 1))
-            continue
-        fi
+check_required_lane() {
+    local platform="$1" lane="$2" session pane_cmd pane
+    session="hapax-${platform}-${lane}"
+    if [ -z "${SEEN_SESSIONS[$session]+present}" ]; then
+        hold "lane.launch" "$lane" "execution_authority_admission_lease_absent"
+        return
     fi
 
-    platform="${LANES[$session]}"
-    case "$session" in
-        hapax-claude-*)  lane="${session#hapax-claude-}" ;;
-        hapax-codex-*)   lane="${session#hapax-codex-}" ;;
-    esac
-
-    # A quota-walled lane is intentionally paused — the headless wrapper backs off
-    # until its quota resets. Nudging it now just re-hits the wall every cooldown
-    # tick (the exact thrash this fix targets), so skip until resets_at. (quota-wall-backoff-fix)
-    if walled_until="$(quota_walled_until "$lane")"; then
-        log "SKIP nudge $lane: quota-walled until $walled_until"
-        continue
-    fi
-
-    dispatch_msg=""
-    claimed=$(find_claimed_task "$lane" 2>/dev/null || true)
-    dispatch_target=""
-    if [ -n "$claimed" ]; then
-        dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m with an active task: $claimed. Resume work immediately. Ship a PR and cc-close --pr N after merge."
-        dispatch_target="$claimed"
-    else
-        log "IDLE without claim for $lane — awaiting governed dispatch"
-        if [ "$LOCAL_DEV_MAINTENANCE_MODE" = "appendix-only" ]; then
-            log "APPENDIX-ONLY skip nudge $session ($platform/$lane): unclaimed local dev lane must remain quiet until explicit governed dispatch"
-            echo "$now" > "$cooldown_file"
-            rm -f "$STATE_DIR/${session}.idle_since" 2>/dev/null
-            suppressed_appendix_only=$((suppressed_appendix_only + 1))
-            continue
-        fi
-        dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m with no active claimed task. Await governed dispatch; do not self-select queue work. Required path: scripts/hapax-methodology-dispatch --task <id> --lane ${lane} --platform ${platform} --mode <mode>."
-        dispatch_target="await-governed-dispatch"
-    fi
-
-    # Context-full Claude lanes may need /clear before reminding an already
-    # claimed lane. Unclaimed lanes are not prepared for new work here.
-    if [ -n "$claimed" ] && [ "${CTX_FULL[$session]:-}" = "1" ] && [ "$platform" = "claude" ]; then
-        log "CLEARING context-full $session before dispatch"
-        tmux send-keys -t "$session" "/clear" Enter 2>/dev/null
-        sleep 5
-    fi
-
-    send_success=false
-    case "$platform" in
-        claude)
-            if [ -x "$CLAUDE_SEND" ]; then
-                "$CLAUDE_SEND" --session "$lane" -- "$dispatch_msg" 2>/dev/null && send_success=true
-            fi
-            if [ "$send_success" = false ]; then
-                tmux send-keys -t "$session" "$dispatch_msg" Enter 2>/dev/null && send_success=true
-            fi
+    pane_cmd="$("${TMUX_OBSERVER[@]}" display-message -t "$session" -p '#{pane_current_command}' 2>/dev/null || true)"
+    pane="$("${TMUX_OBSERVER[@]}" capture-pane -t "$session" -p -S -5 2>/dev/null || true)"
+    case "$platform:$pane_cmd" in
+        claude:claude|claude:claude-code|claude:node|codex:codex|codex:node)
+            return
             ;;
-        codex)
-            if [ -x "$CODEX_SEND" ]; then
-                codex_send_args=(--session "$lane")
-                if [ -n "$claimed" ]; then
-                    codex_send_args+=(--require-ack)
-                fi
-                "$CODEX_SEND" "${codex_send_args[@]}" -- "$dispatch_msg" 2>/dev/null && send_success=true
-            fi
+    esac
+    if [ "$platform" = "claude" ] && printf '%s\n' "$pane" | /usr/bin/grep -qE '(❯|⏵⏵|bypass permissions|tokens)'; then
+        return
+    fi
+    if [ "$platform" = "codex" ] && printf '%s\n' "$pane" | /usr/bin/grep -qE '(Working|gpt-[0-9]|codex-|context left|› )'; then
+        return
+    fi
+    hold "lane.revive" "$lane" "execution_authority_admission_lease_absent"
+}
+
+main() {
+    case "${1:---check}" in
+        --check|--list) ;;
+        --help|-h)
+            printf 'usage: hapax-lane-idle-watchdog [--check|--list]\n'
+            return 0
+            ;;
+        *)
+            printf 'unsupported mode: %s\n' "$1" >&2
+            return 2
             ;;
     esac
 
-    echo "$now" > "$STATE_DIR/${session}.last_kick"
-
-    if [ "$send_success" = true ]; then
-        log "DISPATCHED $session ($platform/$lane): idle ${idle_s}s -> $dispatch_target"
-        rm -f "$STATE_DIR/${session}.idle_since" 2>/dev/null
-        rm -f "$STATE_DIR/${session}.dispatch_failure_alerted" 2>/dev/null
-        dispatched=$((dispatched + 1))
-    else
-        failure_alerted_file="$STATE_DIR/${session}.dispatch_failure_alerted"
-        if [ -f "$failure_alerted_file" ]; then
-            first_alerted="$(cat "$failure_alerted_file" 2>/dev/null || true)"
-            log "SUPPRESSED duplicate dispatch failure for $session ($platform/$lane): idle ${idle_s}s, first_alerted=${first_alerted:-unknown}"
-        else
-            echo "$now" > "$failure_alerted_file"
-            log "FAILED to dispatch $session ($platform/$lane): idle ${idle_s}s"
-            curl -sf -d "Lane idle watchdog: failed to dispatch $lane ($platform) after ${idle_s}s idle" \
-                -H "Title: Lane dispatch failure" \
-                -H "Priority: high" \
-                -H "Tags: warning" \
-                "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
-            # Governed incident record alongside the ntfy channel.
-            "$(dirname "$(readlink -f "$0")")/hapax-alert" high "Lane dispatch failure" "failed to dispatch $lane ($platform) after ${idle_s}s idle" --tag lane --record-only
-        fi
-    fi
-done
-fi
-
-if [ "$dispatched" -eq 0 ] && [ "$skipped_cooldown" -gt 0 ]; then
-    log "all $idle_count idle lanes in cooldown"
-fi
-if [ "$suppressed_appendix_only" -gt 0 ]; then
-    log "appendix-only suppressed $suppressed_appendix_only unclaimed local idle lane nudge(s)"
-fi
-
-log "dispatched $dispatched of $idle_count idle lanes"
-
-# ─── Summary alert if many lanes idle ────────────────────────────────────────
-
-if [ "$idle_count" -ge 3 ] && [ "$suppressed_appendix_only" -lt "$idle_count" ]; then
-    idle_summary=""
-    for session in "${!IDLE_LANES[@]}"; do
-        idle_s="${IDLE_LANES[$session]}"
-        idle_summary+="$session(${idle_s}s) "
+    local session platform lane pair pane
+    local -a sessions=()
+    mapfile -t sessions < <("${TMUX_OBSERVER[@]}" list-sessions -F '#{session_name}' 2>/dev/null | /usr/bin/sort || true)
+    declare -gA SEEN_SESSIONS=()
+    for session in "${sessions[@]}"; do
+        [ -n "$session" ] || continue
+        SEEN_SESSIONS["$session"]=1
     done
-    log "WARNING: $idle_count lanes idle past threshold: $idle_summary"
-    curl -sf -d "Lane idle watchdog: $idle_count lanes idle — $idle_summary" \
-        -H "Title: Multiple lanes idle" \
-        -H "Priority: high" \
-        -H "Tags: warning,robot" \
-        "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
-    # Governed incident record alongside the ntfy channel.
-    "$(dirname "$(readlink -f "$0")")/hapax-alert" high "Multiple lanes idle" "$idle_count lanes idle — $idle_summary" --tag lane --record-only
-fi
+
+    for lane in $REQUIRED_CLAUDE_LANES; do
+        check_required_lane claude "$lane"
+    done
+    for lane in $REQUIRED_CODEX_LANES; do
+        check_required_lane codex "$lane"
+    done
+
+    for session in "${sessions[@]}"; do
+        pair="$(platform_and_lane "$session" 2>/dev/null || true)"
+        [ -n "$pair" ] || continue
+        IFS=$'\t' read -r platform lane <<< "$pair"
+        if should_skip_lane "$lane"; then
+            observe "skipped" "$lane" "configured_skip"
+            continue
+        fi
+        if ! pane="$("${TMUX_OBSERVER[@]}" capture-pane -t "$session" -p -S -30 2>/dev/null)"; then
+            observe "indeterminate" "$lane" "pane_unavailable"
+            continue
+        fi
+        case "$platform" in
+            claude)
+                if is_claude_idle "$pane"; then
+                    observe "idle" "$lane" "pane_prompt_visible"
+                    if is_claude_context_full "$pane"; then
+                        hold "lane.context.clear" "$lane" "execution_authority_admission_lease_absent"
+                    fi
+                    hold "lane.nudge" "$lane" "execution_authority_admission_lease_absent"
+                else
+                    observe "active_or_blocked" "$lane" "no_idle_prompt"
+                fi
+                ;;
+            codex)
+                if is_codex_idle "$pane"; then
+                    observe "idle" "$lane" "pane_prompt_visible"
+                    hold "lane.nudge" "$lane" "execution_authority_admission_lease_absent"
+                else
+                    observe "active_or_blocked" "$lane" "working_or_unclassified"
+                fi
+                ;;
+        esac
+    done
+    printf '# lane idle check: support_only=true effects=0\n'
+}
+
+main "$@"

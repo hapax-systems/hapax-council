@@ -1,15 +1,10 @@
-"""Gemini-backed coordination daemon.
+"""Gate-0A coordination observation daemon.
 
-Replaces: triage_officer daemon, lane idle watchdog, RTE relay pattern.
+The daemon may inspect task, lane, event-log, and pending-spool support state.
+Task-bearing effects remain held behind methodology admission and a future
+execution lease; the Gate-0A loop does not launch, repair, reap, or publish.
 
-Tick loop:
-  1. Scan task queue for unassigned/offered tasks
-  2. Check lane health (relay YAML + PID files)
-  3. Match tasks to idle lanes using Gemini for intelligent routing
-  4. Dispatch work via hapax-claude/hapax-codex/hapax-gemini scripts
-  5. Write coordination state to /dev/shm/hapax-coordinator/state.json
-
-Run: ``uv run python -m agents.coordinator``
+Run: ``.venv/bin/python -I -m agents.coordinator``
 Systemd: ``systemd/units/hapax-coordinator.service``
 """
 
@@ -34,27 +29,28 @@ def _handle_signal(signum: int, _frame: object) -> None:
     log.info("Received signal %d, shutting down", signum)
 
 
-def _boot_reconcile() -> None:
-    """Replay the coord SSOT log + drain fail-open spool intents on boot.
-
-    Realizes "the heap is DERIVED" (master design §2.2/NEW-5): rebuild state from
-    the durable log and fold in intents spooled while the daemon was down, so no
-    authorization survives only in a process image. Advisory — a failure here
-    must never stop the daemon from starting.
-    """
+def _boot_inspect() -> None:
+    """Inspect durable event and spool support without materializing effects."""
     try:
         from shared.coord_event_log import default_event_log
 
-        result = default_event_log().boot_reconcile()
+        event_log = default_event_log()
+        replay = event_log.replay(fail_open=True)
+        spool_pending = (
+            sum(1 for _ in event_log.spool_dir.glob("*.jsonl"))
+            if event_log.spool_dir.is_dir()
+            else 0
+        )
         log.info(
-            "coord boot reconcile: replayed=%d spool_ingested=%d spool_failed=%d degraded=%s",
-            result.replayed,
-            result.spool_ingested,
-            result.spool_failed,
-            result.degraded,
+            "coord boot inspection: replayed=%d spool_pending=%d source=%s "
+            "degraded=%s support_only=true effects=0",
+            len(replay.events),
+            spool_pending,
+            replay.source,
+            replay.degraded,
         )
     except Exception:
-        log.exception("coord boot reconcile failed (continuing daemon start)")
+        log.exception("coord boot inspection HOLD (continuing effect-free daemon start)")
 
 
 def main() -> None:
@@ -69,7 +65,7 @@ def main() -> None:
 
     coordinator = Coordinator()
 
-    _boot_reconcile()
+    _boot_inspect()
 
     log.info("Coordinator daemon starting (tick=%.1fs)", tick_s)
 

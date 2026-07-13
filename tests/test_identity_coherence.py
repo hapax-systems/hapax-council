@@ -1,8 +1,8 @@
 """Tests for reform-identity-coherence-20260601.
 
-Covers the four hollow identity-recovery paths the final audit (cluster 11) found:
-per-spawn session id (no parent-id reuse), in-session role reassert, a cross-role
-stale-claim sweeper, and retired dead identity fallbacks.
+Covers the identity-recovery paths the final audit (cluster 11) found:
+per-spawn session id (no parent-id reuse), in-session role reassert, the
+Gate-0A retirement hold around stale-claim mutation, and dead identity fallbacks.
 
 Self-contained per project convention — no shared conftest fixtures.
 """
@@ -14,10 +14,11 @@ import importlib.util
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DISPATCH = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
@@ -87,7 +88,7 @@ class TestSessionIdNotInherited:
         mod = _load_dispatch()
         captured: dict[str, object] = {}
 
-        def fake_call(args: list[str], env: dict[str, str] | None = None) -> int:
+        def fake_sliced(args: list[str], env: dict[str, str] | None = None) -> int:
             captured["env"] = env
             return 0
 
@@ -96,7 +97,7 @@ class TestSessionIdNotInherited:
         validation = SimpleNamespace(task=None)
         with (
             patch.dict(os.environ, {"HAPAX_SESSION_ID": "parent-leaked-id"}),
-            patch.object(mod.subprocess, "call", fake_call),
+            patch.object(mod, "_sliced_call", fake_sliced),
         ):
             rc = mod.launch_claude_interactive("task-y", "zeta", validation)
         assert rc == 0
@@ -221,81 +222,22 @@ class TestInSessionReassert:
 # --- AC3: cross-role stale-claim sweeper ---------------------------------------
 
 
-class TestStaleClaimSweeper:
-    @staticmethod
-    def _dirs(tmp_path: Path) -> tuple[Path, Path]:
+class TestStaleClaimSweeperRetirement:
+    def test_sweep_holds_before_changing_any_claim_or_task_byte(
+        self, tmp_path: Path
+    ) -> None:
+        mod = _load_dispatch()
         claims = tmp_path / "claims"
         active = tmp_path / "active"
         claims.mkdir()
         active.mkdir()
-        return claims, active
+        task = active / "task.md"
+        claim = claims / "cc-active-task-zeta-12345678-1234-1234-1234-123456789abc"
+        task.write_text("---\nstatus: in_progress\n---\n", encoding="utf-8")
+        claim.write_text("task\n", encoding="utf-8")
+        before = {task: task.read_bytes(), claim: claim.read_bytes()}
 
-    @staticmethod
-    def _age(path: Path, seconds: float) -> None:
-        t = time.time() - seconds
-        os.utime(path, (t, t))
+        with pytest.raises(mod.Gate0AEffectHold, match="claim.sweep"):
+            mod.sweep_stale_claims(claims, active)
 
-    _UUID = "12345678-1234-1234-1234-123456789abc"
-
-    def test_reaps_lease_expired_claim(self, tmp_path: Path) -> None:
-        mod = _load_dispatch()
-        claims, active = self._dirs(tmp_path)
-        # The task is still in active/, but the claim file is 14 days stale: a
-        # dead/abandoned lane (the real council-eqi-phase0-run test-probe case).
-        (active / "council-eqi-phase0-run.md").write_text("---\nstatus: in_progress\n---\n")
-        cf = claims / "cc-active-task-test-probe"
-        cf.write_text("council-eqi-phase0-run\n")
-        self._age(cf, 14 * 86400)
-        reaped = mod.sweep_stale_claims(claims, active, now=time.time())
-        assert not cf.exists()
-        assert any(
-            name == "cc-active-task-test-probe" and reason == "lease-expired"
-            for name, _task, reason in reaped
-        )
-
-    def test_keeps_fresh_live_claim(self, tmp_path: Path) -> None:
-        mod = _load_dispatch()
-        claims, active = self._dirs(tmp_path)
-        (active / "t.md").write_text("---\nstatus: in_progress\n---\n")
-        cf = claims / f"cc-active-task-zeta-{self._UUID}"
-        cf.write_text("t\n")
-        reaped = mod.sweep_stale_claims(claims, active, now=time.time())
-        assert cf.exists()
-        assert reaped == []
-
-    def test_reaps_claim_for_terminal_or_missing_task(self, tmp_path: Path) -> None:
-        mod = _load_dispatch()
-        claims, active = self._dirs(tmp_path)
-        # No note in active/ → task closed/withdrawn/missing → the slot is dead.
-        cf = claims / f"cc-active-task-eta-{self._UUID}"
-        cf.write_text("vanished-task\n")
-        self._age(cf, 3600)  # past the settle grace, but well within the lease TTL
-        reaped = mod.sweep_stale_claims(claims, active, now=time.time())
-        assert not cf.exists()
-        assert any(reason == "terminal-or-missing" for _n, _t, reason in reaped)
-
-    def test_live_session_protects_its_roles_stale_legacy_file(self, tmp_path: Path) -> None:
-        # The gate refreshes only the session-keyed file, so a live role's LEGACY
-        # file ages out — it must not be reaped while a fresh sibling proves life.
-        mod = _load_dispatch()
-        claims, active = self._dirs(tmp_path)
-        (active / "t.md").write_text("---\nstatus: in_progress\n---\n")
-        legacy = claims / "cc-active-task-delta"
-        legacy.write_text("t\n")
-        self._age(legacy, 14 * 86400)
-        sk = claims / f"cc-active-task-delta-{self._UUID}"
-        sk.write_text("t\n")  # fresh → role delta is demonstrably live
-        reaped = mod.sweep_stale_claims(claims, active, now=time.time())
-        assert legacy.exists(), "a live role's stale legacy claim must not be reaped"
-        assert reaped == []
-
-    def test_does_not_reap_recently_touched_missing_task(self, tmp_path: Path) -> None:
-        # A just-written claim for a momentarily-absent note (mid cc-close race) is
-        # left to settle, not reaped.
-        mod = _load_dispatch()
-        claims, active = self._dirs(tmp_path)
-        cf = claims / f"cc-active-task-theta-{self._UUID}"
-        cf.write_text("in-flight-task\n")  # fresh mtime, note absent
-        reaped = mod.sweep_stale_claims(claims, active, now=time.time())
-        assert cf.exists()
-        assert reaped == []
+        assert {path: path.read_bytes() for path in before} == before

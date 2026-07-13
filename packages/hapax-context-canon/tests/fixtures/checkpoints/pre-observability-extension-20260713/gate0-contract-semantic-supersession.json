@@ -1,0 +1,93 @@
+{
+  "authority": {
+    "authority_case": "CASE-CAPACITY-ROUTING-001",
+    "governing_task": "cc-task-sdlc-fsm-canon-impingement-lockstep-bootstrap-20260710",
+    "may_authorize": false,
+    "operator_session_id": "019f47f5-9d09-7160-a9b3-4c14a6514876"
+  },
+  "current": {
+    "carrier_schema": {
+      "path": "src/hapax/context_canon/_data/context-canon-carrier.schema.json",
+      "sha256": "c0172f13062d28e970fb75c9aeb638ac0a0533a5daa4062c017cf4360343dfe1"
+    },
+    "coordination_schema": {
+      "path": "schemas/coordination-canon.schema.json",
+      "sha256": "8d2761d8af902fe05979ca301476642969c172c821275194890c7d03f1eb6a96"
+    },
+    "files": {
+      "gate0-compatibility.json": {
+        "bytes": 13972,
+        "sha256": "4c22e3825b34acff01d0b944b63354ee5a10e69229ab9e8d1002ba6b9afdf2ad"
+      },
+      "gate0-frame.json": {
+        "bytes": 194566,
+        "sha256": "74316ba8095be5902ec1e67f4351c8d6445a88b0ba064a0ca981726e87ae52f5"
+      },
+      "gate0-hashes.json": {
+        "bytes": 2095,
+        "sha256": "35581c21abc693395919d23bccd3e723bf62d06ac2ec7b167f2aaa8455012eed"
+      },
+      "gate0-projections.json": {
+        "bytes": 333421,
+        "sha256": "5ab4b5da5bfaabe8a944e601ba054555477fe2545294de6e9f33d0ea4a98686a"
+      },
+      "gate0-purpose-projections.json": {
+        "bytes": 238372,
+        "sha256": "ea86dd69cbbcb9bc71edd901ceb7a7ec6ceec4785614bd1f4e930c9e91b570ee"
+      }
+    },
+    "generated_twice_byte_identical": true,
+    "semantic_ids": {
+      "bundle_hash": "c053d02835c29acceeb9e4d9e0f8e01cd6872e3a882a0212ac54e43d356203ba",
+      "compatibility_hash": "e36c38a6906749d84db0dbec753d32914ffdaa5b17a0919beb7b05c4499b885a",
+      "frame_hash": "55c9629279a40be783ad8600388656bf37c57eb1e68324ea86447c4ba1fde4c6",
+      "projection_hashes": {
+        "hapax": "216d0c0ff696794948637beac2d7b3dc23f6b57e9b38af6e9d8d773ce0faa39f",
+        "operator": "90e10a32d5d61a73fd9d499a1d2f80aa41b5d2f44b30700cf7518e7680353907",
+        "yard": "00635aa0019e7b7202e59ae92ace3a31c42eafed1728b43a806ab42d16edaaa8"
+      }
+    }
+  },
+  "predecessor": {
+    "checkpoint_manifest": {
+      "bytes": 2085,
+      "path": "checkpoints/pre-contract-extension-20260712/checkpoint-manifest.json",
+      "sha256": "3eedac6414e2c1c3e82d8fb23b301fd977fb01a6151c20546da889e6040674eb"
+    },
+    "requires_checkpointed_parser": true,
+    "semantic_ids": {
+      "compatibility_hash": "963a079191c7f6d4f5f8e25c734af73bb58d67da4a9594fe6614f1f94abe9e3d",
+      "frame_hash": "895960c9acab6f9f67c9e4a3763f672ee563bc2ec2149a5fb7387ff5ec7b793c",
+      "projection_hashes": {
+        "hapax": "f601f3caff8f59bd613163dd03049deca75d14f147257e0696c5cbc1dcb51146",
+        "operator": "88d10d8772ece8aece1016860086ac0f92b72edd4b5a719940eea23851fa3aed",
+        "yard": "5125c7c895f42af7563ff9bb6cdffd5a3a0155fe013d00e2f072c54c4af8d585"
+      }
+    }
+  },
+  "protected_commitments": {
+    "effective_constraint_digest": {
+      "current": "210cc9ad7096785ef82427dc69004041d8ca2de75f3960c6f7093dfe3c231d08",
+      "predecessor": "210cc9ad7096785ef82427dc69004041d8ca2de75f3960c6f7093dfe3c231d08"
+    },
+    "lifecycle_definition_hash": {
+      "current": "4e578a7d2e58f4516222a0ff25c732c2f282d540d5c20808ba3694db503bb0d2",
+      "predecessor": "4e578a7d2e58f4516222a0ff25c732c2f282d540d5c20808ba3694db503bb0d2"
+    }
+  },
+  "schema": "hapax.context-canon.contract-semantic-supersession.v1",
+  "semantics": {
+    "changes": [
+      "demand descriptor now binds canon and lifecycle position basis",
+      "epistemic event payloads are kind-discriminated structured carriers",
+      "projection envelopes carry AIR-sealed typed event braids",
+      "lifecycle opportunity facets carry AIR-closed lawful next actions",
+      "context actions bind exact operations independently of open non-authorizing action classes"
+    ],
+    "historical_bytes_preserved": true,
+    "historical_source_proof_preserved": true,
+    "source_only_semantic_equivalence": false,
+    "wire_schema_ids_retained": true,
+    "wire_schema_ids_retained_basis": "unreleased_gate0_contract"
+  }
+}

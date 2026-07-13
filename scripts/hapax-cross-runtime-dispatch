@@ -1,529 +1,244 @@
-#!/usr/bin/env bash
-# hapax-cross-runtime-dispatch — invoke active Hapax runtimes with orchestration receipts.
+#!/usr/bin/bash
+# hapax-cross-runtime-dispatch - thin cross-runtime entrypoint for methodology dispatch.
 #
-# Reads team metadata registry (Slice 3A), checks freshness gates,
-# validates session protection and duplicate checks, then dispatches
-# to the target runtime with a ledger receipt.
-#
-# CASE-SDLC-REFORM-001 / SLICE-003C-CROSS-RUNTIME
-#
-# Usage:
-#   hapax-cross-runtime-dispatch --lane beta --task ari-sierpinski --platform claude
-#   hapax-cross-runtime-dispatch --lane cx-red --task some-task --platform codex
-#   hapax-cross-runtime-dispatch --list-eligible          # show dispatch candidates
-#   hapax-cross-runtime-dispatch --check-lane beta        # freshness + protection check
+# Task-bearing requests have no local policy or effect path. They are tail-delegated
+# to the sanctioned methodology dispatcher, which owns admission, receipts, and
+# runtime actuation. The list/check modes below are read-only observations only.
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+[[ "$SCRIPT_PATH" == /* ]] || SCRIPT_PATH="$PWD/$SCRIPT_PATH"
+SCRIPT_DIR="$(cd -P -- "${SCRIPT_PATH%/*}" && printf '%s\n' "$PWD")"
+REPO_ROOT="$(cd -P -- "$SCRIPT_DIR/.." && printf '%s\n' "$PWD")"
 
-# Defaults
-DISPATCHER="${HAPAX_AGENT_NAME:-operator}"
 REGISTRY_DIR="${HAPAX_TEAM_REGISTRY_DIR:-$HOME/.cache/hapax/team-registry}"
-LEDGER_DIR="${HAPAX_ORCHESTRATION_LEDGER_DIR:-$HOME/.cache/hapax/orchestration}"
 PROTECTION_FILE="${HAPAX_SESSION_PROTECTION:-$HOME/.cache/hapax/relay/session-protection.md}"
 
 usage() {
-    cat <<'USAGE'
-hapax-cross-runtime-dispatch — cross-runtime dispatch with orchestration receipts
+    /usr/bin/cat <<'USAGE'
+hapax-cross-runtime-dispatch - delegate cross-runtime requests to methodology dispatch
 
-Options:
-  --lane LANE          Target lane (e.g., beta, cx-red, vbe-1)
-  --platform PLATFORM  Target platform (claude, codex, vibe)
-  --task TASK_ID       cc-task to dispatch
-  --case CASE_ID       AuthorityCase reference (optional)
+Task-bearing options:
+  --lane LANE          Target lane (for example beta, cx-red, vbe-1)
+  --platform PLATFORM  Target platform (passed to methodology dispatch)
+  --task TASK_ID       Explicit cc-task to dispatch
+  --mode MODE          Methodology mode: headless|interactive|receipt-only
+  --runtime-mode MODE  Alias for --mode
+  --profile PROFILE    Methodology capability profile
   --mq-message-id ID   Durable relay MQ dispatch message id
-  --advisory-only      Label terminal dispatch as non-authoritative
-  --mode MODE          Workstream mode: single_lane|shared_coordinated|parallel_separate
-  --runtime-mode MODE  Methodology dispatch mode: headless|interactive|receipt-only
-  --profile PROFILE    Methodology dispatch capability profile
-  --policy-rollback    Forward explicit methodology dispatch rollback mode
-  --reason REASON      Dispatch reason
-  --dry-run            Show what would be dispatched without acting
-  --list-eligible      List dispatch-eligible lanes
-  --check-lane LANE    Check lane freshness + protection status
+  --policy-rollback    Forward the methodology rollback request
+  --dry-run            Request methodology receipt-only evaluation
+
+Read-only options:
+  --list-eligible      List observed dispatch candidates without mutation
+  --check-lane LANE    Show freshness and protection observations without mutation
   -h, --help           Show this help
 USAGE
-    exit 0
 }
 
-# Parse arguments
-LANE="" PLATFORM="" TASK="" CASE_ID="" MQ_MESSAGE_ID="" MODE="single_lane" RUNTIME_MODE="headless" PROFILE="full" REASON="" DRY_RUN=false
-ADVISORY_ONLY=false
-POLICY_ROLLBACK=false
-LIST_ELIGIBLE=false CHECK_LANE=""
+hold() {
+    printf 'HOLD: %s\n' "$*" >&2
+    exit 10
+}
 
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --lane)       LANE="$2"; shift 2 ;;
-        --platform)   PLATFORM="$2"; shift 2 ;;
-        --task)       TASK="$2"; shift 2 ;;
-        --case)       CASE_ID="$2"; shift 2 ;;
-        --mq-message-id) MQ_MESSAGE_ID="$2"; shift 2 ;;
-        --advisory-only) ADVISORY_ONLY=true; shift ;;
-        --mode)       MODE="$2"; shift 2 ;;
-        --runtime-mode|--methodology-mode) RUNTIME_MODE="$2"; shift 2 ;;
-        --profile)    PROFILE="$2"; shift 2 ;;
-        --policy-rollback) POLICY_ROLLBACK=true; shift ;;
-        --reason)     REASON="$2"; shift 2 ;;
-        --dry-run)    DRY_RUN=true; shift ;;
-        --list-eligible) LIST_ELIGIBLE=true; shift ;;
-        --check-lane) CHECK_LANE="$2"; shift 2 ;;
-        -h|--help)    usage ;;
-        *)            echo "error: unknown argument: $1" >&2; exit 2 ;;
-    esac
-done
-PLATFORM="${PLATFORM,,}"
+require_value() {
+    local option="$1" value="${2-}"
+    if [[ -z "$value" ]]; then
+        printf 'error: %s requires a value\n' "$option" >&2
+        exit 2
+    fi
+}
 
-# --- Freshness check ---
 check_lane_freshness() {
     local lane="$1"
     local meta_file="$REGISTRY_DIR/${lane}.json"
 
     if [[ ! -f "$meta_file" ]]; then
-        echo "UNKNOWN: no metadata for lane $lane"
+        printf 'UNKNOWN: no metadata for lane %s\n' "$lane"
         return 1
     fi
 
-    local last_probe
-    last_probe=$(python3 -c "
-import json, time
-m = json.load(open('$meta_file'))
-probe = m.get('last_probe_utc', 0)
-ttl = m.get('freshness_ttl_s', 3600)
-age = time.time() - probe
-if age > ttl:
-    print(f'STALE: {age:.0f}s old (ttl={ttl:.0f}s)')
-    exit(1)
-else:
-    print(f'FRESH: {age:.0f}s old (ttl={ttl:.0f}s)')
-" 2>&1) || true
-
-    echo "$last_probe"
-    [[ "$last_probe" == FRESH* ]]
-}
-
-# --- Protection check ---
-check_protection() {
-    local lane="$1"
-    if [[ -f "$PROTECTION_FILE" ]]; then
-        if grep -q "\`${lane}\`.*protected" "$PROTECTION_FILE" 2>/dev/null; then
-            echo "PROTECTED: lane $lane is protected"
-            return 1
-        fi
-    fi
-    echo "OK: lane $lane not protected"
-    return 0
-}
-
-# --- Duplicate check ---
-check_duplicate() {
-    local lane="$1" platform="$2"
-    local ledger="$LEDGER_DIR/dispatch-ledger.jsonl"
-    if [[ ! -f "$ledger" ]]; then
-        return 0
-    fi
-    local active
-    active=$(grep "\"target_lane\":\"${lane}\"" "$ledger" 2>/dev/null \
-        | grep "\"target_platform\":\"${platform}\"" \
-        | grep "\"outcome\":\"dispatched\"" \
-        | tail -1) || true
-    if [[ -n "$active" ]]; then
-        echo "DUPLICATE: lane $lane already has active $platform dispatch"
-        return 1
-    fi
-    return 0
-}
-
-is_retired_antigrav_lane() {
-    local lane="${1,,}"
-    [[ "$lane" == "agy" || "$lane" == agy-* || "$lane" == "antigrav" || "$lane" == antigrav-* || "$lane" == "antigravity" || "$lane" == antigravity-* || "$lane" == "gemini-cli" || "$lane" == gemini-cli-* ]]
-}
-
-is_dispatchable_platform() {
-    local platform="${1,,}"
-    [[ "$platform" == "claude" || "$platform" == "claude-code" || "$platform" == "codex" || "$platform" == "vibe" ]]
-}
-
-write_blocked_dispatch_receipt() {
-    local block_reason="$1"
-    mkdir -p "$LEDGER_DIR"
-    local ledger="$LEDGER_DIR/dispatch-ledger.jsonl"
-    local lock="$LEDGER_DIR/dispatch-ledger.lock"
-    local timestamp
-    timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    TIMESTAMP="$timestamp" \
-    DISPATCHER_VALUE="$DISPATCHER" \
-    TARGET_LANE="$LANE" \
-    TARGET_PLATFORM="$PLATFORM" \
-    TASK_ID="$TASK" \
-    AUTHORITY_CASE_ID="$CASE_ID" \
-    WORKSTREAM_MODE="$MODE" \
-    BLOCK_REASON="$block_reason" \
-    flock "$lock" python3 - "$ledger" <<'PY'
-from pathlib import Path
-from hashlib import sha256
+    /usr/bin/python3 -I - "$meta_file" <<'PY'
 import json
-import os
 import sys
+import time
 
-ledger_path = Path(sys.argv[1])
-replay_key = "|".join(
-    [
-        os.environ["DISPATCHER_VALUE"],
-        os.environ["TARGET_LANE"],
-        os.environ["TARGET_PLATFORM"],
-        os.environ["TASK_ID"] or "",
-        os.environ["AUTHORITY_CASE_ID"] or "",
-        os.environ["WORKSTREAM_MODE"],
-        os.environ["BLOCK_REASON"],
-        "blocked",
-    ]
-)
-if ledger_path.exists():
-    for line in ledger_path.read_text(encoding="utf-8").splitlines():
-        try:
-            existing = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if existing.get("replay_key") == replay_key:
-            sys.exit(0)
-        if (
-            existing.get("outcome") == "blocked"
-            and existing.get("dispatcher") == os.environ["DISPATCHER_VALUE"]
-            and existing.get("target_lane") == os.environ["TARGET_LANE"]
-            and existing.get("target_platform") == os.environ["TARGET_PLATFORM"]
-            and (existing.get("task_id") or "") == (os.environ["TASK_ID"] or "")
-            and (existing.get("authority_case_id") or "")
-            == (os.environ["AUTHORITY_CASE_ID"] or "")
-            and existing.get("workstream_mode") == os.environ["WORKSTREAM_MODE"]
-            and existing.get("reason") == os.environ["BLOCK_REASON"]
-        ):
-            sys.exit(0)
-
-receipt = {
-    "dispatch_id": "BLOCKED-" + sha256(replay_key.encode("utf-8")).hexdigest()[:24],
-    "replay_key": replay_key,
-    "timestamp": os.environ["TIMESTAMP"],
-    "dispatcher": os.environ["DISPATCHER_VALUE"],
-    "target_lane": os.environ["TARGET_LANE"],
-    "target_platform": os.environ["TARGET_PLATFORM"],
-    "task_id": os.environ["TASK_ID"] or None,
-    "authority_case_id": os.environ["AUTHORITY_CASE_ID"] or None,
-    "durable_mq_dispatch_bound": False,
-    "advisory_only": True,
-    "durable_mq_reason": "blocked_before_runtime_dispatch",
-    "workstream_mode": os.environ["WORKSTREAM_MODE"],
-    "reason": os.environ["BLOCK_REASON"],
-    "outcome": "blocked",
-}
-with ledger_path.open("a", encoding="utf-8") as f:
-    f.write(json.dumps(receipt) + "\n")
-PY
-}
-
-check_durable_mq_binding() {
-    local lane="$1" task="$2" case_id="$3" message_id="$4"
-    local db_path="${HAPAX_RELAY_MQ_DB:-$HOME/.cache/hapax/relay/messages.db}"
-    python3 - "$db_path" "$lane" "$task" "$case_id" "$message_id" <<'PY'
-import sqlite3
-import sys
-from datetime import UTC, datetime
-from pathlib import Path
-
-db_path = Path(sys.argv[1]).expanduser()
-lane = sys.argv[2].strip().lower().replace("_", "-")
-task = sys.argv[3]
-case_id = sys.argv[4]
-message_id = sys.argv[5]
-
-if not db_path.exists():
-    print("durable_mq_database_missing")
-    raise SystemExit(3)
-
-params = {
-    "recipient": lane,
-    "task": task,
-    "case_id": case_id,
-}
-message_clause = ""
-if message_id:
-    message_clause = "AND m.message_id = :message_id"
-    params["message_id"] = message_id
+with open(sys.argv[1], encoding="utf-8") as stream:
+    metadata = json.load(stream)
 
 try:
-    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0) as conn:
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA query_only = ON")
-        conn.execute("PRAGMA busy_timeout = 1000")
-        rows = conn.execute(
-            f"""
-            SELECT m.message_id, m.stale_after, m.expires_at
-            FROM messages m
-            JOIN recipients r ON r.message_id = m.message_id
-            WHERE m.message_type = 'dispatch'
-              AND m.authority_case = :case_id
-              AND r.recipient = :recipient
-              {message_clause}
-              AND (
-                  m.authority_item = :task
-                  OR m.subject = :task
-              )
-            ORDER BY m.id DESC
-            LIMIT 5
-            """,
-            params,
-        ).fetchall()
-except sqlite3.Error as exc:
-    print(f"durable_mq_unreadable:{exc}")
-    raise SystemExit(3)
+    age = time.time() - float(metadata.get("last_probe_utc", 0))
+    ttl = float(metadata.get("freshness_ttl_s", 3600))
+except (TypeError, ValueError):
+    print("UNKNOWN: malformed freshness metadata")
+    raise SystemExit(1)
 
-if not rows:
-    print("durable_mq_authority_binding_missing")
-    raise SystemExit(3)
+if age > ttl:
+    print(f"STALE: {age:.0f}s old (ttl={ttl:.0f}s)")
+    raise SystemExit(1)
 
-now = datetime.now(UTC)
-reason = "durable_mq_freshness_unknown"
-for row in rows:
-    try:
-        stale_after = datetime.fromisoformat(str(row["stale_after"]).replace("Z", "+00:00"))
-        expires_at = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00"))
-    except ValueError:
-        reason = "durable_mq_freshness_unknown"
-        continue
-    if stale_after.tzinfo is None:
-        stale_after = stale_after.replace(tzinfo=UTC)
-    if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=UTC)
-    if expires_at < now:
-        reason = "durable_mq_dispatch_expired"
-        continue
-    if stale_after < now:
-        reason = "durable_mq_dispatch_stale"
-        continue
-    print(f"durable_mq_dispatch_bound:{row['message_id']}")
-    raise SystemExit(0)
-
-print(reason)
-raise SystemExit(3)
+print(f"FRESH: {age:.0f}s old (ttl={ttl:.0f}s)")
 PY
 }
 
-# --- List eligible lanes ---
+check_protection() {
+    local lane="$1"
+    if [[ -f "$PROTECTION_FILE" ]] \
+        && /usr/bin/grep -q "\`${lane}\`.*protected" "$PROTECTION_FILE" 2>/dev/null; then
+        printf 'PROTECTED: lane %s is protected\n' "$lane"
+        return 1
+    fi
+    printf 'OK: lane %s not protected\n' "$lane"
+}
+
+is_observed_worker_platform() {
+    local platform="${1,,}"
+    [[ "$platform" == "claude" \
+        || "$platform" == "claude-code" \
+        || "$platform" == "codex" \
+        || "$platform" == "vibe" ]]
+}
+
+LANE=""
+PLATFORM=""
+TASK=""
+RUNTIME_MODE="headless"
+PROFILE="full"
+MQ_MESSAGE_ID=""
+POLICY_ROLLBACK=false
+DRY_RUN=false
+LIST_ELIGIBLE=false
+CHECK_LANE=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --lane)
+            require_value "$1" "${2-}"
+            LANE="$2"
+            shift 2
+            ;;
+        --platform)
+            require_value "$1" "${2-}"
+            PLATFORM="$2"
+            shift 2
+            ;;
+        --task)
+            require_value "$1" "${2-}"
+            TASK="$2"
+            shift 2
+            ;;
+        --mode|--runtime-mode|--methodology-mode)
+            require_value "$1" "${2-}"
+            RUNTIME_MODE="$2"
+            shift 2
+            ;;
+        --profile)
+            require_value "$1" "${2-}"
+            PROFILE="$2"
+            shift 2
+            ;;
+        --mq-message-id)
+            require_value "$1" "${2-}"
+            MQ_MESSAGE_ID="$2"
+            shift 2
+            ;;
+        --policy-rollback)
+            POLICY_ROLLBACK=true
+            shift
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        --list-eligible)
+            LIST_ELIGIBLE=true
+            shift
+            ;;
+        --check-lane)
+            require_value "$1" "${2-}"
+            CHECK_LANE="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            printf 'error: unknown argument: %s\n' "$1" >&2
+            exit 2
+            ;;
+    esac
+done
+
 if $LIST_ELIGIBLE; then
-    echo "=== Eligible dispatch lanes ==="
+    printf '=== Eligible dispatch lanes ===\n'
     for meta_file in "$REGISTRY_DIR"/*.json; do
         [[ -f "$meta_file" ]] || continue
-        lane=$(basename "$meta_file" .json)
-        platform=$(python3 -c "import json; print(json.load(open('$meta_file')).get('platform','?'))" 2>/dev/null)
-        if is_retired_antigrav_lane "$lane" || is_retired_antigrav_lane "$platform" || ! is_dispatchable_platform "$platform"; then
+        lane="$(basename "$meta_file" .json)"
+        platform="$(/usr/bin/python3 -I - "$meta_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    print(json.load(stream).get("platform", "?"))
+PY
+)" || platform="?"
+        if ! is_observed_worker_platform "$platform"; then
             continue
         fi
-        freshness=$(check_lane_freshness "$lane" 2>&1) || true
-        protection=$(check_protection "$lane" 2>&1) || true
+        freshness="$(check_lane_freshness "$lane" 2>&1)" || true
+        protection="$(check_protection "$lane" 2>&1)" || true
         status="unknown"
         [[ "$freshness" == FRESH* ]] && status="eligible"
         [[ "$freshness" == STALE* ]] && status="stale"
         [[ "$protection" == PROTECTED* ]] && status="protected"
-        printf "  %-12s %-12s %-8s  %s\n" "$lane" "$platform" "$status" "$freshness"
+        printf '  %-12s %-12s %-8s  %s\n' "$lane" "$platform" "$status" "$freshness"
     done
     exit 0
 fi
 
-# --- Check single lane ---
 if [[ -n "$CHECK_LANE" ]]; then
-    echo "=== Lane check: $CHECK_LANE ==="
+    printf '=== Lane check: %s ===\n' "$CHECK_LANE"
     check_lane_freshness "$CHECK_LANE" 2>&1 || true
     check_protection "$CHECK_LANE" 2>&1 || true
     exit 0
 fi
 
-# --- Dispatch ---
-if [[ -z "$LANE" || -z "$PLATFORM" ]]; then
-    echo "error: --lane and --platform required for dispatch" >&2
-    exit 2
-fi
-case "$PLATFORM" in
-    claude|codex|vibe) ;;
-    agy)
-        reason="platform 'agy' is the non-launchable read-only agy.review.direct review route, not a cross-runtime worker lane; use scripts/hapax-agy-reviewer for review-plane work"
-        if ! $DRY_RUN; then
-            write_blocked_dispatch_receipt "$reason"
-        fi
-        echo "BLOCKED: $reason" >&2
-        exit 10
-        ;;
-    antigrav|antigravity|gemini-cli)
-        reason="platform '$PLATFORM' is retired/excised; use agy.review.direct for the live read-only review route"
-        if ! $DRY_RUN; then
-            write_blocked_dispatch_receipt "$reason"
-        fi
-        echo "BLOCKED: $reason" >&2
-        exit 10
-        ;;
-    *)
-        echo "error: unsupported platform: $PLATFORM" >&2
-        exit 2
-        ;;
-esac
+# Structural preconditions are the wrapper's entire task-bearing behavior. All
+# policy, authority, state, receipt, and effect decisions belong downstream.
+[[ -n "$TASK" ]] || hold "task_required: task-bearing dispatch requires --task"
+[[ -n "$LANE" ]] || hold "lane_required: task-bearing dispatch requires --lane"
+[[ -n "$PLATFORM" ]] || hold "platform_required: task-bearing dispatch requires --platform"
 
-if is_retired_antigrav_lane "$LANE"; then
-    reason="lane '$LANE' is non-launchable for cross-runtime dispatch; use agy.review.direct via scripts/hapax-agy-reviewer for review-plane work, and keep Antigrav/legacy Gemini lanes retired"
-    if ! $DRY_RUN; then
-        write_blocked_dispatch_receipt "$reason"
-    fi
-    echo "BLOCKED: $reason" >&2
-    exit 10
-fi
+METHODOLOGY_DISPATCH="$SCRIPT_DIR/hapax-methodology-dispatch"
+[[ -f "$METHODOLOGY_DISPATCH" && -x "$METHODOLOGY_DISPATCH" && ! -L "$METHODOLOGY_DISPATCH" ]] \
+    || hold "methodology_dispatch_unavailable: exact repository dispatcher unavailable at $METHODOLOGY_DISPATCH"
 
-echo "--- Pre-dispatch checks for $LANE ($PLATFORM) ---"
-
-# Gate 1: freshness
-if ! check_lane_freshness "$LANE"; then
-    echo "BLOCKED: lane $LANE metadata is not fresh" >&2
-    exit 1
-fi
-
-# Gate 2: protection
-if ! check_protection "$LANE"; then
-    echo "BLOCKED: lane $LANE is protected" >&2
-    exit 1
-fi
-
-# Gate 3: duplicate
-if ! check_duplicate "$LANE" "$PLATFORM"; then
-    echo "BLOCKED: duplicate session" >&2
-    exit 1
-fi
-
-# Gate 4: durable authority binding. Terminal/tmux sends can still wake a lane,
-# but without a fresh MQ dispatch row they are advisory only.
-DURABLE_MQ_BOUND=false
-DURABLE_MQ_REASON="not_authority_bearing"
-if [[ -n "$CASE_ID" && "$ADVISORY_ONLY" != "true" ]]; then
-    MQ_CHECK_OUTPUT="$(check_durable_mq_binding "$LANE" "$TASK" "$CASE_ID" "$MQ_MESSAGE_ID")" || {
-        echo "BLOCKED: authority-bearing dispatch lacks durable MQ binding ($MQ_CHECK_OUTPUT)" >&2
-        exit 1
-    }
-    DURABLE_MQ_BOUND=true
-    DURABLE_MQ_REASON="$MQ_CHECK_OUTPUT"
-    echo "OK: $MQ_CHECK_OUTPUT"
-else
-    ADVISORY_ONLY=true
-    if [[ -n "$CASE_ID" ]]; then
-        DURABLE_MQ_REASON="advisory_only_operator_requested"
-    else
-        DURABLE_MQ_REASON="advisory_only_no_authority_case"
-    fi
-    echo "ADVISORY_ONLY: $DURABLE_MQ_REASON"
-fi
-
-# Build dispatch ID
-DISPATCH_ID="DISPATCH-${DISPATCHER}-$(date -u +%Y%m%dT%H%M%SZ)"
-TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
-echo "--- Dispatch ---"
-echo "  dispatch_id: $DISPATCH_ID"
-echo "  target:      $LANE ($PLATFORM)"
-echo "  task:        ${TASK:-<none>}"
-echo "  case:        ${CASE_ID:-<none>}"
-echo "  mq:          ${DURABLE_MQ_REASON}"
-echo "  advisory:    ${ADVISORY_ONLY}"
-echo "  mode:        $MODE"
-echo "  runtime:     $RUNTIME_MODE/$PROFILE"
-echo "  reason:      ${REASON:-<none>}"
-
+PLATFORM="${PLATFORM,,}"
 if $DRY_RUN; then
-    echo "  [DRY RUN — no action taken]"
-    exit 0
+    RUNTIME_MODE="receipt-only"
 fi
 
-# Write dispatch receipt
-mkdir -p "$LEDGER_DIR"
-python3 -c "
-import json
-receipt = {
-    'dispatch_id': '$DISPATCH_ID',
-    'timestamp': '$TIMESTAMP',
-    'dispatcher': '$DISPATCHER',
-    'target_lane': '$LANE',
-    'target_platform': '$PLATFORM',
-    'task_id': '${TASK}' or None,
-    'authority_case_id': '${CASE_ID}' or None,
-    'durable_mq_dispatch_bound': '${DURABLE_MQ_BOUND}' == 'true',
-    'advisory_only': '${ADVISORY_ONLY}' == 'true',
-    'durable_mq_reason': '${DURABLE_MQ_REASON}',
-    'workstream_mode': '$MODE',
-    'reason': '${REASON}',
-    'outcome': 'dispatched',
-}
-with open('$LEDGER_DIR/dispatch-ledger.jsonl', 'a') as f:
-    f.write(json.dumps(receipt) + '\n')
-print('  receipt written')
-"
-
-# Methodology-dispatch gate: when HAPAX_METHODOLOGY_DISPATCH is set (or the
-# script exists at the standard path), delegate task-bearing dispatches through
-# it. Taskless dispatches are blocked — methodology requires a task.
-METHODOLOGY_DISPATCH_ENV="${HAPAX_METHODOLOGY_DISPATCH:-}"
-METHODOLOGY_DISPATCH="${METHODOLOGY_DISPATCH_ENV:-$SCRIPT_DIR/hapax-methodology-dispatch}"
-if [[ -x "$METHODOLOGY_DISPATCH" ]]; then
-    if [[ -z "$TASK" ]]; then
-        echo "error: require --task and methodology dispatch for governed lane dispatch" >&2
-        exit 2
-    fi
-    METHODOLOGY_CMD=("$METHODOLOGY_DISPATCH")
-    if [[ -z "$METHODOLOGY_DISPATCH_ENV" ]] && command -v uv >/dev/null 2>&1; then
-        METHODOLOGY_CMD=(uv run python "$METHODOLOGY_DISPATCH")
-    fi
-    DELEGATE_ARGS=(
-        --task "$TASK"
-        --lane "$LANE"
-        --platform "$PLATFORM"
-        --mode "$RUNTIME_MODE"
-        --profile "$PROFILE"
-        --launch
-    )
-    if [[ -n "$MQ_MESSAGE_ID" ]]; then
-        DELEGATE_ARGS+=(--mq-message-id "$MQ_MESSAGE_ID")
-    fi
-    if [[ "$POLICY_ROLLBACK" == "true" ]]; then
-        DELEGATE_ARGS+=(--policy-rollback)
-    fi
-    echo "  delegating: ${METHODOLOGY_CMD[*]} ${DELEGATE_ARGS[*]}"
-    if [[ -z "$METHODOLOGY_DISPATCH_ENV" ]]; then
-        export PYTHONPATH="$REPO_ROOT:$REPO_ROOT/packages/agentgov/src:${PYTHONPATH:-}"
-    fi
-    exec "${METHODOLOGY_CMD[@]}" "${DELEGATE_ARGS[@]}"
+DELEGATE_ARGS=(
+    --task "$TASK"
+    --lane "$LANE"
+    --platform "$PLATFORM"
+    --mode "$RUNTIME_MODE"
+    --profile "$PROFILE"
+)
+if [[ "$RUNTIME_MODE" != "receipt-only" ]]; then
+    DELEGATE_ARGS+=(--launch)
+fi
+if [[ -n "$MQ_MESSAGE_ID" ]]; then
+    DELEGATE_ARGS+=(--mq-message-id "$MQ_MESSAGE_ID")
+fi
+if $POLICY_ROLLBACK; then
+    DELEGATE_ARGS+=(--policy-rollback)
 fi
 
-# Fallback: direct launcher (methodology-dispatch not available)
-case "$PLATFORM" in
-    claude)
-        LAUNCHER="$SCRIPT_DIR/hapax-claude"
-        ARGS=(--role "$LANE" --terminal tmux)
-        ;;
-    codex)
-        LAUNCHER="$SCRIPT_DIR/hapax-codex"
-        ARGS=(--session "$LANE" --terminal tmux)
-        [[ -n "$TASK" ]] && ARGS+=(--task "$TASK")
-        ;;
-    vibe)
-        LAUNCHER="$SCRIPT_DIR/hapax-vibe"
-        ARGS=(--session "$LANE" --terminal tmux)
-        [[ -n "$TASK" ]] && ARGS+=(--task "$TASK")
-        ;;
-    *)
-        echo "error: unknown platform: $PLATFORM" >&2
-        exit 2
-        ;;
-esac
-
-if [[ -x "$LAUNCHER" ]]; then
-    echo "  invoking: $LAUNCHER ${ARGS[*]}"
-    exec "$LAUNCHER" "${ARGS[@]}"
-else
-    echo "  warning: launcher not found at $LAUNCHER — receipt written but not launched" >&2
-    exit 0
-fi
+PROJECT_PYTHON="$REPO_ROOT/.venv/bin/python"
+[[ -f "$PROJECT_PYTHON" && -x "$PROJECT_PYTHON" ]] \
+    || hold "methodology_runtime_unavailable: pinned interpreter unavailable at $PROJECT_PYTHON"
+unset PYTHONPATH PYTHONHOME
+exec "$PROJECT_PYTHON" -I "$METHODOLOGY_DISPATCH" "${DELEGATE_ARGS[@]}"

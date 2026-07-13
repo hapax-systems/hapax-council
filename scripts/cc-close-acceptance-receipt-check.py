@@ -17,8 +17,9 @@ Used by ``scripts/cc-close`` in the ``done`` path, before the note moves to
 closed/. Verdicts other than ``accepted`` block: a rejected review is not a
 closeable outcome.
 
-Bypass: ``HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1`` (incident response only),
-honored here so every caller shares one mechanism.
+Bypass: ``HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1`` (legacy incident response only).
+Canon-bound close ignores this raw bypass; governed override evidence belongs in
+the shared terminal-close admission rather than an ambient environment variable.
 
 Failure mode: fail-OPEN on infrastructure errors reading the NOTE (missing /
 unreadable file — a broken gate must not brick closures), but fail-CLOSED on
@@ -44,26 +45,33 @@ from shared.sdlc_lifecycle import (  # noqa: E402
     requires_acceptance_receipt,
 )
 
+CANON_BOUND_CLOSE_ENV = "HAPAX_CANON_BOUND_CLOSE_ENFORCEMENT"
+
 
 def gate(path: Path) -> tuple[int, str]:
     """Return ``(exit_code, message)``; 0 permits closure, 2 blocks it."""
 
-    if os.environ.get("HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF") == "1":
+    canon_bound = os.environ.get(CANON_BOUND_CLOSE_ENV) == "1"
+    if os.environ.get("HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF") == "1" and not canon_bound:
         return 0, "acceptance-receipt gate disabled by HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1"
 
+    if not path.is_file() and canon_bound:
+        return 2, f"canon-bound close fail-CLOSED: source path missing or not a file ({path})"
     if not path.is_file():
         return 0, f"fail-OPEN: source path missing or not a file ({path})"
 
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
+        if canon_bound:
+            return 2, f"canon-bound close fail-CLOSED: source unreadable ({exc})"
         return 0, f"fail-OPEN: source unreadable ({exc})"
 
     frontmatter = frontmatter_from_text(text)
     if not requires_acceptance_receipt(frontmatter):
         return 0, "not a review-floor task — acceptance-receipt gate does not apply"
 
-    blockers = acceptance_receipt_blockers(frontmatter, path)
+    blockers = list(acceptance_receipt_blockers(frontmatter, path))
     if not blockers:
         return 0, "valid acceptance receipt present"
 
@@ -88,7 +96,11 @@ def gate(path: Path) -> tuple[int, str]:
         "A verdict other than 'accepted' keeps the task open — address the review",
         "feedback instead of closing.",
         "",
-        "Bypass for incident response: HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1",
+        (
+            "Canon-bound close requires governed override evidence; raw bypass is ignored."
+            if canon_bound
+            else "Bypass for incident response: HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1"
+        ),
     ]
     return 2, "\n".join(lines)
 

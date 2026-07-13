@@ -1,4 +1,4 @@
-schema: hapax.sdlc-stage-metadata.v1
+schema: hapax.sdlc-stage-metadata.v2
 formal_model: docs/formal/sdlc-ladder.tla
 edge_classes:
   next: TLA Next(s), including BLOCKED escape edges
@@ -16,12 +16,14 @@ stages:
     operation_admissions: []
     next:
       - to: S1
+        projection_role: advance
         authority_capability: coord.case.advance
         guards: [cc_task_shape_valid, parent_spec_present, authority_case_present]
         actions: [append_stage_transition, begin_research]
         enforcement: declared
     fall:
       - to: BLOCKED
+        projection_role: repair
         authority_capability: system.gate.refusal
         guards: [gate_refused]
         actions: [record_blocker_report, append_stage_transition]
@@ -38,12 +40,14 @@ stages:
     operation_admissions: []
     next:
       - to: S2
+        projection_role: advance
         authority_capability: coord.case.advance
         guards: [research_anchors_present]
         actions: [append_stage_transition, begin_design]
         enforcement: declared
     fall:
       - to: BLOCKED
+        projection_role: repair
         authority_capability: system.gate.refusal
         guards: [gate_refused]
         actions: [record_blocker_report, append_stage_transition]
@@ -60,12 +64,14 @@ stages:
     operation_admissions: []
     next:
       - to: S3
+        projection_role: advance
         authority_capability: coord.case.advance
         guards: [standards_present, failure_predicates_present, frontier_review_floor_declared]
         actions: [append_stage_transition, begin_review]
         enforcement: declared
     fall:
       - to: BLOCKED
+        projection_role: repair
         authority_capability: system.gate.refusal
         guards: [gate_refused]
         actions: [record_blocker_report, append_stage_transition]
@@ -82,17 +88,20 @@ stages:
     operation_admissions: []
     next:
       - to: S4
+        projection_role: advance
         authority_capability: coord.case.advance
         guards: [disconfirmation_not_selected]
         actions: [append_stage_transition, begin_acceptance]
         enforcement: declared
       - to: S3_5
+        projection_role: branch
         authority_capability: coord.case.advance
         guards: [disconfirmation_selected]
         actions: [append_stage_transition, begin_disconfirmation]
         enforcement: declared
     fall:
       - to: BLOCKED
+        projection_role: repair
         authority_capability: system.gate.refusal
         guards: [gate_refused]
         actions: [record_blocker_report, append_stage_transition]
@@ -109,17 +118,20 @@ stages:
     operation_admissions: []
     next:
       - to: S4
+        projection_role: advance
         authority_capability: coord.case.advance
         guards: [disconfirmation_allows_advance]
         actions: [append_stage_transition, begin_acceptance]
         enforcement: declared
       - to: S0
+        projection_role: repair
         authority_capability: coord.case.advance
         guards: [disconfirmation_requires_restart]
         actions: [append_stage_transition, restart_intake]
         enforcement: declared
     fall:
       - to: BLOCKED
+        projection_role: repair
         authority_capability: system.gate.refusal
         guards: [gate_refused]
         actions: [record_blocker_report, append_stage_transition]
@@ -136,12 +148,14 @@ stages:
     operation_admissions: []
     next:
       - to: S5
+        projection_role: advance
         authority_capability: coord.case.advance
         guards: [formation_records_present, plan_accepted]
         actions: [append_stage_transition, begin_implementation_authorization]
         enforcement: declared
     fall:
       - to: BLOCKED
+        projection_role: repair
         authority_capability: system.gate.refusal
         guards: [gate_refused]
         actions: [record_blocker_report, append_stage_transition]
@@ -158,12 +172,14 @@ stages:
     operation_admissions: []
     next:
       - to: S6
+        projection_role: advance
         authority_capability: coord.case.advance
         guards: [authority_case_granted, evidence_collection_plan_present, implementation_authorized]
         actions: [append_stage_transition, begin_implementation]
         enforcement: declared
     fall:
       - to: BLOCKED
+        projection_role: repair
         authority_capability: system.gate.refusal
         guards: [gate_refused]
         actions: [record_blocker_report, append_stage_transition]
@@ -190,17 +206,20 @@ stages:
         enforcement_ref: hooks/scripts/cc-task-gate.impl.sh
     next:
       - to: S7
+        projection_role: advance
         authority_capability: coord.case.advance
         guards: [implementation_complete, evidence_present]
         actions: [append_stage_transition, begin_runtime_verification]
         enforcement: declared
       - to: BLOCKED
+        projection_role: repair
         authority_capability: system.gate.refusal
         guards: [implementation_gate_refused]
         actions: [record_blocker_report, append_stage_transition]
         enforcement: declared
     fall:
       - to: BLOCKED
+        projection_role: repair
         authority_capability: system.gate.refusal
         guards: [gate_refused]
         actions: [record_blocker_report, append_stage_transition]
@@ -228,17 +247,20 @@ stages:
         enforcement_ref: hooks/scripts/cc-task-gate.impl.sh
     next:
       - to: S8
+        projection_role: advance
         authority_capability: coord.case.advance
         guards: [live_witness_present, release_authorized]
         actions: [append_stage_transition, begin_release]
         enforcement: declared
       - to: BLOCKED
+        projection_role: repair
         authority_capability: system.gate.refusal
         guards: [runtime_gate_refused]
         actions: [record_blocker_report, append_stage_transition]
         enforcement: declared
     fall:
       - to: BLOCKED
+        projection_role: repair
         authority_capability: system.gate.refusal
         guards: [gate_refused]
         actions: [record_blocker_report, append_stage_transition]
@@ -265,12 +287,14 @@ stages:
         enforcement_ref: hooks/scripts/cc-task-gate.impl.sh
     next:
       - to: S9
+        projection_role: advance
         authority_capability: coord.case.advance
         guards: [pr_merged]
         actions: [append_stage_transition, begin_post_merge_verification]
         enforcement: declared
     fall:
       - to: BLOCKED
+        projection_role: repair
         authority_capability: system.gate.refusal
         guards: [gate_refused]
         actions: [record_blocker_report, append_stage_transition]
@@ -297,12 +321,14 @@ stages:
         enforcement_ref: hooks/scripts/cc-task-gate.impl.sh
     next:
       - to: S10
+        projection_role: advance
         authority_capability: coord.case.advance
         guards: [production_regression_witness_present, acceptance_receipt_valid]
         actions: [append_stage_transition, begin_closure]
         enforcement: declared
     fall:
       - to: BLOCKED
+        projection_role: repair
         authority_capability: system.gate.refusal
         guards: [gate_refused]
         actions: [record_blocker_report, append_stage_transition]
@@ -329,12 +355,14 @@ stages:
         enforcement_ref: hooks/scripts/cc-task-gate.impl.sh
     next:
       - to: S11
+        projection_role: advance
         authority_capability: coord.case.advance
         guards: [closure_receipts_present, cc_close_ready]
         actions: [append_stage_transition, close_task]
         enforcement: declared
     fall:
       - to: BLOCKED
+        projection_role: repair
         authority_capability: system.gate.refusal
         guards: [gate_refused]
         actions: [record_blocker_report, append_stage_transition]
@@ -363,11 +391,13 @@ stages:
     operation_admissions: []
     next:
       - to: S6
+        projection_role: repair
         authority_capability: coord.grant.mint
         guards: [escape_grant_valid, resume_authorized]
         actions: [record_escape_grant, append_stage_transition, resume_implementation]
         enforcement: declared
       - to: S0
+        projection_role: repair
         authority_capability: coord.grant.mint
         guards: [escape_grant_valid, restart_authorized]
         actions: [record_escape_grant, append_stage_transition, restart_intake]

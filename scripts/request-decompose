@@ -21,7 +21,7 @@ import logging
 import os
 import re
 import sys
-from datetime import UTC, datetime
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -30,31 +30,52 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from agents.request_decomposer.models import RequestDecomposition, TaskSpec
-from agents.request_decomposer.writer import write_decomposition
+from agents.request_decomposer.models import (
+    RequestDecomposition,
+    RequestDecompositionPlan,
+    TaskSpec,
+)
+from agents.request_decomposer.writer import (
+    DecompositionJournalInspection,
+    decomposition_commit_state,
+    inspect_decomposition_journals,
+    write_decomposition,
+)
 from shared.frontmatter import parse_frontmatter
+from shared.sdlc_task_store import (
+    TaskIdentityIndex,
+    TaskStoreError,
+    build_task_identity_index,
+    validate_task_identity_index,
+)
 
 _log = logging.getLogger(__name__)
 
 REQUESTS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-requests/active"
 TASKS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks"
 SCAN_LIMIT_ENV = "HAPAX_REQUEST_DECOMPOSE_LIMIT"
-REMEDIATION_AUTHORITY_CASE_ENV = "HAPAX_REQUEST_DECOMPOSE_REMEDIATION_AUTHORITY_CASE"
-REMEDIATION_PARENT_REQUEST_ENV = "HAPAX_REQUEST_DECOMPOSE_REMEDIATION_PARENT_REQUEST"
-REMEDIATION_PARENT_SPEC_ENV = "HAPAX_REQUEST_DECOMPOSE_REMEDIATION_PARENT_SPEC"
-DEFAULT_REMEDIATION_AUTHORITY_CASE = "CASE-SDLC-REFORM-001"
-DEFAULT_REMEDIATION_PARENT_SPEC = str(
-    ROOT / "docs/superpowers/specs/2026-05-30-sdlc-frictionless-self-direction-design.md"
-)
+DECOMPOSITION_HOLD_SCHEMA = "hapax.request-decomposition-hold.v1"
+DECOMPOSITION_HOLD_DIR = "_decomposition_holds"
+HISTORICAL_DECOMPOSITION_PLAN_SCHEMA = "hapax.request-decomposition-plan.v1"
 AUTHORITY_CASE_RE = re.compile(r"^CASE-[A-Z0-9-]+$")
 CCTV_READY_ADMISSION_VALUES = {"ready_to_plan", "advance", "admitted"}
-TERMINAL_REMEDIATION_STATUSES = {"done", "closed", "complete", "withdrawn", "superseded"}
 CCTV_INTAKE_RECEIPT_FIELDS = (
     "cctv_intake_receipt",
     "cctv_intake_receipt_path",
     "cctv_receipt",
     "intake_receipt",
 )
+
+
+class BoundDecompositionHold(ValueError):
+    """Typed non-provider HOLD for one exact bound-plan compatibility boundary."""
+
+    def __init__(self, failure_class: str, reason_code: str) -> None:
+        self.failure_class = failure_class
+        self.reason_code = reason_code
+        super().__init__(reason_code)
+
+
 CCTV_INTAKE_ADMISSION_FIELDS = (
     "cctv_intake_verdict",
     "intake_verdict",
@@ -75,6 +96,13 @@ CCTV_CAPABILITY_RECEIPT_FIELDS = (
     "capability_receipt_refs",
 )
 NULLISH_SCALARS = {"", "null", "none", "None", "NULL", "~", "unassigned", "[]"}
+AUTHORITY_LEVELS = {
+    "authoritative",
+    "support_non_authoritative",
+    "evidence_receipt",
+    "relay_only",
+}
+MAX_DECOMPOSITION_PLAN_BYTES = 8 * 1024 * 1024
 
 DECOMPOSITION_PROMPT = """\
 You are the Hapax request decomposition engine. Given a request note,
@@ -104,6 +132,9 @@ Each task object must have these fields:
 - composition_tolerance: "atomic" | "parallel_ok" | "sequential_required" |
   "decompose_required" | "unknown"
 - requirement_vector_validity_mask: object with the same 8 keys and boolean values
+- status: "offered" | "ready" | "blocked"; use blocked for any unresolved hold
+- blocked_reason: required when status is blocked
+- authority_level: requested ceiling only; this proposal cannot grant authority
 
 Rules:
 1. EVERY task the request needs must appear. No stubs.
@@ -117,17 +148,21 @@ Rules:
    frontier/high-risk/unknown. Set a validity-mask dimension false when the
    request lacks enough evidence; use conservative high scores for unknown hard
    dimensions.
+8. This output is a proposal. It never grants authority, selects a live route,
+   satisfies a dependency, or authorizes mutation.
 """
 
 
 def _read_request(path: Path) -> dict:
-    text = path.read_text(encoding="utf-8")
+    source_bytes = path.read_bytes()
+    text = source_bytes.decode("utf-8")
     fm, body = parse_frontmatter(text)
     return {
         "path": str(path),
         "filename": path.name,
         "frontmatter": fm,
         "body": body or text,
+        "source_sha256": hashlib.sha256(source_bytes).hexdigest(),
     }
 
 
@@ -165,10 +200,6 @@ def _request_keys(path: Path, frontmatter: dict[str, Any]) -> set[str]:
     return keys
 
 
-def _utc_now() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def _slugify(value: str, *, max_length: int = 58) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     if not slug:
@@ -198,76 +229,17 @@ def _priority_for_request(request_data: dict[str, Any]) -> str:
     return "p1"
 
 
-def _wsjf_for_remediation(request_data: dict[str, Any], priority: str) -> float:
-    floor_by_priority = {"p0": 30.0, "p1": 20.0, "p2": 10.0, "p3": 5.0}
-    try:
-        request_wsjf = float(request_data["frontmatter"].get("wsjf", 0) or 0)
-    except (TypeError, ValueError):
-        request_wsjf = 0.0
-    return max(floor_by_priority.get(priority, 10.0), request_wsjf)
-
-
-def _remediation_parent_request(request_data: dict[str, Any]) -> str:
-    return os.environ.get(REMEDIATION_PARENT_REQUEST_ENV, str(request_data["filename"]))
-
-
-def _remediation_parent_spec() -> str:
-    return os.environ.get(REMEDIATION_PARENT_SPEC_ENV, DEFAULT_REMEDIATION_PARENT_SPEC)
-
-
-def _remediation_authority_case() -> str:
-    return os.environ.get(REMEDIATION_AUTHORITY_CASE_ENV, DEFAULT_REMEDIATION_AUTHORITY_CASE)
-
-
-def _decomposition_remediation_task_id(
-    request_data: dict[str, Any],
-    failure_class: str,
-) -> str:
-    request_id = _request_id_for_data(request_data)
-    digest_seed = f"{request_data['path']}:{request_id}:{failure_class}"
-    digest = hashlib.sha1(digest_seed.encode("utf-8")).hexdigest()[:8]
-    return f"request-decompose-{_slugify(failure_class, max_length=24)}-{_slugify(request_id)}-{digest}"
-
-
-def _render_note(frontmatter: dict[str, Any], body: str) -> str:
-    yaml_text = yaml.safe_dump(
-        frontmatter,
-        sort_keys=False,
-        allow_unicode=False,
-        default_flow_style=False,
-    ).strip()
-    return f"---\n{yaml_text}\n---\n\n{body.rstrip()}\n"
-
-
-def _existing_task_path(task_id: str) -> Path | None:
-    candidate = TASKS_DIR / "active" / f"{task_id}.md"
-    if candidate.is_file():
-        fm, _body = parse_frontmatter(candidate)
-        if (
-            _scalar(fm.get("remediates_request_id"))
-            and _scalar(fm.get("status")) in TERMINAL_REMEDIATION_STATUSES
-        ):
-            return None
-        return candidate
-    return None
-
-
-def _known_task_ids() -> set[str]:
-    task_ids: set[str] = set()
-    for task_dir in (TASKS_DIR / "active", TASKS_DIR / "closed"):
-        if not task_dir.is_dir():
+def _known_task_ids(identity_index: TaskIdentityIndex | None = None) -> set[str]:
+    index = identity_index or build_task_identity_index(TASKS_DIR)
+    remediation_ids = set()
+    for entry in index.entries:
+        if entry.task_id is None or entry.error_reason_code is not None:
             continue
-        for task_path in sorted(task_dir.glob("*.md")):
-            if task_path.suffix != ".md":
-                continue
-            fm, _body = parse_frontmatter(task_path)
-            if _scalar(fm.get("remediates_request_id")):
-                continue
-            task_id = _scalar(fm.get("task_id")) or task_path.stem
-            if task_id:
-                task_ids.add(task_id)
-                task_ids.add(task_path.stem)
-    return task_ids
+        fm, _body = parse_frontmatter(entry.path)
+        if _scalar(fm.get("remediates_request_id")):
+            remediation_ids.add(entry.task_id)
+    validate_task_identity_index(index)
+    return set(index.by_task_id) - remediation_ids
 
 
 def _task_parent_reference_keys(value: Any) -> set[str]:
@@ -283,6 +255,89 @@ def _task_parent_reference_keys(value: Any) -> set[str]:
     return keys
 
 
+def _journal_request_keys(inspection: DecompositionJournalInspection) -> set[str]:
+    keys: set[str] = set()
+    if inspection.request_id:
+        keys.add(inspection.request_id)
+    if inspection.request_path:
+        keys.update(_task_parent_reference_keys(inspection.request_path))
+    return keys
+
+
+def _journals_for_request(
+    request_data: dict[str, Any],
+) -> tuple[DecompositionJournalInspection, ...]:
+    path = Path(str(request_data["path"]))
+    keys = _request_keys(path, request_data["frontmatter"])
+    return tuple(
+        inspection
+        for inspection in inspect_decomposition_journals(TASKS_DIR)
+        if keys & _journal_request_keys(inspection)
+    )
+
+
+def _unassociated_invalid_journals() -> tuple[DecompositionJournalInspection, ...]:
+    return tuple(
+        inspection
+        for inspection in inspect_decomposition_journals(TASKS_DIR)
+        if inspection.state == "invalid" and not _journal_request_keys(inspection)
+    )
+
+
+def _persist_decomposition_hold(payload: dict[str, Any], *, dry_run: bool) -> str:
+    unsigned = yaml.safe_dump(payload, sort_keys=False, allow_unicode=False).encode("utf-8")
+    hold_id = hashlib.sha256(unsigned).hexdigest()
+    payload["hold_id"] = hold_id
+    content = yaml.safe_dump(payload, sort_keys=False, allow_unicode=False).encode("utf-8")
+    logical_root = TASKS_DIR.expanduser()
+    if logical_root.is_symlink() or (logical_root.exists() and not logical_root.is_dir()):
+        raise ValueError("task root must be one real directory")
+    physical_root = logical_root.resolve(strict=False)
+    hold_dir = logical_root / DECOMPOSITION_HOLD_DIR
+    if hold_dir.resolve(strict=False) != physical_root / DECOMPOSITION_HOLD_DIR:
+        raise ValueError("decomposition HOLD directory escapes task root")
+    path = hold_dir / f"{hold_id}.yaml"
+    if path.is_symlink():
+        raise ValueError("decomposition HOLD path cannot be a symlink")
+    if path.is_file():
+        if path.read_bytes() != content:
+            raise FileExistsError("decomposition HOLD identity collision")
+        return "existing"
+    if dry_run:
+        return "dry_run"
+    hold_dir.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{hold_id}.", dir=hold_dir)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            if path.read_bytes() != content:
+                raise FileExistsError("decomposition HOLD identity collision") from None
+    finally:
+        temporary.unlink(missing_ok=True)
+    return "created"
+
+
+def _hold_authorization_projection() -> dict[str, bool | str]:
+    return {
+        "authority_level": "support_non_authoritative",
+        "claimable": False,
+        "may_authorize": False,
+        "implementation_authorized": False,
+        "source_mutation_authorized": False,
+        "docs_mutation_authorized": False,
+        "runtime_mutation_authorized": False,
+        "release_authorized": False,
+        "public_mutation_authorized": False,
+        "provider_spend_authorized": False,
+    }
+
+
 def _record_decomposition_remediation(
     request_data: dict[str, Any],
     failure_class: str,
@@ -290,120 +345,48 @@ def _record_decomposition_remediation(
     *,
     dry_run: bool,
 ) -> str:
-    """Create a durable, idempotent remediation cc-task for failed decomposition."""
-    task_id = _decomposition_remediation_task_id(request_data, failure_class)
-    existing = _existing_task_path(task_id)
-    if existing is not None:
-        return "existing"
-    if dry_run:
-        return "dry_run"
-
-    active_dir = TASKS_DIR / "active"
-    active_dir.mkdir(parents=True, exist_ok=True)
-    path = active_dir / f"{task_id}.md"
-    now = _utc_now()
+    """Append a non-task HOLD; failure observation must never mint authority."""
     request_id = _request_id_for_data(request_data)
-    request_path = str(request_data["path"])
-    priority = _priority_for_request(request_data)
-    wsjf = _wsjf_for_remediation(request_data, priority)
-    mutation_surface = "source" if failure_class == "llm_failed" else "vault_docs"
-    mutation_scope_refs = [
-        request_path,
-        "request-decompose:failing-intake-flow",
-    ]
-    if mutation_surface == "source":
-        mutation_scope_refs.append(str(ROOT / "scripts/request-decompose"))
-    title_actions = {
-        "admission_blocked": "Repair request decomposition admission",
-        "llm_failed": "Repair request decomposition generation",
-        "write_conflict": "Repair request decomposition write conflict",
+    request_path = Path(str(request_data["path"]))
+    request_bytes = request_path.read_bytes()
+    payload = {
+        "schema": DECOMPOSITION_HOLD_SCHEMA,
+        "state": "hold",
+        "request_id": request_id,
+        "request_path": str(request_path),
+        "request_sha256": hashlib.sha256(request_bytes).hexdigest(),
+        "failure_class": failure_class,
+        "reason_codes": sorted(set(reasons)),
+        **_hold_authorization_projection(),
     }
-    title_action = title_actions.get(failure_class, "Repair request decomposition")
-    reason_lines = "\n".join(f"- `{reason}`" for reason in reasons)
-    frontmatter = {
-        "type": "cc-task",
-        "task_id": task_id,
-        "title": f"{title_action} for {request_id}",
-        "status": "offered",
-        "assigned_to": "unassigned",
-        "priority": priority,
-        "wsjf": wsjf,
-        "effort_class": "standard",
-        "quality_floor": "deterministic_ok",
-        "mutation_surface": mutation_surface,
-        "mutation_scope_refs": mutation_scope_refs,
-        "authority_level": "authoritative",
-        "route_metadata_schema": 1,
-        "kind": "recovery_triage",
-        "risk_tier": "T1",
-        "implementation_authorized": True,
-        "source_mutation_authorized": mutation_surface == "source",
-        "docs_mutation_authorized": mutation_surface in {"source", "vault_docs"},
-        "runtime_mutation_authorized": False,
-        "depends_on": [],
-        "blocks": [],
-        "branch": None,
-        "pr": None,
-        "created_at": now,
-        "updated_at": now,
-        "claimed_at": None,
-        "completed_at": None,
-        # Normal decomposition/coverage indexes ignore remediation tasks via
-        # remediates_request_id, so this lineage does not mark the failed
-        # request as decomposed or fulfilled.
-        "parent_request": _remediation_parent_request(request_data),
-        "parent_spec": _remediation_parent_spec(),
-        "authority_case": _remediation_authority_case(),
-        "remediates_request_id": request_id,
-        "remediates_request_path": request_path,
-        "decompose_failure_class": failure_class,
-        "decompose_failure_reasons": reasons,
-        "tags": [
-            "cc-task",
-            priority,
-            "request-decompose-remediation",
-            "auto-remediation",
+    return _persist_decomposition_hold(payload, dry_run=dry_run)
+
+
+def _record_journal_reconciliation_hold(
+    inspection: DecompositionJournalInspection,
+    *,
+    dry_run: bool,
+) -> str:
+    payload = {
+        "schema": DECOMPOSITION_HOLD_SCHEMA,
+        "state": "hold",
+        "request_id": inspection.request_id or None,
+        "request_path": inspection.request_path or None,
+        "request_sha256": None,
+        "decomposition_commit_id": inspection.commit_id,
+        "failure_class": "journal_reconciliation_required",
+        "reason_codes": [
+            f"unassociated_decomposition_journal_invalid:{inspection.commit_id}:{inspection.reason_code}"
         ],
+        **_hold_authorization_projection(),
     }
-    body = f"""# {title_action} for {request_id}
-
-`request-decompose` could not create the real downstream task graph for this
-request. This remediation item exists so the failed decomposition is tracked
-instead of becoming an orphaned warning in the timer journal.
-
-## Failed Request
-
-- Request id: `{request_id}`
-- Request path: `{request_path}`
-- Failure class: `{failure_class}`
-
-## Failure Reasons
-
-{reason_lines}
-
-## Acceptance Criteria
-
-- [ ] The failed request has valid CCTV intake receipt and ready verdict when
-      the failure is admission-related.
-- [ ] The failed request has a valid `CASE-*` authority case and non-null parent
-      lineage before source/runtime mutation work is decomposed.
-- [ ] If generation failed after admission, the LLM/runtime/prompt failure is
-      corrected or routed to an explicit operator blocker with evidence.
-- [ ] `scripts/request-decompose --scan --dry-run` no longer reports this
-      request as failing for the same reasons.
-- [ ] The original request receives its real `downstream_tasks`; this remediation
-      task alone is not treated as fulfillment of the request.
-"""
-    tmp = path.with_suffix(".md.decompose-remediation-tmp")
-    tmp.write_text(_render_note(frontmatter, body), encoding="utf-8")
-    tmp.replace(path)
-    return "created"
+    return _persist_decomposition_hold(payload, dry_run=dry_run)
 
 
-def _remediation_next_action(task_id: str, remediation_result: str) -> str:
+def _remediation_next_action(remediation_result: str) -> str:
     if remediation_result == "dry_run":
-        return f"rerun without --dry-run to create remediation task {task_id}"
-    return f"cc-claim {task_id}"
+        return "admit a governed non-dry intake transition to persist this HOLD"
+    return "satisfy the recorded HOLD through a separately authorized transition"
 
 
 def _normalize_mutation_surface(value: Any) -> str:
@@ -488,7 +471,11 @@ def _normalize_quality_floor(value: Any, request_data: dict[str, Any]) -> str:
         "deterministic_ok": "deterministic_ok",
     }
     normalized = aliases.get(text, text)
-    if normalized in {"deterministic_ok", "frontier_review_required", "frontier_required"}:
+    if normalized in {
+        "deterministic_ok",
+        "frontier_review_required",
+        "frontier_required",
+    }:
         return normalized
     request_floor = _scalar(request_data["frontmatter"].get("quality_floor")).lower()
     return aliases.get(request_floor.replace("-", "_"), "deterministic_ok")
@@ -609,13 +596,29 @@ def _coerce_llm_task(
         acceptance = [
             f"{_request_id_for_data(request_data)} has an observable implementation outcome."
         ]
+    dependencies = _string_items(raw_task.get("depends_on"))
+    requested_status = _scalar(raw_task.get("status")).lower()
+    if requested_status not in {"offered", "ready", "blocked"}:
+        requested_status = "ready" if dependencies else "offered"
+    blocked_reason = _scalar(raw_task.get("blocked_reason"))
+    if requested_status == "blocked" and not blocked_reason:
+        blocked_reason = "proposal_contains_unresolved_hold"
+    elif requested_status == "ready" and not blocked_reason and dependencies:
+        blocked_reason = f"Depends on: {', '.join(dependencies)}"
+
+    request_authority = _request_authority_level(request_data["frontmatter"])
+    proposed_authority = _scalar(raw_task.get("authority_level")) or request_authority
+    if proposed_authority not in AUTHORITY_LEVELS:
+        raise ValueError(f"invalid proposed authority_level: {proposed_authority!r}")
+    if request_authority != "authoritative" and proposed_authority != request_authority:
+        raise ValueError("task proposal exceeds or changes the request authority ceiling")
     return {
         "task_id": task_id,
         "title": title,
         "kind": _normalize_task_kind(raw_task.get("kind", "build")),
         "priority": _normalize_priority(raw_task.get("priority"), request_data),
         "wsjf": wsjf,
-        "depends_on": _string_items(raw_task.get("depends_on")),
+        "depends_on": dependencies,
         "phase_index": phase,
         "intent": _scalar(raw_task.get("intent")),
         "acceptance_criteria": acceptance,
@@ -632,6 +635,9 @@ def _coerce_llm_task(
         ),
         "route_envelope": raw_task.get("route_envelope"),
         "task_demand": raw_task.get("task_demand", {}),
+        "status": requested_status,
+        "blocked_reason": blocked_reason or None,
+        "authority_level": proposed_authority,
     }
 
 
@@ -656,6 +662,10 @@ def _authority_case(frontmatter: dict[str, Any]) -> str:
     return _scalar(frontmatter.get("planning_case")) or _scalar(frontmatter.get("authority_case"))
 
 
+def _request_authority_level(frontmatter: dict[str, Any]) -> str:
+    return _scalar(frontmatter.get("authority_level"))
+
+
 def _parent_spec_for_request(request_data: dict[str, Any]) -> str:
     fm = request_data["frontmatter"]
     return (
@@ -668,6 +678,10 @@ def _parent_spec_for_request(request_data: dict[str, Any]) -> str:
 def _decomposition_admission_blockers(request_data: dict[str, Any]) -> list[str]:
     fm = request_data["frontmatter"]
     blockers: list[str] = []
+
+    status = _scalar(fm.get("status"))
+    if status != "accepted_for_planning":
+        blockers.append(f"request_status_not_accepted_for_planning:{status or 'missing'}")
 
     receipt = _first_scalar(fm, CCTV_INTAKE_RECEIPT_FIELDS)
     if not receipt:
@@ -693,40 +707,121 @@ def _decomposition_admission_blockers(request_data: dict[str, Any]) -> list[str]
     elif not AUTHORITY_CASE_RE.match(authority):
         blockers.append(f"invalid_authority_case:{authority}")
 
+    authority_level = _request_authority_level(fm)
+    if not authority_level:
+        blockers.append("missing_authority_level")
+    elif authority_level not in AUTHORITY_LEVELS:
+        blockers.append(f"invalid_authority_level:{authority_level}")
+
     if not _parent_spec_for_request(request_data):
         blockers.append("missing_parent_lineage")
+
+    has_bound_plan = bool(_scalar(fm.get("decomposition_plan_ref"))) and bool(
+        _scalar(fm.get("decomposition_plan_sha256"))
+    )
+    current_plan_sha256 = _scalar(fm.get("decomposition_plan_sha256"))
+    request_journals = _journals_for_request(request_data)
+    known_task_ids = (
+        _known_task_ids()
+        if any(inspection.state == "committed" for inspection in request_journals)
+        else set()
+    )
+    for inspection in request_journals:
+        if inspection.state == "committed":
+            missing_task_ids = sorted(set(inspection.task_ids) - known_task_ids)
+            if missing_task_ids:
+                blockers.append(
+                    "committed_decomposition_projection_missing:"
+                    f"{inspection.commit_id}:{','.join(missing_task_ids)}"
+                )
+            elif not (
+                has_bound_plan
+                and inspection.plan_sha256
+                and current_plan_sha256 == inspection.plan_sha256
+            ):
+                blockers.append(f"decomposition_already_committed:{inspection.commit_id}")
+        elif inspection.state == "invalid":
+            blockers.append(
+                f"decomposition_journal_invalid:{inspection.commit_id}:{inspection.reason_code}"
+            )
+        elif not has_bound_plan or not inspection.plan_sha256:
+            blockers.append(f"prepared_decomposition_binding_missing:{inspection.commit_id}")
+        elif current_plan_sha256 != inspection.plan_sha256:
+            blockers.append(f"prepared_decomposition_binding_superseded:{inspection.commit_id}")
+    for inspection in _unassociated_invalid_journals():
+        blockers.append(
+            f"unassociated_decomposition_journal_invalid:{inspection.commit_id}:"
+            f"{inspection.reason_code}"
+        )
+    if not has_bound_plan and fm.get("provider_spend_authorized") is not True:
+        blockers.append("provider_spend_not_authorized")
 
     return blockers
 
 
 def _find_undecomposed_requests() -> list[Path]:
+    journal_inspections = inspect_decomposition_journals(TASKS_DIR)
+    identity_index = build_task_identity_index(TASKS_DIR)
     task_parents = set()
-    task_ids = _known_task_ids()
-    for d in [TASKS_DIR / "active", TASKS_DIR / "closed"]:
-        if not d.is_dir():
+    task_ids = _known_task_ids(identity_index)
+    for entry in identity_index.entries:
+        if entry.task_id is None or entry.error_reason_code is not None:
             continue
-        for f in sorted(d.glob("*.md")):
-            if f.suffix != ".md":
-                continue
-            fm, _body = parse_frontmatter(f)
-            if _scalar(fm.get("remediates_request_id")):
-                continue
-            for field_name in ("parent_request", "parent_plan", "parent_spec"):
-                for item in _string_list(fm.get(field_name)):
-                    task_parents.update(_task_parent_reference_keys(item))
+        fm, _body = parse_frontmatter(entry.path)
+        if _scalar(fm.get("remediates_request_id")):
+            continue
+        for field_name in ("parent_request", "parent_plan", "parent_spec"):
+            for item in _string_list(fm.get(field_name)):
+                task_parents.update(_task_parent_reference_keys(item))
+    validate_task_identity_index(identity_index)
 
     undecomposed = []
     for f in sorted(REQUESTS_DIR.glob("*.md")):
         if f.suffix != ".md":
             continue
         fm, _body = parse_frontmatter(f)
-        if _scalar(fm.get("status")) != "accepted_for_planning":
+        status = _scalar(fm.get("status"))
+        request_keys = _request_keys(f, fm)
+        request_journals = tuple(
+            inspection
+            for inspection in journal_inspections
+            if request_keys & _journal_request_keys(inspection)
+        )
+        if any(inspection.state != "committed" for inspection in request_journals):
+            undecomposed.append(f)
+            continue
+        committed_journals = tuple(
+            inspection for inspection in request_journals if inspection.state == "committed"
+        )
+        if committed_journals:
+            if any(set(inspection.task_ids) - task_ids for inspection in committed_journals):
+                undecomposed.append(f)
+            continue
+        has_plan_binding = bool(_scalar(fm.get("decomposition_plan_ref"))) or bool(
+            _scalar(fm.get("decomposition_plan_sha256"))
+        )
+        if has_plan_binding:
+            try:
+                plan = _decompose_from_bound_plan(_read_request(f))
+                state = decomposition_commit_state(plan, TASKS_DIR)
+            except (OSError, ValueError):
+                undecomposed.append(f)
+                continue
+            if state == "committed":
+                continue
+            if state == "prepared":
+                undecomposed.append(f)
+                continue
+            if status != "accepted_for_planning":
+                continue
+            undecomposed.append(f)
+            continue
+        if status != "accepted_for_planning":
             continue
         downstream_tasks = _string_list(fm.get("downstream_tasks"))
         if downstream_tasks and any(task_id in task_ids for task_id in downstream_tasks):
             continue
-        keys = _request_keys(f, fm)
-        if keys & task_parents:
+        if request_keys & task_parents:
             continue
         undecomposed.append(f)
     return undecomposed
@@ -823,12 +918,9 @@ def _decompose_with_llm(request_data: dict) -> RequestDecomposition | None:
                     parent_request=request_data["filename"],
                     authority_case=authority,
                     parent_spec=parent_spec,
-                    status="ready" if normalized["depends_on"] else "offered",
-                    blocked_reason=(
-                        f"Depends on: {', '.join(normalized['depends_on'])}"
-                        if normalized["depends_on"]
-                        else None
-                    ),
+                    status=normalized["status"],
+                    blocked_reason=normalized["blocked_reason"],
+                    authority_level=normalized["authority_level"],
                     intent=normalized["intent"],
                     acceptance_criteria=normalized["acceptance_criteria"],
                     effort_class=normalized["effort_class"],
@@ -847,6 +939,7 @@ def _decompose_with_llm(request_data: dict) -> RequestDecomposition | None:
         return RequestDecomposition(
             request_id=slug,
             request_path=str(request_data["path"]),
+            request_source_sha256=_scalar(request_data.get("source_sha256")) or None,
             decomposition_model=model,
             tasks=tasks,
         )
@@ -856,19 +949,91 @@ def _decompose_with_llm(request_data: dict) -> RequestDecomposition | None:
         return None
 
 
+def _decompose_from_bound_plan(
+    request_data: dict[str, Any],
+) -> RequestDecompositionPlan:
+    frontmatter = request_data["frontmatter"]
+    raw_ref = _scalar(frontmatter.get("decomposition_plan_ref"))
+    expected_hash = _scalar(frontmatter.get("decomposition_plan_sha256"))
+    if not raw_ref or not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
+        raise ValueError(
+            "bound decomposition requires decomposition_plan_ref and a lowercase SHA-256"
+        )
+
+    request_path = Path(str(request_data["path"])).expanduser()
+    plan_path = Path(raw_ref).expanduser()
+    if not plan_path.is_absolute():
+        plan_path = request_path.parent / plan_path
+    stat = plan_path.stat()
+    if stat.st_size > MAX_DECOMPOSITION_PLAN_BYTES:
+        raise ValueError("bound decomposition plan exceeds the size limit")
+    plan_bytes = plan_path.read_bytes()
+    if hashlib.sha256(plan_bytes).hexdigest() != expected_hash:
+        raise ValueError("bound decomposition plan hash mismatch")
+    loaded = yaml.safe_load(plan_bytes)
+    if isinstance(loaded, dict) and loaded.get("schema") == HISTORICAL_DECOMPOSITION_PLAN_SCHEMA:
+        raise BoundDecompositionHold(
+            "historical_decomposition_genesis_correction_required",
+            "historical_decomposition_plan_v1_requires_explicit_s0_correction",
+        )
+    plan = RequestDecompositionPlan.model_validate(loaded)
+    if plan.request_id != _request_id_for_data(request_data):
+        raise ValueError("bound decomposition request identity mismatch")
+    if Path(plan.request_path).expanduser().resolve() != request_path.resolve():
+        raise ValueError("bound decomposition request path mismatch")
+    request_authority = _request_authority_level(frontmatter)
+    if request_authority not in {"authoritative", plan.authority_level}:
+        raise ValueError("bound decomposition exceeds the request authority ceiling")
+    return plan
+
+
+def _decompose_request(
+    request_data: dict[str, Any],
+    *,
+    provider_allowed: bool = True,
+) -> RequestDecomposition | RequestDecompositionPlan | None:
+    frontmatter = request_data["frontmatter"]
+    has_plan_ref = bool(_scalar(frontmatter.get("decomposition_plan_ref")))
+    has_plan_hash = bool(_scalar(frontmatter.get("decomposition_plan_sha256")))
+    if has_plan_ref or has_plan_hash:
+        try:
+            return _decompose_from_bound_plan(request_data)
+        except BoundDecompositionHold:
+            raise
+        except Exception as exc:
+            _log.error("Bound decomposition plan failed validation: %s", exc)
+            return None
+    if not provider_allowed:
+        raise ValueError("provider_free_dry_run_requires_bound_decomposition_plan")
+    decomposition = _decompose_with_llm(request_data)
+    if decomposition is not None:
+        source_sha256 = _scalar(request_data.get("source_sha256"))
+        if source_sha256:
+            decomposition.request_source_sha256 = source_sha256
+    return decomposition
+
+
+def _decomposition_task_status(task: TaskSpec | Any) -> str:
+    status = getattr(task, "status", None)
+    if isinstance(status, str):
+        return status
+    initial = getattr(task, "initial_projection", None)
+    return str(getattr(initial, "status", "unknown"))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Decompose requests into cc-tasks",
         epilog=(
             "Environment: HAPAX_REQUEST_DECOMPOSE_LIMIT caps admitted scan attempts. "
-            "Remediation task lineage defaults can be set with "
-            f"{REMEDIATION_AUTHORITY_CASE_ENV}, {REMEDIATION_PARENT_REQUEST_ENV}, and "
-            f"{REMEDIATION_PARENT_SPEC_ENV}."
+            "Decomposition failures append support-only HOLD receipts and never mint tasks."
         ),
     )
     parser.add_argument("request_path", nargs="?", help="Path to a specific request")
     parser.add_argument(
-        "--scan", action="store_true", help="Find and decompose all undecomposed requests"
+        "--scan",
+        action="store_true",
+        help="Find and decompose all undecomposed requests",
     )
     parser.add_argument("--dry-run", action="store_true", help="Show what would be created")
     parser.add_argument(
@@ -888,7 +1053,11 @@ def main() -> int:
             scan_limit = _parse_scan_limit(args.limit, os.environ.get(SCAN_LIMIT_ENV))
         except ValueError as exc:
             parser.error(str(exc))
-        undecomposed = _find_undecomposed_requests()
+        try:
+            undecomposed = _find_undecomposed_requests()
+        except TaskStoreError as exc:
+            _log.error("Task-store frontier refused request scan: %s", exc)
+            return 1
         _log.info("Found %d undecomposed requests", len(undecomposed))
         if scan_limit is not None:
             _log.info(
@@ -904,6 +1073,22 @@ def main() -> int:
         remediation_created = 0
         remediation_existing = 0
         remediation_dry_run = 0
+        for inspection in _unassociated_invalid_journals():
+            remediation_result = _record_journal_reconciliation_hold(
+                inspection,
+                dry_run=args.dry_run,
+            )
+            if remediation_result == "created":
+                remediation_created += 1
+            elif remediation_result == "existing":
+                remediation_existing += 1
+            elif remediation_result == "dry_run":
+                remediation_dry_run += 1
+            _log.warning(
+                "Decomposition journal %s requires global reconciliation (HOLD: %s)",
+                inspection.commit_id,
+                remediation_result,
+            )
         for req_path in undecomposed:
             req_data = _read_request(req_path)
             blockers = _decomposition_admission_blockers(req_data)
@@ -931,7 +1116,35 @@ def main() -> int:
             if scan_limit is not None and admitted_attempts >= scan_limit:
                 break
             admitted_attempts += 1
-            decomp = _decompose_with_llm(req_data)
+            try:
+                decomp = _decompose_request(
+                    req_data,
+                    provider_allowed=not args.dry_run,
+                )
+            except BoundDecompositionHold as exc:
+                failed_decomposition += 1
+                remediation_result = _record_decomposition_remediation(
+                    req_data,
+                    exc.failure_class,
+                    [exc.reason_code],
+                    dry_run=args.dry_run,
+                )
+                if remediation_result == "created":
+                    remediation_created += 1
+                elif remediation_result == "existing":
+                    remediation_existing += 1
+                elif remediation_result == "dry_run":
+                    remediation_dry_run += 1
+                _log.warning(
+                    "Bound historical plan held %s (remediation: %s)",
+                    req_path.name,
+                    remediation_result,
+                )
+                continue
+            except ValueError as exc:
+                failed_decomposition += 1
+                _log.warning("Provider-free dry-run held %s: %s", req_path.name, exc)
+                continue
             if decomp is None:
                 failed_decomposition += 1
                 remediation_result = _record_decomposition_remediation(
@@ -953,19 +1166,49 @@ def main() -> int:
                 )
                 continue
             if args.dry_run:
+                try:
+                    paths = write_decomposition(decomp, TASKS_DIR, dry_run=True)
+                except (FileExistsError, OSError, TaskStoreError, ValueError) as exc:
+                    failed_decomposition += 1
+                    _log.warning("Dry-run validation failed for %s: %s", req_path.name, exc)
+                    continue
                 _log.info("DRY RUN: %s → %d tasks", req_path.name, len(decomp.tasks))
                 for t in decomp.tasks:
-                    _log.info("  %s (WSJF %.1f, %s)", t.task_id, t.wsjf, t.status)
+                    _log.info(
+                        "  %s (WSJF %.1f, %s)",
+                        t.task_id,
+                        t.wsjf,
+                        _decomposition_task_status(t),
+                    )
+                _log.info("  validated postimages: %d", len(paths))
                 total_tasks += len(decomp.tasks)
             else:
                 try:
                     paths = write_decomposition(decomp, TASKS_DIR)
-                except FileExistsError as exc:
-                    skipped_existing += 1
+                except (FileExistsError, TaskStoreError, ValueError) as exc:
+                    identity_conflict = isinstance(exc, FileExistsError) or (
+                        isinstance(exc, TaskStoreError)
+                        and exc.reason_code
+                        in {
+                            "task_identity_write_identity_exists",
+                            "task_identity_write_legacy_alias_collision",
+                            "task_identity_write_path_exists",
+                            "task_identity_write_path_occupied_by_other_identity",
+                        }
+                    )
+                    validation_refused = not identity_conflict
+                    if validation_refused:
+                        failed_decomposition += 1
+                    else:
+                        skipped_existing += 1
                     remediation_result = _record_decomposition_remediation(
                         req_data,
-                        "write_conflict",
-                        [f"task_write_conflict:{exc}"],
+                        "write_validation_refused" if validation_refused else "write_conflict",
+                        [
+                            f"decomposition_validation_refused:{exc}"
+                            if validation_refused
+                            else f"task_write_conflict:{exc}"
+                        ],
                         dry_run=args.dry_run,
                     )
                     if remediation_result == "created":
@@ -993,13 +1236,14 @@ def main() -> int:
         )
         if skipped_admission:
             _log.info(
-                "%d selected requests held by decomposition admission gate", skipped_admission
+                "%d selected requests held by decomposition admission gate",
+                skipped_admission,
             )
         if failed_decomposition:
             _log.info("%d admitted requests failed decomposition", failed_decomposition)
         if remediation_created or remediation_existing or remediation_dry_run:
             _log.info(
-                "Decomposition remediation tasks: %d created, %d existing, %d dry-run",
+                "Decomposition HOLD receipts: %d created, %d existing, %d dry-run",
                 remediation_created,
                 remediation_existing,
                 remediation_dry_run,
@@ -1014,7 +1258,6 @@ def main() -> int:
         req_data = _read_request(req_path)
         blockers = _decomposition_admission_blockers(req_data)
         if blockers:
-            remediation_task_id = _decomposition_remediation_task_id(req_data, "admission_blocked")
             remediation_result = _record_decomposition_remediation(
                 req_data,
                 "admission_blocked",
@@ -1022,17 +1265,35 @@ def main() -> int:
                 dry_run=args.dry_run,
             )
             _log.error(
-                "Decomposition admission blocked for %s: %s (remediation: %s, task: %s, next: %s)",
+                "Decomposition admission blocked for %s: %s (HOLD: %s, next: %s)",
                 req_path.name,
                 ", ".join(blockers),
                 remediation_result,
-                remediation_task_id,
-                _remediation_next_action(remediation_task_id, remediation_result),
+                _remediation_next_action(remediation_result),
             )
             return 1
-        decomp = _decompose_with_llm(req_data)
+        try:
+            decomp = _decompose_request(
+                req_data,
+                provider_allowed=not args.dry_run,
+            )
+        except BoundDecompositionHold as exc:
+            remediation_result = _record_decomposition_remediation(
+                req_data,
+                exc.failure_class,
+                [exc.reason_code],
+                dry_run=args.dry_run,
+            )
+            _log.error(
+                "Bound historical decomposition held (HOLD: %s, next: %s)",
+                remediation_result,
+                _remediation_next_action(remediation_result),
+            )
+            return 1
+        except ValueError as exc:
+            _log.error("Provider-free dry-run held: %s", exc)
+            return 1
         if decomp is None:
-            remediation_task_id = _decomposition_remediation_task_id(req_data, "llm_failed")
             remediation_result = _record_decomposition_remediation(
                 req_data,
                 "llm_failed",
@@ -1040,33 +1301,51 @@ def main() -> int:
                 dry_run=args.dry_run,
             )
             _log.error(
-                "Decomposition failed (fail-closed; remediation: %s, task: %s, next: %s)",
+                "Decomposition failed (fail-closed; HOLD: %s, next: %s)",
                 remediation_result,
-                remediation_task_id,
-                _remediation_next_action(remediation_task_id, remediation_result),
+                _remediation_next_action(remediation_result),
             )
             return 1
         if args.dry_run:
+            try:
+                paths = write_decomposition(decomp, TASKS_DIR, dry_run=True)
+            except (FileExistsError, OSError, TaskStoreError, ValueError) as exc:
+                _log.error("Decomposition dry-run validation failed: %s", exc)
+                return 1
             _log.info("DRY RUN: %d tasks", len(decomp.tasks))
             for t in decomp.tasks:
                 _log.info("  %s: %s (WSJF %.1f)", t.task_id, t.title, t.wsjf)
+            _log.info("Validated %d exact task postimages", len(paths))
             return 0
         try:
             paths = write_decomposition(decomp, TASKS_DIR)
-        except FileExistsError as exc:
-            remediation_task_id = _decomposition_remediation_task_id(req_data, "write_conflict")
+        except (FileExistsError, TaskStoreError, ValueError) as exc:
+            identity_conflict = isinstance(exc, FileExistsError) or (
+                isinstance(exc, TaskStoreError)
+                and exc.reason_code
+                in {
+                    "task_identity_write_identity_exists",
+                    "task_identity_write_legacy_alias_collision",
+                    "task_identity_write_path_exists",
+                    "task_identity_write_path_occupied_by_other_identity",
+                }
+            )
+            validation_refused = not identity_conflict
             remediation_result = _record_decomposition_remediation(
                 req_data,
-                "write_conflict",
-                [f"task_write_conflict:{exc}"],
+                "write_validation_refused" if validation_refused else "write_conflict",
+                [
+                    f"decomposition_validation_refused:{exc}"
+                    if validation_refused
+                    else f"task_write_conflict:{exc}"
+                ],
                 dry_run=args.dry_run,
             )
             _log.error(
-                "Decomposition write failed: %s (remediation: %s, task: %s, next: %s)",
+                "Decomposition write failed: %s (HOLD: %s, next: %s)",
                 exc,
                 remediation_result,
-                remediation_task_id,
-                _remediation_next_action(remediation_task_id, remediation_result),
+                _remediation_next_action(remediation_result),
             )
             return 1
         _log.info("Wrote %d tasks", len(paths))

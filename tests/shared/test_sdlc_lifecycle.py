@@ -284,6 +284,20 @@ class TestStageVocabulary:
 
         s9_to_s10 = SDLC_STAGE_METADATA.by_token["S9"].next_edges[0]
         assert "acceptance_receipt_valid" in s9_to_s10.guards
+        projection_roles = {
+            (stage.token, edge.to): edge.projection_role
+            for stage in SDLC_STAGE_METADATA.stages
+            for edge in stage.next_edges
+        }
+        assert projection_roles[("S3", "S3_5")] == "branch"
+        assert projection_roles[("S3_5", "S0")] == "repair"
+        assert projection_roles[("BLOCKED", "S6")] == "repair"
+        assert projection_roles[("S8", "S9")] == "advance"
+        assert all(
+            edge.projection_role == "repair"
+            for stage in SDLC_STAGE_METADATA.stages
+            for edge in stage.fall_edges
+        )
         assert SDLC_STAGE_METADATA.by_token["BLOCKED"].deliverable.required_fields == (
             "blocked_reason",
             "blocked_witness",
@@ -296,6 +310,7 @@ class TestStageVocabulary:
             ("", "stage_blank"),
             ("s6", "stage_case_drift"),
             ("S6_implementation", "stage_case_drift"),
+            ("S1_INTAKE", "stage_alias_unknown"),
             ("S6_UNKNOWN", "stage_alias_unknown"),
             ("S12", "stage_alias_unknown"),
             (" S6 ", "stage_whitespace_drift"),
@@ -347,8 +362,8 @@ class TestStageVocabulary:
         [
             (
                 lambda text: text.replace(
-                    "schema: hapax.sdlc-stage-metadata.v1\n",
-                    "schema: hapax.sdlc-stage-metadata.v1\nschema: duplicate\n",
+                    "schema: hapax.sdlc-stage-metadata.v2\n",
+                    "schema: hapax.sdlc-stage-metadata.v2\nschema: duplicate\n",
                     1,
                 ),
                 "stage_metadata_duplicate_yaml_key",
@@ -362,7 +377,9 @@ class TestStageVocabulary:
                 "stage_metadata_unknown_edge_target",
             ),
             (
-                lambda text: text.replace("        guards: [gate_refused]\n", "        guards: invalid\n", 1),
+                lambda text: text.replace(
+                    "        guards: [gate_refused]\n", "        guards: invalid\n", 1
+                ),
                 "stage_metadata_invalid_field",
             ),
             (
@@ -403,8 +420,8 @@ class TestStageVocabulary:
             ),
             (
                 lambda text: text.replace(
-                    "schema: hapax.sdlc-stage-metadata.v1\n",
                     "schema: hapax.sdlc-stage-metadata.v2\n",
+                    "schema: hapax.sdlc-stage-metadata.v1\n",
                     1,
                 ),
                 "stage_metadata_schema_unknown",
@@ -493,9 +510,46 @@ class TestStageVocabulary:
                 "stage_metadata_invalid_enforcement",
             ),
             (
+                lambda text: text.replace("projection_role: advance", "projection_role: skip", 1),
+                "stage_metadata_invalid_projection_role",
+            ),
+            (
+                lambda text: text.replace(
+                    "      - to: S0\n        projection_role: repair\n"
+                    "        authority_capability: coord.case.advance\n",
+                    "      - to: S0\n        projection_role: advance\n"
+                    "        authority_capability: coord.case.advance\n",
+                    1,
+                ),
+                "stage_metadata_projection_role_action_mismatch",
+            ),
+            (
+                lambda text: text.replace(
+                    "      - to: S10\n        projection_role: advance\n",
+                    "      - to: S10\n        projection_role: repair\n",
+                    1,
+                ),
+                "stage_metadata_projection_role_action_mismatch",
+            ),
+            (
+                lambda text: text.replace(
+                    "      - to: S0\n        projection_role: repair\n"
+                    "        authority_capability: coord.case.advance\n"
+                    "        guards: [disconfirmation_requires_restart]\n"
+                    "        actions: [append_stage_transition, restart_intake]\n",
+                    "      - to: S0\n        projection_role: advance\n"
+                    "        authority_capability: coord.case.advance\n"
+                    "        guards: [disconfirmation_requires_restart]\n"
+                    "        actions: [append_stage_transition, begin_research]\n",
+                    1,
+                ),
+                "stage_metadata_projection_cycle",
+            ),
+            (
                 lambda text: text.replace(
                     "    fall:\n"
                     "      - to: BLOCKED\n"
+                    "        projection_role: repair\n"
                     "        authority_capability: system.gate.refusal\n"
                     "        guards: [gate_refused]\n"
                     "        actions: [record_blocker_report, append_stage_transition]\n"
@@ -533,22 +587,48 @@ class TestStageVocabulary:
             force_include["docs/formal/sdlc-stage-metadata.yaml"]
             == "shared/_data/sdlc-stage-metadata.yaml"
         )
-        dockerfile = (REPO_ROOT / "docker" / "Dockerfile.logos-api").read_text(
-            encoding="utf-8"
+        assert force_include["docs/formal/sdlc-ladder.tla"] == "shared/_data/sdlc-ladder.tla"
+        assert (
+            force_include["config/compression-surface-registry.yaml"]
+            == "shared/_data/compression-surface-registry.yaml"
         )
+        assert (
+            force_include["config/coordination-canon/source.yaml"]
+            == "shared/_data/coordination-canon-source.yaml"
+        )
+        assert (
+            force_include["config/coordination-canon/runtime-dependency-release-set.json"]
+            == "shared/_data/runtime-dependency-release-set.json"
+        )
+        assert (
+            force_include["schemas/coordination-canon.schema.json"]
+            == "shared/_data/coordination-canon.schema.json"
+        )
+        dockerfile = (REPO_ROOT / "docker" / "Dockerfile.logos-api").read_text(encoding="utf-8")
+        assert "uv sync --frozen --no-dev --extra logos-api --no-install-project" in dockerfile
         assert (
             "COPY docs/formal/sdlc-stage-metadata.yaml "
             "docs/formal/sdlc-stage-metadata.yaml" in dockerfile
         )
+        assert "COPY docs/formal/sdlc-ladder.tla docs/formal/sdlc-ladder.tla" in dockerfile
+        assert (
+            "COPY config/coordination-canon/source.yaml "
+            "config/coordination-canon/source.yaml" in dockerfile
+        )
+        assert (
+            "COPY config/coordination-canon/runtime-dependency-release-set.json "
+            "config/coordination-canon/runtime-dependency-release-set.json" in dockerfile
+        )
         dockerignore = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
         docs_rule = dockerignore.index("docs/")
-        assert dockerignore[docs_rule : docs_rule + 6] == [
+        assert dockerignore[docs_rule : docs_rule + 7] == [
             "docs/",
             "!docs/",
             "docs/*",
             "!docs/formal/",
             "docs/formal/*",
             "!docs/formal/sdlc-stage-metadata.yaml",
+            "!docs/formal/sdlc-ladder.tla",
         ]
 
     def test_stage_re_accepts_canonical_shapes_rejects_malformed(self) -> None:
@@ -564,25 +644,14 @@ class TestStageVocabulary:
 
         assert sdlc_invariants._stage_token is stage_token
 
-    def test_cc_stage_advance_stage_re_pinned_to_canonical(self) -> None:
-        # cc-stage-advance defines _STAGE_RE at module scope (before its
-        # in-function sys.path insert), so it cannot import the canonical pattern
-        # at load time. Pin the two equal by test instead, so they cannot drift.
+    def test_cc_stage_advance_delegates_stage_grammar_and_edges_to_canonical(self) -> None:
+        # The command must not maintain a second stage grammar or infer legal
+        # edges numerically. LifecycleTransitionIntent owns both decisions.
         src = (REPO_ROOT / "scripts" / "cc-stage-advance").read_text(encoding="utf-8")
-        patterns = {
-            node.targets[0].id: node.value.args[0].value
-            for node in ast.walk(ast.parse(src))
-            if isinstance(node, ast.Assign)
-            and len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Name)
-            and isinstance(node.value, ast.Call)
-            and isinstance(node.value.func, ast.Attribute)
-            and node.value.func.attr == "compile"
-            and node.value.args
-            and isinstance(node.value.args[0], ast.Constant)
-        }
-        assert "_STAGE_RE" in patterns, "cc-stage-advance _STAGE_RE = re.compile(...) not found"
-        assert patterns["_STAGE_RE"] == STAGE_RE.pattern
+        assert "LifecycleTransitionIntent.create(" in src
+        assert "_STAGE_RE" not in src
+        assert "_stage_num" not in src
+        assert "--allow-backward was removed" in src
 
 
 class TestAcceptanceReceiptEnforcement:

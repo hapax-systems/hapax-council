@@ -1,40 +1,22 @@
-"""Event-sourced fold of the dispatch plane's service-time distribution.
+"""Support-only fold of observed dispatch service times.
 
-The coordinator dispatch plane is an unmodeled M/G/k WSJF queue. To replace its
-provably-wrong *fixed* stall timeout (lane-reaper 1800s / idle-watchdog 600s)
-with a measured, age/SRPT-aware timeout, we first have to MEASURE the service
-time. This module is the pure, idempotent, daemon-free fold that does so.
+The JSONL inputs are ambient observations, not lifecycle facts, authority,
+admission, or execution outcomes.  This module therefore preserves their source
+provenance, frontier, freshness, and loss classes while refusing to turn them
+into dispatch ordering or liveness effects.  No current Gate-0 admission/outcome
+contract consumes this projection.
 
-SSOT: ``~/.cache/hapax/cc-task-gate-decisions.jsonl`` (every gated tool call,
-with an ISO-8601 ``ts``, ``task_id``, ``session_id`` and ``role``). The
-``methodology-dispatch.jsonl`` dispatch->completion ledger is folded too *when
-present* (it does not exist yet — graceful).
-
-Three reviewer must-fixes are baked in (and pinned by tests):
-
-* **ISO timestamps** — ``ts`` is an ISO-8601 *string* (``2026-05-31T20:40:17Z``),
-  not a float epoch. A naive ``float()`` yields ``0.0`` and a silently-empty
-  distribution (the same class of bug as the sdlc_invariants ts defect). We parse
-  via :func:`datetime.fromisoformat`.
-* **Null task_id exclusion** — a large fraction of gate records carry no
-  ``task_id`` (system/orchestrator commands); they are excluded from the fold.
-* **Session-continuity segmentation** — the "inter-tool gap" is only a valid
-  service-time signal *within a single session*. A gap that spans a session
-  boundary is an abandon/reclaim cycle (the task was dropped then re-offered by
-  the very reaper this tunes), NOT a live non-preemptible turn. Folding those in
-  inflates the tail and would set ``tau`` far too high, defeating never-stall.
-  We segment each task's events into maximal same-session runs and only count
-  gaps *inside* a run.
-
-Re-derived baseline (the design's cited "CV=1.40" is unreproducible against this
-source; see ``--report``): session-continuous inter-tool gaps run CV>>1 with a
-heavy Pareto tail (Hill alpha ~1.3), which is exactly why a single fixed scalar
-timeout cannot separate "slow-but-live" from "dead" — hence per-lineage ``tau``.
+The compatibility planning and reap functions remain importable while callers
+migrate. Planning emits deterministic candidates from governed task/lane inputs
+without using this support data; reap decisions return ``hold``. A measured
+value can be inspected; it cannot authorize, rank, reap, kill, release, clear,
+revive, launch, mint, or notify.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -43,10 +25,8 @@ import time
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
-
-from shared.intake_fit_scorer import composite_rank_key, fit_score
 
 # ── tunables (all overridable; defaults grounded in the measured distribution) ─
 
@@ -69,6 +49,20 @@ MAX_REAP_ATTEMPTS = 3
 DEFAULT_DECISIONS_PATH = Path.home() / ".cache/hapax/cc-task-gate-decisions.jsonl"
 DEFAULT_METHODOLOGY_PATH = Path.home() / ".cache/hapax/methodology-dispatch.jsonl"
 DEFAULT_CACHE_PATH = Path.home() / ".cache/hapax/dispatch-service-time.json"
+
+SUPPORT_PROJECTION_KIND = "dispatch_service_time"
+SUPPORT_EFFECT_STATE = "held_not_admitted"
+SUPPORT_HOLD_REASON = "dispatch_service_time_support_has_no_admission_or_execution_lease"
+SUPPORT_MAY_AUTHORIZE = False
+
+# Parsing bounds make hostile or corrupt ambient input visible and finite.
+MAX_SOURCE_BYTES = 64 * 1024 * 1024
+MAX_LINE_BYTES = 1024 * 1024
+MAX_ID_LENGTH = 256
+DEFAULT_FRESHNESS_WINDOW_S = 86_400.0
+_ISO_TS_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$"
+)
 
 
 # ── statistics ────────────────────────────────────────────────────────────────
@@ -140,6 +134,8 @@ class Distribution:
     @classmethod
     def from_values(cls, xs: Iterable[float]) -> Distribution:
         values = [float(x) for x in xs]
+        if any(not math.isfinite(value) or value < 0 for value in values):
+            raise ValueError("service_time_distribution_value_invalid")
         if not values:
             nan = math.nan
             return cls(0, nan, nan, nan, nan, nan, nan, nan, nan, ())
@@ -159,8 +155,23 @@ class Distribution:
 
 
 @dataclass(frozen=True)
+class SourceSupportReceipt:
+    """Content-bound disposition for one ambient JSONL source."""
+
+    source: str
+    source_state: str
+    sha256: str | None
+    byte_length: int | None
+    lines_total: int
+    records_accepted: int
+    rejected: dict[str, int]
+    frontier_ts: float | None
+    freshness_state: str
+
+
+@dataclass(frozen=True)
 class ServiceTimeReport:
-    """Folded service-time distribution across all sources."""
+    """Folded support projection across explicitly receipted sources."""
 
     gaps: Distribution
     spans: Distribution
@@ -168,45 +179,73 @@ class ServiceTimeReport:
     records_total: int
     records_no_task: int
     records_usable: int
+    records_rejected: int
+    rejected: dict[str, int]
     cross_session_breaks: int
     now: float
     window_s: float | None = None
     sources: tuple[str, ...] = field(default_factory=tuple)
+    source_receipts: tuple[SourceSupportReceipt, ...] = field(default_factory=tuple)
 
 
 # ── the fold ──────────────────────────────────────────────────────────────────
 
 
 def parse_ts(value: object) -> float | None:
-    """Parse an ISO-8601 ``ts`` string into epoch seconds. None on anything else.
+    """Parse a timezone-aware ISO-8601 timestamp into finite epoch seconds."""
 
-    Accepts a trailing ``Z`` (UTC). Deliberately does NOT accept bare floats —
-    the gate writes ISO strings, and treating a string as a float is the bug
-    this guards against.
-    """
-    if not isinstance(value, str) or not value:
+    if not isinstance(value, str) or not _ISO_TS_RE.fullmatch(value):
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
-    except ValueError:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return None
+        timestamp = parsed.timestamp()
+    except (OverflowError, ValueError):
         return None
+    return timestamp if math.isfinite(timestamp) and timestamp >= 0 else None
 
 
-def _read_records(source: Path) -> Iterable[dict]:
+def _valid_identity(value: object) -> str | None:
+    if not isinstance(value, str) or not value or len(value) > MAX_ID_LENGTH:
+        return None
+    if value != value.strip() or "\x00" in value:
+        return None
+    return value
+
+
+def _increment(counts: dict[str, int], reason: str) -> None:
+    counts[reason] = counts.get(reason, 0) + 1
+
+
+def _source_freshness(
+    *, frontier_ts: float | None, now: float, window_s: float | None, source_state: str
+) -> str:
+    if source_state != "observed":
+        return source_state
+    if frontier_ts is None:
+        return "no_accepted_frontier"
+    horizon = window_s if window_s is not None else DEFAULT_FRESHNESS_WINDOW_S
+    return "fresh" if frontier_ts >= now - horizon else "stale"
+
+
+def _read_source_bytes(source: Path) -> tuple[bytes | None, str, int | None, str | None]:
+    """Read one bounded source and return bytes, state, size, and hash."""
+
     try:
-        text = source.read_text(encoding="utf-8")
+        byte_length = source.stat().st_size
+        if byte_length > MAX_SOURCE_BYTES:
+            with source.open("rb") as stream:
+                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            return None, "source_too_large", byte_length, digest
+        raw = source.read_bytes()
     except OSError:
-        return
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(record, dict):
-            yield record
+        state = "missing" if not source.exists() else "unreadable"
+        return None, state, None, None
+    digest = hashlib.sha256(raw).hexdigest()
+    if len(raw) > MAX_SOURCE_BYTES:
+        return None, "source_too_large", len(raw), digest
+    return raw, "observed", len(raw), digest
 
 
 def load_service_time_distribution(
@@ -215,31 +254,181 @@ def load_service_time_distribution(
     now: float | None = None,
     window_s: float | None = None,
 ) -> ServiceTimeReport:
-    """Fold the gate-decision (and methodology-dispatch, when present) ledgers."""
+    """Fold ambient ledgers into a non-authorizing support projection.
+
+    Every nonempty line is either accepted or assigned an explicit rejection
+    class.  Source hashes bind the projection to its input frontier without
+    copying parent-encrypted or otherwise sensitive records into the cache.
+    """
     if sources is None:
         sources = [DEFAULT_DECISIONS_PATH, DEFAULT_METHODOLOGY_PATH]
     resolved = [Path(s) for s in sources]
     now = time.time() if now is None else now
+    if not isinstance(now, (int, float)) or isinstance(now, bool) or not math.isfinite(now):
+        raise ValueError("service_time_query_time_invalid")
+    if now < 0:
+        raise ValueError("service_time_query_time_invalid")
+    if window_s is not None and (
+        isinstance(window_s, bool)
+        or not isinstance(window_s, (int, float))
+        or not math.isfinite(window_s)
+        or window_s <= 0
+    ):
+        raise ValueError("service_time_window_invalid")
 
     total = no_task = 0
+    rejected: dict[str, int] = {}
+    receipts: list[SourceSupportReceipt] = []
     rows: list[tuple[str, str, str, float]] = []  # (task_id, session_id, role, ts)
     for source in resolved:
-        if not source.exists():
+        raw, source_state, byte_length, digest = _read_source_bytes(source)
+        source_rejected: dict[str, int] = {}
+        source_accepted = 0
+        lines_total = 0
+        frontier_ts: float | None = None
+        if raw is None:
+            _increment(rejected, source_state)
+            receipts.append(
+                SourceSupportReceipt(
+                    source=str(source),
+                    source_state=source_state,
+                    sha256=digest,
+                    byte_length=byte_length,
+                    lines_total=0,
+                    records_accepted=0,
+                    rejected={source_state: 1},
+                    frontier_ts=None,
+                    freshness_state=source_state,
+                )
+            )
             continue
-        for record in _read_records(source):
+
+        try:
+            text = raw.decode("utf-8", errors="strict")
+        except UnicodeDecodeError:
+            _increment(rejected, "source_invalid_utf8")
+            receipts.append(
+                SourceSupportReceipt(
+                    source=str(source),
+                    source_state="source_invalid_utf8",
+                    sha256=digest,
+                    byte_length=byte_length,
+                    lines_total=0,
+                    records_accepted=0,
+                    rejected={"source_invalid_utf8": 1},
+                    frontier_ts=None,
+                    freshness_state="source_invalid_utf8",
+                )
+            )
+            continue
+
+        for raw_line in text.splitlines():
+            lines_total += 1
+            if not raw_line.strip():
+                reason = "blank_line"
+                _increment(rejected, reason)
+                _increment(source_rejected, reason)
+                continue
             total += 1
-            task_id = record.get("task_id")
-            if not task_id:
+            if len(raw_line.encode("utf-8")) > MAX_LINE_BYTES:
+                reason = "line_too_large"
+                _increment(rejected, reason)
+                _increment(source_rejected, reason)
+                continue
+            try:
+                record = json.loads(raw_line)
+            except json.JSONDecodeError:
+                reason = "json_invalid"
+                _increment(rejected, reason)
+                _increment(source_rejected, reason)
+                continue
+            if not isinstance(record, dict):
+                reason = "record_not_object"
+                _increment(rejected, reason)
+                _increment(source_rejected, reason)
+                continue
+
+            task_value = record.get("task_id")
+            if task_value is None or task_value == "":
                 no_task += 1
+                reason = "task_id_missing"
+                _increment(rejected, reason)
+                _increment(source_rejected, reason)
                 continue
-            ts = parse_ts(record.get("ts") or record.get("timestamp"))
+            task_id = _valid_identity(task_value)
+            if task_id is None:
+                reason = "task_id_invalid"
+                _increment(rejected, reason)
+                _increment(source_rejected, reason)
+                continue
+
+            ts_value = record.get("ts")
+            timestamp_value = record.get("timestamp")
+            if ts_value is not None and timestamp_value is not None and ts_value != timestamp_value:
+                reason = "timestamp_conflict"
+                _increment(rejected, reason)
+                _increment(source_rejected, reason)
+                continue
+            selected_ts = ts_value if ts_value is not None else timestamp_value
+            if selected_ts is None:
+                reason = "timestamp_missing"
+                _increment(rejected, reason)
+                _increment(source_rejected, reason)
+                continue
+            ts = parse_ts(selected_ts)
             if ts is None:
+                reason = "timestamp_invalid"
+                _increment(rejected, reason)
+                _increment(source_rejected, reason)
                 continue
+            if ts > now:
+                reason = "timestamp_future"
+                _increment(rejected, reason)
+                _increment(source_rejected, reason)
+                continue
+            frontier_ts = ts if frontier_ts is None else max(frontier_ts, ts)
             if window_s is not None and ts < now - window_s:
+                reason = "timestamp_stale"
+                _increment(rejected, reason)
+                _increment(source_rejected, reason)
                 continue
-            session_id = str(record.get("session_id") or record.get("session") or "")
-            role = str(record.get("role") or record.get("lane") or "")
-            rows.append((str(task_id), session_id, role, ts))
+
+            session_value = record.get("session_id") or record.get("session")
+            session_id = _valid_identity(session_value)
+            if session_id is None:
+                reason = "session_id_missing" if not session_value else "session_id_invalid"
+                _increment(rejected, reason)
+                _increment(source_rejected, reason)
+                continue
+            role_value = record.get("role") or record.get("lane")
+            role = _valid_identity(role_value)
+            if role is None:
+                reason = "role_missing" if not role_value else "role_invalid"
+                _increment(rejected, reason)
+                _increment(source_rejected, reason)
+                continue
+
+            rows.append((task_id, session_id, role, ts))
+            source_accepted += 1
+
+        receipts.append(
+            SourceSupportReceipt(
+                source=str(source),
+                source_state=source_state,
+                sha256=digest,
+                byte_length=byte_length,
+                lines_total=lines_total,
+                records_accepted=source_accepted,
+                rejected=dict(sorted(source_rejected.items())),
+                frontier_ts=frontier_ts,
+                freshness_state=_source_freshness(
+                    frontier_ts=frontier_ts,
+                    now=float(now),
+                    window_s=float(window_s) if window_s is not None else None,
+                    source_state=source_state,
+                ),
+            )
+        )
 
     gaps, spans, per_lineage, cross = _segment(rows)
     return ServiceTimeReport(
@@ -249,10 +438,13 @@ def load_service_time_distribution(
         records_total=total,
         records_no_task=no_task,
         records_usable=len(rows),
+        records_rejected=sum(rejected.values()),
+        rejected=dict(sorted(rejected.items())),
         cross_session_breaks=cross,
-        now=now,
+        now=float(now),
         window_s=window_s,
         sources=tuple(str(s) for s in resolved),
+        source_receipts=tuple(receipts),
     )
 
 
@@ -291,31 +483,28 @@ def _segment(
     return gaps, spans, per_lineage, cross_session_breaks
 
 
-# ── scheduler primitives (consumed by the reaper and tick()) ──────────────────
+# ── support metrics + fail-closed compatibility APIs ──────────────────────────
 
 
 def _tau_from_p99(p99: float, k: float = TAU_K) -> float:
-    """Size tau from a p99 inter-tool gap, clamped into [floor, ceil]."""
-    if not math.isfinite(p99) or p99 <= 0:
+    """Derive a bounded, non-authorizing timeout candidate for inspection."""
+    if not math.isfinite(p99) or not math.isfinite(k) or p99 <= 0 or k <= 0:
         return TAU_FLOOR_S
     return max(TAU_FLOOR_S, min(TAU_CEIL_S, k * p99))
 
 
 def tau_for_lineage(report: ServiceTimeReport, lineage: str, k: float = TAU_K) -> float:
-    """Progress-timeout for a lineage: k * its measured p99 gap, clamped.
-
-    Unknown/empty lineages fall back to the global gap p99 (then the floor).
-    This is the Gittins move: rank by elapsed *silence* against the measured
-    hazard, so a long-but-progressing turn is never reaped.
-    """
+    """Return a bounded support metric; never an admission or execution lease."""
     dist = report.per_lineage.get(lineage)
     p99 = dist.p99 if dist is not None and dist.n > 0 else report.gaps.p99
     return _tau_from_p99(p99, k)
 
 
 def should_reap(progress_age_s: float, tau_s: float) -> bool:
-    """A lane is a reap candidate iff it has been silent longer than tau."""
-    return progress_age_s > tau_s
+    """Fail closed: ambient service-time observations cannot authorize a reap."""
+
+    del progress_age_s, tau_s
+    return False
 
 
 def reap_decision(
@@ -325,18 +514,10 @@ def reap_decision(
     attempts: int,
     max_attempts: int = MAX_REAP_ATTEMPTS,
 ) -> str:
-    """Bounded-recovery reap decision: ``skip`` | ``reap`` | ``escalate``.
+    """Fail closed until admission and an execution lease bind any recovery."""
 
-    ``skip``     — progressing (silence within tau): never reap a live turn.
-    ``reap``     — silent past tau and attempts remain: kill + re-offer.
-    ``escalate`` — silent past tau but attempts exhausted: ntfy and STOP, so the
-                   coordinator never spins an infinite reap loop on a wedged lane.
-    """
-    if not should_reap(progress_age_s, min(tau_s, tau_ceil_s)):
-        return "skip"
-    if attempts >= max_attempts:
-        return "escalate"
-    return "reap"
+    del progress_age_s, tau_s, tau_ceil_s, attempts, max_attempts
+    return "hold"
 
 
 def wsjf_effective(
@@ -346,16 +527,13 @@ def wsjf_effective(
     aging_coeff: float = AGING_COEFF,
     aging_cap: float = AGING_CAP,
 ) -> float:
-    """WSJF with bounded aging — breaks SJF starvation without an expert rule.
+    """Return raw WSJF without allowing observed age/service time to modulate rank."""
 
-    A low-WSJF task that has waited a full service epoch climbs above fresh
-    high-WSJF arrivals; the multiplier is capped so it never inverts by more
-    than the aging cap (pure parametric modulation, no thresholds).
-    """
-    if age_norm_s <= 0:
-        return wsjf
-    factor = 1.0 + aging_coeff * min(age_in_queue_s / age_norm_s, aging_cap)
-    return wsjf * factor
+    del age_in_queue_s, age_norm_s, aging_coeff, aging_cap
+    value = float(wsjf)
+    if not math.isfinite(value):
+        raise ValueError("wsjf_support_value_invalid")
+    return value
 
 
 # ── per-lineage virtual queues (the tick() inner loop, made pure & testable) ──
@@ -417,47 +595,50 @@ def plan_dispatches(
     legacy: bool = False,
     fit_blend: float = 0.0,
 ) -> list[tuple[str, str]]:
-    """Decide ``(task_id, lane_role)`` dispatches for one tick.
+    """Select deterministic candidates without service-time or refusal influence.
 
-    Default (new) policy — **per-lineage virtual queues + WSJF aging**:
-    iterate *idle* lanes (lane-outer), and let each free lane pull its
-    best-eligible task by aged WSJF. Because the loop is lane-outer over
-    cooled-*out* lanes only, a busy/cooled lane can never head-of-line-block a
-    routable task from reaching a different free lane (the VOQ fix), and aging
-    lets a starved low-WSJF task overtake fresh high-WSJF arrivals (bounded).
-
-    ``legacy=True`` restores the prior behavior exactly: task-outer over raw
-    WSJF-desc, first-matching lane, and a cooled first-match lane *skips the
-    task* (the head-of-line bug this change fixes) — for the revert env and the
-    golden diff.
-
-    ``fit_blend`` (default ``0.0``) blends the intake ``fit_score`` (demand-shape
-    magnitude) into the rank-key: the per-task key becomes ``composite_rank_key``
-    over aged WSJF + ``fit_blend * fit_score``. ``0.0`` short-circuits to pure
-    WSJF (byte-identical to the pre-blend plan — the golden guarantee); a non-zero
-    blend is the operator's dial. ``_repair_cooled_plan`` MUST receive the same
-    ``fit_blend`` so the no-spin repair never reorders relative to the plan.
+    This is a pure candidate projection, not dispatch admission.  It uses only
+    raw finite WSJF, stable task/lane identity, route compatibility, the lane's
+    governed dispatchable flag, and the caller's candidate bound.  Queue age,
+    observed cooldown, cache values, fit-blend dials, and the legacy environment
+    cannot change the result.  Downstream methodology carriage must still emit a
+    universal held carrier until a real admission/outcome contract exists.
     """
-    if legacy:
-        return _plan_legacy(tasks, lanes, max_dispatches)
 
-    available = [lane for lane in lanes if lane.cooldown_remaining_s <= 0]
-    remaining = list(tasks)
+    del age_norm_s, legacy, fit_blend
+    return _baseline_candidate_plan(tasks, lanes, max_dispatches)
+
+
+def _baseline_candidate_plan(
+    tasks: Sequence[QueueTask], lanes: Sequence[QueueLane], max_dispatches: int
+) -> list[tuple[str, str]]:
+    if (
+        isinstance(max_dispatches, bool)
+        or not isinstance(max_dispatches, int)
+        or max_dispatches <= 0
+    ):
+        return []
+
+    available = sorted(
+        (lane for lane in lanes if is_dispatchable_lane(lane)),
+        key=lambda lane: (lane.role, lane.platform),
+    )
+    remaining = [
+        task
+        for task in tasks
+        if _valid_identity(task.task_id) is not None
+        and not isinstance(task.wsjf, bool)
+        and isinstance(task.wsjf, (int, float))
+        and math.isfinite(task.wsjf)
+    ]
     plan: list[tuple[str, str]] = []
     for lane in available:
         if len(plan) >= max_dispatches:
             break
-        eligible = [t for t in remaining if _routable(t, lane)]
+        eligible = [task for task in remaining if _routable(task, lane)]
         if not eligible:
             continue
-        best = max(
-            eligible,
-            key=lambda t: composite_rank_key(
-                wsjf_effective(t.wsjf, t.age_s, age_norm_s),
-                fit_score(t.requirement_vector),
-                blend=fit_blend,
-            ),
-        )
+        best = min(eligible, key=lambda task: (-float(task.wsjf), task.task_id))
         plan.append((best.task_id, lane.role))
         remaining.remove(best)
     return plan
@@ -468,28 +649,16 @@ def _plan_legacy(
     lanes: Sequence[QueueLane],
     max_dispatches: int,
 ) -> list[tuple[str, str]]:
-    idle = list(lanes)
-    plan: list[tuple[str, str]] = []
-    for task in sorted(tasks, key=lambda t: t.wsjf, reverse=True):
-        if not idle or len(plan) >= max_dispatches:
-            break
-        lane = next((ln for ln in idle if _routable(task, ln)), None)
-        if lane is None:
-            continue
-        if lane.cooldown_remaining_s > 0:
-            # prior behavior: the task gives up on its first-match lane without
-            # trying any other free lane — the head-of-line block.
-            continue
-        plan.append((task.task_id, lane.role))
-        idle.remove(lane)
-    return plan
+    """Legacy compatibility delegates to the same Gate-0A candidate projection."""
+
+    return _baseline_candidate_plan(tasks, lanes, max_dispatches)
 
 
-# ── cache (the SSOT the bash watchdogs read) ──────────────────────────────────
+# ── derived support cache ─────────────────────────────────────────────────────
 
 
 def build_cache_payload(report: ServiceTimeReport, k: float = TAU_K) -> dict:
-    """Compact, value-free summary + per-lineage tau for the watchdogs to read."""
+    """Build an inspectable projection that explicitly cannot authorize effects."""
 
     def summarize(dist: Distribution) -> dict:
         return {
@@ -506,23 +675,44 @@ def build_cache_payload(report: ServiceTimeReport, k: float = TAU_K) -> dict:
     per_lineage = {}
     for role, dist in report.per_lineage.items():
         entry = summarize(dist)
-        entry["tau_s"] = _tau_from_p99(dist.p99, k)
+        entry["observed_tau_candidate_s"] = _tau_from_p99(dist.p99, k)
         per_lineage[role] = entry
 
     global_entry = summarize(report.gaps)
-    global_entry["tau_s"] = _tau_from_p99(report.gaps.p99, k)
+    global_entry["observed_tau_candidate_s"] = _tau_from_p99(report.gaps.p99, k)
+
+    receipts = [
+        {
+            "source": receipt.source,
+            "source_state": receipt.source_state,
+            "sha256": receipt.sha256,
+            "byte_length": receipt.byte_length,
+            "lines_total": receipt.lines_total,
+            "records_accepted": receipt.records_accepted,
+            "rejected": receipt.rejected,
+            "frontier_ts": _format_ts(receipt.frontier_ts),
+            "freshness_state": receipt.freshness_state,
+        }
+        for receipt in report.source_receipts
+    ]
 
     return {
-        "generated_at": report.now,
+        "projection_kind": SUPPORT_PROJECTION_KIND,
+        "effect_state": SUPPORT_EFFECT_STATE,
+        "hold_reason": SUPPORT_HOLD_REASON,
+        "may_authorize": SUPPORT_MAY_AUTHORIZE,
+        "generated_at": _format_ts(report.now),
+        "query_window_s": report.window_s,
         "tau_floor_s": TAU_FLOOR_S,
         "tau_ceil_s": TAU_CEIL_S,
         "tau_k": k,
-        "max_reap_attempts": MAX_REAP_ATTEMPTS,
-        "age_norm_s": _round(report.spans.p90) if report.spans.n else AGE_NORM_S,
         "records_total": report.records_total,
         "records_no_task": report.records_no_task,
         "records_usable": report.records_usable,
+        "records_rejected": report.records_rejected,
+        "rejected": report.rejected,
         "cross_session_breaks": report.cross_session_breaks,
+        "source_frontier": receipts,
         "global": global_entry,
         "spans": summarize(report.spans),
         "per_lineage": per_lineage,
@@ -535,32 +725,80 @@ def _round(value: float) -> float | None:
     return round(float(value), 2)
 
 
+def _format_ts(value: float | None) -> str | None:
+    if value is None or not math.isfinite(value):
+        return None
+    return datetime.fromtimestamp(value, tz=UTC).isoformat().replace("+00:00", "Z")
+
+
 def write_cache(report: ServiceTimeReport, path: Path, k: float = TAU_K) -> None:
+    """Atomically materialize the non-authorizing projection with private mode."""
+
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = build_cache_payload(report, k)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp.chmod(0o600)
     tmp.rename(path)
 
 
-def tau_from_cache(path: Path, lineage: str) -> float:
-    """Read tau for a lineage from the cache. Missing cache -> safe ceiling.
+def tau_from_cache(
+    path: Path,
+    lineage: str,
+    *,
+    now: float | None = None,
+    max_age_s: float = DEFAULT_FRESHNESS_WINDOW_S,
+) -> float:
+    """Read a fresh, bounded diagnostic candidate from a support-only cache."""
 
-    A blind reaper (no cache) must not reap aggressively, so the fallback is the
-    ceiling, not the floor: when uncertain, wait the maximum bounded time.
-    """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return TAU_CEIL_S
+    if not isinstance(data, dict):
+        return TAU_CEIL_S
+    if (
+        data.get("projection_kind") != SUPPORT_PROJECTION_KIND
+        or data.get("effect_state") != SUPPORT_EFFECT_STATE
+        or data.get("hold_reason") != SUPPORT_HOLD_REASON
+        or data.get("may_authorize") is not False
+    ):
+        return TAU_CEIL_S
+    queried_at = time.time() if now is None else now
+    generated_at = parse_ts(data.get("generated_at"))
+    if (
+        isinstance(queried_at, bool)
+        or not isinstance(queried_at, (int, float))
+        or not math.isfinite(queried_at)
+        or isinstance(max_age_s, bool)
+        or not math.isfinite(max_age_s)
+        or max_age_s <= 0
+        or generated_at is None
+        or generated_at > queried_at
+        or queried_at - generated_at > max_age_s
+    ):
+        return TAU_CEIL_S
     per_lineage = data.get("per_lineage", {})
-    entry = per_lineage.get(lineage)
-    if isinstance(entry, dict) and "tau_s" in entry:
-        return float(entry["tau_s"])
+    entry = per_lineage.get(lineage) if isinstance(per_lineage, dict) else None
+    if isinstance(entry, dict):
+        candidate = _bounded_tau_candidate(entry.get("observed_tau_candidate_s"))
+        if candidate is not None:
+            return candidate
     global_entry = data.get("global", {})
-    if isinstance(global_entry, dict) and "tau_s" in global_entry:
-        return float(global_entry["tau_s"])
+    if isinstance(global_entry, dict):
+        candidate = _bounded_tau_candidate(global_entry.get("observed_tau_candidate_s"))
+        if candidate is not None:
+            return candidate
     return TAU_CEIL_S
+
+
+def _bounded_tau_candidate(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    candidate = float(value)
+    if not math.isfinite(candidate) or not TAU_FLOOR_S <= candidate <= TAU_CEIL_S:
+        return None
+    return candidate
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -568,8 +806,10 @@ def tau_from_cache(path: Path, lineage: str) -> float:
 
 def _format_report(report: ServiceTimeReport) -> str:
     lines = [
-        f"dispatch service-time fold  (records: total={report.records_total} "
+        f"dispatch service-time support fold  (effect_state={SUPPORT_EFFECT_STATE} "
+        f"records: total={report.records_total} "
         f"no_task_id={report.records_no_task} usable={report.records_usable} "
+        f"rejected={report.records_rejected} "
         f"cross_session_breaks={report.cross_session_breaks})",
         "",
         f"{'sample':<26} {'n':>6} {'p50':>8} {'p90':>8} {'p95':>8} "
@@ -585,11 +825,13 @@ def _format_report(report: ServiceTimeReport) -> str:
     lines.append(row("inter-tool gaps", report.gaps))
     lines.append(row("service spans", report.spans))
     lines.append("")
-    lines.append("per-lineage inter-tool gaps + tau:")
+    lines.append("per-lineage inter-tool gaps + non-authorizing tau candidate:")
     for role in sorted(report.per_lineage):
         dist = report.per_lineage[role]
         tau = tau_for_lineage(report, role)
-        lines.append(f"  {row(role, dist)}   tau={tau:.0f}s")
+        lines.append(f"  {row(role, dist)}   tau_candidate={tau:.0f}s")
+    lines.append("")
+    lines.append(f"HOLD: {SUPPORT_HOLD_REASON}")
     return "\n".join(lines)
 
 
@@ -600,14 +842,18 @@ def _sources(args: argparse.Namespace) -> list[Path]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Dispatch service-time fold")
+    parser = argparse.ArgumentParser(description="Dispatch service-time support fold")
     parser.add_argument("--report", action="store_true", help="print the distribution table")
-    parser.add_argument("--recompute", action="store_true", help="recompute and write the cache")
-    parser.add_argument("--tau", action="store_true", help="print tau for --lineage from --cache")
+    parser.add_argument(
+        "--recompute", action="store_true", help="recompute the support-only cache"
+    )
+    parser.add_argument(
+        "--tau", action="store_true", help="print diagnostic tau candidate for --lineage"
+    )
     parser.add_argument(
         "--reap-decision",
         action="store_true",
-        help="print skip|reap|escalate for the reaper",
+        help="print the fail-closed Gate-0A recovery disposition (hold)",
     )
     parser.add_argument(
         "--lineage", default="", help="lineage (lane role) for --tau/--reap-decision"

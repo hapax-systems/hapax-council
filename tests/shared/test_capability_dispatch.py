@@ -1,401 +1,233 @@
-"""Tests for shared.capability_dispatch — the alias resolver + utilization view."""
+"""Gate-0A tests for capability catalogue and current-evidence resolution."""
 
 from __future__ import annotations
 
 import json
-import re
-import subprocess
-import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from shared.capability_dispatch import (
     CAPABILITY_ALIASES,
-    LAUNCHABLE_PATHS,
+    DEFAULT_REGISTRY_PATH,
     UNROUTED_POINTERS,
-    launchable_aliases,
-    ledger_health,
-    load_valid_route_ids,
-    read_dispatch_ledger,
-    record_route_id,
+    CapabilityResolution,
+    CapabilityState,
+    build_dispatch_carrier,
+    catalogued_aliases,
+    catalogued_route_ids,
+    default_dispatch_ledger,
+    dispatch_carrier_hash,
+    load_capability_registry,
     registry_error,
     resolve_capability,
+    resolve_catalogued_capability,
     split_route_id,
-    utilization,
+    utilization_status,
+    verify_dispatch_carrier,
 )
+from shared.platform_capability_registry import PlatformCapabilityRegistry
 
-# A fixed registry set so resolution tests don't depend on the live registry file.
-VALID = frozenset(
-    {
-        "codex.headless.full",
-        "codex.headless.spark",
-        "claude.headless.full",
-        "claude.headless.opus",
-        "claude.headless.sonnet",
-        "claude.headless.haiku",
-        "claude.interactive.full",
-        "api.headless.provider_gateway",
-        "api.headless.api_frontier",
-        "api.headless.openrouter",
-        "vibe.headless.full",
-        "agy.review.direct",
-        "glmcp.review.direct",
-        "local_tool.local.worker",
-    }
-)
+FRESH_NOW = datetime(2026, 7, 12, 12, 0, tzinfo=UTC)
 
 
-# --- resolve_capability ----------------------------------------------------------
+def _support(carrier: dict, code: str) -> object:
+    matches = [item for item in carrier["support"] if item["code"] == code]
+    assert len(matches) == 1
+    assert matches[0]["claim_ceiling"] == "support_non_authoritative"
+    return matches[0]["value"]
 
 
-def test_resolve_known_alias_ok() -> None:
-    res = resolve_capability("codex", valid_route_ids=VALID)
-    assert res.ok
-    assert res.route_id == "codex.headless.full"
-    assert (res.platform, res.mode, res.profile) == ("codex", "headless", "full")
+def _raw_registry() -> dict:
+    return json.loads(DEFAULT_REGISTRY_PATH.read_text(encoding="utf-8"))
 
 
-def test_resolve_is_case_insensitive_and_trims() -> None:
-    res = resolve_capability("  CODEX ", valid_route_ids=VALID)
-    assert res.ok and res.route_id == "codex.headless.full"
+def _fresh_registry(route_id: str = "codex.headless.full") -> PlatformCapabilityRegistry:
+    payload = _raw_registry()
+    route = next(item for item in payload["routes"] if item["route_id"] == route_id)
+    observed = "2026-07-12T11:59:00Z"
+    route["route_state"] = "active"
+    route["blocked_reasons"] = []
+    for surface in ("capability", "quota", "resource", "provider_docs"):
+        route["freshness"][f"{surface}_checked_at"] = observed
+        route["freshness"]["evidence"][surface] = {
+            "evidence_refs": [f"test:{route_id}:{surface}"],
+            "blocked_reasons": [],
+        }
+    for score in route["capability_scores"].values():
+        score["observed_at"] = observed
+    for tool in route["tool_state"]:
+        tool["observed_at"] = observed
+    return PlatformCapabilityRegistry.model_validate(payload)
 
 
-def test_resolve_raw_route_id_ok() -> None:
-    res = resolve_capability("claude.headless.opus", valid_route_ids=VALID)
-    assert res.ok and res.profile == "opus"
+def _catalogue() -> frozenset[str]:
+    return catalogued_route_ids(load_capability_registry(receipt_dir=Path("/nonexistent")))
 
 
-def test_resolve_unrouted_fails_closed_with_pointer() -> None:
-    res = resolve_capability("fugu", valid_route_ids=VALID)
-    assert not res.ok
-    assert "P2" in res.reason and res.route_id is None
-
-
-def test_resolve_sakana_points_at_fugu() -> None:
-    res = resolve_capability("sakana", valid_route_ids=VALID)
-    assert not res.ok and "fugu" in res.reason.lower()
-
-
-def test_resolve_agy_review_route_is_valid_but_non_spawnable() -> None:
-    res = resolve_capability("agy", valid_route_ids=VALID)
-    assert not res.ok
-    assert "not a spawnable lane" in res.reason
-    assert res.route_id == "agy.review.direct"
-    assert res.platform == "agy"
-
-    review_alias = resolve_capability("agy-review", valid_route_ids=VALID)
-    assert not review_alias.ok
-    assert "not a spawnable lane" in review_alias.reason
-    assert review_alias.route_id == "agy.review.direct"
-
-
-def test_resolve_deprecated_antigrav_alias_fails_closed() -> None:
-    res = resolve_capability("antigrav", valid_route_ids=VALID)
-    assert not res.ok
-    assert "deprecated" in res.reason.lower()
-    assert "agy-review" in res.reason
-    assert res.route_id is None
-
-    full_word = resolve_capability("antigravity", valid_route_ids=VALID)
-    assert not full_word.ok
-    assert "deprecated" in full_word.reason.lower()
-    assert "agy-review" in full_word.reason
-    assert full_word.route_id is None
-
-    gemini_cli = resolve_capability("gemini-cli", valid_route_ids=VALID)
-    assert not gemini_cli.ok
-    assert "retired" in gemini_cli.reason.lower()
-    assert "agy-review" in gemini_cli.reason
-    assert gemini_cli.route_id is None
-
-
-def test_resolve_unknown_capability() -> None:
-    res = resolve_capability("nope", valid_route_ids=VALID)
-    assert not res.ok and "unknown capability" in res.reason
-
-
-def test_resolve_non_spawnable_platform_fails_closed() -> None:
-    res = resolve_capability("glmcp-review", valid_route_ids=VALID)
-    assert not res.ok
-    assert "not a spawnable lane" in res.reason
-    assert res.platform == "glmcp"  # resolved, but not launchable here
-
-
-def test_resolve_alias_to_route_absent_from_registry() -> None:
-    # codex-spark maps to a real route, but pretend the registry lacks that route.
-    res = resolve_capability("codex-spark", valid_route_ids=VALID - {"codex.headless.spark"})
-    assert not res.ok and "not in the registry" in res.reason
-
-
-# --- split_route_id --------------------------------------------------------------
-
-
-def test_split_route_id_valid() -> None:
-    assert split_route_id("api.headless.provider_gateway") == (
-        "api",
+def test_static_alias_resolution_is_catalogued_not_available() -> None:
+    resolution = resolve_catalogued_capability("  CODEX ", route_ids=_catalogue())
+    assert resolution.state is CapabilityState.CATALOGUED
+    assert resolution.route_id == "codex.headless.full"
+    assert resolution.available is False
+    assert resolution.catalogued is True
+    assert (resolution.platform, resolution.mode, resolution.profile) == (
+        "codex",
         "headless",
-        "provider_gateway",
+        "full",
     )
 
 
-def test_split_route_id_malformed() -> None:
+def test_raw_route_catalogue_resolution_does_not_infer_supply() -> None:
+    resolution = resolve_catalogued_capability("claude.headless.opus", route_ids=_catalogue())
+    assert resolution.state is CapabilityState.CATALOGUED
+    assert "availability has not been evaluated" in resolution.reason
+
+
+def test_known_unrouted_name_is_held_and_unknown_name_is_unknown() -> None:
+    held = resolve_catalogued_capability("fugu", route_ids=_catalogue())
+    unknown = resolve_catalogued_capability("not-a-capability", route_ids=_catalogue())
+    assert held.state is CapabilityState.HELD and held.route_id is None
+    assert unknown.state is CapabilityState.UNKNOWN and unknown.route_id is None
+
+
+def test_alias_catalogue_drift_is_a_hold() -> None:
+    resolution = resolve_catalogued_capability(
+        "codex-spark", route_ids=_catalogue() - {"codex.headless.spark"}
+    )
+    assert resolution.state is CapabilityState.HELD
+    assert "absent from the typed registry catalogue" in resolution.reason
+
+
+def test_current_resolution_uses_typed_freshness_and_policy_evidence() -> None:
+    available = resolve_capability("codex", registry=_fresh_registry(), now=FRESH_NOW)
+    assert available.state is CapabilityState.AVAILABLE
+    assert available.checked_at == "2026-07-12T12:00:00Z"
+    assert available.evidence_refs
+    assert available.blocker_reasons == ()
+
+    seed = load_capability_registry(receipt_dir=Path("/nonexistent"))
+    held = resolve_capability("codex", registry=seed, now=FRESH_NOW)
+    assert held.state is CapabilityState.HELD
+    assert held.route_id == "codex.headless.full"
+    assert held.blocker_reasons
+    assert "blocked" in held.reason or "stale" in held.reason
+
+
+def test_catalogued_aliases_include_non_worker_surfaces_without_calling_them_launchable() -> None:
+    aliases = catalogued_aliases(_catalogue())
+    assert aliases["codex"] == "codex.headless.full"
+    assert aliases["agy-review"] == "agy.review.direct"
+    assert aliases["api"] == "api.headless.provider_gateway"
+    assert aliases["local-worker"] == "local_tool.local.worker"
+
+
+def test_aliases_are_well_formed_and_unrouted_names_are_disjoint() -> None:
+    assert set(UNROUTED_POINTERS).isdisjoint(CAPABILITY_ALIASES)
+    assert all(split_route_id(route_id) is not None for route_id in CAPABILITY_ALIASES.values())
     assert split_route_id("two.parts") is None
-    assert split_route_id("a..c") is None  # empty middle
+    assert split_route_id("a..c") is None
 
 
-# --- load_valid_route_ids --------------------------------------------------------
+def test_typed_registry_error_is_visible(tmp_path: Path) -> None:
+    malformed = tmp_path / "registry.json"
+    malformed.write_text("{not json", encoding="utf-8")
+    detail = registry_error(malformed)
+    assert detail is not None
+    assert "invalid platform capability registry" in detail
 
 
-def test_load_valid_route_ids(tmp_path: Path) -> None:
-    reg = tmp_path / "reg.json"
-    reg.write_text(json.dumps({"required_route_ids": ["a.b.c", "d.e.f"]}), encoding="utf-8")
-    assert load_valid_route_ids(reg) == frozenset({"a.b.c", "d.e.f"})
-
-
-def test_load_valid_route_ids_missing_file(tmp_path: Path) -> None:
-    assert load_valid_route_ids(tmp_path / "nope.json") == frozenset()
-
-
-def test_load_valid_route_ids_malformed(tmp_path: Path) -> None:
-    bad = tmp_path / "bad.json"
-    bad.write_text("{not json", encoding="utf-8")
-    assert load_valid_route_ids(bad) == frozenset()
-
-
-def test_registry_error_readable_returns_none() -> None:
-    assert registry_error() is None  # the shipped registry reads + has routes
-
-
-def test_registry_error_missing_file(tmp_path: Path) -> None:
-    assert "unreadable" in (registry_error(tmp_path / "nope.json") or "")
-
-
-def test_registry_error_malformed(tmp_path: Path) -> None:
-    bad = tmp_path / "bad.json"
-    bad.write_text("{not json", encoding="utf-8")
-    assert "malformed" in (registry_error(bad) or "")
-
-
-def test_registry_error_missing_key(tmp_path: Path) -> None:
-    reg = tmp_path / "reg.json"
-    reg.write_text(json.dumps({"other": []}), encoding="utf-8")
-    assert "required_route_ids" in (registry_error(reg) or "")
-
-
-def test_registry_error_empty_list(tmp_path: Path) -> None:
-    reg = tmp_path / "reg.json"
-    reg.write_text(json.dumps({"required_route_ids": []}), encoding="utf-8")
-    assert "empty" in (registry_error(reg) or "")
-
-
-def test_ledger_health_missing(tmp_path: Path) -> None:
-    assert ledger_health(tmp_path / "nope.jsonl") == (False, 0)
-
-
-def test_ledger_health_counts_corrupt(tmp_path: Path) -> None:
-    led = tmp_path / "methodology-dispatch.jsonl"
-    led.write_text(
-        json.dumps({"platform": "codex", "mode": "headless", "profile": "full"})
-        + "\n"
-        + "{ corrupt\n"
-        + "\n"
-        + "also not json\n",
-        encoding="utf-8",
+def test_carrier_is_exact_rehashable_and_always_negative_state() -> None:
+    resolution = resolve_capability("codex", registry=_fresh_registry(), now=FRESH_NOW)
+    first = build_dispatch_carrier(
+        resolution=resolution,
+        task_id="cc-task-example",
+        lane="cx-red",
+        requested_operation="validate",
+        mq_message_id="message-1",
+        idempotency_key="key-1",
     )
-    exists, corrupt = ledger_health(led)
-    assert exists is True and corrupt == 2
+    second = build_dispatch_carrier(
+        resolution=resolution,
+        task_id="cc-task-example",
+        lane="cx-red",
+        requested_operation="validate",
+        mq_message_id="message-1",
+        idempotency_key="key-1",
+    )
+    assert first == second
+    assert verify_dispatch_carrier(first)
+    assert first["carrier_hash"] == dispatch_carrier_hash(first)
+    assert first["carrier_ref"] == (f"methodology-dispatch-carrier@sha256:{first['carrier_hash']}")
+    assert first["effect_state"] == "held_not_admitted"
+    assert first["materialization_state"] == "not_materialized"
+    assert first["correlation"] == {
+        "schema": "hapax.dispatch-correlation.v1",
+        "mq_message_id": "message-1",
+        "idempotency_key": "key-1",
+    }
+    assert _support(first, "capability.state") == "available"
+    assert _support(first, "task.validation_state") == "not_evaluated"
 
 
-def test_load_valid_route_ids_reflects_real_registry() -> None:
-    # The shipped registry must expose required_route_ids; aliases must be valid; and
-    # launchability must match the dispatcher's spawnable (platform, mode) lanes — the
-    # receipt-only api/local routes must never appear as launch capacity (makes the
-    # "latent capability" claim recheckable, not a hand-picked number).
-    valid = load_valid_route_ids()
-    assert valid, "registry should expose required_route_ids"
-    launchable = launchable_aliases(valid)
-    for route_id in launchable.values():
-        assert route_id in valid
-        platform, mode, _ = split_route_id(route_id)  # type: ignore[misc]
-        assert (platform, mode) in LAUNCHABLE_PATHS
-    assert "api" not in launchable and "api-frontier" not in launchable
-    assert "openrouter" not in launchable and "openrouter-frontier" not in launchable
-    assert "local-worker" not in launchable
-    assert "agy" not in launchable and "agy-review" not in launchable
-    assert "glmcp-review" not in launchable
-    assert not any(rid.startswith("api.") for rid in launchable.values())
+def test_launch_compatibility_request_cannot_change_effect_state() -> None:
+    resolution = resolve_capability("codex", registry=_fresh_registry(), now=FRESH_NOW)
+    carrier = build_dispatch_carrier(
+        resolution=resolution,
+        task_id="cc-task-example",
+        lane="cx-red",
+        requested_operation="launch",
+    )
+    assert carrier["requested_operation"] == "launch"
+    assert carrier["effect_state"] == "held_not_admitted"
+    assert carrier["materialization_state"] == "not_materialized"
+    assert verify_dispatch_carrier(carrier)
 
 
-# --- launchable_aliases ----------------------------------------------------------
+def test_carrier_tamper_requires_a_new_content_address() -> None:
+    resolution = resolve_catalogued_capability("codex", route_ids=_catalogue())
+    carrier = build_dispatch_carrier(
+        resolution=resolution,
+        task_id="cc-task-example",
+        lane="cx-red",
+        requested_operation="validate",
+    )
+    carrier["task_id"] = "other-task"
+    assert not verify_dispatch_carrier(carrier)
 
 
-def test_launchable_aliases_excludes_non_spawnable() -> None:
-    out = launchable_aliases(VALID)
-    assert "codex" in out and "vibe" in out
-    assert "agy" not in out
-    assert "glmcp-review" not in out  # platform glmcp not spawnable
-    assert "local-worker" not in out  # receipt-only local-inference, no lane
-    assert "api" not in out and "api-frontier" not in out  # receipt-only api routes
-    assert "openrouter" not in out and "openrouter-frontier" not in out
-    for route_id in out.values():
-        platform, mode, _ = split_route_id(route_id)  # type: ignore[misc]
-        assert (platform, mode) in LAUNCHABLE_PATHS
-
-
-def test_resolve_api_route_is_receipt_only_not_launchable() -> None:
-    # api routes are valid + admittable but receipt-only (no spawnable lane) — they
-    # must fail closed, not appear as launch capacity (codex major finding).
-    res = resolve_capability("api", valid_route_ids=VALID)
-    assert not res.ok
-    assert "not a spawnable lane" in res.reason
-    assert res.route_id == "api.headless.provider_gateway"
-
-
-def test_resolve_openrouter_route_is_receipt_only_not_launchable() -> None:
-    res = resolve_capability("openrouter", valid_route_ids=VALID)
-    assert not res.ok
-    assert "not a spawnable lane" in res.reason
-    assert res.route_id == "api.headless.openrouter"
-
-    frontier = resolve_capability("openrouter-frontier", valid_route_ids=VALID)
-    assert not frontier.ok
-    assert "not a spawnable lane" in frontier.reason
-    assert frontier.route_id == "api.headless.openrouter"
-
-    raw = resolve_capability("api.headless.openrouter", valid_route_ids=VALID)
-    assert not raw.ok
-    assert "not a spawnable lane" in raw.reason
-    assert raw.route_id == "api.headless.openrouter"
-
-    typo = resolve_capability("open-router", valid_route_ids=VALID)
-    assert not typo.ok
-    assert "unknown capability" in typo.reason
-    assert typo.route_id is None
-
-
-# --- the launchable set vs the LIVE dispatcher (contract, not a mock) ------------
-
-_DISPATCHER = Path(__file__).resolve().parents[2] / "scripts" / "hapax-methodology-dispatch"
-
-
-def test_launchable_paths_match_live_dispatcher() -> None:
-    # Guards the "tests mock away the dispatcher contract" finding: run the REAL
-    # dispatcher's --list-platform-paths and assert LAUNCHABLE_PATHS are exactly the
-    # spawnable lanes while api/local are receipt-only — so the set cannot drift.
-    try:
-        proc = subprocess.run(
-            [sys.executable, str(_DISPATCHER), "--list-platform-paths"],
-            capture_output=True,
-            text=True,
-            timeout=120,
+def test_carrier_refuses_an_unresolved_capability() -> None:
+    unresolved = CapabilityResolution(
+        capability="unknown",
+        state=CapabilityState.UNKNOWN,
+        reason="unknown",
+    )
+    with pytest.raises(ValueError, match="catalogued route"):
+        build_dispatch_carrier(
+            resolution=unresolved,
+            task_id="cc-task-example",
+            lane="cx-red",
+            requested_operation="validate",
         )
-    except (OSError, subprocess.SubprocessError) as exc:  # pragma: no cover - env guard
-        pytest.skip(f"dispatcher not runnable: {exc}")
-    if proc.returncode != 0:  # pragma: no cover - env guard
-        pytest.skip(f"dispatcher --list-platform-paths failed: {proc.stderr[-300:]}")
-    lines = proc.stdout.splitlines()
-    for platform, mode in LAUNCHABLE_PATHS:
-        prefix = f"{platform}/{mode}/"
-        matched = [ln for ln in lines if ln.startswith(prefix)]
-        assert matched, f"{prefix} missing from --list-platform-paths"
-        assert any("receipt-only" not in ln and "no spawnable lane" not in ln for ln in matched), (
-            f"{prefix} is receipt-only in the dispatcher but LAUNCHABLE_PATHS claims it spawns"
-        )
-    api_lines = [ln for ln in lines if ln.startswith("api/")]
-    assert api_lines and all("receipt-only" in ln for ln in api_lines)
-    # Set EQUALITY — catches drift BOTH ways (incl. a NEW spawnable lane LAUNCHABLE_PATHS forgot).
-    spawnable: set[tuple[str, str]] = set()
-    for ln in lines:
-        m = re.match(r"^([a-z_]+)/([a-z_]+)/\S+:", ln)
-        if m and "receipt-only" not in ln and "no spawnable lane" not in ln:
-            spawnable.add((m.group(1), m.group(2)))
-    assert spawnable == set(LAUNCHABLE_PATHS), (
-        f"LAUNCHABLE_PATHS drift: dispatcher spawnable={sorted(spawnable)} "
-        f"vs LAUNCHABLE_PATHS={sorted(LAUNCHABLE_PATHS)}"
+
+
+def test_legacy_utilization_is_support_only_unknown() -> None:
+    status = utilization_status()
+    assert status.state is CapabilityState.UNKNOWN
+    assert status.legacy_source_authority == "support_only_not_consumed"
+    assert "cannot prove ACTIVE or LATENT" in status.reason
+
+
+def test_retired_ledger_symbol_preserves_imports_without_returning_an_evidence_path() -> None:
+    assert default_dispatch_ledger() is None
+
+
+def test_source_has_no_static_launchable_or_legacy_ledger_reader() -> None:
+    source = Path(__import__("shared.capability_dispatch", fromlist=["x"]).__file__).read_text(
+        encoding="utf-8"
     )
-
-
-def test_every_alias_targets_a_well_formed_route_id() -> None:
-    for route_id in CAPABILITY_ALIASES.values():
-        assert split_route_id(route_id) is not None
-
-
-def test_unrouted_pointers_are_not_aliases() -> None:
-    assert set(UNROUTED_POINTERS).isdisjoint(set(CAPABILITY_ALIASES))
-
-
-# --- the dispatch ledger reader --------------------------------------------------
-
-
-def test_read_dispatch_ledger_skips_corrupt(tmp_path: Path) -> None:
-    led = tmp_path / "methodology-dispatch.jsonl"
-    led.write_text(
-        json.dumps({"platform": "codex", "mode": "headless", "profile": "full", "launched": True})
-        + "\n"
-        + "{ corrupt\n"
-        + "\n"
-        + json.dumps({"platform": "claude", "mode": "headless", "profile": "full"})
-        + "\n",
-        encoding="utf-8",
-    )
-    rows = list(read_dispatch_ledger(led))
-    assert len(rows) == 2 and rows[0]["platform"] == "codex"
-
-
-def test_read_dispatch_ledger_missing(tmp_path: Path) -> None:
-    assert list(read_dispatch_ledger(tmp_path / "nope.jsonl")) == []
-
-
-def test_record_route_id() -> None:
-    assert (
-        record_route_id({"platform": "codex", "mode": "headless", "profile": "full"})
-        == "codex.headless.full"
-    )
-    assert record_route_id({"platform": "codex", "mode": "headless"}) is None
-
-
-# --- utilization -----------------------------------------------------------------
-
-
-def test_utilization_active_vs_latent() -> None:
-    records = [
-        {"platform": "codex", "mode": "headless", "profile": "full", "launched": True},
-        {"platform": "codex", "mode": "headless", "profile": "full", "launched": True},
-        {"platform": "antigrav", "mode": "interactive", "profile": "full", "launched": True},
-    ]
-    u = utilization(records, valid_route_ids=VALID)
-    assert "codex.headless.full" in u.active
-    assert "antigrav.interactive.full" not in u.known
-    assert "antigrav.interactive.full" not in u.active
-    assert "vibe.headless.full" in u.latent  # launchable but unused
-    assert u.counts["codex.headless.full"] == 2
-    assert u.counts["antigrav.interactive.full"] == 1
-    assert set(u.active).isdisjoint(set(u.latent))
-    assert sorted(u.active + u.latent) == u.known
-
-
-def test_utilization_launched_only_filter() -> None:
-    records = [
-        {"platform": "vibe", "mode": "headless", "profile": "full", "launched": False},
-    ]
-    u_strict = utilization(records, valid_route_ids=VALID, launched_only=True)
-    assert "vibe.headless.full" in u_strict.latent
-    u_all = utilization(records, valid_route_ids=VALID, launched_only=False)
-    assert "vibe.headless.full" in u_all.active
-
-
-def test_utilization_counts_unknown_routes_but_excludes_from_known() -> None:
-    # A dispatch to a non-launchable route is tallied but not in the known scorecard.
-    records = [
-        {"platform": "glmcp", "mode": "review", "profile": "direct", "launched": True},
-    ]
-    u = utilization(records, valid_route_ids=VALID)
-    assert u.counts.get("glmcp.review.direct") == 1
-    assert "glmcp.review.direct" not in u.known
-
-
-def test_utilization_alias_for_uses_primary_alias() -> None:
-    records = [{"platform": "codex", "mode": "headless", "profile": "full", "launched": True}]
-    u = utilization(records, valid_route_ids=VALID)
-    assert u.alias_for["codex.headless.full"] == "codex"
+    assert "LAUNCHABLE_PATHS" not in source
+    assert "launchable_aliases" not in source
+    assert "read_dispatch_ledger" not in source
+    assert "ledger_health" not in source

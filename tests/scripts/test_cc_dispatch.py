@@ -1,161 +1,136 @@
-"""Tests for the cc-dispatch CLI (the friendly one-command capability surface)."""
+"""Effect-purity tests for the Gate-0A ``cc-dispatch`` intake surface."""
 
 from __future__ import annotations
 
+import ast
 import importlib.util
+import json
 import os
 import subprocess
+import sys
+from datetime import UTC, datetime
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
-_CC_PATH = Path(__file__).resolve().parents[2] / "scripts" / "cc-dispatch"
-
-# Full registry set (matches the shared test fixture) so --list output is not
-# silently narrower than the real registry exposes.
-VALID = frozenset(
-    {
-        "codex.headless.full",
-        "codex.headless.spark",
-        "claude.headless.full",
-        "claude.headless.opus",
-        "claude.headless.sonnet",
-        "claude.headless.haiku",
-        "claude.interactive.full",
-        "api.headless.provider_gateway",
-        "api.headless.api_frontier",
-        "vibe.headless.full",
-        "agy.review.direct",
-        "glmcp.review.direct",
-        "local_tool.local.worker",
-    }
+from shared.capability_dispatch import DEFAULT_REGISTRY_PATH, verify_dispatch_carrier
+from shared.platform_capability_registry import (
+    PlatformCapabilityRegistry,
+    PlatformCapabilityRegistryError,
 )
+
+_CC_PATH = Path(__file__).resolve().parents[2] / "scripts" / "cc-dispatch"
+FRESH_NOW = datetime(2026, 7, 12, 12, 0, tzinfo=UTC)
 
 
 def _load():
     loader = SourceFileLoader("cc_dispatch_cli", str(_CC_PATH))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     assert spec is not None
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
-    return mod
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
 
 
-def _patch_valid(monkeypatch, mod):
-    monkeypatch.setattr(mod, "load_valid_route_ids", lambda *a, **k: VALID)
+def _registry(*, available: bool) -> PlatformCapabilityRegistry:
+    payload = json.loads(DEFAULT_REGISTRY_PATH.read_text(encoding="utf-8"))
+    if not available:
+        return PlatformCapabilityRegistry.model_validate(payload)
+    route = next(item for item in payload["routes"] if item["route_id"] == "codex.headless.full")
+    observed = "2026-07-12T11:59:00Z"
+    route["route_state"] = "active"
+    route["blocked_reasons"] = []
+    for surface in ("capability", "quota", "resource", "provider_docs"):
+        route["freshness"][f"{surface}_checked_at"] = observed
+        route["freshness"]["evidence"][surface] = {
+            "evidence_refs": [f"test:codex:{surface}"],
+            "blocked_reasons": [],
+        }
+    for score in route["capability_scores"].values():
+        score["observed_at"] = observed
+    for tool in route["tool_state"]:
+        tool["observed_at"] = observed
+    return PlatformCapabilityRegistry.model_validate(payload)
 
 
-def test_list(monkeypatch, capsys) -> None:
-    mod = _load()
-    _patch_valid(monkeypatch, mod)
-    assert mod.main(["--list"]) == 0
-    out = capsys.readouterr().out
-    assert "codex" in out and "codex.headless.full" in out
-    assert "agy" not in out and "antigrav.interactive.full" not in out
-    assert "glmcp-review" not in out  # non-spawnable excluded
+def _patch_registry(monkeypatch, module, *, available: bool = True) -> None:
+    monkeypatch.setattr(module, "load_capability_registry", lambda: _registry(available=available))
+    if available:
+        original = module.resolve_capability
+        monkeypatch.setattr(
+            module,
+            "resolve_capability",
+            lambda name, *, registry: original(name, registry=registry, now=FRESH_NOW),
+        )
 
 
-def test_utilization(monkeypatch, capsys) -> None:
-    mod = _load()
-    _patch_valid(monkeypatch, mod)
-    monkeypatch.setattr(
-        mod,
-        "read_dispatch_ledger",
-        lambda *a, **k: iter(
-            [{"platform": "codex", "mode": "headless", "profile": "full", "launched": True}]
-        ),
-    )
-    assert mod.main(["--utilization"]) == 0
-    out = capsys.readouterr().out
-    assert "ACTIVE" in out and "LATENT" in out
-    assert "codex.headless.full" in out
+def _carrier(stdout: str) -> dict:
+    return json.loads(stdout.strip().splitlines()[-1])
 
 
-def test_agy_review_route_is_valid_but_non_spawnable(monkeypatch, capsys) -> None:
-    mod = _load()
-    _patch_valid(monkeypatch, mod)
-    assert mod.main(["agy", "cc-task-x"]) == 2
-    err = capsys.readouterr().err
-    assert "cannot dispatch 'agy'" in err
-    assert "not a spawnable lane" in err
-    assert "agy.review.direct" in err
+def _support(carrier: dict, code: str) -> object:
+    matches = [item for item in carrier["support"] if item["code"] == code]
+    assert len(matches) == 1
+    assert matches[0]["claim_ceiling"] == "support_non_authoritative"
+    return matches[0]["value"]
 
 
-def test_literal_antigrav_capability_fails_with_retired_next_action(monkeypatch, capsys) -> None:
-    mod = _load()
-    _patch_valid(monkeypatch, mod)
-    assert mod.main(["antigrav", "cc-task-x"]) == 2
-    err = capsys.readouterr().err
-    assert "cannot dispatch 'antigrav'" in err
-    assert "deprecated/excised" in err
-    assert "agy-review" in err
-
-    assert mod.main(["antigravity", "cc-task-x"]) == 2
-    err = capsys.readouterr().err
-    assert "cannot dispatch 'antigravity'" in err
-    assert "deprecated/excised" in err
-    assert "agy-review" in err
-
-    assert mod.main(["antigrav.interactive.full", "cc-task-x"]) == 2
-    err = capsys.readouterr().err
-    assert "cannot dispatch 'antigrav.interactive.full'" in err
-    assert "deprecated/excised" in err
+def test_list_labels_catalogue_state_without_launchability_claim(monkeypatch, capsys) -> None:
+    module = _load()
+    _patch_registry(monkeypatch, module)
+    assert module.main(["--list"]) == 0
+    output = capsys.readouterr().out
+    assert "codex" in output and "codex.headless.full" in output
+    assert "[available]" in output
+    assert "agy-review" in output and "[held]" in output
+    assert "launchable" not in output.lower()
 
 
-def test_unknown_fails_closed(monkeypatch, capsys) -> None:
-    mod = _load()
-    _patch_valid(monkeypatch, mod)
-    assert mod.main(["bogus", "cc-task-x"]) == 2
-    assert "unknown capability" in capsys.readouterr().err
+def test_validate_emits_only_an_exact_non_authorizing_carrier(monkeypatch, capsys) -> None:
+    module = _load()
+    _patch_registry(monkeypatch, module)
+    assert module.main(["codex", "cc-task-x", "--lane", "cx-red"]) == 0
+    captured = capsys.readouterr()
+    carrier = _carrier(captured.out)
+    assert captured.err == ""
+    assert verify_dispatch_carrier(carrier)
+    assert carrier["requested_operation"] == "validate"
+    assert _support(carrier, "capability.name") == "codex"
+    assert _support(carrier, "capability.state") == "available"
+    assert _support(carrier, "task.validation_state") == "not_evaluated"
+    assert carrier["effect_state"] == "held_not_admitted"
+    assert carrier["materialization_state"] == "not_materialized"
 
 
-def test_dispatch_validate_builds_correct_cmd(monkeypatch) -> None:
-    mod = _load()
-    _patch_valid(monkeypatch, mod)
-    calls: list[list[str]] = []
-    monkeypatch.setattr(mod, "dispatcher_cmd", lambda: ["DISPATCH"])
-    monkeypatch.setattr(
-        mod.subprocess,
-        "run",
-        lambda cmd, *a, **k: (calls.append(cmd), SimpleNamespace(returncode=0))[1],
-    )
-    assert mod.main(["codex", "cc-task-x", "--lane", "cx-red"]) == 0
-    cmd = calls[0]
-    assert cmd[:1] == ["DISPATCH"]
-    assert "--task" in cmd and "cc-task-x" in cmd
-    assert cmd[cmd.index("--lane") + 1] == "cx-red"  # dispatcher requires --task AND --lane
-    assert cmd[cmd.index("--platform") + 1] == "codex"
-    assert cmd[cmd.index("--mode") + 1] == "headless"
-    assert cmd[cmd.index("--profile") + 1] == "full"
-    assert "--launch" not in cmd  # validate-only by default
+def test_compatibility_launch_is_still_inert(monkeypatch, capsys) -> None:
+    module = _load()
+    _patch_registry(monkeypatch, module)
+    assert module.main(["codex", "cc-task-x", "--lane", "cx-red", "--launch"]) == 0
+    captured = capsys.readouterr()
+    carrier = _carrier(captured.out)
+    assert "compatibility-only" in captured.err
+    assert carrier["requested_operation"] == "launch"
+    assert carrier["effect_state"] == "held_not_admitted"
+    assert carrier["materialization_state"] == "not_materialized"
+    assert verify_dispatch_carrier(carrier)
 
 
-def test_dispatch_launch_passes_launch_flag(monkeypatch) -> None:
-    mod = _load()
-    _patch_valid(monkeypatch, mod)
-    calls: list[list[str]] = []
-    monkeypatch.setattr(mod, "dispatcher_cmd", lambda: ["DISPATCH"])
-    monkeypatch.setattr(
-        mod.subprocess,
-        "run",
-        lambda cmd, *a, **k: (calls.append(cmd), SimpleNamespace(returncode=0))[1],
-    )
-    assert mod.main(["codex", "cc-task-x", "--lane", "cx-red", "--launch"]) == 0
-    assert "--launch" in calls[0]
+def test_held_route_emits_a_held_intake_carrier_not_false_availability(monkeypatch, capsys) -> None:
+    module = _load()
+    _patch_registry(monkeypatch, module, available=False)
+    assert module.main(["codex", "cc-task-x", "--lane", "cx-red"]) == 0
+    captured = capsys.readouterr()
+    carrier = _carrier(captured.out)
+    assert "HOLD route_held" in captured.err
+    assert _support(carrier, "capability.state") == "held"
+    assert _support(carrier, "capability.blocker_reasons")
+    assert verify_dispatch_carrier(carrier)
 
 
-def test_safe_flags_forwarded(monkeypatch) -> None:
-    mod = _load()
-    _patch_valid(monkeypatch, mod)
-    calls: list[list[str]] = []
-    monkeypatch.setattr(mod, "dispatcher_cmd", lambda: ["DISPATCH"])
-    monkeypatch.setattr(
-        mod.subprocess,
-        "run",
-        lambda cmd, *a, **k: (calls.append(cmd), SimpleNamespace(returncode=0))[1],
-    )
+def test_correlation_values_never_imply_mq_or_persistence(monkeypatch, capsys) -> None:
+    module = _load()
+    _patch_registry(monkeypatch, module)
     argv = [
         "codex",
         "cc-task-x",
@@ -166,17 +141,54 @@ def test_safe_flags_forwarded(monkeypatch) -> None:
         "--idempotency-key",
         "K1",
     ]
-    assert mod.main(argv) == 0
-    cmd = calls[0]
-    assert cmd[cmd.index("--mq-message-id") + 1] == "M1"
-    assert cmd[cmd.index("--idempotency-key") + 1] == "K1"
+    assert module.main(argv) == 0
+    carrier = _carrier(capsys.readouterr().out)
+    assert carrier["correlation"] == {
+        "schema": "hapax.dispatch-correlation.v1",
+        "idempotency_key": "K1",
+        "mq_message_id": "M1",
+    }
 
 
-def test_reserved_flags_rejected(monkeypatch) -> None:
-    # CRITICAL: route-defining / receipt flags must NOT be operator-overridable.
-    # parse_args rejects them (unknown to cc-dispatch) -> SystemExit, never forwarded.
-    mod = _load()
-    _patch_valid(monkeypatch, mod)
+def test_unknown_and_unrouted_capabilities_hold_without_carrier(monkeypatch, capsys) -> None:
+    module = _load()
+    _patch_registry(monkeypatch, module)
+    assert module.main(["bogus", "cc-task-x", "--lane", "cx-red"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "HOLD capability_unknown" in captured.err
+
+    assert module.main(["fugu", "cc-task-x", "--lane", "cx-red"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "HOLD capability_held" in captured.err
+
+
+def test_registry_failure_is_a_visible_hold(monkeypatch, capsys) -> None:
+    module = _load()
+
+    def fail():
+        raise PlatformCapabilityRegistryError("typed fixture invalid")
+
+    monkeypatch.setattr(module, "load_capability_registry", fail)
+    assert module.main(["codex", "cc-task-x", "--lane", "cx-red"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "HOLD registry_unknown" in captured.err
+
+
+def test_utilization_fails_visibly_unknown_without_reading_legacy_jsonl(capsys) -> None:
+    module = _load()
+    assert module.main(["--utilization"]) == 3
+    output = capsys.readouterr().out
+    assert "utilization: UNKNOWN" in output
+    assert "support-only" in output
+    assert "ACTIVE (" not in output and "LATENT (" not in output
+
+
+def test_reserved_route_and_effect_flags_are_rejected(monkeypatch) -> None:
+    module = _load()
+    _patch_registry(monkeypatch, module)
     for bad in (
         ["--platform", "claude"],
         ["--no-receipt"],
@@ -184,129 +196,72 @@ def test_reserved_flags_rejected(monkeypatch) -> None:
         ["--skip-worktree-check"],
     ):
         with pytest.raises(SystemExit):
-            mod.main(["codex", "cc-task-x", "--lane", "cx-red", *bad])
+            module.main(["codex", "cc-task-x", "--lane", "cx-red", *bad])
 
 
-def test_missing_args_errors(monkeypatch) -> None:
-    mod = _load()
-    _patch_valid(monkeypatch, mod)
+def test_missing_request_fields_fail_before_projection(monkeypatch) -> None:
+    module = _load()
+    _patch_registry(monkeypatch, module)
     with pytest.raises(SystemExit):
-        mod.main([])
-
-
-def test_missing_lane_errors(monkeypatch) -> None:
-    mod = _load()
-    _patch_valid(monkeypatch, mod)
+        module.main([])
     with pytest.raises(SystemExit):
-        mod.main(["codex", "cc-task-x"])  # no --lane -> the dispatcher would reject; we fail early
+        module.main(["codex", "cc-task-x"])
 
 
-def test_unrouted_fails_closed(monkeypatch, capsys) -> None:
-    mod = _load()
-    _patch_valid(monkeypatch, mod)
-    assert mod.main(["fugu", "cc-task-x"]) == 2
-    err = capsys.readouterr().err
-    assert "cannot dispatch 'fugu'" in err and "P2" in err
+def test_script_has_no_actuator_writer_or_human_prose_authority_parser() -> None:
+    source = _CC_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    imported_roots = {
+        alias.name.split(".", 1)[0]
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+    }
+    assert "subprocess" not in imported_roots
+    assert "os" not in imported_roots
+    for forbidden in (
+        "hapax-methodology-dispatch",
+        "--list-platform-paths",
+        "read_dispatch_ledger",
+        "ledger_health",
+        "relay_mq",
+        "write_text",
+        "write_bytes",
+        "mkdir(",
+        "unlink(",
+        "exec(",
+        "Popen(",
+        "subprocess.run",
+    ):
+        assert forbidden not in source
 
 
-def test_dispatcher_cmd_uses_repo_sibling() -> None:
-    # Trust ONLY the in-repo sibling — never env/PATH (those are bypass vectors).
-    mod = _load()
-    cmd = mod.dispatcher_cmd()
-    assert cmd[0] == mod.sys.executable
-    assert cmd[1] == str(mod._HERE / "hapax-methodology-dispatch")
-
-
-def test_dispatcher_cmd_ignores_hostile_env(monkeypatch) -> None:
-    # CRITICAL fix: a hostile env override must NOT redirect the governed dispatcher.
-    mod = _load()
-    monkeypatch.setenv("HAPAX_METHODOLOGY_DISPATCH_BIN", "/bin/true")
-    cmd = mod.dispatcher_cmd()
-    assert cmd != ["/bin/true"]
-    assert cmd[1] == str(mod._HERE / "hapax-methodology-dispatch")
-
-
-def test_dispatcher_cmd_missing_sibling_exits(monkeypatch, tmp_path) -> None:
-    mod = _load()
-    monkeypatch.setattr(mod, "_HERE", tmp_path)  # no sibling dispatcher here
-    with pytest.raises(SystemExit) as exc:
-        mod.dispatcher_cmd()
-    assert exc.value.code == 3
-
-
-def test_dispatch_composes_with_real_dispatcher(tmp_path) -> None:
-    # Real-composition evidence (not a mock): cc-dispatch's resolved flags reach the
-    # governed dispatcher's validation (no argparse rejection) and a bogus task fails
-    # closed — rebuts "launch predicate only tested as mocked command construction".
-    mod = _load()
-    valid = mod.load_valid_route_ids()
-    if not valid:  # pragma: no cover - env guard
-        pytest.skip("registry unreadable")
-    res = mod.resolve_capability("claude", valid_route_ids=valid)
-    assert res.ok
-    cmd = mod.dispatcher_cmd() + [
-        "--task",
-        "cc-task-DOES-NOT-EXIST-ccdispatch-selftest",
-        "--lane",
-        "ccdispatch-selftest",
-        "--platform",
-        res.platform,
-        "--mode",
-        res.mode,
-        "--profile",
-        res.profile,
-    ]
-    env = {**os.environ, "HAPAX_ORCHESTRATION_LEDGER_DIR": str(tmp_path)}
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=env)
-    except (OSError, subprocess.SubprocessError) as exc:  # pragma: no cover - env guard
-        pytest.skip(f"dispatcher not runnable: {exc}")
-    combined = proc.stdout + proc.stderr
-    assert "unrecognized arguments" not in combined  # flags accepted by the real dispatcher
-    assert "are required" not in combined  # --task/--lane satisfied
-    assert proc.returncode != 0  # a bogus task must NOT falsely succeed
-
-
-def test_print_list_empty_registry_returns_1(monkeypatch, capsys) -> None:
-    mod = _load()
-    monkeypatch.setattr(mod, "load_valid_route_ids", lambda *a, **k: frozenset())
-    assert mod.main(["--list"]) == 1
-    assert "no launchable capabilities" in capsys.readouterr().err
-
-
-def test_utilization_warns_on_missing_ledger(monkeypatch, capsys) -> None:
-    # MAJOR: a LATENT scorecard must not silently hide that the evidence source is absent.
-    mod = _load()
-    _patch_valid(monkeypatch, mod)
-    monkeypatch.setattr(mod, "ledger_health", lambda *a, **k: (False, 0))
-    monkeypatch.setattr(mod, "read_dispatch_ledger", lambda *a, **k: iter([]))
-    assert mod.main(["--utilization"]) == 0
-    err = capsys.readouterr().err
-    assert "no dispatch ledger" in err and "not verified non-use" in err
-
-
-def test_utilization_warns_on_corrupt_ledger(monkeypatch, capsys) -> None:
-    mod = _load()
-    _patch_valid(monkeypatch, mod)
-    monkeypatch.setattr(mod, "ledger_health", lambda *a, **k: (True, 3))
-    monkeypatch.setattr(mod, "read_dispatch_ledger", lambda *a, **k: iter([]))
-    assert mod.main(["--utilization"]) == 0
-    assert "corrupt ledger row" in capsys.readouterr().err
-
-
-def test_utilization_unreadable_registry_returns_1(monkeypatch, capsys) -> None:
-    # MAJOR: utilization must NOT report 0/0 against an unread SSOT.
-    mod = _load()
-    monkeypatch.setattr(mod, "load_valid_route_ids", lambda *a, **k: frozenset())
-    monkeypatch.setattr(mod, "registry_error", lambda *a, **k: "registry unreadable: boom")
-    assert mod.main(["--utilization"]) == 1
-    err = capsys.readouterr().err
-    assert "cannot read the route registry" in err and "boom" in err
-
-
-def test_dispatch_unreadable_registry_returns_1(monkeypatch, capsys) -> None:
-    mod = _load()
-    monkeypatch.setattr(mod, "load_valid_route_ids", lambda *a, **k: frozenset())
-    monkeypatch.setattr(mod, "registry_error", lambda *a, **k: "registry malformed JSON: x")
-    assert mod.main(["codex", "cc-task-x", "--lane", "cx-red"]) == 1
-    assert "cannot read the route registry" in capsys.readouterr().err
+def test_real_script_leaves_home_and_requested_directory_untouched(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    env = {**os.environ, "HOME": str(home), "PYTHONDONTWRITEBYTECODE": "1"}
+    before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(_CC_PATH),
+            "codex",
+            "cc-task-nonexistent-is-still-intake",
+            "--lane",
+            "cx-red",
+            "--launch",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+        check=False,
+    )
+    after = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
+    assert proc.returncode == 0
+    assert before == after
+    carrier = _carrier(proc.stdout)
+    assert _support(carrier, "task.validation_state") == "not_evaluated"
+    assert carrier["effect_state"] == "held_not_admitted"
+    assert carrier["materialization_state"] == "not_materialized"
+    assert verify_dispatch_carrier(carrier)

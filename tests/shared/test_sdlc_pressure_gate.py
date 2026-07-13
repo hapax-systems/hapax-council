@@ -17,6 +17,7 @@ from shared.sdlc_pressure_gate import (
     PressureReading,
     admission_state,
     decide,
+    observe_admission_state,
     parse_psi_some,
     run_in_waves,
     sdlc_slice_wrap,
@@ -136,6 +137,29 @@ def test_admission_state_holds_closed_within_dwell_on_next_call(tmp_path: Path) 
     # 5s later, pressure gone, but min-dwell (20s) not elapsed -> still closed.
     second = admission_state(now=1005.0, reading=_reading(psi=2.0), state_path=state_path)
     assert second.state == "closed"
+
+
+def test_observe_admission_state_never_creates_or_updates_hysteresis(tmp_path: Path) -> None:
+    existing = tmp_path / "existing-state.json"
+    existing.write_text('{"state":"closed","since":1000.0}', encoding="utf-8")
+    before = existing.read_bytes()
+
+    observed = observe_admission_state(
+        now=1005.0,
+        reading=_reading(psi=2.0),
+        state_path=existing,
+    )
+    absent = tmp_path / "absent" / "state.json"
+    fresh = observe_admission_state(
+        now=1005.0,
+        reading=_reading(psi=80.0),
+        state_path=absent,
+    )
+
+    assert observed.state == "closed"
+    assert fresh.state == "closed"
+    assert existing.read_bytes() == before
+    assert not absent.parent.exists()
 
 
 # ── run_in_waves(): the wave governor never drops an item ────────────────────

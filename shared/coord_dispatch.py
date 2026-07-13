@@ -1,27 +1,34 @@
-"""Atomic coordination dispatch binding, MQ consumption, and launch replay."""
+"""Pure Gate-0 coordination binding over composition-owned invocation carriers.
+
+This module contains no actuator. MQ state, terminal mirrors, lane changes, and
+process launch are operational projections that must traverse an activated
+universal executor after Gate-0B.
+"""
 
 from __future__ import annotations
 
-import hashlib
-import sqlite3
-from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
-from pathlib import Path
+from datetime import datetime
 from typing import Literal
 
-from shared.coord_event_log import CoordEvent, CoordEventLog, CoordWriter, DuplicateEventError
-from shared.relay_lifecycle import lane_is_retired
-from shared.relay_mq import ensure_schema
-
-TERMINAL_EVENT_TYPES = {
-    "coord_dispatch.launch_succeeded",
-    "coord_dispatch.launch_failed",
-}
+from shared.execution_admission import (
+    ContentAddress,
+    ExecutionAdmissionError,
+    ExecutionCompositionPorts,
+    ExecutionCompositionRoot,
+    ExecutionInvocationBundle,
+    ExecutionInvocationBundlePointer,
+    ExecutionInvocationContext,
+    ExecutionLease,
+    OutcomeProjectionSnapshot,
+    OutcomeReplayResult,
+    content_address,
+    require_admitted_execution_lease,
+)
 
 
 class CoordDispatchError(RuntimeError):
-    """Base error for coordination dispatch fusion failures."""
+    """Typed refusal at the coordination-to-composition boundary."""
 
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
@@ -30,7 +37,7 @@ class CoordDispatchError(RuntimeError):
 
 @dataclass(frozen=True)
 class DispatchLaunchRequest:
-    """Inputs needed to bind a strict MQ dispatch message to one launch."""
+    """Path-free values binding one dispatch intent to one invocation bundle."""
 
     task_id: str
     lane: str
@@ -40,18 +47,29 @@ class DispatchLaunchRequest:
     authority_case: str
     parent_spec: str | None
     message_id: str
-    mq_db_path: Path
-    event_log: CoordEventLog
     idempotency_key: str | None = None
     authority_item: str | None = None
     reactivate_retired: bool = False
 
     def __post_init__(self) -> None:
-        for name in ("task_id", "lane", "platform", "mode", "profile", "authority_case"):
-            if not str(getattr(self, name)).strip():
+        for name in (
+            "task_id",
+            "lane",
+            "platform",
+            "mode",
+            "profile",
+            "authority_case",
+            "message_id",
+        ):
+            value = getattr(self, name)
+            if type(value) is not str or not value.strip():
                 raise ValueError(f"{name} is required")
-        if not self.message_id.strip():
-            raise CoordDispatchError("strict_mq_message_id_required")
+        for name in ("parent_spec", "idempotency_key", "authority_item"):
+            value = getattr(self, name)
+            if value is not None and (type(value) is not str or not value.strip()):
+                raise ValueError(f"{name} must be null or nonblank")
+        if type(self.reactivate_retired) is not bool:
+            raise ValueError("reactivate_retired must be boolean")
 
     @property
     def normalized_lane(self) -> str:
@@ -59,7 +77,7 @@ class DispatchLaunchRequest:
 
     @property
     def effective_idempotency_key(self) -> str:
-        if self.idempotency_key and self.idempotency_key.strip():
+        if self.idempotency_key is not None:
             return self.idempotency_key.strip()
         return default_idempotency_key(
             task_id=self.task_id,
@@ -73,16 +91,30 @@ class DispatchLaunchRequest:
 
 @dataclass(frozen=True)
 class DispatchLaunchResult:
-    """Outcome of the atomic dispatch launch operation."""
+    """Canonical outcome inspection result; never an MQ or mirror receipt."""
 
     launched: bool
-    launch_returncode: int
+    launch_returncode: int | None
     replayed: bool
     reason: str
     message_id: str
     idempotency_key: str
     event_id: str | None = None
-    cleanup_state: Literal["processed", "deferred"] | None = None
+    cleanup_state: Literal["accepted", "processed", "deferred"] | None = None
+    outcome_projection_ref: str | None = None
+    outcome_projection_hash: str | None = None
+    outcome_receipt_ref: str | None = None
+    outcome_receipt_hash: str | None = None
+    outcome: Literal["succeeded", "failed", "indeterminate"] | None = None
+    closure_state: Literal["closed", "open"] | None = None
+    outcome_validity_ref: str | None = None
+    outcome_validity_hash: str | None = None
+    outcome_replay_ref: str | None = None
+    outcome_replay_hash: str | None = None
+    outcome_catalog_snapshot_ref: str | None = None
+    outcome_catalog_snapshot_hash: str | None = None
+    checked_frontier_ref: str | None = None
+    checked_frontier_hash: str | None = None
 
 
 def default_idempotency_key(
@@ -94,7 +126,7 @@ def default_idempotency_key(
     profile: str,
     message_id: str,
 ) -> str:
-    """Return the stable default idempotency key for one dispatch launch."""
+    """Return the stable dispatch identity; it is not an attempt lock."""
 
     return ":".join(
         [
@@ -109,320 +141,284 @@ def default_idempotency_key(
     )
 
 
-def run_atomic_dispatch_launch(
+def _require_exact(value: object, expected: type[object], reason: str) -> None:
+    if type(value) is not expected:
+        raise CoordDispatchError(reason)
+
+
+def _require_composition_ports(
+    composition: ExecutionCompositionRoot,
+) -> ExecutionCompositionPorts:
+    try:
+        ports = composition.require_composition_ports()
+    except ExecutionAdmissionError as exc:
+        raise CoordDispatchError(f"{exc.reason_code}:{exc.detail}") from exc
+    _require_exact(ports, ExecutionCompositionPorts, "execution_composition_ports_invalid")
+    return ports
+
+
+def _require_dispatch_bundle_binding(
     request: DispatchLaunchRequest,
-    launch: Callable[[], int],
-) -> DispatchLaunchResult:
-    """Bind, consume, launch, and record one dispatch as a single operation.
+    bundle: ExecutionInvocationBundle,
+    lease: ExecutionLease,
+) -> None:
+    admission = bundle.execution_admission
+    intent = bundle.action_intent
+    decision = bundle.route_decision
+    call = lease.bound_call
+    normalized_lease_lane = lease.lane.strip().lower().replace("_", "-")
+    mismatches: list[str] = []
+    if (
+        request.task_id != lease.task_ref
+        or request.task_id != admission.task_ref
+        or request.task_id != intent.task_ref
+    ):
+        mismatches.append("task")
+    if request.normalized_lane != normalized_lease_lane or request.normalized_lane != (
+        admission.lane.strip().lower().replace("_", "-")
+    ):
+        mismatches.append("lane")
+    if request.authority_case != admission.authority_case:
+        mismatches.append("authority_case")
+    if (
+        request.parent_spec != intent.parent_spec.ref
+        or request.parent_spec != admission.parent_spec.ref
+    ):
+        mismatches.append("parent_spec")
+    if request.authority_item is not None and request.authority_item != request.task_id:
+        mismatches.append("authority_item")
+    if (
+        decision.task_id != request.task_id
+        or decision.lane.strip().lower().replace("_", "-") != request.normalized_lane
+    ):
+        mismatches.append("route_identity")
+    if (
+        decision.platform != request.platform
+        or decision.mode != request.mode
+        or decision.profile != request.profile
+    ):
+        mismatches.append("route_shape")
+    if admission.route_decision != content_address(decision.decision_id, decision):
+        mismatches.append("route_decision")
+    selected_leaf = decision.selected_descriptor_leaf or f"{decision.route_id}#base"
+    if selected_leaf != lease.selected_descriptor_leaf:
+        mismatches.append("descriptor_leaf")
+    if (
+        call.task_ref != request.task_id
+        or call.lane.strip().lower().replace("_", "-") != request.normalized_lane
+        or call.dispatch_message_id != request.message_id
+        or call.idempotency_key != request.effective_idempotency_key
+    ):
+        mismatches.append("bound_call_dispatch")
+    if (
+        call.platform != request.platform
+        or call.mode != request.mode
+        or call.profile != request.profile
+        or call.route_id != decision.route_id
+        or call.selected_descriptor_leaf != selected_leaf
+    ):
+        mismatches.append("bound_call_route")
+    if request.message_id != admission.dispatch_message_id:
+        mismatches.append("dispatch_message")
+    if (
+        request.effective_idempotency_key != lease.idempotency_key
+        or request.effective_idempotency_key != admission.idempotency_key
+    ):
+        mismatches.append("idempotency")
+    if lease.admission != ContentAddress(
+        ref=admission.admission_ref,
+        sha256=admission.admission_hash,
+    ):
+        mismatches.append("admission")
+    call_reactivates = "lane.lifecycle.reactivate" in call.control_operations
+    if request.reactivate_retired != call_reactivates:
+        mismatches.append("lane_reactivation_operation")
+    if call_reactivates and (
+        "lane_reactivation_authorized" not in admission.authorized_flags
+        or f"lane:{request.normalized_lane}" not in admission.immutable_scope_refs
+    ):
+        mismatches.append("lane_reactivation_authority")
+    if mismatches:
+        raise CoordDispatchError(
+            "execution_invocation_binding_mismatch:" + ",".join(sorted(set(mismatches)))
+        )
 
-    The external launcher cannot participate in SQLite transactions, so this
-    function makes the side effect idempotent: terminal coordination events are
-    replayed before any MQ mutation; nonzero launcher exits return the MQ row to
-    an explicit deferred cleanup state.
-    """
 
-    key = request.effective_idempotency_key
-    replayed = replay_terminal_result(request, idempotency_key=key)
-    if replayed is not None:
-        return replayed
-
-    _accept_dispatch_message(request, idempotency_key=key)
+def _inspect_dispatch_bundle(
+    request: DispatchLaunchRequest,
+    *,
+    composition: ExecutionCompositionRoot,
+    invocation_pointer: ExecutionInvocationBundlePointer,
+) -> tuple[ExecutionInvocationBundle, ExecutionLease, ExecutionCompositionPorts]:
+    _require_exact(request, DispatchLaunchRequest, "dispatch_launch_request_invalid")
+    _require_exact(
+        composition,
+        ExecutionCompositionRoot,
+        "execution_composition_root_required",
+    )
+    _require_exact(
+        invocation_pointer,
+        ExecutionInvocationBundlePointer,
+        "execution_invocation_bundle_pointer_required",
+    )
     try:
-        # Derived lane-liveness eligibility gate (the retired-axis of the 3-axis
-        # predicate at this chokepoint): refuse to launch a retired lane unless
-        # the caller supplied the sanctioned reactivation signal
-        # (reactivate_retired, threaded from methodology-dispatch's
-        # allow_codex_governed_relay_reactivation). Raised before the "started"
-        # event is appended, so no launch_started is recorded; the except returns
-        # the MQ row to deferred (accepted -> deferred) and the error propagates.
-        # See shared/relay_lifecycle + design-of-record
-        # non-boutique-codex-auth-and-lane-liveness-design-2026-07-03.md.
-        if lane_is_retired(request.lane) and not request.reactivate_retired:
-            raise CoordDispatchError(
-                "lane_retired: inspect the lane relay in HAPAX_RELAY_DIR, resume the lane, "
-                "or use the sanctioned P0-drain reactivation path"
-            )
-        _append_dispatch_event(request, idempotency_key=key, outcome="started", returncode=None)
-    except CoordDispatchError:
-        _cleanup_dispatch_message(request, idempotency_key=key, state="deferred", returncode=71)
-        raise
+        store = composition.require_bundle_resolution()
+        bundle = store.inspect(invocation_pointer)
+    except ExecutionAdmissionError as exc:
+        raise CoordDispatchError(f"{exc.reason_code}:{exc.detail}") from exc
+    except ValueError as exc:
+        raise CoordDispatchError(f"execution_invocation_pointer_invalid:{exc}") from exc
+    if type(bundle) is not ExecutionInvocationBundle:
+        raise CoordDispatchError("active_execution_invocation_bundle_required")
+    lease = require_admitted_execution_lease(bundle.execution_lease)
+    _require_dispatch_bundle_binding(request, bundle, lease)
+    return bundle, lease, _require_composition_ports(composition)
 
+
+def _resolve_dispatch_invocation(
+    request: DispatchLaunchRequest,
+    *,
+    composition: ExecutionCompositionRoot,
+    invocation_pointer: ExecutionInvocationBundlePointer,
+    queried_at: str | datetime,
+) -> tuple[ExecutionInvocationContext, ExecutionLease, ExecutionCompositionPorts]:
+    _, inspected_lease, ports = _inspect_dispatch_bundle(
+        request,
+        composition=composition,
+        invocation_pointer=invocation_pointer,
+    )
     try:
-        returncode = int(launch())
-    except BaseException:
-        _cleanup_dispatch_message(request, idempotency_key=key, state="deferred", returncode=70)
-        _append_dispatch_event(request, idempotency_key=key, outcome="failed", returncode=70)
-        raise
+        invocation = composition.resolve_structural_invocation(
+            invocation_pointer,
+            queried_at=queried_at,
+        )
+        lease = invocation.require_admitted(queried_at=queried_at)
+        invocation_ports = invocation.require_composition_ports()
+    except ExecutionAdmissionError as exc:
+        raise CoordDispatchError(f"{exc.reason_code}:{exc.detail}") from exc
+    _require_exact(
+        invocation,
+        ExecutionInvocationContext,
+        "execution_invocation_context_invalid",
+    )
+    if lease != inspected_lease or invocation_ports.descriptors != ports.descriptors:
+        raise CoordDispatchError("execution_composition_invocation_mismatch")
+    return invocation, lease, ports
 
-    if returncode == 0:
-        cleanup_state: Literal["processed", "deferred"] = "processed"
-        outcome = "succeeded"
-        launched = True
+
+def inspect_terminal_result(
+    request: DispatchLaunchRequest,
+    *,
+    composition: ExecutionCompositionRoot,
+    invocation_pointer: ExecutionInvocationBundlePointer,
+    queried_at: str | datetime,
+    idempotency_key: str | None = None,
+) -> DispatchLaunchResult | None:
+    """Inspect canonical outcome truth without projecting any operational state."""
+
+    _, lease, ports = _inspect_dispatch_bundle(
+        request,
+        composition=composition,
+        invocation_pointer=invocation_pointer,
+    )
+    try:
+        replay = ports.outcomes.replay(lease, queried_at=queried_at)
+    except ExecutionAdmissionError as exc:
+        raise CoordDispatchError(f"{exc.reason_code}:{exc.detail}") from exc
+    if replay is None:
+        return None
+    _require_exact(replay, OutcomeReplayResult, "canonical_outcome_replay_invalid")
+    projection = replay.projection
+    _require_exact(
+        projection,
+        OutcomeProjectionSnapshot,
+        "canonical_outcome_projection_invalid",
+    )
+    checked_projection = OutcomeProjectionSnapshot.model_validate(
+        projection.model_dump(mode="json", by_alias=True)
+    )
+    receipt = checked_projection.outcome_receipt
+    key = idempotency_key or request.effective_idempotency_key
+    if key != lease.idempotency_key or key != receipt.idempotency_key:
+        raise CoordDispatchError("canonical_outcome_idempotency_mismatch")
+    returncode = checked_projection.effect_observation.returncode
+    if receipt.outcome == "succeeded" and receipt.effect_disposition == "applied":
+        terminal_returncode = 0
+    elif receipt.outcome == "failed":
+        terminal_returncode = returncode if isinstance(returncode, int) and returncode != 0 else 1
     else:
-        cleanup_state = "deferred"
-        outcome = "failed"
-        launched = False
-
-    _cleanup_dispatch_message(
-        request,
-        idempotency_key=key,
-        state=cleanup_state,
-        returncode=returncode,
-    )
-    event_id = _append_dispatch_event(
-        request,
-        idempotency_key=key,
-        outcome=outcome,
-        returncode=returncode,
-    )
+        terminal_returncode = 10
     return DispatchLaunchResult(
-        launched=launched,
-        launch_returncode=returncode,
-        replayed=False,
-        reason=f"launch_{outcome}",
+        launched=True,
+        launch_returncode=terminal_returncode,
+        replayed=True,
+        reason=f"replayed_canonical_{receipt.outcome}",
         message_id=request.message_id,
         idempotency_key=key,
-        event_id=event_id,
-        cleanup_state=cleanup_state,
+        outcome_projection_ref=checked_projection.snapshot_ref,
+        outcome_projection_hash=checked_projection.snapshot_hash,
+        outcome_receipt_ref=receipt.receipt_ref,
+        outcome_receipt_hash=receipt.receipt_hash,
+        outcome=receipt.outcome,
+        closure_state=receipt.closure_state,
+        outcome_validity_ref=replay.validity.envelope_ref,
+        outcome_validity_hash=replay.validity.envelope_hash,
+        outcome_replay_ref=replay.result_ref,
+        outcome_replay_hash=replay.result_hash,
+        outcome_catalog_snapshot_ref=replay.catalog_snapshot.ref,
+        outcome_catalog_snapshot_hash=replay.catalog_snapshot.sha256,
+        checked_frontier_ref=replay.validity.checked_frontier.ref,
+        checked_frontier_hash=replay.validity.checked_frontier.sha256,
     )
 
 
 def replay_terminal_result(
     request: DispatchLaunchRequest,
     *,
-    idempotency_key: str,
+    composition: ExecutionCompositionRoot,
+    invocation_pointer: ExecutionInvocationBundlePointer,
+    queried_at: str | datetime,
+    idempotency_key: str | None = None,
 ) -> DispatchLaunchResult | None:
-    """Replay a prior terminal launch result for ``idempotency_key``."""
+    """Compatibility spelling for pure canonical outcome inspection."""
 
-    result = request.event_log.replay(fail_open=True)
-    for event in reversed(result.events):
-        if event.event_type not in TERMINAL_EVENT_TYPES:
-            continue
-        if event.payload.get("idempotency_key") != idempotency_key:
-            continue
-        event_message_id = str(event.payload.get("message_id", ""))
-        if event_message_id != request.message_id:
-            raise CoordDispatchError("idempotency_key_message_id_mismatch")
-        returncode = int(event.payload.get("returncode", 0))
-        outcome = str(event.payload.get("outcome", ""))
-        cleanup_state = "processed" if outcome == "succeeded" else "deferred"
-        return DispatchLaunchResult(
-            launched=outcome == "succeeded",
-            launch_returncode=returncode,
-            replayed=True,
-            reason=f"replayed_{outcome}",
-            message_id=request.message_id,
-            idempotency_key=idempotency_key,
-            event_id=event.event_id,
-            cleanup_state=cleanup_state,
-        )
-    return None
+    return inspect_terminal_result(
+        request,
+        composition=composition,
+        invocation_pointer=invocation_pointer,
+        queried_at=queried_at,
+        idempotency_key=idempotency_key,
+    )
 
 
-def _accept_dispatch_message(request: DispatchLaunchRequest, *, idempotency_key: str) -> None:
-    row = _load_and_validate_message(request, write=True)
-    state = str(row["state"])
-    if state == "processed":
-        raise CoordDispatchError("mq_dispatch_already_processed_without_replay")
-    if state in {"deferred", "escalated"}:
-        raise CoordDispatchError(f"mq_dispatch_not_consumable:{state}")
-
-    now = _now_iso()
-    with sqlite3.connect(str(request.mq_db_path), timeout=5.0) as conn:
-        conn.execute("PRAGMA busy_timeout = 5000")
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute(
-            """
-            UPDATE recipients
-            SET state = 'accepted',
-                reason = :reason,
-                updated_at = :now
-            WHERE message_id = :message_id
-              AND recipient = :recipient
-              AND state IN ('offered', 'read', 'accepted')
-            """,
-            {
-                "reason": f"coord_dispatch_accepted:{idempotency_key}",
-                "now": now,
-                "message_id": request.message_id,
-                "recipient": request.normalized_lane,
-            },
-        )
-        if conn.total_changes != 1:
-            conn.rollback()
-            raise CoordDispatchError("mq_dispatch_consume_race")
-        conn.commit()
-
-
-def _cleanup_dispatch_message(
+def run_atomic_dispatch_launch(
     request: DispatchLaunchRequest,
     *,
-    idempotency_key: str,
-    state: Literal["processed", "deferred"],
-    returncode: int,
-) -> None:
-    now = _now_iso()
-    reason = f"coord_dispatch_launch_{state}:{returncode}:{idempotency_key}"
-    with sqlite3.connect(str(request.mq_db_path), timeout=5.0) as conn:
-        conn.execute("PRAGMA busy_timeout = 5000")
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("BEGIN IMMEDIATE")
-        cursor = conn.execute(
-            """
-            UPDATE recipients
-            SET state = :state,
-                reason = :reason,
-                updated_at = :now
-            WHERE message_id = :message_id
-              AND recipient = :recipient
-              AND state = 'accepted'
-            """,
-            {
-                "state": state,
-                "reason": reason,
-                "now": now,
-                "message_id": request.message_id,
-                "recipient": request.normalized_lane,
-            },
-        )
-        if cursor.rowcount != 1:
-            conn.rollback()
-            raise CoordDispatchError("mq_dispatch_cleanup_race")
-        conn.commit()
+    composition: ExecutionCompositionRoot,
+    invocation_pointer: ExecutionInvocationBundlePointer,
+    queried_at: str | datetime,
+) -> DispatchLaunchResult:
+    """Replay canonical truth, then HOLD before every Gate-0A effect."""
 
-
-def _load_and_validate_message(
-    request: DispatchLaunchRequest,
-    *,
-    write: bool,
-) -> sqlite3.Row:
-    if not request.mq_db_path.exists():
-        raise CoordDispatchError("durable_mq_database_missing")
-    ensure_schema(request.mq_db_path)
-    mode = "" if write else "?mode=ro"
-    uri = f"file:{request.mq_db_path}{mode}" if mode else str(request.mq_db_path)
-    with sqlite3.connect(uri, uri=bool(mode), timeout=5.0) as conn:
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout = 5000")
-        if not write:
-            conn.execute("PRAGMA query_only = ON")
-        row = conn.execute(
-            """
-            SELECT m.message_id,
-                   m.message_type,
-                   m.authority_case,
-                   m.authority_item,
-                   m.subject,
-                   m.stale_after,
-                   m.expires_at,
-                   r.recipient,
-                   r.state
-            FROM messages m
-            JOIN recipients r ON r.message_id = m.message_id
-            WHERE m.message_id = :message_id
-              AND r.recipient = :recipient
-            """,
-            {
-                "message_id": request.message_id,
-                "recipient": request.normalized_lane,
-            },
-        ).fetchone()
-    if row is None:
-        raise CoordDispatchError("strict_mq_message_id_mismatch")
-    _validate_message_row(request, row)
-    return row
-
-
-def _validate_message_row(request: DispatchLaunchRequest, row: sqlite3.Row) -> None:
-    if row["message_type"] != "dispatch":
-        raise CoordDispatchError("mq_message_type_mismatch")
-    if row["authority_case"] != request.authority_case:
-        raise CoordDispatchError("mq_authority_case_mismatch")
-    expected_items = {request.task_id}
-    if request.authority_item:
-        expected_items.add(request.authority_item)
-    authority_item = row["authority_item"]
-    subject = row["subject"]
-    if authority_item not in expected_items and subject != request.task_id:
-        raise CoordDispatchError("mq_authority_item_mismatch")
-
-    now = datetime.now(UTC)
-    expires_at = _parse_datetime(row["expires_at"])
-    stale_after = _parse_datetime(row["stale_after"])
-    if expires_at is None or stale_after is None:
-        raise CoordDispatchError("durable_mq_freshness_unknown")
-    if expires_at < now:
-        raise CoordDispatchError("durable_mq_dispatch_expired")
-    if stale_after < now:
-        raise CoordDispatchError("durable_mq_dispatch_stale")
-
-
-def _append_dispatch_event(
-    request: DispatchLaunchRequest,
-    *,
-    idempotency_key: str,
-    outcome: Literal["started", "succeeded", "failed"],
-    returncode: int | None,
-) -> str:
-    event_type = f"coord_dispatch.launch_{outcome}"
-    event_id = _event_id(idempotency_key, outcome)
-    event = CoordEvent(
-        event_id=event_id,
-        timestamp=_now_z(),
-        event_type=event_type,
-        actor=request.normalized_lane,
-        subject=request.task_id,
-        authority_case=request.authority_case,
-        parent_spec=request.parent_spec,
-        payload={
-            "idempotency_key": idempotency_key,
-            "message_id": request.message_id,
-            "platform": request.platform,
-            "mode": request.mode,
-            "profile": request.profile,
-            "outcome": outcome,
-            "returncode": returncode,
-        },
+    replayed = inspect_terminal_result(
+        request,
+        composition=composition,
+        invocation_pointer=invocation_pointer,
+        queried_at=queried_at,
+    )
+    if replayed is not None:
+        return replayed
+    _resolve_dispatch_invocation(
+        request,
+        composition=composition,
+        invocation_pointer=invocation_pointer,
+        queried_at=queried_at,
     )
     try:
-        request.event_log.append(
-            event,
-            writer=CoordWriter.daemon("hapax-methodology-dispatch"),
-            fail_open=True,
-        )
-    except DuplicateEventError:
-        pass
-    except Exception as exc:
-        raise CoordDispatchError(
-            f"coord_event_log_append_failed:{type(exc).__name__}:{exc}"
-        ) from exc
-    return event_id
-
-
-def _event_id(idempotency_key: str, outcome: str) -> str:
-    digest = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:32]
-    return f"coord-dispatch-{digest}-{outcome}"
-
-
-def _parse_datetime(raw: object) -> datetime | None:
-    if not isinstance(raw, str) or not raw.strip():
-        return None
-    try:
-        value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
-
-
-def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()
-
-
-def _now_z() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        composition.require_effect_activation()
+    except ExecutionAdmissionError as exc:
+        raise CoordDispatchError(f"{exc.reason_code}:{exc.detail}") from exc
+    raise AssertionError("Gate-0A effect activation unexpectedly returned")  # pragma: no cover
 
 
 __all__ = [
@@ -430,6 +426,7 @@ __all__ = [
     "DispatchLaunchRequest",
     "DispatchLaunchResult",
     "default_idempotency_key",
+    "inspect_terminal_result",
     "replay_terminal_result",
     "run_atomic_dispatch_launch",
 ]

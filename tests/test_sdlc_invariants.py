@@ -88,9 +88,7 @@ class TestLadderShape:
             )
             assert match, name
             compact = re.sub(r"\s+", "", match.group("body"))
-            assert re.fullmatch(
-                r'\{(?:"[A-Z0-9_]+"(?:,"[A-Z0-9_]+")*)?\}', compact
-            ), compact
+            assert re.fullmatch(r'\{(?:"[A-Z0-9_]+"(?:,"[A-Z0-9_]+")*)?\}', compact), compact
             return frozenset(re.findall(r'"([A-Z0-9_]+)"', compact))
 
         assert quoted_set("Stages", "Terminal") == frozenset(SDLC_STAGE_METADATA.tokens)
@@ -110,21 +108,17 @@ class TestLadderShape:
         assert arm_lines[-1] == "[] OTHER         -> {}"
         parsed_next: dict[str, frozenset[str]] = {}
         for index, line in enumerate(arm_lines[:-1]):
-            arm = re.fullmatch(
-                r'(CASE|\[\])\s+s\s*=\s*"([A-Z0-9_]+)"\s*->\s*\{([^}]*)\}', line
-            )
+            arm = re.fullmatch(r'(CASE|\[\])\s+s\s*=\s*"([A-Z0-9_]+)"\s*->\s*\{([^}]*)\}', line)
             assert arm, line
             assert arm.group(1) == ("CASE" if index == 0 else "[]")
             token = arm.group(2)
             assert token not in parsed_next, f"duplicate Next arm: {token}"
             destinations = arm.group(3)
             compact_destinations = re.sub(r"\s+", "", destinations)
-            assert re.fullmatch(
-                r'(?:"[A-Z0-9_]+"(?:,"[A-Z0-9_]+")*)?', compact_destinations
-            ), destinations
-            parsed_next[token] = frozenset(
-                re.findall(r'"([A-Z0-9_]+)"', compact_destinations)
+            assert re.fullmatch(r'(?:"[A-Z0-9_]+"(?:,"[A-Z0-9_]+")*)?', compact_destinations), (
+                destinations
             )
+            parsed_next[token] = frozenset(re.findall(r'"([A-Z0-9_]+)"', compact_destinations))
         assert parsed_next == SDLC_LADDER.transitions
 
         fall_block = re.search(
@@ -138,13 +132,11 @@ class TestLadderShape:
         )
         assert normalized_fall == (
             "/\\ stage[t] \\notin (Terminal \\cup Blocked) "
-            "/\\ stage' = [stage EXCEPT ![t] = \"BLOCKED\"]"
+            '/\\ stage\' = [stage EXCEPT ![t] = "BLOCKED"]'
         )
         for stage in SDLC_STAGE_METADATA.stages:
             expected = (
-                frozenset({"BLOCKED"})
-                if not stage.terminal and not stage.blocked
-                else frozenset()
+                frozenset({"BLOCKED"}) if not stage.terminal and not stage.blocked else frozenset()
             )
             assert SDLC_LADDER.fall_transitions[stage.token] == expected
 

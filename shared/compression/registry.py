@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import enum
 import functools
+import math
 from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
 
 import yaml
@@ -31,6 +33,7 @@ __all__ = [
     "SurfaceSpec",
     "RegistryError",
     "DENY_DEFAULT",
+    "parse_registry",
     "load_registry",
     "get_surface_spec",
 ]
@@ -91,15 +94,80 @@ DENY_DEFAULT = SurfaceSpec(
 )
 
 _PROTECTED_TIERS = (Tier.DENY, Tier.HOT_PATH)
+_SURFACE_FIELDS = {
+    "alert_threshold",
+    "codec",
+    "floor",
+    "headroom_enabled",
+    "max_ratio",
+    "route_constraint",
+    "tier",
+}
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """Safe YAML loader that rejects last-wins duplicate mappings."""
+
+
+def _construct_unique_mapping(
+    loader: _UniqueKeyLoader, node: yaml.MappingNode, deep: bool = False
+) -> dict[object, object]:
+    mapping: dict[object, object] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in mapping
+        except TypeError as exc:
+            raise RegistryError("compression registry mapping keys MUST be scalar") from exc
+        if duplicate:
+            raise RegistryError(f"compression registry duplicate YAML key: {key}")
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping
+)
+
+
+def _strict_unit_float(raw: dict, field: str, default: float) -> float:
+    value = raw.get(field, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RegistryError(f"surface numeric field {field!r} MUST be a number")
+    result = float(value)
+    if not math.isfinite(result) or not 0.0 <= result <= 1.0:
+        raise RegistryError(f"surface numeric field {field!r} MUST be within [0, 1]")
+    return result
 
 
 def _build_spec(surface: str, raw: dict) -> SurfaceSpec:
+    unknown_fields = set(raw) - _SURFACE_FIELDS
+    if unknown_fields:
+        raise RegistryError(f"surface {surface!r}: unknown fields {sorted(unknown_fields)!r}")
+    raw_tier = raw.get("tier")
+    if not isinstance(raw_tier, str):
+        raise RegistryError(f"surface {surface!r}: invalid/missing tier")
     try:
-        tier = Tier(raw["tier"])
-    except (KeyError, ValueError) as exc:
+        tier = Tier(raw_tier)
+    except ValueError as exc:
         raise RegistryError(f"surface {surface!r}: invalid/missing tier") from exc
-    codec = Codec(raw.get("codec", "passthrough"))
-    headroom = bool(raw.get("headroom_enabled", False))
+    raw_codec = raw.get("codec", "passthrough")
+    if not isinstance(raw_codec, str):
+        raise RegistryError(f"surface {surface!r}: codec MUST be a string")
+    try:
+        codec = Codec(raw_codec)
+    except ValueError as exc:
+        raise RegistryError(f"surface {surface!r}: codec is invalid") from exc
+    headroom = raw.get("headroom_enabled", False)
+    if not isinstance(headroom, bool):
+        raise RegistryError(f"surface {surface!r}: headroom_enabled MUST be boolean")
+    route_constraint = raw.get("route_constraint", "any")
+    if (
+        not isinstance(route_constraint, str)
+        or not route_constraint.strip()
+        or route_constraint != route_constraint.strip()
+    ):
+        raise RegistryError(f"surface {surface!r}: route_constraint MUST be nonblank")
 
     # Fail-closed structural invariants.
     if tier in _PROTECTED_TIERS:
@@ -118,25 +186,70 @@ def _build_spec(surface: str, raw: dict) -> SurfaceSpec:
         tier=tier,
         codec=codec,
         headroom_enabled=headroom,
-        max_ratio=float(raw.get("max_ratio", 1.0)),
-        floor=float(raw.get("floor", 0.0)),
-        alert_threshold=float(raw.get("alert_threshold", 1.0)),
-        route_constraint=str(raw.get("route_constraint", "any")),
+        max_ratio=_strict_unit_float(raw, "max_ratio", 1.0),
+        floor=_strict_unit_float(raw, "floor", 0.0),
+        alert_threshold=_strict_unit_float(raw, "alert_threshold", 1.0),
+        route_constraint=route_constraint,
     )
 
 
-def load_registry(path: Path | None = None) -> dict[str, SurfaceSpec]:
-    """Parse + validate the surface registry YAML into ``{surface: SurfaceSpec}``.
+def _read_registry(path: Path | None) -> str:
+    if path is not None:
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise RegistryError(f"compression registry unreadable: {path}") from exc
+    if _REGISTRY_PATH.is_file():
+        return _read_registry(_REGISTRY_PATH)
+    packaged = resources.files("shared").joinpath("_data", "compression-surface-registry.yaml")
+    try:
+        return packaged.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RegistryError("packaged compression registry is missing or unreadable") from exc
+
+
+def parse_registry(raw_text: str) -> dict[str, SurfaceSpec]:
+    """Parse one already-read registry snapshot into ``{surface: SurfaceSpec}``.
 
     Raises ``RegistryError`` on any fail-closed invariant violation.
     """
-    registry_path = path or _REGISTRY_PATH
-    data = yaml.safe_load(registry_path.read_text(encoding="utf-8")) or {}
-    default_tier = Tier(data.get("default_tier", "deny"))
+    try:
+        data = yaml.load(raw_text, Loader=_UniqueKeyLoader)
+    except yaml.YAMLError as exc:
+        raise RegistryError("compression registry YAML is malformed") from exc
+    if not isinstance(data, dict):
+        raise RegistryError("compression registry root MUST be a mapping")
+    if set(data) != {"version", "default_tier", "surfaces"}:
+        raise RegistryError(
+            "compression registry root requires only version, default_tier, and surfaces"
+        )
+    if type(data["version"]) is not int or data["version"] != 1:
+        raise RegistryError("compression registry version MUST be integer 1")
+    if not isinstance(data["default_tier"], str):
+        raise RegistryError("compression registry default_tier MUST be a string")
+    try:
+        default_tier = Tier(data.get("default_tier", "deny"))
+    except ValueError as exc:
+        raise RegistryError("compression registry default_tier is invalid") from exc
     if default_tier is not Tier.DENY:
         raise RegistryError("default_tier MUST be 'deny' (fail-closed)")
-    surfaces = data.get("surfaces", {}) or {}
-    return {name: _build_spec(name, raw or {}) for name, raw in surfaces.items()}
+    surfaces = data.get("surfaces", {})
+    if not isinstance(surfaces, dict):
+        raise RegistryError("compression registry surfaces MUST be a mapping")
+    result: dict[str, SurfaceSpec] = {}
+    for name, raw in surfaces.items():
+        if not isinstance(name, str) or not name.strip() or name != name.strip():
+            raise RegistryError("compression registry surface names MUST be nonblank strings")
+        if raw is not None and not isinstance(raw, dict):
+            raise RegistryError(f"surface {name!r}: definition MUST be a mapping")
+        result[name] = _build_spec(name, raw or {})
+    return result
+
+
+def load_registry(path: Path | None = None) -> dict[str, SurfaceSpec]:
+    """Read, parse, and validate the surface registry without fallback."""
+
+    return parse_registry(_read_registry(path))
 
 
 @functools.lru_cache(maxsize=1)

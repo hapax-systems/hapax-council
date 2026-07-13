@@ -1,20 +1,17 @@
 #!/usr/bin/env bash
 # cc-close <task_id> [--pr N] [--status done|withdrawn|superseded]
 #
-# Close out a vault cc-task: rewrite frontmatter (status: done by
-# default; completed_at: now), move the note from active/ to closed/,
-# and clear the session's claim file.
-#
-# Active blocked-with-evidence work is not a cc-close outcome. Keep the note in
-# active/ with status: blocked, blocked_reason: <machine-code>, and
-# blocked_witness: <current-witness-path>; cc-claim/cascade preserve that state.
-#
-# Symlink to ~/.local/bin/cc-close for quick access:
-#   ln -sf ~/projects/hapax-council/scripts/cc-close ~/.local/bin/cc-close
+# This wrapper has no independent mutation path. Every operational close enters
+# the shared claim-bound close transaction; admission failures leave task and
+# claim state byte-identical.
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_cc_self="${BASH_SOURCE[0]}"
+if command -v readlink >/dev/null 2>&1; then
+  _cc_self="$(readlink -f "$_cc_self" 2>/dev/null || printf '%s' "$_cc_self")"
+fi
+SCRIPT_DIR="$(cd "$(dirname "$_cc_self")" && pwd)"
 ROLE_HELPER="$SCRIPT_DIR/../hooks/scripts/agent-role.sh"
 if [[ -f "$ROLE_HELPER" ]]; then
   # shellcheck source=../hooks/scripts/agent-role.sh
@@ -23,19 +20,24 @@ fi
 
 if [[ $# -lt 1 ]]; then
   echo "usage: cc-close <task_id> [--pr N] [--status done|withdrawn|superseded]" >&2
-  echo "       active blocked evidence stays in active/: status=blocked, blocked_reason, blocked_witness" >&2
+  echo "       active blocked evidence stays active with a reason and witness" >&2
   exit 1
 fi
 
-task_id="$1"; shift
+task_id="$1"
+shift
 pr=""
 final_status="done"
+debt_reason=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --pr) pr="$2"; shift 2 ;;
-    --status) final_status="$2"; shift 2 ;;
-    --debt) debt_reason="$2"; shift 2 ;;
-    --retroactive) retroactive=1; shift ;;
+    --pr) pr="${2:-}"; shift 2 ;;
+    --status) final_status="${2:-}"; shift 2 ;;
+    --debt) debt_reason="${2:-}"; shift 2 ;;
+    --retroactive)
+      echo "cc-close: HOLD - raw --retroactive is retired; supply typed operator evidence through the admitted close contract" >&2
+      exit 2
+      ;;
     *) echo "cc-close: unknown arg '$1'" >&2; exit 1 ;;
   esac
 done
@@ -45,281 +47,43 @@ case "$final_status" in
   *) echo "cc-close: --status must be done, withdrawn, or superseded (got '$final_status')" >&2; exit 1 ;;
 esac
 
-role="${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:-${CODEX_SESSION_NAME:-${CODEX_SESSION:-${CODEX_ROLE:-${HAPAX_AGENT_ROLE:-${CLAUDE_ROLE:-}}}}}}}"
-if [[ -z "$role" ]] && declare -F hapax_agent_identity >/dev/null 2>&1; then
-  role="$(hapax_agent_identity 2>/dev/null || true)"
+if declare -F hapax_effective_role >/dev/null 2>&1; then
+  role="$(hapax_effective_role 2>/dev/null || true)"
+else
+  role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
 fi
-
-vault_root="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
-note_path=""
-# Match `<task_id>-<descriptor>.md` (most tasks).
-for candidate in "$vault_root/active/$task_id-"*.md; do
-  if [[ -f "$candidate" ]]; then
-    note_path="$candidate"
-    break
-  fi
-done
-# Fallback: exact-match `<task_id>.md` for tasks without a descriptor
-# suffix. Mirrors the cc-claim glob; same root-cause (the literal `-`
-# in the original glob misses descriptor-less filenames).
-if [[ -z "$note_path" ]] && [[ -f "$vault_root/active/$task_id.md" ]]; then
-  note_path="$vault_root/active/$task_id.md"
-fi
-if [[ -z "$note_path" ]]; then
-  echo "cc-close: task '$task_id' not in $vault_root/active/ (already closed?)" >&2
+if [[ -z "$role" ]]; then
+  echo "cc-close: cannot determine the claim-bound role" >&2
   exit 2
 fi
 
-if ! command -v python3 &>/dev/null; then
-  echo "cc-close: python3 missing; cannot rewrite frontmatter" >&2
+PROJECT_PYTHON="$SCRIPT_DIR/../.venv/bin/python"
+if [[ ! -x "$PROJECT_PYTHON" ]]; then
+  echo "cc-close: project_runtime_unprovisioned: expected pinned interpreter at $PROJECT_PYTHON" >&2
   exit 3
 fi
 
-frontmatter_task_id() {
-  local file="$1"
-  python3 - "$file" <<'PYEOF'
-import re
-import sys
-from pathlib import Path
-
-text = Path(sys.argv[1]).read_text(encoding="utf-8")
-frontmatter = ""
-if text.startswith("---"):
-    end = text.find("\n---", 3)
-    if end != -1:
-        frontmatter = text[3:end]
-
-for line in frontmatter.splitlines():
-    match = re.match(r"\s*task_id\s*:\s*['\"]?([^'\"#\s]+)", line)
-    if match:
-        print(match.group(1).strip())
-        break
-PYEOF
-}
-
-closed_duplicate=""
-for candidate in "$vault_root/closed/$task_id-"*.md "$vault_root/closed/$task_id.md"; do
-  [[ -f "$candidate" ]] || continue
-  candidate_task_id="$(frontmatter_task_id "$candidate" || true)"
-  if [[ "$candidate_task_id" == "$task_id" ]]; then
-    closed_duplicate="$candidate"
-    break
-  fi
-done
-if [[ -n "$closed_duplicate" ]]; then
-  echo "cc-close: BLOCKED - closed task duplicate has task_id '$task_id': $closed_duplicate" >&2
-  exit 8
+session_id=""
+if declare -F hapax_session_id >/dev/null 2>&1; then
+  session_id="$(hapax_session_id 2>/dev/null || true)"
+else
+  session_id="${HAPAX_SESSION_ID:-}"
 fi
 
-# Rapid-closure flag — require --retroactive for tasks closed <5min after claim.
-# Prevents the 22-second paperwork closure pattern found by CCTV disconfirmation.
-if [[ "$final_status" == "done" && -z "${retroactive:-}" && "${HAPAX_RAPID_CLOSE_OFF:-0}" != "1" ]]; then
-  claimed_at="$(python3 -c "
-import re, sys
-from pathlib import Path
-text = Path('$note_path').read_text()
-m = re.search(r'^claimed_at:\s*(.+)$', text, re.MULTILINE)
-if m: print(m.group(1).strip().strip(\"'\").strip('\"'))
-" 2>/dev/null || true)"
-  if [[ -n "$claimed_at" ]]; then
-    elapsed="$(python3 -c "
-from datetime import datetime, timezone
-try:
-    claimed = datetime.fromisoformat('$claimed_at'.replace('Z','+00:00'))
-    now = datetime.now(timezone.utc)
-    print(int((now - claimed).total_seconds()))
-except: print('999')
-" 2>/dev/null || echo "999")"
-    if [[ "$elapsed" -lt 300 ]]; then
-      echo "cc-close: BLOCKED — task closed ${elapsed}s after claim (< 5min threshold)." >&2
-      echo "  If this is a retroactive close of already-completed work, re-run with --retroactive." >&2
-      echo "  Bypass: HAPAX_RAPID_CLOSE_OFF=1" >&2
-      exit 2
-    fi
-  fi
+close_args=("$task_id" --status "$final_status")
+if [[ -n "$pr" ]]; then
+  close_args+=(--pr "$pr")
+fi
+if [[ -n "$debt_reason" ]]; then
+  close_args+=(--debt "$debt_reason")
 fi
 
-# Closure-discipline gate (cc-task cc-task-closure-hook-acceptance-criteria-gate):
-# refuse the move when any `## Acceptance criteria` checkbox is unchecked.
-# The Bash PreToolUse hook catches manual mv / git mv; this call catches
-# the cc-close path (which uses python rename, invisible to the Bash hook).
-# Both surfaces share the same checker. Bypass via HAPAX_CC_TASK_CLOSURE_GATE_OFF=1.
-# Skip the gate for non-`done` outcomes (withdrawn / superseded close paths
-# are operator-marked terminal states where the AC-completeness contract
-# does not apply).
-if [[ "$final_status" == "done" ]]; then
-  CHECKER="$SCRIPT_DIR/cc-task-closure-check.py"
-  if [[ -f "$CHECKER" ]]; then
-    set +e
-    python3 "$CHECKER" "$note_path"
-    gate_rc=$?
-    set -e
-    if [[ "$gate_rc" -ne 0 ]]; then
-      exit "$gate_rc"
-    fi
-  fi
-
-  # Acceptance-receipt gate (routing Phase 0.2) — review-floor
-  # (frontier_review_required) tasks close only with a signed acceptance
-  # receipt (<task_id>.acceptance.yaml beside the note). The checker honors
-  # HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1 directly; non-review-floor tasks
-  # pass through untouched.
-  RECEIPT_CHECKER="$SCRIPT_DIR/cc-close-acceptance-receipt-check.py"
-  if [[ -f "$RECEIPT_CHECKER" ]]; then
-    set +e
-    python3 "$RECEIPT_CHECKER" "$note_path"
-    receipt_rc=$?
-    set -e
-    if [[ "$receipt_rc" -ne 0 ]]; then
-      exit "$receipt_rc"
-    fi
-  fi
-
-  # PR-merge evidence gate — verify PR is merged before allowing done status.
-  # Prevents "status: done but PR is open" false-completion pattern.
-  # Bypass: HAPAX_PR_MERGE_GATE_OFF=1
-  if [[ "${HAPAX_PR_MERGE_GATE_OFF:-0}" != "1" ]]; then
-    PR_MERGE_CHECKER="$SCRIPT_DIR/cc-close-pr-merge-check.py"
-    if [[ -f "$PR_MERGE_CHECKER" ]]; then
-      set +e
-      python3 "$PR_MERGE_CHECKER" "$note_path" ${pr:+--pr "$pr"}
-      merge_rc=$?
-      set -e
-      if [[ "$merge_rc" -ne 0 ]]; then
-        exit "$merge_rc"
-      fi
-    fi
-  fi
-
-  # Artifact disposition gate
-  DISP_CHECKER="$SCRIPT_DIR/cc-task-artifact-disposition-check.py"
-  if [[ -f "$DISP_CHECKER" ]]; then
-    set +e
-    if [[ -n "${debt_reason:-}" ]]; then
-      python3 "$DISP_CHECKER" "$note_path" "$task_id" --debt "$debt_reason"
-    else
-      python3 "$DISP_CHECKER" "$note_path" "$task_id"
-    fi
-    disp_rc=$?
-    set -e
-    if [[ "$disp_rc" -ne 0 ]]; then
-      exit "$disp_rc"
-    fi
-  fi
-
-  # Sibling-task advisory check — warns about stalled siblings under the same
-  # parent request. Advisory only (exit 0), prevents the remediation execution
-  # gap found by CCTV disconfirmation (PR #3659).
-  SIBLING_CHECKER="$SCRIPT_DIR/cc-close-sibling-check.py"
-  if [[ -f "$SIBLING_CHECKER" ]]; then
-    python3 "$SIBLING_CHECKER" "$note_path" || true
-  fi
+set +e
+HAPAX_AGENT_ROLE="$role" HAPAX_SESSION_ID="$session_id" \
+  "$PROJECT_PYTHON" -I -m shared.sdlc_close "${close_args[@]}"
+close_rc=$?
+set -e
+if [[ "$close_rc" -eq 0 && "$final_status" == "done" ]]; then
+  echo "cc-close: HOLD - request reconciliation, phase advance, and cascade require a governed post-close transaction" >&2
 fi
-
-python3 - "$note_path" "$task_id" "$final_status" "$pr" "$role" <<'PYEOF'
-import re
-import sys
-from datetime import datetime, timezone
-from pathlib import Path
-
-path, task_id, final_status, pr, role = (Path(sys.argv[1]), *sys.argv[2:])
-text = path.read_text(encoding="utf-8")
-now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-text = re.sub(r"^status:.*$", f"status: {final_status}", text, count=1, flags=re.MULTILINE)
-text = re.sub(
-    r"^completed_at:.*$", f"completed_at: {now}", text, count=1, flags=re.MULTILINE
-)
-text = re.sub(
-    r"^updated_at:.*$", f"updated_at: {now}", text, count=1, flags=re.MULTILINE
-)
-if pr:
-    text = re.sub(r"^pr:.*$", f"pr: {pr}", text, count=1, flags=re.MULTILINE)
-log_line = f"- {now} {role or 'session'} closed as {final_status}"
-if pr:
-    log_line += f" (PR #{pr})"
-log_line += " (cc-close)\n"
-text = text.replace("## Session log\n", f"## Session log\n{log_line}", 1)
-
-# Move from active/ to closed/.
-new_path = path.parent.parent / "closed" / path.name
-new_path.parent.mkdir(parents=True, exist_ok=True)
-tmp = new_path.with_suffix(new_path.suffix + ".tmp")
-tmp.write_text(text, encoding="utf-8")
-tmp.replace(new_path)
-path.unlink()
-print(f"cc-close: moved '{task_id}' to closed/, status={final_status}")
-
-# The acceptance receipt (routing Phase 0.2) lives ALONGSIDE the note —
-# keep that invariant across the move so closed review-floor tasks stay
-# closure-valid for the autoqueue and audits.
-receipt = path.parent / f"{task_id}.acceptance.yaml"
-if receipt.is_file():
-    receipt.replace(new_path.parent / receipt.name)
-    print(f"cc-close: moved acceptance receipt '{receipt.name}' to closed/")
-PYEOF
-
-# Clear the claim file(s) that still name this task. cc-claim writes BOTH a
-# legacy cc-active-task-<role> AND a session-keyed cc-active-task-<role>-<sid>
-# (agent-role.sh hapax_session_id, reform Phase 1 FM-2). Clearing only the
-# legacy file leaked the session-keyed lease until its 6h TTL — and the gate
-# reads the session-keyed file FIRST, so it kept seeing the just-closed task
-# (reform finding #12/#13). Clear this session's lease forms, each only when its
-# head still names the closed task (never clobber a lease for other work).
-if [[ -n "$role" ]]; then
-  session_id=""
-  if declare -F hapax_session_id >/dev/null 2>&1; then
-    session_id="$(hapax_session_id 2>/dev/null || true)"
-  fi
-  cleared_claim=0
-  for claim_key in \
-    "$role" \
-    ${session_id:+"$role-$session_id"}; do
-    claim_file="$HOME/.cache/hapax/cc-active-task-$claim_key"
-    if [[ -f "$claim_file" ]] &&
-       [[ "$(head -n1 "$claim_file" | tr -d '[:space:]')" == "$task_id" ]]; then
-      # The cc-claim-epoch sidecar carries the claim age for task_is_terminal;
-      # clear it with its claim file so a stale epoch can never mis-age a
-      # future claim. Explicit path construction — substring substitution on
-      # the full path would rewrite a parent-directory occurrence instead.
-      rm -f "$claim_file" "$HOME/.cache/hapax/cc-claim-epoch-$claim_key"
-      echo "cc-close: cleared claim file '$claim_file' (role '$role')"
-      cleared_claim=1
-    fi
-  done
-  if [[ "$cleared_claim" == 1 ]]; then
-    systemctl --user start hapax-cc-hygiene.service 2>/dev/null || true
-  fi
-fi
-
-# Best-effort request lifecycle reconciliation. `request-intake-consumer`
-# remains read-only; this writer is explicit and conservative, and only runs
-# after a successful fulfilling cc-task close.
-if [[ "$final_status" == "done" && "${HAPAX_REQUEST_RECONCILER_OFF:-0}" != "1" && "${HAPAX_CC_HYGIENE_OFF:-0}" != "1" ]]; then
-  reconciler="$SCRIPT_DIR/request-fulfillment-reconciler"
-  if [[ -x "$reconciler" ]]; then
-    set +e
-    "$reconciler" --apply --task-id "$task_id" --write-report --quiet
-    reconcile_rc=$?
-    set -e
-    if [[ "$reconcile_rc" -ne 0 ]]; then
-      echo "cc-close: request fulfillment reconciler failed rc=$reconcile_rc" >&2
-    fi
-  fi
-
-  # Phase-advance: if this task is Phase N, create Phase N+1 if the request has more phases.
-  phase_advance="$SCRIPT_DIR/cc-phase-advance.py"
-  if [[ -f "$phase_advance" ]]; then
-    set +e
-    python3 "$phase_advance" "$vault_root/closed/$(basename "$note_path")" "$task_id"
-    set -e
-  fi
-
-  # Cascade-unblock: transition blocked tasks whose depends_on are now all satisfied.
-  cascade="$SCRIPT_DIR/cc-cascade-unblock"
-  if [[ -x "$cascade" ]]; then
-    set +e
-    "$cascade" "$task_id"
-    set -e
-  fi
-fi
+exit "$close_rc"

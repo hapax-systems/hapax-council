@@ -1,0 +1,92 @@
+{
+  "authority": {
+    "authority_case": "CASE-CAPACITY-ROUTING-001",
+    "governing_task": "cc-task-sdlc-fsm-canon-impingement-lockstep-bootstrap-20260710",
+    "may_authorize": false,
+    "operator_session_id": "019f47f5-9d09-7160-a9b3-4c14a6514876"
+  },
+  "current": {
+    "carrier_schema": {
+      "path": "src/hapax/context_canon/_data/context-canon-carrier.schema.json",
+      "sha256": "f0f4042add44746386e4422e62c4af4d597c5c26e85ed19ce39e4ee1e449618a"
+    },
+    "coordination_schema": {
+      "path": "schemas/coordination-canon.schema.json",
+      "sha256": "4b3ff55e89d949451123dbc45880a64c9daf2df2904b3fd449bee3d6ec297a2e"
+    },
+    "files": {
+      "gate0-compatibility.json": {
+        "bytes": 13972,
+        "sha256": "760fb15c78fa6ddaed14d7acec214d9372a3986986bc756d98dc76978b09311d"
+      },
+      "gate0-frame.json": {
+        "bytes": 194566,
+        "sha256": "b683ff6fc1e001f4f0b1d70414e2b6e7330b15d5a1df5c1bec07b35910ba6f1d"
+      },
+      "gate0-hashes.json": {
+        "bytes": 2095,
+        "sha256": "00fb58c5c69e6ca6329a7b23ef783cbe4e847773c300bd80ccfb4f49ba6dc3e4"
+      },
+      "gate0-projections.json": {
+        "bytes": 333421,
+        "sha256": "e38fa832eb050a9f063ff64eed7c921b1213b9f4a4e005103b5bd19592cd4b9b"
+      },
+      "gate0-purpose-projections.json": {
+        "bytes": 238372,
+        "sha256": "c8209f1ac23ff5bba90be9a9379dc0af29f07d110b70ab1eb4fe935dee80a71a"
+      }
+    },
+    "generated_twice_byte_identical": true,
+    "semantic_ids": {
+      "bundle_hash": "32c7ebf190e14fd83c416738783114dee900995df443b2b7afa8fa8ded809d70",
+      "compatibility_hash": "7c8b32ecaf764205ca5b0a4bb48eaafdcbaf65af429caf44b26f06ff926d6420",
+      "frame_hash": "5f47431a5b9e8541b91007b14b6a7fb070478fb775e8b3e712636c2a4634a69f",
+      "projection_hashes": {
+        "hapax": "44259c49472d99efce8452c823f95dee5fa85abe6a21e86884c1f910f0db755f",
+        "operator": "1a7f44abeb2b0bf04d55cb845ffa60d6e67d1c8694cdd77d54b70e5a4efc9079",
+        "yard": "970e14596c4ff39eda4dfba2cc60f59269fd7423eee288739d40b03f3b3317a6"
+      }
+    }
+  },
+  "predecessor": {
+    "checkpoint_manifest": {
+      "bytes": 2648,
+      "path": "checkpoints/pre-observability-extension-20260713/checkpoint-manifest.json",
+      "sha256": "7f6ff2a8150d56edd780890a94dca72c632b2fca1340cd9cb0e88fcadc33e254"
+    },
+    "requires_checkpointed_parser": true,
+    "semantic_ids": {
+      "bundle_hash": "c053d02835c29acceeb9e4d9e0f8e01cd6872e3a882a0212ac54e43d356203ba",
+      "compatibility_hash": "e36c38a6906749d84db0dbec753d32914ffdaa5b17a0919beb7b05c4499b885a",
+      "frame_hash": "55c9629279a40be783ad8600388656bf37c57eb1e68324ea86447c4ba1fde4c6",
+      "projection_hashes": {
+        "hapax": "216d0c0ff696794948637beac2d7b3dc23f6b57e9b38af6e9d8d773ce0faa39f",
+        "operator": "90e10a32d5d61a73fd9d499a1d2f80aa41b5d2f44b30700cf7518e7680353907",
+        "yard": "00635aa0019e7b7202e59ae92ace3a31c42eafed1728b43a806ab42d16edaaa8"
+      }
+    }
+  },
+  "protected_commitments": {
+    "effective_constraint_digest": {
+      "current": "210cc9ad7096785ef82427dc69004041d8ca2de75f3960c6f7093dfe3c231d08",
+      "predecessor": "210cc9ad7096785ef82427dc69004041d8ca2de75f3960c6f7093dfe3c231d08"
+    },
+    "lifecycle_definition_hash": {
+      "current": "4e578a7d2e58f4516222a0ff25c732c2f282d540d5c20808ba3694db503bb0d2",
+      "predecessor": "4e578a7d2e58f4516222a0ff25c732c2f282d540d5c20808ba3694db503bb0d2"
+    }
+  },
+  "schema": "hapax.context-canon.contract-semantic-supersession.v1",
+  "semantics": {
+    "changes": [
+      "context exposure and external behavior are separate content-addressed non-authorizing carriers",
+      "measurement application and observability invalidation are typed one-target support receipts",
+      "epistemic event vocabulary records exposure and behavior without admitting action-time receipts into frozen frames"
+    ],
+    "historical_bytes_preserved": true,
+    "historical_source_proof_preserved": true,
+    "source_only_semantic_equivalence": false,
+    "wire_schema_ids_retained": true,
+    "wire_schema_ids_retained_basis": "unreleased_gate0_contract"
+  }
+}

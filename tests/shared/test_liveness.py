@@ -1,25 +1,24 @@
-"""Tests for shared.liveness — the unified liveness + recovery substrate.
-
-Self-contained (no shared conftest). The watchdog tests drive the REAL
-``RecoveryGovernor`` with injected deterministic collaborators (tmp state dir,
-fixed clock, open admission, no-op notify/mint, identity jitter) so the
-bounding/pressure/escalation integration is exercised end-to-end without touching
-prod state or randomness.
-"""
+"""Gate-0A conformance for support-only liveness observation."""
 
 from __future__ import annotations
 
+import dataclasses
 import json
-import types
 from pathlib import Path
 
 import pytest
 
+from shared.execution_admission import PROTECTED_ACTION_HOLD_SCHEMA
 from shared.liveness import (
     ALIVE,
+    EFFECT_HOLD_REASON,
+    HELD_NOT_ADMITTED,
+    INDETERMINATE,
     MISSING,
     QUIET,
     STALLED,
+    SUPPORT_ONLY,
+    EffectAdapterDescriptor,
     Heartbeat,
     LivenessSpec,
     LivenessWatchdog,
@@ -29,292 +28,301 @@ from shared.liveness import (
     read_heartbeat,
     register,
 )
-from shared.recovery_governor import RecoveryGovernor, RecoveryParams
-
-# ── Heartbeat ────────────────────────────────────────────────────────────────
 
 
-def test_emit_and_read_heartbeat_round_trips(tmp_path: Path) -> None:
-    emit_heartbeat("lane:epsilon:progress", "42", ts=1000.0, meta={"lines": 42}, beat_dir=tmp_path)
-    hb = read_heartbeat("lane:epsilon:progress", beat_dir=tmp_path)
-    assert hb == Heartbeat(op_id="lane:epsilon:progress", ts=1000.0, token="42", meta={"lines": 42})
+def _adapter(target: str = "op") -> EffectAdapterDescriptor:
+    return EffectAdapterDescriptor(
+        adapter_id="hapax.test.recover.v1",
+        action_kind="test.recover",
+        target_id=target,
+    )
 
 
-def test_read_missing_heartbeat_is_none(tmp_path: Path) -> None:
-    assert read_heartbeat("nope", beat_dir=tmp_path) is None
+def _spec(**changes: object) -> LivenessSpec:
+    values: dict[str, object] = {
+        "op_id": "op",
+        "adapter": _adapter(),
+        "max_quiet_s": 100.0,
+    }
+    values.update(changes)
+    return LivenessSpec(**values)
 
 
-def test_emit_heartbeat_sanitizes_op_id_into_filename(tmp_path: Path) -> None:
-    emit_heartbeat("deploy:post-merge/x", "sha1", ts=1.0, beat_dir=tmp_path)
-    # exactly one beat file, no path traversal out of beat_dir
-    beats = list(tmp_path.glob("*.beat"))
-    assert len(beats) == 1
-    assert beats[0].parent == tmp_path
+def test_emit_and_read_heartbeat_round_trip(tmp_path: Path) -> None:
+    emit_heartbeat("lane:epsilon:progress", 42, ts=1000.0, meta={"lines": 42}, beat_dir=tmp_path)
+    assert read_heartbeat("lane:epsilon:progress", beat_dir=tmp_path) == Heartbeat(
+        op_id="lane:epsilon:progress",
+        ts=1000.0,
+        token="42",
+        meta={"lines": 42},
+    )
 
 
-def test_emit_heartbeat_is_atomic_no_partial_file(tmp_path: Path) -> None:
-    emit_heartbeat("op", "t", ts=1.0, beat_dir=tmp_path)
-    assert not list(tmp_path.glob("*.tmp"))
+def test_heartbeat_rejects_nonfinite_timestamp(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        emit_heartbeat("op", "t", ts=float("nan"), beat_dir=tmp_path)
+    assert list(tmp_path.iterdir()) == []
 
 
-def test_corrupt_heartbeat_reads_as_none(tmp_path: Path) -> None:
-    emit_heartbeat("op", "t", ts=1.0, beat_dir=tmp_path)
-    beat = next(tmp_path.glob("*.beat"))
-    beat.write_text("{ not json")
+def test_read_heartbeat_rejects_identity_substitution(tmp_path: Path) -> None:
+    (tmp_path / "op.beat").write_text(
+        json.dumps({"meta": {}, "op_id": "other", "token": "x", "ts": 1.0}),
+        encoding="utf-8",
+    )
     assert read_heartbeat("op", beat_dir=tmp_path) is None
 
 
-# ── Registry ─────────────────────────────────────────────────────────────────
-
-
-def test_register_and_load_round_trips(tmp_path: Path) -> None:
-    spec = LivenessSpec(
-        op_id="deploy:post-merge",
-        recovery_cmd=["scripts/redeploy", "--rearm"],
-        max_quiet_s=900.0,
-        lineage="deploy",
-        description="post-merge deploy chain",
+def test_read_heartbeat_rejects_extra_fields_and_nan(tmp_path: Path) -> None:
+    (tmp_path / "op.beat").write_text(
+        '{"meta":{},"op_id":"op","token":"x","ts":NaN,"authority":true}',
+        encoding="utf-8",
     )
-    register(spec, registry_dir=tmp_path)
+    assert read_heartbeat("op", beat_dir=tmp_path) is None
+
+
+def test_adapter_descriptor_is_frozen_and_symbolic() -> None:
+    adapter = _adapter()
+    assert dataclasses.is_dataclass(adapter)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        adapter.action_kind = "test.escape"  # type: ignore[misc]
+    assert not hasattr(adapter, "argv")
+    assert not hasattr(adapter, "command")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("adapter_id", "touch /tmp/pwned"),
+        ("action_kind", "recover"),
+        ("target_id", ""),
+        ("version", 2),
+    ],
+)
+def test_adapter_descriptor_rejects_noncanonical_values(field: str, value: object) -> None:
+    values: dict[str, object] = {
+        "adapter_id": "hapax.test.recover.v1",
+        "action_kind": "test.recover",
+        "target_id": "op",
+        "version": 1,
+    }
+    values[field] = value
+    with pytest.raises((TypeError, ValueError)):
+        EffectAdapterDescriptor(**values)
+
+
+def test_register_and_load_round_trip_without_executable_material(tmp_path: Path) -> None:
+    register(_spec(lineage="test", description="support only"), registry_dir=tmp_path)
     loaded = load_registry(registry_dir=tmp_path)
-    assert loaded == [spec]
+    assert loaded == [_spec(lineage="test", description="support only")]
+    wire = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
+    assert "recovery_cmd" not in wire
+    assert wire["adapter"]["adapter_id"] == "hapax.test.recover.v1"
 
 
-def test_load_registry_empty_dir(tmp_path: Path) -> None:
+def test_registry_rejects_legacy_arbitrary_argv(tmp_path: Path) -> None:
+    sentinel = tmp_path / "must-not-exist"
+    (tmp_path / "hostile.json").write_text(
+        json.dumps(
+            {
+                "op_id": "hostile",
+                "recovery_cmd": ["touch", str(sentinel)],
+                "max_quiet_s": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert load_registry(registry_dir=tmp_path) == []
+    assert LivenessWatchdog(registry_dir=tmp_path, beat_dir=tmp_path).scan() == []
+    assert not sentinel.exists()
+
+
+def test_registry_skips_corrupt_and_unknown_entries(tmp_path: Path) -> None:
+    (tmp_path / "broken.json").write_text("{not json", encoding="utf-8")
+    (tmp_path / "unknown.json").write_text(
+        json.dumps({"op_id": "x", "authority": "operator"}),
+        encoding="utf-8",
+    )
     assert load_registry(registry_dir=tmp_path) == []
 
 
-def test_register_overwrites_same_op_id(tmp_path: Path) -> None:
-    register(LivenessSpec(op_id="x", recovery_cmd=["a"], max_quiet_s=10.0), registry_dir=tmp_path)
-    register(LivenessSpec(op_id="x", recovery_cmd=["b"], max_quiet_s=20.0), registry_dir=tmp_path)
-    loaded = load_registry(registry_dir=tmp_path)
-    assert len(loaded) == 1
-    assert loaded[0].recovery_cmd == ["b"]
+def test_classify_missing_is_support_verdict() -> None:
+    verdict = classify(_spec(), None, prev_token=None, now=1000.0, threshold_s=100.0)
+    assert verdict.status == MISSING
+    assert verdict.reason == "heartbeat_missing"
 
 
-def test_load_registry_skips_corrupt_entries(tmp_path: Path) -> None:
-    register(LivenessSpec(op_id="ok", recovery_cmd=["a"], max_quiet_s=10.0), registry_dir=tmp_path)
-    (tmp_path / "broken.json").write_text("{ not json")
-    loaded = load_registry(registry_dir=tmp_path)
-    assert [s.op_id for s in loaded] == ["ok"]
+def test_classify_progressing_token_is_alive_even_when_old() -> None:
+    verdict = classify(
+        _spec(),
+        Heartbeat("op", ts=0.0, token="2"),
+        prev_token="1",
+        now=1000.0,
+        threshold_s=100.0,
+    )
+    assert verdict.status == ALIVE
 
 
-# ── classify (pure: progress-token, not wall-clock) ──────────────────────────
-
-
-def _spec(**kw) -> LivenessSpec:
-    base = {"op_id": "op", "recovery_cmd": ["x"], "max_quiet_s": 100.0}
-    base.update(kw)
-    return LivenessSpec(**base)
-
-
-def test_classify_missing_when_no_heartbeat() -> None:
-    v = classify(_spec(), None, prev_token=None, now=1000.0, threshold_s=100.0)
-    assert v.status == MISSING
-
-
-def test_classify_alive_when_token_advanced_even_if_quiet_exceeds_threshold() -> None:
-    # silent for 10000s (>> threshold) BUT the token moved since last scan ⇒ alive
-    hb = Heartbeat("op", ts=0.0, token="500", meta={})
-    v = classify(_spec(max_quiet_s=100.0), hb, prev_token="490", now=10000.0, threshold_s=100.0)
-    assert v.status == ALIVE
-
-
-def test_classify_quiet_when_token_unchanged_within_threshold() -> None:
-    hb = Heartbeat("op", ts=950.0, token="500", meta={})
-    v = classify(_spec(max_quiet_s=100.0), hb, prev_token="500", now=1000.0, threshold_s=100.0)
-    assert v.status == QUIET
-    assert v.quiet_s == pytest.approx(50.0)
-
-
-def test_classify_stalled_when_token_unchanged_and_past_threshold() -> None:
-    hb = Heartbeat("op", ts=800.0, token="500", meta={})
-    v = classify(_spec(max_quiet_s=100.0), hb, prev_token="500", now=1000.0, threshold_s=100.0)
-    assert v.status == STALLED
-    assert v.quiet_s == pytest.approx(200.0)
-
-
-def test_classify_first_scan_no_prev_token_uses_quiet_age_only() -> None:
-    # never seen before (prev_token None) but a real beat exists: fall back to age
-    hb = Heartbeat("op", ts=800.0, token="500", meta={})
-    stalled = classify(_spec(max_quiet_s=100.0), hb, prev_token=None, now=1000.0, threshold_s=100.0)
+def test_classify_quiet_and_stalled() -> None:
+    quiet = classify(
+        _spec(),
+        Heartbeat("op", ts=950.0, token="1"),
+        prev_token="1",
+        now=1000.0,
+        threshold_s=100.0,
+    )
+    stalled = classify(
+        _spec(),
+        Heartbeat("op", ts=800.0, token="1"),
+        prev_token="1",
+        now=1000.0,
+        threshold_s=100.0,
+    )
+    assert quiet.status == QUIET
     assert stalled.status == STALLED
-    fresh = classify(_spec(max_quiet_s=100.0), hb, prev_token=None, now=850.0, threshold_s=100.0)
-    assert fresh.status == QUIET
 
 
-# ── Watchdog.scan (integration with the real governor) ───────────────────────
-
-
-class _RecordingExec:
-    def __init__(self, result: bool = True) -> None:
-        self.calls: list[list[str]] = []
-        self.result = result
-
-    def __call__(self, cmd: list[str]) -> bool:
-        self.calls.append(list(cmd))
-        return self.result
-
-
-class _RecordingLedger:
-    def __init__(self) -> None:
-        self.events: list[dict] = []
-
-    def __call__(self, event: dict) -> None:
-        self.events.append(event)
-
-
-def _governor(tmp_path: Path, *, now: float) -> RecoveryGovernor:
-    return RecoveryGovernor(
-        params=RecoveryParams(bucket_burst=10, bucket_rate=10.0),
-        state_dir=tmp_path / "gov",
-        now_fn=lambda: now,
-        admission_fn=lambda: types.SimpleNamespace(state="open"),
-        psi_readable_fn=lambda: True,
-        jitter_fn=lambda d: d,
-        notify_fn=lambda *a, **k: None,
-        mint_fn=lambda *a, **k: None,
+def test_classify_future_observation_is_indeterminate() -> None:
+    verdict = classify(
+        _spec(),
+        Heartbeat("op", ts=1001.0, token="1"),
+        prev_token=None,
+        now=1000.0,
+        threshold_s=100.0,
     )
+    assert verdict.status == INDETERMINATE
+    assert verdict.reason == "heartbeat_from_future"
+    assert verdict.quiet_s == 0.0
 
 
-def _watchdog(tmp_path: Path, *, now: float, exec_fn, ledger, governor=None) -> LivenessWatchdog:
-    return LivenessWatchdog(
-        registry_dir=tmp_path / "registry",
-        beat_dir=tmp_path / "beats",
-        scan_state_path=tmp_path / "scan-state.json",
-        governor=governor or _governor(tmp_path, now=now),
-        now_fn=lambda: now,
-        exec_fn=exec_fn,
-        ledger_fn=ledger,
-        tau_fn=lambda lineage: 100.0,
-    )
-
-
-def test_scan_recovers_stalled_op_and_ledgers(tmp_path: Path) -> None:
-    reg = tmp_path / "registry"
-    beats = tmp_path / "beats"
-    register(
-        LivenessSpec(op_id="op", recovery_cmd=["do", "recover"], max_quiet_s=100.0),
-        registry_dir=reg,
-    )
-    emit_heartbeat("op", "5", ts=0.0, beat_dir=beats)  # silent 1000s, token static
-    execer, ledger = _RecordingExec(), _RecordingLedger()
-    wd = _watchdog(tmp_path, now=1000.0, exec_fn=execer, ledger=ledger)
-    results = wd.scan()
-    assert execer.calls == [["do", "recover"]]
-    assert len(ledger.events) == 1
-    assert ledger.events[0]["op_id"] == "op"
-    assert [r.status for r in results] == [STALLED]
-    assert results[0].recovered is True
-
-
-def test_scan_does_not_recover_progressing_op(tmp_path: Path) -> None:
-    reg, beats = tmp_path / "registry", tmp_path / "beats"
-    register(LivenessSpec(op_id="op", recovery_cmd=["x"], max_quiet_s=100.0), registry_dir=reg)
-    execer, ledger = _RecordingExec(), _RecordingLedger()
-    # scan 1: a fresh beat ⇒ QUIET (within threshold); records the baseline token "1"
-    emit_heartbeat("op", "1", ts=950.0, beat_dir=beats)
-    _watchdog(tmp_path, now=1000.0, exec_fn=execer, ledger=ledger).scan()
-    # scan 2: quiet now far exceeds the threshold, BUT the token advanced 1→2 since the
-    # last scan ⇒ ALIVE (progressing), never recovered. (The Gittins move.)
-    emit_heartbeat("op", "2", ts=950.0, beat_dir=beats)
-    res = _watchdog(tmp_path, now=2000.0, exec_fn=execer, ledger=ledger).scan()
-    assert execer.calls == []
-    assert res[0].status == ALIVE
-
-
-def test_scan_quiet_op_within_threshold_not_recovered(tmp_path: Path) -> None:
-    reg, beats = tmp_path / "registry", tmp_path / "beats"
-    register(LivenessSpec(op_id="op", recovery_cmd=["x"], max_quiet_s=100.0), registry_dir=reg)
-    emit_heartbeat("op", "1", ts=950.0, beat_dir=beats)  # quiet only 50s
-    execer, ledger = _RecordingExec(), _RecordingLedger()
-    res = _watchdog(tmp_path, now=1000.0, exec_fn=execer, ledger=ledger).scan()
-    assert execer.calls == []
-    assert res[0].status == QUIET
-
-
-def test_scan_missing_op_not_recovered_by_default(tmp_path: Path) -> None:
-    reg = tmp_path / "registry"
-    register(LivenessSpec(op_id="op", recovery_cmd=["x"], max_quiet_s=100.0), registry_dir=reg)
-    execer, ledger = _RecordingExec(), _RecordingLedger()
-    res = _watchdog(tmp_path, now=1000.0, exec_fn=execer, ledger=ledger).scan()
-    assert execer.calls == []
-    assert res[0].status == MISSING
-
-
-def test_scan_missing_op_recovered_when_opted_in(tmp_path: Path) -> None:
-    reg = tmp_path / "registry"
-    register(
-        LivenessSpec(op_id="op", recovery_cmd=["x"], max_quiet_s=100.0, recover_when_missing=True),
-        registry_dir=reg,
-    )
-    execer, ledger = _RecordingExec(), _RecordingLedger()
-    res = _watchdog(tmp_path, now=1000.0, exec_fn=execer, ledger=ledger).scan()
-    assert execer.calls == [["x"]]
-    assert res[0].recovered is True
-
-
-def test_scan_uses_measured_tau_when_no_explicit_threshold(tmp_path: Path) -> None:
-    reg, beats = tmp_path / "registry", tmp_path / "beats"
-    register(
-        LivenessSpec(op_id="reaper:beta", recovery_cmd=["reap"], lineage="beta"), registry_dir=reg
-    )
-    emit_heartbeat("reaper:beta", "1", ts=0.0, beat_dir=beats)  # silent 1000s
-    execer, ledger = _RecordingExec(), _RecordingLedger()
-    wd = LivenessWatchdog(
-        registry_dir=reg,
+def test_stalled_candidate_returns_generic_protected_action_hold(tmp_path: Path) -> None:
+    registry, beats = tmp_path / "registry", tmp_path / "beats"
+    register(_spec(), registry_dir=registry)
+    emit_heartbeat("op", "1", ts=0.0, beat_dir=beats)
+    result = LivenessWatchdog(
+        registry_dir=registry,
         beat_dir=beats,
-        scan_state_path=tmp_path / "scan-state.json",
-        governor=_governor(tmp_path, now=1000.0),
         now_fn=lambda: 1000.0,
-        exec_fn=execer,
-        ledger_fn=ledger,
-        tau_fn=lambda lineage: 500.0 if lineage == "beta" else 99999.0,
+    ).scan()[0]
+    assert result.status == STALLED
+    assert result.recovered is False
+    assert result.effect_state == HELD_NOT_ADMITTED
+    assert result.permit_reason == EFFECT_HOLD_REASON
+    assert result.hold is not None
+    assert result.hold.schema_id == PROTECTED_ACTION_HOLD_SCHEMA
+    assert result.hold.operation == "test.recover"
+    assert result.hold.may_authorize is False
+    assert result.hold.authorizes_direct_fallthrough is False
+    assert result.hold.reason_codes == (
+        "execution_admission_absent",
+        "execution_authority_absent",
+        "execution_lease_absent",
     )
-    res = wd.scan()
-    assert res[0].status == STALLED  # 1000s quiet > tau 500s
-    assert execer.calls == [["reap"]]
 
 
-def test_scan_respects_governor_backoff(tmp_path: Path) -> None:
-    reg, beats = tmp_path / "registry", tmp_path / "beats"
-    register(
-        LivenessSpec(op_id="op", recovery_cmd=["x"], max_quiet_s=100.0, lineage="op"),
-        registry_dir=reg,
-    )
+def test_missing_candidate_holds_only_when_declared(tmp_path: Path) -> None:
+    registry = tmp_path / "registry"
+    register(_spec(recover_when_missing=False), registry_dir=registry)
+    ordinary = LivenessWatchdog(
+        registry_dir=registry,
+        beat_dir=tmp_path / "beats",
+        now_fn=lambda: 1000.0,
+    ).scan()[0]
+    assert ordinary.status == MISSING
+    assert ordinary.effect_state == SUPPORT_ONLY
+    assert ordinary.hold is None
+
+    register(_spec(recover_when_missing=True), registry_dir=registry)
+    opted_in = LivenessWatchdog(
+        registry_dir=registry,
+        beat_dir=tmp_path / "beats",
+        now_fn=lambda: 1000.0,
+    ).scan()[0]
+    assert opted_in.effect_state == HELD_NOT_ADMITTED
+    assert opted_in.hold is not None
+
+
+def test_future_observation_holds_without_effect(tmp_path: Path) -> None:
+    registry, beats = tmp_path / "registry", tmp_path / "beats"
+    register(_spec(), registry_dir=registry)
+    emit_heartbeat("op", "future", ts=2000.0, beat_dir=beats)
+    result = LivenessWatchdog(
+        registry_dir=registry,
+        beat_dir=beats,
+        now_fn=lambda: 1000.0,
+    ).scan()[0]
+    assert result.status == INDETERMINATE
+    assert result.recovered is False
+    assert result.hold is not None
+    assert "heartbeat_from_future" in result.hold.reason_codes
+
+
+def test_invalid_measured_tau_holds_without_effect(tmp_path: Path) -> None:
+    registry, beats = tmp_path / "registry", tmp_path / "beats"
+    register(_spec(max_quiet_s=None), registry_dir=registry)
     emit_heartbeat("op", "1", ts=0.0, beat_dir=beats)
-    gov = _governor(tmp_path, now=1000.0)
-    # drive the target into backoff: one failure ⇒ next_eligible in the future
-    gov.record_outcome("op", success=False)
-    execer, ledger = _RecordingExec(), _RecordingLedger()
-    wd = _watchdog(tmp_path, now=1000.0, exec_fn=execer, ledger=ledger, governor=gov)
-    res = wd.scan()
-    assert execer.calls == []  # governor denied — backoff
-    assert res[0].status == STALLED
-    assert res[0].recovered is False
-    assert "backoff" in res[0].permit_reason
+    result = LivenessWatchdog(
+        registry_dir=registry,
+        beat_dir=beats,
+        now_fn=lambda: 1000.0,
+        tau_fn=lambda _lineage: float("nan"),
+    ).scan()[0]
+    assert result.status == INDETERMINATE
+    assert result.hold is not None
+    assert "liveness_threshold_invalid" in result.hold.reason_codes
 
 
-def test_scan_records_failure_outcome_into_governor(tmp_path: Path) -> None:
-    reg, beats = tmp_path / "registry", tmp_path / "beats"
-    register(
-        LivenessSpec(op_id="op", recovery_cmd=["x"], max_quiet_s=100.0, lineage="op"),
-        registry_dir=reg,
-    )
+def test_scan_is_read_only_and_accepts_no_effect_collaborators(tmp_path: Path) -> None:
+    registry, beats = tmp_path / "registry", tmp_path / "beats"
+    register(_spec(), registry_dir=registry)
     emit_heartbeat("op", "1", ts=0.0, beat_dir=beats)
-    gov = _governor(tmp_path, now=1000.0)
-    execer = _RecordingExec(result=False)  # recovery command fails
-    wd = _watchdog(tmp_path, now=1000.0, exec_fn=execer, ledger=_RecordingLedger(), governor=gov)
-    wd.scan()
-    # a failed recovery must bump the governor's attempt counter (AIMD increase)
-    assert gov.backoff_entry("op").attempt == 1
+    before = {
+        path: (path.stat().st_mtime_ns, path.read_bytes())
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    }
+    LivenessWatchdog(
+        registry_dir=registry,
+        beat_dir=beats,
+        now_fn=lambda: 1000.0,
+    ).scan(previous_tokens={"op": "1"})
+    after = {
+        path: (path.stat().st_mtime_ns, path.read_bytes())
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+    with pytest.raises(TypeError):
+        LivenessWatchdog(governor=object())  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        LivenessWatchdog(exec_fn=lambda _argv: True)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        LivenessWatchdog(
+            registry_dir=registry,
+            beat_dir=beats,
+            now_fn=lambda: 1000.0,
+        ).scan(previous_tokens=object())  # type: ignore[arg-type]
 
 
-def test_scan_persists_tokens_between_scans(tmp_path: Path) -> None:
-    scan_state = tmp_path / "scan-state.json"
-    reg, beats = tmp_path / "registry", tmp_path / "beats"
-    register(LivenessSpec(op_id="op", recovery_cmd=["x"], max_quiet_s=100.0), registry_dir=reg)
-    emit_heartbeat("op", "7", ts=0.0, beat_dir=beats)
-    _watchdog(tmp_path, now=1000.0, exec_fn=_RecordingExec(), ledger=_RecordingLedger()).scan()
-    saved = json.loads(scan_state.read_text())
-    assert saved["op"] == "7"
+def test_observation_only_spec_never_builds_effect_candidate(tmp_path: Path) -> None:
+    registry, beats = tmp_path / "registry", tmp_path / "beats"
+    register(_spec(adapter=None), registry_dir=registry)
+    emit_heartbeat("op", "1", ts=0.0, beat_dir=beats)
+    result = LivenessWatchdog(
+        registry_dir=registry,
+        beat_dir=beats,
+        now_fn=lambda: 1000.0,
+    ).scan()[0]
+    assert result.status == STALLED
+    assert result.effect_state == SUPPORT_ONLY
+    assert result.hold is None
+
+
+def test_module_has_no_process_or_governor_execution_path() -> None:
+    source = Path(__file__).resolve().parents[2] / "shared" / "liveness.py"
+    text = source.read_text(encoding="utf-8")
+    assert "import subprocess" not in text
+    assert "RecoveryGovernor" not in text
+    assert "recovery_cmd" not in text
+    assert "exec_fn" not in text
+    assert "ledger_fn" not in text
+    assert "record_outcome" not in text

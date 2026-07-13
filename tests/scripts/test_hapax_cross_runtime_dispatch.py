@@ -1,24 +1,25 @@
-"""Tests for cross-runtime dispatch delegating to methodology dispatch."""
+"""Tests for the effect-pure cross-runtime methodology entrypoint."""
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "hapax-cross-runtime-dispatch"
+from shared.methodology_dispatch_carrier import validate_methodology_dispatch_carrier_line
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = REPO_ROOT / "scripts" / "hapax-cross-runtime-dispatch"
 
 
-def _env(tmp_path: Path) -> tuple[dict[str, str], Path]:
+def _env(tmp_path: Path) -> dict[str, str]:
     registry = tmp_path / "team-registry"
-    ledger = tmp_path / "ledger"
-    relay = tmp_path / "relay"
-    for path in (registry, ledger, relay):
-        path.mkdir(parents=True)
+    registry.mkdir(parents=True)
     (registry / "beta.json").write_text(
         json.dumps(
             {
@@ -29,388 +30,217 @@ def _env(tmp_path: Path) -> tuple[dict[str, str], Path]:
         ),
         encoding="utf-8",
     )
-    dispatcher_log = tmp_path / "methodology-dispatch-args.txt"
-    fake_dispatcher = tmp_path / "hapax-methodology-dispatch"
-    fake_dispatcher.write_text(
-        f"""#!/usr/bin/env bash
-printf '%s\\n' "$@" > {dispatcher_log}
-""",
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": str(tmp_path / "home"),
+            "HAPAX_CC_TASK_ROOT": str(tmp_path / "tasks"),
+            "HAPAX_TEAM_REGISTRY_DIR": str(registry),
+            "HAPAX_SESSION_PROTECTION": str(tmp_path / "session-protection.md"),
+            "HAPAX_METHODOLOGY_DISPATCH": "/bin/echo",
+            "HAPAX_METHODOLOGY_DISPATCHER": "/bin/echo",
+        }
+    )
+    return env
+
+
+def _run(
+    env: dict[str, str],
+    *args: str,
+    script: Path = SCRIPT,
+) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        [str(script), *args],
+        capture_output=True,
+        env=env,
+        timeout=30,
+        check=False,
+    )
+
+
+def _carrier(stdout: bytes, **identity: str) -> dict[str, object]:
+    return validate_methodology_dispatch_carrier_line(stdout, **identity)
+
+
+def _tree_bytes(root: Path) -> dict[str, bytes]:
+    if not root.exists():
+        return {}
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_task_bearing_request_ignores_executable_overrides_and_emits_carrier(
+    tmp_path: Path,
+) -> None:
+    env = _env(tmp_path)
+    env["PYTHONPATH"] = "/tmp/hostile-pythonpath"
+    env["PYTHONHOME"] = "/tmp/hostile-pythonhome"
+    hostile_marker = tmp_path / "hostile-python-used"
+    hostile_env_marker = tmp_path / "hostile-env-used"
+    hostile_bin = tmp_path / "hostile-bin"
+    hostile_bin.mkdir()
+    hostile_python = hostile_bin / "python3"
+    hostile_python.write_text(
+        f"#!/bin/sh\nprintf used > {hostile_marker}\nexit 99\n",
         encoding="utf-8",
     )
-    fake_dispatcher.chmod(0o755)
-    env = os.environ.copy()
-    env["HOME"] = str(tmp_path / "home")
-    env["HAPAX_TEAM_REGISTRY_DIR"] = str(registry)
-    env["HAPAX_ORCHESTRATION_LEDGER_DIR"] = str(ledger)
-    env["HAPAX_SESSION_PROTECTION"] = str(relay / "session-protection.md")
-    env["HAPAX_METHODOLOGY_DISPATCH"] = str(fake_dispatcher)
-    env["HAPAX_AGENT_NAME"] = "tester"
-    return env, dispatcher_log
+    hostile_python.chmod(0o755)
+    hostile_env = hostile_bin / "env"
+    hostile_env.write_text(
+        f"#!/bin/sh\nprintf used > {hostile_env_marker}\nexit 98\n",
+        encoding="utf-8",
+    )
+    hostile_env.chmod(0o755)
+    env["PATH"] = f"{hostile_bin}:{env['PATH']}"
 
-
-def test_task_dispatch_delegates_to_methodology_dispatch(tmp_path: Path) -> None:
-    env, dispatcher_log = _env(tmp_path)
-
-    result = subprocess.run(
-        [
-            str(SCRIPT),
-            "--lane",
-            "beta",
-            "--platform",
-            "claude",
-            "--task",
-            "demo-task",
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=5,
+    result = _run(
+        env,
+        "--task",
+        "missing-task",
+        "--lane",
+        "cx-red",
+        "--platform",
+        "Codex",
     )
 
-    assert result.returncode == 0, result.stderr
-    assert "delegating:" in result.stdout
-    assert dispatcher_log.read_text(encoding="utf-8").splitlines() == [
+    assert result.returncode == 10
+    assert b"--task missing-task" not in result.stdout
+    carrier = _carrier(
+        result.stdout,
+        task_id="missing-task",
+        lane="cx-red",
+        platform="codex",
+        mode="headless",
+        profile="full",
+    )
+    assert carrier["effect_state"] == "held_not_admitted"
+    assert carrier["materialization_state"] == "not_materialized"
+    assert carrier["launched"] is False
+    assert not hostile_marker.exists()
+    assert not hostile_env_marker.exists()
+
+
+def test_interactive_mode_and_profile_reach_exact_repository_dispatcher(
+    tmp_path: Path,
+) -> None:
+    result = _run(
+        _env(tmp_path),
         "--task",
-        "demo-task",
+        "missing-task",
+        "--lane",
+        "cx-red",
+        "--platform",
+        "codex",
+        "--mode",
+        "interactive",
+        "--profile",
+        "spark",
+    )
+
+    assert result.returncode == 10
+    carrier = _carrier(
+        result.stdout,
+        task_id="missing-task",
+        lane="cx-red",
+        platform="codex",
+        mode="interactive",
+        profile="spark",
+    )
+    assert carrier["mode"] == "interactive"
+    assert carrier["profile"] == "spark"
+    assert carrier["requested_operation"] == "launch"
+    assert carrier["launched"] is False
+
+
+@pytest.mark.parametrize(
+    ("args", "reason"),
+    [
+        (("--lane", "beta", "--platform", "claude"), "task_required"),
+        (("--task", "demo", "--platform", "claude"), "lane_required"),
+        (("--task", "demo", "--lane", "beta"), "platform_required"),
+    ],
+)
+def test_incomplete_task_bearing_request_holds_before_delegation(
+    tmp_path: Path,
+    args: tuple[str, ...],
+    reason: str,
+) -> None:
+    result = _run(_env(tmp_path), *args)
+
+    assert result.returncode == 10
+    assert result.stdout == b""
+    assert f"HOLD: {reason}:".encode() in result.stderr
+
+
+def test_isolated_wrapper_holds_when_exact_sibling_is_missing(tmp_path: Path) -> None:
+    isolated = tmp_path / "repo" / "scripts" / SCRIPT.name
+    isolated.parent.mkdir(parents=True)
+    shutil.copy2(SCRIPT, isolated)
+
+    result = _run(
+        _env(tmp_path),
+        "--task",
+        "demo",
         "--lane",
         "beta",
         "--platform",
         "claude",
-        "--mode",
-        "headless",
-        "--profile",
-        "full",
-        "--launch",
-    ]
-
-
-def test_task_dispatch_forwards_mq_profile_and_policy_flags(tmp_path: Path) -> None:
-    env, dispatcher_log = _env(tmp_path)
-
-    result = subprocess.run(
-        [
-            str(SCRIPT),
-            "--lane",
-            "beta",
-            "--platform",
-            "codex",
-            "--task",
-            "demo-task",
-            "--mq-message-id",
-            "msg-123",
-            "--runtime-mode",
-            "receipt-only",
-            "--profile",
-            "spark",
-            "--policy-rollback",
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=5,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert dispatcher_log.read_text(encoding="utf-8").splitlines() == [
-        "--task",
-        "demo-task",
-        "--lane",
-        "beta",
-        "--platform",
-        "codex",
-        "--mode",
-        "receipt-only",
-        "--profile",
-        "spark",
-        "--launch",
-        "--mq-message-id",
-        "msg-123",
-        "--policy-rollback",
-    ]
-
-
-def test_taskless_dispatch_is_blocked(tmp_path: Path) -> None:
-    env, dispatcher_log = _env(tmp_path)
-
-    result = subprocess.run(
-        [str(SCRIPT), "--lane", "beta", "--platform", "claude"],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=5,
-    )
-
-    assert result.returncode == 2
-    assert "require --task and methodology dispatch" in result.stderr
-    assert not dispatcher_log.exists()
-
-
-def test_vibe_delegates_to_methodology_dispatch(tmp_path: Path) -> None:
-    env, dispatcher_log = _env(tmp_path / "vibe")
-
-    result = subprocess.run(
-        [
-            str(SCRIPT),
-            "--lane",
-            "beta",
-            "--platform",
-            "vibe",
-            "--task",
-            "demo-task",
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=10,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "--platform\nvibe" in dispatcher_log.read_text(encoding="utf-8")
-
-
-@pytest.mark.parametrize(
-    "retired_platform",
-    ["antigrav", "Antigrav", "antigravity", "gemini-cli"],
-)
-def test_antigrav_is_not_cross_runtime_dispatchable(tmp_path: Path, retired_platform: str) -> None:
-    env, dispatcher_log = _env(tmp_path / "antigrav")
-
-    result = subprocess.run(
-        [
-            str(SCRIPT),
-            "--lane",
-            "beta",
-            "--platform",
-            retired_platform,
-            "--task",
-            "demo-task",
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=10,
+        script=isolated,
     )
 
     assert result.returncode == 10
-    canonical_platform = retired_platform.lower()
-    assert f"platform '{canonical_platform}' is retired/excised" in result.stderr
-    assert "agy.review.direct" in result.stderr
-    assert not dispatcher_log.exists()
-    ledger_path = Path(env["HAPAX_ORCHESTRATION_LEDGER_DIR"]) / "dispatch-ledger.jsonl"
-    records = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()]
-    assert records[-1]["outcome"] == "blocked"
-    assert records[-1]["target_platform"] == canonical_platform
-    assert records[-1]["dispatch_id"].startswith("BLOCKED-")
-    assert records[-1]["replay_key"]
-    assert "agy.review.direct" in records[-1]["reason"]
-
-    second = subprocess.run(
-        [
-            str(SCRIPT),
-            "--lane",
-            "beta",
-            "--platform",
-            retired_platform,
-            "--task",
-            "demo-task",
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=10,
-    )
-    assert second.returncode == 10
-    records_after = [
-        json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()
-    ]
-    assert records_after == records
+    assert result.stdout == b""
+    assert b"methodology_dispatch_unavailable" in result.stderr
 
 
-def test_agy_platform_is_review_route_not_cross_runtime_worker(tmp_path: Path) -> None:
-    env, dispatcher_log = _env(tmp_path / "agy")
+def test_list_and_check_modes_remain_read_only(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    registry = Path(env["HAPAX_TEAM_REGISTRY_DIR"])
+    protection = Path(env["HAPAX_SESSION_PROTECTION"])
+    protection.write_text("`beta` protected\n", encoding="utf-8")
+    before_registry = _tree_bytes(registry)
+    before_protection = protection.read_bytes()
 
-    result = subprocess.run(
-        [
-            str(SCRIPT),
-            "--lane",
-            "beta",
-            "--platform",
-            "agy",
-            "--task",
-            "demo-task",
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=10,
-    )
+    listed = _run(env, "--list-eligible")
+    checked = _run(env, "--check-lane", "beta")
 
-    assert result.returncode == 10
-    assert "platform 'agy' is the non-launchable read-only agy.review.direct" in result.stderr
-    assert "scripts/hapax-agy-reviewer" in result.stderr
-    assert not dispatcher_log.exists()
-    ledger_path = Path(env["HAPAX_ORCHESTRATION_LEDGER_DIR"]) / "dispatch-ledger.jsonl"
-    records = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()]
-    assert records[-1]["outcome"] == "blocked"
-    assert records[-1]["target_platform"] == "agy"
-    assert "agy.review.direct" in records[-1]["reason"]
+    assert listed.returncode == 0
+    assert b"beta" in listed.stdout
+    assert checked.returncode == 0
+    assert b"PROTECTED: lane beta is protected" in checked.stdout
+    assert _tree_bytes(registry) == before_registry
+    assert protection.read_bytes() == before_protection
 
 
-def test_blocked_dispatch_receipt_dedup_is_flock_guarded() -> None:
+def test_source_has_one_exact_delegation_path_and_no_runtime_substitution() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
+    assert source.startswith("#!/usr/bin/bash\n")
+    assert "$(dirname " not in source
+    task_bearing = source.split(
+        "# Structural preconditions are the wrapper's entire task-bearing behavior.",
+        maxsplit=1,
+    )[1]
 
-    assert 'local lock="$LEDGER_DIR/dispatch-ledger.lock"' in source
-    assert 'flock "$lock" python3 - "$ledger"' in source
-
-
-@pytest.mark.parametrize(
-    "retired_lane",
-    ["agy", "agy-2", "antigrav", "antigravity", "antigravity-2", "gemini-cli", "gemini-cli-2"],
-)
-def test_antigrav_lane_name_is_not_cross_runtime_dispatchable(
-    tmp_path: Path, retired_lane: str
-) -> None:
-    env, dispatcher_log = _env(tmp_path / "antigrav-lane")
-    registry = Path(env["HAPAX_TEAM_REGISTRY_DIR"])
-    (registry / f"{retired_lane}.json").write_text(
-        json.dumps(
-            {
-                "platform": "codex",
-                "last_probe_utc": time.time(),
-                "freshness_ttl_s": 3600,
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    result = subprocess.run(
-        [
-            str(SCRIPT),
-            "--lane",
-            retired_lane,
-            "--platform",
-            "codex",
-            "--task",
-            "demo-task",
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=10,
-    )
-
-    assert result.returncode == 10
-    assert f"lane '{retired_lane}' is non-launchable for cross-runtime dispatch" in result.stderr
-    assert "agy.review.direct" in result.stderr
-    assert not dispatcher_log.exists()
-    ledger_path = Path(env["HAPAX_ORCHESTRATION_LEDGER_DIR"]) / "dispatch-ledger.jsonl"
-    records = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()]
-    assert records[-1]["outcome"] == "blocked"
-    assert records[-1]["target_lane"] == retired_lane
-    assert records[-1]["target_platform"] == "codex"
-    assert f"lane '{retired_lane}' is non-launchable" in records[-1]["reason"]
-
-
-def test_list_eligible_skips_retired_antigrav_metadata(tmp_path: Path) -> None:
-    env, _dispatcher_log = _env(tmp_path / "antigrav-list")
-    registry = Path(env["HAPAX_TEAM_REGISTRY_DIR"])
-    for lane, platform in [
-        ("antigrav", "codex"),
-        ("agy", "codex"),
-        ("agy-2", "codex"),
-        ("antigravity", "codex"),
-        ("antigravity-2", "codex"),
-        ("cx-retired-platform", "antigrav"),
-        ("cx-retired-platform-full", "antigravity"),
-        ("cx-retired-gemini-cli", "gemini-cli"),
-        ("cx-unsupported-api", "api"),
-        ("cx-unsupported-gemini", "gemini"),
-        ("cx-unsupported-unknown", "unknown"),
-    ]:
-        (registry / f"{lane}.json").write_text(
-            json.dumps(
-                {
-                    "platform": platform,
-                    "last_probe_utc": time.time(),
-                    "freshness_ttl_s": 3600,
-                }
-            ),
-            encoding="utf-8",
-        )
-
-    result = subprocess.run(
-        [str(SCRIPT), "--list-eligible"],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=10,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "beta" in result.stdout
-    assert "agy" not in result.stdout
-    assert "antigrav" not in result.stdout
-    assert "antigravity" not in result.stdout
-    assert "cx-retired-platform" not in result.stdout
-    assert "cx-retired-platform-full" not in result.stdout
-    assert "cx-retired-gemini-cli" not in result.stdout
-    assert "cx-unsupported-api" not in result.stdout
-    assert "cx-unsupported-gemini" not in result.stdout
-    assert "cx-unsupported-unknown" not in result.stdout
-    assert "gemini-cli" not in result.stdout
-
-
-def test_list_eligible_includes_claude_code_metadata(tmp_path: Path) -> None:
-    env, _dispatcher_log = _env(tmp_path / "claude-code-list")
-    registry = Path(env["HAPAX_TEAM_REGISTRY_DIR"])
-    (registry / "beta.json").write_text(
-        json.dumps(
-            {
-                "platform": "claude-code",
-                "last_probe_utc": time.time(),
-                "freshness_ttl_s": 3600,
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    result = subprocess.run(
-        [str(SCRIPT), "--list-eligible"],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=10,
-    )
-
-    assert result.returncode == 0, result.stderr
-    row = next(line for line in result.stdout.splitlines() if "beta" in line)
-    assert "claude-code" in row
-    assert "eligible" in row
-
-
-def test_list_eligible_marks_malformed_freshness_unknown(tmp_path: Path) -> None:
-    env, _dispatcher_log = _env(tmp_path / "malformed-freshness")
-    registry = Path(env["HAPAX_TEAM_REGISTRY_DIR"])
-    (registry / "bad-freshness.json").write_text(
-        json.dumps(
-            {
-                "platform": "codex",
-                "last_probe_utc": "not-a-number",
-                "freshness_ttl_s": 3600,
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    result = subprocess.run(
-        [str(SCRIPT), "--list-eligible"],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=10,
-    )
-
-    assert result.returncode == 0, result.stderr
-    row = next(line for line in result.stdout.splitlines() if "bad-freshness" in line)
-    assert "unknown" in row
-    assert "eligible" not in row
+    assert 'METHODOLOGY_DISPATCH="$SCRIPT_DIR/hapax-methodology-dispatch"' in task_bearing
+    assert "HAPAX_METHODOLOGY_DISPATCH" not in task_bearing
+    assert "export PYTHONPATH" not in task_bearing
+    assert "unset PYTHONPATH PYTHONHOME" in task_bearing
+    assert "exec env " not in task_bearing
+    assert 'PROJECT_PYTHON="$REPO_ROOT/.venv/bin/python"' in task_bearing
+    assert '"$PROJECT_PYTHON" -I "$METHODOLOGY_DISPATCH"' in task_bearing
+    assert "/usr/bin/python3 -I" in source
+    assert "command -v uv" not in task_bearing
+    assert "uv run" not in task_bearing
+    for forbidden in (
+        "dispatch-ledger",
+        "write_blocked_dispatch_receipt",
+        "sqlite3",
+        "hapax-claude",
+        "hapax-codex",
+        "hapax-vibe",
+        "mkdir ",
+    ):
+        assert forbidden not in source

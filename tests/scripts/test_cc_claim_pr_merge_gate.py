@@ -141,6 +141,7 @@ def _write_task(
         f'title: "{task_id}"',
         f"status: {status}",
         "assigned_to: unassigned",
+        "claimable: true",
         "kind: build",
         "authority_case: CASE-TEST-001",
         "parent_spec: /tmp/isap-test.md",
@@ -191,10 +192,27 @@ def _claim_with_fake_gh(
     env = os.environ.copy()
     env["HOME"] = str(home)
     env["HAPAX_AGENT_ROLE"] = "cx-test"
+    env["HAPAX_SESSION_ID"] = "0f9f9f9f-1111-2222-3333-444455556666"
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["GH_ARGS_LOG"] = str(log_path)
     return subprocess.run(
-        ["bash", str(SCRIPT), task_id],
+        [
+            "bash",
+            str(SCRIPT),
+            task_id,
+            "--dispatch-message-id",
+            "message-a",
+            "--dispatch-binding-hash",
+            "a" * 64,
+            "--dispatch-platform",
+            "codex",
+            "--dispatch-mode",
+            "headless",
+            "--dispatch-profile",
+            "full",
+            "--dispatch-authority-case",
+            "CASE-TEST-001",
+        ],
         env=env,
         text=True,
         capture_output=True,
@@ -247,8 +265,9 @@ def test_claim_allows_merged_external_repo_dependency(tmp_path: pathlib.Path) ->
 
     result = _claim_with_fake_gh(home, "target", bin_dir, log_path)
 
-    assert result.returncode == 0, result.stderr
-    assert "status: claimed" in note.read_text(encoding="utf-8")
+    assert result.returncode == 8, result.stderr
+    assert "unadmitted_claim_publication_forbidden" in result.stderr
+    assert "status: offered" in note.read_text(encoding="utf-8")
     assert log_path.read_text(encoding="utf-8").strip() == "ryanklee/hapax-coord#35"
 
 
@@ -290,8 +309,9 @@ def test_claim_defaults_dependency_pr_lookup_to_council_repo(
 
     result = _claim_with_fake_gh(home, "target", bin_dir, log_path)
 
-    assert result.returncode == 0, result.stderr
-    assert "status: claimed" in note.read_text(encoding="utf-8")
+    assert result.returncode == 8, result.stderr
+    assert "unadmitted_claim_publication_forbidden" in result.stderr
+    assert "status: offered" in note.read_text(encoding="utf-8")
     assert log_path.read_text(encoding="utf-8").strip() == "hapax-systems/hapax-council#12"
 
 

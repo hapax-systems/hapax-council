@@ -13,6 +13,8 @@ DISPATCH_CLAIM_GUARD_MARKERS = (
     "missing required AuthorityCase/ISAP fields",
     "authority_case",
     "parent_spec",
+    "execution_admission_prerequisites_unavailable",
+    "publish_admitted_claim",
 )
 
 DISPATCH_CLOSE_GUARD_MARKERS = (

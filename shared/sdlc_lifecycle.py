@@ -555,6 +555,11 @@ _CANONICAL_STAGE_TOKENS = (
     "S11",
     "BLOCKED",
 )
+_PROJECTION_ROLES = frozenset({"advance", "branch", "repair"})
+_REPAIR_ACTIONS = frozenset(
+    {"record_blocker_report", "record_escape_grant", "restart_intake", "resume_implementation"}
+)
+_BRANCH_ACTIONS = frozenset({"begin_disconfirmation"})
 
 
 class StageMetadataError(ValueError):
@@ -605,6 +610,7 @@ class StageEdgeMetadata:
     """One typed normal, escape, or fall edge from the stage SSOT."""
 
     to: str
+    projection_role: str
     authority_capability: str
     guards: tuple[str, ...]
     actions: tuple[str, ...]
@@ -759,7 +765,14 @@ def _edge_tuple(value: object, *, row: str, edge_class: str) -> tuple[StageEdgeM
             )
         _assert_exact_keys(
             item,
-            {"to", "authority_capability", "guards", "actions", "enforcement"},
+            {
+                "to",
+                "projection_role",
+                "authority_capability",
+                "guards",
+                "actions",
+                "enforcement",
+            },
             optional={"enforcement_ref"},
             row=edge_row,
         )
@@ -771,6 +784,37 @@ def _edge_tuple(value: object, *, row: str, edge_class: str) -> tuple[StageEdgeM
                 edge_row,
             )
         destinations.add(destination)
+        projection_role = _required_string(item, "projection_role", row=edge_row)
+        if projection_role not in _PROJECTION_ROLES:
+            raise _metadata_error(
+                "stage_metadata_invalid_projection_role",
+                "use advance, branch, or repair",
+                edge_row,
+            )
+        actions = _string_tuple(
+            item.get("actions"), row=edge_row, field_name="actions", allow_empty=False
+        )
+        repair_marked = bool(set(actions) & _REPAIR_ACTIONS)
+        branch_marked = bool(set(actions) & _BRANCH_ACTIONS)
+        if repair_marked and branch_marked:
+            raise _metadata_error(
+                "stage_metadata_projection_action_conflict",
+                "declare an edge as repair or branch, never both",
+                edge_row,
+            )
+        expected_role = (
+            "repair"
+            if edge_class == "fall" or repair_marked
+            else "branch"
+            if branch_marked
+            else "advance"
+        )
+        if projection_role != expected_role:
+            raise _metadata_error(
+                "stage_metadata_projection_role_action_mismatch",
+                f"set projection_role to {expected_role} for the declared edge actions",
+                edge_row,
+            )
         enforcement = _required_string(item, "enforcement", row=edge_row)
         if enforcement not in {"declared", "enforced"}:
             raise _metadata_error(
@@ -791,15 +835,12 @@ def _edge_tuple(value: object, *, row: str, edge_class: str) -> tuple[StageEdgeM
         edges.append(
             StageEdgeMetadata(
                 to=destination,
-                authority_capability=_required_string(
-                    item, "authority_capability", row=edge_row
-                ),
+                projection_role=projection_role,
+                authority_capability=_required_string(item, "authority_capability", row=edge_row),
                 guards=_string_tuple(
                     item.get("guards"), row=edge_row, field_name="guards", allow_empty=False
                 ),
-                actions=_string_tuple(
-                    item.get("actions"), row=edge_row, field_name="actions", allow_empty=False
-                ),
+                actions=actions,
                 enforcement=enforcement,
                 enforcement_ref=enforcement_ref,
             )
@@ -908,9 +949,7 @@ def _parse_stage_row(payload: object, *, index: int) -> StageMetadata:
         raise _metadata_error(
             "stage_metadata_invalid_deliverable", "set deliverable to a mapping", token
         )
-    _assert_exact_keys(
-        deliverable_payload, {"id", "required_fields"}, row=f"{token}.deliverable"
-    )
+    _assert_exact_keys(deliverable_payload, {"id", "required_fields"}, row=f"{token}.deliverable")
     terminal = payload.get("terminal")
     blocked = payload.get("blocked")
     if not isinstance(terminal, bool) or not isinstance(blocked, bool):
@@ -995,10 +1034,11 @@ def _read_stage_metadata(path: Path | None) -> tuple[str, str]:
         ) from exc
 
 
-def load_sdlc_stage_metadata(path: Path | None = None) -> StageMetadataCatalog:
-    """Load and strictly validate the canonical stage table without fallback."""
+def parse_sdlc_stage_metadata(
+    raw: str, *, source_label: str = "<stage-metadata-snapshot>"
+) -> StageMetadataCatalog:
+    """Parse and strictly validate one already-read stage-metadata snapshot."""
 
-    raw, source_label = _read_stage_metadata(path)
     try:
         payload = yaml.load(raw, Loader=_UniqueKeyLoader)
     except StageMetadataError:
@@ -1011,14 +1051,12 @@ def load_sdlc_stage_metadata(path: Path | None = None) -> StageMetadataCatalog:
         raise _metadata_error(
             "stage_metadata_root_invalid", "make the YAML root a mapping", source_label
         )
-    _assert_exact_keys(
-        payload, {"schema", "formal_model", "edge_classes", "stages"}, row="root"
-    )
+    _assert_exact_keys(payload, {"schema", "formal_model", "edge_classes", "stages"}, row="root")
     schema = payload.get("schema")
-    if schema != "hapax.sdlc-stage-metadata.v1":
+    if schema != "hapax.sdlc-stage-metadata.v2":
         raise _metadata_error(
             "stage_metadata_schema_unknown",
-            "set schema to hapax.sdlc-stage-metadata.v1",
+            "set schema to hapax.sdlc-stage-metadata.v2",
             str(schema or "<missing>"),
         )
     if payload.get("formal_model") != "docs/formal/sdlc-ladder.tla":
@@ -1072,9 +1110,7 @@ def load_sdlc_stage_metadata(path: Path | None = None) -> StageMetadataCatalog:
             )
         for alias in declared_aliases:
             alias_match = STAGE_RE.fullmatch(alias)
-            special_owner = {"S3.5": "S3_5", "S3_5": "S3_5", "BLOCKED": "BLOCKED"}.get(
-                alias
-            )
+            special_owner = {"S3.5": "S3_5", "S3_5": "S3_5", "BLOCKED": "BLOCKED"}.get(alias)
             if alias_match is None and special_owner is None:
                 raise _metadata_error(
                     "stage_metadata_alias_shape_invalid",
@@ -1128,6 +1164,27 @@ def load_sdlc_stage_metadata(path: Path | None = None) -> StageMetadataCatalog:
                 "give BLOCKED escape next edges and no fall edges",
                 stage.token,
             )
+        if any(edge.projection_role != "repair" for edge in stage.fall_edges):
+            raise _metadata_error(
+                "stage_metadata_fall_projection_role_invalid",
+                "mark every fall edge as repair",
+                stage.token,
+            )
+        if stage.blocked and any(edge.projection_role != "repair" for edge in stage.next_edges):
+            raise _metadata_error(
+                "stage_metadata_escape_projection_role_invalid",
+                "mark every BLOCKED escape edge as repair",
+                stage.token,
+            )
+        if any(
+            edge.to == blocked_token and edge.projection_role != "repair"
+            for edge in stage.next_edges
+        ):
+            raise _metadata_error(
+                "stage_metadata_blocked_projection_role_invalid",
+                "mark every next edge to BLOCKED as repair",
+                stage.token,
+            )
         if not stage.terminal and not stage.blocked and not stage.next_edges:
             raise _metadata_error(
                 "stage_metadata_nonterminal_dead_end",
@@ -1148,12 +1205,46 @@ def load_sdlc_stage_metadata(path: Path | None = None) -> StageMetadataCatalog:
                     f"give {stage.token} exactly one fall edge to {blocked_token}",
                     stage.token,
                 )
+
+    projection_graph = {
+        stage.token: tuple(
+            edge.to for edge in stage.next_edges if edge.projection_role in {"advance", "branch"}
+        )
+        for stage in stages
+    }
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit_projection(token: str) -> None:
+        if token in visiting:
+            raise _metadata_error(
+                "stage_metadata_projection_cycle",
+                "mark restart or escape edges as repair so state-cone traversal is acyclic",
+                token,
+            )
+        if token in visited:
+            return
+        visiting.add(token)
+        for destination in projection_graph[token]:
+            visit_projection(destination)
+        visiting.remove(token)
+        visited.add(token)
+
+    for token in tokens:
+        visit_projection(token)
     return StageMetadataCatalog(
         schema=str(schema),
         stages=stages,
         by_token=MappingProxyType(by_token),
         alias_to_token=MappingProxyType(alias_to_token),
     )
+
+
+def load_sdlc_stage_metadata(path: Path | None = None) -> StageMetadataCatalog:
+    """Read and validate the canonical stage table without fallback."""
+
+    raw, source_label = _read_stage_metadata(path)
+    return parse_sdlc_stage_metadata(raw, source_label=source_label)
 
 
 SDLC_STAGE_METADATA = load_sdlc_stage_metadata()
@@ -1175,9 +1266,7 @@ def stage_token(raw: str) -> str:
     folded = {alias.casefold(): alias for alias in SDLC_STAGE_METADATA.alias_to_token}
     if candidate.casefold() in folded:
         canonical = folded[candidate.casefold()]
-        raise _metadata_error(
-            "stage_case_drift", f"use exact case: {canonical}", candidate
-        )
+        raise _metadata_error("stage_case_drift", f"use exact case: {canonical}", candidate)
     if STAGE_RE.fullmatch(candidate):
         raise _metadata_error(
             "stage_alias_unknown",
