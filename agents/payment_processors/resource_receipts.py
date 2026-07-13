@@ -8,13 +8,14 @@ authority, public projection authority, perks, or customer-service obligations.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
-import json
 import logging
 import os
 import threading
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -179,19 +180,33 @@ def append_resource_receipt(
     *,
     log_path: Path | None = None,
 ) -> bool:
-    """Append one receipt idempotently; return True iff present afterward."""
+    """Append one receipt idempotently; return True iff present afterward.
+
+    The ledger is append-only admission evidence. The same stable receipt may be
+    observed by multiple same-host processes and reuses the first row. A receipt
+    id collision with different stable semantics fails closed instead of
+    overwriting, retracting, or appending ambiguous evidence.
+    """
 
     target = log_path if log_path is not None else default_receipt_log_path()
-    line = receipt.model_dump_json() + "\n"
+    line = (receipt.model_dump_json() + "\n").encode("utf-8")
     with _lock:
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if receipt.receipt_id in _existing_receipt_ids(target):
-                return True
-            with target.open("a", encoding="utf-8") as fh:
-                fh.write(line)
-                fh.flush()
-        except OSError:
+            with _locked_receipt_log(target):
+                existing = _existing_receipts_by_id(target)
+                prior = existing.get(receipt.receipt_id)
+                if prior is not None:
+                    if _stable_receipt_semantics(prior) == _stable_receipt_semantics(receipt):
+                        return True
+                    log.warning(
+                        "money-rail resource receipt append refused at %s: "
+                        "conflicting stable semantics for receipt_id=%s",
+                        target,
+                        receipt.receipt_id,
+                    )
+                    return False
+                _append_line_durable(target, line)
+        except (MoneyRailResourceReceiptError, OSError):
             log.warning(
                 "money-rail resource receipt append failed at %s; check %s, /dev/shm "
                 "availability, and receipt log permissions",
@@ -379,8 +394,9 @@ def prepare_payment_event_resource_receipt(
     """Build a payment-event receipt ref before committing the receipt.
 
     Receive rails use this to commit a durable receipt before writing the event
-    with that ref, then retract the prepared receipt if the event append fails.
-    That prevents either side from surviving as successful evidence alone.
+    with that ref. Once committed, receipts are append-only: failed downstream
+    writes leave the deterministic receipt in place so duplicate workers cannot
+    delete evidence that another successful worker already referenced.
     """
 
     receipt = build_resource_receipt(
@@ -411,44 +427,10 @@ def retract_prepared_resource_receipt(
     *,
     log_path: Path | None = None,
 ) -> bool:
-    """Best-effort rollback for a just-prepared receipt when its event append fails."""
+    """Compatibility hook; committed money-rail receipts are never removed."""
 
-    target = log_path if log_path is not None else default_receipt_log_path()
-    with _lock:
-        try:
-            if not target.exists():
-                return True
-            kept: list[str] = []
-            removed = False
-            with target.open("r", encoding="utf-8") as fh:
-                for raw in fh:
-                    text = raw.rstrip("\n")
-                    try:
-                        parsed = MoneyRailResourceReceipt.model_validate_json(text)
-                    except (ValidationError, ValueError, TypeError):
-                        kept.append(raw)
-                        continue
-                    if parsed.receipt_id == receipt.receipt_id:
-                        removed = True
-                        continue
-                    kept.append(raw)
-            if not removed:
-                return True
-            tmp = target.with_suffix(target.suffix + ".tmp")
-            with tmp.open("w", encoding="utf-8") as fh:
-                fh.writelines(kept)
-                fh.flush()
-            tmp.replace(target)
-            return True
-        except OSError:
-            log.warning(
-                "money-rail resource receipt rollback failed at %s; check %s, /dev/shm "
-                "availability, and receipt log permissions",
-                target,
-                MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
-                exc_info=True,
-            )
-            return False
+    _ = receipt, log_path
+    return True
 
 
 def record_awareness_write_resource_receipt(
@@ -514,19 +496,107 @@ def _append_and_ref(
     return ref
 
 
-def _existing_receipt_ids(target: Path) -> set[str]:
+def _existing_receipts_by_id(target: Path) -> dict[str, MoneyRailResourceReceipt]:
     if not target.exists():
-        return set()
-    ids: set[str] = set()
-    with target.open("r", encoding="utf-8") as fh:
-        for raw in fh:
-            try:
-                payload = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict) and isinstance(payload.get("receipt_id"), str):
-                ids.add(payload["receipt_id"])
-    return ids
+        return {}
+    receipts: dict[str, MoneyRailResourceReceipt] = {}
+    for receipt in _read_receipts(target, fail_closed=True):
+        prior = receipts.get(receipt.receipt_id)
+        if prior is not None and _stable_receipt_semantics(prior) != _stable_receipt_semantics(
+            receipt
+        ):
+            raise MoneyRailResourceReceiptError(
+                f"conflicting money-rail resource receipt rows for {receipt.receipt_id}"
+            )
+        receipts.setdefault(receipt.receipt_id, receipt)
+    return receipts
+
+
+def _read_receipts(
+    target: Path,
+    *,
+    fail_closed: bool = False,
+) -> Iterator[MoneyRailResourceReceipt]:
+    if not target.exists():
+        return
+    with target.open("rb") as fh:
+        rows = fh.read().splitlines(keepends=True)
+    for line_number, raw in enumerate(rows, start=1):
+        if not raw.endswith(b"\n"):
+            message = f"torn final money-rail resource receipt line at {target}:{line_number}"
+            if fail_closed:
+                raise MoneyRailResourceReceiptError(message)
+            log.debug("%s skipped", message)
+            continue
+        try:
+            text = raw.decode("utf-8").strip()
+        except UnicodeDecodeError as exc:
+            if fail_closed:
+                raise MoneyRailResourceReceiptError(
+                    f"non-UTF-8 money-rail resource receipt line at {target}:{line_number}"
+                ) from exc
+            log.debug("non-UTF-8 money-rail resource receipt skipped")
+            continue
+        if not text:
+            continue
+        try:
+            yield MoneyRailResourceReceipt.model_validate_json(text)
+        except (ValidationError, ValueError, TypeError) as exc:
+            if fail_closed:
+                raise MoneyRailResourceReceiptError(
+                    f"malformed money-rail resource receipt line at {target}:{line_number}"
+                ) from exc
+            log.debug("malformed money-rail resource receipt skipped")
+
+
+def _stable_receipt_semantics(receipt: MoneyRailResourceReceipt) -> dict[str, object]:
+    payload = receipt.model_dump(mode="json")
+    payload.pop("created_at", None)
+    return payload
+
+
+def _append_line_durable(target: Path, line: bytes) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(target, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
+    try:
+        _write_all(fd, line)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    _fsync_directory(target.parent)
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    written_total = 0
+    while written_total < len(view):
+        written = os.write(fd, view[written_total:])
+        if written <= 0:
+            raise OSError(
+                "money-rail resource receipt append made no write progress; "
+                "next action: check receipt log filesystem health"
+            )
+        written_total += written
+
+
+def _fsync_directory(path: Path) -> None:
+    dir_fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+@contextmanager
+def _locked_receipt_log(target: Path) -> Iterator[None]:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = target.with_name(f"{target.name}.lock")
+    with lock_path.open("a", encoding="utf-8") as lock_fh:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
 
 
 def _receipt_id(

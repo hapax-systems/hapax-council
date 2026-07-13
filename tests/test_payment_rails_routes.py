@@ -1585,7 +1585,12 @@ _STRIPE_VALID_SECRET = "whsec_stripe-test-XYZ-test-secret-1234567890"
 
 
 @pytest.fixture
-def stripe_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def stripe_output_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    resource_receipt_log: Path,
+) -> Path:
+    _ = resource_receipt_log
     monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
     return tmp_path / "hapax-state" / "publications" / "stripe-payment-link"
 
@@ -2894,7 +2899,12 @@ def _mercury_payload(
 
 
 @pytest.fixture
-def mercury_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def mercury_output_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    resource_receipt_log: Path,
+) -> Path:
+    _ = resource_receipt_log
     monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
     return tmp_path / "hapax-state" / "publications" / "mercury"
 

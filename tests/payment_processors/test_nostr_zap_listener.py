@@ -179,7 +179,7 @@ class TestNostrZapListener:
         assert tail_events(log_path=log_path) == []
         assert "abcdef" not in listener._seen_event_ids  # noqa: SLF001
 
-    def test_failed_event_append_does_not_record_payment_event_receipt(self, tmp_path, monkeypatch):
+    def test_failed_event_append_preserves_payment_event_receipt(self, tmp_path, monkeypatch):
         import agents.payment_processors.event_log as ev_log
         import agents.payment_processors.nostr_zap_listener as nostr_mod
         import agents.payment_processors.resource_receipts as resource_receipts
@@ -207,7 +207,9 @@ class TestNostrZapListener:
         from agents.payment_processors.resource_receipts import tail_resource_receipts
 
         assert tail_events(log_path=log_path) == []
-        assert tail_resource_receipts(log_path=receipt_log) == []
+        assert [
+            receipt.operation.value for receipt in tail_resource_receipts(log_path=receipt_log)
+        ] == ["payment_event_append"]
         assert "abcdef" not in listener._seen_event_ids  # noqa: SLF001
 
     @pytest.mark.asyncio

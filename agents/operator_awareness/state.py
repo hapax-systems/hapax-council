@@ -246,10 +246,10 @@ class SprintBlock(_Block):
 class PaymentEvent(BaseModel):
     """One receive-rail payment event — never aggregated, raw individuals.
 
-    Lightning, Nostr Zap (NIP-57), and Liberapay each emit one
-    PaymentEvent per received receipt. Receivers append to a JSONL log
-    in /dev/shm; the awareness aggregator tails the log and pushes the
-    latest event into the MonetizationBlock.
+    Lightning, Nostr Zap (NIP-57), Liberapay, and x402 USDC-on-Base
+    each emit one PaymentEvent per received receipt. Receivers append
+    to a JSONL log in /dev/shm; the awareness aggregator tails the log
+    and pushes the latest event into the MonetizationBlock.
 
     Anti-anthropomorphization: structured fields, no narrative voice.
     The ``sender_excerpt`` field caps zap/sponsorship messages at 80
@@ -264,7 +264,7 @@ class PaymentEvent(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     timestamp: datetime
-    rail: Literal["lightning", "nostr_zap", "liberapay"]
+    rail: Literal["lightning", "nostr_zap", "liberapay", "x402_usdc_base"]
     amount_sats: int | None = None
     amount_usd: float | None = None
     amount_eur: float | None = None

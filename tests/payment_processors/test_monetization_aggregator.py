@@ -165,7 +165,7 @@ class TestAwarenessWriteReceipts:
         assert aggregator.flush_awareness_block() is False
         assert not state_path.exists()
 
-    def test_flush_retracts_receipt_when_state_write_fails(self, tmp_path, monkeypatch):
+    def test_flush_preserves_receipt_when_state_write_fails(self, tmp_path, monkeypatch):
         import agents.payment_processors.monetization_aggregator as aggregator_mod
         import agents.payment_processors.resource_receipts as resource_receipts
 
@@ -190,4 +190,6 @@ class TestAwarenessWriteReceipts:
 
         assert aggregator.flush_awareness_block() is False
         assert not state_path.exists()
-        assert tail_resource_receipts(log_path=receipt_log) == []
+        receipts = tail_resource_receipts(log_path=receipt_log)
+        assert len(receipts) == 1
+        assert receipts[0].operation.value == "awareness_state_write"

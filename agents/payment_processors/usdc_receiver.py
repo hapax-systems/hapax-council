@@ -72,10 +72,11 @@ from prometheus_client import Counter
 from agents.operator_awareness.state import PaymentEvent
 from agents.payment_processors.event_log import append_event
 from agents.payment_processors.resource_receipts import (
+    MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
     commit_prepared_resource_receipt,
+    default_receipt_log_path,
     prepare_payment_event_resource_receipt,
-    resource_receipt_exists,
-    retract_prepared_resource_receipt,
+    record_external_api_poll_receipt,
 )
 
 log = logging.getLogger(__name__)
@@ -116,9 +117,7 @@ usdc_receipts_total: Counter = Counter(
 )
 
 # x402-USDC-Base rail label. Distinct from "lightning" / "nostr_zap" /
-# "liberapay" so the aggregator can route per-rail. The PaymentEvent
-# model needs to learn this literal; substrate ships with the
-# rail name pinned and the model migration is a follow-up.
+# "liberapay" so the aggregator can route per-rail.
 RAIL_LABEL: str = "x402_usdc_base"
 
 
@@ -356,6 +355,19 @@ class USDCReceiver:
 
         if not self.enabled:
             return 0
+        if (
+            record_external_api_poll_receipt(
+                rail=RAIL_LABEL,
+                endpoint="Base RPC eth_blockNumber+eth_getLogs",
+                downstream_action="USDCReceiver.poll_once._call_rpc",
+            )
+            is None
+        ):
+            log.warning(
+                "usdc poll blocked: external API poll resource receipt missing; %s",
+                _resource_receipt_recovery_action(),
+            )
+            return 0
 
         try:
             tip_block = self._call_rpc("eth_blockNumber", [])
@@ -470,16 +482,12 @@ class USDCReceiver:
     def _emit_payment_event(self, receipt: TransferReceipt, *, now: datetime | None = None) -> bool:
         """Append one PaymentEvent to the canonical event log.
 
-        ``rail`` carries the ``x402_usdc_base`` literal; the
-        :class:`PaymentEvent` Literal type may need extending in a
-        follow-up — substrate ships with the rail tag pinned.
+        ``rail`` carries the ``x402_usdc_base`` literal through the
+        canonical :class:`PaymentEvent` model, so the event can be
+        tailed and revalidated after append.
         """
 
         ts = now if now is not None else datetime.now(UTC)
-        # PaymentEvent's Literal currently allows lightning / nostr_zap
-        # / liberapay only. We construct via dict and bypass the
-        # Literal validation only at the receiver boundary; the
-        # follow-up cc-task widens the Literal.
         event = self._build_payment_event(receipt, ts)
         receipt_ref, resource_receipt = prepare_payment_event_resource_receipt(
             rail=RAIL_LABEL,
@@ -487,21 +495,19 @@ class USDCReceiver:
             event_kind="erc20_transfer",
             downstream_action="payment_event_log.append_event",
         )
-        receipt_preexisting = resource_receipt_exists(receipt_ref)
         if commit_prepared_resource_receipt(resource_receipt) is None:
-            log.warning("usdc payment event blocked: resource receipt append failed")
+            log.warning(
+                "usdc payment event blocked: resource receipt append failed; %s",
+                _resource_receipt_recovery_action(),
+            )
             return False
         event = event.model_copy(update={"resource_receipt_ref": receipt_ref})
         try:
             event_appended = append_event(event)
         except Exception:  # noqa: BLE001
-            if not receipt_preexisting:
-                retract_prepared_resource_receipt(resource_receipt)
             log.warning("usdc payment event append raised", exc_info=True)
             return False
         if not event_appended:
-            if not receipt_preexisting:
-                retract_prepared_resource_receipt(resource_receipt)
             log.warning("usdc payment event append failed")
             return False
         usdc_receipts_total.labels(rail=RAIL_LABEL).inc()
@@ -511,15 +517,12 @@ class USDCReceiver:
         """Construct a PaymentEvent for emission.
 
         Isolated so tests can drive the receiver's projection logic
-        without an event-log side effect. The PaymentEvent's Literal
-        type doesn't yet include ``x402_usdc_base`` — bypass via
-        ``model_construct`` (no validation) per the interim contract;
-        the follow-up adds the literal upstream.
+        without an event-log side effect.
         """
 
-        return PaymentEvent.model_construct(
+        return PaymentEvent(
             timestamp=ts,
-            rail=RAIL_LABEL,  # type: ignore[arg-type]
+            rail=RAIL_LABEL,
             amount_usd=float(receipt.amount_usdc),
             amount_sats=None,
             amount_eur=None,
@@ -569,6 +572,14 @@ def _default_rpc_caller(rpc_url: str) -> Any:
         return body.get("result")
 
     return _call
+
+
+def _resource_receipt_recovery_action() -> str:
+    return (
+        f"check {MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV}, "
+        f"receipt log {default_receipt_log_path()}, /dev/shm availability, "
+        "and receipt log permissions, then retry"
+    )
 
 
 def iter_receipts_for_test(

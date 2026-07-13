@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from agents.payment_processors.event_log import tail_events
 from agents.payment_processors.resource_receipts import (
     MoneyRailReceiptOperation,
     receipt_reference,
@@ -78,6 +79,14 @@ def _log_row(
         "logIndex": hex(log_index),
         "blockNumber": hex(block_number),
     }
+
+
+def _receipts_with_operation(log_path: Path, operation: MoneyRailReceiptOperation):
+    return [
+        receipt
+        for receipt in tail_resource_receipts(log_path=log_path)
+        if receipt.operation is operation
+    ]
 
 
 # ── address normalisation ─────────────────────────────────────────────
@@ -316,6 +325,56 @@ class TestPollOnce:
 
         return _call, calls
 
+    def test_records_poll_resource_receipt_before_rpc(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+        resource_receipt_log: Path,
+    ) -> None:
+        caller, calls = self._make_caller(tip_block=1000, logs=[_log_row()])
+        monkeypatch.setattr("agents.payment_processors.usdc_receiver.append_event", lambda e: True)
+
+        receiver = USDCReceiver(
+            operator_wallet=_OPERATOR_WALLET,
+            cursor_path=tmp_path / "cursor.json",
+            rpc_caller=caller,
+        )
+
+        assert receiver.poll_once() == 1
+        assert calls == ["eth_blockNumber", "eth_getLogs"]
+        receipts = tail_resource_receipts(log_path=resource_receipt_log)
+        assert [receipt.operation for receipt in receipts] == [
+            MoneyRailReceiptOperation.EXTERNAL_API_POLL,
+            MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
+        ]
+        poll_receipt = receipts[0]
+        assert poll_receipt.rail == "x402_usdc_base"
+        assert poll_receipt.downstream_action == "USDCReceiver.poll_once._call_rpc"
+        assert "external_api:Base RPC eth_blockNumber+eth_getLogs" in (
+            poll_receipt.resource_provenance
+        )
+
+    def test_missing_poll_resource_receipt_blocks_rpc_and_cursor(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+    ) -> None:
+        import agents.payment_processors.usdc_receiver as usdc_mod
+
+        caller, calls = self._make_caller(tip_block=1000, logs=[_log_row()])
+        monkeypatch.setattr(usdc_mod, "record_external_api_poll_receipt", lambda **_: None)
+
+        cursor_path = tmp_path / "cursor.json"
+        receiver = USDCReceiver(
+            operator_wallet=_OPERATOR_WALLET,
+            cursor_path=cursor_path,
+            rpc_caller=caller,
+        )
+
+        assert receiver.poll_once() == 0
+        assert calls == []
+        assert not cursor_path.exists()
+
     def test_emits_one_event_per_new_log(self, monkeypatch, tmp_path: Path) -> None:
         caller, _ = self._make_caller(tip_block=1000, logs=[_log_row()])
 
@@ -353,7 +412,10 @@ class TestPollOnce:
         appended: list = []
 
         def _capture_append(event):
-            receipts = tail_resource_receipts(log_path=resource_receipt_log)
+            receipts = _receipts_with_operation(
+                resource_receipt_log,
+                MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
+            )
             assert len(receipts) == 1
             appended.append(event)
             return True
@@ -367,7 +429,10 @@ class TestPollOnce:
         )
 
         assert receiver.poll_once() == 1
-        receipts = tail_resource_receipts(log_path=resource_receipt_log)
+        receipts = _receipts_with_operation(
+            resource_receipt_log,
+            MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
+        )
         assert len(receipts) == 1
         receipt = receipts[0]
         assert receipt.rail == "x402_usdc_base"
@@ -383,6 +448,36 @@ class TestPollOnce:
         assert row["transactionHash"] not in receipt_json
         assert _OPERATOR_WALLET.lower() not in receipt_json
         assert row["topics"][1][-40:].lower() not in receipt_json
+
+    def test_appends_canonical_event_that_tail_events_reloads(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+    ) -> None:
+        import agents.payment_processors.event_log as event_log_mod
+
+        row = _log_row(tx_hash="0x" + "f1" * 32, log_index=9)
+        caller, _ = self._make_caller(tip_block=1000, logs=[row])
+        payment_log = tmp_path / "events.jsonl"
+
+        monkeypatch.setattr(
+            "agents.payment_processors.usdc_receiver.append_event",
+            lambda event: event_log_mod.append_event(event, log_path=payment_log),
+        )
+
+        receiver = USDCReceiver(
+            operator_wallet=_OPERATOR_WALLET,
+            cursor_path=tmp_path / "cursor.json",
+            rpc_caller=caller,
+        )
+
+        assert receiver.poll_once() == 1
+        events = tail_events(log_path=payment_log)
+        assert len(events) == 1
+        event = events[0]
+        assert event.rail == "x402_usdc_base"
+        assert event.external_id == "0x" + "f1" * 32 + ":9"
+        assert event.resource_receipt_ref is not None
 
     def test_dedup_across_ticks(
         self,
@@ -402,7 +497,24 @@ class TestPollOnce:
         # First tick emits 1; second tick (same log returned) emits 0.
         assert receiver.poll_once() == 1
         assert receiver.poll_once() == 0
-        assert len(tail_resource_receipts(log_path=resource_receipt_log)) == 1
+        assert (
+            len(
+                _receipts_with_operation(
+                    resource_receipt_log,
+                    MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
+                )
+            )
+            == 1
+        )
+        assert (
+            len(
+                _receipts_with_operation(
+                    resource_receipt_log,
+                    MoneyRailReceiptOperation.EXTERNAL_API_POLL,
+                )
+            )
+            == 2
+        )
 
     def test_filters_logs_to_other_addresses(self, monkeypatch, tmp_path: Path) -> None:
         # eth_getLogs server may return rows with the operator's
@@ -446,7 +558,15 @@ class TestPollOnce:
         )
         assert receiver.poll_once() == 1
         assert [event.external_id for event in appended] == ["0x" + "ee" * 32 + ":0"]
-        assert len(tail_resource_receipts(log_path=resource_receipt_log)) == 1
+        assert (
+            len(
+                _receipts_with_operation(
+                    resource_receipt_log,
+                    MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
+                )
+            )
+            == 1
+        )
         loaded = json.loads(cursor_path.read_text())
         assert loaded["last_block"] == 1000
         assert loaded["seen_keys"] == [["0x" + "ee" * 32, 0]]
@@ -503,7 +623,9 @@ class TestPollOnce:
 
         assert receiver.poll_once() == 0
         assert appended == []
-        assert tail_resource_receipts(log_path=resource_receipt_log) == []
+        assert [
+            receipt.operation for receipt in tail_resource_receipts(log_path=resource_receipt_log)
+        ] == [MoneyRailReceiptOperation.EXTERNAL_API_POLL]
         loaded = json.loads(cursor_path.read_text())
         assert loaded["last_block"] == 0
         assert loaded["seen_keys"] == []
@@ -514,7 +636,7 @@ class TestPollOnce:
         assert loaded["last_block"] == 1000
         assert loaded["seen_keys"] == [["0x" + "10" * 32, 0]]
 
-    def test_event_append_failure_retracts_new_receipt_and_keeps_cursor_retryable(
+    def test_event_append_failure_preserves_receipt_and_keeps_cursor_retryable(
         self,
         monkeypatch,
         tmp_path: Path,
@@ -539,18 +661,31 @@ class TestPollOnce:
         )
 
         assert receiver.poll_once() == 0
-        assert tail_resource_receipts(log_path=resource_receipt_log) == []
+        assert [
+            receipt.operation for receipt in tail_resource_receipts(log_path=resource_receipt_log)
+        ] == [
+            MoneyRailReceiptOperation.EXTERNAL_API_POLL,
+            MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
+        ]
         loaded = json.loads(cursor_path.read_text())
         assert loaded["last_block"] == 0
         assert loaded["seen_keys"] == []
 
         assert receiver.poll_once() == 1
-        assert len(tail_resource_receipts(log_path=resource_receipt_log)) == 1
+        assert (
+            len(
+                _receipts_with_operation(
+                    resource_receipt_log,
+                    MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
+                )
+            )
+            == 1
+        )
         loaded = json.loads(cursor_path.read_text())
         assert loaded["last_block"] == 1000
         assert loaded["seen_keys"] == [["0x" + "20" * 32, 0]]
 
-    def test_event_append_retry_recovers_preexisting_receipt(
+    def test_event_append_retry_reuses_preserved_receipt(
         self,
         monkeypatch,
         tmp_path: Path,
@@ -568,7 +703,6 @@ class TestPollOnce:
             return append_attempts > 1
 
         monkeypatch.setattr(usdc_mod, "append_event", _flaky_append)
-        monkeypatch.setattr(usdc_mod, "retract_prepared_resource_receipt", lambda _receipt: False)
 
         cursor_path = tmp_path / "cursor.json"
         receiver = USDCReceiver(
@@ -578,13 +712,28 @@ class TestPollOnce:
         )
 
         assert receiver.poll_once() == 0
-        receipts_after_failure = tail_resource_receipts(log_path=resource_receipt_log)
+        receipts_after_failure = _receipts_with_operation(
+            resource_receipt_log,
+            MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
+        )
         assert len(receipts_after_failure) == 1
 
         assert receiver.poll_once() == 1
-        receipts_after_retry = tail_resource_receipts(log_path=resource_receipt_log)
+        receipts_after_retry = _receipts_with_operation(
+            resource_receipt_log,
+            MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
+        )
         assert len(receipts_after_retry) == 1
         assert receipts_after_retry[0].receipt_id == receipts_after_failure[0].receipt_id
+        assert (
+            len(
+                _receipts_with_operation(
+                    resource_receipt_log,
+                    MoneyRailReceiptOperation.EXTERNAL_API_POLL,
+                )
+            )
+            == 2
+        )
 
     def test_cursor_advances_only_to_success_before_failed_receipt(
         self,

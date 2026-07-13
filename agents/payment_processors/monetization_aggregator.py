@@ -46,8 +46,6 @@ from agents.payment_processors.nostr_zap_listener import NostrZapListener
 from agents.payment_processors.resource_receipts import (
     commit_prepared_resource_receipt,
     prepare_awareness_write_resource_receipt,
-    resource_receipt_exists,
-    retract_prepared_resource_receipt,
 )
 
 log = logging.getLogger(__name__)
@@ -175,7 +173,6 @@ class MonetizationAggregator:
             receipt_count=len(events),
             source_window_sha256=event_window_sha256(events),
         )
-        receipt_preexisting = resource_receipt_exists(_receipt_ref)
         if commit_prepared_resource_receipt(receipt) is None:
             log.warning(
                 "monetization awareness write blocked: resource receipt missing; "
@@ -191,8 +188,6 @@ class MonetizationAggregator:
             monetization=block,
         )
         ok = write_state_atomic(state, self._state_path)
-        if not ok and not receipt_preexisting:
-            retract_prepared_resource_receipt(receipt)
         return ok
 
     def run_aggregate_loop(self) -> None:

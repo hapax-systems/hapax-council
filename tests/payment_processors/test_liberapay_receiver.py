@@ -209,7 +209,7 @@ class TestPollOnce:
         assert receiver.poll_once() == 0
         assert tail_events(log_path=log_path) == []
 
-    def test_failed_event_append_does_not_record_payment_event_receipt(self, tmp_path, monkeypatch):
+    def test_failed_event_append_preserves_payment_event_receipt(self, tmp_path, monkeypatch):
         log_path = tmp_path / "events.jsonl"
         receipt_log = tmp_path / "resource-receipts.jsonl"
         import agents.payment_processors.event_log as ev_log
@@ -237,7 +237,7 @@ class TestPollOnce:
         assert tail_events(log_path=log_path) == []
         assert [
             receipt.operation.value for receipt in tail_resource_receipts(log_path=receipt_log)
-        ] == ["external_api_poll"]
+        ] == ["external_api_poll", "payment_event_append"]
 
     def test_skips_pending(self, tmp_path, monkeypatch):
         log_path = tmp_path / "events.jsonl"

@@ -177,7 +177,7 @@ class TestAwarenessRunnerReceiptGate:
         assert runner.run_once() == "resource_receipt_error"
         assert not state_path.exists()
 
-    def test_run_once_retracts_receipt_when_state_write_fails(self, tmp_path, monkeypatch):
+    def test_run_once_preserves_receipt_when_state_write_fails(self, tmp_path, monkeypatch):
         import agents.operator_awareness.runner as runner_mod
         import agents.payment_processors.resource_receipts as resource_receipts
 
@@ -204,4 +204,6 @@ class TestAwarenessRunnerReceiptGate:
 
         assert runner.run_once() == "error"
         assert not state_path.exists()
-        assert tail_resource_receipts(log_path=receipt_log) == []
+        receipts = tail_resource_receipts(log_path=receipt_log)
+        assert len(receipts) == 1
+        assert receipts[0].operation.value == "awareness_state_write"
