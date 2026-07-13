@@ -91,6 +91,18 @@ def _receipts_with_operation(log_path: Path, operation: MoneyRailReceiptOperatio
     ]
 
 
+def _log_row_with(**updates: object) -> dict:
+    row = _log_row()
+    row.update(updates)
+    return row
+
+
+def _log_row_with_topic(index: int, value: object) -> dict:
+    row = _log_row()
+    row["topics"][index] = value
+    return row
+
+
 # ── address normalisation ─────────────────────────────────────────────
 
 
@@ -152,8 +164,7 @@ class TestParseLogToReceipt:
         assert _parse_log_to_receipt(row) is None
 
     def test_handles_zero_amount(self) -> None:
-        row = _log_row()
-        row["data"] = "0x"
+        row = _log_row(amount_atomic=0)
         receipt = _parse_log_to_receipt(row)
         assert receipt is not None
         assert receipt.amount_atomic == 0
@@ -603,6 +614,7 @@ class TestPollOnce:
         caplog,
         monkeypatch,
         tmp_path: Path,
+        resource_receipt_log: Path,
     ) -> None:
         import agents.payment_processors.usdc_receiver as usdc_mod
 
@@ -628,6 +640,106 @@ class TestPollOnce:
         assert loaded["seen_keys"] == [[seen_tx, 4]]
         assert f"invalid top-level result type {type_name}" in caplog.text
         assert str(cursor_path) in caplog.text
+        assert [
+            receipt.operation for receipt in tail_resource_receipts(log_path=resource_receipt_log)
+        ] == [MoneyRailReceiptOperation.EXTERNAL_API_POLL]
+
+    @pytest.mark.parametrize(
+        ("logs_result", "warning"),
+        [
+            ([None], "invalid row 0 type NoneType"),
+            ([{}], "malformed row 0"),
+            ([_log_row(tx_hash="0x" + "61" * 32), None], "invalid row 1 type NoneType"),
+            ([None, _log_row(tx_hash="0x" + "62" * 32)], "invalid row 0 type NoneType"),
+            (
+                [_log_row_with(address="0x" + "12" * 20)],
+                "malformed row 0",
+            ),
+            (
+                [_log_row_with_topic(0, "0x" + "00" * 32)],
+                "malformed row 0",
+            ),
+            (
+                [_log_row_with_topic(1, "0x1234")],
+                "malformed row 0",
+            ),
+            (
+                [_log_row_with(data="0x")],
+                "malformed row 0",
+            ),
+            (
+                [_log_row_with(transactionHash="0x1234")],
+                "malformed row 0",
+            ),
+        ],
+    )
+    def test_invalid_eth_getlogs_member_preserves_existing_cursor_and_skips_event(
+        self,
+        logs_result: list[object],
+        warning: str,
+        caplog,
+        monkeypatch,
+        tmp_path: Path,
+        resource_receipt_log: Path,
+    ) -> None:
+        import agents.payment_processors.usdc_receiver as usdc_mod
+
+        cursor_path = tmp_path / "cursor.json"
+        seen_tx = "0x" + "98" * 32
+        _save_cursor(cursor_path, _Cursor(last_block=777, seen_keys={(seen_tx, 4)}))
+        caller, calls = self._make_caller(tip_block=1000, logs=logs_result)
+        appended: list = []
+        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
+        monkeypatch.setattr(usdc_mod, "append_event", lambda event: appended.append(event) or True)
+
+        receiver = USDCReceiver(
+            operator_wallet=_OPERATOR_WALLET,
+            cursor_path=cursor_path,
+            rpc_caller=caller,
+        )
+
+        assert receiver.poll_once() == 0
+        assert calls == ["eth_blockNumber", "eth_getLogs"]
+        assert appended == []
+        loaded = json.loads(cursor_path.read_text())
+        assert loaded["last_block"] == 777
+        assert loaded["seen_keys"] == [[seen_tx, 4]]
+        assert warning in caplog.text
+        assert str(cursor_path) in caplog.text
+        assert [
+            receipt.operation for receipt in tail_resource_receipts(log_path=resource_receipt_log)
+        ] == [MoneyRailReceiptOperation.EXTERNAL_API_POLL]
+
+    def test_empty_eth_getlogs_result_advances_cursor_without_event(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+        resource_receipt_log: Path,
+    ) -> None:
+        import agents.payment_processors.usdc_receiver as usdc_mod
+
+        cursor_path = tmp_path / "cursor.json"
+        seen_tx = "0x" + "97" * 32
+        _save_cursor(cursor_path, _Cursor(last_block=777, seen_keys={(seen_tx, 4)}))
+        caller, calls = self._make_caller(tip_block=1000, logs=[])
+        appended: list = []
+        monkeypatch.setattr(usdc_mod, "append_event", lambda event: appended.append(event) or True)
+
+        receiver = USDCReceiver(
+            operator_wallet=_OPERATOR_WALLET,
+            cursor_path=cursor_path,
+            rpc_caller=caller,
+        )
+
+        assert receiver.poll_once() == 0
+        assert calls == ["eth_blockNumber", "eth_getLogs"]
+        assert appended == []
+        loaded = json.loads(cursor_path.read_text())
+        assert loaded["last_block"] == 1000
+        assert loaded["seen_keys"] == [[seen_tx, 4]]
+        assert [
+            receipt.operation for receipt in tail_resource_receipts(log_path=resource_receipt_log)
+        ] == [MoneyRailReceiptOperation.EXTERNAL_API_POLL]
 
     def test_receipt_append_failure_blocks_event_and_keeps_cursor_retryable(
         self,

@@ -162,6 +162,30 @@ def _normalise_address(value: str) -> str:
     return value.lower()
 
 
+def _is_hex_field(value: Any, *, hex_chars: int) -> bool:
+    if not isinstance(value, str):
+        return False
+    if not value.startswith("0x") or len(value) != 2 + hex_chars:
+        return False
+    try:
+        int(value[2:], 16)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_hex_quantity(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    if not value.startswith("0x") or len(value) <= 2:
+        return False
+    try:
+        int(value[2:], 16)
+    except ValueError:
+        return False
+    return True
+
+
 def _topic_address(value: str) -> str:
     """Format an address as a 32-byte left-padded ``0x``-prefixed topic.
 
@@ -177,14 +201,23 @@ def _topic_address(value: str) -> str:
 def _parse_log_to_receipt(log: dict[str, Any]) -> TransferReceipt | None:
     """Project one ``eth_getLogs`` row into a :class:`TransferReceipt`.
 
-    Returns ``None`` when the row is malformed (missing topics, bad
-    hex, wrong topic count). ``eth_getLogs`` is a public, untrusted
-    JSON-RPC response — defensive parsing is the contract.
+    Returns ``None`` when the row is malformed (wrong contract,
+    missing fields, bad hex, wrong topic count, wrong topic/hash
+    width). ``eth_getLogs`` is a public, untrusted JSON-RPC response
+    — defensive parsing is the contract.
     """
 
     try:
+        emitting_address = _normalise_address(str(log["address"]))
+        if emitting_address != _normalise_address(BASE_USDC_CONTRACT_ADDRESS):
+            return None
+
         topics = log.get("topics") or []
-        if len(topics) < 3:
+        if not isinstance(topics, list) or len(topics) != 3:
+            return None
+        if not all(_is_hex_field(topic, hex_chars=64) for topic in topics):
+            return None
+        if str(topics[0]).lower() != ERC20_TRANSFER_TOPIC:
             return None
         # Transfer(address indexed from, address indexed to, uint256 value)
         # topic[0] = event sig; topic[1] = from (padded); topic[2] = to (padded)
@@ -195,9 +228,17 @@ def _parse_log_to_receipt(log: dict[str, Any]) -> TransferReceipt | None:
 
         # data is hex-encoded uint256 amount (66 chars including 0x).
         data_hex = log.get("data") or "0x"
-        amount = int(str(data_hex), 16) if data_hex != "0x" else 0
+        if not _is_hex_field(data_hex, hex_chars=64):
+            return None
+        amount = int(str(data_hex), 16)
 
         tx_hash = str(log["transactionHash"])
+        if not _is_hex_field(tx_hash, hex_chars=64):
+            return None
+        if not _is_hex_quantity(log.get("logIndex")) or not _is_hex_quantity(
+            log.get("blockNumber")
+        ):
+            return None
         log_index = int(str(log["logIndex"]), 16)
         block_number = int(str(log["blockNumber"]), 16)
     except (KeyError, ValueError, TypeError):
@@ -411,9 +452,13 @@ class USDCReceiver:
             )
             return 0
 
+        receipts = self._materialize_and_filter_logs(logs_raw)
+        if receipts is None:
+            return 0
+
         emitted = 0
         highest_successful_block = self._cursor.last_block
-        for receipt in self._parse_and_filter(logs_raw):
+        for receipt in receipts:
             key = (receipt.tx_hash, receipt.log_index)
             if key in self._cursor.seen_keys:
                 highest_successful_block = max(highest_successful_block, receipt.block_number)
@@ -468,16 +513,31 @@ class USDCReceiver:
 
     # ── Internals ─────────────────────────────────────────────────────
 
-    def _parse_and_filter(self, logs_raw: Any) -> Iterator[TransferReceipt]:
-        if not isinstance(logs_raw, list):
-            return
+    def _materialize_and_filter_logs(
+        self,
+        logs_raw: list[Any],
+    ) -> list[TransferReceipt] | None:
         assert self._operator_wallet is not None  # gated by self.enabled
-        for row in logs_raw:
+        receipts: list[TransferReceipt] = []
+        for index, row in enumerate(logs_raw):
             if not isinstance(row, dict):
-                continue
+                log.warning(
+                    "eth_getLogs returned invalid row %s type %s; "
+                    "skipping tick without advancing cursor %s",
+                    index,
+                    type(row).__name__,
+                    self._cursor_path,
+                )
+                return None
             receipt = _parse_log_to_receipt(row)
             if receipt is None:
-                continue
+                log.warning(
+                    "eth_getLogs returned malformed row %s; "
+                    "skipping tick without advancing cursor %s",
+                    index,
+                    self._cursor_path,
+                )
+                return None
             if not _filter_receipt(
                 receipt,
                 min_amount_atomic=self._min_amount_atomic,
@@ -485,7 +545,8 @@ class USDCReceiver:
                 expected_to=self._operator_wallet,
             ):
                 continue
-            yield receipt
+            receipts.append(receipt)
+        return receipts
 
     def _emit_payment_event(self, receipt: TransferReceipt, *, now: datetime | None = None) -> bool:
         """Append one PaymentEvent to the canonical event log.
