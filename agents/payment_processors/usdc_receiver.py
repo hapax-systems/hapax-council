@@ -19,7 +19,8 @@ READ-ONLY contract:
     transaction. There is no method named ``send``, ``transfer``,
     ``withdraw``, ``payout``, ``initiate``, or ``remit``. No private
     key is read from disk or env at any point. The Base RPC is hit
-    only with ``eth_getLogs`` + ``eth_blockNumber`` — never
+    only with ``eth_getBlockByNumber("finalized", false)`` +
+    ``eth_getLogs`` — never
     ``eth_sendTransaction`` / ``eth_sendRawTransaction`` /
     ``personal_sign`` / ``eth_signTypedData`` / ``eth_call`` against
     state-mutating selectors. The contract test in
@@ -58,6 +59,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from collections.abc import Iterable, Iterator
@@ -92,7 +94,8 @@ USDC_DECIMALS: int = 6
 
 DEFAULT_BASE_RPC_URL: str = "https://mainnet.base.org"
 DEFAULT_POLL_INTERVAL_S: float = 30.0
-DEFAULT_BLOCK_LOOKBACK: int = 1000  # ~30 min at 2s blocks; safe rewind on restart
+DEFAULT_BLOCK_LOOKBACK: int = 1000  # first cursor-zero bootstrap only
+MAX_ETH_GETLOGS_BLOCK_SPAN: int = 2000
 
 OPERATOR_WALLET_ENV: str = "HAPAX_X402_OPERATOR_WALLET"
 BASE_RPC_URL_ENV: str = "HAPAX_BASE_RPC_URL"
@@ -104,7 +107,7 @@ DEFAULT_CURSOR_PATH: Path = Path.home() / ".cache/hapax/x402-usdc-cursor.json"
 # the runtime test pins this set.
 READ_ONLY_RPC_METHODS: frozenset[str] = frozenset(
     {
-        "eth_blockNumber",
+        "eth_getBlockByNumber",
         "eth_getLogs",
     }
 )
@@ -134,6 +137,8 @@ class TransferReceipt:
     tx_hash: str
     log_index: int
     block_number: int
+    block_hash: str
+    transaction_index: int
     from_address: str
     to_address: str
     amount_atomic: int
@@ -145,6 +150,16 @@ class TransferReceipt:
         return Decimal(self.amount_atomic) / Decimal(10**USDC_DECIMALS)
 
 
+@dataclass(frozen=True)
+class _FinalizedBlock:
+    number: int
+    block_hash: str
+
+
+_HEX_FIELD_RE = re.compile(r"^0x[0-9a-fA-F]+$")
+_HEX_QUANTITY_RE = re.compile(r"^0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)$")
+
+
 def _normalise_address(value: str) -> str:
     """Return a 0x-prefixed lowercased 40-hex-char address.
 
@@ -153,37 +168,59 @@ def _normalise_address(value: str) -> str:
     for set-membership comparison.
     """
 
-    if not value or not value.startswith("0x") or len(value) != 42:
+    if not isinstance(value, str) or not value.startswith("0x") or len(value) != 42:
         raise ValueError(f"invalid Ethereum address: {value!r}")
-    try:
-        int(value[2:], 16)
-    except ValueError as exc:
-        raise ValueError(f"address {value!r} is not 40 hex chars") from exc
+    if not _is_hex_field(value, hex_chars=40):
+        raise ValueError(f"address {value!r} is not 40 hex chars")
     return value.lower()
 
 
 def _is_hex_field(value: Any, *, hex_chars: int) -> bool:
     if not isinstance(value, str):
         return False
-    if not value.startswith("0x") or len(value) != 2 + hex_chars:
+    if len(value) != 2 + hex_chars:
         return False
-    try:
-        int(value[2:], 16)
-    except ValueError:
-        return False
-    return True
+    return bool(_HEX_FIELD_RE.fullmatch(value))
 
 
 def _is_hex_quantity(value: Any) -> bool:
     if not isinstance(value, str):
         return False
-    if not value.startswith("0x") or len(value) <= 2:
-        return False
+    return bool(_HEX_QUANTITY_RE.fullmatch(value))
+
+
+def _quantity_to_int(value: Any) -> int | None:
+    if not _is_hex_quantity(value):
+        return None
+    return int(str(value), 16)
+
+
+def _normalise_32_byte_hex(value: Any) -> str | None:
+    if not _is_hex_field(value, hex_chars=64):
+        return None
+    return str(value).lower()
+
+
+def _topic_to_address(value: Any) -> str | None:
+    if not _is_hex_field(value, hex_chars=64):
+        return None
+    text = str(value).lower()
+    if text[2:26] != "0" * 24:
+        return None
     try:
-        int(value[2:], 16)
+        return _normalise_address("0x" + text[-40:])
     except ValueError:
-        return False
-    return True
+        return None
+
+
+def _parse_finalized_block(value: Any) -> _FinalizedBlock | None:
+    if not isinstance(value, dict):
+        return None
+    number = _quantity_to_int(value.get("number"))
+    block_hash = _normalise_32_byte_hex(value.get("hash"))
+    if number is None or block_hash is None:
+        return None
+    return _FinalizedBlock(number=number, block_hash=block_hash)
 
 
 def _topic_address(value: str) -> str:
@@ -215,32 +252,38 @@ def _parse_log_to_receipt(log: dict[str, Any]) -> TransferReceipt | None:
         topics = log.get("topics") or []
         if not isinstance(topics, list) or len(topics) != 3:
             return None
-        if not all(_is_hex_field(topic, hex_chars=64) for topic in topics):
+        if not _is_hex_field(topics[0], hex_chars=64):
             return None
         if str(topics[0]).lower() != ERC20_TRANSFER_TOPIC:
             return None
         # Transfer(address indexed from, address indexed to, uint256 value)
         # topic[0] = event sig; topic[1] = from (padded); topic[2] = to (padded)
-        from_padded = str(topics[1])
-        to_padded = str(topics[2])
-        from_addr = "0x" + from_padded[-40:]
-        to_addr = "0x" + to_padded[-40:]
+        from_addr = _topic_to_address(topics[1])
+        to_addr = _topic_to_address(topics[2])
+        if from_addr is None or to_addr is None:
+            return None
 
         # data is hex-encoded uint256 amount (66 chars including 0x).
-        data_hex = log.get("data") or "0x"
+        data_hex = log.get("data")
         if not _is_hex_field(data_hex, hex_chars=64):
             return None
         amount = int(str(data_hex), 16)
 
-        tx_hash = str(log["transactionHash"])
-        if not _is_hex_field(tx_hash, hex_chars=64):
-            return None
-        if not _is_hex_quantity(log.get("logIndex")) or not _is_hex_quantity(
-            log.get("blockNumber")
+        tx_hash = _normalise_32_byte_hex(log.get("transactionHash"))
+        block_hash = _normalise_32_byte_hex(log.get("blockHash"))
+        log_index = _quantity_to_int(log.get("logIndex"))
+        block_number = _quantity_to_int(log.get("blockNumber"))
+        transaction_index = _quantity_to_int(log.get("transactionIndex"))
+        if (
+            tx_hash is None
+            or block_hash is None
+            or log_index is None
+            or block_number is None
+            or transaction_index is None
         ):
             return None
-        log_index = int(str(log["logIndex"]), 16)
-        block_number = int(str(log["blockNumber"]), 16)
+        if log.get("removed") is not False:
+            return None
     except (KeyError, ValueError, TypeError):
         log_logger = logging.getLogger(__name__)
         log_logger.debug("malformed eth_getLogs row skipped", exc_info=True)
@@ -250,8 +293,10 @@ def _parse_log_to_receipt(log: dict[str, Any]) -> TransferReceipt | None:
         tx_hash=tx_hash,
         log_index=log_index,
         block_number=block_number,
-        from_address=from_addr.lower(),
-        to_address=to_addr.lower(),
+        block_hash=block_hash,
+        transaction_index=transaction_index,
+        from_address=from_addr,
+        to_address=to_addr,
         amount_atomic=amount,
     )
 
@@ -304,7 +349,7 @@ def _load_cursor(path: Path) -> _Cursor:
         import json
 
         raw = json.loads(path.read_text(encoding="utf-8"))
-        seen = {(str(t[0]), int(t[1])) for t in raw.get("seen_keys", [])}
+        seen = {(str(t[0]).lower(), int(t[1])) for t in raw.get("seen_keys", [])}
         return _Cursor(last_block=int(raw.get("last_block", 0)), seen_keys=seen)
     except (OSError, ValueError, TypeError):
         log.warning("cursor at %s unreadable; resetting", path, exc_info=True)
@@ -399,7 +444,7 @@ class USDCReceiver:
         if (
             record_external_api_poll_receipt(
                 rail=RAIL_LABEL,
-                endpoint="Base RPC eth_blockNumber+eth_getLogs",
+                endpoint="Base RPC eth_getBlockByNumber(finalized)+eth_getLogs",
                 downstream_action="USDCReceiver.poll_once._call_rpc",
             )
             is None
@@ -411,18 +456,23 @@ class USDCReceiver:
             return 0
 
         try:
-            tip_block = self._call_rpc("eth_blockNumber", [])
-            tip_int = int(str(tip_block), 16)
+            finalized_raw = self._call_rpc("eth_getBlockByNumber", ["finalized", False])
         except Exception:  # noqa: BLE001
-            log.warning("eth_blockNumber failed; skipping tick", exc_info=True)
+            log.warning("eth_getBlockByNumber(finalized) failed; skipping tick", exc_info=True)
+            return 0
+        finalized = _parse_finalized_block(finalized_raw)
+        if finalized is None:
+            log.warning(
+                "eth_getBlockByNumber(finalized) returned invalid finalized head; "
+                "skipping tick without advancing cursor %s",
+                self._cursor_path,
+            )
             return 0
 
-        from_block = max(
-            self._cursor.last_block + 1,
-            tip_int - self._block_lookback,
-        )
-        if from_block > tip_int:
+        from_block = self._next_from_block(finalized.number)
+        if from_block > finalized.number:
             return 0
+        to_block = min(finalized.number, from_block + MAX_ETH_GETLOGS_BLOCK_SPAN - 1)
 
         try:
             logs_raw = self._call_rpc(
@@ -430,7 +480,7 @@ class USDCReceiver:
                 [
                     {
                         "fromBlock": hex(from_block),
-                        "toBlock": hex(tip_int),
+                        "toBlock": hex(to_block),
                         "address": BASE_USDC_CONTRACT_ADDRESS,
                         "topics": [
                             ERC20_TRANSFER_TOPIC,
@@ -452,7 +502,11 @@ class USDCReceiver:
             )
             return 0
 
-        receipts = self._materialize_and_filter_logs(logs_raw)
+        receipts = self._materialize_and_filter_logs(
+            logs_raw,
+            from_block=from_block,
+            to_block=to_block,
+        )
         if receipts is None:
             return 0
 
@@ -474,7 +528,7 @@ class USDCReceiver:
             highest_successful_block = max(highest_successful_block, receipt.block_number)
             emitted += 1
 
-        self._cursor.last_block = tip_int
+        self._cursor.last_block = to_block
         _save_cursor(self._cursor_path, self._cursor)
         return emitted
 
@@ -516,9 +570,12 @@ class USDCReceiver:
     def _materialize_and_filter_logs(
         self,
         logs_raw: list[Any],
+        *,
+        from_block: int,
+        to_block: int,
     ) -> list[TransferReceipt] | None:
         assert self._operator_wallet is not None  # gated by self.enabled
-        receipts: list[TransferReceipt] = []
+        receipts_by_key: dict[tuple[str, int], TransferReceipt] = {}
         for index, row in enumerate(logs_raw):
             if not isinstance(row, dict):
                 log.warning(
@@ -538,15 +595,64 @@ class USDCReceiver:
                     self._cursor_path,
                 )
                 return None
-            if not _filter_receipt(
+            if not from_block <= receipt.block_number <= to_block:
+                log.warning(
+                    "eth_getLogs returned row %s outside requested interval "
+                    "[%s, %s]; skipping tick without advancing cursor %s",
+                    index,
+                    from_block,
+                    to_block,
+                    self._cursor_path,
+                )
+                return None
+            if receipt.to_address != self._operator_wallet:
+                log.warning(
+                    "eth_getLogs returned row %s outside requested destination topic; "
+                    "skipping tick without advancing cursor %s",
+                    index,
+                    self._cursor_path,
+                )
+                return None
+            key = (receipt.tx_hash, receipt.log_index)
+            prior = receipts_by_key.get(key)
+            if prior is not None:
+                if _transfer_receipt_semantics(prior) == _transfer_receipt_semantics(receipt):
+                    continue
+                log.warning(
+                    "eth_getLogs returned conflicting duplicate row %s for %s:%s; "
+                    "skipping tick without advancing cursor %s",
+                    index,
+                    receipt.tx_hash,
+                    receipt.log_index,
+                    self._cursor_path,
+                )
+                return None
+            receipts_by_key[key] = receipt
+
+        materialized = sorted(
+            receipts_by_key.values(),
+            key=lambda receipt: (
+                receipt.block_number,
+                receipt.transaction_index,
+                receipt.log_index,
+                receipt.tx_hash,
+            ),
+        )
+        return [
+            receipt
+            for receipt in materialized
+            if _filter_receipt(
                 receipt,
                 min_amount_atomic=self._min_amount_atomic,
                 max_amount_atomic=self._max_amount_atomic,
                 expected_to=self._operator_wallet,
-            ):
-                continue
-            receipts.append(receipt)
-        return receipts
+            )
+        ]
+
+    def _next_from_block(self, finalized_number: int) -> int:
+        if self._cursor.last_block <= 0:
+            return max(0, finalized_number - self._block_lookback)
+        return self._cursor.last_block + 1
 
     def _emit_payment_event(self, receipt: TransferReceipt, *, now: datetime | None = None) -> bool:
         """Append one PaymentEvent to the canonical event log.
@@ -672,6 +778,19 @@ def _resource_receipt_recovery_action() -> str:
     return resource_receipt_recovery_guidance()
 
 
+def _transfer_receipt_semantics(receipt: TransferReceipt) -> tuple[object, ...]:
+    return (
+        receipt.tx_hash,
+        receipt.log_index,
+        receipt.block_number,
+        receipt.block_hash,
+        receipt.transaction_index,
+        receipt.from_address,
+        receipt.to_address,
+        receipt.amount_atomic,
+    )
+
+
 def iter_receipts_for_test(
     logs: Iterable[dict[str, Any]],
     *,
@@ -709,6 +828,7 @@ __all__ = [
     "DEFAULT_CURSOR_PATH",
     "DEFAULT_POLL_INTERVAL_S",
     "ERC20_TRANSFER_TOPIC",
+    "MAX_ETH_GETLOGS_BLOCK_SPAN",
     "OPERATOR_WALLET_ENV",
     "RAIL_LABEL",
     "READ_ONLY_RPC_METHODS",
