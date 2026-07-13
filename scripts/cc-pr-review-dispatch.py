@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -77,6 +78,9 @@ DEFAULT_REPO = "hapax-systems/hapax-council"
 DEFAULT_VAULT_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
 DEFAULT_WAKE_DIR = Path.home() / ".cache" / "hapax" / "review-team" / "wake"
 DEFAULT_REVIEW_LOCK_DIR = DEFAULT_VAULT_ROOT / "_locks" / "review-team"
+# Cross-host review claims older than this are reported as stale, but are never
+# broken automatically. Recovery requires separately governed liveness evidence.
+REVIEW_EXECUTION_LOCK_STALE_AFTER_SECONDS = 6 * 60 * 60
 KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_DISPATCH_OFF"
 TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 TASK_HASH_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
@@ -903,6 +907,8 @@ class ReviewExecutionLock:
     path: Path
     acquired: bool
     holder: dict[str, Any]
+    status: str
+    lock_evidence: dict[str, Any]
 
 
 def _safe_repo_slug(repo: str) -> str:
@@ -925,34 +931,213 @@ def review_execution_lock_path(
     return (base_dir or DEFAULT_REVIEW_LOCK_DIR) / f"{_safe_repo_slug(repo)}-pr-{pr_number}.lock"
 
 
-def _lock_holder_metadata(*, repo: str, pr_number: int, path: Path) -> dict[str, Any]:
+def _read_proc_start_time_ticks() -> int | None:
+    try:
+        stat = Path("/proc/self/stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        return int(stat.rsplit(") ", 1)[1].split()[19])
+    except (IndexError, ValueError):
+        return None
+
+
+def _process_identity() -> dict[str, Any]:
+    identity: dict[str, Any] = {
+        "pid": os.getpid(),
+        "ppid": os.getppid(),
+        "uid": os.getuid() if hasattr(os, "getuid") else None,
+        "gid": os.getgid() if hasattr(os, "getgid") else None,
+        "executable": sys.executable,
+        "argv": sys.argv[:12],
+        "cwd": str(Path.cwd()),
+    }
+    proc_start = _read_proc_start_time_ticks()
+    if proc_start is not None:
+        identity["proc_start_time_ticks"] = proc_start
+    return identity
+
+
+def _lock_holder_metadata(
+    *,
+    repo: str,
+    pr_number: int,
+    path: Path,
+    owner_token: str,
+) -> dict[str, Any]:
+    process = _process_identity()
     return {
         "schema": "hapax.review_execution_lock.holder.v1",
+        "owner_token": owner_token,
         "repo": repo,
         "pr": pr_number,
         "pid": os.getpid(),
+        "host": os.uname().nodename,
         "hostname": os.uname().nodename,
+        "process": process,
         "cwd": str(Path.cwd()),
         "lock_path": str(path),
         "acquired_at": datetime.now(UTC).isoformat(timespec="seconds"),
     }
 
 
-def _write_lock_holder(lock_file: Any, holder: dict[str, Any]) -> None:
-    lock_file.seek(0)
-    lock_file.truncate()
-    lock_file.write(json.dumps(holder, sort_keys=True, indent=2) + "\n")
-    lock_file.flush()
-    os.fsync(lock_file.fileno())
+def _write_lock_holder_fd(fd: int, holder: dict[str, Any]) -> None:
+    payload = (json.dumps(holder, sort_keys=True, indent=2) + "\n").encode("utf-8")
+    offset = 0
+    while offset < len(payload):
+        offset += os.write(fd, payload[offset:])
+    os.fsync(fd)
 
 
-def _read_lock_holder(lock_file: Any) -> dict[str, Any]:
+def _read_lock_holder(path: Path) -> tuple[dict[str, Any], str | None]:
     try:
-        lock_file.seek(0)
-        loaded = json.loads(lock_file.read() or "{}")
-    except (OSError, json.JSONDecodeError):
-        loaded = {}
-    return loaded if isinstance(loaded, dict) else {}
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return {}, f"read_error:{type(exc).__name__}"
+    try:
+        loaded = json.loads(raw or "{}")
+    except json.JSONDecodeError as exc:
+        return {}, f"json_error:{exc.msg}"
+    if not isinstance(loaded, dict):
+        return {}, "holder_not_mapping"
+    return loaded, None
+
+
+def _parse_lock_acquired_at(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _lock_file_stat(path: Path) -> dict[str, Any]:
+    try:
+        stat = path.stat()
+    except OSError as exc:
+        return {"exists": False, "stat_error": type(exc).__name__}
+    return {
+        "exists": True,
+        "size": stat.st_size,
+        "mode": oct(stat.st_mode & 0o777),
+        "mtime": datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(timespec="seconds"),
+    }
+
+
+def _lock_evidence(
+    *,
+    path: Path,
+    status: str,
+    holder_error: str | None = None,
+    lock_age_seconds: float | None = None,
+) -> dict[str, Any]:
+    evidence = {
+        "path": str(path),
+        "status": status,
+        "stale_after_seconds": REVIEW_EXECUTION_LOCK_STALE_AFTER_SECONDS,
+        "stat": _lock_file_stat(path),
+    }
+    if lock_age_seconds is not None:
+        evidence["lock_age_seconds"] = round(max(lock_age_seconds, 0.0), 3)
+    if holder_error:
+        evidence["holder_error"] = holder_error
+    return evidence
+
+
+def _holder_validation_error(
+    holder: dict[str, Any],
+    *,
+    repo: str,
+    pr_number: int,
+) -> str | None:
+    if holder.get("schema") != "hapax.review_execution_lock.holder.v1":
+        return "holder_schema_mismatch"
+    token = holder.get("owner_token")
+    if not isinstance(token, str) or len(token) < 32:
+        return "holder_owner_token_missing"
+    if str(holder.get("repo") or "").strip().lower() != repo.strip().lower():
+        return "holder_repo_mismatch"
+    try:
+        holder_pr = int(holder.get("pr"))
+    except (TypeError, ValueError):
+        return "holder_pr_invalid"
+    if holder_pr != pr_number:
+        return "holder_pr_mismatch"
+    if _parse_lock_acquired_at(holder.get("acquired_at")) is None:
+        return "holder_acquired_at_invalid"
+    return None
+
+
+def _lock_collision_result(*, path: Path, repo: str, pr_number: int) -> ReviewExecutionLock:
+    holder, read_error = _read_lock_holder(path)
+    validation_error = None
+    lock_age_seconds = None
+    status = "review_lock_malformed"
+    if read_error is None:
+        validation_error = _holder_validation_error(holder, repo=repo, pr_number=pr_number)
+        if validation_error is None:
+            acquired_at = _parse_lock_acquired_at(holder.get("acquired_at"))
+            assert acquired_at is not None
+            lock_age_seconds = (datetime.now(UTC) - acquired_at).total_seconds()
+            status = (
+                "review_lock_stale"
+                if lock_age_seconds > REVIEW_EXECUTION_LOCK_STALE_AFTER_SECONDS
+                else "review_in_progress"
+            )
+    holder_error = read_error or validation_error
+    return ReviewExecutionLock(
+        path=path,
+        acquired=False,
+        holder=holder,
+        status=status,
+        lock_evidence=_lock_evidence(
+            path=path,
+            status=status,
+            holder_error=holder_error,
+            lock_age_seconds=lock_age_seconds,
+        ),
+    )
+
+
+def _unlink_open_claim_if_same_file(path: Path, fd: int) -> bool:
+    try:
+        open_stat = os.fstat(fd)
+        path_stat = path.stat()
+    except OSError:
+        return False
+    if (open_stat.st_dev, open_stat.st_ino) != (path_stat.st_dev, path_stat.st_ino):
+        return False
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return False
+    _fsync_directory(path.parent)
+    return True
+
+
+def _release_lock_claim(path: Path, owner_token: str) -> bool:
+    holder, read_error = _read_lock_holder(path)
+    if read_error is not None:
+        LOG.warning(
+            "not releasing review execution lock with unreadable holder %s: %s", path, read_error
+        )
+        return False
+    if holder.get("owner_token") != owner_token:
+        LOG.warning("not releasing review execution lock with mismatched owner token: %s", path)
+        return False
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return False
+    _fsync_directory(path.parent)
+    return True
 
 
 @contextmanager
@@ -963,7 +1148,13 @@ def review_execution_lock(
     vault_root: Path | None = None,
     lock_dir: Path | None = None,
 ) -> Any:
-    """Serialize reviewer spend and artifact publication for one repository+PR."""
+    """Serialize reviewer spend and artifact publication for one repository+PR.
+
+    The claim is the lock file itself, created with ``O_CREAT|O_EXCL`` at the
+    shared vault path so directory-entry creation is serialized by the backing
+    filesystem. Existing claims are never broken here; stale claims are only
+    reported for a separate governed liveness process.
+    """
 
     path = review_execution_lock_path(
         repo=repo,
@@ -972,20 +1163,73 @@ def review_execution_lock(
         lock_dir=lock_dir,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+", encoding="utf-8") as lock_file:
+    owner_token = secrets.token_urlsafe(32)
+    fd: int | None = None
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:
+        LOG.info("review execution claim already exists: %s", path)
+        yield _lock_collision_result(path=path, repo=repo, pr_number=pr_number)
+        return
+    except OSError as exc:
+        status = "review_lock_unavailable"
+        yield ReviewExecutionLock(
+            path=path,
+            acquired=False,
+            holder={},
+            status=status,
+            lock_evidence=_lock_evidence(
+                path=path,
+                status=status,
+                holder_error=f"claim_create_error:{type(exc).__name__}",
+            ),
+        )
+        return
+
+    holder = _lock_holder_metadata(
+        repo=repo,
+        pr_number=pr_number,
+        path=path,
+        owner_token=owner_token,
+    )
+    try:
         try:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            holder = _read_lock_holder(lock_file)
-            LOG.info("review execution already in progress: %s", path)
-            yield ReviewExecutionLock(path=path, acquired=False, holder=holder)
+            _write_lock_holder_fd(fd, holder)
+            os.close(fd)
+            fd = None
+            _fsync_directory(path.parent)
+        except OSError as exc:
+            removed = _unlink_open_claim_if_same_file(path, fd) if fd is not None else False
+            if fd is not None:
+                os.close(fd)
+                fd = None
+            status = "review_lock_unavailable"
+            yield ReviewExecutionLock(
+                path=path,
+                acquired=False,
+                holder=holder,
+                status=status,
+                lock_evidence=_lock_evidence(
+                    path=path,
+                    status=status,
+                    holder_error=f"holder_publish_error:{type(exc).__name__}",
+                )
+                | {"own_claim_removed": removed},
+            )
             return
-        holder = _lock_holder_metadata(repo=repo, pr_number=pr_number, path=path)
-        _write_lock_holder(lock_file, holder)
         try:
-            yield ReviewExecutionLock(path=path, acquired=True, holder=holder)
+            yield ReviewExecutionLock(
+                path=path,
+                acquired=True,
+                holder=holder,
+                status="acquired",
+                lock_evidence=_lock_evidence(path=path, status="acquired"),
+            )
         finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            _release_lock_claim(path, owner_token)
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 def _fsync_directory(path: Path) -> None:
@@ -2848,11 +3092,12 @@ def review_pr(
     with review_execution_lock(repo=repo, pr_number=pr_number, vault_root=vault_root) as lock:
         if not lock.acquired:
             return {
-                "status": "review_in_progress",
+                "status": lock.status,
                 "repo": repo,
                 "pr": pr_number,
                 "lock_path": str(lock.path),
                 "holder": lock.holder,
+                "lock_evidence": lock.lock_evidence,
                 "side_effects": {},
             }
         result = _review_pr_locked(

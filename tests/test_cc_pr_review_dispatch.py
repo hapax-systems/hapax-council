@@ -16,7 +16,7 @@ import subprocess
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from types import ModuleType
@@ -2035,6 +2035,48 @@ checklist:
         assert receipt_path.is_file()
         assert result2["side_effects"]["receipt_path"] == str(receipt_path)
 
+    def test_review_execution_lock_uses_o_excl_claim_file(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        lock_path = dispatch.review_execution_lock_path(
+            repo="owner/repo",
+            pr_number=42,
+            vault_root=vault,
+        )
+
+        with dispatch.review_execution_lock(
+            repo="owner/repo",
+            pr_number=42,
+            vault_root=vault,
+        ) as first:
+            assert first.acquired
+            assert first.status == "acquired"
+            assert lock_path.is_file()
+            on_disk_holder = json.loads(lock_path.read_text(encoding="utf-8"))
+            assert on_disk_holder["owner_token"] == first.holder["owner_token"]
+            assert on_disk_holder["repo"] == "owner/repo"
+            assert on_disk_holder["pr"] == 42
+            assert on_disk_holder["host"]
+            assert on_disk_holder["pid"] == os.getpid()
+            assert on_disk_holder["process"]["pid"] == os.getpid()
+            assert on_disk_holder["acquired_at"]
+
+            with dispatch.review_execution_lock(
+                repo="owner/repo",
+                pr_number=42,
+                vault_root=vault,
+            ) as second:
+                assert not second.acquired
+                assert second.status == "review_in_progress"
+                assert second.holder["owner_token"] == first.holder["owner_token"]
+                assert second.lock_evidence["stat"]["exists"] is True
+                assert second.lock_evidence["stale_after_seconds"] == (
+                    dispatch.REVIEW_EXECUTION_LOCK_STALE_AFTER_SECONDS
+                )
+
+            assert lock_path.is_file()
+
+        assert not lock_path.exists()
+
     def test_concurrent_exact_head_review_is_serialized_and_deduped(self, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)
         note = _write_task(vault)
@@ -2067,6 +2109,8 @@ checklist:
             assert second_result["side_effects"] == {}
             assert second_result["pr"] == 42
             assert str(vault / "_locks" / "review-team") in second_result["lock_path"]
+            assert second_result["holder"]["owner_token"]
+            assert second_result["lock_evidence"]["stat"]["exists"] is True
             assert loser_gh.calls == []
             assert not (note.parent / "task-a.review-dossier.yaml").exists()
             assert not (note.parent / "task-a.acceptance.yaml").exists()
@@ -2078,7 +2122,7 @@ checklist:
         assert len(reviewers.invocations) == 3
         assert (note.parent / "task-a.review-dossier.yaml").is_file()
 
-    def test_process_lock_loser_spends_no_reviewers_and_writes_no_artifacts(
+    def test_process_o_excl_loser_spends_no_reviewers_and_writes_no_artifacts(
         self, tmp_path: Path
     ) -> None:
         vault = _make_vault(tmp_path)
@@ -2140,6 +2184,8 @@ with module.review_execution_lock(
 
             assert result["status"] == "review_in_progress"
             assert result["holder"]["pid"] == proc.pid
+            assert result["holder"]["owner_token"]
+            assert result["lock_evidence"]["stat"]["exists"] is True
             assert result["side_effects"] == {}
             assert gh.calls == []
             assert reviewers.invocations == []
@@ -2151,6 +2197,187 @@ with module.review_execution_lock(
             release.write_text("done", encoding="utf-8")
             stdout, stderr = proc.communicate(timeout=5)
             assert proc.returncode == 0, (stdout, stderr)
+
+    def test_stale_review_lock_fails_closed_without_side_effects(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        note = _write_task(vault)
+        lock_path = dispatch.review_execution_lock_path(
+            repo="owner/repo",
+            pr_number=42,
+            vault_root=vault,
+        )
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        acquired_at = datetime.now(UTC) - timedelta(
+            seconds=dispatch.REVIEW_EXECUTION_LOCK_STALE_AFTER_SECONDS + 60
+        )
+        holder = {
+            "schema": "hapax.review_execution_lock.holder.v1",
+            "owner_token": "x" * 43,
+            "repo": "owner/repo",
+            "pr": 42,
+            "pid": 12345,
+            "host": "stale-host",
+            "hostname": "stale-host",
+            "lock_path": str(lock_path),
+            "acquired_at": acquired_at.isoformat(timespec="seconds"),
+        }
+        lock_path.write_text(json.dumps(holder, sort_keys=True), encoding="utf-8")
+        gh = FakeGh()
+        reviewers = RecordingReviewers()
+
+        result = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            force=True,
+            gh_runner=gh,
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert result["status"] == "review_lock_stale"
+        assert result["holder"] == holder
+        assert result["lock_evidence"]["lock_age_seconds"] >= (
+            dispatch.REVIEW_EXECUTION_LOCK_STALE_AFTER_SECONDS
+        )
+        assert result["lock_evidence"]["stat"]["exists"] is True
+        assert result["side_effects"] == {}
+        assert gh.calls == []
+        assert reviewers.invocations == []
+        assert not (note.parent / "task-a.review-dossier.yaml").exists()
+        assert not (note.parent / "task-a.acceptance.yaml").exists()
+        assert not (tmp_path / "wake").exists()
+        assert not (tmp_path / "degraded-merges.jsonl").exists()
+        assert lock_path.is_file()
+
+    def test_malformed_review_lock_fails_closed_without_side_effects(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        note = _write_task(vault)
+        lock_path = dispatch.review_execution_lock_path(
+            repo="owner/repo",
+            pr_number=42,
+            vault_root=vault,
+        )
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text("{not json", encoding="utf-8")
+        gh = FakeGh()
+        reviewers = RecordingReviewers()
+
+        result = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            force=True,
+            gh_runner=gh,
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert result["status"] == "review_lock_malformed"
+        assert result["holder"] == {}
+        assert result["lock_evidence"]["holder_error"].startswith("json_error:")
+        assert result["lock_evidence"]["stat"]["exists"] is True
+        assert result["side_effects"] == {}
+        assert gh.calls == []
+        assert reviewers.invocations == []
+        assert not (note.parent / "task-a.review-dossier.yaml").exists()
+        assert not (note.parent / "task-a.acceptance.yaml").exists()
+        assert not (tmp_path / "wake").exists()
+        assert not (tmp_path / "degraded-merges.jsonl").exists()
+        assert lock_path.is_file()
+
+    def test_review_lock_release_requires_matching_owner_token(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        lock_path = dispatch.review_execution_lock_path(
+            repo="owner/repo",
+            pr_number=42,
+            vault_root=vault,
+        )
+
+        with dispatch.review_execution_lock(
+            repo="owner/repo",
+            pr_number=42,
+            vault_root=vault,
+        ) as lock:
+            assert lock.acquired
+            holder = json.loads(lock_path.read_text(encoding="utf-8"))
+            holder["owner_token"] = "y" * 43
+            lock_path.write_text(json.dumps(holder), encoding="utf-8")
+
+        assert lock_path.is_file()
+        lock_path.unlink()
+
+    def test_review_lock_releases_on_exception(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        lock_path = dispatch.review_execution_lock_path(
+            repo="owner/repo",
+            pr_number=42,
+            vault_root=vault,
+        )
+
+        with pytest.raises(RuntimeError, match="boom"):
+            with dispatch.review_execution_lock(
+                repo="owner/repo",
+                pr_number=42,
+                vault_root=vault,
+            ) as lock:
+                assert lock.acquired
+                raise RuntimeError("boom")
+
+        assert not lock_path.exists()
+
+    def test_review_lock_metadata_publication_failure_removes_own_claim(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        _write_task(vault)
+        lock_path = dispatch.review_execution_lock_path(
+            repo="owner/repo",
+            pr_number=42,
+            vault_root=vault,
+        )
+
+        def fail_write_lock_holder(fd: int, holder: dict[str, Any]) -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(dispatch, "_write_lock_holder_fd", fail_write_lock_holder)
+        gh = FakeGh()
+        reviewers = RecordingReviewers()
+
+        result = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            force=True,
+            gh_runner=gh,
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert result["status"] == "review_lock_unavailable"
+        assert result["lock_evidence"]["holder_error"] == "holder_publish_error:OSError"
+        assert result["lock_evidence"]["own_claim_removed"] is True
+        assert not lock_path.exists()
+        assert result["side_effects"] == {}
+        assert gh.calls == []
+        assert reviewers.invocations == []
+        assert not (tmp_path / "wake").exists()
+        assert not (tmp_path / "degraded-merges.jsonl").exists()
 
     def test_dossier_and_receipt_publication_use_atomic_replace(
         self, tmp_path: Path, monkeypatch: Any
