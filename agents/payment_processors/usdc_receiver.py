@@ -204,6 +204,10 @@ def _normalise_32_byte_hex(value: Any) -> str | None:
     return str(value).lower()
 
 
+def _is_non_bool_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _topic_to_address(value: Any) -> str | None:
     if not _is_hex_field(value, hex_chars=64):
         return None
@@ -376,16 +380,23 @@ def _load_cursor(
         raw = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             return replace(empty, load_error="cursor JSON is not an object")
-        if raw.get("cursor_schema") != CURSOR_SCHEMA_VERSION:
+        raw_schema = raw.get("cursor_schema")
+        if not _is_non_bool_int(raw_schema) or raw_schema != CURSOR_SCHEMA_VERSION:
             return replace(
                 empty,
                 load_error=(
-                    f"legacy or incompatible cursor schema {raw.get('cursor_schema')!r}; "
+                    f"legacy or incompatible cursor schema {raw_schema!r}; "
                     f"expected {CURSOR_SCHEMA_VERSION}"
                 ),
             )
+        raw_rail = raw.get("rail")
+        if raw_rail != RAIL_LABEL:
+            return replace(
+                empty,
+                load_error=f"incompatible cursor rail {raw_rail!r}; expected {RAIL_LABEL}",
+            )
         raw_chain_id = raw.get("chain_id")
-        if raw_chain_id != chain_id:
+        if not _is_non_bool_int(raw_chain_id) or raw_chain_id != chain_id:
             return replace(
                 empty,
                 load_error=f"incompatible cursor chain_id {raw_chain_id!r}; expected {chain_id}",
@@ -415,7 +426,7 @@ def _load_cursor(
                 ),
             )
         last_block_raw = raw.get("last_block")
-        if not isinstance(last_block_raw, int) or last_block_raw < 0:
+        if not _is_non_bool_int(last_block_raw) or last_block_raw < 0:
             return replace(
                 empty,
                 load_error=f"incompatible cursor last_block {last_block_raw!r}",
@@ -467,7 +478,7 @@ def _parse_cursor_seen_keys(value: object) -> set[tuple[str, int]] | None:
         if tx_hash is None:
             return None
         log_index = item[1]
-        if not isinstance(log_index, int) or log_index < 0:
+        if not _is_non_bool_int(log_index) or log_index < 0:
             return None
         seen.add((tx_hash, log_index))
     return seen
@@ -644,19 +655,32 @@ class USDCReceiver:
             )
             return 0
 
-        receipts = self._materialize_and_filter_logs(
+        admitted_receipts = self._materialize_logs(
             logs_raw,
             from_block=from_block,
             to_block=to_block,
             finalized=finalized,
         )
-        if receipts is None:
+        if admitted_receipts is None:
             return 0
+        if not self._validate_persisted_seen_keys(admitted_receipts, from_block=from_block):
+            return 0
+
+        receipts = [
+            receipt
+            for receipt in admitted_receipts
+            if _filter_receipt(
+                receipt,
+                min_amount_atomic=self._min_amount_atomic,
+                max_amount_atomic=self._max_amount_atomic,
+                expected_to=self._operator_wallet,
+            )
+        ]
 
         emitted = 0
         highest_successful_block = self._cursor.last_block
         receipt_by_seen_key = {
-            (receipt.tx_hash, receipt.log_index): receipt for receipt in receipts
+            (receipt.tx_hash, receipt.log_index): receipt for receipt in admitted_receipts
         }
         for receipt in receipts:
             key = (receipt.tx_hash, receipt.log_index)
@@ -715,7 +739,7 @@ class USDCReceiver:
 
     # ── Internals ─────────────────────────────────────────────────────
 
-    def _materialize_and_filter_logs(
+    def _materialize_logs(
         self,
         logs_raw: list[Any],
         *,
@@ -726,8 +750,10 @@ class USDCReceiver:
         assert self._operator_wallet is not None  # gated by self.enabled
         receipts_by_key: dict[tuple[str, int], TransferReceipt] = {}
         block_hash_by_number: dict[int, str] = {}
+        block_number_by_hash: dict[str, int] = {}
         receipts_by_block_log: dict[tuple[str, int], TransferReceipt] = {}
         tx_locations: dict[str, tuple[int, str, int]] = {}
+        tx_hash_by_block_position: dict[tuple[str, int], str] = {}
         for index, row in enumerate(logs_raw):
             if not isinstance(row, dict):
                 log.warning(
@@ -782,6 +808,16 @@ class USDCReceiver:
                 )
                 return None
             block_hash_by_number[receipt.block_number] = receipt.block_hash
+            prior_block_number = block_number_by_hash.get(receipt.block_hash)
+            if prior_block_number is not None and prior_block_number != receipt.block_number:
+                log.warning(
+                    "eth_getLogs returned block hash %s for multiple block numbers; "
+                    "skipping tick without advancing cursor %s",
+                    receipt.block_hash,
+                    self._cursor_path,
+                )
+                return None
+            block_number_by_hash[receipt.block_hash] = receipt.block_number
             if receipt.to_address != self._operator_wallet:
                 log.warning(
                     "eth_getLogs returned row %s outside requested destination topic; "
@@ -830,10 +866,22 @@ class USDCReceiver:
                 )
                 return None
             tx_locations[receipt.tx_hash] = tx_location
+            block_position = (receipt.block_hash, receipt.transaction_index)
+            prior_tx_hash = tx_hash_by_block_position.get(block_position)
+            if prior_tx_hash is not None and prior_tx_hash != receipt.tx_hash:
+                log.warning(
+                    "eth_getLogs returned block hash %s transaction index %s for "
+                    "multiple transaction hashes; skipping tick without advancing cursor %s",
+                    receipt.block_hash,
+                    receipt.transaction_index,
+                    self._cursor_path,
+                )
+                return None
+            tx_hash_by_block_position[block_position] = receipt.tx_hash
             receipts_by_key[key] = receipt
             receipts_by_block_log[block_log_key] = receipt
 
-        materialized = sorted(
+        return sorted(
             receipts_by_key.values(),
             key=lambda receipt: (
                 receipt.block_number,
@@ -842,16 +890,46 @@ class USDCReceiver:
                 receipt.tx_hash,
             ),
         )
-        return [
-            receipt
-            for receipt in materialized
-            if _filter_receipt(
-                receipt,
-                min_amount_atomic=self._min_amount_atomic,
-                max_amount_atomic=self._max_amount_atomic,
-                expected_to=self._operator_wallet,
-            )
-        ]
+
+    def _validate_persisted_seen_keys(
+        self,
+        admitted_receipts: list[TransferReceipt],
+        *,
+        from_block: int,
+    ) -> bool:
+        if not self._cursor.seen_keys:
+            return True
+
+        admitted_by_key = {
+            (receipt.tx_hash, receipt.log_index): receipt for receipt in admitted_receipts
+        }
+        for tx_hash, log_index in sorted(self._cursor.seen_keys):
+            receipt = admitted_by_key.get((tx_hash, log_index))
+            if receipt is None:
+                log.warning(
+                    "x402 USDC cursor %s persisted seen key %s:%s is absent from "
+                    "the resumed eth_getLogs batch at fromBlock %s; holding without "
+                    "advancing cursor; %s",
+                    self._cursor_path,
+                    tx_hash,
+                    log_index,
+                    from_block,
+                    self._cursor_recovery_action(),
+                )
+                return False
+            if receipt.block_number != from_block:
+                log.warning(
+                    "x402 USDC cursor %s persisted seen key %s:%s resolved at block "
+                    "%s, not resumed fromBlock %s; holding without advancing cursor; %s",
+                    self._cursor_path,
+                    tx_hash,
+                    log_index,
+                    receipt.block_number,
+                    from_block,
+                    self._cursor_recovery_action(),
+                )
+                return False
+        return True
 
     def _next_from_block(self, finalized_number: int) -> int:
         if self._cursor.last_block <= 0:

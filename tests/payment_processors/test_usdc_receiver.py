@@ -364,6 +364,49 @@ class TestCursor:
         assert "contract" in cursor.load_error
         assert json.loads(target.read_text(encoding="utf-8"))["last_block"] == 123
 
+    def test_load_wrong_rail_cursor_holds_without_reset(self, tmp_path: Path) -> None:
+        target = tmp_path / "cursor.json"
+        _save_cursor(target, _cursor(last_block=123))
+        raw = json.loads(target.read_text(encoding="utf-8"))
+        raw["rail"] = "not_x402_usdc_base"
+        target.write_text(json.dumps(raw), encoding="utf-8")
+
+        cursor = _load_cursor(target, operator_wallet=_OPERATOR_WALLET)
+
+        assert cursor.load_error is not None
+        assert "cursor rail" in cursor.load_error
+        assert "x402_usdc_base" in cursor.load_error
+        assert json.loads(target.read_text(encoding="utf-8"))["last_block"] == 123
+
+    @pytest.mark.parametrize(
+        ("update", "expected_error"),
+        [
+            ({"cursor_schema": True}, "cursor schema"),
+            ({"chain_id": True}, "chain_id"),
+            ({"last_block": True}, "last_block"),
+            ({"seen_keys": [["0x" + "33" * 32, True]]}, "seen_keys"),
+        ],
+    )
+    def test_load_boolean_integer_fields_holds_without_reset(
+        self,
+        tmp_path: Path,
+        update: dict[str, object],
+        expected_error: str,
+    ) -> None:
+        target = tmp_path / "cursor.json"
+        _save_cursor(target, _cursor(last_block=123, seen_keys={("0x" + "33" * 32, 0)}))
+        raw = json.loads(target.read_text(encoding="utf-8"))
+        raw.update(update)
+        target.write_text(json.dumps(raw), encoding="utf-8")
+
+        cursor = _load_cursor(target, operator_wallet=_OPERATOR_WALLET)
+
+        assert cursor.load_error is not None
+        assert expected_error in cursor.load_error
+        assert json.loads(target.read_text(encoding="utf-8"))["last_block"] == update.get(
+            "last_block", 123
+        )
+
 
 # ── disabled state ──────────────────────────────────────────────────
 
@@ -914,7 +957,12 @@ class TestPollOnce:
         resource_receipt_log: Path,
     ) -> None:
         dust = _log_row(amount_atomic=100, tx_hash="0x" + "dd" * 32)  # 0.0001 USDC
-        ok = _log_row(amount_atomic=5_000_000, tx_hash="0x" + "ee" * 32, log_index=1)
+        ok = _log_row(
+            amount_atomic=5_000_000,
+            tx_hash="0x" + "ee" * 32,
+            log_index=1,
+            transaction_index=1,
+        )
         caller, _ = self._make_caller(tip_block=1000, logs=[dust, ok])
         appended: list = []
 
@@ -1149,6 +1197,49 @@ class TestPollOnce:
             receipt.operation for receipt in tail_resource_receipts(log_path=resource_receipt_log)
         ] == [MoneyRailReceiptOperation.EXTERNAL_API_POLL]
 
+    def test_same_block_hash_with_multiple_numbers_fails_closed(
+        self,
+        caplog,
+        monkeypatch,
+        tmp_path: Path,
+        resource_receipt_log: Path,
+    ) -> None:
+        import agents.payment_processors.usdc_receiver as usdc_mod
+
+        first = _log_row(
+            tx_hash="0x" + "78" * 32,
+            log_index=0,
+            block_number=998,
+            block_hash="0x" + "44" * 32,
+            transaction_index=1,
+        )
+        second = _log_row(
+            tx_hash="0x" + "79" * 32,
+            log_index=1,
+            block_number=999,
+            block_hash="0x" + "44" * 32,
+            transaction_index=2,
+        )
+        caller, _ = self._make_caller(tip_block=1000, logs=[first, second])
+        appended: list = []
+        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
+        monkeypatch.setattr(usdc_mod, "append_event", lambda event: appended.append(event) or True)
+
+        cursor_path = tmp_path / "cursor.json"
+        receiver = USDCReceiver(
+            operator_wallet=_OPERATOR_WALLET,
+            cursor_path=cursor_path,
+            rpc_caller=caller,
+        )
+
+        assert receiver.poll_once() == 0
+        assert appended == []
+        assert not cursor_path.exists()
+        assert "multiple block numbers" in caplog.text
+        assert [
+            receipt.operation for receipt in tail_resource_receipts(log_path=resource_receipt_log)
+        ] == [MoneyRailReceiptOperation.EXTERNAL_API_POLL]
+
     def test_same_block_hash_log_index_conflict_fails_closed(
         self,
         caplog,
@@ -1232,6 +1323,50 @@ class TestPollOnce:
         assert appended == []
         assert not cursor_path.exists()
         assert "multiple locations" in caplog.text
+        assert [
+            receipt.operation for receipt in tail_resource_receipts(log_path=resource_receipt_log)
+        ] == [MoneyRailReceiptOperation.EXTERNAL_API_POLL]
+
+    def test_same_block_transaction_index_with_multiple_hashes_fails_closed(
+        self,
+        caplog,
+        monkeypatch,
+        tmp_path: Path,
+        resource_receipt_log: Path,
+    ) -> None:
+        import agents.payment_processors.usdc_receiver as usdc_mod
+
+        first = _log_row(
+            tx_hash="0x" + "81" * 32,
+            log_index=0,
+            block_number=999,
+            block_hash="0x" + "44" * 32,
+            transaction_index=3,
+        )
+        second = _log_row(
+            tx_hash="0x" + "82" * 32,
+            log_index=1,
+            block_number=999,
+            block_hash="0x" + "44" * 32,
+            transaction_index=3,
+        )
+        caller, _ = self._make_caller(tip_block=1000, logs=[first, second])
+        appended: list = []
+        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
+        monkeypatch.setattr(usdc_mod, "append_event", lambda event: appended.append(event) or True)
+
+        cursor_path = tmp_path / "cursor.json"
+        receiver = USDCReceiver(
+            operator_wallet=_OPERATOR_WALLET,
+            cursor_path=cursor_path,
+            rpc_caller=caller,
+        )
+
+        assert receiver.poll_once() == 0
+        assert appended == []
+        assert not cursor_path.exists()
+        assert "transaction index" in caplog.text
+        assert "multiple transaction hashes" in caplog.text
         assert [
             receipt.operation for receipt in tail_resource_receipts(log_path=resource_receipt_log)
         ] == [MoneyRailReceiptOperation.EXTERNAL_API_POLL]
@@ -1362,12 +1497,14 @@ class TestPollOnce:
             tx_hash="0x" + "52" * 32,
             log_index=2,
             block_number=999,
+            block_hash="0x" + "52" * 32,
             transaction_index=2,
         )
         earlier = _log_row(
             tx_hash="0x" + "51" * 32,
             log_index=1,
             block_number=998,
+            block_hash="0x" + "51" * 32,
             transaction_index=1,
         )
         caller, _ = self._make_caller(tip_block=1000, logs=[later, earlier])
@@ -1398,8 +1535,7 @@ class TestPollOnce:
         import agents.payment_processors.usdc_receiver as usdc_mod
 
         cursor_path = tmp_path / "cursor.json"
-        seen_tx = "0x" + "97" * 32
-        _save_cursor(cursor_path, _cursor(last_block=777, seen_keys={(seen_tx, 4)}))
+        _save_cursor(cursor_path, _cursor(last_block=777))
         caller, calls = self._make_caller(tip_block=1000, logs=[])
         appended: list = []
         monkeypatch.setattr(usdc_mod, "append_event", lambda event: appended.append(event) or True)
@@ -1589,8 +1725,18 @@ class TestPollOnce:
     ) -> None:
         import agents.payment_processors.usdc_receiver as usdc_mod
 
-        first = _log_row(tx_hash="0x" + "41" * 32, log_index=0, block_number=700)
-        second = _log_row(tx_hash="0x" + "42" * 32, log_index=1, block_number=701)
+        first = _log_row(
+            tx_hash="0x" + "41" * 32,
+            log_index=0,
+            block_number=700,
+            block_hash="0x" + "41" * 32,
+        )
+        second = _log_row(
+            tx_hash="0x" + "42" * 32,
+            log_index=1,
+            block_number=701,
+            block_hash="0x" + "42" * 32,
+        )
         caller, _ = self._make_caller(tip_block=1000, logs=[first, second])
         appended: list = []
         original_commit = usdc_mod.commit_prepared_resource_receipt
@@ -1631,7 +1777,12 @@ class TestPollOnce:
         import agents.payment_processors.usdc_receiver as usdc_mod
 
         first = _log_row(tx_hash="0x" + "43" * 32, log_index=0, block_number=700)
-        second = _log_row(tx_hash="0x" + "44" * 32, log_index=1, block_number=700)
+        second = _log_row(
+            tx_hash="0x" + "44" * 32,
+            log_index=1,
+            block_number=700,
+            transaction_index=1,
+        )
         caller, _ = self._make_caller(tip_block=1000, logs=[first, second])
         appended: list = []
         original_commit = usdc_mod.commit_prepared_resource_receipt
@@ -1659,6 +1810,122 @@ class TestPollOnce:
         assert loaded["last_block"] == 699
         assert loaded["seen_keys"] == [["0x" + "43" * 32, 0]]
         assert [event.external_id for event in appended] == ["0x" + "43" * 32 + ":0"]
+
+    def test_persisted_seen_key_at_resume_block_allows_remaining_receipts(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+    ) -> None:
+        seen_tx = "0x" + "43" * 32
+        next_tx = "0x" + "44" * 32
+        prior_success = _log_row(tx_hash=seen_tx, log_index=0, block_number=700)
+        pending = _log_row(
+            tx_hash=next_tx,
+            log_index=1,
+            block_number=700,
+            transaction_index=1,
+        )
+        caller, _ = self._make_caller(tip_block=1000, logs=[pending, prior_success])
+        appended: list = []
+        monkeypatch.setattr(
+            "agents.payment_processors.usdc_receiver.append_event",
+            lambda event: appended.append(event) or True,
+        )
+
+        cursor_path = tmp_path / "cursor.json"
+        _save_cursor(cursor_path, _cursor(last_block=699, seen_keys={(seen_tx, 0)}))
+        receiver = USDCReceiver(
+            operator_wallet=_OPERATOR_WALLET,
+            cursor_path=cursor_path,
+            rpc_caller=caller,
+        )
+
+        assert receiver.poll_once() == 1
+        loaded = json.loads(cursor_path.read_text())
+        assert loaded["last_block"] == 1000
+        assert loaded["seen_keys"] == []
+        assert [event.external_id for event in appended] == [next_tx + ":1"]
+
+    def test_missing_persisted_seen_key_holds_before_payment_effect(
+        self,
+        caplog,
+        monkeypatch,
+        tmp_path: Path,
+        resource_receipt_log: Path,
+    ) -> None:
+        import agents.payment_processors.usdc_receiver as usdc_mod
+
+        seen_tx = "0x" + "45" * 32
+        pending = _log_row(tx_hash="0x" + "46" * 32, log_index=1, block_number=700)
+        caller, _ = self._make_caller(tip_block=1000, logs=[pending])
+        appended: list = []
+        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
+        monkeypatch.setattr(usdc_mod, "append_event", lambda event: appended.append(event) or True)
+
+        cursor_path = tmp_path / "cursor.json"
+        _save_cursor(cursor_path, _cursor(last_block=699, seen_keys={(seen_tx, 0)}))
+        receiver = USDCReceiver(
+            operator_wallet=_OPERATOR_WALLET,
+            cursor_path=cursor_path,
+            rpc_caller=caller,
+        )
+
+        assert receiver.poll_once() == 0
+        assert appended == []
+        loaded = json.loads(cursor_path.read_text())
+        assert loaded["last_block"] == 699
+        assert loaded["seen_keys"] == [[seen_tx, 0]]
+        assert "persisted seen key" in caplog.text
+        assert "absent from the resumed eth_getLogs batch" in caplog.text
+        assert [
+            receipt.operation for receipt in tail_resource_receipts(log_path=resource_receipt_log)
+        ] == [MoneyRailReceiptOperation.EXTERNAL_API_POLL]
+
+    def test_later_block_persisted_seen_key_holds_before_payment_effect(
+        self,
+        caplog,
+        monkeypatch,
+        tmp_path: Path,
+        resource_receipt_log: Path,
+    ) -> None:
+        import agents.payment_processors.usdc_receiver as usdc_mod
+
+        seen_tx = "0x" + "47" * 32
+        pending = _log_row(
+            tx_hash="0x" + "48" * 32,
+            log_index=1,
+            block_number=700,
+            block_hash="0x" + "48" * 32,
+        )
+        later_seen = _log_row(
+            tx_hash=seen_tx,
+            log_index=0,
+            block_number=701,
+            block_hash="0x" + "47" * 32,
+        )
+        caller, _ = self._make_caller(tip_block=1000, logs=[pending, later_seen])
+        appended: list = []
+        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
+        monkeypatch.setattr(usdc_mod, "append_event", lambda event: appended.append(event) or True)
+
+        cursor_path = tmp_path / "cursor.json"
+        _save_cursor(cursor_path, _cursor(last_block=699, seen_keys={(seen_tx, 0)}))
+        receiver = USDCReceiver(
+            operator_wallet=_OPERATOR_WALLET,
+            cursor_path=cursor_path,
+            rpc_caller=caller,
+        )
+
+        assert receiver.poll_once() == 0
+        assert appended == []
+        loaded = json.loads(cursor_path.read_text())
+        assert loaded["last_block"] == 699
+        assert loaded["seen_keys"] == [[seen_tx, 0]]
+        assert "persisted seen key" in caplog.text
+        assert "not resumed fromBlock 700" in caplog.text
+        assert [
+            receipt.operation for receipt in tail_resource_receipts(log_path=resource_receipt_log)
+        ] == [MoneyRailReceiptOperation.EXTERNAL_API_POLL]
 
     def test_rpc_failure_returns_zero_no_crash(self, monkeypatch, tmp_path: Path) -> None:
         def _raises(method: str, params: list):
