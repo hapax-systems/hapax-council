@@ -58,8 +58,8 @@ case "$classifier_rc" in
 esac
 
 session_id=""
-if declare -F hapax_session_id >/dev/null 2>&1; then
-  session_id="$(hapax_session_id 2>/dev/null || true)"
+if declare -F hapax_session_id_into >/dev/null 2>&1; then
+  hapax_session_id_into session_id 2>/dev/null || true
 fi
 if declare -F hapax_effective_role >/dev/null 2>&1; then
   role="$(hapax_effective_role 2>/dev/null || true)"
@@ -73,12 +73,17 @@ if [[ -z "${role:-}" ]]; then
 fi
 
 claim_file=""
-if [[ -n "$session_id" && -f "$HOME/.cache/hapax/cc-active-task-$role-$session_id" ]]; then
+if [[ -n "$session_id" ]]; then
+  if ! declare -F hapax_claim_keyable_session_id >/dev/null 2>&1 \
+    || ! hapax_claim_keyable_session_id "$session_id"; then
+    echo "mcp-connector-mutator-gate: BLOCKED — session id is not claim-keyable; refusing legacy-role downgrade." >&2
+    exit 2
+  fi
   claim_file="$HOME/.cache/hapax/cc-active-task-$role-$session_id"
 elif [[ -f "$HOME/.cache/hapax/cc-active-task-$role" ]]; then
   claim_file="$HOME/.cache/hapax/cc-active-task-$role"
 fi
-if [[ -z "$claim_file" ]]; then
+if [[ -z "$claim_file" || ! -f "$claim_file" ]]; then
   echo "mcp-connector-mutator-gate: BLOCKED — no claimed task for role '$role'." >&2
   echo "  Next action: claim the dispatched task with scripts/cc-claim before connector mutation." >&2
   exit 2

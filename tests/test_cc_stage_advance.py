@@ -4,10 +4,12 @@ Self-contained (no shared conftest): each test builds a synthetic vault under a
 pinned HOME and invokes the script via subprocess. Coordination reform Phase 2.
 """
 
+import fcntl
 import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 SCRIPT = Path(__file__).parent.parent / "scripts" / "cc-stage-advance"
@@ -114,3 +116,35 @@ class TestStageAdvance:
         )
         r = _run(tmp_path, "nope", "S7_RELEASE")
         assert r.returncode == 3
+
+    def test_concurrent_close_cannot_be_recreated_by_stage_advance(self, tmp_path: Path) -> None:
+        note = _make_task(tmp_path, "race")
+        stage = note.parent / ".hapax-transactions"
+        stage.mkdir(mode=0o700)
+        lock_path = stage / ".hapax-transaction.lock"
+        lock_path.touch(mode=0o600)
+        env = os.environ.copy()
+        env["HOME"] = str(tmp_path)
+        env["HAPAX_AGENT_ROLE"] = "alpha"
+        env["HAPAX_COORD_DIR"] = str(tmp_path / ".cache" / "hapax" / "coord")
+
+        with lock_path.open("r+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            process = subprocess.Popen(
+                [sys.executable, str(SCRIPT), "race", "S7_RELEASE"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            time.sleep(0.25)
+            assert process.poll() is None, "stage advance did not wait on the task-note lock"
+
+            closed = note.parent.parent / "closed" / note.name
+            closed.parent.mkdir(parents=True, exist_ok=True)
+            note.rename(closed)
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            assert process.wait(timeout=10) == 3
+
+        assert not note.exists()
+        assert "stage: S6_IMPLEMENTATION" in closed.read_text(encoding="utf-8")

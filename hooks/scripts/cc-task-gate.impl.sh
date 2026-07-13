@@ -822,6 +822,9 @@ while idx < len(lines):
     key, _, val = line.partition(":")
     key = key.strip()
     val = normalize_value(key, val)
+    if key in fields:
+        print(f"__HAPAX_DUPLICATE_TOP_LEVEL__\t{key}")
+        sys.exit(0)
     if val:
         fields[key] = val
         continue
@@ -857,6 +860,15 @@ print(
 )
 PYEOF
 )"
+
+if [[ "$parse_output" == __HAPAX_DUPLICATE_TOP_LEVEL__* ]]; then
+  _duplicate_key="${parse_output#*$'\t'}"
+  _emit_block <<EOF
+cc-task-gate: BLOCKED — task '$task_id' has duplicate top-level frontmatter key '$_duplicate_key'.
+  Repair the task note with the strict canonical parser before mutating files.
+EOF
+  exit 2
+fi
 
 status="$(printf '%s' "$parse_output" | cut -f1)"
 assigned="$(printf '%s' "$parse_output" | cut -f2)"
@@ -1021,6 +1033,8 @@ def scalar(field: str) -> str:
             continue
         key, separator, raw_value = line.partition(":")
         if separator and key.strip() == field:
+            if value is not None:
+                raise ValueError(f"task note {field} is duplicated")
             value = raw_value.strip().strip('"').strip("'")
     if value is None:
         raise ValueError(f"task note {field} is missing")
@@ -1065,13 +1079,16 @@ elif operation == "transition-claimed":
         count=1,
         flags=re.MULTILINE,
     )
-    updated = re.sub(
-        r"^status:\s*claimed\s*$",
+    updated, replacements = re.subn(
+        r'''^status:\s*(?:claimed|"claimed"|'claimed')\s*$''',
         "status: in_progress",
         updated,
         count=1,
         flags=re.MULTILINE,
-    ).replace(
+    )
+    if replacements != 1:
+        raise ValueError("task note claimed status could not be transitioned")
+    updated = updated.replace(
         "## Session log\n",
         f"## Session log\n- {now} hook transitioned claimed → in_progress on first mutation\n",
         1,

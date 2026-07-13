@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import stat
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -16,6 +18,14 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+from shared.sdlc_filesystem_transaction import (  # noqa: E402
+    FilesystemTransactionError,
+    replace_task_note_transactionally,
+)
+
+OWNERSHIP_CACHE = Path(
+    os.environ.get("HAPAX_CC_OWNERSHIP_CACHE_DIR", str(Path.home() / ".cache" / "hapax"))
+).expanduser()
 
 NULLISH = {"", "null", "none", "~", "[]"}
 TERMINAL_DEPENDENCY_STATUSES = {"completed", "closed", "done"}
@@ -250,8 +260,11 @@ def rewrite_note(
     timestamp: str,
     task_id: str,
     dry_run: bool,
+    vault_root: Path,
 ) -> None:
-    text = path.read_text(encoding="utf-8")
+    metadata = path.lstat()
+    raw = path.read_bytes()
+    text = raw.decode("utf-8")
     lines, suffix = split_frontmatter(text)
     replace_or_insert_scalar(lines, "status", status)
     replace_or_insert_scalar(lines, "assigned_to", "unassigned")
@@ -269,9 +282,14 @@ def rewrite_note(
 
     if dry_run:
         return
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(next_text, encoding="utf-8")
-    tmp.replace(path)
+    replace_task_note_transactionally(
+        path,
+        expected_content=raw,
+        content=next_text.encode("utf-8"),
+        expected_mode=stat.S_IMODE(metadata.st_mode),
+        cache_dir=OWNERSHIP_CACHE,
+        vault_root=vault_root,
+    )
 
 
 def promote(task_id: str, *, vault_root: Path, dry_run: bool) -> int:
@@ -339,14 +357,19 @@ def promote(task_id: str, *, vault_root: Path, dry_run: bool) -> int:
         return 7
 
     timestamp = now_utc()
-    rewrite_note(
-        path=task_path,
-        status="offered",
-        route_changes=route_changes,
-        timestamp=timestamp,
-        task_id=task_id,
-        dry_run=dry_run,
-    )
+    try:
+        rewrite_note(
+            path=task_path,
+            status="offered",
+            route_changes=route_changes,
+            timestamp=timestamp,
+            task_id=task_id,
+            dry_run=dry_run,
+            vault_root=vault_root,
+        )
+    except (OSError, UnicodeDecodeError, FilesystemTransactionError) as exc:
+        print(f"cc-task-offer-ready: task note changed before commit: {exc}", file=sys.stderr)
+        return 8
     normalized = ""
     if route_changes:
         fields_text = ", ".join(f"{key}={value}" for key, value in sorted(route_changes.items()))

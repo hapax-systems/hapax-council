@@ -434,6 +434,37 @@ def test_stage_directory_accepts_server_mapped_new_entry_owner(
     assert target.read_bytes() == b"post"
 
 
+def test_filesystem_without_unnamed_owner_probe_refuses_before_target_or_journal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "target"
+    target.write_bytes(b"pre")
+    journal = root / "journal.json"
+    original_open = transaction.os.open
+
+    def refuse_tmpfile(path: object, flags: int, mode: int = 0o777) -> int:
+        temporary_flag = getattr(os, "O_TMPFILE", 0)
+        if temporary_flag and flags & temporary_flag == temporary_flag:
+            raise OSError(errno.EOPNOTSUPP, "unnamed files unsupported")
+        return original_open(path, flags, mode)
+
+    monkeypatch.setattr(transaction.os, "open", refuse_tmpfile)
+
+    with pytest.raises(FilesystemTransactionError, match="lacks unnamed ownership probes"):
+        execute_filesystem_transaction(
+            journal,
+            (FileMutation(target, b"post"),),
+            allowed_roots=(root,),
+        )
+
+    assert target.read_bytes() == b"pre"
+    assert not journal.exists()
+    assert not (root / ".hapax-owner-probe").exists()
+
+
 def test_nfs_without_no_replace_support_refuses_before_journal_or_target_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -488,7 +519,7 @@ def test_nfs_create_refuses_before_publishing_live_target(
     assert not journal.exists()
 
 
-def test_nfs_noop_prepared_recovery_archives_without_target_capability(
+def test_nfs_noop_prepared_recovery_refuses_before_journal_archive(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -514,10 +545,11 @@ def test_nfs_noop_prepared_recovery_archives_without_target_capability(
     with pytest.raises(FilesystemTransactionError, match="atomic no-replace support"):
         transaction._transition_entry(prepared[0], image="post", allowed_roots=(root,))
 
-    assert recover_filesystem_transaction(journal, allowed_roots=(root,))
+    with pytest.raises(FilesystemTransactionError, match="atomic no-replace support"):
+        recover_filesystem_transaction(journal, allowed_roots=(root,))
     assert target.read_bytes() == b"pre"
-    assert not journal.exists()
-    assert list(root.glob(".journal.json.history-*-recovered-pre"))
+    assert journal.exists()
+    assert not list(root.glob(".journal.json.history-*-recovered-pre"))
 
 
 def test_no_replace_capability_probe_preserves_raced_destination(
@@ -1348,6 +1380,54 @@ def test_v1_retry_always_drains_interrupted_compatibility_journal(
     assert list(root.glob("..journal.json.v1-conversion-*.history-*-committed"))
 
 
+def test_v1_recovery_locks_compatibility_before_target_filesystem(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "target"
+    target.write_bytes(b"post")
+    entries = [
+        {
+            "path": str(target),
+            "pre_content": transaction._encoded(b"pre"),
+            "pre_mode": 0o644,
+            "post_content": transaction._encoded(b"post"),
+            "post_mode": 0o644,
+        }
+    ]
+    body = {"schema": transaction.TRANSACTION_SCHEMA_V1, "state": "prepared", "entries": entries}
+    digest = hashlib.sha256(transaction._canonical_bytes(body)).hexdigest()
+    journal = root / "journal.json"
+    journal.write_bytes(transaction._canonical_bytes({**body, "manifest_sha256": digest}) + b"\n")
+    journal.chmod(0o600)
+    compatibility = root / f".{journal.name}.v1-conversion-{digest[:16]}"
+    original_transaction_lock = transaction._transaction_lock
+    original_target_locks = transaction._target_locks
+    held_transactions: list[Path] = []
+
+    @contextmanager
+    def track_transaction(path: Path):
+        with original_transaction_lock(path):
+            held_transactions.append(path)
+            try:
+                yield
+            finally:
+                held_transactions.remove(path)
+
+    @contextmanager
+    def require_compatibility_first(paths: list[Path] | tuple[Path, ...]):
+        assert compatibility in held_transactions
+        with original_target_locks(paths):
+            yield
+
+    monkeypatch.setattr(transaction, "_transaction_lock", track_transaction)
+    monkeypatch.setattr(transaction, "_target_locks", require_compatibility_first)
+
+    assert recover_filesystem_transaction(journal, allowed_roots=(root,))
+
+
 def test_legacy_v1_supersession_retires_active_compatibility_journal(
     tmp_path: Path,
 ) -> None:
@@ -1396,6 +1476,91 @@ def test_legacy_v1_supersession_retires_active_compatibility_journal(
     assert not compatibility.exists()
     assert list(root.glob(f".{compatibility.name}.history-*-legacy-parent-superseded"))
     assert list(root.glob(f".{legacy.name}.history-v1-*-legacy-superseded-third-image"))
+
+
+def test_legacy_v1_supersession_holds_on_compatibility_auxiliary_third_image(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "target"
+    target.write_bytes(b"post")
+    entries = [
+        {
+            "path": str(target),
+            "pre_content": transaction._encoded(b"pre"),
+            "pre_mode": 0o644,
+            "post_content": transaction._encoded(b"post"),
+            "post_mode": 0o644,
+        }
+    ]
+    body = {"schema": transaction.TRANSACTION_SCHEMA_V1, "state": "prepared", "entries": entries}
+    digest = hashlib.sha256(transaction._canonical_bytes(body)).hexdigest()
+    legacy = root / "cc-ownership-txn-task.json"
+    legacy.write_bytes(transaction._canonical_bytes({**body, "manifest_sha256": digest}) + b"\n")
+    legacy.chmod(0o600)
+    compatibility = root / f".{legacy.name}.v1-conversion-{digest[:16]}"
+    transaction._write_manifest(
+        compatibility,
+        state="prepared",
+        entries=[
+            {
+                "path": str(target),
+                "pre_content": transaction._encoded(b"post"),
+                "pre_mode": 0o644,
+                "post_content": transaction._encoded(b"pre"),
+                "post_mode": 0o644,
+            }
+        ],
+    )
+    child = transaction._load_journal(compatibility)
+    hold, _move = transaction._entry_auxiliary_paths(child.entries[0], (root,))
+    hold.write_bytes(b"operator-child-auxiliary")
+    target.write_bytes(b"operator-target-third-image")
+
+    with pytest.raises(FilesystemTransactionError, match="auxiliary third-image conflict"):
+        transaction.migrate_legacy_filesystem_transactions(
+            root / "cc-ownership-txn.json",
+            (legacy,),
+            allowed_roots=(root,),
+        )
+
+    assert target.read_bytes() == b"operator-target-third-image"
+    assert hold.read_bytes() == b"operator-child-auxiliary"
+    assert legacy.is_file()
+    assert compatibility.is_dir()
+
+
+def test_legacy_v1_missing_target_holds_instead_of_evidencing_supersession(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "target"
+    entries = [
+        {
+            "path": str(target),
+            "pre_content": transaction._encoded(b"pre"),
+            "pre_mode": 0o644,
+            "post_content": transaction._encoded(b"post"),
+            "post_mode": 0o644,
+        }
+    ]
+    body = {"schema": transaction.TRANSACTION_SCHEMA_V1, "state": "prepared", "entries": entries}
+    digest = hashlib.sha256(transaction._canonical_bytes(body)).hexdigest()
+    legacy = root / "cc-ownership-txn-task.json"
+    legacy.write_bytes(transaction._canonical_bytes({**body, "manifest_sha256": digest}) + b"\n")
+    legacy.chmod(0o600)
+
+    with pytest.raises(FilesystemTransactionError, match="target image is missing"):
+        transaction.migrate_legacy_filesystem_transactions(
+            root / "cc-ownership-txn.json",
+            (legacy,),
+            allowed_roots=(root,),
+        )
+
+    assert legacy.is_file()
+    assert not list(root.glob(f".{legacy.name}.history-v1-*-legacy-superseded*"))
 
 
 def test_v1_archive_retry_accepts_existing_link_to_same_journal(tmp_path: Path) -> None:

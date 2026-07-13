@@ -52,8 +52,12 @@ def test_whoami_env_precedence_name_over_role(tmp_path: Path) -> None:
 def test_whoami_marker_still_resolves_when_no_env(tmp_path: Path) -> None:
     # Regression: the pre-existing marker path must keep working.
     (tmp_path / ".cache" / "hapax").mkdir(parents=True)
-    (tmp_path / ".cache" / "hapax" / "session-role-sid42").write_text("gamma\n")
-    r = _run(["bash", str(WHOAMI)], tmp_path, {"CLAUDE_CODE_SESSION_ID": "sid42"})
+    (tmp_path / ".cache" / "hapax" / "session-role-session-sid42").write_text("gamma\n")
+    r = _run(
+        ["bash", str(WHOAMI)],
+        tmp_path,
+        {"CLAUDE_CODE_SESSION_ID": "session-sid42"},
+    )
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip() == "gamma"
 
@@ -91,10 +95,10 @@ def test_assert_identity_accepts_cc_lane(tmp_path: Path) -> None:
     r = _run(
         ["bash", str(AGENT_ROLE), "assert-identity", "cc-zai"],
         tmp_path,
-        {"HAPAX_SESSION_ID": "test-sid-123"},
+        {"HAPAX_SESSION_ID": "test-sid-abc123"},
     )
     assert r.returncode == 0, r.stderr
-    marker = tmp_path / ".cache" / "hapax" / "session-role-test-sid-123"
+    marker = tmp_path / ".cache" / "hapax" / "session-role-test-sid-abc123"
     assert marker.read_text().strip() == "cc-zai"
 
 
@@ -102,7 +106,7 @@ def test_assert_identity_rejects_unknown(tmp_path: Path) -> None:
     r = _run(
         ["bash", str(AGENT_ROLE), "assert-identity", "bogus123"],
         tmp_path,
-        {"HAPAX_SESSION_ID": "test-sid-123"},
+        {"HAPAX_SESSION_ID": "test-sid-abc123"},
     )
     assert r.returncode == 2
 
@@ -111,7 +115,7 @@ def test_assert_identity_rejects_retired_antigrav(tmp_path: Path) -> None:
     r = _run(
         ["bash", str(AGENT_ROLE), "assert-identity", "antigrav"],
         tmp_path,
-        {"HAPAX_SESSION_ID": "test-sid-123"},
+        {"HAPAX_SESSION_ID": "test-sid-abc123"},
     )
     assert r.returncode == 2
 
@@ -163,10 +167,14 @@ def test_whoami_env_beats_present_and_reachable_marker(tmp_path: Path) -> None:
     # prove env wins over that same proven-reachable marker. (The resolver keys the
     # marker by HAPAX_SESSION_ID, falling back to CLAUDE_CODE_SESSION_ID.)
     (tmp_path / ".cache" / "hapax").mkdir(parents=True)
-    (tmp_path / ".cache" / "hapax" / "session-role-sid99").write_text("gamma\n")
+    (tmp_path / ".cache" / "hapax" / "session-role-session-sid99").write_text("gamma\n")
 
     # Phase 1: no identity env → the marker IS reachable and resolves to its value.
-    r_marker = _run(["bash", str(WHOAMI)], tmp_path, {"CLAUDE_CODE_SESSION_ID": "sid99"})
+    r_marker = _run(
+        ["bash", str(WHOAMI)],
+        tmp_path,
+        {"CLAUDE_CODE_SESSION_ID": "session-sid99"},
+    )
     assert r_marker.returncode == 0, r_marker.stderr
     assert r_marker.stdout.strip() == "gamma", "precondition: the marker must be reachable"
 
@@ -174,7 +182,7 @@ def test_whoami_env_beats_present_and_reachable_marker(tmp_path: Path) -> None:
     r_env = _run(
         ["bash", str(WHOAMI)],
         tmp_path,
-        {"HAPAX_AGENT_ROLE": "cc-zai", "CLAUDE_CODE_SESSION_ID": "sid99"},
+        {"HAPAX_AGENT_ROLE": "cc-zai", "CLAUDE_CODE_SESSION_ID": "session-sid99"},
     )
     assert r_env.returncode == 0, r_env.stderr
     assert r_env.stdout.strip() == "cc-zai"  # env beats the proven-reachable marker

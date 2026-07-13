@@ -42,7 +42,7 @@ def _run_gate(
     for key in _CLEARED_ENV:
         env.pop(key, None)
     if role is not None:
-        env["CODEX_THREAD_NAME"] = role
+        env["CODEX_ROLE"] = role
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
@@ -83,7 +83,7 @@ def _run_gate_text(
     env["HOME"] = str(home)
     for key in _CLEARED_ENV:
         env.pop(key, None)
-    env["CODEX_THREAD_NAME"] = "cx-red"
+    env["CODEX_ROLE"] = "cx-red"
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
@@ -152,6 +152,25 @@ def test_side_effecting_connector_with_claim_requires_route_decision(tmp_path: P
     assert result.returncode == 2
     assert "route_decision_absent" in result.stderr
     assert "Next action:" in result.stderr
+
+
+def test_invalid_session_refuses_legacy_claim_downgrade(tmp_path: Path) -> None:
+    cache = tmp_path / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (cache / "cc-active-task-cx-red").write_text("task-1\n", encoding="utf-8")
+
+    result = _run_gate(
+        {
+            "tool_name": "mcp__codex_apps__gmail___forward_emails",
+            "tool_input": {"message_ids": ["m1"], "to": "person@example.com"},
+        },
+        home=tmp_path,
+        extra_env={"HAPAX_SESSION_ID": "session-valid-shape\n"},
+    )
+
+    assert result.returncode == 2
+    assert "not claim-keyable" in result.stderr
+    assert "legacy-role downgrade" in result.stderr
 
 
 def test_python3_absent_classifier_path_fails_closed(tmp_path: Path) -> None:

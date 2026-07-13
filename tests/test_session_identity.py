@@ -18,6 +18,8 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from shared.session_identity import (
     SESSION_ID_ENV_PRECEDENCE,
     claim_paths,
@@ -205,10 +207,9 @@ class TestClaimPaths:
         assert legacy == tmp_path / "cc-active-task-epsilon"
         assert keyed == tmp_path / f"cc-active-task-epsilon-{_UUID}"
 
-    def test_pid_shaped_sid_yields_legacy_only(self, tmp_path: Path) -> None:
-        legacy, keyed = claim_paths("epsilon", "epsilon-12345", cache_dir=tmp_path)
-        assert legacy == tmp_path / "cc-active-task-epsilon"
-        assert keyed is None
+    def test_invalid_present_sid_refuses_legacy_downgrade(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="not claim-keyable"):
+            claim_paths("epsilon", "epsilon-12345", cache_dir=tmp_path)
 
     def test_absent_sid_yields_legacy_only(self, tmp_path: Path) -> None:
         legacy, keyed = claim_paths("epsilon", None, cache_dir=tmp_path)
@@ -220,6 +221,10 @@ class TestClaimPaths:
         assert session_role_marker_path(_UUID, cache_dir=tmp_path) == (
             tmp_path / f"session-role-{_UUID}"
         )
+
+    def test_marker_path_rejects_invalid_present_session(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="not marker-keyable"):
+            session_role_marker_path(f"{_UUID}\n", cache_dir=tmp_path)
 
 
 class TestIdentityStamp:

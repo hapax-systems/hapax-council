@@ -236,16 +236,24 @@ hapax_claim_keyable_session_id() {
 # — niri/KWin have no hyprctl) and the in-session reassert command writes it (so a
 # role-less session can recover an explicit slot without a process restart). The
 # marker is scoped to ONE session id, so it never leaks identity across sessions.
+hapax_session_role_marker_into() {
+  local destination="${1:-}" sid="${2:-}"
+  [ -n "$destination" ] || return 1
+  [ -n "$sid" ] || hapax_session_id_into sid 2>/dev/null || return 1
+  hapax_claim_keyable_session_id "$sid" || return 1
+  printf -v "$destination" '%s/.cache/hapax/session-role-%s' \
+    "${HOME:-/nonexistent}" "$sid"
+}
+
 hapax_session_role_marker() {
-  local sid="${1:-}"
-  [ -n "$sid" ] || hapax_session_id_into sid 2>/dev/null || true
-  [ -n "$sid" ] || return 1
-  printf '%s/.cache/hapax/session-role-%s\n' "${HOME:-/nonexistent}" "$sid"
+  local marker
+  hapax_session_role_marker_into marker "${1:-}" || return 1
+  printf '%s\n' "$marker"
 }
 
 hapax_session_role_read() {
   local f role
-  f="$(hapax_session_role_marker "${1:-}" 2>/dev/null)" || return 1
+  hapax_session_role_marker_into f "${1:-}" 2>/dev/null || return 1
   [ -f "$f" ] || return 1
   role="$(head -n1 "$f" 2>/dev/null | tr -d '[:space:]' || true)"
   [ -n "$role" ] || return 1
@@ -255,7 +263,7 @@ hapax_session_role_read() {
 hapax_session_role_write() {
   local role="${1:-}" sid="${2:-}" f
   [ -n "$role" ] || return 1
-  f="$(hapax_session_role_marker "$sid" 2>/dev/null)" || return 1
+  hapax_session_role_marker_into f "$sid" 2>/dev/null || return 1
   mkdir -p "$(dirname "$f")" 2>/dev/null || true
   printf '%s\n' "$role" >"$f" || return 1
 }
@@ -294,7 +302,8 @@ hapax_agent_claim_key() {
   local role sid
   role="$(hapax_effective_role 2>/dev/null || true)"
   [ -n "$role" ] || return 1
-  if hapax_session_id_into sid 2>/dev/null && hapax_claim_keyable_session_id "$sid"; then
+  if hapax_session_id_into sid 2>/dev/null; then
+    hapax_claim_keyable_session_id "$sid" || return 1
     printf '%s-%s\n' "$role" "$sid"
   else
     printf '%s\n' "$role"
@@ -331,6 +340,10 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
       esac
       if ! hapax_session_id_into _ar_sid 2>/dev/null || [ -z "$_ar_sid" ]; then
         echo "agent-role.sh: no session id (HAPAX_SESSION_ID / CLAUDE_CODE_SESSION_ID) — cannot key a session-scoped identity" >&2
+        exit 3
+      fi
+      if ! hapax_claim_keyable_session_id "$_ar_sid"; then
+        echo "agent-role.sh: session id is not claim-keyable — refusing marker-path normalization" >&2
         exit 3
       fi
       if ! hapax_session_role_write "$_ar_role"; then

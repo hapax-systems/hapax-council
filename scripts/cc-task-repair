@@ -23,9 +23,20 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from shared.sdlc_filesystem_transaction import (  # noqa: E402
+    FilesystemTransactionError,
+    replace_task_note_transactionally,
+)
+
+OWNERSHIP_CACHE = Path.home() / ".cache" / "hapax"
 
 OK = 0  # repaired (or already well-formed)
 RESIDUAL = 1  # scaffolding written, non-scaffolding deficiencies remain
@@ -253,7 +264,13 @@ def repair(task_id: str, overrides: dict[str, str]) -> int:
         )
         return ERROR
 
-    text = note.read_text(encoding="utf-8")
+    try:
+        metadata = note.lstat()
+        raw = note.read_bytes()
+        text = raw.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"cc-task-repair: note unreadable: {exc}", file=sys.stderr)
+        return ERROR
     if not text.startswith("---\n"):
         print("cc-task-repair: note has no YAML frontmatter", file=sys.stderr)
         return ERROR
@@ -307,9 +324,18 @@ def repair(task_id: str, overrides: dict[str, str]) -> int:
         new_front = f"{new_front}\n" + "\n".join(additions)
     new_text = f"---\n{new_front}\n---{new_body}"
 
-    tmp = note.with_suffix(note.suffix + ".repair.tmp")
-    tmp.write_text(new_text, encoding="utf-8")
-    tmp.replace(note)
+    try:
+        replace_task_note_transactionally(
+            note,
+            expected_content=raw,
+            content=new_text.encode("utf-8"),
+            expected_mode=stat.S_IMODE(metadata.st_mode),
+            cache_dir=OWNERSHIP_CACHE,
+            vault_root=_vault_root(),
+        )
+    except (OSError, FilesystemTransactionError) as exc:
+        print(f"cc-task-repair: note changed before commit: {exc}", file=sys.stderr)
+        return ERROR
 
     added_keys = [line.split(":", 1)[0] for line in additions]
     _write_ledger(task_id, note, added_keys, session_log_added)

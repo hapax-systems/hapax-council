@@ -15,6 +15,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -23,6 +24,11 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from shared.sdlc_filesystem_transaction import replace_task_note_transactionally  # noqa: E402
 
 DEFAULT_VAULT_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "hapax"
@@ -39,6 +45,8 @@ class TaskNote:
     path: Path
     frontmatter: dict[str, Any]
     body: str
+    source_content: bytes
+    source_mode: int
 
     @property
     def task_id(self) -> str | None:
@@ -125,13 +133,21 @@ def _split_frontmatter(text: str) -> tuple[dict[str, Any], str] | None:
 
 def _read_task(path: Path) -> TaskNote | None:
     try:
-        parsed = _split_frontmatter(path.read_text(encoding="utf-8"))
-    except OSError:
+        metadata = path.lstat()
+        raw = path.read_bytes()
+        parsed = _split_frontmatter(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError):
         return None
     if parsed is None:
         return None
     frontmatter, body = parsed
-    return TaskNote(path=path, frontmatter=frontmatter, body=body)
+    return TaskNote(
+        path=path,
+        frontmatter=frontmatter,
+        body=body,
+        source_content=raw,
+        source_mode=stat.S_IMODE(metadata.st_mode),
+    )
 
 
 def _serialize_task(note: TaskNote) -> str:
@@ -139,10 +155,15 @@ def _serialize_task(note: TaskNote) -> str:
     return f"---\n{frontmatter}---{note.body}"
 
 
-def _write_task(note: TaskNote) -> None:
-    tmp = note.path.with_suffix(note.path.suffix + ".tmp")
-    tmp.write_text(_serialize_task(note), encoding="utf-8")
-    tmp.replace(note.path)
+def _write_task(note: TaskNote, *, cache_dir: Path, vault_root: Path) -> None:
+    replace_task_note_transactionally(
+        note.path,
+        expected_content=note.source_content,
+        content=_serialize_task(note).encode("utf-8"),
+        expected_mode=note.source_mode,
+        cache_dir=cache_dir,
+        vault_root=vault_root,
+    )
 
 
 def _find_task_note(vault_root: Path, task_id: str | None) -> TaskNote | None:
@@ -392,7 +413,13 @@ def _append_session_log(note: TaskNote, line: str) -> TaskNote:
     else:
         separator = "" if body.endswith("\n") else "\n"
         body = f"{body}{separator}\n## Session log\n{line}\n"
-    return TaskNote(path=note.path, frontmatter=note.frontmatter, body=body)
+    return TaskNote(
+        path=note.path,
+        frontmatter=note.frontmatter,
+        body=body,
+        source_content=note.source_content,
+        source_mode=note.source_mode,
+    )
 
 
 def _restore_task_to_offered(note: TaskNote, now: datetime) -> TaskNote:
@@ -401,7 +428,13 @@ def _restore_task_to_offered(note: TaskNote, now: datetime) -> TaskNote:
     frontmatter["assigned_to"] = "unassigned"
     frontmatter["claimed_at"] = None
     frontmatter["updated_at"] = _utc_iso(now)
-    return TaskNote(path=note.path, frontmatter=frontmatter, body=note.body)
+    return TaskNote(
+        path=note.path,
+        frontmatter=frontmatter,
+        body=note.body,
+        source_content=note.source_content,
+        source_mode=note.source_mode,
+    )
 
 
 def _unique_archive_path(cache_dir: Path, session: str, now: datetime) -> Path:
@@ -559,10 +592,10 @@ def reconcile(config: ReconcileConfig) -> dict[str, Any]:
             note_line = _coordination_note(config.now, config.session, archive, marker_claim)
             if not config.dry_run:
                 noted = _append_session_log(task_note, note_line)
-                _write_task(noted)
+                _write_task(noted, cache_dir=config.cache_dir, vault_root=config.vault_root)
                 reread = _read_task(task_note.path) or noted
                 restored = _restore_task_to_offered(reread, config.now)
-                _write_task(restored)
+                _write_task(restored, cache_dir=config.cache_dir, vault_root=config.vault_root)
             archive_path = _archive_claim_marker(claim_path, archive, dry_run=config.dry_run)
             resolution = "stale_claim_archived_task_restored"
             next_safe_action = "regenerate dashboard and offer the task for a fresh claim"

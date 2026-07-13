@@ -19,11 +19,20 @@ Part of the document pipeline (design §14, slice 1).
 from __future__ import annotations
 
 import os
+import stat
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import yaml
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from shared.sdlc_filesystem_transaction import (  # noqa: E402
+    FilesystemTransactionError,
+    replace_task_note_transactionally,
+)
 
 LEDGER_PATH = Path.home() / ".cache" / "hapax" / "document-pipeline" / "artifact-ledger.yaml"
 
@@ -128,7 +137,9 @@ def write_debt_to_task_note(note_path: Path, debt_entries: list[dict]) -> None:
     section = "\n## Document pipeline debt\n```yaml\n"
     section += yaml.dump(debt_entries, default_flow_style=False, sort_keys=False)
     section += "```\n"
-    text = note_path.read_text(encoding="utf-8")
+    metadata = note_path.lstat()
+    raw = note_path.read_bytes()
+    text = raw.decode("utf-8")
     if "## Document pipeline debt" not in text:
         text += section
     else:
@@ -141,7 +152,14 @@ def write_debt_to_task_note(note_path: Path, debt_entries: list[dict]) -> None:
             text,
             flags=re.DOTALL,
         )
-    note_path.write_text(text, encoding="utf-8")
+    replace_task_note_transactionally(
+        note_path,
+        expected_content=raw,
+        content=text.encode("utf-8"),
+        expected_mode=stat.S_IMODE(metadata.st_mode),
+        cache_dir=Path.home() / ".cache" / "hapax",
+        vault_root=note_path.parent.parent,
+    )
 
 
 def gate(
@@ -224,7 +242,14 @@ def gate(
                 }
             )
         write_debt_to_ledger(ledger_path, ledger)
-        write_debt_to_task_note(note_path, debt_note_entries)
+        try:
+            write_debt_to_task_note(note_path, debt_note_entries)
+        except (OSError, UnicodeDecodeError, FilesystemTransactionError) as exc:
+            print(
+                f"artifact disposition gate: task note changed before debt commit: {exc}",
+                file=sys.stderr,
+            )
+            return 2
         return 0
 
     # Advisory-ceiling debt recording when --debt provided but nothing blocked

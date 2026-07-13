@@ -7,11 +7,14 @@ its own vault + cursor under ``tmp_path`` and injects a fake ``gh`` /
 
 from __future__ import annotations
 
+import fcntl
 import importlib.util
 import json
 import re
 import subprocess
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
@@ -631,7 +634,10 @@ class TestReconcileMerged:
         runner.pr_states = {"100": "MERGED"}
 
         counters = watcher.reconcile_stale_pr_states(
-            vault_root=vault, repo_root=tmp_path, runner=runner
+            vault_root=vault,
+            repo_root=tmp_path,
+            runner=runner,
+            ownership_cache_dir=tmp_path / ".cache" / "hapax",
         )
 
         assert counters["closed"] == 1
@@ -648,7 +654,10 @@ class TestReconcileMerged:
         runner.cc_close_returncodes = [1]  # cc-close fails
 
         counters = watcher.reconcile_stale_pr_states(
-            vault_root=vault, repo_root=tmp_path, runner=runner
+            vault_root=vault,
+            repo_root=tmp_path,
+            runner=runner,
+            ownership_cache_dir=tmp_path / ".cache" / "hapax",
         )
 
         assert counters["closed"] == 0  # failed close is not counted
@@ -661,7 +670,11 @@ class TestReconcileMerged:
         runner.pr_states = {"100": "MERGED"}
 
         counters = watcher.reconcile_stale_pr_states(
-            vault_root=vault, repo_root=tmp_path, dry_run=True, runner=runner
+            vault_root=vault,
+            repo_root=tmp_path,
+            dry_run=True,
+            runner=runner,
+            ownership_cache_dir=tmp_path / ".cache" / "hapax",
         )
 
         assert counters["closed"] == 1  # counts the would-close
@@ -675,7 +688,10 @@ class TestReconcileMerged:
         runner.pr_states = {"100": "CLOSED"}
 
         counters = watcher.reconcile_stale_pr_states(
-            vault_root=vault, repo_root=tmp_path, runner=runner
+            vault_root=vault,
+            repo_root=tmp_path,
+            runner=runner,
+            ownership_cache_dir=tmp_path / ".cache" / "hapax",
         )
 
         assert counters["stale"] == 1
@@ -684,6 +700,41 @@ class TestReconcileMerged:
         assert "status: blocked" in text
         assert "closed without merge" in text
 
+    def test_concurrent_close_cannot_be_recreated_by_block_transition(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        note = _write_reconcile_note(vault, task_id="task-A", pr=100)
+        runner = _ReconcileRunner()
+        runner.pr_states = {"100": "CLOSED"}
+        cache = tmp_path / ".cache" / "hapax"
+        stage = note.parent / ".hapax-transactions"
+        stage.mkdir(mode=0o700)
+        lock_path = stage / ".hapax-transaction.lock"
+        lock_path.touch(mode=0o600)
+
+        with ThreadPoolExecutor(max_workers=1) as executor, lock_path.open("r+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            future = executor.submit(
+                watcher.reconcile_stale_pr_states,
+                vault_root=vault,
+                repo_root=tmp_path,
+                runner=runner,
+                ownership_cache_dir=cache,
+            )
+            time.sleep(0.25)
+            assert not future.done(), "merge watcher did not wait on the task-note lock"
+
+            closed = vault / "closed" / note.name
+            note.rename(closed)
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            counters = future.result(timeout=10)
+
+        assert counters["stale"] == 0
+        assert not note.exists()
+        assert "status: pr_open" in closed.read_text(encoding="utf-8")
+
     def test_open_pr_is_left_alone(self, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)
         note = _write_reconcile_note(vault, task_id="task-A", pr=100)
@@ -691,7 +742,10 @@ class TestReconcileMerged:
         runner.pr_states = {"100": "OPEN"}
 
         counters = watcher.reconcile_stale_pr_states(
-            vault_root=vault, repo_root=tmp_path, runner=runner
+            vault_root=vault,
+            repo_root=tmp_path,
+            runner=runner,
+            ownership_cache_dir=tmp_path / ".cache" / "hapax",
         )
 
         assert counters["closed"] == 0
@@ -709,7 +763,10 @@ class TestReconcilePrNullRepair:
         runner.head_prs = {"epsilon/foo": [{"number": 207, "state": "MERGED"}]}
 
         counters = watcher.reconcile_stale_pr_states(
-            vault_root=vault, repo_root=tmp_path, runner=runner
+            vault_root=vault,
+            repo_root=tmp_path,
+            runner=runner,
+            ownership_cache_dir=tmp_path / ".cache" / "hapax",
         )
 
         assert counters["repaired"] == 1
@@ -727,7 +784,10 @@ class TestReconcilePrNullRepair:
         runner.head_prs = {"epsilon/foo": []}  # no PR for this branch
 
         counters = watcher.reconcile_stale_pr_states(
-            vault_root=vault, repo_root=tmp_path, runner=runner
+            vault_root=vault,
+            repo_root=tmp_path,
+            runner=runner,
+            ownership_cache_dir=tmp_path / ".cache" / "hapax",
         )
 
         assert counters["stale"] == 1
@@ -741,7 +801,10 @@ class TestReconcilePrNullRepair:
         runner = _ReconcileRunner()
 
         counters = watcher.reconcile_stale_pr_states(
-            vault_root=vault, repo_root=tmp_path, runner=runner
+            vault_root=vault,
+            repo_root=tmp_path,
+            runner=runner,
+            ownership_cache_dir=tmp_path / ".cache" / "hapax",
         )
 
         assert counters["stale"] == 1

@@ -5429,14 +5429,14 @@ def test_arm_release_for_task_reports_note_read_failure(
         extra_frontmatter=_eligible_arm_extra(),
     )
     task = next(task for task in autoqueue.load_task_notes(vault) if task.task_id == note.stem)
-    original_read_text = Path.read_text
+    original_read_bytes = Path.read_bytes
 
-    def fail_note_read(path: Path, *args: Any, **kwargs: Any) -> str:
+    def fail_note_read(path: Path, *args: Any, **kwargs: Any) -> bytes:
         if path == note:
             raise OSError("read failed")
-        return original_read_text(path, *args, **kwargs)
+        return original_read_bytes(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_text", fail_note_read)
+    monkeypatch.setattr(Path, "read_bytes", fail_note_read)
 
     ok, message = autoqueue.arm_release_for_task(
         task,

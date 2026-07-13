@@ -798,46 +798,26 @@ def _new_entry_identity(parent: Path) -> tuple[int, int]:
     """Observe server-side ownership assigned to a new private entry."""
 
     temporary_flag = getattr(os, "O_TMPFILE", 0)
-    if temporary_flag:
-        try:
-            descriptor = os.open(
-                parent,
-                os.O_RDWR | temporary_flag | os.O_CLOEXEC,
-                0o600,
-            )
-        except OSError:
-            pass
-        else:
-            try:
-                metadata = os.fstat(descriptor)
-                if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) & 0o077:
-                    raise FilesystemTransactionError(
-                        f"transaction unnamed ownership probe is unsafe: {parent}"
-                    )
-                return metadata.st_uid, metadata.st_gid
-            finally:
-                os.close(descriptor)
-
-    probe = parent / ".hapax-owner-probe"
+    if not temporary_flag:
+        raise FilesystemTransactionError(
+            f"transaction target filesystem lacks unnamed ownership probes: {parent}"
+        )
     try:
         descriptor = os.open(
-            probe,
-            os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            parent,
+            os.O_RDWR | temporary_flag | os.O_CLOEXEC,
             0o600,
         )
-    except FileExistsError:
-        try:
-            descriptor = os.open(probe, os.O_RDWR | os.O_NOFOLLOW)
-        except OSError as exc:
-            raise FilesystemTransactionError(
-                f"transaction ownership probe is unavailable: {probe}"
-            ) from exc
     except OSError as exc:
-        raise FilesystemTransactionError(f"transaction ownership probe failed: {parent}") from exc
+        raise FilesystemTransactionError(
+            f"transaction target filesystem lacks unnamed ownership probes: {parent}"
+        ) from exc
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) & 0o077:
-            raise FilesystemTransactionError(f"transaction ownership probe is unsafe: {probe}")
+            raise FilesystemTransactionError(
+                f"transaction unnamed ownership probe is unsafe: {parent}"
+            )
         os.fsync(descriptor)
         return metadata.st_uid, metadata.st_gid
     finally:
@@ -1221,6 +1201,7 @@ def _recover_v1_journal(
     *,
     allowed_roots: Sequence[Path],
     target_locks_held: bool = False,
+    compatibility_lock_held: bool = False,
 ) -> None:
     record = _load_v1_journal(journal_path)
     target_paths: list[Path] = []
@@ -1234,17 +1215,28 @@ def _recover_v1_journal(
             raise FilesystemTransactionError(f"duplicate transaction path: {path}")
         seen.add(path)
         target_paths.append(path)
-    lock_context = nullcontext() if target_locks_held else _target_locks(target_paths)
-    with lock_context:
-        locked_record = _load_v1_journal(journal_path)
-        if not _same_v1_journal(locked_record, record):
-            raise FilesystemTransactionError(
-                f"transaction v1 journal identity changed while acquiring target locks: {journal_path}"
-            )
-        record = locked_record
-        image: ImageName = "post" if record.state == "committed" else "pre"
-        compatibility_journal = _v1_compatibility_journal_path(journal_path, record)
-        with _transaction_lock(compatibility_journal):
+    compatibility_journal = _v1_compatibility_journal_path(journal_path, record)
+    compatibility_context = (
+        nullcontext() if compatibility_lock_held else _transaction_lock(compatibility_journal)
+    )
+    with compatibility_context:
+        lock_context = (
+            nullcontext() if target_locks_held else _target_locks((journal_path, *target_paths))
+        )
+        with lock_context:
+            locked_record = _load_v1_journal(journal_path)
+            if not _same_v1_journal(locked_record, record):
+                raise FilesystemTransactionError(
+                    "transaction v1 journal identity changed while acquiring target locks: "
+                    f"{journal_path}"
+                )
+            record = locked_record
+            if _v1_compatibility_journal_path(journal_path, record) != compatibility_journal:
+                raise FilesystemTransactionError(
+                    f"transaction v1 compatibility identity changed: {journal_path}"
+                )
+            _require_atomic_no_replace_support((journal_path,))
+            image: ImageName = "post" if record.state == "committed" else "pre"
             # This deterministic child journal may survive a crash after it
             # applied an image but before v1 was archived. Drain it on every
             # retry, including when the v1 target already looks complete.
@@ -1284,7 +1276,7 @@ def _recover_v1_journal(
                     mutations,
                     allowed_roots=allowed_roots,
                 )
-        _archive_v1_journal(journal_path, record, outcome=f"recovered-{image}")
+            _archive_v1_journal(journal_path, record, outcome=f"recovered-{image}")
 
 
 def _v1_compatibility_journal_path(
@@ -1302,9 +1294,11 @@ def _retire_v1_compatibility_for_superseded_parent(
     *,
     parent_targets: Sequence[Path],
     allowed_roots: Sequence[Path],
+    compatibility_lock_held: bool = False,
 ) -> None:
     compatibility = _v1_compatibility_journal_path(journal_path, parent_record)
-    with _transaction_lock(compatibility):
+    lock_context = nullcontext() if compatibility_lock_held else _transaction_lock(compatibility)
+    with lock_context:
         _restore_journal_from_intent(compatibility)
         try:
             metadata = compatibility.lstat()
@@ -1322,6 +1316,14 @@ def _retire_v1_compatibility_for_superseded_parent(
             raise FilesystemTransactionError(
                 f"v1 compatibility target identity mismatch: {compatibility}"
             )
+        if not _entries_have_superseding_target_image(
+            record.entries,
+            allowed_roots=allowed_roots,
+        ):
+            raise FilesystemTransactionError(
+                f"v1 compatibility journal lacks superseding target evidence: {compatibility}"
+            )
+        _require_atomic_no_replace_support((compatibility,))
         locked_record = _load_journal(compatibility)
         if not _same_journal(locked_record, record):
             raise FilesystemTransactionError(
@@ -1564,7 +1566,9 @@ def _recover_filesystem_transaction_unlocked(
         return True
     record = _load_journal(journal_path)
     target_paths = [_entry_path(entry, allowed_roots) for entry in record.entries]
-    lock_context = nullcontext() if target_locks_held else _target_locks(target_paths)
+    lock_context = (
+        nullcontext() if target_locks_held else _target_locks((journal_path, *target_paths))
+    )
     with lock_context:
         locked_record = _load_journal(journal_path)
         if (
@@ -1580,12 +1584,13 @@ def _recover_filesystem_transaction_unlocked(
         record = locked_record
         _materialize_missing_stages(record, allowed_roots=allowed_roots)
         image: ImageName = "post" if record.state == "committed" else "pre"
-        if _entries_require_transition(
+        requires_transition = _entries_require_transition(
             record.entries,
             image=image,
             allowed_roots=allowed_roots,
-        ):
-            _require_atomic_no_replace_support(target_paths)
+        )
+        capability_paths = (journal_path, *target_paths) if requires_transition else (journal_path,)
+        _require_atomic_no_replace_support(capability_paths)
         _apply(
             record.entries,
             image=image,
@@ -1651,38 +1656,47 @@ def _recover_legacy_filesystem_transaction_unlocked(
         target_paths = [
             _allowed(Path(str(entry["path"])), allowed_roots) for entry in record.entries
         ]
-        with _target_locks(target_paths):
-            locked_record = _load_v1_journal(journal_path)
-            if not _same_v1_journal(locked_record, record):
-                raise FilesystemTransactionError(
-                    "legacy v1 transaction journal identity changed while acquiring "
-                    f"target locks: {journal_path}"
+        compatibility = _v1_compatibility_journal_path(journal_path, record)
+        with _transaction_lock(compatibility):
+            with _target_locks((journal_path, *target_paths)):
+                locked_record = _load_v1_journal(journal_path)
+                if not _same_v1_journal(locked_record, record):
+                    raise FilesystemTransactionError(
+                        "legacy v1 transaction journal identity changed while acquiring "
+                        f"target locks: {journal_path}"
+                    )
+                for path, entry in zip(target_paths, locked_record.entries, strict=True):
+                    actual = _snapshot(path)
+                    valid_images = {_entry_image(entry, "pre"), _entry_image(entry, "post")}
+                    if actual == (None, None) and actual not in valid_images:
+                        raise FilesystemTransactionError(
+                            f"legacy v1 transaction target image is missing: {path}"
+                        )
+                    if actual not in valid_images:
+                        _retire_v1_compatibility_for_superseded_parent(
+                            journal_path,
+                            locked_record,
+                            parent_targets=target_paths,
+                            allowed_roots=allowed_roots,
+                            compatibility_lock_held=True,
+                        )
+                        _archive_v1_journal(
+                            journal_path,
+                            locked_record,
+                            outcome="legacy-superseded-third-image",
+                        )
+                        return True
+                _recover_v1_journal(
+                    journal_path,
+                    allowed_roots=allowed_roots,
+                    target_locks_held=True,
+                    compatibility_lock_held=True,
                 )
-            for path, entry in zip(target_paths, locked_record.entries, strict=True):
-                actual = _snapshot(path)
-                if actual not in {_entry_image(entry, "pre"), _entry_image(entry, "post")}:
-                    _retire_v1_compatibility_for_superseded_parent(
-                        journal_path,
-                        locked_record,
-                        parent_targets=target_paths,
-                        allowed_roots=allowed_roots,
-                    )
-                    _archive_v1_journal(
-                        journal_path,
-                        locked_record,
-                        outcome="legacy-superseded-third-image",
-                    )
-                    return True
-            _recover_v1_journal(
-                journal_path,
-                allowed_roots=allowed_roots,
-                target_locks_held=True,
-            )
-            return True
+                return True
 
     record = _load_journal(journal_path)
     target_paths = [_entry_path(entry, allowed_roots) for entry in record.entries]
-    with _target_locks(target_paths):
+    with _target_locks((journal_path, *target_paths)):
         locked_record = _load_journal(journal_path)
         if not _same_journal(locked_record, record):
             raise FilesystemTransactionError(
@@ -1812,8 +1826,7 @@ def _execute_filesystem_transaction_unlocked(
             }
         )
 
-    if transition_paths:
-        _require_atomic_no_replace_support(transition_paths)
+    _require_atomic_no_replace_support((journal_path, *transition_paths))
 
     try:
         record = _prepare_journal(journal_path, entries, allowed_roots=allowed_roots)
@@ -1869,9 +1882,48 @@ def execute_filesystem_transaction(
             allowed_roots=allowed_roots,
         )
         target_paths = [_allowed(mutation.path, allowed_roots) for mutation in mutations]
-        with _target_locks(target_paths):
+        with _target_locks((journal_path, *target_paths)):
             _execute_filesystem_transaction_unlocked(
                 journal_path,
                 mutations,
                 allowed_roots=allowed_roots,
             )
+
+
+def ownership_legacy_journals(cache_dir: Path) -> tuple[Path, ...]:
+    """Return every pre-stable ownership journal, including intent-only images."""
+
+    legacy = set(cache_dir.glob("cc-ownership-txn-*.json"))
+    for intent in cache_dir.glob(".cc-ownership-txn-*.json.intent"):
+        legacy.add(cache_dir / intent.name[1 : -len(".intent")])
+    return tuple(sorted(legacy))
+
+
+def replace_task_note_transactionally(
+    path: Path,
+    *,
+    expected_content: bytes,
+    content: bytes,
+    expected_mode: int,
+    cache_dir: Path,
+    vault_root: Path,
+) -> None:
+    """CAS-replace one task note through the globally serialized ownership journal."""
+
+    if content == expected_content:
+        return
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    execute_filesystem_transaction(
+        cache_dir / "cc-ownership-txn.json",
+        (
+            FileMutation(
+                path=path,
+                content=content,
+                mode=expected_mode,
+                expected_sha256=hashlib.sha256(expected_content).hexdigest(),
+                expected_mode=expected_mode,
+            ),
+        ),
+        allowed_roots=(cache_dir, vault_root),
+        legacy_journals=ownership_legacy_journals(cache_dir),
+    )

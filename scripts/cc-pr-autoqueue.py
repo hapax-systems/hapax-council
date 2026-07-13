@@ -2044,8 +2044,9 @@ def arm_release_for_task(
     now = now or datetime.now(UTC)
     now_iso = now.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
-        text = task.path.read_text(encoding="utf-8")
-    except OSError as exc:
+        raw = task.path.read_bytes()
+        text = raw.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
         return False, f"note_unreadable:{exc}"
     current_frontmatter = frontmatter_from_text(text)
     admission_blockers = _release_auto_arm_current_admission_blockers(
@@ -2138,7 +2139,7 @@ def arm_release_for_task(
                     path=task.path,
                     content=armed.encode("utf-8"),
                     mode=stat.S_IMODE(metadata.st_mode),
-                    expected_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                    expected_sha256=hashlib.sha256(raw).hexdigest(),
                     expected_mode=stat.S_IMODE(metadata.st_mode),
                 ),
             ),

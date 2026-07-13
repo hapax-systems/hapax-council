@@ -20,6 +20,17 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 HOOK = REPO_ROOT / "hooks" / "scripts" / "authorization-packet-validator.sh"
+_IDENTITY_ENV = (
+    "HAPAX_AGENT_NAME",
+    "HAPAX_AGENT_ROLE",
+    "HAPAX_SESSION_ID",
+    "CLAUDE_ROLE",
+    "CLAUDE_CODE_SESSION_ID",
+    "CODEX_ROLE",
+    "CODEX_SESSION",
+    "CODEX_THREAD_ID",
+    "CODEX_THREAD_NAME",
+)
 
 # A well-formed authorization packet, minus whatever a test omits.
 _BASE_FIELDS = {
@@ -51,19 +62,28 @@ def _make_note(tmp_path: Path, *, task_id: str = "pkt-001", omit: tuple[str, ...
     return note
 
 
-def _write_claim(tmp_path: Path, role: str, task_id: str) -> None:
+def _write_claim(tmp_path: Path, role: str, task_id: str, *, session_id: str | None = None) -> None:
     cache = tmp_path / ".cache" / "hapax"
     cache.mkdir(parents=True, exist_ok=True)
-    (cache / f"cc-active-task-{role}").write_text(task_id + "\n")
+    key = f"{role}-{session_id}" if session_id is not None else role
+    (cache / f"cc-active-task-{key}").write_text(task_id + "\n")
 
 
-def _run(command: str, *, tmp_path: Path, role: str = "beta") -> subprocess.CompletedProcess:
+def _run(
+    command: str,
+    *,
+    tmp_path: Path,
+    role: str = "beta",
+    session_id: str | None = None,
+) -> subprocess.CompletedProcess:
     payload = {"tool_name": "Bash", "tool_input": {"command": command}, "session_id": "t"}
     env = os.environ.copy()
     env["HOME"] = str(tmp_path)
+    for key in _IDENTITY_ENV:
+        env.pop(key, None)
     env["CLAUDE_ROLE"] = role
-    env.pop("HAPAX_AGENT_ROLE", None)
-    env.pop("CODEX_ROLE", None)
+    if session_id is not None:
+        env["HAPAX_SESSION_ID"] = session_id
     env.pop("HAPAX_METHODOLOGY_EMERGENCY", None)
     return subprocess.run(
         [str(HOOK)],
@@ -132,3 +152,32 @@ def test_merge_still_requires_release_authorized(tmp_path: Path) -> None:
     result = _run("gh pr merge 123 --squash", tmp_path=tmp_path)
     assert result.returncode == 2, f"merge without release auth must block: {result.stdout}"
     assert "release" in result.stderr.lower()
+
+
+def test_invalid_session_refuses_legacy_claim_downgrade(tmp_path: Path) -> None:
+    _make_note(tmp_path)
+    _write_claim(tmp_path, "beta", "pkt-001")
+
+    result = _run(
+        "git push -u origin HEAD",
+        tmp_path=tmp_path,
+        session_id="session-valid-shape\n",
+    )
+
+    assert result.returncode == 2
+    assert "not claim-keyable" in result.stderr
+    assert "legacy-role downgrade" in result.stderr
+
+
+def test_present_session_requires_exact_session_claim(tmp_path: Path) -> None:
+    session_id = "11111111-2222-4333-8444-555555555555"
+    _make_note(tmp_path)
+    _write_claim(tmp_path, "beta", "pkt-001")
+
+    missing = _run("git push -u origin HEAD", tmp_path=tmp_path, session_id=session_id)
+    assert missing.returncode == 2
+    assert "no exact-session claim" in missing.stderr
+
+    _write_claim(tmp_path, "beta", "pkt-001", session_id=session_id)
+    admitted = _run("git push -u origin HEAD", tmp_path=tmp_path, session_id=session_id)
+    assert admitted.returncode == 0, admitted.stderr

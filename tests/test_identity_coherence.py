@@ -161,19 +161,19 @@ class TestSessionIdNotInherited:
 
 class TestWhoamiMarker:
     def test_whoami_resolves_from_session_marker_without_compositor(self, tmp_path: Path) -> None:
-        marker = tmp_path / ".cache" / "hapax" / "session-role-sidW"
+        marker = tmp_path / ".cache" / "hapax" / "session-role-session-sidW"
         marker.parent.mkdir(parents=True)
         marker.write_text("gamma\n")
-        env = _clean_env(tmp_path, HAPAX_SESSION_ID="sidW")
+        env = _clean_env(tmp_path, HAPAX_SESSION_ID="session-sidW")
         r = subprocess.run([str(WHOAMI)], env=env, capture_output=True, text=True, timeout=10)
         assert r.returncode == 0, r.stderr
         assert r.stdout.strip() == "gamma"
 
     def test_whoami_uses_claude_code_session_id_fallback(self, tmp_path: Path) -> None:
-        marker = tmp_path / ".cache" / "hapax" / "session-role-ccsid"
+        marker = tmp_path / ".cache" / "hapax" / "session-role-session-ccsid"
         marker.parent.mkdir(parents=True)
         marker.write_text("delta\n")
-        env = _clean_env(tmp_path, CLAUDE_CODE_SESSION_ID="ccsid")
+        env = _clean_env(tmp_path, CLAUDE_CODE_SESSION_ID="session-ccsid")
         r = subprocess.run([str(WHOAMI)], env=env, capture_output=True, text=True, timeout=10)
         assert r.returncode == 0, r.stderr
         assert r.stdout.strip() == "delta"
@@ -184,7 +184,7 @@ class TestWhoamiMarker:
 
 class TestInSessionReassert:
     def test_assert_identity_writes_marker_and_resolves(self, tmp_path: Path) -> None:
-        env = _clean_env(tmp_path, HAPAX_SESSION_ID="sidR")
+        env = _clean_env(tmp_path, HAPAX_SESSION_ID="session-sidR")
         r = subprocess.run(
             ["bash", str(AGENT_ROLE), "assert-identity", "alpha"],
             env=env,
@@ -193,7 +193,7 @@ class TestInSessionReassert:
             timeout=10,
         )
         assert r.returncode == 0, r.stderr
-        marker = tmp_path / ".cache" / "hapax" / "session-role-sidR"
+        marker = tmp_path / ".cache" / "hapax" / "session-role-session-sidR"
         assert marker.read_text().strip() == "alpha"
         # The gate's resolver now reports the asserted role — no process restart.
         r2 = subprocess.run(
@@ -207,7 +207,7 @@ class TestInSessionReassert:
         assert r2.stdout.strip() == "alpha"
 
     def test_assert_identity_rejects_unknown_role(self, tmp_path: Path) -> None:
-        env = _clean_env(tmp_path, HAPAX_SESSION_ID="sidR")
+        env = _clean_env(tmp_path, HAPAX_SESSION_ID="session-sidR")
         r = subprocess.run(
             ["bash", str(AGENT_ROLE), "assert-identity", "not-a-real-lane"],
             env=env,
@@ -216,7 +216,7 @@ class TestInSessionReassert:
             timeout=10,
         )
         assert r.returncode != 0
-        assert not (tmp_path / ".cache" / "hapax" / "session-role-sidR").exists()
+        assert not (tmp_path / ".cache" / "hapax" / "session-role-session-sidR").exists()
 
     def test_assert_identity_requires_a_session_id(self, tmp_path: Path) -> None:
         env = _clean_env(tmp_path)  # no HAPAX_SESSION_ID / CLAUDE_CODE_SESSION_ID

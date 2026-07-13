@@ -830,7 +830,7 @@ class TestAutoTransitionClaimed:
         assert "  status: blocked" in text
         assert "  assigned_to: delta" in text
 
-    def test_claimed_transition_uses_last_top_level_assignment(
+    def test_claimed_transition_rejects_duplicate_top_level_assignment(
         self,
         tmp_path: Path,
     ) -> None:
@@ -849,8 +849,27 @@ class TestAutoTransitionClaimed:
             home=tmp_path,
         )
 
+        assert result.returncode == 2
+        assert "duplicate top-level frontmatter key 'assigned_to'" in result.stderr
+        assert "\nstatus: claimed\n" in note.read_text(encoding="utf-8")
+
+    def test_claimed_transition_handles_quoted_status(self, tmp_path: Path) -> None:
+        _, note = _make_vault(tmp_path, status="claimed", assigned="alpha")
+        note.write_text(
+            note.read_text(encoding="utf-8").replace("status: claimed", 'status: "claimed"'),
+            encoding="utf-8",
+        )
+        _write_claim(tmp_path, "alpha", "test-001")
+
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+        )
+
         assert result.returncode == 0, result.stderr
-        assert "\nstatus: in_progress\n" in note.read_text(encoding="utf-8")
+        text = note.read_text(encoding="utf-8")
+        assert "\nstatus: in_progress\n" in text
+        assert text.count("hook transitioned claimed → in_progress") == 1
 
     def test_claimed_failed_authority_check_does_not_transition(self, tmp_path: Path) -> None:
         _, note = _make_vault(
@@ -1097,14 +1116,14 @@ class TestRelayInference:
 
     def test_session_marker_recovers_explicit_role(self, tmp_path: Path) -> None:
         """The marker (not relay presence) recovers an explicit role for a session."""
-        marker = tmp_path / ".cache" / "hapax" / "session-role-sidM"
+        marker = tmp_path / ".cache" / "hapax" / "session-role-session-sidM"
         marker.parent.mkdir(parents=True)
         marker.write_text("alpha\n")
         r = _role_helper(
             "hapax_effective_role",
             home=tmp_path,
             cwd=tmp_path,
-            env={"HAPAX_SESSION_ID": "sidM"},
+            env={"HAPAX_SESSION_ID": "session-sidM"},
         )
         assert r.returncode == 0, r.stderr
         assert r.stdout.strip() == "alpha"

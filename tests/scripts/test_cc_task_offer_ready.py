@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import fcntl
+import os
 import subprocess
+import time
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "cc-task-offer-ready"
@@ -69,11 +72,14 @@ pr: null
 
 
 def _run(vault: Path, task_id: str = "ready-task") -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["HAPAX_CC_OWNERSHIP_CACHE_DIR"] = str(vault.parent / ".cache" / "hapax")
     return subprocess.run(
         [str(SCRIPT), task_id, "--vault-root", str(vault)],
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
 
 
@@ -92,6 +98,38 @@ def test_promotes_dependency_satisfied_ready_task_to_offered(tmp_path: Path) -> 
     assert "authority_level: authoritative" in text
     assert "mutation_surface: vault_docs" in text
     assert "promoted ready -> offered by cc-task-offer-ready" in text
+
+
+def test_concurrent_close_cannot_be_recreated_by_offer_ready(tmp_path: Path) -> None:
+    vault = tmp_path / "tasks"
+    task = _write_ready_task(vault)
+    _write_dep(vault)
+    stage = task.parent / ".hapax-transactions"
+    stage.mkdir(mode=0o700)
+    lock_path = stage / ".hapax-transaction.lock"
+    lock_path.touch(mode=0o600)
+    env = os.environ.copy()
+    env["HAPAX_CC_OWNERSHIP_CACHE_DIR"] = str(vault.parent / ".cache" / "hapax")
+
+    with lock_path.open("r+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        process = subprocess.Popen(
+            [str(SCRIPT), "ready-task", "--vault-root", str(vault)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        time.sleep(0.25)
+        assert process.poll() is None, "offer-ready did not wait on the task-note lock"
+
+        closed = vault / "closed" / task.name
+        task.rename(closed)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        assert process.wait(timeout=10) == 8
+
+    assert not task.exists()
+    assert "status: ready" in closed.read_text(encoding="utf-8")
 
 
 def test_blocks_ready_task_with_nonterminal_dependency(tmp_path: Path) -> None:
@@ -139,7 +177,9 @@ def _run_reconcile(vault: Path, *, dry_run: bool = False) -> subprocess.Complete
     cmd = [str(SCRIPT), "--reconcile", "--vault-root", str(vault)]
     if dry_run:
         cmd.append("--dry-run")
-    return subprocess.run(cmd, capture_output=True, text=True, check=False)
+    env = os.environ.copy()
+    env["HAPAX_CC_OWNERSHIP_CACHE_DIR"] = str(vault.parent / ".cache" / "hapax")
+    return subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
 
 
 def _write_task(vault: Path, task_id: str, *, status: str, depends_on: str) -> Path:

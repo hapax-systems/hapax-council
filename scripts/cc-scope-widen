@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import stat
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,6 +40,14 @@ ERROR = 3
 
 VAULT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from shared.sdlc_filesystem_transaction import (  # noqa: E402
+    FilesystemTransactionError,
+    replace_task_note_transactionally,
+)
+
+OWNERSHIP_CACHE = Path.home() / ".cache" / "hapax"
 LEDGER = Path(
     os.environ.get(
         "HAPAX_AUTHORITY_CASE_LEDGER",
@@ -106,7 +115,13 @@ def widen(task_id: str, additions: list[str], removals: list[str] | None = None)
         if not _surface_ok(item):
             return _refuse(f"path '{item}' has no existing surface under {REPO_ROOT}")
 
-    text = note.read_text(encoding="utf-8")
+    try:
+        metadata = note.lstat()
+        raw = note.read_bytes()
+        text = raw.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"cc-scope-widen: note unreadable: {exc}", file=sys.stderr)
+        return ERROR
     if not text.startswith("---"):
         print("cc-scope-widen: note has no frontmatter", file=sys.stderr)
         return ERROR
@@ -155,7 +170,18 @@ def widen(task_id: str, additions: list[str], removals: list[str] | None = None)
     new_text = "\n".join(lines)
     if text.endswith("\n"):
         new_text += "\n"
-    note.write_text(new_text, encoding="utf-8")
+    try:
+        replace_task_note_transactionally(
+            note,
+            expected_content=raw,
+            content=new_text.encode("utf-8"),
+            expected_mode=stat.S_IMODE(metadata.st_mode),
+            cache_dir=OWNERSHIP_CACHE,
+            vault_root=VAULT,
+        )
+    except (OSError, FilesystemTransactionError) as exc:
+        print(f"cc-scope-widen: note changed before commit: {exc}", file=sys.stderr)
+        return ERROR
 
     added = [a for a in additions if a not in existing]
     removed = [e for e in existing if e in removal_set]

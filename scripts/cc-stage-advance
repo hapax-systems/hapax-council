@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,6 +40,14 @@ ERROR = 3
 
 VAULT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from shared.sdlc_filesystem_transaction import (  # noqa: E402
+    FilesystemTransactionError,
+    replace_task_note_transactionally,
+)
+
+OWNERSHIP_CACHE = Path.home() / ".cache" / "hapax"
 # Derived advisory feed for the sdlc_invariants monitor — NOT the SSOT. The
 # coordination event log (shared/coord_event_log.py, via _emit_coord_event) is
 # the source of truth for stage transitions (coordination reform §4.3).
@@ -148,7 +157,13 @@ def advance(task_id: str, new_stage: str, allow_backward: bool) -> int:
     if note is None:
         print(f"cc-stage-advance: task '{task_id}' not found under {VAULT}", file=sys.stderr)
         return ERROR
-    text = note.read_text(encoding="utf-8")
+    try:
+        metadata = note.lstat()
+        raw = note.read_bytes()
+        text = raw.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"cc-stage-advance: task note unreadable: {exc}", file=sys.stderr)
+        return ERROR
     if not text.startswith("---"):
         print("cc-stage-advance: note has no frontmatter", file=sys.stderr)
         return ERROR
@@ -188,10 +203,19 @@ def advance(task_id: str, new_stage: str, allow_backward: bool) -> int:
 
     log = f"- {now} {_role()}: stage {from_stage} -> {new_stage} (cc-stage-advance)."
     body = body.rstrip("\n") + "\n" + log + "\n"
-    note.write_text(front + body, encoding="utf-8")
+    try:
+        replace_task_note_transactionally(
+            note,
+            expected_content=raw,
+            content=(front + body).encode("utf-8"),
+            expected_mode=stat.S_IMODE(metadata.st_mode),
+            cache_dir=OWNERSHIP_CACHE,
+            vault_root=VAULT,
+        )
+    except (OSError, FilesystemTransactionError) as exc:
+        print(f"cc-stage-advance: task note changed before commit: {exc}", file=sys.stderr)
+        return ERROR
 
-    if str(REPO_ROOT) not in sys.path:
-        sys.path.insert(0, str(REPO_ROOT))
     from shared.jsonl_append import append_jsonl
 
     # Single-writer-safe advisory ledger append (flock + O_APPEND); fail-open —

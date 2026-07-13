@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import re
+import stat
 import subprocess
 import sys
 from collections.abc import Callable
@@ -39,6 +40,9 @@ from typing import Any
 SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
+REPO_ROOT = SCRIPTS_DIR.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from github_pr_status import (  # noqa: E402
     GRAPHQL_BACKOFF_RC,
@@ -50,10 +54,16 @@ from github_pr_status import (  # noqa: E402
     run_graphql_rate_aware,
 )
 
+from shared.sdlc_filesystem_transaction import (  # noqa: E402
+    FilesystemTransactionError,
+    replace_task_note_transactionally,
+)
+
 LOG = logging.getLogger("cc-pr-merge-watcher")
 
 DEFAULT_VAULT_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
 DEFAULT_CURSOR_PATH = Path.home() / ".cache" / "hapax" / "cc-pr-merge-watcher-cursor.txt"
+DEFAULT_OWNERSHIP_CACHE_DIR = Path.home() / ".cache" / "hapax"
 KILLSWITCH_ENV = "HAPAX_CC_HYGIENE_OFF"
 
 # Reform ENGINE auto-advance (CASE-SDLC-REFORM-001): after a close, nudge the
@@ -529,7 +539,17 @@ def _list_prs_for_branch(
     return out
 
 
-def _block_stale_note(note: Path, text: str, *, reason: str, dry_run: bool) -> bool:
+def _block_stale_note(
+    note: Path,
+    text: str,
+    raw: bytes,
+    mode: int,
+    *,
+    reason: str,
+    dry_run: bool,
+    vault_root: Path,
+    ownership_cache_dir: Path,
+) -> bool:
     """Transition a pr_open/merge_queue note to blocked with a reason. True if blocked."""
     if dry_run:
         LOG.info("[dry-run] would block task %s (%s)", note.stem, reason)
@@ -551,7 +571,18 @@ def _block_stale_note(note: Path, text: str, *, reason: str, dry_run: bool) -> b
             count=1,
             flags=re.MULTILINE,
         )
-    note.write_text(new, encoding="utf-8")
+    try:
+        replace_task_note_transactionally(
+            note,
+            expected_content=raw,
+            content=new.encode("utf-8"),
+            expected_mode=mode,
+            cache_dir=ownership_cache_dir,
+            vault_root=vault_root,
+        )
+    except (OSError, FilesystemTransactionError) as exc:
+        LOG.warning("stale PR drain lost task-note CAS for %s: %s", note, exc)
+        return False
     LOG.info("stale PR drain: %s -> blocked (%s)", note.stem, reason)
     return True
 
@@ -583,6 +614,8 @@ def _close_merged_note(
 def _apply_pr_state(
     note: Path,
     text: str,
+    raw: bytes,
+    mode: int,
     pr_num: str,
     pr_state: str,
     *,
@@ -590,6 +623,8 @@ def _apply_pr_state(
     dry_run: bool,
     runner: Callable[..., subprocess.CompletedProcess],
     counts: dict[str, int],
+    vault_root: Path,
+    ownership_cache_dir: Path,
 ) -> None:
     """Reconcile one note against its PR's current state."""
     if pr_state == "MERGED":
@@ -599,7 +634,14 @@ def _apply_pr_state(
             counts["closed"] += 1
     elif pr_state == "CLOSED":
         if _block_stale_note(
-            note, text, reason=f"PR #{pr_num} closed without merge", dry_run=dry_run
+            note,
+            text,
+            raw,
+            mode,
+            reason=f"PR #{pr_num} closed without merge",
+            dry_run=dry_run,
+            vault_root=vault_root,
+            ownership_cache_dir=ownership_cache_dir,
         ):
             counts["stale"] += 1
     # OPEN (or any other state): the PR is still in flight; leave the task alone.
@@ -608,11 +650,15 @@ def _apply_pr_state(
 def _repair_pr_null_note(
     note: Path,
     text: str,
+    raw: bytes,
+    mode: int,
     *,
     repo_root: Path,
     dry_run: bool,
     runner: Callable[..., subprocess.CompletedProcess],
     counts: dict[str, int],
+    vault_root: Path,
+    ownership_cache_dir: Path,
 ) -> None:
     """pr:null + pr_open/merge_queue: re-derive the PR from the task branch.
 
@@ -625,7 +671,14 @@ def _repair_pr_null_note(
     branch = (branch_m.group(1).strip() if branch_m else "").strip("\"'")
     if branch.lower() in _PR_NULL_NULLISH:
         if _block_stale_note(
-            note, text, reason="pr_open but pr:null and no branch to re-derive", dry_run=dry_run
+            note,
+            text,
+            raw,
+            mode,
+            reason="pr_open but pr:null and no branch to re-derive",
+            dry_run=dry_run,
+            vault_root=vault_root,
+            ownership_cache_dir=ownership_cache_dir,
         ):
             counts["stale"] += 1
         return
@@ -634,8 +687,12 @@ def _repair_pr_null_note(
         if _block_stale_note(
             note,
             text,
+            raw,
+            mode,
             reason=f"pr_open but pr:null; no PR found for branch {branch}",
             dry_run=dry_run,
+            vault_root=vault_root,
+            ownership_cache_dir=ownership_cache_dir,
         ):
             counts["stale"] += 1
         return
@@ -650,17 +707,34 @@ def _repair_pr_null_note(
             counts["closed"] += 1
         return
     new_text = re.sub(r"^pr:\s*null\s*$", f"pr: {pr_number}", text, count=1, flags=re.MULTILINE)
-    note.write_text(new_text, encoding="utf-8")
+    new_raw = new_text.encode("utf-8")
+    try:
+        replace_task_note_transactionally(
+            note,
+            expected_content=raw,
+            content=new_raw,
+            expected_mode=mode,
+            cache_dir=ownership_cache_dir,
+            vault_root=vault_root,
+        )
+    except (OSError, FilesystemTransactionError) as exc:
+        LOG.warning("stale PR repair lost task-note CAS for %s: %s", note, exc)
+        counts["repaired"] -= 1
+        return
     LOG.info("stale PR drain: %s -> re-derived PR #%s from branch %s", note.stem, pr_number, branch)
     _apply_pr_state(
         note,
         new_text,
+        new_raw,
+        mode,
         pr_number,
         pr_state,
         repo_root=repo_root,
         dry_run=dry_run,
         runner=runner,
         counts=counts,
+        vault_root=vault_root,
+        ownership_cache_dir=ownership_cache_dir,
     )
 
 
@@ -670,6 +744,7 @@ def reconcile_stale_pr_states(
     repo_root: Path | None = None,
     dry_run: bool = False,
     runner: Callable[..., subprocess.CompletedProcess] | None = None,
+    ownership_cache_dir: Path = DEFAULT_OWNERSHIP_CACHE_DIR,
 ) -> dict[str, int]:
     """Reconcile active pr_open/merge_queue tasks against live PR state.
 
@@ -693,9 +768,12 @@ def reconcile_stale_pr_states(
 
     for note in sorted(active.glob("*.md")):
         try:
-            text = note.read_text(encoding="utf-8")
+            metadata = note.lstat()
+            raw = note.read_bytes()
+            text = raw.decode("utf-8")
         except OSError:
             continue
+        mode = stat.S_IMODE(metadata.st_mode)
         if not _STATUS_OPEN_PATTERN.search(text):
             continue
         pr_m = _PR_NUM_PATTERN.search(text)
@@ -703,10 +781,14 @@ def reconcile_stale_pr_states(
             _repair_pr_null_note(
                 note,
                 text,
+                raw,
+                mode,
                 repo_root=repo_root,
                 dry_run=dry_run,
                 runner=runner,
                 counts=counts,
+                vault_root=vault_root,
+                ownership_cache_dir=ownership_cache_dir,
             )
             continue
         counts["scanned"] += 1
@@ -716,12 +798,16 @@ def reconcile_stale_pr_states(
         _apply_pr_state(
             note,
             text,
+            raw,
+            mode,
             pr_m.group(1),
             pr_state,
             repo_root=repo_root,
             dry_run=dry_run,
             runner=runner,
             counts=counts,
+            vault_root=vault_root,
+            ownership_cache_dir=ownership_cache_dir,
         )
 
     return counts

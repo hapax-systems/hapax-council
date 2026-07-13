@@ -35,12 +35,23 @@ import argparse
 import json
 import re
 import secrets
+import stat
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from shared.sdlc_filesystem_transaction import (  # noqa: E402
+    FilesystemTransactionError,
+    replace_task_note_transactionally,
+)
 
 CAP_DIR = Path.home() / ".cache" / "hapax" / "migration-capabilities"
 LEDGER = CAP_DIR / "ledger.jsonl"
 VAULT_ACTIVE = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
+OWNERSHIP_CACHE = Path.home() / ".cache" / "hapax"
 _NULLISH = {"", "null", "none", "~", "[]"}
 TERMINAL_STATUSES = frozenset({"closed", "completed", "done", "superseded", "withdrawn"})
 RELEASE_STATUSES = frozenset({"merge_queue", "open", "pr_open", "ready"})
@@ -219,7 +230,9 @@ def cmd_backfill(args: argparse.Namespace) -> int:
     terminal_skipped = 0
     task_records: list[dict] = []
     for note in sorted(VAULT_ACTIVE.glob("*.md")):
-        text = note.read_text(encoding="utf-8")
+        metadata = note.lstat()
+        raw = note.read_bytes()
+        text = raw.decode("utf-8")
         if not text.startswith("---"):
             continue
         end = text.find("\n---", 4)
@@ -261,7 +274,18 @@ def cmd_backfill(args: argparse.Namespace) -> int:
             }
         )
         if args.apply:
-            note.write_text(new_front + body, encoding="utf-8")
+            try:
+                replace_task_note_transactionally(
+                    note,
+                    expected_content=raw,
+                    content=(new_front + body).encode("utf-8"),
+                    expected_mode=stat.S_IMODE(metadata.st_mode),
+                    cache_dir=OWNERSHIP_CACHE,
+                    vault_root=VAULT_ACTIVE.parent,
+                )
+            except (OSError, FilesystemTransactionError) as exc:
+                print(f"cc-migration-capability: task note changed before commit: {exc}")
+                return 3
 
     if args.apply:
         ts = _iso(_now())

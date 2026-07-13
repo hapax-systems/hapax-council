@@ -119,17 +119,22 @@ def is_claim_keyable_session_id(session_id: str | None) -> bool:
 def claim_paths(role: str, session_id: str | None, *, cache_dir: Path) -> tuple[Path, Path | None]:
     """Return ``(legacy, session_keyed)`` claim paths for ``role``.
 
-    ``session_keyed`` is ``None`` when there is no claim-keyable session id —
-    the caller must then fall back to legacy-only keying, never invent a key.
+    ``session_keyed`` is ``None`` only when no session id is present. An invalid
+    present identifier is an identity error, never permission to downgrade to
+    the shared legacy role claim.
     """
     legacy = cache_dir / f"{_CLAIM_PREFIX}{role}"
-    if not is_claim_keyable_session_id(session_id):
+    if session_id is None:
         return legacy, None
+    if not is_claim_keyable_session_id(session_id):
+        raise ValueError("session id is not claim-keyable")
     return legacy, cache_dir / f"{_CLAIM_PREFIX}{role}-{session_id}"
 
 
 def session_role_marker_path(session_id: str, *, cache_dir: Path) -> Path:
     """Path of the per-session identity marker (agent-role.sh convention)."""
+    if not is_claim_keyable_session_id(session_id):
+        raise ValueError("session id is not marker-keyable")
     return cache_dir / f"{_MARKER_PREFIX}{session_id}"
 
 

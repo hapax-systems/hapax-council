@@ -104,8 +104,8 @@ def test_worktree_role_separate_from_codex_thread() -> None:
 
 
 def test_session_role_marker_path_uses_session_id(tmp_path: Path) -> None:
-    out = _bash("hapax_session_role_marker abc123", env={"HOME": str(tmp_path)})
-    assert out == str(tmp_path / ".cache/hapax/session-role-abc123")
+    out = _bash("hapax_session_role_marker session-abc123", env={"HOME": str(tmp_path)})
+    assert out == str(tmp_path / ".cache/hapax/session-role-session-abc123")
 
 
 def test_session_role_marker_defaults_to_current_session_id(tmp_path: Path) -> None:
@@ -117,7 +117,7 @@ def test_session_role_marker_defaults_to_current_session_id(tmp_path: Path) -> N
 
 def test_session_role_write_then_read(tmp_path: Path) -> None:
     out = _bash(
-        "hapax_session_role_write alpha sid-xyz && hapax_session_role_read sid-xyz",
+        "hapax_session_role_write alpha session-sid-xyz && hapax_session_role_read session-sid-xyz",
         env={"HOME": str(tmp_path)},
     )
     assert out == "alpha"
@@ -134,25 +134,47 @@ def test_session_role_write_without_session_id_fails(tmp_path: Path) -> None:
     assert out == "NOWRITE"
 
 
+def test_session_role_marker_rejects_trailing_newline_without_normalizing(
+    tmp_path: Path,
+) -> None:
+    out = _bash(
+        "hapax_session_role_marker || echo INVALID",
+        env={"HOME": str(tmp_path), "HAPAX_SESSION_ID": "session-marker-id\n"},
+    )
+    assert out == "INVALID"
+
+
+def test_claim_key_rejects_invalid_present_session_without_legacy_downgrade() -> None:
+    out = _bash(
+        "hapax_agent_claim_key || echo INVALID",
+        env={"CLAUDE_ROLE": "beta", "HAPAX_SESSION_ID": "session-claim-id\n"},
+    )
+    assert out == "INVALID"
+
+
 def test_identity_resolves_from_session_marker(tmp_path: Path) -> None:
-    marker = tmp_path / ".cache/hapax/session-role-sess-1"
+    marker = tmp_path / ".cache/hapax/session-role-session-sess-1"
     marker.parent.mkdir(parents=True)
     marker.write_text("epsilon\n")
     out = _bash(
         "hapax_agent_identity",
         cwd=tmp_path,
-        env={"HOME": str(tmp_path), "HAPAX_SESSION_ID": "sess-1"},
+        env={"HOME": str(tmp_path), "HAPAX_SESSION_ID": "session-sess-1"},
     )
     assert out == "epsilon"
 
 
 def test_explicit_env_role_beats_session_marker(tmp_path: Path) -> None:
-    marker = tmp_path / ".cache/hapax/session-role-sess-2"
+    marker = tmp_path / ".cache/hapax/session-role-session-sess-2"
     marker.parent.mkdir(parents=True)
     marker.write_text("epsilon\n")
     out = _bash(
         "hapax_agent_identity",
         cwd=tmp_path,
-        env={"HOME": str(tmp_path), "HAPAX_SESSION_ID": "sess-2", "CLAUDE_ROLE": "alpha"},
+        env={
+            "HOME": str(tmp_path),
+            "HAPAX_SESSION_ID": "session-sess-2",
+            "CLAUDE_ROLE": "alpha",
+        },
     )
     assert out == "alpha"

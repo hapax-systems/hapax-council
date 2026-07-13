@@ -142,6 +142,15 @@ fi
 
 # --- 6. Determine session role ---
 role=""
+session_id=""
+if declare -F hapax_session_id_into >/dev/null 2>&1; then
+  hapax_session_id_into session_id 2>/dev/null || true
+fi
+if [[ -n "$session_id" ]] && { ! declare -F hapax_claim_keyable_session_id >/dev/null 2>&1 \
+  || ! hapax_claim_keyable_session_id "$session_id"; }; then
+  echo "cc-task-pr-link: session id is not claim-keyable; refusing legacy-role downgrade" >&2
+  exit 0
+fi
 # Resolve via the single resolver FIRST. This closes the cc-* gap: the legacy scans
 # below only match greek alpha-epsilon + cx-*, so cc-*/vbe-*/antigrav lanes stranded
 # at status 'claimed' (the PR never auto-linked). hapax_effective_role returns the
@@ -152,7 +161,12 @@ if declare -F hapax_effective_role >/dev/null 2>&1; then
 fi
 claim_exists_for_role() {
   local candidate="${1:-}"
-  [[ -n "$candidate" && -f "$HOME/.cache/hapax/cc-active-task-$candidate" ]]
+  [[ -n "$candidate" ]] || return 1
+  if [[ -n "$session_id" ]]; then
+    [[ -f "$HOME/.cache/hapax/cc-active-task-$candidate-$session_id" ]]
+  else
+    [[ -f "$HOME/.cache/hapax/cc-active-task-$candidate" ]]
+  fi
 }
 
 # Codex lanes have their own cc-active-task-cx-* claim files. Prefer an active
@@ -221,7 +235,11 @@ if [[ -z "$role" ]]; then
 fi
 
 # --- 7. Read claim file ---
-claim_file="$HOME/.cache/hapax/cc-active-task-$role"
+if [[ -n "$session_id" ]]; then
+  claim_file="$HOME/.cache/hapax/cc-active-task-$role-$session_id"
+else
+  claim_file="$HOME/.cache/hapax/cc-active-task-$role"
+fi
 if [[ ! -f "$claim_file" ]]; then
   echo "cc-task-pr-link: no active claim for role '$role', skipping link" >&2
   exit 0

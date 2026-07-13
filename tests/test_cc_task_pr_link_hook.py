@@ -435,7 +435,6 @@ class TestRoleResolution:
             extra_env={
                 "CLAUDE_ROLE": "alpha",
                 "HAPAX_AGENT_ROLE": "cx-red",
-                "CODEX_THREAD_NAME": "cx-red",
                 "CODEX_ROLE": "cx-red",
             },
         )
@@ -443,6 +442,39 @@ class TestRoleResolution:
         assert result.returncode == 0, result.stderr
         assert "pr: 6060" in codex_note.read_text(encoding="utf-8")
         assert "pr: 6060" not in alpha_note.read_text(encoding="utf-8")
+
+    def test_invalid_session_refuses_legacy_claim_downgrade(self, tmp_path: Path) -> None:
+        _vault, note = _make_vault(tmp_path, task_id="test-001", pr=None)
+        _write_claim(tmp_path, "beta", "test-001")
+
+        result = _run_hook(
+            bash_cmd="gh pr create",
+            bash_output="https://github.com/hapax-systems/hapax-council/pull/6061",
+            home=tmp_path,
+            extra_env={"HAPAX_SESSION_ID": "session-valid-shape\n"},
+        )
+
+        assert result.returncode == 0
+        assert "legacy-role downgrade" in result.stderr
+        assert "pr: null" in note.read_text(encoding="utf-8")
+
+    def test_present_session_uses_only_exact_session_claim(self, tmp_path: Path) -> None:
+        session_id = "11111111-2222-4333-8444-555555555555"
+        _vault, exact_note = _make_vault(tmp_path, task_id="exact-task", pr=None)
+        _vault, legacy_note = _make_vault(tmp_path, task_id="legacy-task", pr=None)
+        _write_claim(tmp_path, "beta", "legacy-task")
+        _write_claim(tmp_path, f"beta-{session_id}", "exact-task")
+
+        result = _run_hook(
+            bash_cmd="gh pr create",
+            bash_output="https://github.com/hapax-systems/hapax-council/pull/6062",
+            home=tmp_path,
+            extra_env={"HAPAX_SESSION_ID": session_id},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "pr: 6062" in exact_note.read_text(encoding="utf-8")
+        assert "pr: 6062" not in legacy_note.read_text(encoding="utf-8")
 
     def test_relay_yaml_fallback_when_role_unset(self, tmp_path: Path) -> None:
         _vault, note = _make_vault(tmp_path, task_id="test-001", pr=None)

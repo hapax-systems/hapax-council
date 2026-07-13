@@ -289,13 +289,23 @@ session_id=""
 if declare -F hapax_session_id_into >/dev/null 2>&1; then
   hapax_session_id_into session_id 2>/dev/null || true
 fi
-if [[ -n "$session_id" ]] && [[ -f "$HOME/.cache/hapax/cc-active-task-$role-$session_id" ]]; then
+if [[ -n "$session_id" ]]; then
+  if ! declare -F hapax_claim_keyable_session_id >/dev/null 2>&1 \
+    || ! hapax_claim_keyable_session_id "$session_id"; then
+    echo "authorization-packet-validator: BLOCKED — session id is not claim-keyable; refusing legacy-role downgrade." >&2
+    exit 2
+  fi
   claim_file="$HOME/.cache/hapax/cc-active-task-$role-$session_id"
 elif [[ -f "$HOME/.cache/hapax/cc-active-task-$role" ]]; then
   claim_file="$HOME/.cache/hapax/cc-active-task-$role"
 else
   echo "authorization-packet-validator: BLOCKED — no claimed task for release/PR command." >&2
   echo "  Release actions require a governed task claim with authority_case." >&2
+  exit 2
+fi
+if [[ ! -f "$claim_file" ]]; then
+  echo "authorization-packet-validator: BLOCKED — no exact-session claim for release/PR command." >&2
+  echo "  Release actions require the current session's governed task claim." >&2
   exit 2
 fi
 task_id="$(head -n1 "$claim_file" | tr -d '[:space:]')"
