@@ -1733,7 +1733,17 @@ def launch_claude_interactive(
     status = ""
     if validation.task is not None:
         status = strip_scalar(str(validation.task.fields.get("status", "")))
-    args = [str(launcher), "--role", lane, "--terminal", "tmux", "--task", task_id]
+    args = [
+        str(launcher),
+        "--role",
+        lane,
+        "--terminal",
+        "tmux",
+        "--task",
+        task_id,
+        "--cd",
+        str(lane_worktree(lane, "claude").resolve()),
+    ]
     # Always hand the lane a scrubbed env: drop any inherited HAPAX_SESSION_ID so it
     # mints its own per-spawn id (reform-identity-coherence cluster 11, AC1).
     # hapax-claude pins the freshly minted id into its tmux runner script.
@@ -2261,6 +2271,8 @@ def launch_vibe_headless(
         "tmux",
         "--task",
         task_id,
+        "--cd",
+        str(lane_worktree(lane, "vibe").resolve()),
         "--prompt",
         prompt,
         "--output",

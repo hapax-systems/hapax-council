@@ -628,8 +628,8 @@ trap '_emit_gate_decision' EXIT
 # enforced below) rather than being hard-blocked. "No role" never means "no
 # escape."
 session_id=""
-if declare -F hapax_session_id >/dev/null 2>&1; then
-  session_id="$(hapax_session_id 2>/dev/null || true)"
+if declare -F hapax_session_id_into >/dev/null 2>&1; then
+  hapax_session_id_into session_id 2>/dev/null || true
 fi
 if [[ -n "$session_id" ]] && declare -F hapax_claim_keyable_session_id >/dev/null 2>&1 \
   && ! hapax_claim_keyable_session_id "$session_id"; then
@@ -812,9 +812,12 @@ def normalize_value(key, val):
     return val
 while idx < len(lines):
     raw = lines[idx]
+    if not raw or raw[0].isspace() or raw.startswith(("#", "-")):
+        idx += 1
+        continue
     line = raw.strip()
     idx += 1
-    if not line or line.startswith("#") or ":" not in line:
+    if ":" not in line:
         continue
     key, _, val = line.partition(":")
     key = key.strip()
@@ -1012,14 +1015,16 @@ front = text[4:end]
 
 
 def scalar(field: str) -> str:
-    values = []
+    value = None
     for line in front.splitlines():
+        if not line or line[0].isspace() or line.startswith(("#", "-")):
+            continue
         key, separator, raw_value = line.partition(":")
         if separator and key.strip() == field:
-            values.append(raw_value.strip().strip('"').strip("'"))
-    if len(values) != 1:
-        raise ValueError(f"task note {field} is missing or duplicated")
-    return values[0]
+            value = raw_value.strip().strip('"').strip("'")
+    if value is None:
+        raise ValueError(f"task note {field} is missing")
+    return value
 
 
 current_status = scalar("status")
@@ -1036,8 +1041,14 @@ if operation == "stamp":
     output: list[str] = []
     found = False
     for line in front.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(f"{key}:") or stripped.startswith(f"{key} :"):
+        line_key, separator, _ = line.partition(":")
+        if (
+            line
+            and not line[0].isspace()
+            and not line.startswith(("#", "-"))
+            and separator
+            and line_key.strip() == key
+        ):
             output.append(f"{key}: {value}")
             found = True
         else:
@@ -1054,7 +1065,13 @@ elif operation == "transition-claimed":
         count=1,
         flags=re.MULTILINE,
     )
-    updated = updated.replace("status: claimed", "status: in_progress", 1).replace(
+    updated = re.sub(
+        r"^status:\s*claimed\s*$",
+        "status: in_progress",
+        updated,
+        count=1,
+        flags=re.MULTILINE,
+    ).replace(
         "## Session log\n",
         f"## Session log\n- {now} hook transitioned claimed → in_progress on first mutation\n",
         1,
@@ -1065,6 +1082,9 @@ else:
 postimage = updated.encode("utf-8")
 if postimage == raw:
     raise SystemExit(0)
+legacy_journals = set(cache_dir.glob("cc-ownership-txn-*.json"))
+for intent in cache_dir.glob(".cc-ownership-txn-*.json.intent"):
+    legacy_journals.add(cache_dir / intent.name[1 : -len(".intent")])
 execute_filesystem_transaction(
     journal,
     (
@@ -1077,6 +1097,7 @@ execute_filesystem_transaction(
         ),
     ),
     allowed_roots=(cache_dir, path.parent.parent),
+    legacy_journals=tuple(legacy_journals),
 )
 PYEOF
 }

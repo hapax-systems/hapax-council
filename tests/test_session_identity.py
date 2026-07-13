@@ -66,6 +66,11 @@ class TestResolvePrecedence:
     def test_resolved_value_is_not_normalized(self) -> None:
         assert resolve_session_id({"HAPAX_SESSION_ID": " sid-h "}) == " sid-h "
 
+    def test_trailing_newline_is_preserved_for_fail_closed_validation(self) -> None:
+        value = f"{_UUID}\n"
+        assert resolve_session_id({"HAPAX_SESSION_ID": value}) == value
+        assert not is_claim_keyable_session_id(value)
+
     def test_precedence_constant_matches_matrix_order(self) -> None:
         assert SESSION_ID_ENV_PRECEDENCE == _IDENTITY_ENV
 
@@ -104,6 +109,24 @@ class TestBashParityCanary:
         assert result.stdout.removesuffix("\n") == " unsafe-session "
         assert resolve_session_id(env) == " unsafe-session "
         assert not is_claim_keyable_session_id(resolve_session_id(env))
+
+    def test_parity_preserves_trailing_newline(self) -> None:
+        value = f"{_UUID}\n"
+        bash_env = {key: val for key, val in os.environ.items() if key not in _IDENTITY_ENV}
+        bash_env["HAPAX_SESSION_ID"] = value
+
+        result = subprocess.run(
+            ["bash", "-c", f'. "{AGENT_ROLE}"; hapax_session_id'],
+            env=bash_env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        assert result.returncode == 0
+        assert result.stdout == f"{value}\n"
+        assert resolve_session_id({"HAPAX_SESSION_ID": value}) == value
+        assert not is_claim_keyable_session_id(value)
 
 
 class TestMint:

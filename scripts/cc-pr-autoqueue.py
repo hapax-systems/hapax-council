@@ -24,10 +24,12 @@ Default mode is a dry-run report. ``--apply`` performs the GitHub mutation.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
 import re
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -70,6 +72,11 @@ from shared.merge_queue_lineage import (  # noqa: E402
     write_quarantine,
 )
 from shared.release_gate import evaluate_avsdlc_release_gate  # noqa: E402
+from shared.sdlc_filesystem_transaction import (  # noqa: E402
+    FileMutation,
+    FilesystemTransactionError,
+    execute_filesystem_transaction,
+)
 from shared.sdlc_lifecycle import (  # noqa: E402
     RELEASE_MITIGATION_CHECKS,
     REVIEW_TEAM_QUORUM_EVIDENCE,
@@ -92,6 +99,7 @@ DEFAULT_REPORT_PATH = (
     Path.home() / ".cache" / "hapax" / "orchestration" / "cc-pr-autoqueue-report.json"
 )
 DEFAULT_ADMISSION_GOVERNOR_PATH = Path.home() / ".cache" / "hapax" / "pr-admission-governor.yaml"
+DEFAULT_OWNERSHIP_TRANSACTION_JOURNAL = Path.home() / ".cache" / "hapax" / "cc-ownership-txn.json"
 KILLSWITCH_ENVS = ("HAPAX_CC_PR_AUTOQUEUE_OFF", "HAPAX_CC_HYGIENE_OFF")
 
 PASS_STATES = {"SUCCESS", "SKIPPED", "NEUTRAL"}
@@ -2115,8 +2123,32 @@ def arm_release_for_task(
     if armed == text:
         return False, "note_unchanged"
     try:
-        task.path.write_text(armed, encoding="utf-8")
-    except OSError as exc:
+        metadata = task.path.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise FilesystemTransactionError("release-arm task note is not a regular file")
+        cache_dir = DEFAULT_OWNERSHIP_TRANSACTION_JOURNAL.parent
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        legacy_journals = set(cache_dir.glob("cc-ownership-txn-*.json"))
+        for intent in cache_dir.glob(".cc-ownership-txn-*.json.intent"):
+            legacy_journals.add(cache_dir / intent.name[1 : -len(".intent")])
+        execute_filesystem_transaction(
+            DEFAULT_OWNERSHIP_TRANSACTION_JOURNAL,
+            (
+                FileMutation(
+                    path=task.path,
+                    content=armed.encode("utf-8"),
+                    mode=stat.S_IMODE(metadata.st_mode),
+                    expected_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                    expected_mode=stat.S_IMODE(metadata.st_mode),
+                ),
+            ),
+            allowed_roots=(
+                cache_dir,
+                task.path.parent.parent,
+            ),
+            legacy_journals=tuple(legacy_journals),
+        )
+    except (OSError, FilesystemTransactionError) as exc:
         return False, f"note_write_failed:{exc}"
     post_arm_assessment = assess_release_auto_arm(
         frontmatter_from_text(armed), verified_checks=verified_checks

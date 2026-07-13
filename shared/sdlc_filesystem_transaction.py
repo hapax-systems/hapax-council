@@ -192,41 +192,70 @@ def _require_atomic_no_replace_support(paths: Sequence[Path]) -> None:
     """Refuse unsupported target filesystems before an authoritative name moves."""
 
     for stage_directory in sorted({_ensure_stage_directory(path) for path in paths}):
-        source = stage_directory / f".hapax-noreplace-probe-{uuid.uuid4().hex}"
-        destination = stage_directory / f".hapax-noreplace-probe-{uuid.uuid4().hex}"
-        try:
-            descriptor = os.open(
-                source,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                0o600,
-            )
-        except OSError as exc:
-            raise FilesystemTransactionError(
-                f"transaction no-replace capability probe failed: {stage_directory}"
-            ) from exc
-        try:
-            metadata = os.fstat(descriptor)
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        stage_metadata = stage_directory.lstat()
+        expected_owner = (stage_metadata.st_uid, stage_metadata.st_gid)
+        source = stage_directory / ".hapax-noreplace-probe-source"
+        destination = stage_directory / ".hapax-noreplace-probe-destination"
+        source_metadata = _ensure_private_probe(source, expected_owner=expected_owner)
+        destination_metadata = _ensure_private_probe(destination, expected_owner=expected_owner)
         _fsync_directory(stage_directory)
         try:
             _renameat2(source, destination, _RENAME_NOREPLACE)
         except OSError as exc:
-            # Preserve both random private probe names on failure. In
-            # particular, never remove a destination a competing writer may
-            # have occupied while the capability check was in flight.
+            if exc.errno != errno.EEXIST:
+                raise FilesystemTransactionError(
+                    "transaction target filesystem lacks atomic no-replace support; "
+                    f"no authoritative image was moved: {stage_directory}"
+                ) from exc
+        else:
             raise FilesystemTransactionError(
-                "transaction target filesystem lacks atomic no-replace support; "
+                "transaction target filesystem replaced an existing no-replace probe; "
                 f"no authoritative image was moved: {stage_directory}"
-            ) from exc
-        _fsync_directory(stage_directory)
-        if _path_identity(destination) != (metadata.st_dev, metadata.st_ino):
-            raise FilesystemTransactionError(
-                f"transaction no-replace capability probe identity changed: {destination}"
             )
-        destination.unlink()
         _fsync_directory(stage_directory)
+        if _path_identity(source) != (source_metadata.st_dev, source_metadata.st_ino):
+            raise FilesystemTransactionError(
+                f"transaction no-replace source probe identity changed: {source}"
+            )
+        if _path_identity(destination) != (
+            destination_metadata.st_dev,
+            destination_metadata.st_ino,
+        ):
+            raise FilesystemTransactionError(
+                f"transaction no-replace destination probe identity changed: {destination}"
+            )
+
+
+def _ensure_private_probe(path: Path, *, expected_owner: tuple[int, int]) -> os.stat_result:
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+        )
+    except FileExistsError:
+        try:
+            descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
+        except OSError as exc:
+            raise FilesystemTransactionError(
+                f"transaction capability probe is unavailable: {path}"
+            ) from exc
+    except OSError as exc:
+        raise FilesystemTransactionError(
+            f"transaction capability probe create failed: {path}"
+        ) from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or (metadata.st_uid, metadata.st_gid) != expected_owner
+            or stat.S_IMODE(metadata.st_mode) & 0o077
+        ):
+            raise FilesystemTransactionError(f"transaction capability probe is unsafe: {path}")
+        os.fsync(descriptor)
+        return metadata
+    finally:
+        os.close(descriptor)
 
 
 def _allowed(path: Path, roots: Sequence[Path]) -> Path:
@@ -768,30 +797,51 @@ def _target_locks(paths: Sequence[Path]):
 def _new_entry_identity(parent: Path) -> tuple[int, int]:
     """Observe server-side ownership assigned to a new private entry."""
 
-    probe = parent / f".hapax-owner-probe-{uuid.uuid4().hex}"
-    descriptor: int | None = None
+    temporary_flag = getattr(os, "O_TMPFILE", 0)
+    if temporary_flag:
+        try:
+            descriptor = os.open(
+                parent,
+                os.O_RDWR | temporary_flag | os.O_CLOEXEC,
+                0o600,
+            )
+        except OSError:
+            pass
+        else:
+            try:
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) & 0o077:
+                    raise FilesystemTransactionError(
+                        f"transaction unnamed ownership probe is unsafe: {parent}"
+                    )
+                return metadata.st_uid, metadata.st_gid
+            finally:
+                os.close(descriptor)
+
+    probe = parent / ".hapax-owner-probe"
     try:
         descriptor = os.open(
             probe,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
             0o600,
         )
+    except FileExistsError:
+        try:
+            descriptor = os.open(probe, os.O_RDWR | os.O_NOFOLLOW)
+        except OSError as exc:
+            raise FilesystemTransactionError(
+                f"transaction ownership probe is unavailable: {probe}"
+            ) from exc
+    except OSError as exc:
+        raise FilesystemTransactionError(f"transaction ownership probe failed: {parent}") from exc
+    try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) & 0o077:
             raise FilesystemTransactionError(f"transaction ownership probe is unsafe: {probe}")
+        os.fsync(descriptor)
         return metadata.st_uid, metadata.st_gid
-    except OSError as exc:
-        raise FilesystemTransactionError(f"transaction ownership probe failed: {parent}") from exc
     finally:
-        if descriptor is not None:
-            os.close(descriptor)
-            try:
-                probe.unlink()
-            except OSError as exc:
-                raise FilesystemTransactionError(
-                    f"transaction ownership probe cleanup failed: {probe}"
-                ) from exc
-            _fsync_directory(parent)
+        os.close(descriptor)
 
 
 def _ensure_stage_directory(path: Path) -> Path:
@@ -1193,9 +1243,7 @@ def _recover_v1_journal(
             )
         record = locked_record
         image: ImageName = "post" if record.state == "committed" else "pre"
-        compatibility_journal = journal_path.with_name(
-            f".{journal_path.name}.v1-conversion-{record.manifest_sha256[:16]}"
-        )
+        compatibility_journal = _v1_compatibility_journal_path(journal_path, record)
         with _transaction_lock(compatibility_journal):
             # This deterministic child journal may survive a crash after it
             # applied an image but before v1 was archived. Drain it on every
@@ -1237,6 +1285,53 @@ def _recover_v1_journal(
                     allowed_roots=allowed_roots,
                 )
         _archive_v1_journal(journal_path, record, outcome=f"recovered-{image}")
+
+
+def _v1_compatibility_journal_path(
+    journal_path: Path,
+    record: _V1JournalRecord,
+) -> Path:
+    return journal_path.with_name(
+        f".{journal_path.name}.v1-conversion-{record.manifest_sha256[:16]}"
+    )
+
+
+def _retire_v1_compatibility_for_superseded_parent(
+    journal_path: Path,
+    parent_record: _V1JournalRecord,
+    *,
+    parent_targets: Sequence[Path],
+    allowed_roots: Sequence[Path],
+) -> None:
+    compatibility = _v1_compatibility_journal_path(journal_path, parent_record)
+    with _transaction_lock(compatibility):
+        _restore_journal_from_intent(compatibility)
+        try:
+            metadata = compatibility.lstat()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise FilesystemTransactionError(
+                f"v1 compatibility journal unavailable: {compatibility}"
+            ) from exc
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise FilesystemTransactionError(f"v1 compatibility journal is unsafe: {compatibility}")
+        record = _load_journal(compatibility)
+        child_targets = [_entry_path(entry, allowed_roots) for entry in record.entries]
+        if set(child_targets) != set(parent_targets):
+            raise FilesystemTransactionError(
+                f"v1 compatibility target identity mismatch: {compatibility}"
+            )
+        locked_record = _load_journal(compatibility)
+        if not _same_journal(locked_record, record):
+            raise FilesystemTransactionError(
+                f"v1 compatibility journal identity changed: {compatibility}"
+            )
+        _archive_journal(
+            compatibility,
+            locked_record,
+            outcome="legacy-parent-superseded",
+        )
 
 
 def _load_journal(journal_path: Path) -> _JournalRecord:
@@ -1566,6 +1661,12 @@ def _recover_legacy_filesystem_transaction_unlocked(
             for path, entry in zip(target_paths, locked_record.entries, strict=True):
                 actual = _snapshot(path)
                 if actual not in {_entry_image(entry, "pre"), _entry_image(entry, "post")}:
+                    _retire_v1_compatibility_for_superseded_parent(
+                        journal_path,
+                        locked_record,
+                        parent_targets=target_paths,
+                        allowed_roots=allowed_roots,
+                    )
                     _archive_v1_journal(
                         journal_path,
                         locked_record,
@@ -1616,22 +1717,35 @@ def migrate_legacy_filesystem_transactions(
 
     _allowed(stable_journal, allowed_roots)
     with _transaction_lock(stable_journal):
-        # The stable journal is the only transaction that can postdate every
-        # task-keyed legacy journal. Resolve it first so legacy classification
-        # observes its committed postimage or prepared rollback, never an
-        # ambiguous in-flight third image.
-        _recover_filesystem_transaction_unlocked(
+        _recover_stable_and_legacy_filesystem_transactions_unlocked(
             stable_journal,
+            legacy_journals,
             allowed_roots=allowed_roots,
         )
-        for journal_path in sorted(set(legacy_journals)):
-            if journal_path == stable_journal:
-                continue
-            with _transaction_lock(journal_path):
-                _recover_legacy_filesystem_transaction_unlocked(
-                    journal_path,
-                    allowed_roots=allowed_roots,
-                )
+
+
+def _recover_stable_and_legacy_filesystem_transactions_unlocked(
+    stable_journal: Path,
+    legacy_journals: Sequence[Path],
+    *,
+    allowed_roots: Sequence[Path],
+) -> None:
+    # The stable journal is the only transaction that can postdate every
+    # task-keyed legacy journal. Resolve it first so legacy classification
+    # observes its committed postimage or prepared rollback, never an
+    # ambiguous in-flight third image.
+    _recover_filesystem_transaction_unlocked(
+        stable_journal,
+        allowed_roots=allowed_roots,
+    )
+    for journal_path in sorted(set(legacy_journals)):
+        if journal_path == stable_journal:
+            continue
+        with _transaction_lock(journal_path):
+            _recover_legacy_filesystem_transaction_unlocked(
+                journal_path,
+                allowed_roots=allowed_roots,
+            )
 
 
 def recover_filesystem_transaction(
@@ -1743,12 +1857,17 @@ def execute_filesystem_transaction(
     mutations: Sequence[FileMutation],
     *,
     allowed_roots: Sequence[Path],
+    legacy_journals: Sequence[Path] = (),
 ) -> None:
     """Apply one transaction while excluding cooperating writers."""
 
     _allowed(journal_path, allowed_roots)
     with _transaction_lock(journal_path):
-        _recover_filesystem_transaction_unlocked(journal_path, allowed_roots=allowed_roots)
+        _recover_stable_and_legacy_filesystem_transactions_unlocked(
+            journal_path,
+            legacy_journals,
+            allowed_roots=allowed_roots,
+        )
         target_paths = [_allowed(mutation.path, allowed_roots) for mutation in mutations]
         with _target_locks(target_paths):
             _execute_filesystem_transaction_unlocked(

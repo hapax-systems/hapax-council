@@ -94,11 +94,15 @@ class TestSessionIdNotInherited:
         # The child must mint its OWN id; the dispatcher's must not leak through.
         assert env.get("HAPAX_SESSION_ID", "") == ""
 
-    def test_interactive_launch_does_not_propagate_parent_session_id(self) -> None:
+    def test_interactive_launch_does_not_propagate_parent_session_id(
+        self,
+        tmp_path: Path,
+    ) -> None:
         mod = _load_dispatch()
         captured: dict[str, object] = {}
 
         def fake_call(args: list[str], env: dict[str, str] | None = None) -> int:
+            captured["args"] = args
             captured["env"] = env
             return 0
 
@@ -106,7 +110,13 @@ class TestSessionIdNotInherited:
         # the full parent environment (HAPAX_SESSION_ID included).
         validation = SimpleNamespace(task=None)
         with (
-            patch.dict(os.environ, {"HAPAX_SESSION_ID": "parent-leaked-id"}),
+            patch.dict(
+                os.environ,
+                {
+                    "HAPAX_SESSION_ID": "parent-leaked-id",
+                    "HAPAX_DISPATCH_WORKTREE": str(tmp_path / "validated-worktree"),
+                },
+            ),
             patch.object(mod.subprocess, "call", fake_call),
         ):
             rc = mod.launch_claude_interactive("task-y", "zeta", validation)
@@ -116,6 +126,9 @@ class TestSessionIdNotInherited:
             "interactive launch must pass a scrubbed env, not inherit os.environ"
         )
         assert env.get("HAPAX_SESSION_ID", "") == ""
+        args = captured["args"]
+        assert isinstance(args, list)
+        assert args[-2:] == ["--cd", str((tmp_path / "validated-worktree").resolve())]
 
     def test_headless_script_mints_fresh_id_ignoring_inherited(self, tmp_path: Path) -> None:
         """The launcher itself mints a fresh id even when one is inherited, and writes

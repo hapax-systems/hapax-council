@@ -115,8 +115,8 @@ if [[ -z "$role" ]]; then
   exit 1
 fi
 session_id=""
-if declare -F hapax_session_id >/dev/null 2>&1; then
-  session_id="$(hapax_session_id 2>/dev/null || true)"
+if declare -F hapax_session_id_into >/dev/null 2>&1; then
+  hapax_session_id_into session_id 2>/dev/null || true
 fi
 # Claim-by-pid unrepresentable (taxonomy-a3-session-identity): only an id with
 # per-session entropy may key a claim. The predicate SSOT is

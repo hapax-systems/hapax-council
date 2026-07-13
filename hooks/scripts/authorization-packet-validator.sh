@@ -286,8 +286,8 @@ fi
 # exists. Additive + fallback-preserving: identical behaviour when no
 # session-suffixed file is present.
 session_id=""
-if declare -F hapax_session_id >/dev/null 2>&1; then
-  session_id="$(hapax_session_id 2>/dev/null || true)"
+if declare -F hapax_session_id_into >/dev/null 2>&1; then
+  hapax_session_id_into session_id 2>/dev/null || true
 fi
 if [[ -n "$session_id" ]] && [[ -f "$HOME/.cache/hapax/cc-active-task-$role-$session_id" ]]; then
   claim_file="$HOME/.cache/hapax/cc-active-task-$role-$session_id"

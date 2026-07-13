@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import fcntl
 import importlib.util
 import json
 import re
 import subprocess
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -65,7 +68,7 @@ COMPLETE_ALWAYS_ON_CHECKLIST = {
 
 
 @pytest.fixture(autouse=True)
-def _review_team_gate_off(monkeypatch: pytest.MonkeyPatch) -> None:
+def _review_team_gate_off(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Pre-gate admission tests run with the review-team gate off.
 
     The review-team quorum gate (review_team.review_team_verdict_blockers) is
@@ -77,6 +80,11 @@ def _review_team_gate_off(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HAPAX_REVIEW_TEAM_GATE_OFF", "1")
     monkeypatch.setattr(
         autoqueue.review_team, "review_route_blocked_families", lambda *_a, **_k: {}
+    )
+    monkeypatch.setattr(
+        autoqueue,
+        "DEFAULT_OWNERSHIP_TRANSACTION_JOURNAL",
+        tmp_path / ".cache" / "hapax" / "cc-ownership-txn.json",
     )
 
 
@@ -5452,14 +5460,11 @@ def test_arm_release_for_task_reports_note_write_failure(
         extra_frontmatter=_eligible_arm_extra(),
     )
     task = next(task for task in autoqueue.load_task_notes(vault) if task.task_id == note.stem)
-    original_write_text = Path.write_text
 
-    def fail_note_write(path: Path, *args: Any, **kwargs: Any) -> int:
-        if path == note:
-            raise OSError("write failed")
-        return original_write_text(path, *args, **kwargs)
+    def fail_note_write(*args: Any, **kwargs: Any) -> None:
+        raise autoqueue.FilesystemTransactionError("write failed")
 
-    monkeypatch.setattr(Path, "write_text", fail_note_write)
+    monkeypatch.setattr(autoqueue, "execute_filesystem_transaction", fail_note_write)
 
     ok, message = autoqueue.arm_release_for_task(
         task,
@@ -5469,6 +5474,49 @@ def test_arm_release_for_task_reports_note_write_failure(
     assert ok is False
     assert message == "note_write_failed:write failed"
     assert "release_authorized: false" in note.read_text(encoding="utf-8")
+    assert not (tmp_path / "ledger.jsonl").exists()
+
+
+def test_arm_release_for_task_cannot_recreate_note_moved_by_concurrent_close(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-concurrent-close",
+        status="pr_open",
+        pr=None,
+        branch="feature/concurrent-close",
+        extra_frontmatter=_eligible_arm_extra(),
+    )
+    task = next(task for task in autoqueue.load_task_notes(vault) if task.task_id == note.stem)
+    stage = note.parent / ".hapax-transactions"
+    stage.mkdir(mode=0o700)
+    lock_path = stage / ".hapax-transaction.lock"
+    lock_path.touch(mode=0o600)
+
+    with ThreadPoolExecutor(max_workers=1) as executor, lock_path.open("r+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        future = executor.submit(
+            autoqueue.arm_release_for_task,
+            task,
+            ledger_path=tmp_path / "ledger.jsonl",
+            pr_number=None,
+            head_ref="feature/concurrent-close",
+        )
+        time.sleep(0.25)
+        assert not future.done(), "autoqueue writer did not wait on the target lock"
+
+        closed = vault / "closed" / note.name
+        closed.parent.mkdir(parents=True, exist_ok=True)
+        note.rename(closed)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        ok, message = future.result(timeout=10)
+
+    assert ok is False
+    assert message.startswith("note_write_failed:transaction preimage changed:")
+    assert not note.exists()
+    assert "release_authorized: false" in closed.read_text(encoding="utf-8")
     assert not (tmp_path / "ledger.jsonl").exists()
 
 

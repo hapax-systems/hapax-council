@@ -182,28 +182,36 @@ hapax_agent_role_or_default() {
 # CLAUDE_CODE_SESSION_ID is Claude Code's always-present fallback; Codex sessions
 # carry CODEX_SESSION / CODEX_THREAD_ID / CODEX_THREAD_NAME. Returns nonzero
 # when none is set.
-hapax_session_id() {
+hapax_session_id_into() {
+  local destination="${1:-}"
+  [ -n "$destination" ] || return 1
   if [ -n "${HAPAX_SESSION_ID:-}" ]; then
-    printf '%s\n' "$HAPAX_SESSION_ID"
+    printf -v "$destination" '%s' "$HAPAX_SESSION_ID"
     return 0
   fi
   if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
-    printf '%s\n' "$CLAUDE_CODE_SESSION_ID"
+    printf -v "$destination" '%s' "$CLAUDE_CODE_SESSION_ID"
     return 0
   fi
   if [ -n "${CODEX_SESSION:-}" ]; then
-    printf '%s\n' "$CODEX_SESSION"
+    printf -v "$destination" '%s' "$CODEX_SESSION"
     return 0
   fi
   if [ -n "${CODEX_THREAD_ID:-}" ]; then
-    printf '%s\n' "$CODEX_THREAD_ID"
+    printf -v "$destination" '%s' "$CODEX_THREAD_ID"
     return 0
   fi
   if [ -n "${CODEX_THREAD_NAME:-}" ]; then
-    printf '%s\n' "$CODEX_THREAD_NAME"
+    printf -v "$destination" '%s' "$CODEX_THREAD_NAME"
     return 0
   fi
   return 1
+}
+
+hapax_session_id() {
+  local session_id
+  hapax_session_id_into session_id || return 1
+  printf '%s\n' "$session_id"
 }
 
 # Bash mirror of shared/session_identity.py::is_claim_keyable_session_id.
@@ -230,7 +238,7 @@ hapax_claim_keyable_session_id() {
 # marker is scoped to ONE session id, so it never leaks identity across sessions.
 hapax_session_role_marker() {
   local sid="${1:-}"
-  [ -n "$sid" ] || sid="$(hapax_session_id 2>/dev/null || true)"
+  [ -n "$sid" ] || hapax_session_id_into sid 2>/dev/null || true
   [ -n "$sid" ] || return 1
   printf '%s/.cache/hapax/session-role-%s\n' "${HOME:-/nonexistent}" "$sid"
 }
@@ -263,13 +271,13 @@ hapax_session_role_write() {
 # removed (it was permanently dead — all four slot relays coexist, so the "exactly
 # one" guard never fired — and a relay file is not evidence of who THIS session is).
 hapax_effective_role() {
-  local role
+  local role sid
   role="$(hapax_agent_identity 2>/dev/null || true)"
   if [ -n "$role" ]; then
     printf '%s\n' "$role"
     return 0
   fi
-  if hapax_session_id >/dev/null 2>&1; then
+  if hapax_session_id_into sid 2>/dev/null; then
     printf 'roleless\n'
     return 0
   fi
@@ -286,7 +294,7 @@ hapax_agent_claim_key() {
   local role sid
   role="$(hapax_effective_role 2>/dev/null || true)"
   [ -n "$role" ] || return 1
-  if sid="$(hapax_session_id 2>/dev/null)" && hapax_claim_keyable_session_id "$sid"; then
+  if hapax_session_id_into sid 2>/dev/null && hapax_claim_keyable_session_id "$sid"; then
     printf '%s-%s\n' "$role" "$sid"
   else
     printf '%s\n' "$role"
@@ -321,7 +329,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
           exit 2
           ;;
       esac
-      if ! _ar_sid="$(hapax_session_id 2>/dev/null)" || [ -z "$_ar_sid" ]; then
+      if ! hapax_session_id_into _ar_sid 2>/dev/null || [ -z "$_ar_sid" ]; then
         echo "agent-role.sh: no session id (HAPAX_SESSION_ID / CLAUDE_CODE_SESSION_ID) — cannot key a session-scoped identity" >&2
         exit 3
       fi

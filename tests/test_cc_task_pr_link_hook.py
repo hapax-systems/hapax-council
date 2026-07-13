@@ -16,6 +16,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from shared import sdlc_filesystem_transaction as filesystem_transaction
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 HOOK = REPO_ROOT / "hooks" / "scripts" / "cc-task-pr-link.sh"
 _IDENTITY_ENV = (
@@ -270,6 +272,47 @@ class TestIdempotency:
         assert "pr: 4242" not in closed_text
         assert process.stderr is not None
         assert "python rewrite failed" in process.stderr.read()
+
+    def test_committed_legacy_close_drains_before_pr_link(self, tmp_path: Path) -> None:
+        vault, note = _make_vault(tmp_path, task_id="test-001", pr=None)
+        _write_claim(tmp_path, "beta", "test-001")
+        closed = vault / "closed" / note.name
+        closed.parent.mkdir(parents=True, exist_ok=True)
+        legacy = tmp_path / ".cache" / "hapax" / "cc-ownership-txn-test-001.json"
+        raw = note.read_bytes()
+        filesystem_transaction._write_manifest(
+            legacy,
+            state="committed",
+            entries=[
+                {
+                    "path": str(note),
+                    "pre_content": filesystem_transaction._encoded(raw),
+                    "pre_mode": 0o644,
+                    "post_content": filesystem_transaction._encoded(None),
+                    "post_mode": None,
+                },
+                {
+                    "path": str(closed),
+                    "pre_content": filesystem_transaction._encoded(None),
+                    "pre_mode": None,
+                    "post_content": filesystem_transaction._encoded(raw),
+                    "post_mode": 0o644,
+                },
+            ],
+        )
+
+        result = _run_hook(
+            bash_cmd="gh pr create",
+            bash_output="https://github.com/ryanklee/hapax-council/pull/4242",
+            home=tmp_path,
+        )
+
+        assert result.returncode == 0
+        assert not note.exists()
+        assert "pr: null" in closed.read_text(encoding="utf-8")
+        assert "pr: 4242" not in closed.read_text(encoding="utf-8")
+        assert not legacy.exists()
+        assert "python rewrite failed" in result.stderr
 
 
 class TestGracefulSkips:

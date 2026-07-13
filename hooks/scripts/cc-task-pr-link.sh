@@ -346,6 +346,9 @@ else:
 # The PostToolUse hook is an official task-note writer. Use the same stable
 # ownership journal and target lock as cc-close so a concurrent move cannot be
 # overwritten by recreating the stale active pathname.
+legacy_journals = set(cache_dir.glob("cc-ownership-txn-*.json"))
+for intent in cache_dir.glob(".cc-ownership-txn-*.json.intent"):
+    legacy_journals.add(cache_dir / intent.name[1 : -len(".intent")])
 execute_filesystem_transaction(
     cache_dir / "cc-ownership-txn.json",
     (
@@ -358,6 +361,7 @@ execute_filesystem_transaction(
         ),
     ),
     allowed_roots=(cache_dir, vault_root),
+    legacy_journals=tuple(legacy_journals),
 )
 print(f"cc-task-pr-link: linked task '{note_path.stem}' to PR #{pr_number}")
 PYEOF

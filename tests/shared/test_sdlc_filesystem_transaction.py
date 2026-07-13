@@ -553,6 +553,81 @@ def test_no_replace_capability_probe_preserves_raced_destination(
     assert not journal.exists()
 
 
+def test_no_replace_capability_probe_requires_eexist_and_preserves_probe_identities(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "target"
+    target.write_bytes(b"pre")
+    stage = transaction._ensure_stage_directory(target)
+
+    transaction._require_atomic_no_replace_support((target,))
+    source = stage / ".hapax-noreplace-probe-source"
+    destination = stage / ".hapax-noreplace-probe-destination"
+    before = (transaction._path_identity(source), transaction._path_identity(destination))
+
+    transaction._require_atomic_no_replace_support((target,))
+
+    assert transaction._path_identity(source) == before[0]
+    assert transaction._path_identity(destination) == before[1]
+
+
+def test_no_replace_capability_probe_refuses_ignored_flag_without_unbounded_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "target"
+    target.write_bytes(b"pre")
+    journal = root / "journal.json"
+    original = transaction._renameat2
+
+    def ignore_noreplace(source: Path, destination: Path, flags: int) -> None:
+        if source.name == ".hapax-noreplace-probe-source":
+            assert flags == transaction._RENAME_NOREPLACE
+            os.replace(source, destination)
+            return
+        original(source, destination, flags)
+
+    monkeypatch.setattr(transaction, "_renameat2", ignore_noreplace)
+
+    for _attempt in range(2):
+        with pytest.raises(FilesystemTransactionError, match="replaced an existing no-replace"):
+            execute_filesystem_transaction(
+                journal,
+                (FileMutation(target, b"post"),),
+                allowed_roots=(root,),
+            )
+
+    probes = list((root / ".hapax-transactions").glob(".hapax-noreplace-probe-*"))
+    assert len(probes) <= 2
+    assert target.read_bytes() == b"pre"
+    assert not journal.exists()
+
+
+def test_capability_probe_never_unlinks_shared_probe_pathnames(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "target"
+    target.write_bytes(b"pre")
+    transaction._ensure_stage_directory(target)
+    original_unlink = Path.unlink
+
+    def reject_probe_unlink(path: Path, *args: object, **kwargs: object) -> None:
+        if path.name.startswith((".hapax-noreplace-probe-", ".hapax-owner-probe")):
+            raise AssertionError(f"probe pathname was unlinked: {path}")
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", reject_probe_unlink)
+
+    transaction._require_atomic_no_replace_support((target,))
+
+
 def test_archive_without_no_replace_support_preserves_active_journal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -854,6 +929,59 @@ def test_stable_prepared_journal_recovers_before_legacy_classification(
     assert not legacy.exists()
     assert list(root.glob(".cc-ownership-txn.json.history-*-recovered-pre"))
     assert list(root.glob(".cc-ownership-txn-a.json.history-*-recovered-pre"))
+
+
+def test_stable_execute_drains_committed_legacy_close_before_current_writer(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    active = root / "active"
+    closed = root / "closed"
+    active.mkdir(parents=True)
+    closed.mkdir()
+    active_note = active / "task.md"
+    closed_note = closed / "task.md"
+    active_note.write_bytes(b"in-progress")
+    legacy = root / "cc-ownership-txn-task.json"
+    transaction._write_manifest(
+        legacy,
+        state="committed",
+        entries=[
+            {
+                "path": str(active_note),
+                "pre_content": transaction._encoded(b"in-progress"),
+                "pre_mode": 0o644,
+                "post_content": transaction._encoded(None),
+                "post_mode": None,
+            },
+            {
+                "path": str(closed_note),
+                "pre_content": transaction._encoded(None),
+                "pre_mode": None,
+                "post_content": transaction._encoded(b"done"),
+                "post_mode": 0o644,
+            },
+        ],
+    )
+
+    with pytest.raises(FilesystemTransactionError, match="preimage changed"):
+        execute_filesystem_transaction(
+            root / "cc-ownership-txn.json",
+            (
+                FileMutation(
+                    active_note,
+                    b"release-armed",
+                    expected_sha256=hashlib.sha256(b"in-progress").hexdigest(),
+                ),
+            ),
+            allowed_roots=(root,),
+            legacy_journals=(legacy,),
+        )
+
+    assert not active_note.exists()
+    assert closed_note.read_bytes() == b"done"
+    assert not legacy.exists()
+    assert list(root.glob(".cc-ownership-txn-task.json.history-*-recovered-post"))
 
 
 def test_legacy_auxiliary_third_image_is_not_classified_as_supersession(
@@ -1218,6 +1346,56 @@ def test_v1_retry_always_drains_interrupted_compatibility_journal(
     assert not compatibility.exists()
     assert list(root.glob("..journal.json.v1-conversion-*.history-*-recovered-pre"))
     assert list(root.glob("..journal.json.v1-conversion-*.history-*-committed"))
+
+
+def test_legacy_v1_supersession_retires_active_compatibility_journal(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "target"
+    target.write_bytes(b"post")
+    entries = [
+        {
+            "path": str(target),
+            "pre_content": transaction._encoded(b"pre"),
+            "pre_mode": 0o644,
+            "post_content": transaction._encoded(b"post"),
+            "post_mode": 0o644,
+        }
+    ]
+    body = {"schema": transaction.TRANSACTION_SCHEMA_V1, "state": "prepared", "entries": entries}
+    digest = hashlib.sha256(transaction._canonical_bytes(body)).hexdigest()
+    legacy = root / "cc-ownership-txn-task.json"
+    legacy.write_bytes(transaction._canonical_bytes({**body, "manifest_sha256": digest}) + b"\n")
+    legacy.chmod(0o600)
+    compatibility = root / f".{legacy.name}.v1-conversion-{digest[:16]}"
+    transaction._write_manifest(
+        compatibility,
+        state="prepared",
+        entries=[
+            {
+                "path": str(target),
+                "pre_content": transaction._encoded(b"post"),
+                "pre_mode": 0o644,
+                "post_content": transaction._encoded(b"pre"),
+                "post_mode": 0o644,
+            }
+        ],
+    )
+    target.write_bytes(b"operator-third-image")
+
+    transaction.migrate_legacy_filesystem_transactions(
+        root / "cc-ownership-txn.json",
+        (legacy,),
+        allowed_roots=(root,),
+    )
+
+    assert target.read_bytes() == b"operator-third-image"
+    assert not legacy.exists()
+    assert not compatibility.exists()
+    assert list(root.glob(f".{compatibility.name}.history-*-legacy-parent-superseded"))
+    assert list(root.glob(f".{legacy.name}.history-v1-*-legacy-superseded-third-image"))
 
 
 def test_v1_archive_retry_accepts_existing_link_to_same_journal(tmp_path: Path) -> None:

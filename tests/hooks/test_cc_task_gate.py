@@ -42,6 +42,7 @@ CC_CLAIM = REPO_ROOT / "scripts" / "cc-claim"
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+from shared import sdlc_filesystem_transaction as filesystem_transaction  # noqa: E402
 from shared.governance.coord_capabilities import (  # noqa: E402
     mint_escape_grant,
     write_grant_file,
@@ -799,6 +800,58 @@ class TestAutoTransitionClaimed:
         # Session log got a transition entry.
         assert "hook transitioned claimed → in_progress" in text
 
+    def test_claimed_transition_ignores_nested_frontmatter_identity_keys(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        _, note = _make_vault(tmp_path, status="claimed", assigned="alpha")
+        note.write_text(
+            note.read_text(encoding="utf-8").replace(
+                "priority: normal",
+                "priority: normal\n"
+                "upstream_contract_ref:\n"
+                "  task_id: unrelated-child-task\n"
+                "  status: blocked\n"
+                "  assigned_to: delta",
+            ),
+            encoding="utf-8",
+        )
+        _write_claim(tmp_path, "alpha", "test-001")
+
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+        )
+
+        assert result.returncode == 0, result.stderr
+        text = note.read_text(encoding="utf-8")
+        assert "\nstatus: in_progress\n" in text
+        assert "  task_id: unrelated-child-task" in text
+        assert "  status: blocked" in text
+        assert "  assigned_to: delta" in text
+
+    def test_claimed_transition_uses_last_top_level_assignment(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        _, note = _make_vault(tmp_path, status="claimed", assigned="unassigned")
+        note.write_text(
+            note.read_text(encoding="utf-8").replace(
+                "assigned_to: unassigned",
+                "assigned_to: unassigned\nassigned_to: alpha",
+            ),
+            encoding="utf-8",
+        )
+        _write_claim(tmp_path, "alpha", "test-001")
+
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "\nstatus: in_progress\n" in note.read_text(encoding="utf-8")
+
     def test_claimed_failed_authority_check_does_not_transition(self, tmp_path: Path) -> None:
         _, note = _make_vault(
             tmp_path,
@@ -860,6 +913,49 @@ class TestAutoTransitionClaimed:
         assert "status: claimed" in closed.read_text(encoding="utf-8")
         assert process.stderr is not None
         assert "task note changed before" in process.stderr.read()
+
+    def test_committed_legacy_close_drains_before_claimed_transition(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        vault, note = _make_vault(tmp_path, status="claimed", assigned="alpha")
+        _write_claim(tmp_path, "alpha", "test-001")
+        closed = vault / "closed" / note.name
+        closed.parent.mkdir(parents=True, exist_ok=True)
+        legacy = tmp_path / ".cache" / "hapax" / "cc-ownership-txn-test-001.json"
+        raw = note.read_bytes()
+        filesystem_transaction._write_manifest(
+            legacy,
+            state="committed",
+            entries=[
+                {
+                    "path": str(note),
+                    "pre_content": filesystem_transaction._encoded(raw),
+                    "pre_mode": 0o644,
+                    "post_content": filesystem_transaction._encoded(None),
+                    "post_mode": None,
+                },
+                {
+                    "path": str(closed),
+                    "pre_content": filesystem_transaction._encoded(None),
+                    "pre_mode": None,
+                    "post_content": filesystem_transaction._encoded(
+                        raw.replace(b"claimed", b"done")
+                    ),
+                    "post_mode": 0o644,
+                },
+            ],
+        )
+
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+        )
+
+        assert result.returncode == 2
+        assert not note.exists()
+        assert b"status: done" in closed.read_bytes()
+        assert not legacy.exists()
 
 
 class TestVaultMissing:
@@ -1116,6 +1212,23 @@ class TestSessionKeyedGate:
             home=tmp_path,
             role="delta",
             extra_env={"HAPAX_SESSION_ID": "1234"},
+        )
+
+        assert result.returncode == 2
+        assert "not claim-keyable" in result.stderr
+
+    def test_trailing_newline_session_cannot_downgrade_to_legacy_claim(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        _make_vault(tmp_path, status="in_progress", assigned="delta")
+        _write_claim(tmp_path, "delta", "test-001")
+
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            role="delta",
+            extra_env={"HAPAX_SESSION_ID": "session-valid-shape\n"},
         )
 
         assert result.returncode == 2

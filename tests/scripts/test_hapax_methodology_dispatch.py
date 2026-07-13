@@ -5073,6 +5073,8 @@ printf '%s\\n' "$@" > {launcher_args}
         "tmux",
         "--task",
         "governed-build",
+        "--cd",
+        str((tmp_path / "worktree").resolve()),
     ]
 
 
@@ -5190,7 +5192,16 @@ printf '%s\\n' "$@" > {launcher_args}
 
     assert result.returncode == 0, result.stderr
     args = launcher_args.read_text(encoding="utf-8").splitlines()
-    assert args[:6] == ["--session", "vbe-1", "--terminal", "tmux", "--task", "bounded-build"]
+    assert args[:8] == [
+        "--session",
+        "vbe-1",
+        "--terminal",
+        "tmux",
+        "--task",
+        "bounded-build",
+        "--cd",
+        str((tmp_path / "worktree").resolve()),
+    ]
     assert "--prompt" in args
     assert "--force" not in args
 
