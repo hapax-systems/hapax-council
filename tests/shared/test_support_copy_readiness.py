@@ -251,10 +251,9 @@ def test_full_evidence_and_refs_requires_real_resource_receipt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     receipt_log = tmp_path / "money-rail-resource-receipts.jsonl"
-    monkeypatch.setattr(
-        resource_receipts,
-        "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
-        receipt_log,
+    monkeypatch.setenv(
+        resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+        str(receipt_log),
     )
     monkeypatch.setattr(
         readiness_module,

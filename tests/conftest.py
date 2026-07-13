@@ -9,10 +9,85 @@ Local files: profiles/operator.json, profiles/demo-personas.yaml, hapaxromana pa
 from __future__ import annotations
 
 import importlib
+import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
+
+# Money-rail resource receipts resolve their ledger at call time from this env
+# var (agents/payment_processors/resource_receipts.default_receipt_log_path),
+# falling back to the live /dev/shm production ledger only when it is unset. The
+# env value therefore wins over any module-constant monkeypatch. Isolation must
+# be universal: a session-private quarantine protects collection/between-test
+# emissions, and a per-test override binds every test to its own tmp ledger. See
+# the root safety-boundary exception documented for
+# cc-task-money-rails-resource-receipt-ledger-20260630.
+_RESOURCE_RECEIPT_LOG_ENV = "HAPAX_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH"
+_RESOURCE_RECEIPT_QUARANTINE_DIR_ATTR = "_hapax_resource_receipt_quarantine_dir"
+_RESOURCE_RECEIPT_PRIOR_ENV_ATTR = "_hapax_resource_receipt_prior_env"
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Establish a session-private resource-receipt quarantine before collection.
+
+    pytest imports test modules (and evaluates any module/collection-time code)
+    after this hook runs. Redirecting the ledger env to a session-private
+    quarantine here means that even a hostile inherited value cannot steer a
+    collection-time emission at the live /dev/shm ledger. The prior process value
+    is captured so it can be restored verbatim at unconfigure.
+    """
+
+    setattr(config, _RESOURCE_RECEIPT_PRIOR_ENV_ATTR, os.environ.get(_RESOURCE_RECEIPT_LOG_ENV))
+    quarantine_dir = Path(tempfile.mkdtemp(prefix="hapax-resource-receipt-quarantine-"))
+    setattr(config, _RESOURCE_RECEIPT_QUARANTINE_DIR_ATTR, quarantine_dir)
+    os.environ[_RESOURCE_RECEIPT_LOG_ENV] = str(quarantine_dir / "resource-receipts.jsonl")
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_unconfigure(config: pytest.Config) -> None:
+    """Remove the quarantine, then restore inherited process state.
+
+    Ordered fail-closed. ``trylast=True`` runs this after every other
+    ``pytest_unconfigure`` hook, so no later teardown can emit at the live ledger
+    behind our back. The session quarantine directory is removed *strictly*
+    (errors propagate, never swallowed) while
+    ``HAPAX_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH`` still points inside it, so any
+    stray teardown emission lands in quarantine rather than the production
+    ledger. Only after the quarantine has been removed successfully is the
+    inherited environment value restored; if removal fails the error propagates
+    (fail-visible) and the safe env stays in place (fail-closed).
+    """
+
+    quarantine_dir = getattr(config, _RESOURCE_RECEIPT_QUARANTINE_DIR_ATTR, None)
+    if quarantine_dir is not None:
+        shutil.rmtree(quarantine_dir)
+    prior = getattr(config, _RESOURCE_RECEIPT_PRIOR_ENV_ATTR, None)
+    if prior is None:
+        os.environ.pop(_RESOURCE_RECEIPT_LOG_ENV, None)
+    else:
+        os.environ[_RESOURCE_RECEIPT_LOG_ENV] = prior
+
+
+@pytest.fixture(autouse=True)
+def _isolate_resource_receipt_ledger(tmp_path, monkeypatch):
+    """Bind every test to its own money-rail resource-receipt ledger.
+
+    ``default_receipt_log_path`` reads ``HAPAX_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH``
+    at call time, so setting it here isolates every default-path emission —
+    including call-time late imports and ordinary child processes that inherit
+    the environment — inside the per-test ``tmp_path``. ``monkeypatch.setenv``
+    restores the value captured before the test, which is the session quarantine
+    established by ``pytest_configure`` (never the live default), so teardown
+    returns to quarantine rather than the production ledger.
+    """
+
+    monkeypatch.setenv(
+        _RESOURCE_RECEIPT_LOG_ENV,
+        str(tmp_path / "resource-receipts.jsonl"),
+    )
 
 
 @pytest.fixture(autouse=True)

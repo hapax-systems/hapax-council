@@ -589,26 +589,6 @@ def _receipt_index_path(target: Path) -> Path:
     return target.with_name(f"{target.name}.index.sqlite3")
 
 
-@contextmanager
-def _indexed_receipt_log(
-    target: Path,
-    *,
-    create_ledger: bool,
-    operation_budget: _ReceiptIndexOperationBudget | None = None,
-) -> Iterator[sqlite3.Connection | None]:
-    budget = operation_budget or _ReceiptIndexOperationBudget()
-    conn = _open_reconciled_receipt_index_once(
-        target,
-        create_ledger=create_ledger,
-        operation_budget=budget,
-    )
-    try:
-        yield conn
-    finally:
-        if conn is not None:
-            conn.close()
-
-
 def _open_reconciled_receipt_index_once(
     target: Path,
     *,
@@ -1086,17 +1066,6 @@ def _load_indexed_receipt(
     if expected_rail is not None and receipt.rail != expected_rail:
         return None
     return receipt
-
-
-def _read_receipts(
-    target: Path,
-    *,
-    fail_closed: bool = False,
-) -> Iterator[MoneyRailResourceReceipt]:
-    if not target.exists():
-        return
-    for row in _iter_ledger_receipt_rows(target, start_offset=0, fail_closed=fail_closed):
-        yield row.receipt
 
 
 def _iter_ledger_receipt_rows(
