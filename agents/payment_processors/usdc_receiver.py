@@ -402,6 +402,14 @@ class USDCReceiver:
         except Exception:  # noqa: BLE001
             log.warning("eth_getLogs failed; skipping tick", exc_info=True)
             return 0
+        if not isinstance(logs_raw, list):
+            log.warning(
+                "eth_getLogs returned invalid top-level result type %s; "
+                "skipping tick without advancing cursor %s",
+                type(logs_raw).__name__,
+                self._cursor_path,
+            )
+            return 0
 
         emitted = 0
         highest_successful_block = self._cursor.last_block
@@ -556,13 +564,20 @@ class USDCReceiver:
         return caller(method, params)
 
     def _payment_event_retry_action(self, receipt: TransferReceipt) -> str:
-        payment_log = os.environ.get(PAYMENT_LOG_ENV, str(DEFAULT_PAYMENT_LOG_PATH))
+        configured_payment_log = os.environ.get(PAYMENT_LOG_ENV)
+        payment_log = (
+            Path(configured_payment_log) if configured_payment_log else DEFAULT_PAYMENT_LOG_PATH
+        )
+        resolved_payment_log = payment_log.expanduser().resolve(strict=False)
         event_id = f"{receipt.tx_hash}:{receipt.log_index}"
         return (
             f"cursor {self._cursor_path} remains before x402 USDC event {event_id} "
-            f"at block {receipt.block_number}; fix payment-event log {payment_log} "
-            "and wait for the next poll or restart the daemon; do not manually advance "
-            "the cursor"
+            f"at block {receipt.block_number}; cursor preservation is intentional; "
+            f"check {PAYMENT_LOG_ENV}={configured_payment_log or '<unset>'}, "
+            f"payment-event log {payment_log}, resolved path {resolved_payment_log}, "
+            "/dev/shm availability, and payment-event log directory/file permissions; "
+            "fix the event log, then retry by waiting for the next poll or restarting "
+            "the daemon; do not manually advance the cursor"
         )
 
 

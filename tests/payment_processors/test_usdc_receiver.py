@@ -33,6 +33,7 @@ from agents.payment_processors.usdc_receiver import (
     READ_ONLY_RPC_METHODS,
     TransferReceipt,
     USDCReceiver,
+    _Cursor,
     _filter_receipt,
     _load_cursor,
     _normalise_address,
@@ -311,7 +312,7 @@ class TestRpcAllowlist:
 
 
 class TestPollOnce:
-    def _make_caller(self, *, tip_block: int, logs: list[dict]):
+    def _make_caller(self, *, tip_block: int, logs: object):
         """Return a stub rpc_caller that scripts the two-call sequence."""
 
         calls: list[str] = []
@@ -587,6 +588,47 @@ class TestPollOnce:
         loaded = json.loads(cursor_path.read_text())
         assert loaded["last_block"] == 12345
 
+    @pytest.mark.parametrize(
+        ("logs_result", "type_name"),
+        [
+            (None, "NoneType"),
+            ({"unexpected": "object"}, "dict"),
+            ("[]", "str"),
+        ],
+    )
+    def test_invalid_eth_getlogs_result_preserves_existing_cursor_and_skips_event(
+        self,
+        logs_result: object,
+        type_name: str,
+        caplog,
+        monkeypatch,
+        tmp_path: Path,
+    ) -> None:
+        import agents.payment_processors.usdc_receiver as usdc_mod
+
+        cursor_path = tmp_path / "cursor.json"
+        seen_tx = "0x" + "99" * 32
+        _save_cursor(cursor_path, _Cursor(last_block=777, seen_keys={(seen_tx, 4)}))
+        caller, calls = self._make_caller(tip_block=1000, logs=logs_result)
+        appended: list = []
+        caplog.set_level(logging.WARNING, logger=usdc_mod.__name__)
+        monkeypatch.setattr(usdc_mod, "append_event", lambda event: appended.append(event) or True)
+
+        receiver = USDCReceiver(
+            operator_wallet=_OPERATOR_WALLET,
+            cursor_path=cursor_path,
+            rpc_caller=caller,
+        )
+
+        assert receiver.poll_once() == 0
+        assert calls == ["eth_blockNumber", "eth_getLogs"]
+        assert appended == []
+        loaded = json.loads(cursor_path.read_text())
+        assert loaded["last_block"] == 777
+        assert loaded["seen_keys"] == [[seen_tx, 4]]
+        assert f"invalid top-level result type {type_name}" in caplog.text
+        assert str(cursor_path) in caplog.text
+
     def test_receipt_append_failure_blocks_event_and_keeps_cursor_retryable(
         self,
         monkeypatch,
@@ -648,6 +690,8 @@ class TestPollOnce:
         caller, _ = self._make_caller(tip_block=1000, logs=[row])
         append_attempts = 0
         caplog.set_level(logging.WARNING, logger="agents.payment_processors.usdc_receiver")
+        payment_log = tmp_path / "events.jsonl"
+        monkeypatch.setenv("HAPAX_MONETIZATION_LOG_PATH", str(payment_log))
 
         def _flaky_append(_event):
             nonlocal append_attempts
@@ -675,7 +719,12 @@ class TestPollOnce:
         assert loaded["seen_keys"] == []
         assert str(cursor_path) in caplog.text
         assert "x402 USDC event " + "0x" + "20" * 32 + ":0" in caplog.text
-        assert "fix payment-event log" in caplog.text
+        assert f"HAPAX_MONETIZATION_LOG_PATH={payment_log}" in caplog.text
+        assert f"resolved path {payment_log.resolve(strict=False)}" in caplog.text
+        assert "/dev/shm availability" in caplog.text
+        assert "payment-event log directory/file permissions" in caplog.text
+        assert "cursor preservation is intentional" in caplog.text
+        assert "then retry" in caplog.text
         assert "do not manually advance the cursor" in caplog.text
 
         assert receiver.poll_once() == 1
