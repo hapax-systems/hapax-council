@@ -124,6 +124,20 @@ def resource_receipt_refs(refs: Iterable[str]) -> tuple[str, ...]:
     return tuple(ref for ref in refs if ref.startswith(RECEIPT_REF_PREFIX))
 
 
+def resource_receipt_recovery_guidance(*, log_path: Path | None = None) -> str:
+    """Operator next action for missing, corrupt, or conflicting receipt evidence."""
+
+    target = log_path if log_path is not None else default_receipt_log_path()
+    return (
+        f"check {MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV}, receipt log {target}, "
+        f"sidecar lock {_receipt_log_lock_path(target)}, /dev/shm availability, "
+        "and receipt log permissions; if the ledger has a torn final line, malformed row, "
+        "or conflicting receipt_id, stop money-rail daemons, copy the log and lock sidecar "
+        "for audit, repair or quarantine only the corrupt rows, preserve valid committed "
+        "receipts, then retry"
+    )
+
+
 def build_resource_receipt(
     *,
     rail: str,
@@ -200,18 +214,18 @@ def append_resource_receipt(
                         return True
                     log.warning(
                         "money-rail resource receipt append refused at %s: "
-                        "conflicting stable semantics for receipt_id=%s",
+                        "conflicting stable semantics for receipt_id=%s; %s",
                         target,
                         receipt.receipt_id,
+                        resource_receipt_recovery_guidance(log_path=target),
                     )
                     return False
                 _append_line_durable(target, line)
         except (MoneyRailResourceReceiptError, OSError):
             log.warning(
-                "money-rail resource receipt append failed at %s; check %s, /dev/shm "
-                "availability, and receipt log permissions",
+                "money-rail resource receipt append failed at %s; %s",
                 target,
-                MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+                resource_receipt_recovery_guidance(log_path=target),
                 exc_info=True,
             )
             return False
@@ -239,10 +253,9 @@ def tail_resource_receipts(
                     log.debug("malformed money-rail resource receipt skipped")
     except OSError:
         log.warning(
-            "money-rail resource receipt read failed at %s; check %s, /dev/shm availability, "
-            "and receipt log permissions",
+            "money-rail resource receipt read failed at %s; %s",
             target,
-            MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+            resource_receipt_recovery_guidance(log_path=target),
             exc_info=True,
         )
         return []
@@ -280,10 +293,9 @@ def load_resource_receipt(
                     return receipt
     except OSError:
         log.warning(
-            "money-rail resource receipt read failed at %s; check %s, /dev/shm availability, "
-            "and receipt log permissions",
+            "money-rail resource receipt read failed at %s; %s",
             target,
-            MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+            resource_receipt_recovery_guidance(log_path=target),
             exc_info=True,
         )
         return None
@@ -313,8 +325,7 @@ def require_resource_receipt(ref: str, *, log_path: Path | None = None) -> None:
     if not resource_receipt_exists(ref, log_path=log_path):
         raise MoneyRailResourceReceiptError(
             f"missing money-rail resource receipt: {ref}; "
-            "check HAPAX_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH, /dev/shm availability, "
-            "and receipt log permissions"
+            f"{resource_receipt_recovery_guidance(log_path=log_path)}"
         )
 
 
@@ -506,7 +517,8 @@ def _existing_receipts_by_id(target: Path) -> dict[str, MoneyRailResourceReceipt
             receipt
         ):
             raise MoneyRailResourceReceiptError(
-                f"conflicting money-rail resource receipt rows for {receipt.receipt_id}"
+                f"conflicting money-rail resource receipt rows for {receipt.receipt_id}; "
+                f"{resource_receipt_recovery_guidance(log_path=target)}"
             )
         receipts.setdefault(receipt.receipt_id, receipt)
     return receipts
@@ -523,7 +535,10 @@ def _read_receipts(
         rows = fh.read().splitlines(keepends=True)
     for line_number, raw in enumerate(rows, start=1):
         if not raw.endswith(b"\n"):
-            message = f"torn final money-rail resource receipt line at {target}:{line_number}"
+            message = (
+                f"torn final money-rail resource receipt line at {target}:{line_number}; "
+                f"{resource_receipt_recovery_guidance(log_path=target)}"
+            )
             if fail_closed:
                 raise MoneyRailResourceReceiptError(message)
             log.debug("%s skipped", message)
@@ -533,7 +548,8 @@ def _read_receipts(
         except UnicodeDecodeError as exc:
             if fail_closed:
                 raise MoneyRailResourceReceiptError(
-                    f"non-UTF-8 money-rail resource receipt line at {target}:{line_number}"
+                    f"non-UTF-8 money-rail resource receipt line at {target}:{line_number}; "
+                    f"{resource_receipt_recovery_guidance(log_path=target)}"
                 ) from exc
             log.debug("non-UTF-8 money-rail resource receipt skipped")
             continue
@@ -544,7 +560,8 @@ def _read_receipts(
         except (ValidationError, ValueError, TypeError) as exc:
             if fail_closed:
                 raise MoneyRailResourceReceiptError(
-                    f"malformed money-rail resource receipt line at {target}:{line_number}"
+                    f"malformed money-rail resource receipt line at {target}:{line_number}; "
+                    f"{resource_receipt_recovery_guidance(log_path=target)}"
                 ) from exc
             log.debug("malformed money-rail resource receipt skipped")
 
@@ -587,10 +604,14 @@ def _fsync_directory(path: Path) -> None:
         os.close(dir_fd)
 
 
+def _receipt_log_lock_path(target: Path) -> Path:
+    return target.with_name(f"{target.name}.lock")
+
+
 @contextmanager
 def _locked_receipt_log(target: Path) -> Iterator[None]:
     target.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = target.with_name(f"{target.name}.lock")
+    lock_path = _receipt_log_lock_path(target)
     with lock_path.open("a", encoding="utf-8") as lock_fh:
         fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
         try:
@@ -667,5 +688,6 @@ __all__ = [
     "resource_receipt_matches",
     "resource_receipt_ref_present",
     "resource_receipt_refs",
+    "resource_receipt_recovery_guidance",
     "tail_resource_receipts",
 ]

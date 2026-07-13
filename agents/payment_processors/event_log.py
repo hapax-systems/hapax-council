@@ -1,7 +1,7 @@
 """Append-only payment-event log shared by all receive rails.
 
-Each rail (Lightning, Nostr Zap, Liberapay) calls ``append_event``
-with a ``PaymentEvent`` once per confirmed receipt. The log lives at
+Each rail (Lightning, Nostr Zap, Liberapay, x402 USDC-on-Base) calls
+``append_event`` with a ``PaymentEvent`` once per confirmed receipt. The log lives at
 ``/dev/shm/hapax-monetization/events.jsonl`` (operator-overridable
 via ``HAPAX_MONETIZATION_LOG_PATH``).
 
@@ -12,9 +12,9 @@ records belong in the chronicle (see ``shared.chronicle.record``)
 which receivers also call.
 
 Idempotency: rails MUST set ``external_id`` (Alby invoice id, Nostr
-zap event id, Liberapay sponsorship id) so the aggregator can skip
-duplicates. The log itself is append-only and never deduplicates;
-deduplication happens at read time keyed by ``(rail, external_id)``.
+zap event id, Liberapay sponsorship id, or x402 USDC ``tx_hash:log_index``)
+so the aggregator can skip duplicates. The log itself is append-only and never
+deduplicates; deduplication happens at read time keyed by ``(rail, external_id)``.
 """
 
 from __future__ import annotations

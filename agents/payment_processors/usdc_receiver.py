@@ -72,11 +72,10 @@ from prometheus_client import Counter
 from agents.operator_awareness.state import PaymentEvent
 from agents.payment_processors.event_log import append_event
 from agents.payment_processors.resource_receipts import (
-    MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
     commit_prepared_resource_receipt,
-    default_receipt_log_path,
     prepare_payment_event_resource_receipt,
     record_external_api_poll_receipt,
+    resource_receipt_recovery_guidance,
 )
 
 log = logging.getLogger(__name__)
@@ -575,11 +574,7 @@ def _default_rpc_caller(rpc_url: str) -> Any:
 
 
 def _resource_receipt_recovery_action() -> str:
-    return (
-        f"check {MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV}, "
-        f"receipt log {default_receipt_log_path()}, /dev/shm availability, "
-        "and receipt log permissions, then retry"
-    )
+    return resource_receipt_recovery_guidance()
 
 
 def iter_receipts_for_test(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import logging
 import os
 import time
 from datetime import UTC, datetime
@@ -24,6 +25,7 @@ from agents.payment_processors.resource_receipts import (
     require_resource_receipt,
     resource_receipt_exists,
     resource_receipt_matches,
+    resource_receipt_recovery_guidance,
     retract_prepared_resource_receipt,
     tail_resource_receipts,
 )
@@ -60,6 +62,11 @@ def _child_commit_receipt(log_path: str, receipt_json: str) -> None:
     receipt = MoneyRailResourceReceipt.model_validate_json(receipt_json)
     if commit_prepared_resource_receipt(receipt, log_path=Path(log_path)) is None:
         raise SystemExit(1)
+
+
+def _child_commit_receipt_after_marker(log_path: str, receipt_json: str, start_marker: str) -> None:
+    _wait_for_marker(Path(start_marker))
+    _child_commit_receipt(log_path, receipt_json)
 
 
 def _child_commit_then_crash(log_path: str, receipt_json: str) -> None:
@@ -163,6 +170,31 @@ def test_append_refuses_duplicate_id_with_conflicting_semantics(tmp_path) -> Non
     assert rows[0].downstream_action == "publication_bus.publish_event"
 
 
+def test_append_conflict_logs_quarantine_guidance(tmp_path, caplog) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    receipt = _receipt(external_id="delivery-conflict-log", raw_payload_sha256="3" * 64)
+    conflicting = receipt.model_copy(update={"downstream_action": "other.action"})
+    caplog.set_level(logging.WARNING, logger=resource_receipts_mod.__name__)
+
+    assert append_resource_receipt(receipt, log_path=log_path)
+    assert not append_resource_receipt(conflicting, log_path=log_path)
+
+    assert "repair or quarantine" in caplog.text
+    assert str(log_path.with_name(f"{log_path.name}.lock")) in caplog.text
+    assert "preserve valid committed receipts" in caplog.text
+
+
+def test_recovery_guidance_names_quarantine_and_sidecar_lock(tmp_path) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+
+    guidance = resource_receipt_recovery_guidance(log_path=log_path)
+
+    assert str(log_path) in guidance
+    assert str(log_path.with_name(f"{log_path.name}.lock")) in guidance
+    assert "repair or quarantine" in guidance
+    assert "preserve valid committed receipts" in guidance
+
+
 def test_append_completes_short_os_writes(tmp_path, monkeypatch) -> None:
     log_path = tmp_path / "resource-receipts.jsonl"
     receipt = _receipt(external_id="delivery-short-write", raw_payload_sha256="d" * 64)
@@ -206,6 +238,23 @@ def test_append_fails_closed_on_torn_final_line(tmp_path) -> None:
     rows = tail_resource_receipts(log_path=log_path)
     assert [row.receipt_id for row in rows] == [existing.receipt_id]
     assert not resource_receipt_exists(receipt_reference(after_torn), log_path=log_path)
+
+
+def test_append_fails_closed_on_torn_final_line_with_quarantine_guidance(tmp_path, caplog) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    existing = _receipt(external_id="delivery-before-torn-guidance", raw_payload_sha256="6" * 64)
+    after_torn = _receipt(external_id="delivery-after-torn-guidance", raw_payload_sha256="7" * 64)
+    log_path.write_text(
+        existing.model_dump_json() + "\n" + '{"receipt_schema":1',
+        encoding="utf-8",
+    )
+    caplog.set_level(logging.WARNING, logger=resource_receipts_mod.__name__)
+
+    assert not append_resource_receipt(after_torn, log_path=log_path)
+
+    assert "torn final money-rail resource receipt line" in caplog.text
+    assert "repair or quarantine" in caplog.text
+    assert "preserve valid committed receipts" in caplog.text
 
 
 def test_append_waits_on_process_receipt_log_lock(tmp_path) -> None:
@@ -282,6 +331,52 @@ def test_multi_process_identical_receipts_reuse_one_row(tmp_path) -> None:
 
     rows = tail_resource_receipts(log_path=log_path)
     assert [row.receipt_id for row in rows] == [receipt.receipt_id]
+
+
+def test_multi_process_conflicting_receipt_identity_fails_closed(tmp_path) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    start_marker = tmp_path / "start-conflict-race"
+    receipt = _receipt(external_id="delivery-conflict-race", raw_payload_sha256="8" * 64)
+    conflicting = receipt.model_copy(update={"downstream_action": "other.action"})
+    assert receipt.receipt_id == conflicting.receipt_id
+    assert resource_receipts_mod._stable_receipt_semantics(
+        receipt
+    ) != resource_receipts_mod._stable_receipt_semantics(conflicting)
+
+    ctx = get_context("spawn")
+    procs = [
+        ctx.Process(
+            target=_child_commit_receipt_after_marker,
+            args=(
+                str(log_path),
+                (receipt if idx % 2 == 0 else conflicting).model_dump_json(),
+                str(start_marker),
+            ),
+        )
+        for idx in range(16)
+    ]
+    for proc in procs:
+        proc.start()
+    start_marker.write_text("go", encoding="utf-8")
+
+    exitcodes: list[int] = []
+    for proc in procs:
+        proc.join(timeout=10)
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=5)
+        assert proc.exitcode in {0, 1}
+        exitcodes.append(proc.exitcode)
+
+    assert exitcodes.count(0) == 8
+    assert exitcodes.count(1) == 8
+    rows = tail_resource_receipts(log_path=log_path)
+    assert len(rows) == 1
+    assert rows[0].receipt_id == receipt.receipt_id
+    assert resource_receipts_mod._stable_receipt_semantics(rows[0]) in (
+        resource_receipts_mod._stable_receipt_semantics(receipt),
+        resource_receipts_mod._stable_receipt_semantics(conflicting),
+    )
 
 
 def test_retract_compat_hook_does_not_remove_committed_receipts(tmp_path) -> None:
@@ -369,7 +464,10 @@ def test_require_resource_receipt_fails_closed_when_missing(tmp_path) -> None:
     ref = receipt_reference(receipt)
 
     assert resource_receipt_exists(ref, log_path=tmp_path / "missing.jsonl") is False
-    with pytest.raises(MoneyRailResourceReceiptError, match="missing money-rail resource receipt"):
+    with pytest.raises(
+        MoneyRailResourceReceiptError,
+        match="missing money-rail resource receipt.*repair or quarantine",
+    ):
         require_resource_receipt(ref, log_path=tmp_path / "missing.jsonl")
 
 
