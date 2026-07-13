@@ -4750,6 +4750,9 @@ from shared.sdlc_filesystem_transaction import (  # noqa: E402
     execute_filesystem_transaction as _execute_filesystem_transaction,
 )
 from shared.sdlc_filesystem_transaction import (  # noqa: E402
+    migrate_legacy_filesystem_transactions as _migrate_legacy_filesystem_transactions,
+)
+from shared.sdlc_filesystem_transaction import (  # noqa: E402
     recover_filesystem_transaction as _recover_filesystem_transaction,
 )
 from shared.sdlc_owner_identity import canonical_task_owner as _canonical_task_owner  # noqa: E402
@@ -4766,6 +4769,7 @@ from shared.sdlc_task_store import (  # noqa: E402
 _ = (
     _check_worktree_claim_guard,
     _execute_filesystem_transaction,
+    _migrate_legacy_filesystem_transactions,
     _recover_filesystem_transaction,
     _canonical_task_owner,
     _assert_claim_slot_available,

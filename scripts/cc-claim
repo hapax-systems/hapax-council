@@ -159,7 +159,7 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from shared.sdlc_filesystem_transaction import (
     FilesystemTransactionError,
-    recover_filesystem_transaction,
+    migrate_legacy_filesystem_transactions,
 )
 
 stable_journal = Path(sys.argv[2])
@@ -170,14 +170,9 @@ for intent in cache_dir.glob(".cc-ownership-txn-*.json.intent"):
     legacy_journals.add(cache_dir / intent.name[1 : -len(".intent")])
 
 try:
-    for journal in sorted(legacy_journals):
-        if journal != stable_journal:
-            recover_filesystem_transaction(
-                journal,
-                allowed_roots=(cache_dir, vault_root),
-            )
-    recover_filesystem_transaction(
+    migrate_legacy_filesystem_transactions(
         stable_journal,
+        tuple(legacy_journals),
         allowed_roots=(cache_dir, vault_root),
     )
 except FilesystemTransactionError as exc:

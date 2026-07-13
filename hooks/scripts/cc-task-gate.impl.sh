@@ -971,39 +971,109 @@ is_nullish() {
   esac
 }
 
-# Idempotently set a single frontmatter key in a cc-task note: replace the key
-# if present, else insert it before the closing '---'. Atomic (tmp + rename).
-# Used to stamp a derived/defaulted field durably so downstream release/packet
-# checks read it consistently. Best-effort: returns non-zero on any failure.
-_stamp_frontmatter_field() {
-  local note="$1" key="$2" value="$3"
-  python3 - "$note" "$key" "$value" <<'PYEOF' 2>/dev/null || return 1
+# Gate-owned note writes share the ownership journal and target-filesystem lock
+# used by cc-claim/cc-close. The expected note identity and content are checked
+# again under that lock, so a concurrent close cannot be overwritten.
+_task_note_transaction() {
+  local note="$1" operation="$2" key="${3:-}" value="${4:-}"
+  python3 - "$SCRIPT_DIR/../.." "$HOME/.cache/hapax/cc-ownership-txn.json" \
+    "$HOME/.cache/hapax" "$note" "$operation" "$key" "$value" \
+    "$task_id" "$assigned" "$status" <<'PYEOF' 2>/dev/null
+import hashlib
+import re
+import stat
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
-path, key, value = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
-text = path.read_text(encoding="utf-8")
-if not text.startswith("---"):
-    sys.exit(1)
-end = text.find("\n---", 4)
-if end < 0:
-    sys.exit(1)
-front, body = text[4:end], text[end:]
-out, found = [], False
-for line in front.splitlines():
-    stripped = line.strip()
-    if stripped.startswith(f"{key}:") or stripped.startswith(f"{key} :"):
-        out.append(f"{key}: {value}")
-        found = True
-    else:
-        out.append(line)
-if not found:
-    out.append(f"{key}: {value}")
-new = "---\n" + "\n".join(out) + body
-tmp = path.with_suffix(path.suffix + ".tmp")
-tmp.write_text(new, encoding="utf-8")
-tmp.replace(path)
+repo_root = Path(sys.argv[1]).resolve()
+journal = Path(sys.argv[2])
+cache_dir = Path(sys.argv[3])
+path = Path(sys.argv[4])
+operation, key, value, task_id, assigned, expected_status = sys.argv[5:11]
+sys.path.insert(0, str(repo_root))
+
+from shared.sdlc_filesystem_transaction import (  # noqa: E402
+    FileMutation,
+    execute_filesystem_transaction,
+)
+from shared.sdlc_lifecycle import frontmatter_from_text  # noqa: E402
+
+metadata = path.lstat()
+if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+    raise ValueError("task note is not a regular file")
+raw = path.read_bytes()
+text = raw.decode("utf-8")
+frontmatter = frontmatter_from_text(text)
+current_status = str(frontmatter.get("status") or "").strip()
+if (
+    str(frontmatter.get("task_id") or "").strip() != task_id
+    or str(frontmatter.get("assigned_to") or "").strip() != assigned
+):
+    raise ValueError("task note identity changed")
+
+if operation == "transition-claimed" and current_status == "in_progress":
+    raise SystemExit(0)
+if current_status != expected_status:
+    raise ValueError("task note status changed")
+
+if operation == "stamp":
+    if not text.startswith("---"):
+        raise ValueError("task note frontmatter missing")
+    end = text.find("\n---", 4)
+    if end < 0:
+        raise ValueError("task note frontmatter unclosed")
+    front, body = text[4:end], text[end:]
+    output: list[str] = []
+    found = False
+    for line in front.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(f"{key}:") or stripped.startswith(f"{key} :"):
+            output.append(f"{key}: {value}")
+            found = True
+        else:
+            output.append(line)
+    if not found:
+        output.append(f"{key}: {value}")
+    updated = "---\n" + "\n".join(output) + body
+elif operation == "transition-claimed":
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    updated = re.sub(
+        r"^updated_at:.*$",
+        f"updated_at: {now}",
+        text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    updated = updated.replace("status: claimed", "status: in_progress", 1).replace(
+        "## Session log\n",
+        f"## Session log\n- {now} hook transitioned claimed → in_progress on first mutation\n",
+        1,
+    )
+else:
+    raise ValueError("unknown gate task-note operation")
+
+postimage = updated.encode("utf-8")
+if postimage == raw:
+    raise SystemExit(0)
+execute_filesystem_transaction(
+    journal,
+    (
+        FileMutation(
+            path=path,
+            content=postimage,
+            mode=stat.S_IMODE(metadata.st_mode),
+            expected_sha256=hashlib.sha256(raw).hexdigest(),
+            expected_mode=stat.S_IMODE(metadata.st_mode),
+        ),
+    ),
+    allowed_roots=(cache_dir, path.parent.parent),
+)
 PYEOF
+}
+
+_stamp_frontmatter_field() {
+  _task_note_transaction "$1" "stamp" "$2" "$3"
 }
 
 # authority_case and parent_spec remain HARD requirements: they are the verified
@@ -1088,7 +1158,13 @@ if [[ "$_is_docs_edit" != "true" && -z "$_stage_num" && "$impl_authorized" == "t
   _orig_stage="${case_stage:-<blank>}"
   case_stage="S6_IMPLEMENTATION"
   _stage_num=6
-  _stamp_frontmatter_field "$note_path" "stage" "S6_IMPLEMENTATION" || true
+  if ! _stamp_frontmatter_field "$note_path" "stage" "S6_IMPLEMENTATION"; then
+    _emit_block <<EOF
+cc-task-gate: BLOCKED — task note changed while persisting the derived S6 stage.
+  Re-read the current task state and retry the mutation.
+EOF
+    exit 2
+  fi
   _stage_ledger="$HOME/.cache/hapax/methodology-emergency-ledger.jsonl"
   mkdir -p "$(dirname "$_stage_ledger")" 2>/dev/null || true
   printf '{"ts":"%s","kind":"stage_derived","role":"%s","task":"%s","case":"%s","from":"%s","to":"S6_IMPLEMENTATION"}\n' \
@@ -1299,33 +1375,13 @@ EOF
 fi
 
 if [[ "$_transition_claimed" == "true" ]]; then
-  python3 - "$note_path" <<'PYEOF'
-import re
-import sys
-from datetime import datetime, timezone
-from pathlib import Path
-
-path = Path(sys.argv[1])
-text = path.read_text(encoding="utf-8")
-now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-text2 = re.sub(
-    r"^updated_at:.*$",
-    f"updated_at: {now}",
-    text,
-    count=1,
-    flags=re.MULTILINE,
-)
-text3 = text2.replace(
-    "status: claimed", "status: in_progress", 1
-).replace(
-    "## Session log\n",
-    f"## Session log\n- {now} hook transitioned claimed → in_progress on first mutation\n",
-    1,
-)
-tmp = path.with_suffix(path.suffix + ".tmp")
-tmp.write_text(text3, encoding="utf-8")
-tmp.replace(path)
-PYEOF
+  if ! _task_note_transaction "$note_path" "transition-claimed"; then
+    _emit_block <<EOF
+cc-task-gate: BLOCKED — task note changed before the claimed-to-in_progress transition.
+  Re-read the current task state and retry the mutation.
+EOF
+    exit 2
+  fi
 fi
 
 exit 0

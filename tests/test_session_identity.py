@@ -129,6 +129,23 @@ class TestClaimKeyablePredicate:
     def test_rejects_empty_and_whitespace(self) -> None:
         assert not is_claim_keyable_session_id("")
         assert not is_claim_keyable_session_id("   ")
+        assert not is_claim_keyable_session_id(f" {_UUID} ")
+
+    def test_bash_and_python_predicates_reject_surrounding_whitespace(self) -> None:
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'. "{AGENT_ROLE}"; hapax_claim_keyable_session_id "$1"',
+                "predicate-test",
+                f" {_UUID} ",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode != 0
+        assert not is_claim_keyable_session_id(f" {_UUID} ")
 
     def test_rejects_path_unsafe_ids(self) -> None:
         assert not is_claim_keyable_session_id("a/../b")

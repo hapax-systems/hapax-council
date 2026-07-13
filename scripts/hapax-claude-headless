@@ -82,7 +82,7 @@ resume_session_id_is_safe() {
 import re
 import sys
 
-value = sys.argv[1].strip()
+value = sys.argv[1]
 tail = value.rsplit("-", 1)[-1]
 safe = (
     8 <= len(value) <= 128

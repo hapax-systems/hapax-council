@@ -19,6 +19,7 @@ Tests cover the full decision matrix from cc-task-gate.sh:
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import shutil
@@ -814,6 +815,51 @@ class TestAutoTransitionClaimed:
         text = note.read_text()
         assert "status: claimed" in text
         assert "status: in_progress" not in text
+
+    def test_concurrent_close_cannot_be_recreated_by_claimed_transition(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        vault, note = _make_vault(tmp_path, status="claimed", assigned="alpha")
+        _write_claim(tmp_path, "alpha", "test-001")
+        stage = note.parent / ".hapax-transactions"
+        stage.mkdir(mode=0o700)
+        lock_path = stage / ".hapax-transaction.lock"
+        lock_path.touch(mode=0o600)
+
+        env = os.environ.copy()
+        for key in (*_IDENTITY_ENV, *_GATE_BYPASS_ENV):
+            env.pop(key, None)
+        env["HOME"] = str(tmp_path)
+        env["CLAUDE_ROLE"] = "alpha"
+        with lock_path.open("r+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            process = subprocess.Popen(
+                [str(HOOK)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            assert process.stdin is not None
+            process.stdin.write(
+                json.dumps({"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}})
+            )
+            process.stdin.close()
+            time.sleep(0.25)
+            assert process.poll() is None, "gate did not wait on the target-filesystem lock"
+
+            closed = vault / "closed" / note.name
+            closed.parent.mkdir(parents=True, exist_ok=True)
+            note.rename(closed)
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            assert process.wait(timeout=10) == 2
+
+        assert not note.exists()
+        assert "status: claimed" in closed.read_text(encoding="utf-8")
+        assert process.stderr is not None
+        assert "task note changed before" in process.stderr.read()
 
 
 class TestVaultMissing:

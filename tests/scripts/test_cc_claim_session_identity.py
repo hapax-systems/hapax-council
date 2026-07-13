@@ -143,6 +143,21 @@ def test_pid_shaped_session_id_is_refused_as_claim_key(tmp_path: Path) -> None:
     assert "session=epsilon-12345" not in note_text
 
 
+def test_whitespace_wrapped_session_id_is_refused_before_any_claim_write(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "task-whitespace")
+
+    result = _claim(home, "task-whitespace", session_id=f" {_UUID} ")
+
+    assert result.returncode == 8
+    assert "not claim-keyable" in result.stderr
+    assert "status: offered" in note.read_text(encoding="utf-8")
+    cache = home / ".cache" / "hapax"
+    assert not list(cache.glob("cc-active-task-epsilon*"))
+
+
 def test_no_session_id_still_claims_legacy_only(tmp_path: Path) -> None:
     home = tmp_path / "home"
     _write_task(home, "task-bare")

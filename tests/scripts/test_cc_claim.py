@@ -275,6 +275,61 @@ def test_claim_recovers_interrupted_legacy_journal_before_other_task(
     assert list(cache.glob(f".{legacy_journal.name}.history-*-recovered-pre"))
 
 
+def test_claim_retires_stranded_legacy_journal_after_later_claim_committed(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    _write_task(
+        home,
+        "active",
+        "second-task",
+        status="claimed",
+        assigned_to="codex/cx-test",
+    )
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    claim_path = cache / "cc-active-task-cx-test"
+    role_key = hashlib.sha256(b"cx-test").hexdigest()
+    task_key = hashlib.sha256(b"first-task").hexdigest()
+    legacy_journal = cache / f"cc-ownership-txn-{role_key}-{task_key}.json"
+    record = transaction._prepare_journal(
+        legacy_journal,
+        [
+            {
+                "path": str(claim_path),
+                "pre_content": transaction._encoded(None),
+                "pre_mode": None,
+                "post_content": transaction._encoded(b"first-task\n"),
+                "post_mode": 0o600,
+            }
+        ],
+        allowed_roots=(cache, _task_root(home)),
+    )
+    transaction._apply(
+        record.entries,
+        image="post",
+        accepted_current_images=("pre",),
+        allowed_roots=(cache, _task_root(home)),
+    )
+    claim_path.write_text("second-task\n", encoding="utf-8")
+    (cache / "cc-claim-epoch-cx-test").write_text(
+        "1780000000 second-task\n",
+        encoding="utf-8",
+    )
+
+    result = _claim(home, "second-task")
+
+    # The stale A journal no longer wedges every future command at recovery.
+    # This synthetic role-only B projection is still (correctly) rejected by
+    # the independent same-session ownership check.
+    assert result.returncode == 7
+    assert "claim_same_task_session_unproven" in result.stderr
+    assert "ownership transaction recovery failed" not in result.stderr
+    assert claim_path.read_text(encoding="utf-8") == "second-task\n"
+    assert not legacy_journal.exists()
+    assert list(cache.glob(f".{legacy_journal.name}.history-*-legacy-superseded-third-image"))
+
+
 def test_dispatch_bound_claim_rejects_changed_task_preimage(tmp_path: Path) -> None:
     home = tmp_path / "home"
     note = _write_task(home, "active", "claim-target")

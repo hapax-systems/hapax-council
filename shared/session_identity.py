@@ -96,7 +96,10 @@ def is_claim_keyable_session_id(session_id: str | None) -> bool:
     """
     if not session_id:
         return False
-    sid = session_id.strip()
+    # Claim paths use the caller's value verbatim. Validation must therefore
+    # reject surrounding whitespace instead of accepting a normalized token
+    # that the Bash writers never actually use.
+    sid = session_id
     if len(sid) < _MIN_ID_LEN or len(sid) > _MAX_ID_LEN:
         return False
     if not _SAFE_ID_RE.fullmatch(sid):

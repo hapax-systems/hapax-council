@@ -53,6 +53,15 @@ class _JournalRecord:
     inode: int
 
 
+@dataclass(frozen=True)
+class _V1JournalRecord:
+    state: Literal["prepared", "committed"]
+    manifest_sha256: str
+    entries: list[TransactionEntry]
+    device: int
+    inode: int
+
+
 def _canonical_bytes(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("ascii")
 
@@ -136,17 +145,9 @@ def _preserve_pathname_removal(
     try:
         _renameat2(path, preserved, _RENAME_NOREPLACE)
     except OSError as exc:
-        if exc.errno not in {errno.ENOSYS, errno.EINVAL, errno.EXDEV, errno.EOPNOTSUPP}:
-            raise FilesystemTransactionError(f"transaction preserving move failed: {path}") from exc
-        try:
-            # The destination is inside a freshly-created private directory. A
-            # portable rename preserves whichever source image occupies the name
-            # at the syscall boundary instead of deleting it with unlink(2).
-            os.rename(path, preserved)
-        except OSError as fallback_exc:
-            raise FilesystemTransactionError(
-                f"transaction portable preserving move failed: {path}"
-            ) from fallback_exc
+        raise FilesystemTransactionError(
+            f"transaction preserving move requires atomic no-replace support: {path}"
+        ) from exc
     _fsync_directory(quarantine)
     _fsync_directory(path.parent)
     if quarantine.parent != path.parent:
@@ -973,8 +974,28 @@ def _load_json_unique_at(directory_fd: int, name: str, path: Path) -> object:
 
 def _load_v1_journal(
     journal_path: Path,
-) -> tuple[Literal["prepared", "committed"], list[TransactionEntry], str]:
-    value = _load_json_unique(journal_path)
+) -> _V1JournalRecord:
+    try:
+        descriptor = os.open(journal_path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise FilesystemTransactionError(
+            f"transaction journal unavailable: {journal_path}"
+        ) from exc
+    try:
+        metadata = os.fstat(descriptor)
+        expected_uid, expected_gid = _new_entry_identity(journal_path.parent)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or (metadata.st_uid, metadata.st_gid) != (expected_uid, expected_gid)
+            or stat.S_IMODE(metadata.st_mode) & 0o077
+        ):
+            raise FilesystemTransactionError(f"transaction journal path is unsafe: {journal_path}")
+        chunks: list[bytes] = []
+        while chunk := os.read(descriptor, 1024 * 1024):
+            chunks.append(chunk)
+    finally:
+        os.close(descriptor)
+    value = _decode_json_unique(b"".join(chunks), journal_path)
     if not isinstance(value, dict) or set(value) != {
         "schema",
         "state",
@@ -1006,77 +1027,56 @@ def _load_v1_journal(
     manifest_sha256 = hashlib.sha256(_canonical_bytes(body)).hexdigest()
     if value["manifest_sha256"] != manifest_sha256:
         raise FilesystemTransactionError(f"transaction journal hash mismatch: {journal_path}")
-    return state, entries, manifest_sha256
-
-
-def _recover_v1_journal(
-    journal_path: Path,
-    *,
-    allowed_roots: Sequence[Path],
-) -> None:
-    metadata = journal_path.lstat()
-    expected_uid, expected_gid = _new_entry_identity(journal_path.parent)
-    if (
-        stat.S_ISLNK(metadata.st_mode)
-        or not stat.S_ISREG(metadata.st_mode)
-        or (metadata.st_uid, metadata.st_gid) != (expected_uid, expected_gid)
-        or stat.S_IMODE(metadata.st_mode) & 0o077
+    try:
+        current_metadata = journal_path.lstat()
+    except OSError as exc:
+        raise FilesystemTransactionError(
+            f"transaction journal identity changed while loading: {journal_path}"
+        ) from exc
+    if (current_metadata.st_dev, current_metadata.st_ino) != (
+        metadata.st_dev,
+        metadata.st_ino,
     ):
-        raise FilesystemTransactionError(f"transaction journal path is unsafe: {journal_path}")
-    state, entries, manifest_sha256 = _load_v1_journal(journal_path)
-    image: ImageName = "post" if state == "committed" else "pre"
-    resolved: list[tuple[Path, TransactionEntry, tuple[bytes | None, int | None]]] = []
-    seen: set[Path] = set()
-    for entry in entries:
-        raw_path = entry["path"]
-        if not isinstance(raw_path, str) or not raw_path:
-            raise FilesystemTransactionError("transaction entry path malformed")
-        path = _allowed(Path(raw_path), allowed_roots)
-        if path in seen:
-            raise FilesystemTransactionError(f"duplicate transaction path: {path}")
-        seen.add(path)
-        actual = _snapshot(path)
-        if actual not in {_entry_image(entry, "pre"), _entry_image(entry, "post")}:
-            raise FilesystemTransactionError(
-                f"transaction third-image conflict; v1 journal and image were preserved: {path}"
-            )
-        resolved.append((path, entry, actual))
-    mutations: list[FileMutation] = []
-    for path, entry, expected_actual in resolved:
-        actual = _snapshot(path)
-        if actual not in {_entry_image(entry, "pre"), _entry_image(entry, "post")}:
-            raise FilesystemTransactionError(
-                f"transaction third-image conflict; v1 journal and image were preserved: {path}"
-            )
-        content, mode = _entry_image(entry, image)
-        if actual != (content, mode):
-            expected_content, expected_mode = expected_actual
-            mutations.append(
-                FileMutation(
-                    path=path,
-                    content=content,
-                    mode=mode,
-                    expected_exists=expected_content is not None,
-                    expected_sha256=(
-                        hashlib.sha256(expected_content).hexdigest()
-                        if expected_content is not None
-                        else None
-                    ),
-                    expected_mode=expected_mode,
-                )
-            )
-    if mutations:
-        compatibility_journal = journal_path.with_name(
-            f".{journal_path.name}.v1-conversion-{manifest_sha256[:16]}"
+        raise FilesystemTransactionError(
+            f"transaction journal identity changed while loading: {journal_path}"
         )
-        execute_filesystem_transaction(
-            compatibility_journal,
-            mutations,
-            allowed_roots=allowed_roots,
-        )
-    archive = journal_path.with_name(
-        f".{journal_path.name}.history-v1-{manifest_sha256[:16]}-recovered-{image}"
+    return _V1JournalRecord(
+        state=state,
+        manifest_sha256=manifest_sha256,
+        entries=entries,
+        device=metadata.st_dev,
+        inode=metadata.st_ino,
     )
+
+
+def _same_v1_journal(left: _V1JournalRecord, right: _V1JournalRecord) -> bool:
+    return (
+        left.state == right.state
+        and left.manifest_sha256 == right.manifest_sha256
+        and left.device == right.device
+        and left.inode == right.inode
+    )
+
+
+def _archive_v1_journal(
+    journal_path: Path,
+    record: _V1JournalRecord,
+    *,
+    outcome: str,
+) -> Path:
+    archive = journal_path.with_name(
+        f".{journal_path.name}.history-v1-{record.manifest_sha256[:16]}-{outcome}"
+    )
+    try:
+        current_metadata = journal_path.lstat()
+    except OSError as exc:
+        raise FilesystemTransactionError(
+            f"transaction v1 journal unavailable before archive: {journal_path}"
+        ) from exc
+    if (current_metadata.st_dev, current_metadata.st_ino) != (record.device, record.inode):
+        raise FilesystemTransactionError(
+            f"transaction v1 journal identity changed before archive: {journal_path}"
+        )
     try:
         _renameat2(journal_path, archive, _RENAME_NOREPLACE)
     except OSError as exc:
@@ -1086,8 +1086,8 @@ def _recover_v1_journal(
             ) from exc
         archive_metadata = archive.lstat()
         if (archive_metadata.st_dev, archive_metadata.st_ino) != (
-            metadata.st_dev,
-            metadata.st_ino,
+            record.device,
+            record.inode,
         ):
             raise FilesystemTransactionError(
                 f"transaction v1 archive third-image conflict: {archive}"
@@ -1101,13 +1101,85 @@ def _recover_v1_journal(
             ) from duplicate_exc
     _fsync_directory(journal_path.parent)
     archive_metadata = archive.lstat()
-    if (archive_metadata.st_dev, archive_metadata.st_ino) != (
-        metadata.st_dev,
-        metadata.st_ino,
-    ):
+    if (archive_metadata.st_dev, archive_metadata.st_ino) != (record.device, record.inode):
         raise FilesystemTransactionError(
             f"transaction v1 journal identity changed; all images were preserved: {archive}"
         )
+    archived = _load_v1_journal(archive)
+    if not _same_v1_journal(archived, record):
+        raise FilesystemTransactionError(
+            f"transaction v1 archived journal identity mismatch: {archive}"
+        )
+    return archive
+
+
+def _recover_v1_journal(
+    journal_path: Path,
+    *,
+    allowed_roots: Sequence[Path],
+    target_locks_held: bool = False,
+) -> None:
+    record = _load_v1_journal(journal_path)
+    target_paths: list[Path] = []
+    seen: set[Path] = set()
+    for entry in record.entries:
+        raw_path = entry["path"]
+        if not isinstance(raw_path, str) or not raw_path:
+            raise FilesystemTransactionError("transaction entry path malformed")
+        path = _allowed(Path(raw_path), allowed_roots)
+        if path in seen:
+            raise FilesystemTransactionError(f"duplicate transaction path: {path}")
+        seen.add(path)
+        target_paths.append(path)
+    lock_context = nullcontext() if target_locks_held else _target_locks(target_paths)
+    with lock_context:
+        locked_record = _load_v1_journal(journal_path)
+        if not _same_v1_journal(locked_record, record):
+            raise FilesystemTransactionError(
+                f"transaction v1 journal identity changed while acquiring target locks: {journal_path}"
+            )
+        record = locked_record
+        image: ImageName = "post" if record.state == "committed" else "pre"
+        mutations: list[FileMutation] = []
+        for path, entry in zip(target_paths, record.entries, strict=True):
+            actual = _snapshot(path)
+            if actual not in {_entry_image(entry, "pre"), _entry_image(entry, "post")}:
+                raise FilesystemTransactionError(
+                    f"transaction third-image conflict; v1 journal and image were preserved: {path}"
+                )
+            content, mode = _entry_image(entry, image)
+            if actual != (content, mode):
+                expected_content, expected_mode = actual
+                mutations.append(
+                    FileMutation(
+                        path=path,
+                        content=content,
+                        mode=mode,
+                        expected_exists=expected_content is not None,
+                        expected_sha256=(
+                            hashlib.sha256(expected_content).hexdigest()
+                            if expected_content is not None
+                            else None
+                        ),
+                        expected_mode=expected_mode,
+                    )
+                )
+        if mutations:
+            compatibility_journal = journal_path.with_name(
+                f".{journal_path.name}.v1-conversion-{record.manifest_sha256[:16]}"
+            )
+            with _transaction_lock(compatibility_journal):
+                _recover_filesystem_transaction_unlocked(
+                    compatibility_journal,
+                    allowed_roots=allowed_roots,
+                    target_locks_held=True,
+                )
+                _execute_filesystem_transaction_unlocked(
+                    compatibility_journal,
+                    mutations,
+                    allowed_roots=allowed_roots,
+                )
+        _archive_v1_journal(journal_path, record, outcome=f"recovered-{image}")
 
 
 def _load_journal(journal_path: Path) -> _JournalRecord:
@@ -1332,7 +1404,11 @@ def _recover_filesystem_transaction_unlocked(
             f"transaction journal unavailable: {journal_path}"
         ) from exc
     if stat.S_ISREG(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
-        _recover_v1_journal(journal_path, allowed_roots=allowed_roots)
+        _recover_v1_journal(
+            journal_path,
+            allowed_roots=allowed_roots,
+            target_locks_held=target_locks_held,
+        )
         return True
     record = _load_journal(journal_path)
     target_paths = [_entry_path(entry, allowed_roots) for entry in record.entries]
@@ -1360,6 +1436,125 @@ def _recover_filesystem_transaction_unlocked(
         )
         _archive_journal(journal_path, record, outcome=f"recovered-{image}")
     return True
+
+
+def _same_journal(left: _JournalRecord, right: _JournalRecord) -> bool:
+    return (
+        left.transaction_id == right.transaction_id
+        and left.manifest_sha256 == right.manifest_sha256
+        and left.state == right.state
+        and left.device == right.device
+        and left.inode == right.inode
+    )
+
+
+def _entries_have_third_image(
+    entries: list[TransactionEntry],
+    *,
+    allowed_roots: Sequence[Path],
+) -> bool:
+    for entry in entries:
+        pre = _entry_image(entry, "pre")
+        post = _entry_image(entry, "post")
+        for candidate in _portable_paths(entry, allowed_roots):
+            actual = _snapshot(candidate)
+            if actual not in {(None, None), pre, post}:
+                return True
+    return False
+
+
+def _recover_legacy_filesystem_transaction_unlocked(
+    journal_path: Path,
+    *,
+    allowed_roots: Sequence[Path],
+) -> bool:
+    """Recover or preserve-retire one journal created before global serialization."""
+
+    _allowed(journal_path, allowed_roots)
+    _restore_journal_from_intent(journal_path)
+    try:
+        metadata = journal_path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise FilesystemTransactionError(
+            f"legacy transaction journal unavailable: {journal_path}"
+        ) from exc
+
+    if stat.S_ISREG(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+        record = _load_v1_journal(journal_path)
+        target_paths = [
+            _allowed(Path(str(entry["path"])), allowed_roots) for entry in record.entries
+        ]
+        with _target_locks(target_paths):
+            locked_record = _load_v1_journal(journal_path)
+            if not _same_v1_journal(locked_record, record):
+                raise FilesystemTransactionError(
+                    "legacy v1 transaction journal identity changed while acquiring "
+                    f"target locks: {journal_path}"
+                )
+            for path, entry in zip(target_paths, locked_record.entries, strict=True):
+                actual = _snapshot(path)
+                if actual not in {_entry_image(entry, "pre"), _entry_image(entry, "post")}:
+                    _archive_v1_journal(
+                        journal_path,
+                        locked_record,
+                        outcome="legacy-superseded-third-image",
+                    )
+                    return True
+            _recover_v1_journal(
+                journal_path,
+                allowed_roots=allowed_roots,
+                target_locks_held=True,
+            )
+            return True
+
+    record = _load_journal(journal_path)
+    target_paths = [_entry_path(entry, allowed_roots) for entry in record.entries]
+    with _target_locks(target_paths):
+        locked_record = _load_journal(journal_path)
+        if not _same_journal(locked_record, record):
+            raise FilesystemTransactionError(
+                "legacy transaction journal identity changed while acquiring target locks: "
+                f"{journal_path}"
+            )
+        _materialize_missing_stages(locked_record, allowed_roots=allowed_roots)
+        if _entries_have_third_image(locked_record.entries, allowed_roots=allowed_roots):
+            _archive_journal(
+                journal_path,
+                locked_record,
+                outcome="legacy-superseded-third-image",
+            )
+            return True
+        return _recover_filesystem_transaction_unlocked(
+            journal_path,
+            allowed_roots=allowed_roots,
+            target_locks_held=True,
+        )
+
+
+def migrate_legacy_filesystem_transactions(
+    stable_journal: Path,
+    legacy_journals: Sequence[Path],
+    *,
+    allowed_roots: Sequence[Path],
+) -> None:
+    """Drain pre-global journals while one stable ownership lock excludes new writers."""
+
+    _allowed(stable_journal, allowed_roots)
+    with _transaction_lock(stable_journal):
+        for journal_path in sorted(set(legacy_journals)):
+            if journal_path == stable_journal:
+                continue
+            with _transaction_lock(journal_path):
+                _recover_legacy_filesystem_transaction_unlocked(
+                    journal_path,
+                    allowed_roots=allowed_roots,
+                )
+        _recover_filesystem_transaction_unlocked(
+            stable_journal,
+            allowed_roots=allowed_roots,
+        )
 
 
 def recover_filesystem_transaction(
