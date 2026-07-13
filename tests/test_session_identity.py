@@ -59,12 +59,12 @@ class TestResolvePrecedence:
         for env, expected in _PRECEDENCE_MATRIX:
             assert resolve_session_id(env) == expected, f"env={env}"
 
-    def test_blank_values_are_skipped(self) -> None:
+    def test_whitespace_value_is_preserved_for_fail_closed_validation(self) -> None:
         env = {"HAPAX_SESSION_ID": "  ", "CLAUDE_CODE_SESSION_ID": "sid-c"}
-        assert resolve_session_id(env) == "sid-c"
+        assert resolve_session_id(env) == "  "
 
-    def test_resolved_value_is_stripped(self) -> None:
-        assert resolve_session_id({"HAPAX_SESSION_ID": " sid-h \n"}) == "sid-h"
+    def test_resolved_value_is_not_normalized(self) -> None:
+        assert resolve_session_id({"HAPAX_SESSION_ID": " sid-h "}) == " sid-h "
 
     def test_precedence_constant_matches_matrix_order(self) -> None:
         assert SESSION_ID_ENV_PRECEDENCE == _IDENTITY_ENV
@@ -85,9 +85,25 @@ class TestBashParityCanary:
                 text=True,
                 timeout=10,
             )
-            bash_sid = r.stdout.strip() if r.returncode == 0 else None
+            bash_sid = r.stdout.removesuffix("\n") if r.returncode == 0 else None
             assert bash_sid == expected, f"bash drifted for env={env}"
             assert resolve_session_id(env) == bash_sid, f"python drifted for env={env}"
+
+    def test_parity_preserves_unsafe_higher_precedence_value(self) -> None:
+        env = {"HAPAX_SESSION_ID": " unsafe-session ", "CLAUDE_CODE_SESSION_ID": _UUID}
+        bash_env = {key: value for key, value in os.environ.items() if key not in _IDENTITY_ENV}
+        bash_env.update(env)
+        result = subprocess.run(
+            ["bash", "-c", f'. "{AGENT_ROLE}"; hapax_session_id'],
+            env=bash_env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 0
+        assert result.stdout.removesuffix("\n") == " unsafe-session "
+        assert resolve_session_id(env) == " unsafe-session "
+        assert not is_claim_keyable_session_id(resolve_session_id(env))
 
 
 class TestMint:

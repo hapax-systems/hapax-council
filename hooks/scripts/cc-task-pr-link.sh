@@ -265,8 +265,11 @@ if ! command -v python3 &>/dev/null; then
 fi
 
 set +e
-python3 - "$note_path" "$pr_number" "$branch_name" "$role" "$pr_url" <<'PYEOF'
+python3 - "$note_path" "$pr_number" "$branch_name" "$role" "$pr_url" \
+  "$SCRIPT_DIR/../.." "$HOME/.cache/hapax" "$vault_root" <<'PYEOF'
+import hashlib
 import re
+import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -278,7 +281,21 @@ note_path, pr_number, branch_name, role, pr_url = (
     sys.argv[4],
     sys.argv[5],
 )
-text = note_path.read_text(encoding="utf-8")
+repo_root = Path(sys.argv[6]).resolve()
+cache_dir = Path(sys.argv[7])
+vault_root = Path(sys.argv[8])
+sys.path.insert(0, str(repo_root))
+
+from shared.sdlc_filesystem_transaction import (  # noqa: E402
+    FileMutation,
+    execute_filesystem_transaction,
+)
+
+metadata = note_path.lstat()
+if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+    raise ValueError("task note is not a regular file")
+raw = note_path.read_bytes()
+text = raw.decode("utf-8")
 
 # Idempotency: if `pr:` already has a different non-null/non-empty value, no-op.
 # A matching existing value is safe and should still drive the status/branch/log
@@ -326,10 +343,22 @@ else:
     # No section — append a fresh one at end of file.
     text = text.rstrip() + "\n\n## Session log\n\n" + log_line
 
-# Atomic write.
-tmp = note_path.with_suffix(note_path.suffix + ".tmp")
-tmp.write_text(text, encoding="utf-8")
-tmp.replace(note_path)
+# The PostToolUse hook is an official task-note writer. Use the same stable
+# ownership journal and target lock as cc-close so a concurrent move cannot be
+# overwritten by recreating the stale active pathname.
+execute_filesystem_transaction(
+    cache_dir / "cc-ownership-txn.json",
+    (
+        FileMutation(
+            path=note_path,
+            content=text.encode("utf-8"),
+            mode=stat.S_IMODE(metadata.st_mode),
+            expected_sha256=hashlib.sha256(raw).hexdigest(),
+            expected_mode=stat.S_IMODE(metadata.st_mode),
+        ),
+    ),
+    allowed_roots=(cache_dir, vault_root),
+)
 print(f"cc-task-pr-link: linked task '{note_path.stem}' to PR #{pr_number}")
 PYEOF
 py_rc=$?

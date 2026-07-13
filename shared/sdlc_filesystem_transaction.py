@@ -188,6 +188,47 @@ def _renameat2(source: Path, destination: Path, flags: int) -> None:
         raise OSError(error, os.strerror(error), str(source), str(destination))
 
 
+def _require_atomic_no_replace_support(paths: Sequence[Path]) -> None:
+    """Refuse unsupported target filesystems before an authoritative name moves."""
+
+    for stage_directory in sorted({_ensure_stage_directory(path) for path in paths}):
+        source = stage_directory / f".hapax-noreplace-probe-{uuid.uuid4().hex}"
+        destination = stage_directory / f".hapax-noreplace-probe-{uuid.uuid4().hex}"
+        try:
+            descriptor = os.open(
+                source,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+            )
+        except OSError as exc:
+            raise FilesystemTransactionError(
+                f"transaction no-replace capability probe failed: {stage_directory}"
+            ) from exc
+        try:
+            metadata = os.fstat(descriptor)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        _fsync_directory(stage_directory)
+        try:
+            _renameat2(source, destination, _RENAME_NOREPLACE)
+        except OSError as exc:
+            # Preserve both random private probe names on failure. In
+            # particular, never remove a destination a competing writer may
+            # have occupied while the capability check was in flight.
+            raise FilesystemTransactionError(
+                "transaction target filesystem lacks atomic no-replace support; "
+                f"no authoritative image was moved: {stage_directory}"
+            ) from exc
+        _fsync_directory(stage_directory)
+        if _path_identity(destination) != (metadata.st_dev, metadata.st_ino):
+            raise FilesystemTransactionError(
+                f"transaction no-replace capability probe identity changed: {destination}"
+            )
+        destination.unlink()
+        _fsync_directory(stage_directory)
+
+
 def _allowed(path: Path, roots: Sequence[Path]) -> Path:
     absolute = path.expanduser().absolute()
     try:
@@ -488,6 +529,7 @@ def _portable_transition_entry(
     allowed_roots: Sequence[Path],
 ) -> None:
     path, stage, hold, move = _portable_paths(entry, allowed_roots)
+    _require_atomic_no_replace_support((path,))
     opposite: ImageName = "post" if image == "pre" else "pre"
     desired_path: ImageName | Literal["absent"] = (
         image if _entry_image(entry, image)[0] is not None else "absent"
@@ -619,6 +661,22 @@ def _apply(
     for entry in entries:
         _transition_entry(entry, image=image, allowed_roots=allowed_roots)
     _validate_current_images(entries, accepted_images=(image,), allowed_roots=allowed_roots)
+
+
+def _entries_require_transition(
+    entries: list[TransactionEntry],
+    *,
+    image: ImageName,
+    allowed_roots: Sequence[Path],
+) -> bool:
+    for entry in entries:
+        try:
+            state = _pair_state(entry, allowed_roots=allowed_roots)
+        except FilesystemTransactionError:
+            return True
+        if state not in {image, "both"}:
+            return True
+    return False
 
 
 def _manifest_body(
@@ -1084,14 +1142,6 @@ def _archive_v1_journal(
             raise FilesystemTransactionError(
                 f"transaction v1 journal archive failed without replacement: {journal_path}"
             ) from exc
-        archive_metadata = archive.lstat()
-        if (archive_metadata.st_dev, archive_metadata.st_ino) != (
-            record.device,
-            record.inode,
-        ):
-            raise FilesystemTransactionError(
-                f"transaction v1 archive third-image conflict: {archive}"
-            ) from exc
         duplicate = archive.with_name(f"{archive.name}.duplicate-{uuid.uuid4().hex}")
         try:
             _renameat2(journal_path, duplicate, _RENAME_NOREPLACE)
@@ -1099,18 +1149,21 @@ def _archive_v1_journal(
             raise FilesystemTransactionError(
                 f"transaction v1 duplicate archive failed without replacement: {journal_path}"
             ) from duplicate_exc
+        published = duplicate
+    else:
+        published = archive
     _fsync_directory(journal_path.parent)
-    archive_metadata = archive.lstat()
+    archive_metadata = published.lstat()
     if (archive_metadata.st_dev, archive_metadata.st_ino) != (record.device, record.inode):
         raise FilesystemTransactionError(
-            f"transaction v1 journal identity changed; all images were preserved: {archive}"
+            f"transaction v1 journal identity changed; all images were preserved: {published}"
         )
-    archived = _load_v1_journal(archive)
+    archived = _load_v1_journal(published)
     if not _same_v1_journal(archived, record):
         raise FilesystemTransactionError(
-            f"transaction v1 archived journal identity mismatch: {archive}"
+            f"transaction v1 archived journal identity mismatch: {published}"
         )
-    return archive
+    return published
 
 
 def _recover_v1_journal(
@@ -1140,40 +1193,44 @@ def _recover_v1_journal(
             )
         record = locked_record
         image: ImageName = "post" if record.state == "committed" else "pre"
-        mutations: list[FileMutation] = []
-        for path, entry in zip(target_paths, record.entries, strict=True):
-            actual = _snapshot(path)
-            if actual not in {_entry_image(entry, "pre"), _entry_image(entry, "post")}:
-                raise FilesystemTransactionError(
-                    f"transaction third-image conflict; v1 journal and image were preserved: {path}"
-                )
-            content, mode = _entry_image(entry, image)
-            if actual != (content, mode):
-                expected_content, expected_mode = actual
-                mutations.append(
-                    FileMutation(
-                        path=path,
-                        content=content,
-                        mode=mode,
-                        expected_exists=expected_content is not None,
-                        expected_sha256=(
-                            hashlib.sha256(expected_content).hexdigest()
-                            if expected_content is not None
-                            else None
-                        ),
-                        expected_mode=expected_mode,
-                    )
-                )
-        if mutations:
-            compatibility_journal = journal_path.with_name(
-                f".{journal_path.name}.v1-conversion-{record.manifest_sha256[:16]}"
+        compatibility_journal = journal_path.with_name(
+            f".{journal_path.name}.v1-conversion-{record.manifest_sha256[:16]}"
+        )
+        with _transaction_lock(compatibility_journal):
+            # This deterministic child journal may survive a crash after it
+            # applied an image but before v1 was archived. Drain it on every
+            # retry, including when the v1 target already looks complete.
+            _recover_filesystem_transaction_unlocked(
+                compatibility_journal,
+                allowed_roots=allowed_roots,
+                target_locks_held=True,
             )
-            with _transaction_lock(compatibility_journal):
-                _recover_filesystem_transaction_unlocked(
-                    compatibility_journal,
-                    allowed_roots=allowed_roots,
-                    target_locks_held=True,
-                )
+            mutations: list[FileMutation] = []
+            for path, entry in zip(target_paths, record.entries, strict=True):
+                actual = _snapshot(path)
+                if actual not in {_entry_image(entry, "pre"), _entry_image(entry, "post")}:
+                    raise FilesystemTransactionError(
+                        "transaction third-image conflict; v1 journal and image were "
+                        f"preserved: {path}"
+                    )
+                content, mode = _entry_image(entry, image)
+                if actual != (content, mode):
+                    expected_content, expected_mode = actual
+                    mutations.append(
+                        FileMutation(
+                            path=path,
+                            content=content,
+                            mode=mode,
+                            expected_exists=expected_content is not None,
+                            expected_sha256=(
+                                hashlib.sha256(expected_content).hexdigest()
+                                if expected_content is not None
+                                else None
+                            ),
+                            expected_mode=expected_mode,
+                        )
+                    )
+            if mutations:
                 _execute_filesystem_transaction_unlocked(
                     compatibility_journal,
                     mutations,
@@ -1428,6 +1485,12 @@ def _recover_filesystem_transaction_unlocked(
         record = locked_record
         _materialize_missing_stages(record, allowed_roots=allowed_roots)
         image: ImageName = "post" if record.state == "committed" else "pre"
+        if _entries_require_transition(
+            record.entries,
+            image=image,
+            allowed_roots=allowed_roots,
+        ):
+            _require_atomic_no_replace_support(target_paths)
         _apply(
             record.entries,
             image=image,
@@ -1448,19 +1511,26 @@ def _same_journal(left: _JournalRecord, right: _JournalRecord) -> bool:
     )
 
 
-def _entries_have_third_image(
+def _entries_have_superseding_target_image(
     entries: list[TransactionEntry],
     *,
     allowed_roots: Sequence[Path],
 ) -> bool:
+    superseded = False
     for entry in entries:
         pre = _entry_image(entry, "pre")
         post = _entry_image(entry, "post")
-        for candidate in _portable_paths(entry, allowed_roots):
+        target, stage, hold, move = _portable_paths(entry, allowed_roots)
+        if _snapshot(target) not in {(None, None), pre, post}:
+            superseded = True
+        for candidate in (stage, hold, move):
             actual = _snapshot(candidate)
             if actual not in {(None, None), pre, post}:
-                return True
-    return False
+                raise FilesystemTransactionError(
+                    "legacy transaction auxiliary third-image conflict; journal and "
+                    f"images were preserved: {candidate}"
+                )
+    return superseded
 
 
 def _recover_legacy_filesystem_transaction_unlocked(
@@ -1519,7 +1589,10 @@ def _recover_legacy_filesystem_transaction_unlocked(
                 f"{journal_path}"
             )
         _materialize_missing_stages(locked_record, allowed_roots=allowed_roots)
-        if _entries_have_third_image(locked_record.entries, allowed_roots=allowed_roots):
+        if _entries_have_superseding_target_image(
+            locked_record.entries,
+            allowed_roots=allowed_roots,
+        ):
             _archive_journal(
                 journal_path,
                 locked_record,
@@ -1543,6 +1616,14 @@ def migrate_legacy_filesystem_transactions(
 
     _allowed(stable_journal, allowed_roots)
     with _transaction_lock(stable_journal):
+        # The stable journal is the only transaction that can postdate every
+        # task-keyed legacy journal. Resolve it first so legacy classification
+        # observes its committed postimage or prepared rollback, never an
+        # ambiguous in-flight third image.
+        _recover_filesystem_transaction_unlocked(
+            stable_journal,
+            allowed_roots=allowed_roots,
+        )
         for journal_path in sorted(set(legacy_journals)):
             if journal_path == stable_journal:
                 continue
@@ -1551,10 +1632,6 @@ def migrate_legacy_filesystem_transactions(
                     journal_path,
                     allowed_roots=allowed_roots,
                 )
-        _recover_filesystem_transaction_unlocked(
-            stable_journal,
-            allowed_roots=allowed_roots,
-        )
 
 
 def recover_filesystem_transaction(
@@ -1586,6 +1663,7 @@ def _execute_filesystem_transaction_unlocked(
 
     entries: list[TransactionEntry] = []
     seen: set[Path] = set()
+    transition_paths: list[Path] = []
     for mutation in mutations:
         path = _allowed(mutation.path, allowed_roots)
         if path in seen:
@@ -1608,6 +1686,8 @@ def _execute_filesystem_transaction_unlocked(
             post_mode = pre_mode if pre_mode is not None else 0o600
         if mutation.content is None:
             post_mode = None
+        if (pre_content, pre_mode) != (mutation.content, post_mode):
+            transition_paths.append(path)
         entries.append(
             {
                 "path": str(path),
@@ -1617,6 +1697,9 @@ def _execute_filesystem_transaction_unlocked(
                 "post_mode": post_mode,
             }
         )
+
+    if transition_paths:
+        _require_atomic_no_replace_support(transition_paths)
 
     try:
         record = _prepare_journal(journal_path, entries, allowed_roots=allowed_roots)

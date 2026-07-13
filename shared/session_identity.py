@@ -68,11 +68,13 @@ _MIN_ID_LEN = 8
 def resolve_session_id(env: Mapping[str, str]) -> str | None:
     """Return the session id the given environment carries, or ``None``.
 
-    Mirrors agent-role.sh ``hapax_session_id`` exactly: first non-blank value
-    in :data:`SESSION_ID_ENV_PRECEDENCE` order, stripped.
+    Mirrors agent-role.sh ``hapax_session_id`` exactly: first non-empty raw
+    value in :data:`SESSION_ID_ENV_PRECEDENCE` order. Path-key consumers must
+    pass that value to :func:`is_claim_keyable_session_id`, which rejects
+    whitespace and other unsafe bytes rather than silently normalizing them.
     """
     for var in SESSION_ID_ENV_PRECEDENCE:
-        value = (env.get(var) or "").strip()
+        value = env.get(var) or ""
         if value:
             return value
     return None

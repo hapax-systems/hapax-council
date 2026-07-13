@@ -9,13 +9,31 @@ its own vault + claim file under ``tmp_path``.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 HOOK = REPO_ROOT / "hooks" / "scripts" / "cc-task-pr-link.sh"
+_IDENTITY_ENV = (
+    "HAPAX_AGENT_NAME",
+    "HAPAX_AGENT_ROLE",
+    "HAPAX_AGENT_SLOT",
+    "HAPAX_WORKTREE_ROLE",
+    "HAPAX_SESSION_ID",
+    "HAPAX_AGENT_INTERFACE",
+    "CLAUDE_ROLE",
+    "CLAUDECODE",
+    "CLAUDE_CODE_SESSION_ID",
+    "CODEX_ROLE",
+    "CODEX_THREAD_NAME",
+    "CODEX_THREAD_ID",
+    "CODEX_SESSION",
+    "CODEX_SESSION_NAME",
+)
 
 
 def _make_vault(
@@ -82,6 +100,8 @@ def _run_hook(
         "session_id": "test-session",
     }
     env = os.environ.copy()
+    for key in _IDENTITY_ENV:
+        env.pop(key, None)
     if home is not None:
         env["HOME"] = str(home)
     env["CLAUDE_ROLE"] = role
@@ -105,15 +125,8 @@ def _run_payload(
 ) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["HOME"] = str(home)
-    env.pop("CLAUDE_ROLE", None)
-    env.pop("CODEX_ROLE", None)
-    env.pop("CODEX_THREAD_NAME", None)
-    env.pop("CODEX_SESSION", None)
-    env.pop("CODEX_SESSION_NAME", None)
-    env.pop("HAPAX_AGENT_NAME", None)
-    env.pop("HAPAX_AGENT_ROLE", None)
-    env.pop("HAPAX_AGENT_SLOT", None)
-    env.pop("HAPAX_WORKTREE_ROLE", None)
+    for key in _IDENTITY_ENV:
+        env.pop(key, None)
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
@@ -211,6 +224,53 @@ class TestIdempotency:
         assert "branch: null" not in text
         assert "auto-linked PR #4242" in text
 
+    def test_concurrent_close_cannot_be_recreated_by_pr_link(self, tmp_path: Path) -> None:
+        vault, note = _make_vault(tmp_path, task_id="test-001", pr=None)
+        _write_claim(tmp_path, "beta", "test-001")
+        stage = note.parent / ".hapax-transactions"
+        stage.mkdir(mode=0o700)
+        lock_path = stage / ".hapax-transaction.lock"
+        lock_path.touch(mode=0o600)
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "gh pr create"},
+            "tool_response": {"output": "https://github.com/ryanklee/hapax-council/pull/4242"},
+        }
+        env = os.environ.copy()
+        for key in _IDENTITY_ENV:
+            env.pop(key, None)
+        env["HOME"] = str(tmp_path)
+        env["CLAUDE_ROLE"] = "beta"
+
+        with lock_path.open("r+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            process = subprocess.Popen(
+                [str(HOOK)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            assert process.stdin is not None
+            process.stdin.write(json.dumps(payload))
+            process.stdin.close()
+            time.sleep(0.25)
+            assert process.poll() is None, "PR-link hook did not wait on the target lock"
+
+            closed = vault / "closed" / note.name
+            closed.parent.mkdir(parents=True, exist_ok=True)
+            note.rename(closed)
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            assert process.wait(timeout=10) == 0
+
+        assert not note.exists()
+        closed_text = closed.read_text(encoding="utf-8")
+        assert "pr: null" in closed_text
+        assert "pr: 4242" not in closed_text
+        assert process.stderr is not None
+        assert "python rewrite failed" in process.stderr.read()
+
 
 class TestGracefulSkips:
     def test_no_active_claim_exits_zero(self, tmp_path: Path) -> None:
@@ -255,6 +315,8 @@ class TestGracefulSkips:
             "tool_response": {"output": "https://github.com/x/y/pull/1"},
         }
         env = os.environ.copy()
+        for key in _IDENTITY_ENV:
+            env.pop(key, None)
         env["HOME"] = str(tmp_path)
         env["CLAUDE_ROLE"] = "beta"
         result = subprocess.run(
@@ -280,6 +342,8 @@ class TestGracefulSkips:
 
     def test_empty_stdin_exits_zero(self, tmp_path: Path) -> None:
         env = os.environ.copy()
+        for key in _IDENTITY_ENV:
+            env.pop(key, None)
         env["HOME"] = str(tmp_path)
         env["CLAUDE_ROLE"] = "beta"
         result = subprocess.run(
@@ -346,8 +410,9 @@ class TestRoleResolution:
         _write_claim(tmp_path, "beta", "test-001")
 
         env = os.environ.copy()
+        for key in _IDENTITY_ENV:
+            env.pop(key, None)
         env["HOME"] = str(tmp_path)
-        env.pop("CLAUDE_ROLE", None)
         payload = {
             "tool_name": "Bash",
             "tool_input": {"command": "gh pr create"},

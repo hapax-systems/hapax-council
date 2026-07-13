@@ -997,19 +997,33 @@ from shared.sdlc_filesystem_transaction import (  # noqa: E402
     FileMutation,
     execute_filesystem_transaction,
 )
-from shared.sdlc_lifecycle import frontmatter_from_text  # noqa: E402
 
 metadata = path.lstat()
 if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
     raise ValueError("task note is not a regular file")
 raw = path.read_bytes()
 text = raw.decode("utf-8")
-frontmatter = frontmatter_from_text(text)
-current_status = str(frontmatter.get("status") or "").strip()
-if (
-    str(frontmatter.get("task_id") or "").strip() != task_id
-    or str(frontmatter.get("assigned_to") or "").strip() != assigned
-):
+if not text.startswith("---"):
+    raise ValueError("task note frontmatter missing")
+end = text.find("\n---", 4)
+if end < 0:
+    raise ValueError("task note frontmatter unclosed")
+front = text[4:end]
+
+
+def scalar(field: str) -> str:
+    values = []
+    for line in front.splitlines():
+        key, separator, raw_value = line.partition(":")
+        if separator and key.strip() == field:
+            values.append(raw_value.strip().strip('"').strip("'"))
+    if len(values) != 1:
+        raise ValueError(f"task note {field} is missing or duplicated")
+    return values[0]
+
+
+current_status = scalar("status")
+if scalar("task_id") != task_id or scalar("assigned_to") != assigned:
     raise ValueError("task note identity changed")
 
 if operation == "transition-claimed" and current_status == "in_progress":
@@ -1018,11 +1032,6 @@ if current_status != expected_status:
     raise ValueError("task note status changed")
 
 if operation == "stamp":
-    if not text.startswith("---"):
-        raise ValueError("task note frontmatter missing")
-    end = text.find("\n---", 4)
-    if end < 0:
-        raise ValueError("task note frontmatter unclosed")
     front, body = text[4:end], text[end:]
     output: list[str] = []
     found = False
