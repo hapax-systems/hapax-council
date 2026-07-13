@@ -50,8 +50,6 @@ from agents.payment_processors.monetization_aggregator import build_monetization
 from agents.payment_processors.resource_receipts import (
     commit_prepared_resource_receipt,
     prepare_awareness_write_resource_receipt,
-    resource_receipt_exists,
-    retract_prepared_resource_receipt,
 )
 
 # sd_notify integration — lazy load so unit tests + non-systemd hosts
@@ -155,7 +153,6 @@ class AwarenessRunner:
             source_window_sha256=event_window_sha256(events),
             route_source="agents.operator_awareness.runner",
         )
-        receipt_preexisting = resource_receipt_exists(_receipt_ref)
         if commit_prepared_resource_receipt(receipt) is None:
             log.warning(
                 "awareness runner write blocked: money-rail resource receipt missing; "
@@ -165,8 +162,12 @@ class AwarenessRunner:
             self.writes_total.labels(result="resource_receipt_error").inc()
             return "resource_receipt_error"
         ok = write_state_atomic(state, self._state_path)
-        if not ok and not receipt_preexisting:
-            retract_prepared_resource_receipt(receipt)
+        if not ok:
+            log.warning(
+                "awareness runner state write failed after resource receipt commit; "
+                "committed money-rail resource receipts are append-only and remain "
+                "available as admission evidence"
+            )
         result = "ok" if ok else "error"
         self.writes_total.labels(result=result).inc()
         return result

@@ -19,8 +19,8 @@ READ-ONLY contract:
     transaction. There is no method named ``send``, ``transfer``,
     ``withdraw``, ``payout``, ``initiate``, or ``remit``. No private
     key is read from disk or env at any point. The Base RPC is hit
-    only with ``eth_getBlockByNumber("finalized", false)`` +
-    ``eth_getLogs`` — never
+    only with ``eth_chainId`` +
+    ``eth_getBlockByNumber("finalized", false)`` + ``eth_getLogs`` — never
     ``eth_sendTransaction`` / ``eth_sendRawTransaction`` /
     ``personal_sign`` / ``eth_signTypedData`` / ``eth_call`` against
     state-mutating selectors. The contract test in
@@ -44,7 +44,7 @@ Constitutional posture:
   truncation, not consent-gating.
 
 Idempotency: each Transfer event has a stable ``(tx_hash, log_index)``
-tuple. We persist the cursor to a JSONL state file so re-poll
+    tuple. We persist the cursor to a JSON state file so re-poll
 overlap is harmless and a daemon restart resumes from the last seen
 event.
 
@@ -63,7 +63,7 @@ import re
 import threading
 import time
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -85,6 +85,7 @@ log = logging.getLogger(__name__)
 # Base mainnet USDC contract — official Circle deployment, eip155:8453.
 # Verifiable at https://basescan.org/token/0x833589fcd6edb6e08f4c7c32d4f71b54bda02913
 BASE_USDC_CONTRACT_ADDRESS: str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+BASE_CHAIN_ID: int = 8453
 
 # keccak256("Transfer(address,address,uint256)") — standard ERC-20.
 ERC20_TRANSFER_TOPIC: str = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
@@ -102,6 +103,7 @@ BASE_RPC_URL_ENV: str = "HAPAX_BASE_RPC_URL"
 CURSOR_PATH_ENV: str = "HAPAX_X402_USDC_CURSOR_PATH"
 PAYMENT_LOG_ENV: str = "HAPAX_MONETIZATION_LOG_PATH"
 DEFAULT_CURSOR_PATH: Path = Path.home() / ".cache/hapax/x402-usdc-cursor.json"
+CURSOR_SCHEMA_VERSION: int = 2
 
 # Allowed JSON-RPC methods. Any deviation is a contract violation —
 # the runtime test pins this set.
@@ -109,6 +111,7 @@ READ_ONLY_RPC_METHODS: frozenset[str] = frozenset(
     {
         "eth_getBlockByNumber",
         "eth_getLogs",
+        "eth_chainId",
     }
 )
 
@@ -336,24 +339,100 @@ class _Cursor:
 
     last_block: int = 0
     seen_keys: set[tuple[str, int]] = None  # type: ignore[assignment]
+    cursor_schema: int = CURSOR_SCHEMA_VERSION
+    chain_id: int = BASE_CHAIN_ID
+    contract_address: str = BASE_USDC_CONTRACT_ADDRESS.lower()
+    operator_wallet: str | None = None
+    load_error: str | None = None
 
     def __post_init__(self) -> None:
         if self.seen_keys is None:
             self.seen_keys = set()
+        if self.contract_address:
+            self.contract_address = _normalise_address(self.contract_address)
+        if self.operator_wallet:
+            self.operator_wallet = _normalise_address(self.operator_wallet)
 
 
-def _load_cursor(path: Path) -> _Cursor:
+def _load_cursor(
+    path: Path,
+    *,
+    operator_wallet: str | None = None,
+    chain_id: int = BASE_CHAIN_ID,
+    contract_address: str = BASE_USDC_CONTRACT_ADDRESS,
+) -> _Cursor:
+    expected_contract = _normalise_address(contract_address)
+    expected_wallet = _normalise_address(operator_wallet) if operator_wallet else None
+    empty = _Cursor(
+        chain_id=chain_id,
+        contract_address=expected_contract,
+        operator_wallet=expected_wallet,
+    )
     if not path.exists():
-        return _Cursor()
+        return empty
     try:
         import json
 
         raw = json.loads(path.read_text(encoding="utf-8"))
-        seen = {(str(t[0]).lower(), int(t[1])) for t in raw.get("seen_keys", [])}
-        return _Cursor(last_block=int(raw.get("last_block", 0)), seen_keys=seen)
+        if not isinstance(raw, dict):
+            return replace(empty, load_error="cursor JSON is not an object")
+        if raw.get("cursor_schema") != CURSOR_SCHEMA_VERSION:
+            return replace(
+                empty,
+                load_error=(
+                    f"legacy or incompatible cursor schema {raw.get('cursor_schema')!r}; "
+                    f"expected {CURSOR_SCHEMA_VERSION}"
+                ),
+            )
+        raw_chain_id = raw.get("chain_id")
+        if raw_chain_id != chain_id:
+            return replace(
+                empty,
+                load_error=f"incompatible cursor chain_id {raw_chain_id!r}; expected {chain_id}",
+            )
+        try:
+            raw_contract = _normalise_address(raw.get("contract_address"))
+        except (TypeError, ValueError) as exc:
+            return replace(empty, load_error=f"incompatible cursor contract address: {exc}")
+        if raw_contract != expected_contract:
+            return replace(
+                empty,
+                load_error=(
+                    f"incompatible cursor contract {raw_contract}; expected {expected_contract}"
+                ),
+            )
+        raw_wallet = raw.get("operator_wallet")
+        try:
+            loaded_wallet = _normalise_address(raw_wallet) if raw_wallet else None
+        except (TypeError, ValueError) as exc:
+            return replace(empty, load_error=f"incompatible cursor operator wallet: {exc}")
+        if expected_wallet is not None and loaded_wallet != expected_wallet:
+            return replace(
+                empty,
+                load_error=(
+                    f"incompatible cursor operator wallet {loaded_wallet}; "
+                    f"expected {expected_wallet}"
+                ),
+            )
+        last_block_raw = raw.get("last_block")
+        if not isinstance(last_block_raw, int) or last_block_raw < 0:
+            return replace(
+                empty,
+                load_error=f"incompatible cursor last_block {last_block_raw!r}",
+            )
+        seen = _parse_cursor_seen_keys(raw.get("seen_keys", []))
+        if seen is None:
+            return replace(empty, load_error="incompatible cursor seen_keys")
+        return _Cursor(
+            last_block=last_block_raw,
+            seen_keys=seen,
+            chain_id=chain_id,
+            contract_address=expected_contract,
+            operator_wallet=loaded_wallet,
+        )
     except (OSError, ValueError, TypeError):
-        log.warning("cursor at %s unreadable; resetting", path, exc_info=True)
-        return _Cursor()
+        log.warning("cursor at %s unreadable; holding without reset", path, exc_info=True)
+        return replace(empty, load_error="corrupt or unreadable cursor JSON")
 
 
 def _save_cursor(path: Path, cursor: _Cursor) -> None:
@@ -363,12 +442,35 @@ def _save_cursor(path: Path, cursor: _Cursor) -> None:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
+        "cursor_schema": CURSOR_SCHEMA_VERSION,
+        "rail": RAIL_LABEL,
+        "chain_id": cursor.chain_id,
+        "chain_id_hex": hex(cursor.chain_id),
+        "contract_address": cursor.contract_address,
+        "operator_wallet": cursor.operator_wallet,
         "last_block": cursor.last_block,
         "seen_keys": sorted(cursor.seen_keys),
     }
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload), encoding="utf-8")
     tmp.replace(path)
+
+
+def _parse_cursor_seen_keys(value: object) -> set[tuple[str, int]] | None:
+    if not isinstance(value, list):
+        return None
+    seen: set[tuple[str, int]] = set()
+    for item in value:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            return None
+        tx_hash = _normalise_32_byte_hex(item[0])
+        if tx_hash is None:
+            return None
+        log_index = item[1]
+        if not isinstance(log_index, int) or log_index < 0:
+            return None
+        seen.add((tx_hash, log_index))
+    return seen
 
 
 class USDCReceiver:
@@ -421,7 +523,12 @@ class USDCReceiver:
         self._max_amount_atomic = max_amount_atomic
         self._block_lookback = max(1, block_lookback)
         self._stop_evt = threading.Event()
-        self._cursor: _Cursor = _load_cursor(self._cursor_path)
+        self._cursor: _Cursor = _load_cursor(
+            self._cursor_path,
+            operator_wallet=self._operator_wallet,
+            chain_id=BASE_CHAIN_ID,
+            contract_address=BASE_USDC_CONTRACT_ADDRESS,
+        )
 
     # ── Public API ────────────────────────────────────────────────────
 
@@ -441,10 +548,18 @@ class USDCReceiver:
 
         if not self.enabled:
             return 0
+        if self._cursor.load_error is not None:
+            log.warning(
+                "x402 USDC cursor hold at %s: %s; %s",
+                self._cursor_path,
+                self._cursor.load_error,
+                self._cursor_recovery_action(),
+            )
+            return 0
         if (
             record_external_api_poll_receipt(
                 rail=RAIL_LABEL,
-                endpoint="Base RPC eth_getBlockByNumber(finalized)+eth_getLogs",
+                endpoint="Base RPC eth_chainId+eth_getBlockByNumber(finalized)+eth_getLogs",
                 downstream_action="USDCReceiver.poll_once._call_rpc",
             )
             is None
@@ -452,6 +567,24 @@ class USDCReceiver:
             log.warning(
                 "usdc poll blocked: external API poll resource receipt missing; %s",
                 _resource_receipt_recovery_action(),
+            )
+            return 0
+
+        try:
+            chain_id_raw = self._call_rpc("eth_chainId", [])
+        except Exception:  # noqa: BLE001
+            log.warning("eth_chainId failed; skipping tick", exc_info=True)
+            return 0
+        chain_id = _quantity_to_int(chain_id_raw)
+        if chain_id != BASE_CHAIN_ID:
+            log.warning(
+                "eth_chainId returned %r, expected Base chain %s (%s); "
+                "skipping tick without advancing cursor %s; %s",
+                chain_id_raw,
+                BASE_CHAIN_ID,
+                hex(BASE_CHAIN_ID),
+                self._cursor_path,
+                self._cursor_recovery_action(),
             )
             return 0
 
@@ -471,6 +604,15 @@ class USDCReceiver:
 
         from_block = self._next_from_block(finalized.number)
         if from_block > finalized.number:
+            if self._cursor.last_block > finalized.number:
+                log.warning(
+                    "x402 USDC cursor %s last_block=%s is ahead of finalized Base head %s; "
+                    "holding without advancing cursor; %s",
+                    self._cursor_path,
+                    self._cursor.last_block,
+                    finalized.number,
+                    self._cursor_recovery_action(),
+                )
             return 0
         to_block = min(finalized.number, from_block + MAX_ETH_GETLOGS_BLOCK_SPAN - 1)
 
@@ -506,12 +648,16 @@ class USDCReceiver:
             logs_raw,
             from_block=from_block,
             to_block=to_block,
+            finalized=finalized,
         )
         if receipts is None:
             return 0
 
         emitted = 0
         highest_successful_block = self._cursor.last_block
+        receipt_by_seen_key = {
+            (receipt.tx_hash, receipt.log_index): receipt for receipt in receipts
+        }
         for receipt in receipts:
             key = (receipt.tx_hash, receipt.log_index)
             if key in self._cursor.seen_keys:
@@ -522,6 +668,7 @@ class USDCReceiver:
                     highest_successful_block,
                     max(self._cursor.last_block, receipt.block_number - 1),
                 )
+                self._retain_seen_keys_needed_for_retry(receipt_by_seen_key)
                 _save_cursor(self._cursor_path, self._cursor)
                 return emitted
             self._cursor.seen_keys.add(key)
@@ -529,6 +676,7 @@ class USDCReceiver:
             emitted += 1
 
         self._cursor.last_block = to_block
+        self._cursor.seen_keys.clear()
         _save_cursor(self._cursor_path, self._cursor)
         return emitted
 
@@ -573,9 +721,13 @@ class USDCReceiver:
         *,
         from_block: int,
         to_block: int,
+        finalized: _FinalizedBlock,
     ) -> list[TransferReceipt] | None:
         assert self._operator_wallet is not None  # gated by self.enabled
         receipts_by_key: dict[tuple[str, int], TransferReceipt] = {}
+        block_hash_by_number: dict[int, str] = {}
+        receipts_by_block_log: dict[tuple[str, int], TransferReceipt] = {}
+        tx_locations: dict[str, tuple[int, str, int]] = {}
         for index, row in enumerate(logs_raw):
             if not isinstance(row, dict):
                 log.warning(
@@ -605,6 +757,31 @@ class USDCReceiver:
                     self._cursor_path,
                 )
                 return None
+            if (
+                receipt.block_number == finalized.number
+                and receipt.block_hash != finalized.block_hash
+            ):
+                log.warning(
+                    "eth_getLogs returned row %s with finalized block hash %s but "
+                    "eth_getBlockByNumber(finalized) returned %s for block %s; "
+                    "skipping tick without advancing cursor %s",
+                    index,
+                    receipt.block_hash,
+                    finalized.block_hash,
+                    finalized.number,
+                    self._cursor_path,
+                )
+                return None
+            prior_block_hash = block_hash_by_number.get(receipt.block_number)
+            if prior_block_hash is not None and prior_block_hash != receipt.block_hash:
+                log.warning(
+                    "eth_getLogs returned multiple block hashes for block %s; "
+                    "skipping tick without advancing cursor %s",
+                    receipt.block_number,
+                    self._cursor_path,
+                )
+                return None
+            block_hash_by_number[receipt.block_number] = receipt.block_hash
             if receipt.to_address != self._operator_wallet:
                 log.warning(
                     "eth_getLogs returned row %s outside requested destination topic; "
@@ -627,7 +804,34 @@ class USDCReceiver:
                     self._cursor_path,
                 )
                 return None
+            block_log_key = (receipt.block_hash, receipt.log_index)
+            prior_block_log = receipts_by_block_log.get(block_log_key)
+            if prior_block_log is not None:
+                if _transfer_receipt_semantics(prior_block_log) == _transfer_receipt_semantics(
+                    receipt
+                ):
+                    continue
+                log.warning(
+                    "eth_getLogs returned conflicting semantic rows for block_hash/log_index "
+                    "%s:%s; skipping tick without advancing cursor %s",
+                    receipt.block_hash,
+                    receipt.log_index,
+                    self._cursor_path,
+                )
+                return None
+            tx_location = (receipt.block_number, receipt.block_hash, receipt.transaction_index)
+            prior_tx_location = tx_locations.get(receipt.tx_hash)
+            if prior_tx_location is not None and prior_tx_location != tx_location:
+                log.warning(
+                    "eth_getLogs returned transaction hash %s at multiple locations; "
+                    "skipping tick without advancing cursor %s",
+                    receipt.tx_hash,
+                    self._cursor_path,
+                )
+                return None
+            tx_locations[receipt.tx_hash] = tx_location
             receipts_by_key[key] = receipt
+            receipts_by_block_log[block_log_key] = receipt
 
         materialized = sorted(
             receipts_by_key.values(),
@@ -653,6 +857,17 @@ class USDCReceiver:
         if self._cursor.last_block <= 0:
             return max(0, finalized_number - self._block_lookback)
         return self._cursor.last_block + 1
+
+    def _retain_seen_keys_needed_for_retry(
+        self,
+        receipt_by_seen_key: dict[tuple[str, int], TransferReceipt],
+    ) -> None:
+        self._cursor.seen_keys = {
+            key
+            for key in self._cursor.seen_keys
+            if (receipt := receipt_by_seen_key.get(key)) is not None
+            and receipt.block_number > self._cursor.last_block
+        }
 
     def _emit_payment_event(self, receipt: TransferReceipt, *, now: datetime | None = None) -> bool:
         """Append one PaymentEvent to the canonical event log.
@@ -747,6 +962,21 @@ class USDCReceiver:
             "the daemon; do not manually advance the cursor"
         )
 
+    def _cursor_recovery_action(self) -> str:
+        configured_cursor = os.environ.get(CURSOR_PATH_ENV)
+        resolved_cursor = self._cursor_path.expanduser().resolve(strict=False)
+        wallet = self._operator_wallet or "<missing>"
+        contract = _normalise_address(BASE_USDC_CONTRACT_ADDRESS)
+        return (
+            f"check {CURSOR_PATH_ENV}={configured_cursor or '<unset>'}, cursor file "
+            f"{self._cursor_path}, resolved path {resolved_cursor}, expected chain "
+            f"{BASE_CHAIN_ID} ({hex(BASE_CHAIN_ID)}), USDC contract {contract}, "
+            f"operator wallet {wallet}, cursor file directory/file permissions, and "
+            "payment-event/resource-receipt log continuity; preserve the cursor, "
+            "seen_keys, payment events, and resource receipts for audit, then quarantine "
+            "or migrate only after reconciling the last processed x402 USDC event"
+        )
+
 
 def _default_rpc_caller(rpc_url: str) -> Any:
     """Construct the default JSON-RPC caller using ``requests``.
@@ -821,7 +1051,9 @@ def iter_receipts_for_test(
 
 __all__ = [
     "BASE_RPC_URL_ENV",
+    "BASE_CHAIN_ID",
     "BASE_USDC_CONTRACT_ADDRESS",
+    "CURSOR_SCHEMA_VERSION",
     "CURSOR_PATH_ENV",
     "DEFAULT_BASE_RPC_URL",
     "DEFAULT_BLOCK_LOOKBACK",

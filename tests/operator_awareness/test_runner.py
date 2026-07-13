@@ -53,15 +53,20 @@ class TestRunOnce:
     def test_write_failure_yields_error_label(self, tmp_path, monkeypatch):
         from agents.operator_awareness import runner as runner_mod
         from agents.payment_processors import resource_receipts
+        from agents.payment_processors.resource_receipts import (
+            MoneyRailReceiptOperation,
+            tail_resource_receipts,
+        )
 
         state = AwarenessState(timestamp=_now())
         agg = mock.Mock(spec=Aggregator)
         agg.collect.return_value = state
         agg.monetization_log_path = tmp_path / "events.jsonl"
+        receipt_log = tmp_path / "resource-receipts.jsonl"
         monkeypatch.setattr(
             resource_receipts,
             "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
-            tmp_path / "resource-receipts.jsonl",
+            receipt_log,
         )
         runner = AwarenessRunner(
             aggregator=agg,
@@ -72,6 +77,11 @@ class TestRunOnce:
         result = runner.run_once()
         assert result == "error"
         assert runner.writes_total.labels(result="error")._value.get() == 1.0
+        receipts = tail_resource_receipts(log_path=receipt_log)
+        assert len(receipts) == 1
+        assert receipts[0].operation is MoneyRailReceiptOperation.AWARENESS_STATE_WRITE
+        assert receipts[0].downstream_action == "operator_awareness.write_state_atomic"
+        assert not (tmp_path / "blocked" / "state.json").exists()
 
 
 class TestTickFloor:
