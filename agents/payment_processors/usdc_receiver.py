@@ -44,9 +44,8 @@ Constitutional posture:
   truncation, not consent-gating.
 
 Idempotency: each Transfer event has a stable ``(tx_hash, log_index)``
-    tuple. We persist the cursor to a JSON state file so re-poll
-overlap is harmless and a daemon restart resumes from the last seen
-event.
+tuple. We persist the cursor to a JSON state file so re-poll overlap
+is harmless and a daemon restart resumes from the last seen event.
 
 Credential bootstrap:
 

@@ -115,10 +115,9 @@ def resource_receipt_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pat
     import agents.payment_processors.resource_receipts as resource_receipts
 
     log_path = tmp_path / "resource-receipts.jsonl"
-    monkeypatch.setattr(
-        resource_receipts,
-        "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
-        log_path,
+    monkeypatch.setenv(
+        resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+        str(log_path),
     )
     return log_path
 

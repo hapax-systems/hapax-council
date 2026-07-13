@@ -28,11 +28,14 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 log = logging.getLogger(__name__)
 
+# Pure canonical fallback. The live ledger path is resolved at call time by
+# ``default_receipt_log_path()`` from ``MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV``;
+# this constant is only the /dev/shm fallback used when the env var is unset. It
+# must NOT capture the environment at import, or a later env change would be
+# ignored and patching this constant would appear to work while the resolver
+# still read a stale import-time value. Bind isolation through the env contract.
 DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH = Path(
-    os.environ.get(
-        "HAPAX_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
-        "/dev/shm/hapax-monetization/resource-receipts.jsonl",
-    )
+    "/dev/shm/hapax-monetization/resource-receipts.jsonl"
 )
 MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV = "HAPAX_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH"
 MONEY_RAIL_RESOURCE_RECEIPT_SCHEMA_VERSION = 1

@@ -133,10 +133,9 @@ class TestPollOnce:
         import agents.payment_processors.resource_receipts as resource_receipts
 
         monkeypatch.setattr(ev_log, "DEFAULT_PAYMENT_LOG_PATH", log_path)
-        monkeypatch.setattr(
-            resource_receipts,
-            "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
-            receipt_log,
+        monkeypatch.setenv(
+            resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+            str(receipt_log),
         )
         body = [
             {
@@ -217,10 +216,9 @@ class TestPollOnce:
         import agents.payment_processors.resource_receipts as resource_receipts
 
         monkeypatch.setattr(ev_log, "DEFAULT_PAYMENT_LOG_PATH", log_path)
-        monkeypatch.setattr(
-            resource_receipts,
-            "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
-            receipt_log,
+        monkeypatch.setenv(
+            resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+            str(receipt_log),
         )
         monkeypatch.setattr(liberapay_mod, "append_event", lambda _event: False)
         body = [

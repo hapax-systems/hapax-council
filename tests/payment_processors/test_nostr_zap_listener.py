@@ -128,10 +128,9 @@ class TestNostrZapListener:
         log_path = tmp_path / "events.jsonl"
         receipt_log = tmp_path / "resource-receipts.jsonl"
         monkeypatch.setattr(ev_log, "DEFAULT_PAYMENT_LOG_PATH", log_path)
-        monkeypatch.setattr(
-            resource_receipts,
-            "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
-            receipt_log,
+        monkeypatch.setenv(
+            resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+            str(receipt_log),
         )
         listener = NostrZapListener(npub_hex="abcd" * 16)
         zap_event = {
@@ -187,10 +186,9 @@ class TestNostrZapListener:
         log_path = tmp_path / "events.jsonl"
         receipt_log = tmp_path / "resource-receipts.jsonl"
         monkeypatch.setattr(ev_log, "DEFAULT_PAYMENT_LOG_PATH", log_path)
-        monkeypatch.setattr(
-            resource_receipts,
-            "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
-            receipt_log,
+        monkeypatch.setenv(
+            resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+            str(receipt_log),
         )
         monkeypatch.setattr(nostr_mod, "append_event", lambda _event: False)
         listener = NostrZapListener(npub_hex="abcd" * 16)
@@ -248,10 +246,9 @@ class TestNostrZapListener:
         import agents.payment_processors.resource_receipts as resource_receipts
 
         receipt_log = tmp_path / "resource-receipts.jsonl"
-        monkeypatch.setattr(
-            resource_receipts,
-            "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
-            receipt_log,
+        monkeypatch.setenv(
+            resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+            str(receipt_log),
         )
 
         class _FakeWebSocket:
@@ -287,10 +284,9 @@ class TestNostrZapListener:
         import agents.payment_processors.resource_receipts as resource_receipts
 
         receipt_log = tmp_path / "resource-receipts.jsonl"
-        monkeypatch.setattr(
-            resource_receipts,
-            "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
-            receipt_log,
+        monkeypatch.setenv(
+            resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+            str(receipt_log),
         )
 
         class _DisconnectingWebSocket:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
@@ -110,10 +111,9 @@ class TestAwarenessWriteReceipts:
         receipt_log = tmp_path / "resource-receipts.jsonl"
         import agents.payment_processors.resource_receipts as resource_receipts
 
-        monkeypatch.setattr(
-            resource_receipts,
-            "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
-            receipt_log,
+        monkeypatch.setenv(
+            resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+            str(receipt_log),
         )
         log_path = tmp_path / "events.jsonl"
         state_path = tmp_path / "state.json"
@@ -165,15 +165,14 @@ class TestAwarenessWriteReceipts:
         assert aggregator.flush_awareness_block() is False
         assert not state_path.exists()
 
-    def test_flush_preserves_receipt_when_state_write_fails(self, tmp_path, monkeypatch):
+    def test_flush_preserves_receipt_when_state_write_fails(self, tmp_path, monkeypatch, caplog):
         import agents.payment_processors.monetization_aggregator as aggregator_mod
         import agents.payment_processors.resource_receipts as resource_receipts
 
         receipt_log = tmp_path / "resource-receipts.jsonl"
-        monkeypatch.setattr(
-            resource_receipts,
-            "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
-            receipt_log,
+        monkeypatch.setenv(
+            resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+            str(receipt_log),
         )
         monkeypatch.setattr(aggregator_mod, "write_state_atomic", lambda *_args, **_kwargs: False)
         log_path = tmp_path / "events.jsonl"
@@ -188,8 +187,14 @@ class TestAwarenessWriteReceipts:
             aggregate_tick_s=5.0,
         )
 
-        assert aggregator.flush_awareness_block() is False
+        with caplog.at_level(logging.WARNING, logger=aggregator_mod.__name__):
+            assert aggregator.flush_awareness_block() is False
         assert not state_path.exists()
         receipts = tail_resource_receipts(log_path=receipt_log)
         assert len(receipts) == 1
         assert receipts[0].operation.value == "awareness_state_write"
+        # The post-receipt state-write failure must surface an operator-visible
+        # warning; the committed receipt is append-only admission evidence.
+        assert (
+            "monetization awareness state write failed after resource receipt commit" in caplog.text
+        )

@@ -264,10 +264,9 @@ def test_public_emit_refused_when_resource_receipt_ref_unverified(
 
 def test_public_emit_accepts_real_resource_receipt(tmp_path, monkeypatch):
     receipt_log = tmp_path / "resource-receipts.jsonl"
-    monkeypatch.setattr(
-        resource_receipts,
-        "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
-        receipt_log,
+    monkeypatch.setenv(
+        resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+        str(receipt_log),
     )
     monkeypatch.setattr(
         normalizer_module,
@@ -300,10 +299,9 @@ def test_public_emit_accepts_real_resource_receipt(tmp_path, monkeypatch):
 
 def test_public_emit_accepts_real_kofi_ingress_resource_receipt(tmp_path, monkeypatch):
     receipt_log = tmp_path / "resource-receipts.jsonl"
-    monkeypatch.setattr(
-        resource_receipts,
-        "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
-        receipt_log,
+    monkeypatch.setenv(
+        resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+        str(receipt_log),
     )
     monkeypatch.setattr(
         normalizer_module,
@@ -342,10 +340,9 @@ def test_public_emit_accepts_real_kofi_ingress_resource_receipt(tmp_path, monkey
 
 def test_public_emit_refuses_kofi_payment_event_operation(tmp_path, monkeypatch):
     receipt_log = tmp_path / "resource-receipts.jsonl"
-    monkeypatch.setattr(
-        resource_receipts,
-        "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
-        receipt_log,
+    monkeypatch.setenv(
+        resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+        str(receipt_log),
     )
     monkeypatch.setattr(
         normalizer_module,
@@ -382,10 +379,9 @@ def test_public_emit_refuses_kofi_payment_event_operation(tmp_path, monkeypatch)
 
 def test_public_emit_refuses_real_resource_receipt_external_id_mismatch(tmp_path, monkeypatch):
     receipt_log = tmp_path / "resource-receipts.jsonl"
-    monkeypatch.setattr(
-        resource_receipts,
-        "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
-        receipt_log,
+    monkeypatch.setenv(
+        resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+        str(receipt_log),
     )
     monkeypatch.setattr(
         normalizer_module,

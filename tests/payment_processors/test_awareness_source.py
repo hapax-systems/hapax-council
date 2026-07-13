@@ -82,10 +82,9 @@ class TestAwarenessRunnerReceiptGate:
         import agents.payment_processors.resource_receipts as resource_receipts
 
         receipt_log = tmp_path / "resource-receipts.jsonl"
-        monkeypatch.setattr(
-            resource_receipts,
-            "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
-            receipt_log,
+        monkeypatch.setenv(
+            resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+            str(receipt_log),
         )
         log_path = tmp_path / "events.jsonl"
         state_path = tmp_path / "state.json"
@@ -118,10 +117,9 @@ class TestAwarenessRunnerReceiptGate:
         import agents.payment_processors.resource_receipts as resource_receipts
 
         receipt_log = tmp_path / "resource-receipts.jsonl"
-        monkeypatch.setattr(
-            resource_receipts,
-            "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
-            receipt_log,
+        monkeypatch.setenv(
+            resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+            str(receipt_log),
         )
         log_path = tmp_path / "events.jsonl"
         state_path = tmp_path / "state.json"
@@ -182,10 +180,9 @@ class TestAwarenessRunnerReceiptGate:
         import agents.payment_processors.resource_receipts as resource_receipts
 
         receipt_log = tmp_path / "resource-receipts.jsonl"
-        monkeypatch.setattr(
-            resource_receipts,
-            "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
-            receipt_log,
+        monkeypatch.setenv(
+            resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+            str(receipt_log),
         )
         monkeypatch.setattr(runner_mod, "write_state_atomic", lambda *_args, **_kwargs: False)
         log_path = tmp_path / "events.jsonl"

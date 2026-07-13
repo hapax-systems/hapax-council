@@ -18,21 +18,20 @@ def _now() -> datetime:
 
 
 class TestRunOnce:
-    def test_writes_state_to_path(self, tmp_path):
+    def test_writes_state_to_path(self, tmp_path, monkeypatch):
         from agents.payment_processors import resource_receipts
 
         state = AwarenessState(timestamp=_now())
         agg = mock.Mock(spec=Aggregator)
         agg.collect.return_value = state
         agg.monetization_log_path = tmp_path / "events.jsonl"
-        with mock.patch.object(
-            resource_receipts,
-            "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
-            tmp_path / "resource-receipts.jsonl",
-        ):
-            out = tmp_path / "state.json"
-            runner = AwarenessRunner(aggregator=agg, state_path=out, registry=CollectorRegistry())
-            result = runner.run_once()
+        monkeypatch.setenv(
+            resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+            str(tmp_path / "resource-receipts.jsonl"),
+        )
+        out = tmp_path / "state.json"
+        runner = AwarenessRunner(aggregator=agg, state_path=out, registry=CollectorRegistry())
+        result = runner.run_once()
         assert result == "ok"
         assert out.exists()
         loaded = json.loads(out.read_text(encoding="utf-8"))
@@ -63,10 +62,9 @@ class TestRunOnce:
         agg.collect.return_value = state
         agg.monetization_log_path = tmp_path / "events.jsonl"
         receipt_log = tmp_path / "resource-receipts.jsonl"
-        monkeypatch.setattr(
-            resource_receipts,
-            "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
-            receipt_log,
+        monkeypatch.setenv(
+            resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+            str(receipt_log),
         )
         runner = AwarenessRunner(
             aggregator=agg,

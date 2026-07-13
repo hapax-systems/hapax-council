@@ -439,6 +439,13 @@ def _resource_receipt_refs(refs: tuple[str, ...]) -> tuple[str, ...]:
 
 
 def _payment_event_receipt_matches_ref(ref: str) -> bool:
+    # The rail is parsed from the ref itself and passed as the expected rail.
+    # ``resource_receipt_matches`` -> ``load_resource_receipt`` binds that rail as
+    # ``expected_rail`` in the index lookup, and ``_load_indexed_receipt`` rejects
+    # both an index-rail and a parsed-row rail mismatch before admission. A forged
+    # cross-rail ref (correct receipt_id, wrong rail) therefore resolves to no
+    # receipt and fails closed here as unverified — it cannot borrow another
+    # rail's committed evidence to pass the public support-copy gate.
     try:
         _prefix, rail, _receipt_id = ref.split(":", 2)
     except ValueError:

@@ -31,7 +31,6 @@ import logging
 import os
 import signal as _signal
 import threading
-from pathlib import Path
 from typing import Any
 
 from prometheus_client import REGISTRY, CollectorRegistry, Counter
@@ -42,7 +41,6 @@ from agents.operator_awareness.state import (
     write_state_atomic,
 )
 from agents.payment_processors.event_log import (
-    DEFAULT_PAYMENT_LOG_PATH,
     event_window_sha256,
     tail_events,
 )
@@ -135,9 +133,11 @@ class AwarenessRunner:
 
     def run_once(self) -> str:
         """Build state + write atomically; return the result label."""
+        # Use the aggregator's own configured monetization log. Do NOT silently
+        # fall back to the live production payment log: the real Aggregator types
+        # this as a Path and always supplies one, so a non-Path here is a
+        # misconfiguration that must surface, not be masked by reading live data.
         monetization_log_path = self._aggregator.monetization_log_path
-        if not isinstance(monetization_log_path, Path):
-            monetization_log_path = DEFAULT_PAYMENT_LOG_PATH
         events = tail_events(log_path=monetization_log_path)
         monetization_block = build_monetization_block_from_events(events)
         try:

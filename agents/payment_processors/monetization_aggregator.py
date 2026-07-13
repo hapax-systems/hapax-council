@@ -188,6 +188,12 @@ class MonetizationAggregator:
             monetization=block,
         )
         ok = write_state_atomic(state, self._state_path)
+        if not ok:
+            log.warning(
+                "monetization awareness state write failed after resource receipt commit; "
+                "committed money-rail resource receipts are append-only and remain "
+                "available as admission evidence"
+            )
         return ok
 
     def run_aggregate_loop(self) -> None:

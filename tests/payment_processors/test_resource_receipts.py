@@ -207,6 +207,37 @@ class _TrackingConnection:
         self._conn.close()
 
 
+def test_default_receipt_log_path_resolves_env_at_call_time(tmp_path, monkeypatch) -> None:
+    """The resolver reflects the env at call time; the constant is a pure fallback.
+
+    Regression for the import-time capture bug: the module constant must be the
+    fixed canonical /dev/shm path, not whatever the environment held at import,
+    and ``default_receipt_log_path()`` must re-read the env on every call so an
+    env transition (or an unset) takes effect immediately.
+    """
+
+    # The canonical fallback constant is the fixed /dev/shm path, not env-derived.
+    canonical_fallback = Path("/dev/shm/hapax-monetization/resource-receipts.jsonl")
+    assert canonical_fallback == resource_receipts_mod.DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH
+
+    path_a = tmp_path / "ledger-a.jsonl"
+    path_b = tmp_path / "ledger-b.jsonl"
+
+    monkeypatch.setenv(resource_receipts_mod.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV, str(path_a))
+    assert resource_receipts_mod.default_receipt_log_path() == path_a
+
+    # A later env transition is honored at call time — no import-time capture.
+    monkeypatch.setenv(resource_receipts_mod.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV, str(path_b))
+    assert resource_receipts_mod.default_receipt_log_path() == path_b
+
+    # With the env unset, the resolver falls back to the canonical constant.
+    monkeypatch.delenv(resource_receipts_mod.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV, raising=False)
+    assert (
+        resource_receipts_mod.default_receipt_log_path()
+        == resource_receipts_mod.DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH
+    )
+
+
 def test_receipt_never_grants_spend_or_public_projection() -> None:
     receipt = _receipt()
 

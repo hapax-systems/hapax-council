@@ -279,6 +279,60 @@ def test_full_evidence_and_refs_requires_real_resource_receipt(
     assert decision.resource_receipt_refs == (receipt_ref,)
 
 
+def test_forged_cross_rail_receipt_ref_fails_closed_against_real_ledger(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ref that reuses a real receipt_id under the wrong rail is unverified.
+
+    Commits a genuine ``liberapay`` PAYMENT_EVENT_APPEND receipt, then presents a
+    forged ref carrying the same receipt_id but a different rail. The gate binds
+    the rail from the ref as ``expected_rail``, so the forged ref resolves to no
+    receipt and holds public support copy — a rail cannot borrow another rail's
+    committed evidence. The honest ref for the same receipt still passes, proving
+    the ledger genuinely holds the receipt and the rejection is rail-based.
+    """
+
+    receipt_log = tmp_path / "money-rail-resource-receipts.jsonl"
+    monkeypatch.setenv(
+        resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+        str(receipt_log),
+    )
+    monkeypatch.setattr(
+        readiness_module,
+        "resource_receipt_matches",
+        resource_receipts.resource_receipt_matches,
+    )
+    honest_ref = resource_receipts.record_payment_event_resource_receipt(
+        rail="liberapay",
+        external_id="lp-forged-rail-real-receipt",
+        event_kind="payin_succeeded",
+        downstream_action="payment_event_log.append_event",
+    )
+    assert honest_ref is not None
+
+    _prefix, rail, receipt_id = honest_ref.split(":", 2)
+    assert rail == "liberapay"
+    forged_ref = resource_receipts.receipt_ref_from_id("lightning", receipt_id)
+    assert forged_ref != honest_ref
+
+    forged_decision = evaluate_support_copy_readiness(
+        _registry(),
+        _ledger(ALL_DIMS, resource_receipt_ref=forged_ref),
+        readiness_refs=_refs(),
+    )
+    assert forged_decision.state == "monetization-held"
+    assert forged_decision.public_copy_allowed is False
+    assert "money_rail_resource_receipt_unverified" in forged_decision.blockers
+
+    honest_decision = evaluate_support_copy_readiness(
+        _registry(),
+        _ledger(ALL_DIMS, resource_receipt_ref=honest_ref),
+        readiness_refs=_refs(),
+    )
+    assert honest_decision.state == "public-safe"
+
+
 def test_missing_resource_receipt_holds_even_with_public_truth_and_monetization() -> None:
     decision = evaluate_support_copy_readiness(
         _registry(),
