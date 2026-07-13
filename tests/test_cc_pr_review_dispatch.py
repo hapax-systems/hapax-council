@@ -2379,6 +2379,201 @@ with module.review_execution_lock(
         assert not (tmp_path / "wake").exists()
         assert not (tmp_path / "degraded-merges.jsonl").exists()
 
+    def test_review_lock_parent_creation_failure_fails_closed_without_side_effects(
+        self, tmp_path: Path
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        note = _write_task(vault)
+        lock_parent = vault / "_locks" / "review-team"
+        lock_parent.parent.mkdir(parents=True, exist_ok=True)
+        lock_parent.write_text("not a directory", encoding="utf-8")
+        gh = FakeGh()
+        reviewers = RecordingReviewers()
+
+        result = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            force=True,
+            gh_runner=gh,
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert result["status"] == "review_lock_unavailable"
+        assert result["lock_evidence"]["holder_error"].startswith("claim_parent_error:")
+        assert result["side_effects"] == {}
+        assert gh.calls == []
+        assert reviewers.invocations == []
+        assert not (note.parent / "task-a.review-dossier.yaml").exists()
+        assert not (note.parent / "task-a.acceptance.yaml").exists()
+        assert not (tmp_path / "wake").exists()
+        assert not (tmp_path / "degraded-merges.jsonl").exists()
+
+    def test_review_lock_publication_directory_fsync_failure_removes_own_claim(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        _write_task(vault)
+        lock_path = dispatch.review_execution_lock_path(
+            repo="owner/repo",
+            pr_number=42,
+            vault_root=vault,
+        )
+
+        def fail_fsync_directory(_path: Path) -> None:
+            raise OSError("nfs commit failed")
+
+        monkeypatch.setattr(dispatch, "_fsync_directory", fail_fsync_directory)
+        gh = FakeGh()
+        reviewers = RecordingReviewers()
+
+        result = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            force=True,
+            gh_runner=gh,
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert result["status"] == "review_lock_unavailable"
+        assert result["lock_evidence"]["holder_error"] == "holder_publish_error:OSError"
+        assert result["lock_evidence"]["own_claim_removed"] is True
+        assert result["lock_evidence"]["cleanup_warning"] == (
+            "own_claim_unlink_directory_fsync_error:OSError"
+        )
+        assert not lock_path.exists()
+        assert result["side_effects"] == {}
+        assert gh.calls == []
+        assert reviewers.invocations == []
+        assert not (tmp_path / "wake").exists()
+        assert not (tmp_path / "degraded-merges.jsonl").exists()
+
+    def test_review_lock_publication_failure_preserves_replaced_claim(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        _write_task(vault)
+        lock_path = dispatch.review_execution_lock_path(
+            repo="owner/repo",
+            pr_number=42,
+            vault_root=vault,
+        )
+        replacement_holder = {
+            "schema": "hapax.review_execution_lock.holder.v1",
+            "owner_token": "z" * 43,
+            "repo": "owner/repo",
+            "pr": 42,
+            "pid": 999,
+            "host": "other-host",
+            "hostname": "other-host",
+            "lock_path": str(lock_path),
+            "acquired_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        }
+        fsync_calls = 0
+
+        def replace_claim_then_fail(_path: Path) -> None:
+            nonlocal fsync_calls
+            fsync_calls += 1
+            if fsync_calls == 1:
+                lock_path.unlink()
+                lock_path.write_text(json.dumps(replacement_holder), encoding="utf-8")
+            raise OSError("nfs commit failed")
+
+        monkeypatch.setattr(dispatch, "_fsync_directory", replace_claim_then_fail)
+        gh = FakeGh()
+        reviewers = RecordingReviewers()
+
+        result = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            force=True,
+            gh_runner=gh,
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert result["status"] == "review_lock_unavailable"
+        assert result["lock_evidence"]["holder_error"] == "holder_publish_error:OSError"
+        assert result["lock_evidence"]["own_claim_removed"] is False
+        assert result["lock_evidence"]["cleanup_warning"] == "own_claim_identity_mismatch"
+        assert json.loads(lock_path.read_text(encoding="utf-8")) == replacement_holder
+        assert result["side_effects"] == {}
+        assert gh.calls == []
+        assert reviewers.invocations == []
+        assert not (tmp_path / "wake").exists()
+        assert not (tmp_path / "degraded-merges.jsonl").exists()
+
+    def test_review_lock_release_directory_fsync_failure_keeps_completed_result(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        note = _write_task(vault, quality_floor="frontier_review_required")
+        lock_path = dispatch.review_execution_lock_path(
+            repo="owner/repo",
+            pr_number=42,
+            vault_root=vault,
+        )
+        real_fsync_directory = dispatch._fsync_directory
+        lock_directory_fsyncs = 0
+
+        def fail_only_release_fsync(path: Path) -> None:
+            nonlocal lock_directory_fsyncs
+            if Path(path) == lock_path.parent:
+                lock_directory_fsyncs += 1
+                if lock_directory_fsyncs == 2:
+                    raise OSError("nfs release commit failed")
+            real_fsync_directory(path)
+
+        monkeypatch.setattr(dispatch, "_fsync_directory", fail_only_release_fsync)
+        caplog.set_level(logging.WARNING, logger=dispatch.LOG.name)
+        gh = FakeGh()
+        reviewers = RecordingReviewers()
+
+        result = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            force=True,
+            gh_runner=gh,
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert result["status"] == "dispatched"
+        assert (note.parent / "task-a.review-dossier.yaml").is_file()
+        assert (note.parent / "task-a.acceptance.yaml").is_file()
+        assert reviewers.invocations
+        assert lock_directory_fsyncs == 2
+        assert not lock_path.exists()
+        assert "release directory fsync failed after unlink" in caplog.text
+
     def test_dossier_and_receipt_publication_use_atomic_replace(
         self, tmp_path: Path, monkeypatch: Any
     ) -> None:

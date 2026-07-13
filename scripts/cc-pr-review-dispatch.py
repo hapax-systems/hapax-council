@@ -1106,20 +1106,30 @@ def _lock_collision_result(*, path: Path, repo: str, pr_number: int) -> ReviewEx
     )
 
 
-def _unlink_open_claim_if_same_file(path: Path, fd: int) -> bool:
+def _unlink_open_claim_if_same_file(path: Path, fd: int) -> tuple[bool, str | None]:
     try:
         open_stat = os.fstat(fd)
         path_stat = path.stat()
-    except OSError:
-        return False
+    except OSError as exc:
+        return False, f"own_claim_identity_error:{type(exc).__name__}"
     if (open_stat.st_dev, open_stat.st_ino) != (path_stat.st_dev, path_stat.st_ino):
-        return False
+        return False, "own_claim_identity_mismatch"
     try:
         path.unlink()
     except FileNotFoundError:
-        return False
-    _fsync_directory(path.parent)
-    return True
+        return False, "own_claim_missing"
+    except OSError as exc:
+        return False, f"own_claim_unlink_error:{type(exc).__name__}"
+    try:
+        _fsync_directory(path.parent)
+    except OSError as exc:
+        LOG.warning(
+            "review execution lock cleanup directory fsync failed after unlink %s: %s",
+            path,
+            exc,
+        )
+        return True, f"own_claim_unlink_directory_fsync_error:{type(exc).__name__}"
+    return True, None
 
 
 def _release_lock_claim(path: Path, owner_token: str) -> bool:
@@ -1136,7 +1146,14 @@ def _release_lock_claim(path: Path, owner_token: str) -> bool:
         path.unlink()
     except FileNotFoundError:
         return False
-    _fsync_directory(path.parent)
+    try:
+        _fsync_directory(path.parent)
+    except OSError as exc:
+        LOG.warning(
+            "review execution lock release directory fsync failed after unlink %s: %s",
+            path,
+            exc,
+        )
     return True
 
 
@@ -1162,7 +1179,22 @@ def review_execution_lock(
         vault_root=vault_root,
         lock_dir=lock_dir,
     )
-    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        status = "review_lock_unavailable"
+        yield ReviewExecutionLock(
+            path=path,
+            acquired=False,
+            holder={},
+            status=status,
+            lock_evidence=_lock_evidence(
+                path=path,
+                status=status,
+                holder_error=f"claim_parent_error:{type(exc).__name__}",
+            ),
+        )
+        return
     owner_token = secrets.token_urlsafe(32)
     fd: int | None = None
     try:
@@ -1195,26 +1227,31 @@ def review_execution_lock(
     try:
         try:
             _write_lock_holder_fd(fd, holder)
+            _fsync_directory(path.parent)
             os.close(fd)
             fd = None
-            _fsync_directory(path.parent)
         except OSError as exc:
-            removed = _unlink_open_claim_if_same_file(path, fd) if fd is not None else False
+            cleanup_warning = "own_claim_fd_missing"
+            removed = False
+            if fd is not None:
+                removed, cleanup_warning = _unlink_open_claim_if_same_file(path, fd)
             if fd is not None:
                 os.close(fd)
                 fd = None
             status = "review_lock_unavailable"
+            lock_evidence = _lock_evidence(
+                path=path,
+                status=status,
+                holder_error=f"holder_publish_error:{type(exc).__name__}",
+            ) | {"own_claim_removed": removed}
+            if cleanup_warning:
+                lock_evidence["cleanup_warning"] = cleanup_warning
             yield ReviewExecutionLock(
                 path=path,
                 acquired=False,
                 holder=holder,
                 status=status,
-                lock_evidence=_lock_evidence(
-                    path=path,
-                    status=status,
-                    holder_error=f"holder_publish_error:{type(exc).__name__}",
-                )
-                | {"own_claim_removed": removed},
+                lock_evidence=lock_evidence,
             )
             return
         try:
