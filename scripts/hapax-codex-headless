@@ -208,6 +208,81 @@ claim_epoch_for_task() {
   return 1
 }
 
+task_note_assignment_for_task() {
+  local task="$1" lane="$2"
+  PYTHONPATH="$COUNCIL_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - "$task" "$lane" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+from shared.frontmatter import parse_frontmatter
+
+task_id = sys.argv[1]
+lane = sys.argv[2]
+root = Path(
+    os.environ.get(
+        "HAPAX_CC_TASK_ROOT",
+        str(Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"),
+    )
+)
+active = root / "active"
+if not active.is_dir():
+    print(
+        f"hapax-codex-headless: refusing launch; task-note active directory is missing: {active}",
+        file=sys.stderr,
+    )
+    sys.exit(78)
+
+matches: list[tuple[Path, dict]] = []
+for path in sorted(active.glob(f"{task_id}*.md")):
+    try:
+        frontmatter, _body = parse_frontmatter(path)
+    except Exception:
+        continue
+    if str(frontmatter.get("task_id", "")).strip() == task_id:
+        matches.append((path, frontmatter))
+
+if not matches:
+    print(
+        f"hapax-codex-headless: refusing launch; no active task note for dispatch task '{task_id}' under {active}",
+        file=sys.stderr,
+    )
+    sys.exit(78)
+if len(matches) > 1:
+    names = ", ".join(str(path) for path, _frontmatter in matches)
+    print(
+        f"hapax-codex-headless: refusing launch; multiple active task notes match dispatch task '{task_id}': {names}",
+        file=sys.stderr,
+    )
+    sys.exit(78)
+
+path, frontmatter = matches[0]
+assigned_to = str(frontmatter.get("assigned_to", "")).strip()
+if assigned_to != lane:
+    print(
+        f"hapax-codex-headless: refusing launch; task note {path} is assigned_to '{assigned_to}', not lane '{lane}'",
+        file=sys.stderr,
+    )
+    sys.exit(78)
+print(path)
+PY
+}
+
+verify_claim_ownership_or_exit() {
+  local context="$1" task_note_path=""
+  CLAIM_EPOCH_LINE="$(claim_epoch_for_task "$SESSION" "$SESSION_UUID" "$CODEX_TASK" || true)"
+  if [[ -z "$CLAIM_EPOCH_LINE" ]]; then
+    echo "hapax-codex-headless: refusing $context without an exact active-task marker and matching cc-claim epoch for '$SESSION' task '$CODEX_TASK'; next action: run governed cc-claim locally for the dispatch task or repair the stale claim/epoch sidecar before retrying" >&2
+    exit 78
+  fi
+  if ! task_note_path="$(task_note_assignment_for_task "$CODEX_TASK" "$SESSION")"; then
+    exit 78
+  fi
+  CLAIMED_TASK="$CODEX_TASK"
+  TASK_NOTE_PATH="$task_note_path"
+  export HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH="$CLAIM_EPOCH_LINE"
+}
+
 remote_python_command() {
   local payload="$1" code="$2"
   local code_b64="" bash_script="" quoted_script="" quoted_payload="" quoted_code=""
@@ -836,7 +911,10 @@ export COCKPIT_BASE_URL
 # claim that belongs to a different task.
 SESSION_CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-$SESSION-$SESSION_UUID"
 CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-$SESSION"
+SESSION_CLAIM_EPOCH_FILE="$HOME/.cache/hapax/cc-claim-epoch-$SESSION-$SESSION_UUID"
+CLAIM_EPOCH_FILE="$HOME/.cache/hapax/cc-claim-epoch-$SESSION"
 CLAIMED_TASK=""
+TASK_NOTE_PATH=""
 if [[ -s "$SESSION_CLAIM_FILE" ]]; then
   CLAIMED_TASK="$(head -n1 "$SESSION_CLAIM_FILE" | tr -d '[:space:]')"
 elif [[ -s "$CLAIM_FILE" ]]; then
@@ -953,20 +1031,19 @@ if [[ -f "$PID_FILE" ]]; then
   fi
 fi
 
+if [[ "$CLAIM_TASK" -eq 0 || -n "$CLAIMED_TASK" ]]; then
+  verify_claim_ownership_or_exit "pre-claim launch"
+fi
+
 if [[ -n "$DISPATCH_HOST_REQUESTED" && -z "$CLAIMED_TASK" && "$CLAIM_TASK" -eq 1 ]]; then
   prove_local_fallback_before_claim
   [[ -x "$WORKDIR/scripts/cc-claim" ]] || { echo "hapax-codex-headless: missing cc-claim in $WORKDIR" >&2; exit 14; }
   (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CODEX_TASK")
-  CLAIMED_TASK="$CODEX_TASK"
+  verify_claim_ownership_or_exit "remote offered launch after cc-claim"
 fi
 
 if [[ -n "$DISPATCH_HOST_REQUESTED" ]]; then
-  CLAIM_EPOCH_LINE="$(claim_epoch_for_task "$SESSION" "$SESSION_UUID" "$CODEX_TASK" || true)"
-  if [[ -z "$CLAIM_EPOCH_LINE" ]]; then
-    echo "hapax-codex-headless: refusing remote dispatch without a matching local cc-claim epoch for '$SESSION' task '$CODEX_TASK'; next action: run governed cc-claim locally for the dispatch task or omit --no-claim before remote dispatch" >&2
-    exit 78
-  fi
-  export HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH="$CLAIM_EPOCH_LINE"
+  verify_claim_ownership_or_exit "remote dispatch"
 fi
 
 if [[ -n "$DISPATCH_HOST_REQUESTED" ]]; then
@@ -1043,17 +1120,12 @@ if [[ -z "$DISPATCH_HOST_REQUESTED" && -z "$DISPATCH_HOST" ]]; then
   if [[ -z "$CLAIMED_TASK" && "$CLAIM_TASK" -eq 1 ]]; then
     [[ -x "$WORKDIR/scripts/cc-claim" ]] || { echo "hapax-codex-headless: missing cc-claim in $WORKDIR" >&2; exit 14; }
     (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CODEX_TASK")
-    CLAIMED_TASK="$CODEX_TASK"
+    verify_claim_ownership_or_exit "local offered launch after cc-claim"
   fi
 fi
 
 if [[ -n "$DISPATCH_HOST" ]]; then
-  CLAIM_EPOCH_LINE="$(claim_epoch_for_task "$SESSION" "$SESSION_UUID" "$CODEX_TASK" || true)"
-  if [[ -z "$CLAIM_EPOCH_LINE" ]]; then
-    echo "hapax-codex-headless: refusing remote dispatch without a matching local cc-claim epoch for '$SESSION' task '$CODEX_TASK'; next action: run governed cc-claim locally for the dispatch task or omit --no-claim before remote dispatch" >&2
-    exit 78
-  fi
-  export HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH="$CLAIM_EPOCH_LINE"
+  verify_claim_ownership_or_exit "remote dispatch"
   POST_CLAIM_PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64 0)"
   POST_CLAIM_PREFLIGHT_COMMAND="$(remote_python_command "$POST_CLAIM_PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
   POST_CLAIM_PREFLIGHT_ERR=""
@@ -1083,10 +1155,16 @@ else
   CODEX_BIN="codex"
 fi
 
+if [[ "$CLAIM_TASK" -eq 0 ]]; then
+  CLAIM_INSTRUCTION="2. The launcher started this worker in preclaimed/--no-claim mode for $CODEX_TASK. DO NOT run cc-claim. Before mutation, verify exact ownership: $SESSION_CLAIM_FILE or $CLAIM_FILE contains $CODEX_TASK, $SESSION_CLAIM_EPOCH_FILE or $CLAIM_EPOCH_FILE contains the matching task-bound claim epoch '$CLAIM_EPOCH_LINE', and task note $TASK_NOTE_PATH is assigned_to $SESSION. If any proof is absent or mismatched, stop and write a relay receipt."
+else
+  CLAIM_INSTRUCTION="2. The launcher already acquired or verified this task before starting Codex, using the worktree-local claim path $WORKDIR/scripts/cc-claim for offered tasks. DO NOT run or re-run cc-claim. Before mutation, verify exact ownership: $SESSION_CLAIM_FILE or $CLAIM_FILE contains $CODEX_TASK, $SESSION_CLAIM_EPOCH_FILE or $CLAIM_EPOCH_FILE contains the matching task-bound claim epoch '$CLAIM_EPOCH_LINE', and task note $TASK_NOTE_PATH is assigned_to $SESSION. If any proof is absent or mismatched, stop and write a relay receipt."
+fi
+
 SDLC_PREAMBLE="SDLC DISCIPLINE (MANDATORY):
 1. Work only on the task named in this dispatch.
-2. Before mutation, verify this lane owns the task claim. If the task is still offered, run $WORKDIR/scripts/cc-claim $CODEX_TASK. If the launcher already claimed it, confirm $SESSION_CLAIM_FILE or $CLAIM_FILE contains $CODEX_TASK and the task note is assigned to this lane.
-3. If claim ownership is absent, cc-claim rejects for another reason, or the task is assigned to another lane, stop and write a relay receipt.
+$CLAIM_INSTRUCTION
+3. If claim ownership is absent or the task is assigned to another lane, stop and write a relay receipt.
 4. Use only the AuthorityCase and parent spec named in this dispatch.
 5. Do not create, select, or claim other work from the task pool.
 6. When the task is complete or blocked, report status and idle.
@@ -1130,12 +1208,7 @@ echo "  pid: $PID_FILE"
 
 cd "$WORKDIR"
 if [[ -n "$DISPATCH_HOST" ]]; then
-  CLAIM_EPOCH_LINE="$(claim_epoch_for_task "$SESSION" "$SESSION_UUID" "$CODEX_TASK" || true)"
-  if [[ -z "$CLAIM_EPOCH_LINE" ]]; then
-    echo "hapax-codex-headless: refusing remote dispatch without a matching local cc-claim epoch for '$SESSION' task '$CODEX_TASK'; next action: run governed cc-claim locally for the dispatch task or omit --no-claim before remote dispatch" >&2
-    exit 78
-  fi
-  export HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH="$CLAIM_EPOCH_LINE"
+  verify_claim_ownership_or_exit "remote exec payload"
   REMOTE_EXEC_PAYLOAD="$(remote_exec_payload_b64 "$DISPATCH_PROOF_FILE" codex "${CODEX_ARGS[@]}")"
   REMOTE_EXEC_COMMAND="$(remote_python_command "$REMOTE_EXEC_PAYLOAD" "$REMOTE_EXEC_PY")"
   ssh -o BatchMode=yes -o RequestTTY=no -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \

@@ -1190,12 +1190,15 @@ def test_prompt_contains_worktree_local_cc_claim_path(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     prompt = result.stdout
-    assert "scripts/cc-claim governed-build" in prompt
-    assert "/scripts/cc-claim governed-build" in prompt
-    assert "If the launcher already claimed it" in prompt
+    assert "worktree-local claim helper" in prompt
+    assert "scripts/cc-claim" in prompt
+    assert "for governed-build" in prompt
+    assert "DO NOT run or re-run cc-claim" in prompt
     assert "cc-active-task-beta" in prompt
+    assert "cc-claim-epoch-beta" in prompt
     assert "scripts/cc-close" in prompt
     assert "/scripts/cc-close" in prompt
+    assert "If the task is still offered, run" not in prompt
     lines = [l for l in prompt.splitlines() if "cc-claim" in l.lower()]
     for line in lines:
         assert "Run cc-claim governed-build" not in line or "/scripts/cc-claim" in line, (
@@ -1206,6 +1209,34 @@ def test_prompt_contains_worktree_local_cc_claim_path(tmp_path: Path) -> None:
         assert "bare cc-close" in line or "/scripts/cc-close" in line, (
             f"bare cc-close without absolute path found: {line!r}"
         )
+
+
+def test_prompt_for_claimed_task_forbids_worker_reclaim(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "claimed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+        status="claimed",
+        assigned_to="beta",
+    )
+
+    result = _run(tmp_path, "--task", "claimed-build", "--lane", "beta", "--print-prompt")
+
+    assert result.returncode == 0, result.stderr
+    prompt = result.stdout
+    assert "already-claimed task for this lane" in prompt
+    assert "preclaimed/no-claim mode" in prompt
+    assert "DO NOT run cc-claim" in prompt
+    assert "cc-active-task-beta" in prompt
+    assert "cc-claim-epoch-beta" in prompt
+    assert "If the task is still offered, run" not in prompt
+    assert "DO NOT run or re-run cc-claim" not in prompt
 
 
 def test_prompt_does_not_use_canonical_checkout_cc_claim(tmp_path: Path) -> None:
@@ -2216,7 +2247,8 @@ printf '%s\\n' "$@" > {launcher_args}
     assert "SDLC GOVERNED DISPATCH." in recorded
     assert "Task: governed-build" in recorded
     assert "AuthorityCase: CASE-TEST-001" in recorded
-    assert "If the launcher already claimed it" in recorded
+    assert "launcher must acquire it before Codex starts" in recorded
+    assert "DO NOT run or re-run cc-claim" in recorded
     assert "claim the next" not in recorded
     assert "highest-WSJF" not in recorded
 
@@ -2873,6 +2905,7 @@ printf '%s\\n' "$@" > {launcher_args}
         "--launch",
         extra_env={
             "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher),
+            "HAPAX_P0_CODEX_DRAIN_LANES": "cx-p0",
             "XDG_CACHE_HOME": str(tmp_path / "cache"),
         },
     )
@@ -3102,6 +3135,13 @@ def test_governed_codex_dispatch_reactivates_clean_retired_relay(tmp_path: Path)
     )
     home = tmp_path / "home"
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    claim_cache = home / ".cache" / "hapax"
+    claim_cache.mkdir(parents=True, exist_ok=True)
+    (claim_cache / "cc-active-task-cx-fugu").write_text(f"{task_id}\n", encoding="utf-8")
+    (claim_cache / "cc-claim-epoch-cx-fugu").write_text(
+        f"1234567890 {task_id}\n",
+        encoding="utf-8",
+    )
     relay = home / ".cache" / "hapax" / "relay"
     relay.mkdir(parents=True)
     (home / ".cache" / "hapax" / "stage0-durable-sink").mkdir(parents=True)
