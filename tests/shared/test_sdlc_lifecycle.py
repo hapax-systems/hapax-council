@@ -26,6 +26,7 @@ from shared.sdlc_lifecycle import (
     REVIEW_TEAM_DIGEST_MIGRATION_FILENAME,
     REVIEW_TEAM_DIGEST_MIGRATION_INTEGRITY_RECHECK,
     REVIEW_TEAM_DIGEST_MIGRATION_LEGACY_ROUTE,
+    REVIEW_TEAM_DIGEST_MIGRATION_NEXT_ACTIONS,
     REVIEW_TEAM_DIGEST_MIGRATION_PAUSE_BOUNDARY,
     REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION,
     REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA,
@@ -430,6 +431,7 @@ class TestAcceptanceReceiptEnforcement:
                         "unmatched": 0,
                         "not-subject": 0,
                     },
+                    "next_actions": dict(REVIEW_TEAM_DIGEST_MIGRATION_NEXT_ACTIONS),
                 },
                 sort_keys=False,
             ),
@@ -685,7 +687,12 @@ class TestAcceptanceReceiptEnforcement:
             ("authority_extra_key", "sealed_migration_authority_extra_key:unexpected"),
             (
                 "self_consistent_reclassification",
-                "sealed_migration_frozen_tuple_reclassified:task-r:not-subject",
+                "sealed_migration_frozen_tuple_reclassified:task-r:rebound",
+            ),
+            ("active_dir_other_absolute", "sealed_migration_active_dir_mismatch"),
+            (
+                "next_actions_bad_value",
+                "sealed_migration_next_actions_value_mismatch:rebound",
             ),
         ),
     )
@@ -719,15 +726,24 @@ class TestAcceptanceReceiptEnforcement:
         elif mutation == "authority_extra_key":
             loaded["authority"]["unexpected"] = True
         elif mutation == "self_consistent_reclassification":
-            loaded["entries"][0]["classification"] = "not-subject"
-            loaded["entries"][0]["reason"] = "acceptor_not_review_team"
+            loaded["entries"][0]["classification"] = "rebound"
+            loaded["entries"][0]["reason"] = "current_open_pr_replay_rebound"
             loaded["entries"][0].pop("legacy_admission")
             loaded["counts"][REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION] = 0
-            loaded["counts"]["not-subject"] = 1
+            loaded["counts"]["rebound"] = 1
+        elif mutation == "active_dir_other_absolute":
+            other_active = tmp_path / "other-active"
+            other_active.mkdir()
+            loaded["active_dir"] = str(other_active.resolve())
+        elif mutation == "next_actions_bad_value":
+            loaded["next_actions"]["rebound"] = "arbitrary text"
         else:
             raise AssertionError(mutation)
 
-        blockers = sdlc_lifecycle.review_team_digest_migration_artifact_blockers(loaded)
+        blockers = sdlc_lifecycle.review_team_digest_migration_artifact_blockers(
+            loaded,
+            expected_active_dir=tmp_path,
+        )
 
         assert expected_blocker in blockers
 

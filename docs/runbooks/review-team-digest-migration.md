@@ -46,8 +46,13 @@ require `migration.status: migration_unchanged`, identical
 `migration.plan_binding.plan_sha256`,
 `migration.plan_binding.disposition_manifest_sha256`,
 `migration.plan_binding.write_set_sha256`, and
-`migration.plan_binding.evidence_manifest_sha256`; any later apply authority
-must bind those exact digests. The sealed artifact's persisted
+`migration.plan_binding.evidence_manifest_sha256`,
+`migration.plan_binding.candidate_artifact_core_sha256`, and
+`migration.plan_binding.candidate_authority_sha256`. The later candidate
+authority carrier must consume the exact
+`migration.plan_binding.candidate_authority` body and use the exact
+`migration.plan_binding.candidate_authority_response` text; the source
+remediation act is not apply authority. The sealed artifact's persisted
 `integrity_recheck` text must name the providerless `--migration-recheck`
 command, not the applying replay command.
 
@@ -76,19 +81,43 @@ uv run python scripts/cc-pr-review-dispatch.py --all --apply --replay-only \
   --migration-authority-proposal /path/to/ratified-proposal.yaml \
   --migration-authority-proposal-sha256 <64-hex> \
   --migration-consumed-act-carrier /path/to/consumed-carrier.yaml \
-  --migration-consumed-act-carrier-sha256 <64-hex>
+  --migration-consumed-act-carrier-sha256 <64-hex> \
+  --migration-candidate-authority-carrier /path/to/consumed-candidate-carrier.yaml \
+  --migration-candidate-authority-carrier-sha256 <64-hex>
 ```
+
+Every `--apply` invocation requires the candidate-authority carrier, including
+an already-sealed or otherwise no-op apply. `--apply` without that carrier, or
+with a carrier whose candidate body, frozen anchor, disposition manifest, write
+set, evidence manifest, or plan digest differs from the prepared plan, is a
+blocker before journal creation or target effects.
 
 A valid pre-existing sealed artifact is immutable. Empty, partial, removed, or
 forged seal mappings are blockers, not an unsealed legacy artifact. The only
 replaceable unsealed artifact is the exact source-pinned legacy preimage named
 by `legacy_unsealed_artifact_sha256` in the reviewed source trust anchor. Reruns
-may rebind current open receipts from current dossiers through the prepared
-write set only; apply must not recompute PR discovery, replay classification, or
-acceptance semantics after a write. Acceptance admission is checked against the
-prepared outputs before the first real write, and any blocker leaves the active
-tree byte-exact. After apply, rerun the providerless recheck with the killswitch
-set again and compare before/after hashes:
+may rebind current open receipts from current dossiers through the exact
+prepared write bytes only; apply must not recompute PR discovery, replay
+classification, or acceptance semantics after a write. Acceptance admission is
+checked from an in-memory overlay of the prepared outputs, not a temporary
+copied vault. Immediately before the transaction, the complete evidence
+manifest is compared again; any drift blocks before the first target effect.
+The prepared plan binds a deterministic absent-to-owned migration-lock
+transition, while the running apply records exact owned lock bytes and rechecks
+them immediately before effects. Any lock byte, holder, stat, or hash drift is
+a blocker before journal creation. The consumed candidate-authority carrier is
+also bound by exact bytes/stat/hash evidence and rechecked at transaction entry;
+any carrier drift is a blocker before journal creation. The transaction never
+serializes mutable payload maps at effect time; missing prepared
+`candidate_raw_bytes` is HOLD before journal, stage, archive, or target effects.
+The transaction writes a same-filesystem initializing journal under `_locks`
+before creating any stage directory or preimage file, then stages exact outputs,
+records preimage hashes and archive paths, fsyncs phase changes, and rolls back
+or reports
+`migration_recovery_required` on any archive, stage, journal, replace, fsync,
+post-write verification, rollback, or restart failure. After apply, rerun the
+providerless recheck with the killswitch set again and compare before/after
+hashes:
 
 ```bash
 export HAPAX_REVIEW_TEAM_DISPATCH_OFF=1
@@ -98,11 +127,18 @@ sha256sum ~/Documents/Personal/20-projects/hapax-cc-tasks/active/_review-team-di
 ## Recovery
 
 There is no manual lifecycle-admission bypass. Missing or tampered migration
-authority is recovered only by restoring the exact source-pinned proposal,
-carrier, legacy preimage, and sealed artifact bytes, or by fresh authoritative
-re-review.
+authority or candidate authority is recovered only by restoring the exact
+source-pinned proposal, source carrier, consumed candidate carrier, legacy
+preimage, and sealed artifact bytes, or by fresh authoritative re-review.
 Post-merge closure bookkeeping does not validate, repair, or bypass migration
 authority and must not be cited as migration admission.
+
+An existing `_locks/review-team-digest-migration.transaction.json` is HOLD for
+fresh planning and apply until the recorded operation is recovered exactly. Do
+not delete the journal to retry; preserve it with the staged files and recover
+or escalate under a new governed act. An orphan stage path matching
+`_locks/.review-team-digest-migration.transaction.*.files` is also HOLD even
+when the journal is absent.
 
 Malformed review claims remain HOLD until holder identity/liveness evidence is
 preserved. Only stale same-host claims with exact dead-or-reused PID/proc-start

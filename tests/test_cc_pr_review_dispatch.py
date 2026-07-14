@@ -223,6 +223,75 @@ def _write_migration_authority(
     }
 
 
+def _write_candidate_authority_carrier(
+    tmp_path: Path,
+    plan_binding: dict[str, Any],
+    *,
+    suffix: str = "candidate",
+) -> dict[str, Any]:
+    candidate = dict(plan_binding["candidate_authority"])
+    candidate_sha = plan_binding["candidate_authority_sha256"]
+    carrier = tmp_path / f"{suffix}-{candidate['id']}-carrier.yaml"
+    carrier.write_text(
+        yaml.safe_dump(
+            {
+                "schema": dispatch.MIGRATION_CANDIDATE_AUTHORITY_CARRIER_SCHEMA,
+                "id": candidate["id"],
+                "status": "consumed_active",
+                "consumed_at": "2026-07-14T03:00:30+00:00",
+                "candidate_authority": candidate,
+                "candidate_authority_sha256": candidate_sha,
+                "operator_act": {
+                    "exact_response_utf8_no_lf": (
+                        f"RATIFY {candidate['id']} candidate_authority_sha256={candidate_sha}"
+                    ),
+                    "matched_id": True,
+                    "matched_candidate_authority_sha256": True,
+                    "authority_minted": True,
+                    "authority_limited_to_candidate": True,
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "migration_candidate_authority_carrier_path": carrier,
+        "migration_candidate_authority_carrier_sha256": sha256(carrier.read_bytes()).hexdigest(),
+    }
+
+
+def _authorize_digest_migration_apply(
+    tmp_path: Path,
+    *,
+    repo: str,
+    repo_root: Path,
+    vault_root: Path,
+    gh_runner: Any,
+    reviewer_runner: Any,
+    wake_dir: Path,
+    send_runner: Any,
+    now_iso: str,
+    route_blocked_families: dict[str, tuple[str, ...]],
+    authority_kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    plan = dispatch.replay_all_open_prs_with_digest_migration(
+        repo=repo,
+        repo_root=repo_root,
+        vault_root=vault_root,
+        apply=False,
+        gh_runner=gh_runner,
+        reviewer_runner=reviewer_runner,
+        wake_dir=wake_dir,
+        send_runner=send_runner,
+        now_iso=now_iso,
+        route_blocked_families=route_blocked_families,
+        **authority_kwargs,
+    )
+    assert plan["status"] == "replay_migration_ready"
+    return _write_candidate_authority_carrier(tmp_path, plan["migration"]["plan_binding"])
+
+
 GOOD_REPLY = """```yaml
 verdict: accept
 findings: []
@@ -2265,6 +2334,19 @@ checklist:
         authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
         reviewers = RecordingReviewers()
         gh = NoOpenPullsGh()
+        candidate_kwargs = _authorize_digest_migration_apply(
+            tmp_path,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            gh_runner=NoOpenPullsGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:00:00+00:00",
+            route_blocked_families={},
+            authority_kwargs=authority_kwargs,
+        )
 
         result = dispatch.replay_all_open_prs_with_digest_migration(
             repo="owner/repo",
@@ -2278,6 +2360,7 @@ checklist:
             now_iso="2026-07-14T03:00:00+00:00",
             route_blocked_families={},
             **authority_kwargs,
+            **candidate_kwargs,
         )
 
         migration = result["migration"]
@@ -2307,6 +2390,19 @@ checklist:
             receipt.read_text(encoding="utf-8").removesuffix("tampered: true\n"),
             encoding="utf-8",
         )
+        second_candidate_kwargs = _authorize_digest_migration_apply(
+            tmp_path,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            gh_runner=NoOpenPullsGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:01:00+00:00",
+            route_blocked_families={},
+            authority_kwargs=authority_kwargs,
+        )
         second = dispatch.replay_all_open_prs_with_digest_migration(
             repo="owner/repo",
             repo_root=REPO_ROOT,
@@ -2319,7 +2415,9 @@ checklist:
             now_iso="2026-07-14T03:01:00+00:00",
             route_blocked_families={},
             **authority_kwargs,
+            **second_candidate_kwargs,
         )
+        assert second["status"] == "replay_migration_complete"
         assert second["migration"]["status"] == "migration_unchanged"
         assert second["migration"]["counts"] == migration["counts"]
         assert sha256(artifact_path.read_bytes()).hexdigest() == artifact_sha
@@ -2343,6 +2441,19 @@ checklist:
             encoding="utf-8",
         )
         reviewers = RecordingReviewers()
+        candidate_kwargs = _authorize_digest_migration_apply(
+            tmp_path,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            gh_runner=FakeGh(head_sha="c" * 40),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:05:00+00:00",
+            route_blocked_families={},
+            authority_kwargs=authority_kwargs,
+        )
 
         result = dispatch.replay_all_open_prs_with_digest_migration(
             repo="owner/repo",
@@ -2356,6 +2467,7 @@ checklist:
             now_iso="2026-07-14T03:05:00+00:00",
             route_blocked_families={},
             **authority_kwargs,
+            **candidate_kwargs,
         )
 
         assert result["open_pr_results"][0]["status"] == "replay_blocked"
@@ -2377,6 +2489,19 @@ checklist:
         note = _write_task(vault, quality_floor="frontier_review_required")
         receipt = _write_legacy_review_team_receipt(vault)
         authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+        candidate_kwargs = _authorize_digest_migration_apply(
+            tmp_path,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            gh_runner=NoOpenPullsGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:06:00+00:00",
+            route_blocked_families={},
+            authority_kwargs=authority_kwargs,
+        )
 
         first = dispatch.replay_all_open_prs_with_digest_migration(
             repo="owner/repo",
@@ -2390,6 +2515,7 @@ checklist:
             now_iso="2026-07-14T03:06:00+00:00",
             route_blocked_families={},
             **authority_kwargs,
+            **candidate_kwargs,
         )
         artifact_path = dispatch.review_team_digest_migration_path(vault)
         artifact_bytes = artifact_path.read_bytes()
@@ -2399,6 +2525,19 @@ checklist:
         closed_receipt = vault / "closed" / receipt.name
         note.rename(closed_note)
         receipt.rename(closed_receipt)
+        second_candidate_kwargs = _authorize_digest_migration_apply(
+            tmp_path,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            gh_runner=NoOpenPullsGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:07:00+00:00",
+            route_blocked_families={},
+            authority_kwargs=authority_kwargs,
+        )
 
         second = dispatch.replay_all_open_prs_with_digest_migration(
             repo="owner/repo",
@@ -2412,8 +2551,10 @@ checklist:
             now_iso="2026-07-14T03:07:00+00:00",
             route_blocked_families={},
             **authority_kwargs,
+            **second_candidate_kwargs,
         )
 
+        assert second["status"] == "replay_migration_complete"
         assert second["migration"]["status"] == "migration_unchanged"
         assert artifact_path.read_bytes() == artifact_bytes
         assert second["migration"]["current_receipt_drift"] == [
@@ -2445,6 +2586,19 @@ checklist:
         )
         replay_reviewers = RecordingReviewers()
         replay_gh = FakeGh()
+        candidate_kwargs = _authorize_digest_migration_apply(
+            tmp_path,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            gh_runner=FakeGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:10:00+00:00",
+            route_blocked_families={},
+            authority_kwargs=authority_kwargs,
+        )
 
         migration = dispatch.replay_all_open_prs_with_digest_migration(
             repo="owner/repo",
@@ -2458,6 +2612,7 @@ checklist:
             now_iso="2026-07-14T03:10:00+00:00",
             route_blocked_families={},
             **authority_kwargs,
+            **candidate_kwargs,
         )
 
         assert migration["open_pr_results"][0]["status"] == "replayed_fresh"
@@ -2469,6 +2624,19 @@ checklist:
         assert replay_gh.comments == []
         rebound_receipt = yaml.safe_load(receipt_path.read_text(encoding="utf-8"))
         assert rebound_receipt["dossier_sha256"].startswith("sha256:")
+        second_candidate_kwargs = _authorize_digest_migration_apply(
+            tmp_path,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            gh_runner=FakeGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:11:00+00:00",
+            route_blocked_families={},
+            authority_kwargs=authority_kwargs,
+        )
 
         second = dispatch.replay_all_open_prs_with_digest_migration(
             repo="owner/repo",
@@ -2482,10 +2650,25 @@ checklist:
             now_iso="2026-07-14T03:11:00+00:00",
             route_blocked_families={},
             **authority_kwargs,
+            **second_candidate_kwargs,
         )
+        assert second["status"] == "replay_migration_complete"
         assert second["migration"]["status"] == "migration_unchanged"
         assert second["migration"]["counts"] == migration["migration"]["counts"]
         assert sha256(artifact_path.read_bytes()).hexdigest() == artifact_sha
+        third_candidate_kwargs = _authorize_digest_migration_apply(
+            tmp_path,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            gh_runner=FakeGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:12:00+00:00",
+            route_blocked_families={},
+            authority_kwargs=authority_kwargs,
+        )
 
         third = dispatch.replay_all_open_prs_with_digest_migration(
             repo="owner/repo",
@@ -2499,7 +2682,9 @@ checklist:
             now_iso="2026-07-14T03:12:00+00:00",
             route_blocked_families={},
             **authority_kwargs,
+            **third_candidate_kwargs,
         )
+        assert third["status"] == "replay_migration_complete"
         assert third["migration"]["status"] == "migration_unchanged"
         assert third["migration"]["counts"] == second["migration"]["counts"]
         assert sha256(artifact_path.read_bytes()).hexdigest() == artifact_sha
@@ -2527,6 +2712,20 @@ checklist:
             return real_review_all(*args, **kwargs)
 
         monkeypatch.setattr(dispatch, "review_all_open_prs", counting_review_all)
+        candidate_kwargs = _authorize_digest_migration_apply(
+            tmp_path,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            gh_runner=FakeGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:10:30+00:00",
+            route_blocked_families={},
+            authority_kwargs=authority_kwargs,
+        )
+        apply_modes.clear()
 
         migration = dispatch.replay_all_open_prs_with_digest_migration(
             repo="owner/repo",
@@ -2540,6 +2739,7 @@ checklist:
             now_iso="2026-07-14T03:10:30+00:00",
             route_blocked_families={},
             **authority_kwargs,
+            **candidate_kwargs,
         )
 
         assert migration["status"] == "replay_migration_complete"
@@ -2574,6 +2774,276 @@ checklist:
         assert gh.calls == []
         assert reviewers.invocations == []
         assert not dispatch.review_team_digest_migration_path(vault).exists()
+
+    def test_digest_migration_apply_requires_candidate_authority_before_effects(
+        self, tmp_path: Path
+    ) -> None:
+        class NoOpenPullsGh(FakeGh):
+            def _rest_open_prs(self) -> list[dict[str, Any]]:
+                return []
+
+        vault = _make_vault(tmp_path)
+        _write_task(vault, quality_floor="frontier_review_required")
+        receipt = _write_legacy_review_team_receipt(vault)
+        receipt_bytes = receipt.read_bytes()
+        authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+
+        result = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=NoOpenPullsGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:10+00:00",
+            route_blocked_families={},
+            **authority_kwargs,
+        )
+
+        assert result["status"] == "migration_blocked"
+        assert result["migration"]["blockers"] == [
+            "migration_candidate_authority_carrier_path_missing",
+            "migration_candidate_authority_carrier_sha256_missing",
+        ]
+        assert receipt.read_bytes() == receipt_bytes
+        assert not dispatch.review_team_digest_migration_path(vault).exists()
+        assert not dispatch.review_team_digest_migration_journal_path(vault).exists()
+
+    def test_digest_migration_noop_apply_still_requires_candidate_authority(
+        self, tmp_path: Path
+    ) -> None:
+        class NoOpenPullsGh(FakeGh):
+            def _rest_open_prs(self) -> list[dict[str, Any]]:
+                return []
+
+        vault = _make_vault(tmp_path)
+        _write_task(vault, quality_floor="frontier_review_required")
+        receipt = _write_legacy_review_team_receipt(vault)
+        authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+        candidate_kwargs = _authorize_digest_migration_apply(
+            tmp_path,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            gh_runner=NoOpenPullsGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:10+00:00",
+            route_blocked_families={},
+            authority_kwargs=authority_kwargs,
+        )
+        first = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=NoOpenPullsGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:10+00:00",
+            route_blocked_families={},
+            **authority_kwargs,
+            **candidate_kwargs,
+        )
+        assert first["status"] == "replay_migration_complete"
+        artifact_path = dispatch.review_team_digest_migration_path(vault)
+        artifact_bytes = artifact_path.read_bytes()
+
+        second = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=NoOpenPullsGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:11+00:00",
+            route_blocked_families={},
+            **authority_kwargs,
+        )
+
+        assert second["status"] == "migration_blocked"
+        assert second["migration"]["blockers"] == [
+            "migration_candidate_authority_carrier_path_missing",
+            "migration_candidate_authority_carrier_sha256_missing",
+        ]
+        assert second["migration"]["status"] == "migration_unchanged"
+        assert artifact_path.read_bytes() == artifact_bytes
+        assert not dispatch.review_team_digest_migration_journal_path(vault).exists()
+
+    def test_digest_migration_trace_uses_in_memory_overlay(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class NoOpenPullsGh(FakeGh):
+            def _rest_open_prs(self) -> list[dict[str, Any]]:
+                return []
+
+        vault = _make_vault(tmp_path)
+        _write_task(vault, quality_floor="frontier_review_required")
+        receipt = _write_legacy_review_team_receipt(vault)
+        authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+        candidate_kwargs = _authorize_digest_migration_apply(
+            tmp_path,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            gh_runner=NoOpenPullsGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:11+00:00",
+            route_blocked_families={},
+            authority_kwargs=authority_kwargs,
+        )
+
+        def forbidden_temporary_directory(*_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError("semantic trace must not use filesystem temp overlays")
+
+        monkeypatch.setattr(dispatch.tempfile, "TemporaryDirectory", forbidden_temporary_directory)
+
+        result = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=NoOpenPullsGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:11+00:00",
+            route_blocked_families={},
+            **authority_kwargs,
+            **candidate_kwargs,
+        )
+
+        assert result["status"] == "replay_migration_complete"
+        assert dispatch.review_team_digest_migration_path(vault).is_file()
+
+    def test_digest_migration_blocks_on_owned_lock_drift_before_effects(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class NoOpenPullsGh(FakeGh):
+            def _rest_open_prs(self) -> list[dict[str, Any]]:
+                return []
+
+        vault = _make_vault(tmp_path)
+        _write_task(vault, quality_floor="frontier_review_required")
+        receipt = _write_legacy_review_team_receipt(vault)
+        receipt_bytes = receipt.read_bytes()
+        authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+        candidate_kwargs = _authorize_digest_migration_apply(
+            tmp_path,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            gh_runner=NoOpenPullsGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:12+00:00",
+            route_blocked_families={},
+            authority_kwargs=authority_kwargs,
+        )
+        real_trace = dispatch._trace_with_prepared_migration_outputs
+
+        def drifting_trace(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+            trace = real_trace(*args, **kwargs)
+            lock_path = dispatch.review_team_digest_migration_lock_path(vault)
+            lock_path.write_text(lock_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+            return trace
+
+        monkeypatch.setattr(dispatch, "_trace_with_prepared_migration_outputs", drifting_trace)
+
+        result = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=NoOpenPullsGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:12+00:00",
+            route_blocked_families={},
+            **authority_kwargs,
+            **candidate_kwargs,
+        )
+
+        assert result["status"] == "migration_blocked"
+        assert "migration_lock_changed_before_effects" in result["migration"]["blockers"]
+        assert receipt.read_bytes() == receipt_bytes
+        assert not dispatch.review_team_digest_migration_path(vault).exists()
+        assert not dispatch.review_team_digest_migration_journal_path(vault).exists()
+
+    def test_digest_migration_blocks_on_candidate_carrier_drift_before_effects(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class NoOpenPullsGh(FakeGh):
+            def _rest_open_prs(self) -> list[dict[str, Any]]:
+                return []
+
+        vault = _make_vault(tmp_path)
+        _write_task(vault, quality_floor="frontier_review_required")
+        receipt = _write_legacy_review_team_receipt(vault)
+        receipt_bytes = receipt.read_bytes()
+        authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+        candidate_kwargs = _authorize_digest_migration_apply(
+            tmp_path,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            gh_runner=NoOpenPullsGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:13+00:00",
+            route_blocked_families={},
+            authority_kwargs=authority_kwargs,
+        )
+        carrier = candidate_kwargs["migration_candidate_authority_carrier_path"]
+        real_bind = dispatch._migration_with_consumed_candidate_authority
+
+        def drifting_candidate_carrier(
+            migration: dict[str, Any],
+            candidate_authority: dict[str, Any],
+        ) -> dict[str, Any]:
+            result = real_bind(migration, candidate_authority)
+            carrier.write_text(carrier.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+            return result
+
+        monkeypatch.setattr(
+            dispatch,
+            "_migration_with_consumed_candidate_authority",
+            drifting_candidate_carrier,
+        )
+
+        result = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=NoOpenPullsGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:13+00:00",
+            route_blocked_families={},
+            **authority_kwargs,
+            **candidate_kwargs,
+        )
+
+        assert result["status"] == "migration_recovery_required"
+        assert result["migration"]["blockers"] == [
+            "migration_candidate_authority_carrier_changed_before_effects"
+        ]
+        assert receipt.read_bytes() == receipt_bytes
+        assert not dispatch.review_team_digest_migration_path(vault).exists()
+        assert not dispatch.review_team_digest_migration_journal_path(vault).exists()
 
     @pytest.mark.parametrize(
         ("completed", "expected_blocker"),
@@ -2990,6 +3460,42 @@ checklist:
         assert "migration_recheck_artifact_drift" in result["migration"]["blockers"]
         assert not (vault / "_locks").exists()
 
+    def test_migration_recheck_blocks_on_active_tree_drift_after_candidate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        receipt = _write_legacy_review_team_receipt(vault)
+        authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+        monkeypatch.setenv(dispatch.KILLSWITCH_ENV, "true")
+        real_publish = dispatch.publish_review_team_digest_migration
+
+        def racing_publish(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            result = real_publish(*args, **kwargs)
+            _write_task(vault, task_id="concurrent-task", pr=404)
+            return result
+
+        monkeypatch.setattr(dispatch, "publish_review_team_digest_migration", racing_publish)
+
+        result = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=False,
+            gh_runner=FakeGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:45+00:00",
+            route_blocked_families={},
+            migration_recheck=True,
+            **authority_kwargs,
+        )
+
+        assert result["status"] == "migration_blocked"
+        assert "migration_recheck_evidence_manifest_drift" in result["migration"]["blockers"]
+        assert not dispatch.review_team_digest_migration_path(vault).exists()
+        assert not (vault / "_locks").exists()
+
     def test_migration_recheck_blocks_on_authority_drift_after_candidate(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -3045,6 +3551,19 @@ checklist:
         _write_task(vault, quality_floor="frontier_review_required")
         receipt = _write_legacy_review_team_receipt(vault)
         authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+        candidate_kwargs = _authorize_digest_migration_apply(
+            tmp_path,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            gh_runner=NoOpenPullsGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:45+00:00",
+            route_blocked_families={},
+            authority_kwargs=authority_kwargs,
+        )
         applied = dispatch.replay_all_open_prs_with_digest_migration(
             repo="owner/repo",
             repo_root=REPO_ROOT,
@@ -3057,6 +3576,7 @@ checklist:
             now_iso="2026-07-14T03:20:45+00:00",
             route_blocked_families={},
             **authority_kwargs,
+            **candidate_kwargs,
         )
         assert applied["status"] == "replay_migration_complete"
         artifact_path = dispatch.review_team_digest_migration_path(vault)
@@ -3276,6 +3796,19 @@ checklist:
         _write_task(vault, quality_floor="frontier_review_required")
         receipt = _write_legacy_review_team_receipt(vault)
         authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+        candidate_kwargs = _authorize_digest_migration_apply(
+            tmp_path,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            gh_runner=NoOpenPullsGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:49+00:00",
+            route_blocked_families={},
+            authority_kwargs=authority_kwargs,
+        )
         real_review_all = dispatch.review_all_open_prs
         apply_calls: list[bool] = []
 
@@ -3300,6 +3833,7 @@ checklist:
             now_iso="2026-07-14T03:20:49+00:00",
             route_blocked_families={},
             **authority_kwargs,
+            **candidate_kwargs,
         )
 
         assert result["status"] == "migration_blocked"
@@ -3308,6 +3842,416 @@ checklist:
         assert result["migration"]["snapshot_drift"][0]["status"] == "changed_after_preflight"
         assert apply_calls == [False]
         assert not dispatch.review_team_digest_migration_path(vault).exists()
+
+    def test_digest_migration_transaction_rolls_back_after_artifact_write_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result, _, _, note = _review(
+            tmp_path, task_kwargs={"quality_floor": "frontier_review_required"}
+        )
+        assert result["status"] == "dispatched"
+        vault = note.parent.parent
+        receipt_path = note.parent / "task-a.acceptance.yaml"
+        legacy_receipt = yaml.safe_load(receipt_path.read_text(encoding="utf-8"))
+        legacy_receipt.pop("dossier_sha256")
+        receipt_path.write_text(yaml.safe_dump(legacy_receipt, sort_keys=False), encoding="utf-8")
+        receipt_preimage = receipt_path.read_bytes()
+        authority_kwargs = _write_migration_authority(
+            tmp_path, [_migration_frozen_entry(receipt_path)]
+        )
+        candidate_kwargs = _authorize_digest_migration_apply(
+            tmp_path,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            gh_runner=FakeGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:50+00:00",
+            route_blocked_families={},
+            authority_kwargs=authority_kwargs,
+        )
+        real_atomic_write_bytes = dispatch.atomic_write_bytes
+
+        def failing_artifact_write(path: Path, raw: bytes) -> None:
+            if Path(path).name == dispatch.REVIEW_TEAM_DIGEST_MIGRATION_FILENAME:
+                raise OSError("injected artifact write failure")
+            real_atomic_write_bytes(path, raw)
+
+        monkeypatch.setattr(dispatch, "atomic_write_bytes", failing_artifact_write)
+
+        migration = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=FakeGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:50+00:00",
+            route_blocked_families={},
+            **authority_kwargs,
+            **candidate_kwargs,
+        )
+
+        assert migration["status"] == "migration_recovery_required"
+        assert migration["migration"]["blockers"] == ["migration_transaction_failed:OSError"]
+        assert receipt_path.read_bytes() == receipt_preimage
+        assert not dispatch.review_team_digest_migration_path(vault).exists()
+        assert not dispatch.review_team_digest_migration_journal_path(vault).exists()
+        assert not list((vault / "active").glob("task-a.acceptance.*.yaml"))
+
+    def _transaction_fixture(
+        self,
+        tmp_path: Path,
+    ) -> tuple[Path, Path, Path, Path, bytes, dict[str, Any], dict[str, Any]]:
+        vault = _make_vault(tmp_path)
+        receipt = _write_legacy_review_team_receipt(vault)
+        receipt_preimage = receipt.read_bytes()
+        archive = receipt.with_name("task-a.acceptance.review-team.yaml")
+        artifact = dispatch.review_team_digest_migration_path(vault)
+        receipt_raw = b"acceptor: review-team:codex\nverdict: accepted\n"
+        artifact_raw = b"schema: hapax.review_team_digest_migration.v1\n"
+        carrier = tmp_path / "transaction-candidate-carrier.yaml"
+        carrier.write_bytes(b"schema: test-candidate-carrier\n")
+        _carrier_raw, carrier_evidence, carrier_error = dispatch._exact_file_evidence_with_bytes(
+            carrier
+        )
+        assert carrier_error == ""
+        receipt_write = {
+            "path": str(receipt),
+            "archive_path": str(archive),
+            "existing_sha256": "sha256:" + sha256(receipt_preimage).hexdigest(),
+            "raw_bytes": receipt_raw,
+            "sha256": "sha256:" + sha256(receipt_raw).hexdigest(),
+        }
+        migration = {
+            "artifact_path": str(artifact),
+            "before_artifact_sha256": None,
+            "candidate_payload": {"schema": dispatch.REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA},
+            "candidate_raw_bytes": artifact_raw,
+            "candidate_artifact_sha256": "sha256:" + sha256(artifact_raw).hexdigest(),
+            "candidate_authority": {
+                "carrier_path": str(carrier),
+                "carrier_sha256": sha256(carrier.read_bytes()).hexdigest(),
+                "carrier_evidence": carrier_evidence,
+            },
+        }
+        return vault, receipt, archive, artifact, receipt_preimage, receipt_write, migration
+
+    def test_digest_migration_transaction_requires_exact_candidate_raw_bytes(
+        self, tmp_path: Path
+    ) -> None:
+        vault, receipt, archive, artifact, receipt_preimage, receipt_write, migration = (
+            self._transaction_fixture(tmp_path)
+        )
+        migration.pop("candidate_raw_bytes")
+
+        result = dispatch._apply_prepared_migration_outputs(
+            vault_root=vault,
+            migration=migration,
+            receipt_writes=[receipt_write],
+        )
+
+        assert result["status"] == "migration_recovery_required"
+        assert result["blockers"] == ["migration_transaction_candidate_raw_bytes_missing"]
+        assert receipt.read_bytes() == receipt_preimage
+        assert not artifact.exists()
+        assert not archive.exists()
+        assert not dispatch.review_team_digest_migration_journal_path(vault).exists()
+        assert dispatch.review_team_digest_migration_stage_paths(vault) == []
+
+    def test_digest_migration_initializing_journal_survives_hard_interrupt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        vault, receipt, archive, artifact, receipt_preimage, receipt_write, migration = (
+            self._transaction_fixture(tmp_path)
+        )
+        real_mkdir = Path.mkdir
+
+        def interrupt_stage_mkdir(path: Path, *args: Any, **kwargs: Any) -> None:
+            journal = dispatch.review_team_digest_migration_journal_path(vault)
+            if path.name.startswith(f".{journal.stem}.") and path.name.endswith(".files"):
+                raise KeyboardInterrupt("simulated hard interruption")
+            real_mkdir(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", interrupt_stage_mkdir)
+
+        with pytest.raises(KeyboardInterrupt):
+            dispatch._apply_prepared_migration_outputs(
+                vault_root=vault,
+                migration=migration,
+                receipt_writes=[receipt_write],
+            )
+
+        journal = dispatch.review_team_digest_migration_journal_path(vault)
+        assert journal.exists()
+        assert yaml.safe_load(journal.read_text(encoding="utf-8"))["phase"] == "initializing"
+        assert receipt.read_bytes() == receipt_preimage
+        assert not artifact.exists()
+        assert not archive.exists()
+
+        monkeypatch.setattr(Path, "mkdir", real_mkdir)
+        restart = dispatch._apply_prepared_migration_outputs(
+            vault_root=vault,
+            migration=migration,
+            receipt_writes=[receipt_write],
+        )
+        assert restart["status"] == "migration_recovery_required"
+        assert restart["blockers"] == ["migration_transaction_recovery_required"]
+        assert receipt.read_bytes() == receipt_preimage
+        assert not artifact.exists()
+        assert not archive.exists()
+
+    @pytest.mark.parametrize(
+        "failure_phase",
+        (
+            "archive",
+            "stage",
+            "journal_create",
+            "journal_update",
+            "replace",
+            "fsync",
+            "post_write_verify",
+        ),
+    )
+    def test_digest_migration_transaction_fault_matrix_preserves_preimage(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        failure_phase: str,
+    ) -> None:
+        vault, receipt, archive, artifact, receipt_preimage, receipt_write, migration = (
+            self._transaction_fixture(tmp_path)
+        )
+        real_replace = dispatch.os.replace
+        real_atomic_write_bytes = dispatch.atomic_write_bytes
+        real_open = Path.open
+        real_fsync_directory = dispatch._fsync_directory
+        real_read_bytes = Path.read_bytes
+        journal_writes = 0
+
+        if failure_phase == "archive":
+
+            def failing_replace(src: str | Path, dst: str | Path) -> None:
+                if Path(dst) == archive:
+                    raise OSError("injected archive failure")
+                real_replace(src, dst)
+
+            monkeypatch.setattr(dispatch.os, "replace", failing_replace)
+        elif failure_phase == "stage":
+
+            def failing_open(path: Path, *args: Any, **kwargs: Any) -> Any:
+                if path.name == "0.output":
+                    raise OSError("injected stage failure")
+                return real_open(path, *args, **kwargs)
+
+            monkeypatch.setattr(Path, "open", failing_open)
+        elif failure_phase in {"journal_create", "journal_update"}:
+
+            def failing_journal_write(path: Path, raw: bytes) -> None:
+                nonlocal journal_writes
+                if Path(path) == dispatch.review_team_digest_migration_journal_path(vault):
+                    journal_writes += 1
+                    if failure_phase == "journal_create" and journal_writes == 1:
+                        raise OSError("injected journal create failure")
+                    if failure_phase == "journal_update" and journal_writes == 2:
+                        raise OSError("injected journal update failure")
+                real_atomic_write_bytes(path, raw)
+
+            monkeypatch.setattr(dispatch, "atomic_write_bytes", failing_journal_write)
+        elif failure_phase == "replace":
+
+            def failing_replace_write(path: Path, raw: bytes) -> None:
+                if Path(path) == artifact:
+                    raise OSError("injected replace failure")
+                real_atomic_write_bytes(path, raw)
+
+            monkeypatch.setattr(dispatch, "atomic_write_bytes", failing_replace_write)
+        elif failure_phase == "fsync":
+
+            def failing_fsync_directory(path: Path) -> None:
+                if Path(path) == receipt.parent and archive.exists():
+                    raise OSError("injected fsync failure")
+                real_fsync_directory(path)
+
+            monkeypatch.setattr(dispatch, "_fsync_directory", failing_fsync_directory)
+        elif failure_phase == "post_write_verify":
+
+            def corrupting_read_bytes(path: Path) -> bytes:
+                if Path(path) == artifact and artifact.exists():
+                    return b"not the staged artifact bytes"
+                return real_read_bytes(path)
+
+            monkeypatch.setattr(Path, "read_bytes", corrupting_read_bytes)
+
+        result = dispatch._apply_prepared_migration_outputs(
+            vault_root=vault,
+            migration=migration,
+            receipt_writes=[receipt_write],
+        )
+
+        assert result["status"] == "migration_recovery_required"
+        assert receipt.read_bytes() == receipt_preimage
+        assert not artifact.exists()
+        assert not archive.exists()
+        assert not dispatch.review_team_digest_migration_journal_path(vault).exists()
+
+    def test_digest_migration_transaction_reports_hold_on_rollback_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        vault, receipt, archive, artifact, _receipt_preimage, receipt_write, migration = (
+            self._transaction_fixture(tmp_path)
+        )
+        real_atomic_write_bytes = dispatch.atomic_write_bytes
+        real_replace = dispatch.os.replace
+        fail_artifact = True
+
+        def failing_write_and_rollback(path: Path, raw: bytes) -> None:
+            nonlocal fail_artifact
+            if Path(path) == artifact and fail_artifact:
+                fail_artifact = False
+                raise OSError("injected artifact failure")
+            real_atomic_write_bytes(path, raw)
+
+        def failing_rollback_replace(src: str | Path, dst: str | Path) -> None:
+            if Path(src) == archive and Path(dst) == receipt:
+                raise OSError("injected rollback failure")
+            real_replace(src, dst)
+
+        monkeypatch.setattr(dispatch, "atomic_write_bytes", failing_write_and_rollback)
+        monkeypatch.setattr(dispatch.os, "replace", failing_rollback_replace)
+
+        result = dispatch._apply_prepared_migration_outputs(
+            vault_root=vault,
+            migration=migration,
+            receipt_writes=[receipt_write],
+        )
+
+        assert result["status"] == "migration_recovery_required"
+        assert result["blockers"] == ["migration_transaction_rollback_failed:OSError"]
+        assert dispatch.review_team_digest_migration_journal_path(vault).exists()
+
+    @pytest.mark.parametrize(
+        "phase",
+        (
+            "initializing",
+            "prepared",
+            "applied:1",
+            "complete",
+            "rollback_started",
+            "rolled_back",
+            "rollback_failed",
+        ),
+    )
+    def test_digest_migration_existing_transaction_journal_holds_restart(
+        self, tmp_path: Path, phase: str
+    ) -> None:
+        class NoOpenPullsGh(FakeGh):
+            def _rest_open_prs(self) -> list[dict[str, Any]]:
+                raise AssertionError("incomplete transaction must stop before GitHub")
+
+        vault = _make_vault(tmp_path)
+        receipt = _write_legacy_review_team_receipt(vault)
+        receipt_bytes = receipt.read_bytes()
+        archive = receipt.with_name("task-a.acceptance.review-team.yaml")
+        applied_receipt = b"acceptor: review-team:codex\nverdict: accepted\n"
+        authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+        if phase.startswith("applied"):
+            archive.write_bytes(receipt_bytes)
+            receipt.write_bytes(applied_receipt)
+        journal = dispatch.review_team_digest_migration_journal_path(vault)
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        journal.write_text(
+            json.dumps(
+                {
+                    "schema": dispatch.MIGRATION_TRANSACTION_JOURNAL_SCHEMA,
+                    "phase": phase,
+                    "operations": [
+                        {
+                            "kind": "acceptance_receipt",
+                            "target": str(receipt),
+                            "archive": str(archive),
+                            "expected_before_sha256": "sha256:" + sha256(receipt_bytes).hexdigest(),
+                            "sha256": "sha256:" + sha256(applied_receipt).hexdigest(),
+                        }
+                    ],
+                    "applied": [
+                        {
+                            "kind": "acceptance_receipt",
+                            "target": str(receipt),
+                            "archive": str(archive),
+                            "preimage_sha256": "sha256:" + sha256(receipt_bytes).hexdigest(),
+                        }
+                    ]
+                    if phase.startswith("applied")
+                    else [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=NoOpenPullsGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:51+00:00",
+            route_blocked_families={},
+            **authority_kwargs,
+        )
+
+        assert result["status"] == "migration_recovery_required"
+        assert result["migration"]["blockers"] == ["migration_transaction_recovery_required"]
+        if phase.startswith("applied"):
+            assert receipt.read_bytes() == applied_receipt
+            assert archive.read_bytes() == receipt_bytes
+        else:
+            assert receipt.read_bytes() == receipt_bytes
+            assert not archive.exists()
+        assert journal.exists()
+
+    def test_digest_migration_orphan_transaction_stage_holds_restart(self, tmp_path: Path) -> None:
+        class NoOpenPullsGh(FakeGh):
+            def _rest_open_prs(self) -> list[dict[str, Any]]:
+                raise AssertionError("orphan transaction stage must stop before GitHub")
+
+        vault = _make_vault(tmp_path)
+        receipt = _write_legacy_review_team_receipt(vault)
+        receipt_bytes = receipt.read_bytes()
+        authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+        stage = (
+            dispatch.review_team_digest_migration_journal_path(vault).parent
+            / ".review-team-digest-migration.transaction.orphan.files"
+        )
+        stage.mkdir(parents=True)
+        (stage / "0.output").write_bytes(b"staged output")
+
+        result = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=NoOpenPullsGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:52+00:00",
+            route_blocked_families={},
+            **authority_kwargs,
+        )
+
+        assert result["status"] == "migration_recovery_required"
+        assert result["migration"]["blockers"] == ["migration_transaction_recovery_required"]
+        assert result["migration"]["transaction_recovery"]["stage_paths"] == [str(stage)]
+        assert receipt.read_bytes() == receipt_bytes
+        assert stage.exists()
 
     def test_preexisting_sealed_migration_blocker_stops_before_replay_or_lock(
         self, tmp_path: Path

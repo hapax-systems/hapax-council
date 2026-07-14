@@ -27,7 +27,9 @@ Usage::
       --migration-authority-proposal /path/to/ratified-proposal.yaml \
       --migration-authority-proposal-sha256 <64-hex> \
       --migration-consumed-act-carrier /path/to/consumed-carrier.yaml \
-      --migration-consumed-act-carrier-sha256 <64-hex>               # no-review cutover
+      --migration-consumed-act-carrier-sha256 <64-hex> \
+      --migration-candidate-authority-carrier /path/to/consumed-candidate-carrier.yaml \
+      --migration-candidate-authority-carrier-sha256 <64-hex>        # no-review cutover
     uv run python scripts/cc-pr-review-dispatch.py --all --replay-only --migration-recheck \
       --migration-authority-proposal /path/to/ratified-proposal.yaml \
       --migration-authority-proposal-sha256 <64-hex> \
@@ -39,7 +41,9 @@ Default mode is a dry-run constitution plan. ``--apply`` dispatches reviewers
 and writes the dossier; ``--force`` re-reviews an already-reviewed head sha.
 The legacy digest cutover command is ``--all --apply --replay-only`` plus the
 four migration-authority flags naming the ratified proposal and consumed act
-carrier with exact SHA-256 values. It must run only while automatic PR
+carrier with exact SHA-256 values, plus the two candidate-authority flags
+naming the separately consumed exact prepared-plan carrier. It must run only
+while automatic PR
 autoqueue/review dispatch is paused. The command acquires a vault-wide
 ``O_CREAT|O_EXCL`` migration claim before GitHub, reviewer, dossier, receipt, or
 comment effects; snapshots pre-binding review-team acceptance receipts; replays
@@ -75,7 +79,6 @@ import logging
 import os
 import re
 import secrets
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -110,6 +113,7 @@ from shared.sdlc_lifecycle import (  # noqa: E402
     REVIEW_TEAM_DIGEST_MIGRATION_FILENAME,
     REVIEW_TEAM_DIGEST_MIGRATION_INTEGRITY_RECHECK,
     REVIEW_TEAM_DIGEST_MIGRATION_LEGACY_ROUTE,
+    REVIEW_TEAM_DIGEST_MIGRATION_NEXT_ACTIONS,
     REVIEW_TEAM_DIGEST_MIGRATION_PAUSE_BOUNDARY,
     REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION,
     REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA,
@@ -131,6 +135,11 @@ DEFAULT_REVIEW_LOCK_DIR = DEFAULT_VAULT_ROOT / "_locks" / "review-team"
 # broken automatically. Recovery requires separately governed liveness evidence.
 REVIEW_EXECUTION_LOCK_STALE_AFTER_SECONDS = 6 * 60 * 60
 MIGRATION_LOCK_SCHEMA = "hapax.review_team_digest_migration.lock.v1"
+MIGRATION_TRANSACTION_JOURNAL_SCHEMA = "hapax.review_team_digest_migration.transaction.v1"
+MIGRATION_CANDIDATE_AUTHORITY_SCHEMA = "hapax.review_team_digest_migration.candidate_authority.v1"
+MIGRATION_CANDIDATE_AUTHORITY_CARRIER_SCHEMA = (
+    "hapax.review_team_digest_migration.candidate_authority_carrier.v1"
+)
 REVIEW_TEAM_DIGEST_MIGRATION_LOCK_STALE_AFTER_SECONDS = REVIEW_EXECUTION_LOCK_STALE_AFTER_SECONDS
 KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_DISPATCH_OFF"
 TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
@@ -234,28 +243,7 @@ MIGRATION_CLASSIFICATIONS = (
     MIGRATION_CLASS_UNMATCHED,
     MIGRATION_CLASS_NOT_SUBJECT,
 )
-MIGRATION_NEXT_ACTIONS = {
-    MIGRATION_CLASS_REBOUND: (
-        "Receipt was rebound from a current admissible dossier; rerun lifecycle validation "
-        "against the digest-bound active receipt."
-    ),
-    MIGRATION_CLASS_EXACT_HASH_PRESERVED: (
-        "Receipt is preserved only while the active receipt bytes match this exact SHA-256; "
-        "byte drift requires governed re-review or renewed reconciliation."
-    ),
-    MIGRATION_CLASS_STALE_INVALID: (
-        "Do not preserve this receipt; inspect the malformed/stale evidence and rerun a "
-        "governed review if acceptance is still required."
-    ),
-    MIGRATION_CLASS_UNMATCHED: (
-        "No matching active task note was found; restore the governed task identity or rerun "
-        "review under a current task before relying on acceptance."
-    ),
-    MIGRATION_CLASS_NOT_SUBJECT: (
-        "No migration action is needed; the receipt is operator-signed, already digest-bound, "
-        "or outside the review-floor gate."
-    ),
-}
+MIGRATION_NEXT_ACTIONS = dict(REVIEW_TEAM_DIGEST_MIGRATION_NEXT_ACTIONS)
 PUBLIC_GATE_AUTHORITY_BINDING_KEY_RE = re.compile(r"\A[a-z][a-z0-9_]{0,63}\Z")
 PUBLIC_GATE_AUTHORITY_RESERVED_BINDING_KEYS = frozenset(
     {
@@ -1787,6 +1775,33 @@ def atomic_write_text(path: Path, text: str) -> None:
             tmp_path.unlink(missing_ok=True)
 
 
+def atomic_write_bytes(path: Path, raw: bytes) -> None:
+    """Write exact bytes by same-directory temp file and atomic replace."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    mode = _artifact_mode(path)
+    try:
+        with tempfile.NamedTemporaryFile(
+            "wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+            tmp.write(raw)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.chmod(tmp_path, mode)
+        os.replace(tmp_path, path)
+        tmp_path = None
+        _fsync_directory(path.parent)
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+
+
 def atomic_write_yaml(path: Path, payload: dict[str, Any]) -> None:
     atomic_write_text(path, yaml.safe_dump(payload, sort_keys=False))
 
@@ -2219,6 +2234,89 @@ def _migration_authority_preimage_blockers(
     return []
 
 
+def migration_candidate_authority_from_file(
+    *,
+    carrier_path: Path | None,
+    carrier_sha256: str | None,
+    plan_binding: dict[str, Any],
+    authority: dict[str, Any],
+) -> tuple[dict[str, Any] | None, tuple[str, ...]]:
+    missing = []
+    if carrier_path is None:
+        missing.append("migration_candidate_authority_carrier_path_missing")
+    if not carrier_sha256:
+        missing.append("migration_candidate_authority_carrier_sha256_missing")
+    if missing:
+        return None, tuple(missing)
+    assert carrier_path is not None
+    carrier_sha = str(carrier_sha256 or "").strip().lower().removeprefix("sha256:")
+    if RAW_SHA256_RE.fullmatch(carrier_sha) is None:
+        return None, ("migration_candidate_authority_carrier_sha256_invalid",)
+    raw, carrier_evidence, read_error = _exact_file_evidence_with_bytes(carrier_path)
+    if read_error or raw is None:
+        return None, (f"migration_candidate_authority_carrier_unreadable:{read_error}",)
+    if carrier_evidence.get("sha256") != f"sha256:{carrier_sha}":
+        return None, ("migration_candidate_authority_carrier_sha256_mismatch",)
+    carrier, carrier_error = _load_yaml_mapping_from_bytes(
+        raw,
+        label="candidate_authority_carrier",
+    )
+    if carrier_error or carrier is None:
+        return None, (carrier_error or "migration_candidate_authority_carrier_malformed",)
+    if str(carrier.get("schema") or "") != MIGRATION_CANDIDATE_AUTHORITY_CARRIER_SCHEMA:
+        return None, ("migration_candidate_authority_carrier_schema_mismatch",)
+    if str(carrier.get("status") or "") != "consumed_active":
+        return None, ("migration_candidate_authority_carrier_not_consumed",)
+    candidate = carrier.get("candidate_authority")
+    if not isinstance(candidate, dict):
+        return None, ("migration_candidate_authority_missing",)
+    expected_candidate = plan_binding.get("candidate_authority")
+    if not isinstance(expected_candidate, dict):
+        return None, ("migration_candidate_authority_plan_missing",)
+    if candidate != expected_candidate:
+        return None, ("migration_candidate_authority_plan_digest_mismatch",)
+    candidate_sha = _canonical_json_sha256(candidate)
+    if str(carrier.get("candidate_authority_sha256") or "") != candidate_sha:
+        return None, ("migration_candidate_authority_sha256_mismatch",)
+    if str(carrier.get("id") or "") != str(candidate.get("id") or ""):
+        return None, ("migration_candidate_authority_carrier_id_mismatch",)
+    operator_act = carrier.get("operator_act")
+    if not isinstance(operator_act, dict):
+        return None, ("migration_candidate_authority_operator_act_missing",)
+    expected_response = f"RATIFY {candidate['id']} candidate_authority_sha256={candidate_sha}"
+    if str(operator_act.get("exact_response_utf8_no_lf") or "") != expected_response:
+        return None, ("migration_candidate_authority_response_mismatch",)
+    for key in (
+        "matched_id",
+        "matched_candidate_authority_sha256",
+        "authority_minted",
+        "authority_limited_to_candidate",
+    ):
+        if operator_act.get(key) is not True:
+            return None, (f"migration_candidate_authority_{key}_false",)
+    comparisons = {
+        "migration_authority_proposal_sha256": authority["proposal_sha256"],
+        "migration_authority_consumed_act_carrier_sha256": authority["consumed_act_carrier_sha256"],
+        "frozen_inventory_canonical_sha256": authority["frozen_inventory_canonical_sha256"],
+        "candidate_artifact_core_sha256": plan_binding["candidate_artifact_core_sha256"],
+        "disposition_manifest_sha256": plan_binding["disposition_manifest_sha256"],
+        "write_set_sha256": plan_binding["write_set_sha256"],
+        "evidence_manifest_sha256": plan_binding["evidence_manifest_sha256"],
+        "plan_sha256": plan_binding["plan_sha256"],
+    }
+    for key, expected in comparisons.items():
+        if candidate.get(key) != expected:
+            return None, (f"migration_candidate_authority_{key}_mismatch",)
+    return {
+        **candidate,
+        "carrier_path": str(carrier_path),
+        "carrier_sha256": carrier_sha,
+        "carrier_evidence": carrier_evidence,
+        "candidate_authority_sha256": candidate_sha,
+        "consumed_at": carrier.get("consumed_at"),
+    }, ()
+
+
 def _migration_snapshot_fingerprint(snapshots: tuple[dict[str, Any], ...]) -> str:
     payload = json.dumps(snapshots, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -2296,6 +2394,19 @@ def review_team_digest_migration_path(vault_root: Path) -> Path:
 
 def review_team_digest_migration_lock_path(vault_root: Path) -> Path:
     return vault_root / "_locks" / "review-team-digest-migration.lock"
+
+
+def review_team_digest_migration_journal_path(vault_root: Path) -> Path:
+    return vault_root / "_locks" / "review-team-digest-migration.transaction.json"
+
+
+def review_team_digest_migration_stage_paths(vault_root: Path) -> list[Path]:
+    journal_path = review_team_digest_migration_journal_path(vault_root)
+    lock_dir = journal_path.parent
+    if not lock_dir.exists():
+        return []
+    pattern = f".{journal_path.stem}.*.files"
+    return sorted(lock_dir.glob(pattern), key=lambda path: str(path))
 
 
 def _migration_lock_holder_metadata(path: Path, owner_token: str) -> dict[str, Any]:
@@ -2627,11 +2738,15 @@ def _sealed_migration_payload_blockers(
     *,
     authority: dict[str, Any],
     frozen_inventory_entries: tuple[dict[str, Any], ...],
+    active_dir: Path,
+    require_candidate_authority_for_reclassified: bool = True,
 ) -> tuple[str, ...]:
     return review_team_digest_migration_artifact_blockers(
         payload,
         expected_authority=authority,
         expected_frozen_inventory_entries=frozen_inventory_entries,
+        expected_active_dir=active_dir,
+        require_candidate_authority_for_reclassified=(require_candidate_authority_for_reclassified),
     )
 
 
@@ -2732,6 +2847,7 @@ def _preflight_existing_review_team_digest_migration(
             loaded,
             authority=authority,
             frozen_inventory_entries=frozen_inventory_entries,
+            active_dir=vault_root / "active",
         )
         if blockers:
             return {
@@ -2874,6 +2990,7 @@ def publish_review_team_digest_migration(
                 loaded,
                 authority=authority,
                 frozen_inventory_entries=frozen_inventory_entries,
+                active_dir=vault_root / "active",
             )
             if blockers:
                 return {
@@ -2946,6 +3063,8 @@ def publish_review_team_digest_migration(
         payload,
         authority=authority,
         frozen_inventory_entries=frozen_inventory_entries,
+        active_dir=vault_root / "active",
+        require_candidate_authority_for_reclassified=False,
     )
     if payload_blockers:
         return {
@@ -2976,9 +3095,22 @@ def publish_review_team_digest_migration(
             }
 
     if apply:
-        atomic_write_yaml(path, payload)
-    after_artifact_sha256 = "sha256:" + sha256_file(path) if apply else existing_artifact_sha256
-    status = "migration_written" if apply else "migration_ready"
+        return {
+            "status": "migration_blocked",
+            "artifact_path": str(path),
+            "artifact_written": False,
+            "blockers": ["migration_publish_apply_forbidden_without_transaction"],
+            "entries": payload["entries"],
+            "counts": payload["counts"],
+            "before_artifact_sha256": existing_artifact_sha256,
+            "after_artifact_sha256": existing_artifact_sha256,
+            "candidate_artifact_sha256": candidate_artifact_sha256,
+            "candidate_artifact_core_sha256": candidate_artifact_sha256,
+            "candidate_raw_bytes": candidate_raw,
+            "candidate_payload": payload,
+        }
+    after_artifact_sha256 = existing_artifact_sha256
+    status = "migration_ready"
     result = {
         "status": status,
         "artifact_path": str(path),
@@ -2994,6 +3126,8 @@ def publish_review_team_digest_migration(
         "before_artifact_sha256": existing_artifact_sha256,
         "after_artifact_sha256": after_artifact_sha256,
         "candidate_artifact_sha256": candidate_artifact_sha256,
+        "candidate_artifact_core_sha256": candidate_artifact_sha256,
+        "candidate_raw_bytes": candidate_raw,
         "candidate_payload": payload,
     }
     if existing_was_unsealed:
@@ -4923,21 +5057,9 @@ def plan_acceptance_receipt_write_if_due(
         "archive_path": str(archive_path) if archive_path else None,
         "existing_sha256": existing_sha256,
         "payload": receipt,
+        "raw_bytes": raw,
         "sha256": _sha256_bytes(raw),
     }
-
-
-def apply_planned_acceptance_receipt_write(plan: dict[str, Any]) -> None:
-    receipt_path = Path(str(plan["path"]))
-    archive_path = Path(str(plan["archive_path"])) if plan.get("archive_path") else None
-    if archive_path is not None and receipt_path.exists():
-        archive_path.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(receipt_path, archive_path)
-        _fsync_directory(receipt_path.parent)
-    payload = plan.get("payload")
-    if not isinstance(payload, dict):
-        raise RuntimeError("planned receipt payload missing")
-    atomic_write_yaml(receipt_path, payload)
 
 
 def _default_send_runner(cmd: list[str]) -> None:
@@ -5755,7 +5877,9 @@ def _migration_write_set(
     receipt_writes: list[dict[str, Any]],
 ) -> dict[str, Any]:
     writes: list[dict[str, Any]] = []
-    candidate_artifact_sha256 = migration.get("candidate_artifact_sha256")
+    candidate_artifact_sha256 = migration.get("candidate_artifact_core_sha256") or migration.get(
+        "candidate_artifact_sha256"
+    )
     if migration.get("candidate_payload") and candidate_artifact_sha256:
         writes.append(
             {
@@ -5779,6 +5903,263 @@ def _migration_write_set(
     return {"schema": "hapax.review_team_digest_migration.write_set.v1", "writes": writes}
 
 
+def _path_evidence(path: Path, *, vault_root: Path) -> dict[str, Any]:
+    evidence: dict[str, Any] = {"path": str(path)}
+    try:
+        evidence["relpath"] = str(path.resolve(strict=False).relative_to(vault_root))
+    except (OSError, ValueError):
+        evidence["relpath"] = None
+    try:
+        stat = path.lstat()
+    except FileNotFoundError:
+        evidence["exists"] = False
+        return evidence
+    except OSError as exc:
+        evidence.update({"exists": None, "error": type(exc).__name__})
+        return evidence
+    lock_dir = vault_root / "_locks"
+    migration_lock = review_team_digest_migration_lock_path(vault_root)
+    migration_journal = review_team_digest_migration_journal_path(vault_root)
+    if path in {lock_dir, migration_lock, migration_journal}:
+        evidence.update(
+            {
+                "exists": True,
+                "is_file": path.is_file(),
+                "is_dir": path.is_dir(),
+                "is_symlink": path.is_symlink(),
+            }
+        )
+        if path == lock_dir and path.is_dir():
+            try:
+                evidence["entries"] = sorted(child.name for child in path.iterdir())
+            except OSError as exc:
+                evidence["entries_error"] = type(exc).__name__
+        elif path.is_file() and not path.is_symlink():
+            try:
+                loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            except (OSError, yaml.YAMLError) as exc:
+                evidence["read_error"] = type(exc).__name__
+            else:
+                evidence["schema"] = loaded.get("schema") if isinstance(loaded, dict) else None
+                evidence["status"] = loaded.get("status") if isinstance(loaded, dict) else None
+        return evidence
+    evidence.update(
+        {
+            "exists": True,
+            "mode": stat.st_mode,
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+            "ctime_ns": stat.st_ctime_ns,
+            "dev": stat.st_dev,
+            "ino": stat.st_ino,
+            "is_file": path.is_file(),
+            "is_dir": path.is_dir(),
+            "is_symlink": path.is_symlink(),
+        }
+    )
+    if path.is_symlink():
+        try:
+            evidence["symlink_target"] = os.readlink(path)
+        except OSError as exc:
+            evidence["symlink_error"] = type(exc).__name__
+    if path.is_file() and not path.is_symlink():
+        try:
+            evidence["sha256"] = "sha256:" + sha256_file(path)
+        except OSError as exc:
+            evidence["sha256_error"] = type(exc).__name__
+    if path.is_dir() and not path.is_symlink():
+        try:
+            evidence["entries"] = sorted(
+                (
+                    {
+                        "name": child.name,
+                        "is_file": child.is_file(),
+                        "is_dir": child.is_dir(),
+                        "is_symlink": child.is_symlink(),
+                    }
+                    for child in path.iterdir()
+                ),
+                key=lambda item: item["name"],
+            )
+        except OSError as exc:
+            evidence["entries_error"] = type(exc).__name__
+    return evidence
+
+
+def _exact_file_evidence_with_bytes(path: Path) -> tuple[bytes | None, dict[str, Any], str]:
+    evidence: dict[str, Any] = {"path": str(path)}
+    try:
+        stat = path.lstat()
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        evidence["exists"] = False
+        return None, evidence, "not_found"
+    except OSError as exc:
+        evidence.update({"exists": None, "error": type(exc).__name__})
+        return None, evidence, type(exc).__name__
+    evidence.update(
+        {
+            "exists": True,
+            "sha256": _sha256_bytes(raw),
+            "mode": stat.st_mode,
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+            "ctime_ns": stat.st_ctime_ns,
+            "dev": stat.st_dev,
+            "ino": stat.st_ino,
+            "is_file": path.is_file(),
+            "is_symlink": path.is_symlink(),
+        }
+    )
+    if path.is_symlink():
+        try:
+            evidence["symlink_target"] = os.readlink(path)
+        except OSError as exc:
+            evidence["symlink_error"] = type(exc).__name__
+    return raw, evidence, ""
+
+
+def _migration_lock_exact_evidence(path: Path) -> dict[str, Any]:
+    evidence: dict[str, Any] = {"path": str(path)}
+    try:
+        stat = path.lstat()
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        evidence["exists"] = False
+        return evidence
+    except OSError as exc:
+        evidence.update({"exists": None, "error": type(exc).__name__})
+        return evidence
+    evidence.update(
+        {
+            "exists": True,
+            "sha256": _sha256_bytes(raw),
+            "mode": stat.st_mode,
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+            "ctime_ns": stat.st_ctime_ns,
+            "dev": stat.st_dev,
+            "ino": stat.st_ino,
+            "is_file": path.is_file(),
+            "is_symlink": path.is_symlink(),
+        }
+    )
+    try:
+        loaded = yaml.safe_load(raw.decode("utf-8"))
+    except (UnicodeDecodeError, yaml.YAMLError) as exc:
+        evidence["load_error"] = type(exc).__name__
+        return evidence
+    if isinstance(loaded, dict):
+        for key in (
+            "schema",
+            "owner_token",
+            "host",
+            "hostname",
+            "pid",
+            "process",
+            "lock_path",
+            "acquired_at",
+        ):
+            evidence[key] = loaded.get(key)
+    else:
+        evidence["load_error"] = f"not_a_mapping:{type(loaded).__name__}"
+    return evidence
+
+
+def _migration_lock_transition_model(
+    *,
+    vault_root: Path,
+    pre_claim_state: dict[str, Any],
+    owned_lock_evidence: dict[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "schema": "hapax.review_team_digest_migration.lock_transition.v1",
+        "lock_path": str(review_team_digest_migration_lock_path(vault_root)),
+        "pre_claim_status": str(pre_claim_state.get("status") or "unknown"),
+        "required_pre_claim_status": "migration_lock_absent",
+        "owned_lock_present": bool(owned_lock_evidence and owned_lock_evidence.get("exists")),
+        "owned_lock_schema": (owned_lock_evidence or {}).get("schema"),
+        "required_owned_lock_schema": MIGRATION_LOCK_SCHEMA,
+    }
+
+
+def _planned_path_set(
+    *,
+    vault_root: Path,
+    artifact_preflight: dict[str, Any],
+    migration: dict[str, Any] | None = None,
+    receipt_writes: list[dict[str, Any]] | None = None,
+    authority: dict[str, Any] | None = None,
+) -> list[Path]:
+    paths = {
+        vault_root / "active",
+        vault_root / "closed",
+        vault_root / "_locks",
+        review_team_digest_migration_path(vault_root),
+        review_team_digest_migration_lock_path(vault_root),
+        review_team_digest_migration_journal_path(vault_root),
+    }
+    artifact_path = artifact_preflight.get("artifact_path")
+    if artifact_path:
+        paths.add(Path(str(artifact_path)))
+    if migration and migration.get("artifact_path"):
+        paths.add(Path(str(migration["artifact_path"])))
+    if authority:
+        for key in ("proposal_path", "consumed_act_carrier_path"):
+            value = authority.get(key)
+            if value:
+                paths.add(Path(str(value)))
+    for write in receipt_writes or []:
+        for key in ("path", "archive_path", "dossier_path"):
+            value = write.get(key)
+            if value:
+                paths.add(Path(str(value)))
+        payload = write.get("payload")
+        if isinstance(payload, dict) and payload.get("dossier_path"):
+            paths.add(Path(str(payload["dossier_path"])))
+    active_dir = vault_root / "active"
+    if active_dir.is_dir():
+        for path in active_dir.rglob("*"):
+            paths.add(path)
+    return sorted(paths, key=lambda item: str(item))
+
+
+def _collect_migration_evidence_manifest(
+    *,
+    vault_root: Path,
+    authority: dict[str, Any],
+    artifact_preflight: dict[str, Any],
+    migration: dict[str, Any] | None,
+    receipt_writes: list[dict[str, Any]],
+    lock_transition: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    paths = _planned_path_set(
+        vault_root=vault_root,
+        artifact_preflight=artifact_preflight,
+        migration=migration,
+        receipt_writes=receipt_writes,
+        authority=authority,
+    )
+    return {
+        "schema": "hapax.review_team_digest_migration.evidence_manifest.v2",
+        "source_trust_anchor": dict(authority.get("source_trust_anchor") or {}),
+        "authority": {
+            "proposal_path": authority.get("proposal_path"),
+            "proposal_sha256": authority.get("proposal_sha256"),
+            "consumed_act_carrier_path": authority.get("consumed_act_carrier_path"),
+            "consumed_act_carrier_sha256": authority.get("consumed_act_carrier_sha256"),
+            "frozen_inventory_canonical_sha256": authority.get("frozen_inventory_canonical_sha256"),
+        },
+        "artifact_preflight": artifact_preflight,
+        "lock_transition": lock_transition,
+        "planned_writes": _migration_write_set(
+            migration=migration or {},
+            receipt_writes=receipt_writes,
+        ),
+        "paths": [_path_evidence(path, vault_root=vault_root) for path in paths],
+    }
+
+
 def _migration_plan_binding(
     *,
     authority: dict[str, Any],
@@ -5786,31 +6167,53 @@ def _migration_plan_binding(
     migration: dict[str, Any],
     receipt_writes: list[dict[str, Any]],
     snapshots: tuple[dict[str, Any], ...],
+    evidence_manifest: dict[str, Any],
 ) -> dict[str, Any]:
     disposition_manifest = _migration_disposition_manifest(migration)
     write_set = _migration_write_set(migration=migration, receipt_writes=receipt_writes)
-    evidence_manifest = {
-        "schema": "hapax.review_team_digest_migration.evidence_manifest.v1",
-        "authority": authority,
-        "artifact_preflight": artifact_preflight,
-        "snapshot_fingerprint": _migration_snapshot_fingerprint(snapshots),
-        "snapshot_count": len(snapshots),
-    }
+    candidate_artifact_core_sha256 = migration.get("candidate_artifact_core_sha256") or (
+        migration.get("candidate_artifact_sha256")
+    )
     binding = {
         "schema": "hapax.review_team_digest_migration.prepared_plan.v1",
+        "candidate_artifact_core_sha256": candidate_artifact_core_sha256,
         "candidate_artifact_sha256": migration.get("candidate_artifact_sha256"),
         "disposition_manifest_sha256": _canonical_json_sha256(disposition_manifest),
         "write_set_sha256": _canonical_json_sha256(write_set),
         "evidence_manifest_sha256": _canonical_json_sha256(evidence_manifest),
+        "snapshot_fingerprint": _migration_snapshot_fingerprint(snapshots),
+        "snapshot_count": len(snapshots),
     }
     binding["plan_sha256"] = _canonical_json_sha256(
         {
             "schema": binding["schema"],
-            "candidate_artifact_sha256": binding["candidate_artifact_sha256"],
+            "candidate_artifact_core_sha256": binding["candidate_artifact_core_sha256"],
             "disposition_manifest_sha256": binding["disposition_manifest_sha256"],
             "write_set_sha256": binding["write_set_sha256"],
             "evidence_manifest_sha256": binding["evidence_manifest_sha256"],
         }
+    )
+    candidate_authority = {
+        "schema": MIGRATION_CANDIDATE_AUTHORITY_SCHEMA,
+        "id": (
+            "review-team-digest-migration-candidate."
+            f"{binding['plan_sha256'].removeprefix('sha256:')[:16]}"
+        ),
+        "migration_authority_proposal_sha256": authority["proposal_sha256"],
+        "migration_authority_consumed_act_carrier_sha256": authority["consumed_act_carrier_sha256"],
+        "frozen_inventory_canonical_sha256": authority["frozen_inventory_canonical_sha256"],
+        "candidate_artifact_core_sha256": candidate_artifact_core_sha256,
+        "disposition_manifest_sha256": binding["disposition_manifest_sha256"],
+        "write_set_sha256": binding["write_set_sha256"],
+        "evidence_manifest_sha256": binding["evidence_manifest_sha256"],
+        "plan_sha256": binding["plan_sha256"],
+    }
+    candidate_authority_sha256 = _canonical_json_sha256(candidate_authority)
+    binding["candidate_authority"] = candidate_authority
+    binding["candidate_authority_sha256"] = candidate_authority_sha256
+    binding["candidate_authority_response"] = (
+        f"RATIFY {candidate_authority['id']} "
+        f"candidate_authority_sha256={candidate_authority_sha256}"
     )
     return {
         **binding,
@@ -5820,47 +6223,577 @@ def _migration_plan_binding(
     }
 
 
+def _migration_with_consumed_candidate_authority(
+    migration: dict[str, Any],
+    candidate_authority: dict[str, Any],
+) -> dict[str, Any]:
+    payload = migration.get("candidate_payload")
+    if not isinstance(payload, dict):
+        return migration
+    final_payload = dict(payload)
+    final_payload["candidate_authority"] = {
+        "schema": candidate_authority["schema"],
+        "id": candidate_authority["id"],
+        "carrier_path": candidate_authority["carrier_path"],
+        "carrier_sha256": candidate_authority["carrier_sha256"],
+        "candidate_authority_sha256": candidate_authority["candidate_authority_sha256"],
+        "migration_authority_proposal_sha256": candidate_authority[
+            "migration_authority_proposal_sha256"
+        ],
+        "migration_authority_consumed_act_carrier_sha256": candidate_authority[
+            "migration_authority_consumed_act_carrier_sha256"
+        ],
+        "frozen_inventory_canonical_sha256": candidate_authority[
+            "frozen_inventory_canonical_sha256"
+        ],
+        "candidate_artifact_core_sha256": candidate_authority["candidate_artifact_core_sha256"],
+        "disposition_manifest_sha256": candidate_authority["disposition_manifest_sha256"],
+        "write_set_sha256": candidate_authority["write_set_sha256"],
+        "evidence_manifest_sha256": candidate_authority["evidence_manifest_sha256"],
+        "plan_sha256": candidate_authority["plan_sha256"],
+    }
+    raw = _yaml_bytes(final_payload)
+    result = dict(migration)
+    result["candidate_payload"] = final_payload
+    result["candidate_raw_bytes"] = raw
+    result["candidate_artifact_sha256"] = _sha256_bytes(raw)
+    result["candidate_authority"] = final_payload["candidate_authority"]
+    return result
+
+
+def _load_yaml_mapping_from_bytes(raw: bytes, *, label: str) -> tuple[dict[str, Any] | None, str]:
+    try:
+        loaded = yaml.safe_load(raw.decode("utf-8"))
+    except (UnicodeDecodeError, yaml.YAMLError) as exc:
+        return None, f"{label}_malformed:{type(exc).__name__}"
+    if not isinstance(loaded, dict):
+        return None, f"{label}_malformed:not_a_mapping:{type(loaded).__name__}"
+    return loaded, ""
+
+
+def _legacy_digest_admission_from_payload(
+    *,
+    candidate_payload: dict[str, Any] | None,
+    vault_root: Path,
+    receipt_path: Path,
+    receipt_sha256: str,
+    task_id: str,
+) -> dict[str, Any]:
+    payload = candidate_payload
+    if payload is None:
+        migration_path = review_team_digest_migration_path(vault_root)
+        try:
+            payload = _load_yaml_mapping(migration_path)
+        except (OSError, RuntimeError, yaml.YAMLError) as exc:
+            return {
+                "accepted": False,
+                "route": "blocked",
+                "blockers": [f"acceptance_receipt_digest_migration_malformed:{type(exc).__name__}"],
+            }
+    artifact_blockers = review_team_digest_migration_artifact_blockers(
+        payload,
+        expected_active_dir=vault_root / "active",
+    )
+    terminal = [
+        blocker
+        for blocker in artifact_blockers
+        if blocker.startswith(
+            (
+                "sealed_migration_authority",
+                "sealed_migration_generation",
+                "sealed_migration_frozen_inventory",
+                "sealed_migration_frozen_tuple",
+                "sealed_migration_counts",
+                "sealed_migration_count_",
+                "sealed_migration_candidate_authority",
+                "sealed_migration_authorized_disposition",
+            )
+        )
+    ]
+    if terminal:
+        return {
+            "accepted": False,
+            "route": "blocked",
+            "blockers": [f"acceptance_receipt_digest_migration_{blocker}" for blocker in terminal],
+        }
+    entries = payload.get("entries")
+    matching = [
+        entry
+        for entry in entries or []
+        if isinstance(entry, dict) and str(entry.get("task_id") or "") == task_id
+    ]
+    if len(matching) > 1:
+        return {
+            "accepted": False,
+            "route": "blocked",
+            "blockers": [f"acceptance_receipt_digest_migration_duplicate_task:{task_id}"],
+        }
+    if not matching:
+        return {
+            "accepted": False,
+            "route": "blocked",
+            "blockers": ["acceptance_receipt_digest_migration_unlisted"],
+        }
+    entry = matching[0]
+    if str(entry.get("receipt_basename") or "") != receipt_path.name:
+        return {
+            "accepted": False,
+            "route": "blocked",
+            "blockers": ["acceptance_receipt_digest_migration_unlisted"],
+        }
+    classification = str(entry.get("classification") or "")
+    if classification != MIGRATION_CLASS_EXACT_HASH_PRESERVED:
+        if str(entry.get("reason") or "") == "post_cutover_unlisted_digest_unbound_receipt":
+            blocker = "acceptance_receipt_digest_migration_post_cutover_unlisted"
+        else:
+            blocker = (
+                "acceptance_receipt_digest_migration_classification_not_preserving:"
+                f"{classification or 'missing'}"
+            )
+        return {"accepted": False, "route": "blocked", "blockers": [blocker]}
+    expected_sha = str(entry.get("receipt_sha256") or "")
+    if expected_sha != receipt_sha256:
+        return {
+            "accepted": False,
+            "route": "blocked",
+            "blockers": ["acceptance_receipt_digest_migration_sha256_mismatch"],
+        }
+    legacy_admission = entry.get("legacy_admission")
+    return {
+        "accepted": True,
+        "route": REVIEW_TEAM_DIGEST_MIGRATION_LEGACY_ROUTE,
+        "blockers": (),
+        "receipt_sha256": expected_sha,
+        "classification": classification,
+        "sealed_generation": payload.get("sealed_generation") or {},
+        "legacy_admission": legacy_admission if isinstance(legacy_admission, dict) else {},
+    }
+
+
+def _acceptance_receipt_admission_route_with_overlay(
+    *,
+    frontmatter: dict[str, Any],
+    note_path: Path,
+    task_id: str,
+    overlay_receipts: dict[str, bytes | None],
+    candidate_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not requires_acceptance_receipt(frontmatter):
+        return {"accepted": True, "route": "not_required", "blockers": ()}
+    receipt_path = acceptance_receipt_path(note_path, task_id)
+    raw = overlay_receipts.get(str(receipt_path))
+    if raw is None:
+        try:
+            raw = receipt_path.read_bytes()
+        except FileNotFoundError:
+            return {
+                "accepted": False,
+                "route": "blocked",
+                "blockers": ("missing_acceptance_receipt",),
+            }
+        except OSError as exc:
+            return {
+                "accepted": False,
+                "route": "blocked",
+                "blockers": (f"acceptance_receipt_malformed:{type(exc).__name__}",),
+            }
+    loaded, load_error = _load_yaml_mapping_from_bytes(raw, label="acceptance_receipt")
+    if load_error or loaded is None:
+        return {"accepted": False, "route": "blocked", "blockers": (load_error,)}
+    blockers = [
+        f"acceptance_receipt_missing_field:{field}"
+        for field in ("acceptor", "verdict", "timestamp", "artifact")
+        if not str(loaded.get(field) or "").strip()
+    ]
+    verdict = str(loaded.get("verdict") or "").strip().lower()
+    if verdict and verdict not in {"accepted", "accept"}:
+        blockers.append(f"acceptance_receipt_verdict_not_accepted:{verdict}")
+    if blockers:
+        return {"accepted": False, "route": "blocked", "blockers": tuple(blockers)}
+    acceptor = str(loaded.get("acceptor") or "")
+    if not acceptor.startswith("review-team:"):
+        return {"accepted": True, "route": "operator_receipt", "blockers": ()}
+    dossier_sha256 = str(loaded.get("dossier_sha256") or "")
+    if dossier_sha256:
+        if TASK_HASH_RE.fullmatch(dossier_sha256) is None:
+            return {
+                "accepted": False,
+                "route": "blocked",
+                "blockers": ("acceptance_receipt_dossier_sha256_malformed",),
+            }
+        dossier_path = review_team.review_dossier_path(note_path, task_id)
+        try:
+            actual = sha256_file(dossier_path)
+        except FileNotFoundError:
+            return {
+                "accepted": False,
+                "route": "blocked",
+                "blockers": ("acceptance_receipt_dossier_missing",),
+            }
+        except OSError as exc:
+            return {
+                "accepted": False,
+                "route": "blocked",
+                "blockers": (f"acceptance_receipt_dossier_unreadable:{type(exc).__name__}",),
+            }
+        if actual != dossier_sha256.removeprefix("sha256:"):
+            return {
+                "accepted": False,
+                "route": "blocked",
+                "blockers": ("acceptance_receipt_dossier_sha256_mismatch",),
+            }
+        return {
+            "accepted": True,
+            "route": "review_team_dossier_sha256",
+            "blockers": (),
+            "dossier_sha256": dossier_sha256,
+        }
+    return _legacy_digest_admission_from_payload(
+        candidate_payload=candidate_payload,
+        vault_root=note_path.parent.parent,
+        receipt_path=receipt_path,
+        receipt_sha256=_sha256_bytes(raw),
+        task_id=task_id,
+    )
+
+
 def _trace_with_prepared_migration_outputs(
     *,
     vault_root: Path,
     migration: dict[str, Any],
     receipt_writes: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    active_dir = vault_root / "active"
+    overlay_receipts = {
+        str(Path(str(write["path"]))): write.get("raw_bytes")
+        for write in receipt_writes
+        if write.get("path") and isinstance(write.get("raw_bytes"), bytes)
+    }
     candidate_payload = migration.get("candidate_payload")
-    with tempfile.TemporaryDirectory(prefix="review-team-digest-migration-plan.") as tmp:
-        tmp_vault = Path(tmp) / "hapax-cc-tasks"
-        source_active = vault_root / "active"
-        target_active = tmp_vault / "active"
-        if source_active.exists():
-            shutil.copytree(source_active, target_active)
-        else:
-            target_active.mkdir(parents=True)
-        (tmp_vault / "closed").mkdir(exist_ok=True)
-        if isinstance(candidate_payload, dict):
-            (target_active / REVIEW_TEAM_DIGEST_MIGRATION_FILENAME).write_bytes(
-                _yaml_bytes(candidate_payload)
+    trace: list[dict[str, Any]] = []
+    if not active_dir.is_dir():
+        return trace
+    for note_path in sorted(active_dir.glob("*.md")):
+        frontmatter = review_team._note_frontmatter(note_path)
+        if frontmatter is None:
+            trace.append(
+                {
+                    "task_note_basename": note_path.name,
+                    "task_id": note_path.stem,
+                    "accepted": False,
+                    "route": "blocked",
+                    "blockers": ["task_note_frontmatter_malformed"],
+                }
             )
-        for write in receipt_writes:
-            rel = Path(str(write["path"])).relative_to(vault_root)
-            payload = write.get("payload")
-            if not isinstance(payload, dict):
-                continue
-            target = tmp_vault / rel
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(_yaml_bytes(payload))
-        return collect_acceptance_receipt_admission_trace(tmp_vault)
+            continue
+        task_id = str(frontmatter.get("task_id") or note_path.stem)
+        admission = _acceptance_receipt_admission_route_with_overlay(
+            frontmatter=frontmatter,
+            note_path=note_path,
+            task_id=task_id,
+            overlay_receipts=overlay_receipts,
+            candidate_payload=candidate_payload if isinstance(candidate_payload, dict) else None,
+        )
+        trace.append(
+            {
+                "task_note_basename": note_path.name,
+                "task_id": task_id,
+                "accepted": bool(admission.get("accepted")),
+                "route": str(admission.get("route") or "blocked"),
+                "blockers": list(admission.get("blockers") or []),
+                **{
+                    key: value
+                    for key, value in admission.items()
+                    if key not in {"accepted", "route", "blockers"}
+                },
+            }
+        )
+    return trace
+
+
+def _migration_transaction_recovery_state(vault_root: Path) -> dict[str, Any]:
+    journal_path = review_team_digest_migration_journal_path(vault_root)
+    stage_paths = review_team_digest_migration_stage_paths(vault_root)
+    blockers: list[str] = []
+    if journal_path.exists():
+        blockers.append("migration_transaction_recovery_required")
+    if stage_paths:
+        blockers.append("migration_transaction_recovery_required")
+    return {
+        "journal_path": str(journal_path),
+        "journal_exists": journal_path.exists(),
+        "stage_paths": [str(path) for path in stage_paths],
+        "blockers": list(dict.fromkeys(blockers)),
+    }
+
+
+def _candidate_authority_carrier_recheck(
+    candidate_authority: dict[str, Any],
+) -> tuple[list[str], dict[str, Any] | None]:
+    carrier_path_text = str(candidate_authority.get("carrier_path") or "")
+    expected_evidence = candidate_authority.get("carrier_evidence")
+    if not carrier_path_text or not isinstance(expected_evidence, dict):
+        return ["migration_candidate_authority_carrier_evidence_missing"], None
+    raw, evidence, read_error = _exact_file_evidence_with_bytes(Path(carrier_path_text))
+    if read_error or raw is None:
+        return [f"migration_candidate_authority_carrier_recheck_unreadable:{read_error}"], evidence
+    if evidence != expected_evidence:
+        return ["migration_candidate_authority_carrier_changed_before_effects"], evidence
+    expected_sha = str(candidate_authority.get("carrier_sha256") or "")
+    if evidence.get("sha256") != f"sha256:{expected_sha}":
+        return ["migration_candidate_authority_carrier_recheck_sha256_mismatch"], evidence
+    return [], evidence
 
 
 def _apply_prepared_migration_outputs(
     *,
+    vault_root: Path,
     migration: dict[str, Any],
     receipt_writes: list[dict[str, Any]],
-) -> None:
+) -> dict[str, Any]:
+    recovery_state = _migration_transaction_recovery_state(vault_root)
+    journal_path = review_team_digest_migration_journal_path(vault_root)
+    if recovery_state["blockers"]:
+        return {
+            "status": "migration_recovery_required",
+            "blockers": recovery_state["blockers"],
+            "journal_path": str(journal_path),
+            "recovery_state": recovery_state,
+        }
+    token = secrets.token_urlsafe(12)
+    stage_dir = journal_path.parent / f".{journal_path.stem}.{token}.files"
+    operations: list[dict[str, Any]] = []
     for write in receipt_writes:
-        apply_planned_acceptance_receipt_write(write)
+        raw = write.get("raw_bytes")
+        if not isinstance(raw, bytes):
+            return {
+                "status": "migration_recovery_required",
+                "blockers": ["migration_transaction_receipt_raw_bytes_missing"],
+            }
+        operations.append(
+            {
+                "kind": "acceptance_receipt",
+                "target": Path(str(write["path"])),
+                "archive": Path(str(write["archive_path"])) if write.get("archive_path") else None,
+                "expected_before_sha256": write.get("existing_sha256"),
+                "raw_bytes": raw,
+                "sha256": _sha256_bytes(raw),
+            }
+        )
     candidate_payload = migration.get("candidate_payload")
     if isinstance(candidate_payload, dict):
-        atomic_write_yaml(Path(str(migration["artifact_path"])), candidate_payload)
+        raw = migration.get("candidate_raw_bytes")
+        if not isinstance(raw, bytes):
+            return {
+                "status": "migration_recovery_required",
+                "blockers": ["migration_transaction_candidate_raw_bytes_missing"],
+                "journal_path": str(journal_path),
+            }
+        candidate_authority = migration.get("candidate_authority")
+        if not isinstance(candidate_authority, dict):
+            return {
+                "status": "migration_recovery_required",
+                "blockers": ["migration_candidate_authority_missing_before_effects"],
+                "journal_path": str(journal_path),
+            }
+        carrier_blockers, carrier_evidence = _candidate_authority_carrier_recheck(
+            candidate_authority
+        )
+        if carrier_blockers:
+            return {
+                "status": "migration_recovery_required",
+                "blockers": carrier_blockers,
+                "journal_path": str(journal_path),
+                "candidate_carrier_evidence": carrier_evidence,
+            }
+        operations.append(
+            {
+                "kind": "migration_artifact",
+                "target": Path(str(migration["artifact_path"])),
+                "archive": None,
+                "expected_before_sha256": migration.get("before_artifact_sha256"),
+                "raw_bytes": raw,
+                "sha256": _sha256_bytes(raw),
+            }
+        )
+    if not operations:
+        return {"status": "applied", "journal_path": str(journal_path), "operations": []}
+
+    applied: list[dict[str, Any]] = []
+    touched: list[dict[str, Any]] = []
+
+    def mark_touched(op: dict[str, Any]) -> None:
+        if not any(existing is op for existing in touched):
+            touched.append(op)
+
+    def cleanup_stage() -> None:
+        if not stage_dir.exists():
+            return
+        for path in stage_dir.glob("*"):
+            path.unlink(missing_ok=True)
+        stage_dir.rmdir()
+        _fsync_directory(stage_dir.parent)
+
+    def write_stage_file(path: Path, raw: bytes) -> None:
+        with path.open("wb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    def write_journal(phase: str, extra: dict[str, Any] | None = None) -> None:
+        journal = {
+            "schema": MIGRATION_TRANSACTION_JOURNAL_SCHEMA,
+            "phase": phase,
+            "token": token,
+            "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "stage_dir": str(stage_dir),
+            "operations": [
+                {
+                    "kind": op["kind"],
+                    "target": str(op["target"]),
+                    "archive": str(op["archive"]) if op["archive"] else None,
+                    "expected_before_sha256": op.get("expected_before_sha256"),
+                    "sha256": op["sha256"],
+                }
+                for op in operations
+            ],
+            "applied": [
+                {
+                    "kind": op["kind"],
+                    "target": str(op["target"]),
+                    "archive": str(op["archive"]) if op["archive"] else None,
+                    "preimage_sha256": op.get("preimage_sha256"),
+                }
+                for op in applied
+            ],
+        }
+        if extra:
+            journal.update(extra)
+        atomic_write_bytes(
+            journal_path,
+            json.dumps(journal, sort_keys=True, indent=2).encode("utf-8") + b"\n",
+        )
+
+    def rollback() -> None:
+        for op in reversed(touched):
+            target = op["target"]
+            archive = op.get("archive")
+            preimage = op.get("preimage_bytes")
+            if isinstance(preimage, bytes):
+                if isinstance(archive, Path) and archive.exists():
+                    os.replace(archive, target)
+                else:
+                    atomic_write_bytes(target, preimage)
+            else:
+                target.unlink(missing_ok=True)
+            if isinstance(archive, Path) and archive.exists():
+                archive.unlink()
+            _fsync_directory(target.parent)
+
+    try:
+        write_journal("initializing")
+        stage_dir.mkdir(parents=True, exist_ok=False)
+        _fsync_directory(stage_dir.parent)
+        for index, op in enumerate(operations):
+            target = op["target"]
+            preimage = target.read_bytes() if target.exists() else None
+            op["preimage_bytes"] = preimage
+            op["preimage_sha256"] = _sha256_bytes(preimage) if isinstance(preimage, bytes) else None
+            expected_before = op.get("expected_before_sha256")
+            if expected_before and expected_before != op["preimage_sha256"]:
+                cleanup_stage()
+                return {
+                    "status": "migration_recovery_required",
+                    "blockers": ["migration_transaction_preimage_sha256_mismatch"],
+                    "journal_path": str(journal_path),
+                }
+            write_stage_file(stage_dir / f"{index}.output", op["raw_bytes"])
+            if isinstance(preimage, bytes):
+                write_stage_file(stage_dir / f"{index}.preimage", preimage)
+        write_journal("prepared")
+        for op in operations:
+            target = op["target"]
+            archive = op["archive"]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if isinstance(archive, Path) and target.exists():
+                archive.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(target, archive)
+                op["archived"] = True
+                mark_touched(op)
+                _fsync_directory(target.parent)
+                if archive.parent != target.parent:
+                    _fsync_directory(archive.parent)
+            mark_touched(op)
+            atomic_write_bytes(target, op["raw_bytes"])
+            actual_sha = _sha256_bytes(target.read_bytes())
+            if actual_sha != op["sha256"]:
+                raise RuntimeError("post_write_sha256_mismatch")
+            applied.append(op)
+            write_journal(f"applied:{len(applied)}")
+        write_journal("complete")
+        journal_path.unlink(missing_ok=True)
+        _fsync_directory(journal_path.parent)
+        cleanup_stage()
+        return {
+            "status": "applied",
+            "journal_path": str(journal_path),
+            "operations": len(operations),
+        }
+    except Exception as exc:  # noqa: BLE001 - transaction must report recovery state.
+        rollback_journal_errors: list[str] = []
+        try:
+            try:
+                write_journal("rollback_started", {"error": f"{type(exc).__name__}:{exc}"})
+            except Exception as journal_exc:  # noqa: BLE001
+                rollback_journal_errors.append(f"rollback_started:{type(journal_exc).__name__}")
+            rollback()
+            try:
+                write_journal(
+                    "rolled_back",
+                    {
+                        "error": f"{type(exc).__name__}:{exc}",
+                        "journal_errors": rollback_journal_errors,
+                    },
+                )
+            except Exception as journal_exc:  # noqa: BLE001
+                rollback_journal_errors.append(f"rolled_back:{type(journal_exc).__name__}")
+            if not rollback_journal_errors:
+                journal_path.unlink(missing_ok=True)
+                _fsync_directory(journal_path.parent)
+            cleanup_stage()
+        except Exception as rollback_exc:  # noqa: BLE001
+            try:
+                write_journal(
+                    "rollback_failed",
+                    {
+                        "error": f"{type(exc).__name__}:{exc}",
+                        "rollback_error": f"{type(rollback_exc).__name__}:{rollback_exc}",
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            return {
+                "status": "migration_recovery_required",
+                "blockers": [
+                    f"migration_transaction_rollback_failed:{type(rollback_exc).__name__}"
+                ],
+                "journal_path": str(journal_path),
+            }
+        if rollback_journal_errors:
+            return {
+                "status": "migration_recovery_required",
+                "blockers": [
+                    "migration_transaction_failed:"
+                    f"{type(exc).__name__}:rollback_journal_update_failed"
+                ],
+                "journal_path": str(journal_path),
+                "journal_errors": rollback_journal_errors,
+            }
+        return {
+            "status": "migration_recovery_required",
+            "blockers": [f"migration_transaction_failed:{type(exc).__name__}"],
+            "journal_path": str(journal_path),
+        }
 
 
 def replay_all_open_prs_with_digest_migration(
@@ -5879,6 +6812,8 @@ def replay_all_open_prs_with_digest_migration(
     migration_authority_proposal_sha256: str | None = None,
     migration_consumed_act_carrier_path: Path | None = None,
     migration_consumed_act_carrier_sha256: str | None = None,
+    migration_candidate_authority_carrier_path: Path | None = None,
+    migration_candidate_authority_carrier_sha256: str | None = None,
     migration_source_trust_anchor: dict[str, Any] | None = None,
     migration_recheck: bool = False,
     systemctl_runner: Any = None,
@@ -5939,6 +6874,20 @@ def replay_all_open_prs_with_digest_migration(
             "side_effects": {},
             "pause_preconditions": pause_preconditions,
         }
+    transaction_recovery_state = _migration_transaction_recovery_state(vault_root)
+    journal_path = review_team_digest_migration_journal_path(vault_root)
+    if transaction_recovery_state["blockers"]:
+        return _migration_blocked_result(
+            status="migration_recovery_required",
+            repo=repo,
+            vault_root=vault_root,
+            blockers=list(transaction_recovery_state["blockers"]),
+            pause_preconditions=pause_preconditions,
+            migration_extra={
+                "journal_path": str(journal_path),
+                "transaction_recovery": transaction_recovery_state,
+            },
+        )
     artifact_preflight = _preflight_existing_review_team_digest_migration(
         vault_root,
         authority=authority,
@@ -5993,6 +6942,13 @@ def replay_all_open_prs_with_digest_migration(
                     "after_artifact_sha256": artifact_preflight.get("artifact_sha256"),
                 },
             )
+        pre_candidate_evidence_manifest = _collect_migration_evidence_manifest(
+            vault_root=vault_root,
+            authority=authority,
+            artifact_preflight=artifact_preflight,
+            migration=None,
+            receipt_writes=[],
+        )
         migration = publish_review_team_digest_migration(
             vault_root,
             snapshots=pre_effect_snapshots,
@@ -6004,12 +6960,20 @@ def replay_all_open_prs_with_digest_migration(
             source_head_sha=_current_source_head(repo_root),
         )
         migration["artifact_preflight"] = artifact_preflight
+        evidence_manifest = _collect_migration_evidence_manifest(
+            vault_root=vault_root,
+            authority=authority,
+            artifact_preflight=artifact_preflight,
+            migration=migration,
+            receipt_writes=[],
+        )
         migration["plan_binding"] = _migration_plan_binding(
             authority=authority,
             artifact_preflight=artifact_preflight,
             migration=migration,
             receipt_writes=[],
             snapshots=pre_effect_snapshots,
+            evidence_manifest=evidence_manifest,
         )
         post_authority_blockers = _migration_authority_preimage_blockers(
             authority=authority,
@@ -6024,6 +6988,13 @@ def replay_all_open_prs_with_digest_migration(
             vault_root,
             authority=authority,
             frozen_inventory_entries=frozen_entries,
+        )
+        post_evidence_manifest = _collect_migration_evidence_manifest(
+            vault_root=vault_root,
+            authority=authority,
+            artifact_preflight=artifact_preflight,
+            migration=None,
+            receipt_writes=[],
         )
         post_recheck_snapshots = collect_review_team_digest_migration_snapshots(vault_root)
         snapshot_drift = _migration_snapshot_drift(pre_effect_snapshots, post_recheck_snapshots)
@@ -6043,6 +7014,13 @@ def replay_all_open_prs_with_digest_migration(
         if post_artifact_preflight != artifact_preflight:
             blockers.append("migration_recheck_artifact_drift")
             migration["post_artifact_preflight"] = post_artifact_preflight
+        if _canonical_json_sha256(post_evidence_manifest) != _canonical_json_sha256(
+            pre_candidate_evidence_manifest
+        ):
+            blockers.append("migration_recheck_evidence_manifest_drift")
+            migration["post_evidence_manifest_sha256"] = _canonical_json_sha256(
+                post_evidence_manifest
+            )
         if migration.get("current_receipt_drift"):
             blockers.append("migration_recheck_current_receipt_drift")
         if snapshot_drift:
@@ -6067,6 +7045,8 @@ def replay_all_open_prs_with_digest_migration(
             "side_effects": {"migration_artifact": None},
             "pause_preconditions": pause_preconditions,
         }
+    pre_claim_state = _providerless_migration_claim_state(vault_root)
+    pause_preconditions["pre_migration_claim"] = pre_claim_state
     with review_team_digest_migration_lock(vault_root) as migration_lock:
         if not migration_lock.acquired:
             return {
@@ -6085,6 +7065,34 @@ def replay_all_open_prs_with_digest_migration(
                 "side_effects": {},
                 "pause_preconditions": pause_preconditions,
             }
+        owned_lock_evidence = _migration_lock_exact_evidence(migration_lock.path)
+        lock_transition = _migration_lock_transition_model(
+            vault_root=vault_root,
+            pre_claim_state=pre_claim_state,
+            owned_lock_evidence=owned_lock_evidence,
+        )
+        lock_claim_blockers: list[str] = []
+        if pre_claim_state.get("status") != "migration_lock_absent":
+            lock_claim_blockers.append(f"migration_lock_preclaim_state:{pre_claim_state['status']}")
+        if owned_lock_evidence.get("schema") != MIGRATION_LOCK_SCHEMA:
+            lock_claim_blockers.append("migration_lock_owned_schema_mismatch")
+        if owned_lock_evidence.get("owner_token") != migration_lock.holder.get("owner_token"):
+            lock_claim_blockers.append("migration_lock_owned_token_mismatch")
+        if lock_claim_blockers:
+            return _migration_blocked_result(
+                status="migration_blocked",
+                repo=repo,
+                vault_root=vault_root,
+                blockers=lock_claim_blockers,
+                pause_preconditions=pause_preconditions,
+                migration_extra={
+                    "artifact_preflight": artifact_preflight,
+                    "lock_transition": lock_transition,
+                    "owned_lock_evidence": owned_lock_evidence,
+                    "before_artifact_sha256": artifact_preflight.get("artifact_sha256"),
+                    "after_artifact_sha256": artifact_preflight.get("artifact_sha256"),
+                },
+            )
         under_lock_preflight = _preflight_existing_review_team_digest_migration(
             vault_root,
             authority=authority,
@@ -6168,12 +7176,21 @@ def replay_all_open_prs_with_digest_migration(
         planned_receipt_writes = _prepared_receipt_writes_from_replay_results(
             planned_open_pr_results
         )
+        evidence_manifest = _collect_migration_evidence_manifest(
+            vault_root=vault_root,
+            authority=authority,
+            artifact_preflight=artifact_preflight,
+            migration=planned_migration,
+            receipt_writes=planned_receipt_writes,
+            lock_transition=lock_transition,
+        )
         planned_migration["plan_binding"] = _migration_plan_binding(
             authority=authority,
             artifact_preflight=artifact_preflight,
             migration=planned_migration,
             receipt_writes=planned_receipt_writes,
             snapshots=pre_effect_snapshots,
+            evidence_manifest=evidence_manifest,
         )
         final_authority_blockers = _migration_authority_preimage_blockers(
             authority=authority,
@@ -6208,6 +7225,25 @@ def replay_all_open_prs_with_digest_migration(
             final_blockers.append("migration_acceptance_trace_blocked")
             planned_migration["acceptance_trace_blockers"] = trace_blockers
         planned_migration["acceptance_admission_trace"] = acceptance_trace
+        final_evidence_manifest = _collect_migration_evidence_manifest(
+            vault_root=vault_root,
+            authority=authority,
+            artifact_preflight=artifact_preflight,
+            migration=planned_migration,
+            receipt_writes=planned_receipt_writes,
+            lock_transition=lock_transition,
+        )
+        if _canonical_json_sha256(final_evidence_manifest) != _canonical_json_sha256(
+            evidence_manifest
+        ):
+            final_blockers.append("migration_evidence_manifest_changed_before_effects")
+            planned_migration["final_evidence_manifest_sha256"] = _canonical_json_sha256(
+                final_evidence_manifest
+            )
+        final_lock_evidence = _migration_lock_exact_evidence(migration_lock.path)
+        if final_lock_evidence != owned_lock_evidence:
+            final_blockers.append("migration_lock_changed_before_effects")
+            planned_migration["final_lock_evidence"] = final_lock_evidence
         if final_blockers:
             return _migration_blocked_result(
                 status="migration_blocked",
@@ -6226,26 +7262,75 @@ def replay_all_open_prs_with_digest_migration(
                     "plan_binding": planned_migration["plan_binding"],
                     "acceptance_admission_trace": acceptance_trace,
                     "acceptance_trace_blockers": trace_blockers,
+                    "lock_transition": lock_transition,
+                    "owned_lock_evidence": owned_lock_evidence,
                     "before_artifact_sha256": artifact_preflight.get("artifact_sha256"),
                     "after_artifact_sha256": final_artifact_preflight.get("artifact_sha256"),
                 },
             )
         if apply:
-            _apply_prepared_migration_outputs(
+            candidate_authority, candidate_authority_blockers = (
+                migration_candidate_authority_from_file(
+                    carrier_path=migration_candidate_authority_carrier_path,
+                    carrier_sha256=migration_candidate_authority_carrier_sha256,
+                    plan_binding=planned_migration["plan_binding"],
+                    authority=authority,
+                )
+            )
+            if candidate_authority_blockers or candidate_authority is None:
+                return _migration_blocked_result(
+                    status="migration_blocked",
+                    repo=repo,
+                    vault_root=vault_root,
+                    blockers=list(candidate_authority_blockers),
+                    pause_preconditions=pause_preconditions,
+                    migration_extra={
+                        **planned_migration,
+                        "artifact_preflight": artifact_preflight,
+                        "under_lock_artifact_preflight": under_lock_preflight,
+                        "final_artifact_preflight": final_artifact_preflight,
+                        "snapshot_drift": snapshot_drift,
+                        "planned_open_pr_results": planned_open_pr_results,
+                        "planned_receipt_writes": planned_receipt_writes,
+                        "lock_transition": lock_transition,
+                        "owned_lock_evidence": owned_lock_evidence,
+                        "before_artifact_sha256": artifact_preflight.get("artifact_sha256"),
+                        "after_artifact_sha256": final_artifact_preflight.get("artifact_sha256"),
+                    },
+                )
+            planned_migration = _migration_with_consumed_candidate_authority(
+                planned_migration,
+                candidate_authority,
+            )
+            planned_migration["candidate_authority"] = candidate_authority
+        if apply:
+            transaction_result = _apply_prepared_migration_outputs(
+                vault_root=vault_root,
                 migration=planned_migration,
                 receipt_writes=planned_receipt_writes,
             )
             open_pr_results = _applied_replay_results_from_plan(planned_open_pr_results)
             migration = dict(planned_migration)
             migration["planned_receipt_writes"] = planned_receipt_writes
+            migration["transaction"] = transaction_result
+            if transaction_result.get("status") != "applied":
+                migration["artifact_written"] = False
+                migration["status"] = "migration_recovery_required"
+                migration["blockers"] = list(
+                    transaction_result.get("blockers") or ["migration_transaction_failed"]
+                )
+                continue_status = False
+            else:
+                continue_status = True
             if migration.get("candidate_payload"):
-                after_sha256 = "sha256:" + sha256_file(Path(str(migration["artifact_path"])))
-                migration["after_artifact_sha256"] = after_sha256
-                migration["artifact_written"] = True
-                migration["status"] = "migration_written"
-                if after_sha256 != migration.get("candidate_artifact_sha256"):
-                    migration["status"] = "migration_recovery_required"
-                    migration["blockers"] = ["migration_artifact_post_write_sha256_mismatch"]
+                if continue_status:
+                    after_sha256 = "sha256:" + sha256_file(Path(str(migration["artifact_path"])))
+                    migration["after_artifact_sha256"] = after_sha256
+                    migration["artifact_written"] = True
+                    migration["status"] = "migration_written"
+                    if after_sha256 != migration.get("candidate_artifact_sha256"):
+                        migration["status"] = "migration_recovery_required"
+                        migration["blockers"] = ["migration_artifact_post_write_sha256_mismatch"]
         else:
             migration = planned_migration
     migration["artifact_preflight"] = artifact_preflight
@@ -6342,6 +7427,15 @@ def main(argv: list[str] | None = None) -> int:
         "--migration-consumed-act-carrier-sha256",
         help="exact 64-hex SHA-256 of --migration-consumed-act-carrier",
     )
+    parser.add_argument(
+        "--migration-candidate-authority-carrier",
+        type=Path,
+        help="consumed candidate-authority carrier binding the exact prepared migration plan",
+    )
+    parser.add_argument(
+        "--migration-candidate-authority-carrier-sha256",
+        help="exact 64-hex SHA-256 of --migration-candidate-authority-carrier",
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
     logging.basicConfig(
@@ -6407,6 +7501,12 @@ def main(argv: list[str] | None = None) -> int:
                 migration_authority_proposal_sha256=args.migration_authority_proposal_sha256,
                 migration_consumed_act_carrier_path=args.migration_consumed_act_carrier,
                 migration_consumed_act_carrier_sha256=args.migration_consumed_act_carrier_sha256,
+                migration_candidate_authority_carrier_path=(
+                    args.migration_candidate_authority_carrier
+                ),
+                migration_candidate_authority_carrier_sha256=(
+                    args.migration_candidate_authority_carrier_sha256
+                ),
                 migration_recheck=args.migration_recheck,
             )
         else:

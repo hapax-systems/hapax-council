@@ -333,6 +333,28 @@ REVIEW_TEAM_DIGEST_MIGRATION_CLASSIFICATIONS = frozenset(
         "not-subject",
     }
 )
+REVIEW_TEAM_DIGEST_MIGRATION_NEXT_ACTIONS = {
+    "rebound": (
+        "Receipt was rebound from a current admissible dossier; rerun lifecycle validation "
+        "against the digest-bound active receipt."
+    ),
+    REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION: (
+        "Receipt is preserved only while the active receipt bytes match this exact SHA-256; "
+        "byte drift requires governed re-review or renewed reconciliation."
+    ),
+    "stale-invalid": (
+        "Do not preserve this receipt; inspect the malformed/stale evidence and rerun a "
+        "governed review if acceptance is still required."
+    ),
+    "unmatched": (
+        "No matching active task note was found; restore the governed task identity or rerun "
+        "review under a current task before relying on acceptance."
+    ),
+    "not-subject": (
+        "No migration action is needed; the receipt is operator-signed, already digest-bound, "
+        "or outside the review-floor gate."
+    ),
+}
 REVIEW_TEAM_DIGEST_MIGRATION_TOP_LEVEL_KEYS = frozenset(
     {
         "schema",
@@ -349,6 +371,7 @@ REVIEW_TEAM_DIGEST_MIGRATION_TOP_LEVEL_KEYS = frozenset(
         "next_actions",
     }
 )
+REVIEW_TEAM_DIGEST_MIGRATION_OPTIONAL_TOP_LEVEL_KEYS = frozenset({"candidate_authority"})
 REVIEW_TEAM_DIGEST_MIGRATION_AUTHORITY_KEYS = frozenset(
     {
         "proposal_path",
@@ -397,6 +420,23 @@ REVIEW_TEAM_DIGEST_MIGRATION_LEGACY_ADMISSION_KEYS = frozenset(
         "sealed_generation_source_head_sha",
         "receipt_sha256",
         "classification",
+    }
+)
+REVIEW_TEAM_DIGEST_MIGRATION_CANDIDATE_AUTHORITY_KEYS = frozenset(
+    {
+        "schema",
+        "id",
+        "carrier_path",
+        "carrier_sha256",
+        "candidate_authority_sha256",
+        "migration_authority_proposal_sha256",
+        "migration_authority_consumed_act_carrier_sha256",
+        "frozen_inventory_canonical_sha256",
+        "candidate_artifact_core_sha256",
+        "disposition_manifest_sha256",
+        "write_set_sha256",
+        "evidence_manifest_sha256",
+        "plan_sha256",
     }
 )
 
@@ -704,6 +744,141 @@ def _migration_counts(entries: list[Mapping[str, Any]]) -> dict[str, int]:
     return counts
 
 
+def _canonical_json_sha256(payload: object) -> str:
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def _migration_disposition_manifest_from_entries(
+    entries: list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    disposition_entries = [
+        {
+            "task_id": _frontmatter_non_null_scalar(entry.get("task_id")),
+            "receipt_basename": _frontmatter_non_null_scalar(entry.get("receipt_basename")),
+            "receipt_sha256": _frontmatter_non_null_scalar(entry.get("receipt_sha256")),
+            "classification": _frontmatter_non_null_scalar(entry.get("classification")),
+            "reason": _frontmatter_non_null_scalar(entry.get("reason")),
+        }
+        for entry in entries
+    ]
+    disposition_entries.sort(
+        key=lambda item: (item["task_id"], item["receipt_basename"], item["receipt_sha256"])
+    )
+    return {
+        "schema": "hapax.review_team_digest_migration.disposition_manifest.v1",
+        "entries": disposition_entries,
+    }
+
+
+def _candidate_artifact_core_sha256(loaded: Mapping[str, Any]) -> str:
+    core = {key: value for key, value in loaded.items() if key != "candidate_authority"}
+    raw = yaml.safe_dump(core, sort_keys=False).encode("utf-8")
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def _candidate_authority_blockers(
+    loaded: Mapping[str, Any],
+    *,
+    entries: list[Mapping[str, Any]],
+    authority: Mapping[str, Any] | None,
+) -> tuple[str, ...]:
+    candidate = loaded.get("candidate_authority")
+    if not isinstance(candidate, Mapping):
+        return ("sealed_migration_candidate_authority_missing",)
+    key_blockers = _key_set_blockers(
+        candidate,
+        required=REVIEW_TEAM_DIGEST_MIGRATION_CANDIDATE_AUTHORITY_KEYS,
+        allowed=REVIEW_TEAM_DIGEST_MIGRATION_CANDIDATE_AUTHORITY_KEYS,
+        reason_prefix="sealed_migration_candidate_authority",
+    )
+    if key_blockers:
+        return tuple(key_blockers)
+    if _frontmatter_non_null_scalar(candidate.get("schema")) != (
+        "hapax.review_team_digest_migration.candidate_authority.v1"
+    ):
+        return ("sealed_migration_candidate_authority_schema_mismatch",)
+    carrier_path_text = _frontmatter_non_null_scalar(candidate.get("carrier_path"))
+    carrier_sha = _frontmatter_non_null_scalar(candidate.get("carrier_sha256"))
+    candidate_sha = _frontmatter_non_null_scalar(candidate.get("candidate_authority_sha256"))
+    if not carrier_path_text or RAW_SHA256_RE.fullmatch(carrier_sha) is None:
+        return ("sealed_migration_candidate_authority_carrier_invalid",)
+    if REVIEW_TEAM_DIGEST_MIGRATION_SHA256_RE.fullmatch(candidate_sha) is None:
+        return ("sealed_migration_candidate_authority_sha256_invalid",)
+    if _frontmatter_non_null_scalar(candidate.get("candidate_artifact_core_sha256")) != (
+        _candidate_artifact_core_sha256(loaded)
+    ):
+        return ("sealed_migration_candidate_artifact_core_sha256_mismatch",)
+    if authority is not None:
+        if _frontmatter_non_null_scalar(
+            candidate.get("migration_authority_proposal_sha256")
+        ) != _frontmatter_non_null_scalar(authority.get("proposal_sha256")):
+            return ("sealed_migration_candidate_authority_proposal_sha256_mismatch",)
+        if _frontmatter_non_null_scalar(
+            candidate.get("migration_authority_consumed_act_carrier_sha256")
+        ) != _frontmatter_non_null_scalar(authority.get("consumed_act_carrier_sha256")):
+            return ("sealed_migration_candidate_authority_carrier_sha256_mismatch",)
+        if _frontmatter_non_null_scalar(candidate.get("frozen_inventory_canonical_sha256")) != (
+            _frontmatter_non_null_scalar(authority.get("frozen_inventory_canonical_sha256"))
+        ):
+            return ("sealed_migration_candidate_authority_frozen_sha256_mismatch",)
+
+    disposition_manifest = _migration_disposition_manifest_from_entries(entries)
+    if _frontmatter_non_null_scalar(candidate.get("disposition_manifest_sha256")) != (
+        _canonical_json_sha256(disposition_manifest)
+    ):
+        return ("sealed_migration_authorized_disposition_manifest_mismatch",)
+
+    carrier_path = Path(carrier_path_text)
+    try:
+        if _raw_sha256_file(carrier_path) != carrier_sha:
+            return ("sealed_migration_candidate_authority_carrier_sha256_mismatch",)
+    except OSError as exc:
+        return (f"sealed_migration_candidate_authority_carrier_unreadable:{type(exc).__name__}",)
+    carrier, carrier_error = _load_yaml_mapping_for_migration(carrier_path)
+    if carrier_error or carrier is None:
+        return (f"sealed_migration_candidate_authority_carrier_malformed:{carrier_error}",)
+    if _frontmatter_non_null_scalar(carrier.get("status")) != "consumed_active":
+        return ("sealed_migration_candidate_authority_carrier_not_consumed",)
+    if _frontmatter_non_null_scalar(carrier.get("id")) != _frontmatter_non_null_scalar(
+        candidate.get("id")
+    ):
+        return ("sealed_migration_candidate_authority_carrier_id_mismatch",)
+    carrier_candidate = carrier.get("candidate_authority")
+    if not isinstance(carrier_candidate, Mapping):
+        return ("sealed_migration_candidate_authority_carrier_binding_missing",)
+    carrier_candidate_sha = _canonical_json_sha256(carrier_candidate)
+    if carrier_candidate_sha != candidate_sha:
+        return ("sealed_migration_candidate_authority_sha256_mismatch",)
+    for key in REVIEW_TEAM_DIGEST_MIGRATION_CANDIDATE_AUTHORITY_KEYS - frozenset(
+        {"carrier_path", "carrier_sha256", "candidate_authority_sha256"}
+    ):
+        if _frontmatter_non_null_scalar(carrier_candidate.get(key)) != (
+            _frontmatter_non_null_scalar(candidate.get(key))
+        ):
+            return (f"sealed_migration_candidate_authority_{key}_mismatch",)
+    operator_act = carrier.get("operator_act")
+    if not isinstance(operator_act, Mapping):
+        return ("sealed_migration_candidate_authority_carrier_operator_act_missing",)
+    expected_response = (
+        f"RATIFY {_frontmatter_non_null_scalar(candidate.get('id'))} "
+        f"candidate_authority_sha256={candidate_sha}"
+    )
+    if _frontmatter_non_null_scalar(operator_act.get("exact_response_utf8_no_lf")) != (
+        expected_response
+    ):
+        return ("sealed_migration_candidate_authority_carrier_response_mismatch",)
+    for key in (
+        "matched_id",
+        "matched_candidate_authority_sha256",
+        "authority_minted",
+        "authority_limited_to_candidate",
+    ):
+        if operator_act.get(key) is not True:
+            return (f"sealed_migration_candidate_authority_carrier_{key}_false",)
+    return ()
+
+
 def _valid_iso_datetime(value: str) -> bool:
     if not value:
         return False
@@ -754,6 +929,8 @@ def review_team_digest_migration_artifact_blockers(
     *,
     expected_authority: Mapping[str, Any] | None = None,
     expected_frozen_inventory_entries: tuple[Mapping[str, Any], ...] | None = None,
+    expected_active_dir: Path | None = None,
+    require_candidate_authority_for_reclassified: bool = True,
 ) -> tuple[str, ...]:
     """Validate the sealed review-team digest migration artifact.
 
@@ -767,7 +944,10 @@ def review_team_digest_migration_artifact_blockers(
         _key_set_blockers(
             loaded,
             required=REVIEW_TEAM_DIGEST_MIGRATION_TOP_LEVEL_KEYS,
-            allowed=REVIEW_TEAM_DIGEST_MIGRATION_TOP_LEVEL_KEYS,
+            allowed=(
+                REVIEW_TEAM_DIGEST_MIGRATION_TOP_LEVEL_KEYS
+                | REVIEW_TEAM_DIGEST_MIGRATION_OPTIONAL_TOP_LEVEL_KEYS
+            ),
             reason_prefix="sealed_migration_top_level",
         )
     )
@@ -779,6 +959,15 @@ def review_team_digest_migration_artifact_blockers(
     active_dir = _frontmatter_non_null_scalar(loaded.get("active_dir"))
     if not active_dir or not Path(active_dir).is_absolute() or ".." in Path(active_dir).parts:
         blockers.append("sealed_migration_active_dir_invalid")
+    elif expected_active_dir is not None:
+        try:
+            actual_active_dir = Path(active_dir).resolve(strict=False)
+            expected_resolved = expected_active_dir.resolve(strict=False)
+        except OSError:
+            blockers.append("sealed_migration_active_dir_invalid")
+        else:
+            if actual_active_dir != expected_resolved:
+                blockers.append("sealed_migration_active_dir_mismatch")
     authority = loaded.get("authority")
     if not isinstance(authority, Mapping) or not authority:
         blockers.append("sealed_migration_authority_missing")
@@ -957,7 +1146,11 @@ def review_team_digest_migration_artifact_blockers(
             entry_tuple = (task_id, basename, receipt_sha)
             if entry_tuple in frozen_tuples:
                 represented_frozen_tuples.add(entry_tuple)
-                if classification == "not-subject":
+                if (
+                    classification != REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION
+                    and "candidate_authority" not in loaded
+                    and require_candidate_authority_for_reclassified
+                ):
                     blockers.append(
                         "sealed_migration_frozen_tuple_reclassified:"
                         f"{task_id}:{classification or 'missing'}"
@@ -1013,6 +1206,27 @@ def review_team_digest_migration_artifact_blockers(
                 required=REVIEW_TEAM_DIGEST_MIGRATION_CLASSIFICATIONS,
                 allowed=REVIEW_TEAM_DIGEST_MIGRATION_CLASSIFICATIONS,
                 reason_prefix="sealed_migration_next_actions",
+            )
+        )
+        for classification, expected_action in sorted(
+            REVIEW_TEAM_DIGEST_MIGRATION_NEXT_ACTIONS.items()
+        ):
+            if _frontmatter_non_null_scalar(next_actions.get(classification)) != expected_action:
+                blockers.append(f"sealed_migration_next_actions_value_mismatch:{classification}")
+    frozen_reclassified = any(
+        _migration_tuple_from_mapping(entry) in frozen_tuples
+        and _frontmatter_non_null_scalar(entry.get("classification"))
+        != REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION
+        for entry in entries
+    )
+    if (
+        frozen_reclassified and require_candidate_authority_for_reclassified
+    ) or "candidate_authority" in loaded:
+        blockers.extend(
+            _candidate_authority_blockers(
+                loaded,
+                entries=entries,
+                authority=authority if isinstance(authority, Mapping) else None,
             )
         )
     return tuple(dict.fromkeys(blockers))
@@ -1136,7 +1350,10 @@ def _review_team_digest_migration_blockers(
             "acceptance_receipt_digest_migration_malformed:schema:"
             f"{loaded.get('schema') or 'missing'}",
         )
-    artifact_blockers = review_team_digest_migration_artifact_blockers(loaded)
+    artifact_blockers = review_team_digest_migration_artifact_blockers(
+        loaded,
+        expected_active_dir=active_dir,
+    )
     authority_artifact_blockers = tuple(
         blocker
         for blocker in artifact_blockers
