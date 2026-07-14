@@ -439,6 +439,9 @@ REVIEW_TEAM_DIGEST_MIGRATION_CANDIDATE_AUTHORITY_KEYS = frozenset(
         "plan_sha256",
     }
 )
+REVIEW_TEAM_DIGEST_MIGRATION_OPTIONAL_CANDIDATE_AUTHORITY_KEYS = frozenset(
+    {"prepared_plan_file_sha256", "prepared_plan_canonical_sha256"}
+)
 
 
 def review_team_digest_migration_source_trust_anchor() -> dict[str, str]:
@@ -773,8 +776,7 @@ def _migration_disposition_manifest_from_entries(
 
 def _candidate_artifact_core_sha256(loaded: Mapping[str, Any]) -> str:
     core = {key: value for key, value in loaded.items() if key != "candidate_authority"}
-    raw = yaml.safe_dump(core, sort_keys=False).encode("utf-8")
-    return "sha256:" + hashlib.sha256(raw).hexdigest()
+    return _canonical_json_sha256(core)
 
 
 def _candidate_authority_blockers(
@@ -789,7 +791,10 @@ def _candidate_authority_blockers(
     key_blockers = _key_set_blockers(
         candidate,
         required=REVIEW_TEAM_DIGEST_MIGRATION_CANDIDATE_AUTHORITY_KEYS,
-        allowed=REVIEW_TEAM_DIGEST_MIGRATION_CANDIDATE_AUTHORITY_KEYS,
+        allowed=(
+            REVIEW_TEAM_DIGEST_MIGRATION_CANDIDATE_AUTHORITY_KEYS
+            | REVIEW_TEAM_DIGEST_MIGRATION_OPTIONAL_CANDIDATE_AUTHORITY_KEYS
+        ),
         reason_prefix="sealed_migration_candidate_authority",
     )
     if key_blockers:
@@ -805,6 +810,10 @@ def _candidate_authority_blockers(
         return ("sealed_migration_candidate_authority_carrier_invalid",)
     if REVIEW_TEAM_DIGEST_MIGRATION_SHA256_RE.fullmatch(candidate_sha) is None:
         return ("sealed_migration_candidate_authority_sha256_invalid",)
+    for optional_sha_key in REVIEW_TEAM_DIGEST_MIGRATION_OPTIONAL_CANDIDATE_AUTHORITY_KEYS:
+        optional_sha = _frontmatter_non_null_scalar(candidate.get(optional_sha_key))
+        if optional_sha and REVIEW_TEAM_DIGEST_MIGRATION_SHA256_RE.fullmatch(optional_sha) is None:
+            return (f"sealed_migration_candidate_authority_{optional_sha_key}_invalid",)
     if _frontmatter_non_null_scalar(candidate.get("candidate_artifact_core_sha256")) != (
         _candidate_artifact_core_sha256(loaded)
     ):
@@ -850,9 +859,11 @@ def _candidate_authority_blockers(
     carrier_candidate_sha = _canonical_json_sha256(carrier_candidate)
     if carrier_candidate_sha != candidate_sha:
         return ("sealed_migration_candidate_authority_sha256_mismatch",)
-    for key in REVIEW_TEAM_DIGEST_MIGRATION_CANDIDATE_AUTHORITY_KEYS - frozenset(
-        {"carrier_path", "carrier_sha256", "candidate_authority_sha256"}
-    ):
+    comparable_keys = (
+        REVIEW_TEAM_DIGEST_MIGRATION_CANDIDATE_AUTHORITY_KEYS
+        | REVIEW_TEAM_DIGEST_MIGRATION_OPTIONAL_CANDIDATE_AUTHORITY_KEYS
+    ) - frozenset({"carrier_path", "carrier_sha256", "candidate_authority_sha256"})
+    for key in comparable_keys:
         if _frontmatter_non_null_scalar(carrier_candidate.get(key)) != (
             _frontmatter_non_null_scalar(candidate.get(key))
         ):

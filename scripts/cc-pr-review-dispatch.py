@@ -28,6 +28,8 @@ Usage::
       --migration-authority-proposal-sha256 <64-hex> \
       --migration-consumed-act-carrier /path/to/consumed-carrier.yaml \
       --migration-consumed-act-carrier-sha256 <64-hex> \
+      --migration-prepared-plan /path/to/prepared-plan.json \
+      --migration-prepared-plan-sha256 <64-hex> \
       --migration-candidate-authority-carrier /path/to/consumed-candidate-carrier.yaml \
       --migration-candidate-authority-carrier-sha256 <64-hex>        # no-review cutover
     uv run python scripts/cc-pr-review-dispatch.py --all --replay-only --migration-recheck \
@@ -42,7 +44,8 @@ and writes the dossier; ``--force`` re-reviews an already-reviewed head sha.
 The legacy digest cutover command is ``--all --apply --replay-only`` plus the
 four migration-authority flags naming the ratified proposal and consumed act
 carrier with exact SHA-256 values, plus the two candidate-authority flags
-naming the separately consumed exact prepared-plan carrier. It must run only
+naming the separately consumed exact prepared-plan carrier, plus the exact
+prepared-plan file and SHA-256 captured from the dry-run output. It must run only
 while automatic PR
 autoqueue/review dispatch is paused. The command acquires a vault-wide
 ``O_CREAT|O_EXCL`` migration claim before GitHub, reviewer, dossier, receipt, or
@@ -140,6 +143,7 @@ MIGRATION_CANDIDATE_AUTHORITY_SCHEMA = "hapax.review_team_digest_migration.candi
 MIGRATION_CANDIDATE_AUTHORITY_CARRIER_SCHEMA = (
     "hapax.review_team_digest_migration.candidate_authority_carrier.v1"
 )
+PREPARED_MIGRATION_PLAN_SCHEMA = "hapax.review_team_digest_migration.prepared_plan.v2"
 REVIEW_TEAM_DIGEST_MIGRATION_LOCK_STALE_AFTER_SECONDS = REVIEW_EXECUTION_LOCK_STALE_AFTER_SECONDS
 KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_DISPATCH_OFF"
 TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
@@ -1814,6 +1818,16 @@ def _sha256_bytes(raw: bytes) -> str:
     return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
+def _candidate_artifact_core_sha256_for_payload(payload: dict[str, Any]) -> str:
+    loaded = yaml.safe_load(_yaml_bytes(payload).decode("utf-8"))
+    core = {
+        key: value
+        for key, value in (loaded if isinstance(loaded, dict) else payload).items()
+        if key != "candidate_authority"
+    }
+    return _canonical_json_sha256(core)
+
+
 def _load_yaml_mapping(path: Path) -> dict[str, Any]:
     loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(loaded, dict):
@@ -2304,6 +2318,9 @@ def migration_candidate_authority_from_file(
         "evidence_manifest_sha256": plan_binding["evidence_manifest_sha256"],
         "plan_sha256": plan_binding["plan_sha256"],
     }
+    for optional_key in ("prepared_plan_file_sha256", "prepared_plan_canonical_sha256"):
+        if plan_binding.get(optional_key):
+            comparisons[optional_key] = plan_binding[optional_key]
     for key, expected in comparisons.items():
         if candidate.get(key) != expected:
             return None, (f"migration_candidate_authority_{key}_mismatch",)
@@ -3079,6 +3096,7 @@ def publish_review_team_digest_migration(
         }
     candidate_raw = _yaml_bytes(payload)
     candidate_artifact_sha256 = _sha256_bytes(candidate_raw)
+    candidate_artifact_core_sha256 = _candidate_artifact_core_sha256_for_payload(payload)
     comparable_payload = {k: v for k, v in payload.items() if k != "generated_at"}
     if isinstance(existing_payload, dict) and not existing_was_unsealed:
         comparable_existing = {k: v for k, v in existing_payload.items() if k != "generated_at"}
@@ -3105,7 +3123,7 @@ def publish_review_team_digest_migration(
             "before_artifact_sha256": existing_artifact_sha256,
             "after_artifact_sha256": existing_artifact_sha256,
             "candidate_artifact_sha256": candidate_artifact_sha256,
-            "candidate_artifact_core_sha256": candidate_artifact_sha256,
+            "candidate_artifact_core_sha256": candidate_artifact_core_sha256,
             "candidate_raw_bytes": candidate_raw,
             "candidate_payload": payload,
         }
@@ -3126,7 +3144,7 @@ def publish_review_team_digest_migration(
         "before_artifact_sha256": existing_artifact_sha256,
         "after_artifact_sha256": after_artifact_sha256,
         "candidate_artifact_sha256": candidate_artifact_sha256,
-        "candidate_artifact_core_sha256": candidate_artifact_sha256,
+        "candidate_artifact_core_sha256": candidate_artifact_core_sha256,
         "candidate_raw_bytes": candidate_raw,
         "candidate_payload": payload,
     }
@@ -5794,8 +5812,12 @@ def _rebound_task_ids_from_replay_results(results: list[dict[str, Any]]) -> froz
 
 
 def _canonical_json_sha256(payload: Any) -> str:
-    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    raw = _canonical_json_bytes(payload)
     return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def _canonical_json_bytes(payload: Any) -> bytes:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
 
 
 def _iter_single_replay_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -6168,6 +6190,8 @@ def _migration_plan_binding(
     receipt_writes: list[dict[str, Any]],
     snapshots: tuple[dict[str, Any], ...],
     evidence_manifest: dict[str, Any],
+    prepared_plan_file_sha256: str | None = None,
+    prepared_plan_canonical_sha256: str | None = None,
 ) -> dict[str, Any]:
     disposition_manifest = _migration_disposition_manifest(migration)
     write_set = _migration_write_set(migration=migration, receipt_writes=receipt_writes)
@@ -6184,15 +6208,22 @@ def _migration_plan_binding(
         "snapshot_fingerprint": _migration_snapshot_fingerprint(snapshots),
         "snapshot_count": len(snapshots),
     }
-    binding["plan_sha256"] = _canonical_json_sha256(
-        {
-            "schema": binding["schema"],
-            "candidate_artifact_core_sha256": binding["candidate_artifact_core_sha256"],
-            "disposition_manifest_sha256": binding["disposition_manifest_sha256"],
-            "write_set_sha256": binding["write_set_sha256"],
-            "evidence_manifest_sha256": binding["evidence_manifest_sha256"],
-        }
-    )
+    if prepared_plan_file_sha256:
+        binding["prepared_plan_file_sha256"] = prepared_plan_file_sha256
+    if prepared_plan_canonical_sha256:
+        binding["prepared_plan_canonical_sha256"] = prepared_plan_canonical_sha256
+    plan_identity = {
+        "schema": binding["schema"],
+        "candidate_artifact_core_sha256": binding["candidate_artifact_core_sha256"],
+        "disposition_manifest_sha256": binding["disposition_manifest_sha256"],
+        "write_set_sha256": binding["write_set_sha256"],
+        "evidence_manifest_sha256": binding["evidence_manifest_sha256"],
+    }
+    if prepared_plan_file_sha256:
+        plan_identity["prepared_plan_file_sha256"] = prepared_plan_file_sha256
+    if prepared_plan_canonical_sha256:
+        plan_identity["prepared_plan_canonical_sha256"] = prepared_plan_canonical_sha256
+    binding["plan_sha256"] = _canonical_json_sha256(plan_identity)
     candidate_authority = {
         "schema": MIGRATION_CANDIDATE_AUTHORITY_SCHEMA,
         "id": (
@@ -6208,6 +6239,10 @@ def _migration_plan_binding(
         "evidence_manifest_sha256": binding["evidence_manifest_sha256"],
         "plan_sha256": binding["plan_sha256"],
     }
+    if prepared_plan_file_sha256:
+        candidate_authority["prepared_plan_file_sha256"] = prepared_plan_file_sha256
+    if prepared_plan_canonical_sha256:
+        candidate_authority["prepared_plan_canonical_sha256"] = prepared_plan_canonical_sha256
     candidate_authority_sha256 = _canonical_json_sha256(candidate_authority)
     binding["candidate_authority"] = candidate_authority
     binding["candidate_authority_sha256"] = candidate_authority_sha256
@@ -6252,6 +6287,9 @@ def _migration_with_consumed_candidate_authority(
         "evidence_manifest_sha256": candidate_authority["evidence_manifest_sha256"],
         "plan_sha256": candidate_authority["plan_sha256"],
     }
+    for optional_key in ("prepared_plan_file_sha256", "prepared_plan_canonical_sha256"):
+        if candidate_authority.get(optional_key):
+            final_payload["candidate_authority"][optional_key] = candidate_authority[optional_key]
     raw = _yaml_bytes(final_payload)
     result = dict(migration)
     result["candidate_payload"] = final_payload
@@ -6545,31 +6583,364 @@ def _candidate_authority_carrier_recheck(
     return [], evidence
 
 
-def _apply_prepared_migration_outputs(
+def _bytes_from_hex(value: Any, *, field: str) -> tuple[bytes | None, str | None]:
+    if value is None:
+        return None, None
+    if not isinstance(value, str):
+        return None, f"{field}_not_string"
+    try:
+        return bytes.fromhex(value), None
+    except ValueError:
+        return None, f"{field}_not_hex"
+
+
+def _plan_binding_core(binding: dict[str, Any]) -> dict[str, Any]:
+    excluded = {
+        "candidate_authority",
+        "candidate_authority_sha256",
+        "candidate_authority_response",
+        "prepared_plan_file_sha256",
+        "prepared_plan_canonical_sha256",
+    }
+    return {key: value for key, value in binding.items() if key not in excluded}
+
+
+def _capture_target_preimage(path: Path) -> dict[str, Any]:
+    raw, evidence, read_error = _exact_file_evidence_with_bytes(path)
+    result = {"evidence": evidence, "read_error": read_error}
+    if raw is not None:
+        result["raw_bytes_hex"] = raw.hex()
+    return result
+
+
+def _attach_prepared_target_preimages(
     *,
-    vault_root: Path,
     migration: dict[str, Any],
     receipt_writes: list[dict[str, Any]],
+) -> None:
+    for write in receipt_writes:
+        path_text = str(write.get("path") or "")
+        if path_text:
+            write["target_preimage"] = _capture_target_preimage(Path(path_text))
+    artifact_path = str(migration.get("artifact_path") or "")
+    if artifact_path and migration.get("candidate_payload"):
+        migration["target_preimage"] = _capture_target_preimage(Path(artifact_path))
+
+
+def _prepared_plan_serializable_migration(migration: dict[str, Any]) -> dict[str, Any]:
+    serializable: dict[str, Any] = {}
+    for key, value in migration.items():
+        if key == "candidate_raw_bytes":
+            if isinstance(value, bytes):
+                serializable["candidate_raw_bytes_hex"] = value.hex()
+            continue
+        if key in {"prepared_plan", "plan_binding"}:
+            continue
+        serializable[key] = value
+    return serializable
+
+
+def _prepared_plan_serializable_receipt_writes(
+    receipt_writes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    serializable: list[dict[str, Any]] = []
+    for write in receipt_writes:
+        item: dict[str, Any] = {}
+        for key, value in write.items():
+            if key == "raw_bytes":
+                if isinstance(value, bytes):
+                    item["raw_bytes_hex"] = value.hex()
+                continue
+            item[key] = value
+        serializable.append(item)
+    return serializable
+
+
+def _prepared_migration_plan_payload(
+    *,
+    repo: str,
+    authority: dict[str, Any],
+    artifact_preflight: dict[str, Any],
+    snapshots: tuple[dict[str, Any], ...],
+    open_pr_results: list[dict[str, Any]],
+    migration: dict[str, Any],
+    receipt_writes: list[dict[str, Any]],
+    evidence_manifest: dict[str, Any],
+    lock_transition: dict[str, Any],
+    plan_binding: dict[str, Any],
+    now_iso: str,
 ) -> dict[str, Any]:
-    recovery_state = _migration_transaction_recovery_state(vault_root)
-    journal_path = review_team_digest_migration_journal_path(vault_root)
-    if recovery_state["blockers"]:
-        return {
-            "status": "migration_recovery_required",
-            "blockers": recovery_state["blockers"],
-            "journal_path": str(journal_path),
-            "recovery_state": recovery_state,
-        }
-    token = secrets.token_urlsafe(12)
-    stage_dir = journal_path.parent / f".{journal_path.stem}.{token}.files"
+    return {
+        "schema": PREPARED_MIGRATION_PLAN_SCHEMA,
+        "generated_at": now_iso,
+        "repo": repo,
+        "authority": {
+            "proposal_path": authority.get("proposal_path"),
+            "proposal_sha256": authority.get("proposal_sha256"),
+            "proposal_id": authority.get("proposal_id"),
+            "case_id": authority.get("case_id"),
+            "consumed_act_carrier_path": authority.get("consumed_act_carrier_path"),
+            "consumed_act_carrier_sha256": authority.get("consumed_act_carrier_sha256"),
+            "frozen_inventory_canonical_sha256": authority.get("frozen_inventory_canonical_sha256"),
+            "frozen_inventory_count": authority.get("frozen_inventory_count"),
+            "legacy_unsealed_artifact_sha256": authority.get("legacy_unsealed_artifact_sha256"),
+            "source_trust_anchor": dict(authority.get("source_trust_anchor") or {}),
+        },
+        "artifact_preflight": artifact_preflight,
+        "snapshots": list(snapshots),
+        "open_pr_results": open_pr_results,
+        "migration": _prepared_plan_serializable_migration(migration),
+        "receipt_writes": _prepared_plan_serializable_receipt_writes(receipt_writes),
+        "evidence_manifest": evidence_manifest,
+        "lock_transition": lock_transition,
+        "plan_binding_core": _plan_binding_core(plan_binding),
+        "recovery_policy": {
+            "initializing": "rollback",
+            "prepared": "rollback",
+            "applied": "rollback",
+            "rollback_started": "rollback",
+            "rollback_failed": "rollback",
+            "complete": "roll_forward",
+            "rolled_back": "rollback_verify",
+        },
+        "assertions": {
+            "provider_calls": "forbidden_during_apply",
+            "github_calls": "forbidden_during_apply",
+            "reviewer_calls": "forbidden_during_apply",
+            "external_effects_before_journal": False,
+            "outputs_are_exact_prepared_bytes": True,
+        },
+    }
+
+
+def _with_prepared_plan(
+    *,
+    repo: str,
+    authority: dict[str, Any],
+    artifact_preflight: dict[str, Any],
+    snapshots: tuple[dict[str, Any], ...],
+    open_pr_results: list[dict[str, Any]],
+    migration: dict[str, Any],
+    receipt_writes: list[dict[str, Any]],
+    evidence_manifest: dict[str, Any],
+    lock_transition: dict[str, Any],
+    now_iso: str,
+) -> dict[str, Any]:
+    _attach_prepared_target_preimages(migration=migration, receipt_writes=receipt_writes)
+    core_binding = _migration_plan_binding(
+        authority=authority,
+        artifact_preflight=artifact_preflight,
+        migration=migration,
+        receipt_writes=receipt_writes,
+        snapshots=snapshots,
+        evidence_manifest=evidence_manifest,
+    )
+    payload = _prepared_migration_plan_payload(
+        repo=repo,
+        authority=authority,
+        artifact_preflight=artifact_preflight,
+        snapshots=snapshots,
+        open_pr_results=open_pr_results,
+        migration=migration,
+        receipt_writes=receipt_writes,
+        evidence_manifest=evidence_manifest,
+        lock_transition=lock_transition,
+        plan_binding=core_binding,
+        now_iso=now_iso,
+    )
+    raw = _canonical_json_bytes(payload)
+    prepared_plan_file_sha256 = _sha256_bytes(raw)
+    prepared_plan_canonical_sha256 = _canonical_json_sha256(payload)
+    final_binding = _migration_plan_binding(
+        authority=authority,
+        artifact_preflight=artifact_preflight,
+        migration=migration,
+        receipt_writes=receipt_writes,
+        snapshots=snapshots,
+        evidence_manifest=evidence_manifest,
+        prepared_plan_file_sha256=prepared_plan_file_sha256,
+        prepared_plan_canonical_sha256=prepared_plan_canonical_sha256,
+    )
+    migration["plan_binding"] = final_binding
+    migration["prepared_plan"] = {
+        "schema": PREPARED_MIGRATION_PLAN_SCHEMA,
+        "file_sha256": prepared_plan_file_sha256,
+        "canonical_sha256": prepared_plan_canonical_sha256,
+        "raw_bytes_hex": raw.hex(),
+    }
+    return migration
+
+
+def _decode_prepared_plan_migration(raw_migration: Any) -> tuple[dict[str, Any], list[str]]:
+    if not isinstance(raw_migration, dict):
+        return {}, ["migration_prepared_plan_migration_not_mapping"]
+    migration = dict(raw_migration)
+    blockers: list[str] = []
+    raw_hex = migration.pop("candidate_raw_bytes_hex", None)
+    if raw_hex is not None:
+        raw, error = _bytes_from_hex(raw_hex, field="migration_candidate_raw_bytes_hex")
+        if error:
+            blockers.append(error)
+        elif raw is not None:
+            migration["candidate_raw_bytes"] = raw
+    return migration, blockers
+
+
+def _decode_prepared_plan_receipt_writes(raw_writes: Any) -> tuple[list[dict[str, Any]], list[str]]:
+    if not isinstance(raw_writes, list):
+        return [], ["migration_prepared_plan_receipt_writes_not_list"]
+    writes: list[dict[str, Any]] = []
+    blockers: list[str] = []
+    for index, raw_write in enumerate(raw_writes):
+        if not isinstance(raw_write, dict):
+            blockers.append(f"migration_prepared_plan_receipt_write_not_mapping:{index}")
+            continue
+        write = dict(raw_write)
+        raw_hex = write.pop("raw_bytes_hex", None)
+        raw, error = _bytes_from_hex(raw_hex, field=f"receipt_write_raw_bytes_hex:{index}")
+        if error:
+            blockers.append(error)
+        elif raw is not None:
+            write["raw_bytes"] = raw
+        writes.append(write)
+    return writes, blockers
+
+
+def _load_prepared_migration_plan(
+    *,
+    plan_path: Path | None,
+    plan_sha256: str | None,
+    authority: dict[str, Any],
+) -> tuple[dict[str, Any] | None, list[str]]:
+    missing = []
+    if plan_path is None:
+        missing.append("migration_prepared_plan_path_missing")
+    if not plan_sha256:
+        missing.append("migration_prepared_plan_sha256_missing")
+    if missing:
+        return None, missing
+    assert plan_path is not None
+    expected_sha = str(plan_sha256 or "").strip().lower().removeprefix("sha256:")
+    if RAW_SHA256_RE.fullmatch(expected_sha) is None:
+        return None, ["migration_prepared_plan_sha256_invalid"]
+    raw, evidence, read_error = _exact_file_evidence_with_bytes(plan_path)
+    if read_error or raw is None:
+        return None, [f"migration_prepared_plan_unreadable:{read_error}"]
+    if evidence.get("sha256") != f"sha256:{expected_sha}":
+        return None, ["migration_prepared_plan_sha256_mismatch"]
+    try:
+        loaded = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return None, [f"migration_prepared_plan_malformed:{type(exc).__name__}"]
+    if not isinstance(loaded, dict):
+        return None, [f"migration_prepared_plan_not_mapping:{type(loaded).__name__}"]
+    if loaded.get("schema") != PREPARED_MIGRATION_PLAN_SCHEMA:
+        return None, ["migration_prepared_plan_schema_mismatch"]
+    if _canonical_json_bytes(loaded) != raw:
+        return None, ["migration_prepared_plan_noncanonical_bytes"]
+
+    plan_authority = loaded.get("authority")
+    if not isinstance(plan_authority, dict):
+        return None, ["migration_prepared_plan_authority_missing"]
+    authority_fields = (
+        "proposal_sha256",
+        "proposal_id",
+        "case_id",
+        "consumed_act_carrier_sha256",
+        "frozen_inventory_canonical_sha256",
+        "legacy_unsealed_artifact_sha256",
+    )
+    for field in authority_fields:
+        if plan_authority.get(field) != authority.get(field):
+            return None, [f"migration_prepared_plan_authority_{field}_mismatch"]
+
+    migration, migration_blockers = _decode_prepared_plan_migration(loaded.get("migration"))
+    receipt_writes, receipt_blockers = _decode_prepared_plan_receipt_writes(
+        loaded.get("receipt_writes")
+    )
+    blockers = migration_blockers + receipt_blockers
+    snapshots_raw = loaded.get("snapshots")
+    open_pr_results_raw = loaded.get("open_pr_results")
+    evidence_manifest = loaded.get("evidence_manifest")
+    artifact_preflight = loaded.get("artifact_preflight")
+    lock_transition = loaded.get("lock_transition")
+    if not isinstance(snapshots_raw, list):
+        blockers.append("migration_prepared_plan_snapshots_not_list")
+        snapshots: tuple[dict[str, Any], ...] = ()
+    else:
+        snapshots = tuple(item for item in snapshots_raw if isinstance(item, dict))
+        if len(snapshots) != len(snapshots_raw):
+            blockers.append("migration_prepared_plan_snapshot_not_mapping")
+    if not isinstance(open_pr_results_raw, list):
+        blockers.append("migration_prepared_plan_open_pr_results_not_list")
+        open_pr_results: list[dict[str, Any]] = []
+    else:
+        open_pr_results = [item for item in open_pr_results_raw if isinstance(item, dict)]
+        if len(open_pr_results) != len(open_pr_results_raw):
+            blockers.append("migration_prepared_plan_open_pr_result_not_mapping")
+    if not isinstance(evidence_manifest, dict):
+        blockers.append("migration_prepared_plan_evidence_manifest_missing")
+        evidence_manifest = {}
+    if not isinstance(artifact_preflight, dict):
+        blockers.append("migration_prepared_plan_artifact_preflight_missing")
+        artifact_preflight = {}
+    if not isinstance(lock_transition, dict):
+        blockers.append("migration_prepared_plan_lock_transition_missing")
+        lock_transition = {}
+    if blockers:
+        return None, blockers
+
+    recomputed_core = _plan_binding_core(
+        _migration_plan_binding(
+            authority=authority,
+            artifact_preflight=artifact_preflight,
+            migration=migration,
+            receipt_writes=receipt_writes,
+            snapshots=snapshots,
+            evidence_manifest=evidence_manifest,
+        )
+    )
+    if loaded.get("plan_binding_core") != recomputed_core:
+        return None, ["migration_prepared_plan_binding_mismatch"]
+    final_binding = _migration_plan_binding(
+        authority=authority,
+        artifact_preflight=artifact_preflight,
+        migration=migration,
+        receipt_writes=receipt_writes,
+        snapshots=snapshots,
+        evidence_manifest=evidence_manifest,
+        prepared_plan_file_sha256=f"sha256:{expected_sha}",
+        prepared_plan_canonical_sha256=_canonical_json_sha256(loaded),
+    )
+    return {
+        "payload": loaded,
+        "path": str(plan_path),
+        "file_sha256": f"sha256:{expected_sha}",
+        "evidence": evidence,
+        "artifact_preflight": artifact_preflight,
+        "snapshots": snapshots,
+        "open_pr_results": open_pr_results,
+        "migration": migration,
+        "receipt_writes": receipt_writes,
+        "evidence_manifest": evidence_manifest,
+        "lock_transition": lock_transition,
+        "plan_binding": final_binding,
+    }, []
+
+
+def _prepared_migration_operations(
+    *,
+    migration: dict[str, Any],
+    receipt_writes: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str], dict[str, Any] | None]:
     operations: list[dict[str, Any]] = []
+    blockers: list[str] = []
+    candidate_carrier_evidence: dict[str, Any] | None = None
     for write in receipt_writes:
         raw = write.get("raw_bytes")
         if not isinstance(raw, bytes):
-            return {
-                "status": "migration_recovery_required",
-                "blockers": ["migration_transaction_receipt_raw_bytes_missing"],
-            }
+            blockers.append("migration_transaction_receipt_raw_bytes_missing")
+            continue
         operations.append(
             {
                 "kind": "acceptance_receipt",
@@ -6578,46 +6949,319 @@ def _apply_prepared_migration_outputs(
                 "expected_before_sha256": write.get("existing_sha256"),
                 "raw_bytes": raw,
                 "sha256": _sha256_bytes(raw),
+                "target_preimage": write.get("target_preimage"),
             }
         )
-    candidate_payload = migration.get("candidate_payload")
-    if isinstance(candidate_payload, dict):
+    if isinstance(migration.get("candidate_payload"), dict):
         raw = migration.get("candidate_raw_bytes")
         if not isinstance(raw, bytes):
-            return {
-                "status": "migration_recovery_required",
-                "blockers": ["migration_transaction_candidate_raw_bytes_missing"],
-                "journal_path": str(journal_path),
-            }
+            blockers.append("migration_transaction_candidate_raw_bytes_missing")
         candidate_authority = migration.get("candidate_authority")
         if not isinstance(candidate_authority, dict):
+            blockers.append("migration_candidate_authority_missing_before_effects")
+        else:
+            carrier_blockers, candidate_carrier_evidence = _candidate_authority_carrier_recheck(
+                candidate_authority
+            )
+            blockers.extend(carrier_blockers)
+        if isinstance(raw, bytes):
+            operations.append(
+                {
+                    "kind": "migration_artifact",
+                    "target": Path(str(migration["artifact_path"])),
+                    "archive": None,
+                    "expected_before_sha256": migration.get("before_artifact_sha256"),
+                    "raw_bytes": raw,
+                    "sha256": _sha256_bytes(raw),
+                    "target_preimage": migration.get("target_preimage"),
+                }
+            )
+    return operations, blockers, candidate_carrier_evidence
+
+
+def _planned_preimage_from_operation(op: dict[str, Any]) -> tuple[bytes | None, str | None]:
+    preimage = op.get("target_preimage")
+    if not isinstance(preimage, dict):
+        return None, None
+    raw, error = _bytes_from_hex(preimage.get("raw_bytes_hex"), field="target_preimage_raw_bytes")
+    if error:
+        raise RuntimeError(error)
+    evidence = preimage.get("evidence")
+    evidence_sha = evidence.get("sha256") if isinstance(evidence, dict) else None
+    return raw, evidence_sha if isinstance(evidence_sha, str) else None
+
+
+def _target_file_bytes_for_preimage(path: Path) -> tuple[bytes | None, str | None]:
+    try:
+        stat = path.lstat()
+    except FileNotFoundError:
+        return None, None
+    except OSError as exc:
+        return None, f"migration_transaction_preimage_unreadable:{type(exc).__name__}"
+    if path.is_symlink():
+        return None, "migration_transaction_preimage_symlink"
+    if not path.is_file():
+        kind = "dir" if path.is_dir() else "other"
+        return None, f"migration_transaction_preimage_wrong_kind:{kind}"
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        return None, f"migration_transaction_preimage_unreadable:{type(exc).__name__}"
+    if stat.st_size != len(raw):
+        return None, "migration_transaction_preimage_stat_size_mismatch"
+    return raw, None
+
+
+def _validate_transaction_preimages(operations: list[dict[str, Any]]) -> list[str]:
+    blockers: list[str] = []
+    for op in operations:
+        current, error = _target_file_bytes_for_preimage(op["target"])
+        if error:
+            blockers.append(error)
+            continue
+        current_sha = _sha256_bytes(current) if isinstance(current, bytes) else None
+        planned_preimage, planned_sha = _planned_preimage_from_operation(op)
+        if op.get("expected_before_sha256") != current_sha:
+            blockers.append("migration_transaction_preimage_sha256_mismatch")
+            continue
+        if planned_sha != current_sha:
+            blockers.append("migration_transaction_preimage_sha256_mismatch")
+            continue
+        if isinstance(planned_preimage, bytes) and planned_preimage != current:
+            blockers.append("migration_transaction_preimage_bytes_mismatch")
+            continue
+        op["preimage_bytes"] = current
+        op["preimage_sha256"] = current_sha
+    return list(dict.fromkeys(blockers))
+
+
+def _journal_operation(op: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "kind": op["kind"],
+        "target": str(op["target"]),
+        "archive": str(op["archive"]) if op["archive"] else None,
+        "expected_before_sha256": op.get("expected_before_sha256"),
+        "sha256": op["sha256"],
+    }
+
+
+def _write_stage_file(path: Path, raw: bytes) -> None:
+    with path.open("wb") as handle:
+        handle.write(raw)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _cleanup_stage_dir(stage_dir: Path) -> None:
+    if not stage_dir.exists():
+        return
+    for path in sorted(stage_dir.glob("*"), key=lambda item: item.name):
+        if path.is_dir():
+            raise RuntimeError("migration_transaction_stage_nested_directory")
+        path.unlink(missing_ok=True)
+    stage_dir.rmdir()
+    _fsync_directory(stage_dir.parent)
+
+
+def _transaction_target_sha(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError("migration_transaction_target_kind_mismatch")
+    return _sha256_bytes(path.read_bytes())
+
+
+def _operation_preimage_bytes(
+    op: dict[str, Any],
+    *,
+    index: int,
+    stage_dir: Path | None,
+) -> bytes | None:
+    if isinstance(op.get("preimage_bytes"), bytes):
+        return op["preimage_bytes"]
+    planned, _planned_sha = _planned_preimage_from_operation(op)
+    if isinstance(planned, bytes):
+        return planned
+    if stage_dir is not None:
+        preimage_path = stage_dir / f"{index}.preimage"
+        if preimage_path.exists():
+            return preimage_path.read_bytes()
+    return None
+
+
+def _rollback_transaction_operations(
+    operations: list[dict[str, Any]],
+    *,
+    stage_dir: Path | None,
+) -> None:
+    for index, op in reversed(list(enumerate(operations))):
+        target = op["target"]
+        archive = op.get("archive")
+        output_sha = op["sha256"]
+        preimage = _operation_preimage_bytes(op, index=index, stage_dir=stage_dir)
+        preimage_sha = _sha256_bytes(preimage) if isinstance(preimage, bytes) else None
+        current_sha = _transaction_target_sha(target)
+        if isinstance(archive, Path) and archive.exists():
+            if isinstance(preimage, bytes) and _sha256_bytes(archive.read_bytes()) != preimage_sha:
+                raise RuntimeError("migration_transaction_archive_preimage_mismatch")
+            os.replace(archive, target)
+        elif isinstance(preimage, bytes):
+            if current_sha not in {preimage_sha, output_sha, None}:
+                raise RuntimeError("migration_transaction_rollback_target_changed")
+            if current_sha != preimage_sha:
+                atomic_write_bytes(target, preimage)
+        else:
+            if current_sha is not None:
+                target.unlink()
+        if isinstance(archive, Path) and archive.exists():
+            archive.unlink()
+        _fsync_directory(target.parent)
+
+
+def _roll_forward_transaction_operations(
+    operations: list[dict[str, Any]],
+    *,
+    stage_dir: Path | None,
+) -> None:
+    for index, op in enumerate(operations):
+        target = op["target"]
+        archive = op.get("archive")
+        output_sha = op["sha256"]
+        preimage = _operation_preimage_bytes(op, index=index, stage_dir=stage_dir)
+        preimage_sha = _sha256_bytes(preimage) if isinstance(preimage, bytes) else None
+        current_sha = _transaction_target_sha(target)
+        if current_sha != output_sha:
+            if current_sha not in {preimage_sha, None}:
+                raise RuntimeError("migration_transaction_roll_forward_target_changed")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_bytes(target, op["raw_bytes"])
+        if isinstance(archive, Path) and isinstance(preimage, bytes):
+            if archive.exists():
+                if _sha256_bytes(archive.read_bytes()) != preimage_sha:
+                    raise RuntimeError("migration_transaction_archive_preimage_mismatch")
+            else:
+                atomic_write_bytes(archive, preimage)
+        _fsync_directory(target.parent)
+
+
+def _load_transaction_journal(journal_path: Path) -> tuple[dict[str, Any] | None, list[str]]:
+    try:
+        loaded = json.loads(journal_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None, ["migration_transaction_journal_missing"]
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, [f"migration_transaction_journal_malformed:{type(exc).__name__}"]
+    if not isinstance(loaded, dict):
+        return None, [f"migration_transaction_journal_not_mapping:{type(loaded).__name__}"]
+    if loaded.get("schema") != MIGRATION_TRANSACTION_JOURNAL_SCHEMA:
+        return None, ["migration_transaction_journal_schema_mismatch"]
+    return loaded, []
+
+
+def _recover_prepared_migration_transaction(
+    *,
+    vault_root: Path,
+    operations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    journal_path = review_team_digest_migration_journal_path(vault_root)
+    journal, blockers = _load_transaction_journal(journal_path)
+    stage_paths = review_team_digest_migration_stage_paths(vault_root)
+    if blockers or journal is None:
+        if stage_paths:
             return {
                 "status": "migration_recovery_required",
-                "blockers": ["migration_candidate_authority_missing_before_effects"],
+                "blockers": list(dict.fromkeys(blockers + ["migration_transaction_orphan_stage"])),
                 "journal_path": str(journal_path),
+                "stage_paths": [str(path) for path in stage_paths],
             }
-        carrier_blockers, carrier_evidence = _candidate_authority_carrier_recheck(
-            candidate_authority
-        )
-        if carrier_blockers:
+        return {
+            "status": "migration_recovery_required",
+            "blockers": blockers,
+            "journal_path": str(journal_path),
+        }
+    stage_dir_text = str(journal.get("stage_dir") or "")
+    stage_dir = Path(stage_dir_text) if stage_dir_text else None
+    if journal.get("operations") != [_journal_operation(op) for op in operations]:
+        return {
+            "status": "migration_recovery_required",
+            "blockers": ["migration_transaction_journal_plan_mismatch"],
+            "journal_path": str(journal_path),
+        }
+    phase = str(journal.get("phase") or "")
+    try:
+        if phase in {"initializing", "prepared", "rollback_started", "rollback_failed"} or (
+            phase.startswith("applied:")
+        ):
+            _rollback_transaction_operations(operations, stage_dir=stage_dir)
+            terminal_phase = "rolled_back"
+        elif phase == "complete":
+            _roll_forward_transaction_operations(operations, stage_dir=stage_dir)
+            terminal_phase = "complete"
+        elif phase == "rolled_back":
+            _rollback_transaction_operations(operations, stage_dir=stage_dir)
+            terminal_phase = "rolled_back"
+        else:
             return {
                 "status": "migration_recovery_required",
-                "blockers": carrier_blockers,
+                "blockers": [f"migration_transaction_phase_unrecoverable:{phase or 'missing'}"],
                 "journal_path": str(journal_path),
-                "candidate_carrier_evidence": carrier_evidence,
             }
-        operations.append(
-            {
-                "kind": "migration_artifact",
-                "target": Path(str(migration["artifact_path"])),
-                "archive": None,
-                "expected_before_sha256": migration.get("before_artifact_sha256"),
-                "raw_bytes": raw,
-                "sha256": _sha256_bytes(raw),
-            }
+        if stage_dir is not None:
+            _cleanup_stage_dir(stage_dir)
+        journal_path.unlink(missing_ok=True)
+        _fsync_directory(journal_path.parent)
+        return {
+            "status": "recovered",
+            "terminal_phase": terminal_phase,
+            "journal_path": str(journal_path),
+            "operations": len(operations),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "status": "migration_recovery_required",
+            "blockers": [f"migration_transaction_recovery_failed:{type(exc).__name__}"],
+            "journal_path": str(journal_path),
+        }
+
+
+def _apply_prepared_migration_outputs(
+    *,
+    vault_root: Path,
+    migration: dict[str, Any],
+    receipt_writes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    recovery_state = _migration_transaction_recovery_state(vault_root)
+    journal_path = review_team_digest_migration_journal_path(vault_root)
+    operations, operation_blockers, carrier_evidence = _prepared_migration_operations(
+        migration=migration,
+        receipt_writes=receipt_writes,
+    )
+    if recovery_state["blockers"] and not operation_blockers:
+        recovered = _recover_prepared_migration_transaction(
+            vault_root=vault_root,
+            operations=operations,
         )
+        recovered["recovery_state"] = recovery_state
+        return recovered
+    if operation_blockers:
+        return {
+            "status": "migration_recovery_required",
+            "blockers": list(dict.fromkeys(operation_blockers)),
+            "journal_path": str(journal_path),
+            "candidate_carrier_evidence": carrier_evidence,
+        }
+    token = secrets.token_urlsafe(12)
+    stage_dir = journal_path.parent / f".{journal_path.stem}.{token}.files"
     if not operations:
         return {"status": "applied", "journal_path": str(journal_path), "operations": []}
+
+    preimage_blockers = _validate_transaction_preimages(operations)
+    if preimage_blockers:
+        return {
+            "status": "migration_blocked",
+            "blockers": preimage_blockers,
+            "journal_path": str(journal_path),
+        }
 
     applied: list[dict[str, Any]] = []
     touched: list[dict[str, Any]] = []
@@ -6626,20 +7270,6 @@ def _apply_prepared_migration_outputs(
         if not any(existing is op for existing in touched):
             touched.append(op)
 
-    def cleanup_stage() -> None:
-        if not stage_dir.exists():
-            return
-        for path in stage_dir.glob("*"):
-            path.unlink(missing_ok=True)
-        stage_dir.rmdir()
-        _fsync_directory(stage_dir.parent)
-
-    def write_stage_file(path: Path, raw: bytes) -> None:
-        with path.open("wb") as handle:
-            handle.write(raw)
-            handle.flush()
-            os.fsync(handle.fileno())
-
     def write_journal(phase: str, extra: dict[str, Any] | None = None) -> None:
         journal = {
             "schema": MIGRATION_TRANSACTION_JOURNAL_SCHEMA,
@@ -6647,16 +7277,16 @@ def _apply_prepared_migration_outputs(
             "token": token,
             "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
             "stage_dir": str(stage_dir),
-            "operations": [
-                {
-                    "kind": op["kind"],
-                    "target": str(op["target"]),
-                    "archive": str(op["archive"]) if op["archive"] else None,
-                    "expected_before_sha256": op.get("expected_before_sha256"),
-                    "sha256": op["sha256"],
-                }
-                for op in operations
-            ],
+            "recovery_policy": {
+                "initializing": "rollback",
+                "prepared": "rollback",
+                "applied": "rollback",
+                "rollback_started": "rollback",
+                "rollback_failed": "rollback",
+                "complete": "roll_forward",
+                "rolled_back": "rollback_verify",
+            },
+            "operations": [_journal_operation(op) for op in operations],
             "applied": [
                 {
                     "kind": op["kind"],
@@ -6675,41 +7305,16 @@ def _apply_prepared_migration_outputs(
         )
 
     def rollback() -> None:
-        for op in reversed(touched):
-            target = op["target"]
-            archive = op.get("archive")
-            preimage = op.get("preimage_bytes")
-            if isinstance(preimage, bytes):
-                if isinstance(archive, Path) and archive.exists():
-                    os.replace(archive, target)
-                else:
-                    atomic_write_bytes(target, preimage)
-            else:
-                target.unlink(missing_ok=True)
-            if isinstance(archive, Path) and archive.exists():
-                archive.unlink()
-            _fsync_directory(target.parent)
+        _rollback_transaction_operations(touched, stage_dir=stage_dir)
 
     try:
         write_journal("initializing")
         stage_dir.mkdir(parents=True, exist_ok=False)
         _fsync_directory(stage_dir.parent)
         for index, op in enumerate(operations):
-            target = op["target"]
-            preimage = target.read_bytes() if target.exists() else None
-            op["preimage_bytes"] = preimage
-            op["preimage_sha256"] = _sha256_bytes(preimage) if isinstance(preimage, bytes) else None
-            expected_before = op.get("expected_before_sha256")
-            if expected_before and expected_before != op["preimage_sha256"]:
-                cleanup_stage()
-                return {
-                    "status": "migration_recovery_required",
-                    "blockers": ["migration_transaction_preimage_sha256_mismatch"],
-                    "journal_path": str(journal_path),
-                }
-            write_stage_file(stage_dir / f"{index}.output", op["raw_bytes"])
-            if isinstance(preimage, bytes):
-                write_stage_file(stage_dir / f"{index}.preimage", preimage)
+            _write_stage_file(stage_dir / f"{index}.output", op["raw_bytes"])
+            if isinstance(op.get("preimage_bytes"), bytes):
+                _write_stage_file(stage_dir / f"{index}.preimage", op["preimage_bytes"])
         write_journal("prepared")
         for op in operations:
             target = op["target"]
@@ -6733,7 +7338,7 @@ def _apply_prepared_migration_outputs(
         write_journal("complete")
         journal_path.unlink(missing_ok=True)
         _fsync_directory(journal_path.parent)
-        cleanup_stage()
+        _cleanup_stage_dir(stage_dir)
         return {
             "status": "applied",
             "journal_path": str(journal_path),
@@ -6760,7 +7365,7 @@ def _apply_prepared_migration_outputs(
             if not rollback_journal_errors:
                 journal_path.unlink(missing_ok=True)
                 _fsync_directory(journal_path.parent)
-            cleanup_stage()
+            _cleanup_stage_dir(stage_dir)
         except Exception as rollback_exc:  # noqa: BLE001
             try:
                 write_journal(
@@ -6812,6 +7417,8 @@ def replay_all_open_prs_with_digest_migration(
     migration_authority_proposal_sha256: str | None = None,
     migration_consumed_act_carrier_path: Path | None = None,
     migration_consumed_act_carrier_sha256: str | None = None,
+    migration_prepared_plan_path: Path | None = None,
+    migration_prepared_plan_sha256: str | None = None,
     migration_candidate_authority_carrier_path: Path | None = None,
     migration_candidate_authority_carrier_sha256: str | None = None,
     migration_source_trust_anchor: dict[str, Any] | None = None,
@@ -6876,7 +7483,7 @@ def replay_all_open_prs_with_digest_migration(
         }
     transaction_recovery_state = _migration_transaction_recovery_state(vault_root)
     journal_path = review_team_digest_migration_journal_path(vault_root)
-    if transaction_recovery_state["blockers"]:
+    if transaction_recovery_state["blockers"] and not apply:
         return _migration_blocked_result(
             status="migration_recovery_required",
             repo=repo,
@@ -7138,6 +7745,202 @@ def replay_all_open_prs_with_digest_migration(
                     "after_artifact_sha256": under_lock_preflight.get("artifact_sha256"),
                 },
             )
+        if apply:
+            prepared_plan, prepared_plan_blockers = _load_prepared_migration_plan(
+                plan_path=migration_prepared_plan_path,
+                plan_sha256=migration_prepared_plan_sha256,
+                authority=authority,
+            )
+            if prepared_plan_blockers or prepared_plan is None:
+                return _migration_blocked_result(
+                    status="migration_blocked",
+                    repo=repo,
+                    vault_root=vault_root,
+                    blockers=list(prepared_plan_blockers),
+                    pause_preconditions=pause_preconditions,
+                    migration_extra={
+                        "artifact_preflight": artifact_preflight,
+                        "under_lock_artifact_preflight": under_lock_preflight,
+                        "lock_transition": lock_transition,
+                        "owned_lock_evidence": owned_lock_evidence,
+                        "before_artifact_sha256": artifact_preflight.get("artifact_sha256"),
+                        "after_artifact_sha256": under_lock_preflight.get("artifact_sha256"),
+                    },
+                )
+            planned_open_pr_results = prepared_plan["open_pr_results"]
+            planned_receipt_writes = prepared_plan["receipt_writes"]
+            planned_migration = dict(prepared_plan["migration"])
+            planned_migration["artifact_preflight"] = prepared_plan["artifact_preflight"]
+            planned_migration["plan_binding"] = prepared_plan["plan_binding"]
+            planned_migration["prepared_plan"] = {
+                "path": prepared_plan["path"],
+                "file_sha256": prepared_plan["file_sha256"],
+                "canonical_sha256": _canonical_json_sha256(prepared_plan["payload"]),
+                "evidence": prepared_plan["evidence"],
+            }
+            final_authority_blockers = _migration_authority_preimage_blockers(
+                authority=authority,
+                frozen_entries=frozen_entries,
+                proposal_path=migration_authority_proposal_path,
+                proposal_sha256=migration_authority_proposal_sha256,
+                consumed_act_carrier_path=migration_consumed_act_carrier_path,
+                consumed_act_carrier_sha256=migration_consumed_act_carrier_sha256,
+                source_trust_anchor=migration_source_trust_anchor,
+            )
+            final_artifact_preflight = _preflight_existing_review_team_digest_migration(
+                vault_root,
+                authority=authority,
+                frozen_inventory_entries=frozen_entries,
+            )
+            final_snapshots = collect_review_team_digest_migration_snapshots(vault_root)
+            snapshot_drift = _migration_snapshot_drift(
+                prepared_plan["snapshots"],
+                final_snapshots,
+            )
+            acceptance_trace = _trace_with_prepared_migration_outputs(
+                vault_root=vault_root,
+                migration=planned_migration,
+                receipt_writes=planned_receipt_writes,
+            )
+            trace_blockers = _acceptance_trace_blockers(acceptance_trace)
+            final_evidence_manifest = _collect_migration_evidence_manifest(
+                vault_root=vault_root,
+                authority=authority,
+                artifact_preflight=artifact_preflight,
+                migration=planned_migration,
+                receipt_writes=planned_receipt_writes,
+                lock_transition=lock_transition,
+            )
+            final_lock_evidence = _migration_lock_exact_evidence(migration_lock.path)
+            final_blockers = list(final_authority_blockers)
+            if prepared_plan["artifact_preflight"] != final_artifact_preflight:
+                final_blockers.extend(final_artifact_preflight.get("blockers") or [])
+                if not final_artifact_preflight.get("blockers"):
+                    final_blockers.append("migration_artifact_changed_after_plan")
+            if snapshot_drift:
+                final_blockers.append("migration_receipts_changed_after_plan")
+            if trace_blockers:
+                final_blockers.append("migration_acceptance_trace_blocked")
+                planned_migration["acceptance_trace_blockers"] = trace_blockers
+            if _canonical_json_sha256(final_evidence_manifest) != _canonical_json_sha256(
+                prepared_plan["evidence_manifest"]
+            ):
+                final_blockers.append("migration_evidence_manifest_changed_before_effects")
+                planned_migration["final_evidence_manifest_sha256"] = _canonical_json_sha256(
+                    final_evidence_manifest
+                )
+            if final_lock_evidence != owned_lock_evidence:
+                final_blockers.append("migration_lock_changed_before_effects")
+                planned_migration["final_lock_evidence"] = final_lock_evidence
+            if final_blockers:
+                return _migration_blocked_result(
+                    status="migration_blocked",
+                    repo=repo,
+                    vault_root=vault_root,
+                    blockers=list(dict.fromkeys(final_blockers)),
+                    pause_preconditions=pause_preconditions,
+                    migration_extra={
+                        **planned_migration,
+                        "artifact_preflight": artifact_preflight,
+                        "under_lock_artifact_preflight": under_lock_preflight,
+                        "final_artifact_preflight": final_artifact_preflight,
+                        "snapshot_drift": snapshot_drift,
+                        "planned_open_pr_results": planned_open_pr_results,
+                        "planned_receipt_writes": planned_receipt_writes,
+                        "acceptance_admission_trace": acceptance_trace,
+                        "acceptance_trace_blockers": trace_blockers,
+                        "lock_transition": lock_transition,
+                        "owned_lock_evidence": owned_lock_evidence,
+                        "before_artifact_sha256": artifact_preflight.get("artifact_sha256"),
+                        "after_artifact_sha256": final_artifact_preflight.get("artifact_sha256"),
+                    },
+                )
+            candidate_authority, candidate_authority_blockers = (
+                migration_candidate_authority_from_file(
+                    carrier_path=migration_candidate_authority_carrier_path,
+                    carrier_sha256=migration_candidate_authority_carrier_sha256,
+                    plan_binding=prepared_plan["plan_binding"],
+                    authority=authority,
+                )
+            )
+            if candidate_authority_blockers or candidate_authority is None:
+                return _migration_blocked_result(
+                    status="migration_blocked",
+                    repo=repo,
+                    vault_root=vault_root,
+                    blockers=list(candidate_authority_blockers),
+                    pause_preconditions=pause_preconditions,
+                    migration_extra={
+                        **planned_migration,
+                        "artifact_preflight": artifact_preflight,
+                        "under_lock_artifact_preflight": under_lock_preflight,
+                        "final_artifact_preflight": final_artifact_preflight,
+                        "snapshot_drift": snapshot_drift,
+                        "planned_open_pr_results": planned_open_pr_results,
+                        "planned_receipt_writes": planned_receipt_writes,
+                        "lock_transition": lock_transition,
+                        "owned_lock_evidence": owned_lock_evidence,
+                        "before_artifact_sha256": artifact_preflight.get("artifact_sha256"),
+                        "after_artifact_sha256": final_artifact_preflight.get("artifact_sha256"),
+                    },
+                )
+            planned_migration = _migration_with_consumed_candidate_authority(
+                planned_migration,
+                candidate_authority,
+            )
+            planned_migration["candidate_authority"] = candidate_authority
+            transaction_result = _apply_prepared_migration_outputs(
+                vault_root=vault_root,
+                migration=planned_migration,
+                receipt_writes=planned_receipt_writes,
+            )
+            open_pr_results = _applied_replay_results_from_plan(planned_open_pr_results)
+            migration = dict(planned_migration)
+            migration["planned_receipt_writes"] = planned_receipt_writes
+            migration["transaction"] = transaction_result
+            migration["acceptance_admission_trace"] = acceptance_trace
+            if transaction_result.get("status") == "applied":
+                if migration.get("candidate_payload"):
+                    after_sha256 = "sha256:" + sha256_file(Path(str(migration["artifact_path"])))
+                    migration["after_artifact_sha256"] = after_sha256
+                    migration["artifact_written"] = True
+                    migration["status"] = "migration_written"
+                    if after_sha256 != migration.get("candidate_artifact_sha256"):
+                        migration["status"] = "migration_recovery_required"
+                        migration["blockers"] = ["migration_artifact_post_write_sha256_mismatch"]
+                status = (
+                    "migration_recovery_required"
+                    if migration.get("status") == "migration_recovery_required"
+                    else "replay_migration_complete"
+                )
+            elif transaction_result.get("status") == "recovered":
+                migration["status"] = "migration_recovered"
+                migration["artifact_written"] = False
+                status = "migration_recovered"
+            elif transaction_result.get("status") == "migration_blocked":
+                migration["artifact_written"] = False
+                migration["status"] = "migration_blocked"
+                migration["blockers"] = list(transaction_result.get("blockers") or [])
+                status = "migration_blocked"
+            else:
+                migration["artifact_written"] = False
+                migration["status"] = "migration_recovery_required"
+                migration["blockers"] = list(
+                    transaction_result.get("blockers") or ["migration_transaction_failed"]
+                )
+                status = "migration_recovery_required"
+            return {
+                "status": status,
+                "repo": repo,
+                "open_pr_results": open_pr_results,
+                "migration": migration,
+                "side_effects": {
+                    "migration_artifact": migration["artifact_path"]
+                    if migration.get("artifact_written")
+                    else None
+                },
+                "pause_preconditions": pause_preconditions,
+            }
         open_pr_results = review_all_open_prs(
             repo=repo,
             repo_root=repo_root,
@@ -7184,13 +7987,17 @@ def replay_all_open_prs_with_digest_migration(
             receipt_writes=planned_receipt_writes,
             lock_transition=lock_transition,
         )
-        planned_migration["plan_binding"] = _migration_plan_binding(
+        planned_migration = _with_prepared_plan(
+            repo=repo,
             authority=authority,
             artifact_preflight=artifact_preflight,
+            snapshots=pre_effect_snapshots,
+            open_pr_results=planned_open_pr_results,
             migration=planned_migration,
             receipt_writes=planned_receipt_writes,
-            snapshots=pre_effect_snapshots,
             evidence_manifest=evidence_manifest,
+            lock_transition=lock_transition,
+            now_iso=now_iso,
         )
         final_authority_blockers = _migration_authority_preimage_blockers(
             authority=authority,
@@ -7428,6 +8235,15 @@ def main(argv: list[str] | None = None) -> int:
         help="exact 64-hex SHA-256 of --migration-consumed-act-carrier",
     )
     parser.add_argument(
+        "--migration-prepared-plan",
+        type=Path,
+        help="canonical prepared migration plan file consumed by --apply",
+    )
+    parser.add_argument(
+        "--migration-prepared-plan-sha256",
+        help="exact 64-hex SHA-256 of --migration-prepared-plan",
+    )
+    parser.add_argument(
         "--migration-candidate-authority-carrier",
         type=Path,
         help="consumed candidate-authority carrier binding the exact prepared migration plan",
@@ -7501,6 +8317,8 @@ def main(argv: list[str] | None = None) -> int:
                 migration_authority_proposal_sha256=args.migration_authority_proposal_sha256,
                 migration_consumed_act_carrier_path=args.migration_consumed_act_carrier,
                 migration_consumed_act_carrier_sha256=args.migration_consumed_act_carrier_sha256,
+                migration_prepared_plan_path=args.migration_prepared_plan,
+                migration_prepared_plan_sha256=args.migration_prepared_plan_sha256,
                 migration_candidate_authority_carrier_path=(
                     args.migration_candidate_authority_carrier
                 ),

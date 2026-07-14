@@ -48,7 +48,9 @@ require `migration.status: migration_unchanged`, identical
 `migration.plan_binding.write_set_sha256`, and
 `migration.plan_binding.evidence_manifest_sha256`,
 `migration.plan_binding.candidate_artifact_core_sha256`, and
-`migration.plan_binding.candidate_authority_sha256`. The later candidate
+`migration.plan_binding.candidate_authority_sha256`. Write
+`migration.prepared_plan.raw_bytes_hex` byte-exactly to a durable prepared-plan
+file and record its `migration.prepared_plan.file_sha256`. The later candidate
 authority carrier must consume the exact
 `migration.plan_binding.candidate_authority` body and use the exact
 `migration.plan_binding.candidate_authority_response` text; the source
@@ -82,15 +84,18 @@ uv run python scripts/cc-pr-review-dispatch.py --all --apply --replay-only \
   --migration-authority-proposal-sha256 <64-hex> \
   --migration-consumed-act-carrier /path/to/consumed-carrier.yaml \
   --migration-consumed-act-carrier-sha256 <64-hex> \
+  --migration-prepared-plan /path/to/prepared-plan.json \
+  --migration-prepared-plan-sha256 <64-hex> \
   --migration-candidate-authority-carrier /path/to/consumed-candidate-carrier.yaml \
   --migration-candidate-authority-carrier-sha256 <64-hex>
 ```
 
-Every `--apply` invocation requires the candidate-authority carrier, including
-an already-sealed or otherwise no-op apply. `--apply` without that carrier, or
-with a carrier whose candidate body, frozen anchor, disposition manifest, write
-set, evidence manifest, or plan digest differs from the prepared plan, is a
-blocker before journal creation or target effects.
+Every `--apply` invocation requires both the exact prepared-plan file/SHA-256
+and the candidate-authority carrier, including an already-sealed or otherwise
+no-op apply. `--apply` without them, or with a carrier whose candidate body,
+frozen anchor, disposition manifest, write set, evidence manifest, prepared-plan
+file digest, or plan digest differs from the prepared plan, is a blocker before
+journal creation or target effects.
 
 A valid pre-existing sealed artifact is immutable. Empty, partial, removed, or
 forged seal mappings are blockers, not an unsealed legacy artifact. The only
@@ -110,12 +115,12 @@ also bound by exact bytes/stat/hash evidence and rechecked at transaction entry;
 any carrier drift is a blocker before journal creation. The transaction never
 serializes mutable payload maps at effect time; missing prepared
 `candidate_raw_bytes` is HOLD before journal, stage, archive, or target effects.
-The transaction writes a same-filesystem initializing journal under `_locks`
-before creating any stage directory or preimage file, then stages exact outputs,
-records preimage hashes and archive paths, fsyncs phase changes, and rolls back
-or reports
+The transaction validates every target preimage against the prepared plan before
+creating the journal. It then writes a same-filesystem initializing journal
+under `_locks`, stages exact outputs and preimages, records preimage hashes and
+archive paths, fsyncs phase changes, and rolls back or reports
 `migration_recovery_required` on any archive, stage, journal, replace, fsync,
-post-write verification, rollback, or restart failure. After apply, rerun the
+post-write verification, rollback, or recovery failure. After apply, rerun the
 providerless recheck with the killswitch set again and compare before/after
 hashes:
 
@@ -134,11 +139,16 @@ Post-merge closure bookkeeping does not validate, repair, or bypass migration
 authority and must not be cited as migration admission.
 
 An existing `_locks/review-team-digest-migration.transaction.json` is HOLD for
-fresh planning and apply until the recorded operation is recovered exactly. Do
-not delete the journal to retry; preserve it with the staged files and recover
-or escalate under a new governed act. An orphan stage path matching
+fresh planning and unauthenticated apply. To recover, rerun `--apply` with the
+same exact prepared-plan file/SHA-256 and consumed candidate-authority carrier.
+Valid `initializing`, `prepared`, `applied:N`, `rollback_started`, and
+`rollback_failed` phases recover by exact rollback; `complete` recovers by exact
+roll-forward/finalization; `rolled_back` verifies rollback and finalizes. Do not
+delete the journal to retry; preserve it with the staged files and recover or
+escalate under a new governed act. An orphan stage path matching
 `_locks/.review-team-digest-migration.transaction.*.files` is also HOLD even
-when the journal is absent.
+when the journal is absent unless the exact journal-bound recovery path can
+prove it belongs to the prepared plan.
 
 Malformed review claims remain HOLD until holder identity/liveness evidence is
 preserved. Only stale same-host claims with exact dead-or-reused PID/proc-start

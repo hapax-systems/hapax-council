@@ -289,7 +289,17 @@ def _authorize_digest_migration_apply(
         **authority_kwargs,
     )
     assert plan["status"] == "replay_migration_ready"
-    return _write_candidate_authority_carrier(tmp_path, plan["migration"]["plan_binding"])
+    prepared = plan["migration"]["prepared_plan"]
+    prepared_plan = tmp_path / f"{prepared['file_sha256'].removeprefix('sha256:')}.plan.json"
+    prepared_plan.write_bytes(bytes.fromhex(prepared["raw_bytes_hex"]))
+    candidate_kwargs = _write_candidate_authority_carrier(
+        tmp_path, plan["migration"]["plan_binding"]
+    )
+    return {
+        "migration_prepared_plan_path": prepared_plan,
+        "migration_prepared_plan_sha256": sha256(prepared_plan.read_bytes()).hexdigest(),
+        **candidate_kwargs,
+    }
 
 
 GOOD_REPLY = """```yaml
@@ -2689,9 +2699,13 @@ checklist:
         assert third["migration"]["counts"] == second["migration"]["counts"]
         assert sha256(artifact_path.read_bytes()).hexdigest() == artifact_sha
 
-    def test_digest_migration_apply_consumes_prepared_replay_without_second_replay(
+    def test_digest_migration_apply_consumes_exact_prepared_plan_without_replanning(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        class ExplodingGh(FakeGh):
+            def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+                raise AssertionError("apply must not call GitHub or PR discovery")
+
         result, _, _, note = _review(
             tmp_path, task_kwargs={"quality_floor": "frontier_review_required"}
         )
@@ -2727,12 +2741,16 @@ checklist:
         )
         apply_modes.clear()
 
+        def forbidden_review_all(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+            raise AssertionError("apply must consume the exact prepared plan")
+
+        monkeypatch.setattr(dispatch, "review_all_open_prs", forbidden_review_all)
         migration = dispatch.replay_all_open_prs_with_digest_migration(
             repo="owner/repo",
             repo_root=REPO_ROOT,
             vault_root=vault,
             apply=True,
-            gh_runner=FakeGh(),
+            gh_runner=ExplodingGh(),
             reviewer_runner=RecordingReviewers(),
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
@@ -2744,8 +2762,9 @@ checklist:
 
         assert migration["status"] == "replay_migration_complete"
         assert migration["open_pr_results"][0]["status"] == "replayed_fresh"
-        assert apply_modes == [False]
+        assert apply_modes == []
         assert migration["migration"]["plan_binding"]["write_set_sha256"].startswith("sha256:")
+        assert migration["migration"]["prepared_plan"]["file_sha256"].startswith("sha256:")
         rebound_receipt = yaml.safe_load(receipt_path.read_text(encoding="utf-8"))
         assert rebound_receipt["dossier_sha256"].startswith("sha256:")
 
@@ -2787,13 +2806,14 @@ checklist:
         receipt = _write_legacy_review_team_receipt(vault)
         receipt_bytes = receipt.read_bytes()
         authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+        gh = NoOpenPullsGh()
 
         result = dispatch.replay_all_open_prs_with_digest_migration(
             repo="owner/repo",
             repo_root=REPO_ROOT,
             vault_root=vault,
             apply=True,
-            gh_runner=NoOpenPullsGh(),
+            gh_runner=gh,
             reviewer_runner=RecordingReviewers(),
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
@@ -2804,9 +2824,10 @@ checklist:
 
         assert result["status"] == "migration_blocked"
         assert result["migration"]["blockers"] == [
-            "migration_candidate_authority_carrier_path_missing",
-            "migration_candidate_authority_carrier_sha256_missing",
+            "migration_prepared_plan_path_missing",
+            "migration_prepared_plan_sha256_missing",
         ]
+        assert gh.calls == []
         assert receipt.read_bytes() == receipt_bytes
         assert not dispatch.review_team_digest_migration_path(vault).exists()
         assert not dispatch.review_team_digest_migration_journal_path(vault).exists()
@@ -2869,10 +2890,10 @@ checklist:
 
         assert second["status"] == "migration_blocked"
         assert second["migration"]["blockers"] == [
-            "migration_candidate_authority_carrier_path_missing",
-            "migration_candidate_authority_carrier_sha256_missing",
+            "migration_prepared_plan_path_missing",
+            "migration_prepared_plan_sha256_missing",
         ]
-        assert second["migration"]["status"] == "migration_unchanged"
+        assert second["migration"]["status"] == "migration_blocked"
         assert artifact_path.read_bytes() == artifact_bytes
         assert not dispatch.review_team_digest_migration_journal_path(vault).exists()
 
@@ -2887,19 +2908,6 @@ checklist:
         _write_task(vault, quality_floor="frontier_review_required")
         receipt = _write_legacy_review_team_receipt(vault)
         authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
-        candidate_kwargs = _authorize_digest_migration_apply(
-            tmp_path,
-            repo="owner/repo",
-            repo_root=REPO_ROOT,
-            vault_root=vault,
-            gh_runner=NoOpenPullsGh(),
-            reviewer_runner=RecordingReviewers(),
-            wake_dir=tmp_path / "wake",
-            send_runner=lambda cmd: None,
-            now_iso="2026-07-14T03:20:11+00:00",
-            route_blocked_families={},
-            authority_kwargs=authority_kwargs,
-        )
 
         def forbidden_temporary_directory(*_args: Any, **_kwargs: Any) -> Any:
             raise AssertionError("semantic trace must not use filesystem temp overlays")
@@ -2910,7 +2918,7 @@ checklist:
             repo="owner/repo",
             repo_root=REPO_ROOT,
             vault_root=vault,
-            apply=True,
+            apply=False,
             gh_runner=NoOpenPullsGh(),
             reviewer_runner=RecordingReviewers(),
             wake_dir=tmp_path / "wake",
@@ -2918,11 +2926,10 @@ checklist:
             now_iso="2026-07-14T03:20:11+00:00",
             route_blocked_families={},
             **authority_kwargs,
-            **candidate_kwargs,
         )
 
-        assert result["status"] == "replay_migration_complete"
-        assert dispatch.review_team_digest_migration_path(vault).is_file()
+        assert result["status"] == "replay_migration_ready"
+        assert not dispatch.review_team_digest_migration_path(vault).exists()
 
     def test_digest_migration_blocks_on_owned_lock_drift_before_effects(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -3809,17 +3816,12 @@ checklist:
             route_blocked_families={},
             authority_kwargs=authority_kwargs,
         )
-        real_review_all = dispatch.review_all_open_prs
-        apply_calls: list[bool] = []
+        receipt.write_text(receipt.read_text(encoding="utf-8") + "tampered: true\n")
 
-        def racing_review_all(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
-            apply_calls.append(bool(kwargs.get("apply")))
-            result = real_review_all(*args, **kwargs)
-            if kwargs.get("apply") is False:
-                receipt.write_text(receipt.read_text(encoding="utf-8") + "tampered: true\n")
-            return result
+        def forbidden_review_all(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+            raise AssertionError("apply must not replan to detect receipt drift")
 
-        monkeypatch.setattr(dispatch, "review_all_open_prs", racing_review_all)
+        monkeypatch.setattr(dispatch, "review_all_open_prs", forbidden_review_all)
 
         result = dispatch.replay_all_open_prs_with_digest_migration(
             repo="owner/repo",
@@ -3837,11 +3839,11 @@ checklist:
         )
 
         assert result["status"] == "migration_blocked"
-        assert "migration_receipts_changed_after_plan" in result["migration"]["blockers"]
-        assert "migration_acceptance_trace_blocked" in result["migration"]["blockers"]
-        assert result["migration"]["snapshot_drift"][0]["status"] == "changed_after_preflight"
-        assert apply_calls == [False]
+        assert result["migration"]["blockers"] == [
+            "migration_frozen_tuple_missing_from_active:task-a:task-a.acceptance.yaml"
+        ]
         assert not dispatch.review_team_digest_migration_path(vault).exists()
+        assert not dispatch.review_team_digest_migration_journal_path(vault).exists()
 
     def test_digest_migration_transaction_rolls_back_after_artifact_write_failure(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -3926,6 +3928,7 @@ checklist:
             "existing_sha256": "sha256:" + sha256(receipt_preimage).hexdigest(),
             "raw_bytes": receipt_raw,
             "sha256": "sha256:" + sha256(receipt_raw).hexdigest(),
+            "target_preimage": dispatch._capture_target_preimage(receipt),
         }
         migration = {
             "artifact_path": str(artifact),
@@ -3933,6 +3936,7 @@ checklist:
             "candidate_payload": {"schema": dispatch.REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA},
             "candidate_raw_bytes": artifact_raw,
             "candidate_artifact_sha256": "sha256:" + sha256(artifact_raw).hexdigest(),
+            "target_preimage": dispatch._capture_target_preimage(artifact),
             "candidate_authority": {
                 "carrier_path": str(carrier),
                 "carrier_sha256": sha256(carrier.read_bytes()).hexdigest(),
@@ -3999,11 +4003,12 @@ checklist:
             migration=migration,
             receipt_writes=[receipt_write],
         )
-        assert restart["status"] == "migration_recovery_required"
-        assert restart["blockers"] == ["migration_transaction_recovery_required"]
+        assert restart["status"] == "recovered"
+        assert restart["terminal_phase"] == "rolled_back"
         assert receipt.read_bytes() == receipt_preimage
         assert not artifact.exists()
         assert not archive.exists()
+        assert not journal.exists()
 
     @pytest.mark.parametrize(
         "failure_phase",
@@ -4134,6 +4139,66 @@ checklist:
         assert result["blockers"] == ["migration_transaction_rollback_failed:OSError"]
         assert dispatch.review_team_digest_migration_journal_path(vault).exists()
 
+    def test_digest_migration_preimage_race_blocks_before_journal(self, tmp_path: Path) -> None:
+        vault, receipt, archive, artifact, _receipt_preimage, receipt_write, migration = (
+            self._transaction_fixture(tmp_path)
+        )
+        receipt.write_bytes(b"concurrent mutation\n")
+
+        result = dispatch._apply_prepared_migration_outputs(
+            vault_root=vault,
+            migration=migration,
+            receipt_writes=[receipt_write],
+        )
+
+        assert result["status"] == "migration_blocked"
+        assert result["blockers"] == ["migration_transaction_preimage_sha256_mismatch"]
+        assert not dispatch.review_team_digest_migration_journal_path(vault).exists()
+        assert not artifact.exists()
+        assert not archive.exists()
+
+    def test_digest_migration_recovers_applied_boundary_by_exact_rollback(
+        self, tmp_path: Path
+    ) -> None:
+        vault, receipt, archive, artifact, receipt_preimage, receipt_write, migration = (
+            self._transaction_fixture(tmp_path)
+        )
+        operations, blockers, _carrier_evidence = dispatch._prepared_migration_operations(
+            migration=migration,
+            receipt_writes=[receipt_write],
+        )
+        assert blockers == []
+        receipt.write_bytes(receipt_write["raw_bytes"])
+        archive.write_bytes(receipt_preimage)
+        journal = dispatch.review_team_digest_migration_journal_path(vault)
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        dispatch.atomic_write_bytes(
+            journal,
+            json.dumps(
+                {
+                    "schema": dispatch.MIGRATION_TRANSACTION_JOURNAL_SCHEMA,
+                    "phase": "applied:1",
+                    "stage_dir": str(journal.parent / ".missing-stage.files"),
+                    "operations": [dispatch._journal_operation(op) for op in operations],
+                    "applied": [dispatch._journal_operation(operations[0])],
+                },
+                sort_keys=True,
+            ).encode("utf-8"),
+        )
+
+        result = dispatch._apply_prepared_migration_outputs(
+            vault_root=vault,
+            migration=migration,
+            receipt_writes=[receipt_write],
+        )
+
+        assert result["status"] == "recovered"
+        assert result["terminal_phase"] == "rolled_back"
+        assert receipt.read_bytes() == receipt_preimage
+        assert not archive.exists()
+        assert not artifact.exists()
+        assert not journal.exists()
+
     @pytest.mark.parametrize(
         "phase",
         (
@@ -4146,7 +4211,7 @@ checklist:
             "rollback_failed",
         ),
     )
-    def test_digest_migration_existing_transaction_journal_holds_restart(
+    def test_digest_migration_existing_transaction_journal_requires_exact_plan_for_restart(
         self, tmp_path: Path, phase: str
     ) -> None:
         class NoOpenPullsGh(FakeGh):
@@ -4197,7 +4262,7 @@ checklist:
             repo="owner/repo",
             repo_root=REPO_ROOT,
             vault_root=vault,
-            apply=True,
+            apply=False,
             gh_runner=NoOpenPullsGh(),
             reviewer_runner=RecordingReviewers(),
             wake_dir=tmp_path / "wake",
@@ -4209,6 +4274,7 @@ checklist:
 
         assert result["status"] == "migration_recovery_required"
         assert result["migration"]["blockers"] == ["migration_transaction_recovery_required"]
+        assert result["migration"]["transaction_recovery"]["journal_exists"] is True
         if phase.startswith("applied"):
             assert receipt.read_bytes() == applied_receipt
             assert archive.read_bytes() == receipt_bytes
@@ -4217,7 +4283,9 @@ checklist:
             assert not archive.exists()
         assert journal.exists()
 
-    def test_digest_migration_orphan_transaction_stage_holds_restart(self, tmp_path: Path) -> None:
+    def test_digest_migration_orphan_transaction_stage_requires_exact_plan_for_restart(
+        self, tmp_path: Path
+    ) -> None:
         class NoOpenPullsGh(FakeGh):
             def _rest_open_prs(self) -> list[dict[str, Any]]:
                 raise AssertionError("orphan transaction stage must stop before GitHub")
@@ -4237,7 +4305,7 @@ checklist:
             repo="owner/repo",
             repo_root=REPO_ROOT,
             vault_root=vault,
-            apply=True,
+            apply=False,
             gh_runner=NoOpenPullsGh(),
             reviewer_runner=RecordingReviewers(),
             wake_dir=tmp_path / "wake",
@@ -4376,7 +4444,7 @@ checklist:
             repo="owner/repo",
             repo_root=REPO_ROOT,
             vault_root=vault,
-            apply=True,
+            apply=False,
             gh_runner=NoOpenPullsGh(),
             reviewer_runner=RecordingReviewers(),
             wake_dir=tmp_path / "wake",
@@ -4412,7 +4480,7 @@ checklist:
             repo="owner/repo",
             repo_root=REPO_ROOT,
             vault_root=vault,
-            apply=True,
+            apply=False,
             gh_runner=NoOpenPullsGh(),
             reviewer_runner=RecordingReviewers(),
             wake_dir=tmp_path / "wake",
