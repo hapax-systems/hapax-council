@@ -855,6 +855,23 @@ def test_task_demand_execution_axes_default_to_none() -> None:
     assert demand.task_demand.context_mode_demand is None
 
 
+def test_task_demand_quarantines_legacy_operator_dependency_term() -> None:
+    demand = build_demand_vector(_demand_frontmatter(operator_insight_dependency=5))
+
+    assert demand.task_demand.authority_constraint_dependency == 5
+    assert "operator_insight_dependency" not in demand.task_demand.model_dump(mode="json")
+
+
+def test_task_demand_rejects_conflicting_legacy_operator_dependency_term() -> None:
+    with pytest.raises((ValidationError, ValueError), match="operator_insight_dependency"):
+        build_demand_vector(
+            _demand_frontmatter(
+                operator_insight_dependency=5,
+                authority_constraint_dependency=3,
+            )
+        )
+
+
 def test_task_demand_accepts_valid_execution_axis_demands() -> None:
     demand = build_demand_vector(
         _demand_frontmatter(effort_demand="low", context_mode_demand="extended_1m")

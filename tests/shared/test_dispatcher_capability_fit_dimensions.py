@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 
 from shared.dispatcher_policy import (
     DIMENSION_WEIGHTS,
+    RECEIPT_ONLY_DIMENSIONS,
     DispatchAction,
     DispatchRequest,
     QuotaSpendState,
@@ -283,27 +284,41 @@ def test_undemanded_scoring_is_byte_identical_to_pre_change() -> None:
     assert _aggregate_score(demanded_legacy) == _aggregate_score(undemanded)
 
     # frozen concrete anchor captured from origin/main @ 59a404f8 — a tripwire if a legacy weight or
-    # score drifts; the byte-identity above is the load-bearing guarantee.
-    assert _aggregate_score(undemanded) == 4.06
+    # score drifts; the byte-identity above is the load-bearing guarantee. The prior
+    # 4.06 included quota/urgency as a weighted selector term; that dimension is now
+    # receipt-only, so the same route scores exactly on capability fit.
+    assert _aggregate_score(undemanded) == 4.0
 
 
-def test_legacy_dimension_weights_unchanged_and_new_keys_present() -> None:
-    expected_legacy = {
+def test_weighted_dimensions_exclude_receipt_only_quota_priority_metadata() -> None:
+    expected_weighted = {
         "grounding_governance_fit": 24,
         "implementation_architecture_fit": 20,
         "context_tools_execution_fit": 18,
         "verification_fit": 14,
         "coordination_worktree_fit": 10,
         "historical_local_calibration": 8,
-        "quota_latency_scarcity": 6,
     }
-    for dimension, weight in expected_legacy.items():
+    for dimension, weight in expected_weighted.items():
         assert DIMENSION_WEIGHTS[dimension] == weight
-    # the legacy weights still sum to 100 — the conditional dims sit ON TOP and only ever
-    # participate in the denominator when present (demanded), so undemanded scoring is unchanged.
-    assert sum(expected_legacy.values()) == 100
+    assert "quota_latency_scarcity" not in DIMENSION_WEIGHTS
+    assert frozenset({"quota_latency_scarcity"}) == RECEIPT_ONLY_DIMENSIONS
     assert DIMENSION_WEIGHTS["effort_fit"] == 12
     assert DIMENSION_WEIGHTS["context_mode_fit"] == 12
+
+
+def test_priority_context_urgency_is_not_a_route_fitness_weight() -> None:
+    low_priority = _score_candidate(
+        _dimensional_request("codex.headless.full", score=4, demand=_demand(priority="p3"))
+    )
+    p0_priority = _score_candidate(
+        _dimensional_request("codex.headless.full", score=4, demand=_demand(priority="p0"))
+    )
+
+    assert _aggregate_score(low_priority) == _aggregate_score(p0_priority)
+    quota_score = next(score for score in p0_priority if score.dimension == "quota_latency_scarcity")
+    assert quota_score.demand == "resource_headroom"
+    assert quota_score.dimension in RECEIPT_ONLY_DIMENSIONS
 
 
 # ----------------------------------------------------------------------------------

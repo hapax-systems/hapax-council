@@ -25,7 +25,7 @@ def _td(**overrides: object) -> TaskDemand:
         "release_publication_impact": 0,
         "coordination_load": 0,
         "branch_worktree_conflict_risk": 0,
-        "operator_insight_dependency": 0,
+        "authority_constraint_dependency": 0,
         "failure_cost": 0,
     }
     payload.update(overrides)

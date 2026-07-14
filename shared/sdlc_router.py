@@ -30,6 +30,7 @@ DEFAULT_SDLC_ROUTER_STATE = Path(
 )
 DEFAULT_FRONTIER_INCUMBENT_ROUTE_ID = "codex.headless.full"
 DEFAULT_THOMPSON_GAMMA = 0.9999
+DEMAND_LANGUAGE_AUDIT_REF = "cc-task-demand-language-anti-anthropomorphism-audit-20260630"
 
 REQUIREMENT_VECTOR_DIMENSIONS = (
     "quality_floor",
@@ -71,6 +72,112 @@ _REQUIREMENT_TO_SUPPLY_SCORES: Mapping[str, tuple[str, ...]] = {
         "public_claim_safety",
     ),
 }
+DEMAND_DIMENSION_JUSTIFICATIONS: Mapping[str, str] = {
+    "quality_floor": "acceptance floor ordinal; recorded separately from capability fit",
+    "information_scope": "evidence breadth and source-currentness floor",
+    "context_length": "minimum working-context capacity",
+    "mutation_risk": "required source/architecture/governance edit safety",
+    "verification_demand": "required proof and observation surface",
+    "ambiguity_novelty": "required ambiguity-resolution and architecture capacity",
+    "composition_coupling": "required coordination reliability across coupled changes",
+    "governance_sensitivity": "required governance, privacy, and public-claim safety",
+}
+_DEMAND_LANGUAGE_FORBIDDEN_TOKENS = frozenset(
+    {
+        "age",
+        "aging",
+        "fair",
+        "fairness",
+        "human",
+        "operator",
+        "person",
+        "priority",
+        "role",
+        "seniority",
+        "urgent",
+        "urgency",
+        "user",
+    }
+)
+_CARRIER_LANGUAGE_FORBIDDEN_TOKENS = frozenset(
+    {
+        "agy",
+        "antigrav",
+        "carrier",
+        "claude",
+        "codex",
+        "fugu",
+        "gemini",
+        "glmcp",
+        "grok",
+        "mistral",
+        "model",
+        "openrouter",
+        "ornith",
+        "perplexity",
+        "platform",
+        "provider",
+        "sakana",
+        "sonnet",
+        "opus",
+        "vibe",
+    }
+)
+
+
+def demand_language_contract_errors(
+    *,
+    requirement_dimensions: Sequence[str] = REQUIREMENT_VECTOR_DIMENSIONS,
+    requirement_to_supply_scores: Mapping[str, tuple[str, ...]] = _REQUIREMENT_TO_SUPPLY_SCORES,
+    justifications: Mapping[str, str] = DEMAND_DIMENSION_JUSTIFICATIONS,
+) -> tuple[str, ...]:
+    """Return demand-language drift findings that require the audit review gate.
+
+    This is the CODEOWNERS-equivalent schema pin for the demand language in this
+    module: future dimensions/mapping keys must be system-economics facts, not
+    human-context priority terms or carrier/platform labels.
+    """
+
+    errors: list[str] = []
+    dimensions = tuple(requirement_dimensions)
+    dimension_set = set(dimensions)
+    if dimension_set != set(justifications):
+        errors.append("dimension_justification_mismatch")
+    if set(requirement_to_supply_scores) != dimension_set - {"quality_floor"}:
+        errors.append("requirement_to_supply_mapping_key_mismatch")
+    for label in (*dimensions, *requirement_to_supply_scores.keys()):
+        tokens = _demand_language_tokens(label)
+        forbidden = sorted(
+            tokens
+            & (
+                _DEMAND_LANGUAGE_FORBIDDEN_TOKENS
+                | _CARRIER_LANGUAGE_FORBIDDEN_TOKENS
+            )
+        )
+        if forbidden:
+            errors.append(f"forbidden_demand_language:{label}:{','.join(forbidden)}")
+    for requirement_dimension, supply_dimensions in requirement_to_supply_scores.items():
+        for supply_dimension in supply_dimensions:
+            tokens = _demand_language_tokens(supply_dimension)
+            forbidden = sorted(_CARRIER_LANGUAGE_FORBIDDEN_TOKENS & tokens)
+            if forbidden:
+                errors.append(
+                    "carrier_language_in_supply_mapping:"
+                    f"{requirement_dimension}->{supply_dimension}:{','.join(forbidden)}"
+                )
+    return tuple(errors)
+
+
+def _demand_language_tokens(label: str) -> set[str]:
+    return {token for token in label.lower().replace("-", "_").replace(".", "_").split("_") if token}
+
+
+_DEMAND_LANGUAGE_CONTRACT_ERRORS = demand_language_contract_errors()
+if _DEMAND_LANGUAGE_CONTRACT_ERRORS:
+    raise RuntimeError(
+        "demand language contract violated; review "
+        f"{DEMAND_LANGUAGE_AUDIT_REF}: {_DEMAND_LANGUAGE_CONTRACT_ERRORS}"
+    )
 
 
 class SdlcRouterAction(StrEnum):

@@ -14,11 +14,15 @@ from shared.platform_capability_registry import (
 from shared.route_metadata_schema import LearningEligibility
 from shared.sdlc_router import (
     DEFAULT_FRONTIER_INCUMBENT_ROUTE_ID,
+    DEMAND_DIMENSION_JUSTIFICATIONS,
+    DEMAND_LANGUAGE_AUDIT_REF,
+    REQUIREMENT_VECTOR_DIMENSIONS,
     ClassActivationEvidence,
     SdlcRouteCandidate,
     SdlcRouter,
     SdlcRouterAction,
     SdlcRoutingRequest,
+    demand_language_contract_errors,
     gate_event_learning_allowed,
     gate_event_thompson_update_allowed,
 )
@@ -213,6 +217,24 @@ def test_router_validation_errors_include_next_actions() -> None:
                 "unsupported_dimension": 5,
             },
         )
+
+
+def test_demand_language_contract_requires_system_economics_terms() -> None:
+    assert DEMAND_LANGUAGE_AUDIT_REF == (
+        "cc-task-demand-language-anti-anthropomorphism-audit-20260630"
+    )
+    assert set(DEMAND_DIMENSION_JUSTIFICATIONS) == set(REQUIREMENT_VECTOR_DIMENSIONS)
+    assert demand_language_contract_errors() == ()
+    assert demand_language_contract_errors(
+        requirement_dimensions=(*REQUIREMENT_VECTOR_DIMENSIONS, "operator_urgency"),
+        justifications={
+            **DEMAND_DIMENSION_JUSTIFICATIONS,
+            "operator_urgency": "legacy human priority",
+        },
+    ) == (
+        "requirement_to_supply_mapping_key_mismatch",
+        "forbidden_demand_language:operator_urgency:operator,urgency",
+    )
 
 
 def test_candidate_rejects_unbounded_or_unknown_capability_scores() -> None:

@@ -857,12 +857,32 @@ class TaskDemand(_RouteModel):
     release_publication_impact: int = Field(ge=0, le=5)
     coordination_load: int = Field(ge=0, le=5)
     branch_worktree_conflict_risk: int = Field(ge=0, le=5)
-    operator_insight_dependency: int = Field(ge=0, le=5)
+    authority_constraint_dependency: int = Field(default=0, ge=0, le=5)
     failure_cost: int = Field(ge=0, le=5)
     # conditional execution-axis demands; None = undemanded (the non-perturbation default)
     effort_demand: str | None = None
     context_mode_demand: str | None = None
     fixed_route_overhead_sensitivity: int = Field(default=0, ge=0, le=5)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_operator_insight_dependency(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        if "operator_insight_dependency" not in value:
+            return value
+        payload = dict(value)
+        legacy_value = payload.pop("operator_insight_dependency")
+        if (
+            "authority_constraint_dependency" in payload
+            and payload["authority_constraint_dependency"] != legacy_value
+        ):
+            raise ValueError(
+                "operator_insight_dependency is deprecated; use "
+                "authority_constraint_dependency as an authority/filter constraint"
+            )
+        payload.setdefault("authority_constraint_dependency", legacy_value)
+        return payload
 
     @field_validator("effort_demand")
     @classmethod
@@ -1907,7 +1927,21 @@ def _build_task_demand(frontmatter: Mapping[str, Any], metadata: RouteMetadata) 
     explicit = frontmatter.get("task_demand")
     if isinstance(explicit, Mapping):
         payload = _derived_task_demand_payload(frontmatter, metadata)
-        payload.update(dict(explicit))
+        explicit_payload = dict(explicit)
+        legacy_operator_dependency = explicit_payload.pop("operator_insight_dependency", None)
+        if legacy_operator_dependency is not None:
+            if (
+                "authority_constraint_dependency" in explicit_payload
+                and explicit_payload["authority_constraint_dependency"] != legacy_operator_dependency
+            ):
+                raise ValueError(
+                    "operator_insight_dependency is deprecated; use "
+                    "authority_constraint_dependency as an authority/filter constraint"
+                )
+            explicit_payload.setdefault(
+                "authority_constraint_dependency", legacy_operator_dependency
+            )
+        payload.update(explicit_payload)
         return TaskDemand.model_validate(payload)
     return TaskDemand.model_validate(_derived_task_demand_payload(frontmatter, metadata))
 
@@ -1962,7 +1996,7 @@ def _derived_task_demand_payload(
         if locality == CodebaseLocality.CROSS_MODULE
         else 1,
         "branch_worktree_conflict_risk": 4 if mutation == MutationSurface.SOURCE else 1,
-        "operator_insight_dependency": 4 if risk.aesthetic_theory_sensitive else 2,
+        "authority_constraint_dependency": 4 if risk.aesthetic_theory_sensitive else 2,
         "failure_cost": 5
         if risk.audio_or_live_egress_sensitive or risk.provider_billing_sensitive
         else 4

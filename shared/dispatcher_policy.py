@@ -1349,7 +1349,6 @@ DIMENSION_WEIGHTS: Mapping[str, int] = {
     "verification_fit": 14,
     "coordination_worktree_fit": 10,
     "historical_local_calibration": 8,
-    "quota_latency_scarcity": 6,
     # conditional execution-axis dimensions: present in a candidate's scores ONLY when the
     # task declares the matching demand, so _aggregate_score (which normalizes over PRESENT
     # dimensions) leaves undemanded-task scoring byte-identical. The raw sum is no longer 100;
@@ -1358,6 +1357,7 @@ DIMENSION_WEIGHTS: Mapping[str, int] = {
     "context_mode_fit": 12,
     "fixed_route_overhead": 6,
 }
+RECEIPT_ONLY_DIMENSIONS = frozenset({"quota_latency_scarcity"})
 
 #: The reasoning-effort ordinal ladder (none < low < ... < max), derived from the supply-side
 #: Effort enum so a future reorder cannot silently mis-score; pinned by the demand drift test.
@@ -1832,7 +1832,7 @@ def _score_candidate(request: DispatchRequest) -> tuple[DimensionalScore, ...]:
         ),
         DimensionalScore(
             dimension="quota_latency_scarcity",
-            demand=demand.priority_context.urgency.value,
+            demand="resource_headroom",
             supply=supply.state.quota_state,
             score=5.0
             if supply.state.quota_state in {"available", "low"}
