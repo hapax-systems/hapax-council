@@ -114,6 +114,7 @@ from shared.sdlc_lifecycle import (  # noqa: E402
     acceptance_receipt_blockers,
     acceptance_receipt_path,
     requires_acceptance_receipt,
+    review_team_digest_migration_artifact_blockers,
     review_team_digest_migration_source_trust_anchor,
 )
 
@@ -1861,6 +1862,7 @@ def _migration_source_anchor_blockers(
     proposal_sha256: str | None = None,
     consumed_act_carrier_sha256: str | None = None,
     frozen_inventory_canonical_sha256: str | None = None,
+    legacy_unsealed_artifact_sha256: str | None = None,
     authority_case: str | None = None,
 ) -> tuple[str, ...]:
     comparisons = (
@@ -1868,6 +1870,7 @@ def _migration_source_anchor_blockers(
         ("proposal_sha256", proposal_sha256),
         ("consumed_act_carrier_sha256", consumed_act_carrier_sha256),
         ("frozen_inventory_canonical_sha256", frozen_inventory_canonical_sha256),
+        ("legacy_unsealed_artifact_sha256", legacy_unsealed_artifact_sha256),
         ("authority_case", authority_case),
     )
     blockers = []
@@ -1909,10 +1912,14 @@ def migration_authority_from_files(
     if RAW_SHA256_RE.fullmatch(carrier_sha) is None:
         return None, (), ("migration_consumed_act_carrier_sha256_invalid",)
     anchor = _migration_source_trust_anchor(source_trust_anchor)
+    legacy_unsealed_artifact_sha256 = str(anchor.get("legacy_unsealed_artifact_sha256") or "")
+    if RAW_SHA256_RE.fullmatch(legacy_unsealed_artifact_sha256) is None:
+        return None, (), ("migration_authority_source_anchor_legacy_unsealed_sha256_invalid",)
     anchor_blockers = _migration_source_anchor_blockers(
         anchor=anchor,
         proposal_sha256=proposal_sha,
         consumed_act_carrier_sha256=carrier_sha,
+        legacy_unsealed_artifact_sha256=legacy_unsealed_artifact_sha256,
     )
     if anchor_blockers:
         return None, (), anchor_blockers
@@ -1951,6 +1958,12 @@ def migration_authority_from_files(
         return None, (), ("migration_consumed_act_carrier_not_consumed",)
     if str(carrier.get("id") or "") != proposal_id:
         return None, (), ("migration_consumed_act_carrier_id_mismatch",)
+    carrier_schema = str(carrier.get("schema") or "").strip()
+    if not carrier_schema:
+        return None, (), ("migration_consumed_act_carrier_schema_missing",)
+    consumed_at = str(carrier.get("consumed_at") or "").strip()
+    if not consumed_at:
+        return None, (), ("migration_consumed_act_carrier_consumed_at_missing",)
     if str(carrier_proposal.get("path") or "") != str(proposal_path):
         return None, (), ("migration_consumed_act_carrier_proposal_path_mismatch",)
     if str(carrier_proposal.get("sha256") or "") != proposal_sha:
@@ -2019,12 +2032,13 @@ def migration_authority_from_files(
         "case_id": case_id,
         "consumed_act_carrier_path": str(consumed_act_carrier_path),
         "consumed_act_carrier_sha256": carrier_sha,
-        "consumed_act_carrier_schema": str(carrier.get("schema") or ""),
+        "consumed_act_carrier_schema": carrier_schema,
         "consumed_act_carrier_status": str(carrier.get("status") or ""),
-        "consumed_at": str(carrier.get("consumed_at") or ""),
+        "consumed_at": consumed_at,
         "operator_act_response": expected_response,
         "frozen_inventory_canonical_sha256": canonical_sha,
         "frozen_inventory_count": len(normalized_entries),
+        "legacy_unsealed_artifact_sha256": legacy_unsealed_artifact_sha256,
         "source_trust_anchor": anchor,
     }
     return authority, tuple(normalized_entries), ()
@@ -2054,6 +2068,7 @@ def _review_team_digest_migration_pause_preflight(
             "--user",
             "show",
             unit,
+            "--property=Id",
             "--property=LoadState",
             "--property=ActiveState",
             "--no-pager",
@@ -2076,9 +2091,11 @@ def _review_team_digest_migration_pause_preflight(
         parsed = _parse_systemctl_show(str(getattr(completed, "stdout", "") or ""))
         load_state = parsed.get("LoadState")
         active_state = parsed.get("ActiveState")
+        unit_id = parsed.get("Id")
         unit_result: dict[str, Any] = {
             "command": cmd,
             "returncode": int(getattr(completed, "returncode", 1)),
+            "id": unit_id or "missing",
             "load_state": load_state or "missing",
             "active_state": active_state or "missing",
         }
@@ -2089,6 +2106,8 @@ def _review_team_digest_migration_pause_preflight(
         if unit_result["returncode"] != 0:
             blockers.append(f"pause_unit_probe_failed:{unit}:rc={unit_result['returncode']}")
             continue
+        if unit_id != unit:
+            blockers.append(f"pause_unit_id:{unit}:{unit_id or 'missing'}")
         if load_state != "loaded":
             blockers.append(f"pause_unit_load_state:{unit}:{load_state or 'missing'}")
         if active_state != "inactive":
@@ -2474,91 +2493,11 @@ def _sealed_migration_payload_blockers(
     authority: dict[str, Any],
     frozen_inventory_entries: tuple[dict[str, Any], ...],
 ) -> tuple[str, ...]:
-    blockers: list[str] = []
-    if payload.get("schema") != REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA:
-        blockers.append("sealed_migration_schema_mismatch")
-    existing_authority = payload.get("authority")
-    if not isinstance(existing_authority, dict):
-        blockers.append("sealed_migration_authority_missing")
-    else:
-        for key in (
-            "proposal_path",
-            "proposal_sha256",
-            "proposal_id",
-            "case_id",
-            "consumed_act_carrier_path",
-            "consumed_act_carrier_sha256",
-            "frozen_inventory_canonical_sha256",
-            "source_trust_anchor",
-        ):
-            if existing_authority.get(key) != authority.get(key):
-                blockers.append(f"sealed_migration_authority_{key}_mismatch")
-    sealed_generation = payload.get("sealed_generation")
-    if not isinstance(sealed_generation, dict):
-        blockers.append("sealed_migration_generation_missing")
-    else:
-        if not sealed_generation.get("id") or not sealed_generation.get("sealed_at"):
-            blockers.append("sealed_migration_generation_incomplete")
-    frozen = payload.get("frozen_prebinding_inventory")
-    if not isinstance(frozen, dict):
-        blockers.append("sealed_migration_frozen_inventory_missing")
-    else:
-        entries = frozen.get("entries")
-        if not isinstance(entries, list):
-            blockers.append("sealed_migration_frozen_inventory_entries_invalid")
-        elif (
-            _canonical_frozen_inventory_sha256(entries)
-            != authority["frozen_inventory_canonical_sha256"]
-        ):
-            blockers.append("sealed_migration_frozen_inventory_sha256_mismatch")
-        try:
-            frozen_count = int(frozen.get("count"))
-        except (TypeError, ValueError):
-            blockers.append("sealed_migration_frozen_inventory_count_invalid")
-        else:
-            if frozen_count != len(frozen_inventory_entries):
-                blockers.append("sealed_migration_frozen_inventory_count_mismatch")
-
-    frozen_tuples = _migration_tuple_set(frozen_inventory_entries)
-    seen_tasks: set[str] = set()
-    entries = payload.get("entries")
-    if not isinstance(entries, list):
-        blockers.append("sealed_migration_entries_invalid")
-    else:
-        for entry in entries:
-            if not isinstance(entry, dict):
-                blockers.append("sealed_migration_entry_invalid")
-                continue
-            task_id = str(entry.get("task_id") or "")
-            if task_id in seen_tasks:
-                blockers.append(f"sealed_migration_duplicate_task:{task_id}")
-            seen_tasks.add(task_id)
-            if entry.get("classification") == MIGRATION_CLASS_EXACT_HASH_PRESERVED:
-                if _migration_tuple(entry) not in frozen_tuples:
-                    blockers.append(f"sealed_migration_preservation_not_frozen:{task_id}")
-                admission = entry.get("legacy_admission")
-                if not isinstance(admission, dict):
-                    blockers.append(f"sealed_migration_legacy_admission_missing:{task_id}")
-                else:
-                    if admission.get("route") != REVIEW_TEAM_DIGEST_MIGRATION_LEGACY_ROUTE:
-                        blockers.append(
-                            f"sealed_migration_legacy_admission_route_mismatch:{task_id}"
-                        )
-                    if admission.get("source_trust_anchor") != authority.get("source_trust_anchor"):
-                        blockers.append(
-                            f"sealed_migration_legacy_admission_source_anchor_mismatch:{task_id}"
-                        )
-                    if admission.get("sealed_generation_id") != (
-                        sealed_generation.get("id") if isinstance(sealed_generation, dict) else None
-                    ):
-                        blockers.append(
-                            f"sealed_migration_legacy_admission_generation_mismatch:{task_id}"
-                        )
-                    if admission.get("receipt_sha256") != entry.get("receipt_sha256"):
-                        blockers.append(
-                            f"sealed_migration_legacy_admission_receipt_sha_mismatch:{task_id}"
-                        )
-    return tuple(blockers)
+    return review_team_digest_migration_artifact_blockers(
+        payload,
+        expected_authority=authority,
+        expected_frozen_inventory_entries=frozen_inventory_entries,
+    )
 
 
 def _migration_entries_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2653,7 +2592,7 @@ def _preflight_existing_review_team_digest_migration(
             "artifact_sha256": artifact_sha256,
             "blockers": ["existing_migration_schema_mismatch"],
         }
-    if loaded.get("authority") or loaded.get("sealed_generation"):
+    if _migration_artifact_has_seal_fields(loaded):
         blockers = _sealed_migration_payload_blockers(
             loaded,
             authority=authority,
@@ -2672,6 +2611,13 @@ def _preflight_existing_review_team_digest_migration(
             "artifact_sha256": artifact_sha256,
             "blockers": [],
             "sealed_generation": loaded.get("sealed_generation"),
+        }
+    if artifact_sha256.removeprefix("sha256:") != authority["legacy_unsealed_artifact_sha256"]:
+        return {
+            "status": "migration_blocked",
+            "artifact_path": str(path),
+            "artifact_sha256": artifact_sha256,
+            "blockers": ["existing_migration_unsealed_preimage_mismatch"],
         }
     return {
         "status": "unsealed_migration_present",
@@ -2718,6 +2664,37 @@ def collect_acceptance_receipt_admission_trace(vault_root: Path) -> list[dict[st
     return trace
 
 
+def _migration_artifact_has_seal_fields(payload: dict[str, Any]) -> bool:
+    return any(
+        key in payload
+        for key in (
+            "authority",
+            "authority_proposal_id",
+            "sealed_generation",
+            "frozen_prebinding_inventory",
+        )
+    )
+
+
+def _migration_frozen_snapshot_coverage_blockers(
+    snapshots: tuple[dict[str, Any], ...],
+    frozen_inventory_entries: tuple[dict[str, Any], ...],
+) -> list[str]:
+    snapshot_tuples = {
+        (
+            str(snapshot.get("task_id") or ""),
+            str(snapshot.get("receipt_basename") or ""),
+            str(snapshot.get("receipt_sha256") or ""),
+        )
+        for snapshot in snapshots
+    }
+    frozen_tuples = _migration_tuple_set(frozen_inventory_entries)
+    return [
+        f"migration_frozen_tuple_missing_from_active:{task_id}:{basename}"
+        for task_id, basename, _receipt_sha in sorted(frozen_tuples - snapshot_tuples)
+    ]
+
+
 def publish_review_team_digest_migration(
     vault_root: Path,
     *,
@@ -2757,7 +2734,7 @@ def publish_review_team_digest_migration(
                 "blockers": ["existing_migration_schema_mismatch"],
                 "entries": [],
             }
-        if loaded.get("authority") or loaded.get("sealed_generation"):
+        if _migration_artifact_has_seal_fields(loaded):
             blockers = _sealed_migration_payload_blockers(
                 loaded,
                 authority=authority,
@@ -2789,8 +2766,17 @@ def publish_review_team_digest_migration(
                 "before_artifact_sha256": existing_artifact_sha256,
                 "after_artifact_sha256": existing_artifact_sha256,
             }
-        else:
-            existing_was_unsealed = True
+        if existing_artifact_sha256 != "sha256:" + authority["legacy_unsealed_artifact_sha256"]:
+            return {
+                "status": "migration_blocked",
+                "artifact_path": str(path),
+                "artifact_written": False,
+                "blockers": ["existing_migration_unsealed_preimage_mismatch"],
+                "entries": [],
+                "before_artifact_sha256": existing_artifact_sha256,
+                "after_artifact_sha256": existing_artifact_sha256,
+            }
+        existing_was_unsealed = True
     elif loaded is not None:
         return {
             "status": "migration_blocked",
@@ -2821,6 +2807,22 @@ def publish_review_team_digest_migration(
         now_iso=now_iso,
         sealed_generation=sealed_generation,
     )
+    payload_blockers = _sealed_migration_payload_blockers(
+        payload,
+        authority=authority,
+        frozen_inventory_entries=frozen_inventory_entries,
+    )
+    if payload_blockers:
+        return {
+            "status": "migration_blocked",
+            "artifact_path": str(path),
+            "artifact_written": False,
+            "blockers": list(payload_blockers),
+            "entries": payload["entries"],
+            "counts": payload["counts"],
+            "before_artifact_sha256": existing_artifact_sha256,
+            "after_artifact_sha256": existing_artifact_sha256,
+        }
     comparable_payload = {k: v for k, v in payload.items() if k != "generated_at"}
     if isinstance(existing_payload, dict) and not existing_was_unsealed:
         comparable_existing = {k: v for k, v in existing_payload.items() if k != "generated_at"}
@@ -5490,6 +5492,54 @@ def replay_all_open_prs_with_digest_migration(
                 "after_artifact_sha256": artifact_preflight.get("artifact_sha256"),
             },
         )
+    pre_effect_snapshots = collect_review_team_digest_migration_snapshots(vault_root)
+    if artifact_preflight["status"] != "sealed_migration_valid":
+        coverage_blockers = _migration_frozen_snapshot_coverage_blockers(
+            pre_effect_snapshots,
+            frozen_entries,
+        )
+        if coverage_blockers:
+            return _migration_blocked_result(
+                status="migration_blocked",
+                repo=repo,
+                vault_root=vault_root,
+                blockers=coverage_blockers,
+                pause_preconditions=pause_preconditions,
+                migration_extra={
+                    "artifact_preflight": artifact_preflight,
+                    "before_artifact_sha256": artifact_preflight.get("artifact_sha256"),
+                    "after_artifact_sha256": artifact_preflight.get("artifact_sha256"),
+                },
+            )
+    if migration_recheck:
+        migration = publish_review_team_digest_migration(
+            vault_root,
+            snapshots=pre_effect_snapshots,
+            authority=authority,
+            frozen_inventory_entries=frozen_entries,
+            rebound_task_ids=frozenset(),
+            apply=False,
+            now_iso=now_iso,
+            source_head_sha=_current_source_head(repo_root),
+        )
+        migration["artifact_preflight"] = artifact_preflight
+        status = (
+            "migration_blocked"
+            if migration.get("status") == "migration_blocked"
+            else "migration_recheck_ready"
+        )
+        if status != "migration_blocked":
+            migration["acceptance_admission_trace"] = collect_acceptance_receipt_admission_trace(
+                vault_root
+            )
+        return {
+            "status": status,
+            "repo": repo,
+            "open_pr_results": [],
+            "migration": migration,
+            "side_effects": {"migration_artifact": None},
+            "pause_preconditions": pause_preconditions,
+        }
     with review_team_digest_migration_lock(vault_root) as migration_lock:
         if not migration_lock.acquired:
             return {
@@ -5508,28 +5558,45 @@ def replay_all_open_prs_with_digest_migration(
                 "side_effects": {},
                 "pause_preconditions": pause_preconditions,
             }
-        snapshots = collect_review_team_digest_migration_snapshots(vault_root)
-        if migration_recheck:
-            open_pr_results = []
-            rebound_task_ids = frozenset()
-        else:
-            open_pr_results = review_all_open_prs(
+        under_lock_preflight = _preflight_existing_review_team_digest_migration(
+            vault_root,
+            authority=authority,
+            frozen_inventory_entries=frozen_entries,
+        )
+        if under_lock_preflight != artifact_preflight:
+            blockers = list(under_lock_preflight.get("blockers") or [])
+            if not blockers:
+                blockers = ["migration_artifact_changed_after_preflight"]
+            return _migration_blocked_result(
+                status="migration_blocked",
                 repo=repo,
-                repo_root=repo_root,
                 vault_root=vault_root,
-                apply=apply,
-                force=False,
-                replay_only=True,
-                gh_runner=gh_runner,
-                reviewer_runner=reviewer_runner,
-                wake_dir=wake_dir,
-                send_runner=send_runner,
-                route_blocked_families=route_blocked_families,
+                blockers=blockers,
+                pause_preconditions=pause_preconditions,
+                migration_extra={
+                    "artifact_preflight": artifact_preflight,
+                    "under_lock_artifact_preflight": under_lock_preflight,
+                    "before_artifact_sha256": artifact_preflight.get("artifact_sha256"),
+                    "after_artifact_sha256": under_lock_preflight.get("artifact_sha256"),
+                },
             )
-            rebound_task_ids = _rebound_task_ids_from_replay_results(open_pr_results)
+        open_pr_results = review_all_open_prs(
+            repo=repo,
+            repo_root=repo_root,
+            vault_root=vault_root,
+            apply=apply,
+            force=False,
+            replay_only=True,
+            gh_runner=gh_runner,
+            reviewer_runner=reviewer_runner,
+            wake_dir=wake_dir,
+            send_runner=send_runner,
+            route_blocked_families=route_blocked_families,
+        )
+        rebound_task_ids = _rebound_task_ids_from_replay_results(open_pr_results)
         migration = publish_review_team_digest_migration(
             vault_root,
-            snapshots=snapshots,
+            snapshots=pre_effect_snapshots,
             authority=authority,
             frozen_inventory_entries=frozen_entries,
             rebound_task_ids=rebound_task_ids,

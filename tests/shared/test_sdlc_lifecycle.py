@@ -324,6 +324,7 @@ class TestAcceptanceReceiptEnforcement:
                     "schema": "hapax.test-carrier.v1",
                     "id": proposal_id,
                     "status": "consumed_active",
+                    "consumed_at": "2026-07-14T03:00:00+00:00",
                     "proposal": {"path": str(proposal), "sha256": proposal_sha},
                     "operator_act": {
                         "exact_response_utf8_no_lf": (
@@ -346,6 +347,7 @@ class TestAcceptanceReceiptEnforcement:
             "proposal_sha256": proposal_sha,
             "consumed_act_carrier_sha256": carrier_sha,
             "frozen_inventory_canonical_sha256": frozen_digest,
+            "legacy_unsealed_artifact_sha256": "a" * 64,
             "authority_case": "CASE-TEST",
         }
         sdlc_lifecycle.REVIEW_TEAM_DIGEST_MIGRATION_SOURCE_TRUST_ANCHOR.clear()
@@ -381,7 +383,15 @@ class TestAcceptanceReceiptEnforcement:
                         "case_id": "CASE-TEST",
                         "consumed_act_carrier_path": str(carrier),
                         "consumed_act_carrier_sha256": carrier_sha,
+                        "consumed_act_carrier_schema": "hapax.test-carrier.v1",
+                        "consumed_act_carrier_status": "consumed_active",
+                        "consumed_at": "2026-07-14T03:00:00+00:00",
+                        "operator_act_response": (
+                            f"RATIFY {proposal_id} proposal_sha256={proposal_sha}"
+                        ),
                         "frozen_inventory_canonical_sha256": frozen_digest,
+                        "frozen_inventory_count": len(frozen_entries),
+                        "legacy_unsealed_artifact_sha256": "a" * 64,
                         "source_trust_anchor": source_anchor,
                     },
                     "authority_proposal_id": proposal_id,
@@ -396,6 +406,20 @@ class TestAcceptanceReceiptEnforcement:
                         "entries": frozen_entries,
                     },
                     "entries": entries,
+                    "counts": {
+                        "rebound": 0,
+                        REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION: sum(
+                            1
+                            for entry in entries
+                            if entry.get("classification")
+                            == REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION
+                        ),
+                        "stale-invalid": sum(
+                            1 for entry in entries if entry.get("classification") == "stale-invalid"
+                        ),
+                        "unmatched": 0,
+                        "not-subject": 0,
+                    },
                 },
                 sort_keys=False,
             ),
@@ -582,6 +606,56 @@ class TestAcceptanceReceiptEnforcement:
         blockers = acceptance_receipt_blockers(frontmatter, note)
 
         assert "acceptance_receipt_digest_migration_legacy_admission_missing" in blockers
+
+    def test_digest_migration_empty_seal_maps_fail_closed(self, tmp_path: Path) -> None:
+        note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})
+        receipt = self._receipt(
+            tmp_path,
+            "task-r",
+            self.VALID_RECEIPT.replace("acceptor: operator", "acceptor: review-team:codex,glm"),
+        )
+        receipt_sha = "sha256:" + hashlib.sha256(receipt.read_bytes()).hexdigest()
+        migration = self._migration(tmp_path, receipt_sha256=receipt_sha)
+        loaded = yaml.safe_load(migration.read_text(encoding="utf-8"))
+        loaded["authority"] = {}
+        loaded["sealed_generation"] = {}
+        loaded["frozen_prebinding_inventory"] = {}
+        migration.write_text(yaml.safe_dump(loaded, sort_keys=False), encoding="utf-8")
+        frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
+
+        blockers = acceptance_receipt_blockers(frontmatter, note)
+
+        assert "acceptance_receipt_digest_migration_sealed_migration_authority_missing" in blockers
+        assert "acceptance_receipt_digest_migration_sealed_migration_generation_missing" in blockers
+        assert (
+            "acceptance_receipt_digest_migration_sealed_migration_frozen_inventory_missing"
+            in blockers
+        )
+
+    def test_digest_migration_self_consistent_forged_generation_fails_closed(
+        self, tmp_path: Path
+    ) -> None:
+        note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})
+        receipt = self._receipt(
+            tmp_path,
+            "task-r",
+            self.VALID_RECEIPT.replace("acceptor: operator", "acceptor: review-team:codex,glm"),
+        )
+        receipt_sha = "sha256:" + hashlib.sha256(receipt.read_bytes()).hexdigest()
+        migration = self._migration(tmp_path, receipt_sha256=receipt_sha)
+        loaded = yaml.safe_load(migration.read_text(encoding="utf-8"))
+        forged_id = "forged-generation.000000000000.111111111111"
+        loaded["sealed_generation"]["id"] = forged_id
+        loaded["entries"][0]["legacy_admission"]["sealed_generation_id"] = forged_id
+        migration.write_text(yaml.safe_dump(loaded, sort_keys=False), encoding="utf-8")
+        frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
+
+        blockers = acceptance_receipt_blockers(frontmatter, note)
+
+        assert (
+            "acceptance_receipt_digest_migration_sealed_migration_generation_id_mismatch"
+            in blockers
+        )
 
     def test_closed_note_without_active_sibling_reports_unrecognized_layout(
         self, tmp_path: Path

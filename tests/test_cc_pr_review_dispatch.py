@@ -56,7 +56,12 @@ def _loaded_inactive_systemctl_runner(
     cmd: list[str],
     **_kwargs: Any,
 ) -> subprocess.CompletedProcess:
-    return subprocess.CompletedProcess(cmd, 0, "LoadState=loaded\nActiveState=inactive\n", "")
+    return subprocess.CompletedProcess(
+        cmd,
+        0,
+        f"Id={cmd[3]}\nLoadState=loaded\nActiveState=inactive\n",
+        "",
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -180,6 +185,7 @@ def _write_migration_authority(
                 "schema": "hapax.test-sovereign-act-carrier.v1",
                 "id": proposal_id,
                 "status": "consumed_active",
+                "consumed_at": "2026-07-14T03:00:00+00:00",
                 "proposal": {"path": str(proposal), "sha256": proposal_sha},
                 "operator_act": {
                     "exact_response_utf8_no_lf": (
@@ -202,6 +208,7 @@ def _write_migration_authority(
         "proposal_sha256": proposal_sha,
         "consumed_act_carrier_sha256": carrier_sha,
         "frozen_inventory_canonical_sha256": frozen_digest,
+        "legacy_unsealed_artifact_sha256": "a" * 64,
         "authority_case": "CASE-TEST",
     }
     if update_source_anchor:
@@ -2530,7 +2537,16 @@ checklist:
                 subprocess.CompletedProcess(
                     ["systemctl"],
                     0,
-                    "LoadState=loaded\nActiveState=active\n",
+                    "LoadState=loaded\nActiveState=inactive\n",
+                    "",
+                ),
+                "pause_unit_id:hapax-pr-review-dispatch.timer:missing",
+            ),
+            (
+                subprocess.CompletedProcess(
+                    ["systemctl"],
+                    0,
+                    "Id=hapax-pr-review-dispatch.timer\nLoadState=loaded\nActiveState=active\n",
                     "",
                 ),
                 "pause_unit_active_state:hapax-pr-review-dispatch.timer:active",
@@ -2539,10 +2555,37 @@ checklist:
                 subprocess.CompletedProcess(
                     ["systemctl"],
                     1,
-                    "LoadState=not-found\nActiveState=inactive\n",
+                    "Id=hapax-pr-review-dispatch.timer\nLoadState=not-found\nActiveState=inactive\n",
                     "not found",
                 ),
                 "pause_unit_probe_failed:hapax-pr-review-dispatch.timer:rc=1",
+            ),
+            (
+                subprocess.CompletedProcess(
+                    ["systemctl"],
+                    0,
+                    "Id=hapax-pr-review-dispatch.timer\nLoadState=loaded\nActiveState=failed\n",
+                    "",
+                ),
+                "pause_unit_active_state:hapax-pr-review-dispatch.timer:failed",
+            ),
+            (
+                subprocess.CompletedProcess(
+                    ["systemctl"],
+                    0,
+                    "Id=hapax-pr-review-dispatch.timer\nLoadState=loaded\nActiveState=activating\n",
+                    "",
+                ),
+                "pause_unit_active_state:hapax-pr-review-dispatch.timer:activating",
+            ),
+            (
+                subprocess.CompletedProcess(
+                    ["systemctl"],
+                    0,
+                    "Id=hapax-pr-review-dispatch.timer\nLoadState=not-found\nActiveState=inactive\n",
+                    "",
+                ),
+                "pause_unit_load_state:hapax-pr-review-dispatch.timer:not-found",
             ),
         ),
     )
@@ -2593,6 +2636,47 @@ checklist:
         assert not dispatch.review_team_digest_migration_path(vault).exists()
         assert not (vault / "_locks").exists()
         assert not (note.parent / "task-a.review-dossier.yaml").exists()
+
+    def test_digest_migration_pause_probe_exception_blocks_before_effects(
+        self, tmp_path: Path
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        _write_task(vault, quality_floor="frontier_review_required")
+        receipt = _write_legacy_review_team_receipt(vault)
+        authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+        gh = FakeGh()
+        reviewers = RecordingReviewers()
+
+        def raising_systemctl_runner(
+            _cmd: list[str],
+            **_kwargs: Any,
+        ) -> subprocess.CompletedProcess:
+            raise subprocess.TimeoutExpired("systemctl", 10)
+
+        result = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=gh,
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:16+00:00",
+            route_blocked_families={},
+            systemctl_runner=raising_systemctl_runner,
+            **authority_kwargs,
+        )
+
+        assert result["status"] == "migration_paused"
+        assert (
+            "pause_unit_probe_error:hapax-pr-review-dispatch.timer:TimeoutExpired"
+            in (result["migration"]["blockers"])
+        )
+        assert gh.calls == []
+        assert reviewers.invocations == []
+        assert not dispatch.review_team_digest_migration_path(vault).exists()
+        assert not (vault / "_locks").exists()
 
     def test_digest_migration_direct_apply_honors_killswitch_before_effects(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2775,6 +2859,146 @@ checklist:
         assert result["pause_preconditions"]["providerless_recheck"] is True
         assert result["pause_preconditions"]["dispatch_killswitch_set"] is True
         assert result["pause_preconditions"]["unit_pause"]["validated"] is True
+        assert reviewers.invocations == []
+        assert not dispatch.review_team_digest_migration_path(vault).exists()
+        assert not (vault / "_locks").exists()
+        assert sorted(path.relative_to(vault) for path in vault.rglob("*")) == [
+            Path("active"),
+            Path("active/task-a.acceptance.yaml"),
+            Path("closed"),
+        ]
+
+    def test_empty_seal_mappings_cannot_reopen_unsealed_transition(self, tmp_path: Path) -> None:
+        class ExplodingGh(FakeGh):
+            def _rest_open_prs(self) -> list[dict[str, Any]]:
+                raise AssertionError("forged seal artifact must stop before GitHub")
+
+        vault = _make_vault(tmp_path)
+        receipt = _write_legacy_review_team_receipt(vault)
+        authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+        artifact_path = dispatch.review_team_digest_migration_path(vault)
+        dispatch.atomic_write_yaml(
+            artifact_path,
+            {
+                "schema": dispatch.REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA,
+                "authority": {},
+                "sealed_generation": {},
+                "frozen_prebinding_inventory": {},
+                "entries": [],
+                "counts": {},
+            },
+        )
+        artifact_bytes = artifact_path.read_bytes()
+        reviewers = RecordingReviewers()
+
+        result = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=ExplodingGh(),
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:46+00:00",
+            route_blocked_families={},
+            **authority_kwargs,
+        )
+
+        assert result["status"] == "migration_blocked"
+        assert "sealed_migration_authority_missing" in result["migration"]["blockers"]
+        assert "sealed_migration_generation_missing" in result["migration"]["blockers"]
+        assert artifact_path.read_bytes() == artifact_bytes
+        assert reviewers.invocations == []
+        assert not (vault / "_locks").exists()
+
+    def test_initial_partial_frozen_inventory_blocks_before_replay_or_lock(
+        self, tmp_path: Path
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        _write_task(vault, quality_floor="frontier_review_required")
+        receipt = _write_legacy_review_team_receipt(vault)
+        frozen = [
+            _migration_frozen_entry(receipt),
+            {
+                "task_id": "missing-task",
+                "receipt_basename": "missing-task.acceptance.yaml",
+                "receipt_sha256": "sha256:" + "b" * 64,
+            },
+        ]
+        authority_kwargs = _write_migration_authority(tmp_path, frozen)
+        gh = FakeGh()
+        reviewers = RecordingReviewers()
+
+        result = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=gh,
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:47+00:00",
+            route_blocked_families={},
+            **authority_kwargs,
+        )
+
+        assert result["status"] == "migration_blocked"
+        assert result["migration"]["blockers"] == [
+            "migration_frozen_tuple_missing_from_active:missing-task:missing-task.acceptance.yaml"
+        ]
+        assert gh.calls == []
+        assert reviewers.invocations == []
+        assert not dispatch.review_team_digest_migration_path(vault).exists()
+        assert not (vault / "_locks").exists()
+
+    def test_artifact_change_after_preflight_blocks_before_receipt_replay(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        _write_task(vault, quality_floor="frontier_review_required")
+        receipt = _write_legacy_review_team_receipt(vault)
+        authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+        gh = FakeGh()
+        reviewers = RecordingReviewers()
+        real_preflight = dispatch._preflight_existing_review_team_digest_migration
+        calls = 0
+
+        def racing_preflight(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            nonlocal calls
+            calls += 1
+            result = real_preflight(*args, **kwargs)
+            if calls == 2:
+                changed = dict(result)
+                changed["status"] = "unsealed_migration_present"
+                changed["artifact_sha256"] = "sha256:" + "c" * 64
+                return changed
+            return result
+
+        monkeypatch.setattr(
+            dispatch,
+            "_preflight_existing_review_team_digest_migration",
+            racing_preflight,
+        )
+
+        result = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=gh,
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:48+00:00",
+            route_blocked_families={},
+            **authority_kwargs,
+        )
+
+        assert result["status"] == "migration_blocked"
+        assert result["migration"]["blockers"] == ["migration_artifact_changed_after_preflight"]
+        assert gh.calls == []
         assert reviewers.invocations == []
         assert not dispatch.review_team_digest_migration_path(vault).exists()
 

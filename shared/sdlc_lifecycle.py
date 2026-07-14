@@ -298,6 +298,7 @@ REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION = "exact-hash-preserved"
 REVIEW_TEAM_DIGEST_MIGRATION_LEGACY_ROUTE = "legacy_exact_hash_preserved"
 REVIEW_TEAM_DIGEST_MIGRATION_SHA256_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 RAW_SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
+GIT_SHA_RE = re.compile(r"\A[0-9a-f]{40}\Z")
 REVIEW_TEAM_DIGEST_MIGRATION_SOURCE_TRUST_ANCHOR: dict[str, str] = {
     "proposal_id": "PR4485-p0-sealed-cutover-boundary-final-remediation-20260714-v4",
     "proposal_sha256": "f89439a328e420c194183a772f81b08d2dc6a8cb860d8e3bf6456fb81305ec6e",
@@ -307,9 +308,21 @@ REVIEW_TEAM_DIGEST_MIGRATION_SOURCE_TRUST_ANCHOR: dict[str, str] = {
     "frozen_inventory_canonical_sha256": (
         "df0e9f2f2db610306b7186fe669f5f240f05c1e8b1161b9f2ea1684d5760c0c2"
     ),
+    "legacy_unsealed_artifact_sha256": (
+        "a87bc1867d07193e7e5d41e024c499d59f205f585b369c00b6da51cf6835dc5c"
+    ),
     "authority_case": "CASE-SYSTEM-INTEGRITY-20260611",
 }
 REVIEW_TEAM_DIGEST_MIGRATION_RUNBOOK = "docs/runbooks/review-team-digest-migration.md"
+REVIEW_TEAM_DIGEST_MIGRATION_CLASSIFICATIONS = frozenset(
+    {
+        "rebound",
+        REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION,
+        "stale-invalid",
+        "unmatched",
+        "not-subject",
+    }
+)
 
 
 def review_team_digest_migration_source_trust_anchor() -> dict[str, str]:
@@ -422,6 +435,10 @@ def _migration_source_anchor_blockers(authority: Mapping[str, Any]) -> tuple[str
             source_anchor.get("frozen_inventory_canonical_sha256"),
             "frozen_inventory_canonical_sha256",
         ),
+        (
+            source_anchor.get("legacy_unsealed_artifact_sha256"),
+            "legacy_unsealed_artifact_sha256",
+        ),
         (source_anchor.get("authority_case"), "authority_case"),
         (authority.get("proposal_id"), "proposal_id"),
         (authority.get("proposal_sha256"), "proposal_sha256"),
@@ -429,6 +446,10 @@ def _migration_source_anchor_blockers(authority: Mapping[str, Any]) -> tuple[str
         (
             authority.get("frozen_inventory_canonical_sha256"),
             "frozen_inventory_canonical_sha256",
+        ),
+        (
+            authority.get("legacy_unsealed_artifact_sha256"),
+            "legacy_unsealed_artifact_sha256",
         ),
         (authority.get("case_id"), "authority_case"),
     )
@@ -507,6 +528,22 @@ def _migration_authority_blockers(loaded: Mapping[str, Any]) -> tuple[str, ...]:
         != expected_response
     ):
         return ("acceptance_receipt_digest_migration_authority_carrier_response_mismatch",)
+    if _frontmatter_non_null_scalar(authority.get("operator_act_response")) != expected_response:
+        return ("acceptance_receipt_digest_migration_authority_operator_response_mismatch",)
+    carrier_schema = _frontmatter_non_null_scalar(carrier.get("schema"))
+    if not carrier_schema:
+        return ("acceptance_receipt_digest_migration_authority_carrier_schema_missing",)
+    if _frontmatter_non_null_scalar(authority.get("consumed_act_carrier_schema")) != carrier_schema:
+        return ("acceptance_receipt_digest_migration_authority_carrier_schema_mismatch",)
+    if _frontmatter_non_null_scalar(authority.get("consumed_act_carrier_status")) != (
+        _frontmatter_non_null_scalar(carrier.get("status"))
+    ):
+        return ("acceptance_receipt_digest_migration_authority_carrier_status_mismatch",)
+    consumed_at = _frontmatter_non_null_scalar(carrier.get("consumed_at"))
+    if not consumed_at:
+        return ("acceptance_receipt_digest_migration_authority_carrier_consumed_at_missing",)
+    if _frontmatter_non_null_scalar(authority.get("consumed_at")) != consumed_at:
+        return ("acceptance_receipt_digest_migration_authority_carrier_consumed_at_mismatch",)
     for key in (
         "matched_id",
         "matched_proposal_sha256",
@@ -546,7 +583,196 @@ def _migration_authority_blockers(loaded: Mapping[str, Any]) -> tuple[str, ...]:
         return ("acceptance_receipt_digest_migration_authority_artifact_inventory_count_invalid",)
     if artifact_count != len(frozen_entries):
         return ("acceptance_receipt_digest_migration_authority_artifact_inventory_count_mismatch",)
+    try:
+        authority_count = int(authority.get("frozen_inventory_count"))
+    except (TypeError, ValueError):
+        return ("acceptance_receipt_digest_migration_authority_frozen_count_invalid",)
+    if authority_count != len(frozen_entries):
+        return ("acceptance_receipt_digest_migration_authority_frozen_count_mismatch",)
     return ()
+
+
+def _expected_sealed_generation_id(authority: Mapping[str, Any]) -> str:
+    proposal_id = _frontmatter_non_null_scalar(authority.get("proposal_id"))
+    proposal_sha = _frontmatter_non_null_scalar(authority.get("proposal_sha256"))
+    carrier_sha = _frontmatter_non_null_scalar(authority.get("consumed_act_carrier_sha256"))
+    if not proposal_id or RAW_SHA256_RE.fullmatch(proposal_sha) is None:
+        return ""
+    if RAW_SHA256_RE.fullmatch(carrier_sha) is None:
+        return ""
+    return f"{proposal_id}.{proposal_sha[:12]}.{carrier_sha[:12]}"
+
+
+def _migration_tuple_from_mapping(entry: Mapping[str, Any]) -> tuple[str, str, str]:
+    return (
+        _frontmatter_non_null_scalar(entry.get("task_id")),
+        _frontmatter_non_null_scalar(entry.get("receipt_basename")),
+        _frontmatter_non_null_scalar(entry.get("receipt_sha256")),
+    )
+
+
+def _migration_frozen_entry_tuples(entries: list[Any]) -> set[tuple[str, str, str]]:
+    tuples: set[tuple[str, str, str]] = set()
+    for entry in entries:
+        if isinstance(entry, Mapping):
+            tuples.add(_migration_tuple_from_mapping(entry))
+    return tuples
+
+
+def _migration_counts(entries: list[Mapping[str, Any]]) -> dict[str, int]:
+    counts = {classification: 0 for classification in REVIEW_TEAM_DIGEST_MIGRATION_CLASSIFICATIONS}
+    for entry in entries:
+        classification = _frontmatter_non_null_scalar(entry.get("classification"))
+        if classification in counts:
+            counts[classification] += 1
+    return counts
+
+
+def review_team_digest_migration_artifact_blockers(
+    loaded: Mapping[str, Any],
+    *,
+    expected_authority: Mapping[str, Any] | None = None,
+    expected_frozen_inventory_entries: tuple[Mapping[str, Any], ...] | None = None,
+) -> tuple[str, ...]:
+    """Validate the sealed review-team digest migration artifact.
+
+    This is the canonical sealed-artifact contract for both lifecycle admission
+    and dispatcher preflight. It validates identity, authority provenance,
+    frozen tuple completeness, per-entry legacy provenance, and count coherence.
+    """
+
+    blockers: list[str] = []
+    if loaded.get("schema") != REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA:
+        blockers.append(f"sealed_migration_schema_mismatch:{loaded.get('schema') or 'missing'}")
+    authority = loaded.get("authority")
+    if not isinstance(authority, Mapping) or not authority:
+        blockers.append("sealed_migration_authority_missing")
+    else:
+        blockers.extend(_migration_authority_blockers(loaded))
+        if expected_authority is not None:
+            for key, expected in expected_authority.items():
+                if authority.get(key) != expected:
+                    blockers.append(f"sealed_migration_authority_{key}_mismatch")
+
+    sealed_generation = loaded.get("sealed_generation")
+    if not isinstance(sealed_generation, Mapping) or not sealed_generation:
+        blockers.append("sealed_migration_generation_missing")
+    else:
+        expected_generation_id = (
+            _expected_sealed_generation_id(authority) if isinstance(authority, Mapping) else ""
+        )
+        if not expected_generation_id:
+            blockers.append("sealed_migration_generation_expected_id_unavailable")
+        elif _frontmatter_non_null_scalar(sealed_generation.get("id")) != expected_generation_id:
+            blockers.append("sealed_migration_generation_id_mismatch")
+        if not _frontmatter_non_null_scalar(sealed_generation.get("sealed_at")):
+            blockers.append("sealed_migration_generation_sealed_at_missing")
+        source_head = _frontmatter_non_null_scalar(sealed_generation.get("source_head_sha"))
+        if GIT_SHA_RE.fullmatch(source_head) is None:
+            blockers.append("sealed_migration_generation_source_head_invalid")
+
+    frozen = loaded.get("frozen_prebinding_inventory")
+    frozen_entries: list[Any] = []
+    frozen_tuples: set[tuple[str, str, str]] = set()
+    if not isinstance(frozen, Mapping) or not frozen:
+        blockers.append("sealed_migration_frozen_inventory_missing")
+    else:
+        raw_entries = frozen.get("entries")
+        if not isinstance(raw_entries, list):
+            blockers.append("sealed_migration_frozen_inventory_entries_invalid")
+        else:
+            frozen_entries = raw_entries
+            frozen_tuples = _migration_frozen_entry_tuples(raw_entries)
+            if len(frozen_tuples) != len(raw_entries):
+                blockers.append("sealed_migration_frozen_inventory_duplicate_tuple")
+            expected_digest = (
+                authority.get("frozen_inventory_canonical_sha256")
+                if isinstance(authority, Mapping)
+                else None
+            )
+            if _canonical_frozen_inventory_sha256(raw_entries) != expected_digest:
+                blockers.append("sealed_migration_frozen_inventory_sha256_mismatch")
+        try:
+            frozen_count = int(frozen.get("count"))
+        except (TypeError, ValueError):
+            blockers.append("sealed_migration_frozen_inventory_count_invalid")
+        else:
+            if frozen_count != len(frozen_entries):
+                blockers.append("sealed_migration_frozen_inventory_count_mismatch")
+        if expected_frozen_inventory_entries is not None:
+            expected_tuples = {
+                _migration_tuple_from_mapping(entry) for entry in expected_frozen_inventory_entries
+            }
+            if frozen_tuples != expected_tuples:
+                blockers.append("sealed_migration_frozen_inventory_expected_tuple_mismatch")
+
+    entries_raw = loaded.get("entries")
+    entries: list[Mapping[str, Any]] = []
+    represented_frozen_tuples: set[tuple[str, str, str]] = set()
+    seen_identities: set[tuple[str, str]] = set()
+    if not isinstance(entries_raw, list):
+        blockers.append("sealed_migration_entries_invalid")
+    else:
+        for index, entry in enumerate(entries_raw):
+            if not isinstance(entry, Mapping):
+                blockers.append(f"sealed_migration_entry_invalid:{index}")
+                continue
+            entries.append(entry)
+            task_id, basename, receipt_sha = _migration_tuple_from_mapping(entry)
+            if not task_id:
+                blockers.append(f"sealed_migration_entry_task_id_missing:{index}")
+            if not _valid_artifact_basename(basename):
+                blockers.append(f"sealed_migration_entry_path_invalid:{task_id or index}")
+            relpath = _frontmatter_non_null_scalar(entry.get("receipt_relpath"))
+            if relpath and (Path(relpath).name != relpath or relpath != basename):
+                blockers.append(f"sealed_migration_entry_relpath_invalid:{task_id or index}")
+            if REVIEW_TEAM_DIGEST_MIGRATION_SHA256_RE.fullmatch(receipt_sha) is None:
+                blockers.append(f"sealed_migration_entry_receipt_sha_invalid:{task_id or index}")
+            identity = (task_id, basename)
+            if identity in seen_identities:
+                blockers.append(f"sealed_migration_duplicate_identity:{task_id}:{basename}")
+            seen_identities.add(identity)
+            classification = _frontmatter_non_null_scalar(entry.get("classification"))
+            if classification not in REVIEW_TEAM_DIGEST_MIGRATION_CLASSIFICATIONS:
+                blockers.append(
+                    "sealed_migration_entry_classification_invalid:"
+                    f"{task_id or index}:{classification or 'missing'}"
+                )
+            entry_tuple = (task_id, basename, receipt_sha)
+            if entry_tuple in frozen_tuples:
+                represented_frozen_tuples.add(entry_tuple)
+            if classification == REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION:
+                if entry_tuple not in frozen_tuples:
+                    blockers.append(f"sealed_migration_preservation_not_frozen:{task_id}")
+                blockers.extend(
+                    f"{blocker}:{task_id}"
+                    for blocker in _legacy_admission_blockers(
+                        loaded,
+                        entry,
+                        expected_sha=receipt_sha,
+                    )
+                )
+
+    missing_frozen = sorted(frozen_tuples - represented_frozen_tuples)
+    blockers.extend(
+        f"sealed_migration_frozen_tuple_missing:{task_id}:{basename}"
+        for task_id, basename, _receipt_sha in missing_frozen
+    )
+
+    counts = loaded.get("counts")
+    if not isinstance(counts, Mapping):
+        blockers.append("sealed_migration_counts_missing")
+    else:
+        actual_counts = _migration_counts(entries)
+        for classification, actual in sorted(actual_counts.items()):
+            try:
+                declared = int(counts.get(classification))
+            except (TypeError, ValueError):
+                blockers.append(f"sealed_migration_count_invalid:{classification}")
+                continue
+            if declared != actual:
+                blockers.append(f"sealed_migration_count_mismatch:{classification}")
+    return tuple(dict.fromkeys(blockers))
 
 
 def _legacy_admission_blockers(
@@ -577,6 +803,24 @@ def _legacy_admission_blockers(
         admission.get("sealed_generation_id")
     ) != _frontmatter_non_null_scalar(sealed.get("id")):
         return ("acceptance_receipt_digest_migration_legacy_admission_sealed_generation_mismatch",)
+    authority = loaded.get("authority")
+    if not isinstance(authority, Mapping):
+        return ("acceptance_receipt_digest_migration_legacy_admission_authority_missing",)
+    expected_generation_id = _expected_sealed_generation_id(authority)
+    if (
+        not expected_generation_id
+        or _frontmatter_non_null_scalar(sealed.get("id")) != expected_generation_id
+    ):
+        return (
+            "acceptance_receipt_digest_migration_legacy_admission_sealed_generation_id_mismatch",
+        )
+    source_head = _frontmatter_non_null_scalar(sealed.get("source_head_sha"))
+    if GIT_SHA_RE.fullmatch(source_head) is None:
+        return ("acceptance_receipt_digest_migration_legacy_admission_source_head_invalid",)
+    if _frontmatter_non_null_scalar(admission.get("sealed_generation_source_head_sha")) != (
+        source_head
+    ):
+        return ("acceptance_receipt_digest_migration_legacy_admission_source_head_mismatch",)
     source_anchor = admission.get("source_trust_anchor")
     if not isinstance(source_anchor, Mapping):
         return ("acceptance_receipt_digest_migration_legacy_admission_source_anchor_missing",)
@@ -632,6 +876,34 @@ def _review_team_digest_migration_blockers(
         return (
             "acceptance_receipt_digest_migration_malformed:schema:"
             f"{loaded.get('schema') or 'missing'}",
+        )
+    artifact_blockers = review_team_digest_migration_artifact_blockers(loaded)
+    authority_artifact_blockers = tuple(
+        blocker
+        for blocker in artifact_blockers
+        if blocker.startswith("acceptance_receipt_digest_migration_")
+        and "legacy_admission" not in blocker
+    )
+    if authority_artifact_blockers:
+        return authority_artifact_blockers
+    terminal_artifact_blockers = tuple(
+        blocker
+        for blocker in artifact_blockers
+        if blocker.startswith(
+            (
+                "sealed_migration_authority",
+                "sealed_migration_generation",
+                "sealed_migration_frozen_inventory",
+                "sealed_migration_frozen_tuple",
+                "sealed_migration_counts",
+                "sealed_migration_count_",
+            )
+        )
+    )
+    if terminal_artifact_blockers:
+        return tuple(
+            f"acceptance_receipt_digest_migration_{blocker}"
+            for blocker in terminal_artifact_blockers
         )
     authority_blockers = _migration_authority_blockers(loaded)
     if authority_blockers:
