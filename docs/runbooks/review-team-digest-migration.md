@@ -8,7 +8,9 @@ acceptance migration guarded by
 ## Preconditions
 
 - Pause automatic review and autoqueue effects before any write:
-  `systemctl --user stop hapax-pr-review-dispatch.timer cc-pr-autoqueue.timer`
+  `systemctl --user stop hapax-pr-review-dispatch.timer hapax-pr-review-dispatch.service hapax-cc-pr-autoqueue.timer hapax-cc-pr-autoqueue.service`
+- Prove the exact four deployed units are loaded and inactive:
+  `systemctl --user show hapax-pr-review-dispatch.timer hapax-pr-review-dispatch.service hapax-cc-pr-autoqueue.timer hapax-cc-pr-autoqueue.service --property=LoadState --property=ActiveState --no-pager`
 - Set the dispatcher killswitch while investigating or holding:
   `export HAPAX_REVIEW_TEAM_DISPATCH_OFF=1`
 - Preserve any existing `_locks/review-team/*.lock` and
@@ -29,13 +31,30 @@ uv run python scripts/cc-pr-review-dispatch.py --all --replay-only --migration-r
   --migration-consumed-act-carrier-sha256 <64-hex>
 ```
 
-Require `status: migration_recheck_ready`. For an existing sealed artifact,
-require `migration.status: migration_unchanged` and identical
+Require `status: migration_recheck_ready`, `pause_preconditions.unit_pause.validated:
+true`, and a populated `migration.acceptance_admission_trace`. For an existing
+sealed artifact, require `migration.status: migration_unchanged` and identical
 `before_artifact_sha256` / `after_artifact_sha256`.
 
 ## Apply
 
-Only after the dry-run is clean and timers remain paused:
+Only after the dry-run is clean and all four units still report
+`LoadState=loaded` and `ActiveState=inactive`, capture current artifact bytes
+and hash if the artifact exists:
+
+```bash
+cp ~/Documents/Personal/20-projects/hapax-cc-tasks/active/_review-team-digest-migration.yaml \
+  /tmp/review-team-digest-migration.pre-apply.yaml
+sha256sum /tmp/review-team-digest-migration.pre-apply.yaml
+```
+
+The foreground apply must be an explicit transition out of HOLD:
+
+```bash
+unset HAPAX_REVIEW_TEAM_DISPATCH_OFF
+```
+
+Then run:
 
 ```bash
 uv run python scripts/cc-pr-review-dispatch.py --all --apply --replay-only \
@@ -47,20 +66,41 @@ uv run python scripts/cc-pr-review-dispatch.py --all --apply --replay-only \
 
 A valid pre-existing sealed artifact is immutable. Reruns may rebind current
 open receipts from current dossiers, but must never rewrite, shrink, expand, or
-replace `_review-team-digest-migration.yaml`.
+replace `_review-team-digest-migration.yaml`. After apply, rerun the providerless
+recheck with the killswitch set again and compare before/after hashes:
+
+```bash
+export HAPAX_REVIEW_TEAM_DISPATCH_OFF=1
+sha256sum ~/Documents/Personal/20-projects/hapax-cc-tasks/active/_review-team-digest-migration.yaml
+```
 
 ## Recovery
 
 There is no manual lifecycle-admission bypass. Missing or tampered migration
 authority is recovered only by restoring the exact source-pinned proposal,
 carrier, and sealed artifact bytes, or by fresh authoritative re-review.
+Post-merge closure bookkeeping does not validate, repair, or bypass migration
+authority and must not be cited as migration admission.
 
 Malformed review claims remain HOLD until holder identity/liveness evidence is
-preserved. Use the no-provider probe before retrying unavailable lock storage:
+preserved. Only stale same-host claims with exact dead-or-reused PID/proc-start
+proof are archive-releasable. Unavailable storage must name the exact lock
+probe failure. Use the no-provider probe before retrying unavailable lock
+storage:
 
 ```bash
 uv run python scripts/cc-pr-review-dispatch.py --pr <pr> --probe-lock
 ```
 
-Rollback is to restore the saved artifact bytes and keep timers/killswitch in
-HOLD until lifecycle validation and the providerless recheck are clean.
+Rollback is to restore the saved artifact bytes and keep all four units stopped
+with the killswitch in HOLD:
+
+```bash
+export HAPAX_REVIEW_TEAM_DISPATCH_OFF=1
+systemctl --user stop hapax-pr-review-dispatch.timer hapax-pr-review-dispatch.service hapax-cc-pr-autoqueue.timer hapax-cc-pr-autoqueue.service
+cp /tmp/review-team-digest-migration.pre-apply.yaml \
+  ~/Documents/Personal/20-projects/hapax-cc-tasks/active/_review-team-digest-migration.yaml
+```
+
+Do not restart timers until lifecycle validation and the providerless recheck
+are clean.

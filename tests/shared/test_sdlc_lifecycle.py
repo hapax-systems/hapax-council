@@ -14,8 +14,10 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+from collections.abc import Iterator
 from pathlib import Path
 
+import pytest
 import yaml
 
 from shared import sdlc_lifecycle
@@ -42,6 +44,14 @@ from shared.sdlc_lifecycle import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture(autouse=True)
+def _restore_review_team_digest_migration_source_anchor() -> Iterator[None]:
+    source_anchor = dict(sdlc_lifecycle.REVIEW_TEAM_DIGEST_MIGRATION_SOURCE_TRUST_ANCHOR)
+    yield
+    sdlc_lifecycle.REVIEW_TEAM_DIGEST_MIGRATION_SOURCE_TRUST_ANCHOR.clear()
+    sdlc_lifecycle.REVIEW_TEAM_DIGEST_MIGRATION_SOURCE_TRUST_ANCHOR.update(source_anchor)
 
 
 class TestPrActions:

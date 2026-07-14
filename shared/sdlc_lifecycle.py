@@ -374,11 +374,6 @@ def _canonical_active_dir_for_note(note_path: Path) -> Path | None:
     return note_dir
 
 
-def _review_team_digest_migration_path(note_path: Path) -> Path:
-    active_dir = _canonical_active_dir_for_note(note_path)
-    return (active_dir or note_path.parent) / REVIEW_TEAM_DIGEST_MIGRATION_FILENAME
-
-
 def _valid_artifact_basename(value: str) -> bool:
     return bool(value) and Path(value).name == value and value not in {".", ".."}
 

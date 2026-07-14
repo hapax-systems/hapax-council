@@ -110,6 +110,7 @@ from shared.sdlc_lifecycle import (  # noqa: E402
     REVIEW_TEAM_DIGEST_MIGRATION_LEGACY_ROUTE,
     REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION,
     REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA,
+    acceptance_receipt_admission_route,
     acceptance_receipt_blockers,
     acceptance_receipt_path,
     requires_acceptance_receipt,
@@ -129,6 +130,13 @@ MIGRATION_LOCK_SCHEMA = "hapax.review_team_digest_migration.lock.v1"
 REVIEW_TEAM_DIGEST_MIGRATION_LOCK_STALE_AFTER_SECONDS = REVIEW_EXECUTION_LOCK_STALE_AFTER_SECONDS
 KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_DISPATCH_OFF"
 TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+REVIEW_TEAM_MIGRATION_PAUSE_UNITS = (
+    "hapax-pr-review-dispatch.timer",
+    "hapax-pr-review-dispatch.service",
+    "hapax-cc-pr-autoqueue.timer",
+    "hapax-cc-pr-autoqueue.service",
+)
+SYSTEMCTL_RUNNER = subprocess.run
 TASK_HASH_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 RAW_SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 MAX_DIFF_CHARS = 80_000
@@ -2022,6 +2030,105 @@ def migration_authority_from_files(
     return authority, tuple(normalized_entries), ()
 
 
+def _parse_systemctl_show(stdout: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for raw_line in stdout.splitlines():
+        line = raw_line.strip()
+        if not line or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        parsed[key] = value
+    return parsed
+
+
+def _review_team_digest_migration_pause_preflight(
+    *,
+    runner: Any | None = None,
+) -> dict[str, Any]:
+    runner = runner or SYSTEMCTL_RUNNER
+    blockers: list[str] = []
+    units: dict[str, dict[str, Any]] = {}
+    for unit in REVIEW_TEAM_MIGRATION_PAUSE_UNITS:
+        cmd = [
+            "systemctl",
+            "--user",
+            "show",
+            unit,
+            "--property=LoadState",
+            "--property=ActiveState",
+            "--no-pager",
+        ]
+        try:
+            completed = runner(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            units[unit] = {
+                "command": cmd,
+                "probe_error": type(exc).__name__,
+            }
+            blockers.append(f"pause_unit_probe_error:{unit}:{type(exc).__name__}")
+            continue
+        parsed = _parse_systemctl_show(str(getattr(completed, "stdout", "") or ""))
+        load_state = parsed.get("LoadState")
+        active_state = parsed.get("ActiveState")
+        unit_result: dict[str, Any] = {
+            "command": cmd,
+            "returncode": int(getattr(completed, "returncode", 1)),
+            "load_state": load_state or "missing",
+            "active_state": active_state or "missing",
+        }
+        stderr = str(getattr(completed, "stderr", "") or "").strip()
+        if stderr:
+            unit_result["stderr_excerpt"] = truncate_context(stderr, limit=500)
+        units[unit] = unit_result
+        if unit_result["returncode"] != 0:
+            blockers.append(f"pause_unit_probe_failed:{unit}:rc={unit_result['returncode']}")
+            continue
+        if load_state != "loaded":
+            blockers.append(f"pause_unit_load_state:{unit}:{load_state or 'missing'}")
+        if active_state != "inactive":
+            blockers.append(f"pause_unit_active_state:{unit}:{active_state or 'missing'}")
+    return {
+        "validated": not blockers,
+        "required_units": list(REVIEW_TEAM_MIGRATION_PAUSE_UNITS),
+        "units": units,
+        "blockers": blockers,
+    }
+
+
+def _migration_blocked_result(
+    *,
+    status: str,
+    repo: str,
+    vault_root: Path,
+    blockers: list[str],
+    pause_preconditions: dict[str, Any],
+    migration_extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    migration: dict[str, Any] = {
+        "status": status,
+        "artifact_path": str(review_team_digest_migration_path(vault_root)),
+        "artifact_written": False,
+        "blockers": blockers,
+        "entries": [],
+    }
+    if migration_extra:
+        migration.update(migration_extra)
+    return {
+        "status": status,
+        "repo": repo,
+        "open_pr_results": [],
+        "migration": migration,
+        "side_effects": {},
+        "pause_preconditions": pause_preconditions,
+    }
+
+
 def review_team_digest_migration_path(vault_root: Path) -> Path:
     return vault_root / "active" / REVIEW_TEAM_DIGEST_MIGRATION_FILENAME
 
@@ -2497,6 +2604,118 @@ def _sealed_migration_current_receipt_drift(
                 }
             )
     return drift
+
+
+def _preflight_existing_review_team_digest_migration(
+    vault_root: Path,
+    *,
+    authority: dict[str, Any],
+    frozen_inventory_entries: tuple[dict[str, Any], ...],
+) -> dict[str, Any]:
+    path = review_team_digest_migration_path(vault_root)
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return {
+            "status": "migration_artifact_absent",
+            "artifact_path": str(path),
+            "artifact_sha256": None,
+            "blockers": [],
+        }
+    except OSError as exc:
+        return {
+            "status": "migration_blocked",
+            "artifact_path": str(path),
+            "artifact_sha256": None,
+            "blockers": [f"existing_migration_unreadable:{type(exc).__name__}"],
+        }
+    artifact_sha256 = "sha256:" + hashlib.sha256(raw).hexdigest()
+    try:
+        loaded = yaml.safe_load(raw.decode("utf-8"))
+    except (UnicodeDecodeError, yaml.YAMLError) as exc:
+        return {
+            "status": "migration_blocked",
+            "artifact_path": str(path),
+            "artifact_sha256": artifact_sha256,
+            "blockers": [f"existing_migration_unreadable:{type(exc).__name__}"],
+        }
+    if not isinstance(loaded, dict):
+        return {
+            "status": "migration_blocked",
+            "artifact_path": str(path),
+            "artifact_sha256": artifact_sha256,
+            "blockers": [f"existing_migration_not_mapping:{type(loaded).__name__}"],
+        }
+    if loaded.get("schema") != REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA:
+        return {
+            "status": "migration_blocked",
+            "artifact_path": str(path),
+            "artifact_sha256": artifact_sha256,
+            "blockers": ["existing_migration_schema_mismatch"],
+        }
+    if loaded.get("authority") or loaded.get("sealed_generation"):
+        blockers = _sealed_migration_payload_blockers(
+            loaded,
+            authority=authority,
+            frozen_inventory_entries=frozen_inventory_entries,
+        )
+        if blockers:
+            return {
+                "status": "migration_blocked",
+                "artifact_path": str(path),
+                "artifact_sha256": artifact_sha256,
+                "blockers": list(blockers),
+            }
+        return {
+            "status": "sealed_migration_valid",
+            "artifact_path": str(path),
+            "artifact_sha256": artifact_sha256,
+            "blockers": [],
+            "sealed_generation": loaded.get("sealed_generation"),
+        }
+    return {
+        "status": "unsealed_migration_present",
+        "artifact_path": str(path),
+        "artifact_sha256": artifact_sha256,
+        "blockers": [],
+    }
+
+
+def collect_acceptance_receipt_admission_trace(vault_root: Path) -> list[dict[str, Any]]:
+    active_dir = vault_root / "active"
+    trace: list[dict[str, Any]] = []
+    if not active_dir.is_dir():
+        return trace
+    for note_path in sorted(active_dir.glob("*.md")):
+        frontmatter = review_team._note_frontmatter(note_path)
+        if frontmatter is None:
+            trace.append(
+                {
+                    "task_note_basename": note_path.name,
+                    "task_id": note_path.stem,
+                    "accepted": False,
+                    "route": "blocked",
+                    "blockers": ["task_note_frontmatter_malformed"],
+                }
+            )
+            continue
+        task_id = str(frontmatter.get("task_id") or note_path.stem)
+        admission = acceptance_receipt_admission_route(frontmatter, note_path)
+        trace.append(
+            {
+                "task_note_basename": note_path.name,
+                "task_id": task_id,
+                "accepted": bool(admission.get("accepted")),
+                "route": str(admission.get("route") or "blocked"),
+                "blockers": list(admission.get("blockers") or []),
+                **{
+                    key: value
+                    for key, value in admission.items()
+                    if key not in {"accepted", "route", "blockers"}
+                },
+            }
+        )
+    return trace
 
 
 def publish_review_team_digest_migration(
@@ -5195,15 +5414,42 @@ def replay_all_open_prs_with_digest_migration(
     migration_consumed_act_carrier_sha256: str | None = None,
     migration_source_trust_anchor: dict[str, Any] | None = None,
     migration_recheck: bool = False,
+    systemctl_runner: Any = None,
 ) -> dict[str, Any]:
     now_iso = now_iso or datetime.now(UTC).isoformat(timespec="seconds")
+    killswitch_set = os.environ.get(KILLSWITCH_ENV, "").strip().lower() in TRUTHY_ENV_VALUES
     pause_preconditions = {
         "dispatch_killswitch_env": KILLSWITCH_ENV,
-        "dispatch_killswitch_set": os.environ.get(KILLSWITCH_ENV, "").strip().lower()
-        in TRUTHY_ENV_VALUES,
+        "dispatch_killswitch_set": killswitch_set,
         "writes_requested": bool(apply),
         "providerless_recheck": bool(migration_recheck),
     }
+    if migration_recheck and apply:
+        return _migration_blocked_result(
+            status="migration_blocked",
+            repo=repo,
+            vault_root=vault_root,
+            blockers=["migration_recheck_apply_forbidden"],
+            pause_preconditions=pause_preconditions,
+        )
+    if killswitch_set and not migration_recheck:
+        return _migration_blocked_result(
+            status="migration_paused",
+            repo=repo,
+            vault_root=vault_root,
+            blockers=["dispatch_killswitch_set"],
+            pause_preconditions=pause_preconditions,
+        )
+    unit_pause = _review_team_digest_migration_pause_preflight(runner=systemctl_runner)
+    pause_preconditions["unit_pause"] = unit_pause
+    if not unit_pause["validated"]:
+        return _migration_blocked_result(
+            status="migration_paused",
+            repo=repo,
+            vault_root=vault_root,
+            blockers=list(unit_pause["blockers"]),
+            pause_preconditions=pause_preconditions,
+        )
     authority, frozen_entries, authority_blockers = migration_authority_from_files(
         proposal_path=migration_authority_proposal_path,
         proposal_sha256=migration_authority_proposal_sha256,
@@ -5226,6 +5472,24 @@ def replay_all_open_prs_with_digest_migration(
             "side_effects": {},
             "pause_preconditions": pause_preconditions,
         }
+    artifact_preflight = _preflight_existing_review_team_digest_migration(
+        vault_root,
+        authority=authority,
+        frozen_inventory_entries=frozen_entries,
+    )
+    if artifact_preflight["blockers"]:
+        return _migration_blocked_result(
+            status="migration_blocked",
+            repo=repo,
+            vault_root=vault_root,
+            blockers=list(artifact_preflight["blockers"]),
+            pause_preconditions=pause_preconditions,
+            migration_extra={
+                "artifact_preflight": artifact_preflight,
+                "before_artifact_sha256": artifact_preflight.get("artifact_sha256"),
+                "after_artifact_sha256": artifact_preflight.get("artifact_sha256"),
+            },
+        )
     with review_team_digest_migration_lock(vault_root) as migration_lock:
         if not migration_lock.acquired:
             return {
@@ -5273,9 +5537,17 @@ def replay_all_open_prs_with_digest_migration(
             now_iso=now_iso,
             source_head_sha=_current_source_head(repo_root),
         )
-    status = "replay_migration_complete" if apply else "replay_migration_ready"
-    if migration_recheck:
+    migration["artifact_preflight"] = artifact_preflight
+    if migration.get("status") == "migration_blocked":
+        status = "migration_blocked"
+    elif migration_recheck:
         status = "migration_recheck_complete" if apply else "migration_recheck_ready"
+    else:
+        status = "replay_migration_complete" if apply else "replay_migration_ready"
+    if status != "migration_blocked":
+        migration["acceptance_admission_trace"] = collect_acceptance_receipt_admission_trace(
+            vault_root
+        )
     return {
         "status": status,
         "repo": repo,
