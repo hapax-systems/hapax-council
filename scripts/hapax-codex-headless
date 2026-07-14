@@ -1085,8 +1085,8 @@ fi
 
 SDLC_PREAMBLE="SDLC DISCIPLINE (MANDATORY):
 1. Work only on the task named in this dispatch.
-2. Run cc-claim for that exact task before mutation.
-3. If cc-claim rejects, stop and write a relay receipt.
+2. Before mutation, verify this lane owns the task claim. If the task is still offered, run $WORKDIR/scripts/cc-claim $CODEX_TASK. If the launcher already claimed it, confirm $SESSION_CLAIM_FILE or $CLAIM_FILE contains $CODEX_TASK and the task note is assigned to this lane.
+3. If claim ownership is absent, cc-claim rejects for another reason, or the task is assigned to another lane, stop and write a relay receipt.
 4. Use only the AuthorityCase and parent spec named in this dispatch.
 5. Do not create, select, or claim other work from the task pool.
 6. When the task is complete or blocked, report status and idle.
