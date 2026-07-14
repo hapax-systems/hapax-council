@@ -3151,6 +3151,10 @@ def test_governed_codex_dispatch_reactivates_clean_retired_relay(tmp_path: Path)
         f"1234567890 {task_id}\n",
         encoding="utf-8",
     )
+    (claim_cache / f"session-role-{TEST_CODEX_SESSION_ID}").write_text(
+        "cx-fugu\n",
+        encoding="utf-8",
+    )
     relay = home / ".cache" / "hapax" / "relay"
     relay.mkdir(parents=True)
     (home / ".cache" / "hapax" / "stage0-durable-sink").mkdir(parents=True)

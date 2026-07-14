@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -37,6 +38,7 @@ _AMBIENT_DISPATCH_ENV = (
     "CODEX_SESSION",
     "CODEX_THREAD_ID",
     "HAPAX_SESSION_ID",
+    "HAPAX_CLAIM_LEASE_TTL_SECS",
 )
 
 
@@ -169,6 +171,7 @@ def _write_claim_epoch(
         encoding="utf-8",
     )
     if sid:
+        (cache / f"session-role-{sid}").write_text(f"{role}\n", encoding="utf-8")
         (cache / f"cc-active-task-{role}-{sid}").write_text(
             f"{task_id}\n",
             encoding="utf-8",
@@ -855,6 +858,7 @@ def test_codex_headless_offered_prompt_keeps_governed_claim_path(tmp_path: Path)
     bin_dir = tmp_path / "bin"
     args_file = tmp_path / "codex-args.txt"
     claim_log = tmp_path / "claim.log"
+    sid_log = tmp_path / "claim-session-id.log"
     _write_executable(
         bin_dir / "codex",
         f"""printf '%s\\n' "$*" > {args_file}
@@ -864,6 +868,7 @@ exit 0
     _write_executable(
         workdir / "scripts" / "cc-claim",
         f"""printf '%s\\n' "$*" > {claim_log}
+    printf '%s\\n' "$HAPAX_SESSION_ID" > {sid_log}
     mkdir -p "$HOME/.cache/hapax"
     printf '%s\\n' "$1" > "$HOME/.cache/hapax/cc-active-task-cx-amber"
     printf '1234567890 %s\\n' "$1" > "$HOME/.cache/hapax/cc-claim-epoch-cx-amber"
@@ -893,6 +898,12 @@ exit 0
 
     assert result.returncode == 0, result.stderr
     assert claim_log.read_text(encoding="utf-8").strip() == "task-x"
+    claim_sid = sid_log.read_text(encoding="utf-8").strip()
+    assert claim_sid != TEST_SESSION_ID
+    assert re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        claim_sid,
+    )
     launched = args_file.read_text(encoding="utf-8")
     assert "launcher already acquired or verified this task before starting Codex" in launched
     assert f"worktree-local claim path {workdir}/scripts/cc-claim for offered tasks" in launched
@@ -1079,7 +1090,7 @@ exit 0
     assert not args_file.exists()
 
 
-def test_codex_headless_no_claim_with_different_session_claim_fails_before_codex(
+def test_codex_headless_no_claim_derives_different_live_session_before_codex(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -1114,9 +1125,8 @@ exit 0
         timeout=10,
     )
 
-    assert result.returncode == 78
-    assert "without an exact active-task marker and matching cc-claim epoch" in result.stderr
-    assert not args_file.exists()
+    assert result.returncode == 0, result.stderr
+    assert args_file.exists()
 
 
 def test_codex_headless_no_claim_with_incomplete_session_vector_refuses_legacy_fallback(
@@ -1207,6 +1217,212 @@ exit 0
     assert not args_file.exists()
 
 
+@pytest.mark.parametrize("epoch", ["0", str(int(time.time()) + 3600)])
+def test_codex_headless_no_claim_requires_positive_nonfuture_epoch(
+    tmp_path: Path,
+    epoch: str,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    _write_claim_epoch(cache, "cx-amber", "task-x", epoch=epoch)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    args_file = tmp_path / "codex-args.txt"
+    _write_executable(
+        bin_dir / "codex",
+        f"""printf '%s\\n' "$*" > {args_file}
+exit 0
+""",
+    )
+
+    env = _headless_env()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 78
+    assert "without an exact active-task marker and matching cc-claim epoch" in result.stderr
+    assert not args_file.exists()
+
+
+def test_codex_headless_no_claim_rejects_future_marker_mtime(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    _write_claim_epoch(cache, "cx-amber", "task-x")
+    future = time.time() + 3600
+    os.utime(cache / f"cc-active-task-cx-amber-{TEST_SESSION_ID}", (future, future))
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    args_file = tmp_path / "codex-args.txt"
+    _write_executable(
+        bin_dir / "codex",
+        f"""printf '%s\\n' "$*" > {args_file}
+exit 0
+""",
+    )
+
+    env = _headless_env()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 78
+    assert "without an exact active-task marker and matching cc-claim epoch" in result.stderr
+    assert not args_file.exists()
+
+
+def test_codex_headless_no_claim_requires_matching_session_role_marker(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    _write_claim_epoch(cache, "cx-amber", "task-x")
+    (cache / f"session-role-{TEST_SESSION_ID}").write_text("cx-other\n", encoding="utf-8")
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    args_file = tmp_path / "codex-args.txt"
+    _write_executable(
+        bin_dir / "codex",
+        f"""printf '%s\\n' "$*" > {args_file}
+exit 0
+""",
+    )
+
+    env = _headless_env()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 78
+    assert "without an exact active-task marker and matching cc-claim epoch" in result.stderr
+    assert not args_file.exists()
+
+
+def test_codex_headless_no_claim_derives_single_live_session_when_env_absent(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    sid = "9b6ba5ca-513c-41aa-9900-d3026b42aad1"
+    _write_claim_epoch(cache, "cx-amber", "task-x", sid=sid)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    sid_log = tmp_path / "codex-session-id.txt"
+    _write_executable(
+        bin_dir / "codex",
+        f"""printf '%s\\n' "$HAPAX_SESSION_ID" > {sid_log}
+exit 0
+""",
+    )
+
+    env = _headless_env()
+    env.pop("HAPAX_SESSION_ID", None)
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert sid_log.read_text(encoding="utf-8").strip() == sid
+
+
+def test_codex_headless_no_claim_refuses_multiple_live_session_vectors(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    _write_claim_epoch(cache, "cx-amber", "task-x", sid="9b6ba5ca-513c-41aa-9900-d3026b42aad1")
+    _write_claim_epoch(cache, "cx-amber", "task-x", sid="7c4db1c9-3f4d-4a9c-96dd-8d84675f5f19")
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    args_file = tmp_path / "codex-args.txt"
+    _write_executable(
+        bin_dir / "codex",
+        f"""printf '%s\\n' "$*" > {args_file}
+exit 0
+""",
+    )
+
+    env = _headless_env()
+    env.pop("HAPAX_SESSION_ID", None)
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 78
+    assert "multiple exact live session claims" in result.stderr
+    assert not args_file.exists()
+
+
 @pytest.mark.parametrize("status", ["offered", "superseded"])
 def test_codex_headless_no_claim_requires_live_claimed_task_note_status(
     tmp_path: Path,
@@ -1292,6 +1508,58 @@ exit 0
 
     assert result.returncode == 78
     assert "assigned_to 'cx-other', not lane 'cx-amber'" in result.stderr
+    assert not args_file.exists()
+
+
+def test_codex_headless_local_rechecks_task_note_after_auth_probe(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    _write_claim_epoch(cache, "cx-amber", "task-x")
+    task_root = tmp_path / "local-recheck-tasks"
+    _write_task_note(task_root, "task-x", "cx-amber")
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    args_file = tmp_path / "codex-args.txt"
+    codex = bin_dir / "codex"
+    codex.write_text(
+        f"""#!/usr/bin/env bash
+if [ "${{1:-}}" = "exec" ] && [[ "$*" == *HAPAX_CODEX_EXEC_AUTH_OK* ]]; then
+  sed -i 's/^status:.*/status: superseded/' "{task_root}/active/task-x.md"
+  printf '%s\\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":"HAPAX_CODEX_EXEC_AUTH_OK"}}}}'
+  exit 0
+fi
+printf '%s\\n' "$*" > "{args_file}"
+exit 0
+""",
+        encoding="utf-8",
+    )
+    codex.chmod(0o755)
+
+    env = _headless_env()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_CC_TASK_ROOT"] = str(task_root)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 78
+    assert "status 'superseded', not 'claimed' or 'in_progress'" in result.stderr
     assert not args_file.exists()
 
 
@@ -1804,8 +2072,8 @@ exit 99
         timeout=10,
     )
 
-    assert result.returncode == 13
-    assert "already claims 'other-task'" in result.stderr
+    assert result.returncode == 78
+    assert "without an exact active-task marker and matching cc-claim epoch" in result.stderr
     assert not ssh_log.exists()
 
 
@@ -3049,6 +3317,8 @@ def test_codex_headless_remote_exec_fails_if_claim_cache_materialization_fails(
     remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
     workdir = tmp_path / "workdir"
     workdir.mkdir()
+    task_root = tmp_path / "remote-tasks"
+    _write_task_note(task_root, "task-x", "cx-amber")
     codex_bin = tmp_path / "bin" / "codex"
     _write_executable(codex_bin, "exit 0\n")
     token_path = _write_codex_access_token(tmp_path / "handoff", exp=int(time.time()) + 3600)
@@ -3068,6 +3338,7 @@ def test_codex_headless_remote_exec_fails_if_claim_cache_materialization_fails(
             "HAPAX_AGENT_ROLE": "cx-amber",
             "HAPAX_METHODOLOGY_DISPATCH_TASK": "task-x",
             "HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH": "1234567890 task-x",
+            "HAPAX_CC_TASK_ROOT": str(task_root),
         },
         "proof_file": str(proof),
         "token_handoff_file": str(token_path),
@@ -3097,6 +3368,8 @@ def test_codex_headless_remote_exec_refuses_task_without_claim_epoch(tmp_path: P
     remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
     workdir = tmp_path / "workdir"
     workdir.mkdir()
+    task_root = tmp_path / "remote-tasks"
+    _write_task_note(task_root, "task-x", "cx-amber")
     codex_bin = tmp_path / "bin" / "codex"
     _write_executable(codex_bin, "exit 0\n")
     token_path = _write_codex_access_token(tmp_path / "handoff", exp=int(time.time()) + 3600)
@@ -3113,6 +3386,7 @@ def test_codex_headless_remote_exec_refuses_task_without_claim_epoch(tmp_path: P
             "HAPAX_SESSION_ID": "remote-cache-session",
             "HAPAX_AGENT_ROLE": "cx-amber",
             "HAPAX_METHODOLOGY_DISPATCH_TASK": "task-x",
+            "HAPAX_CC_TASK_ROOT": str(task_root),
         },
         "proof_file": str(proof),
         "token_handoff_file": str(token_path),
@@ -3138,6 +3412,196 @@ def test_codex_headless_remote_exec_refuses_task_without_claim_epoch(tmp_path: P
     assert not proof.exists()
 
 
+@pytest.mark.parametrize("epoch", ["0", str(int(time.time()) + 3600)])
+def test_codex_headless_remote_exec_refuses_temporally_invalid_epoch(
+    tmp_path: Path,
+    epoch: str,
+) -> None:
+    remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    home = tmp_path / "home"
+    task_root = tmp_path / "remote-tasks"
+    _write_task_note(task_root, "task-x", "cx-amber")
+    codex_bin = tmp_path / "bin" / "codex"
+    _write_executable(codex_bin, "exit 0\n")
+    proof = tmp_path / "proof.json"
+    payload = {
+        "workdir": str(workdir),
+        "env": {
+            "HOME": str(home),
+            "HAPAX_SESSION_ID": "remote-cache-session",
+            "HAPAX_AGENT_ROLE": "cx-amber",
+            "HAPAX_METHODOLOGY_DISPATCH_TASK": "task-x",
+            "HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH": f"{epoch} task-x",
+            "HAPAX_CC_TASK_ROOT": str(task_root),
+        },
+        "proof_file": str(proof),
+        "argv": ["codex"],
+    }
+    env = _headless_env()
+    env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+    env["NPM_CONFIG_PREFIX"] = ""
+    env["PATH"] = str(_python_only_remote_path(tmp_path))
+    env["HAPAX_CODEX_BIN_PATH"] = str(codex_bin)
+
+    result = subprocess.run(
+        [sys.executable, "-c", remote_exec_py],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 78
+    assert "temporally invalid local cc-claim epoch" in result.stderr
+    assert not proof.exists()
+
+
+def test_codex_headless_remote_exec_refuses_conflicting_remote_claim(
+    tmp_path: Path,
+) -> None:
+    remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (cache / "cc-active-task-cx-amber").write_text("other-task\n", encoding="utf-8")
+    task_root = tmp_path / "remote-tasks"
+    _write_task_note(task_root, "task-x", "cx-amber")
+    codex_bin = tmp_path / "bin" / "codex"
+    _write_executable(codex_bin, "exit 0\n")
+    proof = tmp_path / "proof.json"
+    payload = {
+        "workdir": str(workdir),
+        "env": {
+            "HOME": str(home),
+            "HAPAX_SESSION_ID": "remote-cache-session",
+            "HAPAX_AGENT_ROLE": "cx-amber",
+            "HAPAX_METHODOLOGY_DISPATCH_TASK": "task-x",
+            "HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH": "1234567890 task-x",
+            "HAPAX_CC_TASK_ROOT": str(task_root),
+        },
+        "proof_file": str(proof),
+        "argv": ["codex"],
+    }
+    env = _headless_env()
+    env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+    env["NPM_CONFIG_PREFIX"] = ""
+    env["PATH"] = str(_python_only_remote_path(tmp_path))
+    env["HAPAX_CODEX_BIN_PATH"] = str(codex_bin)
+
+    result = subprocess.run(
+        [sys.executable, "-c", remote_exec_py],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 78
+    assert "conflicting remote legacy claim already owns other-task" in result.stderr
+    assert not proof.exists()
+
+
+def test_codex_headless_remote_exec_refuses_conflicting_remote_session_claim(
+    tmp_path: Path,
+) -> None:
+    remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    other_sid = "9b6ba5ca-513c-41aa-9900-d3026b42aad1"
+    (cache / f"cc-active-task-cx-amber-{other_sid}").write_text(
+        "other-task\n",
+        encoding="utf-8",
+    )
+    task_root = tmp_path / "remote-tasks"
+    _write_task_note(task_root, "task-x", "cx-amber")
+    codex_bin = tmp_path / "bin" / "codex"
+    _write_executable(codex_bin, "exit 0\n")
+    proof = tmp_path / "proof.json"
+    payload = {
+        "workdir": str(workdir),
+        "env": {
+            "HOME": str(home),
+            "HAPAX_SESSION_ID": "remote-cache-session",
+            "HAPAX_AGENT_ROLE": "cx-amber",
+            "HAPAX_METHODOLOGY_DISPATCH_TASK": "task-x",
+            "HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH": "1234567890 task-x",
+            "HAPAX_CC_TASK_ROOT": str(task_root),
+        },
+        "proof_file": str(proof),
+        "argv": ["codex"],
+    }
+    env = _headless_env()
+    env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+    env["NPM_CONFIG_PREFIX"] = ""
+    env["PATH"] = str(_python_only_remote_path(tmp_path))
+    env["HAPAX_CODEX_BIN_PATH"] = str(codex_bin)
+
+    result = subprocess.run(
+        [sys.executable, "-c", remote_exec_py],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 78
+    assert "conflicting remote session claim already exists" in result.stderr
+    assert not proof.exists()
+
+
+@pytest.mark.parametrize("status", ["offered", "superseded"])
+def test_codex_headless_remote_exec_requires_live_remote_task_note(
+    tmp_path: Path,
+    status: str,
+) -> None:
+    remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    home = tmp_path / "home"
+    task_root = tmp_path / "remote-tasks"
+    _write_task_note(task_root, "task-x", "cx-amber", status=status)
+    codex_bin = tmp_path / "bin" / "codex"
+    _write_executable(codex_bin, "exit 0\n")
+    proof = tmp_path / "proof.json"
+    payload = {
+        "workdir": str(workdir),
+        "env": {
+            "HOME": str(home),
+            "HAPAX_SESSION_ID": "remote-cache-session",
+            "HAPAX_AGENT_ROLE": "cx-amber",
+            "HAPAX_METHODOLOGY_DISPATCH_TASK": "task-x",
+            "HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH": "1234567890 task-x",
+            "HAPAX_CC_TASK_ROOT": str(task_root),
+        },
+        "proof_file": str(proof),
+        "argv": ["codex"],
+    }
+    env = _headless_env()
+    env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+    env["NPM_CONFIG_PREFIX"] = ""
+    env["PATH"] = str(_python_only_remote_path(tmp_path))
+    env["HAPAX_CODEX_BIN_PATH"] = str(codex_bin)
+
+    result = subprocess.run(
+        [sys.executable, "-c", remote_exec_py],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 78
+    assert f"has status {status}, not claimed or in_progress" in result.stderr
+    assert not proof.exists()
+
+
 def test_codex_headless_remote_exec_claim_guards_precede_missing_codex(
     tmp_path: Path,
 ) -> None:
@@ -3147,6 +3611,9 @@ def test_codex_headless_remote_exec_claim_guards_precede_missing_codex(
     def run_remote_exec(case: str, payload_env: dict[str, str]) -> subprocess.CompletedProcess[str]:
         workdir = tmp_path / f"workdir-{case}"
         workdir.mkdir()
+        task_root = tmp_path / f"remote-tasks-{case}"
+        _write_task_note(task_root, "task-x", "cx-amber")
+        payload_env.setdefault("HAPAX_CC_TASK_ROOT", str(task_root))
         token_path = _write_codex_access_token(
             tmp_path / f"handoff-{case}",
             exp=int(time.time()) + 3600,
@@ -3367,12 +3834,8 @@ def test_codex_headless_prefers_session_keyed_claim_over_stale_legacy(
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     sid = "9b6ba5ca-513c-41aa-9900-d3026b42aad1"
+    _write_claim_epoch(cache, "cx-amber", "task-x", sid=sid)
     (cache / "cc-active-task-cx-amber").write_text("old-task\n", encoding="utf-8")
-    (cache / f"cc-active-task-cx-amber-{sid}").write_text("task-x\n", encoding="utf-8")
-    (cache / f"cc-claim-epoch-cx-amber-{sid}").write_text(
-        "1234567890 task-x\n",
-        encoding="utf-8",
-    )
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     workdir = tmp_path / "worktree"
     workdir.mkdir()
@@ -3395,7 +3858,7 @@ exit 0
     env["HAPAX_SESSION_ID"] = sid
 
     result = subprocess.run(
-        [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
         capture_output=True,
         text=True,
         env=env,
