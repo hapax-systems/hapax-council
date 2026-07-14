@@ -291,6 +291,10 @@ ACCEPTANCE_RECEIPT_ACCEPTED_VERDICTS = frozenset({"accepted"})
 REVIEW_TEAM_ACCEPTOR_PREFIX = "review-team:"
 REVIEW_DOSSIER_SUFFIX = ".review-dossier.yaml"
 REVIEW_TEAM_DOSSIER_SHA256_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
+REVIEW_TEAM_DIGEST_MIGRATION_FILENAME = "_review-team-digest-migration.yaml"
+REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA = "hapax.review_team_digest_migration.v1"
+REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION = "exact-hash-preserved"
+REVIEW_TEAM_DIGEST_MIGRATION_SHA256_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 
 
 def requires_acceptance_receipt(frontmatter: Mapping[str, Any]) -> bool:
@@ -335,6 +339,85 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _review_team_digest_migration_path(note_path: Path) -> Path:
+    return note_path.parent / REVIEW_TEAM_DIGEST_MIGRATION_FILENAME
+
+
+def _valid_artifact_basename(value: str) -> bool:
+    return bool(value) and Path(value).name == value and value not in {".", ".."}
+
+
+def _review_team_digest_migration_blockers(
+    receipt_path: Path,
+    *,
+    note_path: Path | None,
+    task_id: str | None,
+) -> tuple[str, ...]:
+    if note_path is None or not task_id:
+        return ("acceptance_receipt_digest_migration_context_missing",)
+    migration_path = _review_team_digest_migration_path(note_path)
+    if not migration_path.is_file():
+        return ("acceptance_receipt_digest_migration_missing",)
+    try:
+        loaded = yaml.safe_load(migration_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        return (f"acceptance_receipt_digest_migration_malformed:{type(exc).__name__}",)
+    if not isinstance(loaded, Mapping):
+        return (
+            f"acceptance_receipt_digest_migration_malformed:not_a_mapping:{type(loaded).__name__}",
+        )
+    if loaded.get("schema") != REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA:
+        return (
+            "acceptance_receipt_digest_migration_malformed:schema:"
+            f"{loaded.get('schema') or 'missing'}",
+        )
+    entries = loaded.get("entries")
+    if not isinstance(entries, list):
+        return ("acceptance_receipt_digest_migration_malformed:entries_not_list",)
+
+    matching_task_entries: list[Mapping[str, Any]] = []
+    task_entry_count = 0
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            return ("acceptance_receipt_digest_migration_malformed:entry_not_mapping",)
+        entry_task_id = _frontmatter_non_null_scalar(entry.get("task_id"))
+        if entry_task_id == task_id:
+            task_entry_count += 1
+            matching_task_entries.append(entry)
+
+    if task_entry_count > 1:
+        return (f"acceptance_receipt_digest_migration_duplicate_task:{task_id}",)
+    if not matching_task_entries:
+        return ("acceptance_receipt_digest_migration_unlisted",)
+
+    entry = matching_task_entries[0]
+    basename = _frontmatter_non_null_scalar(entry.get("receipt_basename"))
+    if not _valid_artifact_basename(basename):
+        return ("acceptance_receipt_digest_migration_path_invalid",)
+    if basename != receipt_path.name:
+        return ("acceptance_receipt_digest_migration_unlisted",)
+    relpath = _frontmatter_non_null_scalar(entry.get("receipt_relpath"))
+    if relpath and (Path(relpath).name != relpath or relpath != receipt_path.name):
+        return ("acceptance_receipt_digest_migration_path_invalid",)
+
+    classification = _frontmatter_non_null_scalar(entry.get("classification"))
+    if classification != REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION:
+        return (
+            "acceptance_receipt_digest_migration_classification_not_preserving:"
+            f"{classification or 'missing'}",
+        )
+    expected_sha = _frontmatter_non_null_scalar(entry.get("receipt_sha256"))
+    if REVIEW_TEAM_DIGEST_MIGRATION_SHA256_RE.fullmatch(expected_sha) is None:
+        return ("acceptance_receipt_digest_migration_malformed:receipt_sha256",)
+    try:
+        actual_sha = _sha256_file(receipt_path)
+    except OSError as exc:
+        return (f"acceptance_receipt_unreadable:{type(exc).__name__}",)
+    if expected_sha.removeprefix("sha256:") != actual_sha:
+        return ("acceptance_receipt_digest_migration_sha256_mismatch",)
+    return ()
+
+
 def _acceptance_receipt_validity_blockers(
     receipt_path: Path,
     *,
@@ -362,7 +445,14 @@ def _acceptance_receipt_validity_blockers(
     if acceptor.startswith(REVIEW_TEAM_ACCEPTOR_PREFIX):
         dossier_sha256 = _frontmatter_non_null_scalar(loaded.get("dossier_sha256"))
         if not dossier_sha256:
-            blockers.append("acceptance_receipt_legacy_review_team_digest_unbound")
+            migration_blockers = _review_team_digest_migration_blockers(
+                receipt_path,
+                note_path=note_path,
+                task_id=task_id,
+            )
+            if migration_blockers:
+                blockers.append("acceptance_receipt_review_team_dossier_sha256_missing")
+                blockers.extend(migration_blockers)
         elif REVIEW_TEAM_DOSSIER_SHA256_RE.fullmatch(dossier_sha256) is None:
             blockers.append("acceptance_receipt_dossier_sha256_malformed")
         elif note_path is None or not task_id:

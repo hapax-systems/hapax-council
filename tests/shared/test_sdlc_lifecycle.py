@@ -17,6 +17,9 @@ from pathlib import Path
 
 from shared.sdlc_lifecycle import (
     PR_ACTIONS,
+    REVIEW_TEAM_DIGEST_MIGRATION_FILENAME,
+    REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION,
+    REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA,
     STAGE_RE,
     TASK_CLAIMABLE_STATUSES,
     TASK_DISPATCHABLE_STATUSES,
@@ -258,6 +261,29 @@ class TestAcceptanceReceiptEnforcement:
         path.write_text(body, encoding="utf-8")
         return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
+    def _migration(
+        self,
+        tmp_path: Path,
+        *,
+        task_id: str = "task-r",
+        receipt_basename: str = "task-r.acceptance.yaml",
+        receipt_sha256: str,
+        classification: str = REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION,
+        extra_entry: str = "",
+    ) -> Path:
+        path = tmp_path / REVIEW_TEAM_DIGEST_MIGRATION_FILENAME
+        path.write_text(
+            f"""schema: {REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA}
+entries:
+  - task_id: {task_id}
+    receipt_basename: {receipt_basename}
+    receipt_sha256: {receipt_sha256}
+    classification: {classification}
+{extra_entry}""",
+            encoding="utf-8",
+        )
+        return path
+
     VALID_RECEIPT = (
         "acceptor: operator\n"
         "verdict: accepted\n"
@@ -346,7 +372,30 @@ class TestAcceptanceReceiptEnforcement:
             self.VALID_RECEIPT.replace("acceptor: operator", "acceptor: review-team:codex,glm"),
         )
         frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
-        assert "acceptance_receipt_legacy_review_team_digest_unbound" in (
+        blockers = acceptance_receipt_blockers(frontmatter, note)
+        assert "acceptance_receipt_review_team_dossier_sha256_missing" in blockers
+        assert "acceptance_receipt_digest_migration_missing" in blockers
+
+    def test_digest_unbound_review_team_receipt_exact_hash_migration_clears_blockers(
+        self, tmp_path: Path
+    ) -> None:
+        note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})
+        receipt = self._receipt(
+            tmp_path,
+            "task-r",
+            self.VALID_RECEIPT.replace("acceptor: operator", "acceptor: review-team:codex,glm"),
+        )
+        receipt_sha = "sha256:" + hashlib.sha256(receipt.read_bytes()).hexdigest()
+        self._migration(tmp_path, receipt_sha256=receipt_sha)
+        frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
+
+        assert acceptance_receipt_blockers(frontmatter, note) == ()
+
+        receipt.write_text(
+            receipt.read_text(encoding="utf-8") + "tampered: true\n",
+            encoding="utf-8",
+        )
+        assert "acceptance_receipt_digest_migration_sha256_mismatch" in (
             acceptance_receipt_blockers(frontmatter, note)
         )
 
@@ -361,7 +410,84 @@ class TestAcceptanceReceiptEnforcement:
             ).replace("timestamp: 2026-06-10T17:00:00Z", "timestamp: 2026-07-14T00:00:00Z"),
         )
         frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
-        assert "acceptance_receipt_legacy_review_team_digest_unbound" in (
+        blockers = acceptance_receipt_blockers(frontmatter, note)
+        assert "acceptance_receipt_review_team_dossier_sha256_missing" in blockers
+        assert "acceptance_receipt_digest_migration_missing" in blockers
+
+    def test_malformed_digest_migration_artifact_fails_closed(self, tmp_path: Path) -> None:
+        note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})
+        self._receipt(
+            tmp_path,
+            "task-r",
+            self.VALID_RECEIPT.replace("acceptor: operator", "acceptor: review-team:codex,glm"),
+        )
+        (tmp_path / REVIEW_TEAM_DIGEST_MIGRATION_FILENAME).write_text("[]\n", encoding="utf-8")
+        frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
+
+        assert "acceptance_receipt_digest_migration_malformed:not_a_mapping:list" in (
+            acceptance_receipt_blockers(frontmatter, note)
+        )
+
+    def test_path_escaping_digest_migration_entry_fails_closed(self, tmp_path: Path) -> None:
+        note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})
+        receipt = self._receipt(
+            tmp_path,
+            "task-r",
+            self.VALID_RECEIPT.replace("acceptor: operator", "acceptor: review-team:codex,glm"),
+        )
+        receipt_sha = "sha256:" + hashlib.sha256(receipt.read_bytes()).hexdigest()
+        self._migration(
+            tmp_path,
+            receipt_basename="../task-r.acceptance.yaml",
+            receipt_sha256=receipt_sha,
+        )
+        frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
+
+        assert "acceptance_receipt_digest_migration_path_invalid" in (
+            acceptance_receipt_blockers(frontmatter, note)
+        )
+
+    def test_unlisted_digest_migration_entry_fails_closed(self, tmp_path: Path) -> None:
+        note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})
+        receipt = self._receipt(
+            tmp_path,
+            "task-r",
+            self.VALID_RECEIPT.replace("acceptor: operator", "acceptor: review-team:codex,glm"),
+        )
+        receipt_sha = "sha256:" + hashlib.sha256(receipt.read_bytes()).hexdigest()
+        self._migration(
+            tmp_path,
+            task_id="other-task",
+            receipt_basename="other-task.acceptance.yaml",
+            receipt_sha256=receipt_sha,
+        )
+        frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
+
+        assert "acceptance_receipt_digest_migration_unlisted" in (
+            acceptance_receipt_blockers(frontmatter, note)
+        )
+
+    def test_duplicate_task_digest_migration_entry_fails_closed(self, tmp_path: Path) -> None:
+        note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})
+        receipt = self._receipt(
+            tmp_path,
+            "task-r",
+            self.VALID_RECEIPT.replace("acceptor: operator", "acceptor: review-team:codex,glm"),
+        )
+        receipt_sha = "sha256:" + hashlib.sha256(receipt.read_bytes()).hexdigest()
+        self._migration(
+            tmp_path,
+            receipt_sha256=receipt_sha,
+            extra_entry=(
+                "  - task_id: task-r\n"
+                "    receipt_basename: other.acceptance.yaml\n"
+                f"    receipt_sha256: {receipt_sha}\n"
+                f"    classification: {REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION}\n"
+            ),
+        )
+        frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
+
+        assert "acceptance_receipt_digest_migration_duplicate_task:task-r" in (
             acceptance_receipt_blockers(frontmatter, note)
         )
 

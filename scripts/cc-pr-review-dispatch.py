@@ -24,11 +24,20 @@ Usage::
     uv run python scripts/cc-pr-review-dispatch.py --pr 123 --probe-lock --hold-seconds 60
     uv run python scripts/cc-pr-review-dispatch.py --all --apply      # timer-ready scan
     uv run python scripts/cc-pr-review-dispatch.py --all --apply --replay-only
-                                                                    # no-review migration
+                                                                    # no-review migration/cutover
     HAPAX_REVIEW_TEAM_DISPATCH_OFF=1 ...                              # killswitch
 
 Default mode is a dry-run constitution plan. ``--apply`` dispatches reviewers
 and writes the dossier; ``--force`` re-reviews an already-reviewed head sha.
+The legacy digest cutover command is ``--all --apply --replay-only`` and must
+run only while automatic PR autoqueue/review dispatch is paused. It snapshots
+pre-binding review-team acceptance receipts, replays current open PR dossiers
+without reviewer/provider dispatch, then atomically publishes
+``<vault>/active/_review-team-digest-migration.yaml``. Re-run the same command
+for the integrity recheck; it reports unchanged entries when the active receipt
+bytes still match. A fresh-but-dead review claim is not recovered by replay:
+first prove the holder is not live, then use the explicit ``--release-lock``
+path below.
 ``--release-lock`` is a no-provider recovery path for stale or malformed
 per-repository+PR claim files under ``<vault>/_locks/review-team/``; dry-run
 reports evidence and ``--apply`` archives the stale claim instead of deleting it.
@@ -79,6 +88,10 @@ from github_pr_status import (  # noqa: E402
 from shared import public_gate_receipts  # noqa: E402
 from shared.route_metadata_schema import stable_payload_hash  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
+    ACCEPTANCE_RECEIPT_SUFFIX,
+    REVIEW_TEAM_DIGEST_MIGRATION_FILENAME,
+    REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION,
+    REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA,
     acceptance_receipt_blockers,
     acceptance_receipt_path,
     requires_acceptance_receipt,
@@ -175,6 +188,40 @@ PUBLIC_GATE_AUTHORITY_BINDING_CONTEXT_KEYS = (
     "public_gate_bindings",
     "publication_gate_bindings",
 )
+MIGRATION_CLASS_REBOUND = "rebound"
+MIGRATION_CLASS_EXACT_HASH_PRESERVED = REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION
+MIGRATION_CLASS_STALE_INVALID = "stale-invalid"
+MIGRATION_CLASS_UNMATCHED = "unmatched"
+MIGRATION_CLASS_NOT_SUBJECT = "not-subject"
+MIGRATION_CLASSIFICATIONS = (
+    MIGRATION_CLASS_REBOUND,
+    MIGRATION_CLASS_EXACT_HASH_PRESERVED,
+    MIGRATION_CLASS_STALE_INVALID,
+    MIGRATION_CLASS_UNMATCHED,
+    MIGRATION_CLASS_NOT_SUBJECT,
+)
+MIGRATION_NEXT_ACTIONS = {
+    MIGRATION_CLASS_REBOUND: (
+        "Receipt was rebound from a current admissible dossier; rerun lifecycle validation "
+        "against the digest-bound active receipt."
+    ),
+    MIGRATION_CLASS_EXACT_HASH_PRESERVED: (
+        "Receipt is preserved only while the active receipt bytes match this exact SHA-256; "
+        "byte drift requires governed re-review or renewed reconciliation."
+    ),
+    MIGRATION_CLASS_STALE_INVALID: (
+        "Do not preserve this receipt; inspect the malformed/stale evidence and rerun a "
+        "governed review if acceptance is still required."
+    ),
+    MIGRATION_CLASS_UNMATCHED: (
+        "No matching active task note was found; restore the governed task identity or rerun "
+        "review under a current task before relying on acceptance."
+    ),
+    MIGRATION_CLASS_NOT_SUBJECT: (
+        "No migration action is needed; the receipt is operator-signed, already digest-bound, "
+        "or outside the review-floor gate."
+    ),
+}
 PUBLIC_GATE_AUTHORITY_BINDING_KEY_RE = re.compile(r"\A[a-z][a-z0-9_]{0,63}\Z")
 PUBLIC_GATE_AUTHORITY_RESERVED_BINDING_KEYS = frozenset(
     {
@@ -1600,6 +1647,209 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def review_team_digest_migration_path(vault_root: Path) -> Path:
+    return vault_root / "active" / REVIEW_TEAM_DIGEST_MIGRATION_FILENAME
+
+
+def _classification_counts(entries: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {classification: 0 for classification in MIGRATION_CLASSIFICATIONS}
+    for entry in entries:
+        classification = str(entry.get("classification") or "")
+        if classification in counts:
+            counts[classification] += 1
+    return counts
+
+
+def collect_review_team_digest_migration_snapshots(vault_root: Path) -> tuple[dict[str, Any], ...]:
+    """Snapshot active acceptance receipts before replay can replace legacy bytes."""
+
+    active_dir = vault_root / "active"
+    snapshots: list[dict[str, Any]] = []
+    if not active_dir.is_dir():
+        return ()
+    pattern = f"*{ACCEPTANCE_RECEIPT_SUFFIX}"
+    for receipt_path in sorted(active_dir.glob(pattern)):
+        task_id = receipt_path.name[: -len(ACCEPTANCE_RECEIPT_SUFFIX)]
+        snapshot: dict[str, Any] = {
+            "task_id": task_id,
+            "receipt_basename": receipt_path.name,
+            "receipt_relpath": receipt_path.name,
+            "receipt_path": str(receipt_path),
+        }
+        try:
+            raw = receipt_path.read_bytes()
+        except OSError as exc:
+            snapshot.update(
+                {
+                    "receipt_sha256": None,
+                    "loaded": None,
+                    "load_error": type(exc).__name__,
+                }
+            )
+            snapshots.append(snapshot)
+            continue
+        snapshot["receipt_sha256"] = "sha256:" + hashlib.sha256(raw).hexdigest()
+        try:
+            loaded = yaml.safe_load(raw.decode("utf-8"))
+        except (UnicodeDecodeError, yaml.YAMLError) as exc:
+            snapshot.update({"loaded": None, "load_error": type(exc).__name__})
+        else:
+            snapshot["loaded"] = loaded if isinstance(loaded, dict) else None
+            if not isinstance(loaded, dict):
+                snapshot["load_error"] = f"not_a_mapping:{type(loaded).__name__}"
+
+        note_path = active_dir / f"{task_id}.md"
+        snapshot["task_note_basename"] = note_path.name
+        if not note_path.is_file():
+            snapshot["note_missing"] = True
+        else:
+            frontmatter = review_team._note_frontmatter(note_path)
+            if frontmatter is None:
+                snapshot["note_malformed"] = True
+            else:
+                snapshot["frontmatter"] = frontmatter
+        snapshots.append(snapshot)
+    return tuple(snapshots)
+
+
+def _classify_review_team_digest_snapshot(
+    snapshot: dict[str, Any],
+    *,
+    rebound_task_ids: frozenset[str],
+) -> tuple[str, str]:
+    loaded = snapshot.get("loaded")
+    if not isinstance(loaded, dict):
+        return (
+            MIGRATION_CLASS_STALE_INVALID,
+            f"receipt_malformed:{snapshot.get('load_error') or 'not_a_mapping'}",
+        )
+    acceptor = str(loaded.get("acceptor") or "")
+    if not acceptor.startswith("review-team:"):
+        return (MIGRATION_CLASS_NOT_SUBJECT, "acceptor_not_review_team")
+    if loaded.get("dossier_sha256"):
+        return (MIGRATION_CLASS_NOT_SUBJECT, "already_digest_bound")
+    verdict = str(loaded.get("verdict") or "").strip().lower()
+    if verdict != "accepted":
+        return (MIGRATION_CLASS_STALE_INVALID, f"verdict_not_accepted:{verdict or 'missing'}")
+    if snapshot.get("note_missing"):
+        return (MIGRATION_CLASS_UNMATCHED, "active_task_note_missing")
+    frontmatter = snapshot.get("frontmatter")
+    if not isinstance(frontmatter, dict):
+        return (MIGRATION_CLASS_STALE_INVALID, "active_task_note_malformed")
+    task_id = str(snapshot.get("task_id") or "")
+    if str(frontmatter.get("task_id") or "").strip() != task_id:
+        return (MIGRATION_CLASS_STALE_INVALID, "task_note_id_mismatch")
+    if not requires_acceptance_receipt(frontmatter):
+        return (MIGRATION_CLASS_NOT_SUBJECT, "task_not_review_floor")
+    if task_id in rebound_task_ids:
+        return (MIGRATION_CLASS_REBOUND, "current_open_pr_replay_rebound")
+    return (
+        MIGRATION_CLASS_EXACT_HASH_PRESERVED,
+        "non_replayable_or_moved_head_exact_hash_preservation",
+    )
+
+
+def build_review_team_digest_migration_payload(
+    vault_root: Path,
+    *,
+    snapshots: tuple[dict[str, Any], ...],
+    rebound_task_ids: frozenset[str] = frozenset(),
+    now_iso: str,
+) -> dict[str, Any]:
+    entries: list[dict[str, Any]] = []
+    for snapshot in snapshots:
+        classification, reason = _classify_review_team_digest_snapshot(
+            snapshot,
+            rebound_task_ids=rebound_task_ids,
+        )
+        entry = {
+            "task_id": str(snapshot.get("task_id") or ""),
+            "task_note_basename": str(snapshot.get("task_note_basename") or ""),
+            "receipt_basename": str(snapshot.get("receipt_basename") or ""),
+            "receipt_relpath": str(snapshot.get("receipt_relpath") or ""),
+            "receipt_sha256": snapshot.get("receipt_sha256") or "sha256:unreadable",
+            "classification": classification,
+            "reason": reason,
+        }
+        entries.append(entry)
+    entries.sort(key=lambda item: (item["task_id"], item["receipt_basename"]))
+    counts = _classification_counts(entries)
+    return {
+        "schema": REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA,
+        "generated_at": now_iso,
+        "active_dir": str((vault_root / "active").resolve(strict=False)),
+        "pause_boundary": (
+            "Run only while hapax-pr-review-dispatch.timer and cc-pr-autoqueue effects "
+            "are paused; replay-only must not dispatch reviewers or mutate GitHub."
+        ),
+        "integrity_recheck": (
+            "Rerun `uv run python scripts/cc-pr-review-dispatch.py --all --apply "
+            "--replay-only` and require unchanged entries plus lifecycle validation."
+        ),
+        "entries": entries,
+        "counts": counts,
+        "next_actions": {
+            classification: MIGRATION_NEXT_ACTIONS[classification]
+            for classification in MIGRATION_CLASSIFICATIONS
+        },
+    }
+
+
+def publish_review_team_digest_migration(
+    vault_root: Path,
+    *,
+    snapshots: tuple[dict[str, Any], ...],
+    rebound_task_ids: frozenset[str] = frozenset(),
+    apply: bool,
+    now_iso: str,
+) -> dict[str, Any]:
+    payload = build_review_team_digest_migration_payload(
+        vault_root,
+        snapshots=snapshots,
+        rebound_task_ids=rebound_task_ids,
+        now_iso=now_iso,
+    )
+    path = review_team_digest_migration_path(vault_root)
+    comparable_payload = {k: v for k, v in payload.items() if k != "generated_at"}
+    existing_payload: dict[str, Any] | None = None
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        loaded = None
+    if isinstance(loaded, dict):
+        existing_payload = loaded
+        comparable_existing = {k: v for k, v in loaded.items() if k != "generated_at"}
+        if comparable_existing == comparable_payload:
+            return {
+                "status": "migration_unchanged",
+                "artifact_path": str(path),
+                "artifact_written": False,
+                "counts": payload["counts"],
+                "entries": payload["entries"],
+                "next_actions": payload["next_actions"],
+                "generated_at": loaded.get("generated_at"),
+            }
+
+    if apply:
+        atomic_write_yaml(path, payload)
+    status = "migration_written" if apply else "migration_ready"
+    result = {
+        "status": status,
+        "artifact_path": str(path),
+        "artifact_written": bool(apply),
+        "counts": payload["counts"],
+        "entries": payload["entries"],
+        "next_actions": payload["next_actions"],
+        "generated_at": payload["generated_at"],
+    }
+    if (
+        existing_payload is not None
+        and existing_payload.get("schema") != REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA
+    ):
+        result["replaced_malformed_artifact"] = True
+    return result
 
 
 def _archive_path(path: Path, *, token: str) -> Path:
@@ -3682,6 +3932,7 @@ def _review_pr_locked(
                 "status": status,
                 "repo": repo,
                 "pr": pr_number,
+                "task_id": only["task_id"],
                 "head_sha": pr_info.head_sha,
                 "dossier_path": only["dossier_path"],
                 "review_team_verdict": only["review_team_verdict"],
@@ -4119,6 +4370,73 @@ def review_all_open_prs(
     return results
 
 
+def _rebound_task_ids_from_replay_results(results: list[dict[str, Any]]) -> frozenset[str]:
+    rebound: set[str] = set()
+    for result in results:
+        status = str(result.get("status") or "")
+        if status in {"replayed_fresh", "replay_ready"}:
+            task_id = str(result.get("task_id") or "")
+            if task_id:
+                rebound.add(task_id)
+            continue
+        if status in {"multi_replayed_fresh", "multi_replay_ready"}:
+            for item in result.get("results") or []:
+                if not isinstance(item, dict):
+                    continue
+                task_id = str(item.get("task_id") or "")
+                if task_id:
+                    rebound.add(task_id)
+    return frozenset(rebound)
+
+
+def replay_all_open_prs_with_digest_migration(
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path | None = None,
+    vault_root: Path = DEFAULT_VAULT_ROOT,
+    apply: bool = False,
+    gh_runner: Any = None,
+    reviewer_runner: Any = None,
+    wake_dir: Path = DEFAULT_WAKE_DIR,
+    send_runner: Any = None,
+    now_iso: str | None = None,
+    route_blocked_families: dict[str, tuple[str, ...]] | None = None,
+) -> dict[str, Any]:
+    now_iso = now_iso or datetime.now(UTC).isoformat(timespec="seconds")
+    snapshots = collect_review_team_digest_migration_snapshots(vault_root)
+    open_pr_results = review_all_open_prs(
+        repo=repo,
+        repo_root=repo_root,
+        vault_root=vault_root,
+        apply=apply,
+        force=False,
+        replay_only=True,
+        gh_runner=gh_runner,
+        reviewer_runner=reviewer_runner,
+        wake_dir=wake_dir,
+        send_runner=send_runner,
+        route_blocked_families=route_blocked_families,
+    )
+    migration = publish_review_team_digest_migration(
+        vault_root,
+        snapshots=snapshots,
+        rebound_task_ids=_rebound_task_ids_from_replay_results(open_pr_results),
+        apply=apply,
+        now_iso=now_iso,
+    )
+    return {
+        "status": "replay_migration_complete" if apply else "replay_migration_ready",
+        "repo": repo,
+        "open_pr_results": open_pr_results,
+        "migration": migration,
+        "side_effects": {
+            "migration_artifact": migration["artifact_path"]
+            if migration["artifact_written"]
+            else None
+        },
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     target = parser.add_mutually_exclusive_group(required=True)
@@ -4198,13 +4516,20 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write("\n")
         return 0
     if args.all:
-        results: Any = review_all_open_prs(
-            repo=args.repo,
-            vault_root=args.vault_root,
-            apply=args.apply,
-            force=args.force,
-            replay_only=args.replay_only,
-        )
+        if args.replay_only:
+            results: Any = replay_all_open_prs_with_digest_migration(
+                repo=args.repo,
+                vault_root=args.vault_root,
+                apply=args.apply,
+            )
+        else:
+            results = review_all_open_prs(
+                repo=args.repo,
+                vault_root=args.vault_root,
+                apply=args.apply,
+                force=args.force,
+                replay_only=False,
+            )
     else:
         results = review_pr(
             args.pr,

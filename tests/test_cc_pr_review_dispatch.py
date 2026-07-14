@@ -102,6 +102,28 @@ Acceptance evidence belongs here.
     return path
 
 
+def _write_legacy_review_team_receipt(
+    vault: Path,
+    task_id: str = "task-a",
+    *,
+    pr: int = 42,
+    head_sha: str = "c" * 40,
+) -> Path:
+    path = vault / "active" / f"{task_id}.acceptance.yaml"
+    path.write_text(
+        f"""acceptor: review-team:codex,glm
+verdict: accepted
+timestamp: 2026-06-10T17:00:00Z
+artifact: https://github.com/owner/repo/pull/{pr}
+pr: {pr}
+head_sha: {head_sha}
+review_team_verdict: quorum-accept
+""",
+        encoding="utf-8",
+    )
+    return path
+
+
 GOOD_REPLY = """```yaml
 verdict: accept
 findings: []
@@ -2129,6 +2151,173 @@ checklist:
         assert gh.calls == []
         assert reviewers.invocations == []
         assert not (vault / "_locks").exists()
+
+    def test_legacy_closed_pr_receipt_is_exact_hash_preserved_without_provider_dispatch(
+        self, tmp_path: Path
+    ) -> None:
+        class NoOpenPullsGh(FakeGh):
+            def _rest_open_prs(self) -> list[dict[str, Any]]:
+                return []
+
+        vault = _make_vault(tmp_path)
+        note = _write_task(vault, quality_floor="frontier_review_required")
+        receipt = _write_legacy_review_team_receipt(vault)
+        receipt_sha = "sha256:" + sha256(receipt.read_bytes()).hexdigest()
+        reviewers = RecordingReviewers()
+        gh = NoOpenPullsGh()
+
+        result = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=gh,
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:00:00+00:00",
+            route_blocked_families={},
+        )
+
+        migration = result["migration"]
+        assert migration["counts"]["exact-hash-preserved"] == 1
+        assert migration["entries"][0]["receipt_sha256"] == receipt_sha
+        assert migration["entries"][0]["classification"] == "exact-hash-preserved"
+        assert reviewers.invocations == []
+        assert gh.comments == []
+        frontmatter = dispatch.review_team._note_frontmatter(note)
+        assert frontmatter is not None
+        assert dispatch.acceptance_receipt_blockers(frontmatter, note) == ()
+
+        receipt.write_text(receipt.read_text(encoding="utf-8") + "tampered: true\n")
+        assert "acceptance_receipt_digest_migration_sha256_mismatch" in (
+            dispatch.acceptance_receipt_blockers(frontmatter, note)
+        )
+
+        receipt.write_text(
+            receipt.read_text(encoding="utf-8").removesuffix("tampered: true\n"),
+            encoding="utf-8",
+        )
+        second = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=NoOpenPullsGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:01:00+00:00",
+            route_blocked_families={},
+        )
+        assert second["migration"]["status"] == "migration_unchanged"
+        assert second["migration"]["counts"] == migration["counts"]
+
+    def test_moved_head_legacy_receipt_gets_exact_hash_preservation_without_replay(
+        self, tmp_path: Path
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        note = _write_task(vault, quality_floor="frontier_review_required")
+        _write_legacy_review_team_receipt(vault, head_sha="b" * 40)
+        stale_dossier = {
+            "dossier_schema": 1,
+            "task_id": "task-a",
+            "pr": 42,
+            "head_sha": "b" * 40,
+            "review_team_verdict": "quorum-accept",
+        }
+        (vault / "active" / "task-a.review-dossier.yaml").write_text(
+            yaml.safe_dump(stale_dossier, sort_keys=False),
+            encoding="utf-8",
+        )
+        reviewers = RecordingReviewers()
+
+        result = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=FakeGh(head_sha="c" * 40),
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:05:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert result["open_pr_results"][0]["status"] == "replay_blocked"
+        assert result["migration"]["counts"]["exact-hash-preserved"] == 1
+        assert result["migration"]["counts"]["rebound"] == 0
+        assert reviewers.invocations == []
+        frontmatter = dispatch.review_team._note_frontmatter(note)
+        assert frontmatter is not None
+        assert dispatch.acceptance_receipt_blockers(frontmatter, note) == ()
+
+    def test_current_head_legacy_receipt_is_rebound_and_inventory_is_idempotent(
+        self, tmp_path: Path
+    ) -> None:
+        result, _, _, note = _review(
+            tmp_path, task_kwargs={"quality_floor": "frontier_review_required"}
+        )
+        assert result["status"] == "dispatched"
+        vault = note.parent.parent
+        receipt_path = note.parent / "task-a.acceptance.yaml"
+        legacy_receipt = yaml.safe_load(receipt_path.read_text(encoding="utf-8"))
+        legacy_receipt.pop("dossier_sha256")
+        receipt_path.write_text(yaml.safe_dump(legacy_receipt, sort_keys=False), encoding="utf-8")
+        replay_reviewers = RecordingReviewers()
+        replay_gh = FakeGh()
+
+        migration = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=replay_gh,
+            reviewer_runner=replay_reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:10:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert migration["open_pr_results"][0]["status"] == "replayed_fresh"
+        assert migration["migration"]["counts"]["rebound"] == 1
+        assert migration["migration"]["entries"][0]["classification"] == "rebound"
+        assert replay_reviewers.invocations == []
+        assert replay_gh.comments == []
+        rebound_receipt = yaml.safe_load(receipt_path.read_text(encoding="utf-8"))
+        assert rebound_receipt["dossier_sha256"].startswith("sha256:")
+
+        second = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=FakeGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:11:00+00:00",
+            route_blocked_families={},
+        )
+        assert second["migration"]["status"] == "migration_written"
+        assert second["migration"]["counts"]["not-subject"] == 1
+
+        third = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=FakeGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:12:00+00:00",
+            route_blocked_families={},
+        )
+        assert third["migration"]["status"] == "migration_unchanged"
+        assert third["migration"]["counts"] == second["migration"]["counts"]
 
     def test_probe_lock_acquires_releases_and_reports_cross_host_recheck(
         self, tmp_path: Path
