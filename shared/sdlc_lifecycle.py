@@ -6,7 +6,7 @@ import hashlib
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -291,8 +291,6 @@ ACCEPTANCE_RECEIPT_ACCEPTED_VERDICTS = frozenset({"accepted"})
 REVIEW_TEAM_ACCEPTOR_PREFIX = "review-team:"
 REVIEW_DOSSIER_SUFFIX = ".review-dossier.yaml"
 REVIEW_TEAM_DOSSIER_SHA256_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
-# Pre-floor review-team receipts remain legacy-valid until the replay migration rebinds them.
-REVIEW_TEAM_DOSSIER_SHA256_REQUIRED_AFTER = datetime(2026, 7, 14, tzinfo=UTC)
 
 
 def requires_acceptance_receipt(frontmatter: Mapping[str, Any]) -> bool:
@@ -317,27 +315,24 @@ def acceptance_receipt_path(note_path: Path, task_id: str) -> Path:
     return note_path.parent / f"{task_id}{ACCEPTANCE_RECEIPT_SUFFIX}"
 
 
+def _task_artifact_path_beside_note(note_path: Path, task_id: str, suffix: str) -> Path | None:
+    task_path = Path(task_id)
+    if task_path.is_absolute() or task_path.name != task_id or task_id in {".", ".."}:
+        return None
+    candidate = note_path.parent / f"{task_id}{suffix}"
+    try:
+        candidate.resolve(strict=False).relative_to(note_path.parent.resolve(strict=False))
+    except (OSError, ValueError):
+        return None
+    return candidate
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _parse_receipt_timestamp(value: Any) -> datetime | None:
-    text = _frontmatter_non_null_scalar(value)
-    if not text:
-        return None
-    if text.endswith("Z"):
-        text = f"{text[:-1]}+00:00"
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
 
 
 def _acceptance_receipt_validity_blockers(
@@ -367,16 +362,18 @@ def _acceptance_receipt_validity_blockers(
     if acceptor.startswith(REVIEW_TEAM_ACCEPTOR_PREFIX):
         dossier_sha256 = _frontmatter_non_null_scalar(loaded.get("dossier_sha256"))
         if not dossier_sha256:
-            timestamp = _parse_receipt_timestamp(loaded.get("timestamp"))
-            if timestamp is None or timestamp >= REVIEW_TEAM_DOSSIER_SHA256_REQUIRED_AFTER:
-                blockers.append("acceptance_receipt_legacy_review_team_digest_unbound")
+            blockers.append("acceptance_receipt_legacy_review_team_digest_unbound")
         elif REVIEW_TEAM_DOSSIER_SHA256_RE.fullmatch(dossier_sha256) is None:
             blockers.append("acceptance_receipt_dossier_sha256_malformed")
         elif note_path is None or not task_id:
             blockers.append("acceptance_receipt_dossier_context_missing")
         else:
-            dossier_path = note_path.parent / f"{task_id}{REVIEW_DOSSIER_SUFFIX}"
-            if not dossier_path.is_file():
+            dossier_path = _task_artifact_path_beside_note(
+                note_path, task_id, REVIEW_DOSSIER_SUFFIX
+            )
+            if dossier_path is None:
+                blockers.append("acceptance_receipt_dossier_context_invalid")
+            elif not dossier_path.is_file():
                 blockers.append("acceptance_receipt_dossier_missing")
             else:
                 try:
@@ -403,8 +400,11 @@ def acceptance_receipt_blockers(frontmatter: Mapping[str, Any], note_path: Path)
     task_id = _frontmatter_non_null_scalar(frontmatter.get("task_id"))
     if not task_id:
         return ("missing_acceptance_receipt",)
+    receipt_path = _task_artifact_path_beside_note(note_path, task_id, ACCEPTANCE_RECEIPT_SUFFIX)
+    if receipt_path is None:
+        return ("missing_acceptance_receipt",)
     return _acceptance_receipt_validity_blockers(
-        acceptance_receipt_path(note_path, task_id),
+        receipt_path,
         note_path=note_path,
         task_id=task_id,
     )

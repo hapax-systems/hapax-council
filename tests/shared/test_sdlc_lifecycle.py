@@ -335,7 +335,7 @@ class TestAcceptanceReceiptEnforcement:
         frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
         assert acceptance_receipt_blockers(frontmatter, note) == ()
 
-    def test_legacy_review_team_receipt_before_digest_floor_remains_valid(
+    def test_backdated_review_team_receipt_without_digest_still_blocks(
         self, tmp_path: Path
     ) -> None:
         note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})
@@ -346,7 +346,9 @@ class TestAcceptanceReceiptEnforcement:
             self.VALID_RECEIPT.replace("acceptor: operator", "acceptor: review-team:codex,glm"),
         )
         frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
-        assert acceptance_receipt_blockers(frontmatter, note) == ()
+        assert "acceptance_receipt_legacy_review_team_digest_unbound" in (
+            acceptance_receipt_blockers(frontmatter, note)
+        )
 
     def test_new_review_team_receipt_missing_dossier_sha_blocks(self, tmp_path: Path) -> None:
         note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})
@@ -361,6 +363,48 @@ class TestAcceptanceReceiptEnforcement:
         frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
         assert "acceptance_receipt_legacy_review_team_digest_unbound" in (
             acceptance_receipt_blockers(frontmatter, note)
+        )
+
+    def test_non_basename_task_id_does_not_read_receipt_outside_note_dir(
+        self, tmp_path: Path
+    ) -> None:
+        note_dir = tmp_path / "active"
+        outside_dir = tmp_path / "outside"
+        note_dir.mkdir()
+        outside_dir.mkdir()
+        note = note_dir / "task-r.md"
+        note.write_text(
+            "---\ntype: cc-task\ntask_id: ../outside/task-r\n"
+            "quality_floor: frontier_review_required\n---\n",
+            encoding="utf-8",
+        )
+        self._receipt(outside_dir, "task-r", self.VALID_RECEIPT)
+
+        frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
+
+        assert acceptance_receipt_blockers(frontmatter, note) == ("missing_acceptance_receipt",)
+
+    def test_non_basename_task_id_does_not_read_dossier_outside_note_dir(
+        self, tmp_path: Path
+    ) -> None:
+        note_dir = tmp_path / "active"
+        outside_dir = tmp_path / "outside"
+        note_dir.mkdir()
+        outside_dir.mkdir()
+        note = note_dir / "task-r.md"
+        note.write_text("---\ntype: cc-task\ntask_id: task-r\n---\n", encoding="utf-8")
+        digest = self._dossier(outside_dir, "task-r")
+        receipt = note_dir / "task-r.acceptance.yaml"
+        receipt.write_text(
+            self.VALID_RECEIPT.replace("acceptor: operator", "acceptor: review-team:codex,glm")
+            + f"dossier_sha256: sha256:{digest}\n",
+            encoding="utf-8",
+        )
+
+        assert "acceptance_receipt_dossier_context_invalid" in (
+            _acceptance_receipt_validity_blockers(
+                receipt, note_path=note, task_id="../outside/task-r"
+            )
         )
 
     def test_review_team_receipt_blocks_after_dossier_tamper(self, tmp_path: Path) -> None:
