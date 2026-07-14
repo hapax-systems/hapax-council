@@ -75,6 +75,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1790,6 +1791,14 @@ def atomic_write_yaml(path: Path, payload: dict[str, Any]) -> None:
     atomic_write_text(path, yaml.safe_dump(payload, sort_keys=False))
 
 
+def _yaml_bytes(payload: dict[str, Any]) -> bytes:
+    return yaml.safe_dump(payload, sort_keys=False).encode("utf-8")
+
+
+def _sha256_bytes(raw: bytes) -> str:
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
 def _load_yaml_mapping(path: Path) -> dict[str, Any]:
     loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(loaded, dict):
@@ -2949,6 +2958,8 @@ def publish_review_team_digest_migration(
             "before_artifact_sha256": existing_artifact_sha256,
             "after_artifact_sha256": existing_artifact_sha256,
         }
+    candidate_raw = _yaml_bytes(payload)
+    candidate_artifact_sha256 = _sha256_bytes(candidate_raw)
     comparable_payload = {k: v for k, v in payload.items() if k != "generated_at"}
     if isinstance(existing_payload, dict) and not existing_was_unsealed:
         comparable_existing = {k: v for k, v in existing_payload.items() if k != "generated_at"}
@@ -2961,6 +2972,7 @@ def publish_review_team_digest_migration(
                 "entries": payload["entries"],
                 "next_actions": payload["next_actions"],
                 "generated_at": loaded.get("generated_at"),
+                "candidate_artifact_sha256": candidate_artifact_sha256,
             }
 
     if apply:
@@ -2981,6 +2993,8 @@ def publish_review_team_digest_migration(
         "current_receipt_drift": [],
         "before_artifact_sha256": existing_artifact_sha256,
         "after_artifact_sha256": after_artifact_sha256,
+        "candidate_artifact_sha256": candidate_artifact_sha256,
+        "candidate_payload": payload,
     }
     if existing_was_unsealed:
         result["replaced_unsealed_artifact"] = True
@@ -4810,6 +4824,122 @@ def replay_dossier_side_effects(
     }
 
 
+def plan_acceptance_receipt_write_if_due(
+    frontmatter: dict[str, Any],
+    note_path: Path,
+    task_id: str,
+    dossier: dict[str, Any],
+    *,
+    repo: str,
+    now_iso: str,
+    pr_number: int | None = None,
+    changed_files: tuple[str, ...] | None = None,
+    changed_file_count: int | None = None,
+    outage_state_path: Path | None = None,
+    route_blocked_families: dict[str, tuple[str, ...]] | None = None,
+) -> dict[str, Any] | None:
+    """Return the exact acceptance-receipt write that replay would perform."""
+
+    if dossier["review_team_verdict"] != review_team.QUORUM_ACCEPT:
+        return None
+    on_disk_dossier_path = review_team.review_dossier_path(note_path, task_id)
+    if not on_disk_dossier_path.is_file():
+        return None
+    blockers = review_team.review_dossier_validity_blockers(
+        frontmatter,
+        note_path,
+        pr_head_sha=str(dossier.get("head_sha") or ""),
+        pr_number=pr_number,
+        changed_files=changed_files or (),
+        changed_file_count=changed_file_count,
+        outage_state_path=outage_state_path or FAMILY_OUTAGE_STATE,
+        admission_time=now_iso,
+        route_blocked_families=route_blocked_families,
+    )
+    if blockers or not requires_acceptance_receipt(frontmatter):
+        return None
+    on_disk_dossier = _load_yaml_mapping(on_disk_dossier_path)
+    if (
+        on_disk_dossier.get("task_id") != task_id
+        or on_disk_dossier.get("pr") != dossier.get("pr")
+        or on_disk_dossier.get("head_sha") != dossier.get("head_sha")
+        or on_disk_dossier.get("review_team_verdict") != review_team.QUORUM_ACCEPT
+    ):
+        return None
+    dossier_sha256 = sha256_file(on_disk_dossier_path)
+    receipt_path = acceptance_receipt_path(note_path, task_id)
+    archive_path: Path | None = None
+    existing_sha256: str | None = None
+    if receipt_path.exists():
+        try:
+            existing = yaml.safe_load(receipt_path.read_text(encoding="utf-8")) or {}
+        except Exception:  # noqa: BLE001 - unreadable receipts are not planned over.
+            return None
+        existing_sha256 = "sha256:" + sha256_file(receipt_path)
+        existing_acceptor = str(existing.get("acceptor") or "")
+        existing_head = str(existing.get("head_sha") or "")
+        current_head = str(dossier.get("head_sha") or "")
+        if existing_acceptor.startswith("review-team:"):
+            if _existing_review_team_receipt_is_current(
+                receipt_path=receipt_path,
+                frontmatter=frontmatter,
+                note_path=note_path,
+                expected_head_sha=current_head,
+            ):
+                return None
+            token = (
+                existing_head[:8].lower()
+                if re.fullmatch(r"[0-9a-fA-F]{40}", existing_head)
+                else "review-team"
+            )
+            existing_digest = str(existing.get("dossier_sha256") or "").removeprefix("sha256:")
+            if existing_head == current_head and re.fullmatch(r"[0-9a-f]{64}", existing_digest):
+                token = f"{token}.{existing_digest[:12]}"
+            archive_path = _archive_path(receipt_path, token=token)
+        else:
+            return None
+    families = sorted({str(r["family"]) for r in on_disk_dossier["reviewers"]})
+    receipt = {
+        "acceptor": "review-team:" + ",".join(families),
+        "verdict": "accepted",
+        "timestamp": now_iso,
+        "artifact": f"{on_disk_dossier_path} (https://github.com/{repo}/pull/{dossier['pr']})",
+        "dossier_path": str(on_disk_dossier_path),
+        "dossier_sha256": f"sha256:{dossier_sha256}",
+        "pr": on_disk_dossier.get("pr"),
+        "head_sha": on_disk_dossier.get("head_sha"),
+        "review_team_verdict": on_disk_dossier.get("review_team_verdict"),
+        "reviewers": [
+            {"id": r.get("id"), "family": r.get("family"), "verdict": r.get("verdict")}
+            for r in on_disk_dossier.get("reviewers") or []
+        ],
+    }
+    _apply_public_gate_authority_context(receipt, frontmatter)
+    _sign_public_gate_authority_evidence(receipt)
+    raw = _yaml_bytes(receipt)
+    return {
+        "kind": "acceptance_receipt",
+        "path": str(receipt_path),
+        "archive_path": str(archive_path) if archive_path else None,
+        "existing_sha256": existing_sha256,
+        "payload": receipt,
+        "sha256": _sha256_bytes(raw),
+    }
+
+
+def apply_planned_acceptance_receipt_write(plan: dict[str, Any]) -> None:
+    receipt_path = Path(str(plan["path"]))
+    archive_path = Path(str(plan["archive_path"])) if plan.get("archive_path") else None
+    if archive_path is not None and receipt_path.exists():
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(receipt_path, archive_path)
+        _fsync_directory(receipt_path.parent)
+    payload = plan.get("payload")
+    if not isinstance(payload, dict):
+        raise RuntimeError("planned receipt payload missing")
+    atomic_write_yaml(receipt_path, payload)
+
+
 def _default_send_runner(cmd: list[str]) -> None:
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60)
     if proc.returncode != 0:
@@ -5034,6 +5164,21 @@ def _review_pr_locked(
         replay_results: list[dict[str, Any]] = []
         for target_note_path, target_frontmatter, target_task_id, existing in replay_candidates:
             target_dossier_path = review_team.review_dossier_path(target_note_path, target_task_id)
+            prepared_side_effects: dict[str, Any] = {}
+            planned_receipt = plan_acceptance_receipt_write_if_due(
+                target_frontmatter,
+                target_note_path,
+                target_task_id,
+                existing,
+                repo=repo,
+                now_iso=now_iso,
+                pr_number=pr_info.number,
+                changed_files=pr_info.files,
+                changed_file_count=pr_info.changed_file_count,
+                route_blocked_families=effective_route_blocked_families,
+            )
+            if planned_receipt is not None:
+                prepared_side_effects["acceptance_receipt"] = planned_receipt
             side_effects = {}
             if apply:
                 side_effects = replay_dossier_side_effects(
@@ -5056,6 +5201,7 @@ def _review_pr_locked(
                     "task_id": target_task_id,
                     "dossier_path": str(target_dossier_path),
                     "review_team_verdict": existing.get("review_team_verdict"),
+                    "prepared_side_effects": prepared_side_effects,
                     "side_effects": side_effects,
                 }
             )
@@ -5071,6 +5217,7 @@ def _review_pr_locked(
                 "head_sha": pr_info.head_sha,
                 "dossier_path": only["dossier_path"],
                 "review_team_verdict": only["review_team_verdict"],
+                "prepared_side_effects": only["prepared_side_effects"],
                 "side_effects": only["side_effects"],
             }
         return {
@@ -5524,6 +5671,198 @@ def _rebound_task_ids_from_replay_results(results: list[dict[str, Any]]) -> froz
     return frozenset(rebound)
 
 
+def _canonical_json_sha256(payload: Any) -> str:
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def _iter_single_replay_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    flattened: list[dict[str, Any]] = []
+    for result in results:
+        if str(result.get("status") or "").startswith("multi_"):
+            for item in result.get("results") or []:
+                if isinstance(item, dict):
+                    flattened.append(item)
+            continue
+        flattened.append(result)
+    return flattened
+
+
+def _prepared_receipt_writes_from_replay_results(
+    results: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    writes: list[dict[str, Any]] = []
+    for result in _iter_single_replay_results(results):
+        prepared = result.get("prepared_side_effects")
+        if not isinstance(prepared, dict):
+            continue
+        receipt = prepared.get("acceptance_receipt")
+        if isinstance(receipt, dict):
+            writes.append(receipt)
+    writes.sort(key=lambda item: str(item.get("path") or ""))
+    return writes
+
+
+def _applied_replay_results_from_plan(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    applied: list[dict[str, Any]] = []
+    for result in results:
+        item = dict(result)
+        status = str(item.get("status") or "")
+        if status == "replay_ready":
+            item["status"] = "replayed_fresh"
+        elif status == "multi_replay_ready":
+            item["status"] = "multi_replayed_fresh"
+            item["results"] = _applied_replay_results_from_plan(
+                [nested for nested in item.get("results") or [] if isinstance(nested, dict)]
+            )
+        prepared = item.get("prepared_side_effects")
+        if isinstance(prepared, dict) and "side_effects" in item:
+            receipt = prepared.get("acceptance_receipt")
+            if isinstance(receipt, dict):
+                item["side_effects"] = {
+                    **dict(item.get("side_effects") or {}),
+                    "receipt_path": receipt.get("path"),
+                    "wake_path": None,
+                }
+        applied.append(item)
+    return applied
+
+
+def _migration_disposition_manifest(migration: dict[str, Any]) -> dict[str, Any]:
+    entries = [
+        {
+            "task_id": str(entry.get("task_id") or ""),
+            "receipt_basename": str(entry.get("receipt_basename") or ""),
+            "receipt_sha256": str(entry.get("receipt_sha256") or ""),
+            "classification": str(entry.get("classification") or ""),
+            "reason": str(entry.get("reason") or ""),
+        }
+        for entry in migration.get("entries") or []
+        if isinstance(entry, dict)
+    ]
+    entries.sort(
+        key=lambda item: (item["task_id"], item["receipt_basename"], item["receipt_sha256"])
+    )
+    return {
+        "schema": "hapax.review_team_digest_migration.disposition_manifest.v1",
+        "entries": entries,
+    }
+
+
+def _migration_write_set(
+    *,
+    migration: dict[str, Any],
+    receipt_writes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    writes: list[dict[str, Any]] = []
+    candidate_artifact_sha256 = migration.get("candidate_artifact_sha256")
+    if migration.get("candidate_payload") and candidate_artifact_sha256:
+        writes.append(
+            {
+                "kind": "migration_artifact",
+                "path": str(migration.get("artifact_path") or ""),
+                "sha256": str(candidate_artifact_sha256),
+                "before_sha256": migration.get("before_artifact_sha256"),
+            }
+        )
+    for write in receipt_writes:
+        writes.append(
+            {
+                "kind": "acceptance_receipt",
+                "path": str(write.get("path") or ""),
+                "sha256": str(write.get("sha256") or ""),
+                "before_sha256": write.get("existing_sha256"),
+                "archive_path": write.get("archive_path"),
+            }
+        )
+    writes.sort(key=lambda item: (item["kind"], item["path"]))
+    return {"schema": "hapax.review_team_digest_migration.write_set.v1", "writes": writes}
+
+
+def _migration_plan_binding(
+    *,
+    authority: dict[str, Any],
+    artifact_preflight: dict[str, Any],
+    migration: dict[str, Any],
+    receipt_writes: list[dict[str, Any]],
+    snapshots: tuple[dict[str, Any], ...],
+) -> dict[str, Any]:
+    disposition_manifest = _migration_disposition_manifest(migration)
+    write_set = _migration_write_set(migration=migration, receipt_writes=receipt_writes)
+    evidence_manifest = {
+        "schema": "hapax.review_team_digest_migration.evidence_manifest.v1",
+        "authority": authority,
+        "artifact_preflight": artifact_preflight,
+        "snapshot_fingerprint": _migration_snapshot_fingerprint(snapshots),
+        "snapshot_count": len(snapshots),
+    }
+    binding = {
+        "schema": "hapax.review_team_digest_migration.prepared_plan.v1",
+        "candidate_artifact_sha256": migration.get("candidate_artifact_sha256"),
+        "disposition_manifest_sha256": _canonical_json_sha256(disposition_manifest),
+        "write_set_sha256": _canonical_json_sha256(write_set),
+        "evidence_manifest_sha256": _canonical_json_sha256(evidence_manifest),
+    }
+    binding["plan_sha256"] = _canonical_json_sha256(
+        {
+            "schema": binding["schema"],
+            "candidate_artifact_sha256": binding["candidate_artifact_sha256"],
+            "disposition_manifest_sha256": binding["disposition_manifest_sha256"],
+            "write_set_sha256": binding["write_set_sha256"],
+            "evidence_manifest_sha256": binding["evidence_manifest_sha256"],
+        }
+    )
+    return {
+        **binding,
+        "disposition_manifest": disposition_manifest,
+        "write_set": write_set,
+        "evidence_manifest": evidence_manifest,
+    }
+
+
+def _trace_with_prepared_migration_outputs(
+    *,
+    vault_root: Path,
+    migration: dict[str, Any],
+    receipt_writes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    candidate_payload = migration.get("candidate_payload")
+    with tempfile.TemporaryDirectory(prefix="review-team-digest-migration-plan.") as tmp:
+        tmp_vault = Path(tmp) / "hapax-cc-tasks"
+        source_active = vault_root / "active"
+        target_active = tmp_vault / "active"
+        if source_active.exists():
+            shutil.copytree(source_active, target_active)
+        else:
+            target_active.mkdir(parents=True)
+        (tmp_vault / "closed").mkdir(exist_ok=True)
+        if isinstance(candidate_payload, dict):
+            (target_active / REVIEW_TEAM_DIGEST_MIGRATION_FILENAME).write_bytes(
+                _yaml_bytes(candidate_payload)
+            )
+        for write in receipt_writes:
+            rel = Path(str(write["path"])).relative_to(vault_root)
+            payload = write.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            target = tmp_vault / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(_yaml_bytes(payload))
+        return collect_acceptance_receipt_admission_trace(tmp_vault)
+
+
+def _apply_prepared_migration_outputs(
+    *,
+    migration: dict[str, Any],
+    receipt_writes: list[dict[str, Any]],
+) -> None:
+    for write in receipt_writes:
+        apply_planned_acceptance_receipt_write(write)
+    candidate_payload = migration.get("candidate_payload")
+    if isinstance(candidate_payload, dict):
+        atomic_write_yaml(Path(str(migration["artifact_path"])), candidate_payload)
+
+
 def replay_all_open_prs_with_digest_migration(
     *,
     repo: str = DEFAULT_REPO,
@@ -5665,6 +6004,27 @@ def replay_all_open_prs_with_digest_migration(
             source_head_sha=_current_source_head(repo_root),
         )
         migration["artifact_preflight"] = artifact_preflight
+        migration["plan_binding"] = _migration_plan_binding(
+            authority=authority,
+            artifact_preflight=artifact_preflight,
+            migration=migration,
+            receipt_writes=[],
+            snapshots=pre_effect_snapshots,
+        )
+        post_authority_blockers = _migration_authority_preimage_blockers(
+            authority=authority,
+            frozen_entries=frozen_entries,
+            proposal_path=migration_authority_proposal_path,
+            proposal_sha256=migration_authority_proposal_sha256,
+            consumed_act_carrier_path=migration_consumed_act_carrier_path,
+            consumed_act_carrier_sha256=migration_consumed_act_carrier_sha256,
+            source_trust_anchor=migration_source_trust_anchor,
+        )
+        post_artifact_preflight = _preflight_existing_review_team_digest_migration(
+            vault_root,
+            authority=authority,
+            frozen_inventory_entries=frozen_entries,
+        )
         post_recheck_snapshots = collect_review_team_digest_migration_snapshots(vault_root)
         snapshot_drift = _migration_snapshot_drift(pre_effect_snapshots, post_recheck_snapshots)
         acceptance_trace = (
@@ -5677,6 +6037,12 @@ def replay_all_open_prs_with_digest_migration(
         blockers: list[str] = []
         if migration.get("status") == "migration_blocked":
             blockers.extend(migration.get("blockers") or ["migration_recheck_candidate_blocked"])
+        if post_authority_blockers:
+            blockers.extend(post_authority_blockers)
+            migration["post_authority_blockers"] = post_authority_blockers
+        if post_artifact_preflight != artifact_preflight:
+            blockers.append("migration_recheck_artifact_drift")
+            migration["post_artifact_preflight"] = post_artifact_preflight
         if migration.get("current_receipt_drift"):
             blockers.append("migration_recheck_current_receipt_drift")
         if snapshot_drift:
@@ -5799,6 +6165,16 @@ def replay_all_open_prs_with_digest_migration(
                 pause_preconditions=pause_preconditions,
                 migration_extra=planned_migration,
             )
+        planned_receipt_writes = _prepared_receipt_writes_from_replay_results(
+            planned_open_pr_results
+        )
+        planned_migration["plan_binding"] = _migration_plan_binding(
+            authority=authority,
+            artifact_preflight=artifact_preflight,
+            migration=planned_migration,
+            receipt_writes=planned_receipt_writes,
+            snapshots=pre_effect_snapshots,
+        )
         final_authority_blockers = _migration_authority_preimage_blockers(
             authority=authority,
             frozen_entries=frozen_entries,
@@ -5822,6 +6198,16 @@ def replay_all_open_prs_with_digest_migration(
                 final_blockers.append("migration_artifact_changed_after_plan")
         if snapshot_drift:
             final_blockers.append("migration_receipts_changed_after_plan")
+        acceptance_trace = _trace_with_prepared_migration_outputs(
+            vault_root=vault_root,
+            migration=planned_migration,
+            receipt_writes=planned_receipt_writes,
+        )
+        trace_blockers = _acceptance_trace_blockers(acceptance_trace)
+        if trace_blockers:
+            final_blockers.append("migration_acceptance_trace_blocked")
+            planned_migration["acceptance_trace_blockers"] = trace_blockers
+        planned_migration["acceptance_admission_trace"] = acceptance_trace
         if final_blockers:
             return _migration_blocked_result(
                 status="migration_blocked",
@@ -5830,65 +6216,50 @@ def replay_all_open_prs_with_digest_migration(
                 blockers=list(dict.fromkeys(final_blockers)),
                 pause_preconditions=pause_preconditions,
                 migration_extra={
+                    **planned_migration,
                     "artifact_preflight": artifact_preflight,
                     "under_lock_artifact_preflight": under_lock_preflight,
                     "final_artifact_preflight": final_artifact_preflight,
                     "snapshot_drift": snapshot_drift,
+                    "planned_open_pr_results": planned_open_pr_results,
+                    "planned_receipt_writes": planned_receipt_writes,
+                    "plan_binding": planned_migration["plan_binding"],
+                    "acceptance_admission_trace": acceptance_trace,
+                    "acceptance_trace_blockers": trace_blockers,
                     "before_artifact_sha256": artifact_preflight.get("artifact_sha256"),
                     "after_artifact_sha256": final_artifact_preflight.get("artifact_sha256"),
                 },
             )
         if apply:
-            open_pr_results = review_all_open_prs(
-                repo=repo,
-                repo_root=repo_root,
-                vault_root=vault_root,
-                apply=True,
-                force=False,
-                replay_only=True,
-                gh_runner=gh_runner,
-                reviewer_runner=reviewer_runner,
-                wake_dir=wake_dir,
-                send_runner=send_runner,
-                route_blocked_families=route_blocked_families,
+            _apply_prepared_migration_outputs(
+                migration=planned_migration,
+                receipt_writes=planned_receipt_writes,
             )
-            applied_rebound_task_ids = _rebound_task_ids_from_replay_results(open_pr_results)
-            if applied_rebound_task_ids != rebound_task_ids:
-                return _migration_blocked_result(
-                    status="migration_blocked",
-                    repo=repo,
-                    vault_root=vault_root,
-                    blockers=["migration_replay_plan_changed_during_apply"],
-                    pause_preconditions=pause_preconditions,
-                    migration_extra={
-                        "artifact_preflight": artifact_preflight,
-                        "planned_open_pr_results": planned_open_pr_results,
-                        "applied_open_pr_results": open_pr_results,
-                        "planned_rebound_task_ids": sorted(rebound_task_ids),
-                        "applied_rebound_task_ids": sorted(applied_rebound_task_ids),
-                    },
-                )
-            migration = publish_review_team_digest_migration(
-                vault_root,
-                snapshots=pre_effect_snapshots,
-                authority=authority,
-                frozen_inventory_entries=frozen_entries,
-                rebound_task_ids=rebound_task_ids,
-                apply=True,
-                now_iso=now_iso,
-                source_head_sha=_current_source_head(repo_root),
-            )
+            open_pr_results = _applied_replay_results_from_plan(planned_open_pr_results)
+            migration = dict(planned_migration)
+            migration["planned_receipt_writes"] = planned_receipt_writes
+            if migration.get("candidate_payload"):
+                after_sha256 = "sha256:" + sha256_file(Path(str(migration["artifact_path"])))
+                migration["after_artifact_sha256"] = after_sha256
+                migration["artifact_written"] = True
+                migration["status"] = "migration_written"
+                if after_sha256 != migration.get("candidate_artifact_sha256"):
+                    migration["status"] = "migration_recovery_required"
+                    migration["blockers"] = ["migration_artifact_post_write_sha256_mismatch"]
         else:
             migration = planned_migration
     migration["artifact_preflight"] = artifact_preflight
     if migration.get("status") == "migration_blocked":
         status = "migration_blocked"
+    elif migration.get("status") == "migration_recovery_required":
+        status = "migration_recovery_required"
     elif migration_recheck:
         status = "migration_recheck_complete" if apply else "migration_recheck_ready"
     else:
         status = "replay_migration_complete" if apply else "replay_migration_ready"
     if status != "migration_blocked" and (
-        apply or migration.get("status") == "migration_unchanged"
+        "acceptance_admission_trace" not in migration
+        and migration.get("status") == "migration_unchanged"
     ):
         acceptance_trace = collect_acceptance_receipt_admission_trace(vault_root)
         migration["acceptance_admission_trace"] = acceptance_trace

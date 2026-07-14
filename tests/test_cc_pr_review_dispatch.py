@@ -2504,6 +2504,51 @@ checklist:
         assert third["migration"]["counts"] == second["migration"]["counts"]
         assert sha256(artifact_path.read_bytes()).hexdigest() == artifact_sha
 
+    def test_digest_migration_apply_consumes_prepared_replay_without_second_replay(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result, _, _, note = _review(
+            tmp_path, task_kwargs={"quality_floor": "frontier_review_required"}
+        )
+        assert result["status"] == "dispatched"
+        vault = note.parent.parent
+        receipt_path = note.parent / "task-a.acceptance.yaml"
+        legacy_receipt = yaml.safe_load(receipt_path.read_text(encoding="utf-8"))
+        legacy_receipt.pop("dossier_sha256")
+        receipt_path.write_text(yaml.safe_dump(legacy_receipt, sort_keys=False), encoding="utf-8")
+        authority_kwargs = _write_migration_authority(
+            tmp_path, [_migration_frozen_entry(receipt_path)]
+        )
+        real_review_all = dispatch.review_all_open_prs
+        apply_modes: list[bool] = []
+
+        def counting_review_all(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+            apply_modes.append(bool(kwargs.get("apply")))
+            return real_review_all(*args, **kwargs)
+
+        monkeypatch.setattr(dispatch, "review_all_open_prs", counting_review_all)
+
+        migration = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=FakeGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:10:30+00:00",
+            route_blocked_families={},
+            **authority_kwargs,
+        )
+
+        assert migration["status"] == "replay_migration_complete"
+        assert migration["open_pr_results"][0]["status"] == "replayed_fresh"
+        assert apply_modes == [False]
+        assert migration["migration"]["plan_binding"]["write_set_sha256"].startswith("sha256:")
+        rebound_receipt = yaml.safe_load(receipt_path.read_text(encoding="utf-8"))
+        assert rebound_receipt["dossier_sha256"].startswith("sha256:")
+
     def test_digest_migration_without_authority_has_no_effects(self, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)
         _write_task(vault, quality_floor="frontier_review_required")
@@ -2859,6 +2904,8 @@ checklist:
         assert result["pause_preconditions"]["providerless_recheck"] is True
         assert result["pause_preconditions"]["dispatch_killswitch_set"] is True
         assert result["pause_preconditions"]["unit_pause"]["validated"] is True
+        assert result["migration"]["plan_binding"]["plan_sha256"].startswith("sha256:")
+        assert result["migration"]["plan_binding"]["write_set_sha256"].startswith("sha256:")
         assert reviewers.invocations == []
         assert not dispatch.review_team_digest_migration_path(vault).exists()
         assert not (vault / "_locks").exists()
@@ -2903,6 +2950,89 @@ checklist:
         )
         assert result["migration"]["blockers"] == ["migration_claim_state:migration_in_progress"]
         assert not dispatch.review_team_digest_migration_path(vault).exists()
+
+    def test_migration_recheck_blocks_on_artifact_drift_after_candidate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        receipt = _write_legacy_review_team_receipt(vault)
+        authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+        monkeypatch.setenv(dispatch.KILLSWITCH_ENV, "true")
+        real_publish = dispatch.publish_review_team_digest_migration
+
+        def racing_publish(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            result = real_publish(*args, **kwargs)
+            payload = result.get("candidate_payload")
+            if isinstance(payload, dict):
+                dispatch.atomic_write_yaml(
+                    dispatch.review_team_digest_migration_path(vault), payload
+                )
+            return result
+
+        monkeypatch.setattr(dispatch, "publish_review_team_digest_migration", racing_publish)
+
+        result = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=False,
+            gh_runner=FakeGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:45+00:00",
+            route_blocked_families={},
+            migration_recheck=True,
+            **authority_kwargs,
+        )
+
+        assert result["status"] == "migration_blocked"
+        assert "migration_recheck_artifact_drift" in result["migration"]["blockers"]
+        assert not (vault / "_locks").exists()
+
+    def test_migration_recheck_blocks_on_authority_drift_after_candidate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        receipt = _write_legacy_review_team_receipt(vault)
+        authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+        monkeypatch.setenv(dispatch.KILLSWITCH_ENV, "true")
+        real_authority = dispatch.migration_authority_from_files
+        calls = 0
+
+        def racing_authority(
+            *args: Any, **kwargs: Any
+        ) -> tuple[Any, tuple[Any, ...], tuple[str, ...]]:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                return None, (), ("migration_authority_proposal_sha256_mismatch",)
+            return real_authority(*args, **kwargs)
+
+        monkeypatch.setattr(dispatch, "migration_authority_from_files", racing_authority)
+
+        result = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=False,
+            gh_runner=FakeGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:45+00:00",
+            route_blocked_families={},
+            migration_recheck=True,
+            **authority_kwargs,
+        )
+
+        assert result["status"] == "migration_blocked"
+        assert (
+            "migration_authority_changed_after_preflight:"
+            "migration_authority_proposal_sha256_mismatch"
+        ) in result["migration"]["blockers"]
+        assert not dispatch.review_team_digest_migration_path(vault).exists()
+        assert not (vault / "_locks").exists()
 
     def test_migration_recheck_blocks_on_current_receipt_drift(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -3173,7 +3303,8 @@ checklist:
         )
 
         assert result["status"] == "migration_blocked"
-        assert result["migration"]["blockers"] == ["migration_receipts_changed_after_plan"]
+        assert "migration_receipts_changed_after_plan" in result["migration"]["blockers"]
+        assert "migration_acceptance_trace_blocked" in result["migration"]["blockers"]
         assert result["migration"]["snapshot_drift"][0]["status"] == "changed_after_preflight"
         assert apply_calls == [False]
         assert not dispatch.review_team_digest_migration_path(vault).exists()
@@ -3321,6 +3452,7 @@ checklist:
         assert trace["operator"]["route"] == "operator_receipt"
         assert trace["blocked"]["route"] == "blocked"
         assert trace["blocked"]["blockers"] == ["missing_acceptance_receipt"]
+        assert not dispatch.review_team_digest_migration_path(vault).exists()
 
     def test_post_freeze_digest_unbound_receipt_is_reported_rejected(self, tmp_path: Path) -> None:
         class NoOpenPullsGh(FakeGh):
@@ -3350,10 +3482,16 @@ checklist:
         assert migration["counts"]["exact-hash-preserved"] == 0
         assert migration["counts"]["stale-invalid"] == 1
         assert migration["entries"][0]["reason"] == "post_cutover_unlisted_digest_unbound_receipt"
+        trace = {item["task_id"]: item for item in migration["acceptance_admission_trace"]}
+        assert (
+            "acceptance_receipt_digest_migration_post_cutover_unlisted"
+            in (trace["task-a"]["blockers"])
+        )
         frontmatter = dispatch.review_team._note_frontmatter(note)
         assert frontmatter is not None
         blockers = dispatch.acceptance_receipt_blockers(frontmatter, note)
-        assert "acceptance_receipt_digest_migration_post_cutover_unlisted" in blockers
+        assert "acceptance_receipt_digest_migration_missing" in blockers
+        assert not dispatch.review_team_digest_migration_path(vault).exists()
         assert receipt.is_file()
 
     def test_migration_lock_loser_has_no_github_or_artifact_effects(self, tmp_path: Path) -> None:

@@ -21,10 +21,11 @@ acceptance migration guarded by
 
 Use the providerless recheck first. It validates the source-pinned authority
 tuple, proposal/carrier bytes, sealed artifact immutability, current receipt
-drift, and before/after artifact hash without GitHub, reviewers, comments,
-artifact writes, temp files, migration claims, or `_locks` directory creation.
-It also reports the existing migration claim state as absent, active, stale,
-malformed, or unavailable; any non-absent state is HOLD.
+drift, before/after artifact hash, and a deterministic prepared-plan binding
+without GitHub, reviewers, comments, artifact writes, temp files, migration
+claims, or `_locks` directory creation. It also reports the existing migration
+claim state as absent, active, stale, malformed, or unavailable; any non-absent
+state is HOLD.
 
 ```bash
 uv run python scripts/cc-pr-review-dispatch.py --all --replay-only --migration-recheck \
@@ -41,7 +42,12 @@ require `migration.status: migration_ready`. For an existing sealed artifact,
 require `migration.status: migration_unchanged`, identical
 `before_artifact_sha256` / `after_artifact_sha256`, empty
 `current_receipt_drift`, no `acceptance_trace_blockers`, and a populated
-`migration.acceptance_admission_trace`. The sealed artifact's persisted
+`migration.acceptance_admission_trace`. In both cases record
+`migration.plan_binding.plan_sha256`,
+`migration.plan_binding.disposition_manifest_sha256`,
+`migration.plan_binding.write_set_sha256`, and
+`migration.plan_binding.evidence_manifest_sha256`; any later apply authority
+must bind those exact digests. The sealed artifact's persisted
 `integrity_recheck` text must name the providerless `--migration-recheck`
 command, not the applying replay command.
 
@@ -63,7 +69,7 @@ The foreground apply must be an explicit transition out of HOLD:
 unset HAPAX_REVIEW_TEAM_DISPATCH_OFF
 ```
 
-Then run:
+Then run only the exact candidate authorized by the later digest-binding act:
 
 ```bash
 uv run python scripts/cc-pr-review-dispatch.py --all --apply --replay-only \
@@ -77,10 +83,12 @@ A valid pre-existing sealed artifact is immutable. Empty, partial, removed, or
 forged seal mappings are blockers, not an unsealed legacy artifact. The only
 replaceable unsealed artifact is the exact source-pinned legacy preimage named
 by `legacy_unsealed_artifact_sha256` in the reviewed source trust anchor. Reruns
-may rebind current open receipts from current dossiers, but must never rewrite,
-shrink, expand, or replace `_review-team-digest-migration.yaml`. After apply,
-rerun the providerless recheck with the killswitch set again and compare
-before/after hashes:
+may rebind current open receipts from current dossiers through the prepared
+write set only; apply must not recompute PR discovery, replay classification, or
+acceptance semantics after a write. Acceptance admission is checked against the
+prepared outputs before the first real write, and any blocker leaves the active
+tree byte-exact. After apply, rerun the providerless recheck with the killswitch
+set again and compare before/after hashes:
 
 ```bash
 export HAPAX_REVIEW_TEAM_DISPATCH_OFF=1

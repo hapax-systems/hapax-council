@@ -412,6 +412,7 @@ class TestAcceptanceReceiptEnforcement:
                         "canonical_sha256": frozen_digest,
                         "entries": frozen_entries,
                     },
+                    "active_dir": str(tmp_path.resolve()),
                     "pause_boundary": REVIEW_TEAM_DIGEST_MIGRATION_PAUSE_BOUNDARY,
                     "integrity_recheck": REVIEW_TEAM_DIGEST_MIGRATION_INTEGRITY_RECHECK,
                     "entries": entries,
@@ -679,6 +680,9 @@ class TestAcceptanceReceiptEnforcement:
                 "sealed_migration_entry_task_note_basename_mismatch:task-r",
             ),
             ("sealed_at", "sealed_migration_generation_sealed_at_invalid"),
+            ("generated_at_naive", "sealed_migration_generated_at_invalid"),
+            ("top_level_extra_key", "sealed_migration_top_level_extra_key:unexpected"),
+            ("authority_extra_key", "sealed_migration_authority_extra_key:unexpected"),
             (
                 "self_consistent_reclassification",
                 "sealed_migration_frozen_tuple_reclassified:task-r:not-subject",
@@ -708,6 +712,12 @@ class TestAcceptanceReceiptEnforcement:
             loaded["entries"][0]["task_note_basename"] = "other-task.md"
         elif mutation == "sealed_at":
             loaded["sealed_generation"]["sealed_at"] = "not-a-real-timestamp"
+        elif mutation == "generated_at_naive":
+            loaded["generated_at"] = "2026-07-14T03:00:00"
+        elif mutation == "top_level_extra_key":
+            loaded["unexpected"] = True
+        elif mutation == "authority_extra_key":
+            loaded["authority"]["unexpected"] = True
         elif mutation == "self_consistent_reclassification":
             loaded["entries"][0]["classification"] = "not-subject"
             loaded["entries"][0]["reason"] = "acceptor_not_review_team"

@@ -333,6 +333,72 @@ REVIEW_TEAM_DIGEST_MIGRATION_CLASSIFICATIONS = frozenset(
         "not-subject",
     }
 )
+REVIEW_TEAM_DIGEST_MIGRATION_TOP_LEVEL_KEYS = frozenset(
+    {
+        "schema",
+        "generated_at",
+        "authority",
+        "authority_proposal_id",
+        "sealed_generation",
+        "frozen_prebinding_inventory",
+        "active_dir",
+        "pause_boundary",
+        "integrity_recheck",
+        "entries",
+        "counts",
+        "next_actions",
+    }
+)
+REVIEW_TEAM_DIGEST_MIGRATION_AUTHORITY_KEYS = frozenset(
+    {
+        "proposal_path",
+        "proposal_sha256",
+        "proposal_id",
+        "case_id",
+        "consumed_act_carrier_path",
+        "consumed_act_carrier_sha256",
+        "consumed_act_carrier_schema",
+        "consumed_act_carrier_status",
+        "consumed_at",
+        "operator_act_response",
+        "frozen_inventory_canonical_sha256",
+        "frozen_inventory_count",
+        "legacy_unsealed_artifact_sha256",
+        "source_trust_anchor",
+    }
+)
+REVIEW_TEAM_DIGEST_MIGRATION_SOURCE_ANCHOR_KEYS = frozenset(
+    REVIEW_TEAM_DIGEST_MIGRATION_SOURCE_TRUST_ANCHOR
+)
+REVIEW_TEAM_DIGEST_MIGRATION_GENERATION_KEYS = frozenset({"id", "sealed_at", "source_head_sha"})
+REVIEW_TEAM_DIGEST_MIGRATION_FROZEN_INVENTORY_KEYS = frozenset(
+    {"count", "canonical_sha256", "entries"}
+)
+REVIEW_TEAM_DIGEST_MIGRATION_FROZEN_ENTRY_KEYS = frozenset(
+    {"task_id", "receipt_basename", "receipt_sha256"}
+)
+REVIEW_TEAM_DIGEST_MIGRATION_ENTRY_KEYS = frozenset(
+    {
+        "task_id",
+        "task_note_basename",
+        "receipt_basename",
+        "receipt_relpath",
+        "receipt_sha256",
+        "classification",
+        "reason",
+        "legacy_admission",
+    }
+)
+REVIEW_TEAM_DIGEST_MIGRATION_LEGACY_ADMISSION_KEYS = frozenset(
+    {
+        "route",
+        "source_trust_anchor",
+        "sealed_generation_id",
+        "sealed_generation_source_head_sha",
+        "receipt_sha256",
+        "classification",
+    }
+)
 
 
 def review_team_digest_migration_source_trust_anchor() -> dict[str, str]:
@@ -642,10 +708,23 @@ def _valid_iso_datetime(value: str) -> bool:
     if not value:
         return False
     try:
-        datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return False
-    return True
+    return parsed.tzinfo is not None and parsed.utcoffset() is not None
+
+
+def _key_set_blockers(
+    mapping: Mapping[str, Any],
+    *,
+    required: frozenset[str],
+    allowed: frozenset[str],
+    reason_prefix: str,
+) -> list[str]:
+    keys = frozenset(str(key) for key in mapping)
+    blockers = [f"{reason_prefix}_missing_key:{key}" for key in sorted(required - keys)]
+    blockers.extend(f"{reason_prefix}_extra_key:{key}" for key in sorted(keys - allowed))
+    return blockers
 
 
 def _migration_entry_reason_valid(classification: str, reason: str) -> bool:
@@ -684,12 +763,44 @@ def review_team_digest_migration_artifact_blockers(
     """
 
     blockers: list[str] = []
+    blockers.extend(
+        _key_set_blockers(
+            loaded,
+            required=REVIEW_TEAM_DIGEST_MIGRATION_TOP_LEVEL_KEYS,
+            allowed=REVIEW_TEAM_DIGEST_MIGRATION_TOP_LEVEL_KEYS,
+            reason_prefix="sealed_migration_top_level",
+        )
+    )
     if loaded.get("schema") != REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA:
         blockers.append(f"sealed_migration_schema_mismatch:{loaded.get('schema') or 'missing'}")
+    generated_at = _frontmatter_non_null_scalar(loaded.get("generated_at"))
+    if not _valid_iso_datetime(generated_at):
+        blockers.append("sealed_migration_generated_at_invalid")
+    active_dir = _frontmatter_non_null_scalar(loaded.get("active_dir"))
+    if not active_dir or not Path(active_dir).is_absolute() or ".." in Path(active_dir).parts:
+        blockers.append("sealed_migration_active_dir_invalid")
     authority = loaded.get("authority")
     if not isinstance(authority, Mapping) or not authority:
         blockers.append("sealed_migration_authority_missing")
     else:
+        blockers.extend(
+            _key_set_blockers(
+                authority,
+                required=REVIEW_TEAM_DIGEST_MIGRATION_AUTHORITY_KEYS,
+                allowed=REVIEW_TEAM_DIGEST_MIGRATION_AUTHORITY_KEYS,
+                reason_prefix="sealed_migration_authority",
+            )
+        )
+        source_anchor = authority.get("source_trust_anchor")
+        if isinstance(source_anchor, Mapping):
+            blockers.extend(
+                _key_set_blockers(
+                    source_anchor,
+                    required=REVIEW_TEAM_DIGEST_MIGRATION_SOURCE_ANCHOR_KEYS,
+                    allowed=REVIEW_TEAM_DIGEST_MIGRATION_SOURCE_ANCHOR_KEYS,
+                    reason_prefix="sealed_migration_authority_source_anchor",
+                )
+            )
         blockers.extend(_migration_authority_blockers(loaded))
         if expected_authority is not None:
             for key, expected in expected_authority.items():
@@ -709,6 +820,14 @@ def review_team_digest_migration_artifact_blockers(
     if not isinstance(sealed_generation, Mapping) or not sealed_generation:
         blockers.append("sealed_migration_generation_missing")
     else:
+        blockers.extend(
+            _key_set_blockers(
+                sealed_generation,
+                required=REVIEW_TEAM_DIGEST_MIGRATION_GENERATION_KEYS,
+                allowed=REVIEW_TEAM_DIGEST_MIGRATION_GENERATION_KEYS,
+                reason_prefix="sealed_migration_generation",
+            )
+        )
         expected_generation_id = (
             _expected_sealed_generation_id(authority) if isinstance(authority, Mapping) else ""
         )
@@ -731,6 +850,14 @@ def review_team_digest_migration_artifact_blockers(
     if not isinstance(frozen, Mapping) or not frozen:
         blockers.append("sealed_migration_frozen_inventory_missing")
     else:
+        blockers.extend(
+            _key_set_blockers(
+                frozen,
+                required=REVIEW_TEAM_DIGEST_MIGRATION_FROZEN_INVENTORY_KEYS,
+                allowed=REVIEW_TEAM_DIGEST_MIGRATION_FROZEN_INVENTORY_KEYS,
+                reason_prefix="sealed_migration_frozen_inventory",
+            )
+        )
         raw_entries = frozen.get("entries")
         if not isinstance(raw_entries, list):
             blockers.append("sealed_migration_frozen_inventory_entries_invalid")
@@ -739,6 +866,18 @@ def review_team_digest_migration_artifact_blockers(
             frozen_tuples = _migration_frozen_entry_tuples(raw_entries)
             if len(frozen_tuples) != len(raw_entries):
                 blockers.append("sealed_migration_frozen_inventory_duplicate_tuple")
+            for index, frozen_entry in enumerate(raw_entries):
+                if not isinstance(frozen_entry, Mapping):
+                    blockers.append(f"sealed_migration_frozen_inventory_entry_invalid:{index}")
+                    continue
+                blockers.extend(
+                    _key_set_blockers(
+                        frozen_entry,
+                        required=REVIEW_TEAM_DIGEST_MIGRATION_FROZEN_ENTRY_KEYS,
+                        allowed=REVIEW_TEAM_DIGEST_MIGRATION_FROZEN_ENTRY_KEYS,
+                        reason_prefix=f"sealed_migration_frozen_inventory_entry:{index}",
+                    )
+                )
             expected_digest = (
                 authority.get("frozen_inventory_canonical_sha256")
                 if isinstance(authority, Mapping)
@@ -773,6 +912,15 @@ def review_team_digest_migration_artifact_blockers(
             if not isinstance(entry, Mapping):
                 blockers.append(f"sealed_migration_entry_invalid:{index}")
                 continue
+            blockers.extend(
+                _key_set_blockers(
+                    entry,
+                    required=REVIEW_TEAM_DIGEST_MIGRATION_ENTRY_KEYS
+                    - frozenset({"legacy_admission"}),
+                    allowed=REVIEW_TEAM_DIGEST_MIGRATION_ENTRY_KEYS,
+                    reason_prefix=f"sealed_migration_entry:{index}",
+                )
+            )
             entries.append(entry)
             task_id, basename, receipt_sha = _migration_tuple_from_mapping(entry)
             if not task_id:
@@ -838,6 +986,14 @@ def review_team_digest_migration_artifact_blockers(
     if not isinstance(counts, Mapping):
         blockers.append("sealed_migration_counts_missing")
     else:
+        blockers.extend(
+            _key_set_blockers(
+                counts,
+                required=REVIEW_TEAM_DIGEST_MIGRATION_CLASSIFICATIONS,
+                allowed=REVIEW_TEAM_DIGEST_MIGRATION_CLASSIFICATIONS,
+                reason_prefix="sealed_migration_counts",
+            )
+        )
         actual_counts = _migration_counts(entries)
         for classification, actual in sorted(actual_counts.items()):
             try:
@@ -847,6 +1003,18 @@ def review_team_digest_migration_artifact_blockers(
                 continue
             if declared != actual:
                 blockers.append(f"sealed_migration_count_mismatch:{classification}")
+    next_actions = loaded.get("next_actions")
+    if not isinstance(next_actions, Mapping):
+        blockers.append("sealed_migration_next_actions_missing")
+    else:
+        blockers.extend(
+            _key_set_blockers(
+                next_actions,
+                required=REVIEW_TEAM_DIGEST_MIGRATION_CLASSIFICATIONS,
+                allowed=REVIEW_TEAM_DIGEST_MIGRATION_CLASSIFICATIONS,
+                reason_prefix="sealed_migration_next_actions",
+            )
+        )
     return tuple(dict.fromkeys(blockers))
 
 
@@ -859,6 +1027,14 @@ def _legacy_admission_blockers(
     admission = entry.get("legacy_admission")
     if not isinstance(admission, Mapping):
         return ("acceptance_receipt_digest_migration_legacy_admission_missing",)
+    key_blockers = _key_set_blockers(
+        admission,
+        required=REVIEW_TEAM_DIGEST_MIGRATION_LEGACY_ADMISSION_KEYS,
+        allowed=REVIEW_TEAM_DIGEST_MIGRATION_LEGACY_ADMISSION_KEYS,
+        reason_prefix="acceptance_receipt_digest_migration_legacy_admission",
+    )
+    if key_blockers:
+        return tuple(key_blockers)
     if (
         _frontmatter_non_null_scalar(admission.get("route"))
         != REVIEW_TEAM_DIGEST_MIGRATION_LEGACY_ROUTE
@@ -899,6 +1075,14 @@ def _legacy_admission_blockers(
     source_anchor = admission.get("source_trust_anchor")
     if not isinstance(source_anchor, Mapping):
         return ("acceptance_receipt_digest_migration_legacy_admission_source_anchor_missing",)
+    key_blockers = _key_set_blockers(
+        source_anchor,
+        required=REVIEW_TEAM_DIGEST_MIGRATION_SOURCE_ANCHOR_KEYS,
+        allowed=REVIEW_TEAM_DIGEST_MIGRATION_SOURCE_ANCHOR_KEYS,
+        reason_prefix="acceptance_receipt_digest_migration_legacy_admission_source_anchor",
+    )
+    if key_blockers:
+        return tuple(key_blockers)
     expected_anchor = review_team_digest_migration_source_trust_anchor()
     for key, expected in expected_anchor.items():
         if _frontmatter_non_null_scalar(source_anchor.get(key)) != expected:
