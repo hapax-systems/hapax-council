@@ -1162,6 +1162,7 @@ def build_prompt(
     authority_case = fields.get("authority_case")
     parent_spec = fields.get("parent_spec")
     title = fields.get("title")
+    status = strip_scalar(str(fields.get("status", "")))
     worktree = lane_worktree(lane, platform)
     claim_cmd = worktree / "scripts" / "cc-claim"
     close_cmd = worktree / "scripts" / "cc-close"
@@ -1169,14 +1170,30 @@ def build_prompt(
         Path(os.environ.get("HAPAX_CC_CLAIMS_DIR", str(Path.home() / ".cache" / "hapax")))
         / f"cc-active-task-{lane}"
     )
-    claim_instruction = (
-        "2. Before mutation, verify this lane owns the task claim. "
-        f"If the task is still offered, run {claim_cmd} {task_id}. "
-        f"If the launcher already claimed it, confirm {claim_file} contains {task_id} "
-        "and the task note is assigned to this lane. "
-        "If claim ownership is absent, rejected for another reason, or assigned to another lane, "
-        "stop and write a relay receipt."
-    )
+    claim_epoch_file = claim_file.with_name(f"cc-claim-epoch-{lane}")
+    if status in {"claimed", "in_progress"}:
+        claim_instruction = (
+            "2. The dispatcher selected an already-claimed task for this lane. "
+            "The launcher must start in preclaimed/no-claim mode; DO NOT run cc-claim. "
+            "The launcher must verify the exact same-session active marker, matching "
+            "claim epoch, fresh claim lease, and live task-note status before Codex starts. "
+            f"Before mutation, verify the launcher-provided session-keyed claim paths contain {task_id}, "
+            f"{claim_file} and {claim_epoch_file} are only legacy compatibility evidence, "
+            "and the task note is status claimed/in_progress and assigned to this lane. "
+            "If claim ownership is absent or assigned to another lane, stop and write a relay receipt."
+        )
+    else:
+        claim_instruction = (
+            "2. The task is offered to this launcher. The launcher must acquire it before "
+            f"Codex starts using the worktree-local claim helper {claim_cmd} for {task_id}; "
+            "after startup, DO NOT run or re-run cc-claim. "
+            "The launcher must then re-read the exact same-session active marker, matching "
+            "claim epoch, fresh claim lease, and live task-note status before Codex starts. "
+            f"Before mutation, verify the launcher-provided session-keyed claim paths contain {task_id}, "
+            f"{claim_file} and {claim_epoch_file} are only legacy compatibility evidence, "
+            "and the task note is status claimed/in_progress and assigned to this lane. "
+            "If claim ownership is absent or assigned to another lane, stop and write a relay receipt."
+        )
     base = "\n".join(
         [
             "SDLC GOVERNED DISPATCH.",
