@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -295,6 +296,7 @@ REVIEW_TEAM_DIGEST_MIGRATION_FILENAME = "_review-team-digest-migration.yaml"
 REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA = "hapax.review_team_digest_migration.v1"
 REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION = "exact-hash-preserved"
 REVIEW_TEAM_DIGEST_MIGRATION_SHA256_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
+RAW_SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 
 
 def requires_acceptance_receipt(frontmatter: Mapping[str, Any]) -> bool:
@@ -339,12 +341,159 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _canonical_active_dir_for_note(note_path: Path) -> Path:
+    """Resolve the canonical active vault directory for review migration state."""
+
+    note_dir = note_path.parent
+    if note_dir.name == "active":
+        return note_dir
+    sibling_active = note_dir.parent / "active"
+    if sibling_active.is_dir():
+        return sibling_active
+    return note_dir
+
+
 def _review_team_digest_migration_path(note_path: Path) -> Path:
-    return note_path.parent / REVIEW_TEAM_DIGEST_MIGRATION_FILENAME
+    return _canonical_active_dir_for_note(note_path) / REVIEW_TEAM_DIGEST_MIGRATION_FILENAME
 
 
 def _valid_artifact_basename(value: str) -> bool:
     return bool(value) and Path(value).name == value and value not in {".", ".."}
+
+
+def _raw_sha256_file(path: Path) -> str:
+    return _sha256_file(path)
+
+
+def _canonical_frozen_inventory_sha256(entries: list[Any]) -> str:
+    payload = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _load_yaml_mapping_for_migration(path: Path) -> tuple[Mapping[str, Any] | None, str | None]:
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        return None, type(exc).__name__
+    if not isinstance(loaded, Mapping):
+        return None, f"not_a_mapping:{type(loaded).__name__}"
+    return loaded, None
+
+
+def _migration_authority_blockers(loaded: Mapping[str, Any]) -> tuple[str, ...]:
+    authority = loaded.get("authority")
+    if not isinstance(authority, Mapping):
+        return ("acceptance_receipt_digest_migration_authority_missing",)
+
+    proposal_path_text = _frontmatter_non_null_scalar(authority.get("proposal_path"))
+    proposal_sha = _frontmatter_non_null_scalar(authority.get("proposal_sha256"))
+    carrier_path_text = _frontmatter_non_null_scalar(authority.get("consumed_act_carrier_path"))
+    carrier_sha = _frontmatter_non_null_scalar(authority.get("consumed_act_carrier_sha256"))
+    frozen_digest = _frontmatter_non_null_scalar(authority.get("frozen_inventory_canonical_sha256"))
+    if not proposal_path_text or RAW_SHA256_RE.fullmatch(proposal_sha) is None:
+        return ("acceptance_receipt_digest_migration_authority_proposal_invalid",)
+    if not carrier_path_text or RAW_SHA256_RE.fullmatch(carrier_sha) is None:
+        return ("acceptance_receipt_digest_migration_authority_carrier_invalid",)
+    if RAW_SHA256_RE.fullmatch(frozen_digest) is None:
+        return ("acceptance_receipt_digest_migration_authority_inventory_invalid",)
+
+    proposal_path = Path(proposal_path_text)
+    carrier_path = Path(carrier_path_text)
+    try:
+        if _raw_sha256_file(proposal_path) != proposal_sha:
+            return ("acceptance_receipt_digest_migration_authority_proposal_sha256_mismatch",)
+        if _raw_sha256_file(carrier_path) != carrier_sha:
+            return ("acceptance_receipt_digest_migration_authority_carrier_sha256_mismatch",)
+    except OSError as exc:
+        return (f"acceptance_receipt_digest_migration_authority_unreadable:{type(exc).__name__}",)
+
+    proposal, proposal_error = _load_yaml_mapping_for_migration(proposal_path)
+    if proposal_error or proposal is None:
+        return (
+            f"acceptance_receipt_digest_migration_authority_proposal_malformed:{proposal_error}",
+        )
+    carrier, carrier_error = _load_yaml_mapping_for_migration(carrier_path)
+    if carrier_error or carrier is None:
+        return (f"acceptance_receipt_digest_migration_authority_carrier_malformed:{carrier_error}",)
+
+    proposal_id = _frontmatter_non_null_scalar(proposal.get("id"))
+    if proposal_id and _frontmatter_non_null_scalar(loaded.get("authority_proposal_id")) not in {
+        "",
+        proposal_id,
+    }:
+        return ("acceptance_receipt_digest_migration_authority_proposal_id_mismatch",)
+    carrier_proposal = carrier.get("proposal")
+    operator_act = carrier.get("operator_act")
+    if not isinstance(carrier_proposal, Mapping) or not isinstance(operator_act, Mapping):
+        return ("acceptance_receipt_digest_migration_authority_carrier_malformed:binding_missing",)
+    expected_response = f"RATIFY {proposal_id} proposal_sha256={proposal_sha}"
+    if _frontmatter_non_null_scalar(carrier.get("status")) != "consumed_active":
+        return ("acceptance_receipt_digest_migration_authority_carrier_not_consumed",)
+    if _frontmatter_non_null_scalar(carrier_proposal.get("path")) != proposal_path_text:
+        return ("acceptance_receipt_digest_migration_authority_carrier_proposal_path_mismatch",)
+    if _frontmatter_non_null_scalar(carrier_proposal.get("sha256")) != proposal_sha:
+        return ("acceptance_receipt_digest_migration_authority_carrier_proposal_sha_mismatch",)
+    if (
+        _frontmatter_non_null_scalar(operator_act.get("exact_response_utf8_no_lf"))
+        != expected_response
+    ):
+        return ("acceptance_receipt_digest_migration_authority_carrier_response_mismatch",)
+    for key in (
+        "matched_id",
+        "matched_proposal_sha256",
+        "authority_minted",
+        "authority_limited_to_proposal",
+    ):
+        if operator_act.get(key) is not True:
+            return (f"acceptance_receipt_digest_migration_authority_carrier_{key}_false",)
+
+    frozen = proposal.get("frozen_prebinding_inventory")
+    if not isinstance(frozen, Mapping):
+        return ("acceptance_receipt_digest_migration_authority_inventory_missing",)
+    frozen_entries = frozen.get("entries")
+    if not isinstance(frozen_entries, list):
+        return ("acceptance_receipt_digest_migration_authority_inventory_entries_invalid",)
+    proposal_frozen_digest = _frontmatter_non_null_scalar(frozen.get("canonical_sha256"))
+    actual_frozen_digest = _canonical_frozen_inventory_sha256(frozen_entries)
+    if proposal_frozen_digest != actual_frozen_digest or frozen_digest != actual_frozen_digest:
+        return ("acceptance_receipt_digest_migration_authority_inventory_sha256_mismatch",)
+
+    artifact_frozen = loaded.get("frozen_prebinding_inventory")
+    if not isinstance(artifact_frozen, Mapping):
+        return ("acceptance_receipt_digest_migration_authority_artifact_inventory_missing",)
+    artifact_frozen_entries = artifact_frozen.get("entries")
+    if not isinstance(artifact_frozen_entries, list):
+        return ("acceptance_receipt_digest_migration_authority_artifact_inventory_invalid",)
+    if _canonical_frozen_inventory_sha256(artifact_frozen_entries) != actual_frozen_digest:
+        return ("acceptance_receipt_digest_migration_authority_artifact_inventory_expanded",)
+    try:
+        artifact_count = int(artifact_frozen.get("count"))
+    except (TypeError, ValueError):
+        return ("acceptance_receipt_digest_migration_authority_artifact_inventory_count_invalid",)
+    if artifact_count != len(frozen_entries):
+        return ("acceptance_receipt_digest_migration_authority_artifact_inventory_count_mismatch",)
+    return ()
+
+
+def _frozen_digest_tuples(loaded: Mapping[str, Any]) -> set[tuple[str, str, str]]:
+    frozen = loaded.get("frozen_prebinding_inventory")
+    if not isinstance(frozen, Mapping):
+        return set()
+    entries = frozen.get("entries")
+    if not isinstance(entries, list):
+        return set()
+    tuples: set[tuple[str, str, str]] = set()
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        tuples.add(
+            (
+                _frontmatter_non_null_scalar(entry.get("task_id")),
+                _frontmatter_non_null_scalar(entry.get("receipt_basename")),
+                _frontmatter_non_null_scalar(entry.get("receipt_sha256")),
+            )
+        )
+    return tuples
 
 
 def _review_team_digest_migration_blockers(
@@ -358,19 +507,17 @@ def _review_team_digest_migration_blockers(
     migration_path = _review_team_digest_migration_path(note_path)
     if not migration_path.is_file():
         return ("acceptance_receipt_digest_migration_missing",)
-    try:
-        loaded = yaml.safe_load(migration_path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
-        return (f"acceptance_receipt_digest_migration_malformed:{type(exc).__name__}",)
-    if not isinstance(loaded, Mapping):
-        return (
-            f"acceptance_receipt_digest_migration_malformed:not_a_mapping:{type(loaded).__name__}",
-        )
+    loaded, load_error = _load_yaml_mapping_for_migration(migration_path)
+    if load_error or loaded is None:
+        return (f"acceptance_receipt_digest_migration_malformed:{load_error}",)
     if loaded.get("schema") != REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA:
         return (
             "acceptance_receipt_digest_migration_malformed:schema:"
             f"{loaded.get('schema') or 'missing'}",
         )
+    authority_blockers = _migration_authority_blockers(loaded)
+    if authority_blockers:
+        return authority_blockers
     entries = loaded.get("entries")
     if not isinstance(entries, list):
         return ("acceptance_receipt_digest_migration_malformed:entries_not_list",)
@@ -402,6 +549,10 @@ def _review_team_digest_migration_blockers(
 
     classification = _frontmatter_non_null_scalar(entry.get("classification"))
     if classification != REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION:
+        if _frontmatter_non_null_scalar(entry.get("reason")) == (
+            "post_cutover_unlisted_digest_unbound_receipt"
+        ):
+            return ("acceptance_receipt_digest_migration_post_cutover_unlisted",)
         return (
             "acceptance_receipt_digest_migration_classification_not_preserving:"
             f"{classification or 'missing'}",
@@ -409,6 +560,8 @@ def _review_team_digest_migration_blockers(
     expected_sha = _frontmatter_non_null_scalar(entry.get("receipt_sha256"))
     if REVIEW_TEAM_DIGEST_MIGRATION_SHA256_RE.fullmatch(expected_sha) is None:
         return ("acceptance_receipt_digest_migration_malformed:receipt_sha256",)
+    if (task_id, basename, expected_sha) not in _frozen_digest_tuples(loaded):
+        return ("acceptance_receipt_digest_migration_post_cutover_unlisted",)
     try:
         actual_sha = _sha256_file(receipt_path)
     except OSError as exc:
@@ -480,19 +633,19 @@ def _acceptance_receipt_validity_blockers(
 def acceptance_receipt_blockers(frontmatter: Mapping[str, Any], note_path: Path) -> tuple[str, ...]:
     """Receipt blockers for a review-floor task; empty for non-review-floor tasks.
 
-    A review-floor note without a resolvable ``task_id`` fails closed with
-    ``missing_acceptance_receipt`` — the receipt is keyed by task_id, so an
-    anonymous note can never present one.
+    A review-floor note without a safe, resolvable ``task_id`` fails closed with
+    a task-identity blocker — the receipt is keyed by task_id, so an unsafe
+    identity must not be hidden behind a generic missing-receipt reason.
     """
 
     if not requires_acceptance_receipt(frontmatter):
         return ()
     task_id = _frontmatter_non_null_scalar(frontmatter.get("task_id"))
     if not task_id:
-        return ("missing_acceptance_receipt",)
+        return ("acceptance_receipt_task_id_missing",)
     receipt_path = _task_artifact_path_beside_note(note_path, task_id, ACCEPTANCE_RECEIPT_SUFFIX)
     if receipt_path is None:
-        return ("missing_acceptance_receipt",)
+        return ("acceptance_receipt_task_id_invalid",)
     return _acceptance_receipt_validity_blockers(
         receipt_path,
         note_path=note_path,

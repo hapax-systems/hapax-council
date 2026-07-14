@@ -23,21 +23,29 @@ Usage::
     uv run python scripts/cc-pr-review-dispatch.py --pr 123 --release-lock --apply
     uv run python scripts/cc-pr-review-dispatch.py --pr 123 --probe-lock --hold-seconds 60
     uv run python scripts/cc-pr-review-dispatch.py --all --apply      # timer-ready scan
-    uv run python scripts/cc-pr-review-dispatch.py --all --apply --replay-only
-                                                                    # no-review migration/cutover
+    uv run python scripts/cc-pr-review-dispatch.py --all --apply --replay-only \
+      --migration-authority-proposal /path/to/ratified-proposal.yaml \
+      --migration-authority-proposal-sha256 <64-hex> \
+      --migration-consumed-act-carrier /path/to/consumed-carrier.yaml \
+      --migration-consumed-act-carrier-sha256 <64-hex>               # no-review cutover
     HAPAX_REVIEW_TEAM_DISPATCH_OFF=1 ...                              # killswitch
 
 Default mode is a dry-run constitution plan. ``--apply`` dispatches reviewers
 and writes the dossier; ``--force`` re-reviews an already-reviewed head sha.
-The legacy digest cutover command is ``--all --apply --replay-only`` and must
-run only while automatic PR autoqueue/review dispatch is paused. It snapshots
-pre-binding review-team acceptance receipts, replays current open PR dossiers
-without reviewer/provider dispatch, then atomically publishes
-``<vault>/active/_review-team-digest-migration.yaml``. Re-run the same command
-for the integrity recheck; it reports unchanged entries when the active receipt
-bytes still match. A fresh-but-dead review claim is not recovered by replay:
-first prove the holder is not live, then use the explicit ``--release-lock``
-path below.
+The legacy digest cutover command is ``--all --apply --replay-only`` plus the
+four migration-authority flags naming the ratified proposal and consumed act
+carrier with exact SHA-256 values. It must run only while automatic PR
+autoqueue/review dispatch is paused. The command acquires a vault-wide
+``O_CREAT|O_EXCL`` migration claim before GitHub, reviewer, dossier, receipt, or
+comment effects; snapshots pre-binding review-team acceptance receipts; replays
+current open PR dossiers without reviewer/provider dispatch; then atomically
+publishes the sealed one-shot authority artifact at
+``<vault>/active/_review-team-digest-migration.yaml``. Re-runs are integrity
+rechecks against that sealed authority: they may rebind current receipts but may
+not expand the exact-hash preservation allowlist. A fresh-but-dead review claim
+is not recovered by replay: first prove same-host PID + proc-start liveness is
+not the recorded holder, then use the explicit ``--release-lock`` path below;
+cross-host or uncertain holder identity remains HOLD.
 ``--release-lock`` is a no-provider recovery path for stale or malformed
 per-repository+PR claim files under ``<vault>/_locks/review-team/``; dry-run
 reports evidence and ``--apply`` archives the stale claim instead of deleting it.
@@ -106,9 +114,12 @@ DEFAULT_REVIEW_LOCK_DIR = DEFAULT_VAULT_ROOT / "_locks" / "review-team"
 # Cross-host review claims older than this are reported as stale, but are never
 # broken automatically. Recovery requires separately governed liveness evidence.
 REVIEW_EXECUTION_LOCK_STALE_AFTER_SECONDS = 6 * 60 * 60
+MIGRATION_LOCK_SCHEMA = "hapax.review_team_digest_migration.lock.v1"
+REVIEW_TEAM_DIGEST_MIGRATION_LOCK_STALE_AFTER_SECONDS = REVIEW_EXECUTION_LOCK_STALE_AFTER_SECONDS
 KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_DISPATCH_OFF"
 TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 TASK_HASH_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
+RAW_SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 MAX_DIFF_CHARS = 80_000
 MAX_TASK_NOTE_CHARS = 60_000
 MAX_REVIEW_REPLY_EXCERPT_CHARS = 4_000
@@ -1001,6 +1012,19 @@ def _read_proc_start_time_ticks() -> int | None:
         return None
 
 
+def _read_pid_proc_start_time_ticks(pid: int) -> int | None:
+    if pid <= 0:
+        return None
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        return int(stat.rsplit(") ", 1)[1].split()[19])
+    except (IndexError, ValueError):
+        return None
+
+
 def _process_identity() -> dict[str, Any]:
     identity: dict[str, Any] = {
         "pid": os.getpid(),
@@ -1015,6 +1039,76 @@ def _process_identity() -> dict[str, Any]:
     if proc_start is not None:
         identity["proc_start_time_ticks"] = proc_start
     return identity
+
+
+def _holder_liveness_evidence(holder: dict[str, Any]) -> dict[str, Any]:
+    """Best-effort same-host process identity check for governed lock recovery."""
+
+    current_host = os.uname().nodename
+    holder_host = str(holder.get("hostname") or holder.get("host") or "")
+    evidence: dict[str, Any] = {
+        "current_host": current_host,
+        "holder_host": holder_host,
+    }
+    if holder_host != current_host:
+        evidence["status"] = "cross_host_unverified"
+        evidence["next_action"] = (
+            "HOLD: verify holder liveness on the recorded host or obtain explicit "
+            "operator override before archive-release."
+        )
+        return evidence
+
+    process = holder.get("process")
+    if not isinstance(process, dict):
+        process = {}
+    try:
+        pid = int(process.get("pid") or holder.get("pid"))
+    except (TypeError, ValueError):
+        evidence["status"] = "same_host_identity_incomplete"
+        evidence["next_action"] = (
+            "HOLD: holder PID is missing or invalid; inspect the claim and record "
+            "explicit recovery evidence before archive-release."
+        )
+        return evidence
+    try:
+        expected_start = int(process.get("proc_start_time_ticks"))
+    except (TypeError, ValueError):
+        evidence.update(
+            {
+                "pid": pid,
+                "status": "same_host_identity_incomplete",
+                "next_action": (
+                    "HOLD: proc-start ticks are missing; inspect the claim and record "
+                    "explicit recovery evidence before archive-release."
+                ),
+            }
+        )
+        return evidence
+
+    actual_start = _read_pid_proc_start_time_ticks(pid)
+    evidence.update(
+        {
+            "pid": pid,
+            "expected_proc_start_time_ticks": expected_start,
+            "actual_proc_start_time_ticks": actual_start,
+        }
+    )
+    if actual_start is None:
+        evidence["status"] = "same_host_not_live"
+        evidence["next_action"] = "Recorded same-host holder is absent; archive-release is allowed."
+    elif actual_start == expected_start:
+        evidence["status"] = "same_host_live"
+        evidence["next_action"] = (
+            "HOLD: recorded holder PID and proc-start still identify a live process; "
+            "wait for normal release or terminate only through the governing lane."
+        )
+    else:
+        evidence["status"] = "same_host_pid_reused"
+        evidence["next_action"] = (
+            "Recorded PID belongs to a different process; archive-release is allowed "
+            "after preserving this liveness evidence."
+        )
+    return evidence
 
 
 def _lock_holder_metadata(
@@ -1098,6 +1192,7 @@ def _lock_evidence(
     pr_number: int | None = None,
     holder_error: str | None = None,
     lock_age_seconds: float | None = None,
+    holder_liveness: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     evidence = {
         "path": str(path),
@@ -1109,6 +1204,8 @@ def _lock_evidence(
         evidence["lock_age_seconds"] = round(max(lock_age_seconds, 0.0), 3)
     if holder_error:
         evidence["holder_error"] = holder_error
+    if holder_liveness is not None:
+        evidence["holder_liveness"] = holder_liveness
     next_action = _lock_next_action(status=status, repo=repo, pr_number=pr_number)
     if next_action:
         evidence["next_action"] = next_action
@@ -1147,8 +1244,8 @@ def _lock_next_action(
         )
     if status == "review_lock_stale":
         return (
-            "Claim is stale. Confirm the recorded holder is not live, then archive-release it with: "
-            f"{release_cmd}"
+            "Claim is stale. Archive-release only when same-host PID/proc-start evidence proves "
+            f"the holder is not live; cross-host or uncertain identity remains HOLD. Command: {release_cmd}"
         )
     if status == "review_lock_malformed":
         return (
@@ -1221,6 +1318,7 @@ def _lock_collision_result(*, path: Path, repo: str, pr_number: int) -> ReviewEx
     holder, read_error = _read_lock_holder(path)
     validation_error = None
     lock_age_seconds = None
+    holder_liveness = None
     status = "review_lock_malformed"
     if read_error is None:
         validation_error = _holder_validation_error(holder, repo=repo, pr_number=pr_number)
@@ -1228,6 +1326,7 @@ def _lock_collision_result(*, path: Path, repo: str, pr_number: int) -> ReviewEx
             acquired_at = _parse_lock_acquired_at(holder.get("acquired_at"))
             assert acquired_at is not None
             lock_age_seconds = (datetime.now(UTC) - acquired_at).total_seconds()
+            holder_liveness = _holder_liveness_evidence(holder)
             status = (
                 "review_lock_stale"
                 if lock_age_seconds > REVIEW_EXECUTION_LOCK_STALE_AFTER_SECONDS
@@ -1246,6 +1345,7 @@ def _lock_collision_result(*, path: Path, repo: str, pr_number: int) -> ReviewEx
             pr_number=pr_number,
             holder_error=holder_error,
             lock_age_seconds=lock_age_seconds,
+            holder_liveness=holder_liveness,
         ),
     )
 
@@ -1369,6 +1469,35 @@ def release_review_execution_lock(
             "holder": collision.holder,
             "lock_evidence": evidence,
             "next_action": evidence.get("next_action"),
+        }
+    holder_liveness = evidence.get("holder_liveness")
+    if collision.status == "review_lock_malformed" or not isinstance(holder_liveness, dict):
+        return {
+            "status": "release_refused",
+            "repo": repo,
+            "pr": pr_number,
+            "lock_path": str(path),
+            "reason": "holder_liveness_unproven",
+            "holder": collision.holder,
+            "lock_evidence": evidence,
+            "next_action": (
+                "HOLD: claim holder identity is malformed or incomplete; preserve the "
+                "claim and obtain explicit recovery evidence before archive-release."
+            ),
+        }
+    liveness_status = str(holder_liveness.get("status") or "")
+    if liveness_status not in {"same_host_not_live", "same_host_pid_reused"}:
+        return {
+            "status": "release_refused",
+            "repo": repo,
+            "pr": pr_number,
+            "lock_path": str(path),
+            "reason": "holder_liveness_unproven"
+            if liveness_status != "same_host_live"
+            else "holder_still_live",
+            "holder": collision.holder,
+            "lock_evidence": evidence,
+            "next_action": holder_liveness.get("next_action") or evidence.get("next_action"),
         }
     if not apply:
         return {
@@ -1649,8 +1778,339 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _canonical_frozen_inventory_sha256(entries: list[dict[str, Any]]) -> str:
+    payload = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _migration_tuple(entry: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(entry.get("task_id") or ""),
+        str(entry.get("receipt_basename") or ""),
+        str(entry.get("receipt_sha256") or ""),
+    )
+
+
+def _migration_tuple_set(entries: tuple[dict[str, Any], ...]) -> frozenset[tuple[str, str, str]]:
+    return frozenset(_migration_tuple(entry) for entry in entries)
+
+
+def _current_source_head(repo_root: Path | None) -> str:
+    root = repo_root or REPO_ROOT
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    return completed.stdout.strip() or "unknown"
+
+
+def _load_yaml_mapping_or_blocker(
+    path: Path, label: str
+) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        return None, f"{label}_unreadable:{type(exc).__name__}"
+    if not isinstance(loaded, dict):
+        return None, f"{label}_malformed:not_a_mapping:{type(loaded).__name__}"
+    return loaded, None
+
+
+def migration_authority_from_files(
+    *,
+    proposal_path: Path | None,
+    proposal_sha256: str | None,
+    consumed_act_carrier_path: Path | None,
+    consumed_act_carrier_sha256: str | None,
+) -> tuple[dict[str, Any] | None, tuple[dict[str, Any], ...], tuple[str, ...]]:
+    """Validate the ratified cutover authority and return its frozen tuple set."""
+
+    missing = []
+    if proposal_path is None:
+        missing.append("migration_authority_proposal_path_missing")
+    if not proposal_sha256:
+        missing.append("migration_authority_proposal_sha256_missing")
+    if consumed_act_carrier_path is None:
+        missing.append("migration_consumed_act_carrier_path_missing")
+    if not consumed_act_carrier_sha256:
+        missing.append("migration_consumed_act_carrier_sha256_missing")
+    if missing:
+        return None, (), tuple(missing)
+    assert proposal_path is not None
+    assert consumed_act_carrier_path is not None
+    proposal_sha = str(proposal_sha256 or "").strip().lower()
+    carrier_sha = str(consumed_act_carrier_sha256 or "").strip().lower()
+    if RAW_SHA256_RE.fullmatch(proposal_sha) is None:
+        return None, (), ("migration_authority_proposal_sha256_invalid",)
+    if RAW_SHA256_RE.fullmatch(carrier_sha) is None:
+        return None, (), ("migration_consumed_act_carrier_sha256_invalid",)
+    try:
+        if sha256_file(proposal_path) != proposal_sha:
+            return None, (), ("migration_authority_proposal_sha256_mismatch",)
+        if sha256_file(consumed_act_carrier_path) != carrier_sha:
+            return None, (), ("migration_consumed_act_carrier_sha256_mismatch",)
+    except OSError as exc:
+        return None, (), (f"migration_authority_unreadable:{type(exc).__name__}",)
+
+    proposal, proposal_error = _load_yaml_mapping_or_blocker(proposal_path, "proposal")
+    if proposal_error or proposal is None:
+        return None, (), (proposal_error or "proposal_malformed",)
+    carrier, carrier_error = _load_yaml_mapping_or_blocker(consumed_act_carrier_path, "carrier")
+    if carrier_error or carrier is None:
+        return None, (), (carrier_error or "carrier_malformed",)
+
+    proposal_id = str(proposal.get("id") or "").strip()
+    if not proposal_id:
+        return None, (), ("migration_authority_proposal_id_missing",)
+    carrier_proposal = carrier.get("proposal")
+    operator_act = carrier.get("operator_act")
+    if not isinstance(carrier_proposal, dict) or not isinstance(operator_act, dict):
+        return None, (), ("migration_consumed_act_carrier_binding_missing",)
+    expected_response = f"RATIFY {proposal_id} proposal_sha256={proposal_sha}"
+    if str(carrier.get("status") or "") != "consumed_active":
+        return None, (), ("migration_consumed_act_carrier_not_consumed",)
+    if str(carrier.get("id") or "") != proposal_id:
+        return None, (), ("migration_consumed_act_carrier_id_mismatch",)
+    if str(carrier_proposal.get("path") or "") != str(proposal_path):
+        return None, (), ("migration_consumed_act_carrier_proposal_path_mismatch",)
+    if str(carrier_proposal.get("sha256") or "") != proposal_sha:
+        return None, (), ("migration_consumed_act_carrier_proposal_sha_mismatch",)
+    if str(operator_act.get("exact_response_utf8_no_lf") or "") != expected_response:
+        return None, (), ("migration_consumed_act_carrier_response_mismatch",)
+    for key in (
+        "matched_id",
+        "matched_proposal_sha256",
+        "authority_minted",
+        "authority_limited_to_proposal",
+    ):
+        if operator_act.get(key) is not True:
+            return None, (), (f"migration_consumed_act_carrier_{key}_false",)
+
+    frozen = proposal.get("frozen_prebinding_inventory")
+    if not isinstance(frozen, dict):
+        return None, (), ("migration_authority_frozen_inventory_missing",)
+    entries = frozen.get("entries")
+    if not isinstance(entries, list):
+        return None, (), ("migration_authority_frozen_inventory_entries_invalid",)
+    normalized_entries: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            return None, (), ("migration_authority_frozen_inventory_entry_invalid",)
+        normalized = {
+            "task_id": str(entry.get("task_id") or ""),
+            "receipt_basename": str(entry.get("receipt_basename") or ""),
+            "receipt_sha256": str(entry.get("receipt_sha256") or ""),
+        }
+        if (
+            not normalized["task_id"]
+            or Path(normalized["receipt_basename"]).name != normalized["receipt_basename"]
+        ):
+            return None, (), ("migration_authority_frozen_inventory_entry_path_invalid",)
+        if TASK_HASH_RE.fullmatch(normalized["receipt_sha256"]) is None:
+            return None, (), ("migration_authority_frozen_inventory_entry_sha_invalid",)
+        frozen_tuple = _migration_tuple(normalized)
+        if frozen_tuple in seen:
+            return None, (), ("migration_authority_frozen_inventory_duplicate_tuple",)
+        seen.add(frozen_tuple)
+        normalized_entries.append(normalized)
+    canonical_sha = _canonical_frozen_inventory_sha256(normalized_entries)
+    if str(frozen.get("canonical_sha256") or "") != canonical_sha:
+        return None, (), ("migration_authority_frozen_inventory_sha256_mismatch",)
+    try:
+        frozen_count = int(frozen.get("count"))
+    except (TypeError, ValueError):
+        frozen_count = len(normalized_entries)
+    if frozen_count != len(normalized_entries):
+        return None, (), ("migration_authority_frozen_inventory_count_mismatch",)
+    if str(carrier.get("frozen_prebinding_inventory_canonical_sha256") or "") != canonical_sha:
+        return None, (), ("migration_consumed_act_carrier_inventory_sha_mismatch",)
+
+    authority = {
+        "proposal_path": str(proposal_path),
+        "proposal_sha256": proposal_sha,
+        "proposal_id": proposal_id,
+        "case_id": str(proposal.get("case_id") or proposal.get("authority_case") or ""),
+        "consumed_act_carrier_path": str(consumed_act_carrier_path),
+        "consumed_act_carrier_sha256": carrier_sha,
+        "consumed_act_carrier_schema": str(carrier.get("schema") or ""),
+        "consumed_act_carrier_status": str(carrier.get("status") or ""),
+        "consumed_at": str(carrier.get("consumed_at") or ""),
+        "operator_act_response": expected_response,
+        "frozen_inventory_canonical_sha256": canonical_sha,
+        "frozen_inventory_count": len(normalized_entries),
+    }
+    return authority, tuple(normalized_entries), ()
+
+
 def review_team_digest_migration_path(vault_root: Path) -> Path:
     return vault_root / "active" / REVIEW_TEAM_DIGEST_MIGRATION_FILENAME
+
+
+def review_team_digest_migration_lock_path(vault_root: Path) -> Path:
+    return vault_root / "_locks" / "review-team-digest-migration.lock"
+
+
+def _migration_lock_holder_metadata(path: Path, owner_token: str) -> dict[str, Any]:
+    return {
+        "schema": MIGRATION_LOCK_SCHEMA,
+        "owner_token": owner_token,
+        "host": os.uname().nodename,
+        "hostname": os.uname().nodename,
+        "pid": os.getpid(),
+        "process": _process_identity(),
+        "lock_path": str(path),
+        "acquired_at": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+
+
+def _migration_lock_collision(path: Path) -> ReviewExecutionLock:
+    holder, read_error = _read_lock_holder(path)
+    status = "migration_lock_malformed"
+    lock_age_seconds = None
+    holder_error = read_error
+    if read_error is None:
+        if holder.get("schema") != MIGRATION_LOCK_SCHEMA:
+            holder_error = "holder_schema_mismatch"
+        elif not isinstance(holder.get("owner_token"), str) or len(holder["owner_token"]) < 32:
+            holder_error = "holder_owner_token_missing"
+        else:
+            acquired_at = _parse_lock_acquired_at(holder.get("acquired_at"))
+            if acquired_at is None:
+                holder_error = "holder_acquired_at_invalid"
+            else:
+                lock_age_seconds = (datetime.now(UTC) - acquired_at).total_seconds()
+                status = (
+                    "migration_lock_stale"
+                    if lock_age_seconds > REVIEW_TEAM_DIGEST_MIGRATION_LOCK_STALE_AFTER_SECONDS
+                    else "migration_in_progress"
+                )
+    evidence = {
+        "path": str(path),
+        "status": status,
+        "stale_after_seconds": REVIEW_TEAM_DIGEST_MIGRATION_LOCK_STALE_AFTER_SECONDS,
+        "stat": _lock_file_stat(path),
+        "next_action": (
+            "HOLD: migration claim exists. Do not run replay or publish migration until the "
+            "holder completes, or preserve liveness evidence and obtain governed recovery."
+        ),
+    }
+    if holder_error:
+        evidence["holder_error"] = holder_error
+    if lock_age_seconds is not None:
+        evidence["lock_age_seconds"] = round(max(lock_age_seconds, 0.0), 3)
+    return ReviewExecutionLock(
+        path=path,
+        acquired=False,
+        holder=holder,
+        status=status,
+        lock_evidence=evidence,
+    )
+
+
+@contextmanager
+def review_team_digest_migration_lock(vault_root: Path) -> Any:
+    path = review_team_digest_migration_lock_path(vault_root)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        yield ReviewExecutionLock(
+            path=path,
+            acquired=False,
+            holder={},
+            status="migration_lock_unavailable",
+            lock_evidence={
+                "path": str(path),
+                "status": "migration_lock_unavailable",
+                "holder_error": f"claim_parent_error:{type(exc).__name__}",
+                "stat": _lock_file_stat(path),
+                "next_action": (
+                    "Fix migration lock storage before replay; no GitHub, reviewer, or "
+                    "artifact effects are allowed while the lock is unavailable."
+                ),
+            },
+        )
+        return
+    owner_token = secrets.token_urlsafe(32)
+    fd: int | None = None
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:
+        yield _migration_lock_collision(path)
+        return
+    except OSError as exc:
+        yield ReviewExecutionLock(
+            path=path,
+            acquired=False,
+            holder={},
+            status="migration_lock_unavailable",
+            lock_evidence={
+                "path": str(path),
+                "status": "migration_lock_unavailable",
+                "holder_error": f"claim_create_error:{type(exc).__name__}",
+                "stat": _lock_file_stat(path),
+            },
+        )
+        return
+
+    holder = _migration_lock_holder_metadata(path, owner_token)
+    try:
+        try:
+            _write_lock_holder_fd(fd, holder)
+            _fsync_directory(path.parent)
+            close_fd = fd
+            fd = None
+            os.close(close_fd)
+        except OSError as exc:
+            cleanup_warning = "own_claim_fd_missing"
+            removed = False
+            if fd is not None:
+                removed, cleanup_warning = _unlink_open_claim_if_same_file(path, fd)
+                close_fd = fd
+                fd = None
+                cleanup_warning = _append_cleanup_warning(
+                    cleanup_warning, _close_claim_fd_for_cleanup(close_fd)
+                )
+            evidence = {
+                "path": str(path),
+                "status": "migration_lock_unavailable",
+                "holder_error": f"holder_publish_error:{type(exc).__name__}",
+                "own_claim_removed": removed,
+                "stat": _lock_file_stat(path),
+            }
+            if cleanup_warning:
+                evidence["cleanup_warning"] = cleanup_warning
+            yield ReviewExecutionLock(
+                path=path,
+                acquired=False,
+                holder=holder,
+                status="migration_lock_unavailable",
+                lock_evidence=evidence,
+            )
+            return
+        try:
+            yield ReviewExecutionLock(
+                path=path,
+                acquired=True,
+                holder=holder,
+                status="acquired",
+                lock_evidence={
+                    "path": str(path),
+                    "status": "acquired",
+                    "stat": _lock_file_stat(path),
+                },
+            )
+        finally:
+            _release_lock_claim(path, owner_token)
+    finally:
+        if fd is not None:
+            _close_claim_fd_for_cleanup(fd)
 
 
 def _classification_counts(entries: list[dict[str, Any]]) -> dict[str, int]:
@@ -1718,6 +2178,7 @@ def _classify_review_team_digest_snapshot(
     snapshot: dict[str, Any],
     *,
     rebound_task_ids: frozenset[str],
+    frozen_tuples: frozenset[tuple[str, str, str]],
 ) -> tuple[str, str]:
     loaded = snapshot.get("loaded")
     if not isinstance(loaded, dict):
@@ -1745,6 +2206,13 @@ def _classify_review_team_digest_snapshot(
         return (MIGRATION_CLASS_NOT_SUBJECT, "task_not_review_floor")
     if task_id in rebound_task_ids:
         return (MIGRATION_CLASS_REBOUND, "current_open_pr_replay_rebound")
+    receipt_tuple = (
+        task_id,
+        str(snapshot.get("receipt_basename") or ""),
+        str(snapshot.get("receipt_sha256") or ""),
+    )
+    if receipt_tuple not in frozen_tuples:
+        return (MIGRATION_CLASS_STALE_INVALID, "post_cutover_unlisted_digest_unbound_receipt")
     return (
         MIGRATION_CLASS_EXACT_HASH_PRESERVED,
         "non_replayable_or_moved_head_exact_hash_preservation",
@@ -1755,14 +2223,19 @@ def build_review_team_digest_migration_payload(
     vault_root: Path,
     *,
     snapshots: tuple[dict[str, Any], ...],
+    authority: dict[str, Any],
+    frozen_inventory_entries: tuple[dict[str, Any], ...],
     rebound_task_ids: frozenset[str] = frozenset(),
     now_iso: str,
+    sealed_generation: dict[str, Any],
 ) -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
+    frozen_tuples = _migration_tuple_set(frozen_inventory_entries)
     for snapshot in snapshots:
         classification, reason = _classify_review_team_digest_snapshot(
             snapshot,
             rebound_task_ids=rebound_task_ids,
+            frozen_tuples=frozen_tuples,
         )
         entry = {
             "task_id": str(snapshot.get("task_id") or ""),
@@ -1779,6 +2252,14 @@ def build_review_team_digest_migration_payload(
     return {
         "schema": REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA,
         "generated_at": now_iso,
+        "authority": authority,
+        "authority_proposal_id": authority["proposal_id"],
+        "sealed_generation": sealed_generation,
+        "frozen_prebinding_inventory": {
+            "count": len(frozen_inventory_entries),
+            "canonical_sha256": authority["frozen_inventory_canonical_sha256"],
+            "entries": list(frozen_inventory_entries),
+        },
         "active_dir": str((vault_root / "active").resolve(strict=False)),
         "pause_boundary": (
             "Run only while hapax-pr-review-dispatch.timer and cc-pr-autoqueue effects "
@@ -1786,7 +2267,8 @@ def build_review_team_digest_migration_payload(
         ),
         "integrity_recheck": (
             "Rerun `uv run python scripts/cc-pr-review-dispatch.py --all --apply "
-            "--replay-only` and require unchanged entries plus lifecycle validation."
+            "--replay-only` with the same migration-authority flags and require unchanged "
+            "sealed authority plus lifecycle validation."
         ),
         "entries": entries,
         "counts": counts,
@@ -1797,30 +2279,160 @@ def build_review_team_digest_migration_payload(
     }
 
 
+def _sealed_migration_payload_blockers(
+    payload: dict[str, Any],
+    *,
+    authority: dict[str, Any],
+    frozen_inventory_entries: tuple[dict[str, Any], ...],
+) -> tuple[str, ...]:
+    blockers: list[str] = []
+    if payload.get("schema") != REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA:
+        blockers.append("sealed_migration_schema_mismatch")
+    existing_authority = payload.get("authority")
+    if not isinstance(existing_authority, dict):
+        blockers.append("sealed_migration_authority_missing")
+    else:
+        for key in (
+            "proposal_path",
+            "proposal_sha256",
+            "proposal_id",
+            "consumed_act_carrier_path",
+            "consumed_act_carrier_sha256",
+            "frozen_inventory_canonical_sha256",
+        ):
+            if existing_authority.get(key) != authority.get(key):
+                blockers.append(f"sealed_migration_authority_{key}_mismatch")
+    sealed_generation = payload.get("sealed_generation")
+    if not isinstance(sealed_generation, dict):
+        blockers.append("sealed_migration_generation_missing")
+    else:
+        if not sealed_generation.get("id") or not sealed_generation.get("sealed_at"):
+            blockers.append("sealed_migration_generation_incomplete")
+    frozen = payload.get("frozen_prebinding_inventory")
+    if not isinstance(frozen, dict):
+        blockers.append("sealed_migration_frozen_inventory_missing")
+    else:
+        entries = frozen.get("entries")
+        if not isinstance(entries, list):
+            blockers.append("sealed_migration_frozen_inventory_entries_invalid")
+        elif (
+            _canonical_frozen_inventory_sha256(entries)
+            != authority["frozen_inventory_canonical_sha256"]
+        ):
+            blockers.append("sealed_migration_frozen_inventory_sha256_mismatch")
+        try:
+            frozen_count = int(frozen.get("count"))
+        except (TypeError, ValueError):
+            blockers.append("sealed_migration_frozen_inventory_count_invalid")
+        else:
+            if frozen_count != len(frozen_inventory_entries):
+                blockers.append("sealed_migration_frozen_inventory_count_mismatch")
+
+    frozen_tuples = _migration_tuple_set(frozen_inventory_entries)
+    seen_tasks: set[str] = set()
+    entries = payload.get("entries")
+    if not isinstance(entries, list):
+        blockers.append("sealed_migration_entries_invalid")
+    else:
+        for entry in entries:
+            if not isinstance(entry, dict):
+                blockers.append("sealed_migration_entry_invalid")
+                continue
+            task_id = str(entry.get("task_id") or "")
+            if task_id in seen_tasks:
+                blockers.append(f"sealed_migration_duplicate_task:{task_id}")
+            seen_tasks.add(task_id)
+            if entry.get("classification") == MIGRATION_CLASS_EXACT_HASH_PRESERVED:
+                if _migration_tuple(entry) not in frozen_tuples:
+                    blockers.append(f"sealed_migration_preservation_not_frozen:{task_id}")
+    return tuple(blockers)
+
+
 def publish_review_team_digest_migration(
     vault_root: Path,
     *,
     snapshots: tuple[dict[str, Any], ...],
+    authority: dict[str, Any],
+    frozen_inventory_entries: tuple[dict[str, Any], ...],
     rebound_task_ids: frozenset[str] = frozenset(),
     apply: bool,
     now_iso: str,
+    source_head_sha: str,
 ) -> dict[str, Any]:
+    path = review_team_digest_migration_path(vault_root)
+    existing_payload: dict[str, Any] | None = None
+    existing_was_unsealed = False
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        loaded = None
+    except (OSError, yaml.YAMLError) as exc:
+        return {
+            "status": "migration_blocked",
+            "artifact_path": str(path),
+            "artifact_written": False,
+            "blockers": [f"existing_migration_unreadable:{type(exc).__name__}"],
+            "entries": [],
+        }
+    if isinstance(loaded, dict):
+        existing_payload = loaded
+        if loaded.get("schema") != REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA:
+            return {
+                "status": "migration_blocked",
+                "artifact_path": str(path),
+                "artifact_written": False,
+                "blockers": ["existing_migration_schema_mismatch"],
+                "entries": [],
+            }
+        if loaded.get("authority") or loaded.get("sealed_generation"):
+            blockers = _sealed_migration_payload_blockers(
+                loaded,
+                authority=authority,
+                frozen_inventory_entries=frozen_inventory_entries,
+            )
+            if blockers:
+                return {
+                    "status": "migration_blocked",
+                    "artifact_path": str(path),
+                    "artifact_written": False,
+                    "blockers": list(blockers),
+                    "entries": [],
+                }
+        else:
+            existing_was_unsealed = True
+    elif loaded is not None:
+        return {
+            "status": "migration_blocked",
+            "artifact_path": str(path),
+            "artifact_written": False,
+            "blockers": [f"existing_migration_not_mapping:{type(loaded).__name__}"],
+            "entries": [],
+        }
+
+    if existing_payload and not existing_was_unsealed:
+        sealed_generation = dict(existing_payload["sealed_generation"])
+    else:
+        sealed_generation = {
+            "id": (
+                f"{authority['proposal_id']}."
+                f"{authority['proposal_sha256'][:12]}."
+                f"{authority['consumed_act_carrier_sha256'][:12]}"
+            ),
+            "sealed_at": now_iso,
+            "source_head_sha": source_head_sha,
+        }
     payload = build_review_team_digest_migration_payload(
         vault_root,
         snapshots=snapshots,
+        authority=authority,
+        frozen_inventory_entries=frozen_inventory_entries,
         rebound_task_ids=rebound_task_ids,
         now_iso=now_iso,
+        sealed_generation=sealed_generation,
     )
-    path = review_team_digest_migration_path(vault_root)
     comparable_payload = {k: v for k, v in payload.items() if k != "generated_at"}
-    existing_payload: dict[str, Any] | None = None
-    try:
-        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
-        loaded = None
-    if isinstance(loaded, dict):
-        existing_payload = loaded
-        comparable_existing = {k: v for k, v in loaded.items() if k != "generated_at"}
+    if isinstance(existing_payload, dict) and not existing_was_unsealed:
+        comparable_existing = {k: v for k, v in existing_payload.items() if k != "generated_at"}
         if comparable_existing == comparable_payload:
             return {
                 "status": "migration_unchanged",
@@ -1843,12 +2455,11 @@ def publish_review_team_digest_migration(
         "entries": payload["entries"],
         "next_actions": payload["next_actions"],
         "generated_at": payload["generated_at"],
+        "authority": authority,
+        "sealed_generation": sealed_generation,
     }
-    if (
-        existing_payload is not None
-        and existing_payload.get("schema") != REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA
-    ):
-        result["replaced_malformed_artifact"] = True
+    if existing_was_unsealed:
+        result["replaced_unsealed_artifact"] = True
     return result
 
 
@@ -4401,29 +5012,73 @@ def replay_all_open_prs_with_digest_migration(
     send_runner: Any = None,
     now_iso: str | None = None,
     route_blocked_families: dict[str, tuple[str, ...]] | None = None,
+    migration_authority_proposal_path: Path | None = None,
+    migration_authority_proposal_sha256: str | None = None,
+    migration_consumed_act_carrier_path: Path | None = None,
+    migration_consumed_act_carrier_sha256: str | None = None,
 ) -> dict[str, Any]:
     now_iso = now_iso or datetime.now(UTC).isoformat(timespec="seconds")
-    snapshots = collect_review_team_digest_migration_snapshots(vault_root)
-    open_pr_results = review_all_open_prs(
-        repo=repo,
-        repo_root=repo_root,
-        vault_root=vault_root,
-        apply=apply,
-        force=False,
-        replay_only=True,
-        gh_runner=gh_runner,
-        reviewer_runner=reviewer_runner,
-        wake_dir=wake_dir,
-        send_runner=send_runner,
-        route_blocked_families=route_blocked_families,
+    authority, frozen_entries, authority_blockers = migration_authority_from_files(
+        proposal_path=migration_authority_proposal_path,
+        proposal_sha256=migration_authority_proposal_sha256,
+        consumed_act_carrier_path=migration_consumed_act_carrier_path,
+        consumed_act_carrier_sha256=migration_consumed_act_carrier_sha256,
     )
-    migration = publish_review_team_digest_migration(
-        vault_root,
-        snapshots=snapshots,
-        rebound_task_ids=_rebound_task_ids_from_replay_results(open_pr_results),
-        apply=apply,
-        now_iso=now_iso,
-    )
+    if authority_blockers or authority is None:
+        return {
+            "status": "migration_authority_blocked",
+            "repo": repo,
+            "open_pr_results": [],
+            "migration": {
+                "status": "migration_authority_blocked",
+                "artifact_path": str(review_team_digest_migration_path(vault_root)),
+                "artifact_written": False,
+                "blockers": list(authority_blockers),
+                "entries": [],
+            },
+            "side_effects": {},
+        }
+    with review_team_digest_migration_lock(vault_root) as migration_lock:
+        if not migration_lock.acquired:
+            return {
+                "status": migration_lock.status,
+                "repo": repo,
+                "open_pr_results": [],
+                "migration": {
+                    "status": migration_lock.status,
+                    "artifact_path": str(review_team_digest_migration_path(vault_root)),
+                    "artifact_written": False,
+                    "lock_path": str(migration_lock.path),
+                    "holder": migration_lock.holder,
+                    "lock_evidence": migration_lock.lock_evidence,
+                    "entries": [],
+                },
+                "side_effects": {},
+            }
+        snapshots = collect_review_team_digest_migration_snapshots(vault_root)
+        open_pr_results = review_all_open_prs(
+            repo=repo,
+            repo_root=repo_root,
+            vault_root=vault_root,
+            apply=apply,
+            force=False,
+            replay_only=True,
+            gh_runner=gh_runner,
+            reviewer_runner=reviewer_runner,
+            wake_dir=wake_dir,
+            send_runner=send_runner,
+            route_blocked_families=route_blocked_families,
+        )
+        migration = publish_review_team_digest_migration(
+            vault_root,
+            snapshots=snapshots,
+            authority=authority,
+            frozen_inventory_entries=frozen_entries,
+            rebound_task_ids=_rebound_task_ids_from_replay_results(open_pr_results),
+            apply=apply,
+            now_iso=now_iso,
+            source_head_sha=_current_source_head(repo_root),
+        )
     return {
         "status": "replay_migration_complete" if apply else "replay_migration_ready",
         "repo": repo,
@@ -4470,6 +5125,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--repo", default=DEFAULT_REPO)
     parser.add_argument("--vault-root", type=Path, default=DEFAULT_VAULT_ROOT)
+    parser.add_argument(
+        "--migration-authority-proposal",
+        type=Path,
+        help="ratified proposal YAML authorizing --all --replay-only digest migration",
+    )
+    parser.add_argument(
+        "--migration-authority-proposal-sha256",
+        help="exact 64-hex SHA-256 of --migration-authority-proposal",
+    )
+    parser.add_argument(
+        "--migration-consumed-act-carrier",
+        type=Path,
+        help="consumed operator-act carrier YAML binding the ratified migration proposal",
+    )
+    parser.add_argument(
+        "--migration-consumed-act-carrier-sha256",
+        help="exact 64-hex SHA-256 of --migration-consumed-act-carrier",
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
     logging.basicConfig(
@@ -4521,6 +5194,10 @@ def main(argv: list[str] | None = None) -> int:
                 repo=args.repo,
                 vault_root=args.vault_root,
                 apply=args.apply,
+                migration_authority_proposal_path=args.migration_authority_proposal,
+                migration_authority_proposal_sha256=args.migration_authority_proposal_sha256,
+                migration_consumed_act_carrier_path=args.migration_consumed_act_carrier,
+                migration_consumed_act_carrier_sha256=args.migration_consumed_act_carrier_sha256,
             )
         else:
             results = review_all_open_prs(

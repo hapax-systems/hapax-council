@@ -124,6 +124,72 @@ review_team_verdict: quorum-accept
     return path
 
 
+def _migration_frozen_entry(receipt_path: Path) -> dict[str, str]:
+    return {
+        "task_id": receipt_path.name[: -len(dispatch.ACCEPTANCE_RECEIPT_SUFFIX)],
+        "receipt_basename": receipt_path.name,
+        "receipt_sha256": "sha256:" + sha256(receipt_path.read_bytes()).hexdigest(),
+    }
+
+
+def _write_migration_authority(
+    tmp_path: Path,
+    frozen_entries: list[dict[str, str]],
+    *,
+    proposal_id: str = "test-sealed-digest-migration-v4",
+) -> dict[str, Any]:
+    frozen_digest = sha256(
+        json.dumps(frozen_entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    proposal = tmp_path / f"{proposal_id}-proposal.yaml"
+    proposal.write_text(
+        yaml.safe_dump(
+            {
+                "id": proposal_id,
+                "case_id": "CASE-TEST",
+                "frozen_prebinding_inventory": {
+                    "count": len(frozen_entries),
+                    "canonical_sha256": frozen_digest,
+                    "entries": frozen_entries,
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    proposal_sha = sha256(proposal.read_bytes()).hexdigest()
+    carrier = tmp_path / f"{proposal_id}-carrier.yaml"
+    carrier.write_text(
+        yaml.safe_dump(
+            {
+                "schema": "hapax.test-sovereign-act-carrier.v1",
+                "id": proposal_id,
+                "status": "consumed_active",
+                "proposal": {"path": str(proposal), "sha256": proposal_sha},
+                "operator_act": {
+                    "exact_response_utf8_no_lf": (
+                        f"RATIFY {proposal_id} proposal_sha256={proposal_sha}"
+                    ),
+                    "matched_id": True,
+                    "matched_proposal_sha256": True,
+                    "authority_minted": True,
+                    "authority_limited_to_proposal": True,
+                },
+                "frozen_prebinding_inventory_canonical_sha256": frozen_digest,
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    carrier_sha = sha256(carrier.read_bytes()).hexdigest()
+    return {
+        "migration_authority_proposal_path": proposal,
+        "migration_authority_proposal_sha256": proposal_sha,
+        "migration_consumed_act_carrier_path": carrier,
+        "migration_consumed_act_carrier_sha256": carrier_sha,
+    }
+
+
 GOOD_REPLY = """```yaml
 verdict: accept
 findings: []
@@ -2163,6 +2229,7 @@ checklist:
         note = _write_task(vault, quality_floor="frontier_review_required")
         receipt = _write_legacy_review_team_receipt(vault)
         receipt_sha = "sha256:" + sha256(receipt.read_bytes()).hexdigest()
+        authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
         reviewers = RecordingReviewers()
         gh = NoOpenPullsGh()
 
@@ -2177,6 +2244,7 @@ checklist:
             send_runner=lambda cmd: None,
             now_iso="2026-07-14T03:00:00+00:00",
             route_blocked_families={},
+            **authority_kwargs,
         )
 
         migration = result["migration"]
@@ -2209,6 +2277,7 @@ checklist:
             send_runner=lambda cmd: None,
             now_iso="2026-07-14T03:01:00+00:00",
             route_blocked_families={},
+            **authority_kwargs,
         )
         assert second["migration"]["status"] == "migration_unchanged"
         assert second["migration"]["counts"] == migration["counts"]
@@ -2218,7 +2287,8 @@ checklist:
     ) -> None:
         vault = _make_vault(tmp_path)
         note = _write_task(vault, quality_floor="frontier_review_required")
-        _write_legacy_review_team_receipt(vault, head_sha="b" * 40)
+        receipt = _write_legacy_review_team_receipt(vault, head_sha="b" * 40)
+        authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
         stale_dossier = {
             "dossier_schema": 1,
             "task_id": "task-a",
@@ -2243,6 +2313,7 @@ checklist:
             send_runner=lambda cmd: None,
             now_iso="2026-07-14T03:05:00+00:00",
             route_blocked_families={},
+            **authority_kwargs,
         )
 
         assert result["open_pr_results"][0]["status"] == "replay_blocked"
@@ -2265,6 +2336,9 @@ checklist:
         legacy_receipt = yaml.safe_load(receipt_path.read_text(encoding="utf-8"))
         legacy_receipt.pop("dossier_sha256")
         receipt_path.write_text(yaml.safe_dump(legacy_receipt, sort_keys=False), encoding="utf-8")
+        authority_kwargs = _write_migration_authority(
+            tmp_path, [_migration_frozen_entry(receipt_path)]
+        )
         replay_reviewers = RecordingReviewers()
         replay_gh = FakeGh()
 
@@ -2279,6 +2353,7 @@ checklist:
             send_runner=lambda cmd: None,
             now_iso="2026-07-14T03:10:00+00:00",
             route_blocked_families={},
+            **authority_kwargs,
         )
 
         assert migration["open_pr_results"][0]["status"] == "replayed_fresh"
@@ -2300,6 +2375,7 @@ checklist:
             send_runner=lambda cmd: None,
             now_iso="2026-07-14T03:11:00+00:00",
             route_blocked_families={},
+            **authority_kwargs,
         )
         assert second["migration"]["status"] == "migration_written"
         assert second["migration"]["counts"]["not-subject"] == 1
@@ -2315,9 +2391,101 @@ checklist:
             send_runner=lambda cmd: None,
             now_iso="2026-07-14T03:12:00+00:00",
             route_blocked_families={},
+            **authority_kwargs,
         )
         assert third["migration"]["status"] == "migration_unchanged"
         assert third["migration"]["counts"] == second["migration"]["counts"]
+
+    def test_digest_migration_without_authority_has_no_effects(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        _write_task(vault, quality_floor="frontier_review_required")
+        _write_legacy_review_team_receipt(vault)
+        gh = FakeGh()
+        reviewers = RecordingReviewers()
+
+        result = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=gh,
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert result["status"] == "migration_authority_blocked"
+        assert "migration_authority_proposal_path_missing" in result["migration"]["blockers"]
+        assert gh.calls == []
+        assert reviewers.invocations == []
+        assert not dispatch.review_team_digest_migration_path(vault).exists()
+
+    def test_post_freeze_digest_unbound_receipt_is_reported_rejected(self, tmp_path: Path) -> None:
+        class NoOpenPullsGh(FakeGh):
+            def _rest_open_prs(self) -> list[dict[str, Any]]:
+                return []
+
+        vault = _make_vault(tmp_path)
+        note = _write_task(vault, quality_floor="frontier_review_required")
+        receipt = _write_legacy_review_team_receipt(vault)
+        authority_kwargs = _write_migration_authority(tmp_path, [])
+
+        result = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=NoOpenPullsGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:21:00+00:00",
+            route_blocked_families={},
+            **authority_kwargs,
+        )
+
+        migration = result["migration"]
+        assert migration["counts"]["exact-hash-preserved"] == 0
+        assert migration["counts"]["stale-invalid"] == 1
+        assert migration["entries"][0]["reason"] == "post_cutover_unlisted_digest_unbound_receipt"
+        frontmatter = dispatch.review_team._note_frontmatter(note)
+        assert frontmatter is not None
+        blockers = dispatch.acceptance_receipt_blockers(frontmatter, note)
+        assert "acceptance_receipt_digest_migration_post_cutover_unlisted" in blockers
+        assert receipt.is_file()
+
+    def test_migration_lock_loser_has_no_github_or_artifact_effects(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        note = _write_task(vault, quality_floor="frontier_review_required")
+        receipt = _write_legacy_review_team_receipt(vault)
+        authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+        gh = FakeGh()
+        reviewers = RecordingReviewers()
+
+        with dispatch.review_team_digest_migration_lock(vault) as held:
+            assert held.acquired
+            result = dispatch.replay_all_open_prs_with_digest_migration(
+                repo="owner/repo",
+                repo_root=REPO_ROOT,
+                vault_root=vault,
+                apply=True,
+                gh_runner=gh,
+                reviewer_runner=reviewers,
+                wake_dir=tmp_path / "wake",
+                send_runner=lambda cmd: None,
+                now_iso="2026-07-14T03:22:00+00:00",
+                route_blocked_families={},
+                **authority_kwargs,
+            )
+
+        assert result["status"] == "migration_in_progress"
+        assert result["migration"]["holder"]["owner_token"] == held.holder["owner_token"]
+        assert gh.calls == []
+        assert reviewers.invocations == []
+        assert not dispatch.review_team_digest_migration_path(vault).exists()
+        assert not (note.parent / "task-a.review-dossier.yaml").exists()
 
     def test_probe_lock_acquires_releases_and_reports_cross_host_recheck(
         self, tmp_path: Path
@@ -2654,9 +2822,10 @@ with module.review_execution_lock(
             "owner_token": "x" * 43,
             "repo": "owner/repo",
             "pr": 42,
-            "pid": 12345,
-            "host": "stale-host",
-            "hostname": "stale-host",
+            "pid": 999999,
+            "host": os.uname().nodename,
+            "hostname": os.uname().nodename,
+            "process": {"pid": 999999, "proc_start_time_ticks": 1},
             "lock_path": str(lock_path),
             "acquired_at": (
                 datetime.now(UTC)
@@ -2671,6 +2840,7 @@ with module.review_execution_lock(
             vault_root=vault,
         )
         assert dry_run["status"] == "release_ready"
+        assert dry_run["lock_evidence"]["holder_liveness"]["status"] == "same_host_not_live"
         assert lock_path.is_file()
 
         released = dispatch.release_review_execution_lock(
@@ -2701,6 +2871,45 @@ with module.review_execution_lock(
             assert refused["status"] == "release_refused"
             assert refused["reason"] == "claim_not_stale"
             assert lock_path.is_file()
+
+    def test_release_lock_refuses_live_same_host_stale_claim(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        lock_path = dispatch.review_execution_lock_path(
+            repo="owner/repo",
+            pr_number=42,
+            vault_root=vault,
+        )
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        proc_start = dispatch._read_proc_start_time_ticks()
+        assert proc_start is not None
+        live_holder = {
+            "schema": "hapax.review_execution_lock.holder.v1",
+            "owner_token": "x" * 43,
+            "repo": "owner/repo",
+            "pr": 42,
+            "pid": os.getpid(),
+            "host": os.uname().nodename,
+            "hostname": os.uname().nodename,
+            "process": {"pid": os.getpid(), "proc_start_time_ticks": proc_start},
+            "lock_path": str(lock_path),
+            "acquired_at": (
+                datetime.now(UTC)
+                - timedelta(seconds=dispatch.REVIEW_EXECUTION_LOCK_STALE_AFTER_SECONDS + 60)
+            ).isoformat(timespec="seconds"),
+        }
+        lock_path.write_text(json.dumps(live_holder), encoding="utf-8")
+
+        refused = dispatch.release_review_execution_lock(
+            repo="owner/repo",
+            pr_number=42,
+            vault_root=vault,
+            apply=True,
+        )
+
+        assert refused["status"] == "release_refused"
+        assert refused["reason"] == "holder_still_live"
+        assert refused["lock_evidence"]["holder_liveness"]["status"] == "same_host_live"
+        assert lock_path.is_file()
 
     def test_review_lock_release_requires_matching_owner_token(self, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)
