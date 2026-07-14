@@ -2703,6 +2703,58 @@ with module.review_execution_lock(
         assert not (tmp_path / "wake").exists()
         assert not (tmp_path / "degraded-merges.jsonl").exists()
 
+    def test_review_lock_holder_close_failure_releases_own_claim(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        _write_task(vault)
+        lock_path = dispatch.review_execution_lock_path(
+            repo="owner/repo",
+            pr_number=42,
+            vault_root=vault,
+        )
+        monkeypatch.setattr(dispatch, "_fsync_directory", lambda _path: None)
+        real_close = dispatch.os.close
+        failed = False
+
+        def fail_first_close(fd: int) -> None:
+            nonlocal failed
+            if not failed:
+                failed = True
+                real_close(fd)
+                raise OSError("nfs close failed")
+            real_close(fd)
+
+        monkeypatch.setattr(dispatch.os, "close", fail_first_close)
+        gh = FakeGh()
+        reviewers = RecordingReviewers()
+
+        result = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            force=True,
+            gh_runner=gh,
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert result["status"] == "review_lock_unavailable"
+        assert result["lock_evidence"]["holder_error"] == "holder_publish_error:OSError"
+        assert result["lock_evidence"]["own_claim_removed"] is True
+        assert "cleanup_warning" not in result["lock_evidence"]
+        assert not lock_path.exists()
+        assert result["side_effects"] == {}
+        assert gh.calls == []
+        assert reviewers.invocations == []
+        assert not (tmp_path / "wake").exists()
+        assert not (tmp_path / "degraded-merges.jsonl").exists()
+
     def test_review_lock_publication_failure_preserves_replaced_claim(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

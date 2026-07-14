@@ -1229,6 +1229,22 @@ def _unlink_open_claim_if_same_file(path: Path, fd: int) -> tuple[bool, str | No
     return True, None
 
 
+def _append_cleanup_warning(current: str | None, extra: str | None) -> str | None:
+    if not extra:
+        return current
+    if not current:
+        return extra
+    return f"{current};{extra}"
+
+
+def _close_claim_fd_for_cleanup(fd: int) -> str | None:
+    try:
+        os.close(fd)
+    except OSError as exc:
+        return f"own_claim_close_error:{type(exc).__name__}"
+    return None
+
+
 def _release_lock_claim(path: Path, owner_token: str) -> bool:
     holder, read_error = _read_lock_holder(path)
     if read_error is not None:
@@ -1467,16 +1483,22 @@ def review_execution_lock(
         try:
             _write_lock_holder_fd(fd, holder)
             _fsync_directory(path.parent)
-            os.close(fd)
+            close_fd = fd
             fd = None
+            os.close(close_fd)
         except OSError as exc:
             cleanup_warning = "own_claim_fd_missing"
             removed = False
             if fd is not None:
                 removed, cleanup_warning = _unlink_open_claim_if_same_file(path, fd)
-            if fd is not None:
-                os.close(fd)
+                close_fd = fd
                 fd = None
+                cleanup_warning = _append_cleanup_warning(
+                    cleanup_warning, _close_claim_fd_for_cleanup(close_fd)
+                )
+            else:
+                removed = _release_lock_claim(path, owner_token)
+                cleanup_warning = None if removed else "own_claim_token_release_failed"
             status = "review_lock_unavailable"
             lock_evidence = _lock_evidence(
                 path=path,
@@ -1512,7 +1534,7 @@ def review_execution_lock(
             _release_lock_claim(path, owner_token)
     finally:
         if fd is not None:
-            os.close(fd)
+            _close_claim_fd_for_cleanup(fd)
 
 
 def _fsync_directory(path: Path) -> None:
