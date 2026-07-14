@@ -23,6 +23,7 @@ SCRIPT = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
 RECEIPT_SCRIPT = REPO_ROOT / "scripts" / "hapax-platform-capability-receipts"
 REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
 CLAUDE_DISPATCH_ADMISSION_WITNESS = "claude-subscription-headroom-observed-20260709t0710z"
+TEST_CODEX_SESSION_ID = "019f4f4e-307f-7ac2-a833-3bee723dbb02"
 
 
 def _dispatcher_module() -> ModuleType:
@@ -3142,6 +3143,14 @@ def test_governed_codex_dispatch_reactivates_clean_retired_relay(tmp_path: Path)
         f"1234567890 {task_id}\n",
         encoding="utf-8",
     )
+    (claim_cache / f"cc-active-task-cx-fugu-{TEST_CODEX_SESSION_ID}").write_text(
+        f"{task_id}\n",
+        encoding="utf-8",
+    )
+    (claim_cache / f"cc-claim-epoch-cx-fugu-{TEST_CODEX_SESSION_ID}").write_text(
+        f"1234567890 {task_id}\n",
+        encoding="utf-8",
+    )
     relay = home / ".cache" / "hapax" / "relay"
     relay.mkdir(parents=True)
     (home / ".cache" / "hapax" / "stage0-durable-sink").mkdir(parents=True)
@@ -3185,6 +3194,7 @@ printf '%s\\n' "$*" > {codex_args}
             "HAPAX_CODEX_HEADLESS_PID_DIR": str(pid_dir),
             "HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE": str(_write_codex_access_token(tmp_path)),
             "HAPAX_DISPATCH_HOST": "local",
+            "HAPAX_SESSION_ID": TEST_CODEX_SESSION_ID,
             "HAPAX_P0_CODEX_DRAIN_LANES": "",
             "XDG_CACHE_HOME": str(tmp_path / "cache"),
             "PATH": f"{bin_dir}:{os.environ['PATH']}",

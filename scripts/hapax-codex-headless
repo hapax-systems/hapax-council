@@ -189,22 +189,30 @@ normalize_session_uuid() {
 }
 
 claim_epoch_for_task() {
-  local role="$1" sid="$2" task="$3" suffix="" epoch_path="" claim_path="" line="" epoch="" epoch_task="" active_task=""
-  for suffix in "$role-$sid" "$role"; do
-    epoch_path="$HOME/.cache/hapax/cc-claim-epoch-$suffix"
-    claim_path="$HOME/.cache/hapax/cc-active-task-$suffix"
-    [[ -s "$epoch_path" && -s "$claim_path" ]] || continue
-    active_task="$(head -n1 "$claim_path" | tr -d '[:space:]')"
-    [[ "$active_task" == "$task" ]] || continue
-    IFS= read -r line <"$epoch_path" || true
-    epoch="${line%% *}"
-    epoch_task="${line#* }"
-    [[ "$line" != "$epoch" ]] || continue
-    if [[ "$epoch" =~ ^[0-9]+$ && "$epoch_task" == "$task" ]]; then
-      printf '%s\n' "$line"
-      return 0
-    fi
-  done
+  local role="$1" sid="$2" task="$3" suffix="" epoch_path="" claim_path="" line="" epoch="" epoch_task="" active_task="" now_epoch="" claim_mtime="" lease_ttl=""
+  [[ -n "$sid" ]] || return 1
+  suffix="$role-$sid"
+  epoch_path="$HOME/.cache/hapax/cc-claim-epoch-$suffix"
+  claim_path="$HOME/.cache/hapax/cc-active-task-$suffix"
+  [[ -s "$epoch_path" && -s "$claim_path" ]] || return 1
+  active_task="$(head -n1 "$claim_path" | tr -d '[:space:]')"
+  [[ "$active_task" == "$task" ]] || return 1
+  lease_ttl="${HAPAX_CLAIM_LEASE_TTL_SECS:-21600}"
+  [[ "$lease_ttl" =~ ^[0-9]+$ && "$lease_ttl" -gt 0 ]] || return 1
+  now_epoch="$(date +%s 2>/dev/null || echo 0)"
+  claim_mtime="$(stat -c %Y "$claim_path" 2>/dev/null || echo 0)"
+  [[ "$now_epoch" =~ ^[0-9]+$ && "$claim_mtime" =~ ^[0-9]+$ ]] || return 1
+  if (( now_epoch - claim_mtime > lease_ttl )); then
+    return 1
+  fi
+  IFS= read -r line <"$epoch_path" || true
+  epoch="${line%% *}"
+  epoch_task="${line#* }"
+  [[ "$line" != "$epoch" ]] || return 1
+  if [[ "$epoch" =~ ^[0-9]+$ && "$epoch_task" == "$task" ]]; then
+    printf '%s\n' "$line"
+    return 0
+  fi
   return 1
 }
 
@@ -257,10 +265,21 @@ if len(matches) > 1:
     sys.exit(78)
 
 path, frontmatter = matches[0]
-assigned_to = str(frontmatter.get("assigned_to", "")).strip()
+def strip_scalar(value: object) -> str:
+    return str(value).strip().strip('"').strip("'")
+
+
+status = strip_scalar(frontmatter.get("status", ""))
+assigned_to = strip_scalar(frontmatter.get("assigned_to", ""))
 if assigned_to != lane:
     print(
         f"hapax-codex-headless: refusing launch; task note {path} is assigned_to '{assigned_to}', not lane '{lane}'",
+        file=sys.stderr,
+    )
+    sys.exit(78)
+if status not in {"claimed", "in_progress"}:
+    print(
+        f"hapax-codex-headless: refusing launch; task note {path} has status '{status}', not 'claimed' or 'in_progress'",
         file=sys.stderr,
     )
     sys.exit(78)
@@ -272,7 +291,7 @@ verify_claim_ownership_or_exit() {
   local context="$1" task_note_path=""
   CLAIM_EPOCH_LINE="$(claim_epoch_for_task "$SESSION" "$SESSION_UUID" "$CODEX_TASK" || true)"
   if [[ -z "$CLAIM_EPOCH_LINE" ]]; then
-    echo "hapax-codex-headless: refusing $context without an exact active-task marker and matching cc-claim epoch for '$SESSION' task '$CODEX_TASK'; next action: run governed cc-claim locally for the dispatch task or repair the stale claim/epoch sidecar before retrying" >&2
+    echo "hapax-codex-headless: refusing $context without an exact active-task marker and matching cc-claim epoch for '$SESSION' task '$CODEX_TASK' (same-session marker pair and fresh claim lease required); next action: run governed cc-claim locally for the dispatch task or repair the stale claim/epoch sidecar before retrying" >&2
     exit 78
   fi
   if ! task_note_path="$(task_note_assignment_for_task "$CODEX_TASK" "$SESSION")"; then
@@ -1156,9 +1175,9 @@ else
 fi
 
 if [[ "$CLAIM_TASK" -eq 0 ]]; then
-  CLAIM_INSTRUCTION="2. The launcher started this worker in preclaimed/--no-claim mode for $CODEX_TASK. DO NOT run cc-claim. Before mutation, verify exact ownership: $SESSION_CLAIM_FILE or $CLAIM_FILE contains $CODEX_TASK, $SESSION_CLAIM_EPOCH_FILE or $CLAIM_EPOCH_FILE contains the matching task-bound claim epoch '$CLAIM_EPOCH_LINE', and task note $TASK_NOTE_PATH is assigned_to $SESSION. If any proof is absent or mismatched, stop and write a relay receipt."
+  CLAIM_INSTRUCTION="2. The launcher started this worker in preclaimed/--no-claim mode for $CODEX_TASK. DO NOT run cc-claim. Before mutation, verify exact same-session ownership: $SESSION_CLAIM_FILE contains $CODEX_TASK, $SESSION_CLAIM_EPOCH_FILE contains the matching task-bound claim epoch '$CLAIM_EPOCH_LINE', the claim lease is fresh, and task note $TASK_NOTE_PATH is status claimed/in_progress and assigned_to $SESSION. Legacy role-keyed claim files are not sufficient proof for this session. If any proof is absent or mismatched, stop and write a relay receipt."
 else
-  CLAIM_INSTRUCTION="2. The launcher already acquired or verified this task before starting Codex, using the worktree-local claim path $WORKDIR/scripts/cc-claim for offered tasks. DO NOT run or re-run cc-claim. Before mutation, verify exact ownership: $SESSION_CLAIM_FILE or $CLAIM_FILE contains $CODEX_TASK, $SESSION_CLAIM_EPOCH_FILE or $CLAIM_EPOCH_FILE contains the matching task-bound claim epoch '$CLAIM_EPOCH_LINE', and task note $TASK_NOTE_PATH is assigned_to $SESSION. If any proof is absent or mismatched, stop and write a relay receipt."
+  CLAIM_INSTRUCTION="2. The launcher already acquired or verified this task before starting Codex, using the worktree-local claim path $WORKDIR/scripts/cc-claim for offered tasks. DO NOT run or re-run cc-claim. Before mutation, verify exact same-session ownership: $SESSION_CLAIM_FILE contains $CODEX_TASK, $SESSION_CLAIM_EPOCH_FILE contains the matching task-bound claim epoch '$CLAIM_EPOCH_LINE', the claim lease is fresh, and task note $TASK_NOTE_PATH is status claimed/in_progress and assigned_to $SESSION. Legacy role-keyed claim files are not sufficient proof for this session. If any proof is absent or mismatched, stop and write a relay receipt."
 fi
 
 SDLC_PREAMBLE="SDLC DISCIPLINE (MANDATORY):
