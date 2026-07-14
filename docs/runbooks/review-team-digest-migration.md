@@ -23,6 +23,8 @@ Use the providerless recheck first. It validates the source-pinned authority
 tuple, proposal/carrier bytes, sealed artifact immutability, current receipt
 drift, and before/after artifact hash without GitHub, reviewers, comments,
 artifact writes, temp files, migration claims, or `_locks` directory creation.
+It also reports the existing migration claim state as absent, active, stale,
+malformed, or unavailable; any non-absent state is HOLD.
 
 ```bash
 uv run python scripts/cc-pr-review-dispatch.py --all --replay-only --migration-recheck \
@@ -34,9 +36,14 @@ uv run python scripts/cc-pr-review-dispatch.py --all --replay-only --migration-r
 
 Require `status: migration_recheck_ready`, `pause_preconditions.unit_pause.validated:
 true`, every unit entry to show matching `id`, `load_state: loaded`, and
-`active_state: inactive`, and a populated `migration.acceptance_admission_trace`.
-For an existing sealed artifact, require `migration.status: migration_unchanged`
-and identical `before_artifact_sha256` / `after_artifact_sha256`.
+`active_state: inactive`. For an initial absent or unsealed artifact candidate,
+require `migration.status: migration_ready`. For an existing sealed artifact,
+require `migration.status: migration_unchanged`, identical
+`before_artifact_sha256` / `after_artifact_sha256`, empty
+`current_receipt_drift`, no `acceptance_trace_blockers`, and a populated
+`migration.acceptance_admission_trace`. The sealed artifact's persisted
+`integrity_recheck` text must name the providerless `--migration-recheck`
+command, not the applying replay command.
 
 ## Apply
 

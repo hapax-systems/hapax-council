@@ -24,7 +24,9 @@ from shared import sdlc_lifecycle
 from shared.sdlc_lifecycle import (
     PR_ACTIONS,
     REVIEW_TEAM_DIGEST_MIGRATION_FILENAME,
+    REVIEW_TEAM_DIGEST_MIGRATION_INTEGRITY_RECHECK,
     REVIEW_TEAM_DIGEST_MIGRATION_LEGACY_ROUTE,
+    REVIEW_TEAM_DIGEST_MIGRATION_PAUSE_BOUNDARY,
     REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION,
     REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA,
     STAGE_RE,
@@ -355,9 +357,14 @@ class TestAcceptanceReceiptEnforcement:
         entries = [
             {
                 "task_id": task_id,
+                "task_note_basename": f"{task_id}.md",
                 "receipt_basename": receipt_basename,
+                "receipt_relpath": receipt_basename,
                 "receipt_sha256": receipt_sha256,
                 "classification": classification,
+                "reason": "non_replayable_or_moved_head_exact_hash_preservation"
+                if classification == REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION
+                else "current_open_pr_replay_rebound",
             }
         ]
         if classification == REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION:
@@ -405,6 +412,8 @@ class TestAcceptanceReceiptEnforcement:
                         "canonical_sha256": frozen_digest,
                         "entries": frozen_entries,
                     },
+                    "pause_boundary": REVIEW_TEAM_DIGEST_MIGRATION_PAUSE_BOUNDARY,
+                    "integrity_recheck": REVIEW_TEAM_DIGEST_MIGRATION_INTEGRITY_RECHECK,
                     "entries": entries,
                     "counts": {
                         "rebound": 0,
@@ -656,6 +665,61 @@ class TestAcceptanceReceiptEnforcement:
             "acceptance_receipt_digest_migration_sealed_migration_generation_id_mismatch"
             in blockers
         )
+
+    @pytest.mark.parametrize(
+        ("mutation", "expected_blocker"),
+        (
+            (
+                "declared_frozen_digest",
+                "sealed_migration_frozen_inventory_sha256_mismatch",
+            ),
+            ("entry_reason", "sealed_migration_entry_reason_mismatch:task-r"),
+            (
+                "task_note_basename",
+                "sealed_migration_entry_task_note_basename_mismatch:task-r",
+            ),
+            ("sealed_at", "sealed_migration_generation_sealed_at_invalid"),
+            (
+                "self_consistent_reclassification",
+                "sealed_migration_frozen_tuple_reclassified:task-r:not-subject",
+            ),
+        ),
+    )
+    def test_digest_migration_total_contract_rejects_forged_coherent_fields(
+        self,
+        tmp_path: Path,
+        mutation: str,
+        expected_blocker: str,
+    ) -> None:
+        receipt = self._receipt(
+            tmp_path,
+            "task-r",
+            self.VALID_RECEIPT.replace("acceptor: operator", "acceptor: review-team:codex,glm"),
+        )
+        receipt_sha = "sha256:" + hashlib.sha256(receipt.read_bytes()).hexdigest()
+        migration = self._migration(tmp_path, receipt_sha256=receipt_sha)
+        loaded = yaml.safe_load(migration.read_text(encoding="utf-8"))
+
+        if mutation == "declared_frozen_digest":
+            loaded["frozen_prebinding_inventory"]["canonical_sha256"] = "0" * 64
+        elif mutation == "entry_reason":
+            loaded["entries"][0]["reason"] = "acceptor_not_review_team"
+        elif mutation == "task_note_basename":
+            loaded["entries"][0]["task_note_basename"] = "other-task.md"
+        elif mutation == "sealed_at":
+            loaded["sealed_generation"]["sealed_at"] = "not-a-real-timestamp"
+        elif mutation == "self_consistent_reclassification":
+            loaded["entries"][0]["classification"] = "not-subject"
+            loaded["entries"][0]["reason"] = "acceptor_not_review_team"
+            loaded["entries"][0].pop("legacy_admission")
+            loaded["counts"][REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION] = 0
+            loaded["counts"]["not-subject"] = 1
+        else:
+            raise AssertionError(mutation)
+
+        blockers = sdlc_lifecycle.review_team_digest_migration_artifact_blockers(loaded)
+
+        assert expected_blocker in blockers
 
     def test_closed_note_without_active_sibling_reports_unrecognized_layout(
         self, tmp_path: Path

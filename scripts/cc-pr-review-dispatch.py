@@ -107,7 +107,9 @@ from shared.route_metadata_schema import stable_payload_hash  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     ACCEPTANCE_RECEIPT_SUFFIX,
     REVIEW_TEAM_DIGEST_MIGRATION_FILENAME,
+    REVIEW_TEAM_DIGEST_MIGRATION_INTEGRITY_RECHECK,
     REVIEW_TEAM_DIGEST_MIGRATION_LEGACY_ROUTE,
+    REVIEW_TEAM_DIGEST_MIGRATION_PAUSE_BOUNDARY,
     REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION,
     REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA,
     acceptance_receipt_admission_route,
@@ -2148,6 +2150,137 @@ def _migration_blocked_result(
     }
 
 
+def _providerless_migration_claim_state(vault_root: Path) -> dict[str, Any]:
+    path = review_team_digest_migration_lock_path(vault_root)
+    try:
+        exists = path.exists()
+    except OSError as exc:
+        return {
+            "status": "migration_lock_unavailable",
+            "lock_path": str(path),
+            "holder": {},
+            "lock_evidence": {
+                "path": str(path),
+                "status": "migration_lock_unavailable",
+                "holder_error": f"claim_stat_error:{type(exc).__name__}",
+                "stat": _lock_file_stat(path),
+            },
+        }
+    if not exists:
+        return {
+            "status": "migration_lock_absent",
+            "lock_path": str(path),
+            "holder": {},
+            "lock_evidence": {
+                "path": str(path),
+                "status": "migration_lock_absent",
+                "stat": _lock_file_stat(path),
+            },
+        }
+    collision = _migration_lock_collision(path)
+    return {
+        "status": collision.status,
+        "lock_path": str(path),
+        "holder": collision.holder,
+        "lock_evidence": collision.lock_evidence,
+    }
+
+
+def _migration_authority_preimage_blockers(
+    *,
+    authority: dict[str, Any],
+    frozen_entries: tuple[dict[str, Any], ...],
+    proposal_path: Path | None,
+    proposal_sha256: str | None,
+    consumed_act_carrier_path: Path | None,
+    consumed_act_carrier_sha256: str | None,
+    source_trust_anchor: dict[str, Any] | None,
+) -> list[str]:
+    current_authority, current_frozen_entries, blockers = migration_authority_from_files(
+        proposal_path=proposal_path,
+        proposal_sha256=proposal_sha256,
+        consumed_act_carrier_path=consumed_act_carrier_path,
+        consumed_act_carrier_sha256=consumed_act_carrier_sha256,
+        source_trust_anchor=source_trust_anchor,
+    )
+    if blockers or current_authority is None:
+        return [f"migration_authority_changed_after_preflight:{blocker}" for blocker in blockers]
+    if current_authority != authority or current_frozen_entries != frozen_entries:
+        return ["migration_authority_changed_after_preflight"]
+    return []
+
+
+def _migration_snapshot_fingerprint(snapshots: tuple[dict[str, Any], ...]) -> str:
+    payload = json.dumps(snapshots, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _migration_snapshot_drift(
+    before: tuple[dict[str, Any], ...],
+    after: tuple[dict[str, Any], ...],
+) -> list[dict[str, Any]]:
+    if _migration_snapshot_fingerprint(before) == _migration_snapshot_fingerprint(after):
+        return []
+    before_by_key = {
+        (str(item.get("task_id") or ""), str(item.get("receipt_basename") or "")): item
+        for item in before
+    }
+    after_by_key = {
+        (str(item.get("task_id") or ""), str(item.get("receipt_basename") or "")): item
+        for item in after
+    }
+    drift: list[dict[str, Any]] = []
+    for key in sorted(set(before_by_key) | set(after_by_key)):
+        before_item = before_by_key.get(key)
+        after_item = after_by_key.get(key)
+        if before_item is None:
+            drift.append(
+                {
+                    "task_id": key[0],
+                    "receipt_basename": key[1],
+                    "status": "created_after_preflight",
+                    "after_receipt_sha256": after_item.get("receipt_sha256")
+                    if after_item
+                    else None,
+                }
+            )
+            continue
+        if after_item is None:
+            drift.append(
+                {
+                    "task_id": key[0],
+                    "receipt_basename": key[1],
+                    "status": "removed_after_preflight",
+                    "before_receipt_sha256": before_item.get("receipt_sha256"),
+                }
+            )
+            continue
+        if before_item != after_item:
+            drift.append(
+                {
+                    "task_id": key[0],
+                    "receipt_basename": key[1],
+                    "status": "changed_after_preflight",
+                    "before_receipt_sha256": before_item.get("receipt_sha256"),
+                    "after_receipt_sha256": after_item.get("receipt_sha256"),
+                }
+            )
+    return drift
+
+
+def _acceptance_trace_blockers(trace: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "task_id": str(item.get("task_id") or ""),
+            "task_note_basename": str(item.get("task_note_basename") or ""),
+            "route": str(item.get("route") or "blocked"),
+            "blockers": list(item.get("blockers") or []),
+        }
+        for item in trace
+        if item.get("blockers") or item.get("accepted") is False
+    ]
+
+
 def review_team_digest_migration_path(vault_root: Path) -> Path:
     return vault_root / "active" / REVIEW_TEAM_DIGEST_MIGRATION_FILENAME
 
@@ -2469,15 +2602,8 @@ def build_review_team_digest_migration_payload(
             "entries": list(frozen_inventory_entries),
         },
         "active_dir": str((vault_root / "active").resolve(strict=False)),
-        "pause_boundary": (
-            "Run only while hapax-pr-review-dispatch.timer and cc-pr-autoqueue effects "
-            "are paused; replay-only must not dispatch reviewers or mutate GitHub."
-        ),
-        "integrity_recheck": (
-            "Rerun `uv run python scripts/cc-pr-review-dispatch.py --all --apply "
-            "--replay-only` with the same migration-authority flags and require unchanged "
-            "sealed authority plus lifecycle validation."
-        ),
+        "pause_boundary": REVIEW_TEAM_DIGEST_MIGRATION_PAUSE_BOUNDARY,
+        "integrity_recheck": REVIEW_TEAM_DIGEST_MIGRATION_INTEGRITY_RECHECK,
         "entries": entries,
         "counts": counts,
         "next_actions": {
@@ -5512,6 +5638,22 @@ def replay_all_open_prs_with_digest_migration(
                 },
             )
     if migration_recheck:
+        claim_state = _providerless_migration_claim_state(vault_root)
+        pause_preconditions["migration_claim"] = claim_state
+        if claim_state["status"] != "migration_lock_absent":
+            return _migration_blocked_result(
+                status="migration_blocked",
+                repo=repo,
+                vault_root=vault_root,
+                blockers=[f"migration_claim_state:{claim_state['status']}"],
+                pause_preconditions=pause_preconditions,
+                migration_extra={
+                    "claim_state": claim_state,
+                    "artifact_preflight": artifact_preflight,
+                    "before_artifact_sha256": artifact_preflight.get("artifact_sha256"),
+                    "after_artifact_sha256": artifact_preflight.get("artifact_sha256"),
+                },
+            )
         migration = publish_review_team_digest_migration(
             vault_root,
             snapshots=pre_effect_snapshots,
@@ -5523,15 +5665,34 @@ def replay_all_open_prs_with_digest_migration(
             source_head_sha=_current_source_head(repo_root),
         )
         migration["artifact_preflight"] = artifact_preflight
-        status = (
-            "migration_blocked"
-            if migration.get("status") == "migration_blocked"
-            else "migration_recheck_ready"
+        post_recheck_snapshots = collect_review_team_digest_migration_snapshots(vault_root)
+        snapshot_drift = _migration_snapshot_drift(pre_effect_snapshots, post_recheck_snapshots)
+        acceptance_trace = (
+            collect_acceptance_receipt_admission_trace(vault_root)
+            if artifact_preflight["status"] == "sealed_migration_valid"
+            or migration.get("status") == "migration_unchanged"
+            else []
         )
-        if status != "migration_blocked":
-            migration["acceptance_admission_trace"] = collect_acceptance_receipt_admission_trace(
-                vault_root
-            )
+        trace_blockers = _acceptance_trace_blockers(acceptance_trace)
+        blockers: list[str] = []
+        if migration.get("status") == "migration_blocked":
+            blockers.extend(migration.get("blockers") or ["migration_recheck_candidate_blocked"])
+        if migration.get("current_receipt_drift"):
+            blockers.append("migration_recheck_current_receipt_drift")
+        if snapshot_drift:
+            blockers.append("migration_recheck_receipt_snapshot_drift")
+            migration["snapshot_drift"] = snapshot_drift
+        if acceptance_trace:
+            migration["acceptance_admission_trace"] = acceptance_trace
+        if trace_blockers:
+            blockers.append("migration_recheck_acceptance_trace_blocked")
+            migration["acceptance_trace_blockers"] = trace_blockers
+        status = "migration_recheck_ready"
+        if blockers:
+            status = "migration_blocked"
+            migration["status"] = "migration_blocked"
+            migration["artifact_written"] = False
+            migration["blockers"] = list(dict.fromkeys(blockers))
         return {
             "status": status,
             "repo": repo,
@@ -5580,11 +5741,34 @@ def replay_all_open_prs_with_digest_migration(
                     "after_artifact_sha256": under_lock_preflight.get("artifact_sha256"),
                 },
             )
+        authority_race_blockers = _migration_authority_preimage_blockers(
+            authority=authority,
+            frozen_entries=frozen_entries,
+            proposal_path=migration_authority_proposal_path,
+            proposal_sha256=migration_authority_proposal_sha256,
+            consumed_act_carrier_path=migration_consumed_act_carrier_path,
+            consumed_act_carrier_sha256=migration_consumed_act_carrier_sha256,
+            source_trust_anchor=migration_source_trust_anchor,
+        )
+        if authority_race_blockers:
+            return _migration_blocked_result(
+                status="migration_blocked",
+                repo=repo,
+                vault_root=vault_root,
+                blockers=authority_race_blockers,
+                pause_preconditions=pause_preconditions,
+                migration_extra={
+                    "artifact_preflight": artifact_preflight,
+                    "under_lock_artifact_preflight": under_lock_preflight,
+                    "before_artifact_sha256": artifact_preflight.get("artifact_sha256"),
+                    "after_artifact_sha256": under_lock_preflight.get("artifact_sha256"),
+                },
+            )
         open_pr_results = review_all_open_prs(
             repo=repo,
             repo_root=repo_root,
             vault_root=vault_root,
-            apply=apply,
+            apply=False,
             force=False,
             replay_only=True,
             gh_runner=gh_runner,
@@ -5593,17 +5777,109 @@ def replay_all_open_prs_with_digest_migration(
             send_runner=send_runner,
             route_blocked_families=route_blocked_families,
         )
-        rebound_task_ids = _rebound_task_ids_from_replay_results(open_pr_results)
-        migration = publish_review_team_digest_migration(
+        planned_open_pr_results = open_pr_results
+        rebound_task_ids = _rebound_task_ids_from_replay_results(planned_open_pr_results)
+        planned_migration = publish_review_team_digest_migration(
             vault_root,
             snapshots=pre_effect_snapshots,
             authority=authority,
             frozen_inventory_entries=frozen_entries,
             rebound_task_ids=rebound_task_ids,
-            apply=apply,
+            apply=False,
             now_iso=now_iso,
             source_head_sha=_current_source_head(repo_root),
         )
+        planned_migration["artifact_preflight"] = artifact_preflight
+        if planned_migration.get("status") == "migration_blocked":
+            return _migration_blocked_result(
+                status="migration_blocked",
+                repo=repo,
+                vault_root=vault_root,
+                blockers=list(planned_migration.get("blockers") or []),
+                pause_preconditions=pause_preconditions,
+                migration_extra=planned_migration,
+            )
+        final_authority_blockers = _migration_authority_preimage_blockers(
+            authority=authority,
+            frozen_entries=frozen_entries,
+            proposal_path=migration_authority_proposal_path,
+            proposal_sha256=migration_authority_proposal_sha256,
+            consumed_act_carrier_path=migration_consumed_act_carrier_path,
+            consumed_act_carrier_sha256=migration_consumed_act_carrier_sha256,
+            source_trust_anchor=migration_source_trust_anchor,
+        )
+        final_artifact_preflight = _preflight_existing_review_team_digest_migration(
+            vault_root,
+            authority=authority,
+            frozen_inventory_entries=frozen_entries,
+        )
+        final_snapshots = collect_review_team_digest_migration_snapshots(vault_root)
+        snapshot_drift = _migration_snapshot_drift(pre_effect_snapshots, final_snapshots)
+        final_blockers = list(final_authority_blockers)
+        if final_artifact_preflight != under_lock_preflight:
+            final_blockers.extend(final_artifact_preflight.get("blockers") or [])
+            if not final_artifact_preflight.get("blockers"):
+                final_blockers.append("migration_artifact_changed_after_plan")
+        if snapshot_drift:
+            final_blockers.append("migration_receipts_changed_after_plan")
+        if final_blockers:
+            return _migration_blocked_result(
+                status="migration_blocked",
+                repo=repo,
+                vault_root=vault_root,
+                blockers=list(dict.fromkeys(final_blockers)),
+                pause_preconditions=pause_preconditions,
+                migration_extra={
+                    "artifact_preflight": artifact_preflight,
+                    "under_lock_artifact_preflight": under_lock_preflight,
+                    "final_artifact_preflight": final_artifact_preflight,
+                    "snapshot_drift": snapshot_drift,
+                    "before_artifact_sha256": artifact_preflight.get("artifact_sha256"),
+                    "after_artifact_sha256": final_artifact_preflight.get("artifact_sha256"),
+                },
+            )
+        if apply:
+            open_pr_results = review_all_open_prs(
+                repo=repo,
+                repo_root=repo_root,
+                vault_root=vault_root,
+                apply=True,
+                force=False,
+                replay_only=True,
+                gh_runner=gh_runner,
+                reviewer_runner=reviewer_runner,
+                wake_dir=wake_dir,
+                send_runner=send_runner,
+                route_blocked_families=route_blocked_families,
+            )
+            applied_rebound_task_ids = _rebound_task_ids_from_replay_results(open_pr_results)
+            if applied_rebound_task_ids != rebound_task_ids:
+                return _migration_blocked_result(
+                    status="migration_blocked",
+                    repo=repo,
+                    vault_root=vault_root,
+                    blockers=["migration_replay_plan_changed_during_apply"],
+                    pause_preconditions=pause_preconditions,
+                    migration_extra={
+                        "artifact_preflight": artifact_preflight,
+                        "planned_open_pr_results": planned_open_pr_results,
+                        "applied_open_pr_results": open_pr_results,
+                        "planned_rebound_task_ids": sorted(rebound_task_ids),
+                        "applied_rebound_task_ids": sorted(applied_rebound_task_ids),
+                    },
+                )
+            migration = publish_review_team_digest_migration(
+                vault_root,
+                snapshots=pre_effect_snapshots,
+                authority=authority,
+                frozen_inventory_entries=frozen_entries,
+                rebound_task_ids=rebound_task_ids,
+                apply=True,
+                now_iso=now_iso,
+                source_head_sha=_current_source_head(repo_root),
+            )
+        else:
+            migration = planned_migration
     migration["artifact_preflight"] = artifact_preflight
     if migration.get("status") == "migration_blocked":
         status = "migration_blocked"
@@ -5611,10 +5887,17 @@ def replay_all_open_prs_with_digest_migration(
         status = "migration_recheck_complete" if apply else "migration_recheck_ready"
     else:
         status = "replay_migration_complete" if apply else "replay_migration_ready"
-    if status != "migration_blocked":
-        migration["acceptance_admission_trace"] = collect_acceptance_receipt_admission_trace(
-            vault_root
-        )
+    if status != "migration_blocked" and (
+        apply or migration.get("status") == "migration_unchanged"
+    ):
+        acceptance_trace = collect_acceptance_receipt_admission_trace(vault_root)
+        migration["acceptance_admission_trace"] = acceptance_trace
+        trace_blockers = _acceptance_trace_blockers(acceptance_trace)
+        if trace_blockers:
+            migration["status"] = "migration_blocked"
+            migration["blockers"] = ["migration_acceptance_trace_blocked"]
+            migration["acceptance_trace_blockers"] = trace_blockers
+            status = "migration_blocked"
     return {
         "status": status,
         "repo": repo,

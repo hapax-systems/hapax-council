@@ -2868,6 +2868,93 @@ checklist:
             Path("closed"),
         ]
 
+    def test_migration_recheck_reports_active_claim_without_mutating_lock(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        receipt = _write_legacy_review_team_receipt(vault)
+        authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+        monkeypatch.setenv(dispatch.KILLSWITCH_ENV, "true")
+
+        with dispatch.review_team_digest_migration_lock(vault) as held:
+            assert held.acquired
+            lock_bytes = held.path.read_bytes()
+            result = dispatch.replay_all_open_prs_with_digest_migration(
+                repo="owner/repo",
+                repo_root=REPO_ROOT,
+                vault_root=vault,
+                apply=False,
+                gh_runner=FakeGh(),
+                reviewer_runner=RecordingReviewers(),
+                wake_dir=tmp_path / "wake",
+                send_runner=lambda cmd: None,
+                now_iso="2026-07-14T03:20:45+00:00",
+                route_blocked_families={},
+                migration_recheck=True,
+                **authority_kwargs,
+            )
+            assert held.path.read_bytes() == lock_bytes
+
+        assert result["status"] == "migration_blocked"
+        assert result["migration"]["claim_state"]["status"] == "migration_in_progress"
+        assert (
+            result["migration"]["claim_state"]["holder"]["owner_token"]
+            == held.holder["owner_token"]
+        )
+        assert result["migration"]["blockers"] == ["migration_claim_state:migration_in_progress"]
+        assert not dispatch.review_team_digest_migration_path(vault).exists()
+
+    def test_migration_recheck_blocks_on_current_receipt_drift(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class NoOpenPullsGh(FakeGh):
+            def _rest_open_prs(self) -> list[dict[str, Any]]:
+                return []
+
+        vault = _make_vault(tmp_path)
+        _write_task(vault, quality_floor="frontier_review_required")
+        receipt = _write_legacy_review_team_receipt(vault)
+        authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+        applied = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=NoOpenPullsGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:45+00:00",
+            route_blocked_families={},
+            **authority_kwargs,
+        )
+        assert applied["status"] == "replay_migration_complete"
+        artifact_path = dispatch.review_team_digest_migration_path(vault)
+        artifact_bytes = artifact_path.read_bytes()
+        receipt.write_text(receipt.read_text(encoding="utf-8") + "tampered: true\n")
+        monkeypatch.setenv(dispatch.KILLSWITCH_ENV, "true")
+
+        result = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=False,
+            gh_runner=NoOpenPullsGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:46+00:00",
+            route_blocked_families={},
+            migration_recheck=True,
+            **authority_kwargs,
+        )
+
+        assert result["status"] == "migration_blocked"
+        assert "migration_recheck_current_receipt_drift" in result["migration"]["blockers"]
+        assert "migration_recheck_acceptance_trace_blocked" in result["migration"]["blockers"]
+        assert result["migration"]["current_receipt_drift"][0]["status"] == "sha256_mismatch"
+        assert artifact_path.read_bytes() == artifact_bytes
+
     def test_empty_seal_mappings_cannot_reopen_unsealed_transition(self, tmp_path: Path) -> None:
         class ExplodingGh(FakeGh):
             def _rest_open_prs(self) -> list[dict[str, Any]]:
@@ -3000,6 +3087,95 @@ checklist:
         assert result["migration"]["blockers"] == ["migration_artifact_changed_after_preflight"]
         assert gh.calls == []
         assert reviewers.invocations == []
+        assert not dispatch.review_team_digest_migration_path(vault).exists()
+
+    def test_authority_change_under_migration_claim_blocks_before_replay_or_artifact(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        _write_task(vault, quality_floor="frontier_review_required")
+        receipt = _write_legacy_review_team_receipt(vault)
+        authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+        real_authority = dispatch.migration_authority_from_files
+        calls = 0
+
+        def racing_authority(
+            *args: Any, **kwargs: Any
+        ) -> tuple[Any, tuple[Any, ...], tuple[str, ...]]:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                return None, (), ("migration_authority_proposal_sha256_mismatch",)
+            return real_authority(*args, **kwargs)
+
+        monkeypatch.setattr(dispatch, "migration_authority_from_files", racing_authority)
+        gh = FakeGh()
+        reviewers = RecordingReviewers()
+
+        result = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=gh,
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:48+00:00",
+            route_blocked_families={},
+            **authority_kwargs,
+        )
+
+        assert result["status"] == "migration_blocked"
+        assert result["migration"]["blockers"] == [
+            "migration_authority_changed_after_preflight:"
+            "migration_authority_proposal_sha256_mismatch"
+        ]
+        assert gh.calls == []
+        assert reviewers.invocations == []
+        assert not dispatch.review_team_digest_migration_path(vault).exists()
+
+    def test_receipt_change_after_plan_blocks_before_replay_or_artifact(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class NoOpenPullsGh(FakeGh):
+            def _rest_open_prs(self) -> list[dict[str, Any]]:
+                return []
+
+        vault = _make_vault(tmp_path)
+        _write_task(vault, quality_floor="frontier_review_required")
+        receipt = _write_legacy_review_team_receipt(vault)
+        authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+        real_review_all = dispatch.review_all_open_prs
+        apply_calls: list[bool] = []
+
+        def racing_review_all(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+            apply_calls.append(bool(kwargs.get("apply")))
+            result = real_review_all(*args, **kwargs)
+            if kwargs.get("apply") is False:
+                receipt.write_text(receipt.read_text(encoding="utf-8") + "tampered: true\n")
+            return result
+
+        monkeypatch.setattr(dispatch, "review_all_open_prs", racing_review_all)
+
+        result = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=NoOpenPullsGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:49+00:00",
+            route_blocked_families={},
+            **authority_kwargs,
+        )
+
+        assert result["status"] == "migration_blocked"
+        assert result["migration"]["blockers"] == ["migration_receipts_changed_after_plan"]
+        assert result["migration"]["snapshot_drift"][0]["status"] == "changed_after_preflight"
+        assert apply_calls == [False]
         assert not dispatch.review_team_digest_migration_path(vault).exists()
 
     def test_preexisting_sealed_migration_blocker_stops_before_replay_or_lock(
@@ -3135,7 +3311,8 @@ checklist:
             **authority_kwargs,
         )
 
-        assert result["status"] == "replay_migration_complete"
+        assert result["status"] == "migration_blocked"
+        assert result["migration"]["blockers"] == ["migration_acceptance_trace_blocked"]
         trace = {
             item["task_id"]: item for item in result["migration"]["acceptance_admission_trace"]
         }

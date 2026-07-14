@@ -314,6 +314,16 @@ REVIEW_TEAM_DIGEST_MIGRATION_SOURCE_TRUST_ANCHOR: dict[str, str] = {
     "authority_case": "CASE-SYSTEM-INTEGRITY-20260611",
 }
 REVIEW_TEAM_DIGEST_MIGRATION_RUNBOOK = "docs/runbooks/review-team-digest-migration.md"
+REVIEW_TEAM_DIGEST_MIGRATION_PAUSE_BOUNDARY = (
+    "Run only while hapax-pr-review-dispatch.timer, hapax-pr-review-dispatch.service, "
+    "hapax-cc-pr-autoqueue.timer, and hapax-cc-pr-autoqueue.service are paused; "
+    "replay-only must not dispatch reviewers or mutate GitHub."
+)
+REVIEW_TEAM_DIGEST_MIGRATION_INTEGRITY_RECHECK = (
+    "Rerun `uv run python scripts/cc-pr-review-dispatch.py --all --replay-only "
+    "--migration-recheck` with the same migration-authority flags and require unchanged "
+    "sealed authority plus lifecycle validation."
+)
 REVIEW_TEAM_DIGEST_MIGRATION_CLASSIFICATIONS = frozenset(
     {
         "rebound",
@@ -628,6 +638,38 @@ def _migration_counts(entries: list[Mapping[str, Any]]) -> dict[str, int]:
     return counts
 
 
+def _valid_iso_datetime(value: str) -> bool:
+    if not value:
+        return False
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
+
+
+def _migration_entry_reason_valid(classification: str, reason: str) -> bool:
+    if classification == "rebound":
+        return reason == "current_open_pr_replay_rebound"
+    if classification == REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION:
+        return reason == "non_replayable_or_moved_head_exact_hash_preservation"
+    if classification == "unmatched":
+        return reason == "active_task_note_missing"
+    if classification == "not-subject":
+        return reason in {
+            "acceptor_not_review_team",
+            "already_digest_bound",
+            "task_not_review_floor",
+        }
+    if classification == "stale-invalid":
+        return reason in {
+            "active_task_note_malformed",
+            "task_note_id_mismatch",
+            "post_cutover_unlisted_digest_unbound_receipt",
+        } or reason.startswith(("receipt_malformed:", "verdict_not_accepted:"))
+    return False
+
+
 def review_team_digest_migration_artifact_blockers(
     loaded: Mapping[str, Any],
     *,
@@ -653,6 +695,15 @@ def review_team_digest_migration_artifact_blockers(
             for key, expected in expected_authority.items():
                 if authority.get(key) != expected:
                     blockers.append(f"sealed_migration_authority_{key}_mismatch")
+        if _frontmatter_non_null_scalar(loaded.get("authority_proposal_id")) != (
+            _frontmatter_non_null_scalar(authority.get("proposal_id"))
+        ):
+            blockers.append("sealed_migration_authority_proposal_id_mismatch")
+
+    if loaded.get("pause_boundary") != REVIEW_TEAM_DIGEST_MIGRATION_PAUSE_BOUNDARY:
+        blockers.append("sealed_migration_pause_boundary_mismatch")
+    if loaded.get("integrity_recheck") != REVIEW_TEAM_DIGEST_MIGRATION_INTEGRITY_RECHECK:
+        blockers.append("sealed_migration_integrity_recheck_mismatch")
 
     sealed_generation = loaded.get("sealed_generation")
     if not isinstance(sealed_generation, Mapping) or not sealed_generation:
@@ -665,8 +716,11 @@ def review_team_digest_migration_artifact_blockers(
             blockers.append("sealed_migration_generation_expected_id_unavailable")
         elif _frontmatter_non_null_scalar(sealed_generation.get("id")) != expected_generation_id:
             blockers.append("sealed_migration_generation_id_mismatch")
-        if not _frontmatter_non_null_scalar(sealed_generation.get("sealed_at")):
+        sealed_at = _frontmatter_non_null_scalar(sealed_generation.get("sealed_at"))
+        if not sealed_at:
             blockers.append("sealed_migration_generation_sealed_at_missing")
+        elif not _valid_iso_datetime(sealed_at):
+            blockers.append("sealed_migration_generation_sealed_at_invalid")
         source_head = _frontmatter_non_null_scalar(sealed_generation.get("source_head_sha"))
         if GIT_SHA_RE.fullmatch(source_head) is None:
             blockers.append("sealed_migration_generation_source_head_invalid")
@@ -690,7 +744,9 @@ def review_team_digest_migration_artifact_blockers(
                 if isinstance(authority, Mapping)
                 else None
             )
-            if _canonical_frozen_inventory_sha256(raw_entries) != expected_digest:
+            declared_digest = _frontmatter_non_null_scalar(frozen.get("canonical_sha256"))
+            actual_digest = _canonical_frozen_inventory_sha256(raw_entries)
+            if declared_digest != expected_digest or actual_digest != expected_digest:
                 blockers.append("sealed_migration_frozen_inventory_sha256_mismatch")
         try:
             frozen_count = int(frozen.get("count"))
@@ -721,10 +777,19 @@ def review_team_digest_migration_artifact_blockers(
             task_id, basename, receipt_sha = _migration_tuple_from_mapping(entry)
             if not task_id:
                 blockers.append(f"sealed_migration_entry_task_id_missing:{index}")
+            expected_note_basename = f"{task_id}.md" if task_id else ""
+            if (
+                not expected_note_basename
+                or _frontmatter_non_null_scalar(entry.get("task_note_basename"))
+                != expected_note_basename
+            ):
+                blockers.append(
+                    f"sealed_migration_entry_task_note_basename_mismatch:{task_id or index}"
+                )
             if not _valid_artifact_basename(basename):
                 blockers.append(f"sealed_migration_entry_path_invalid:{task_id or index}")
             relpath = _frontmatter_non_null_scalar(entry.get("receipt_relpath"))
-            if relpath and (Path(relpath).name != relpath or relpath != basename):
+            if not relpath or Path(relpath).name != relpath or relpath != basename:
                 blockers.append(f"sealed_migration_entry_relpath_invalid:{task_id or index}")
             if REVIEW_TEAM_DIGEST_MIGRATION_SHA256_RE.fullmatch(receipt_sha) is None:
                 blockers.append(f"sealed_migration_entry_receipt_sha_invalid:{task_id or index}")
@@ -738,9 +803,17 @@ def review_team_digest_migration_artifact_blockers(
                     "sealed_migration_entry_classification_invalid:"
                     f"{task_id or index}:{classification or 'missing'}"
                 )
+            reason = _frontmatter_non_null_scalar(entry.get("reason"))
+            if not _migration_entry_reason_valid(classification, reason):
+                blockers.append(f"sealed_migration_entry_reason_mismatch:{task_id or index}")
             entry_tuple = (task_id, basename, receipt_sha)
             if entry_tuple in frozen_tuples:
                 represented_frozen_tuples.add(entry_tuple)
+                if classification == "not-subject":
+                    blockers.append(
+                        "sealed_migration_frozen_tuple_reclassified:"
+                        f"{task_id}:{classification or 'missing'}"
+                    )
             if classification == REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION:
                 if entry_tuple not in frozen_tuples:
                     blockers.append(f"sealed_migration_preservation_not_frozen:{task_id}")
@@ -752,6 +825,8 @@ def review_team_digest_migration_artifact_blockers(
                         expected_sha=receipt_sha,
                     )
                 )
+            elif "legacy_admission" in entry:
+                blockers.append(f"sealed_migration_entry_unexpected_legacy_admission:{task_id}")
 
     missing_frozen = sorted(frozen_tuples - represented_frozen_tuples)
     blockers.extend(
