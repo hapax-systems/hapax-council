@@ -2098,6 +2098,7 @@ checklist:
 
         assert replay["status"] == "replay_blocked"
         assert replay["blocked_reasons"] == ["task-a:missing_or_stale"]
+        assert "--apply --replay-only" in replay["next_action"]
         assert replay["side_effects"] == {}
         assert reviewers.invocations == []
         assert not receipt_path.exists()
@@ -2122,10 +2123,68 @@ checklist:
         )
 
         assert result["status"] == "replay_force_conflict"
+        assert "--apply --replay-only" in result["next_action"]
+        assert " --force " not in result["next_action"]
         assert result["side_effects"] == {}
         assert gh.calls == []
         assert reviewers.invocations == []
         assert not (vault / "_locks").exists()
+
+    def test_probe_lock_acquires_releases_and_reports_cross_host_recheck(
+        self, tmp_path: Path
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        lock_path = dispatch.review_execution_lock_path(
+            repo="owner/repo",
+            pr_number=42,
+            vault_root=vault,
+        )
+
+        result = dispatch.probe_review_execution_lock(
+            repo="owner/repo",
+            pr_number=42,
+            vault_root=vault,
+        )
+
+        assert result["status"] == "probe_acquired_released"
+        assert result["lock_path"] == str(lock_path)
+        assert result["holder"]["repo"] == "owner/repo"
+        assert result["holder"]["pr"] == 42
+        assert "--probe-lock --hold-seconds 60" in result["next_action"]
+        assert not lock_path.exists()
+
+    def test_probe_lock_contends_without_provider_or_artifact_side_effects(
+        self, tmp_path: Path
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        note = _write_task(vault)
+        lock_path = dispatch.review_execution_lock_path(
+            repo="owner/repo",
+            pr_number=42,
+            vault_root=vault,
+        )
+
+        with dispatch.review_execution_lock(
+            repo="owner/repo",
+            pr_number=42,
+            vault_root=vault,
+        ) as held:
+            assert held.acquired
+            result = dispatch.probe_review_execution_lock(
+                repo="owner/repo",
+                pr_number=42,
+                vault_root=vault,
+            )
+
+        assert result["status"] == "probe_contended"
+        assert result["holder"]["owner_token"] == held.holder["owner_token"]
+        assert result["lock_evidence"]["stat"]["exists"] is True
+        assert "--probe-lock" in result["next_action"]
+        assert not lock_path.exists()
+        assert not (note.parent / "task-a.review-dossier.yaml").exists()
+        assert not (note.parent / "task-a.acceptance.yaml").exists()
+        assert not (tmp_path / "wake").exists()
+        assert not (tmp_path / "degraded-merges.jsonl").exists()
 
     def test_review_execution_lock_uses_o_excl_claim_file(self, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)
@@ -2161,6 +2220,7 @@ checklist:
                 assert second.status == "review_in_progress"
                 assert second.holder["owner_token"] == first.holder["owner_token"]
                 assert second.lock_evidence["stat"]["exists"] is True
+                assert "--release-lock --apply" in second.lock_evidence["next_action"]
                 assert second.lock_evidence["stale_after_seconds"] == (
                     dispatch.REVIEW_EXECUTION_LOCK_STALE_AFTER_SECONDS
                 )
@@ -2334,6 +2394,8 @@ with module.review_execution_lock(
 
         assert result["status"] == "review_lock_stale"
         assert result["holder"] == holder
+        assert result["next_action"] == result["lock_evidence"]["next_action"]
+        assert "--release-lock --apply" in result["next_action"]
         assert result["lock_evidence"]["lock_age_seconds"] >= (
             dispatch.REVIEW_EXECUTION_LOCK_STALE_AFTER_SECONDS
         )
@@ -2388,6 +2450,69 @@ with module.review_execution_lock(
         assert not (tmp_path / "degraded-merges.jsonl").exists()
         assert lock_path.is_file()
 
+    def test_release_lock_archives_stale_claim_and_refuses_fresh_claim(
+        self, tmp_path: Path
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        lock_path = dispatch.review_execution_lock_path(
+            repo="owner/repo",
+            pr_number=42,
+            vault_root=vault,
+        )
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        stale_holder = {
+            "schema": "hapax.review_execution_lock.holder.v1",
+            "owner_token": "x" * 43,
+            "repo": "owner/repo",
+            "pr": 42,
+            "pid": 12345,
+            "host": "stale-host",
+            "hostname": "stale-host",
+            "lock_path": str(lock_path),
+            "acquired_at": (
+                datetime.now(UTC)
+                - timedelta(seconds=dispatch.REVIEW_EXECUTION_LOCK_STALE_AFTER_SECONDS + 60)
+            ).isoformat(timespec="seconds"),
+        }
+        lock_path.write_text(json.dumps(stale_holder), encoding="utf-8")
+
+        dry_run = dispatch.release_review_execution_lock(
+            repo="owner/repo",
+            pr_number=42,
+            vault_root=vault,
+        )
+        assert dry_run["status"] == "release_ready"
+        assert lock_path.is_file()
+
+        released = dispatch.release_review_execution_lock(
+            repo="owner/repo",
+            pr_number=42,
+            vault_root=vault,
+            apply=True,
+        )
+        assert released["status"] == "released"
+        assert released["prior_status"] == "review_lock_stale"
+        assert not lock_path.exists()
+        archived = Path(released["archived_lock_path"])
+        assert archived.is_file()
+        assert json.loads(archived.read_text(encoding="utf-8")) == stale_holder
+
+        with dispatch.review_execution_lock(
+            repo="owner/repo",
+            pr_number=42,
+            vault_root=vault,
+        ) as lock:
+            assert lock.acquired
+            refused = dispatch.release_review_execution_lock(
+                repo="owner/repo",
+                pr_number=42,
+                vault_root=vault,
+                apply=True,
+            )
+            assert refused["status"] == "release_refused"
+            assert refused["reason"] == "claim_not_stale"
+            assert lock_path.is_file()
+
     def test_review_lock_release_requires_matching_owner_token(self, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)
         lock_path = dispatch.review_execution_lock_path(
@@ -2408,6 +2533,28 @@ with module.review_execution_lock(
 
         assert lock_path.is_file()
         lock_path.unlink()
+
+    def test_review_lock_release_refuses_unreadable_holder(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        lock_path = dispatch.review_execution_lock_path(
+            repo="owner/repo",
+            pr_number=42,
+            vault_root=vault,
+        )
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text("{", encoding="utf-8")
+
+        def unreadable(_path: Path) -> tuple[dict[str, Any], str | None]:
+            return {}, "read_error:PermissionError"
+
+        monkeypatch.setattr(dispatch, "_read_lock_holder", unreadable)
+        caplog.set_level(logging.WARNING, logger=dispatch.LOG.name)
+
+        assert dispatch._release_lock_claim(lock_path, "x" * 43) is False
+        assert lock_path.is_file()
+        assert "not releasing review execution lock with unreadable holder" in caplog.text
 
     def test_review_lock_releases_on_exception(self, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)
@@ -2687,6 +2834,77 @@ with module.review_execution_lock(
         assert "task-a.review-dossier.yaml" in replaced
         assert "task-a.acceptance.yaml" in replaced
 
+    def test_atomic_write_text_cleans_temp_file_after_fsync_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        target = tmp_path / "artifact.yaml"
+        target.write_text("old: true\n", encoding="utf-8")
+
+        def fail_fsync(_fd: int) -> None:
+            raise OSError("fsync failed")
+
+        monkeypatch.setattr(dispatch.os, "fsync", fail_fsync)
+
+        with pytest.raises(OSError, match="fsync failed"):
+            dispatch.atomic_write_text(target, "new: true\n")
+
+        assert target.read_text(encoding="utf-8") == "old: true\n"
+        assert list(tmp_path.glob(".artifact.yaml.*.tmp")) == []
+
+    def test_load_yaml_mapping_rejects_non_mapping(self, tmp_path: Path) -> None:
+        path = tmp_path / "artifact.yaml"
+        path.write_text("- not\n- a\n- mapping\n", encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="did not round-trip as a YAML mapping"):
+            dispatch._load_yaml_mapping(path)
+
+    def test_publish_review_dossier_roundtrip_mismatch_fails_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        note = _write_task(vault)
+        dossier_path = note.parent / "task-a.review-dossier.yaml"
+        pr_info = dispatch.PRInfo(
+            number=42,
+            title="PR 42",
+            body="",
+            base_ref="main",
+            base_sha="b" * 40,
+            head_ref="feat/42",
+            head_sha="c" * 40,
+            changed_file_count=1,
+            is_draft=False,
+            files=("shared/foo.py",),
+        )
+        dossier = {
+            "task_id": "task-a",
+            "pr": 42,
+            "head_sha": "c" * 40,
+            "review_team_verdict": "blocked",
+            "reviewers": [],
+        }
+        real_load = dispatch._load_yaml_mapping
+
+        def tampered_load(path: Path) -> dict[str, Any]:
+            loaded = real_load(path)
+            if path == dossier_path:
+                loaded["head_sha"] = "d" * 40
+            return loaded
+
+        monkeypatch.setattr(dispatch, "_load_yaml_mapping", tampered_load)
+
+        with pytest.raises(RuntimeError, match="published dossier failed coherence check"):
+            dispatch.publish_review_dossier(
+                dossier_path,
+                dossier,
+                frontmatter={"task_id": "task-a"},
+                note_path=note,
+                task_id="task-a",
+                pr_info=pr_info,
+                registry=dispatch.review_team.load_lens_registry(),
+                route_blocked_families={},
+            )
+
 
 class TestAllMode:
     def test_review_all_scans_open_prs(self, tmp_path: Path) -> None:
@@ -2804,6 +3022,140 @@ class TestReceiptAndWake:
             "sha256:" + dispatch.sha256_file(note.parent / "task-a.review-dossier.yaml")
         )
         assert len(receipt["reviewers"]) == 3
+
+    def test_missing_published_dossier_withholds_acceptance_receipt(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        result, _, _, note = _review(
+            tmp_path, task_kwargs={"quality_floor": "frontier_review_required"}
+        )
+        frontmatter = dispatch.review_team._note_frontmatter(note)
+        assert frontmatter is not None
+        dossier = result["dossier"]
+        (note.parent / "task-a.acceptance.yaml").unlink()
+        (note.parent / "task-a.review-dossier.yaml").unlink()
+        caplog.set_level(logging.WARNING, logger=dispatch.LOG.name)
+
+        receipt = dispatch.write_acceptance_receipt_if_due(
+            frontmatter,
+            note,
+            "task-a",
+            dossier,
+            pr_url="https://github.com/owner/repo/pull/42",
+            now_iso="2026-06-11T22:00:00+00:00",
+            pr_number=42,
+            changed_files=("shared/foo.py",),
+            changed_file_count=1,
+            route_blocked_families={},
+        )
+
+        assert receipt is None
+        assert "published dossier is missing; next action:" in caplog.text
+        assert not (note.parent / "task-a.acceptance.yaml").exists()
+
+    def test_incoherent_published_dossier_withholds_acceptance_receipt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        result, _, _, note = _review(
+            tmp_path, task_kwargs={"quality_floor": "frontier_review_required"}
+        )
+        frontmatter = dispatch.review_team._note_frontmatter(note)
+        assert frontmatter is not None
+        receipt_path = note.parent / "task-a.acceptance.yaml"
+        receipt_path.unlink()
+        dossier_path = note.parent / "task-a.review-dossier.yaml"
+        on_disk = yaml.safe_load(dossier_path.read_text(encoding="utf-8"))
+        on_disk["head_sha"] = "d" * 40
+        dossier_path.write_text(yaml.safe_dump(on_disk, sort_keys=False), encoding="utf-8")
+        monkeypatch.setattr(
+            dispatch.review_team, "review_dossier_validity_blockers", lambda *a, **k: ()
+        )
+        caplog.set_level(logging.WARNING, logger=dispatch.LOG.name)
+
+        receipt = dispatch.write_acceptance_receipt_if_due(
+            frontmatter,
+            note,
+            "task-a",
+            result["dossier"],
+            pr_url="https://github.com/owner/repo/pull/42",
+            now_iso="2026-06-11T22:00:00+00:00",
+            pr_number=42,
+            changed_files=("shared/foo.py",),
+            changed_file_count=1,
+            route_blocked_families={},
+        )
+
+        assert receipt is None
+        assert "on-disk dossier is incoherent; next action:" in caplog.text
+        assert not receipt_path.exists()
+
+    def test_invalid_written_receipt_is_archived_and_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result, _, _, note = _review(
+            tmp_path, task_kwargs={"quality_floor": "frontier_review_required"}
+        )
+        frontmatter = dispatch.review_team._note_frontmatter(note)
+        assert frontmatter is not None
+        receipt_path = note.parent / "task-a.acceptance.yaml"
+        receipt_path.unlink()
+        dossier_digest = dispatch.sha256_file(note.parent / "task-a.review-dossier.yaml")
+
+        monkeypatch.setattr(
+            dispatch,
+            "acceptance_receipt_blockers",
+            lambda _frontmatter, _note_path: ("synthetic_receipt_blocker",),
+        )
+
+        with pytest.raises(RuntimeError, match="synthetic_receipt_blocker"):
+            dispatch.write_acceptance_receipt_if_due(
+                frontmatter,
+                note,
+                "task-a",
+                result["dossier"],
+                pr_url="https://github.com/owner/repo/pull/42",
+                now_iso="2026-06-11T22:00:00+00:00",
+                pr_number=42,
+                changed_files=("shared/foo.py",),
+                changed_file_count=1,
+                route_blocked_families={},
+            )
+
+        assert not receipt_path.exists()
+        archives = sorted(note.parent.glob("task-a.acceptance.invalid.*.yaml"))
+        assert len(archives) == 1
+        assert f"invalid.{dossier_digest[:12]}" in archives[0].name
+
+    def test_non_accept_rereview_archives_stale_review_team_receipt(self, tmp_path: Path) -> None:
+        result, _, _, note = _review(
+            tmp_path, task_kwargs={"quality_floor": "frontier_review_required"}
+        )
+        assert result["status"] == "dispatched"
+        receipt_path = note.parent / "task-a.acceptance.yaml"
+        original_receipt = yaml.safe_load(receipt_path.read_text(encoding="utf-8"))
+
+        blocked_reviewers = RecordingReviewers({"codex": BLOCK_REPLY})
+        second = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=note.parent.parent,
+            apply=True,
+            force=True,
+            gh_runner=FakeGh(),
+            reviewer_runner=blocked_reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T22:00:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert second["status"] == "dispatched"
+        assert second["dossier"]["review_team_verdict"] == "blocked"
+        assert not receipt_path.exists()
+        archives = sorted(note.parent.glob("task-a.acceptance.invalidated.*.yaml"))
+        assert len(archives) == 1
+        assert yaml.safe_load(archives[0].read_text(encoding="utf-8")) == original_receipt
 
     def test_review_evidence_is_signed_when_public_gate_secret_is_present(
         self,

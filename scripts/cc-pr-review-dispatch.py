@@ -19,6 +19,9 @@ Usage::
 
     uv run python scripts/cc-pr-review-dispatch.py --pr 123           # dry-run plan
     uv run python scripts/cc-pr-review-dispatch.py --pr 123 --apply
+    uv run python scripts/cc-pr-review-dispatch.py --pr 123 --release-lock
+    uv run python scripts/cc-pr-review-dispatch.py --pr 123 --release-lock --apply
+    uv run python scripts/cc-pr-review-dispatch.py --pr 123 --probe-lock --hold-seconds 60
     uv run python scripts/cc-pr-review-dispatch.py --all --apply      # timer-ready scan
     uv run python scripts/cc-pr-review-dispatch.py --all --apply --replay-only
                                                                     # no-review migration
@@ -26,6 +29,12 @@ Usage::
 
 Default mode is a dry-run constitution plan. ``--apply`` dispatches reviewers
 and writes the dossier; ``--force`` re-reviews an already-reviewed head sha.
+``--release-lock`` is a no-provider recovery path for stale or malformed
+per-repository+PR claim files under ``<vault>/_locks/review-team/``; dry-run
+reports evidence and ``--apply`` archives the stale claim instead of deleting it.
+``--probe-lock`` is a no-provider O_CREAT|O_EXCL recheck: run the hold command
+on one host, then the same probe without ``--hold-seconds`` on the other host;
+the second host must return ``probe_contended`` with the holder metadata.
 Reviewer CLIs (claude/codex/agy-backed gemini/glm) are configured in
 ``config/review-lenses/registry.yaml`` ``families[].reviewer_command``.
 """
@@ -43,6 +52,7 @@ import secrets
 import subprocess
 import sys
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -1037,6 +1047,8 @@ def _lock_evidence(
     *,
     path: Path,
     status: str,
+    repo: str | None = None,
+    pr_number: int | None = None,
     holder_error: str | None = None,
     lock_age_seconds: float | None = None,
 ) -> dict[str, Any]:
@@ -1050,7 +1062,88 @@ def _lock_evidence(
         evidence["lock_age_seconds"] = round(max(lock_age_seconds, 0.0), 3)
     if holder_error:
         evidence["holder_error"] = holder_error
+    next_action = _lock_next_action(status=status, repo=repo, pr_number=pr_number)
+    if next_action:
+        evidence["next_action"] = next_action
     return evidence
+
+
+def _lock_release_command(*, repo: str | None, pr_number: int | None) -> str:
+    cmd = "uv run python scripts/cc-pr-review-dispatch.py"
+    if pr_number is not None:
+        cmd += f" --pr {pr_number}"
+    if repo:
+        cmd += f" --repo {repo}"
+    return f"{cmd} --release-lock --apply"
+
+
+def _review_dispatch_command(*, repo: str | None, pr_number: int | None) -> str:
+    cmd = "uv run python scripts/cc-pr-review-dispatch.py"
+    if pr_number is not None:
+        cmd += f" --pr {pr_number}"
+    if repo:
+        cmd += f" --repo {repo}"
+    return cmd
+
+
+def _lock_next_action(
+    *,
+    status: str,
+    repo: str | None,
+    pr_number: int | None,
+) -> str | None:
+    release_cmd = _lock_release_command(repo=repo, pr_number=pr_number)
+    if status == "review_in_progress":
+        return (
+            "Another review claim is fresh. Wait for the holder to finish; if the "
+            f"claim ages past stale_after_seconds after external liveness review, run: {release_cmd}"
+        )
+    if status == "review_lock_stale":
+        return (
+            "Claim is stale. Confirm the recorded holder is not live, then archive-release it with: "
+            f"{release_cmd}"
+        )
+    if status == "review_lock_malformed":
+        return (
+            "Claim metadata is unreadable or invalid. Inspect the lock path, then archive-release "
+            f"the malformed claim with: {release_cmd}"
+        )
+    if status == "review_lock_unavailable":
+        return (
+            "Review lock storage is unavailable. Fix the reported holder_error/path permissions or "
+            "shared-vault state, then rerun the exact PR review."
+        )
+    if status == "acquired":
+        return "Review claim acquired; no operator action is needed unless this process aborts."
+    return None
+
+
+def _probe_next_action(*, repo: str, pr_number: int, status: str) -> str:
+    probe_cmd = f"{_review_dispatch_command(repo=repo, pr_number=pr_number)} --probe-lock"
+    if status == "probe_acquired_released":
+        return (
+            "Probe acquired and released the review claim. For a cross-host witness, run "
+            f"'{probe_cmd} --hold-seconds 60' on one host, then '{probe_cmd}' on the other "
+            "and require probe_contended while the first process is holding the claim."
+        )
+    return (
+        "Probe correctly contended on an existing claim. After the holder exits, rerun "
+        f"'{probe_cmd}' and require probe_acquired_released."
+    )
+
+
+def _replay_next_action(*, repo: str, pr_number: int, status: str) -> str:
+    replay_cmd = f"{_review_dispatch_command(repo=repo, pr_number=pr_number)} --apply --replay-only"
+    if status == "replay_force_conflict":
+        return (
+            f"Replay-only never forces or dispatches a review. Rerun without --force: {replay_cmd}"
+        )
+    if status == "replay_blocked":
+        return (
+            "Do not mint a receipt from stale or invalid dossier evidence. Resolve the listed "
+            f"blocked_reasons or use a governed operator reconciliation path, then rerun: {replay_cmd}"
+        )
+    return f"Rerun after correcting the reported blocker: {_review_dispatch_command(repo=repo, pr_number=pr_number)}"
 
 
 def _holder_validation_error(
@@ -1102,6 +1195,8 @@ def _lock_collision_result(*, path: Path, repo: str, pr_number: int) -> ReviewEx
         lock_evidence=_lock_evidence(
             path=path,
             status=status,
+            repo=repo,
+            pr_number=pr_number,
             holder_error=holder_error,
             lock_age_seconds=lock_age_seconds,
         ),
@@ -1159,6 +1254,144 @@ def _release_lock_claim(path: Path, owner_token: str) -> bool:
     return True
 
 
+def release_review_execution_lock(
+    *,
+    repo: str,
+    pr_number: int,
+    vault_root: Path | None = None,
+    lock_dir: Path | None = None,
+    apply: bool = False,
+) -> dict[str, Any]:
+    """Archive-release a stale or malformed per-PR review claim.
+
+    Fresh claims are never released here. This is an operator recovery path for
+    dead claim files whose holder process cannot run the normal ``finally``
+    cleanup; the original claim file is preserved beside the lock as evidence.
+    """
+
+    path = review_execution_lock_path(
+        repo=repo,
+        pr_number=pr_number,
+        vault_root=vault_root,
+        lock_dir=lock_dir,
+    )
+    if not path.exists():
+        return {
+            "status": "review_lock_absent",
+            "repo": repo,
+            "pr": pr_number,
+            "lock_path": str(path),
+            "next_action": "No claim exists; rerun the exact PR review if needed.",
+        }
+    collision = _lock_collision_result(path=path, repo=repo, pr_number=pr_number)
+    evidence = collision.lock_evidence
+    if collision.status == "review_in_progress":
+        return {
+            "status": "release_refused",
+            "repo": repo,
+            "pr": pr_number,
+            "lock_path": str(path),
+            "reason": "claim_not_stale",
+            "holder": collision.holder,
+            "lock_evidence": evidence,
+            "next_action": evidence.get("next_action"),
+        }
+    if collision.status not in {"review_lock_stale", "review_lock_malformed"}:
+        return {
+            "status": "release_refused",
+            "repo": repo,
+            "pr": pr_number,
+            "lock_path": str(path),
+            "reason": collision.status,
+            "holder": collision.holder,
+            "lock_evidence": evidence,
+            "next_action": evidence.get("next_action"),
+        }
+    if not apply:
+        return {
+            "status": "release_ready",
+            "repo": repo,
+            "pr": pr_number,
+            "lock_path": str(path),
+            "prior_status": collision.status,
+            "holder": collision.holder,
+            "lock_evidence": evidence,
+            "next_action": _lock_release_command(repo=repo, pr_number=pr_number),
+        }
+    token = f"released.{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ').lower()}"
+    archive = archive_existing_artifact(path, token=token)
+    return {
+        "status": "released",
+        "repo": repo,
+        "pr": pr_number,
+        "lock_path": str(path),
+        "archived_lock_path": str(archive) if archive else None,
+        "prior_status": collision.status,
+        "holder": collision.holder,
+        "lock_evidence": evidence,
+        "next_action": "Rerun the exact PR review; the stale claim has been archived.",
+    }
+
+
+def probe_review_execution_lock(
+    *,
+    repo: str,
+    pr_number: int,
+    vault_root: Path | None = None,
+    lock_dir: Path | None = None,
+    hold_seconds: float = 0.0,
+) -> dict[str, Any]:
+    """No-provider O_EXCL witness for the shared-vault review claim."""
+
+    started_at = datetime.now(UTC).isoformat(timespec="seconds")
+    with review_execution_lock(
+        repo=repo,
+        pr_number=pr_number,
+        vault_root=vault_root,
+        lock_dir=lock_dir,
+    ) as lock:
+        if not lock.acquired:
+            return {
+                "status": "probe_contended",
+                "repo": repo,
+                "pr": pr_number,
+                "started_at": started_at,
+                "lock_path": str(lock.path),
+                "holder": lock.holder,
+                "lock_evidence": lock.lock_evidence,
+                "next_action": _probe_next_action(
+                    repo=repo,
+                    pr_number=pr_number,
+                    status="probe_contended",
+                ),
+            }
+        if hold_seconds:
+            LOG.info(
+                "probe lock acquired for %s PR #%d; holding for %.3f seconds at %s",
+                repo,
+                pr_number,
+                hold_seconds,
+                lock.path,
+            )
+            time.sleep(hold_seconds)
+        return {
+            "status": "probe_acquired_released",
+            "repo": repo,
+            "pr": pr_number,
+            "started_at": started_at,
+            "released_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "lock_path": str(lock.path),
+            "holder": lock.holder,
+            "lock_evidence": lock.lock_evidence,
+            "held_seconds": hold_seconds,
+            "next_action": _probe_next_action(
+                repo=repo,
+                pr_number=pr_number,
+                status="probe_acquired_released",
+            ),
+        }
+
+
 @contextmanager
 def review_execution_lock(
     *,
@@ -1193,6 +1426,8 @@ def review_execution_lock(
             lock_evidence=_lock_evidence(
                 path=path,
                 status=status,
+                repo=repo,
+                pr_number=pr_number,
                 holder_error=f"claim_parent_error:{type(exc).__name__}",
             ),
         )
@@ -1215,6 +1450,8 @@ def review_execution_lock(
             lock_evidence=_lock_evidence(
                 path=path,
                 status=status,
+                repo=repo,
+                pr_number=pr_number,
                 holder_error=f"claim_create_error:{type(exc).__name__}",
             ),
         )
@@ -1244,6 +1481,8 @@ def review_execution_lock(
             lock_evidence = _lock_evidence(
                 path=path,
                 status=status,
+                repo=repo,
+                pr_number=pr_number,
                 holder_error=f"holder_publish_error:{type(exc).__name__}",
             ) | {"own_claim_removed": removed}
             if cleanup_warning:
@@ -1262,7 +1501,12 @@ def review_execution_lock(
                 acquired=True,
                 holder=holder,
                 status="acquired",
-                lock_evidence=_lock_evidence(path=path, status="acquired"),
+                lock_evidence=_lock_evidence(
+                    path=path,
+                    status="acquired",
+                    repo=repo,
+                    pr_number=pr_number,
+                ),
             )
         finally:
             _release_lock_claim(path, owner_token)
@@ -1304,10 +1548,10 @@ def atomic_write_text(path: Path, text: str) -> None:
             suffix=".tmp",
             delete=False,
         ) as tmp:
+            tmp_path = Path(tmp.name)
             tmp.write(text)
             tmp.flush()
             os.fsync(tmp.fileno())
-            tmp_path = Path(tmp.name)
         os.chmod(tmp_path, mode)
         os.replace(tmp_path, path)
         tmp_path = None
@@ -1378,6 +1622,40 @@ def _existing_review_team_receipt_is_current(
     return str(receipt.get("head_sha") or "") == expected_head_sha
 
 
+def _archive_review_team_receipt_after_non_accept_dossier(
+    *,
+    note_path: Path,
+    task_id: str,
+    dossier: dict[str, Any],
+) -> Path | None:
+    if dossier.get("review_team_verdict") == review_team.QUORUM_ACCEPT:
+        return None
+    receipt_path = acceptance_receipt_path(note_path, task_id)
+    if not receipt_path.exists():
+        return None
+    try:
+        existing = _load_yaml_mapping(receipt_path)
+    except (OSError, RuntimeError, yaml.YAMLError):
+        existing = {}
+    if not str(existing.get("acceptor") or "").startswith("review-team:"):
+        return None
+    head = str(dossier.get("head_sha") or "")
+    token_head = head[:8].lower() if re.fullmatch(r"[0-9a-fA-F]{40}", head) else "review-team"
+    try:
+        receipt_digest = sha256_file(receipt_path)[:12]
+        token = f"invalidated.{token_head}.{receipt_digest}"
+    except OSError:
+        token = f"invalidated.{token_head}"
+    archive = archive_existing_artifact(receipt_path, token=token)
+    if archive is not None:
+        LOG.warning(
+            "archived stale review-team acceptance receipt after non-accept dossier "
+            "supersession: %s; next action: rerun review after resolving findings",
+            archive,
+        )
+    return archive
+
+
 def publish_review_dossier(
     dossier_path: Path,
     dossier: dict[str, Any],
@@ -1431,6 +1709,12 @@ def publish_review_dossier(
         mismatches.append("reviewers_roundtrip_mismatch")
     if mismatches:
         raise RuntimeError("published dossier failed coherence check: " + ",".join(mismatches))
+
+    _archive_review_team_receipt_after_non_accept_dossier(
+        note_path=note_path,
+        task_id=task_id,
+        dossier=loaded,
+    )
 
     if loaded.get("review_team_verdict") == review_team.QUORUM_ACCEPT:
         admission_blockers = review_team.review_dossier_validity_blockers(
@@ -2866,7 +3150,10 @@ def write_acceptance_receipt_if_due(
         return None
     on_disk_dossier_path = review_team.review_dossier_path(note_path, task_id)
     if not on_disk_dossier_path.is_file():
-        LOG.warning("acceptance receipt withheld; published dossier is missing")
+        LOG.warning(
+            "acceptance receipt withheld; published dossier is missing; next action: "
+            "rerun exact PR review or restore a coherent published dossier before replay"
+        )
         return None
     witness_snapshot_path: Path | None = None
     validation_outage_state_path = outage_state_path or FAMILY_OUTAGE_STATE
@@ -2910,7 +3197,11 @@ def write_acceptance_receipt_if_due(
                     witness_snapshot_path,
                 )
     if blockers:
-        LOG.warning("acceptance receipt withheld; review-team gate blocks: %s", ",".join(blockers))
+        LOG.warning(
+            "acceptance receipt withheld; review-team gate blocks: %s; next action: "
+            "resolve blockers before rerun/replay",
+            ",".join(blockers),
+        )
         return None
     if not requires_acceptance_receipt(frontmatter):
         return None
@@ -2921,7 +3212,10 @@ def write_acceptance_receipt_if_due(
         or on_disk_dossier.get("head_sha") != dossier.get("head_sha")
         or on_disk_dossier.get("review_team_verdict") != review_team.QUORUM_ACCEPT
     ):
-        LOG.warning("acceptance receipt withheld; on-disk dossier is incoherent")
+        LOG.warning(
+            "acceptance receipt withheld; on-disk dossier is incoherent; next action: "
+            "rerun exact PR review so the receipt binds the published dossier"
+        )
         return None
     dossier_sha256 = sha256_file(on_disk_dossier_path)
     receipt_path = acceptance_receipt_path(note_path, task_id)
@@ -3140,6 +3434,11 @@ def review_pr(
             "repo": repo,
             "pr": pr_number,
             "reason": "replay-only never forces or dispatches a review",
+            "next_action": _replay_next_action(
+                repo=repo,
+                pr_number=pr_number,
+                status="replay_force_conflict",
+            ),
             "side_effects": {},
         }
 
@@ -3152,6 +3451,7 @@ def review_pr(
                 "lock_path": str(lock.path),
                 "holder": lock.holder,
                 "lock_evidence": lock.lock_evidence,
+                "next_action": lock.lock_evidence.get("next_action"),
                 "side_effects": {},
             }
         result = _review_pr_locked(
@@ -3221,11 +3521,20 @@ def _review_pr_locked(
             "status": "route_gate_unavailable",
             "pr": pr_number,
             "reason": truncate_context(f"{type(exc).__name__}: {exc}", limit=500),
+            "next_action": _replay_next_action(
+                repo=repo,
+                pr_number=pr_number,
+                status="route_gate_unavailable",
+            ),
         }
 
     pr_info = fetch_pr(pr_number, repo=repo, repo_root=repo_root, runner=gh_runner)
     if pr_info.is_draft:
-        return {"status": "draft_skipped", "pr": pr_number}
+        return {
+            "status": "draft_skipped",
+            "pr": pr_number,
+            "next_action": "Mark the PR ready for review, wait for required checks, then rerun.",
+        }
     if not pr_info.files:
         return {"status": "changed_files_unknown", "pr": pr_number}
     if pr_info.changed_file_count is None:
@@ -3307,6 +3616,11 @@ def _review_pr_locked(
                 "pr": pr_number,
                 "head_sha": pr_info.head_sha,
                 "blocked_reasons": replay_blockers or ["incomplete_replay_candidate_set"],
+                "next_action": _replay_next_action(
+                    repo=repo,
+                    pr_number=pr_number,
+                    status="replay_blocked",
+                ),
                 "side_effects": {},
             }
 
@@ -3795,6 +4109,25 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="validate current dossiers and replay side effects without dispatching reviewers",
     )
+    parser.add_argument(
+        "--release-lock",
+        action="store_true",
+        help=(
+            "recover a stale or malformed per-PR review claim; dry-run reports evidence, "
+            "--apply archives the claim"
+        ),
+    )
+    parser.add_argument(
+        "--probe-lock",
+        action="store_true",
+        help="exercise the per-PR O_EXCL review claim without GitHub, reviewers, or artifacts",
+    )
+    parser.add_argument(
+        "--hold-seconds",
+        type=float,
+        default=0.0,
+        help="with --probe-lock, hold an acquired claim for this many seconds before release",
+    )
     parser.add_argument("--repo", default=DEFAULT_REPO)
     parser.add_argument("--vault-root", type=Path, default=DEFAULT_VAULT_ROOT)
     parser.add_argument("--verbose", action="store_true")
@@ -3808,6 +4141,40 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.force and args.replay_only:
         parser.error("--replay-only cannot be combined with --force")
+    if args.hold_seconds < 0:
+        parser.error("--hold-seconds must be non-negative")
+    if args.hold_seconds and not args.probe_lock:
+        parser.error("--hold-seconds requires --probe-lock")
+    if args.probe_lock and args.all:
+        parser.error("--probe-lock requires an exact --pr target")
+    if args.probe_lock and (args.apply or args.force or args.replay_only or args.release_lock):
+        parser.error(
+            "--probe-lock cannot be combined with --apply, --force, --replay-only, or --release-lock"
+        )
+    if args.probe_lock:
+        results = probe_review_execution_lock(
+            repo=args.repo,
+            pr_number=args.pr,
+            vault_root=args.vault_root,
+            hold_seconds=args.hold_seconds,
+        )
+        json.dump(results, sys.stdout, indent=2, default=str)
+        sys.stdout.write("\n")
+        return 0
+    if args.release_lock and args.all:
+        parser.error("--release-lock requires an exact --pr target")
+    if args.release_lock and (args.force or args.replay_only):
+        parser.error("--release-lock cannot be combined with --force or --replay-only")
+    if args.release_lock:
+        results = release_review_execution_lock(
+            repo=args.repo,
+            pr_number=args.pr,
+            vault_root=args.vault_root,
+            apply=args.apply,
+        )
+        json.dump(results, sys.stdout, indent=2, default=str)
+        sys.stdout.write("\n")
+        return 0
     if args.all:
         results: Any = review_all_open_prs(
             repo=args.repo,

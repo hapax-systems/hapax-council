@@ -20,6 +20,7 @@ from shared.sdlc_lifecycle import (
     STAGE_RE,
     TASK_CLAIMABLE_STATUSES,
     TASK_DISPATCHABLE_STATUSES,
+    _acceptance_receipt_validity_blockers,
     acceptance_receipt_blockers,
     acceptance_receipt_path,
     active_blocked_task_blockers,
@@ -311,6 +312,21 @@ class TestAcceptanceReceiptEnforcement:
         frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
         assert acceptance_receipt_blockers(frontmatter, note) == ()
 
+    def test_direct_review_team_digest_validation_requires_dossier_context(
+        self, tmp_path: Path
+    ) -> None:
+        digest = self._dossier(tmp_path, "task-r")
+        receipt = self._receipt(
+            tmp_path,
+            "task-r",
+            self.VALID_RECEIPT.replace("acceptor: operator", "acceptor: review-team:codex,glm")
+            + f"dossier_sha256: sha256:{digest}\n",
+        )
+
+        assert "acceptance_receipt_dossier_context_missing" in (
+            _acceptance_receipt_validity_blockers(receipt)
+        )
+
     def test_operator_receipt_does_not_retroactively_require_dossier_sha(
         self, tmp_path: Path
     ) -> None:
@@ -319,7 +335,9 @@ class TestAcceptanceReceiptEnforcement:
         frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
         assert acceptance_receipt_blockers(frontmatter, note) == ()
 
-    def test_review_team_receipt_missing_dossier_sha_blocks(self, tmp_path: Path) -> None:
+    def test_legacy_review_team_receipt_before_digest_floor_remains_valid(
+        self, tmp_path: Path
+    ) -> None:
         note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})
         self._dossier(tmp_path, "task-r")
         self._receipt(
@@ -328,8 +346,21 @@ class TestAcceptanceReceiptEnforcement:
             self.VALID_RECEIPT.replace("acceptor: operator", "acceptor: review-team:codex,glm"),
         )
         frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
-        assert "acceptance_receipt_missing_field:dossier_sha256" in acceptance_receipt_blockers(
-            frontmatter, note
+        assert acceptance_receipt_blockers(frontmatter, note) == ()
+
+    def test_new_review_team_receipt_missing_dossier_sha_blocks(self, tmp_path: Path) -> None:
+        note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})
+        self._dossier(tmp_path, "task-r")
+        self._receipt(
+            tmp_path,
+            "task-r",
+            self.VALID_RECEIPT.replace(
+                "acceptor: operator", "acceptor: review-team:codex,glm"
+            ).replace("timestamp: 2026-06-10T17:00:00Z", "timestamp: 2026-07-14T00:00:00Z"),
+        )
+        frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
+        assert "acceptance_receipt_legacy_review_team_digest_unbound" in (
+            acceptance_receipt_blockers(frontmatter, note)
         )
 
     def test_review_team_receipt_blocks_after_dossier_tamper(self, tmp_path: Path) -> None:
