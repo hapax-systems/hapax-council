@@ -295,8 +295,27 @@ REVIEW_TEAM_DOSSIER_SHA256_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 REVIEW_TEAM_DIGEST_MIGRATION_FILENAME = "_review-team-digest-migration.yaml"
 REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA = "hapax.review_team_digest_migration.v1"
 REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION = "exact-hash-preserved"
+REVIEW_TEAM_DIGEST_MIGRATION_LEGACY_ROUTE = "legacy_exact_hash_preserved"
 REVIEW_TEAM_DIGEST_MIGRATION_SHA256_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 RAW_SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
+REVIEW_TEAM_DIGEST_MIGRATION_SOURCE_TRUST_ANCHOR: dict[str, str] = {
+    "proposal_id": "PR4485-p0-sealed-cutover-boundary-final-remediation-20260714-v4",
+    "proposal_sha256": "f89439a328e420c194183a772f81b08d2dc6a8cb860d8e3bf6456fb81305ec6e",
+    "consumed_act_carrier_sha256": (
+        "09d70fcb36485fc1e584243d081d3bf19b6a4d565b2e32bd684b2aa67c926987"
+    ),
+    "frozen_inventory_canonical_sha256": (
+        "df0e9f2f2db610306b7186fe669f5f240f05c1e8b1161b9f2ea1684d5760c0c2"
+    ),
+    "authority_case": "CASE-SYSTEM-INTEGRITY-20260611",
+}
+REVIEW_TEAM_DIGEST_MIGRATION_RUNBOOK = "docs/runbooks/review-team-digest-migration.md"
+
+
+def review_team_digest_migration_source_trust_anchor() -> dict[str, str]:
+    """Reviewed-source trust anchor for legacy review-team digest migration."""
+
+    return dict(REVIEW_TEAM_DIGEST_MIGRATION_SOURCE_TRUST_ANCHOR)
 
 
 def requires_acceptance_receipt(frontmatter: Mapping[str, Any]) -> bool:
@@ -341,7 +360,7 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _canonical_active_dir_for_note(note_path: Path) -> Path:
+def _canonical_active_dir_for_note(note_path: Path) -> Path | None:
     """Resolve the canonical active vault directory for review migration state."""
 
     note_dir = note_path.parent
@@ -350,11 +369,14 @@ def _canonical_active_dir_for_note(note_path: Path) -> Path:
     sibling_active = note_dir.parent / "active"
     if sibling_active.is_dir():
         return sibling_active
+    if note_dir.name in {"closed", "done", "archive", "archived"}:
+        return None
     return note_dir
 
 
 def _review_team_digest_migration_path(note_path: Path) -> Path:
-    return _canonical_active_dir_for_note(note_path) / REVIEW_TEAM_DIGEST_MIGRATION_FILENAME
+    active_dir = _canonical_active_dir_for_note(note_path)
+    return (active_dir or note_path.parent) / REVIEW_TEAM_DIGEST_MIGRATION_FILENAME
 
 
 def _valid_artifact_basename(value: str) -> bool:
@@ -380,10 +402,60 @@ def _load_yaml_mapping_for_migration(path: Path) -> tuple[Mapping[str, Any] | No
     return loaded, None
 
 
+def _source_anchor_blocker(
+    *,
+    actual: object,
+    expected_key: str,
+    reason_prefix: str,
+) -> str | None:
+    expected = review_team_digest_migration_source_trust_anchor()[expected_key]
+    if _frontmatter_non_null_scalar(actual) != expected:
+        return f"{reason_prefix}_{expected_key}_mismatch"
+    return None
+
+
+def _migration_source_anchor_blockers(authority: Mapping[str, Any]) -> tuple[str, ...]:
+    source_anchor = authority.get("source_trust_anchor")
+    if not isinstance(source_anchor, Mapping):
+        return ("acceptance_receipt_digest_migration_authority_source_trust_anchor_missing",)
+    reason_prefix = "acceptance_receipt_digest_migration_source_anchor"
+    checks = (
+        (source_anchor.get("proposal_id"), "proposal_id"),
+        (source_anchor.get("proposal_sha256"), "proposal_sha256"),
+        (source_anchor.get("consumed_act_carrier_sha256"), "consumed_act_carrier_sha256"),
+        (
+            source_anchor.get("frozen_inventory_canonical_sha256"),
+            "frozen_inventory_canonical_sha256",
+        ),
+        (source_anchor.get("authority_case"), "authority_case"),
+        (authority.get("proposal_id"), "proposal_id"),
+        (authority.get("proposal_sha256"), "proposal_sha256"),
+        (authority.get("consumed_act_carrier_sha256"), "consumed_act_carrier_sha256"),
+        (
+            authority.get("frozen_inventory_canonical_sha256"),
+            "frozen_inventory_canonical_sha256",
+        ),
+        (authority.get("case_id"), "authority_case"),
+    )
+    blockers = [
+        blocker
+        for actual, key in checks
+        if (
+            blocker := _source_anchor_blocker(
+                actual=actual, expected_key=key, reason_prefix=reason_prefix
+            )
+        )
+    ]
+    return tuple(blockers)
+
+
 def _migration_authority_blockers(loaded: Mapping[str, Any]) -> tuple[str, ...]:
     authority = loaded.get("authority")
     if not isinstance(authority, Mapping):
         return ("acceptance_receipt_digest_migration_authority_missing",)
+    source_anchor_blockers = _migration_source_anchor_blockers(authority)
+    if source_anchor_blockers:
+        return source_anchor_blockers
 
     proposal_path_text = _frontmatter_non_null_scalar(authority.get("proposal_path"))
     proposal_sha = _frontmatter_non_null_scalar(authority.get("proposal_sha256"))
@@ -429,6 +501,8 @@ def _migration_authority_blockers(loaded: Mapping[str, Any]) -> tuple[str, ...]:
     expected_response = f"RATIFY {proposal_id} proposal_sha256={proposal_sha}"
     if _frontmatter_non_null_scalar(carrier.get("status")) != "consumed_active":
         return ("acceptance_receipt_digest_migration_authority_carrier_not_consumed",)
+    if _frontmatter_non_null_scalar(carrier.get("id")) != proposal_id:
+        return ("acceptance_receipt_digest_migration_authority_carrier_id_mismatch",)
     if _frontmatter_non_null_scalar(carrier_proposal.get("path")) != proposal_path_text:
         return ("acceptance_receipt_digest_migration_authority_carrier_proposal_path_mismatch",)
     if _frontmatter_non_null_scalar(carrier_proposal.get("sha256")) != proposal_sha:
@@ -457,6 +531,11 @@ def _migration_authority_blockers(loaded: Mapping[str, Any]) -> tuple[str, ...]:
     actual_frozen_digest = _canonical_frozen_inventory_sha256(frozen_entries)
     if proposal_frozen_digest != actual_frozen_digest or frozen_digest != actual_frozen_digest:
         return ("acceptance_receipt_digest_migration_authority_inventory_sha256_mismatch",)
+    if (
+        _frontmatter_non_null_scalar(carrier.get("frozen_prebinding_inventory_canonical_sha256"))
+        != actual_frozen_digest
+    ):
+        return ("acceptance_receipt_digest_migration_authority_carrier_inventory_sha_mismatch",)
 
     artifact_frozen = loaded.get("frozen_prebinding_inventory")
     if not isinstance(artifact_frozen, Mapping):
@@ -472,6 +551,47 @@ def _migration_authority_blockers(loaded: Mapping[str, Any]) -> tuple[str, ...]:
         return ("acceptance_receipt_digest_migration_authority_artifact_inventory_count_invalid",)
     if artifact_count != len(frozen_entries):
         return ("acceptance_receipt_digest_migration_authority_artifact_inventory_count_mismatch",)
+    return ()
+
+
+def _legacy_admission_blockers(
+    loaded: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    *,
+    expected_sha: str,
+) -> tuple[str, ...]:
+    admission = entry.get("legacy_admission")
+    if not isinstance(admission, Mapping):
+        return ("acceptance_receipt_digest_migration_legacy_admission_missing",)
+    if (
+        _frontmatter_non_null_scalar(admission.get("route"))
+        != REVIEW_TEAM_DIGEST_MIGRATION_LEGACY_ROUTE
+    ):
+        return ("acceptance_receipt_digest_migration_legacy_admission_route_mismatch",)
+    if (
+        _frontmatter_non_null_scalar(admission.get("classification"))
+        != REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION
+    ):
+        return ("acceptance_receipt_digest_migration_legacy_admission_classification_mismatch",)
+    if _frontmatter_non_null_scalar(admission.get("receipt_sha256")) != expected_sha:
+        return ("acceptance_receipt_digest_migration_legacy_admission_receipt_sha_mismatch",)
+    sealed = loaded.get("sealed_generation")
+    if not isinstance(sealed, Mapping):
+        return ("acceptance_receipt_digest_migration_legacy_admission_sealed_generation_missing",)
+    if _frontmatter_non_null_scalar(
+        admission.get("sealed_generation_id")
+    ) != _frontmatter_non_null_scalar(sealed.get("id")):
+        return ("acceptance_receipt_digest_migration_legacy_admission_sealed_generation_mismatch",)
+    source_anchor = admission.get("source_trust_anchor")
+    if not isinstance(source_anchor, Mapping):
+        return ("acceptance_receipt_digest_migration_legacy_admission_source_anchor_missing",)
+    expected_anchor = review_team_digest_migration_source_trust_anchor()
+    for key, expected in expected_anchor.items():
+        if _frontmatter_non_null_scalar(source_anchor.get(key)) != expected:
+            return (
+                "acceptance_receipt_digest_migration_legacy_admission_source_anchor_"
+                f"{key}_mismatch",
+            )
     return ()
 
 
@@ -504,7 +624,10 @@ def _review_team_digest_migration_blockers(
 ) -> tuple[str, ...]:
     if note_path is None or not task_id:
         return ("acceptance_receipt_digest_migration_context_missing",)
-    migration_path = _review_team_digest_migration_path(note_path)
+    active_dir = _canonical_active_dir_for_note(note_path)
+    if active_dir is None:
+        return ("acceptance_receipt_digest_migration_unrecognized_vault_layout",)
+    migration_path = active_dir / REVIEW_TEAM_DIGEST_MIGRATION_FILENAME
     if not migration_path.is_file():
         return ("acceptance_receipt_digest_migration_missing",)
     loaded, load_error = _load_yaml_mapping_for_migration(migration_path)
@@ -562,6 +685,9 @@ def _review_team_digest_migration_blockers(
         return ("acceptance_receipt_digest_migration_malformed:receipt_sha256",)
     if (task_id, basename, expected_sha) not in _frozen_digest_tuples(loaded):
         return ("acceptance_receipt_digest_migration_post_cutover_unlisted",)
+    legacy_blockers = _legacy_admission_blockers(loaded, entry, expected_sha=expected_sha)
+    if legacy_blockers:
+        return legacy_blockers
     try:
         actual_sha = _sha256_file(receipt_path)
     except OSError as exc:
@@ -604,8 +730,8 @@ def _acceptance_receipt_validity_blockers(
                 task_id=task_id,
             )
             if migration_blockers:
-                blockers.append("acceptance_receipt_review_team_dossier_sha256_missing")
                 blockers.extend(migration_blockers)
+                blockers.append("acceptance_receipt_review_team_dossier_sha256_missing")
         elif REVIEW_TEAM_DOSSIER_SHA256_RE.fullmatch(dossier_sha256) is None:
             blockers.append("acceptance_receipt_dossier_sha256_malformed")
         elif note_path is None or not task_id:
@@ -651,6 +777,87 @@ def acceptance_receipt_blockers(frontmatter: Mapping[str, Any], note_path: Path)
         note_path=note_path,
         task_id=task_id,
     )
+
+
+def acceptance_receipt_admission_route(
+    frontmatter: Mapping[str, Any], note_path: Path
+) -> dict[str, Any]:
+    """Return the accepted receipt route for audit diagnostics.
+
+    This is intentionally separate from ``acceptance_receipt_blockers`` so gate
+    callers keep a simple fail-closed reason tuple while audit callers can tell
+    normal dossier-bound review-team receipts from legacy exact-hash admission.
+    """
+
+    blockers = acceptance_receipt_blockers(frontmatter, note_path)
+    if blockers:
+        return {"accepted": False, "route": "blocked", "blockers": blockers}
+    if not requires_acceptance_receipt(frontmatter):
+        return {"accepted": True, "route": "not_required", "blockers": ()}
+    task_id = _frontmatter_non_null_scalar(frontmatter.get("task_id"))
+    receipt_path = _task_artifact_path_beside_note(note_path, task_id, ACCEPTANCE_RECEIPT_SUFFIX)
+    if receipt_path is None:
+        return {
+            "accepted": False,
+            "route": "blocked",
+            "blockers": ("acceptance_receipt_task_id_invalid",),
+        }
+    loaded, load_error = _load_yaml_mapping_for_migration(receipt_path)
+    if load_error or loaded is None:
+        return {
+            "accepted": False,
+            "route": "blocked",
+            "blockers": (f"acceptance_receipt_malformed:{load_error}",),
+        }
+    acceptor = _frontmatter_non_null_scalar(loaded.get("acceptor")) or ""
+    if not acceptor.startswith(REVIEW_TEAM_ACCEPTOR_PREFIX):
+        return {"accepted": True, "route": "operator_receipt", "blockers": ()}
+    dossier_sha256 = _frontmatter_non_null_scalar(loaded.get("dossier_sha256"))
+    if dossier_sha256:
+        return {
+            "accepted": True,
+            "route": "review_team_dossier_sha256",
+            "blockers": (),
+            "dossier_sha256": dossier_sha256,
+        }
+
+    active_dir = _canonical_active_dir_for_note(note_path)
+    if active_dir is None:
+        return {
+            "accepted": False,
+            "route": "blocked",
+            "blockers": ("acceptance_receipt_digest_migration_unrecognized_vault_layout",),
+        }
+    migration, migration_error = _load_yaml_mapping_for_migration(
+        active_dir / REVIEW_TEAM_DIGEST_MIGRATION_FILENAME
+    )
+    if migration_error or migration is None:
+        return {
+            "accepted": False,
+            "route": "blocked",
+            "blockers": (f"acceptance_receipt_digest_migration_malformed:{migration_error}",),
+        }
+    entries = migration.get("entries")
+    matching = []
+    if isinstance(entries, list):
+        matching = [
+            entry
+            for entry in entries
+            if isinstance(entry, Mapping)
+            and _frontmatter_non_null_scalar(entry.get("task_id")) == task_id
+        ]
+    entry = matching[0] if matching else {}
+    admission = entry.get("legacy_admission") if isinstance(entry, Mapping) else None
+    sealed = migration.get("sealed_generation")
+    return {
+        "accepted": True,
+        "route": REVIEW_TEAM_DIGEST_MIGRATION_LEGACY_ROUTE,
+        "blockers": (),
+        "receipt_sha256": _frontmatter_non_null_scalar(entry.get("receipt_sha256")),
+        "classification": _frontmatter_non_null_scalar(entry.get("classification")),
+        "sealed_generation": dict(sealed) if isinstance(sealed, Mapping) else {},
+        "legacy_admission": dict(admission) if isinstance(admission, Mapping) else {},
+    }
 
 
 def _frontmatter_pr_number(frontmatter: Mapping[str, Any]) -> str | None:

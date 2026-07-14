@@ -32,6 +32,7 @@ if str(REPO_ROOT) not in sys.path:
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
+from shared import sdlc_lifecycle  # noqa: E402
 from shared.quota_spend_ledger import QuotaSpendLedger, SubscriptionQuotaState  # noqa: E402
 from shared.route_metadata_schema import stable_payload_hash  # noqa: E402
 
@@ -182,11 +183,21 @@ def _write_migration_authority(
         encoding="utf-8",
     )
     carrier_sha = sha256(carrier.read_bytes()).hexdigest()
+    source_anchor = {
+        "proposal_id": proposal_id,
+        "proposal_sha256": proposal_sha,
+        "consumed_act_carrier_sha256": carrier_sha,
+        "frozen_inventory_canonical_sha256": frozen_digest,
+        "authority_case": "CASE-TEST",
+    }
+    sdlc_lifecycle.REVIEW_TEAM_DIGEST_MIGRATION_SOURCE_TRUST_ANCHOR.clear()
+    sdlc_lifecycle.REVIEW_TEAM_DIGEST_MIGRATION_SOURCE_TRUST_ANCHOR.update(source_anchor)
     return {
         "migration_authority_proposal_path": proposal,
         "migration_authority_proposal_sha256": proposal_sha,
         "migration_consumed_act_carrier_path": carrier,
         "migration_consumed_act_carrier_sha256": carrier_sha,
+        "migration_source_trust_anchor": source_anchor,
     }
 
 
@@ -2248,14 +2259,22 @@ checklist:
         )
 
         migration = result["migration"]
+        artifact_path = dispatch.review_team_digest_migration_path(vault)
+        artifact_sha = sha256(artifact_path.read_bytes()).hexdigest()
         assert migration["counts"]["exact-hash-preserved"] == 1
         assert migration["entries"][0]["receipt_sha256"] == receipt_sha
         assert migration["entries"][0]["classification"] == "exact-hash-preserved"
+        assert migration["entries"][0]["legacy_admission"]["route"] == (
+            "legacy_exact_hash_preserved"
+        )
         assert reviewers.invocations == []
         assert gh.comments == []
         frontmatter = dispatch.review_team._note_frontmatter(note)
         assert frontmatter is not None
         assert dispatch.acceptance_receipt_blockers(frontmatter, note) == ()
+        admission = sdlc_lifecycle.acceptance_receipt_admission_route(frontmatter, note)
+        assert admission["route"] == "legacy_exact_hash_preserved"
+        assert admission["receipt_sha256"] == receipt_sha
 
         receipt.write_text(receipt.read_text(encoding="utf-8") + "tampered: true\n")
         assert "acceptance_receipt_digest_migration_sha256_mismatch" in (
@@ -2281,6 +2300,7 @@ checklist:
         )
         assert second["migration"]["status"] == "migration_unchanged"
         assert second["migration"]["counts"] == migration["counts"]
+        assert sha256(artifact_path.read_bytes()).hexdigest() == artifact_sha
 
     def test_moved_head_legacy_receipt_gets_exact_hash_preservation_without_replay(
         self, tmp_path: Path
@@ -2324,6 +2344,68 @@ checklist:
         assert frontmatter is not None
         assert dispatch.acceptance_receipt_blockers(frontmatter, note) == ()
 
+    def test_sealed_legacy_receipt_moved_to_closed_remains_byte_stable_and_valid(
+        self, tmp_path: Path
+    ) -> None:
+        class NoOpenPullsGh(FakeGh):
+            def _rest_open_prs(self) -> list[dict[str, Any]]:
+                return []
+
+        vault = _make_vault(tmp_path)
+        note = _write_task(vault, quality_floor="frontier_review_required")
+        receipt = _write_legacy_review_team_receipt(vault)
+        authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+
+        first = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=NoOpenPullsGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:06:00+00:00",
+            route_blocked_families={},
+            **authority_kwargs,
+        )
+        artifact_path = dispatch.review_team_digest_migration_path(vault)
+        artifact_bytes = artifact_path.read_bytes()
+        assert first["migration"]["counts"]["exact-hash-preserved"] == 1
+
+        closed_note = vault / "closed" / note.name
+        closed_receipt = vault / "closed" / receipt.name
+        note.rename(closed_note)
+        receipt.rename(closed_receipt)
+
+        second = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=NoOpenPullsGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:07:00+00:00",
+            route_blocked_families={},
+            **authority_kwargs,
+        )
+
+        assert second["migration"]["status"] == "migration_unchanged"
+        assert artifact_path.read_bytes() == artifact_bytes
+        assert second["migration"]["current_receipt_drift"] == [
+            {
+                "task_id": "task-a",
+                "receipt_basename": "task-a.acceptance.yaml",
+                "status": "missing_from_active",
+                "expected_receipt_sha256": first["migration"]["entries"][0]["receipt_sha256"],
+            }
+        ]
+        frontmatter = dispatch.review_team._note_frontmatter(closed_note)
+        assert frontmatter is not None
+        assert dispatch.acceptance_receipt_blockers(frontmatter, closed_note) == ()
+
     def test_current_head_legacy_receipt_is_rebound_and_inventory_is_idempotent(
         self, tmp_path: Path
     ) -> None:
@@ -2359,6 +2441,8 @@ checklist:
         assert migration["open_pr_results"][0]["status"] == "replayed_fresh"
         assert migration["migration"]["counts"]["rebound"] == 1
         assert migration["migration"]["entries"][0]["classification"] == "rebound"
+        artifact_path = dispatch.review_team_digest_migration_path(vault)
+        artifact_sha = sha256(artifact_path.read_bytes()).hexdigest()
         assert replay_reviewers.invocations == []
         assert replay_gh.comments == []
         rebound_receipt = yaml.safe_load(receipt_path.read_text(encoding="utf-8"))
@@ -2377,8 +2461,9 @@ checklist:
             route_blocked_families={},
             **authority_kwargs,
         )
-        assert second["migration"]["status"] == "migration_written"
-        assert second["migration"]["counts"]["not-subject"] == 1
+        assert second["migration"]["status"] == "migration_unchanged"
+        assert second["migration"]["counts"] == migration["migration"]["counts"]
+        assert sha256(artifact_path.read_bytes()).hexdigest() == artifact_sha
 
         third = dispatch.replay_all_open_prs_with_digest_migration(
             repo="owner/repo",
@@ -2395,6 +2480,7 @@ checklist:
         )
         assert third["migration"]["status"] == "migration_unchanged"
         assert third["migration"]["counts"] == second["migration"]["counts"]
+        assert sha256(artifact_path.read_bytes()).hexdigest() == artifact_sha
 
     def test_digest_migration_without_authority_has_no_effects(self, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)
@@ -2419,6 +2505,128 @@ checklist:
         assert result["status"] == "migration_authority_blocked"
         assert "migration_authority_proposal_path_missing" in result["migration"]["blockers"]
         assert gh.calls == []
+        assert reviewers.invocations == []
+        assert not dispatch.review_team_digest_migration_path(vault).exists()
+
+    def test_digest_migration_rejects_self_consistent_authority_outside_source_anchor(
+        self, tmp_path: Path
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        receipt = _write_legacy_review_team_receipt(vault)
+        authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+        bad_anchor = dict(authority_kwargs["migration_source_trust_anchor"])
+        bad_anchor["proposal_sha256"] = "0" * 64
+        authority_kwargs["migration_source_trust_anchor"] = bad_anchor
+        gh = FakeGh()
+        reviewers = RecordingReviewers()
+
+        result = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=gh,
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:30+00:00",
+            route_blocked_families={},
+            **authority_kwargs,
+        )
+
+        assert result["status"] == "migration_authority_blocked"
+        assert result["migration"]["blockers"] == [
+            "migration_authority_source_anchor_proposal_sha256_mismatch"
+        ]
+        assert gh.calls == []
+        assert reviewers.invocations == []
+        assert not dispatch.review_team_digest_migration_path(vault).exists()
+
+    @pytest.mark.parametrize(
+        ("anchor_key", "replacement", "expected_reason"),
+        (
+            (
+                "proposal_id",
+                "other-proposal",
+                "migration_authority_source_anchor_proposal_id_mismatch",
+            ),
+            (
+                "proposal_sha256",
+                "0" * 64,
+                "migration_authority_source_anchor_proposal_sha256_mismatch",
+            ),
+            (
+                "consumed_act_carrier_sha256",
+                "1" * 64,
+                "migration_authority_source_anchor_consumed_act_carrier_sha256_mismatch",
+            ),
+            (
+                "frozen_inventory_canonical_sha256",
+                "2" * 64,
+                "migration_authority_source_anchor_frozen_inventory_canonical_sha256_mismatch",
+            ),
+            (
+                "authority_case",
+                "CASE-OTHER",
+                "migration_authority_source_anchor_authority_case_mismatch",
+            ),
+        ),
+    )
+    def test_digest_migration_source_anchor_mismatch_reasons_are_direct(
+        self,
+        tmp_path: Path,
+        anchor_key: str,
+        replacement: str,
+        expected_reason: str,
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        receipt = _write_legacy_review_team_receipt(vault)
+        authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+        bad_anchor = dict(authority_kwargs["migration_source_trust_anchor"])
+        bad_anchor[anchor_key] = replacement
+
+        _, _, blockers = dispatch.migration_authority_from_files(
+            proposal_path=authority_kwargs["migration_authority_proposal_path"],
+            proposal_sha256=authority_kwargs["migration_authority_proposal_sha256"],
+            consumed_act_carrier_path=authority_kwargs["migration_consumed_act_carrier_path"],
+            consumed_act_carrier_sha256=authority_kwargs["migration_consumed_act_carrier_sha256"],
+            source_trust_anchor=bad_anchor,
+        )
+
+        assert blockers == (expected_reason,)
+
+    def test_migration_recheck_is_providerless_and_does_not_write_artifact(
+        self, tmp_path: Path
+    ) -> None:
+        class ExplodingGh(FakeGh):
+            def _rest_open_prs(self) -> list[dict[str, Any]]:
+                raise AssertionError("migration recheck must not read GitHub")
+
+        vault = _make_vault(tmp_path)
+        receipt = _write_legacy_review_team_receipt(vault)
+        authority_kwargs = _write_migration_authority(tmp_path, [_migration_frozen_entry(receipt)])
+        reviewers = RecordingReviewers()
+
+        result = dispatch.replay_all_open_prs_with_digest_migration(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=False,
+            gh_runner=ExplodingGh(),
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-07-14T03:20:45+00:00",
+            route_blocked_families={},
+            migration_recheck=True,
+            **authority_kwargs,
+        )
+
+        assert result["status"] == "migration_recheck_ready"
+        assert result["open_pr_results"] == []
+        assert result["migration"]["status"] == "migration_ready"
+        assert result["migration"]["artifact_written"] is False
+        assert result["pause_preconditions"]["providerless_recheck"] is True
         assert reviewers.invocations == []
         assert not dispatch.review_team_digest_migration_path(vault).exists()
 
@@ -2798,6 +3006,8 @@ with module.review_execution_lock(
         assert result["holder"] == {}
         assert result["lock_evidence"]["holder_error"].startswith("json_error:")
         assert result["lock_evidence"]["stat"]["exists"] is True
+        assert result["lock_evidence"]["next_action"].startswith("HOLD:")
+        assert "--release-lock --apply" not in result["lock_evidence"]["next_action"]
         assert result["side_effects"] == {}
         assert gh.calls == []
         assert reviewers.invocations == []
@@ -3011,6 +3221,7 @@ with module.review_execution_lock(
 
         assert result["status"] == "review_lock_unavailable"
         assert result["lock_evidence"]["holder_error"] == "holder_publish_error:OSError"
+        assert "--probe-lock" in result["lock_evidence"]["next_action"]
         assert result["lock_evidence"]["own_claim_removed"] is True
         assert not lock_path.exists()
         assert result["side_effects"] == {}

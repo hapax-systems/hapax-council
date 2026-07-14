@@ -18,15 +18,18 @@ from pathlib import Path
 
 import yaml
 
+from shared import sdlc_lifecycle
 from shared.sdlc_lifecycle import (
     PR_ACTIONS,
     REVIEW_TEAM_DIGEST_MIGRATION_FILENAME,
+    REVIEW_TEAM_DIGEST_MIGRATION_LEGACY_ROUTE,
     REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION,
     REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA,
     STAGE_RE,
     TASK_CLAIMABLE_STATUSES,
     TASK_DISPATCHABLE_STATUSES,
     _acceptance_receipt_validity_blockers,
+    acceptance_receipt_admission_route,
     acceptance_receipt_blockers,
     acceptance_receipt_path,
     active_blocked_task_blockers,
@@ -321,12 +324,22 @@ class TestAcceptanceReceiptEnforcement:
                         "authority_minted": True,
                         "authority_limited_to_proposal": True,
                     },
+                    "frozen_prebinding_inventory_canonical_sha256": frozen_digest,
                 },
                 sort_keys=False,
             ),
             encoding="utf-8",
         )
         carrier_sha = hashlib.sha256(carrier.read_bytes()).hexdigest()
+        source_anchor = {
+            "proposal_id": proposal_id,
+            "proposal_sha256": proposal_sha,
+            "consumed_act_carrier_sha256": carrier_sha,
+            "frozen_inventory_canonical_sha256": frozen_digest,
+            "authority_case": "CASE-TEST",
+        }
+        sdlc_lifecycle.REVIEW_TEAM_DIGEST_MIGRATION_SOURCE_TRUST_ANCHOR.clear()
+        sdlc_lifecycle.REVIEW_TEAM_DIGEST_MIGRATION_SOURCE_TRUST_ANCHOR.update(source_anchor)
         entries = [
             {
                 "task_id": task_id,
@@ -335,6 +348,15 @@ class TestAcceptanceReceiptEnforcement:
                 "classification": classification,
             }
         ]
+        if classification == REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION:
+            entries[0]["legacy_admission"] = {
+                "route": REVIEW_TEAM_DIGEST_MIGRATION_LEGACY_ROUTE,
+                "source_trust_anchor": source_anchor,
+                "sealed_generation_id": f"{proposal_id}.{proposal_sha[:12]}.{carrier_sha[:12]}",
+                "sealed_generation_source_head_sha": "a" * 40,
+                "receipt_sha256": receipt_sha256,
+                "classification": classification,
+            }
         entries.extend(extra_entries or [])
         path = tmp_path / REVIEW_TEAM_DIGEST_MIGRATION_FILENAME
         path.write_text(
@@ -346,9 +368,11 @@ class TestAcceptanceReceiptEnforcement:
                         "proposal_path": str(proposal),
                         "proposal_sha256": proposal_sha,
                         "proposal_id": proposal_id,
+                        "case_id": "CASE-TEST",
                         "consumed_act_carrier_path": str(carrier),
                         "consumed_act_carrier_sha256": carrier_sha,
                         "frozen_inventory_canonical_sha256": frozen_digest,
+                        "source_trust_anchor": source_anchor,
                     },
                     "authority_proposal_id": proposal_id,
                     "sealed_generation": {
@@ -475,6 +499,12 @@ class TestAcceptanceReceiptEnforcement:
         frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
 
         assert acceptance_receipt_blockers(frontmatter, note) == ()
+        admission = acceptance_receipt_admission_route(frontmatter, note)
+        assert admission["route"] == REVIEW_TEAM_DIGEST_MIGRATION_LEGACY_ROUTE
+        assert admission["receipt_sha256"] == receipt_sha
+        assert admission["legacy_admission"]["classification"] == (
+            REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION
+        )
 
         receipt.write_text(
             receipt.read_text(encoding="utf-8") + "tampered: true\n",
@@ -521,7 +551,45 @@ class TestAcceptanceReceiptEnforcement:
         blockers = acceptance_receipt_blockers(frontmatter, note)
 
         assert "acceptance_receipt_review_team_dossier_sha256_missing" in blockers
-        assert "acceptance_receipt_digest_migration_authority_proposal_sha256_mismatch" in blockers
+        assert "acceptance_receipt_digest_migration_source_anchor_proposal_sha256_mismatch" in (
+            blockers
+        )
+
+    def test_digest_migration_missing_legacy_admission_fails_closed(self, tmp_path: Path) -> None:
+        note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})
+        receipt = self._receipt(
+            tmp_path,
+            "task-r",
+            self.VALID_RECEIPT.replace("acceptor: operator", "acceptor: review-team:codex,glm"),
+        )
+        receipt_sha = "sha256:" + hashlib.sha256(receipt.read_bytes()).hexdigest()
+        migration = self._migration(tmp_path, receipt_sha256=receipt_sha)
+        loaded = yaml.safe_load(migration.read_text(encoding="utf-8"))
+        loaded["entries"][0].pop("legacy_admission")
+        migration.write_text(yaml.safe_dump(loaded, sort_keys=False), encoding="utf-8")
+        frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
+
+        blockers = acceptance_receipt_blockers(frontmatter, note)
+
+        assert "acceptance_receipt_digest_migration_legacy_admission_missing" in blockers
+
+    def test_closed_note_without_active_sibling_reports_unrecognized_layout(
+        self, tmp_path: Path
+    ) -> None:
+        closed = tmp_path / "closed"
+        closed.mkdir()
+        note = self._note(closed, "task-r", {"quality_floor": "frontier_review_required"})
+        self._receipt(
+            closed,
+            "task-r",
+            self.VALID_RECEIPT.replace("acceptor: operator", "acceptor: review-team:codex,glm"),
+        )
+        frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
+
+        blockers = acceptance_receipt_blockers(frontmatter, note)
+
+        assert "acceptance_receipt_digest_migration_unrecognized_vault_layout" in blockers
+        assert blockers[-1] == "acceptance_receipt_review_team_dossier_sha256_missing"
 
     def test_moved_task_note_resolves_canonical_active_migration_artifact(
         self, tmp_path: Path

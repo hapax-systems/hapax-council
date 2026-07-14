@@ -28,6 +28,11 @@ Usage::
       --migration-authority-proposal-sha256 <64-hex> \
       --migration-consumed-act-carrier /path/to/consumed-carrier.yaml \
       --migration-consumed-act-carrier-sha256 <64-hex>               # no-review cutover
+    uv run python scripts/cc-pr-review-dispatch.py --all --replay-only --migration-recheck \
+      --migration-authority-proposal /path/to/ratified-proposal.yaml \
+      --migration-authority-proposal-sha256 <64-hex> \
+      --migration-consumed-act-carrier /path/to/consumed-carrier.yaml \
+      --migration-consumed-act-carrier-sha256 <64-hex>               # no-provider recheck
     HAPAX_REVIEW_TEAM_DISPATCH_OFF=1 ...                              # killswitch
 
 Default mode is a dry-run constitution plan. ``--apply`` dispatches reviewers
@@ -41,8 +46,12 @@ comment effects; snapshots pre-binding review-team acceptance receipts; replays
 current open PR dossiers without reviewer/provider dispatch; then atomically
 publishes the sealed one-shot authority artifact at
 ``<vault>/active/_review-team-digest-migration.yaml``. Re-runs are integrity
-rechecks against that sealed authority: they may rebind current receipts but may
-not expand the exact-hash preservation allowlist. A fresh-but-dead review claim
+rechecks against that sealed authority: they may rebind current receipts but
+must not rewrite the sealed artifact or expand/shrink the exact-hash
+preservation allowlist. ``--migration-recheck`` performs the same authority and
+sealed-artifact validation without GitHub, reviewer, artifact-write, or PR
+comment effects. Operational pause/dry-run/apply/recovery commands are in
+``docs/runbooks/review-team-digest-migration.md``. A fresh-but-dead review claim
 is not recovered by replay: first prove same-host PID + proc-start liveness is
 not the recorded holder, then use the explicit ``--release-lock`` path below;
 cross-host or uncertain holder identity remains HOLD.
@@ -98,11 +107,13 @@ from shared.route_metadata_schema import stable_payload_hash  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     ACCEPTANCE_RECEIPT_SUFFIX,
     REVIEW_TEAM_DIGEST_MIGRATION_FILENAME,
+    REVIEW_TEAM_DIGEST_MIGRATION_LEGACY_ROUTE,
     REVIEW_TEAM_DIGEST_MIGRATION_PRESERVE_CLASSIFICATION,
     REVIEW_TEAM_DIGEST_MIGRATION_SCHEMA,
     acceptance_receipt_blockers,
     acceptance_receipt_path,
     requires_acceptance_receipt,
+    review_team_digest_migration_source_trust_anchor,
 )
 
 LOG = logging.getLogger("cc-pr-review-dispatch")
@@ -1249,13 +1260,18 @@ def _lock_next_action(
         )
     if status == "review_lock_malformed":
         return (
-            "Claim metadata is unreadable or invalid. Inspect the lock path, then archive-release "
-            f"the malformed claim with: {release_cmd}"
+            "HOLD: claim metadata is unreadable or invalid. Preserve the lock path and obtain "
+            "holder identity/liveness evidence before any archive-release."
         )
     if status == "review_lock_unavailable":
+        probe_cmd = (
+            f"{_review_dispatch_command(repo=repo, pr_number=pr_number)} --probe-lock"
+            if pr_number is not None
+            else "uv run python scripts/cc-pr-review-dispatch.py --pr <pr> --probe-lock"
+        )
         return (
             "Review lock storage is unavailable. Fix the reported holder_error/path permissions or "
-            "shared-vault state, then rerun the exact PR review."
+            f"shared-vault state, then run the no-provider probe: {probe_cmd}"
         )
     if status == "acquired":
         return "Review claim acquired; no operator action is needed unless this process aborts."
@@ -1822,12 +1838,46 @@ def _load_yaml_mapping_or_blocker(
     return loaded, None
 
 
+def _migration_source_trust_anchor(
+    source_trust_anchor: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    if source_trust_anchor is None:
+        return review_team_digest_migration_source_trust_anchor()
+    return {key: str(value) for key, value in source_trust_anchor.items()}
+
+
+def _migration_source_anchor_blockers(
+    *,
+    anchor: dict[str, str],
+    proposal_id: str | None = None,
+    proposal_sha256: str | None = None,
+    consumed_act_carrier_sha256: str | None = None,
+    frozen_inventory_canonical_sha256: str | None = None,
+    authority_case: str | None = None,
+) -> tuple[str, ...]:
+    comparisons = (
+        ("proposal_id", proposal_id),
+        ("proposal_sha256", proposal_sha256),
+        ("consumed_act_carrier_sha256", consumed_act_carrier_sha256),
+        ("frozen_inventory_canonical_sha256", frozen_inventory_canonical_sha256),
+        ("authority_case", authority_case),
+    )
+    blockers = []
+    for key, actual in comparisons:
+        if actual is None:
+            continue
+        if str(actual) != anchor.get(key):
+            blockers.append(f"migration_authority_source_anchor_{key}_mismatch")
+    return tuple(blockers)
+
+
 def migration_authority_from_files(
     *,
     proposal_path: Path | None,
     proposal_sha256: str | None,
     consumed_act_carrier_path: Path | None,
     consumed_act_carrier_sha256: str | None,
+    source_trust_anchor: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, tuple[dict[str, Any], ...], tuple[str, ...]]:
     """Validate the ratified cutover authority and return its frozen tuple set."""
 
@@ -1850,6 +1900,14 @@ def migration_authority_from_files(
         return None, (), ("migration_authority_proposal_sha256_invalid",)
     if RAW_SHA256_RE.fullmatch(carrier_sha) is None:
         return None, (), ("migration_consumed_act_carrier_sha256_invalid",)
+    anchor = _migration_source_trust_anchor(source_trust_anchor)
+    anchor_blockers = _migration_source_anchor_blockers(
+        anchor=anchor,
+        proposal_sha256=proposal_sha,
+        consumed_act_carrier_sha256=carrier_sha,
+    )
+    if anchor_blockers:
+        return None, (), anchor_blockers
     try:
         if sha256_file(proposal_path) != proposal_sha:
             return None, (), ("migration_authority_proposal_sha256_mismatch",)
@@ -1868,6 +1926,14 @@ def migration_authority_from_files(
     proposal_id = str(proposal.get("id") or "").strip()
     if not proposal_id:
         return None, (), ("migration_authority_proposal_id_missing",)
+    case_id = str(proposal.get("case_id") or proposal.get("authority_case") or "")
+    anchor_blockers = _migration_source_anchor_blockers(
+        anchor=anchor,
+        proposal_id=proposal_id,
+        authority_case=case_id,
+    )
+    if anchor_blockers:
+        return None, (), anchor_blockers
     carrier_proposal = carrier.get("proposal")
     operator_act = carrier.get("operator_act")
     if not isinstance(carrier_proposal, dict) or not isinstance(operator_act, dict):
@@ -1931,12 +1997,18 @@ def migration_authority_from_files(
         return None, (), ("migration_authority_frozen_inventory_count_mismatch",)
     if str(carrier.get("frozen_prebinding_inventory_canonical_sha256") or "") != canonical_sha:
         return None, (), ("migration_consumed_act_carrier_inventory_sha_mismatch",)
+    anchor_blockers = _migration_source_anchor_blockers(
+        anchor=anchor,
+        frozen_inventory_canonical_sha256=canonical_sha,
+    )
+    if anchor_blockers:
+        return None, (), anchor_blockers
 
     authority = {
         "proposal_path": str(proposal_path),
         "proposal_sha256": proposal_sha,
         "proposal_id": proposal_id,
-        "case_id": str(proposal.get("case_id") or proposal.get("authority_case") or ""),
+        "case_id": case_id,
         "consumed_act_carrier_path": str(consumed_act_carrier_path),
         "consumed_act_carrier_sha256": carrier_sha,
         "consumed_act_carrier_schema": str(carrier.get("schema") or ""),
@@ -1945,6 +2017,7 @@ def migration_authority_from_files(
         "operator_act_response": expected_response,
         "frozen_inventory_canonical_sha256": canonical_sha,
         "frozen_inventory_count": len(normalized_entries),
+        "source_trust_anchor": anchor,
     }
     return authority, tuple(normalized_entries), ()
 
@@ -2246,6 +2319,15 @@ def build_review_team_digest_migration_payload(
             "classification": classification,
             "reason": reason,
         }
+        if classification == MIGRATION_CLASS_EXACT_HASH_PRESERVED:
+            entry["legacy_admission"] = {
+                "route": REVIEW_TEAM_DIGEST_MIGRATION_LEGACY_ROUTE,
+                "source_trust_anchor": dict(authority["source_trust_anchor"]),
+                "sealed_generation_id": sealed_generation["id"],
+                "sealed_generation_source_head_sha": sealed_generation.get("source_head_sha"),
+                "receipt_sha256": entry["receipt_sha256"],
+                "classification": classification,
+            }
         entries.append(entry)
     entries.sort(key=lambda item: (item["task_id"], item["receipt_basename"]))
     counts = _classification_counts(entries)
@@ -2296,9 +2378,11 @@ def _sealed_migration_payload_blockers(
             "proposal_path",
             "proposal_sha256",
             "proposal_id",
+            "case_id",
             "consumed_act_carrier_path",
             "consumed_act_carrier_sha256",
             "frozen_inventory_canonical_sha256",
+            "source_trust_anchor",
         ):
             if existing_authority.get(key) != authority.get(key):
                 blockers.append(f"sealed_migration_authority_{key}_mismatch")
@@ -2345,7 +2429,74 @@ def _sealed_migration_payload_blockers(
             if entry.get("classification") == MIGRATION_CLASS_EXACT_HASH_PRESERVED:
                 if _migration_tuple(entry) not in frozen_tuples:
                     blockers.append(f"sealed_migration_preservation_not_frozen:{task_id}")
+                admission = entry.get("legacy_admission")
+                if not isinstance(admission, dict):
+                    blockers.append(f"sealed_migration_legacy_admission_missing:{task_id}")
+                else:
+                    if admission.get("route") != REVIEW_TEAM_DIGEST_MIGRATION_LEGACY_ROUTE:
+                        blockers.append(
+                            f"sealed_migration_legacy_admission_route_mismatch:{task_id}"
+                        )
+                    if admission.get("source_trust_anchor") != authority.get("source_trust_anchor"):
+                        blockers.append(
+                            f"sealed_migration_legacy_admission_source_anchor_mismatch:{task_id}"
+                        )
+                    if admission.get("sealed_generation_id") != (
+                        sealed_generation.get("id") if isinstance(sealed_generation, dict) else None
+                    ):
+                        blockers.append(
+                            f"sealed_migration_legacy_admission_generation_mismatch:{task_id}"
+                        )
+                    if admission.get("receipt_sha256") != entry.get("receipt_sha256"):
+                        blockers.append(
+                            f"sealed_migration_legacy_admission_receipt_sha_mismatch:{task_id}"
+                        )
     return tuple(blockers)
+
+
+def _migration_entries_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    entries = payload.get("entries")
+    return (
+        [entry for entry in entries if isinstance(entry, dict)] if isinstance(entries, list) else []
+    )
+
+
+def _sealed_migration_current_receipt_drift(
+    payload: dict[str, Any], snapshots: tuple[dict[str, Any], ...]
+) -> list[dict[str, Any]]:
+    by_receipt = {
+        (str(snapshot.get("task_id") or ""), str(snapshot.get("receipt_basename") or "")): snapshot
+        for snapshot in snapshots
+    }
+    drift: list[dict[str, Any]] = []
+    for entry in _migration_entries_from_payload(payload):
+        if entry.get("classification") != MIGRATION_CLASS_EXACT_HASH_PRESERVED:
+            continue
+        key = (str(entry.get("task_id") or ""), str(entry.get("receipt_basename") or ""))
+        snapshot = by_receipt.get(key)
+        expected_sha = str(entry.get("receipt_sha256") or "")
+        if snapshot is None:
+            drift.append(
+                {
+                    "task_id": key[0],
+                    "receipt_basename": key[1],
+                    "status": "missing_from_active",
+                    "expected_receipt_sha256": expected_sha,
+                }
+            )
+            continue
+        actual_sha = str(snapshot.get("receipt_sha256") or "")
+        if actual_sha != expected_sha:
+            drift.append(
+                {
+                    "task_id": key[0],
+                    "receipt_basename": key[1],
+                    "status": "sha256_mismatch",
+                    "expected_receipt_sha256": expected_sha,
+                    "actual_receipt_sha256": actual_sha,
+                }
+            )
+    return drift
 
 
 def publish_review_team_digest_migration(
@@ -2362,11 +2513,14 @@ def publish_review_team_digest_migration(
     path = review_team_digest_migration_path(vault_root)
     existing_payload: dict[str, Any] | None = None
     existing_was_unsealed = False
+    existing_artifact_sha256: str | None = None
     try:
-        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw = path.read_bytes()
+        existing_artifact_sha256 = "sha256:" + hashlib.sha256(raw).hexdigest()
+        loaded = yaml.safe_load(raw.decode("utf-8"))
     except FileNotFoundError:
         loaded = None
-    except (OSError, yaml.YAMLError) as exc:
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
         return {
             "status": "migration_blocked",
             "artifact_path": str(path),
@@ -2398,6 +2552,24 @@ def publish_review_team_digest_migration(
                     "blockers": list(blockers),
                     "entries": [],
                 }
+            entries = _migration_entries_from_payload(loaded)
+            counts = _classification_counts(entries)
+            drift = _sealed_migration_current_receipt_drift(loaded, snapshots)
+            return {
+                "status": "migration_unchanged",
+                "artifact_path": str(path),
+                "artifact_written": False,
+                "counts": counts,
+                "entries": entries,
+                "next_actions": loaded.get("next_actions") or {},
+                "generated_at": loaded.get("generated_at"),
+                "authority": loaded.get("authority"),
+                "sealed_generation": loaded.get("sealed_generation"),
+                "sealed_artifact_immutable": True,
+                "current_receipt_drift": drift,
+                "before_artifact_sha256": existing_artifact_sha256,
+                "after_artifact_sha256": existing_artifact_sha256,
+            }
         else:
             existing_was_unsealed = True
     elif loaded is not None:
@@ -2446,6 +2618,7 @@ def publish_review_team_digest_migration(
 
     if apply:
         atomic_write_yaml(path, payload)
+    after_artifact_sha256 = "sha256:" + sha256_file(path) if apply else existing_artifact_sha256
     status = "migration_written" if apply else "migration_ready"
     result = {
         "status": status,
@@ -2457,6 +2630,10 @@ def publish_review_team_digest_migration(
         "generated_at": payload["generated_at"],
         "authority": authority,
         "sealed_generation": sealed_generation,
+        "sealed_artifact_immutable": False,
+        "current_receipt_drift": [],
+        "before_artifact_sha256": existing_artifact_sha256,
+        "after_artifact_sha256": after_artifact_sha256,
     }
     if existing_was_unsealed:
         result["replaced_unsealed_artifact"] = True
@@ -5016,13 +5193,23 @@ def replay_all_open_prs_with_digest_migration(
     migration_authority_proposal_sha256: str | None = None,
     migration_consumed_act_carrier_path: Path | None = None,
     migration_consumed_act_carrier_sha256: str | None = None,
+    migration_source_trust_anchor: dict[str, Any] | None = None,
+    migration_recheck: bool = False,
 ) -> dict[str, Any]:
     now_iso = now_iso or datetime.now(UTC).isoformat(timespec="seconds")
+    pause_preconditions = {
+        "dispatch_killswitch_env": KILLSWITCH_ENV,
+        "dispatch_killswitch_set": os.environ.get(KILLSWITCH_ENV, "").strip().lower()
+        in TRUTHY_ENV_VALUES,
+        "writes_requested": bool(apply),
+        "providerless_recheck": bool(migration_recheck),
+    }
     authority, frozen_entries, authority_blockers = migration_authority_from_files(
         proposal_path=migration_authority_proposal_path,
         proposal_sha256=migration_authority_proposal_sha256,
         consumed_act_carrier_path=migration_consumed_act_carrier_path,
         consumed_act_carrier_sha256=migration_consumed_act_carrier_sha256,
+        source_trust_anchor=migration_source_trust_anchor,
     )
     if authority_blockers or authority is None:
         return {
@@ -5037,6 +5224,7 @@ def replay_all_open_prs_with_digest_migration(
                 "entries": [],
             },
             "side_effects": {},
+            "pause_preconditions": pause_preconditions,
         }
     with review_team_digest_migration_lock(vault_root) as migration_lock:
         if not migration_lock.acquired:
@@ -5054,33 +5242,42 @@ def replay_all_open_prs_with_digest_migration(
                     "entries": [],
                 },
                 "side_effects": {},
+                "pause_preconditions": pause_preconditions,
             }
         snapshots = collect_review_team_digest_migration_snapshots(vault_root)
-        open_pr_results = review_all_open_prs(
-            repo=repo,
-            repo_root=repo_root,
-            vault_root=vault_root,
-            apply=apply,
-            force=False,
-            replay_only=True,
-            gh_runner=gh_runner,
-            reviewer_runner=reviewer_runner,
-            wake_dir=wake_dir,
-            send_runner=send_runner,
-            route_blocked_families=route_blocked_families,
-        )
+        if migration_recheck:
+            open_pr_results = []
+            rebound_task_ids = frozenset()
+        else:
+            open_pr_results = review_all_open_prs(
+                repo=repo,
+                repo_root=repo_root,
+                vault_root=vault_root,
+                apply=apply,
+                force=False,
+                replay_only=True,
+                gh_runner=gh_runner,
+                reviewer_runner=reviewer_runner,
+                wake_dir=wake_dir,
+                send_runner=send_runner,
+                route_blocked_families=route_blocked_families,
+            )
+            rebound_task_ids = _rebound_task_ids_from_replay_results(open_pr_results)
         migration = publish_review_team_digest_migration(
             vault_root,
             snapshots=snapshots,
             authority=authority,
             frozen_inventory_entries=frozen_entries,
-            rebound_task_ids=_rebound_task_ids_from_replay_results(open_pr_results),
+            rebound_task_ids=rebound_task_ids,
             apply=apply,
             now_iso=now_iso,
             source_head_sha=_current_source_head(repo_root),
         )
+    status = "replay_migration_complete" if apply else "replay_migration_ready"
+    if migration_recheck:
+        status = "migration_recheck_complete" if apply else "migration_recheck_ready"
     return {
-        "status": "replay_migration_complete" if apply else "replay_migration_ready",
+        "status": status,
         "repo": repo,
         "open_pr_results": open_pr_results,
         "migration": migration,
@@ -5089,6 +5286,7 @@ def replay_all_open_prs_with_digest_migration(
             if migration["artifact_written"]
             else None
         },
+        "pause_preconditions": pause_preconditions,
     }
 
 
@@ -5103,6 +5301,14 @@ def main(argv: list[str] | None = None) -> int:
         "--replay-only",
         action="store_true",
         help="validate current dossiers and replay side effects without dispatching reviewers",
+    )
+    parser.add_argument(
+        "--migration-recheck",
+        action="store_true",
+        help=(
+            "with --all --replay-only, validate authority and sealed migration bytes without "
+            "GitHub, reviewers, artifact writes, or comments"
+        ),
     )
     parser.add_argument(
         "--release-lock",
@@ -5149,11 +5355,21 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(levelname)s %(name)s: %(message)s",
     )
-    if os.environ.get(KILLSWITCH_ENV, "").strip().lower() in TRUTHY_ENV_VALUES:
+    read_only_migration_recheck = (
+        args.all and args.replay_only and args.migration_recheck and not args.apply
+    )
+    if (
+        os.environ.get(KILLSWITCH_ENV, "").strip().lower() in TRUTHY_ENV_VALUES
+        and not read_only_migration_recheck
+    ):
         LOG.warning("%s set — dispatcher disabled, exiting without action", KILLSWITCH_ENV)
         return 0
     if args.force and args.replay_only:
         parser.error("--replay-only cannot be combined with --force")
+    if args.migration_recheck and not (args.all and args.replay_only):
+        parser.error("--migration-recheck requires --all --replay-only")
+    if args.migration_recheck and args.apply:
+        parser.error("--migration-recheck is read-only and cannot be combined with --apply")
     if args.hold_seconds < 0:
         parser.error("--hold-seconds must be non-negative")
     if args.hold_seconds and not args.probe_lock:
@@ -5198,6 +5414,7 @@ def main(argv: list[str] | None = None) -> int:
                 migration_authority_proposal_sha256=args.migration_authority_proposal_sha256,
                 migration_consumed_act_carrier_path=args.migration_consumed_act_carrier,
                 migration_consumed_act_carrier_sha256=args.migration_consumed_act_carrier_sha256,
+                migration_recheck=args.migration_recheck,
             )
         else:
             results = review_all_open_prs(
