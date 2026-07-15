@@ -11997,6 +11997,101 @@ with module.review_execution_lock(
             assert refused["reason"] == "claim_not_stale"
             assert lock_path.is_file()
 
+    def test_release_lock_preserves_a_replacement_instead_of_archiving_it_as_owned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        lock_path = dispatch.review_execution_lock_path(
+            repo="owner/repo", pr_number=42, vault_root=vault
+        )
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        stale_holder = {
+            "schema": "hapax.review_execution_lock.holder.v1",
+            "owner_token": "x" * 43,
+            "repo": "owner/repo",
+            "pr": 42,
+            "pid": 999999,
+            "host": os.uname().nodename,
+            "hostname": os.uname().nodename,
+            "process": {"pid": 999999, "proc_start_time_ticks": 1},
+            "lock_path": str(lock_path),
+            "acquired_at": (
+                datetime.now(UTC)
+                - timedelta(seconds=dispatch.REVIEW_EXECUTION_LOCK_STALE_AFTER_SECONDS + 60)
+            ).isoformat(timespec="seconds"),
+        }
+        original_bytes = json.dumps(stale_holder).encode("utf-8")
+        replacement_bytes = b"a replacement that must survive intact\n"
+        lock_path.write_bytes(original_bytes)
+        original_survivor = lock_path.with_name(f"{lock_path.name}.original-survivor")
+        retire = dispatch._retire_entry_to_private
+        injected = False
+
+        def replace_before_retirement(**kwargs: Any) -> str | None:
+            nonlocal injected
+            if not injected:
+                injected = True
+                lock_path.rename(original_survivor)
+                lock_path.write_bytes(replacement_bytes)
+            return retire(**kwargs)
+
+        monkeypatch.setattr(dispatch, "_retire_entry_to_private", replace_before_retirement)
+
+        result = dispatch.release_review_execution_lock(
+            repo="owner/repo", pr_number=42, vault_root=vault, apply=True
+        )
+
+        assert result["status"] == "release_preserved_replacement"
+        assert result["retained_claim"]["reason"] == "replaced_stale_review_claim"
+        assert result["retained_claim"].get("reclaimable") is None
+        preserved = Path(result["retained_claim"]["preserved"])
+        assert preserved.read_bytes() == replacement_bytes
+        assert original_survivor.read_bytes() == original_bytes
+        assert not lock_path.exists()
+
+    def test_release_lock_refuses_effect_on_unreleasable_mount(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        lock_path = dispatch.review_execution_lock_path(
+            repo="owner/repo", pr_number=42, vault_root=vault
+        )
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        stale_holder = {
+            "schema": "hapax.review_execution_lock.holder.v1",
+            "owner_token": "x" * 43,
+            "repo": "owner/repo",
+            "pr": 42,
+            "pid": 999999,
+            "host": os.uname().nodename,
+            "hostname": os.uname().nodename,
+            "process": {"pid": 999999, "proc_start_time_ticks": 1},
+            "lock_path": str(lock_path),
+            "acquired_at": (
+                datetime.now(UTC)
+                - timedelta(seconds=dispatch.REVIEW_EXECUTION_LOCK_STALE_AFTER_SECONDS + 60)
+            ).isoformat(timespec="seconds"),
+        }
+        raw = json.dumps(stale_holder).encode("utf-8")
+        lock_path.write_bytes(raw)
+        identity = (lock_path.stat().st_dev, lock_path.stat().st_ino)
+        monkeypatch.setattr(dispatch, "_mount_fstype_for_path", lambda _path: "nfs4")
+        monkeypatch.setattr(
+            dispatch,
+            "_renameat2_capability",
+            lambda: dispatch._Renameat2Capability(True, ""),
+        )
+
+        result = dispatch.release_review_execution_lock(
+            repo="owner/repo", pr_number=42, vault_root=vault, apply=True
+        )
+
+        assert result["status"] == "release_refused"
+        assert result["reason"] == "review_claim_release_noreplace_unsupported:nfs4"
+        assert result["lock_evidence"]["release_capability"]["filesystem_type"] == "nfs4"
+        assert lock_path.read_bytes() == raw
+        assert (lock_path.stat().st_dev, lock_path.stat().st_ino) == identity
+
     def test_release_lock_refuses_live_same_host_stale_claim(self, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)
         lock_path = dispatch.review_execution_lock_path(

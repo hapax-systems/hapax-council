@@ -1764,16 +1764,23 @@ def _write_lock_holder_fd(fd: int, holder: dict[str, Any]) -> None:
     os.fsync(fd)
 
 
-def _read_lock_holder(path: Path) -> tuple[dict[str, Any], str | None]:
-    raw, _stat, error = _read_regular_file_no_follow(path)
+def _read_lock_holder_with_stat(
+    path: Path,
+) -> tuple[dict[str, Any], str | None, os.stat_result | None]:
+    raw, file_stat, error = _read_regular_file_no_follow(path)
     if error or raw is None:
-        return {}, f"read_error:{error}"
+        return {}, f"read_error:{error}", file_stat
     loaded, load_error = _json_loads_no_duplicate_mapping(raw or b"{}", label="lock_holder")
     if load_error:
-        return {}, f"json_error:{load_error}"
+        return {}, f"json_error:{load_error}", file_stat
     if not isinstance(loaded, dict):
-        return {}, "holder_not_mapping"
-    return loaded, None
+        return {}, "holder_not_mapping", file_stat
+    return loaded, None, file_stat
+
+
+def _read_lock_holder(path: Path) -> tuple[dict[str, Any], str | None]:
+    holder, error, _file_stat = _read_lock_holder_with_stat(path)
+    return holder, error
 
 
 def _parse_lock_acquired_at(value: Any) -> datetime | None:
@@ -1940,7 +1947,7 @@ def _holder_validation_error(
 
 
 def _lock_collision_result(*, path: Path, repo: str, pr_number: int) -> ReviewExecutionLock:
-    holder, read_error = _read_lock_holder(path)
+    holder, read_error, holder_stat = _read_lock_holder_with_stat(path)
     validation_error = None
     lock_age_seconds = None
     holder_liveness = None
@@ -1958,20 +1965,28 @@ def _lock_collision_result(*, path: Path, repo: str, pr_number: int) -> ReviewEx
                 else "review_in_progress"
             )
     holder_error = read_error or validation_error
+    lock_evidence = _lock_evidence(
+        path=path,
+        status=status,
+        repo=repo,
+        pr_number=pr_number,
+        holder_error=holder_error,
+        lock_age_seconds=lock_age_seconds,
+        holder_liveness=holder_liveness,
+    )
+    if holder_stat is not None:
+        lock_evidence["validated_holder_identity"] = {
+            "dev": holder_stat.st_dev,
+            "ino": holder_stat.st_ino,
+            "size": holder_stat.st_size,
+            "mode": stat_module.S_IMODE(holder_stat.st_mode),
+        }
     return ReviewExecutionLock(
         path=path,
         acquired=False,
         holder=holder,
         status=status,
-        lock_evidence=_lock_evidence(
-            path=path,
-            status=status,
-            repo=repo,
-            pr_number=pr_number,
-            holder_error=holder_error,
-            lock_age_seconds=lock_age_seconds,
-            holder_liveness=holder_liveness,
-        ),
+        lock_evidence=lock_evidence,
     )
 
 
@@ -2204,18 +2219,117 @@ def release_review_execution_lock(
             "lock_evidence": evidence,
             "next_action": _lock_release_command(repo=repo, pr_number=pr_number),
         }
-    token = f"released.{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ').lower()}"
-    archive = archive_existing_artifact(path, token=token)
+
+    release_capability = _review_claim_release_capability(path.parent)
+    release_blocker = release_capability.get("blocker")
+    if isinstance(release_blocker, str) and release_blocker:
+        return {
+            "status": "release_refused",
+            "repo": repo,
+            "pr": pr_number,
+            "lock_path": str(path),
+            "reason": release_blocker,
+            "holder": collision.holder,
+            "lock_evidence": evidence | {"release_capability": release_capability},
+            "next_action": (
+                "Route this exact recovery to the storage-owning host with the same validated "
+                "holder-liveness evidence; this host cannot safely move the claim."
+            ),
+        }
+
+    validated_identity = evidence.get("validated_holder_identity")
+    if not isinstance(validated_identity, dict):
+        return {
+            "status": "release_refused",
+            "repo": repo,
+            "pr": pr_number,
+            "lock_path": str(path),
+            "reason": "validated_holder_identity_missing",
+            "holder": collision.holder,
+            "lock_evidence": evidence,
+            "next_action": "HOLD: preserve the claim and obtain exact inode evidence.",
+        }
+    try:
+        owned_identity = (int(validated_identity["dev"]), int(validated_identity["ino"]))
+        expected_size = int(validated_identity["size"])
+    except (KeyError, TypeError, ValueError):
+        return {
+            "status": "release_refused",
+            "repo": repo,
+            "pr": pr_number,
+            "lock_path": str(path),
+            "reason": "validated_holder_identity_invalid",
+            "holder": collision.holder,
+            "lock_evidence": evidence,
+            "next_action": "HOLD: preserve the claim and obtain exact inode evidence.",
+        }
+
+    dir_fd: int | None = None
+    try:
+        dir_fd = os.open(
+            path.parent,
+            os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+        )
+        release_status, retained = _clear_entry_nondestructively(
+            src_dir_fd=dir_fd,
+            src_name=path.name,
+            dest_dir_fd=dir_fd,
+            source_label=str(path),
+            dest_label=str(path.parent),
+            owned_identity=owned_identity,
+            expected_size=expected_size,
+            reclaim_prefix=REVIEW_CLAIM_RECLAIMABLE_PREFIX,
+            reclaim_reason="released_stale_review_claim",
+            preserve_prefix=REVIEW_CLAIM_PRESERVED_PREFIX,
+            preserve_reason="replaced_stale_review_claim",
+        )
+    except (OSError, RuntimeError) as exc:
+        return {
+            "status": "release_failed",
+            "repo": repo,
+            "pr": pr_number,
+            "lock_path": str(path),
+            "reason": f"nondestructive_release_error:{type(exc).__name__}:{exc}",
+            "holder": collision.holder,
+            "lock_evidence": evidence | {"release_capability": release_capability},
+            "next_action": "HOLD: preserve every retained entry and inspect the exact failure.",
+        }
+    finally:
+        if dir_fd is not None:
+            _close_claim_fd_for_cleanup(dir_fd)
+
+    retained_path = None
+    if retained is not None:
+        retained_path = retained.get("reclaimable") or retained.get("preserved")
+    if release_status == "reclaimed":
+        return {
+            "status": "released",
+            "repo": repo,
+            "pr": pr_number,
+            "lock_path": str(path),
+            "archived_lock_path": retained_path,
+            "retained_claim": retained,
+            "prior_status": collision.status,
+            "holder": collision.holder,
+            "lock_evidence": evidence | {"release_capability": release_capability},
+            "next_action": "Rerun the exact PR review; the stale claim is retained for reclamation.",
+        }
     return {
-        "status": "released",
+        "status": "release_preserved_replacement"
+        if release_status == "preserved"
+        else "release_raced_absent",
         "repo": repo,
         "pr": pr_number,
         "lock_path": str(path),
-        "archived_lock_path": str(archive) if archive else None,
+        "archived_lock_path": retained_path,
+        "retained_claim": retained,
         "prior_status": collision.status,
         "holder": collision.holder,
-        "lock_evidence": evidence,
-        "next_action": "Rerun the exact PR review; the stale claim has been archived.",
+        "lock_evidence": evidence | {"release_capability": release_capability},
+        "next_action": (
+            "HOLD: the validated claim was replaced or disappeared before the non-destructive "
+            "move; inspect retained evidence before retry."
+        ),
     }
 
 
