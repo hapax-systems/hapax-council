@@ -12204,6 +12204,87 @@ with module.review_execution_lock(
         assert not (tmp_path / "wake").exists()
         assert not (tmp_path / "degraded-merges.jsonl").exists()
 
+    @pytest.mark.parametrize(
+        ("filesystem_type", "kernel_available", "kernel_reason", "blocker"),
+        [
+            (
+                "autofs",
+                True,
+                "",
+                "review_claim_release_backing_filesystem_unresolved:autofs",
+            ),
+            ("nfs", True, "", "review_claim_release_noreplace_unsupported:nfs"),
+            ("nfs4", True, "", "review_claim_release_noreplace_unsupported:nfs4"),
+            (None, True, "", "review_claim_release_filesystem_unknown"),
+            (
+                "btrfs",
+                False,
+                "symbol_unavailable:AttributeError",
+                "review_claim_release_renameat2_unavailable:symbol_unavailable:AttributeError",
+            ),
+        ],
+    )
+    def test_review_lock_unreleasable_filesystem_preflight_holds_before_claim_creation(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        filesystem_type: str | None,
+        kernel_available: bool,
+        kernel_reason: str,
+        blocker: str,
+    ) -> None:
+        """A host that cannot retire a claim must not be allowed to mint one."""
+
+        vault = _make_vault(tmp_path)
+        note = _write_task(vault)
+        lock_path = dispatch.review_execution_lock_path(
+            repo="owner/repo", pr_number=42, vault_root=vault
+        )
+        monkeypatch.setattr(dispatch, "_mount_fstype_for_path", lambda _path: filesystem_type)
+        monkeypatch.setattr(
+            dispatch,
+            "_renameat2_capability",
+            lambda: dispatch._Renameat2Capability(kernel_available, kernel_reason),
+        )
+        gh = FakeGh()
+        reviewers = RecordingReviewers()
+
+        result = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            force=True,
+            gh_runner=gh,
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert result["status"] == "review_lock_unavailable"
+        evidence = result["lock_evidence"]
+        assert evidence["holder_error"] == blocker
+        assert evidence["release_capability"] == {
+            "path": str(lock_path.parent),
+            "filesystem_type": filesystem_type,
+            "kernel_renameat2_available": kernel_available,
+            "status": "blocked",
+            "blocker": blocker,
+        }
+        assert "storage-owning host" in evidence["next_action"]
+        assert "Do not run --probe-lock" in evidence["next_action"]
+        assert not lock_path.parent.exists()
+        assert result["side_effects"] == {}
+        assert gh.calls == []
+        assert reviewers.invocations == []
+        assert not (note.parent / "task-a.review-dossier.yaml").exists()
+        assert not (note.parent / "task-a.acceptance.yaml").exists()
+        assert not (tmp_path / "wake").exists()
+        assert not (tmp_path / "degraded-merges.jsonl").exists()
+
     def test_review_lock_publication_fsync_failure_retains_own_claim(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

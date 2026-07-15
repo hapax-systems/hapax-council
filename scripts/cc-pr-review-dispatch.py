@@ -116,6 +116,9 @@ from github_pr_status import (  # noqa: E402
 )
 
 from shared import public_gate_receipts  # noqa: E402
+from shared.durable_jsonl_sink import (  # noqa: E402
+    _mount_fstype_for_path as _mount_fstype_for_path,
+)
 from shared.route_metadata_schema import stable_payload_hash  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     ACCEPTANCE_RECEIPT_SUFFIX,
@@ -170,6 +173,8 @@ PREPARED_MIGRATION_PLAN_SCHEMA = "hapax.review_team_digest_migration.prepared_pl
 REVIEW_TEAM_DIGEST_MIGRATION_LOCK_STALE_AFTER_SECONDS = REVIEW_EXECUTION_LOCK_STALE_AFTER_SECONDS
 KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_DISPATCH_OFF"
 TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+REVIEW_CLAIM_NOREPLACE_UNSUPPORTED_FS_TYPES = frozenset({"nfs", "nfs4"})
+REVIEW_CLAIM_INDIRECT_FS_TYPES = frozenset({"autofs"})
 REVIEW_TEAM_MIGRATION_PAUSE_UNITS = (
     "hapax-pr-review-dispatch.timer",
     "hapax-pr-review-dispatch.service",
@@ -2299,6 +2304,32 @@ def review_execution_lock(
         vault_root=vault_root,
         lock_dir=lock_dir,
     )
+    release_capability = _review_claim_release_capability(path.parent)
+    release_blocker = release_capability.get("blocker")
+    if isinstance(release_blocker, str) and release_blocker:
+        status = "review_lock_unavailable"
+        lock_evidence = _lock_evidence(
+            path=path,
+            status=status,
+            repo=repo,
+            pr_number=pr_number,
+            holder_error=release_blocker,
+        )
+        lock_evidence["release_capability"] = release_capability
+        lock_evidence["next_action"] = (
+            "Route this exact review to the storage-owning host, or another host where the shared "
+            "claim directory is on a filesystem that supports renameat2(RENAME_NOREPLACE). Do not "
+            "run --probe-lock on this host because it cannot safely retire a claim it acquires."
+        )
+        yield ReviewExecutionLock(
+            path=path,
+            acquired=False,
+            holder={},
+            status=status,
+            lock_evidence=lock_evidence,
+        )
+        return
+
     dir_fd: int | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -3541,6 +3572,45 @@ class _Renameat2Capability:
 
 
 _RENAMEAT2_CAPABILITY: _Renameat2Capability | None = None
+
+
+def _review_claim_release_capability(path: Path) -> dict[str, Any]:
+    """Fail before claim creation when this host cannot perform its lossless release.
+
+    Kernel support alone is insufficient: Linux exposes ``renameat2`` on Appendix, but its NFSv4
+    claim mount rejects ``RENAME_NOREPLACE`` with ``EINVAL``. Acquiring there creates a claim that
+    the same process cannot safely retire. NFS has no atomic non-overwriting rename fallback, so the
+    review must run on the storage-owning host instead of weakening the transition primitive. An
+    unresolved automount layer also HOLDs because it does not prove the backing filesystem.
+    """
+
+    kernel_capability = _renameat2_capability()
+    filesystem_type = _mount_fstype_for_path(path)
+    evidence: dict[str, Any] = {
+        "path": str(path),
+        "filesystem_type": filesystem_type,
+        "kernel_renameat2_available": kernel_capability.available,
+    }
+    if not kernel_capability.available:
+        evidence["status"] = "blocked"
+        evidence["blocker"] = (
+            f"review_claim_release_renameat2_unavailable:{kernel_capability.reason}"
+        )
+    elif filesystem_type is None:
+        evidence["status"] = "blocked"
+        evidence["blocker"] = "review_claim_release_filesystem_unknown"
+    elif filesystem_type in REVIEW_CLAIM_INDIRECT_FS_TYPES:
+        evidence["status"] = "blocked"
+        evidence["blocker"] = (
+            f"review_claim_release_backing_filesystem_unresolved:{filesystem_type}"
+        )
+    elif filesystem_type in REVIEW_CLAIM_NOREPLACE_UNSUPPORTED_FS_TYPES:
+        evidence["status"] = "blocked"
+        evidence["blocker"] = f"review_claim_release_noreplace_unsupported:{filesystem_type}"
+    else:
+        evidence["status"] = "admitted"
+        evidence["blocker"] = None
+    return evidence
 
 
 def _probe_renameat2_capability() -> _Renameat2Capability:
