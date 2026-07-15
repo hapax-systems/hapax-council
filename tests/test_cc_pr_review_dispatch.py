@@ -8959,7 +8959,8 @@ checklist:
         assert not dispatch.review_team_digest_migration_recovery_receipt_path(vault).exists()
 
         # A fresh process reconstructs and validates the exact retained record from durable state.
-        entries = dispatch.review_team_digest_migration_retained_entries(vault)
+        with _migration_root(vault) as root:
+            entries = root.landed_retention()
         reconstructed = [e for e in entries if e["name"] == landed]
         assert len(reconstructed) == 1, "a durable retention went dark when its append did not run"
         entry = reconstructed[0]
@@ -9006,9 +9007,8 @@ checklist:
 
         # 2. The reclamation surface reports the genuine entry corroborated and the forged not: grammar
         #    locates candidates, it does not mint reclamation authority over a false identity.
-        retained = {
-            e["name"]: e for e in dispatch.review_team_digest_migration_retained_entries(vault)
-        }
+        with _migration_root(vault) as root:
+            retained = {e["name"]: e for e in root.landed_retention()}
         assert retained[forged_name]["corroborated"] is False, "a forged basename minted authority"
         assert retained[genuine_name]["corroborated"] is True, (
             "a genuine retention failed corroboration"
@@ -9119,9 +9119,8 @@ checklist:
         )
 
         # 2. The reclamation surface reports it uncorroborated: a false device mints no authority.
-        retained = {
-            e["name"]: e for e in dispatch.review_team_digest_migration_retained_entries(vault)
-        }
+        with _migration_root(vault) as root:
+            retained = {e["name"]: e for e in root.landed_retention()}
         assert retained[wrong_device_name]["corroborated"] is False, "a false device corroborated"
 
         # 3. It is not exposed as a corroborated landed retention through the held root either.
@@ -9138,9 +9137,8 @@ checklist:
         assert genuine_name not in entries_after, (
             "device not load-bearing: real device failed to corroborate"
         )
-        retained_after = {
-            e["name"]: e for e in dispatch.review_team_digest_migration_retained_entries(vault)
-        }
+        with _migration_root(vault) as root:
+            retained_after = {e["name"]: e for e in root.landed_retention()}
         assert retained_after[genuine_name]["corroborated"] is True
 
     def test_v12_probe_78_live_token_fabricated_stage_state_holds(self, tmp_path: Path) -> None:
@@ -12242,10 +12240,8 @@ with module.review_execution_lock(
         assert not lock_path.exists()
         # The inode was RETAINED, not unlinked: cleanup on a failure path is still not a licence to
         # destroy, and the retained entry is self-describing so an operator can reclaim it.
-        retained = dispatch.review_execution_claim_retained_entries(
-            repo="owner/repo", vault_root=vault
-        )
-        assert [item["class"] for item in retained] == ["retained_reclaimable_claim"]
+        claim_state = dispatch._active_review_writer_claims(repo="owner/repo", vault_root=vault)
+        assert [item["kind"] for item in claim_state["claims"]] == ["retained_reclaimable_claim"]
         assert result["side_effects"] == {}
         assert gh.calls == []
         assert reviewers.invocations == []

@@ -3167,35 +3167,6 @@ def _retained_claim_kind(name: str) -> str | None:
     return None
 
 
-def review_execution_claim_retained_entries(
-    *,
-    repo: str,
-    vault_root: Path | None = None,
-    lock_dir: Path | None = None,
-) -> list[dict[str, Any]]:
-    """Enumerate retained review-execution claims, for the same governed reclamation phase."""
-
-    directory = review_execution_lock_path(
-        repo=repo, pr_number=0, vault_root=vault_root, lock_dir=lock_dir
-    ).parent
-    if not directory.is_dir():
-        return []
-    retained: list[dict[str, Any]] = []
-    for child in sorted(directory.iterdir(), key=lambda item: item.name):
-        kind = _retained_claim_kind(child.name)
-        if kind is None:
-            continue
-        try:
-            info = child.lstat()
-        except OSError as exc:
-            retained.append({"name": child.name, "class": kind, "error": type(exc).__name__})
-            continue
-        retained.append(
-            {"name": child.name, "class": kind, "ino": info.st_ino, "size": info.st_size}
-        )
-    return retained
-
-
 def _providerless_migration_claim_state(vault_root: Path) -> dict[str, Any]:
     path = review_team_digest_migration_lock_path(vault_root)
     try:
@@ -9380,43 +9351,6 @@ def _path_entry_evidence(path: Path, *, vault_root: Path) -> list[dict[str, Any]
         if dir_fd is not None:
             with suppress(OSError):
                 os.close(dir_fd)
-
-
-def review_team_digest_migration_retained_entries(vault_root: Path) -> list[dict[str, Any]]:
-    """Enumerate every entry the protocol is RETAINING in the lock directory, for reclamation.
-
-    This is the governed reclamation surface. Nothing in the review or migration path deletes these
-    -- deletion by pathname cannot be bound to an inode, which is the whole reason they exist -- so
-    an operator reclamation phase is the only thing entitled to remove them, and it needs to be able
-    to SEE them. A retention nobody can enumerate is a leak wearing a policy.
-
-    Each entry's record is RECONSTRUCTED from its durable self-describing name and VALIDATED against
-    the live inode, so it does not depend on the in-memory ledger append that a process stop between
-    the landing rename and that append can skip (V12-STATIC-24 / V12-PROBE-74): a fresh capability
-    re-derives the exact device/inode, content fingerprint and kind from disk alone. The grammar only
-    LOCATES a candidate; an entry whose live kind, fingerprint or device/inode does not back the name
-    it wears is reported ``corroborated: False`` and is never described as cleanly reclaimable, so a
-    forged basename can neither mint reclamation authority nor pass for governed residue
-    (V12-STATIC-25 / V12-PROBE-75). Filenames locate; the live inode proves.
-
-    This is the status-reader entry point, which opens the lock directory by pathname. The PRODUCTION
-    reclamation consumer -- recovery, terminal reuse and the pre-effect boundary -- reaches the same
-    reconstruction through the HELD capability descriptor (``MigrationRootCapability.landed_retention``)
-    so it names the exact directory the effects touch (V12-STATIC-28 / V12-PROBE-77).
-    """
-
-    lock_dir = vault_root / "_locks"
-    if not lock_dir.is_dir():
-        return []
-    try:
-        lock_fd = os.open(lock_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    except OSError:
-        return []
-    try:
-        return _scan_governed_retention(lock_fd)
-    finally:
-        with suppress(OSError):
-            os.close(lock_fd)
 
 
 def _path_evidence(path: Path, *, vault_root: Path) -> dict[str, Any]:
