@@ -131,10 +131,11 @@ post-write verification, rollback, or recovery failure.
 Admission is total, capability-bound, and re-proved at the last pre-effect
 boundary:
 
-- **One exact decoder.** The prepared plan is decoded by a single function,
-  `prepared_migration_plan_blockers` in `shared/sdlc_lifecycle.py`, which the
-  runtime apply path and lifecycle admission both call over the same decoded
-  bytes. It is total over constants, enums, digest forms, counts, container
+- **One exact decoder.** The prepared plan is decoded by
+  `shared.sdlc_lifecycle.decode_prepared_migration_plan`. The runtime apply path
+  calls that decoder directly; lifecycle admission calls
+  `prepared_migration_plan_blockers`, which is its blocker-only projection over
+  the same bytes. It is total over constants, enums, digest forms, counts, container
   types and cross-object relations, and it **recomputes** the disposition
   manifest, write set, evidence digest, plan identity and candidate authority
   from the plan's own contents. A plan that merely agrees with its own claimed
@@ -145,8 +146,8 @@ boundary:
   when the migration lock is acquired and carried through apply, rollback,
   recovery, cleanup and release. The vault root, `active`, `_locks` and the
   stage directory are held as `O_DIRECTORY | O_NOFOLLOW` descriptors, and every
-  effect is performed *at* those descriptors (`openat`, `renameat`, `unlinkat`,
-  `linkat`, `fstatat`). Admitted paths are never re-resolved through the mutable
+  effect is performed *at* those descriptors (`openat`, `renameat2`, `linkat`,
+  `fstatat`, and `fsync` on file or directory descriptors). Admitted paths are never re-resolved through the mutable
   namespace between admission and effect, so replacing `active` (or any
   ancestor) with a symlink after the pre-effect boundary cannot redirect a
   write — the held descriptor still refers to the directory that was admitted.
@@ -157,16 +158,26 @@ boundary:
   name still **be the held inode**: matching the world-readable `owner_token` is
   not ownership, because any writer can rename the claim away and publish a
   different inode carrying a copy of those bytes.
-- **Exact temp identities.** Every migration write publishes through a temp named
+- **Exact temp identities.** Every non-terminal migration write publishes through a temp named
   from the journal token (`.<name>.<token>.<slot>.mtmp`) at an exact
-  (parent-descriptor, name) **site**. Cleanup deletes only a verified regular
-  inode created by the current transaction at one of its own sites. The same
+  (parent-descriptor, name) **site**. Reconciliation retires only a verified regular
+  inode created by the current transaction at one of its own sites, retaining it
+  under the governed reclamation grammar rather than deleting it. The same
   basename in a different directory is a different site and is never touched: it
   is unknown evidence, and unknown, wrong-directory, symlink, partial, malformed
   or conflicting evidence is always preserved and HOLD.
-- **Power-loss-safe publication.** The initial journal, every stage child and the
-  terminal receipt are published through an explicit prepared-temp → fsync →
-  rename/`linkat` transition. The initial journal uses `linkat`, which is both
+- **Power-loss-safe publication.** The initial journal and every stage child are
+  published through an explicit prepared-temp → fsync → rename/`linkat`
+  transition. The terminal receipt is created directly at its final name with
+  `O_EXCL`, then becomes a seal only after complete bytes, file `fsync`, parent
+  directory `fsync`, and exact-inode recheck. A process stop can expose an
+  incomplete final, which recovery preserves as uncertain evidence while the
+  retained journal remains authoritative; successful publication creates no
+  scratch name to retire after the seal and does not depend on `O_TMPFILE`
+  support from the admitted NFS vault. The journal is retired first under its dedicated durable
+  reclamation grammar and included in the receipt. Recovery can adopt exactly
+  one unaccounted retired journal if process death lands in that pre-seal window.
+  The initial journal uses `linkat`, which is both
   exclusive and atomic, so a crash part-way through its bytes cannot leave a
   half-written *final* journal — a state that could be neither trusted nor
   destroyed, and which stuck the vault forever.
@@ -690,9 +701,12 @@ ratified binding untouched — and the plan decoded clean. It is now pinned by r
 to the ratified candidate authority in its exact artifact form.
 
 Recovery is verified against real, uncatchable `SIGKILL` delivered **inside** each
-durable syscall — part-way through the payload bytes of `write`, and inside
-`fsync`, `rename`, `linkat`, `unlink` and the directory fsync — at several
-occurrences each, which walks the kill across the journal, the stage children,
+durable syscall class the transaction actually reaches: part-way through the
+payload bytes of `write`, and inside `fsync`, `renameat2`, and `linkat`, at several
+occurrences each. Directory durability is covered by the `fsync` ordinals that
+land on held directory descriptors; there is no separate directory-fsync helper
+and no `unlink`/`unlinkat` row because the protocol performs neither. The matrix
+walks the kill across the journal, the stage children,
 every `applied:N` boundary, the archive rename, the target publications and the
 terminal seal. Substitution is exercised the same way: a probe plants a replacement
 **inside** the transition syscall itself (at the `renameat2` boundary), which is the
@@ -702,6 +716,14 @@ under test. After any such kill the tree is either recoverable to a terminal
 state or already terminal; targets are either the exact preimages or the exact
 prepared outputs, never anything in between; no orphan temp survives; and a
 second recovery pass changes no byte.
+
+Reproduce the complete dispatcher matrix, including explicit syscall-reachability
+counts, landed SIGKILL assertions, the terminal-write retired-journal row, and the
+successive-nonempty-transaction proof:
+
+```bash
+uv run pytest tests/test_cc_pr_review_dispatch.py -q --no-header
+```
 
 Malformed review claims remain HOLD until holder identity/liveness evidence is
 preserved. Only stale same-host claims with exact dead-or-reused PID/proc-start

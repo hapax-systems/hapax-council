@@ -383,6 +383,7 @@ MIGRATION_STAGE_LATE_CHILD_PASSES = 8
 MIGRATION_RECLAIMABLE_TEMP_PREFIX = "review-team-digest-migration.recovery-temp.reclaimable."
 MIGRATION_RECLAIMABLE_FINAL_PREFIX = "review-team-digest-migration.superseded-final.reclaimable."
 MIGRATION_RECLAIMABLE_LOCK_PREFIX = "review-team-digest-migration.lock-claim.reclaimable."
+MIGRATION_RECLAIMABLE_JOURNAL_PREFIX = "review-team-digest-migration.journal.reclaimable."
 MIGRATION_RECLAIMABLE_STAGE_PREFIX = "review-team-digest-migration.stage-dir.reclaimable."
 MIGRATION_RECLAIMABLE_STAGE_CHILD_PREFIX = "review-team-digest-migration.stage-child.reclaimable."
 # The review execution claim is a different lock in a different directory, but it is the same
@@ -427,6 +428,7 @@ MIGRATION_PRESERVED_PREFIXES = frozenset(
 MIGRATION_RECLAIMABLE_PREFIXES = frozenset(
     {
         MIGRATION_RECLAIMABLE_FINAL_PREFIX,
+        MIGRATION_RECLAIMABLE_JOURNAL_PREFIX,
         MIGRATION_RECLAIMABLE_LOCK_PREFIX,
         MIGRATION_RECLAIMABLE_STAGE_CHILD_PREFIX,
         MIGRATION_RECLAIMABLE_STAGE_PREFIX,
@@ -709,6 +711,7 @@ MIGRATION_TERMINAL_RECLAIMABLE_REASONS = frozenset(
         "owned_temp",
         "published_stage_child",
         "released_lock_claim",
+        "retired_journal",
         "superseded_final",
     }
 )
@@ -768,6 +771,11 @@ MIGRATION_TERMINAL_RECLAIMABLE_RELATIONS: dict[str, tuple[str, frozenset[str], s
     ),
     "released_lock_claim": (
         MIGRATION_RECLAIMABLE_LOCK_PREFIX,
+        frozenset({MIGRATION_PARENT_LOCKS}),
+        "file",
+    ),
+    "retired_journal": (
+        MIGRATION_RECLAIMABLE_JOURNAL_PREFIX,
         frozenset({MIGRATION_PARENT_LOCKS}),
         "file",
     ),
@@ -2402,9 +2410,12 @@ def review_execution_lock(
 ) -> Any:
     """Serialize reviewer spend and artifact publication for one repository+PR.
 
-    The claim is the lock file itself, created with ``O_CREAT|O_EXCL`` at the shared vault path so
-    directory-entry creation is serialized by the backing filesystem. Existing claims are never
-    broken here; stale claims are only reported for a separate governed liveness process.
+    The claim is the lock file itself. Its complete holder document is written and fsynced on an
+    anonymous ``O_TMPFILE`` inode before ``linkat`` publishes that inode at the final name. The link
+    is the exclusive-create arbitration point: an existing final wins without being touched, while
+    process death before the link leaves no final claim and process death after it leaves a complete
+    claim whose holder identity can reach ordinary stale recovery. Existing claims are never broken
+    here; stale claims are only reported for a separate governed liveness process.
 
     The claim descriptor and its parent directory descriptor are held for the WHOLE lifetime of the
     lock. The old code closed the claim fd as soon as the holder document was written and then
@@ -2472,17 +2483,30 @@ def review_execution_lock(
     owner_proof = hashlib.sha256(owner_secret.encode("utf-8")).hexdigest()
     fd: int | None = None
     try:
+        tmpfile_flag = getattr(os, "O_TMPFILE", 0)
+        if not tmpfile_flag:
+            status = "review_lock_unavailable"
+            yield ReviewExecutionLock(
+                path=path,
+                acquired=False,
+                holder={},
+                status=status,
+                lock_evidence=_lock_evidence(
+                    path=path,
+                    status=status,
+                    repo=repo,
+                    pr_number=pr_number,
+                    holder_error="claim_atomic_publication_unavailable:o_tmpfile_missing",
+                ),
+            )
+            return
         try:
             fd = os.open(
-                path.name,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                ".",
+                os.O_WRONLY | tmpfile_flag,
                 0o644,
                 dir_fd=dir_fd,
             )
-        except FileExistsError:
-            LOG.info("review execution claim already exists: %s", path)
-            yield _lock_collision_result(path=path, repo=repo, pr_number=pr_number)
-            return
         except OSError as exc:
             status = "review_lock_unavailable"
             yield ReviewExecutionLock(
@@ -2495,7 +2519,7 @@ def review_execution_lock(
                     status=status,
                     repo=repo,
                     pr_number=pr_number,
-                    holder_error=f"claim_create_error:{type(exc).__name__}",
+                    holder_error=f"claim_atomic_inode_error:{type(exc).__name__}",
                 ),
             )
             return
@@ -2518,11 +2542,88 @@ def review_execution_lock(
         )
         try:
             _write_lock_holder_fd(fd, holder)
+        except OSError as exc:
+            # The inode has no name yet. Closing its descriptor discards only private scratch this
+            # process created; no final claim and no ambiguous cleanup entry can survive this branch.
+            status = "review_lock_unavailable"
+            lock_evidence = _lock_evidence(
+                path=path,
+                status=status,
+                repo=repo,
+                pr_number=pr_number,
+                holder_error=f"holder_publish_error:{type(exc).__name__}",
+            ) | {
+                "claim_final_published": False,
+                "own_claim_removed": False,
+            }
+            yield ReviewExecutionLock(
+                path=path,
+                acquired=False,
+                holder=holder,
+                status=status,
+                lock_evidence=lock_evidence,
+            )
+            return
+
+        try:
+            os.link(
+                f"/proc/self/fd/{fd}",
+                path.name,
+                dst_dir_fd=dir_fd,
+                follow_symlinks=True,
+            )
+        except FileExistsError:
+            LOG.info("review execution claim already exists: %s", path)
+            yield _lock_collision_result(path=path, repo=repo, pr_number=pr_number)
+            return
+        except OSError as exc:
+            status = "review_lock_unavailable"
+            yield ReviewExecutionLock(
+                path=path,
+                acquired=False,
+                holder=holder,
+                status=status,
+                lock_evidence=_lock_evidence(
+                    path=path,
+                    status=status,
+                    repo=repo,
+                    pr_number=pr_number,
+                    holder_error=f"claim_atomic_link_error:{type(exc).__name__}",
+                )
+                | {
+                    "claim_final_published": False,
+                    "own_claim_removed": False,
+                },
+            )
+            return
+
+        published = _stat_at(dir_fd, path.name)
+        if published is None or (published.st_dev, published.st_ino) != capability.identity:
+            status = "review_lock_unavailable"
+            yield ReviewExecutionLock(
+                path=path,
+                acquired=False,
+                holder=holder,
+                status=status,
+                lock_evidence=_lock_evidence(
+                    path=path,
+                    status=status,
+                    repo=repo,
+                    pr_number=pr_number,
+                    holder_error="claim_atomic_publication_identity_unproved",
+                )
+                | {
+                    "claim_final_published": True,
+                    "own_claim_removed": False,
+                },
+            )
+            return
+
+        try:
             os.fsync(dir_fd)
         except OSError as exc:
-            # The holder document never became durable, so there is nothing to prove possession
-            # against -- but the inode is ours by descriptor, and that is the whole capability. The
-            # name is cleared by a MOVE, so a replacement planted at it is retained, not destroyed.
+            # The complete claim became visible but its directory entry did not become durable. Move
+            # exactly our inode aside without destroying it, then report an unavailable acquisition.
             removed, cleanup_warning, record = _release_review_claim(
                 capability, require_holder_proof=False
             )
@@ -2533,7 +2634,10 @@ def review_execution_lock(
                 repo=repo,
                 pr_number=pr_number,
                 holder_error=f"holder_publish_error:{type(exc).__name__}",
-            ) | {"own_claim_removed": removed}
+            ) | {
+                "claim_final_published": True,
+                "own_claim_removed": removed,
+            }
             if cleanup_warning:
                 lock_evidence["cleanup_warning"] = cleanup_warning
             if record is not None:
@@ -3083,6 +3187,91 @@ def _review_team_digest_migration_pause_preflight(
     }
 
 
+def _migration_next_action(
+    blockers: list[str],
+    *,
+    repo: str | None = None,
+    vault_root: Path | None = None,
+) -> dict[str, Any]:
+    """Map the first stable blocker class to one deterministic, effect-free operator action."""
+
+    unique = list(dict.fromkeys(blockers))
+    first = unique[0] if unique else "migration_blocker_unspecified"
+    action: dict[str, Any] = {
+        "disposition": "HOLD",
+        "first_blocker": first,
+        "effects_authorized": False,
+    }
+    if any(
+        marker in blocker
+        for blocker in unique
+        for marker in (
+            "journal",
+            "recovery",
+            "rollback",
+            "retirement",
+            "unsealed_retention",
+        )
+    ):
+        argv = [
+            "uv",
+            "run",
+            "python",
+            "scripts/cc-pr-review-dispatch.py",
+            "--all",
+            "--replay-only",
+            "--migration-recover",
+        ]
+        if repo is not None:
+            argv.extend(["--repo", repo])
+        if vault_root is not None:
+            argv.extend(["--vault-root", str(vault_root)])
+        action.update(
+            {
+                "action": "run_exact_hash_bound_recovery",
+                "command_argv_prefix": argv,
+                "required_exact_bindings": [
+                    "migration_prepared_plan_path_and_sha256",
+                    "migration_candidate_authority_carrier_path_and_sha256",
+                ],
+                "forbidden_flags": ["--apply"],
+            }
+        )
+    elif any("review_writer_claim" in blocker for blocker in unique):
+        action.update(
+            {
+                "action": "resolve_exact_review_writer_claim_then_rerun_dry_run",
+                "required_evidence": "typed claim release or holder completion",
+            }
+        )
+    elif any(blocker.startswith("pause_unit_") for blocker in unique):
+        action.update(
+            {
+                "action": "restore_exact_pause_preconditions_then_rerun_dry_run",
+                "required_inactive_units": list(REVIEW_TEAM_MIGRATION_PAUSE_UNITS),
+            }
+        )
+    elif any(
+        marker in blocker
+        for blocker in unique
+        for marker in ("authority", "prepared_plan", "plan_sha256", "candidate_carrier")
+    ):
+        action.update(
+            {
+                "action": "regenerate_and_ratify_exact_hash_bound_plan_then_rerun_dry_run",
+                "required_evidence": "fresh prepared-plan and consumed-authority hashes",
+            }
+        )
+    else:
+        action.update(
+            {
+                "action": "inspect_first_blocker_and_rerun_exact_dry_run",
+                "required_evidence": f"{first}:resolved",
+            }
+        )
+    return action
+
+
 def _migration_blocked_result(
     *,
     status: str,
@@ -3092,11 +3281,13 @@ def _migration_blocked_result(
     pause_preconditions: dict[str, Any],
     migration_extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    next_action = _migration_next_action(blockers, repo=repo, vault_root=vault_root)
     migration: dict[str, Any] = {
         "status": status,
         "artifact_path": str(review_team_digest_migration_path(vault_root)),
         "artifact_written": False,
         "blockers": blockers,
+        "next_action": next_action,
         "entries": [],
     }
     if migration_extra:
@@ -3110,6 +3301,7 @@ def _migration_blocked_result(
     migration["status"] = status
     migration["artifact_written"] = False
     migration["blockers"] = blockers
+    migration["next_action"] = next_action
     return {
         "status": status,
         "repo": repo,
@@ -3117,6 +3309,7 @@ def _migration_blocked_result(
         "migration": migration,
         "side_effects": {},
         "pause_preconditions": pause_preconditions,
+        "next_action": next_action,
     }
 
 
@@ -4280,8 +4473,10 @@ class MigrationRootCapability:
         except FileNotFoundError:
             return None
 
-    def read_child(self, site: MigrationEffectSite) -> tuple[bytes | None, str]:
-        """Read a child as a regular file without ever following a symlink at the leaf."""
+    def read_child_with_stat(
+        self, site: MigrationEffectSite
+    ) -> tuple[bytes | None, os.stat_result | None, str]:
+        """Read one regular child and return the stat from that same held descriptor."""
 
         try:
             fd = os.open(
@@ -4290,28 +4485,34 @@ class MigrationRootCapability:
                 dir_fd=self.dir_fd(site.parent),
             )
         except FileNotFoundError:
-            return None, "not_found"
+            return None, None, "not_found"
         except OSError as exc:
             # O_NOFOLLOW reports ELOOP for a symlinked leaf on Linux.
             info = self.child_stat(site)
             if info is not None and stat_module.S_ISLNK(info.st_mode):
-                return None, "symlink"
-            return None, type(exc).__name__
+                return None, None, "symlink"
+            return None, None, type(exc).__name__
         try:
             info = os.fstat(fd)
             if not stat_module.S_ISREG(info.st_mode):
-                return None, "not_regular"
+                return None, info, "not_regular"
             chunks: list[bytes] = []
             while True:
                 chunk = os.read(fd, 1 << 20)
                 if not chunk:
                     break
                 chunks.append(chunk)
-            return b"".join(chunks), ""
+            return b"".join(chunks), info, ""
         except OSError as exc:
-            return None, type(exc).__name__
+            return None, None, type(exc).__name__
         finally:
             os.close(fd)
+
+    def read_child(self, site: MigrationEffectSite) -> tuple[bytes | None, str]:
+        """Read a child as a regular file without ever following a symlink at the leaf."""
+
+        raw, _info, error = self.read_child_with_stat(site)
+        return raw, error
 
     def child_dir_entries(self, site: MigrationEffectSite) -> list[str] | None:
         """List a child DIRECTORY through a descriptor, never following a symlink at the leaf.
@@ -4428,6 +4629,61 @@ class MigrationRootCapability:
             raise RuntimeError(
                 f"migration_transaction_publication_source_unprovable:{type(exc).__name__}"
             ) from None
+
+    def publish_terminal_exclusive(
+        self,
+        site: MigrationEffectSite,
+        raw: bytes,
+        *,
+        mode: int,
+        existing_conflict: str,
+    ) -> None:
+        """Write the terminal final directly and exclusively, with no scratch name to retire.
+
+        Unlike the journal, a terminal receipt may be partial before it becomes a seal: the retained
+        journal is still the recovery authority, and recovery preserves any incomplete final as
+        uncertain evidence before trying again. The receipt becomes a seal only after its bytes, the
+        file and the parent directory are durable and the final is re-proved to name the held inode.
+
+        Direct ``O_EXCL`` creation is intentional here. A named temp would need cleanup after the
+        final became durable and thereby create post-seal retention; ``O_TMPFILE`` would avoid that
+        but is not portable to every admitted NFS vault. Direct final creation has no second name,
+        no cleanup phase and no hidden filesystem capability dependency. Process death can leave a
+        partial final, but never an unaccounted scratch object, and the still-retained journal makes
+        that state attributable and convergent.
+        """
+
+        parent_fd = self.dir_fd(site.parent)
+        try:
+            fd = os.open(
+                site.name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                mode,
+                dir_fd=parent_fd,
+            )
+        except FileExistsError:
+            raise RuntimeError(existing_conflict) from None
+        except OSError as exc:
+            raise RuntimeError(
+                "migration_transaction_terminal_publication_unavailable:"
+                f"{type(exc).__name__}:{exc.errno}"
+            ) from None
+        try:
+            _complete_write(fd, raw)
+            os.fchmod(fd, mode)
+            os.fsync(fd)
+            identity = _fd_identity(fd)
+            published = self.child_stat(site)
+            if published is None or (published.st_dev, published.st_ino) != identity:
+                raise RuntimeError("migration_transaction_publication_identity_unproved")
+            self.fsync_parent(site.parent)
+            published = self.child_stat(site)
+            if published is None or (published.st_dev, published.st_ino) != identity:
+                raise RuntimeError("migration_transaction_publication_identity_unproved")
+            self.published_finals[(site.parent, site.name)] = identity
+        finally:
+            with suppress(OSError):
+                os.close(fd)
 
     # ---- lossless preservation ---------------------------------------------------------------
 
@@ -10178,6 +10434,7 @@ def _migration_transaction_recovery_state(
     journal_exists = False
     journal_lstat: dict[str, Any] = {}
     stage_entries: list[tuple[str, str]] = []
+    retired_journal_paths: list[Path] = []
     if root_capability is not None and not root_capability.closed:
         # Every stage-named entry is evidence, whatever KIND it is. A wrong-kind entry is reported
         # as a blocker and as a path, never filtered out of both.
@@ -10196,6 +10453,19 @@ def _migration_transaction_recovery_state(
                 "is_file": stat_module.S_ISREG(info.st_mode),
             }
             blockers.append("migration_transaction_recovery_required")
+        else:
+            accounted_names = _migration_terminal_receipt_accounted_names(root_capability)
+            retired_journal_paths = [
+                vault_root / MIGRATION_PARENT_LOCKS / str(entry["name"])
+                for entry in root_capability.landed_retention()
+                if entry.get("corroborated")
+                and entry.get("domain") == "transaction"
+                and entry.get("kind") == "file"
+                and str(entry.get("name") or "").startswith(MIGRATION_RECLAIMABLE_JOURNAL_PREFIX)
+                and str(entry.get("name") or "") not in accounted_names
+            ]
+            if retired_journal_paths:
+                blockers.append("migration_transaction_recovery_required")
     else:
         stage_paths = review_team_digest_migration_stage_paths(vault_root)
         try:
@@ -10222,6 +10492,11 @@ def _migration_transaction_recovery_state(
         "journal_path": str(journal_path),
         "journal_exists": journal_exists,
         "journal_lstat": journal_lstat,
+        **(
+            {"retired_journal_paths": [str(path) for path in retired_journal_paths]}
+            if retired_journal_paths
+            else {}
+        ),
         "stage_paths": [str(path) for path in stage_paths],
         "stage_entries": [{"name": name, "kind": kind} for name, kind in stage_entries],
         "blockers": list(dict.fromkeys(blockers)),
@@ -11697,9 +11972,14 @@ def _transaction_journal_shape_blockers(loaded: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(blockers))
 
 
-def _load_transaction_journal(
+def _load_transaction_journal_evidence(
     root_capability: MigrationRootCapability,
-) -> tuple[dict[str, Any] | None, list[str]]:
+) -> tuple[
+    dict[str, Any] | None,
+    list[str],
+    MigrationEffectSite | None,
+    tuple[int, int] | None,
+]:
     """Read the journal THROUGH the held root, so classification and effects describe one directory.
 
     Loading it by absolute pathname re-resolved ``vault/_locks`` through the mutable namespace on
@@ -11709,18 +11989,70 @@ def _load_transaction_journal(
     just a description of where it used to be.
     """
 
-    raw, read_error = root_capability.read_child(_journal_site(root_capability))
+    source_site = _journal_site(root_capability)
+    raw, source_stat, read_error = root_capability.read_child_with_stat(source_site)
     if read_error or raw is None:
-        if read_error == "not_found":
-            return None, ["migration_transaction_journal_missing"]
-        return None, [f"migration_transaction_journal_unreadable:{read_error}"]
+        if read_error != "not_found":
+            return None, [f"migration_transaction_journal_unreadable:{read_error}"], None, None
+
+        # Journal retirement precedes the terminal seal. If the process stops between those two
+        # boundaries, the exact journal inode is still present under its dedicated, corroborated
+        # retention name but the final path is correctly absent. Adopt only the single unaccounted
+        # journal retention; older journals named by a valid terminal relation are historical, and
+        # multiple unaccounted candidates are an ambiguity that cannot safely choose a winner.
+        accounted_names = _migration_terminal_receipt_accounted_names(root_capability)
+        retired = [
+            entry
+            for entry in root_capability.landed_retention()
+            if entry.get("corroborated")
+            and entry.get("domain") == "transaction"
+            and entry.get("kind") == "file"
+            and str(entry.get("name") or "").startswith(MIGRATION_RECLAIMABLE_JOURNAL_PREFIX)
+            and str(entry.get("name") or "") not in accounted_names
+        ]
+        if not retired:
+            return None, ["migration_transaction_journal_missing"], None, None
+        if len(retired) != 1:
+            return (
+                None,
+                [f"migration_transaction_retired_journal_ambiguous:{len(retired)}"],
+                None,
+                None,
+            )
+        retired_entry = retired[0]
+        source_site = MigrationEffectSite(
+            parent=MIGRATION_PARENT_LOCKS,
+            name=str(retired_entry["name"]),
+        )
+        raw, retained_stat, read_error = root_capability.read_child_with_stat(source_site)
+        if read_error or raw is None:
+            return (
+                None,
+                [f"migration_transaction_retired_journal_unreadable:{read_error}"],
+                None,
+                None,
+            )
+        if (
+            retained_stat is None
+            or (retained_stat.st_dev, retained_stat.st_ino)
+            != (retired_entry.get("dev"), retired_entry.get("ino"))
+            or _sha256_bytes(raw) != f"sha256:{retired_entry.get('name_sha256')}"
+        ):
+            return (
+                None,
+                ["migration_transaction_retired_journal_identity_changed"],
+                None,
+                None,
+            )
+        source_stat = retained_stat
+    source_identity = (source_stat.st_dev, source_stat.st_ino) if source_stat is not None else None
     loaded, load_error = _json_loads_no_duplicate_mapping(
         raw, label="migration_transaction_journal"
     )
     if load_error or loaded is None:
-        return None, [load_error or "migration_transaction_journal_malformed"]
+        return None, [load_error or "migration_transaction_journal_malformed"], None, None
     if loaded.get("schema") != MIGRATION_TRANSACTION_JOURNAL_SCHEMA:
-        return None, ["migration_transaction_journal_schema_mismatch"]
+        return None, ["migration_transaction_journal_schema_mismatch"], None, None
     key_blockers = _exact_key_blockers(
         loaded,
         required=MIGRATION_TRANSACTION_JOURNAL_REQUIRED_KEYS,
@@ -11728,13 +12060,27 @@ def _load_transaction_journal(
         reason_prefix="migration_transaction_journal",
     )
     if key_blockers:
-        return None, key_blockers
+        return None, key_blockers, None, None
     if loaded.get("recovery_policy") != MIGRATION_RECOVERY_POLICY:
-        return None, ["migration_transaction_journal_recovery_policy_mismatch"]
+        return (
+            None,
+            ["migration_transaction_journal_recovery_policy_mismatch"],
+            None,
+            None,
+        )
     shape_blockers = _transaction_journal_shape_blockers(loaded)
     if shape_blockers:
-        return None, shape_blockers
-    return loaded, []
+        return None, shape_blockers, None, None
+    return loaded, [], source_site, source_identity
+
+
+def _load_transaction_journal(
+    root_capability: MigrationRootCapability,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    loaded, blockers, _source_site, _source_identity = _load_transaction_journal_evidence(
+        root_capability
+    )
+    return loaded, blockers
 
 
 def _terminal_child_evidence(
@@ -12013,30 +12359,151 @@ def _accounted_retention_names(*groups: list[dict[str, Any]]) -> set[str]:
     return names
 
 
+def _merge_reconstructed_retentions(
+    *groups: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Accumulate durable-name reconstructions without collapsing conflicting evidence."""
+
+    merged: dict[str, dict[str, Any]] = {}
+    for group in groups:
+        for entry in group:
+            merged[_canonical_json_sha256(entry)] = dict(entry)
+    return sorted(
+        merged.values(),
+        key=lambda item: (
+            str(item.get("class") or ""),
+            str(item.get("name") or ""),
+            str(item.get("sha256") or ""),
+        ),
+    )
+
+
+def _reconstructed_retention_names(entries: list[dict[str, Any]]) -> set[str]:
+    return {
+        str(entry["name"])
+        for entry in entries
+        if isinstance(entry.get("name"), str) and entry["name"]
+    }
+
+
+def _valid_retained_terminal_receipts(
+    root_capability: MigrationRootCapability,
+) -> list[dict[str, Any]]:
+    """Recover valid historical terminal relations from their retained exact inodes.
+
+    A new transaction may have moved the prior terminal final before a process stop. Its governed
+    retention name and live inode preserve the document, so recovery can carry its retention
+    relations into the replacement seal instead of mistaking their objects for ungoverned residue.
+    Non-terminal and malformed bytes at the same broad retention prefixes confer no standing.
+    """
+
+    receipts: list[dict[str, Any]] = []
+    for entry in root_capability.landed_retention():
+        if (
+            not entry.get("corroborated")
+            or entry.get("domain") != "transaction"
+            or entry.get("kind") != "file"
+        ):
+            continue
+        name = str(entry.get("name") or "")
+        if not name.startswith(
+            (MIGRATION_RECLAIMABLE_FINAL_PREFIX, MIGRATION_TERMINAL_PRESERVED_PREFIX)
+        ):
+            continue
+        raw, retained_stat, read_error = root_capability.read_child_with_stat(
+            MigrationEffectSite(parent=MIGRATION_PARENT_LOCKS, name=name)
+        )
+        if (
+            read_error
+            or raw is None
+            or retained_stat is None
+            or (retained_stat.st_dev, retained_stat.st_ino) != (entry.get("dev"), entry.get("ino"))
+            or _sha256_bytes(raw) != f"sha256:{entry.get('name_sha256')}"
+        ):
+            continue
+        loaded, document_error = _terminal_receipt_document_error(
+            raw, root_capability=root_capability
+        )
+        if document_error is None and loaded is not None:
+            receipts.append(loaded)
+    return sorted(
+        receipts,
+        key=lambda item: (
+            str(item.get("journal_identity_sha256") or ""),
+            _canonical_json_sha256(item),
+        ),
+    )
+
+
+def _terminal_receipt_with_current_retention(
+    root_capability: MigrationRootCapability,
+    receipt: dict[str, Any],
+    *,
+    prior_receipts: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Refresh every retention field from the ledger, history and durable namespace."""
+
+    histories = [dict(item) for item in (prior_receipts or [])]
+    ledger_preserved, ledger_reclaimable = root_capability.retained_entries()
+    published = dict(receipt)
+    published["preserved_entries"] = _merge_preserved_entries(
+        list(published.get("preserved_entries") or []),
+        *(list(item.get("preserved_entries") or []) for item in histories),
+        ledger_preserved,
+    )
+    published["reclaimable_entries"] = _merge_preserved_entries(
+        list(published.get("reclaimable_entries") or []),
+        *(list(item.get("reclaimable_entries") or []) for item in histories),
+        ledger_reclaimable,
+    )
+    inherited_reconstructed = _merge_reconstructed_retentions(
+        list(published.get("reconstructed_retentions") or []),
+        *(list(item.get("reconstructed_retentions") or []) for item in histories),
+    )
+    accounted_names = _accounted_retention_names(
+        published["preserved_entries"], published["reclaimable_entries"]
+    ) | _reconstructed_retention_names(inherited_reconstructed)
+    reconstructed = _merge_reconstructed_retentions(
+        inherited_reconstructed,
+        root_capability.reconstructed_retention_records(accounted_names=accounted_names),
+    )
+    if reconstructed:
+        published["reconstructed_retentions"] = reconstructed
+    else:
+        published.pop("reconstructed_retentions", None)
+    return published
+
+
 def _write_terminal_recovery_receipt(
     root_capability: MigrationRootCapability,
     receipt: dict[str, Any],
     *,
     token: str,
+    allow_prior_terminal_supersession: bool = False,
 ) -> tuple[Path, dict[str, Any]]:
-    """Publish the terminal receipt through a deterministic temp so recovery always converges.
+    """Publish a terminal seal after every governed retention is already represented.
 
     Republishing OUR OWN terminal state is a no-op, and its preserved set is carried forward rather
     than recomputed away. A partial or corrupt final file is PRESERVED and then superseded -- it is
     uncertain evidence, so it is neither trusted nor silently overwritten, and the preservation is
-    itself bound into the receipt that supersedes it. Only a well-formed receipt belonging to a
-    different journal identity is a hard conflict.
+    itself bound into the receipt that supersedes it. A valid prior transaction may be superseded
+    only when the transaction caller explicitly admits that transition; direct recovery attempts
+    retain the existing foreign-authority conflict.
 
     Returns the receipt as actually published, so the caller reports the durable state and not the
     draft it proposed.
     """
 
+    del token  # Kept in the call contract for compatibility with exact prepared transaction inputs.
     site = _terminal_site(root_capability)
     path = review_team_digest_migration_recovery_receipt_path(root_capability.vault_root)
     identity = str(receipt.get("journal_identity_sha256") or "")
-    published = dict(receipt)
+    prior_receipts = _valid_retained_terminal_receipts(root_capability)
+    published = _terminal_receipt_with_current_retention(
+        root_capability, receipt, prior_receipts=prior_receipts
+    )
 
-    existing, read_error = root_capability.read_child(site)
+    existing, existing_stat, read_error = root_capability.read_child_with_stat(site)
     if read_error == "":
         # An existing receipt may be adopted as OUR OWN durable state only after it passes the same
         # complete loader a reader would apply -- schema, exact keys, canonical bytes, target
@@ -12056,25 +12523,50 @@ def _write_terminal_recovery_receipt(
             # Our own terminal state, already durable and fully validated. Accumulate what earlier
             # passes preserved: a re-run legitimately has nothing left to preserve, and recomputing
             # the set from this pass alone would drop what the first one had to rescue.
-            published["preserved_entries"] = _merge_preserved_entries(
-                list(loaded.get("preserved_entries") or []),
-                list(published.get("preserved_entries") or []),
-            )
-            published["reclaimable_entries"] = _merge_preserved_entries(
-                list(loaded.get("reclaimable_entries") or []),
-                list(published.get("reclaimable_entries") or []),
+            prior_receipts.append(loaded)
+            published = _terminal_receipt_with_current_retention(
+                root_capability, published, prior_receipts=prior_receipts
             )
             if _terminal_recovery_receipt_bytes(published) == existing:
                 return path, published
         elif _terminal_receipt_is_foreign(loaded, document_error, journal_identity_sha256=identity):
-            raise RuntimeError("migration_recovery_receipt_conflict")
+            if not allow_prior_terminal_supersession:
+                raise RuntimeError("migration_recovery_receipt_conflict")
+            assert loaded is not None
+            prior_receipts.append(loaded)
         else:
-            published["preserved_entries"] = _merge_preserved_entries(
-                list(published.get("preserved_entries") or []),
-                [_preserve_uncertain_terminal_bytes(root_capability)],
+            _preserve_uncertain_terminal_bytes(root_capability)
+
+        if loaded is not None and document_error is None:
+            if existing_stat is None:
+                raise RuntimeError("migration_recovery_receipt_prior_final_identity_missing")
+            if stat_module.S_ISLNK(existing_stat.st_mode) or not stat_module.S_ISREG(
+                existing_stat.st_mode
+            ):
+                raise RuntimeError("migration_recovery_receipt_prior_final_wrong_kind")
+            status, _record = root_capability.clear_name(
+                site,
+                owned_identity=(existing_stat.st_dev, existing_stat.st_ino),
+                expected_size=existing_stat.st_size,
+                preserve_prefix=MIGRATION_TERMINAL_PRESERVED_PREFIX,
+                reason="uncertain_terminal",
+                reclaim_prefix=MIGRATION_RECLAIMABLE_FINAL_PREFIX,
+                reclaim_reason="superseded_final",
             )
+            if status != "reclaimed":
+                raise RuntimeError(
+                    f"migration_recovery_receipt_prior_final_identity_changed:{status}"
+                )
     elif read_error != "not_found":
         raise RuntimeError(f"migration_recovery_receipt_unreadable:{read_error}")
+
+    # Clearing an existing terminal and retiring the journal both append to the capability ledger.
+    # Refresh AFTER those transitions, and carry any valid terminal relation rediscovered under a
+    # retention name after an earlier process stop.
+    prior_receipts.extend(_valid_retained_terminal_receipts(root_capability))
+    published = _terminal_receipt_with_current_retention(
+        root_capability, published, prior_receipts=prior_receipts
+    )
 
     # A receipt is a durable, digest-bound CLAIM about what is on disk. Before it is sealed it must
     # pass the very loader that will read it back -- including the re-proof of every preservation
@@ -12085,10 +12577,11 @@ def _write_terminal_recovery_receipt(
     if seal_error:
         raise RuntimeError(f"migration_recovery_receipt_unsealable:{seal_error}")
 
-    root_capability.publish_child(
+    root_capability.publish_terminal_exclusive(
         site,
         raw,
-        temp_name=_operation_temp_site(site, token=token, slot="terminal").name,
+        mode=0o644,
+        existing_conflict="migration_recovery_receipt_conflict",
     )
     return path, published
 
@@ -13034,22 +13527,22 @@ def _quarantine_stranded_journal_temps(root_capability: MigrationRootCapability)
 def _retire_transaction_journal(
     root_capability: MigrationRootCapability,
     journal_site: MigrationEffectSite,
+    *,
+    owned_identity: tuple[int, int] | None = None,
 ) -> None:
-    """Retire the journal on identity, never on the bare fact that something answers to its name.
+    """Retire the journal before sealing, retaining its exact inode under a dedicated grammar.
 
-    The terminal receipt is already durable at this point, so the journal has no authority left to
-    carry -- but a journal entry that is no longer the inode this process published is not this
-    transaction's journal, and destroying it would destroy a stranger's file on the strength of a
-    deterministic pathname.
+    The journal is the recovery authority until the terminal receipt is durable. Its retirement is
+    therefore itself part of the state the receipt must seal, never a cleanup effect after the seal.
+    A process stop in between leaves the exact journal bytes at a corroborated journal-only name;
+    ``_load_transaction_journal`` can adopt that one unaccounted candidate and continue recovery.
 
-    If this process published the journal it drops exactly that inode. If it did not -- a recovery
-    capability publishes the journal it re-reads, never the crashed writer's original -- the entry is
-    dropped under the journal identity the terminal receipt has just sealed. Anything else is
-    preserved: the receipt is already durable, so convergence does not depend on destroying it, and
-    an entry nobody can attribute is exactly the thing this protocol never deletes.
+    If this process published the journal it reclaims exactly that inode. A recovery capability did
+    not create it, but the complete journal decoder plus the held descriptor proves the inode it just
+    classified. Anything substituted before the move is preserved rather than destroyed.
     """
 
-    identity = root_capability.published_identity(journal_site)
+    identity = owned_identity or root_capability.published_identity(journal_site)
     if identity is None:
         info = root_capability.child_stat(journal_site)
         if info is None:
@@ -13057,17 +13550,59 @@ def _retire_transaction_journal(
         if stat_module.S_ISLNK(info.st_mode) or not stat_module.S_ISREG(info.st_mode):
             raise RuntimeError("migration_transaction_journal_wrong_kind")
         identity = (info.st_dev, info.st_ino)
+    elif root_capability.child_stat(journal_site) is None:
+        raise RuntimeError("migration_transaction_journal_disappeared_before_retirement")
     status, record = root_capability.clear_name(
         journal_site,
         owned_identity=identity,
         preserve_prefix=MIGRATION_TEMP_PRESERVED_PREFIX,
         reason="stranded_journal_temp",
+        reclaim_prefix=MIGRATION_RECLAIMABLE_JOURNAL_PREFIX,
+        reclaim_reason="retired_journal",
     )
+    if status == "absent":
+        raise RuntimeError("migration_transaction_journal_disappeared_before_retirement")
     if status == "preserved" and record is not None:
-        LOG.warning(
-            "migration journal entry was replaced before retirement; preserved at %s",
-            record["preserved"],
+        raise RuntimeError(
+            "migration_transaction_journal_identity_changed_before_retirement:"
+            f"{record['preserved']}"
         )
+
+
+def _prepare_loaded_journal_for_terminal_seal(
+    root_capability: MigrationRootCapability,
+    *,
+    source_site: MigrationEffectSite | None,
+    source_identity: tuple[int, int] | None,
+) -> None:
+    """Retire a final journal or re-prove the retained journal recovery actually decoded."""
+
+    if source_site is None or source_identity is None:
+        raise RuntimeError("migration_transaction_journal_source_evidence_missing")
+    final_site = _journal_site(root_capability)
+    if source_site == final_site:
+        _retire_transaction_journal(
+            root_capability,
+            final_site,
+            owned_identity=source_identity,
+        )
+        return
+
+    raw, source_stat, read_error = root_capability.read_child_with_stat(source_site)
+    if (
+        read_error
+        or raw is None
+        or source_stat is None
+        or (source_stat.st_dev, source_stat.st_ino) != source_identity
+    ):
+        raise RuntimeError("migration_transaction_retired_journal_changed_before_seal")
+    match = MIGRATION_RECLAIMABLE_NAME_RE.fullmatch(source_site.name)
+    if (
+        match is None
+        or match.group("prefix") != MIGRATION_RECLAIMABLE_JOURNAL_PREFIX
+        or _sha256_bytes(raw) != f"sha256:{match.group('sha256')}"
+    ):
+        raise RuntimeError("migration_transaction_retired_journal_changed_before_seal")
 
 
 def _recover_prepared_migration_transaction(
@@ -13088,7 +13623,9 @@ def _recover_prepared_migration_transaction(
     # Journal and stage classification read through the SAME held descriptors the effects mutate, so
     # a vault pathname swapped in after the capability was opened cannot describe one root while
     # recovery acts on another.
-    journal, blockers = _load_transaction_journal(root_capability)
+    journal, blockers, journal_source_site, journal_source_identity = (
+        _load_transaction_journal_evidence(root_capability)
+    )
     stage_entries = _migration_stage_entries(root_capability)
     stage_names = [name for name, kind in stage_entries if kind == "directory"]
     stage_kind_blockers = _migration_stage_entry_blockers(stage_entries)
@@ -13210,7 +13747,6 @@ def _recover_prepared_migration_transaction(
             journal_path=journal_path,
             blockers=orphan_blockers,
         )
-    journal_site = _journal_site(root_capability)
     phase = str(journal.get("phase") or "")
     try:
         root_capability.attach_stage(stage_name)
@@ -13241,6 +13777,11 @@ def _recover_prepared_migration_transaction(
             preserved,
             _migration_reconcile_expected_temps(root_capability, operations, token=token),
         )
+        _prepare_loaded_journal_for_terminal_seal(
+            root_capability,
+            source_site=journal_source_site,
+            source_identity=journal_source_identity,
+        )
         # Every retention THIS pass performed was appended to the ledger as it landed. The seal is
         # built from that ledger and this preserved set, and it ALSO ATTACHES any corroborated
         # transaction retention on disk that neither covers -- a prior interrupted pass's lost-append
@@ -13259,9 +13800,11 @@ def _recover_prepared_migration_transaction(
             preserved_entries=preserved,
         )
         receipt_path, receipt = _write_terminal_recovery_receipt(
-            root_capability, receipt, token=token
+            root_capability,
+            receipt,
+            token=token,
+            allow_prior_terminal_supersession=True,
         )
-        _retire_transaction_journal(root_capability, journal_site)
         return _migration_transaction_result(
             "recovered",
             journal_path=journal_path,
@@ -13300,6 +13843,8 @@ def _migration_transaction_result(
     result: dict[str, Any] = {"status": state, "journal_path": str(journal_path)}
     if blockers is not None:
         result["blockers"] = list(dict.fromkeys(blockers))
+        if state in {"migration_blocked", "migration_recovery_required"}:
+            result["next_action"] = _migration_next_action(result["blockers"])
     elif state in {"migration_blocked", "migration_recovery_required"}:
         raise RuntimeError(f"migration_transaction_result_missing_blockers:{state}")
     for key, value in fields.items():
@@ -13327,29 +13872,37 @@ def _migration_terminal_receipt_accounted_names(
 
     if root_capability.closed:
         return set()
+    receipts: list[dict[str, Any]] = []
     raw, read_error = root_capability.read_child(_terminal_site(root_capability))
-    if read_error or raw is None:
-        return set()
-    loaded, document_error = _terminal_receipt_document_error(raw, root_capability=root_capability)
-    if document_error is not None or loaded is None:
-        return set()
-    # Structural validity and live retention evidence establish integrity, not authority. A prior
-    # receipt accounts retention only when it also carries and revalidates the exact consumed
-    # candidate-authority carrier and prepared-plan relation that authorized its transaction. Legacy
-    # receipts remain readable, but cannot silently mint this accounting relation (V12-PROBE-85).
-    if "candidate_authority_provenance" not in loaded:
-        return set()
-    if _terminal_candidate_authority_provenance_error(loaded) is not None:
-        return set()
-    accounted = _accounted_retention_names(
-        list(loaded.get("preserved_entries") or []),
-        list(loaded.get("reclaimable_entries") or []),
-    )
-    for entry in loaded.get("reconstructed_retentions") or []:
-        if isinstance(entry, dict):
-            name = entry.get("name")
-            if isinstance(name, str) and name:
-                accounted.add(name)
+    if read_error == "" and raw is not None:
+        loaded, document_error = _terminal_receipt_document_error(
+            raw, root_capability=root_capability
+        )
+        if document_error is None and loaded is not None:
+            receipts.append(loaded)
+    # A process may stop after moving the prior terminal final but before linking the replacement.
+    # The exact retained document remains a durable relation and must continue to account for the
+    # retentions it names while the current retired journal drives recovery.
+    receipts.extend(_valid_retained_terminal_receipts(root_capability))
+
+    accounted: set[str] = set()
+    for receipt in receipts:
+        # Structural validity and live retention evidence establish integrity, not authority. A
+        # receipt accounts retention only when it also carries and revalidates the exact consumed
+        # candidate-authority carrier and prepared-plan relation that authorized its transaction.
+        if "candidate_authority_provenance" not in receipt:
+            continue
+        if _terminal_candidate_authority_provenance_error(receipt) is not None:
+            continue
+        accounted.update(
+            _accounted_retention_names(
+                list(receipt.get("preserved_entries") or []),
+                list(receipt.get("reclaimable_entries") or []),
+            )
+        )
+        accounted.update(
+            _reconstructed_retention_names(list(receipt.get("reconstructed_retentions") or []))
+        )
     return accounted
 
 
@@ -13791,6 +14344,7 @@ def _apply_prepared_migration_outputs(
             preserved,
             _migration_reconcile_expected_temps(root_capability, operations, token=token),
         )
+        _retire_transaction_journal(root_capability, journal_site)
         receipt = _terminal_recovery_receipt(
             root_capability,
             journal_path=journal_path,
@@ -13803,9 +14357,11 @@ def _apply_prepared_migration_outputs(
             preserved_entries=preserved,
         )
         receipt_path, receipt = _write_terminal_recovery_receipt(
-            root_capability, receipt, token=token
+            root_capability,
+            receipt,
+            token=token,
+            allow_prior_terminal_supersession=True,
         )
-        _retire_transaction_journal(root_capability, journal_site)
         return _migration_transaction_result(
             "applied",
             journal_path=journal_path,
@@ -13848,6 +14404,7 @@ def _apply_prepared_migration_outputs(
                     # here, not silently dropped with the failed transaction.
                     rollback_preserved,
                 )
+                _retire_transaction_journal(root_capability, journal_site)
                 sealed_receipt = _terminal_recovery_receipt(
                     root_capability,
                     journal_path=journal_path,
@@ -13860,9 +14417,11 @@ def _apply_prepared_migration_outputs(
                     preserved_entries=sealed_preserved,
                 )
                 sealed_receipt_path, sealed_receipt = _write_terminal_recovery_receipt(
-                    root_capability, sealed_receipt, token=token
+                    root_capability,
+                    sealed_receipt,
+                    token=token,
+                    allow_prior_terminal_supersession=True,
                 )
-                _retire_transaction_journal(root_capability, journal_site)
         except Exception as rollback_exc:  # noqa: BLE001
             try:
                 write_journal(

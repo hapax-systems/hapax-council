@@ -217,6 +217,76 @@ raise SystemExit(3)
 """
 
 
+_REVIEW_CLAIM_SIGKILL_CHILD_SOURCE = """
+import importlib.util, json, os, signal, sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+lock_dir = Path(sys.argv[2])
+mode = sys.argv[3]
+boundary = sys.argv[4]
+marker = Path(sys.argv[5])
+sys.path.insert(0, str(repo_root))
+sys.path.insert(0, str(repo_root / "scripts"))
+spec = importlib.util.spec_from_file_location(
+    "cc_pr_review_dispatch", repo_root / "scripts" / "cc-pr-review-dispatch.py"
+)
+dispatch = importlib.util.module_from_spec(spec)
+sys.modules["cc_pr_review_dispatch"] = dispatch
+spec.loader.exec_module(dispatch)
+
+hits = 0
+
+
+def landed():
+    global hits
+    hits += 1
+    if mode != "kill":
+        return
+    fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(fd, boundary.encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.kill(os.getpid(), signal.SIGKILL)
+
+
+if boundary == "before_link":
+    real_holder_write = dispatch._write_lock_holder_fd
+
+    def holder_write(fd, holder):
+        if mode == "kill":
+            os.write(fd, b'{"partial":')
+            landed()
+        else:
+            real_holder_write(fd, holder)
+            landed()
+
+    dispatch._write_lock_holder_fd = holder_write
+elif boundary == "after_link":
+    real_link = os.link
+
+    def link(src, dst, **kwargs):
+        result = real_link(src, dst, **kwargs)
+        landed()
+        return result
+
+    os.link = link
+else:
+    raise SystemExit(4)
+
+with dispatch.review_execution_lock(
+    repo="owner/repo", pr_number=42, lock_dir=lock_dir
+) as lock:
+    if not lock.acquired:
+        print(json.dumps({"status": lock.status, "evidence": lock.lock_evidence}))
+        raise SystemExit(2)
+
+print(json.dumps({"hits": hits}))
+"""
+
+
 @contextmanager
 def _migration_root(vault: Path) -> Iterator[Any]:
     """A live root capability, opened exactly as the migration lock opens it."""
@@ -4936,6 +5006,104 @@ checklist:
         assert blockers == []
         return operations
 
+    def test_v14_successive_nonempty_transactions_leave_no_unsealed_retention(
+        self, tmp_path: Path
+    ) -> None:
+        """V14-C02/C03: the first terminal seal must not manufacture the second HOLD."""
+
+        vault, _receipt, _archive, _artifact, _preimage, receipt_write, migration = (
+            self._transaction_fixture(tmp_path)
+        )
+        first = self._apply_with_migration_lock(
+            vault=vault, migration=migration, receipt_writes=[receipt_write]
+        )
+        assert first["status"] == "applied"
+
+        with _migration_root(vault) as first_root:
+            first_accounted = dispatch._migration_terminal_receipt_accounted_names(first_root)
+            first_unaccounted = first_root.unaccounted_transaction_retention(
+                accounted_names=first_accounted
+            )
+            assert first_unaccounted == []
+            assert first_root.child_stat(dispatch._journal_site(first_root)) is None
+
+        second_receipt = vault / "active" / "task-b.acceptance.yaml"
+        second_preimage = b"acceptor: codex\nverdict: accepted\n"
+        second_receipt.write_bytes(second_preimage)
+        second_archive = second_receipt.with_name("task-b.acceptance.review-team.yaml")
+        second_raw = b"acceptor: review-team:claude\nverdict: accepted\n"
+        second_write = {
+            "kind": "acceptance_receipt",
+            "path": str(second_receipt),
+            "archive_path": str(second_archive),
+            "existing_sha256": dispatch._sha256_bytes(second_preimage),
+            "raw_bytes": second_raw,
+            "sha256": dispatch._sha256_bytes(second_raw),
+            "target_preimage": dispatch._capture_target_preimage(second_receipt),
+        }
+        second_migration = {
+            "plan_binding": migration["plan_binding"],
+            "candidate_authority": migration["candidate_authority"],
+        }
+        second = self._apply_with_migration_lock(
+            vault=vault,
+            migration=second_migration,
+            receipt_writes=[second_write],
+        )
+        assert second["status"] == "applied", second
+        assert second["operations"] == 1
+        assert second_receipt.read_bytes() == second_raw
+        assert second_archive.read_bytes() == second_preimage
+
+        with _migration_root(vault) as second_root:
+            second_accounted = dispatch._migration_terminal_receipt_accounted_names(second_root)
+            assert (
+                second_root.unaccounted_transaction_retention(accounted_names=second_accounted)
+                == []
+            )
+            assert dispatch._migration_pre_effect_boundary_blockers(
+                root_capability=second_root,
+                migration_lock=None,
+                owned_lock_evidence=None,
+                operations=[],
+                candidate_authority=None,
+                token="post-second-proof",
+            ) == ["migration_transaction_lock_capability_missing"]
+
+    def test_v14_journal_retirement_refuses_a_replacement_inode(self, tmp_path: Path) -> None:
+        """V14-C02: decoded journal identity, not its deterministic name, authorizes retirement."""
+
+        vault = _make_vault(tmp_path)
+        journal = dispatch.review_team_digest_migration_journal_path(vault)
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        original = b'{"journal": "the decoded inode"}\n'
+        replacement = b'{"journal": "a replacement this recovery never decoded"}\n'
+        journal.write_bytes(original)
+
+        with _migration_root(vault) as root:
+            original_stat = root.child_stat(dispatch._journal_site(root))
+            assert original_stat is not None
+            saved_original = journal.with_name("decoded-journal-preserved-by-probe.json")
+            journal.rename(saved_original)
+            journal.write_bytes(replacement)
+
+            with pytest.raises(
+                RuntimeError,
+                match="migration_transaction_journal_identity_changed_before_retirement",
+            ):
+                dispatch._retire_transaction_journal(
+                    root,
+                    dispatch._journal_site(root),
+                    owned_identity=(original_stat.st_dev, original_stat.st_ino),
+                )
+
+            assert saved_original.read_bytes() == original
+            assert not journal.exists()
+            survivors = [
+                child.read_bytes() for child in journal.parent.iterdir() if child.is_file()
+            ]
+            assert replacement in survivors
+
     # ---- V12-PROBE-19: a symlinked _locks ancestor must not externalize the migration claim ----
 
     def test_v12_probe_19_locks_ancestor_symlink_cannot_externalize_lock(
@@ -7916,12 +8084,7 @@ checklist:
     def test_v12_probe_64_publication_cleanup_never_consumes_a_replacement(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """V12-PROBE-64: cleanup proved fd and path named one inode, then unlinked the path.
-
-        The probe replaced the path at ``Path.unlink`` -- AFTER the identity proof. Cleanup returned
-        removed=True, no warning, and the replacement inode survived nowhere. A descriptor identity
-        checked before a pathname call is not a capability over that call's operand.
-        """
+        """V12-PROBE-64: a replacement final survives failed anonymous preparation untouched."""
 
         vault = _make_vault(tmp_path)
         lock_dir = vault / "_locks" / "review-team"
@@ -7930,18 +8093,11 @@ checklist:
             repo="owner/repo", pr_number=42, vault_root=vault
         )
         replacement = b'{"schema": "a claim this cleanup never created"}\n'
-        armed: dict[str, dict[str, bool]] = {}
-
-        def plant(_name: str) -> None:
-            lock_path.unlink()
-            lock_path.write_bytes(replacement)
 
         def fail_holder_write(_fd: int, _holder: dict[str, Any]) -> None:
-            # Arm the substitution only once cleanup is the next thing that will run, so the
-            # replacement lands AFTER cleanup has proved the descriptor and the path agree.
-            armed["state"] = _substitute_at_final_consumption(
-                monkeypatch, matches=lambda name: name == lock_path.name, plant=plant
-            )
+            # The candidate claim is still anonymous. A concurrent final therefore belongs to the
+            # other writer and this failure path has no namespace entry it is entitled to clear.
+            lock_path.write_bytes(replacement)
             raise OSError("nfs write failed")
 
         monkeypatch.setattr(dispatch, "_write_lock_holder_fd", fail_holder_write)
@@ -7951,11 +8107,9 @@ checklist:
             assert not lock.acquired
         monkeypatch.undo()
 
-        assert armed["state"]["fired"], "the probe never raced the publication-failure cleanup"
-        survivors = [path.read_bytes() for path in lock_dir.iterdir() if path.is_file()]
-        assert replacement in survivors, (
-            "publication-failure cleanup DESTROYED an inode substituted at its final syscall"
-        )
+        assert lock.lock_evidence["claim_final_published"] is False
+        assert lock.lock_evidence["own_claim_removed"] is False
+        assert lock_path.read_bytes() == replacement
 
     def test_v12_probe_65_retirement_name_does_not_bind_the_final_syscall(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -9928,8 +10082,11 @@ checklist:
         terminal_path = dispatch.review_team_digest_migration_recovery_receipt_path(vault)
         sealed = json.loads(terminal_path.read_text(encoding="utf-8"))
         assert sealed["preserved_entries"] == receipt["preserved_entries"]
+        assert any(
+            entry.get("reason") == "retired_journal" for entry in sealed["reclaimable_entries"]
+        ), "journal retirement was not included in the terminal relation"
         assert not dispatch.review_team_digest_migration_journal_path(vault).exists(), (
-            "the journal was retired before the terminal receipt was sealed"
+            "the journal final survived after its retained inode was sealed"
         )
 
     def test_v12_prepared_plan_requires_candidate_digests_when_effects_are_planned(
@@ -10236,6 +10393,60 @@ checklist:
             receipt_write=receipt_write,
             migration=migration,
             label=label,
+        )
+
+    def test_v14_sigkill_during_terminal_write_recovers_from_retired_journal(
+        self, tmp_path: Path
+    ) -> None:
+        """V14-C02: the last reachable write is the unsealed final, after journal retirement."""
+
+        count_vault, _cr, _ca, _cart, _cpre, count_write, count_migration = (
+            self._transaction_fixture(tmp_path / "count-terminal")
+        )
+        terminal_write_ordinal = self._count_syscalls(
+            tmp_path,
+            count_vault,
+            count_write,
+            count_migration,
+            syscall="write",
+        )
+        assert terminal_write_ordinal > 0
+
+        vault, receipt, archive, artifact, receipt_preimage, receipt_write, migration = (
+            self._transaction_fixture(tmp_path / "kill-terminal")
+        )
+        self._kill_inside_syscall(
+            tmp_path,
+            vault,
+            receipt_write,
+            migration,
+            syscall="write",
+            ordinal=terminal_write_ordinal,
+            prefix_bytes=11,
+            label="terminal-write",
+        )
+
+        terminal_path = dispatch.review_team_digest_migration_recovery_receipt_path(vault)
+        assert terminal_path.read_bytes() and len(terminal_path.read_bytes()) == 11
+        assert not dispatch.review_team_digest_migration_journal_path(vault).exists()
+        with _migration_root(vault) as root:
+            state = dispatch._migration_transaction_recovery_state(vault, root_capability=root)
+            assert state["blockers"] == ["migration_transaction_recovery_required"]
+            assert len(state["retired_journal_paths"]) == 1
+            journal, blockers = dispatch._load_transaction_journal(root)
+            assert blockers == []
+            assert journal is not None
+            assert journal["phase"] == "terminal_publishing"
+
+        self._assert_converges_and_preserves(
+            vault,
+            receipt=receipt,
+            archive=archive,
+            artifact=artifact,
+            receipt_preimage=receipt_preimage,
+            receipt_write=receipt_write,
+            migration=migration,
+            label="terminal-write",
         )
 
     def test_v12_probe_30_torn_initial_journal_is_unreachable_and_converges(
@@ -10886,6 +11097,50 @@ checklist:
         assert result["migration"]["status"] == "migration_blocked"
         assert result["migration"]["artifact_written"] is False
         assert result["migration"]["blockers"] == ["must_hold"]
+        assert result["next_action"] == result["migration"]["next_action"]
+        assert result["next_action"] == {
+            "disposition": "HOLD",
+            "first_blocker": "must_hold",
+            "effects_authorized": False,
+            "action": "inspect_first_blocker_and_rerun_exact_dry_run",
+            "required_evidence": "must_hold:resolved",
+        }
+
+    def test_v14_transaction_recovery_result_names_safe_exact_recovery(self) -> None:
+        result = dispatch._migration_transaction_result(
+            "migration_recovery_required",
+            journal_path=Path("/vault/_locks/review-team-digest-migration.transaction.json"),
+            blockers=["migration_transaction_journal_missing"],
+        )
+
+        assert result["next_action"]["disposition"] == "HOLD"
+        assert result["next_action"]["action"] == "run_exact_hash_bound_recovery"
+        assert result["next_action"]["command_argv_prefix"][-3:] == [
+            "--all",
+            "--replay-only",
+            "--migration-recover",
+        ]
+        assert result["next_action"]["forbidden_flags"] == ["--apply"]
+
+    def test_v14_runbook_names_exact_decoder_and_reachable_fault_matrix(self) -> None:
+        runbook = (REPO_ROOT / "docs/runbooks/review-team-digest-migration.md").read_text(
+            encoding="utf-8"
+        )
+        decoder_section = runbook.split("- **One exact decoder.**", 1)[1].split(
+            "- **One live root capability.**", 1
+        )[0]
+        assert "shared.sdlc_lifecycle.decode_prepared_migration_plan" in decoder_section
+        assert "prepared_migration_plan_blockers" in decoder_section
+        assert "blocker-only projection" in decoder_section
+
+        fault_section = runbook.split(
+            "Recovery is verified against real, uncatchable `SIGKILL`", 1
+        )[1].split("Malformed review claims remain HOLD", 1)[0]
+        for syscall in ("`write`", "`fsync`", "`renameat2`", "`linkat`"):
+            assert syscall in fault_section
+        assert "no `unlink`/`unlinkat` row" in fault_section
+        assert "Directory durability is covered by the `fsync` ordinals" in fault_section
+        assert "uv run pytest tests/test_cc_pr_review_dispatch.py -q --no-header" in fault_section
 
     def test_digest_migration_broken_journal_symlink_requires_recovery(
         self, tmp_path: Path
@@ -12219,7 +12474,7 @@ with module.review_execution_lock(
 
         assert not lock_path.exists()
 
-    def test_review_lock_metadata_publication_failure_removes_own_claim(
+    def test_review_lock_metadata_publication_failure_leaves_final_absent(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         vault = _make_vault(tmp_path)
@@ -12255,7 +12510,8 @@ with module.review_execution_lock(
         assert result["status"] == "review_lock_unavailable"
         assert result["lock_evidence"]["holder_error"] == "holder_publish_error:OSError"
         assert "--probe-lock" in result["lock_evidence"]["next_action"]
-        assert result["lock_evidence"]["own_claim_removed"] is True
+        assert result["lock_evidence"]["claim_final_published"] is False
+        assert result["lock_evidence"]["own_claim_removed"] is False
         assert not lock_path.exists()
         assert result["side_effects"] == {}
         assert gh.calls == []
@@ -12424,15 +12680,10 @@ with module.review_execution_lock(
         assert not (tmp_path / "wake").exists()
         assert not (tmp_path / "degraded-merges.jsonl").exists()
 
-    def test_review_lock_holder_write_failure_releases_own_claim_by_descriptor(
+    def test_review_lock_holder_write_failure_discards_anonymous_inode(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The holder document never became durable, so ownership rests on the DESCRIPTOR alone.
-
-        The old cleanup path proved the open fd and the path named one inode, then unlinked the
-        path -- a proof about the entry BEFORE the syscall, not about the entry the syscall
-        consumed. Cleanup now clears the name with a move, which cannot destroy whatever it meets.
-        """
+        """A failed holder write has no final name and therefore needs no namespace cleanup."""
 
         vault = _make_vault(tmp_path)
         _write_task(vault)
@@ -12465,12 +12716,94 @@ with module.review_execution_lock(
 
         assert result["status"] == "review_lock_unavailable"
         assert result["lock_evidence"]["holder_error"] == "holder_publish_error:OSError"
-        assert result["lock_evidence"]["own_claim_removed"] is True
+        assert result["lock_evidence"]["claim_final_published"] is False
+        assert result["lock_evidence"]["own_claim_removed"] is False
         assert "cleanup_warning" not in result["lock_evidence"]
         assert not lock_path.exists()
         assert result["side_effects"] == {}
         assert gh.calls == []
         assert reviewers.invocations == []
+
+    @pytest.mark.parametrize("boundary", ("before_link", "after_link"))
+    def test_v14_review_claim_real_sigkill_is_complete_or_absent_and_recoverable(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        boundary: str,
+    ) -> None:
+        """V14-C01: prove reachability, land SIGKILL, then inspect the actual final namespace."""
+
+        child = tmp_path / "review_claim_sigkill_child.py"
+        child.write_text(_REVIEW_CLAIM_SIGKILL_CHILD_SOURCE, encoding="utf-8")
+
+        count_dir = tmp_path / f"count-{boundary}"
+        count_marker = tmp_path / f"count-{boundary}.marker"
+        counted = subprocess.run(
+            [
+                sys.executable,
+                str(child),
+                str(REPO_ROOT),
+                str(count_dir),
+                "count",
+                boundary,
+                str(count_marker),
+            ],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        assert counted.returncode == 0, counted.stderr
+        assert json.loads(counted.stdout) == {"hits": 1}
+
+        lock_dir = tmp_path / f"kill-{boundary}"
+        marker = tmp_path / f"kill-{boundary}.marker"
+        killed = subprocess.run(
+            [
+                sys.executable,
+                str(child),
+                str(REPO_ROOT),
+                str(lock_dir),
+                "kill",
+                boundary,
+                str(marker),
+            ],
+            capture_output=True,
+            check=False,
+        )
+        assert killed.returncode == -signal.SIGKILL
+        assert marker.read_text(encoding="utf-8") == boundary
+
+        lock_path = dispatch.review_execution_lock_path(
+            repo="owner/repo", pr_number=42, lock_dir=lock_dir
+        )
+        if boundary == "before_link":
+            assert not lock_path.exists()
+            assert list(lock_dir.iterdir()) == []
+            with dispatch.review_execution_lock(
+                repo="owner/repo", pr_number=42, lock_dir=lock_dir
+            ) as reacquired:
+                assert reacquired.acquired
+            return
+
+        holder, holder_error = dispatch._read_lock_holder(lock_path)
+        assert holder_error is None
+        assert dispatch._holder_validation_error(holder, repo="owner/repo", pr_number=42) is None
+        collision = dispatch._lock_collision_result(path=lock_path, repo="owner/repo", pr_number=42)
+        assert collision.status == "review_in_progress"
+        assert collision.lock_evidence["holder_liveness"]["status"] == "same_host_not_live"
+
+        # Age is a policy threshold, not a structural repair. Lower it only in this isolated probe
+        # so the complete dead-holder claim can exercise the ordinary typed archive-release path.
+        monkeypatch.setattr(dispatch, "REVIEW_EXECUTION_LOCK_STALE_AFTER_SECONDS", -1)
+        released = dispatch.release_review_execution_lock(
+            repo="owner/repo",
+            pr_number=42,
+            lock_dir=lock_dir,
+            apply=True,
+        )
+        assert released["status"] == "released"
+        assert not lock_path.exists()
+        assert Path(released["archived_lock_path"]).is_file()
 
     def test_v12_probe_64_publication_failure_never_consumes_a_replaced_claim(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -12504,9 +12837,8 @@ with module.review_execution_lock(
             "acquired_at": datetime.now(UTC).isoformat(timespec="seconds"),
         }
 
-        # Replace the claim with a DIFFERENT inode at the instant the publication fails.
+        # Publish a DIFFERENT inode while this process's candidate is still anonymous.
         def replace_claim_then_fail(_fd: int, _holder: dict[str, Any]) -> None:
-            lock_path.unlink()
             lock_path.write_text(json.dumps(replacement_holder), encoding="utf-8")
             raise OSError("nfs commit failed")
 
@@ -12532,8 +12864,9 @@ with module.review_execution_lock(
 
         assert result["status"] == "review_lock_unavailable"
         assert result["lock_evidence"]["holder_error"] == "holder_publish_error:OSError"
+        assert result["lock_evidence"]["claim_final_published"] is False
         assert result["lock_evidence"]["own_claim_removed"] is False
-        assert result["lock_evidence"]["cleanup_warning"] == "own_claim_identity_mismatch"
+        assert "cleanup_warning" not in result["lock_evidence"]
         assert json.loads(lock_path.read_text(encoding="utf-8")) == replacement_holder, (
             "cleanup consumed a claim inode it never created"
         )
