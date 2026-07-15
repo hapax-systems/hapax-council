@@ -174,9 +174,12 @@ boundary:
   incomplete final, which recovery preserves as uncertain evidence while the
   retained journal remains authoritative; successful publication creates no
   scratch name to retire after the seal and does not depend on `O_TMPFILE`
-  support from the admitted NFS vault. The journal is retired first under its dedicated durable
-  reclamation grammar and included in the receipt. Recovery can adopt exactly
-  one unaccounted retired journal if process death lands in that pre-seal window.
+  support from the admitted NFS vault. Before that direct-final seal, the journal moves through
+  `review-team-digest-migration.retired.journal.<token>.<dev>-<ino>.bin` and then into
+  `review-team-digest-migration.journal.reclaimable.<sha256>.<dev>-<ino>.bin`. Both states are
+  decoder-discoverable recovery authority. Recovery reconciles the in-flight state before it may
+  classify the public journal name as missing, and can adopt exactly one unaccounted final journal
+  retention if process death lands in the later pre-seal window.
   The initial journal uses `linkat`, which is both
   exclusive and atomic, so a crash part-way through its bytes cannot leave a
   half-written *final* journal — a state that could be neither trusted nor
@@ -222,8 +225,10 @@ name the right target while claiming bytes that target never held. Phase-
 conditional fields (`error`, `rollback_error`, `journal_errors`) are refused
 outside their legal phases.
 
-The journal makes publication, cleanup, and retirement explicit phases, and the
-terminal receipt is published through a deterministic temp and an atomic rename.
+The journal makes publication, cleanup, and retirement explicit phases. The terminal
+receipt is published directly at its final name with `O_CREAT|O_EXCL|O_NOFOLLOW`, then
+becomes durable only after a complete-write check, file `fsync`, parent-directory `fsync`,
+and exact-inode recheck. There is no terminal temp/rename publication path.
 A successful recovery writes
 `_locks/review-team-digest-migration.recovery-terminal.json`; a repeated
 recovery with the same inputs returns that same terminal receipt, byte for byte,
@@ -234,7 +239,7 @@ both, and an archive that does not exist cannot carry a digest or an error.
 A **partial or corrupt** terminal receipt (a torn final write) is superseded
 rather than treated as a permanent conflict — otherwise recovery could never
 converge — but its bytes are first **preserved** to
-`_locks/review-team-digest-migration.recovery-terminal.preserved.<sha16>.json`.
+`_locks/review-team-digest-migration.recovery-terminal.preserved.<sha256>.<dev>-<ino>.bin`.
 Convergence is never bought by destroying evidence we could not read. Only a
 well-formed terminal receipt belonging to a **different** journal identity is a
 hard conflict, which is a real governance stop, not a torn write.
@@ -483,10 +488,12 @@ describing a directory the transaction never touched. Evidence read through a
 different root than the effects is not evidence. The pathname is still reported, as
 a **label** for the operator; it is never the thing that was read.
 
-**It is published only after reconciliation has converged.** Stage cleanup, late
-stage-child reconciliation and temp reconciliation all run first, and everything
-they had to preserve is bound into the receipt as `preserved_entries` before it is
-sealed and before the journal is retired. The receipt previously asserted
+**It is published only after reconciliation has converged and the journal is retained.** Stage
+cleanup, late stage-child reconciliation and temp reconciliation all run first. The complete
+journal then moves through its dedicated in-flight name into its full
+digest/device/inode reclamation name. Only after that retention is recorded does the terminal
+receipt publish directly at its final name, binding the journal record and every preservation
+record into the sealed relation. The receipt previously asserted
 `cleanup_result: stage_cleaned` over a directory whose unattributed temps had not
 yet been looked at, and whatever reconciliation then preserved existed only in an
 in-memory return value that died with the process. It later asserted
@@ -498,7 +505,22 @@ not achieve. The reclaimable stage-directory record is now re-proved **empty**
 against the live root at seal time, and a proved-late regular child rides into the
 receipt as a `late_stage_child` preserved entry rather than surviving invisibly.
 
-**An interrupted retirement is rediscovered, not stranded — and adoption is bound to the
+**Journal authority survives every retirement boundary.** The first journal-retirement rename
+consumes the public final directly into
+`…retired.journal.<token>.<dev>-<ino>.bin`; it never passes only through the opaque generic
+`…retired.<hex>.bin` grammar. Reconciliation scans this dedicated state before loading the
+public journal, verifies the live device/inode, completely decodes the journal, binds the
+embedded token to the decoded token, and lands it at
+`…journal.reclaimable.<sha256>.<dev>-<ino>.bin`. A substituted inode, malformed document, wrong
+kind, token mismatch or occupied destination remains alive and produces a typed, effect-free
+HOLD. A stop before the first rename leaves the public journal; a stop between the two renames
+leaves the dedicated in-flight journal; a stop after the second leaves the final journal
+retention. On an uninterrupted handoff, the canonical decoded-document digest captured before
+retirement must still match after the first rename, so an in-place rewrite on the same inode cannot
+inherit the journal that was classified. Recovery recognizes all three durable states and repeated
+recovery converges.
+
+**An interrupted stage retirement is rediscovered, not stranded — and adoption is bound to the
 particular stage object, not to shape or to a public token.** Proving the moved directory
 empty means enumerating it, so the window between the rename that consumes the stage name
 and the rename that lands it as reclaimable now spans real work; a crash inside it must
@@ -532,8 +554,10 @@ at an opaque `…retired.<hex>.bin` name — the other half of an interrupted `c
 swept the same way and **preserved** (`interrupted_clear`), never reclaimed, and needs
 neither gate because preservation mints no authority. Reconciliation is entered from the
 **providerless recovery path itself**, before a terminal result can be reused or a
-missing/unreadable journal can return, so a stranded clear is never stepped over. A second
-recovery over converged state finds neither in-flight grammar occupied, records nothing,
+missing/unreadable journal can return, so a stranded clear is never stepped over. Dedicated
+journal reconciliation runs before that journal classification; generic and stage reconciliation
+then run against the resulting live journal relation. A second recovery over converged state finds
+no in-flight grammar occupied, records nothing,
 and seals byte-identical terminal state.
 
 **A landed retention is reconstructable from durable state, and it has a production

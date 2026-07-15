@@ -5094,6 +5094,7 @@ checklist:
                 dispatch._retire_transaction_journal(
                     root,
                     dispatch._journal_site(root),
+                    token="test-journal-retirement",
                     owned_identity=(original_stat.st_dev, original_stat.st_ino),
                 )
 
@@ -5103,6 +5104,328 @@ checklist:
                 child.read_bytes() for child in journal.parent.iterdir() if child.is_file()
             ]
             assert replacement in survivors
+
+    def test_v16_probe_01_dedicated_journal_handoff_recovers_before_missing_classification(
+        self, tmp_path: Path
+    ) -> None:
+        """V16-C01/C02: the exact V15 first-rename stop keeps decoder-admissible authority."""
+
+        vault, _receipt, _archive, _artifact, _preimage, receipt_write, migration = (
+            self._transaction_fixture(tmp_path)
+        )
+        operations = self._operations_for(vault, migration, [receipt_write])
+        token = "v16handoff123"
+        journal = self._write_bound_transaction_journal(
+            vault,
+            phase="prepared",
+            operations=operations,
+            plan_binding=migration["plan_binding"],
+            candidate_authority=migration["candidate_authority"],
+            token=token,
+        )
+        journal_stat = journal.stat()
+        retiring_name = dispatch._retiring_journal_name(
+            (journal_stat.st_dev, journal_stat.st_ino),
+            token,
+        )
+        retiring_path = journal.parent / retiring_name
+
+        # This is the post-transition state of an abrupt stop after the first retirement rename.
+        journal.rename(retiring_path)
+        assert not journal.exists()
+        assert dispatch.MIGRATION_RETIRING_JOURNAL_NAME_RE.fullmatch(retiring_path.name)
+        assert not list(journal.parent.glob("review-team-digest-migration.retired.[0-9a-f]*.bin"))
+
+        with _migration_root(vault) as root:
+            state = dispatch._migration_transaction_recovery_state(vault, root_capability=root)
+        assert state["journal_exists"] is False
+        assert state["retiring_journal_paths"] == [str(retiring_path)]
+
+        recovered = _recover_with_root(
+            vault,
+            operations,
+            plan_binding=migration["plan_binding"],
+            candidate_authority=migration["candidate_authority"],
+        )
+        assert recovered["status"] == "recovered", recovered
+        assert recovered["terminal_phase"] == "rolled_back"
+        assert any(
+            entry.get("reason") == "retired_journal"
+            for entry in recovered["terminal_receipt"]["reclaimable_entries"]
+        )
+        terminal = dispatch.review_team_digest_migration_recovery_receipt_path(vault)
+        sealed = terminal.read_bytes()
+
+        repeated = _recover_with_root(
+            vault,
+            operations,
+            plan_binding=migration["plan_binding"],
+            candidate_authority=migration["candidate_authority"],
+        )
+        assert repeated["status"] == "migration_recovery_required"
+        assert repeated["blockers"] == ["migration_transaction_journal_missing"]
+        assert terminal.read_bytes() == sealed
+
+    def test_v16_probe_02_journal_retirement_destination_collision_is_effect_free(
+        self, tmp_path: Path
+    ) -> None:
+        """V16-C02: NOREPLACE collision keeps both the authority and the occupant alive."""
+
+        vault, _receipt, _archive, _artifact, _preimage, receipt_write, migration = (
+            self._transaction_fixture(tmp_path)
+        )
+        operations = self._operations_for(vault, migration, [receipt_write])
+        token = "v16collision123"
+        journal = self._write_bound_transaction_journal(
+            vault,
+            phase="prepared",
+            operations=operations,
+            plan_binding=migration["plan_binding"],
+            candidate_authority=migration["candidate_authority"],
+            token=token,
+        )
+        original = journal.read_bytes()
+        info = journal.stat()
+        collision = journal.parent / dispatch._retiring_journal_name(
+            (info.st_dev, info.st_ino),
+            token,
+        )
+        collision_bytes = b"unrelated destination occupant\n"
+        collision.write_bytes(collision_bytes)
+
+        with _migration_root(vault) as root:
+            with pytest.raises(
+                RuntimeError,
+                match="migration_transaction_journal_retirement_name_occupied",
+            ):
+                dispatch._retire_transaction_journal(
+                    root,
+                    dispatch._journal_site(root),
+                    token=token,
+                    owned_identity=(info.st_dev, info.st_ino),
+                )
+
+        assert journal.read_bytes() == original
+        assert collision.read_bytes() == collision_bytes
+
+    def test_v16_probe_03_recovery_failure_reason_is_typed_bounded_and_sanitized(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """V16-C03: a path/credential-bearing exception cannot escape the closed projection."""
+
+        blocker = dispatch._migration_recovery_failure_blocker(
+            RuntimeError(
+                "migration_transaction_terminal_publication_conflict:"
+                "/home/hapax/private/token=do-not-emit"
+            )
+        )
+        assert blocker == (
+            "migration_transaction_recovery_failed:terminal:"
+            "migration_transaction_terminal_publication_conflict"
+        )
+        result = dispatch._migration_transaction_result(
+            "migration_recovery_required",
+            journal_path=Path("/bounded/journal"),
+            blockers=[blocker],
+        )
+        assert "do-not-emit" not in json.dumps(result)
+        assert result["next_action"] == {
+            "disposition": "HOLD",
+            "first_blocker": blocker,
+            "effects_authorized": False,
+            "action": "resolve_typed_migration_recovery_hold",
+            "reason_domain": "terminal",
+            "reason_code": "migration_transaction_terminal_publication_conflict",
+            "rerun_authorized": False,
+            "required_evidence": [
+                "exact held-root filesystem state",
+                "bound migration plan and candidate authority",
+                "operator-authorized correction or recovery disposition",
+            ],
+        }
+        assert dispatch._migration_recovery_failure_blocker(
+            RuntimeError("credential=do-not-emit:/private/path")
+        ) == (
+            "migration_transaction_recovery_failed:unexpected:"
+            "migration_transaction_unexpected_failure"
+        )
+        legacy_action = dispatch._migration_next_action(
+            ["migration_transaction_recovery_failed:RuntimeError"]
+        )
+        assert legacy_action["action"] == "run_exact_hash_bound_recovery"
+        assert legacy_action["effects_authorized"] is False
+
+        def fail_outside_inner_boundary(**_kwargs: Any) -> dict[str, Any]:
+            raise RuntimeError(
+                "migration_transaction_terminal_identity_conflict:/private/bearer=also-do-not-emit"
+            )
+
+        monkeypatch.setattr(
+            dispatch,
+            "_recover_prepared_migration_transaction_impl",
+            fail_outside_inner_boundary,
+        )
+        vault = _make_vault(tmp_path)
+        with _migration_root(vault) as root:
+            projected = dispatch._recover_prepared_migration_transaction(
+                root_capability=root,
+                operations=[],
+            )
+        assert projected["blockers"] == [
+            "migration_transaction_recovery_failed:identity:"
+            "migration_transaction_terminal_identity_conflict"
+        ]
+        assert "bearer" not in json.dumps(projected)
+        assert projected["next_action"]["rerun_authorized"] is False
+
+    def test_v16_probe_05_final_journal_retention_collision_holds_without_effect(
+        self, tmp_path: Path
+    ) -> None:
+        """V16-C02: a final-retention collision keeps both inodes alive and explicitly HOLDs."""
+
+        vault, _receipt, _archive, _artifact, _preimage, receipt_write, migration = (
+            self._transaction_fixture(tmp_path)
+        )
+        operations = self._operations_for(vault, migration, [receipt_write])
+        token = "v16finalcollision"
+        journal = self._write_bound_transaction_journal(
+            vault,
+            phase="prepared",
+            operations=operations,
+            plan_binding=migration["plan_binding"],
+            candidate_authority=migration["candidate_authority"],
+            token=token,
+        )
+        journal_raw = journal.read_bytes()
+        info = journal.stat()
+        digest = sha256(journal_raw).hexdigest()
+        collision = journal.parent / (
+            f"{dispatch.MIGRATION_RECLAIMABLE_JOURNAL_PREFIX}{digest}."
+            f"{info.st_dev}-{info.st_ino}.bin"
+        )
+        collision_raw = b"preexisting unrelated retention occupant\n"
+        collision.write_bytes(collision_raw)
+        retiring = journal.parent / dispatch._retiring_journal_name(
+            (info.st_dev, info.st_ino),
+            token,
+        )
+        journal.rename(retiring)
+
+        recovered = _recover_with_root(
+            vault,
+            operations,
+            plan_binding=migration["plan_binding"],
+            candidate_authority=migration["candidate_authority"],
+        )
+
+        blocker = (
+            "migration_transaction_recovery_failed:retention:"
+            "migration_transaction_journal_retention_name_occupied"
+        )
+        assert recovered["status"] == "migration_recovery_required"
+        assert recovered["blockers"] == [blocker]
+        assert recovered["next_action"]["action"] == "resolve_typed_migration_recovery_hold"
+        assert recovered["next_action"]["rerun_authorized"] is False
+        assert collision.read_bytes() == collision_raw
+        assert not journal.exists()
+        assert retiring.read_bytes() == journal_raw
+        assert retiring.stat().st_ino == info.st_ino
+
+    def test_v16_probe_06_malformed_dedicated_journal_stays_alive_and_holds(
+        self, tmp_path: Path
+    ) -> None:
+        """V16-C01/C02: dedicated shape cannot authorize malformed unknown evidence."""
+
+        vault, _receipt, _archive, _artifact, _preimage, receipt_write, migration = (
+            self._transaction_fixture(tmp_path)
+        )
+        operations = self._operations_for(vault, migration, [receipt_write])
+        token = "v16malformed123"
+        journal = self._write_bound_transaction_journal(
+            vault,
+            phase="prepared",
+            operations=operations,
+            plan_binding=migration["plan_binding"],
+            candidate_authority=migration["candidate_authority"],
+            token=token,
+        )
+        journal.write_bytes(b'{"partial":')
+        info = journal.stat()
+        retiring = journal.parent / dispatch._retiring_journal_name(
+            (info.st_dev, info.st_ino),
+            token,
+        )
+        journal.rename(retiring)
+        before = retiring.read_bytes()
+
+        recovered = _recover_with_root(
+            vault,
+            operations,
+            plan_binding=migration["plan_binding"],
+            candidate_authority=migration["candidate_authority"],
+        )
+
+        assert recovered["status"] == "migration_recovery_required"
+        assert recovered["blockers"] == [
+            "migration_transaction_recovery_failed:retention:"
+            "migration_transaction_journal_retirement_document_invalid"
+        ]
+        assert recovered["next_action"]["rerun_authorized"] is False
+        assert retiring.read_bytes() == before
+        assert not journal.exists()
+
+    def test_v16_probe_07_same_inode_journal_rewrite_cannot_inherit_decoded_authority(
+        self, tmp_path: Path
+    ) -> None:
+        """V16-C01/C02: inode identity cannot hide a semantic journal rewrite."""
+
+        vault, _receipt, _archive, _artifact, _preimage, receipt_write, migration = (
+            self._transaction_fixture(tmp_path)
+        )
+        operations = self._operations_for(vault, migration, [receipt_write])
+        token = "v16sameinode123"
+        journal = self._write_bound_transaction_journal(
+            vault,
+            phase="prepared",
+            operations=operations,
+            plan_binding=migration["plan_binding"],
+            candidate_authority=migration["candidate_authority"],
+            token=token,
+        )
+        original_document = json.loads(journal.read_text(encoding="utf-8"))
+        expected_document_sha256 = dispatch._canonical_json_sha256(original_document)
+        original_info = journal.stat()
+        rewritten = dict(original_document)
+        rewritten["created_at"] = "2026-07-15T14:55:00+00:00"
+        journal.write_text(
+            json.dumps(rewritten, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        assert journal.stat().st_ino == original_info.st_ino
+
+        with _migration_root(vault) as root:
+            with pytest.raises(
+                RuntimeError,
+                match="migration_transaction_journal_changed_before_retirement",
+            ):
+                dispatch._retire_transaction_journal(
+                    root,
+                    dispatch._journal_site(root),
+                    token=token,
+                    owned_identity=(original_info.st_dev, original_info.st_ino),
+                    expected_document_sha256=expected_document_sha256,
+                )
+
+        assert not journal.exists()
+        retiring = journal.parent / dispatch._retiring_journal_name(
+            (original_info.st_dev, original_info.st_ino),
+            token,
+        )
+        assert json.loads(retiring.read_text(encoding="utf-8"))["created_at"] == (
+            "2026-07-15T14:55:00+00:00"
+        )
 
     # ---- V12-PROBE-19: a symlinked _locks ancestor must not externalize the migration claim ----
 
@@ -10447,6 +10770,58 @@ checklist:
             receipt_write=receipt_write,
             migration=migration,
             label="terminal-write",
+        )
+
+    def test_v16_probe_04_sigkill_at_journal_retention_handoff_converges(
+        self, tmp_path: Path
+    ) -> None:
+        """V16-C02: a real abrupt stop at the second journal rename is recoverable."""
+
+        count_vault, _cr, _ca, _cart, _cpre, count_write, count_migration = (
+            self._transaction_fixture(tmp_path / "count-journal-handoff")
+        )
+        final_rename_ordinal = self._count_syscalls(
+            tmp_path,
+            count_vault,
+            count_write,
+            count_migration,
+            syscall="renameat2",
+        )
+        assert final_rename_ordinal > 1
+
+        vault, receipt, archive, artifact, receipt_preimage, receipt_write, migration = (
+            self._transaction_fixture(tmp_path / "kill-journal-handoff")
+        )
+        self._kill_inside_syscall(
+            tmp_path,
+            vault,
+            receipt_write,
+            migration,
+            syscall="renameat2",
+            ordinal=final_rename_ordinal,
+            prefix_bytes=0,
+            label="journal-retention-handoff",
+        )
+
+        journal = dispatch.review_team_digest_migration_journal_path(vault)
+        assert not journal.exists()
+        retiring = [
+            path
+            for path in journal.parent.iterdir()
+            if dispatch.MIGRATION_RETIRING_JOURNAL_NAME_RE.fullmatch(path.name) is not None
+        ]
+        assert len(retiring) == 1
+        assert not list(journal.parent.glob("review-team-digest-migration.retired.[0-9a-f]*.bin"))
+
+        self._assert_converges_and_preserves(
+            vault,
+            receipt=receipt,
+            archive=archive,
+            artifact=artifact,
+            receipt_preimage=receipt_preimage,
+            receipt_write=receipt_write,
+            migration=migration,
+            label="journal-retention-handoff",
         )
 
     def test_v12_probe_30_torn_initial_journal_is_unreachable_and_converges(

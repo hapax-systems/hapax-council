@@ -306,6 +306,20 @@ MIGRATION_TRANSACTION_PHASE_ERROR_KEYS = {
 MIGRATION_TRANSACTION_RESULT_STATES = frozenset(
     {"applied", "migration_blocked", "migration_recovery_required", "recovered", "rolled_back"}
 )
+MIGRATION_RECOVERY_FAILURE_DOMAINS = frozenset(
+    {
+        "identity",
+        "retention",
+        "terminal",
+        "journal",
+        "stage",
+        "publication",
+        "rollback",
+        "cleanup",
+        "unexpected",
+    }
+)
+MIGRATION_RECOVERY_REASON_CODE_RE = re.compile(r"\Amigration_transaction_[a-z0-9_]{1,96}\Z")
 MIGRATION_EFFECT_TEMP_SUFFIX = ".mtmp"
 MIGRATION_ORPHAN_TEMP_SUFFIXES = (".tmp", MIGRATION_EFFECT_TEMP_SUFFIX)
 # The three directories the migration capability holds descriptors on. Every effect is performed AT
@@ -346,6 +360,16 @@ MIGRATION_LOCK_PRESERVED_PREFIX = "review-team-digest-migration.lock-claim.prese
 MIGRATION_RETIREMENT_PREFIX = "review-team-digest-migration.retired."
 MIGRATION_RETIREMENT_NAME_RE = re.compile(
     r"\Areview-team-digest-migration\.retired\.[0-9a-f]{32}\.bin\Z"
+)
+# A journal in flight between consuming the public final name and landing the exact inode at its
+# digest-addressed reclamation name. Unlike the generic retirement grammar, this name is stable and
+# self-describing enough for the next recovery pass to find it. The embedded token is correlation,
+# not authority; reconciliation also binds the live device/inode and the complete journal's token
+# before it can land as a decoder-admissible journal retention.
+MIGRATION_RETIRING_JOURNAL_PREFIX = f"{MIGRATION_RETIREMENT_PREFIX}journal."
+MIGRATION_RETIRING_JOURNAL_NAME_RE = re.compile(
+    r"\Areview-team-digest-migration\.retired\.journal\."
+    r"(?P<token>[A-Za-z0-9_-]{8,64})\.(?P<dev>\d+)-(?P<ino>\d+)\.bin\Z"
 )
 # A stage directory in flight between the rename that consumes its public name and the rename that
 # lands it as reclaimable. It gets its own name for two reasons the random retirement name above
@@ -3202,7 +3226,37 @@ def _migration_next_action(
         "first_blocker": first,
         "effects_authorized": False,
     }
-    if any(
+    typed_recovery = next(
+        (
+            blocker
+            for blocker in unique
+            if blocker.startswith("migration_transaction_recovery_failed:")
+        ),
+        None,
+    )
+    typed_parts = typed_recovery.split(":", 2) if typed_recovery is not None else []
+    typed_projection_valid = (
+        len(typed_parts) == 3
+        and typed_parts[0] == "migration_transaction_recovery_failed"
+        and typed_parts[1] in MIGRATION_RECOVERY_FAILURE_DOMAINS
+        and MIGRATION_RECOVERY_REASON_CODE_RE.fullmatch(typed_parts[2]) is not None
+    )
+    if typed_projection_valid:
+        _prefix, domain, reason_code = typed_parts
+        action.update(
+            {
+                "action": "resolve_typed_migration_recovery_hold",
+                "reason_domain": domain,
+                "reason_code": reason_code,
+                "rerun_authorized": False,
+                "required_evidence": [
+                    "exact held-root filesystem state",
+                    "bound migration plan and candidate authority",
+                    "operator-authorized correction or recovery disposition",
+                ],
+            }
+        )
+    elif any(
         marker in blocker
         for blocker in unique
         for marker in (
@@ -3270,6 +3324,40 @@ def _migration_next_action(
             }
         )
     return action
+
+
+def _migration_recovery_failure_blocker(exc: BaseException) -> str:
+    """Project one exception into a bounded, path- and secret-free recovery reason.
+
+    Only the first colon-delimited token can survive, and only when it is a bounded member of the
+    migration reason namespace. Everything else collapses to the closed ``unexpected`` reason. The
+    domain is likewise one of a fixed set so callers can distinguish identity, retention and
+    terminal conflicts without exposing arbitrary exception text.
+    """
+
+    candidate = str(exc).split(":", 1)[0]
+    reason_code = (
+        candidate
+        if isinstance(exc, RuntimeError)
+        and MIGRATION_RECOVERY_REASON_CODE_RE.fullmatch(candidate) is not None
+        else "migration_transaction_unexpected_failure"
+    )
+    markers = (
+        ("identity", ("identity", "inode", "root_capability")),
+        ("retention", ("retir", "preserv", "reclaim", "retention")),
+        ("terminal", ("terminal", "receipt", "seal")),
+        ("journal", ("journal",)),
+        ("stage", ("stage",)),
+        ("publication", ("publication", "publish")),
+        ("rollback", ("rollback",)),
+        ("cleanup", ("cleanup", "temp")),
+    )
+    domain = next(
+        (name for name, needles in markers if any(item in reason_code for item in needles)),
+        "unexpected",
+    )
+    assert domain in MIGRATION_RECOVERY_FAILURE_DOMAINS
+    return f"migration_transaction_recovery_failed:{domain}:{reason_code}"
 
 
 def _migration_blocked_result(
@@ -4135,6 +4223,17 @@ def _retiring_stage_name(identity: tuple[int, int], token: str) -> str:
     return (
         f"{MIGRATION_RETIRING_STAGE_PREFIX}{token}.{identity[0]}-{identity[1]}"
         f"{MIGRATION_RECLAIMABLE_DIR_SUFFIX}"
+    )
+
+
+def _retiring_journal_name(identity: tuple[int, int], token: str) -> str:
+    """The recoverable in-flight name for one complete journal inode."""
+
+    if re.fullmatch(r"[A-Za-z0-9_-]{8,64}", token) is None:
+        raise RuntimeError("migration_transaction_journal_retirement_token_invalid")
+    return (
+        f"{MIGRATION_RETIRING_JOURNAL_PREFIX}{token}.{identity[0]}-{identity[1]}"
+        f"{MIGRATION_TEMP_PRESERVED_SUFFIX}"
     )
 
 
@@ -5588,6 +5687,183 @@ class MigrationRootCapability:
             raise RuntimeError(f"migration_transaction_stage_late_child_unpreserved:{status}")
         self.retained.append(record)
 
+    def retire_journal(
+        self,
+        site: MigrationEffectSite,
+        *,
+        identity: tuple[int, int],
+        token: str,
+        expected_document_sha256: str | None = None,
+    ) -> dict[str, Any]:
+        """Move the live journal through a recoverable, transaction-bound handoff.
+
+        The first rename consumes the public journal directly into a name that states the
+        transaction token and the inode it is supposed to hold. A stop after that rename therefore
+        leaves decoder-discoverable recovery authority, not an opaque generic retirement. The
+        second rename lands the completely decoded inode at its digest/device/inode retention.
+        """
+
+        retiring_name = _retiring_journal_name(identity, token)
+        retiring_site = MigrationEffectSite(
+            parent=MIGRATION_PARENT_LOCKS,
+            name=retiring_name,
+        )
+        try:
+            self._renameat2_child(site, retiring_site, flags=RENAME_NOREPLACE)
+        except FileNotFoundError:
+            raise RuntimeError(
+                "migration_transaction_journal_disappeared_before_retirement"
+            ) from None
+        except FileExistsError:
+            raise RuntimeError("migration_transaction_journal_retirement_name_occupied") from None
+        self.fsync_parent(site.parent)
+        if retiring_site.parent != site.parent:
+            self.fsync_parent(retiring_site.parent)
+
+        # Reoccupation is evidence of a concurrent writer. The intended journal is still alive at
+        # the dedicated retirement name and the replacement stays alive at the public name; HOLD.
+        if self.child_stat(site) is not None:
+            raise RuntimeError("migration_transaction_journal_source_reoccupied")
+
+        landed = self.child_stat(retiring_site)
+        if (
+            landed is None
+            or stat_module.S_ISLNK(landed.st_mode)
+            or not stat_module.S_ISREG(landed.st_mode)
+        ):
+            raise RuntimeError("migration_transaction_journal_retirement_wrong_kind")
+        if (landed.st_dev, landed.st_ino) != identity:
+            # The source was substituted before the rename. Preserve what the rename actually
+            # consumed under the generic unknown-evidence grammar, then HOLD; it cannot inherit the
+            # expected journal's authority from the destination name.
+            status, record = self.clear_name(
+                retiring_site,
+                owned_identity=None,
+                preserve_prefix=MIGRATION_TEMP_PRESERVED_PREFIX,
+                reason="journal_retirement_identity_changed",
+            )
+            if status != "preserved" or record is None:
+                raise RuntimeError("migration_transaction_journal_retirement_identity_unpreserved")
+            raise RuntimeError("migration_transaction_journal_identity_changed_before_retirement")
+
+        match = MIGRATION_RETIRING_JOURNAL_NAME_RE.fullmatch(retiring_name)
+        if match is None:  # The constructor and parser are deliberately required to agree.
+            raise RuntimeError("migration_transaction_journal_retirement_name_invalid")
+        return self._reconcile_retiring_journal(
+            retiring_name,
+            match=match,
+            expected_document_sha256=expected_document_sha256,
+        )
+
+    def reconcile_journal_retirements(self) -> list[dict[str, Any]]:
+        """Land dedicated in-flight journals before recovery classifies the public name absent."""
+
+        locks_fd = self.dir_fd(MIGRATION_PARENT_LOCKS)
+        records: list[dict[str, Any]] = []
+        for name in sorted(os.listdir(locks_fd)):
+            match = MIGRATION_RETIRING_JOURNAL_NAME_RE.fullmatch(name)
+            if match is not None:
+                records.append(self._reconcile_retiring_journal(name, match=match))
+        return records
+
+    def _reconcile_retiring_journal(
+        self,
+        name: str,
+        *,
+        match: re.Match[str],
+        expected_document_sha256: str | None = None,
+    ) -> dict[str, Any]:
+        """Decode and land one interrupted journal handoff without minting authority from shape."""
+
+        site = MigrationEffectSite(parent=MIGRATION_PARENT_LOCKS, name=name)
+        raw, info, read_error = self.read_child_with_stat(site)
+        if read_error or raw is None or info is None:
+            raise RuntimeError("migration_transaction_journal_retirement_unreadable")
+        if stat_module.S_ISLNK(info.st_mode) or not stat_module.S_ISREG(info.st_mode):
+            raise RuntimeError("migration_transaction_journal_retirement_wrong_kind")
+        identity = (info.st_dev, info.st_ino)
+        name_identity = (int(match.group("dev")), int(match.group("ino")))
+        if identity != name_identity:
+            raise RuntimeError("migration_transaction_journal_retirement_identity_mismatch")
+
+        loaded, load_error = _json_loads_no_duplicate_mapping(
+            raw,
+            label="migration_transaction_journal",
+        )
+        if load_error or loaded is None:
+            raise RuntimeError("migration_transaction_journal_retirement_document_invalid")
+        key_blockers = _exact_key_blockers(
+            loaded,
+            required=MIGRATION_TRANSACTION_JOURNAL_REQUIRED_KEYS,
+            allowed=MIGRATION_TRANSACTION_JOURNAL_KEYS,
+            reason_prefix="migration_transaction_journal",
+        )
+        if (
+            loaded.get("schema") != MIGRATION_TRANSACTION_JOURNAL_SCHEMA
+            or loaded.get("recovery_policy") != MIGRATION_RECOVERY_POLICY
+            or key_blockers
+            or _transaction_journal_shape_blockers(loaded)
+        ):
+            raise RuntimeError("migration_transaction_journal_retirement_document_invalid")
+        if expected_document_sha256 is not None and not hmac.compare_digest(
+            _canonical_json_sha256(loaded),
+            expected_document_sha256,
+        ):
+            raise RuntimeError("migration_transaction_journal_changed_before_retirement")
+        journal_token = loaded.get("token")
+        if not isinstance(journal_token, str) or not hmac.compare_digest(
+            journal_token,
+            match.group("token"),
+        ):
+            raise RuntimeError("migration_transaction_journal_retirement_token_mismatch")
+
+        digest = hashlib.sha256(raw).hexdigest()
+        landed_name = (
+            f"{MIGRATION_RECLAIMABLE_JOURNAL_PREFIX}{digest}."
+            f"{identity[0]}-{identity[1]}{MIGRATION_TEMP_PRESERVED_SUFFIX}"
+        )
+        try:
+            _renameat2(
+                old_dir_fd=self.dir_fd(MIGRATION_PARENT_LOCKS),
+                old_name=name,
+                new_dir_fd=self.dir_fd(MIGRATION_PARENT_LOCKS),
+                new_name=landed_name,
+                flags=RENAME_NOREPLACE,
+            )
+        except FileNotFoundError:
+            raise RuntimeError("migration_transaction_journal_retirement_disappeared") from None
+        except FileExistsError:
+            # A dedicated recovery authority never skips past an unexplained occupant to a numbered
+            # slot. The in-flight journal and the occupant both stay alive and the ambiguity HOLDs.
+            raise RuntimeError("migration_transaction_journal_retention_name_occupied") from None
+        self.fsync_parent(MIGRATION_PARENT_LOCKS)
+        landed_site = MigrationEffectSite(
+            parent=MIGRATION_PARENT_LOCKS,
+            name=landed_name,
+        )
+        landed_raw, landed_info, landed_error = self.read_child_with_stat(landed_site)
+        if (
+            landed_error
+            or landed_raw is None
+            or landed_info is None
+            or (landed_info.st_dev, landed_info.st_ino) != identity
+            or hashlib.sha256(landed_raw).hexdigest() != digest
+        ):
+            raise RuntimeError("migration_transaction_journal_retention_identity_unproved")
+        record = _retained_record(
+            reason="retired_journal",
+            kind="file",
+            source_label=f"{MIGRATION_PARENT_LOCKS}/{name}",
+            destination=_join_label(MIGRATION_PARENT_LOCKS, landed_name),
+            destination_key="reclaimable",
+            digest=digest,
+            identity=identity,
+            mode=stat_module.S_IMODE(landed_info.st_mode),
+            size=landed_info.st_size,
+        )
+        self.retained.append(record)
+        return record
+
     def reconcile_retirements(self) -> list[dict[str, Any]]:
         """Finish every retirement an interrupted pass left in flight, in either grammar.
 
@@ -5598,8 +5874,10 @@ class MigrationRootCapability:
         the same silent-retention failure the ledger exists to prevent, arrived at by interruption
         instead of by omission.
 
-        Two intermediate grammars reach this point, and both are swept here:
+        Three intermediate grammars reach this point, and all are swept here:
 
+        * a COMPLETE JOURNAL at its token-and-identity-derived in-flight name -- completely decoded
+          and landed at its digest/device/inode retention before a missing public name is classified;
         * a STAGE DIRECTORY at its identity-derived in-flight retirement name -- reconciled through a
           descriptor, proved empty, landed as reclaimable;
         * a REGULAR FILE at an opaque retirement name -- an interrupted clear of a temp, a final or a
@@ -5611,8 +5889,10 @@ class MigrationRootCapability:
         """
 
         locks_fd = self.dir_fd(MIGRATION_PARENT_LOCKS)
-        records: list[dict[str, Any]] = []
+        records = self.reconcile_journal_retirements()
         for name in sorted(os.listdir(locks_fd)):
+            if MIGRATION_RETIRING_JOURNAL_NAME_RE.fullmatch(name) is not None:
+                continue
             stage_match = MIGRATION_RETIRING_STAGE_NAME_RE.fullmatch(name)
             if stage_match is not None:
                 records.append(self._reconcile_retiring_stage(name, match=stage_match))
@@ -10435,12 +10715,20 @@ def _migration_transaction_recovery_state(
     journal_lstat: dict[str, Any] = {}
     stage_entries: list[tuple[str, str]] = []
     retired_journal_paths: list[Path] = []
+    retiring_journal_paths: list[Path] = []
     if root_capability is not None and not root_capability.closed:
         # Every stage-named entry is evidence, whatever KIND it is. A wrong-kind entry is reported
         # as a blocker and as a path, never filtered out of both.
         stage_entries = _migration_stage_entries(root_capability)
         stage_paths = [vault_root / MIGRATION_PARENT_LOCKS / name for name, _kind in stage_entries]
         blockers.extend(_migration_stage_entry_blockers(stage_entries))
+        retiring_journal_paths = [
+            vault_root / MIGRATION_PARENT_LOCKS / name
+            for name in root_capability.list_children(MIGRATION_PARENT_LOCKS)
+            if MIGRATION_RETIRING_JOURNAL_NAME_RE.fullmatch(name) is not None
+        ]
+        if retiring_journal_paths:
+            blockers.append("migration_transaction_recovery_required")
         info = root_capability.child_stat(_journal_site(root_capability))
         if info is not None:
             journal_exists = True
@@ -10468,6 +10756,17 @@ def _migration_transaction_recovery_state(
                 blockers.append("migration_transaction_recovery_required")
     else:
         stage_paths = review_team_digest_migration_stage_paths(vault_root)
+        locks_path = vault_root / MIGRATION_PARENT_LOCKS
+        try:
+            retiring_journal_paths = [
+                path
+                for path in locks_path.iterdir()
+                if MIGRATION_RETIRING_JOURNAL_NAME_RE.fullmatch(path.name) is not None
+            ]
+        except OSError:
+            retiring_journal_paths = []
+        if retiring_journal_paths:
+            blockers.append("migration_transaction_recovery_required")
         try:
             stat = journal_path.lstat()
         except FileNotFoundError:
@@ -10495,6 +10794,11 @@ def _migration_transaction_recovery_state(
         **(
             {"retired_journal_paths": [str(path) for path in retired_journal_paths]}
             if retired_journal_paths
+            else {}
+        ),
+        **(
+            {"retiring_journal_paths": [str(path) for path in retiring_journal_paths]}
+            if retiring_journal_paths
             else {}
         ),
         "stage_paths": [str(path) for path in stage_paths],
@@ -13528,7 +13832,9 @@ def _retire_transaction_journal(
     root_capability: MigrationRootCapability,
     journal_site: MigrationEffectSite,
     *,
+    token: str,
     owned_identity: tuple[int, int] | None = None,
+    expected_document_sha256: str | None = None,
 ) -> None:
     """Retire the journal before sealing, retaining its exact inode under a dedicated grammar.
 
@@ -13552,21 +13858,12 @@ def _retire_transaction_journal(
         identity = (info.st_dev, info.st_ino)
     elif root_capability.child_stat(journal_site) is None:
         raise RuntimeError("migration_transaction_journal_disappeared_before_retirement")
-    status, record = root_capability.clear_name(
+    root_capability.retire_journal(
         journal_site,
-        owned_identity=identity,
-        preserve_prefix=MIGRATION_TEMP_PRESERVED_PREFIX,
-        reason="stranded_journal_temp",
-        reclaim_prefix=MIGRATION_RECLAIMABLE_JOURNAL_PREFIX,
-        reclaim_reason="retired_journal",
+        identity=identity,
+        token=token,
+        expected_document_sha256=expected_document_sha256,
     )
-    if status == "absent":
-        raise RuntimeError("migration_transaction_journal_disappeared_before_retirement")
-    if status == "preserved" and record is not None:
-        raise RuntimeError(
-            "migration_transaction_journal_identity_changed_before_retirement:"
-            f"{record['preserved']}"
-        )
 
 
 def _prepare_loaded_journal_for_terminal_seal(
@@ -13574,6 +13871,8 @@ def _prepare_loaded_journal_for_terminal_seal(
     *,
     source_site: MigrationEffectSite | None,
     source_identity: tuple[int, int] | None,
+    token: str,
+    expected_document_sha256: str,
 ) -> None:
     """Retire a final journal or re-prove the retained journal recovery actually decoded."""
 
@@ -13584,7 +13883,9 @@ def _prepare_loaded_journal_for_terminal_seal(
         _retire_transaction_journal(
             root_capability,
             final_site,
+            token=token,
             owned_identity=source_identity,
+            expected_document_sha256=expected_document_sha256,
         )
         return
 
@@ -13612,6 +13913,30 @@ def _recover_prepared_migration_transaction(
     plan_binding: dict[str, Any] | None = None,
     candidate_authority: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Project every recoverable implementation failure through the closed result taxonomy."""
+
+    try:
+        return _recover_prepared_migration_transaction_impl(
+            root_capability=root_capability,
+            operations=operations,
+            plan_binding=plan_binding,
+            candidate_authority=candidate_authority,
+        )
+    except Exception as exc:  # noqa: BLE001 - this is the recovery API's fail-closed boundary
+        return _migration_transaction_result(
+            "migration_recovery_required",
+            journal_path=review_team_digest_migration_journal_path(root_capability.vault_root),
+            blockers=[_migration_recovery_failure_blocker(exc)],
+        )
+
+
+def _recover_prepared_migration_transaction_impl(
+    *,
+    root_capability: MigrationRootCapability,
+    operations: list[dict[str, Any]],
+    plan_binding: dict[str, Any] | None = None,
+    candidate_authority: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Drive a crashed transaction to a durable terminal state through the live root capability.
 
     Recovery reads and writes only through held descriptors, so it cannot be redirected by a
@@ -13620,15 +13945,33 @@ def _recover_prepared_migration_transaction(
 
     vault_root = root_capability.vault_root
     journal_path = review_team_digest_migration_journal_path(vault_root)
+    # The public journal name being absent is not yet evidence that journal authority is absent.
+    # Finish the dedicated handoff first, so classification observes the post-transition state and
+    # can load the digest/device/inode retention produced by an interrupted retirement.
+    try:
+        preclassified_retirements = root_capability.reconcile_journal_retirements()
+    except Exception as exc:  # noqa: BLE001 - projected through the closed recovery taxonomy
+        return _migration_transaction_result(
+            "migration_recovery_required",
+            journal_path=journal_path,
+            blockers=[_migration_recovery_failure_blocker(exc)],
+        )
     # Journal and stage classification read through the SAME held descriptors the effects mutate, so
     # a vault pathname swapped in after the capability was opened cannot describe one root while
     # recovery acts on another.
-    journal, blockers, journal_source_site, journal_source_identity = (
-        _load_transaction_journal_evidence(root_capability)
-    )
-    stage_entries = _migration_stage_entries(root_capability)
-    stage_names = [name for name, kind in stage_entries if kind == "directory"]
-    stage_kind_blockers = _migration_stage_entry_blockers(stage_entries)
+    try:
+        journal, blockers, journal_source_site, journal_source_identity = (
+            _load_transaction_journal_evidence(root_capability)
+        )
+        stage_entries = _migration_stage_entries(root_capability)
+        stage_names = [name for name, kind in stage_entries if kind == "directory"]
+        stage_kind_blockers = _migration_stage_entry_blockers(stage_entries)
+    except Exception as exc:  # noqa: BLE001 - projected through the closed recovery taxonomy
+        return _migration_transaction_result(
+            "migration_recovery_required",
+            journal_path=journal_path,
+            blockers=[_migration_recovery_failure_blocker(exc)],
+        )
     # Reconcile any retirement an interrupted CLEAR left in flight BEFORE any early return can reuse a
     # terminal result, return for a missing journal, or gather pre-effect evidence over it
     # (V12-STATIC-23 / V12-PROBE-73). A stranded regular file is preserved with full evidence -- it
@@ -13637,12 +13980,12 @@ def _recover_prepared_migration_transaction(
     # otherwise left visible as a typed HOLD. Nothing here is destroyed, and a second recovery finds
     # every retirement already landed, so this converges.
     try:
-        reconciled = root_capability.reconcile_retirements()
-    except RuntimeError as exc:
+        reconciled = preclassified_retirements + root_capability.reconcile_retirements()
+    except Exception as exc:  # noqa: BLE001 - projected through the closed recovery taxonomy
         return _migration_transaction_result(
             "migration_recovery_required",
             journal_path=journal_path,
-            blockers=[f"migration_transaction_retirement_hold:{exc}"],
+            blockers=[_migration_recovery_failure_blocker(exc)],
         )
     reconciled_sites = [str(record.get("site")) for record in reconciled] or None
     # Every corroborated transaction retention the lock directory is HOLDING, reconstructed from
@@ -13781,6 +14124,8 @@ def _recover_prepared_migration_transaction(
             root_capability,
             source_site=journal_source_site,
             source_identity=journal_source_identity,
+            token=token,
+            expected_document_sha256=_canonical_json_sha256(journal),
         )
         # Every retention THIS pass performed was appended to the ledger as it landed. The seal is
         # built from that ledger and this preserved set, and it ALSO ATTACHES any corroborated
@@ -13819,7 +14164,7 @@ def _recover_prepared_migration_transaction(
         return _migration_transaction_result(
             "migration_recovery_required",
             journal_path=journal_path,
-            blockers=[f"migration_transaction_recovery_failed:{type(exc).__name__}"],
+            blockers=[_migration_recovery_failure_blocker(exc)],
         )
     finally:
         root_capability.detach_stage()
@@ -13973,6 +14318,11 @@ def _migration_pre_effect_boundary_blockers(
             )
     if _migration_stage_names(root_capability):
         blockers.append("migration_transaction_orphan_stage_before_effects")
+    for name in root_capability.list_children(MIGRATION_PARENT_LOCKS):
+        if MIGRATION_RETIRING_JOURNAL_NAME_RE.fullmatch(name) is not None:
+            blockers.append(
+                f"migration_transaction_journal_retirement_present_before_effects:{name}"
+            )
     blockers.extend(
         _migration_orphan_temp_blockers(
             root_capability,
@@ -14209,6 +14559,7 @@ def _apply_prepared_migration_outputs(
     # stage retirement and seal an unbound digest (V12-PROBE-84).
     stage_identity_state: dict[str, tuple[int, int] | None] = {"value": None}
     journal_identity_state: dict[str, str | None] = {"sha256": None}
+    journal_document_state: dict[str, str | None] = {"sha256": None}
 
     def mark_touched(op: dict[str, Any]) -> None:
         if not any(existing is op for existing in touched):
@@ -14255,6 +14606,7 @@ def _apply_prepared_migration_outputs(
         }
         if extra:
             journal.update(extra)
+        journal_document_state["sha256"] = _canonical_json_sha256(journal)
         raw = json.dumps(journal, sort_keys=True, indent=2).encode("utf-8") + b"\n"
         if create:
             # Exclusive AND never partially visible: the bytes are written and fsynced into a temp
@@ -14344,7 +14696,12 @@ def _apply_prepared_migration_outputs(
             preserved,
             _migration_reconcile_expected_temps(root_capability, operations, token=token),
         )
-        _retire_transaction_journal(root_capability, journal_site)
+        _retire_transaction_journal(
+            root_capability,
+            journal_site,
+            token=token,
+            expected_document_sha256=journal_document_state["sha256"],
+        )
         receipt = _terminal_recovery_receipt(
             root_capability,
             journal_path=journal_path,
@@ -14404,7 +14761,12 @@ def _apply_prepared_migration_outputs(
                     # here, not silently dropped with the failed transaction.
                     rollback_preserved,
                 )
-                _retire_transaction_journal(root_capability, journal_site)
+                _retire_transaction_journal(
+                    root_capability,
+                    journal_site,
+                    token=token,
+                    expected_document_sha256=journal_document_state["sha256"],
+                )
                 sealed_receipt = _terminal_recovery_receipt(
                     root_capability,
                     journal_path=journal_path,
