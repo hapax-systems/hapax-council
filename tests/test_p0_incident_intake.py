@@ -11,6 +11,8 @@ from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
 
+import yaml
+
 import shared.p0_incident_intake as p0_intake
 from shared.p0_incident_intake import (
     DEFAULT_AUTHORITY_CASE,
@@ -85,6 +87,57 @@ def test_service_failure_creates_governed_p0_task(tmp_path):
     assert "recurrence-prevention notes are written" in task
     assert str(ledger_path) in task
     assert str(state_path) in task
+
+    frontmatter = yaml.safe_load(task.split("---", 2)[1])
+    assert frontmatter["closure_contract_schema"] == "hapax.p0-incident-closure.v1"
+    closure = frontmatter["closure_contract"]
+    assert closure["overall_status"] == "HOLD"
+    assert closure["pre_release"] == {
+        "gate": "source_runtime_remediation_acceptance",
+        "status": "HOLD",
+        "root_cause": None,
+        "remediation_disposition": None,
+        "source_verification": None,
+        "runtime_verification": None,
+        "acceptance_receipt": None,
+    }
+    post_activation = closure["post_activation"]
+    assert post_activation["gate"] == "deployed_non_recurrence_closure"
+    assert post_activation["status"] == "HOLD"
+    assert post_activation["requires_pre_release_status"] == "accepted"
+    assert post_activation["deployed_head"] == {"status": "HOLD", "value": None}
+    assert post_activation["intended_producer_topology"] == {
+        "status": "HOLD",
+        "producers": [],
+    }
+    assert post_activation["live_producer_state"] == {
+        "status": "HOLD",
+        "evidence": None,
+    }
+    assert post_activation["baseline_event"] == {
+        "status": "HOLD",
+        "cursor": None,
+        "count": None,
+    }
+    assert post_activation["incident_fingerprint"] == {
+        "status": "bound",
+        "value": result.fingerprint,
+    }
+    assert post_activation["observation"] == {
+        "status": "HOLD",
+        "bounded_duration_seconds": None,
+        "complete_producer_intervals": [],
+    }
+    assert post_activation["downstream_replay"] == {
+        "applicability": "unknown",
+        "status": "HOLD",
+        "evidence": None,
+    }
+    assert post_activation["final_observed_state"] == {
+        "status": "HOLD",
+        "value": None,
+    }
+    assert "post-activation non-recurrence" in frontmatter["exit_predicate"]
 
     events = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()]
     assert len(events) == 1
