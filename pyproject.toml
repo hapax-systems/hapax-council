@@ -23,7 +23,7 @@ dependencies = [
     "httpx>=0.28.0",
     "ollama>=0.6.2",
     "pydantic>=2.13.4",
-    "pydantic-ai>=1.99.0,<2",
+    "pydantic-ai>=2.12.0,<3",
     "pyyaml>=6.0",
     "qdrant-client>=1.18.0",
     "opentelemetry-api>=1.39.0",
@@ -31,9 +31,9 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-http>=1.39.0",
     "opentelemetry-instrumentation-httpx>=0.50b0",
     "opentelemetry-instrumentation-logging>=0.50b0",
-    "python-json-logger>=3.3.0,<4",
+    "python-json-logger>=4.1.0,<5",
     "openwakeword>=0.4.0",
-    "litellm>=1.90.3",
+    "litellm>=1.92.0",
     "kokoro>=0.9",
     "chatterbox-tts",
     # torchvision must move in lockstep with torch (0.25.x <-> torch 2.10.x).
@@ -41,8 +41,8 @@ dependencies = [
     # torch pin during resolution, so this floor is what keeps the pair
     # ABI-matched. Bump together with the torch override.
     # Recheck: uv run pytest tests/test_python_prod_dependency_constraints.py -q
-    "torchvision>=0.25,<0.26",
-    "mistralai>=2.5.2",
+    "torchvision>=0.28.0,<0.29",
+    "mistralai>=2.7.0",
     "python-toon>=0.1.3",
     "model2vec>=0.8.2",
     "uvloop>=0.21.0",
@@ -52,9 +52,9 @@ dependencies = [
     "pycairo>=1.29.0",
     "moderngl>=5.12.0",
     "pyte>=0.8.2",
-    "fastapi>=0.139.0",
+    "fastapi>=0.139.2",
     "werkzeug>=3.1.8",
-    "opencv-python-headless>=4.13.0.92,<5",
+    "opencv-python-headless>=5.0.0.93,<6",
     "chat-downloader>=0.2.8",
     "sdnotify>=0.3.2",
     "imagehash>=4.3.2",
@@ -70,11 +70,11 @@ dependencies = [
 
 [project.optional-dependencies]
 logos-api = [
-    "fastapi>=0.139.0",
+    "fastapi>=0.139.2",
     "jinja2>=3.1",
-    "langfuse>=3.14.5,<4",
-    "sse-starlette>=2.0.0,<3",
-    "uvicorn>=0.49.0",
+    "langfuse>=4.14.0,<5",
+    "sse-starlette>=3.4.5,<4",
+    "uvicorn>=0.51.0",
     "watchdog>=6.0.0",
     "opentelemetry-instrumentation-fastapi>=0.50b0",
     "prometheus-fastapi-instrumentator>=7.0.0",
@@ -82,7 +82,7 @@ logos-api = [
 sync-pipeline = [
     "google-api-python-client>=2.198.0",
     "google-auth-oauthlib>=1.4.0",
-    "langfuse>=3.14.5,<4",
+    "langfuse>=4.14.0,<5",
 ]
 mail-monitor = [
     # cc-tasks mail-monitor-002 / -004 / -005 — gmail.modify-scoped
@@ -90,16 +90,16 @@ mail-monitor = [
     # consumer. Same Google deps as sync-pipeline plus pubsub, kept as a
     # separate extra so a daemon-only install can skip langfuse.
     "google-api-python-client>=2.198.0",
-    "google-auth>=2.55.1",
+    "google-auth>=2.56.0",
     "google-auth-oauthlib>=1.4.0",
     "google-cloud-pubsub>=2.39.0",
 ]
 audio = [
     "faster-whisper>=1.1.0",
     "mediapipe>=0.10.35",
-    "opencv-python-headless>=4.10.0,<5",
+    "opencv-python-headless>=5.0.0.93,<6",
     "panns-inference>=0.1.1",
-    "pipecat-ai[silero,openai]>=1.4.0",
+    "pipecat-ai[silero,openai]>=1.5.0",
     # pyannote 3.x imports torchaudio.AudioMetaData, which torchaudio >=2.9
     # removed — 3.4.0 is import-broken under the cu128 keystone stack. 4.x
     # is torchcodec-native (declares torchcodec>=0.7.0 itself).
@@ -127,13 +127,13 @@ audio = [
     # [tool.uv] erases any torch coupling during resolution, so this pin is
     # what keeps the pair matched. Bump together with the torch override.
     # Runtime needs FFmpeg 4-8 shared libs on the host (appendix: n8.1.1).
-    "torchcodec==0.10.*",
+    "torchcodec==0.15.*",
     "mido>=1.3.0",
     "python-rtmidi>=1.5.0",
     "obsws-python>=1.7.0",
     "hsemotion-onnx>=0.3",
     "praat-parselmouth>=0.4.5",
-    "essentia>=2.1b6.dev1091,<=2.1b6.dev1389",
+    "essentia<=2.1b6.dev1438,>=2.1b6.dev1438",
     # laion-clap: install separately — pins numpy<2.0.0 which conflicts with qdrant-client on 3.14
     #   uv pip install 'laion-clap>=1.1.6' --no-deps
     #   uv pip install transformers ftfy h5py braceexpand webdataset wget --no-deps
@@ -177,15 +177,15 @@ ci = [
     # typing-spec conformance gap is mostly moot. pyright kept in
     # [dependency-groups] dev for local IDE use + weekly
     # .github/workflows/pyright-safety-net.yml coverage.
-    "pyrefly>=0.62,<1",
+    "pyrefly>=1.1.1,<2",
     "vulture>=2.16",
 ]
 studio = [
     "pyudev>=0.24.3",
-    "ultralytics>=8.4.87",
+    "ultralytics>=8.4.99",
 ]
 tui = [
-    "textual>=3.0,<4",
+    "textual>=8.2.8,<9",
 ]
 host = [
     # Everything — for local development on the host machine
