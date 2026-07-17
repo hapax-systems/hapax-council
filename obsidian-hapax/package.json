@@ -7,10 +7,10 @@
     "dev": "node esbuild.config.mjs --watch"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
-    "esbuild": "^0.25.0",
-    "obsidian": "^1.8.0",
-    "typescript": "^5.7.0"
+    "@types/node": "^26.1.1",
+    "esbuild": "^0.28.1",
+    "obsidian": "^1.13.1",
+    "typescript": "^7.0.2"
   },
   "pnpm": {
     "onlyBuiltDependencies": ["esbuild"]
