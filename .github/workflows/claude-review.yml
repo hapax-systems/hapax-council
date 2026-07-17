@@ -48,7 +48,7 @@ jobs:
         if: steps.auto_fix.outputs.skip == 'true'
         run: echo "PR head is an [auto-fix] commit; review reports success without invoking Claude."
 
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         if: steps.auto_fix.outputs.skip != 'true'
         with:
           fetch-depth: 0
@@ -103,7 +103,7 @@ jobs:
         if: steps.auto_fix.outputs.skip != 'true' && steps.docs.outputs.docs_only == 'true'
         run: echo "Docs-only PR; review reports success without invoking Claude."
 
-      - uses: anthropics/claude-code-action@034cbdb008291e7eeeac420d315fc3b45fca3781
+      - uses: anthropics/claude-code-action@700e7f8316990de46bed556429765647af760efc
         if: >-
           steps.auto_fix.outputs.skip != 'true' &&
           env.CLAUDE_REVIEW_CONFIGURED == 'true' &&
@@ -137,7 +137,7 @@ jobs:
       - name: Generate app token
         if: always() && steps.claude.outcome == 'success' && env.REVIEW_APP_CONFIGURED == 'true'
         id: app-token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         with:
           app-id: ${{ secrets.REVIEW_APP_ID }}
           private-key: ${{ secrets.REVIEW_APP_KEY }}
