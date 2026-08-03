@@ -1,46 +1,54 @@
 """Regression pin: `ruff format` must never own markdown in this repo.
 
-WHY THIS EXISTS. On 2026-07-11 hapax-council merged its last PR for 23 days. The cause was not a
-commit: `.github/workflows/ci.yml` SHA-pins the ruff ACTION but passed no `version:`, so CI installed
-whatever ruff was newest. Ruff 0.16 promoted MARKDOWN formatting out of preview, ~24 untouched docs
-went red, `lint` failed, the REQUIRED `all-green` check failed with it, and the merge queue sealed
-with 75 PRs behind it.
+WHY THIS EXISTS. On 2026-07-11 hapax-council stopped merging for 23 days. Not because of a commit:
+`.github/workflows/ci.yml` SHA-pins the ruff ACTION but passed no `version:`, so CI installed
+whatever ruff was newest. Ruff 0.16 promoted MARKDOWN formatting out of preview, untouched docs went
+red, `lint` failed, the REQUIRED `all-green` failed with it, and the merge queue sealed.
 
-Bisected on files byte-identical to origin/main at the time:
-    ruff 0.15.3 -> "Markdown formatting is experimental, enable preview mode."
-    ruff 0.16.1 -> "2 files would be reformatted"
-
-The fix declares markdown out of scope in CONFIG and pins the tool. These tests exist because the
-original review of that fix objected — correctly — that it "adds no test that invokes Ruff through
-the CI-equivalent path and proves Markdown is excluded". Without that, deleting one `exclude` line
-silently re-arms a 23-day outage, which is precisely how the outage started: a configuration change
-nobody was watching.
+The fix declares markdown out of scope in config and pins the tool. These tests are the pin on the
+fix. Everything here is DISCOVERED rather than enumerated, because the defect is structural: ruff's
+hierarchical discovery makes ANY file carrying its own ruff config the config root for its subtree,
+so a config root added tomorrow must be caught by the same assertion that catches today's.
 """
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tomllib
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-
-#: Every ruff config root in the tree. The three package configs are NOT redundant: each carries its
-#: own [tool.ruff], and ruff's hierarchical discovery makes it the config root for its own subtree,
-#: so a root-level exclude cannot reach them. Measured during the fix: root-config-only still left 3
-#: files flagged (packages/{agentgov,hapax-refusals,hapax-swarm}/README.md).
-CONFIG_ROOTS = (
-    ("ruff.toml", ("format", "exclude")),
-    ("packages/agentgov/pyproject.toml", ("tool", "ruff", "extend-exclude")),
-    ("packages/hapax-refusals/pyproject.toml", ("tool", "ruff", "extend-exclude")),
-    ("packages/hapax-swarm/pyproject.toml", ("tool", "ruff", "extend-exclude")),
-)
+SKIP_DIRS = {".git", ".venv", "node_modules", "__pycache__", ".ruff_cache", "target", "dist"}
 
 
-def _dig(data: dict, path: tuple[str, ...]):
+def _iter_config_roots() -> list[tuple[Path, tuple[str, ...]]]:
+    """Every file in the tree that makes its directory a ruff config root.
+
+    DISCOVERED, not listed. An earlier version of this test hard-coded four known paths; review
+    pointed out that a fifth package carrying [tool.ruff] would silently reintroduce the outage.
+    """
+    found: list[tuple[Path, tuple[str, ...]]] = []
+    for path in REPO_ROOT.rglob("*"):
+        if not path.is_file() or any(part in SKIP_DIRS for part in path.parts):
+            continue
+        if path.name in {"ruff.toml", ".ruff.toml"}:
+            found.append((path, ("format", "exclude")))
+        elif path.name == "pyproject.toml":
+            try:
+                data = tomllib.loads(path.read_text(encoding="utf-8"))
+            except (OSError, tomllib.TOMLDecodeError):
+                continue
+            if isinstance(data.get("tool"), dict) and "ruff" in data["tool"]:
+                found.append((path, ("tool", "ruff", "extend-exclude")))
+    return found
+
+
+def _dig(data: object, path: tuple[str, ...]) -> object | None:
     for key in path:
         if not isinstance(data, dict) or key not in data:
             return None
@@ -48,56 +56,114 @@ def _dig(data: dict, path: tuple[str, ...]):
     return data
 
 
-@pytest.mark.parametrize(("rel_path", "key_path"), CONFIG_ROOTS)
-def test_every_ruff_config_root_excludes_markdown(rel_path: str, key_path: tuple[str, ...]) -> None:
-    """Each config root must declare the markdown exclusion itself."""
-    config = REPO_ROOT / rel_path
-    assert config.is_file(), f"{rel_path} missing — ruff config roots changed; update this pin"
-    excludes = _dig(tomllib.loads(config.read_text(encoding="utf-8")), key_path)
-    assert excludes is not None, (
-        f"{rel_path} no longer declares {'.'.join(key_path)}. Ruff would resume formatting markdown "
-        f"in this subtree; that sealed the merge queue for 23 days on 2026-07-11."
+def _excludes_markdown(config: Path, key_path: tuple[str, ...]) -> bool:
+    data = tomllib.loads(config.read_text(encoding="utf-8"))
+    # A root ruff.toml may use either [format].exclude or a top-level extend-exclude.
+    for candidate in (key_path, ("extend-exclude",), ("tool", "ruff", "extend-exclude")):
+        value = _dig(data, candidate)
+        if isinstance(value, list) and any(str(p).endswith("*.md") for p in value):
+            return True
+    return False
+
+
+def test_every_discovered_ruff_config_root_excludes_markdown() -> None:
+    """Each config root must declare the exclusion itself — a parent's cannot reach it."""
+    roots = _iter_config_roots()
+    assert roots, "no ruff config roots discovered — the walk is broken, not the repo"
+    missing = [
+        str(path.relative_to(REPO_ROOT))
+        for path, key_path in roots
+        if not _excludes_markdown(path, key_path)
+    ]
+    assert not missing, (
+        "ruff config root(s) do not exclude '*.md': "
+        + ", ".join(missing)
+        + ". Ruff's hierarchical discovery makes each of these the config root for its own subtree, "
+        "so a root-level exclude cannot reach them. Markdown formatting there sealed the merge "
+        "queue for 23 days on 2026-07-11."
     )
-    assert any(str(pattern).endswith("*.md") for pattern in excludes), (
-        f"{rel_path}: {'.'.join(key_path)} = {excludes!r} does not cover '*.md'"
-    )
 
 
-def test_ci_pins_the_ruff_version_not_just_the_action() -> None:
-    """A SHA-pinned action that installs an unpinned tool is only half pinned."""
-    workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    action_uses = workflow.count("astral-sh/ruff-action@")
-    version_pins = workflow.count('version: "0.16')
-    assert action_uses > 0, "ruff-action no longer referenced — update this pin"
-    assert version_pins >= action_uses, (
-        f"{action_uses} ruff-action step(s) but only {version_pins} version pin(s). An unpinned "
-        f"ruff can change this gate's behaviour with no commit here — that is the 2026-07-11 outage."
-    )
+def _ruff_action_steps() -> list[dict]:
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    steps: list[dict] = []
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            uses = node.get("uses")
+            if isinstance(uses, str) and uses.startswith("astral-sh/ruff-action@"):
+                steps.append(node)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(workflow)
+    return steps
 
 
-@pytest.mark.skipif(shutil.which("ruff") is None, reason="ruff not resolvable")
-def test_ruff_format_check_leaves_markdown_alone() -> None:
-    """The CI-equivalent invocation must be clean across the whole tree.
+def test_every_ruff_action_step_pins_a_tool_version() -> None:
+    """A SHA-pinned action that installs an unpinned tool is only half pinned.
 
-    This is the half a config assertion cannot give you: it proves the DISCOVERY chain works, not
-    merely that the key is spelled correctly somewhere.
-
-    NOTE THE INVOCATION SHAPE, which is load-bearing and got this test wrong on the first attempt.
-    Ruff applies exclude patterns during PATH DISCOVERY; a file named EXPLICITLY on the command line
-    is formatted regardless (absent --force-exclude). So `ruff format --check some/README.md` exits
-    non-zero even with a correct exclusion, and proves nothing about CI. The workflow passes no
-    paths at all — `args: "format --check"` — so the test must do the same and let discovery run.
+    PARSED, not grepped. An earlier version counted occurrences of the string 'version: "0.16' in
+    the file, which this very docstring would have satisfied.
     """
+    steps = _ruff_action_steps()
+    assert steps, "no astral-sh/ruff-action steps found in ci.yml — update this pin"
+    unpinned = [
+        step.get("uses")
+        for step in steps
+        if not re.fullmatch(r"\d+\.\d+\.\d+", str((step.get("with") or {}).get("version", "")))
+    ]
+    assert not unpinned, (
+        f"{len(unpinned)} of {len(steps)} ruff-action step(s) have no exact `version:` input. "
+        "An unpinned ruff can change this gate's behaviour with no commit here — that is the "
+        "2026-07-11 outage."
+    )
+
+
+def _pinned_ruff_version() -> str:
+    versions = {str((s.get("with") or {}).get("version", "")) for s in _ruff_action_steps()}
+    versions.discard("")
+    assert len(versions) == 1, f"ruff-action steps disagree on version: {sorted(versions)}"
+    return versions.pop()
+
+
+def test_ruff_format_check_leaves_markdown_alone() -> None:
+    """Run the CI invocation, at the CI-pinned version, over the whole tree.
+
+    NEVER SILENTLY SKIPPED. An earlier version skipped when ruff was absent from PATH — a test that
+    quietly does not run is the same fail-quiet defect this whole pin exists to catch.
+
+    THE INVOCATION SHAPE IS LOAD-BEARING. Ruff applies excludes during PATH DISCOVERY; a file named
+    explicitly on the command line is formatted regardless (absent --force-exclude). An earlier
+    version passed an explicit README path and exited 2 against a correct configuration. The
+    workflow passes no paths — `args: "format --check"` — so this must not either.
+    """
+    version = _pinned_ruff_version()
+    uvx = shutil.which("uvx") or shutil.which("uv")
+    if uvx:
+        argv = (
+            [uvx, "tool", "run", f"ruff@{version}"]
+            if uvx.endswith("uv")
+            else [uvx, f"ruff@{version}"]
+        )
+    else:  # pragma: no cover - CI always has uv
+        ruff = shutil.which("ruff")
+        assert ruff, "neither uvx nor ruff resolvable; cannot verify the CI path — fix the runner"
+        argv = [ruff]
+
     result = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        ["ruff", "format", "--check"],
+        [*argv, "format", "--check"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
-        timeout=600,
+        timeout=900,
     )
     assert result.returncode == 0, (
-        "ruff format --check is not clean on the tree — markdown exclusion is declared but not "
-        "reaching the discovery path. This is the 2026-07-11 merge-queue seal.\n"
+        f"`ruff format --check` (ruff {version}) is not clean on the tree — the markdown exclusion "
+        "is declared but not reaching the discovery path. This is the 2026-07-11 merge-queue seal.\n"
         f"stdout: {result.stdout[-1200:]}\nstderr: {result.stderr[-400:]}"
     )
     assert ".md" not in result.stdout, (
