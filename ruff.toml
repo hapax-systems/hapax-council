@@ -35,7 +35,8 @@ known-first-party = ["agents", "shared", "logos"]
 [format]
 quote-style = "double"
 # Markdown is NOT ours to format. Ruff promoted markdown formatting out of preview in 0.16, and
-# because .github/workflows/ci.yml pins the ruff ACTION by SHA but passes no `version:`, CI silently
+# because .github/workflows/ci.yml pinned the ruff ACTION by SHA while passing no `version:` — the
+# state BEFORE this change; the same commit adds `version: "0.16.1"` to both steps — CI silently
 # picked up the new behaviour. ~24 docs that nobody had touched went red overnight, `lint` failed,
 # `all-green` failed with it, and since `all-green` is a REQUIRED check the entire merge queue
 # jammed: hapax-council merged nothing between 2026-07-11 and 2026-08-03 while 75 PRs accumulated.
