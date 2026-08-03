@@ -1685,6 +1685,18 @@ verify_protected_user_unit_oom_scores() {
         unit="${spec%%:*}"
         score="${spec##*:}"
         cgroup="${protected_user_cgroup_snapshot[$unit]:-}"
+        # HOST FIT: a unit that does not exist on this host has no live properties to verify.
+        # systemctl STILL answers `show` for an unknown unit, with DEFAULTS -- OOMScoreAdjust=200,
+        # Slice=, MemoryLow=0, MemoryMin=0 -- every one of which this loop then reads as drift and
+        # hard-fails on. Absent is not drifted; it is UNEVALUABLE, and conflating the two is what
+        # bricked source activation on hapax-appendix for three weeks. This package is podium-shaped:
+        # hapax-daimonion / studio-compositor / hapax-imagination are LoadState=not-found on
+        # appendix, so every run failed verify, exited 1, rolled the deploy back, and repeated every
+        # two minutes -- 2176 incident events before containment stopped it. Skip, and say so.
+        if [ "$(user_systemctl show "$unit" -p LoadState --value 2>/dev/null || true)" = "not-found" ]; then
+            echo "p0-oom: skipping $unit — not present on this host (LoadState=not-found); nothing to verify" >&2
+            continue
+        fi
         configured="$(user_systemctl show "$unit" -p OOMScoreAdjust --value 2>/dev/null || true)"
         if [ "$configured" != "100" ]; then
             echo "user unit startup OOM policy drift for $unit: configured=$configured expected=100; the user manager cannot lower a child score, so root must apply live score $score after start; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
