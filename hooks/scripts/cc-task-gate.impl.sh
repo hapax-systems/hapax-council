@@ -794,7 +794,14 @@ while idx < len(lines):
             items.append(child[2:].strip().strip('"').strip("'"))
             idx += 1
             continue
-        if not child:
+        # Blank lines and COMMENTS are not list terminators. Before this, a `#` line inside a
+        # block sequence hit the `break` below and SILENTLY DROPPED every remaining item —
+        # measured on a live note: 6 refs written, 4 parsed, 2 lost with no diagnostic. That
+        # is a fail-quiet scope reduction, and worse, it is invited: mutation_scope_refs is
+        # exactly the field an author wants to annotate when widening it, so documenting the
+        # change is what discards it. YAML permits comments anywhere in a block sequence; this
+        # parser must too.
+        if not child or child.startswith("#"):
             idx += 1
             continue
         break
