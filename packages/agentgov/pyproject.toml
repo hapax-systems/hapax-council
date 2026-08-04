@@ -47,6 +47,11 @@ packages = ["src/agentgov"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# Markdown is not ours to format. Ruff 0.16 promoted markdown formatting out of preview and README.md
+# went red without anyone touching it. Declared here as well as in the root ruff.toml because this
+# package's [tool.ruff] makes it the config root for its own subtree — a root-level exclude cannot
+# reach it.
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

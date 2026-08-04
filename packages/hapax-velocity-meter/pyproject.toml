@@ -69,6 +69,12 @@ include = [
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+# Markdown is not ours to format. This package carries its own [tool.ruff], which makes it the config
+# root for its own subtree — a root-level exclude cannot reach it. Latent rather than active today
+# only because this package has no markdown ruff currently flags; adding a README with a code block
+# would re-arm the 2026-07-11 merge-queue seal. Found by the discovery-based regression pin, which
+# replaced an enumeration that had missed this root.
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = [
