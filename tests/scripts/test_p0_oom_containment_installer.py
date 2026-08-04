@@ -3266,3 +3266,39 @@ def test_degraded_search_path_may_not_be_used_to_prove_absence(tmp_path: Path) -
         "it failed, but not because absence was unprovable — the assertion would pass on an "
         f"unrelated failure.\nstderr: {result.stderr[-2000:]}"
     )
+
+
+def test_authoritative_systemd_analyze_discovery_finds_a_unit_file(tmp_path: Path) -> None:
+    """codex-1 on PR #4499: only the FAILING systemd-analyze branch was covered.
+
+    The success branch is the one that runs on every real host, and it is the branch that decides
+    whether the host-absent skip is even permitted. Untested, a change that made discovery return
+    nothing on success would make every unit look absent, permit every allow-listed skip, and be
+    invisible — while the failure-path test kept passing.
+
+    Here systemd-analyze SUCCEEDS and prints a directory holding the unit file, so discovery is
+    authoritative and must find it.
+    """
+    discovered = tmp_path / "analyze-reported-path"
+    discovered.mkdir()
+    (discovered / "hapax-daimonion.service").write_text("[Unit]\n", encoding="utf-8")
+
+    ok_analyze = tmp_path / "systemd-analyze-ok"
+    ok_analyze.write_text(
+        f"#!/usr/bin/env bash\nprintf '%s\\n' {discovered}\nexit 0\n", encoding="utf-8"
+    )
+    ok_analyze.chmod(0o755)
+
+    result = _run_install_verify_live(
+        tmp_path,
+        load_state={"hapax-daimonion.service": "not-found"},
+        unit_files=set(),
+        no_unit_path_override=True,
+        systemd_analyze=str(ok_analyze),
+    )
+    assert "unit file for it EXISTS on this host" in result.stderr, (
+        "authoritative systemd-analyze discovery did not find a unit file in the directory it "
+        "itself reported. If discovery yields nothing on the success path, every unit looks absent "
+        f"and every allow-listed skip is permitted.\nstderr: {result.stderr[-2500:]}"
+    )
+    assert result.returncode != 0, "an installed-but-unloadable unit must fail closed"
