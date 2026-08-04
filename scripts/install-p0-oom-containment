@@ -700,7 +700,14 @@ user_unit_file_present() {
     local unit="$1" dir
     while IFS= read -r dir; do
         [ -n "$dir" ] || continue
-        [ -e "$dir/$unit" ] && return 0
+        # -e FOLLOWS symlinks and is false for a DANGLING one, so `-e` alone would report a broken
+        # `systemctl --user enable` link as "never installed here" and take the skip -- the exact
+        # installed-here-but-unloadable case this function exists to catch, inverted. A dangling
+        # link is the strongest possible evidence the unit WAS installed on this host. `-L` matches
+        # the link regardless of its target. Found by blind review (codex-1) on PR #4499.
+        if [ -e "$dir/$unit" ] || [ -L "$dir/$unit" ]; then
+            return 0
+        fi
     done < <(user_unit_search_paths)
     return 1
 }

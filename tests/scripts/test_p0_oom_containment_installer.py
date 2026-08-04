@@ -2904,6 +2904,8 @@ def _run_install_verify_live(
     load_state: dict[str, str] | None = None,
     drift: dict[str, dict[str, str]] | None = None,
     unit_files: set[str] | None = None,
+    no_unit_path_override: bool = False,
+    systemd_analyze: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Drive the REAL installer through --install --verify-live against temp destinations.
 
@@ -2963,7 +2965,15 @@ def _run_install_verify_live(
     unit_path_dir = tmp_path / "user-unit-path"
     unit_path_dir.mkdir()
     for unit in unit_files:
-        (unit_path_dir / unit).write_text("[Unit]\nDescription=placed by test\n", encoding="utf-8")
+        if unit.startswith("dangling:"):
+            # A BROKEN `systemctl --user enable` link. `-e` is FALSE here because it follows the
+            # link, so this fixture is what distinguishes a correct presence check from one that
+            # reports an enabled-but-broken unit as never-installed.
+            (unit_path_dir / unit[len("dangling:") :]).symlink_to(tmp_path / "no-such-target.service")
+        else:
+            (unit_path_dir / unit).write_text(
+                "[Unit]\nDescription=placed by test\n", encoding="utf-8"
+            )
 
     return subprocess.run(
         [str(INSTALLER), "--install", "--verify-live"],
@@ -2982,7 +2992,12 @@ def _run_install_verify_live(
             "HAPAX_OOM_ENFORCER_DEST": str(enforcer_dest),
             "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
             "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
-            "HAPAX_OOM_USER_UNIT_PATHS": str(unit_path_dir),
+            **(
+                {}
+                if no_unit_path_override
+                else {"HAPAX_OOM_USER_UNIT_PATHS": str(unit_path_dir)}
+            ),
+            **({"HAPAX_OOM_SYSTEMD_ANALYZE": systemd_analyze} if systemd_analyze else {}),
             "HAPAX_OOM_EFFECTIVE_UID": "0",
             "HAPAX_OOM_RUNUSER": str(fake_runuser),
             "HAPAX_OOM_INSTALL_SUDO": "",
@@ -3157,4 +3172,65 @@ def test_verify_live_fails_when_it_verified_nothing_at_all(tmp_path: Path) -> No
         "it failed, but the vacuous-pass guard is not what caught it — the three REQUIRED units "
         "failing closed would produce a non-zero exit on their own and mask the guard's absence.\n"
         f"stderr: {result.stderr[-2000:]}"
+    )
+
+
+def test_a_dangling_unit_symlink_is_not_read_as_host_absence(tmp_path: Path) -> None:
+    """MAJOR from blind review (codex-1) on PR #4499: `-e` follows symlinks.
+
+    `systemctl --user enable` installs a SYMLINK into the unit path. If its target is removed the
+    link dangles, `[ -e ]` on it is FALSE, and a presence check built only on `-e` reports "no unit
+    file here" — so an allow-listed unit that is enabled-but-broken takes the host-absent skip and
+    --verify-live passes having verified nothing about it.
+
+    That is the exact case the presence check exists to catch, inverted. A dangling link is in fact
+    the STRONGEST evidence the unit was installed on this host: something deliberately linked it.
+    """
+    result = _run_install_verify_live(
+        tmp_path,
+        load_state={"hapax-daimonion.service": "not-found"},
+        unit_files={"dangling:hapax-daimonion.service"},
+    )
+    assert result.returncode != 0, (
+        "an allow-listed unit whose unit file is a DANGLING SYMLINK was skipped as host-absent. "
+        "The link proves the unit was enabled here; the broken target is a load failure and must "
+        f"fail closed.\nstderr: {result.stderr[-2000:]}"
+    )
+    assert "unit file for it EXISTS on this host" in result.stderr, (
+        "it failed, but not via the presence check — the assertion would pass on an unrelated "
+        f"failure.\nstderr: {result.stderr[-2000:]}"
+    )
+
+
+def test_unit_search_path_falls_back_when_systemd_analyze_is_unusable(tmp_path: Path) -> None:
+    """glm-2 minor on PR #4499: the SYSTEMD_ANALYZE branch was declared but never exercised.
+
+    With no HAPAX_OOM_USER_UNIT_PATHS override the installer asks `systemd-analyze --user
+    unit-paths`, and falls back to a static list only when that fails. Neither path had a test, so
+    a fallback that produced no directories — making EVERY unit look absent and every allow-listed
+    unit silently skippable — would not have been caught.
+
+    Here systemd-analyze is pointed at a binary that always fails, forcing the fallback, and the
+    unit file is placed in the fallback's own $TARGET_HOME location.
+    """
+    target_home = tmp_path / "target-home"
+    fallback_dir = target_home / ".config" / "systemd" / "user"
+    fallback_dir.mkdir(parents=True, exist_ok=True)
+    (fallback_dir / "hapax-daimonion.service").write_text("[Unit]\n", encoding="utf-8")
+
+    failing_analyze = tmp_path / "systemd-analyze-broken"
+    failing_analyze.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+    failing_analyze.chmod(0o755)
+
+    result = _run_install_verify_live(
+        tmp_path,
+        load_state={"hapax-daimonion.service": "not-found"},
+        unit_files=set(),
+        no_unit_path_override=True,
+        systemd_analyze=str(failing_analyze),
+    )
+    assert "unit file for it EXISTS on this host" in result.stderr, (
+        "with systemd-analyze failing, the static fallback did not find a unit file that is "
+        "present in ~/.config/systemd/user. A fallback that yields no directories makes every "
+        f"unit look absent and every allow-listed unit skippable.\nstderr: {result.stderr[-2500:]}"
     )
