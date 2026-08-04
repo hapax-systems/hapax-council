@@ -2883,15 +2883,35 @@ def _load_state_cases(load_state: dict[str, str]) -> str:
     return "\n".join(cases)
 
 
+def _drift_cases(drift: dict[str, dict[str, str]]) -> str:
+    """systemctl stub cases that make a PRESENT unit report wrong policy values.
+
+    Needed to prove the allow-list only tolerates ABSENCE. Without an injectable drift the suite can
+    only show that an absent allow-listed unit is skipped; it cannot show that a LOADED allow-listed
+    unit is still checked, which is the property that stops the list from becoming an exemption.
+    """
+    cases = []
+    for unit, props in drift.items():
+        for prop, value in props.items():
+            cases.append(
+                f"  *--user\\ show\\ {unit}\\ -p\\ {prop}\\ --value*) printf '%s\\n' '{value}' ;;"
+            )
+    return "\n".join(cases)
+
+
 def _run_install_verify_live(
-    tmp_path: Path, load_state: dict[str, str] | None = None
+    tmp_path: Path,
+    load_state: dict[str, str] | None = None,
+    drift: dict[str, dict[str, str]] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Drive the REAL installer through --install --verify-live against temp destinations.
 
     Mirrors test_p0_oom_containment_install_and_verify_live_against_temp_destinations, adding a
-    LoadState-answering systemctl stub so the host-fit branch is actually reached.
+    LoadState-answering systemctl stub so the host-fit branch is actually reached, and an optional
+    drift injector so a PRESENT unit can be made to report wrong policy values.
     """
     load_state = load_state or {}
+    drift = drift or {}
     system_dir = tmp_path / "systemd-system"
     target_home = tmp_path / "target-home"
     root_home = tmp_path / "root-home"
@@ -2913,6 +2933,7 @@ def _run_install_verify_live(
         "#!/usr/bin/env bash\n"
         'case "$*" in\n'
         '  *"show user@1000.service -p MainPID --value"*) printf "900\\n" ;;\n'
+        f"{_drift_cases(drift)}\n"
         f"{_load_state_cases(load_state)}\n"
         f"{_systemctl_system_memory_cases(RECOVERY_SYSTEM_UNIT_PIDS)}\n"
         f"{_systemctl_user_unit_cases()}\n"
@@ -2995,4 +3016,36 @@ def test_verify_live_fails_closed_on_an_absent_required_unit(tmp_path: Path) -> 
     assert "next action" in result.stderr and "host_optional_user_units" in result.stderr, (
         "per executive_function the failure must carry a next action and name both lawful exits "
         f"(install the unit, or justify the allow-list entry).\nstderr: {result.stderr[-2000:]}"
+    )
+
+
+def test_allow_list_membership_only_narrows_the_not_found_case(tmp_path: Path) -> None:
+    """A host-optional unit that IS present must still be verified in full.
+
+    The allow-list exists to make ABSENCE tolerable, not to make a unit exempt. If membership also
+    suppressed checks on a unit that is loaded, then adding a name to that list would silently stop
+    verifying it on the host where it actually runs — podium would stop verifying its own compositor
+    stack while reporting success, which is the same false green the list was added to prevent, just
+    aimed at a different host.
+
+    This drives the real verifier with hapax-daimonion.service LOADED (not not-found) and with a
+    deliberate OOMScoreAdjust drift. The allow-list must not save it.
+    """
+    result = _run_install_verify_live(
+        tmp_path,
+        load_state={"hapax-daimonion.service": "loaded"},
+        drift={"hapax-daimonion.service": {"OOMScoreAdjust": "200"}},
+    )
+    assert result.returncode != 0, (
+        "a PRESENT host-optional unit with real OOM policy drift passed verify-live — allow-list "
+        "membership is exempting a loaded unit instead of only tolerating its absence.\n"
+        f"stdout: {result.stdout[-1200:]}"
+    )
+    assert "hapax-daimonion.service" in result.stderr, (
+        "the drift on the present host-optional unit was not reported by name.\n"
+        f"stderr: {result.stderr[-1500:]}"
+    )
+    assert "skipping hapax-daimonion.service" not in result.stderr, (
+        "verify-live SKIPPED a unit that is loaded. The skip branch must be reachable only via "
+        f"LoadState=not-found.\nstderr: {result.stderr[-1500:]}"
     )
