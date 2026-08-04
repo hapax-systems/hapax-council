@@ -109,15 +109,24 @@ def test_one_below_observed_requirement_fails_with_named_limit_and_next_action(
         _verify(root, anchors, limits)
 
 
+def _first_agentic_run_graph_object(root: Path) -> Path:
+    """Locate the run-graph CAS object among mixed JSON and non-JSON store bytes."""
+
+    for path in sorted((root / "objects" / "sha256").glob("*/*")):
+        try:
+            document = json.loads(path.read_bytes())
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if isinstance(document, dict) and document.get("document_type") == "agentic_run_graph":
+            return path
+    raise AssertionError("golden terminal fixture is missing an agentic_run_graph object")
+
+
 def test_scheduled_pair_limit_rejects_before_recursive_graph_decode(
     golden_terminal: tuple[Path, dict[str, str]],
 ) -> None:
     root, _ = golden_terminal
-    graph_path = next(
-        path
-        for path in (root / "objects" / "sha256").glob("*/*")
-        if json.loads(path.read_bytes()).get("document_type") == "agentic_run_graph"
-    )
+    graph_path = _first_agentic_run_graph_object(root)
     document = json.loads(graph_path.read_bytes())
     scheduled_pairs = document["payload"]["graph"]["fields"]["scheduled_pairs"]
     document["payload"]["graph"]["fields"]["scheduled_pairs"] = scheduled_pairs * 2
@@ -150,11 +159,7 @@ def test_fixed_graph_arrays_reject_before_recursive_decode(
     mutation: Callable[[list[object]], list[object]],
 ) -> None:
     root, _ = golden_terminal
-    graph_path = next(
-        path
-        for path in (root / "objects" / "sha256").glob("*/*")
-        if json.loads(path.read_bytes()).get("document_type") == "agentic_run_graph"
-    )
+    graph_path = _first_agentic_run_graph_object(root)
     document = json.loads(graph_path.read_bytes())
     if field_name == "run_artifact_bindings":
         fields_row = document["payload"]["graph"]["fields"]
