@@ -222,13 +222,26 @@ jobs:
           cache-dependency-glob: |
             pyproject.toml
             uv.lock
+      # The action is SHA-pinned but installs whatever ruff is newest unless `version:` is given, so
+      # a ruff release can change this gate's behaviour with no commit here. That is exactly what
+      # happened: ruff 0.16 promoted MARKDOWN formatting out of preview, ~24 untouched docs went red,
+      # `lint` failed, `all-green` failed with it, and because all-green is REQUIRED the whole merge
+      # queue jammed — hapax-council merged nothing between 2026-07-11 and 2026-08-03 while 75 PRs
+      # piled up. Pin the tool, not just the action.
       - uses: astral-sh/ruff-action@0ce1b0bf8b818ef400413f810f8a11cdbda0034b
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         with:
+          version: "0.16.1"
           args: "check"
+      # The markdown exclusion is DECLARED IN CONFIG, not passed here. An `--exclude *.md` in this
+      # args string is unquoted when the action interpolates it into a shell, so it glob-expands
+      # against the repo root (AGENTS.md, CLAUDE.md, CONTRIBUTING.md, GOVERNANCE.md, NOTICE.md,
+      # README.md) and silently becomes "--exclude <those six>" plus stray positional args — the
+      # nested docs it was meant to cover would still be checked. Config cannot be word-split.
       - uses: astral-sh/ruff-action@0ce1b0bf8b818ef400413f810f8a11cdbda0034b
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         with:
+          version: "0.16.1"
           args: "format --check"
       # Task #155 Stage 5 — anti-personification fail-loud CI gate.
       # Scans axioms/**/*.md and prompt-surface modules; exits non-zero
