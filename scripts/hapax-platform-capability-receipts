@@ -754,11 +754,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     observed_at = parse_utc(args.now) if args.now else datetime.now(UTC).replace(microsecond=0)
-    registry, _observation_errors = load_platform_capability_registry_for_dispatch(
+    registry, non_supply_observation_errors = load_platform_capability_registry_for_dispatch(
         args.registry,
         now=observed_at,
         apply_receipts=False,
     )
+    if non_supply_observation_errors and not args.json:
+        for err in non_supply_observation_errors:
+            print(
+                f"NOTE: non-supply observation error (inert for receipt write): {err}",
+                file=sys.stderr,
+            )
     routes_by_platform = platform_routes(registry.routes)
     selected = (
         sorted(routes_by_platform)

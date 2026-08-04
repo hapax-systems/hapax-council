@@ -37,7 +37,7 @@ def test_machine_provenance_keeps_the_no_authority_claim_ceiling() -> None:
 
     assert document["record_type"] == "unsigned_local_source_transformation_record"
     assert document["attestation_status"] == "not_signed_not_slsa_not_in_toto"
-    assert document["repository"]["worktree_state"] == "prepared_uncommitted"
+    assert document["repository"]["worktree_state"] == "committed_feature_branch_not_released"
     assert document["scope"] == {
         "role": "evidence_only_non_supply",
         "activation": False,

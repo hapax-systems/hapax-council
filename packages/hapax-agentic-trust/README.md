@@ -103,8 +103,9 @@ library only as `evidence_only_non_supply`.
 
 ## Source, provenance, and license
 
-This package is currently prepared in an uncommitted task worktree; it is not
-yet a durable migration or release. Human-readable provenance is in
-[PROVENANCE.md](PROVENANCE.md), and the machine-readable source/transformation
-record is in [PROVENANCE.json](PROVENANCE.json). The package is governed by the
-Council's PolyForm Strict 1.0.0 license.
+This package is landed as Council source on the feature branch (PR landing
+path only). It is not a release, activation, or admitted runtime dependency.
+Human-readable provenance is in [PROVENANCE.md](PROVENANCE.md), and the
+machine-readable source/transformation record is in
+[PROVENANCE.json](PROVENANCE.json). The package is governed by the Council's
+PolyForm Strict 1.0.0 license.

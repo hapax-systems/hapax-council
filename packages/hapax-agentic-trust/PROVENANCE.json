@@ -9,9 +9,9 @@
   },
   "repository": {
     "base_commit": "fcb740f332c242820f13b6482fd8a998bbe8df8a",
-    "introduced_commit": null,
+    "introduced_commit": "eb7277750af5ef5b42299ce35c7c344f0c1e0154",
     "task_id": "cc-task-agentic-trust-evidence-only-onboarding-20260804",
-    "worktree_state": "prepared_uncommitted"
+    "worktree_state": "committed_feature_branch_not_released"
   },
   "scope": {
     "role": "evidence_only_non_supply",
@@ -113,22 +113,22 @@
   },
   "payload": {
     "manifest_path": "provenance/package-payload-v1.sha256",
-    "manifest_sha256": "8a12cd8fc0c53d7b86a3a889fe97c8d5f9c59075a5060740ddb5aa8018b40718",
+    "manifest_sha256": "4ac5c7ce52f8b62159518b9c0ecf7ae7b0d4717670a5171299c4e3d51aeb0604",
     "manifest_format": "sha256sum_lines_sorted_by_posix_path_lc_all_c",
     "file_count": 24,
-    "total_bytes": 521604,
+    "total_bytes": 521670,
     "self_digest_excluded_to_avoid_recursive_manifest": true,
     "files": [
       {
         "path": "PROVENANCE.md",
-        "size": 6333,
-        "sha256": "7cecc9991d58cc6a1dacb6127c52cc5d4c9332dd02bd1a7d635a32646ad902f3",
+        "size": 6344,
+        "sha256": "ecc8af7034dcf24b7efb3a095656227f8b54ee2ab5d745d9013f9bf53e687f90",
         "role": "documentation"
       },
       {
         "path": "README.md",
-        "size": 5322,
-        "sha256": "101452efbd0de0c5c323d443fb4f0a1b49b92963388568f12233a736b270b1d4",
+        "size": 5360,
+        "sha256": "e8b726a545672f7e8292a31d574714e69570dc20677375c80213a11014829437",
         "role": "documentation"
       },
       {
@@ -229,8 +229,8 @@
       },
       {
         "path": "tests/test_provenance.py",
-        "size": 5076,
-        "sha256": "777ab37160537478a7b20f7b33ffce6eecdc83bf81371a08f35ad4c360eae102",
+        "size": 5093,
+        "sha256": "2e15d2e36382a4737b1fc95e822c07b2f31b19397412f8982e090efcc53668a4",
         "role": "test"
       },
       {

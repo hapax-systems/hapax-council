@@ -1,6 +1,6 @@
 # Agentic-trust verifier provenance
 
-Status: prepared and validated in an uncommitted task worktree  
+Status: committed on feature branch (source land; not release/activation)  
 Date: 2026-08-04  
 Base commit: `fcb740f332c242820f13b6482fd8a998bbe8df8a`  
 Task: `cc-task-agentic-trust-evidence-only-onboarding-20260804`
