@@ -2829,3 +2829,532 @@ def test_root_failure_intake_reports_action_when_emergency_ledger_is_unwritable(
     assert "unit=hapax-oom-score-enforce.service" in result.stderr
     assert f"missing_intake={tmp_path / 'missing-intake'}" in result.stderr
     assert "next action: repair the ledger parent ownership/capacity" in result.stderr
+
+
+# What real systemd answers for a unit it has never heard of. VERIFIED on this host, 2026-08-04,
+# against both a fabricated unit name and a genuinely-absent protected unit:
+#
+#   systemctl --user show <unknown>.service -p LoadState      --value  -> not-found
+#   systemctl --user show <unknown>.service -p OOMScoreAdjust --value  -> 200
+#   systemctl --user show <unknown>.service -p Slice          --value  -> (empty)
+#   systemctl --user show <unknown>.service -p MemoryLow      --value  -> 0
+#   systemctl --user show <unknown>.service -p MemoryMin      --value  -> 0
+#
+# Re-derive with:
+#   for p in LoadState OOMScoreAdjust Slice MemoryLow MemoryMin; do \
+#     systemctl --user show definitely-not-a-real-unit.service -p "$p" --value; done
+#
+# THIS is the 2026-07-11 mechanism, and it is why LoadState alone is not enough to reproduce it:
+# systemctl does not error on an unknown unit, it ANSWERS WITH DEFAULTS, and those defaults are
+# indistinguishable from drift to a verifier that does not check existence first. A stub that
+# reported not-found while still returning the CORRECT policy values would exercise the skip branch
+# without ever demonstrating what the skip prevents.
+UNKNOWN_UNIT_SYSTEMD_DEFAULTS = {
+    "OOMScoreAdjust": "200",
+    "Slice": "",
+    "MemoryLow": "0",
+    "MemoryMin": "0",
+}
+
+
+def _load_state_cases(load_state: dict[str, str]) -> str:
+    """systemctl stub cases for units whose LoadState is being forced.
+
+    The pre-existing stub answers no LoadState query at all, so it returned empty, "not-found" never
+    matched, and the host-fit branch was unreachable in tests — which is why the full
+    install/verify-live test passed without ever executing the code it appeared to cover.
+
+    For any unit forced to not-found, this ALSO emits systemd's real defaults-for-unknown-unit, so
+    the drift checks downstream see exactly what they would see on a live host. Without the host-fit
+    branch those defaults read as drift and verify-live fails; with it, the unit is skipped. That
+    difference is what makes the assertions discriminating rather than decorative.
+    """
+    cases = []
+    for unit, state in load_state.items():
+        cases.append(
+            f"  *--user\\ show\\ {unit}\\ -p\\ LoadState\\ --value*) printf '%s\\n' '{state}' ;;"
+        )
+        if state == "not-found":
+            for prop, value in UNKNOWN_UNIT_SYSTEMD_DEFAULTS.items():
+                cases.append(
+                    f"  *--user\\ show\\ {unit}\\ -p\\ {prop}\\ --value*) printf '%s\\n' '{value}' ;;"
+                )
+    cases.append("  *-p\\ LoadState\\ --value*) printf '%s\\n' 'loaded' ;;")
+    return "\n".join(cases)
+
+
+def _drift_cases(drift: dict[str, dict[str, str]]) -> str:
+    """systemctl stub cases that make a PRESENT unit report wrong policy values.
+
+    Needed to prove the allow-list only tolerates ABSENCE. Without an injectable drift the suite can
+    only show that an absent allow-listed unit is skipped; it cannot show that a LOADED allow-listed
+    unit is still checked, which is the property that stops the list from becoming an exemption.
+    """
+    cases = []
+    for unit, props in drift.items():
+        for prop, value in props.items():
+            cases.append(
+                f"  *--user\\ show\\ {unit}\\ -p\\ {prop}\\ --value*) printf '%s\\n' '{value}' ;;"
+            )
+    return "\n".join(cases)
+
+
+def _run_install_verify_live(
+    tmp_path: Path,
+    load_state: dict[str, str] | None = None,
+    drift: dict[str, dict[str, str]] | None = None,
+    unit_files: set[str] | None = None,
+    no_unit_path_override: bool = False,
+    systemd_analyze: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Drive the REAL installer through --install --verify-live against temp destinations.
+
+    Mirrors test_p0_oom_containment_install_and_verify_live_against_temp_destinations, adding a
+    LoadState-answering systemctl stub so the host-fit branch is actually reached, and an optional
+    drift injector so a PRESENT unit can be made to report wrong policy values.
+
+    `unit_files` places unit FILES on the fake host without making them load, which is the state
+    that distinguishes "never installed here" from "installed here and broken".
+
+    THE UNIT SEARCH PATH IS PINNED TO tmp_path. Left unset, the installer asks the real
+    `systemd-analyze --user unit-paths` and finds the REAL machine's units — so a test asserting
+    that pipewire.service is absent would silently be told it is present, and would assert against
+    whatever the developer's laptop happens to have installed. Hermetic by construction.
+    """
+    load_state = load_state or {}
+    drift = drift or {}
+    unit_files = unit_files or set()
+    system_dir = tmp_path / "systemd-system"
+    target_home = tmp_path / "target-home"
+    root_home = tmp_path / "root-home"
+    user_dir = target_home / ".config" / "systemd" / "user"
+    user_control_dir = target_home / ".config" / "systemd" / "user.control"
+    earlyoom_dest = tmp_path / "earlyoom"
+    enforcer_dest = tmp_path / "sbin" / "hapax-oom-score-enforce"
+    root_failure_dest = tmp_path / "sbin" / "hapax-root-failure-intake"
+    root_defer = tmp_path / "root-required"
+    installed_source = tmp_path / "current-source"
+    (installed_source / "scripts").mkdir(parents=True)
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=100)
+    _write_recovery_procs(proc_root)
+
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$*" in\n'
+        '  *"show user@1000.service -p MainPID --value"*) printf "900\\n" ;;\n'
+        f"{_drift_cases(drift)}\n"
+        f"{_load_state_cases(load_state)}\n"
+        f"{_systemctl_system_memory_cases(RECOVERY_SYSTEM_UNIT_PIDS)}\n"
+        f"{_systemctl_user_unit_cases()}\n"
+        f"{_systemctl_app_slice_cases()}\n"
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+    fake_runuser = tmp_path / "runuser"
+    fake_runuser.write_text(
+        "#!/usr/bin/env bash\n"
+        'while [ "$1" != "--" ]; do shift; done\n'
+        "shift\n"
+        # Mark the environment so a test can prove a command reached the target user THROUGH
+        # runuser rather than being executed directly as root.
+        'exec env RUNUSER_MARKER=yes "$@"\n',
+        encoding="utf-8",
+    )
+    fake_runuser.chmod(0o755)
+
+    unit_path_dir = tmp_path / "user-unit-path"
+    unit_path_dir.mkdir()
+    for unit in unit_files:
+        if unit.startswith("dangling:"):
+            # A BROKEN `systemctl --user enable` link. `-e` is FALSE here because it follows the
+            # link, so this fixture is what distinguishes a correct presence check from one that
+            # reports an enabled-but-broken unit as never-installed.
+            (unit_path_dir / unit[len("dangling:") :]).symlink_to(
+                tmp_path / "no-such-target.service"
+            )
+        else:
+            (unit_path_dir / unit).write_text(
+                "[Unit]\nDescription=placed by test\n", encoding="utf-8"
+            )
+
+    return subprocess.run(
+        [str(INSTALLER), "--install", "--verify-live"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(root_home),
+            "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(system_dir),
+            "HAPAX_OOM_SYSTEMD_USER_DIR": str(user_dir),
+            "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR": str(user_control_dir),
+            "HAPAX_OOM_TARGET_UID": "1000",
+            "HAPAX_OOM_TARGET_HOME": str(target_home),
+            "HAPAX_OOM_EARLYOOM_DEST": str(earlyoom_dest),
+            "HAPAX_OOM_ENFORCER_DEST": str(enforcer_dest),
+            "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
+            "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            **({} if no_unit_path_override else {"HAPAX_OOM_USER_UNIT_PATHS": str(unit_path_dir)}),
+            **({"HAPAX_OOM_SYSTEMD_ANALYZE": systemd_analyze} if systemd_analyze else {}),
+            "HAPAX_OOM_EFFECTIVE_UID": "0",
+            "HAPAX_OOM_RUNUSER": str(fake_runuser),
+            "HAPAX_OOM_INSTALL_SUDO": "",
+            "HAPAX_OOM_PROC_ROOT": str(proc_root),
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(root_defer),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": REPO_HEAD,
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
+            "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source),
+        },
+    )
+
+
+def test_verify_live_skips_an_absent_host_optional_unit(tmp_path: Path) -> None:
+    """EXECUTES THE BRANCH. A podium-shaped unit absent here must be skipped, not hard-failed.
+
+    This is the 2026-07-11 regression: appendix has no hapax-daimonion/studio-compositor/
+    hapax-imagination, systemctl answered `show` for them with DEFAULTS, the verifier read those
+    defaults as drift, exited 1, rolled the deploy back, and repeated every two minutes for 2,176
+    incident events.
+    """
+    result = _run_install_verify_live(tmp_path, load_state={"hapax-daimonion.service": "not-found"})
+    assert result.returncode == 0, (
+        "verify-live hard-failed on an absent HOST-OPTIONAL unit — the 2026-07-11 regression is "
+        f"back.\nstderr: {result.stderr[-2000:]}"
+    )
+    assert "skipping hapax-daimonion.service" in result.stderr, (
+        "the skip was not announced; a silent skip is indistinguishable from a unit that was "
+        f"actually verified.\nstderr: {result.stderr[-2000:]}"
+    )
+
+
+def test_verify_live_fails_closed_on_an_absent_required_unit(tmp_path: Path) -> None:
+    """EXECUTES THE BRANCH. A REQUIRED unit absent here must fail, never be skipped.
+
+    Without this, --verify-live can report success having verified nothing: every protected unit
+    absent, every one skipped, exit 0. That is a false green in the package whose job is to prevent
+    one, and it is what the first version of this fix actually did.
+    """
+    result = _run_install_verify_live(tmp_path, load_state={"pipewire.service": "not-found"})
+    assert result.returncode != 0, (
+        "verify-live PASSED while a required protected unit was absent — it reported success "
+        f"having verified nothing about it.\nstdout: {result.stdout[-1500:]}"
+    )
+    assert "required protected user unit pipewire.service is absent" in result.stderr, (
+        f"the failure did not name the absent required unit.\nstderr: {result.stderr[-2000:]}"
+    )
+    assert "next action" in result.stderr and "host_optional_user_units" in result.stderr, (
+        "per executive_function the failure must carry a next action and name both lawful exits "
+        f"(install the unit, or justify the allow-list entry).\nstderr: {result.stderr[-2000:]}"
+    )
+
+
+def test_allow_list_membership_only_narrows_the_not_found_case(tmp_path: Path) -> None:
+    """A host-optional unit that IS present must still be verified in full.
+
+    The allow-list exists to make ABSENCE tolerable, not to make a unit exempt. If membership also
+    suppressed checks on a unit that is loaded, then adding a name to that list would silently stop
+    verifying it on the host where it actually runs — podium would stop verifying its own compositor
+    stack while reporting success, which is the same false green the list was added to prevent, just
+    aimed at a different host.
+
+    This drives the real verifier with hapax-daimonion.service LOADED (not not-found) and with a
+    deliberate OOMScoreAdjust drift. The allow-list must not save it.
+    """
+    result = _run_install_verify_live(
+        tmp_path,
+        load_state={"hapax-daimonion.service": "loaded"},
+        drift={"hapax-daimonion.service": {"OOMScoreAdjust": "200"}},
+    )
+    assert result.returncode != 0, (
+        "a PRESENT host-optional unit with real OOM policy drift passed verify-live — allow-list "
+        "membership is exempting a loaded unit instead of only tolerating its absence.\n"
+        f"stdout: {result.stdout[-1200:]}"
+    )
+    assert "hapax-daimonion.service" in result.stderr, (
+        "the drift on the present host-optional unit was not reported by name.\n"
+        f"stderr: {result.stderr[-1500:]}"
+    )
+    assert "skipping hapax-daimonion.service" not in result.stderr, (
+        "verify-live SKIPPED a unit that is loaded. The skip branch must be reachable only via "
+        f"LoadState=not-found.\nstderr: {result.stderr[-1500:]}"
+    )
+
+
+def test_allow_listed_unit_with_a_unit_file_on_disk_fails_closed(tmp_path: Path) -> None:
+    """REVIEW'S CHARGE, EXECUTED. The allow-list is global; membership must not be sufficient.
+
+    CodeRabbit on PR #4499: "This allowlist is global. `is_host_optional_user_unit` checks only the
+    unit name. If an allowlisted unit is absent on podium, the skip fires and `--verify-live` can
+    pass." That is correct, and the allow-list cannot fix it — a NAME cannot say which host it is on.
+
+    Measured on both hosts 2026-08-04, which is where the discriminator came from:
+        appendix  hapax-daimonion.service  LoadState=not-found  no unit file anywhere in the path
+        podium    hapax-daimonion.service  LoadState=loaded     ~/.config/systemd/user/...
+
+    So the unit FILE is what distinguishes never-installed-here from installed-here-and-broken, and
+    it does so without the script ever asking its own hostname — hostname checks are precisely the
+    thing that rots when a host is renamed, cloned, or replaced.
+
+    NOTE ON FragmentPath: it was the first candidate and it does NOT work. systemd reports
+    FragmentPath as EMPTY for every not-found unit, on both hosts, so it merely restates LoadState.
+    Verified before writing this test rather than after.
+    """
+    result = _run_install_verify_live(
+        tmp_path,
+        load_state={"hapax-daimonion.service": "not-found"},
+        unit_files={"hapax-daimonion.service"},
+    )
+    assert result.returncode != 0, (
+        "an ALLOW-LISTED unit that is not-found while its unit file sits on disk was SKIPPED. That "
+        "is a unit installed on this host which the manager cannot load (masked, dangling symlink, "
+        "bad syntax), and skipping it makes --verify-live pass having verified nothing about it.\n"
+        f"stderr: {result.stderr[-2000:]}"
+    )
+    assert "unit file for it EXISTS on this host" in result.stderr, (
+        "the run failed, but not for this reason — the assertion would pass on an unrelated failure "
+        f"and stop being a test of this branch.\nstderr: {result.stderr[-2000:]}"
+    )
+
+
+def test_absent_host_optional_unit_is_still_skipped_when_no_unit_file_exists(
+    tmp_path: Path,
+) -> None:
+    """The other side of the same predicate: narrowing the skip must not delete it.
+
+    Without this, a fix for the review comment could simply fail on everything absent and still look
+    green in the test above — reinstating the 2026-07-11 rollback loop while appearing to be a
+    hardening. Same LoadState as the test above, opposite file state, opposite required outcome.
+    """
+    result = _run_install_verify_live(
+        tmp_path,
+        load_state={"hapax-daimonion.service": "not-found"},
+        unit_files=set(),
+    )
+    assert result.returncode == 0, (
+        "a host-optional unit with NO unit file on this host was failed rather than skipped — this "
+        f"is the 2026-07-11 rollback loop returning.\nstderr: {result.stderr[-2000:]}"
+    )
+    assert "skipping hapax-daimonion.service" in result.stderr
+
+
+def test_verify_live_fails_when_it_verified_nothing_at_all(tmp_path: Path) -> None:
+    """VACUOUS PASS. A check quantified over an empty set is TRUE, and says nothing.
+
+    Every assertion in verify_protected_user_unit_oom_scores is of the form "for each surviving
+    unit, ...". Skip them all and the loop body never runs, `failed` stays 0, and the exit code is
+    identical to a run that verified all six units against a live manager. The allow-list is the
+    mechanism that can empty the set — it is hand-edited, under deploy pressure, by whoever needs a
+    host to go green.
+
+    This test empties it deliberately: all six protected units report not-found with no unit files.
+    A green exit here would mean the verifier reports success on a host where it examined nothing.
+    """
+    result = _run_install_verify_live(
+        tmp_path,
+        load_state={
+            "pipewire.service": "not-found",
+            "pipewire-pulse.service": "not-found",
+            "wireplumber.service": "not-found",
+            "hapax-daimonion.service": "not-found",
+            "studio-compositor.service": "not-found",
+            "hapax-imagination.service": "not-found",
+        },
+        unit_files=set(),
+    )
+    assert result.returncode != 0, (
+        "--verify-live examined ZERO protected units and still exited 0. That exit code is "
+        "indistinguishable from a full successful verification, which is the entire defect class "
+        f"this package exists to remove.\nstderr: {result.stderr[-2000:]}"
+    )
+    assert "examined 0 of 6 protected user units" in result.stderr, (
+        "it failed, but the vacuous-pass guard is not what caught it — the three REQUIRED units "
+        "failing closed would produce a non-zero exit on their own and mask the guard's absence.\n"
+        f"stderr: {result.stderr[-2000:]}"
+    )
+
+
+def test_a_dangling_unit_symlink_is_not_read_as_host_absence(tmp_path: Path) -> None:
+    """MAJOR from blind review (codex-1) on PR #4499: `-e` follows symlinks.
+
+    `systemctl --user enable` installs a SYMLINK into the unit path. If its target is removed the
+    link dangles, `[ -e ]` on it is FALSE, and a presence check built only on `-e` reports "no unit
+    file here" — so an allow-listed unit that is enabled-but-broken takes the host-absent skip and
+    --verify-live passes having verified nothing about it.
+
+    That is the exact case the presence check exists to catch, inverted. A dangling link is in fact
+    the STRONGEST evidence the unit was installed on this host: something deliberately linked it.
+    """
+    result = _run_install_verify_live(
+        tmp_path,
+        load_state={"hapax-daimonion.service": "not-found"},
+        unit_files={"dangling:hapax-daimonion.service"},
+    )
+    assert result.returncode != 0, (
+        "an allow-listed unit whose unit file is a DANGLING SYMLINK was skipped as host-absent. "
+        "The link proves the unit was enabled here; the broken target is a load failure and must "
+        f"fail closed.\nstderr: {result.stderr[-2000:]}"
+    )
+    assert "unit file for it EXISTS on this host" in result.stderr, (
+        "it failed, but not via the presence check — the assertion would pass on an unrelated "
+        f"failure.\nstderr: {result.stderr[-2000:]}"
+    )
+
+
+def test_unit_search_path_falls_back_when_systemd_analyze_is_unusable(tmp_path: Path) -> None:
+    """glm-2 minor on PR #4499: the SYSTEMD_ANALYZE branch was declared but never exercised.
+
+    With no HAPAX_OOM_USER_UNIT_PATHS override the installer asks `systemd-analyze --user
+    unit-paths`, and falls back to a static list only when that fails. Neither path had a test, so
+    a fallback that produced no directories — making EVERY unit look absent and every allow-listed
+    unit silently skippable — would not have been caught.
+
+    Here systemd-analyze is pointed at a binary that always fails, forcing the fallback, and the
+    unit file is placed in the fallback's own $TARGET_HOME location.
+    """
+    target_home = tmp_path / "target-home"
+    fallback_dir = target_home / ".config" / "systemd" / "user"
+    fallback_dir.mkdir(parents=True, exist_ok=True)
+    (fallback_dir / "hapax-daimonion.service").write_text("[Unit]\n", encoding="utf-8")
+
+    failing_analyze = tmp_path / "systemd-analyze-broken"
+    failing_analyze.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+    failing_analyze.chmod(0o755)
+
+    result = _run_install_verify_live(
+        tmp_path,
+        load_state={"hapax-daimonion.service": "not-found"},
+        unit_files=set(),
+        no_unit_path_override=True,
+        systemd_analyze=str(failing_analyze),
+    )
+    assert "unit file for it EXISTS on this host" in result.stderr, (
+        "with systemd-analyze failing, the static fallback did not find a unit file that is "
+        "present in ~/.config/systemd/user. A fallback that yields no directories makes every "
+        f"unit look absent and every allow-listed unit skippable.\nstderr: {result.stderr[-2500:]}"
+    )
+
+
+def test_degraded_search_path_may_not_be_used_to_prove_absence(tmp_path: Path) -> None:
+    """MAJOR from blind review (codex-1) on PR #4499, at its root rather than its symptom.
+
+    The first fix answered "the fallback omits directories" by listing more directories. That is
+    necessary but not sufficient: ANY reconstruction can omit a path this system actually uses, so
+    "no unit file found" under a degraded enumeration means "I did not look everywhere", not "it is
+    not installed". Skipping on that is a false host-absence.
+
+    So a degraded path list may still PROVE PRESENCE — finding a file is positive evidence — but it
+    may never prove ABSENCE. Here systemd-analyze fails and no unit file exists anywhere, which is
+    exactly the state that must fail closed instead of skipping.
+    """
+    failing_analyze = tmp_path / "systemd-analyze-broken"
+    failing_analyze.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+    failing_analyze.chmod(0o755)
+
+    result = _run_install_verify_live(
+        tmp_path,
+        load_state={"hapax-daimonion.service": "not-found"},
+        unit_files=set(),
+        no_unit_path_override=True,
+        systemd_analyze=str(failing_analyze),
+    )
+    assert result.returncode != 0, (
+        "an allow-listed unit was skipped as host-absent while the search path was a RECONSTRUCTION "
+        "— absence was never proven, so this is a false green.\n"
+        f"stderr: {result.stderr[-2000:]}"
+    )
+    assert "RECONSTRUCTION" in result.stderr, (
+        "it failed, but not because absence was unprovable — the assertion would pass on an "
+        f"unrelated failure.\nstderr: {result.stderr[-2000:]}"
+    )
+
+
+def test_authoritative_systemd_analyze_discovery_finds_a_unit_file(tmp_path: Path) -> None:
+    """codex-1 on PR #4499: only the FAILING systemd-analyze branch was covered.
+
+    The success branch is the one that runs on every real host, and it is the branch that decides
+    whether the host-absent skip is even permitted. Untested, a change that made discovery return
+    nothing on success would make every unit look absent, permit every allow-listed skip, and be
+    invisible — while the failure-path test kept passing.
+
+    Here systemd-analyze SUCCEEDS and prints a directory holding the unit file, so discovery is
+    authoritative and must find it.
+    """
+    discovered = tmp_path / "analyze-reported-path"
+    discovered.mkdir()
+    (discovered / "hapax-daimonion.service").write_text("[Unit]\n", encoding="utf-8")
+
+    ok_analyze = tmp_path / "systemd-analyze-ok"
+    ok_analyze.write_text(
+        f"#!/usr/bin/env bash\nprintf '%s\\n' {discovered}\nexit 0\n", encoding="utf-8"
+    )
+    ok_analyze.chmod(0o755)
+
+    result = _run_install_verify_live(
+        tmp_path,
+        load_state={"hapax-daimonion.service": "not-found"},
+        unit_files=set(),
+        no_unit_path_override=True,
+        systemd_analyze=str(ok_analyze),
+    )
+    assert "unit file for it EXISTS on this host" in result.stderr, (
+        "authoritative systemd-analyze discovery did not find a unit file in the directory it "
+        "itself reported. If discovery yields nothing on the success path, every unit looks absent "
+        f"and every allow-listed skip is permitted.\nstderr: {result.stderr[-2500:]}"
+    )
+    assert result.returncode != 0, "an installed-but-unloadable unit must fail closed"
+
+
+def test_unit_path_discovery_queries_the_target_user_not_the_installer_user(tmp_path: Path) -> None:
+    """MAJOR from blind review (codex-1) on PR #4499: privilege boundary in discovery.
+
+    The installer escalates for root-only steps, so this code can run with EFFECTIVE_UID=0. A bare
+    `systemd-analyze --user unit-paths` under root enumerates ROOT's user manager, whose search path
+    does not include the target user's ~/.config/systemd/user. Every target-user unit would then
+    look absent, every allow-listed unit would become skippable, and --verify-live would pass having
+    verified nothing.
+
+    That is this package's own defect class — enumeration in the wrong scope read as absence —
+    reappearing inside the fix written to remove it.
+
+    The stub records the argv it was invoked with. Under EFFECTIVE_UID=0 the installer must reach
+    systemd-analyze THROUGH runuser (as user_systemctl does), not call it directly.
+    """
+    marker = tmp_path / "analyze-invocation.txt"
+    analyze = tmp_path / "systemd-analyze-recording"
+    analyze.write_text(
+        f'#!/usr/bin/env bash\nprintf "%s\\n" "RUNUSER_SEEN=${{RUNUSER_MARKER:-no}}" >> {marker}\n'
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    analyze.chmod(0o755)
+
+    _run_install_verify_live(
+        tmp_path,
+        load_state={"hapax-daimonion.service": "not-found"},
+        unit_files=set(),
+        no_unit_path_override=True,
+        systemd_analyze=str(analyze),
+    )
+    recorded = marker.read_text(encoding="utf-8") if marker.exists() else ""
+    lines = [x for x in recorded.splitlines() if x.strip()]
+    # UNIVERSAL, NOT EXISTENTIAL. The first version of this assertion checked that SOME invocation
+    # carried the runuser marker, and a mutant that bypassed runuser at one of the two call sites
+    # SURVIVED it — the other site still satisfied the existential. "At least one call was correct"
+    # is not the property; "no call was wrong" is. This is the same quantifier error the vacuous-pass
+    # guard in this very installer exists to prevent, committed in the test for it.
+    assert lines, (
+        "systemd-analyze was never invoked, so this test proves nothing about how it is invoked. "
+        "Check that the fixture actually reaches unit-path discovery."
+    )
+    direct = [x for x in lines if "RUNUSER_SEEN=yes" not in x]
+    assert not direct, (
+        f"{len(direct)} of {len(lines)} systemd-analyze invocation(s) bypassed runuser while the "
+        "installer ran as root. Under root it enumerates ROOT's user manager, not the target "
+        "user's, so every target-user unit reads as absent and every allow-listed skip is "
+        f"permitted.\nbypassing invocations: {direct!r}"
+    )
