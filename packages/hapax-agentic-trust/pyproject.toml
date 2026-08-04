@@ -1,0 +1,75 @@
+[build-system]
+requires = ["hatchling==1.31.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hapax-agentic-trust"
+version = "0.1.0"
+description = "Execution-inert caller-pinned terminal-evidence verification for agentic trust experiments."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "LicenseRef-PolyForm-Strict-1.0.0"
+license-files = ["LICENSE.txt"]
+authors = [{ name = "Hapax (Oudepode)", email = "hapax@oudepode.studio" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: Other/Proprietary License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/hapax-systems/hapax-council"
+
+[project.optional-dependencies]
+dev = ["hatchling==1.31.0", "jsonschema>=4.26.0", "pytest>=9.0.2", "ruff>=0.14.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hapax_agentic_trust"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"schemas" = "hapax_agentic_trust/schemas"
+"PROVENANCE.md" = "hapax_agentic_trust/PROVENANCE.md"
+"PROVENANCE.json" = "hapax_agentic_trust/PROVENANCE.json"
+"provenance/golden-terminal-v3.sha256" = "hapax_agentic_trust/provenance/golden-terminal-v3.sha256"
+"provenance/package-payload-v1.sha256" = "hapax_agentic_trust/provenance/package-payload-v1.sha256"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/hapax_agentic_trust/**",
+    "schemas/**",
+    "tests/**",
+    "README.md",
+    "PROVENANCE.md",
+    "PROVENANCE.json",
+    "LICENSE.txt",
+    "pyproject.toml",
+    "provenance/**",
+    "uv.lock",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "TCH"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["hapax_agentic_trust"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["TC001", "TC002", "TC003"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

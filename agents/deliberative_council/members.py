@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Any
 
 from pydantic_ai import Agent
@@ -49,11 +51,13 @@ MODEL_FAMILIES: dict[str, str] = {
     "glm": "zhipu",
 }
 
-LEGACY_MODEL_ALIASES: dict[str, str] = {
-    "claude-opus": "opus",
-    "claude-sonnet": "balanced",
-    "gemini-pro": "gemini-3-pro",
-}
+LEGACY_MODEL_ALIASES: Mapping[str, str] = MappingProxyType(
+    {
+        "claude-opus": "opus",
+        "claude-sonnet": "balanced",
+        "gemini-pro": "gemini-3-pro",
+    }
+)
 
 CACHE_CONTROL_FAMILIES = frozenset({"anthropic", "google"})
 OPENAI_PROMPT_CACHE_FAMILIES = frozenset({"openai"})

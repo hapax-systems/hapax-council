@@ -12,15 +12,17 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from shared.frontmatter import parse_frontmatter
 from shared.platform_capability_registry import (
+    AGENTIC_TRUST_EVIDENCE_SURFACE_ID,
     PLATFORM_CAPABILITY_REGISTRY,
     PlatformCapabilityRegistryError,
     RouteState,
     check_registry_freshness,
-    load_platform_capability_registry,
+    is_agentic_trust_supply_evidence_reference,
+    load_platform_capability_registry_for_dispatch,
     normalize_route_id,
 )
 from shared.quota_spend_ledger import (
@@ -80,6 +82,39 @@ class CapabilityAdmissionReceipt(_AdmissionModel):
     receipt_refs: tuple[str, ...] = Field(default=())
     ledger_id: str | None = None
     ledger_captured_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def _decision_representation_is_consistent(self) -> CapabilityAdmissionReceipt:
+        if self.admitted is not (self.admission_action == "admitted"):
+            raise ValueError("capability admission action and admitted flag disagree")
+        if self.admitted and any(
+            is_agentic_trust_supply_evidence_reference(identity)
+            for identity in (
+                self.capability_id,
+                self.route_id,
+                self.provider,
+                self.profile,
+                self.task_class,
+                self.quality_floor,
+            )
+        ):
+            raise ValueError(
+                "agentic-trust evaluator observation identity cannot be represented as admitted"
+            )
+        if self.admitted and any(
+            is_agentic_trust_supply_evidence_reference(ref)
+            for ref in (
+                self.receipt_ref,
+                *self.quota_evidence_refs,
+                *self.spend_evidence_refs,
+                *self.resource_evidence_refs,
+                *self.receipt_refs,
+            )
+        ):
+            raise ValueError(
+                "agentic-trust observation evidence cannot support an admitted capability"
+            )
+        return self
 
     def short_reason(self) -> str:
         return ",".join(self.reason_codes) if self.reason_codes else self.admission_action
@@ -222,7 +257,14 @@ def admit_model_alias(
 ) -> CapabilityAdmissionReceipt:
     from agents.deliberative_council.members import normalize_model_alias
 
+    if any(
+        is_agentic_trust_supply_evidence_reference(identity)
+        for identity in (model_alias, invoked_route_id)
+    ):
+        return _receipt_for_reserved_model_alias(model_alias, invoked_route_id, now=now)
     alias = normalize_model_alias(model_alias)
+    if is_agentic_trust_supply_evidence_reference(alias):
+        return _receipt_for_reserved_model_alias(alias, invoked_route_id, now=now)
     descriptor = MODEL_CAPABILITIES.get(alias)
     if descriptor is None:
         return _receipt_for_missing_descriptor(f"cctv.model.{alias}", alias)
@@ -254,6 +296,27 @@ def admit_capability(
     now: datetime | None = None,
 ) -> CapabilityAdmissionReceipt:
     checked_at = _admission_now(now)
+    if any(
+        is_agentic_trust_supply_evidence_reference(identity)
+        for identity in (
+            descriptor.capability_id,
+            descriptor.route_id,
+            descriptor.platform_route_id,
+            descriptor.provider,
+            descriptor.profile,
+            descriptor.task_class,
+            descriptor.quality_floor,
+        )
+    ):
+        return _build_receipt(
+            descriptor,
+            action="refused",
+            reason_codes=(
+                "evidence_only_observation_identity_not_admissible_supply",
+                f"reserved_identity:{AGENTIC_TRUST_EVIDENCE_SURFACE_ID}",
+            ),
+            evaluated_at=checked_at,
+        )
     try:
         ledger = _load_ledger()
     except Exception as exc:
@@ -294,6 +357,45 @@ def require_member_admission(member: Any) -> CapabilityAdmissionReceipt:
             f"receipt_refs={','.join(admission.receipt_refs)} "
             "next_action=refresh the quota/spend ledger or change route before retrying "
             "provider invocation"
+        )
+    try:
+        admission = CapabilityAdmissionReceipt.model_validate(admission.model_dump(mode="python"))
+    except ValidationError as exc:
+        raise CapabilityAdmissionError(
+            "capability_admission_receipt_invalid; "
+            "next_action=rebuild the member so its admission receipt is freshly validated"
+        ) from exc
+    member_route_id = getattr(member, "_cctv_route_id", None)
+    member_model_alias = getattr(member, "_cctv_model_alias", None)
+    if type(member_route_id) is not str or type(member_model_alias) is not str:
+        raise CapabilityAdmissionError(
+            "capability_admission_member_identity_missing; "
+            "next_action=build the member with build_member() so invocation identity is bound"
+        )
+    expected_capability_id = f"cctv.model.{member_model_alias}"
+    if any(
+        is_agentic_trust_supply_evidence_reference(identity)
+        for identity in (
+            admission.capability_id,
+            admission.route_id,
+            member_route_id,
+            member_model_alias,
+        )
+    ):
+        raise CapabilityAdmissionError(
+            "evidence_only_observation_identity_not_admissible_supply; "
+            "next_action=remove the evaluator observation identity from the member invocation"
+        )
+    if (
+        normalize_route_id(member_route_id) != normalize_route_id(admission.route_id)
+        or admission.capability_id != expected_capability_id
+    ):
+        raise CapabilityAdmissionError(
+            "capability_admission_member_identity_mismatch; "
+            f"member_route_id={member_route_id} receipt_route_id={admission.route_id} "
+            f"member_capability_id={expected_capability_id} "
+            f"receipt_capability_id={admission.capability_id}; "
+            "next_action=rebuild the member and do not substitute admission receipts"
         )
     return admission
 
@@ -433,12 +535,19 @@ def _admit_subscription_route(
     now: datetime,
 ) -> CapabilityAdmissionReceipt:
     state, evidence_refs = subscription_quota_state_for_route(ledger, descriptor.route_id, now=now)
-    admitted = state is SubscriptionQuotaState.FRESH
+    platform_route_id = descriptor.platform_route_id or descriptor.route_id
+    platform_reasons, platform_refs = _platform_route_block_reasons(
+        platform_route_id,
+        now=now,
+        required=descriptor.platform_route_id is not None,
+    )
+    admitted = state is SubscriptionQuotaState.FRESH and not platform_reasons
     return _build_receipt(
         descriptor,
         action="admitted" if admitted else "refused",
-        reason_codes=(f"subscription_quota_state:{state.value}",),
+        reason_codes=(f"subscription_quota_state:{state.value}",) + platform_reasons,
         quota_evidence_refs=evidence_refs,
+        resource_evidence_refs=platform_refs,
         ledger=ledger,
         evaluated_at=now,
     )
@@ -472,7 +581,12 @@ def _admit_local_route(
         reasons.append("local_resource_snapshot_not_fresh")
     if not resource_green:
         reasons.append(f"local_resource_state:{ledger.local_resource_state.value}")
-    platform_reasons, platform_refs = _platform_route_block_reasons(descriptor.route_id, now=now)
+    platform_route_id = descriptor.platform_route_id or descriptor.route_id
+    platform_reasons, platform_refs = _platform_route_block_reasons(
+        platform_route_id,
+        now=now,
+        required=descriptor.platform_route_id is not None,
+    )
     reasons.extend(platform_reasons)
     admitted = not reasons
     return _build_receipt(
@@ -503,7 +617,10 @@ def _platform_route_block_reasons(
         os.environ.get(PLATFORM_CAPABILITY_REGISTRY_ENV, str(PLATFORM_CAPABILITY_REGISTRY))
     ).expanduser()
     try:
-        registry = load_platform_capability_registry(registry_path, now=now)
+        registry, _observation_errors = load_platform_capability_registry_for_dispatch(
+            registry_path,
+            now=now,
+        )
     except PlatformCapabilityRegistryError as exc:
         return (
             (f"platform_capability_registry_unavailable:{type(exc).__name__}",),
@@ -566,6 +683,33 @@ def _receipt_for_missing_descriptor(capability_id: str, name: str) -> Capability
         action="refused",
         reason_codes=("capability_descriptor_missing",),
         evaluated_at=_admission_now(None),
+    )
+
+
+def _receipt_for_reserved_model_alias(
+    model_alias: str,
+    invoked_route_id: str | None,
+    *,
+    now: datetime | None,
+) -> CapabilityAdmissionReceipt:
+    descriptor = CapabilityDescriptor(
+        capability_id=f"cctv.model.{model_alias}",
+        route_id=invoked_route_id or model_alias,
+        provider="none",
+        capacity_pool=CapacityPool.LOCAL_COMPUTE,
+        profile="evidence-only-non-supply",
+        task_class="evidence-verification",
+        quality_floor="not-applicable",
+        estimated_cost_usd=Decimal("0"),
+    )
+    return _build_receipt(
+        descriptor,
+        action="refused",
+        reason_codes=(
+            "evidence_only_observation_identity_not_admissible_supply",
+            f"reserved_identity:{AGENTIC_TRUST_EVIDENCE_SURFACE_ID}",
+        ),
+        evaluated_at=_admission_now(now),
     )
 
 

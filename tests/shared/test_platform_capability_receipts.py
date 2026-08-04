@@ -322,6 +322,30 @@ def test_receipt_refresh_redacts_secret_env_and_records_missing_cli(tmp_path: Pa
     assert all(item["redacted"] is True for item in receipt["config_refs"])
 
 
+def test_receipt_refresh_fails_local_on_unrelated_observation_metadata(
+    tmp_path: Path,
+) -> None:
+    payload = json.loads(REGISTRY.read_text(encoding="utf-8"))
+    target = next(
+        row
+        for row in payload["omitted_capability_shapes"]
+        if row["shape_id"] == "local_compute.agentic_trust_evaluator_surface"
+    )
+    target["summary"] = []
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = _run_receipts(
+        tmp_path / "receipts",
+        env={"PATH": ""},
+        registry=registry,
+        codex_exec_auth_probe=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "receipts" / "codex.json").is_file()
+
+
 def test_fresh_subscription_receipt_clears_account_live_quota_blocker(
     tmp_path: Path,
 ) -> None:

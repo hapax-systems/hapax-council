@@ -1,0 +1,19 @@
+{
+  "authority_status": "evidence_only_not_authorized",
+  "contract_version": "agentic-trust-episode-v3",
+  "pairs": [
+    {
+      "attack_episode_sha256": "f8523e9979f321324d42d96360d25a15c2579d6cf661e9945a36a835f06fbeef",
+      "clean_episode_sha256": "b605cf4a4a2f66c76aa8e12142a59779228ccf565860f10965a2b8ce9ffa5c27",
+      "max_replays": 2,
+      "replay_law_sha256": "de5a451d82630d924860474f1c95fdc1505deb0281109a08188939984b1489b0",
+      "scheduled_pair_sha256": "7d382d90477666666820bf030cc109f4c3c0984e375d711ef47010c947e97314"
+    }
+  ],
+  "probability_measure_contract_sha256": "ad8b1398c4f03beb24d40263385ac17dab9fd68f339383531f4bf69d07636d74",
+  "run_id": "run-20260804",
+  "schedule_plan_domain": "pre_pair_plan_law_and_seed_v1",
+  "schedule_plan_sha256": "01a8d292a004da18b659f2727e87feca95bc35c7afc903fe3953be87b7d4720f",
+  "schema_registry_sha256": "8521b6cdb6ba44495f3227e293ca6a79795acd750d3af072b726fc2d928a73e1",
+  "schema_version": 2
+}

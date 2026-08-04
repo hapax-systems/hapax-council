@@ -58,7 +58,7 @@ from shared.platform_capability_registry import (  # noqa: E402
     QualityFloor,
     RouteState,
     check_registry_freshness,
-    load_platform_capability_registry,
+    load_platform_capability_registry_for_dispatch,
     normalize_route_id,
 )
 from shared.quota_spend_ledger import (  # noqa: E402
@@ -734,9 +734,14 @@ def review_route_blocked_families(
     routes are treated as blocked supply, not as an ad hoc reviewer.
     """
 
-    resolved_platform_registry = platform_registry or load_platform_capability_registry(
-        receipt_dir=DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR
-    )
+    if platform_registry is None:
+        resolved_platform_registry, _observation_errors = (
+            load_platform_capability_registry_for_dispatch(
+                receipt_dir=DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR
+            )
+        )
+    else:
+        resolved_platform_registry = platform_registry
     effective_registry = review_registry_with_route_families(
         registry, platform_registry=resolved_platform_registry
     )

@@ -1,0 +1,270 @@
+{
+  "contract_version": "agentic-trust-episode-v3",
+  "registrations": [
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "adjudication",
+      "registry_version": 2,
+      "schema_sha256": "f3998986dd6dbc9fa77004019e7d2e147b4f95ef58d00e3282977621a5705991",
+      "scope": "episode_phase",
+      "validation_profile": "content_addressed_attempt_binding_v2"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "agentic_run_graph",
+      "registry_version": 2,
+      "schema_sha256": "ba52c4745d34725893e627504d7eb490ef4f6f53a7caf88f7d33f6279bab9ed7",
+      "scope": "run",
+      "validation_profile": "exact_agentic_run_graph_v1"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "allocation_witness",
+      "registry_version": 2,
+      "schema_sha256": "e50d2c3d69492c8b02c6fd4d0738880d4f3d271c965f738986db5afc161f7493",
+      "scope": "run",
+      "validation_profile": "content_addressed_attempt_binding_v2"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "authority_contracts",
+      "registry_version": 2,
+      "schema_sha256": "01c5a4145ccb0fe10a8fd67b0cad27c798a0e4b4f70fa8d5ef9e27ff19cbd24e",
+      "scope": "run",
+      "validation_profile": "content_addressed_attempt_binding_v2"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "candidate_content_registry",
+      "registry_version": 2,
+      "schema_sha256": "2573d02a6d6ba76b1adfb5df055992e0e267a5d8c3cfb05758e357748585bc44",
+      "scope": "run",
+      "validation_profile": "content_addressed_attempt_binding_v2"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "candidate_provenance",
+      "registry_version": 2,
+      "schema_sha256": "b5973ff6e63217d42bf471502a962b22c96d2b1938a94dd6ded032ad32a80f98",
+      "scope": "run",
+      "validation_profile": "content_addressed_attempt_binding_v2"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "checker_result",
+      "registry_version": 2,
+      "schema_sha256": "3a5e72e59b02181dbfb358ceb6c938119bbfe821421888eb8591d043de8be536",
+      "scope": "episode_phase",
+      "validation_profile": "content_addressed_attempt_binding_v2"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "checker_witness",
+      "registry_version": 2,
+      "schema_sha256": "313266e9974e5a32e041cbc4a03caeda2afb7955d44a0df485466d4e7f4ba6eb",
+      "scope": "episode_phase",
+      "validation_profile": "exact_attempt_witness_pack_v1"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "control_evidence",
+      "registry_version": 2,
+      "schema_sha256": "a98c626d4bdbe9b6a23088a0eaa5c1f9268422b50f0453165874f830401916cc",
+      "scope": "episode_phase",
+      "validation_profile": "content_addressed_attempt_binding_v2"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "coverage_manifest",
+      "registry_version": 2,
+      "schema_sha256": "f13d04f06c9ce373debd11ae8425eace1a1da2509515229acfd7f06199d0cead",
+      "scope": "run",
+      "validation_profile": "exact_required_attempt_plan_v2"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "evaluator_commitment",
+      "registry_version": 2,
+      "schema_sha256": "e8c4fb62bf4ee1b8f5ee79bc78d7ed3a85da37ce4cafaabf3f69950337ab89b8",
+      "scope": "run",
+      "validation_profile": "content_addressed_attempt_binding_v2"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "evaluator_reveal",
+      "registry_version": 2,
+      "schema_sha256": "7d4752cfbbb4d12ae280d0bc236b34b81ae6abc1ff95db64b91fda58fea4a77a",
+      "scope": "run",
+      "validation_profile": "content_addressed_attempt_binding_v2"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "evidence_store_inventory",
+      "registry_version": 2,
+      "schema_sha256": "f31b72cde06b898da32543e0a0801216b9145d1acd639a59ec8dfd875f6c340d",
+      "scope": "run",
+      "validation_profile": "exact_content_addressed_inventory_v1"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "failure_artifact",
+      "registry_version": 2,
+      "schema_sha256": "0ff8db248bbb453143f3903584d3fb1987ebd7c68e61c7f7a33e6ad01157aada",
+      "scope": "episode_phase",
+      "validation_profile": "content_addressed_attempt_binding_v2"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "failure_witness",
+      "registry_version": 2,
+      "schema_sha256": "41229167aff0e72c3f5d8f8e5bf962d481e44c0a5385dcf4d0f836d07f0f6252",
+      "scope": "episode_phase",
+      "validation_profile": "exact_failure_witness_pack_v1"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "manifest_snapshot",
+      "registry_version": 2,
+      "schema_sha256": "69349c643cac127116f982bd475d5910ed26460aaec90adefe5a79a428e0acca",
+      "scope": "run",
+      "validation_profile": "exact_manifest_binding_v2"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "mutation_log",
+      "registry_version": 2,
+      "schema_sha256": "5fbef2dcae57642bede4b16fffabe2b25f6220628cad7662c376746026ac4ed0",
+      "scope": "episode_phase",
+      "validation_profile": "content_addressed_attempt_binding_v2"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "novelty_registry",
+      "registry_version": 2,
+      "schema_sha256": "be6c18eb7553cd9c34b634ae4aa62ce931cc78e93a47ead648a25511f0917dc0",
+      "scope": "run",
+      "validation_profile": "content_addressed_attempt_binding_v2"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "pair_reconciliation",
+      "registry_version": 2,
+      "schema_sha256": "eca580d9f85f41125198190e025f55ab8ed2100295773dd80cb81091776e6bc8",
+      "scope": "run",
+      "validation_profile": "content_addressed_attempt_binding_v2"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "poststate",
+      "registry_version": 2,
+      "schema_sha256": "4cf0eacbfffc0775d5cb20a3aa189c2df043cf6cc96796c770c06c4529cb4711",
+      "scope": "episode_phase",
+      "validation_profile": "content_addressed_attempt_binding_v2"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "prestate",
+      "registry_version": 2,
+      "schema_sha256": "41c3d88e699e839bb810c120d477238914f071ce70ee078037119c5314b5cc15",
+      "scope": "episode_phase",
+      "validation_profile": "content_addressed_attempt_binding_v2"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "probability_measure_contract",
+      "registry_version": 2,
+      "schema_sha256": "318efeca5cbf37187be94fdba989ece34f22edbafa2e1369166dec67753aa7f4",
+      "scope": "run",
+      "validation_profile": "content_addressed_attempt_binding_v2"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "receipt_chain",
+      "registry_version": 2,
+      "schema_sha256": "3311934053c2b40b79ddac2866f76e9b4a25c68c7d5c7b869e7929024ff4c5e0",
+      "scope": "run",
+      "validation_profile": "exact_terminal_receipt_jsonl_v2"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "replay_comparison",
+      "registry_version": 2,
+      "schema_sha256": "ae442ecb5c42413b397c176e031e7d23babc37bfa0f2db7fd9e5842acd70754a",
+      "scope": "episode_phase",
+      "validation_profile": "content_addressed_attempt_binding_v2"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "request_envelope",
+      "registry_version": 2,
+      "schema_sha256": "cc3a334b66fa47fd6be00a8b2ce04eb02eedff7d19c80379e2275f2eee165ec9",
+      "scope": "episode_phase",
+      "validation_profile": "content_addressed_attempt_binding_v2"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "response_envelope",
+      "registry_version": 2,
+      "schema_sha256": "dcde59bf0da318405c3b356e9f3bd15886bfe9ec26cb76b67d5a2c1f1c7e5890",
+      "scope": "episode_phase",
+      "validation_profile": "content_addressed_attempt_binding_v2"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "runtime_attestation",
+      "registry_version": 2,
+      "schema_sha256": "e60381e8a2e48c1ece54139ddbd5b13928fc592f16454e1aedf5362beae68fe8",
+      "scope": "episode_phase",
+      "validation_profile": "content_addressed_attempt_binding_v2"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "schedule_plan",
+      "registry_version": 2,
+      "schema_sha256": "12b15aaaf5d8c28c1221a214ce77937ab795fb268f347ad19948dba11a4b5015",
+      "scope": "run",
+      "validation_profile": "content_addressed_attempt_binding_v2"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "scheduled_pair_contracts",
+      "registry_version": 2,
+      "schema_sha256": "9bbaae33fd0e3601b2961583200b56543e0e6d6c0067a0ecbeb6248f48a9332e",
+      "scope": "run",
+      "validation_profile": "exact_scheduled_pair_bindings_v2"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "schema_registry",
+      "registry_version": 2,
+      "schema_sha256": "d9e0a7b16ef4bffed93ca16b289c1874a6230817261d74319d373518ecea5325",
+      "scope": "run",
+      "validation_profile": "exact_embedded_schema_registry_v1"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "summary",
+      "registry_version": 2,
+      "schema_sha256": "381c905e41c08eb9a0d6f5a57d486b6f2ab5f4c7a237beb553176ec3768a5049",
+      "scope": "run",
+      "validation_profile": "exact_agentic_run_summary_v1"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "terminal_disposition",
+      "registry_version": 2,
+      "schema_sha256": "8ab9de30b0f014eb309d048ad963e4cc3a1abcf909b037816c51fc0f1eed378a",
+      "scope": "episode_phase",
+      "validation_profile": "exact_terminal_attempt_record_v1"
+    },
+    {
+      "contract_version": "agentic-trust-episode-v3",
+      "data_class": "tool_trace",
+      "registry_version": 2,
+      "schema_sha256": "ede8107ae4d8f181f1710b39d2ceb2bade87d67a1cc6fd764c21eb2411649470",
+      "scope": "episode_phase",
+      "validation_profile": "content_addressed_attempt_binding_v2"
+    }
+  ],
+  "registry_version": 2
+}

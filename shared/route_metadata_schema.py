@@ -19,6 +19,8 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from shared.agentic_trust_boundary import is_agentic_trust_supply_evidence_reference
+
 
 def route_envelope_gate_enforced() -> bool:
     """Whether the derived-route-envelope dispatch gate ENFORCES holds (default: shadow).
@@ -357,6 +359,13 @@ class RequiredTool(_RouteModel):
     tool_id: str
     required: bool = True
     authority_use: ToolAuthorityUse = ToolAuthorityUse.READ
+
+    @field_validator("tool_id")
+    @classmethod
+    def _observation_identity_cannot_be_required_supply(cls, value: str) -> str:
+        if is_agentic_trust_supply_evidence_reference(value):
+            raise ValueError("agentic-trust observation evidence cannot be a required supply tool")
+        return value
 
 
 class ExecutionEnvironment(_RouteModel):

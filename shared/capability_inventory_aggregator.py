@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import ast
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from shared.capability_harness_descriptor import (
@@ -17,7 +17,17 @@ from shared.capability_harness_descriptor import (
     CapabilitySurfaceDelta,
     discover,
 )
-from shared.capability_registry_ingest import ingest_platform_capability_registry
+from shared.capability_inventory_contract import (
+    AdmittedSupplyInventoryRecord,
+    CapabilityInventoryBaselineRecord,
+    CapabilityInventorySnapshot,
+    EvidenceOnlyNonSupplyInventoryRecord,
+    discover_inventory,
+)
+from shared.capability_registry_ingest import (
+    ingest_platform_capability_inventory,
+    ingest_platform_capability_registry,
+)
 from shared.classification_inventory_ingest import ingest_classification_inventory
 from shared.grounding_provider_ingest import ingest_grounding_providers
 from shared.mcp_connector_ingest import ingest_mcp_connector_manifest
@@ -25,7 +35,13 @@ from shared.models_dict_ingest import ingest_models_dict
 from shared.publication_bus_ingest import ingest_publication_bus_from_module
 from shared.world_capability_ingest import ingest_world_capability_registry
 
-__all__ = ["aggregate_all_capabilities", "repo_root"]
+__all__ = [
+    "aggregate_all_capabilities",
+    "aggregate_capability_inventory",
+    "full_capability_inventory_delta",
+    "full_inventory_delta",
+    "repo_root",
+]
 
 LOG = logging.getLogger(__name__)
 
@@ -126,6 +142,39 @@ def aggregate_all_capabilities(root: Path | None = None) -> list[CapabilityHarne
     return descriptors
 
 
+def aggregate_capability_inventory(root: Path | None = None) -> CapabilityInventorySnapshot:
+    """Aggregate the authoritative tagged inventory across supply and non-supply planes.
+
+    Existing vocabulary adapters remain admitted-supply projections. The platform
+    registry's ``omitted_capability_shapes`` enter only the evidence-only non-supply
+    plane and therefore cannot be passed to supply consumers by type accident.
+    """
+
+    root = root or repo_root()
+    supply = aggregate_all_capabilities(root)
+    platform_path = root / "config" / "platform-capability-registry.json"
+    omitted_shapes = []
+    if platform_path.is_file():
+        _, omitted_shapes = ingest_platform_capability_inventory(platform_path)
+
+    records = [
+        AdmittedSupplyInventoryRecord(
+            inventory_id=descriptor.capability_id,
+            descriptor=descriptor,
+        )
+        for descriptor in supply
+    ]
+    records.extend(
+        EvidenceOnlyNonSupplyInventoryRecord(
+            inventory_id=descriptor.shape_id,
+            descriptor=descriptor,
+        )
+        for descriptor in omitted_shapes
+    )
+    records.sort(key=lambda record: (record.inventory_id, record.inventory_disposition.value))
+    return CapabilityInventorySnapshot(records=tuple(records))
+
+
 def full_inventory_delta(
     registered: dict[str, str] | None = None,
 ) -> tuple[list[CapabilityHarnessDescriptor], CapabilitySurfaceDelta]:
@@ -136,3 +185,12 @@ def full_inventory_delta(
     observed = aggregate_all_capabilities()
     registered = registered or {}
     return observed, discover(observed, registered)
+
+
+def full_capability_inventory_delta(
+    registered: Mapping[str, CapabilityInventoryBaselineRecord] | None = None,
+) -> tuple[CapabilityInventorySnapshot, CapabilitySurfaceDelta]:
+    """Compute the authoritative v2 delta over both tagged inventory planes."""
+
+    snapshot = aggregate_capability_inventory()
+    return snapshot, discover_inventory(snapshot, registered or {})

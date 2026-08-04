@@ -15,17 +15,20 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
+from types import MappingProxyType
 
 from shared.platform_capability_receipts import (
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
 )
 from shared.platform_capability_registry import (
+    AGENTIC_TRUST_EVIDENCE_SURFACE_ID,
     PLATFORM_CAPABILITY_REGISTRY,
     PlatformCapabilityRegistryError,
     RouteState,
     check_registry_freshness,
-    load_platform_capability_registry,
+    is_agentic_trust_supply_evidence_reference,
+    load_platform_capability_registry_for_dispatch,
     normalize_route_id,
 )
 from shared.quota_spend_ledger import (
@@ -121,10 +124,47 @@ class CockpitAdmissionReceipt:
     admission_action: str
     admitted: bool
     reason_codes: tuple[str, ...]
+    profile: str = "unknown"
+    task_class: str = "unknown"
+    quality_floor: str = "unknown"
     quota_evidence_refs: tuple[str, ...] = ()
     spend_evidence_refs: tuple[str, ...] = ()
     resource_evidence_refs: tuple[str, ...] = ()
     receipt_refs: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.admitted is not (self.admission_action == "admitted"):
+            raise ValueError("cockpit admission action and admitted flag disagree")
+        if self.admitted and any(
+            is_agentic_trust_supply_evidence_reference(identity)
+            for identity in (
+                self.capability_id,
+                self.route_id,
+                self.platform_route_id,
+                self.provider,
+                self.profile,
+                self.task_class,
+                self.quality_floor,
+                self.model_alias,
+                self.model_route,
+            )
+        ):
+            raise ValueError(
+                "agentic-trust evaluator observation identity cannot be represented as admitted"
+            )
+        if self.admitted and any(
+            is_agentic_trust_supply_evidence_reference(ref)
+            for ref in (
+                self.receipt_ref,
+                *self.quota_evidence_refs,
+                *self.spend_evidence_refs,
+                *self.resource_evidence_refs,
+                *self.receipt_refs,
+            )
+        ):
+            raise ValueError(
+                "agentic-trust observation evidence cannot support an admitted cockpit capability"
+            )
 
     def short_reason(self) -> str:
         return ",".join(self.reason_codes) if self.reason_codes else self.admission_action
@@ -147,17 +187,19 @@ class _FlagArg:
     value: str | None = None
 
 
-_ALIAS_TO_MODEL_ROUTE = {
-    "fast": "gemini-flash",
-    "balanced": "claude-sonnet",
-    "claude-opus": "claude-opus",
-    "opus": "claude-opus",
-    "web-scout": "web-scout",
-    "web-deep": "web-deep",
-    "local-fast": "local-fast",
-    "appendix-fast": "appendix-fast",
-    "coding": "coding",
-}
+_ALIAS_TO_MODEL_ROUTE = MappingProxyType(
+    {
+        "fast": "gemini-flash",
+        "balanced": "claude-sonnet",
+        "claude-opus": "claude-opus",
+        "opus": "claude-opus",
+        "web-scout": "web-scout",
+        "web-deep": "web-deep",
+        "local-fast": "local-fast",
+        "appendix-fast": "appendix-fast",
+        "coding": "coding",
+    }
+)
 
 _MODEL_ROUTE_TO_PROVIDER = {
     "gemini-flash": "google",
@@ -190,7 +232,15 @@ def _model_leaf(
     tool_refs: tuple[str, ...] = (),
     public_egress: bool = False,
 ) -> CockpitSupplyLeaf:
+    if is_agentic_trust_supply_evidence_reference(alias):
+        raise ValueError(
+            "agentic-trust evaluator observation identity cannot construct a model supply leaf"
+        )
     model_route = _ALIAS_TO_MODEL_ROUTE.get(alias, alias)
+    if is_agentic_trust_supply_evidence_reference(model_route):
+        raise ValueError(
+            "agentic-trust evaluator observation identity cannot be an aliased model route"
+        )
     provider = _MODEL_ROUTE_TO_PROVIDER.get(model_route, "unknown")
     local = model_route in _LOCAL_MODEL_ROUTES
     capacity_pool = CapacityPool.LOCAL_COMPUTE.value if local else CapacityPool.API_PAID_SPEND.value
@@ -533,6 +583,29 @@ def require_cockpit_agent_admission(
 
 
 def _admit_leaf(leaf: CockpitSupplyLeaf, *, now: datetime) -> CockpitAdmissionReceipt:
+    if any(
+        is_agentic_trust_supply_evidence_reference(identity)
+        for identity in (
+            leaf.capability_id,
+            leaf.route_id,
+            leaf.platform_route_id,
+            leaf.provider,
+            leaf.profile,
+            leaf.task_class,
+            leaf.quality_floor,
+            leaf.model_alias,
+            leaf.model_route,
+            *leaf.tool_refs,
+        )
+    ):
+        return _build_receipt(
+            leaf,
+            action="refused",
+            reason_codes=(
+                "evidence_only_observation_identity_not_admissible_supply",
+                f"reserved_identity:{AGENTIC_TRUST_EVIDENCE_SURFACE_ID}",
+            ),
+        )
     try:
         ledger = _load_ledger()
     except Exception as exc:
@@ -697,8 +770,10 @@ def _platform_route_block_reasons(
     ).expanduser()
     receipt_dir = _platform_receipt_dir()
     try:
-        registry = load_platform_capability_registry(
-            registry_path, receipt_dir=receipt_dir, now=now
+        registry, _observation_errors = load_platform_capability_registry_for_dispatch(
+            registry_path,
+            receipt_dir=receipt_dir,
+            now=now,
         )
     except PlatformCapabilityRegistryError as exc:
         return ((f"platform_capability_registry_unavailable:{type(exc).__name__}",), ())
@@ -767,6 +842,9 @@ def _build_receipt(
         "route_id": leaf.route_id,
         "platform_route_id": leaf.platform_route_id,
         "provider": leaf.provider,
+        "profile": leaf.profile,
+        "task_class": leaf.task_class,
+        "quality_floor": leaf.quality_floor,
         "model_alias": leaf.model_alias,
         "model_route": leaf.model_route,
         "capacity_pool": leaf.capacity_pool,
@@ -800,6 +878,9 @@ def _build_receipt(
         route_id=leaf.route_id,
         platform_route_id=leaf.platform_route_id,
         provider=leaf.provider,
+        profile=leaf.profile,
+        task_class=leaf.task_class,
+        quality_floor=leaf.quality_floor,
         model_alias=leaf.model_alias,
         model_route=leaf.model_route,
         capacity_pool=leaf.capacity_pool,

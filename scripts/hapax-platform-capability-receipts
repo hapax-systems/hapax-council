@@ -38,7 +38,7 @@ from shared.platform_capability_receipts import (  # noqa: E402
 from shared.platform_capability_registry import (  # noqa: E402
     PLATFORM_CAPABILITY_REGISTRY,
     PlatformCapabilityRoute,
-    load_platform_capability_registry,
+    load_platform_capability_registry_for_dispatch,
 )
 
 BINARY_BY_PLATFORM = {
@@ -754,7 +754,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     observed_at = parse_utc(args.now) if args.now else datetime.now(UTC).replace(microsecond=0)
-    registry = load_platform_capability_registry(args.registry)
+    registry, _observation_errors = load_platform_capability_registry_for_dispatch(
+        args.registry,
+        now=observed_at,
+        apply_receipts=False,
+    )
     routes_by_platform = platform_routes(registry.routes)
     selected = (
         sorted(routes_by_platform)

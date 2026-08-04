@@ -5,8 +5,12 @@ import json
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from agents.deliberative_council.capability_admission import (
+    CapabilityAdmissionError,
     CapabilityAdmissionReceipt,
     CapabilityDescriptor,
     admit_capability,
@@ -14,12 +18,14 @@ from agents.deliberative_council.capability_admission import (
     admit_tool,
     capability_admission_event_scope,
     record_capability_admission,
+    require_member_admission,
     route_resource_admission_state,
 )
 from shared.quota_spend_ledger import QUOTA_SPEND_LEDGER_FIXTURES, CapacityPool
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PLATFORM_CAPABILITY_REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
+RESERVED_EVALUATOR_ID = "local_compute.agentic_trust_evaluator_surface"
 
 
 def _mark_route_fresh_for_registry_check(route: dict[str, object], checked_at: str) -> None:
@@ -255,6 +261,185 @@ def test_paid_model_alias_refuses_missing_platform_route(tmp_path: Path, monkeyp
     assert "platform_route_missing:api.headless.missing-provider-gateway" in admission.reason_codes
 
 
+def test_reserved_evaluator_identity_refuses_before_any_supply_admission(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HAPAX_CCTV_QUOTA_SPEND_LEDGER", str(tmp_path / "must-not-load.json"))
+    base = {
+        "capability_id": "cctv.model.synthetic",
+        "route_id": "local-fast",
+        "provider": "local",
+        "capacity_pool": CapacityPool.LOCAL_COMPUTE,
+        "profile": "local",
+    }
+    descriptors = (
+        CapabilityDescriptor(**(base | {"capability_id": RESERVED_EVALUATOR_ID})),
+        CapabilityDescriptor(**(base | {"route_id": f"surface/{RESERVED_EVALUATOR_ID}"})),
+        CapabilityDescriptor(**(base | {"platform_route_id": RESERVED_EVALUATOR_ID})),
+        CapabilityDescriptor(**(base | {"capability_id": f"ROUTE/{RESERVED_EVALUATOR_ID}"})),
+        CapabilityDescriptor(**(base | {"route_id": f"route.{RESERVED_EVALUATOR_ID}"})),
+        CapabilityDescriptor(**(base | {"platform_route_id": f"ROUTE/{RESERVED_EVALUATOR_ID}"})),
+        CapabilityDescriptor(**(base | {"provider": "AgenticTrustEvidenceReceiptV1"})),
+        CapabilityDescriptor(**(base | {"profile": "AgenticTrustEvidenceReceiptV1"})),
+        CapabilityDescriptor(**(base | {"task_class": "AgenticTrustEvidenceReceiptV1"})),
+        CapabilityDescriptor(**(base | {"quality_floor": "AgenticTrustEvidenceReceiptV1"})),
+    )
+
+    for descriptor in descriptors:
+        admission = admit_capability(descriptor, now=datetime(2026, 6, 1, tzinfo=UTC))
+        assert admission.admitted is False
+        assert admission.reason_codes == (
+            "evidence_only_observation_identity_not_admissible_supply",
+            f"reserved_identity:{RESERVED_EVALUATOR_ID}",
+        )
+
+
+def test_reserved_evaluator_child_follows_normal_admission_path(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HAPAX_CCTV_QUOTA_SPEND_LEDGER", str(tmp_path / "missing-ledger.json"))
+    descriptor = CapabilityDescriptor(
+        capability_id=f"{RESERVED_EVALUATOR_ID}.child",
+        route_id="local-fast",
+        provider="local",
+        capacity_pool=CapacityPool.LOCAL_COMPUTE,
+        profile="local",
+    )
+
+    admission = admit_capability(descriptor, now=datetime(2026, 6, 1, tzinfo=UTC))
+
+    assert admission.admitted is False
+    assert admission.reason_codes[0].startswith("quota_spend_ledger_unavailable:")
+    assert not any(
+        "evidence_only_observation_identity" in reason for reason in admission.reason_codes
+    )
+
+
+@pytest.mark.parametrize(
+    ("aliases", "requested_alias"),
+    (
+        ({RESERVED_EVALUATOR_ID: "opus"}, RESERVED_EVALUATOR_ID),
+        ({"legacy-evaluator": RESERVED_EVALUATOR_ID}, "legacy-evaluator"),
+    ),
+)
+def test_model_alias_rebinding_cannot_erase_reserved_evaluator_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    aliases: dict[str, str],
+    requested_alias: str,
+) -> None:
+    from agents.deliberative_council import members
+
+    monkeypatch.setattr(members, "LEGACY_MODEL_ALIASES", aliases)
+    monkeypatch.setenv("HAPAX_CCTV_QUOTA_SPEND_LEDGER", str(tmp_path / "must-not-load.json"))
+
+    admission = admit_model_alias(requested_alias)
+
+    assert admission.admitted is False
+    assert admission.reason_codes == (
+        "evidence_only_observation_identity_not_admissible_supply",
+        f"reserved_identity:{RESERVED_EVALUATOR_ID}",
+    )
+
+
+def test_invoked_model_route_cannot_name_reserved_evaluator_identity() -> None:
+    admission = admit_model_alias("opus", invoked_route_id=RESERVED_EVALUATOR_ID)
+
+    assert admission.admitted is False
+    assert admission.reason_codes == (
+        "evidence_only_observation_identity_not_admissible_supply",
+        f"reserved_identity:{RESERVED_EVALUATOR_ID}",
+    )
+
+
+def _admitted_receipt(**overrides: object) -> CapabilityAdmissionReceipt:
+    payload: dict[str, object] = {
+        "receipt_id": "cctv-test-admitted",
+        "receipt_ref": "cctv-capability-admission:cctv-test-admitted",
+        "capability_id": "cctv.model.opus",
+        "route_id": "claude-opus",
+        "provider": "anthropic",
+        "capacity_pool": "api_paid_spend",
+        "admission_action": "admitted",
+        "admitted": True,
+        "reason_codes": ("eligible",),
+    }
+    payload.update(overrides)
+    return CapabilityAdmissionReceipt.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    (
+        {"admission_action": "refused", "admitted": True},
+        {"admission_action": "admitted", "admitted": False},
+        {"capability_id": RESERVED_EVALUATOR_ID},
+        {"route_id": f"route.{RESERVED_EVALUATOR_ID}"},
+        {"provider": "AgenticTrustEvidenceReceiptV1"},
+        {"profile": "AgenticTrustEvidenceReceiptV1"},
+        {"task_class": "AgenticTrustEvidenceReceiptV1"},
+        {"quality_floor": "AgenticTrustEvidenceReceiptV1"},
+        {"receipt_ref": "AgenticTrustEvidenceReceiptV1:test-only"},
+        {"receipt_refs": ("AgenticTrustEvidenceReceiptV1:test-only",)},
+    ),
+)
+def test_admission_receipt_representation_rejects_contradictions_and_reserved_supply(
+    overrides: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        _admitted_receipt(**overrides)
+
+
+def test_refused_receipt_may_name_reserved_evaluator_for_audit() -> None:
+    receipt = CapabilityAdmissionReceipt(
+        receipt_id="cctv-test-refused",
+        receipt_ref="cctv-capability-admission:cctv-test-refused",
+        capability_id=RESERVED_EVALUATOR_ID,
+        route_id="local-fast",
+        provider="local",
+        capacity_pool="local_compute",
+        admission_action="refused",
+        admitted=False,
+        reason_codes=("evidence_only_observation_identity_not_admissible_supply",),
+    )
+
+    assert receipt.admitted is False
+
+
+@pytest.mark.parametrize(
+    ("member_route", "member_alias", "reason"),
+    (
+        (f"route.{RESERVED_EVALUATOR_ID}", "opus", "evidence_only_observation_identity"),
+        ("claude-sonnet", "opus", "member_identity_mismatch"),
+        ("claude-opus", "balanced", "member_identity_mismatch"),
+    ),
+)
+def test_member_gate_rejects_receipt_substitution(
+    member_route: str,
+    member_alias: str,
+    reason: str,
+) -> None:
+    member = SimpleNamespace(
+        _cctv_capability_admission=_admitted_receipt(),
+        _cctv_route_id=member_route,
+        _cctv_model_alias=member_alias,
+    )
+
+    with pytest.raises(CapabilityAdmissionError, match=reason):
+        require_member_admission(member)
+
+
+def test_member_gate_accepts_exactly_cross_bound_receipt() -> None:
+    receipt = _admitted_receipt()
+    member = SimpleNamespace(
+        _cctv_capability_admission=receipt,
+        _cctv_route_id="claude-opus",
+        _cctv_model_alias="opus",
+    )
+
+    assert require_member_admission(member) == receipt
+
+
 def test_receipt_identity_binds_decision_inputs(tmp_path: Path, monkeypatch) -> None:
     ledger = _write_test_ledger(tmp_path)
     registry = _write_platform_registry(
@@ -454,6 +639,28 @@ def test_local_model_admission_is_bound_to_route_snapshot(tmp_path: Path, monkey
     assert "local_resource_snapshot_missing" in appendix_fast.reason_codes
     assert appendix_fast.quota_evidence_refs == ()
     assert "litellm:gateway-4000-local-fast-route-healthy" not in appendix_fast.receipt_refs
+
+
+def test_explicit_local_platform_route_must_resolve(tmp_path: Path, monkeypatch) -> None:
+    ledger = _write_test_ledger(tmp_path)
+    registry = _write_platform_registry(tmp_path, local_worker_blocked=False)
+    monkeypatch.setenv("HAPAX_CCTV_QUOTA_SPEND_LEDGER", str(ledger))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(registry))
+    descriptor = CapabilityDescriptor(
+        capability_id="cctv.model.synthetic-local",
+        route_id="local-fast",
+        platform_route_id="local_tool.missing.worker",
+        provider="local",
+        capacity_pool=CapacityPool.LOCAL_COMPUTE,
+        profile="local",
+        quality_floor="capable_sufficient",
+        estimated_cost_usd=Decimal("0"),
+    )
+
+    admission = admit_capability(descriptor, now=datetime(2026, 6, 1, 0, 10, tzinfo=UTC))
+
+    assert admission.admitted is False
+    assert "platform_route_missing:local_tool.missing.worker" in admission.reason_codes
 
 
 def test_missing_ledger_refuses_fail_closed(tmp_path: Path, monkeypatch) -> None:

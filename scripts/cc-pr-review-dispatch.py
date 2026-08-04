@@ -2553,9 +2553,9 @@ def review_pr(
         platform_registry = (
             None
             if route_blocked_families is not None
-            else review_team.load_platform_capability_registry(
+            else review_team.load_platform_capability_registry_for_dispatch(
                 receipt_dir=review_team.DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR
-            )
+            )[0]
         )
         registry = review_team.review_registry_with_route_families(
             registry, platform_registry=platform_registry
