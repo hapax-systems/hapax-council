@@ -88,8 +88,6 @@ def _collect(note_lines: list[str]) -> list[str]:
         f"{collector}"
         "\nprint(json.dumps(items))\n"
     )
-    import json
-
     result = subprocess.run(
         ["python3", "-c", program, json.dumps(note_lines)],
         capture_output=True,
