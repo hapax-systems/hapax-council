@@ -2903,15 +2903,25 @@ def _run_install_verify_live(
     tmp_path: Path,
     load_state: dict[str, str] | None = None,
     drift: dict[str, dict[str, str]] | None = None,
+    unit_files: set[str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Drive the REAL installer through --install --verify-live against temp destinations.
 
     Mirrors test_p0_oom_containment_install_and_verify_live_against_temp_destinations, adding a
     LoadState-answering systemctl stub so the host-fit branch is actually reached, and an optional
     drift injector so a PRESENT unit can be made to report wrong policy values.
+
+    `unit_files` places unit FILES on the fake host without making them load, which is the state
+    that distinguishes "never installed here" from "installed here and broken".
+
+    THE UNIT SEARCH PATH IS PINNED TO tmp_path. Left unset, the installer asks the real
+    `systemd-analyze --user unit-paths` and finds the REAL machine's units — so a test asserting
+    that pipewire.service is absent would silently be told it is present, and would assert against
+    whatever the developer's laptop happens to have installed. Hermetic by construction.
     """
     load_state = load_state or {}
     drift = drift or {}
+    unit_files = unit_files or set()
     system_dir = tmp_path / "systemd-system"
     target_home = tmp_path / "target-home"
     root_home = tmp_path / "root-home"
@@ -2950,6 +2960,11 @@ def _run_install_verify_live(
     )
     fake_runuser.chmod(0o755)
 
+    unit_path_dir = tmp_path / "user-unit-path"
+    unit_path_dir.mkdir()
+    for unit in unit_files:
+        (unit_path_dir / unit).write_text("[Unit]\nDescription=placed by test\n", encoding="utf-8")
+
     return subprocess.run(
         [str(INSTALLER), "--install", "--verify-live"],
         text=True,
@@ -2967,6 +2982,7 @@ def _run_install_verify_live(
             "HAPAX_OOM_ENFORCER_DEST": str(enforcer_dest),
             "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
             "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_OOM_USER_UNIT_PATHS": str(unit_path_dir),
             "HAPAX_OOM_EFFECTIVE_UID": "0",
             "HAPAX_OOM_RUNUSER": str(fake_runuser),
             "HAPAX_OOM_INSTALL_SUDO": "",
@@ -3048,4 +3064,95 @@ def test_allow_list_membership_only_narrows_the_not_found_case(tmp_path: Path) -
     assert "skipping hapax-daimonion.service" not in result.stderr, (
         "verify-live SKIPPED a unit that is loaded. The skip branch must be reachable only via "
         f"LoadState=not-found.\nstderr: {result.stderr[-1500:]}"
+    )
+
+
+def test_allow_listed_unit_with_a_unit_file_on_disk_fails_closed(tmp_path: Path) -> None:
+    """REVIEW'S CHARGE, EXECUTED. The allow-list is global; membership must not be sufficient.
+
+    CodeRabbit on PR #4499: "This allowlist is global. `is_host_optional_user_unit` checks only the
+    unit name. If an allowlisted unit is absent on podium, the skip fires and `--verify-live` can
+    pass." That is correct, and the allow-list cannot fix it — a NAME cannot say which host it is on.
+
+    Measured on both hosts 2026-08-04, which is where the discriminator came from:
+        appendix  hapax-daimonion.service  LoadState=not-found  no unit file anywhere in the path
+        podium    hapax-daimonion.service  LoadState=loaded     ~/.config/systemd/user/...
+
+    So the unit FILE is what distinguishes never-installed-here from installed-here-and-broken, and
+    it does so without the script ever asking its own hostname — hostname checks are precisely the
+    thing that rots when a host is renamed, cloned, or replaced.
+
+    NOTE ON FragmentPath: it was the first candidate and it does NOT work. systemd reports
+    FragmentPath as EMPTY for every not-found unit, on both hosts, so it merely restates LoadState.
+    Verified before writing this test rather than after.
+    """
+    result = _run_install_verify_live(
+        tmp_path,
+        load_state={"hapax-daimonion.service": "not-found"},
+        unit_files={"hapax-daimonion.service"},
+    )
+    assert result.returncode != 0, (
+        "an ALLOW-LISTED unit that is not-found while its unit file sits on disk was SKIPPED. That "
+        "is a unit installed on this host which the manager cannot load (masked, dangling symlink, "
+        "bad syntax), and skipping it makes --verify-live pass having verified nothing about it.\n"
+        f"stderr: {result.stderr[-2000:]}"
+    )
+    assert "unit file for it EXISTS on this host" in result.stderr, (
+        "the run failed, but not for this reason — the assertion would pass on an unrelated failure "
+        f"and stop being a test of this branch.\nstderr: {result.stderr[-2000:]}"
+    )
+
+
+def test_absent_host_optional_unit_is_still_skipped_when_no_unit_file_exists(tmp_path: Path) -> None:
+    """The other side of the same predicate: narrowing the skip must not delete it.
+
+    Without this, a fix for the review comment could simply fail on everything absent and still look
+    green in the test above — reinstating the 2026-07-11 rollback loop while appearing to be a
+    hardening. Same LoadState as the test above, opposite file state, opposite required outcome.
+    """
+    result = _run_install_verify_live(
+        tmp_path,
+        load_state={"hapax-daimonion.service": "not-found"},
+        unit_files=set(),
+    )
+    assert result.returncode == 0, (
+        "a host-optional unit with NO unit file on this host was failed rather than skipped — this "
+        f"is the 2026-07-11 rollback loop returning.\nstderr: {result.stderr[-2000:]}"
+    )
+    assert "skipping hapax-daimonion.service" in result.stderr
+
+
+def test_verify_live_fails_when_it_verified_nothing_at_all(tmp_path: Path) -> None:
+    """VACUOUS PASS. A check quantified over an empty set is TRUE, and says nothing.
+
+    Every assertion in verify_protected_user_unit_oom_scores is of the form "for each surviving
+    unit, ...". Skip them all and the loop body never runs, `failed` stays 0, and the exit code is
+    identical to a run that verified all six units against a live manager. The allow-list is the
+    mechanism that can empty the set — it is hand-edited, under deploy pressure, by whoever needs a
+    host to go green.
+
+    This test empties it deliberately: all six protected units report not-found with no unit files.
+    A green exit here would mean the verifier reports success on a host where it examined nothing.
+    """
+    result = _run_install_verify_live(
+        tmp_path,
+        load_state={
+            "pipewire.service": "not-found",
+            "pipewire-pulse.service": "not-found",
+            "wireplumber.service": "not-found",
+            "hapax-daimonion.service": "not-found",
+            "studio-compositor.service": "not-found",
+            "hapax-imagination.service": "not-found",
+        },
+        unit_files=set(),
+    )
+    assert result.returncode != 0, (
+        "--verify-live examined ZERO protected units and still exited 0. That exit code is "
+        "indistinguishable from a full successful verification, which is the entire defect class "
+        f"this package exists to remove.\nstderr: {result.stderr[-2000:]}"
+    )
+    assert "examined 0 of 6 protected user units" in result.stderr, (
+        "it failed, but the vacuous-pass guard is not what caught it — the three REQUIRED units "
+        "failing closed would produce a non-zero exit on their own and mask the guard's absence.\n"
+        f"stderr: {result.stderr[-2000:]}"
     )

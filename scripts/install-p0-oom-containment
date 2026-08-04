@@ -36,6 +36,7 @@ ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapa
 OOM_POLICY_AUDIT_DEST="${HAPAX_OOM_POLICY_AUDIT_DEST:-/usr/local/sbin/hapax-oom-policy-audit}"
 ROOT_REQUIRED_AUDIT_DEST="${HAPAX_ROOT_REQUIRED_AUDIT_DEST:-/usr/local/sbin/hapax-root-required-deploy-audit}"
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
+SYSTEMD_ANALYZE="${HAPAX_OOM_SYSTEMD_ANALYZE:-systemd-analyze}"
 SUDO="${HAPAX_OOM_INSTALL_SUDO-sudo}"
 ACTUAL_UID="$(/usr/bin/id -u)"
 if [ "$ACTUAL_UID" != "0" ] && [ "${HAPAX_OOM_INSTALL_TEST_ACTUAL_UID:-}" = "0" ]; then
@@ -659,6 +660,48 @@ is_host_optional_user_unit() {
     for optional in "${host_optional_user_units[@]}"; do
         [ "$candidate" = "$optional" ] && return 0
     done
+    return 1
+}
+
+# Where the user manager looks for unit files. Asked of systemd rather than hardcoded: the real
+# path includes generator, transient and .control directories that a static list silently omits,
+# and omitting one turns "installed here" into "absent here" -- the exact misread this whole
+# section exists to prevent. The static fallback is for environments with no queryable user
+# manager; it is a floor, not the answer.
+user_unit_search_paths() {
+    if [ -n "${HAPAX_OOM_USER_UNIT_PATHS:-}" ]; then
+        printf '%s\n' "${HAPAX_OOM_USER_UNIT_PATHS//:/$'\n'}"
+        return 0
+    fi
+    if "$SYSTEMD_ANALYZE" --user unit-paths 2>/dev/null; then
+        return 0
+    fi
+    printf '%s\n' \
+        "$TARGET_HOME/.config/systemd/user" \
+        "$TARGET_HOME/.local/share/systemd/user" \
+        /etc/systemd/user \
+        /run/systemd/user \
+        /usr/lib/systemd/user
+}
+
+# Does a unit FILE for this unit exist on this host, regardless of whether it loaded?
+#
+# This is the discriminator the allow-list alone cannot provide. `host_optional_user_units` says a
+# unit MAY be absent somewhere; it cannot say whether THIS host is such a place, so on its own it
+# would skip an allow-listed unit that vanished from a host it belongs on -- review's exact charge.
+# LoadState cannot settle it either (not-found is not-found), and neither can FragmentPath, which is
+# empty for every not-found unit and therefore just restates LoadState.
+#
+# The file on disk does settle it, and does so WITHOUT asking which host we are:
+#   no unit file  -> the package was never installed here      -> absence is expected
+#   unit file     -> installed here and the manager cannot load it (masked, dangling symlink,
+#                    syntax error) -> absence is ALARMING and must fail closed
+user_unit_file_present() {
+    local unit="$1" dir
+    while IFS= read -r dir; do
+        [ -n "$dir" ] || continue
+        [ -e "$dir/$unit" ] && return 0
+    done < <(user_unit_search_paths)
     return 1
 }
 
@@ -1723,6 +1766,7 @@ verify_user_manager_oom_score() {
 
 verify_protected_user_unit_oom_scores() {
     local spec unit score pid actual configured rel expected_slice key expected_raw expected_bytes cgroup failed=0
+    local verified=0 skipped=0
     for spec in "${protected_user_unit_scores[@]}"; do
         unit="${spec%%:*}"
         score="${spec##*:}"
@@ -1742,8 +1786,17 @@ verify_protected_user_unit_oom_scores() {
         # success. The skip is therefore allow-listed to host_optional_user_units; every other
         # protected unit is required wherever this package installs, and its absence fails closed.
         if [ "$(user_systemctl show "$unit" -p LoadState --value 2>/dev/null || true)" = "not-found" ]; then
+            # Allow-list membership is necessary but NOT sufficient. It says the unit may be absent
+            # on SOME host; only the unit file says whether THIS host is one of them. Checked first,
+            # so an allow-listed unit that is installed here but unloadable can never reach the skip.
+            if user_unit_file_present "$unit"; then
+                echo "protected user unit $unit reports LoadState=not-found but a unit file for it EXISTS on this host: the package IS installed here and the user manager cannot load it, so this is a load failure, not host-absence, and skipping it would report success having verified nothing; next action: run 'systemctl --user status $unit' and 'systemd-analyze --user verify $unit' to find the masked/dangling/malformed unit, then rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+                failed=1
+                continue
+            fi
             if is_host_optional_user_unit "$unit"; then
-                echo "p0-oom: skipping $unit — host-optional protected unit, not present here (LoadState=not-found); nothing to verify" >&2
+                skipped=$((skipped + 1))
+                echo "p0-oom: skipping $unit — host-optional protected unit, no unit file on this host (LoadState=not-found); nothing to verify" >&2
                 continue
             fi
             echo "required protected user unit $unit is absent on this host (LoadState=not-found): --verify-live cannot confirm OOM policy for a unit that is not loaded, and treating it as verified would be a false green; next action: install/enable $unit on this host, or if it is legitimately host-optional add it to host_optional_user_units in scripts/install-p0-oom-containment with the measurement that justifies it" >&2
@@ -1797,7 +1850,22 @@ verify_protected_user_unit_oom_scores() {
                 failed=1
             fi
         done < <(snapshotted_user_unit_pids "$unit")
+        verified=$((verified + 1))
     done
+    # VACUOUS-PASS GUARD. Every check above is universally quantified over the units that survived
+    # the skip, and a universally quantified check over an EMPTY set is true. So a --verify-live that
+    # examined nothing returns exactly what a --verify-live that examined everything returns, and the
+    # two are indistinguishable from the exit code -- which is the failure mode this package was
+    # written to stop, reappearing one level up in the package's own verifier.
+    #
+    # The allow-list is the mechanism that could empty the set: it is edited by hand, under pressure,
+    # by whoever is trying to get a host to deploy. Nothing structurally prevents it from growing
+    # until it covers every protected unit, at which point verify-live passes on every host forever.
+    # This makes that state loud instead of green.
+    if [ "$verified" -eq 0 ]; then
+        echo "--verify-live examined 0 of ${#protected_user_unit_scores[@]} protected user units ($skipped skipped as host-optional): a verification that evaluates nothing PASSES VACUOUSLY and cannot be told apart from one that actually verified the policy; next action: confirm this host is meant to run none of the protected units, and if so stop running --verify-live here, otherwise install the units or shrink host_optional_user_units in scripts/install-p0-oom-containment" >&2
+        failed=1
+    fi
     [ "$failed" -eq 0 ]
 }
 
