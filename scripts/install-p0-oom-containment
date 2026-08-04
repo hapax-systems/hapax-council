@@ -676,12 +676,42 @@ user_unit_search_paths() {
     if "$SYSTEMD_ANALYZE" --user unit-paths 2>/dev/null; then
         return 0
     fi
+    # DEGRADED. Mirrors systemd's documented user unit load path, INCLUDING the .control,
+    # transient, generator and user.attached directories an abbreviated list omits -- review
+    # (codex-1, PR #4499) showed that a unit represented only in one of those would be classified
+    # as having no unit file and skipped. Enumerated from `systemd-analyze --user unit-paths`
+    # observed on hapax-appendix 2026-08-04.
+    local runtime="${XDG_RUNTIME_DIR:-/run/user/$TARGET_UID}"
     printf '%s\n' \
+        "$TARGET_HOME/.config/systemd/user.control" \
+        "$runtime/systemd/user.control" \
+        "$runtime/systemd/transient" \
+        "$runtime/systemd/generator.early" \
         "$TARGET_HOME/.config/systemd/user" \
-        "$TARGET_HOME/.local/share/systemd/user" \
+        "$TARGET_HOME/.config/systemd/user.attached" \
         /etc/systemd/user \
+        "$runtime/systemd/user" \
+        "$runtime/systemd/user.attached" \
         /run/systemd/user \
+        "$runtime/systemd/generator" \
+        "$runtime/systemd/generator.late" \
+        "$TARGET_HOME/.local/share/systemd/user" \
         /usr/lib/systemd/user
+    return 2
+}
+
+# Is the unit search path AUTHORITATIVE on this run, or a reconstruction?
+#
+# This distinction is the whole reason the skip is safe. Absence can only be asserted from an
+# authoritative enumeration: if the manager could not be queried, a reconstructed list may omit a
+# directory this system actually uses, and "no unit file found" then means "I did not look
+# everywhere" rather than "it is not installed". Skipping on that is a false host-absence -- the
+# same absent-vs-unevaluable conflation this whole section exists to remove, one level up.
+# So a degraded enumeration may still PROVE presence (finding a file is positive evidence), but it
+# may never be used to prove ABSENCE.
+user_unit_search_paths_are_authoritative() {
+    [ -n "${HAPAX_OOM_USER_UNIT_PATHS:-}" ] && return 0
+    "$SYSTEMD_ANALYZE" --user unit-paths >/dev/null 2>&1
 }
 
 # Does a unit FILE for this unit exist on this host, regardless of whether it loaded?
@@ -1802,6 +1832,13 @@ verify_protected_user_unit_oom_scores() {
                 continue
             fi
             if is_host_optional_user_unit "$unit"; then
+                # The skip rests on having proven absence, which a reconstructed search path
+                # cannot do. Fail closed rather than skip on a list that may not be complete.
+                if ! user_unit_search_paths_are_authoritative; then
+                    echo "protected user unit $unit is not loaded and no unit file was found, but the user unit search path could NOT be obtained from systemd ('$SYSTEMD_ANALYZE --user unit-paths' failed), so the list searched is a RECONSTRUCTION and may omit a directory this system uses; absence is therefore unproven and skipping it would be a false green; next action: make systemd-analyze usable for the target user, or set HAPAX_OOM_USER_UNIT_PATHS to the authoritative colon-separated search path, then rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+                    failed=1
+                    continue
+                fi
                 skipped=$((skipped + 1))
                 echo "p0-oom: skipping $unit — host-optional protected unit, no unit file on this host (LoadState=not-found); nothing to verify" >&2
                 continue

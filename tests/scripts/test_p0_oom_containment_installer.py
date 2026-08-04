@@ -3232,3 +3232,37 @@ def test_unit_search_path_falls_back_when_systemd_analyze_is_unusable(tmp_path: 
         "present in ~/.config/systemd/user. A fallback that yields no directories makes every "
         f"unit look absent and every allow-listed unit skippable.\nstderr: {result.stderr[-2500:]}"
     )
+
+
+def test_degraded_search_path_may_not_be_used_to_prove_absence(tmp_path: Path) -> None:
+    """MAJOR from blind review (codex-1) on PR #4499, at its root rather than its symptom.
+
+    The first fix answered "the fallback omits directories" by listing more directories. That is
+    necessary but not sufficient: ANY reconstruction can omit a path this system actually uses, so
+    "no unit file found" under a degraded enumeration means "I did not look everywhere", not "it is
+    not installed". Skipping on that is a false host-absence.
+
+    So a degraded path list may still PROVE PRESENCE — finding a file is positive evidence — but it
+    may never prove ABSENCE. Here systemd-analyze fails and no unit file exists anywhere, which is
+    exactly the state that must fail closed instead of skipping.
+    """
+    failing_analyze = tmp_path / "systemd-analyze-broken"
+    failing_analyze.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+    failing_analyze.chmod(0o755)
+
+    result = _run_install_verify_live(
+        tmp_path,
+        load_state={"hapax-daimonion.service": "not-found"},
+        unit_files=set(),
+        no_unit_path_override=True,
+        systemd_analyze=str(failing_analyze),
+    )
+    assert result.returncode != 0, (
+        "an allow-listed unit was skipped as host-absent while the search path was a RECONSTRUCTION "
+        "— absence was never proven, so this is a false green.\n"
+        f"stderr: {result.stderr[-2000:]}"
+    )
+    assert "RECONSTRUCTION" in result.stderr, (
+        "it failed, but not because absence was unprovable — the assertion would pass on an "
+        f"unrelated failure.\nstderr: {result.stderr[-2000:]}"
+    )
