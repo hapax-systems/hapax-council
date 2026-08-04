@@ -4739,3 +4739,85 @@ _ = (_classify_entitlement, _is_routable_supply)
 from github_pr_status import get_pr_status_rest as _get_pr_status_rest  # noqa: E402
 
 _ = (_get_pr_status_rest,)
+
+# ---------------------------------------------------------------------------
+# Agentic-trust evidence-only non-supply plane (PR #4503)
+# Pydantic model_validator / model_serializer hooks and observation-plane
+# helpers. Vulture cannot see decorator-driven validation; production tests
+# exercise them. Public helpers below are the intentional non-supply contract
+# surface consumed by the registry/freshness scripts and focused suites.
+# ---------------------------------------------------------------------------
+from agents.deliberative_council.capability_admission import (  # noqa: E402
+    CapabilityAdmissionReceipt as _CapabilityAdmissionReceipt,
+)
+from shared.capability_inventory_contract import (  # noqa: E402
+    AdmittedSupplyInventoryRecord as _AdmittedSupplyInventoryRecord,
+)
+from shared.capability_inventory_contract import (  # noqa: E402
+    CapabilityInventoryBaselineV2 as _CapabilityInventoryBaselineV2,
+)
+from shared.capability_inventory_contract import (  # noqa: E402
+    CapabilityInventorySnapshot as _CapabilityInventorySnapshot,
+)
+from shared.capability_inventory_contract import (  # noqa: E402
+    EvidenceOnlyNonSupplyInventoryRecord as _EvidenceOnlyNonSupplyInventoryRecord,
+)
+from shared.capability_inventory_contract import (  # noqa: E402
+    _DescriptorGuardedRecord as _DescriptorGuardedInventoryRecord,
+)
+from shared.dispatcher_policy import DispatchRequest as _DispatchRequest  # noqa: E402
+from shared.dispatcher_policy import RouteCapabilityState as _RouteCapabilityState  # noqa: E402
+from shared.dispatcher_policy import RouteDecision as _RouteDecision  # noqa: E402
+from shared.platform_capability_receipts import ToolEvidence as _ToolEvidence  # noqa: E402
+from shared.platform_capability_registry import (  # noqa: E402
+    CapabilityShapeDescriptor as _CapabilityShapeDescriptor,
+)
+from shared.platform_capability_registry import (  # noqa: E402
+    DescriptorVariant as _DescriptorVariant,
+)
+from shared.platform_capability_registry import (  # noqa: E402
+    HistoricalPerformance as _HistoricalPerformance,
+)
+from shared.platform_capability_registry import (  # noqa: E402
+    QualityEnvelope as _QualityEnvelope,
+)
+from shared.platform_capability_registry import (  # noqa: E402
+    SupplyDescriptor as _SupplyDescriptor,
+)
+from shared.platform_capability_registry import SupplyRoute as _SupplyRoute  # noqa: E402
+from shared.platform_capability_registry import ToolAccess as _ToolAccess  # noqa: E402
+from shared.platform_capability_registry import (  # noqa: E402
+    check_omitted_shape_freshness as _check_omitted_shape_freshness,
+)
+from shared.platform_capability_registry import (  # noqa: E402
+    is_registered_evidence_only_surface as _is_registered_evidence_only_surface,
+)
+from shared.route_metadata_schema import RequiredTool as _RequiredTool  # noqa: E402
+
+_CapabilityAdmissionReceipt._decision_representation_is_consistent
+_DescriptorGuardedInventoryRecord._serialize_guarded
+_AdmittedSupplyInventoryRecord._id_matches_descriptor
+_EvidenceOnlyNonSupplyInventoryRecord._id_matches_descriptor
+_CapabilityInventorySnapshot._existing_snapshot_is_unchanged
+_CapabilityInventorySnapshot._ids_are_unique_across_planes
+_CapabilityInventorySnapshot._serialize_validated_records
+_CapabilityInventorySnapshot.evidence_only_non_supply_descriptors
+_CapabilityInventoryBaselineV2._existing_baseline_is_unchanged
+_CapabilityInventoryBaselineV2._count_matches_records
+_CapabilityInventoryBaselineV2._serialize_guarded
+_RouteCapabilityState._observation_evidence_cannot_become_route_capability
+_DispatchRequest._observation_evidence_cannot_define_requested_quality
+_RouteDecision._selected_leaf_is_bound_to_the_non_reserved_route
+_ToolEvidence._evidence_reference_retains_its_type
+_ToolAccess._observation_receipt_cannot_create_execution_access
+_DescriptorVariant._observation_identity_cannot_be_an_execution_leaf
+_QualityEnvelope._observation_receipt_cannot_establish_supply_equivalence
+_SupplyRoute._reserved_observation_identity_is_not_supply
+_HistoricalPerformance._observation_receipt_cannot_establish_historical_supply
+_SupplyDescriptor._observation_identity_cannot_be_selected_as_a_supply_leaf
+_RequiredTool._observation_identity_cannot_be_required_supply
+_ = (
+    _is_registered_evidence_only_surface,
+    _check_omitted_shape_freshness,
+    _CapabilityShapeDescriptor,
+)
