@@ -56,11 +56,15 @@ def _extract_collector() -> str:
         "the extracted slice does not contain the sequence-item branch, so it is not the "
         "block-sequence collector — re-anchor rather than testing whatever loop this is."
     )
-    assert block.count("while ") == 1, (
-        "the extracted slice contains a nested loop, so the `break` anchor may have terminated it "
-        "early and the test would execute a truncated parser."
-    )
-    block = src[start : end + len("\n        break\n")]
+    # The slice must reach the END of the collector, not stop at some inner `break`. Counting
+    # `while` was the first attempt and was WRONG: the collector legitimately grew a nested loop
+    # (quoted-scalar scanning), and the assertion then rejected correct code. What actually matters
+    # is that the slice contains the whole body, so assert on its terminal constructs instead.
+    for marker in ("items.append(", 'for sep in ("\\t#", " #")'):
+        assert marker in block, (
+            f"the extracted slice is missing {marker!r}, so the `break` anchor terminated it early "
+            "and the test would execute a TRUNCATED parser that silently parses fewer refs."
+        )
     # The collector lives inside a function in the gate, so it arrives indented. Dedent it to
     # module level for splicing; textwrap.dedent handles the blank/comment lines correctly.
     return textwrap.dedent(block)
@@ -207,4 +211,26 @@ def test_comment_handling_is_documented_accurately() -> None:
     assert re.search(r"trailing comment", src, re.I), (
         "the collector handles trailing comments but does not say so; the next reader will assume "
         "only full-line comments are covered and re-introduce the gap"
+    )
+
+
+def test_escaped_quotes_inside_a_quoted_scalar_do_not_truncate_the_path() -> None:
+    """MAJOR from blind review (codex-1) on PR #4501, both YAML escape forms.
+
+    `find(quote, 1)` stops at the first quote character. A double-quoted scalar escapes one as
+    `\\"` and a single-quoted scalar doubles it (`''`), so either form terminated the value early
+    and silently shortened the path — narrowing the authorized surface, which is the defect this
+    collector exists to prevent, reappearing one layer down from where it was fixed.
+    """
+    refs = _collect(
+        [
+            "mutation_scope_refs:",
+            '  - "~/projects/x/we\\"ird.py"',
+            "  - '~/projects/x/it''s.py'",
+            "exit_predicate: something",
+        ]
+    )
+    assert refs == ['~/projects/x/we"ird.py', "~/projects/x/it's.py"], (
+        "an escaped quote inside a quoted scalar truncated the path. Double-quoted uses "
+        f"backslash (\\\"), single-quoted doubles the quote (''). got {refs}"
     )

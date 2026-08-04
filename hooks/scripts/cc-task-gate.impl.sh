@@ -798,9 +798,32 @@ while idx < len(lines):
             # authorized surface — the same fail-quiet defect this collector exists to remove,
             # reintroduced by the fix for it. Caught by blind review on PR #4501.
             if value[:1] in ('"', "'"):
-                closing = value.find(value[0], 1)
-                if closing != -1:
-                    items.append(value[1:closing])
+                # ESCAPE FORMS MATTER. `find(quote, 1)` stops at the FIRST quote, but a
+                # double-quoted scalar escapes one as \" and a single-quoted scalar doubles it
+                # (''). Either would terminate the value early and silently truncate the path --
+                # the same narrowing this collector exists to prevent, one layer down. Found by
+                # blind review (codex-1) on PR #4501.
+                quote = value[0]
+                buf = []
+                pos = 1
+                closed = False
+                while pos < len(value):
+                    ch = value[pos]
+                    if quote == '"' and ch == "\\" and pos + 1 < len(value):
+                        buf.append(value[pos + 1])
+                        pos += 2
+                        continue
+                    if ch == quote:
+                        if quote == "'" and value[pos : pos + 2] == "''":
+                            buf.append("'")
+                            pos += 2
+                            continue
+                        closed = True
+                        break
+                    buf.append(ch)
+                    pos += 1
+                if closed:
+                    items.append("".join(buf))
                     idx += 1
                     continue
                 # Unterminated quote: fall through and treat it as a plain scalar rather than
