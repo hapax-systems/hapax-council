@@ -67,6 +67,9 @@ _ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
 # G5 stuck-PR alerter. The owning repo for the merge-queue graphql probe; the
 # autoqueue likewise hardcodes the council repo. Overridable for tests/forks.
 DEFAULT_REPO = os.environ.get("HAPAX_CC_PR_REPO", "hapax-systems/hapax-council")
+
+#: YAML spellings of "no value". A task whose pr_repo is one of these has not declared one.
+_NULLISH = frozenset({"", "null", "none", "~", "nil"})
 # Branch-protection required contexts (mirrors cc-pr-autoqueue DEFAULT_REQUIRED_CHECKS).
 REQUIRED_QUEUE_CHECKS = ("lint", "test", "typecheck", "web-build", "vscode-build")
 
@@ -231,6 +234,7 @@ def write_cursor(cursor_path: Path, when: datetime) -> None:
 def fetch_merged_prs(
     cursor: datetime,
     *,
+    repo: str = DEFAULT_REPO,
     repo_root: Path | None = None,
     limit: int = 300,
     runner: Callable[..., subprocess.CompletedProcess] | None = None,
@@ -254,7 +258,7 @@ def fetch_merged_prs(
     LOG.debug("fetching merged PRs newer than %s via REST search", cursor_str)
     items = _search_merged_pull_details_rest(
         cursor,
-        repo=DEFAULT_REPO,
+        repo=repo,
         repo_root=repo_root,
         runner=runner,
         limit=limit,
@@ -262,7 +266,7 @@ def fetch_merged_prs(
     if items is None:
         LOG.warning("REST merged-PR search failed; falling back to closed pulls scan")
         items = list_pulls_rest(
-            repo=DEFAULT_REPO,
+            repo=repo,
             repo_root=repo_root,
             runner=runner,
             state="closed",
@@ -281,8 +285,25 @@ def fetch_merged_prs(
     return out
 
 
-def find_linked_tasks(pr_number: int, *, vault_root: Path = DEFAULT_VAULT_ROOT) -> list[LinkedTask]:
-    """Locate vault cc-task notes (in ``active/``) whose ``pr: N`` matches."""
+PR_REPO_PATTERN = re.compile(r"^pr_repo:\s*(\S+)\s*$", flags=re.MULTILINE)
+
+
+def find_linked_tasks(
+    pr_number: int, *, repo: str = DEFAULT_REPO, vault_root: Path = DEFAULT_VAULT_ROOT
+) -> list[LinkedTask]:
+    """Active cc-task notes linked to ``repo#pr_number``. A BARE NUMBER IS NOT A LINK.
+
+    This matched on the number alone, and the watcher only ever queries ONE repository, so a merged
+    council PR closed any task whose ``pr:`` happened to carry the same number in a different
+    repository. Measured 2026-08-04: a task meaning ``reins#6`` was closed twice while that PR was
+    still open, because ``hapax-council#6`` is merged. Two sibling tasks meaning ``reins-dev#11``
+    and ``reins-dev#8`` survived the same run only because they declared ``pr_repo``.
+
+    A task carrying ``pr:`` WITHOUT ``pr_repo:`` is not matched. It is deliberately not defaulted:
+    "we do not know which repository" resolving to "the council repository" is a wrong non-empty
+    value standing in for an absent one, and it fails in the direction that marks work DONE. The
+    caller reports these so an undeclared link is visible rather than silent.
+    """
     active = vault_root / "active"
     if not active.is_dir():
         return []
@@ -299,16 +320,32 @@ def find_linked_tasks(pr_number: int, *, vault_root: Path = DEFAULT_VAULT_ROOT) 
         m = task_id_pattern.search(text)
         if not m:
             continue
+        declared = PR_REPO_PATTERN.search(text)
+        task_repo = declared.group(1).strip() if declared else ""
+        if task_repo.lower() in _NULLISH:
+            task_repo = ""
+        if not task_repo:
+            LOG.warning(
+                "task %s links PR #%d with no pr_repo; NOT closing it. Add "
+                "'pr_repo: <owner>/<name>' so the link names a repository.",
+                m.group(1).strip(),
+                pr_number,
+            )
+            continue
+        if task_repo != repo:
+            continue
         tasks.append(LinkedTask(task_id=m.group(1).strip(), note_path=note, pr_number=pr_number))
     return tasks
 
 
-def find_linked_task(pr_number: int, *, vault_root: Path = DEFAULT_VAULT_ROOT) -> LinkedTask | None:
-    """Locate the first vault cc-task note linked to ``pr_number``.
+def find_linked_task(
+    pr_number: int, *, repo: str = DEFAULT_REPO, vault_root: Path = DEFAULT_VAULT_ROOT
+) -> LinkedTask | None:
+    """Locate the first vault cc-task note linked to ``repo#pr_number``.
 
     Kept for older callers/tests; the watcher itself closes every linked active task.
     """
-    tasks = find_linked_tasks(pr_number, vault_root=vault_root)
+    tasks = find_linked_tasks(pr_number, repo=repo, vault_root=vault_root)
     return tasks[0] if tasks else None
 
 
@@ -404,6 +441,7 @@ def run_watcher(
     *,
     cursor_path: Path = DEFAULT_CURSOR_PATH,
     vault_root: Path = DEFAULT_VAULT_ROOT,
+    repo: str = DEFAULT_REPO,
     repo_root: Path | None = None,
     dry_run: bool = False,
     runner: Callable[..., subprocess.CompletedProcess] | None = None,
@@ -420,7 +458,7 @@ def run_watcher(
     cursor = read_cursor(cursor_path)
     LOG.info("scanning merged PRs since %s", cursor.isoformat())
 
-    merged = fetch_merged_prs(cursor, repo_root=repo_root, runner=runner)
+    merged = fetch_merged_prs(cursor, repo=repo, repo_root=repo_root, runner=runner)
     LOG.info("found %d merged PRs since cursor", len(merged))
 
     linked = 0
@@ -429,7 +467,7 @@ def run_watcher(
     newest_seen = cursor  # start where we were; bump only across a failure-free prefix
     first_failure_at: datetime | None = None
     for pr in sorted(merged, key=lambda p: p.merged_at):
-        tasks = find_linked_tasks(pr.number, vault_root=vault_root)
+        tasks = find_linked_tasks(pr.number, repo=repo, vault_root=vault_root)
         if not tasks:
             LOG.info("PR #%d (%s) has no linked cc-task; skipping", pr.number, pr.head_branch)
             # Still advance cursor for the success prefix — no work to lose.

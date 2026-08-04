@@ -64,8 +64,19 @@ def _make_vault(tmp_path: Path) -> Path:
     return vault
 
 
-def _write_note(vault: Path, *, task_id: str, pr: int | None) -> Path:
+#: The repository these fixture notes' PRs live in. Emitted EXPLICITLY, because a bare `pr:` no
+#: longer links to anything: the watcher matches on (repo, number) after a merged council PR closed
+#: a task meaning reins#6 while that PR was still open. These fixtures encoded the old implicit
+#: contract -- a number with no repository -- so they now say what they always meant.
+FIXTURE_PR_REPO = "hapax-systems/hapax-council"
+
+
+def _write_note(
+    vault: Path, *, task_id: str, pr: int | None, pr_repo: str | None = FIXTURE_PR_REPO
+) -> Path:
     pr_line = f"pr: {pr}" if pr is not None else "pr: null"
+    if pr_repo is not None:
+        pr_line = f"pr_repo: {pr_repo}\n{pr_line}"
     note = vault / "active" / f"{task_id}-test.md"
     note.write_text(
         f"""---

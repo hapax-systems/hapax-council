@@ -92,7 +92,22 @@ def main() -> int:
     pr_num = cli_pr or fields.get("pr", "").strip()
     pr_repo = cli_repo or fields.get("pr_repo", "").strip()
     if _nullish(pr_repo):
-        pr_repo = DEFAULT_PR_REPO
+        # NOT DEFAULTED. This resolved an absent pr_repo to the council repo, so a task meaning
+        # reins#6 was checked against hapax-council#6 -- which is merged -- and closed while the
+        # real PR was still open. Twice, on 2026-08-04. Two sibling tasks meaning reins-dev#11 and
+        # reins-dev#8 survived the same watcher run only because they declared the field.
+        #
+        # A wrong non-empty value standing in for an absent one is the estate's absence-into-zero
+        # pattern, and here it failed in the direction that marks work DONE. All active tasks
+        # carrying `pr:` were backfilled, so nothing depends on the old default.
+        print(
+            f"cc-close-pr-merge-check: BLOCKED — task declares 'pr: {pr_num}' with no 'pr_repo'.\n"
+            f"  A bare number is not a link: PR #{pr_num} exists in more than one repository of "
+            f"this estate, and guessing one would risk closing a task whose PR is still open.\n"
+            f"  Add 'pr_repo: <owner>/<name>' to the task note, or pass --repo <owner>/<name>.",
+            file=sys.stderr,
+        )
+        return 2
     mutation_surface = fields.get("mutation_surface", "")
     kind = fields.get("kind", "build")
 
