@@ -534,8 +534,18 @@ def _write_reconcile_note(
     status: str = "pr_open",
     pr: int | None = None,
     branch: str | None = None,
+    pr_repo: str | None = FIXTURE_PR_REPO,
 ) -> Path:
+    """A reconcile fixture. DECLARES ITS REPOSITORY, like the cursor-loop fixtures.
+
+    `reconcile_stale_pr_states` scans every active task, so it now skips notes that declare no
+    pr_repo -- the same rule as the cursor loop, since both paths close tasks and must agree about
+    which they own. These fixtures encoded the old implicit contract; `pr_repo=None` still builds
+    an undeclared note for the tests that need one.
+    """
     pr_line = f"pr: {pr}" if pr is not None else "pr: null"
+    if pr_repo is not None:
+        pr_line = f"pr_repo: {pr_repo}\n{pr_line}"
     branch_line = f"branch: {branch}" if branch is not None else "branch: null"
     note = vault / "active" / f"{task_id}-test.md"
     note.write_text(
@@ -630,6 +640,46 @@ def _make_cc_close(tmp_path: Path) -> None:
     cc_close.parent.mkdir(parents=True, exist_ok=True)
     cc_close.write_text("#!/bin/sh\nexit 0\n")
     cc_close.chmod(0o755)
+
+
+class TestReconcileRepoScope:
+    """Both closure paths must agree about which tasks they own."""
+
+    def test_undeclared_repo_note_is_skipped(self, tmp_path: Path) -> None:
+        """Added with the repo-qualification change: an undeclared note is not this pass's task.
+
+        `reconcile_stale_pr_states` is cursor-window independent, so it sees EVERY active note --
+        including ones whose PR lives in another repository. Before this, an absent pr_repo fell
+        through and the task was reconciled, and closed, against whatever repo was being scanned.
+        """
+        vault = _make_vault(tmp_path)
+        _write_reconcile_note(vault, task_id="task-undeclared", pr=100, pr_repo=None)
+        _make_cc_close(tmp_path)
+        runner = _ReconcileRunner()
+        runner.pr_states = {"100": "MERGED"}
+
+        counters = watcher.reconcile_stale_pr_states(
+            vault_root=vault, repo_root=tmp_path, runner=runner
+        )
+
+        assert counters["closed"] == 0
+        assert runner.cc_close_invocations == []
+
+    def test_other_repo_note_is_skipped(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        _write_reconcile_note(
+            vault, task_id="task-elsewhere", pr=100, pr_repo="hapax-systems/reins"
+        )
+        _make_cc_close(tmp_path)
+        runner = _ReconcileRunner()
+        runner.pr_states = {"100": "MERGED"}
+
+        counters = watcher.reconcile_stale_pr_states(
+            vault_root=vault, repo_root=tmp_path, runner=runner
+        )
+
+        assert counters["closed"] == 0
+        assert runner.cc_close_invocations == []
 
 
 class TestReconcileMerged:

@@ -34,7 +34,23 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+# Standalone scripts do not inherit the repo root on sys.path; siblings (cc-pr-autoqueue) do the
+# same. Without it `shared.cc_task_pr_link` is unimportable and the gate dies before it can gate,
+# which is a fail-OPEN in a wrapper that only checks the exit code.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 from typing import Any
+
+from shared.cc_task_pr_link import (
+    NULLISH,
+    declared_pr_repo,
+    frontmatter,
+    is_well_formed_repo,
+    same_repo,
+)
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
@@ -68,8 +84,6 @@ _ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
 # autoqueue likewise hardcodes the council repo. Overridable for tests/forks.
 DEFAULT_REPO = os.environ.get("HAPAX_CC_PR_REPO", "hapax-systems/hapax-council")
 
-#: YAML spellings of "no value". A task whose pr_repo is one of these has not declared one.
-_NULLISH = frozenset({"", "null", "none", "~", "nil"})
 # Branch-protection required contexts (mirrors cc-pr-autoqueue DEFAULT_REQUIRED_CHECKS).
 REQUIRED_QUEUE_CHECKS = ("lint", "test", "typecheck", "web-build", "vscode-build")
 
@@ -285,9 +299,6 @@ def fetch_merged_prs(
     return out
 
 
-PR_REPO_PATTERN = re.compile(r"^pr_repo:\s*(\S+)\s*$", flags=re.MULTILINE)
-
-
 def find_linked_tasks(
     pr_number: int, *, repo: str = DEFAULT_REPO, vault_root: Path = DEFAULT_VAULT_ROOT
 ) -> list[LinkedTask]:
@@ -315,15 +326,20 @@ def find_linked_tasks(
             text = note.read_text(encoding="utf-8")
         except OSError:
             continue
-        if not pr_pattern.search(text):
+        # FRONTMATTER FOR EVERY FIELD, not just pr_repo.
+        #
+        # The pr_repo read was scoped first; this one was left matching the whole note, so a body
+        # line "pr: 6" -- in prose, an example, a fenced block -- could forge the very link the
+        # scoping was added to protect. One half of a pair fixed and the other left is the third
+        # time that shape has appeared in this change alone: the two closure paths, then pr_repo
+        # and pr. Every field is read from the same block now.
+        head = frontmatter(text)
+        if not pr_pattern.search(head):
             continue
-        m = task_id_pattern.search(text)
+        m = task_id_pattern.search(head)
         if not m:
             continue
-        declared = PR_REPO_PATTERN.search(text)
-        task_repo = declared.group(1).strip() if declared else ""
-        if task_repo.lower() in _NULLISH:
-            task_repo = ""
+        task_repo = declared_pr_repo(text)
         if not task_repo:
             LOG.warning(
                 "task %s links PR #%d with no pr_repo; NOT closing it. Add "
@@ -332,7 +348,17 @@ def find_linked_tasks(
                 pr_number,
             )
             continue
-        if task_repo != repo:
+        if not is_well_formed_repo(task_repo):
+            # A task declaring `pr_repo: garbage` would otherwise be skipped SILENTLY -- it simply
+            # fails the comparison below and never closes, with nothing said. That is a task
+            # stranded forever by a typo, which is the fail-quiet family this change exists to
+            # remove, so it is reported like any other undeclared link.
+            LOG.warning(
+                "task %s declares a malformed pr_repo (want owner/name); NOT closing it.",
+                m.group(1).strip(),
+            )
+            continue
+        if not same_repo(task_repo, repo):
             continue
         tasks.append(LinkedTask(task_id=m.group(1).strip(), note_path=note, pr_number=pr_number))
     return tasks
@@ -519,7 +545,15 @@ def run_watcher(
 
 _STATUS_OPEN_PATTERN = re.compile(r"^status:\s*(pr_open|merge_queue)\s*$", flags=re.MULTILINE)
 _PR_NUM_PATTERN = re.compile(r"^pr:\s*(\d+)\s*$", flags=re.MULTILINE)
-_PR_NULL_NULLISH = frozenset({"", "null", "none", "~"})
+#: The ONE definition of "absent", from shared.cc_task_pr_link. Three copies of this existed --
+#: here, a second one in this file, and cc-close-pr-merge-check._nullish -- and they had ALREADY
+#: diverged on "nil". One gate treating a value as undeclared while another treats it as a
+#: repository NAME reintroduces the silent mismatch this change removes. A reviewer then pointed
+#: out that the OTHER alias in this file, `_NULLISH`, had become dead once declared_pr_repo took
+#: over reading the field; THAT one is gone. This one survives because _repair_pr_null_note still
+#: reads it. An unused alias is a second name for something that already has one, waiting to drift
+#: apart again, so only the name with a live reader is kept.
+_PR_NULL_NULLISH = NULLISH
 
 
 def _task_id_from_note(note: Path, text: str) -> str:
@@ -530,12 +564,13 @@ def _task_id_from_note(note: Path, text: str) -> str:
 def _query_pr_state(
     pr_num: str,
     *,
+    repo: str = DEFAULT_REPO,
     repo_root: Path,
     runner: Callable[..., subprocess.CompletedProcess],
 ) -> str | None:
     """Return the PR's current state (MERGED|CLOSED|OPEN) or None on lookup failure."""
     try:
-        payload = get_pull_rest(pr_num, repo=DEFAULT_REPO, repo_root=repo_root, runner=runner)
+        payload = get_pull_rest(pr_num, repo=repo, repo_root=repo_root, runner=runner)
     except (OSError, subprocess.TimeoutExpired):
         return None
     return rest_pull_state(payload)
@@ -544,6 +579,7 @@ def _query_pr_state(
 def _list_prs_for_branch(
     branch: str,
     *,
+    repo: str = DEFAULT_REPO,
     repo_root: Path,
     runner: Callable[..., subprocess.CompletedProcess],
 ) -> list[dict[str, Any]]:
@@ -551,7 +587,7 @@ def _list_prs_for_branch(
     try:
         rows = list_pulls_for_branch_rest(
             branch,
-            repo=DEFAULT_REPO,
+            repo=repo,
             repo_root=repo_root,
             runner=runner,
             state="all",
@@ -647,6 +683,7 @@ def _repair_pr_null_note(
     note: Path,
     text: str,
     *,
+    repo: str = DEFAULT_REPO,
     repo_root: Path,
     dry_run: bool,
     runner: Callable[..., subprocess.CompletedProcess],
@@ -659,7 +696,7 @@ def _repair_pr_null_note(
     write the number back and reconcile its state, otherwise block with a
     reason so the stuck task surfaces instead of silently lingering.
     """
-    branch_m = re.search(r"^branch:\s*(\S+)\s*$", text, flags=re.MULTILINE)
+    branch_m = re.search(r"^branch:\s*(\S+)\s*$", frontmatter(text), flags=re.MULTILINE)
     branch = (branch_m.group(1).strip() if branch_m else "").strip("\"'")
     if branch.lower() in _PR_NULL_NULLISH:
         if _block_stale_note(
@@ -667,7 +704,7 @@ def _repair_pr_null_note(
         ):
             counts["stale"] += 1
         return
-    rows = _list_prs_for_branch(branch, repo_root=repo_root, runner=runner)
+    rows = _list_prs_for_branch(branch, repo=repo, repo_root=repo_root, runner=runner)
     if not rows:
         if _block_stale_note(
             note,
@@ -705,6 +742,7 @@ def _repair_pr_null_note(
 def reconcile_stale_pr_states(
     *,
     vault_root: Path = DEFAULT_VAULT_ROOT,
+    repo: str = DEFAULT_REPO,
     repo_root: Path | None = None,
     dry_run: bool = False,
     runner: Callable[..., subprocess.CompletedProcess] | None = None,
@@ -721,11 +759,31 @@ def reconcile_stale_pr_states(
     - PR OPEN   -> leave it (still in flight).
     - pr: null  -> repair: re-derive the PR from the task branch via
       REST ``pulls?head=<owner>:<branch>``; write it back and act on its state, or block.
+
+    SCOPED TO ``repo``, LIKE THE CURSOR LOOP. This scanned EVERY active task and queried each
+    number against one hardcoded repository, so a task meaning reins#6 was reconciled against
+    hapax-council#6 and closed when that merged. The cursor loop was fixed first and this second
+    closure path was left behind -- a control whose scope of effect nobody had declared, which is
+    the shape of the defect it was fixing. `main` invokes both, so fixing one fixed nothing.
+
+    A task whose ``pr_repo`` names another repository is skipped, and one that declares NONE is
+    skipped and reported -- the same rule as the cursor loop, so the two closure paths cannot
+    disagree about which tasks they own.
     """
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
     active = vault_root / "active"
-    counts = {"scanned": 0, "stale": 0, "closed": 0, "repaired": 0}
+    counts = {"scanned": 0, "stale": 0, "closed": 0, "repaired": 0, "skipped": 0}
+    # THE KILLSWITCH MUST STOP BOTH DOORS. run_watcher honoured it and this path did not, so
+    # HAPAX_CC_HYGIENE_OFF=1 left automated task mutation running: this function queries PRs,
+    # rewrites `pr: null` notes, and invokes cc-close. A killswitch that stops half the automation
+    # is worse than none, because the operator believes the estate is quiet while it is closing
+    # tasks. Guarded here rather than only at the call site, so a direct caller cannot route
+    # around it. Found in review.
+    if os.environ.get(KILLSWITCH_ENV) == "1":
+        LOG.info("killswitch %s=1; skipping stale-PR reconciliation", KILLSWITCH_ENV)
+        counts["skipped"] = 1
+        return counts
     if not active.is_dir():
         return counts
 
@@ -734,13 +792,47 @@ def reconcile_stale_pr_states(
             text = note.read_text(encoding="utf-8")
         except OSError:
             continue
-        if not _STATUS_OPEN_PATTERN.search(text):
+        head = frontmatter(text)
+        if not _STATUS_OPEN_PATTERN.search(head):
             continue
-        pr_m = _PR_NUM_PATTERN.search(text)
+        note_repo = declared_pr_repo(text)
+        if not note_repo:
+            # UNDECLARED IS NOT "THE REPO WE HAPPEN TO BE SCANNING".
+            #
+            # This read `if note_repo and note_repo != repo`, so an absent pr_repo fell THROUGH and
+            # the task was reconciled -- and closed -- against whatever repo this pass was scanning.
+            # That is the original defect, reintroduced in the fix for it, in the second closure
+            # path, while the docstring three lines up already said absent tasks are skipped.
+            # Fourth time in this session that a correct statement has sat directly above code
+            # doing the opposite; both codex seats caught it.
+            LOG.warning(
+                "task note %s is open but declares no pr_repo; NOT reconciling it. Add "
+                "'pr_repo: <owner>/<name>' so the link names a repository.",
+                note.name,
+            )
+            # Counted, not merely logged. A skip that appears nowhere in the returned counters is
+            # invisible to anything reading them -- the RTE, a dashboard, a future assertion -- so
+            # a vault slowly filling with unlinkable tasks would look like a quiet estate.
+            counts["skipped"] += 1
+            continue
+        if not is_well_formed_repo(note_repo):
+            # The cursor loop reports this; for a while this path did not, so a task with a typo'd
+            # pr_repo was stranded here in silence. Fixing one half of a pair and leaving the other
+            # is the fourth appearance of that shape in this change.
+            LOG.warning(
+                "task note %s declares a malformed pr_repo (want owner/name); NOT reconciling it.",
+                note.name,
+            )
+            counts["skipped"] += 1
+            continue
+        if not same_repo(note_repo, repo):
+            continue
+        pr_m = _PR_NUM_PATTERN.search(head)
         if not pr_m:
             _repair_pr_null_note(
                 note,
                 text,
+                repo=repo,
                 repo_root=repo_root,
                 dry_run=dry_run,
                 runner=runner,
@@ -748,7 +840,7 @@ def reconcile_stale_pr_states(
             )
             continue
         counts["scanned"] += 1
-        pr_state = _query_pr_state(pr_m.group(1), repo_root=repo_root, runner=runner)
+        pr_state = _query_pr_state(pr_m.group(1), repo=repo, repo_root=repo_root, runner=runner)
         if pr_state is None:
             continue
         _apply_pr_state(
@@ -941,6 +1033,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Vault root containing active/ + closed/ (default: %(default)s).",
     )
     parser.add_argument(
+        "--repo",
+        default=DEFAULT_REPO,
+        help=(
+            "owner/name whose merged PRs are scanned AND whose tasks may be closed. Both closure "
+            "paths use it; a task declaring a different pr_repo is skipped."
+        ),
+    )
+    parser.add_argument(
         "--repo-root",
         type=Path,
         default=default_repo_root(),
@@ -960,9 +1060,22 @@ def main(argv: list[str] | None = None) -> int:
         stream=sys.stderr,
     )
 
+    # A TYPO MUST NOT LOOK LIKE A QUIET SUCCESS. An unvalidated --repo scans a repository that does
+    # not exist, matches no task, closes nothing, and exits 0 -- a run that reports health while
+    # doing nothing, which is the fail-quiet shape this whole change is about. Shape is checkable
+    # without the network, so it is checked before either closure path runs.
+    if not is_well_formed_repo(args.repo):
+        LOG.error(
+            "--repo %r is not owner/name. Both closure paths would scan nothing and exit "
+            "successfully, so this refuses instead.",
+            args.repo,
+        )
+        return 2
+
     counters = run_watcher(
         cursor_path=args.cursor_path,
         vault_root=args.vault_root,
+        repo=args.repo,
         repo_root=args.repo_root,
         dry_run=args.dry_run,
     )
@@ -975,8 +1088,12 @@ def main(argv: list[str] | None = None) -> int:
         if trigger_reform_dispatch(repo_root=args.repo_root):
             LOG.info("nudged reform auto-advance dispatcher after %d close(s)", counters["closed"])
 
+    # SAME REPO AS THE CURSOR LOOP. Both paths close tasks; scoping one and not the other left
+    # the defect fully alive through the second door, which is how a control ends up with a scope
+    # of effect nobody declared.
     stale_counters = reconcile_stale_pr_states(
         vault_root=args.vault_root,
+        repo=args.repo,
         repo_root=args.repo_root,
         dry_run=args.dry_run,
     )
