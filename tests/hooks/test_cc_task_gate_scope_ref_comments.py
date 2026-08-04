@@ -34,14 +34,32 @@ def _extract_collector() -> str:
     loop is read from the shipped file and executed as-is.
     """
     src = GATE.read_text(encoding="utf-8")
-    start = src.find("    while idx < len(lines):\n        child = lines[idx].strip()")
-    assert start != -1, (
-        "could not locate the block-sequence collector in cc-task-gate.impl.sh. If the parser was "
-        "restructured, re-anchor this extraction rather than inlining a copy — a copied parser "
-        "passes forever while the real one rots."
+    anchor = "    while idx < len(lines):\n        child = lines[idx].strip()"
+    # UNIQUENESS IS THE POINT, not merely presence. Blind review on PR #4501 flagged that a
+    # `find()` anchor plus the next `break` can silently capture a DIFFERENT loop if the gate
+    # grows another nested one — the test would keep passing while testing the wrong code, which
+    # is the exact rot this extraction was chosen to avoid.
+    occurrences = src.count(anchor)
+    assert occurrences == 1, (
+        f"the collector anchor matches {occurrences} times in cc-task-gate.impl.sh, so this "
+        "extraction cannot prove WHICH loop it lifted. Re-anchor on something unique rather than "
+        "letting the test silently bind to the wrong parser."
     )
+    start = src.find(anchor)
     end = src.find("\n        break\n", start)
     assert end != -1, "collector loop end anchor not found"
+    block = src[start : end + len("\n        break\n")]
+    # The slice must BE the collector, checked structurally rather than by counting `break`s in
+    # the rest of the file — other loops legitimately end in `break`, so a global count is a false
+    # constraint. These two assertions pin the slice to the right loop instead.
+    assert 'child.startswith("- ")' in block, (
+        "the extracted slice does not contain the sequence-item branch, so it is not the "
+        "block-sequence collector — re-anchor rather than testing whatever loop this is."
+    )
+    assert block.count("while ") == 1, (
+        "the extracted slice contains a nested loop, so the `break` anchor may have terminated it "
+        "early and the test would execute a truncated parser."
+    )
     block = src[start : end + len("\n        break\n")]
     # The collector lives inside a function in the gate, so it arrives indented. Dedent it to
     # module level for splicing; textwrap.dedent handles the blank/comment lines correctly.
@@ -141,6 +159,34 @@ def test_hash_without_leading_whitespace_is_kept_as_a_path_character() -> None:
     )
     assert refs == ["~/projects/x/od#d-name.py"], (
         f"a literal '#' inside a path was stripped as if it were a comment. got {refs}"
+    )
+
+
+def test_a_quoted_scalar_keeps_a_hash_that_looks_like_a_comment() -> None:
+    """MAJOR from blind review on PR #4501: the comment fix broke quoted paths.
+
+    In YAML a `#` inside a quoted scalar is a literal character; a comment can only start after
+    the closing quote. The first version of this fix stripped on ` #` BEFORE unquoting, so
+    `- "~/projects/x/b #2.py"` became `~/projects/x/b` — a ref matching no file, silently
+    narrowing the authorized surface. That is the identical fail-quiet defect this collector was
+    written to remove, reintroduced by the fix for it.
+    """
+    refs = _collect(
+        [
+            "mutation_scope_refs:",
+            '  - "~/projects/x/b #2.py"',
+            "  - '~/projects/x/c #3.py'   # annotated, and the annotation must still go",
+            "  - ~/projects/x/plain.py   # this one IS a comment",
+            "exit_predicate: something",
+        ]
+    )
+    assert refs == [
+        "~/projects/x/b #2.py",
+        "~/projects/x/c #3.py",
+        "~/projects/x/plain.py",
+    ], (
+        "a '#' inside a QUOTED scalar was treated as a comment and truncated the path, or a real "
+        f"trailing comment survived on the unquoted one. got {refs}"
     )
 
 

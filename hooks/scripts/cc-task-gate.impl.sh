@@ -792,13 +792,23 @@ while idx < len(lines):
         child = lines[idx].strip()
         if child.startswith("- "):
             value = child[2:].strip()
-            # STRIP A TRAILING COMMENT. YAML starts a comment at a `#` that follows whitespace,
-            # so `- ~/a/b.py   # widened 2026-08-04` has the value `~/a/b.py`, not the whole line.
-            # Without this the comment became part of the path and produced a scope ref that
-            # matches no file — silently narrowing the authorized surface, which is precisely the
-            # fail-quiet defect the full-line-comment fix above was written to remove. Fixing one
-            # comment position and not the other left the same hole one keystroke away, and a
-            # trailing note is the MORE natural way to annotate a single ref.
+            # QUOTED SCALARS FIRST. Inside quotes a `#` is a literal path character, and a comment
+            # can only begin AFTER the closing quote. Stripping before unquoting truncated
+            # `- "~/a/b #2.py"` to `~/a/b`, which matches no file and silently narrows the
+            # authorized surface — the same fail-quiet defect this collector exists to remove,
+            # reintroduced by the fix for it. Caught by blind review on PR #4501.
+            if value[:1] in ('"', "'"):
+                closing = value.find(value[0], 1)
+                if closing != -1:
+                    items.append(value[1:closing])
+                    idx += 1
+                    continue
+                # Unterminated quote: fall through and treat it as a plain scalar rather than
+                # guessing where the value ends.
+            # PLAIN SCALAR: strip a trailing comment. YAML starts a comment at a `#` that follows
+            # whitespace, so `- ~/a/b.py   # widened 2026-08-04` has the value `~/a/b.py`, not the
+            # whole line. Fixing full-line comments and not trailing ones left the same hole one
+            # keystroke away, and a trailing note is the MORE natural way to annotate a single ref.
             # A `#` not preceded by whitespace is kept: it is a legal character in a path.
             for sep in ("\t#", " #"):
                 pos = value.find(sep)
