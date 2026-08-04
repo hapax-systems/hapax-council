@@ -141,6 +141,43 @@ class TestHappyPath:
         assert "status: pr_open" in text
         assert "auto-linked PR #4242" in text
 
+    def test_writes_pr_repo_from_the_pr_url(self, tmp_path: Path) -> None:
+        """A BARE PR NUMBER IS NOT A LINK, so the repository is recorded at birth.
+
+        The merge watcher scans ONE repository and would otherwise match any task carrying that
+        number -- which closed a task meaning reins#6 against a merged council#6 while the real PR
+        was still open. Both closure gates now REQUIRE pr_repo, so a task written without it can
+        never close.
+
+        This hook already parsed the PR URL, so it always knew the repository; it simply was not
+        writing it down. With several sessions creating tasks in parallel, "the author will
+        remember to add it" is not a mechanism.
+        """
+        _vault, note = _make_vault(tmp_path, task_id="repo-001", pr=None)
+        _write_claim(tmp_path, "beta", "repo-001")
+        result = _run_hook(
+            bash_cmd="gh pr create",
+            bash_output="https://github.com/hapax-systems/reins/pull/6\n",
+            home=tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
+        text = note.read_text(encoding="utf-8")
+        assert "pr_repo: hapax-systems/reins" in text, (
+            "the task was linked to PR #6 with no repository; both closure gates will refuse it"
+        )
+        assert "pr: 6" in text
+
+    def test_pr_repo_follows_the_url_not_a_default(self, tmp_path: Path) -> None:
+        """Two repositories, same hook. The value must come from the URL, not a constant."""
+        _vault, note = _make_vault(tmp_path, task_id="repo-002", pr=None)
+        _write_claim(tmp_path, "beta", "repo-002")
+        _run_hook(
+            bash_cmd="gh pr create",
+            bash_output="https://github.com/ryanklee/hapax-council/pull/4242\n",
+            home=tmp_path,
+        )
+        assert "pr_repo: ryanklee/hapax-council" in note.read_text(encoding="utf-8")
+
     def test_writes_branch_field(self, tmp_path: Path) -> None:
         _vault, note = _make_vault(tmp_path, task_id="ef7-020", pr=None, branch=None)
         _write_claim(tmp_path, "beta", "ef7-020")

@@ -49,7 +49,14 @@ GStreamer pipeline: cameras → cudacompositor → GL shader chain (12 glfeedbac
 
 ## CC Task Tracking
 
-SSOT: `~/Documents/Personal/20-projects/hapax-cc-tasks/`. Commands: `cc-claim <id>`, `cc-close <id> [--pr N]`. Hook `cc-task-gate.sh` auto-transitions claimed→in_progress. SessionStart shows claimed task + top 5 WSJF.
+SSOT: `~/Documents/Personal/20-projects/hapax-cc-tasks/`. Commands: `cc-claim <id>`, `cc-close <id> [--pr N]`.
+**A task's `pr:` MUST be accompanied by `pr_repo: <owner>/<name>`** — `cc-task-pr-link.sh` writes both
+automatically from the PR URL, so hand-written notes are the only ones at risk. A bare number is not a
+link: the merge watcher scans one repository and a same-numbered PR elsewhere used to close the wrong
+task (measured 2026-08-04, twice). Both closure gates refuse an undeclared, malformed, or foreign
+`pr_repo`, and refuse a PR they cannot verify. `HAPAX_PR_MERGE_GATE_OFF=1` closes with **no merge
+evidence at all** — it does not pick a repository or check anything, and it says so on stderr; it is
+for a genuinely offline operator, not for clearing a block. Recheck: `uv run pytest tests/test_cc_pr_merge_watcher_repo_scope.py tests/scripts/test_cc_claim_pr_merge_gate.py -q`; audit the vault for undeclared links with `rg -l --glob '*.md' '^pr: *"?[0-9]' ~/Documents/Personal/20-projects/hapax-cc-tasks/active | xargs rg --files-without-match '^pr_repo:'` (expect no output). Hook `cc-task-gate.sh` auto-transitions claimed→in_progress. SessionStart shows claimed task + top 5 WSJF.
 
 Multi-session stacks: Claude (`hapax-claude-<role>`, `scripts/hapax-claude`),
 Codex (`hapax-codex-cx-<color>`, `scripts/hapax-codex`), Vibe
