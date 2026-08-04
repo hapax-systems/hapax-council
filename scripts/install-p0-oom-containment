@@ -663,6 +663,25 @@ is_host_optional_user_unit() {
     return 1
 }
 
+# Run systemd-analyze AS THE TARGET USER, exactly as user_systemctl does.
+#
+# The installer escalates for root-only steps, so this can execute with EFFECTIVE_UID=0. A bare
+# `systemd-analyze --user unit-paths` under root enumerates ROOT's user manager, whose search path
+# does not include /home/<target>/.config/systemd/user -- so every target-user unit would look
+# absent, every allow-listed unit would become skippable, and --verify-live would pass having
+# verified nothing. That is this package's own defect class (wrong-scope enumeration read as
+# absence) reappearing inside the fix for it. Found by blind review (codex-1) on PR #4499.
+user_systemd_analyze() {
+    if [ "$EFFECTIVE_UID" = "$TARGET_UID" ]; then
+        "$SYSTEMD_ANALYZE" --user "$@"
+    elif [ "$EFFECTIVE_UID" = "0" ]; then
+        "$RUNUSER" -u "$TARGET_USER" -- env XDG_RUNTIME_DIR="/run/user/$TARGET_UID" \
+            "$SYSTEMD_ANALYZE" --user "$@"
+    else
+        return 1
+    fi
+}
+
 # Where the user manager looks for unit files. Asked of systemd rather than hardcoded: the real
 # path includes generator, transient and .control directories that a static list silently omits,
 # and omitting one turns "installed here" into "absent here" -- the exact misread this whole
@@ -673,7 +692,7 @@ user_unit_search_paths() {
         printf '%s\n' "${HAPAX_OOM_USER_UNIT_PATHS//:/$'\n'}"
         return 0
     fi
-    if "$SYSTEMD_ANALYZE" --user unit-paths 2>/dev/null; then
+    if user_systemd_analyze unit-paths 2>/dev/null; then
         return 0
     fi
     # DEGRADED. Mirrors systemd's documented user unit load path, INCLUDING the .control,
@@ -711,7 +730,7 @@ user_unit_search_paths() {
 # may never be used to prove ABSENCE.
 user_unit_search_paths_are_authoritative() {
     [ -n "${HAPAX_OOM_USER_UNIT_PATHS:-}" ] && return 0
-    "$SYSTEMD_ANALYZE" --user unit-paths >/dev/null 2>&1
+    user_systemd_analyze unit-paths >/dev/null 2>&1
 }
 
 # Does a unit FILE for this unit exist on this host, regardless of whether it loaded?

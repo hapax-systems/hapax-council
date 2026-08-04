@@ -2957,7 +2957,12 @@ def _run_install_verify_live(
     fake_systemctl.chmod(0o755)
     fake_runuser = tmp_path / "runuser"
     fake_runuser.write_text(
-        '#!/usr/bin/env bash\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n',
+        "#!/usr/bin/env bash\n"
+        'while [ "$1" != "--" ]; do shift; done\n'
+        "shift\n"
+        # Mark the environment so a test can prove a command reached the target user THROUGH
+        # runuser rather than being executed directly as root.
+        'exec env RUNUSER_MARKER=yes "$@"\n',
         encoding="utf-8",
     )
     fake_runuser.chmod(0o755)
@@ -3302,3 +3307,54 @@ def test_authoritative_systemd_analyze_discovery_finds_a_unit_file(tmp_path: Pat
         f"and every allow-listed skip is permitted.\nstderr: {result.stderr[-2500:]}"
     )
     assert result.returncode != 0, "an installed-but-unloadable unit must fail closed"
+
+
+def test_unit_path_discovery_queries_the_target_user_not_the_installer_user(tmp_path: Path) -> None:
+    """MAJOR from blind review (codex-1) on PR #4499: privilege boundary in discovery.
+
+    The installer escalates for root-only steps, so this code can run with EFFECTIVE_UID=0. A bare
+    `systemd-analyze --user unit-paths` under root enumerates ROOT's user manager, whose search path
+    does not include the target user's ~/.config/systemd/user. Every target-user unit would then
+    look absent, every allow-listed unit would become skippable, and --verify-live would pass having
+    verified nothing.
+
+    That is this package's own defect class — enumeration in the wrong scope read as absence —
+    reappearing inside the fix written to remove it.
+
+    The stub records the argv it was invoked with. Under EFFECTIVE_UID=0 the installer must reach
+    systemd-analyze THROUGH runuser (as user_systemctl does), not call it directly.
+    """
+    marker = tmp_path / "analyze-invocation.txt"
+    analyze = tmp_path / "systemd-analyze-recording"
+    analyze.write_text(
+        f'#!/usr/bin/env bash\nprintf "%s\\n" "RUNUSER_SEEN=${{RUNUSER_MARKER:-no}}" >> {marker}\n'
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    analyze.chmod(0o755)
+
+    _run_install_verify_live(
+        tmp_path,
+        load_state={"hapax-daimonion.service": "not-found"},
+        unit_files=set(),
+        no_unit_path_override=True,
+        systemd_analyze=str(analyze),
+    )
+    recorded = marker.read_text(encoding="utf-8") if marker.exists() else ""
+    lines = [x for x in recorded.splitlines() if x.strip()]
+    # UNIVERSAL, NOT EXISTENTIAL. The first version of this assertion checked that SOME invocation
+    # carried the runuser marker, and a mutant that bypassed runuser at one of the two call sites
+    # SURVIVED it — the other site still satisfied the existential. "At least one call was correct"
+    # is not the property; "no call was wrong" is. This is the same quantifier error the vacuous-pass
+    # guard in this very installer exists to prevent, committed in the test for it.
+    assert lines, (
+        "systemd-analyze was never invoked, so this test proves nothing about how it is invoked. "
+        "Check that the fixture actually reaches unit-path discovery."
+    )
+    direct = [x for x in lines if "RUNUSER_SEEN=yes" not in x]
+    assert not direct, (
+        f"{len(direct)} of {len(lines)} systemd-analyze invocation(s) bypassed runuser while the "
+        "installer ran as root. Under root it enumerates ROOT's user manager, not the target "
+        "user's, so every target-user unit reads as absent and every allow-listed skip is "
+        f"permitted.\nbypassing invocations: {direct!r}"
+    )
