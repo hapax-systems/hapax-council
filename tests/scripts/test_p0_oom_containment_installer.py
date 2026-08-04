@@ -2829,3 +2829,123 @@ def test_root_failure_intake_reports_action_when_emergency_ledger_is_unwritable(
     assert "unit=hapax-oom-score-enforce.service" in result.stderr
     assert f"missing_intake={tmp_path / 'missing-intake'}" in result.stderr
     assert "next action: repair the ledger parent ownership/capacity" in result.stderr
+
+
+def _extract_bash_block(start_pattern: str, end_pattern: str) -> str:
+    """Lift a block VERBATIM out of the real installer.
+
+    The block is read from the shipped script rather than restated here, so these tests cannot
+    silently drift from the source they claim to cover — a copied fixture would keep passing after
+    the real allow-list changed, which is the failure mode this whole PR is about.
+    """
+    lines = INSTALLER.read_text(encoding="utf-8").splitlines()
+    out: list[str] = []
+    capturing = False
+    for line in lines:
+        if not capturing and line.startswith(start_pattern):
+            capturing = True
+        if capturing:
+            out.append(line)
+            if line.startswith(end_pattern) and len(out) > 1:
+                break
+    assert out, f"could not find block starting {start_pattern!r} in {INSTALLER}"
+    return "\n".join(out)
+
+
+def _host_optional_predicate_fragment() -> str:
+    array_block = _extract_bash_block("host_optional_user_units=(", ")")
+    fn_block = _extract_bash_block("is_host_optional_user_unit()", "}")
+    return f"{array_block}\n{fn_block}\n"
+
+
+def test_host_optional_allow_list_covers_exactly_the_podium_shaped_units() -> None:
+    """The allow-list must be an explicit set, not 'anything absent'.
+
+    Measured on both hosts 2026-08-04: pipewire/pipewire-pulse/wireplumber are loaded on
+    hapax-podium AND hapax-appendix; hapax-daimonion/studio-compositor/hapax-imagination are loaded
+    on podium and LoadState=not-found on appendix. Only the latter three may be skipped.
+    """
+    fragment = _host_optional_predicate_fragment()
+    result = subprocess.run(
+        ["bash", "-c", f'{fragment}\nprintf "%s\\n" "${{host_optional_user_units[@]}}"'],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    listed = {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    assert listed == {
+        "hapax-daimonion.service",
+        "studio-compositor.service",
+        "hapax-imagination.service",
+    }, (
+        f"host_optional_user_units is {sorted(listed)}. Every entry here is a unit whose absence "
+        "--verify-live will SKIP, so adding one silently narrows what the verifier proves. Add a "
+        "unit only with the two-host LoadState measurement that shows it is legitimately absent."
+    )
+    assert listed < set(PROTECTED_USER_UNIT_SCORES), (
+        "every host-optional unit must itself be a protected unit, and the set must be a PROPER "
+        "subset — if it ever equals the protected set, --verify-live can skip everything and pass "
+        "having verified nothing."
+    )
+
+
+def test_required_protected_units_are_not_skippable() -> None:
+    """The audio core is required wherever this package installs; absence must fail, not skip."""
+    fragment = _host_optional_predicate_fragment()
+    required = sorted(set(PROTECTED_USER_UNIT_SCORES) - {
+        "hapax-daimonion.service",
+        "studio-compositor.service",
+        "hapax-imagination.service",
+    })
+    assert required, "expected at least one required protected unit"
+    for unit in required:
+        probe = subprocess.run(
+            ["bash", "-c", f'{fragment}\nis_host_optional_user_unit "{unit}"'],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert probe.returncode != 0, (
+            f"{unit} is treated as host-optional, so --verify-live would SKIP it when absent and "
+            "report success having proven nothing about it. Required units must fail closed."
+        )
+
+
+def test_host_optional_units_are_recognised_by_the_predicate() -> None:
+    """The skip branch must actually be reachable for the units it exists to serve.
+
+    Without this, a typo in the allow-list would make every unit required, restoring the original
+    2026-07-11 failure where appendix hard-failed on podium-shaped units 2,176 times.
+    """
+    fragment = _host_optional_predicate_fragment()
+    for unit in (
+        "hapax-daimonion.service",
+        "studio-compositor.service",
+        "hapax-imagination.service",
+    ):
+        probe = subprocess.run(
+            ["bash", "-c", f'{fragment}\nis_host_optional_user_unit "{unit}"'],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert probe.returncode == 0, (
+            f"{unit} is NOT recognised as host-optional, so an appendix-shaped host will hard-fail "
+            "verify on a unit that legitimately does not exist there."
+        )
+
+
+def test_absent_required_unit_message_names_both_remedies() -> None:
+    """Per executive_function: the fail-closed branch must say what to do next.
+
+    An error that only reports a state leaves the operator to rediscover the two lawful exits —
+    install the unit, or justify adding it to the allow-list with a measurement.
+    """
+    source = INSTALLER.read_text(encoding="utf-8")
+    marker = "required protected user unit"
+    assert marker in source, "the fail-closed branch for absent required units is missing"
+    line = next(ln for ln in source.splitlines() if marker in ln)
+    assert "host_optional_user_units" in line, (
+        "the failure message must name the allow-list as the second lawful remedy"
+    )
+    assert "next action" in line, "the failure message must carry a next action"
