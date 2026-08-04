@@ -3103,7 +3103,9 @@ def test_allow_listed_unit_with_a_unit_file_on_disk_fails_closed(tmp_path: Path)
     )
 
 
-def test_absent_host_optional_unit_is_still_skipped_when_no_unit_file_exists(tmp_path: Path) -> None:
+def test_absent_host_optional_unit_is_still_skipped_when_no_unit_file_exists(
+    tmp_path: Path,
+) -> None:
     """The other side of the same predicate: narrowing the skip must not delete it.
 
     Without this, a fix for the review comment could simply fail on everything absent and still look
