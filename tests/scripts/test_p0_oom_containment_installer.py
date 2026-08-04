@@ -2969,7 +2969,9 @@ def _run_install_verify_live(
             # A BROKEN `systemctl --user enable` link. `-e` is FALSE here because it follows the
             # link, so this fixture is what distinguishes a correct presence check from one that
             # reports an enabled-but-broken unit as never-installed.
-            (unit_path_dir / unit[len("dangling:") :]).symlink_to(tmp_path / "no-such-target.service")
+            (unit_path_dir / unit[len("dangling:") :]).symlink_to(
+                tmp_path / "no-such-target.service"
+            )
         else:
             (unit_path_dir / unit).write_text(
                 "[Unit]\nDescription=placed by test\n", encoding="utf-8"
@@ -2992,11 +2994,7 @@ def _run_install_verify_live(
             "HAPAX_OOM_ENFORCER_DEST": str(enforcer_dest),
             "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
             "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
-            **(
-                {}
-                if no_unit_path_override
-                else {"HAPAX_OOM_USER_UNIT_PATHS": str(unit_path_dir)}
-            ),
+            **({} if no_unit_path_override else {"HAPAX_OOM_USER_UNIT_PATHS": str(unit_path_dir)}),
             **({"HAPAX_OOM_SYSTEMD_ANALYZE": systemd_analyze} if systemd_analyze else {}),
             "HAPAX_OOM_EFFECTIVE_UID": "0",
             "HAPAX_OOM_RUNUSER": str(fake_runuser),
