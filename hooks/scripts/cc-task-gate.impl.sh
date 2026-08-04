@@ -791,7 +791,20 @@ while idx < len(lines):
     while idx < len(lines):
         child = lines[idx].strip()
         if child.startswith("- "):
-            items.append(child[2:].strip().strip('"').strip("'"))
+            value = child[2:].strip()
+            # STRIP A TRAILING COMMENT. YAML starts a comment at a `#` that follows whitespace,
+            # so `- ~/a/b.py   # widened 2026-08-04` has the value `~/a/b.py`, not the whole line.
+            # Without this the comment became part of the path and produced a scope ref that
+            # matches no file — silently narrowing the authorized surface, which is precisely the
+            # fail-quiet defect the full-line-comment fix above was written to remove. Fixing one
+            # comment position and not the other left the same hole one keystroke away, and a
+            # trailing note is the MORE natural way to annotate a single ref.
+            # A `#` not preceded by whitespace is kept: it is a legal character in a path.
+            for sep in ("\t#", " #"):
+                pos = value.find(sep)
+                if pos != -1:
+                    value = value[:pos].rstrip()
+            items.append(value.strip().strip('"').strip("'"))
             idx += 1
             continue
         # Blank lines and COMMENTS are not list terminators. Before this, a `#` line inside a
