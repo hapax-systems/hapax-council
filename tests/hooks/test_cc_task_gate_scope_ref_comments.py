@@ -17,6 +17,8 @@ built on that false premise before anyone read the parser.
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import subprocess
 import textwrap
@@ -233,4 +235,106 @@ def test_escaped_quotes_inside_a_quoted_scalar_do_not_truncate_the_path() -> Non
     assert refs == ['~/projects/x/we"ird.py', "~/projects/x/it's.py"], (
         "an escaped quote inside a quoted scalar truncated the path. Double-quoted uses "
         f"backslash (\\\"), single-quoted doubles the quote (''). got {refs}"
+    )
+
+
+# --- End-to-end: the SHIPPED gate, not a slice of it -------------------------------------------
+# Three independent reviewers (CodeRabbit, codex-1, glm-2 on PR #4501) made the same objection to
+# the extraction tests above: `_collect()` executes a dedented text slice and bypasses frontmatter
+# parsing, field assignment, scope matching and the decision path, and the structural assertions
+# guarding the slice can themselves pass on a truncated extraction. All correct.
+#
+# The extraction tests are kept because they pin the parser against a copied-parser rot the
+# end-to-end test cannot see. These add what they could not: the real script, real stdin contract,
+# real vault layout, real exit codes — INCLUDING a negative control, without which "allowed" would
+# be indistinguishable from a gate that permits everything.
+
+GATE_TASK = """---
+type: cc-task
+task_id: tst-001
+status: in_progress
+assigned_to: alpha
+priority: p1
+kind: source
+risk_tier: T1
+stage: S6_IMPLEMENTATION
+implementation_authorized: true
+source_mutation_authorized: true
+route_metadata_schema: 1
+mutation_surface: source
+quality_floor: frontier_review_required
+authority_level: support_non_authoritative
+route_metadata:
+  route_metadata_schema: 1
+  quality_floor: frontier_review_required
+  authority_level: support_non_authoritative
+  mutation_surface: source
+authority_case: CASE-SYSTEM-INTEGRITY-20260611
+parent_spec: docs/specs/tst.md
+mutation_scope_refs:
+  - "~/projects/x/we ird #1.py"
+  - ~/projects/x/plain.py   # a real comment
+exit_predicate: "n/a"
+---
+body
+"""
+
+
+def _run_real_gate(home: Path, rel_path: str) -> subprocess.CompletedProcess[str]:
+    """Invoke the shipped gate exactly as the harness does: JSON on stdin, HOME-rooted vault."""
+    payload = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(home / rel_path)}})
+    return subprocess.run(
+        ["bash", str(GATE)],
+        input=payload,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "HOME": str(home), "HAPAX_AGENT_ROLE": "alpha"},
+    )
+
+
+def _gate_home(tmp_path: Path) -> Path:
+    home = tmp_path / "home"
+    (home / "Documents/Personal/20-projects/hapax-cc-tasks/active").mkdir(parents=True)
+    (home / ".cache/hapax").mkdir(parents=True)
+    (home / "projects/x").mkdir(parents=True)
+    (home / "Documents/Personal/20-projects/hapax-cc-tasks/active/tst-001.md").write_text(
+        GATE_TASK, encoding="utf-8"
+    )
+    (home / ".cache/hapax/cc-active-task-alpha").write_text("tst-001\n", encoding="utf-8")
+    return home
+
+
+def test_real_gate_allows_a_quoted_scope_ref_containing_a_hash(tmp_path: Path) -> None:
+    """The shipped gate must authorize a path whose quoted scope ref contains a literal `#`."""
+    result = _run_real_gate(_gate_home(tmp_path), "projects/x/we ird #1.py")
+    assert result.returncode == 0, (
+        "the REAL gate refused a file that IS inside mutation_scope_refs, because the quoted ref "
+        "carrying a literal '#' was truncated during parsing. This is the silent scope narrowing "
+        f"in its live form: authorized work gets blocked.\n{result.stdout}\n{result.stderr}"
+    )
+
+
+def test_real_gate_allows_a_ref_annotated_with_a_trailing_comment(tmp_path: Path) -> None:
+    """A trailing YAML comment must not become part of the path in the shipped gate."""
+    result = _run_real_gate(_gate_home(tmp_path), "projects/x/plain.py")
+    assert result.returncode == 0, (
+        "the REAL gate refused a file whose scope ref carried a trailing comment.\n"
+        f"{result.stdout}\n{result.stderr}"
+    )
+
+
+def test_real_gate_still_blocks_a_file_outside_the_declared_scope(tmp_path: Path) -> None:
+    """NEGATIVE CONTROL — without this the two tests above prove nothing.
+
+    A gate that authorized everything would pass both of them. This is the assertion that makes
+    them mean something: the same gate, same fixture, a path that is NOT declared, must refuse.
+    """
+    result = _run_real_gate(_gate_home(tmp_path), "projects/x/notinscope.py")
+    assert result.returncode != 0, (
+        "the REAL gate ALLOWED a file outside mutation_scope_refs. The two allow-tests above are "
+        f"then vacuous — they would pass against a gate that permits everything.\n{result.stdout}"
+    )
+    assert "outside this task's declared mutation_sc" in (result.stdout + result.stderr), (
+        f"it refused, but not for being out of scope.\n{result.stdout}\n{result.stderr}"
     )
