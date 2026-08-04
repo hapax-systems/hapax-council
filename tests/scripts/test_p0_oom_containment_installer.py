@@ -2831,18 +2831,54 @@ def test_root_failure_intake_reports_action_when_emergency_ledger_is_unwritable(
     assert "next action: repair the ledger parent ownership/capacity" in result.stderr
 
 
-def _load_state_cases(load_state: dict[str, str]) -> str:
-    """systemctl stub cases for `show <unit> -p LoadState --value`.
+# What real systemd answers for a unit it has never heard of. VERIFIED on this host, 2026-08-04,
+# against both a fabricated unit name and a genuinely-absent protected unit:
+#
+#   systemctl --user show <unknown>.service -p LoadState      --value  -> not-found
+#   systemctl --user show <unknown>.service -p OOMScoreAdjust --value  -> 200
+#   systemctl --user show <unknown>.service -p Slice          --value  -> (empty)
+#   systemctl --user show <unknown>.service -p MemoryLow      --value  -> 0
+#   systemctl --user show <unknown>.service -p MemoryMin      --value  -> 0
+#
+# Re-derive with:
+#   for p in LoadState OOMScoreAdjust Slice MemoryLow MemoryMin; do \
+#     systemctl --user show definitely-not-a-real-unit.service -p "$p" --value; done
+#
+# THIS is the 2026-07-11 mechanism, and it is why LoadState alone is not enough to reproduce it:
+# systemctl does not error on an unknown unit, it ANSWERS WITH DEFAULTS, and those defaults are
+# indistinguishable from drift to a verifier that does not check existence first. A stub that
+# reported not-found while still returning the CORRECT policy values would exercise the skip branch
+# without ever demonstrating what the skip prevents.
+UNKNOWN_UNIT_SYSTEMD_DEFAULTS = {
+    "OOMScoreAdjust": "200",
+    "Slice": "",
+    "MemoryLow": "0",
+    "MemoryMin": "0",
+}
 
-    The pre-existing stub answers no LoadState query at all, so it returns empty and the host-fit
-    branch is never entered. That is why the full install/verify-live test passed without ever
-    executing the code it appeared to cover.
+
+def _load_state_cases(load_state: dict[str, str]) -> str:
+    """systemctl stub cases for units whose LoadState is being forced.
+
+    The pre-existing stub answers no LoadState query at all, so it returned empty, "not-found" never
+    matched, and the host-fit branch was unreachable in tests — which is why the full
+    install/verify-live test passed without ever executing the code it appeared to cover.
+
+    For any unit forced to not-found, this ALSO emits systemd's real defaults-for-unknown-unit, so
+    the drift checks downstream see exactly what they would see on a live host. Without the host-fit
+    branch those defaults read as drift and verify-live fails; with it, the unit is skipped. That
+    difference is what makes the assertions discriminating rather than decorative.
     """
     cases = []
     for unit, state in load_state.items():
         cases.append(
             f"  *--user\\ show\\ {unit}\\ -p\\ LoadState\\ --value*) printf '%s\\n' '{state}' ;;"
         )
+        if state == "not-found":
+            for prop, value in UNKNOWN_UNIT_SYSTEMD_DEFAULTS.items():
+                cases.append(
+                    f"  *--user\\ show\\ {unit}\\ -p\\ {prop}\\ --value*) printf '%s\\n' '{value}' ;;"
+                )
     cases.append("  *-p\\ LoadState\\ --value*) printf '%s\\n' 'loaded' ;;")
     return "\n".join(cases)
 

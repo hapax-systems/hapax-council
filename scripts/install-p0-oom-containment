@@ -630,6 +630,19 @@ protected_user_unit_scores=(
 #   hapax-daimonion / studio-compositor /
 #   hapax-imagination                          loaded on podium, not-found on appendix -> optional
 #
+# RE-DERIVE the split rather than trusting this comment (it is a measurement, and measurements go
+# stale — a unit installed on appendix tomorrow stops being host-optional and must leave this list):
+#
+#   for u in pipewire.service pipewire-pulse.service wireplumber.service \
+#            hapax-daimonion.service studio-compositor.service hapax-imagination.service; do
+#     printf '%-32s local=%s ' "$u" "$(systemctl --user show "$u" -p LoadState --value)"
+#     ssh hapax-podium 'bash -s' <<< "systemctl --user show $u -p LoadState --value"
+#   done
+#
+# A unit belongs here only if it is loaded on at least one host AND not-found on another. A unit
+# absent EVERYWHERE is not host-optional, it is missing, and belongs in neither list until that is
+# explained.
+#
 # The distinction is load-bearing. An earlier version of this fix skipped ANY unit reporting
 # not-found, which meant a required unit disappearing from a host it belongs on would silently
 # satisfy --verify-live: the verifier would report success having verified nothing. That is the
