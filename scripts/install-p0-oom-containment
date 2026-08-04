@@ -620,6 +620,35 @@ protected_user_unit_scores=(
     hapax-imagination.service:-800
 )
 
+# HOST-OPTIONAL protected units: present on some hosts, legitimately absent on others, so
+# LoadState=not-found is an EXPECTED state for these and only these. Everything else in
+# protected_user_unit_scores is REQUIRED wherever this package installs, and its absence is a
+# verification FAILURE rather than a skip.
+#
+# Measured 2026-08-04 on both hosts:
+#   pipewire / pipewire-pulse / wireplumber   loaded on podium AND appendix  -> required
+#   hapax-daimonion / studio-compositor /
+#   hapax-imagination                          loaded on podium, not-found on appendix -> optional
+#
+# The distinction is load-bearing. An earlier version of this fix skipped ANY unit reporting
+# not-found, which meant a required unit disappearing from a host it belongs on would silently
+# satisfy --verify-live: the verifier would report success having verified nothing. That is the
+# fail-quiet class this package exists to eliminate, so the skip is now allow-listed rather than
+# universal.
+host_optional_user_units=(
+    hapax-daimonion.service
+    studio-compositor.service
+    hapax-imagination.service
+)
+
+is_host_optional_user_unit() {
+    local candidate="$1" optional
+    for optional in "${host_optional_user_units[@]}"; do
+        [ "$candidate" = "$optional" ] && return 0
+    done
+    return 1
+}
+
 src_path() {
     printf '%s/%s\n' "$SOURCE" "$1"
 }
@@ -1689,12 +1718,23 @@ verify_protected_user_unit_oom_scores() {
         # systemctl STILL answers `show` for an unknown unit, with DEFAULTS -- OOMScoreAdjust=200,
         # Slice=, MemoryLow=0, MemoryMin=0 -- every one of which this loop then reads as drift and
         # hard-fails on. Absent is not drifted; it is UNEVALUABLE, and conflating the two is what
-        # bricked source activation on hapax-appendix for three weeks. This package is podium-shaped:
-        # hapax-daimonion / studio-compositor / hapax-imagination are LoadState=not-found on
-        # appendix, so every run failed verify, exited 1, rolled the deploy back, and repeated every
-        # two minutes -- 2176 incident events before containment stopped it. Skip, and say so.
+        # bricked source activation on hapax-appendix for three weeks: hapax-daimonion /
+        # studio-compositor / hapax-imagination are LoadState=not-found on appendix, so every run
+        # failed verify, exited 1, rolled the deploy back, and repeated every two minutes -- 2176
+        # incident events before containment stopped it.
+        #
+        # But UNEVALUABLE-AND-EXPECTED and UNEVALUABLE-AND-ALARMING are different states, and only
+        # the first may be skipped. Skipping both is how --verify-live comes to PASS WITHOUT
+        # VERIFYING ANYTHING: a required unit vanishing from a host it belongs on would report
+        # success. The skip is therefore allow-listed to host_optional_user_units; every other
+        # protected unit is required wherever this package installs, and its absence fails closed.
         if [ "$(user_systemctl show "$unit" -p LoadState --value 2>/dev/null || true)" = "not-found" ]; then
-            echo "p0-oom: skipping $unit — not present on this host (LoadState=not-found); nothing to verify" >&2
+            if is_host_optional_user_unit "$unit"; then
+                echo "p0-oom: skipping $unit — host-optional protected unit, not present here (LoadState=not-found); nothing to verify" >&2
+                continue
+            fi
+            echo "required protected user unit $unit is absent on this host (LoadState=not-found): --verify-live cannot confirm OOM policy for a unit that is not loaded, and treating it as verified would be a false green; next action: install/enable $unit on this host, or if it is legitimately host-optional add it to host_optional_user_units in scripts/install-p0-oom-containment with the measurement that justifies it" >&2
+            failed=1
             continue
         fi
         configured="$(user_systemctl show "$unit" -p OOMScoreAdjust --value 2>/dev/null || true)"
