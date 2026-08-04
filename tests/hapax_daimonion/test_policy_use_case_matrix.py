@@ -66,14 +66,14 @@ def _has_dignity_floor(policy: str) -> None:
 def _has_operator_style(policy: str) -> None:
     """B: architectural-state operator style (post-#155 Stage 2)."""
     assert "executive-function prosthetic" in policy, "Missing operator-style frame"
-    assert "dysfluencies" in policy, "Missing ADHD accommodation"
+    assert "dysfluencies" in policy, "Missing dysfluency accommodation"
     assert "open loops" in policy, "Missing proactivity directive"
 
 
 def _lacks_operator_style(policy: str) -> None:
     """B (inverse): operator style must NOT be present."""
     assert "executive-function prosthetic" not in policy, "Operator style leaked"
-    assert "dysfluencies" not in policy, "ADHD details leaked to non-operator"
+    assert "dysfluencies" not in policy, "Operator accommodation details leaked to non-operator"
 
 
 def _has_activity_mod(policy: str, mode: str) -> None:

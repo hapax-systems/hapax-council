@@ -2,7 +2,7 @@
 
 ## The System
 
-You built a system where AI agents run on your home workstation. They monitor your calendar, process ambient audio from microphones, track your health data, prepare management briefings, and generally act as externalized cognitive infrastructure — compensating for ADHD executive function challenges.
+You built a system where AI agents run on your home workstation. They monitor your calendar, process ambient audio from microphones, track your health data, prepare management briefings, and generally act as externalized cognitive infrastructure — compensating for executive function challenges.
 
 These agents share your physical space. A microphone doesn't just hear you — it hears your partner, your housemates, anyone who walks through your living room. A camera doesn't just see your desk — it sees whoever's in the frame.
 
@@ -136,7 +136,7 @@ Your system has five axioms, weighted by priority:
 | Axiom | Weight | What it means |
 |-------|--------|---------------|
 | `single_user` | 100 | One operator. No multi-user anything. |
-| `executive_function` | 95 | System compensates for ADHD/autism. Never adds cognitive load. |
+| `executive_function` | 95 | System compensates for executive-function constraints. Never adds cognitive load. |
 | `corporate_boundary` | 90 | Work data stays in employer systems. |
 | `interpersonal_transparency` | 88 | No persistent state about non-operator persons without consent. |
 | `management_governance` | 85 | LLMs prepare, humans deliver. No generated feedback about individuals. |

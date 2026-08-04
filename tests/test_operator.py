@@ -94,7 +94,7 @@ def test_system_prompt_fragment_includes_executive_function_axiom():
     fragment = get_system_prompt_fragment("research")
     assert "executive function" in fragment.lower()
     # Registry provides richer text — check for key concepts present in either path
-    assert "adhd" in fragment.lower() or "friction" in fragment.lower()
+    assert "task initiation" in fragment.lower() or "friction" in fragment.lower()
 
 
 def test_system_prompt_fragment_research():
@@ -226,7 +226,7 @@ def test_system_prompt_still_has_neurocognitive():
     """Neurocognitive patterns are still injected alongside context map data."""
     fragment = get_system_prompt_fragment("code-review")
     # Should have both neurocognitive AND constraints
-    assert "Neurocognitive patterns" in fragment or "ADHD" in fragment.lower()
+    assert "Neurocognitive patterns" in fragment
     assert "Relevant constraints:" in fragment
 
 

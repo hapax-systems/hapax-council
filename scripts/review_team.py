@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import ast
 import fnmatch
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -40,6 +42,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from shared import operator_attribution_scan as attribution_scan  # noqa: E402
+from shared import public_gate_receipts  # noqa: E402
 from shared.failure_classification import (  # noqa: E402
     STRUCTURED_PROVIDER_OUTAGE_ACTIONS,
     STRUCTURED_PROVIDER_OUTAGE_ERROR_CLASSES,
@@ -1344,25 +1348,402 @@ def verify_literal_defect_critical(finding: Mapping[str, Any], repo_root: Path) 
     return False  # parses clean — the syntax/compile claim is a phantom
 
 
+_OPERATOR_RATIFICATIONS_RELPATH = Path("config/governance/operator-ratifications.yaml")
+_SUPPORTED_RATIFICATION_SAFETY_POLICIES = frozenset({"operator_privacy_residual"})
+_DECISION_RECORD_SIGNATURE_FIELDS = (
+    "id",
+    "ratified",
+    "authority",
+    "decision_record",
+    "decision_record_path",
+    "decision_record_sha256",
+    "class",
+    "lenses",
+    "topics",
+    "files",
+    "files_sha256",
+)
+
+
+def _decision_record_pin_holds(repo_root: Path, entry: Mapping[str, Any]) -> bool:
+    """True iff the ratification's decision record exists and matches its sha256 pin."""
+    raw_path = entry.get("decision_record_path")
+    expected = entry.get("decision_record_sha256")
+    if not isinstance(raw_path, str) or not raw_path.strip() or not isinstance(expected, str):
+        return False
+    if raw_path.startswith("vault://"):
+        vault_root = Path(os.environ.get("HAPAX_VAULT_ROOT", "~/Documents/Personal")).expanduser()
+        record_path = vault_root / raw_path.removeprefix("vault://").lstrip("/")
+    else:
+        record_path = Path(raw_path).expanduser()
+    if not record_path.is_absolute():
+        record_path = repo_root / record_path
+    try:
+        actual = hashlib.sha256(record_path.read_bytes()).hexdigest()
+    except OSError:
+        return False
+    return actual == expected
+
+
+def _decision_record_authority_payload(entry: Mapping[str, Any]) -> dict[str, Any]:
+    payload = {key: entry[key] for key in _DECISION_RECORD_SIGNATURE_FIELDS if key in entry}
+    payload["authority_issuer"] = entry.get("decision_record_authority_issuer")
+    return payload
+
+
+def _decision_record_authority_signature_holds(entry: Mapping[str, Any]) -> bool:
+    issuer = entry.get("decision_record_authority_issuer")
+    signature = entry.get("decision_record_authority_signature")
+    if not isinstance(issuer, str) or not issuer.strip():
+        return False
+    if not isinstance(signature, str) or not signature.strip():
+        return False
+    secret = os.environ.get(public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, "").strip()
+    if not secret:
+        return False
+    expected = public_gate_receipts.public_gate_authority_signature(
+        _decision_record_authority_payload(entry),
+        secret,
+    )
+    return hmac.compare_digest(signature, expected)
+
+
+def _ratification_classes(payload: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Ledger-declared ratification classes keyed by stable class id.
+
+    The code implements safety policies, not class names. Class ids live in the ledger
+    so adding a new named class is a data/schema act; adding a new safety policy remains
+    source work with tests. Fail-closed: malformed or unsupported classes make the
+    ledger waive nothing.
+    """
+    raw = payload.get("ratification_classes")
+    if not isinstance(raw, Mapping) or not raw:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for class_id, config in raw.items():
+        if not isinstance(class_id, str) or not class_id.strip() or not isinstance(config, Mapping):
+            return {}
+        authority = config.get("authority")
+        safety_policy = config.get("safety_policy")
+        if (
+            not isinstance(authority, str)
+            or not authority.strip()
+            or not isinstance(safety_policy, str)
+            or safety_policy not in _SUPPORTED_RATIFICATION_SAFETY_POLICIES
+            or (safety_policy == "operator_privacy_residual" and authority != "operator")
+        ):
+            return {}
+        out[class_id] = {"authority": authority, "safety_policy": safety_policy}
+    return out
+
+
+def _operator_ratifications(repo_root: Path) -> list[dict[str, Any]]:
+    """Load the operator-stipulated ratification ledger. FAIL-CLOSED: any parse or schema problem
+    returns [] (waive nothing). Entries waive exactly the (lens x file) intersection they
+    name; governance and rationale live in the ledger header."""
+    path = repo_root / _OPERATOR_RATIFICATIONS_RELPATH
+    if not path.is_file():
+        return []
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return []
+    if not isinstance(payload, Mapping) or payload.get("ratifications_schema") != 1:
+        return []
+    entries = payload.get("ratifications")
+    if not isinstance(entries, list):
+        return []
+    classes = _ratification_classes(payload)
+    if not classes:
+        return []
+    valid: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            return []  # one malformed entry poisons the whole ledger — waive nothing
+        lenses = entry.get("lenses")
+        files = entry.get("files")
+        topics = entry.get("topics")
+        pins = entry.get("files_sha256")
+        entry_class = entry.get("class")
+        class_config = classes.get(entry_class) if isinstance(entry_class, str) else None
+        if (
+            not isinstance(entry.get("id"), str)
+            or not str(entry.get("id")).strip()
+            or not isinstance(entry.get("ratified"), str)
+            or not str(entry.get("ratified")).strip()
+            or class_config is None
+            or entry.get("authority") != class_config["authority"]
+            or not isinstance(entry.get("decision_record"), str)
+            or not str(entry.get("decision_record")).strip()
+            or not isinstance(entry.get("decision_record_path"), str)
+            or not str(entry.get("decision_record_path")).strip()
+            or not isinstance(entry.get("decision_record_sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", str(entry.get("decision_record_sha256")))
+            or not _decision_record_pin_holds(repo_root, entry)
+            or not _decision_record_authority_signature_holds(entry)
+            or not isinstance(lenses, list)
+            or not lenses
+            or not all(isinstance(item, str) and item.strip() for item in lenses)
+            or not isinstance(files, list)
+            or not files
+            or not all(isinstance(item, str) and item.strip() for item in files)
+            or not isinstance(topics, list)
+            or not topics
+            or not all(isinstance(item, str) and item.strip() for item in topics)
+            # content pins are REQUIRED and must cover exactly the files list: the
+            # ratification applies to the reviewed bytes, never to future content
+            or not isinstance(pins, Mapping)
+            or set(pins.keys()) != set(files)
+            or not all(
+                isinstance(v, str) and re.fullmatch(r"[0-9a-f]{64}", v) for v in pins.values()
+            )
+        ):
+            return []
+        ratification = dict(entry)
+        ratification["_safety_policy"] = class_config["safety_policy"]
+        valid.append(ratification)
+    return valid
+
+
+def _ratification_release_head_authorized(
+    head_sha: str | None,
+    release_authorized_head_sha: str | None,
+) -> bool:
+    """True iff the task note's governed release authorization names this exact head."""
+    head = str(head_sha or "").strip()
+    authorized = str(release_authorized_head_sha or "").strip()
+    return (
+        bool(head)
+        and bool(authorized)
+        and re.fullmatch(r"[0-9a-fA-F]{40}", head) is not None
+        and re.fullmatch(r"[0-9a-fA-F]{40}", authorized) is not None
+        and hmac.compare_digest(head.lower(), authorized.lower())
+    )
+
+
+def _ratified_content_pin_holds(repo_root: Path, entry: Mapping[str, Any], rel_path: str) -> bool:
+    """True iff ``rel_path``'s bytes at ``repo_root`` hash to the entry's ratified pin.
+    The data-owner ratified SPECIFIC content; any edit voids the waiver for that file
+    until re-ratified (fail-closed: unreadable file = pin does not hold)."""
+    pins = entry.get("files_sha256")
+    expected = pins.get(rel_path) if isinstance(pins, Mapping) else None
+    if not isinstance(expected, str):
+        return False
+    try:
+        actual = hashlib.sha256((repo_root / rel_path).read_bytes()).hexdigest()
+    except OSError:
+        return False
+    return actual == expected
+
+
+#: Datum classes a data-owner ratification may NEVER waive, matched over finding PROSE
+#: in the BLOCKING direction (a match only ever keeps a finding blocking — false
+#: positives are safe). This is the un-enumerable-PII leg: content scans cannot detect
+#: estate-specific literals (a legal name, a place), so a finding ALLEGING such a datum
+#: routes to operator disposition (i.e. blocks) instead of auto-waiving, even when its
+#: prose also mentions a ratified topic term.
+_NON_WAIVABLE_ALLEGATION_RE = re.compile(
+    r"\bPII\b|personally\s+identifiable|personal\s+information|personal\s+data"
+    r"|private\s+information|sensitive\s+information|identity\s+details?"
+    r"|identifying\s+(?:detail|details|information)|personal\s+identifier"
+    r"|legal\s+name|real\s+name|full\s+name|surname|family\s+name|maiden\s+name"
+    r"|\baddress(?:es)?\b|home\s+address(?:es)?|street\s+address(?:es)?"
+    r"|mailing\s+address(?:es)?|phone\s+number"
+    r"|e-?mail\s+address|employer|workplace|third[- ]part(?:y|ies)"
+    r"|spouse|\bwife\b|\bhusband\b|\bpartner'?s\s+name|\bchild(?:ren)?\b"
+    r"|date\s+of\s+birth|\bDOB\b|social\s+security|\bSSN\b"
+    r"|credential|password|api\s+key|\btoken\b|medical\s+record|patient"
+    r"|location\s+data|whereabouts|geolocation"
+    # local-path/username privacy class — the repo's own claim-inventory taxonomy names
+    # it, and unlike names it is enumerable without leaking:
+    r"|private\s+path|local\s+path|vault\s+path|home\s+director(?:y|ies)"
+    r"|filesystem\s+path|user\s?name|/home/|~/|C:\\\\Users"
+    # medical/mental-state datum classes beyond the diagnosis lexicon (round 14):
+    # medication, treatment, and affective-state disclosures are never waivable
+    r"|medical\s+(?:information|data|details?|record)"
+    r"|health\s+(?:information|data|details?|record)"
+    r"|healthcare\s+(?:information|data|details?|record)"
+    r"|medication|prescription|psychiatric|antidepressant|dosage"
+    r"|mental\s+state|emotional\s+state|cognitive\s+state|psychological\s+state"
+    r"|affective\s+state|mood|morale|burnout|stress|well-?being"
+    r"|depress\w*|anxiet\w*|frustrat\w*|overwrought|demorali[sz]\w*"
+    r"|therap\w*|suicid\w*",
+    re.IGNORECASE,
+)
+
+
+def _operator_ratification_for(
+    finding: Mapping[str, Any], ratifications: Sequence[Mapping[str, Any]], repo_root: Path
+) -> str | None:
+    """The ratification id waiving this finding, or None. Waived ONLY when the
+    finding's lens AND exact file path AND topic (title/detail must reference one of
+    the entry's ratified topic terms) are all named by a single ledger entry, the
+    file content hash matches the ratified pin, AND the prose alleges no non-waivable
+    datum class — an unrelated, edited, or datum-alleging finding in a ratified file
+    still blocks (operator disposition, never auto-waiver)."""
+    lens = str(finding.get("lens", ""))
+    file_ = str(finding.get("file", ""))
+    text = f"{finding.get('title', '')} {finding.get('detail', '')}".lower()
+    if _NON_WAIVABLE_ALLEGATION_RE.search(text):
+        return None
+    for entry in ratifications:
+        if entry.get("_safety_policy") != "operator_privacy_residual":
+            continue
+        if lens not in entry.get("lenses", ()) or file_ not in entry.get("files", ()):
+            continue
+        if any(str(topic).lower() in text for topic in entry.get("topics", ())):
+            if not _ratified_content_pin_holds(repo_root, entry, file_):
+                return None
+            return str(entry["id"])
+    return None
+
+
+def _worktrees_of(repo_root: Path) -> list[Path]:
+    """Every git worktree of ``repo_root``'s repository (including itself)."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_root), "worktree", "list", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if out.returncode != 0:
+        return []
+    return [
+        Path(line.split(" ", 1)[1].strip())
+        for line in out.stdout.splitlines()
+        if line.startswith("worktree ")
+    ]
+
+
+def _repo_worktree_clean(repo_root: Path) -> bool:
+    """True iff ``repo_root`` has no uncommitted tracked or untracked working-tree bytes."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_root), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.returncode == 0 and not out.stdout.strip()
+
+
+def _head_bound_repo_root(repo_root: Path | None, head_sha: str | None) -> Path | None:
+    """The checkout that IS the reviewed commit, or None.
+
+    Both head-bound mechanisms (the go-gate's phantom invalidation and the
+    operator-ratification gate) refuse to run unless the tree they inspect is the tree
+    the reviewers reviewed. Callers, however, hand us whatever root they happen to have:
+    ``cc-pr-review-dispatch`` passes the *activated source* worktree, which tracks main
+    and is essentially never at a PR head — so both gates silently no-oped in production
+    and every phantom/waivable critical blocked forever.
+
+    Resolution order: the caller's root, the CWD-discovered repo, then deterministic
+    sibling worktree paths of either. Each candidate is accepted ONLY if its HEAD equals
+    ``head_sha`` AND its working tree is clean, because the gates read file bytes from the
+    working tree. Returning None preserves the fail-closed behaviour (every critical
+    blocks).
+    """
+    want = str(head_sha or "").strip()
+    if not want:
+        return None
+    seen: set[Path] = set()
+    candidates: list[Path] = []
+    for base in (repo_root, _discover_repo_root()):
+        if base is None or base in seen:
+            continue
+        seen.add(base)
+        candidates.append(base)
+        for tree in sorted(_worktrees_of(base), key=lambda path: str(path)):
+            if tree not in seen:
+                seen.add(tree)
+                candidates.append(tree)
+    for candidate in candidates:
+        if _repo_head_matches(candidate, want) and _repo_worktree_clean(candidate):
+            return candidate
+    return None
+
+
 def _blocking_criticals(
     reviews: Sequence[Mapping[str, Any]],
     repo_root: Path | None,
     head_sha: str | None = None,
+    release_authorized_head_sha: str | None = None,
 ) -> tuple[list[tuple[str, dict]], list[tuple[str, dict]]]:
     """Partition unresolved criticals into (blocking, phantom). ``repo_root=None`` discovers the repo
     from cwd. The verifier runs ONLY when the checkout is confirmed to be the reviewed commit
     (``head_sha`` matches local HEAD, when given); otherwise — no repo, killswitch, or a wrong/unknown
-    checkout — every critical blocks (the safe, pre-go-gate behaviour)."""
+    checkout — every critical blocks (the safe, pre-go-gate behaviour).
+
+    Operator-stipulated ratifications: criticals whose (lens, file) are named by an active entry in
+    the operator-ratification ledger are waived WITH a stderr receipt (go-gate phantom
+    precedent) — the disposition belongs to the operator/data owner under the single_user
+    axiom, not to reviewers. Same binding rule as the go-gate: the ledger is honored only
+    against a checkout proven to be the reviewed head and a task note whose
+    release_authorized_head_sha matches that head; the killswitch disables it too."""
     criticals = _unresolved_criticals(reviews)
     if os.environ.get(_GO_GATE_OFF_ENV) == "1":
         return criticals, []  # killswitch: every critical blocks (pre-go-gate behaviour)
-    root = repo_root if repo_root is not None else _discover_repo_root()
+    # Bind to the checkout that IS the reviewed commit, wherever it lives. The caller's
+    # root is often the activated-source worktree (tracks main), which never matches a PR
+    # head; before this resolver both head-bound gates silently no-oped in production.
+    root = _head_bound_repo_root(repo_root, head_sha)
     if root is None:
-        return criticals, []
-    if not head_sha or not _repo_head_matches(root, head_sha):
         return criticals, []  # no commit to bind to, or wrong checkout -> do not verify (keep all)
+    ratifications = (
+        _operator_ratifications(root)
+        if _ratification_release_head_authorized(head_sha, release_authorized_head_sha)
+        else []
+    )
+    if ratifications:
+        kept: list[tuple[str, dict]] = []
+        resolved: list[tuple[str, dict]] = []
+        for reviewer_id, finding in criticals:
+            ratification_id = _operator_ratification_for(finding, ratifications, root)
+            if ratification_id is None:
+                kept.append((reviewer_id, finding))
+                continue
+            # The ledger can never waive the ENFORCED class or any non-residual PII
+            # datum. Waiver safety is decided on FILE CONTENT at head, never on
+            # finding prose: if the cited file carries a tier-1/tier-2 regression OR
+            # any detectable non-residual PII (address, phone, email, ...), the
+            # finding may be reporting exactly that — keep it blocking. A topical-
+            # sounding allegation whose datum is absent from the file has no
+            # referent; waiving it is correct.
+            if not attribution_scan.file_waiver_safe(root, str(finding.get("file", ""))):
+                print(
+                    f"ratification-gate: NOT waiving {str(finding.get('title'))!r} — "
+                    f"{finding.get('file')} is not waiver-safe at head (enforced-class "
+                    "or non-residual PII/operator mental-state content present); "
+                    "ledger cannot waive it",
+                    file=sys.stderr,
+                )
+                kept.append((reviewer_id, finding))
+                continue
+            resolved_finding = dict(finding)
+            resolved_finding["_resolution_source"] = "operator-ratification"
+            resolved_finding["_resolution_detail"] = (
+                f"operator-stipulated ratification {ratification_id}; cited file verified "
+                "waiver-safe at head"
+            )
+            resolved.append((reviewer_id, resolved_finding))
+            print(
+                f"ratification-gate: waived critical {str(finding.get('title'))!r} "
+                f"({finding.get('file')}) under {ratification_id} — operator-stipulated "
+                "disposition, receipted; cited file verified waiver-safe at head "
+                "(no enforced-class attribution, no non-residual PII/operator "
+                "mental-state content)",
+                file=sys.stderr,
+            )
+        criticals = kept
     blocking: list[tuple[str, dict]] = []
-    phantom: list[tuple[str, dict]] = []
+    phantom: list[tuple[str, dict]] = list(resolved) if ratifications else []
     for reviewer_id, finding in criticals:
         target = blocking if verify_literal_defect_critical(finding, root) else phantom
         target.append((reviewer_id, finding))
@@ -1379,11 +1760,21 @@ def _finding_key(reviewer_id: str, finding: Mapping[str, Any]) -> tuple[str, str
     )
 
 
+_TRUSTED_CRITICAL_RESOLUTION_SOURCES = frozenset({"review-go-gate", "operator-ratification"})
+
+
+def _trusted_critical_resolution(finding: Mapping[str, Any]) -> bool:
+    return (
+        finding.get("resolved") is True
+        and str(finding.get("resolution_source") or "") in _TRUSTED_CRITICAL_RESOLUTION_SOURCES
+    )
+
+
 def _reviews_with_phantom_resolutions(
     reviews: Sequence[Mapping[str, Any]], phantom_criticals: Sequence[tuple[str, dict]]
 ) -> list[dict[str, Any]]:
-    phantom_keys = {
-        _finding_key(reviewer_id, finding) for reviewer_id, finding in phantom_criticals
+    resolutions = {
+        _finding_key(reviewer_id, finding): finding for reviewer_id, finding in phantom_criticals
     }
     out: list[dict[str, Any]] = []
     for review in reviews:
@@ -1395,11 +1786,15 @@ def _reviews_with_phantom_resolutions(
                 findings.append(finding)
                 continue
             finding_record = dict(finding)
-            if _finding_key(reviewer_id, finding_record) in phantom_keys:
+            resolution = resolutions.get(_finding_key(reviewer_id, finding_record))
+            if resolution is not None:
                 finding_record["resolved"] = True
-                finding_record["resolution_source"] = "review-go-gate"
-                finding_record["resolution_detail"] = (
-                    "literal-defect critical refuted by the file at head"
+                finding_record["resolution_source"] = str(
+                    resolution.get("_resolution_source") or "review-go-gate"
+                )
+                finding_record["resolution_detail"] = str(
+                    resolution.get("_resolution_detail")
+                    or "literal-defect critical refuted by the file at head"
                 )
             findings.append(finding_record)
         record["findings"] = findings
@@ -1423,20 +1818,27 @@ def _reviews_for_quorum(
         record = dict(review)
         if str(review.get("verdict", "")).lower() == "block":
             reviewer_id = str(review.get("id"))
-            critical_keys = {
-                _finding_key(reviewer_id, finding)
+            critical_findings = [
+                finding
                 for finding in review.get("findings") or []
                 if isinstance(finding, Mapping)
                 and str(finding.get("severity", "")).lower() == "critical"
+            ]
+            unresolved_critical_keys = {
+                _finding_key(reviewer_id, finding)
+                for finding in critical_findings
+                if not _trusted_critical_resolution(finding)
             }
             if (
-                critical_keys
-                and not (critical_keys & blocking_keys)
-                and critical_keys <= phantom_keys
+                critical_findings
+                and not (unresolved_critical_keys & blocking_keys)
+                and unresolved_critical_keys <= phantom_keys
             ):
                 record["verdict"] = "accept-with-findings"
                 record["raw_verdict"] = "block"
-                record["verdict_effective_reason"] = "all named criticals invalidated by go-gate"
+                record["verdict_effective_reason"] = (
+                    "all named criticals resolved by go-gate or operator ratification"
+                )
         out.append(record)
     return out
 
@@ -1524,6 +1926,7 @@ def synthesize_dossier(
     changed_files: Sequence[str] | None = None,
     changed_file_count: int | None = None,
     repo_root: Path | None = None,
+    release_authorized_head_sha: str | None = None,
 ) -> dict[str, Any]:
     """Reconcile blind reviews into a dossier (the synthesizer, spec §3/§5).
 
@@ -1560,7 +1963,12 @@ def synthesize_dossier(
         if any(str(n) == "degraded_to:t2_standard" for n in constitution_notes):
             sizing = registry["sizing"]["t2_standard"]
     block_reviews = [r for r in reviews if str(r.get("verdict", "")).lower() == "block"]
-    criticals, phantom_criticals = _blocking_criticals(reviews, repo_root, head_sha=head_sha)
+    criticals, phantom_criticals = _blocking_criticals(
+        reviews,
+        repo_root,
+        head_sha=head_sha,
+        release_authorized_head_sha=release_authorized_head_sha,
+    )
     quorum_reviews = _reviews_for_quorum(reviews, criticals, phantom_criticals)
     accepts = _checklist_complete_accepts(quorum_reviews, lenses)
     accept_families = {str(r.get("family")) for r in accepts}
@@ -1581,17 +1989,34 @@ def synthesize_dossier(
             }
         )
     for reviewer_id, finding in phantom_criticals:
-        escalations.append(
-            {
-                "kind": "invalidated-phantom-critical",
-                "reviewer": reviewer_id,
-                "title": finding.get("title"),
-                "file": finding.get("file"),
-                "line": finding.get("line"),
-                "lens": finding.get("lens"),
-                "detail": "literal-defect critical refuted by the file at head (fail-closed go-gate)",
-            }
-        )
+        resolution_source = str(finding.get("_resolution_source") or "review-go-gate")
+        if resolution_source == "operator-ratification":
+            escalations.append(
+                {
+                    "kind": "operator-ratified-critical",
+                    "reviewer": reviewer_id,
+                    "title": finding.get("title"),
+                    "file": finding.get("file"),
+                    "line": finding.get("line"),
+                    "lens": finding.get("lens"),
+                    "detail": str(
+                        finding.get("_resolution_detail")
+                        or "critical resolved by operator-stipulated ratification"
+                    ),
+                }
+            )
+        else:
+            escalations.append(
+                {
+                    "kind": "invalidated-phantom-critical",
+                    "reviewer": reviewer_id,
+                    "title": finding.get("title"),
+                    "file": finding.get("file"),
+                    "line": finding.get("line"),
+                    "lens": finding.get("lens"),
+                    "detail": "literal-defect critical refuted by the file at head (fail-closed go-gate)",
+                }
+            )
     if accepts and block_reviews:
         blocking_families = {str(r.get("family")) for r in block_reviews}
         if blocking_families - accept_families or accept_families - blocking_families:
@@ -1951,10 +2376,25 @@ def _dossier_validity_blockers(
     # prefer a declared task worktree when one is available and head-bound.
     dossier_head_sha = str(dossier.get("head_sha") or "")
     verification_root = _frontmatter_repo_root(frontmatter, dossier_head_sha)
-    criticals, phantoms = _blocking_criticals(reviews, verification_root, head_sha=dossier_head_sha)
-    if phantoms:  # receipt: phantom invalidations are auditable in the CI log, never silent
+    criticals, phantoms = _blocking_criticals(
+        reviews,
+        verification_root,
+        head_sha=dossier_head_sha,
+        release_authorized_head_sha=str(
+            (frontmatter or {}).get("release_authorized_head_sha") or ""
+        ),
+    )
+    if phantoms:  # receipt: critical resolutions are auditable in the CI log, never silent
+        go_gate_count = sum(
+            1
+            for _, finding in phantoms
+            if str(finding.get("_resolution_source") or "review-go-gate") == "review-go-gate"
+        )
+        ratified_count = len(phantoms) - go_gate_count
         print(
-            f"go-gate: invalidated {len(phantoms)} phantom literal-defect critical(s): "
+            "critical-resolution-gate: resolved "
+            f"{len(phantoms)} critical(s) "
+            f"(go-gate={go_gate_count}, operator-ratification={ratified_count}): "
             + "; ".join(str(f.get("title")) for _, f in phantoms),
             file=sys.stderr,
         )

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import re
 import subprocess
 import sys
@@ -16,6 +17,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+
+import pytest
 
 # Ensure scripts/ is importable in tests.
 _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
@@ -64,8 +67,10 @@ def _make_vault(tmp_path: Path) -> Path:
     return vault
 
 
-def _write_note(vault: Path, *, task_id: str, pr: int | None) -> Path:
+def _write_note(vault: Path, *, task_id: str, pr: int | None, extra_frontmatter: str = "") -> Path:
     pr_line = f"pr: {pr}" if pr is not None else "pr: null"
+    if extra_frontmatter:
+        pr_line = f"{pr_line}\n{extra_frontmatter}"
     note = vault / "active" / f"{task_id}-test.md"
     note.write_text(
         f"""---
@@ -83,6 +88,46 @@ status: pr_open
 """
     )
     return note
+
+
+def _git(repo: Path, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return proc.stdout.strip()
+
+
+def _init_activation_repo(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "source-activation" / "worktree"
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "cc-pr-merge-watcher@example.invalid")
+    _git(repo, "config", "user.name", "cc pr merge watcher tests")
+    (repo / "README.md").write_text("release one\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "release one")
+    sha = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "update-ref", "refs/remotes/origin/main", sha)
+    return repo, sha
+
+
+def _write_activation_current(current_path: Path, repo: Path, active_head: str) -> None:
+    current_path.parent.mkdir(parents=True, exist_ok=True)
+    current_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "active_source_head": active_head,
+                "active_source_path": str(repo),
+                "origin_main_sha": active_head,
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 class _FakeRunner:
@@ -242,6 +287,95 @@ class TestDefaultRepoRoot:
         assert watcher.default_repo_root() == active
 
 
+class TestSourceActivationFreshness:
+    def test_source_activation_current_head_matches_origin_main(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        repo, active_head = _init_activation_repo(tmp_path)
+        current = tmp_path / "source-activation" / "current.json"
+        _write_activation_current(current, repo, active_head)
+        monkeypatch.setenv("HAPAX_SOURCE_ACTIVATION_CURRENT", str(current))
+        monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", str(repo))
+
+        watcher.assert_source_activation_fresh(repo)
+
+    def test_source_activation_stale_origin_main_blocks_before_close(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        repo, active_head = _init_activation_repo(tmp_path)
+        (repo / "README.md").write_text("release two\n", encoding="utf-8")
+        _git(repo, "add", "README.md")
+        _git(repo, "commit", "-m", "release two")
+        origin_main = _git(repo, "rev-parse", "HEAD")
+        _git(repo, "update-ref", "refs/remotes/origin/main", origin_main)
+        _git(repo, "checkout", "--detach", active_head)
+        current = tmp_path / "source-activation" / "current.json"
+        _write_activation_current(current, repo, active_head)
+        monkeypatch.setenv("HAPAX_SOURCE_ACTIVATION_CURRENT", str(current))
+        monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", str(repo))
+
+        vault = _make_vault(tmp_path)
+        _write_note(vault, task_id="task-A", pr=100)
+        cursor = tmp_path / "cursor.txt"
+        cursor_start = datetime(2026, 4, 26, 0, tzinfo=UTC)
+        watcher.write_cursor(cursor, cursor_start)
+        cc_close = repo / "scripts" / "cc-close"
+        cc_close.parent.mkdir(parents=True, exist_ok=True)
+        cc_close.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        cc_close.chmod(0o755)
+        runner = _FakeRunner()
+        runner.gh_payload = [
+            {"number": 100, "mergedAt": "2026-04-26T12:00:00Z", "headRefName": "feat/a"},
+        ]
+
+        with pytest.raises(watcher.SourceActivationFreshnessError, match="lags origin/main"):
+            watcher.run_watcher(
+                cursor_path=cursor,
+                vault_root=vault,
+                repo_root=repo,
+                runner=runner,
+            )
+
+        assert not runner.calls
+        assert not runner.cc_close_invocations
+        assert watcher.read_cursor(cursor) == cursor_start
+
+    def test_source_activation_freshness_block_alert_is_rate_limited(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        sent: list[dict[str, Any]] = []
+
+        def fake_send_notification(**kwargs: Any) -> None:
+            sent.append(kwargs)
+
+        monkeypatch.setattr("shared.notify.send_notification", fake_send_notification)
+        error = watcher.SourceActivationFreshnessError(
+            "active_source_head abc lags origin/main def"
+        )
+        alert_path = tmp_path / "alert.json"
+        now = datetime(2026, 7, 9, 17, 30, tzinfo=UTC)
+
+        first = watcher.alert_source_activation_freshness_blocked(
+            error,
+            repo_root=tmp_path,
+            alert_path=alert_path,
+            now=now,
+        )
+        second = watcher.alert_source_activation_freshness_blocked(
+            error,
+            repo_root=tmp_path,
+            alert_path=alert_path,
+            now=now + timedelta(minutes=1),
+        )
+
+        assert first is True
+        assert second is False
+        assert len(sent) == 1
+        assert sent[0]["title"] == "cc-pr-merge-watcher source stale"
+        assert "hapax-post-merge-deploy.service" in sent[0]["message"]
+        assert "hapax-cc-pr-merge-watcher.timer" in sent[0]["message"]
+
+
 # ---------------------------------------------------------------------------
 # fetch_merged_prs
 # ---------------------------------------------------------------------------
@@ -329,7 +463,14 @@ class TestRunWatcher:
             repo_root=tmp_path,
             runner=runner,
         )
-        assert counters == {"merged": 1, "linked": 1, "closed": 1, "failed": 0, "skipped": 0}
+        assert counters == {
+            "merged": 1,
+            "linked": 1,
+            "opted_out": 0,
+            "closed": 1,
+            "failed": 0,
+            "skipped": 0,
+        }
         # cc-close was invoked with --pr 100.
         assert any(
             cmd[-3:] == ["--pr", "100", "--retroactive"] for cmd in runner.cc_close_invocations
@@ -457,7 +598,14 @@ class TestRunWatcher:
             repo_root=tmp_path,
             runner=runner,
         )
-        assert counters == {"merged": 1, "linked": 2, "closed": 2, "failed": 0, "skipped": 0}
+        assert counters == {
+            "merged": 1,
+            "linked": 2,
+            "opted_out": 0,
+            "closed": 2,
+            "failed": 0,
+            "skipped": 0,
+        }
         assert [cmd[1] for cmd in runner.cc_close_invocations] == ["task-A", "task-B"]
 
     def test_killswitch_skips(self, tmp_path: Path, monkeypatch: Any) -> None:
@@ -505,6 +653,201 @@ class TestRunWatcher:
 
 
 # ---------------------------------------------------------------------------
+# close_on_pr_merge: false — multi-PR lane opt-out
+# ---------------------------------------------------------------------------
+
+
+class TestCloseOnPrMergeOptOut:
+    def test_opt_out_note_is_not_closed(self, tmp_path: Path, caplog: Any) -> None:
+        """A note declaring close_on_pr_merge: false is skipped with an info log."""
+        vault = _make_vault(tmp_path)
+        _write_note(vault, task_id="task-A", pr=100, extra_frontmatter="close_on_pr_merge: false")
+        cursor = tmp_path / "cursor.txt"
+        watcher.write_cursor(cursor, datetime(2026, 4, 26, 0, tzinfo=UTC))
+        _make_cc_close(tmp_path)
+
+        runner = _FakeRunner()
+        runner.gh_payload = [
+            {"number": 100, "mergedAt": "2026-04-26T12:00:00Z", "headRefName": "feat/a"},
+        ]
+
+        with caplog.at_level(logging.INFO, logger="cc-pr-merge-watcher"):
+            counters = watcher.run_watcher(
+                cursor_path=cursor,
+                vault_root=vault,
+                repo_root=tmp_path,
+                runner=runner,
+            )
+        assert counters["linked"] == 0
+        assert counters["opted_out"] == 1
+        assert counters["closed"] == 0
+        assert counters["failed"] == 0
+        assert not runner.cc_close_invocations
+        assert (
+            "task task-A declares close_on_pr_merge: false — lane owner closes explicitly"
+            in caplog.text
+        )
+        assert "has 1 linked cc-task(s) opted out of auto-close" in caplog.text
+        # The skip is intentional, not a failure: the cursor still advances.
+        assert watcher.read_cursor(cursor) == datetime(2026, 4, 26, 12, tzinfo=UTC)
+
+    def test_body_only_mention_does_not_opt_out(self, tmp_path: Path) -> None:
+        """The opt-out is a FRONTMATTER contract: a body/session-log line quoting
+        `close_on_pr_merge: false` must not skip the close (parser scoped to the
+        leading --- block; fail-safe default preserved)."""
+        vault = _make_vault(tmp_path)
+        note = _write_note(vault, task_id="task-A", pr=100)
+        body_mention = note.read_text() + "\n- note: set close_on_pr_merge: false next time\n"
+        note.write_text(body_mention)
+        assert not watcher.declines_close_on_pr_merge(body_mention)
+        cursor = tmp_path / "cursor.txt"
+        watcher.write_cursor(cursor, datetime(2026, 4, 26, 0, tzinfo=UTC))
+        _make_cc_close(tmp_path)
+
+        runner = _FakeRunner()
+        runner.gh_payload = [
+            {"number": 100, "mergedAt": "2026-04-26T12:00:00Z", "headRefName": "feat/a"},
+        ]
+
+        counters = watcher.run_watcher(
+            cursor_path=cursor,
+            vault_root=vault,
+            repo_root=tmp_path,
+            runner=runner,
+        )
+        assert counters == {
+            "merged": 1,
+            "linked": 1,
+            "opted_out": 0,
+            "closed": 1,
+            "failed": 0,
+            "skipped": 0,
+        }
+
+    def test_crlf_frontmatter_still_opts_out(self, tmp_path: Path) -> None:
+        """A CRLF-checked-out note must not silently lose the opt-out: the failure
+        direction of a parse miss is the lane-killing auto-close."""
+        vault = _make_vault(tmp_path)
+        note = _write_note(
+            vault, task_id="task-A", pr=100, extra_frontmatter="close_on_pr_merge: false"
+        )
+        note.write_text(note.read_text().replace("\n", "\r\n"))
+        assert watcher.declines_close_on_pr_merge(note.read_text())
+
+    def test_yaml_equivalent_false_spellings_opt_out(self) -> None:
+        """A YAML-dumper round-trip may re-serialize false as no/off/quoted forms, and a
+        lane owner may append a YAML comment; all of those keep the opt-out. Explicit
+        true-ish values (or the field's absence) keep the auto-close default."""
+        for spelling in (
+            "false",
+            "no",
+            "off",
+            '"false"',
+            "'false'",
+            "FALSE",
+            "No",
+            "false  # lane owner closes explicitly",
+            '"off" # reason',
+        ):
+            text = f"---\nclose_on_pr_merge: {spelling}\n---\nbody\n"
+            assert watcher.declines_close_on_pr_merge(text), spelling
+        for spelling in ("true", "yes", "on", '"true"', "'yes'", "TRUE # note"):
+            text = f"---\nclose_on_pr_merge: {spelling}\n---\nbody\n"
+            assert not watcher.declines_close_on_pr_merge(text), spelling
+
+    def test_malformed_opt_out_fails_closed_toward_not_closing(self, caplog: Any) -> None:
+        """A present-but-unreadable value is an ATTEMPTED opt-out: the watcher must not
+        proceed to cc-close on it — it declines the close and warns."""
+        for spelling in ('"false', "false'", "\"false'", "0", "falsey", "flase"):
+            text = f"---\nclose_on_pr_merge: {spelling}\n---\nbody\n"
+            with caplog.at_level(logging.WARNING, logger="cc-pr-merge-watcher"):
+                assert watcher.declines_close_on_pr_merge(text), spelling
+            # two fail-closed paths, one direction: an unreadable VALUE inside parsed
+            # frontmatter, or frontmatter that fails to parse while mentioning the field
+            assert "unreadable value" in caplog.text or "failed to parse" in caplog.text
+            caplog.clear()
+
+    def test_note_with_explicit_true_value_still_closes(self, tmp_path: Path) -> None:
+        """An explicit true-ish value keeps the auto-close default."""
+        vault = _make_vault(tmp_path)
+        _write_note(vault, task_id="task-A", pr=100, extra_frontmatter="close_on_pr_merge: true")
+        cursor = tmp_path / "cursor.txt"
+        watcher.write_cursor(cursor, datetime(2026, 4, 26, 0, tzinfo=UTC))
+        _make_cc_close(tmp_path)
+
+        runner = _FakeRunner()
+        runner.gh_payload = [
+            {"number": 100, "mergedAt": "2026-04-26T12:00:00Z", "headRefName": "feat/a"},
+        ]
+
+        counters = watcher.run_watcher(
+            cursor_path=cursor,
+            vault_root=vault,
+            repo_root=tmp_path,
+            runner=runner,
+        )
+        assert counters == {
+            "merged": 1,
+            "linked": 1,
+            "opted_out": 0,
+            "closed": 1,
+            "failed": 0,
+            "skipped": 0,
+        }
+        assert any(
+            cmd[-3:] == ["--pr", "100", "--retroactive"] for cmd in runner.cc_close_invocations
+        ), runner.cc_close_invocations
+
+    def test_mixed_lane_only_non_opt_out_note_closes(self, tmp_path: Path, caplog: Any) -> None:
+        vault = _make_vault(tmp_path)
+        _write_note(vault, task_id="task-A", pr=100, extra_frontmatter="close_on_pr_merge: false")
+        _write_note(vault, task_id="task-B", pr=100)
+        cursor = tmp_path / "cursor.txt"
+        watcher.write_cursor(cursor, datetime(2026, 4, 26, 0, tzinfo=UTC))
+        _make_cc_close(tmp_path)
+
+        runner = _FakeRunner()
+        runner.gh_payload = [
+            {"number": 100, "mergedAt": "2026-04-26T12:00:00Z", "headRefName": "feat/a"},
+        ]
+
+        with caplog.at_level(logging.INFO, logger="cc-pr-merge-watcher"):
+            counters = watcher.run_watcher(
+                cursor_path=cursor,
+                vault_root=vault,
+                repo_root=tmp_path,
+                runner=runner,
+            )
+        assert counters["closed"] == 1
+        assert counters["opted_out"] == 1
+        assert [cmd[1] for cmd in runner.cc_close_invocations] == ["task-B"]
+        assert "has 1 linked cc-task(s) opted out of auto-close" in caplog.text
+
+    def test_reconcile_skips_opt_out_note(self, tmp_path: Path, caplog: Any) -> None:
+        """The stale-state reconciler honors the opt-out too (same class of close)."""
+        vault = _make_vault(tmp_path)
+        note = _write_reconcile_note(
+            vault, task_id="task-A", pr=100, extra_frontmatter="close_on_pr_merge: false"
+        )
+        _make_cc_close(tmp_path)
+        runner = _ReconcileRunner()
+        runner.pr_states = {"100": "MERGED"}
+
+        with caplog.at_level(logging.INFO, logger="cc-pr-merge-watcher"):
+            counters = watcher.reconcile_stale_pr_states(
+                vault_root=vault, repo_root=tmp_path, runner=runner
+            )
+
+        assert counters["closed"] == 0
+        assert not runner.cc_close_invocations
+        assert (
+            "task task-A declares close_on_pr_merge: false — lane owner closes explicitly"
+            in caplog.text
+        )
+        assert "status: pr_open" in note.read_text()
+
+
+# ---------------------------------------------------------------------------
 # reconcile_stale_pr_states: cursor-window-INDEPENDENT self-heal
 #
 # The cursor loop (run_watcher) only sees PRs merged after the cursor. A task
@@ -523,8 +866,11 @@ def _write_reconcile_note(
     status: str = "pr_open",
     pr: int | None = None,
     branch: str | None = None,
+    extra_frontmatter: str = "",
 ) -> Path:
     pr_line = f"pr: {pr}" if pr is not None else "pr: null"
+    if extra_frontmatter:
+        pr_line = f"{pr_line}\n{extra_frontmatter}"
     branch_line = f"branch: {branch}" if branch is not None else "branch: null"
     note = vault / "active" / f"{task_id}-test.md"
     note.write_text(
@@ -719,6 +1065,32 @@ class TestReconcilePrNullRepair:
         assert any(
             cmd[-3:] == ["--pr", "207", "--retroactive"] for cmd in runner.cc_close_invocations
         ), runner.cc_close_invocations
+
+    def test_pr_null_dry_run_respects_opt_out(self, tmp_path: Path, caplog: Any) -> None:
+        vault = _make_vault(tmp_path)
+        note = _write_reconcile_note(
+            vault,
+            task_id="task-A",
+            pr=None,
+            branch="epsilon/foo",
+            extra_frontmatter="close_on_pr_merge: false",
+        )
+        runner = _ReconcileRunner()
+        runner.head_prs = {"epsilon/foo": [{"number": 207, "state": "MERGED"}]}
+
+        with caplog.at_level(logging.INFO, logger="cc-pr-merge-watcher"):
+            counters = watcher.reconcile_stale_pr_states(
+                vault_root=vault,
+                repo_root=tmp_path,
+                dry_run=True,
+                runner=runner,
+            )
+
+        assert counters["repaired"] == 1
+        assert counters["closed"] == 0
+        assert "pr: null" in note.read_text()
+        assert "declares close_on_pr_merge: false" in caplog.text
+        assert not runner.cc_close_invocations
 
     def test_pr_null_with_branch_no_pr_blocks(self, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)

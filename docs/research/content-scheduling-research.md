@@ -2,7 +2,7 @@
 
 Research into how an ambient display agent should decide what content to show, when,
 for how long, and how often -- given 10 injection source categories and an operator
-with ADHD/autism who explicitly rejects visual emptiness.
+who explicitly rejects visual emptiness.
 
 ---
 
@@ -257,8 +257,8 @@ Zentall's Optimal Stimulation Theory (OST) is the key framework:
   due to lower baseline dopamine levels.
 - **Understimulation is actively uncomfortable** -- it produces restlessness,
   task-switching, and self-stimulation behaviors.
-- The operator's rejection of emptiness ("I DON'T LIKE EMPTINESS AT ALL") is
-  a textbook expression of this. An empty display = understimulation.
+- The standing design directive forbids emptiness outright: an empty display =
+  understimulation. The display must always carry a base layer.
 - The **Yerkes-Dodson curve is narrower** for ADHD: the zone between
   understimulation and overwhelm is smaller, requiring more precise calibration.
 
@@ -280,7 +280,7 @@ function as background noise -- it raises baseline arousal toward the optimal
 zone. This is not distraction; it is *functional background stimulation*.
 
 The display should therefore:
-- **Never be empty or static** (confirms the operator's instinct)
+- **Never be empty or static** (the standing design directive)
 - Maintain **moderate visual complexity** at all times
 - Use **continuous evolution** (shader drift, color evolution) as the base layer
 - Layer discrete content on top of this continuous base
@@ -291,8 +291,8 @@ Research on autistic visual processing:
 
 - **Enhanced pattern recognition**: Autistic people detect fine-grained visual
   patterns that neurotypicals miss. The display can be more visually complex
-  than typical ambient displays because the operator will extract meaning from
-  subtle patterns.
+  than typical ambient displays because detail-oriented viewing extracts
+  meaning from subtle patterns.
 - **Preference for predictability with variation**: Not rigid sameness, but
   *structured variation*. The display should have recognizable patterns that
   evolve rather than random chaos.
@@ -495,8 +495,8 @@ facts" -- these adjust base weights directly.
 3. **Five notification levels** (Matthews): Most content is change-blind or
    make-aware. Interrupt is rare and earned.
 
-4. **Never empty**: The ADHD optimal stimulation model confirms the operator's
-   instinct. Visual emptiness = understimulation = discomfort. The shader base
+4. **Never empty**: The optimal stimulation model supports the stated design
+   requirement. Visual emptiness = understimulation = discomfort. The shader base
    layer is always active.
 
 5. **Respect focus**: During deep work, reduce injection rate, cap notification
@@ -505,8 +505,9 @@ facts" -- these adjust base weights directly.
 6. **Exponential freshness decay**: Prevents repetition naturally. Half-life
    per content type. Profile facts ~2min, alerts ~30s, camera ~5min.
 
-7. **Structure with surprise**: The AuDHD profile wants recognizable patterns
-   with novel content within them. Regular rhythm, varied payload.
+7. **Structure with surprise**: A high-variance attention profile wants
+   recognizable patterns with novel content within them. Regular rhythm,
+   varied payload.
 
 8. **Graduated urgency**: Critical items bypass the sampler. Everything else
    goes through utility scoring. No alert fatigue.

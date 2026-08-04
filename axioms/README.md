@@ -39,7 +39,7 @@ The weights resolve conflicts between axioms. When `corporate_boundary` (90) say
 
 ### The Executive Function Axiom
 
-The `executive_function` axiom (weight 95) encodes ADHD and autism accommodation as a governance constraint. Task initiation, sustained attention, and routine maintenance are cognitive bottlenecks for the operator.
+This system serves as externalized executive function infrastructure. Task initiation, sustained attention, and routine maintenance are the binding constraints the system exists to support. The system must compensate for these, not add to cognitive load.
 
 The T0 implication: every error must include a specific next action ("Qdrant is unreachable — run `docker compose up -d qdrant` and retry"), not a generic failure message. Every recurring task must have a systemd timer. Every agent must work with zero configuration beyond environment variables.
 

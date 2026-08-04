@@ -316,7 +316,7 @@ Governance rules can become:
 
 ### Who Should Govern
 
-In the hapax single-operator model, the answer is clear: **the operator governs the governance system**. But the operator has ADHD and limited attention. The governance system must make meta-governance easy, not another pull-based task.
+In the hapax single-operator model, the answer is clear: **the operator governs the governance system**. But operator attention is a scarce, binding resource. The governance system must make meta-governance easy, not another pull-based task.
 
 ### Meta-Governance Mechanisms
 

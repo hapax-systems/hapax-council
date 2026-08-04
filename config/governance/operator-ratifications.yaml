@@ -1,0 +1,78 @@
+# Operator ratification ledger — operator-stipulated dispositions the review plane honors.
+#
+# Purpose: in a single-operator estate (axiom single_user, weight 100) certain review
+# finding classes are decisions that belong to the DATA OWNER, not to reviewers —
+# canonically: the operator's own privacy posture. An entry here records a ratified
+# decision and waives EXACTLY the (lens x file) intersection it names. Everything else
+# blocks as before. Fail-closed: a malformed ledger waives NOTHING.
+#
+# Governance: entries are sovereign stipulations (registry-guard class). Each entry MUST
+# name its decision record and pin that record by sha256. Waived findings are receipted
+# in the dossier evaluation log, never silent (go-gate phantom precedent).
+# Trust boundary: decision_record_authority_signature is an estate-local HMAC seal
+# issued by Claim Verification Council authority material (HAPAX_PUBLIC_GATE_AUTHORITY_HMAC_KEY).
+# It detects ledger tampering; it is not third-party authority attestation. The review
+# gate honors ratifications only when the task note's release_authorized_head_sha
+# exactly matches the reviewed head.
+ratifications_schema: 1
+ratification_classes:
+  operator-privacy-residual:
+    authority: operator
+    safety_policy: operator_privacy_residual
+ratifications:
+  - id: RAT-20260709-privacy-residual-item27
+    ratified: "2026-07-09"
+    authority: operator
+    decision_record: "operator-decision-memo:2026-07-09:item-27:accept-residual"
+    decision_record_path: "vault://30-areas/hapax/wave3d-session-reconstruction-2026-07-09.md"
+    decision_record_sha256: 2451388794fce2e03fae076101bba93f056a0d7a5f49a8140b5e08fa91ef4664
+    decision_record_authority_issuer: claim-verification-council
+    decision_record_authority_signature: hmac-sha256:fce1ecfe7173c5a6b660beebfc1ae35a2369109ef8932528f90271cc829a055a
+    class: operator-privacy-residual
+    lenses: [consent-provenance]
+    # A finding is waived ONLY if its title/detail references the ratified TOPIC —
+    # an unrelated privacy finding (e.g. an address leak) in these files still blocks.
+    topics:
+      - ADHD
+      - AuDHD
+      - autism
+      - autistic
+      - neurodiverg
+      - neurotype
+      - RSD
+      - rejection-sensitiv
+      - dysphoria
+      - diagnosis
+      - diagnostic
+      - cognitive profile
+      - perceptual profile
+    files:
+      - docs/research/content-scheduling-research.md
+      - docs/research/hapax-ontology-and-visual-fitment.md
+      - agents/demo_pipeline/domain_corpus/neurodivergent-technology-design.md
+      - agents/demo_pipeline/domain_corpus/cognitive-load-theory.md
+      - docs/research/apperception-healthy-self-model-research.md
+      - docs/research/phenomenology-ai-perception-research.md
+    files_sha256:
+      docs/research/content-scheduling-research.md: 9e84812fc89af4a4871d60d4d920a292d1ad70af99ab3f7665bff8e12420c524
+      docs/research/hapax-ontology-and-visual-fitment.md: d411a2e6edc63188e628f2995fc120bde067cf4af6d35b4684f0bae189cd04e8
+      agents/demo_pipeline/domain_corpus/neurodivergent-technology-design.md: bb4d5711042729154d11e2b7f03122235e736e34141dfee5ce2f9fed1713fe21
+      agents/demo_pipeline/domain_corpus/cognitive-load-theory.md: 912e76ef694fce2836dad9e3e5b41fb1318d7fc6bd7fc6bf4fc1a2c02cae709a
+      docs/research/apperception-healthy-self-model-research.md: 7855cec64c2d1982f02c00acd6f1a029ece6145b4f2100a4c9a9c17218579ed3
+      docs/research/phenomenology-ai-perception-research.md: 3a7554399dcc1c99de02ec63d93b9a14b6131ca01598b160dfa02be7bcfcc753
+    scope_note: >
+      The ENFORCED privacy class is tier-1/tier-2 diagnostic attribution to the operator
+      (fully redacted; hash-pinned two-tier guard). Section/document-level linkage between
+      neurotype research and system design in profile-grounded research documents is an
+      operator-ACCEPTED residual: the privacy owner ratified that grounding design in
+      neurotype literature does not constitute an operator diagnosis claim. This entry
+      waives consent-provenance criticals on the named files only; any tier-1/tier-2
+      attribution regression still fails the durable scan and still blocks review.
+      HONEST LIMITATION + ROUTING: content scans detect pattern-detectable datum
+      classes (email/phone/SSN/street-address/DOB/local-paths/operator mental-state
+      content). Estate-specific literals (legal names, places, third-party facts) are
+      NOT content-detectable in public source, so any finding whose prose ALLEGES a
+      name/identity/third-party/credential/medical/mental-state datum class is
+      non-waivable by rule (_NON_WAIVABLE_ALLEGATION_RE) and routes to operator
+      disposition — the waiver covers only findings about the ratified linkage class
+      itself.

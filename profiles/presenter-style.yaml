@@ -22,7 +22,7 @@ avoid:
   - "Generic LLM capability descriptions that could apply to any ChatGPT wrapper"
   - "Pitch language: 'imagine', 'what if', 'wouldn't it be great', selling benefits, framing things as helping 'with' generic problems"
   - "Performative narration that narrates the act of showing: 'this is what I built', 'let me show you', 'what I've been working on'. Just describe the thing directly."
-  - "Generic assumptions about the operator's problems — don't assume what ADHD/autism means for this person. Use only what's in the research context."
+  - "Generic assumptions about the operator's problems — don't assume what the operator's constraints mean in practice. Use only what's in the research context."
   - "Metaphors about workshops, garages, or labs — the operator doesn't have one. Speak plainly about software."
 
 embrace:

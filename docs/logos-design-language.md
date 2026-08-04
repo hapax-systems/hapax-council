@@ -555,7 +555,7 @@ These surfaces must comply with §1–§8. All colors must derive from §3, all 
 
 **Officium React app**: Must implement ThemeProvider with CSS custom property injection, reading working mode from `~/.cache/hapax/working-mode`. Must have dual palettes (Gruvbox/Solarized) matching council's `palettes.ts`. This is a separate engineering effort in the hapax-officium repository.
 
-**Studio compositor overlays**: Cairo rendering must use JetBrains Mono (`ctx.select_font_face("JetBrains Mono", ...)`). Signal zone colors must align with §3.3 category colors. The 30% desaturation for ADHD/autism safety is approved as a documented accessibility variant — apply desaturation to the §3.3 colors rather than using arbitrary values. Consent badge and recording indicator colors must use §3.1 semantic tokens (green-400 for allowed, red-400 for refused, yellow-400 for pending, orange-400 for blocked).
+**Studio compositor overlays**: Cairo rendering must use JetBrains Mono (`ctx.select_font_face("JetBrains Mono", ...)`). Signal zone colors must align with §3.3 category colors. The 30% desaturation for neurodivergent sensory safety is approved as a documented accessibility variant — apply desaturation to the §3.3 colors rather than using arbitrary values. Consent badge and recording indicator colors must use §3.1 semantic tokens (green-400 for allowed, red-400 for refused, yellow-400 for pending, orange-400 for blocked).
 
 ### 11.3 Excluded surfaces
 

@@ -85,7 +85,7 @@ Research on accessible consent for autistic people and people with intellectual 
 
 A CHI 2025 paper on consent mechanisms for augmented reality proposed design dimensions including Consent Triggers, Awareness Cues, Interaction Modalities, Visualizations, and Time Frames.
 
-**Connection to hapax-council:** The accommodations system already handles neurodivergent-aware presentation for the operator. The same principles must extend to guest consent channels. A guest with ADHD may need a different consent channel than a neurotypical guest. This connects the AccommodationSet concept to consent channel selection — but for guests, not the operator. The system cannot know a guest's needs in advance, so it must offer all channels simultaneously and let the guest self-select.
+**Connection to hapax-council:** The accommodations system already handles accommodation-aware presentation for the operator. The same principles must extend to guest consent channels. A guest with ADHD may need a different consent channel than a neurotypical guest. This connects the AccommodationSet concept to consent channel selection — but for guests, not the operator. The system cannot know a guest's needs in advance, so it must offer all channels simultaneously and let the guest self-select.
 
 Sources:
 - [Guidelines for Accessible Consent Materials (PMC 2025)](https://pmc.ncbi.nlm.nih.gov/articles/PMC12448064/)

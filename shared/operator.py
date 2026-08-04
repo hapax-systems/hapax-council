@@ -39,8 +39,8 @@ class OperatorSchema(BaseModel, extra="allow"):
 SYSTEM_CONTEXT = """\
 System: Externalized executive function infrastructure for a single operator.
 
-The operator has ADHD and autism — task initiation, sustained attention, and \
-routine maintenance are genuine cognitive challenges. This system offloads \
+Task initiation, sustained attention, and routine maintenance are the binding \
+constraints this system exists to support. This system offloads \
 cognitive overhead, maintains continuity, monitors health autonomously, and \
 surfaces what needs attention. Behavioral variance is expected baseline.
 

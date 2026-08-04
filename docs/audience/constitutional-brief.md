@@ -139,7 +139,7 @@ Concretely, the system in this report holds five axioms.
 ``single_user`` (weight 100) declares the operator the unique
 subject of the system across its lifetime. ``executive_function``
 (weight 95) declares the system's purpose: externalization of
-cognitive work for an operator with ADHD and autism.
+the operator's executive-function load.
 ``corporate_boundary`` (weight 90) declares a network discontinuity
 between home and employer substrates. ``interpersonal_transparency``
 (weight 88) declares the consent contract structure required to
@@ -370,8 +370,8 @@ not yet been such a conflict in eighteen months of operation.
 ### 3.2 — executive_function (weight 95, hardcoded, constitutional)
 
 > This system serves as externalized executive function infrastructure.
-> The operator has ADHD and autism — task initiation, sustained
-> attention, and routine maintenance are genuine cognitive challenges.
+> Task initiation, sustained attention, and routine maintenance are
+> the binding constraints the system exists to support.
 > The system must compensate for these, not add to cognitive load.
 
 **Constitutive force.** The axiom names a category of work — the
@@ -837,7 +837,7 @@ single_user.
 
 When the literal text is silent or ambiguous, the purposivist canon
 asks what the axiom is for. ``executive_function`` (weight 95)
-exists to compensate for ADHD/autism cognitive load. The literal
+exists to compensate for executive-function cognitive load. The literal
 text says "compensate for these, not add to them." A
 zero-config-flag system passes the textualist reading. A system
 that requires the operator to remember which-mode-am-I-in fails the

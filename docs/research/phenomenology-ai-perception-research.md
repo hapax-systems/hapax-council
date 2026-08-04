@@ -206,11 +206,11 @@ Lisa Feldman Barrett's **Embodied Predictive Interoception Coding (EPIC)** model
 
 Hapax already has a "mood" concept (the visual layer state machine), but it's currently driven by signal thresholds rather than anything phenomenologically grounded. A Stimmung-inspired redesign would mean:
 
-- The system's "mood" is not a classification of the operator's emotional state but a **global prior that shapes all perception**. When the system is in a "deep work" attunement, *everything* is perceived through the lens of "does this disrupt or support deep work?" When in "transition" attunement, everything is perceived through "what comes next?"
+- The system's "mood" is not a readout of anyone's emotional state but a **global prior that shapes all perception**. When the system is in a "deep work" attunement, *everything* is perceived through the lens of "does this disrupt or support deep work?" When in "transition" attunement, everything is perceived through "what comes next?"
 
 - Mood transitions should be **gradual and pervasive**, not discrete state changes. A shift from "active" to "winding down" should progressively alter the salience weightings across all sensor channels, not flip a switch.
 
-- The system's mood should be **bidirectionally coupled** with the operator's: operator state shapes system mood, but system mood (via display state, audio, information selection) shapes operator experience. This is the Stimmung feedback loop.
+- The system's attunement should be **bidirectionally coupled** with its context: sensed context shapes the global prior, and that global prior (via display state, audio, information selection) shapes the human experience at the interface. This is the Stimmung feedback loop.
 
 **Key gap**: Nobody has implemented mood-as-world-disclosure computationally. All "affective computing" treats emotion as content (what the person is feeling) rather than as form (how the world is disclosed). The precision-weighting interpretation from active inference is the most promising computational handle, but it hasn't been applied to ambient computing.
 
@@ -339,7 +339,7 @@ Process perception as a continuous flow with retention/impression/protention str
 
 ---
 
-## 10. ADHD/Autism Phenomenology: Fitting the System to *This* Being-in-the-World
+## 10. Neurodivergent Phenomenology and Profile-Sensitive Ambient Design
 
 ### ADHD as Temporal Desynchronization
 
@@ -369,15 +369,15 @@ The comprehensive review by de Haan et al. (2023, *Frontiers in Psychology*) ide
 
 ### Implications for System Design
 
-For an operator with ADHD/autism, the standard ambient computing assumptions break down:
+For profile-sensitive ambient design, the standard ambient computing assumptions break down:
 
-**Temporal structure**: The retention-protention structure (Thread 7) cannot assume neurotypical temporal dynamics. ADHD retention may be "shorter" (less persistence of the just-past) and protention "weaker" (less anticipatory readiness), while hyperfocus may produce "deeper" retention and protention within a narrowed domain. The system must adapt its temporal processing to the operator's actual temporal rhythm, not a normative one.
+**Temporal structure**: The retention-protention structure (Thread 7) cannot assume uniform temporal dynamics. Retention may be "shorter" (less persistence of the just-past) and protention "weaker" (less anticipatory readiness), while hyperfocus may produce "deeper" retention and protention within a narrowed domain. The system must adapt its temporal processing to the supported person's actual temporal rhythm, not a normative one.
 
-**Attentional transitions**: Monotropic attention means that the ready-to-hand/present-at-hand transition (Thread 4) is particularly consequential. A poorly timed alert doesn't just briefly distract -- it can "completely derail focus" and trigger a cascade of dysregulation. The cost of interruption is much higher than for neurotypical operators.
+**Attentional transitions**: Monotropic attention means that the ready-to-hand/present-at-hand transition (Thread 4) is particularly consequential. A poorly timed alert doesn't just briefly distract -- it can "completely derail focus" and trigger a cascade of dysregulation. The cost of interruption can be much higher than standard ambient-interface assumptions allow.
 
 **Sensory calibration**: Detail-first perception means the ambient display must be calibrated to avoid accidentally becoming salient. What's "background" for a neurotypical perceiver may be "foreground" for someone with heightened sensory discrimination. The display must be genuinely low-salience, not just "quiet."
 
-**Desynchronization support**: The system should help *resynchronize* the operator with environmental demands -- not by imposing external rhythms but by making temporal information available in the periphery (how long you've been working, when the next transition point is) in a way that doesn't demand attention.
+**Desynchronization support**: The system should help *resynchronize* a person with environmental demands -- not by imposing external rhythms but by making temporal information available in the periphery (how long a work block has been running, when the next transition point is) in a way that doesn't demand attention.
 
 **Flow protection**: Given monotropism, protecting flow states is not a nice-to-have but a core design requirement. The system must detect flow states with high confidence before allowing any transition above ambient display.
 
@@ -414,7 +414,7 @@ The system's default mode is withdrawal -- it shapes the operator's environment 
 The system's "body" is its sensor array and its "motor repertoire" is its range of outputs (display, audio, information selection). The system learns the sensorimotor contingencies of its environment: the regular relationships between its actions and their perceptual consequences. This coupling is continuously refined through experience.
 
 **7. Adapted to this specific being-in-the-world (Nielsen, de Haan)**
-All of the above must be calibrated to the operator's actual phenomenological structure: ADHD temporal dynamics, monotropic attention, heightened sensory discrimination, desynchronization patterns. The system is fitted to *this* Dasein, not to a normative one.
+All of the above must be calibrated to the phenomenological structure of the person being supported: individual temporal dynamics, monotropic attention, heightened sensory discrimination, desynchronization patterns. The system is fitted to a concrete life-world, not to a normative one.
 
 ### The Deepest Gap
 
@@ -424,7 +424,7 @@ The deepest gap in the literature is this: everyone recognizes that phenomenolog
 - **Learned** (developed through experience in the environment) -- this is the sensorimotor contingency approach
 - **Both** (bootstrap with engineered structure, refine through learning) -- this is most likely what's needed
 
-The most promising path is active inference as the engineered foundation, with sensorimotor contingency learning as the adaptive refinement layer, all calibrated to the operator's specific neurodivergent phenomenology. This has never been built. It is the next step.
+The most promising path is active inference as the engineered foundation, with sensorimotor contingency learning as the adaptive refinement layer, all calibrated to the specific phenomenology of the person being supported. This has never been built. It is the next step.
 
 ---
 

@@ -291,7 +291,7 @@ The content scheduler already selects from a weighted pool of content sources us
 
 **Selection criteria**:
 - What type of thing needs expression right now?
-- What's the current display density (ADHD accommodation)?
+- What's the current display density (stimulation accommodation)?
 - What's the operator's flow state (don't distract in deep work)?
 - What stimmung stance is active (stressed system should look stressed)?
 - What's the circadian position (evening = warmer, calmer)?

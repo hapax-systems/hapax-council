@@ -73,8 +73,8 @@ auto-blocks.
 - **single_user (weight 100)** — no auth, no roles, no multi-user
   abstractions. Constitutive: "this user" = the operator, full stop.
   Regulative: rejects every PR introducing user_id/role primitives.
-- **executive_function (weight 95)** — externalized cognition for an
-  ADHD/autism-shaped operator. Constitutive: "compensation, not addition."
+- **executive_function (weight 95)** — externalized executive function
+  for the operator. Constitutive: "compensation, not addition."
   Regulative: rejects code that increases cognitive load.
 - **management_governance (weight 85)** — LLMs prepare, humans deliver.
   Constitutive: aggregation + drafting only. Regulative: blocks generated

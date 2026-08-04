@@ -1,8 +1,9 @@
 # Value-proposition registry (seed).
 # source: value-prop mapping re-evaluation 2026-07-09, workflow wf_545c8c48-dd2
 # status: active_control_seed; SSOT question deferred — council holds the seed.
-# checker: scripts/check-value-prop-registry.py (v1 structural checks C1/C2/C3/C6/C8),
-#   wired into the ci.yml public_surface_freshness job.
+# checker: scripts/check-value-prop-registry.py (v2: structural C1/C2/C3/C6/C8 plus
+#   C4 embargo lint, C5 required-pairings, C7 comparative-claim pins, C9 pinned counts,
+#   C10 PII screen), wired into the ci.yml public_surface_freshness job.
 # normalization from the draft:
 #   - row semantic-visual-grammar-air carried `competitive_claims`; renamed to
 #     `comparative_claims` to match the field name every other row uses.
@@ -44,7 +45,7 @@ audiences:  # weights judgment-ranked until an audience-signal source is wired
   operators: {weight: 40}
   management_reviewers: {weight: 40}
 
-constraints:  # registry-level bindings; check script enforces on rows AND rendered surfaces
+constraints:  # registry-level bindings; check script lints REGISTRY ROWS only (rendered-surface linting explicitly deferred to wave-2)
   - id: banned-absolutes
     rule: >-
       'cannot lie' / 'structurally impossible' / 'structurally cannot' / 'proves what happens' /
@@ -67,6 +68,29 @@ constraints:  # registry-level bindings; check script enforces on rows AND rende
       Every comparative-absence claim carries evidence_level + scout_date + pinned comparator
       versions, else status=docs_internal — symmetric with the CVC/OKF discipline. Stale scout
       pin => hold_docs_internal. (Spec Kit releases near-daily; benchmark cells 1/2/5 already stale.)
+  - id: embargo-terms
+    rule: >-
+      Machine list for checker C4: any row claim-copy text (tangible_benefit, claim_ceiling,
+      maturity_note, notes, competitive_position, comparative_claims text) containing one of
+      these terms errors unless the row carries the term in embargo_exceptions with a
+      mention-not-use reason that quotes the ban itself. Seeded from banned-absolutes + the embargo
+      lexicon; the embargo-lexicon mapping below stays prose (its keys are lexicon ids, not
+      scan phrases).
+    terms:
+      - "cannot lie"
+      - "structurally impossible"
+      - "structurally cannot"
+      - "proves what happens"
+      - "impossible to leak"
+      - "measured capability"
+  - id: required-pairings
+    rule: >-
+      Machine map for checker C5: a row whose claim copy uses the absolute phrase (left) must
+      carry the paired disclosure substring (right) somewhere in the same row's text (matching
+      folds hyphens/commas, so 'no-false-green' triggers too).
+    pairings:
+      "no false green": "merge-gate scoping disclosure"
+      "no quorum no merge": "receipted-bypass disclosure"
   - id: embargo-lexicon
     terms:
       measured: "embargoed on capability/routing copy until learning-eligible outcomes move posteriors"
@@ -84,8 +108,8 @@ constraints:  # registry-level bindings; check script enforces on rows AND rende
   - id: pii-screen
     rule: >-
       Any copy quoting axioms/registry.yaml or frozen axiom snapshots (hapax-axioms,
-      hapax-refusals) requires a PII-screen receipt first: executive_function axiom text
-      contains operator medical details.
+      hapax-refusals) requires a PII-screen receipt first: axiom-adjacent text is
+      privacy-sensitive (defense-in-depth; historical snapshots may predate redactions).
   - id: spine-copy-gate
     rule: >-
       ALL spine copy placements estate-wide (including rows witnessed-only-learning,
@@ -136,6 +160,8 @@ registry:
       surface until the first-run preference runbook executes (fresh user/agent) and copy cites
       its receipts — public copy limited to capability-descriptive evidence-tagged language
       ('renders absence as absence [SV, guard-tested]').
+    required_pairings:
+      - "'no false green' ships with merge-gate scoping disclosure (blockers render visibly; gates fail closed on the SDLC merge path — not an all-claims guarantee)"
     evidence_level: SV
     evidence_visibility: mixed_public_guards_vault_benchmark
     comparative_claims:
@@ -266,6 +292,10 @@ registry:
       Source-visible research/runtime artifact and current case study — not product, framework,
       or support surface. Language ban: 'cannot lie', 'structurally impossible', 'proves what
       happens', product-negation-as-pitch.
+    embargo_exceptions:
+      - {term: "cannot lie", reason: "mention-not-use: the ceiling quotes the banned phrase only to state the language ban"}
+      - {term: "structurally impossible", reason: "mention-not-use: the ceiling quotes the banned phrase only to state the language ban"}
+      - {term: "proves what happens", reason: "mention-not-use: the ceiling quotes the banned phrase only to state the language ban"}
     evidence_level: SV
     competitive_position: "Own-paradigm voice; buyer-question parity frame (route/preserve/review/gate/show/produce) without category membership"
     target_surfaces: [council-readme, council-start-here, org-profile-entry]
@@ -495,6 +525,8 @@ registry:
       Prevents laundering asserted scores into learned rankings; does NOT supply independent
       measurements. Claim: assertion and measurement are typed apart and unmeasured shows as
       unmeasured.
+    required_pairings:
+      - "'no false green' ships with merge-gate scoping disclosure (blockers render visibly; gates fail closed on the SDLC merge path — not an all-claims guarantee)"
     evidence_level: SV
     competitive_position: "Anti-Goodhart integrity rule pairing with scoped 'no false green'; learning integrity, distinct from Capability Frontier routing"
     target_surfaces: [council-docs, research-audience-copy, spine-docs-GATED-on-spine-row]
@@ -565,7 +597,11 @@ registry:
       Plan tone constraint verbatim: no 'impossible to leak' or truth-oracle claims. Ward safety
       is CONDITIONAL on the four-part discipline (quote the condition). Per-surface mechanisms,
       never an estate-wide privacy guarantee. Fresh witness evidence (AIR tests/screenshots)
-      required per plan VP row 19.
+      required per the plan's AIR-posture VP row.
+    embargo_exceptions:
+      - {term: "impossible to leak", reason: "mention-not-use: the ceiling quotes the plan tone constraint that bans the phrase"}
+    pinned_counts:
+      "55": "agents/publication_bus/surface_registry.py SURFACE_REGISTRY (55 SurfaceSpec entries, recounted 2026-07-09)"
     evidence_level: SV
     competitive_position: "Serves the audience-82 owed evidence bundle (refusal records, source reconcile, AIR tests/screenshots) as one join point"
     target_surfaces: [council-docs-auditor-bundle, reins-readme-air-adjacent-line, council-readme-line]
@@ -697,11 +733,18 @@ registry:
       - "research-ledger no-user-study disclosure; EDT receipts branded 'n=1 honest'"
     claim_ceiling_ref: ceiling.scope_declaration_not_validation
     claim_ceiling: >-
-      Scope declaration is not validation — zero generalization claims. CRITICAL PII: the
-      adjacent executive_function axiom text contains operator medical details — public n=1
-      copy cites single_user mechanics ONLY and never surfaces operator-health axiom text;
-      audit hapax-refusals/hapax-axioms frozen snapshots before quoting registry text
-      (constraint pii-screen).
+      Scope declaration is not validation — zero generalization claims. PII discipline:
+      axiom-adjacent text is privacy-sensitive — public n=1 copy cites single_user
+      mechanics ONLY and never quotes adjacent axiom text; audit hapax-refusals/hapax-axioms
+      frozen snapshots before quoting registry text (historical snapshots may predate
+      redactions; constraint pii-screen).
+    pinned_counts:
+      "100": "axioms/registry.yaml single_user weight: 100 (hardcoded, constitutional; reverified 2026-07-09)"
+    pii_screen_receipt: >-
+      2026-07-09 checker-v2 rollout screen: row quotes single_user id/weight mechanics only;
+      no adjacent axiom text is quoted anywhere in the row. Screened against
+      axioms/registry.yaml in the C10 rollout commit
+      (branch codex/sdlc-wave3-closure-checker-v2-20260709).
     evidence_level: SV
     competitive_position: "The plan's 'claim ceilings are part of the value proposition' made concrete"
     target_surfaces: [registry-voice-row-all-surfaces, council-start-here-skeptic-paragraph, ledger-framing]
@@ -756,7 +799,7 @@ registry:
   - value_proposition_id: recursive-system-ingestion
     rank: 29
     implementation_maturity: present
-    tangible_benefit: "The cockpit is built to audit its own coverage (111-element/13-program machine-checkable matrix; orphan = leak) — no completed self-audit yet exists"
+    tangible_benefit: "The cockpit is built to audit its own coverage (machine-checkable element/program coverage matrix; orphan = leak) — no completed self-audit yet exists"
     priority_weight: 100
     audience_ids: {hn_technical: 100, researchers: 85}
     technical_items: ["401-line re-runnable purview engine; 111-element coverage matrix"]
@@ -914,6 +957,8 @@ registry:
       'swap without losing context' planned until exercised against a real harness swap.
       BANNED: 'structurally cannot' formulations (plan absolute-language ban) — reworded as a
       capability contrast, no universal negative about competitor clients.
+    embargo_exceptions:
+      - {term: "structurally cannot", reason: "mention-not-use: the ceiling names the banned formulation only to ban it"}
     evidence_level: SV
     competitive_position: "Distinctive HN-grade planned feature; provenance stays 'x via y' legible"
     target_surfaces: [reins-docs, readme-planned-bullet]

@@ -1390,7 +1390,7 @@ queue while a previous finding's PR is unmerged (per workspace CLAUDE.md
 - `docs/research/2026-04-19-homage-aesthetic-reckoning.md` (vault at
   `~/Documents/Personal/20-projects/hapax-research/
   2026-04-19-homage-aesthetic-reckoning.md`) — the operator's
-  diagnosis that this audit enumerates against.
+  assessment that this audit enumerates against.
 - Memory files: `project_programmes_enable_grounding`,
   `feedback_hapax_authors_programmes`, `feedback_no_expert_system_rules`,
   `feedback_grounding_exhaustive`.

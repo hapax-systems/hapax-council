@@ -342,7 +342,7 @@ HONESTY AND ACCURACY RULES (violations cause automatic rejection):
 - Do NOT describe generic LLM capabilities (answering questions, writing emails, summarizing) as unique to this system.
 - CLEARLY DISTINGUISH what LLMs already do (chat, answer questions, summarize text) from what THIS SYSTEM adds on top (agents that run autonomously, self-monitoring, profile learning across 13 dimensions, management support tools, executive function accommodation). This boundary is critical for non-technical audiences to understand what the builder actually created.
 - The primary value is NOT "saving time on maintenance" or "system health monitoring." Those are background infrastructure. The real value is: life organization, domain balance (work/personal/health), better relationships, executive function support, and personal growth.
-- Do NOT assume what ADHD/autism means for the operator. Only describe specific accommodations that are actually built into the system and visible in the Research Context. No generic "struggles with..." framing.
+- Do NOT make generic assumptions about the operator's cognitive profile. Only describe specific accommodations that are actually built into the system and visible in the Research Context. No generic "struggles with..." framing.
 
 NARRATIVE STRUCTURE RULES:
 - Scene 1 MUST be a big-picture overview: what this whole thing is, in plain terms, before ANY features. Use a screenshot of the dashboard (/) to show it's real, but the narration explains the overall concept — NOT the dashboard's health panel.
@@ -571,7 +571,7 @@ Slides show key_points as bullet lists next to the visual. Good presentations us
 - Only cite numbers that appear verbatim in the Research Context.
 - System is under active development — use "designed to", "so far it can".
 - Focus on what's architecturally unique, not generic LLM capabilities.
-- Do not describe what ADHD/autism means generically — only mention specific built accommodations visible in the Research Context.
+- Do not describe the operator's cognitive profile generically — only mention specific built accommodations visible in the Research Context.
 - Do NOT plan content about capabilities that aren't in the Research Context. If the research doesn't mention it, the system doesn't do it.
 - Do NOT plan facts that reference daily routines, habits, or specific times of day unless they appear in the Research Context (e.g. "timer fires at 07:00" is factual; "every morning I check..." is fabricated).
 
