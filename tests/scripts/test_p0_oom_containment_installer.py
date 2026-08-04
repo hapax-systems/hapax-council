@@ -2831,121 +2831,132 @@ def test_root_failure_intake_reports_action_when_emergency_ledger_is_unwritable(
     assert "next action: repair the ledger parent ownership/capacity" in result.stderr
 
 
-def _extract_bash_block(start_pattern: str, end_pattern: str) -> str:
-    """Lift a block VERBATIM out of the real installer.
+def _load_state_cases(load_state: dict[str, str]) -> str:
+    """systemctl stub cases for `show <unit> -p LoadState --value`.
 
-    The block is read from the shipped script rather than restated here, so these tests cannot
-    silently drift from the source they claim to cover — a copied fixture would keep passing after
-    the real allow-list changed, which is the failure mode this whole PR is about.
+    The pre-existing stub answers no LoadState query at all, so it returns empty and the host-fit
+    branch is never entered. That is why the full install/verify-live test passed without ever
+    executing the code it appeared to cover.
     """
-    lines = INSTALLER.read_text(encoding="utf-8").splitlines()
-    out: list[str] = []
-    capturing = False
-    for line in lines:
-        if not capturing and line.startswith(start_pattern):
-            capturing = True
-        if capturing:
-            out.append(line)
-            if line.startswith(end_pattern) and len(out) > 1:
-                break
-    assert out, f"could not find block starting {start_pattern!r} in {INSTALLER}"
-    return "\n".join(out)
+    cases = []
+    for unit, state in load_state.items():
+        cases.append(
+            f"  *--user\\ show\\ {unit}\\ -p\\ LoadState\\ --value*) printf '%s\\n' '{state}' ;;"
+        )
+    cases.append("  *-p\\ LoadState\\ --value*) printf '%s\\n' 'loaded' ;;")
+    return "\n".join(cases)
 
 
-def _host_optional_predicate_fragment() -> str:
-    array_block = _extract_bash_block("host_optional_user_units=(", ")")
-    fn_block = _extract_bash_block("is_host_optional_user_unit()", "}")
-    return f"{array_block}\n{fn_block}\n"
+def _run_install_verify_live(
+    tmp_path: Path, load_state: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Drive the REAL installer through --install --verify-live against temp destinations.
 
-
-def test_host_optional_allow_list_covers_exactly_the_podium_shaped_units() -> None:
-    """The allow-list must be an explicit set, not 'anything absent'.
-
-    Measured on both hosts 2026-08-04: pipewire/pipewire-pulse/wireplumber are loaded on
-    hapax-podium AND hapax-appendix; hapax-daimonion/studio-compositor/hapax-imagination are loaded
-    on podium and LoadState=not-found on appendix. Only the latter three may be skipped.
+    Mirrors test_p0_oom_containment_install_and_verify_live_against_temp_destinations, adding a
+    LoadState-answering systemctl stub so the host-fit branch is actually reached.
     """
-    fragment = _host_optional_predicate_fragment()
-    result = subprocess.run(
-        ["bash", "-c", f'{fragment}\nprintf "%s\\n" "${{host_optional_user_units[@]}}"'],
+    load_state = load_state or {}
+    system_dir = tmp_path / "systemd-system"
+    target_home = tmp_path / "target-home"
+    root_home = tmp_path / "root-home"
+    user_dir = target_home / ".config" / "systemd" / "user"
+    user_control_dir = target_home / ".config" / "systemd" / "user.control"
+    earlyoom_dest = tmp_path / "earlyoom"
+    enforcer_dest = tmp_path / "sbin" / "hapax-oom-score-enforce"
+    root_failure_dest = tmp_path / "sbin" / "hapax-root-failure-intake"
+    root_defer = tmp_path / "root-required"
+    installed_source = tmp_path / "current-source"
+    (installed_source / "scripts").mkdir(parents=True)
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=100)
+    _write_recovery_procs(proc_root)
+
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$*" in\n'
+        '  *"show user@1000.service -p MainPID --value"*) printf "900\\n" ;;\n'
+        f"{_load_state_cases(load_state)}\n"
+        f"{_systemctl_system_memory_cases(RECOVERY_SYSTEM_UNIT_PIDS)}\n"
+        f"{_systemctl_user_unit_cases()}\n"
+        f"{_systemctl_app_slice_cases()}\n"
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+    fake_runuser = tmp_path / "runuser"
+    fake_runuser.write_text(
+        '#!/usr/bin/env bash\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n',
+        encoding="utf-8",
+    )
+    fake_runuser.chmod(0o755)
+
+    return subprocess.run(
+        [str(INSTALLER), "--install", "--verify-live"],
         text=True,
         capture_output=True,
-        check=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(root_home),
+            "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(system_dir),
+            "HAPAX_OOM_SYSTEMD_USER_DIR": str(user_dir),
+            "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR": str(user_control_dir),
+            "HAPAX_OOM_TARGET_UID": "1000",
+            "HAPAX_OOM_TARGET_HOME": str(target_home),
+            "HAPAX_OOM_EARLYOOM_DEST": str(earlyoom_dest),
+            "HAPAX_OOM_ENFORCER_DEST": str(enforcer_dest),
+            "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
+            "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_OOM_EFFECTIVE_UID": "0",
+            "HAPAX_OOM_RUNUSER": str(fake_runuser),
+            "HAPAX_OOM_INSTALL_SUDO": "",
+            "HAPAX_OOM_PROC_ROOT": str(proc_root),
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(root_defer),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": REPO_HEAD,
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
+            "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source),
+        },
     )
-    listed = {line.strip() for line in result.stdout.splitlines() if line.strip()}
-    assert listed == {
-        "hapax-daimonion.service",
-        "studio-compositor.service",
-        "hapax-imagination.service",
-    }, (
-        f"host_optional_user_units is {sorted(listed)}. Every entry here is a unit whose absence "
-        "--verify-live will SKIP, so adding one silently narrows what the verifier proves. Add a "
-        "unit only with the two-host LoadState measurement that shows it is legitimately absent."
-    )
-    assert listed < set(PROTECTED_USER_UNIT_SCORES), (
-        "every host-optional unit must itself be a protected unit, and the set must be a PROPER "
-        "subset — if it ever equals the protected set, --verify-live can skip everything and pass "
-        "having verified nothing."
-    )
 
 
-def test_required_protected_units_are_not_skippable() -> None:
-    """The audio core is required wherever this package installs; absence must fail, not skip."""
-    fragment = _host_optional_predicate_fragment()
-    required = sorted(set(PROTECTED_USER_UNIT_SCORES) - {
-        "hapax-daimonion.service",
-        "studio-compositor.service",
-        "hapax-imagination.service",
-    })
-    assert required, "expected at least one required protected unit"
-    for unit in required:
-        probe = subprocess.run(
-            ["bash", "-c", f'{fragment}\nis_host_optional_user_unit "{unit}"'],
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        assert probe.returncode != 0, (
-            f"{unit} is treated as host-optional, so --verify-live would SKIP it when absent and "
-            "report success having proven nothing about it. Required units must fail closed."
-        )
+def test_verify_live_skips_an_absent_host_optional_unit(tmp_path: Path) -> None:
+    """EXECUTES THE BRANCH. A podium-shaped unit absent here must be skipped, not hard-failed.
 
-
-def test_host_optional_units_are_recognised_by_the_predicate() -> None:
-    """The skip branch must actually be reachable for the units it exists to serve.
-
-    Without this, a typo in the allow-list would make every unit required, restoring the original
-    2026-07-11 failure where appendix hard-failed on podium-shaped units 2,176 times.
+    This is the 2026-07-11 regression: appendix has no hapax-daimonion/studio-compositor/
+    hapax-imagination, systemctl answered `show` for them with DEFAULTS, the verifier read those
+    defaults as drift, exited 1, rolled the deploy back, and repeated every two minutes for 2,176
+    incident events.
     """
-    fragment = _host_optional_predicate_fragment()
-    for unit in (
-        "hapax-daimonion.service",
-        "studio-compositor.service",
-        "hapax-imagination.service",
-    ):
-        probe = subprocess.run(
-            ["bash", "-c", f'{fragment}\nis_host_optional_user_unit "{unit}"'],
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        assert probe.returncode == 0, (
-            f"{unit} is NOT recognised as host-optional, so an appendix-shaped host will hard-fail "
-            "verify on a unit that legitimately does not exist there."
-        )
-
-
-def test_absent_required_unit_message_names_both_remedies() -> None:
-    """Per executive_function: the fail-closed branch must say what to do next.
-
-    An error that only reports a state leaves the operator to rediscover the two lawful exits —
-    install the unit, or justify adding it to the allow-list with a measurement.
-    """
-    source = INSTALLER.read_text(encoding="utf-8")
-    marker = "required protected user unit"
-    assert marker in source, "the fail-closed branch for absent required units is missing"
-    line = next(ln for ln in source.splitlines() if marker in ln)
-    assert "host_optional_user_units" in line, (
-        "the failure message must name the allow-list as the second lawful remedy"
+    result = _run_install_verify_live(tmp_path, load_state={"hapax-daimonion.service": "not-found"})
+    assert result.returncode == 0, (
+        "verify-live hard-failed on an absent HOST-OPTIONAL unit — the 2026-07-11 regression is "
+        f"back.\nstderr: {result.stderr[-2000:]}"
     )
-    assert "next action" in line, "the failure message must carry a next action"
+    assert "skipping hapax-daimonion.service" in result.stderr, (
+        "the skip was not announced; a silent skip is indistinguishable from a unit that was "
+        f"actually verified.\nstderr: {result.stderr[-2000:]}"
+    )
+
+
+def test_verify_live_fails_closed_on_an_absent_required_unit(tmp_path: Path) -> None:
+    """EXECUTES THE BRANCH. A REQUIRED unit absent here must fail, never be skipped.
+
+    Without this, --verify-live can report success having verified nothing: every protected unit
+    absent, every one skipped, exit 0. That is a false green in the package whose job is to prevent
+    one, and it is what the first version of this fix actually did.
+    """
+    result = _run_install_verify_live(tmp_path, load_state={"pipewire.service": "not-found"})
+    assert result.returncode != 0, (
+        "verify-live PASSED while a required protected unit was absent — it reported success "
+        f"having verified nothing about it.\nstdout: {result.stdout[-1500:]}"
+    )
+    assert "required protected user unit pipewire.service is absent" in result.stderr, (
+        f"the failure did not name the absent required unit.\nstderr: {result.stderr[-2000:]}"
+    )
+    assert "next action" in result.stderr and "host_optional_user_units" in result.stderr, (
+        "per executive_function the failure must carry a next action and name both lawful exits "
+        f"(install the unit, or justify the allow-list entry).\nstderr: {result.stderr[-2000:]}"
+    )
