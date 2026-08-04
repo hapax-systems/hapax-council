@@ -36,6 +36,7 @@ ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapa
 OOM_POLICY_AUDIT_DEST="${HAPAX_OOM_POLICY_AUDIT_DEST:-/usr/local/sbin/hapax-oom-policy-audit}"
 ROOT_REQUIRED_AUDIT_DEST="${HAPAX_ROOT_REQUIRED_AUDIT_DEST:-/usr/local/sbin/hapax-root-required-deploy-audit}"
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
+SYSTEMD_ANALYZE="${HAPAX_OOM_SYSTEMD_ANALYZE:-systemd-analyze}"
 SUDO="${HAPAX_OOM_INSTALL_SUDO-sudo}"
 ACTUAL_UID="$(/usr/bin/id -u)"
 if [ "$ACTUAL_UID" != "0" ] && [ "${HAPAX_OOM_INSTALL_TEST_ACTUAL_UID:-}" = "0" ]; then
@@ -619,6 +620,146 @@ protected_user_unit_scores=(
     studio-compositor.service:-800
     hapax-imagination.service:-800
 )
+
+# HOST-OPTIONAL protected units: present on some hosts, legitimately absent on others, so
+# LoadState=not-found is an EXPECTED state for these and only these. Everything else in
+# protected_user_unit_scores is REQUIRED wherever this package installs, and its absence is a
+# verification FAILURE rather than a skip.
+#
+# Measured 2026-08-04 on both hosts:
+#   pipewire / pipewire-pulse / wireplumber   loaded on podium AND appendix  -> required
+#   hapax-daimonion / studio-compositor /
+#   hapax-imagination                          loaded on podium, not-found on appendix -> optional
+#
+# RE-DERIVE the split rather than trusting this comment (it is a measurement, and measurements go
+# stale — a unit installed on appendix tomorrow stops being host-optional and must leave this list):
+#
+#   for u in pipewire.service pipewire-pulse.service wireplumber.service \
+#            hapax-daimonion.service studio-compositor.service hapax-imagination.service; do
+#     printf '%-32s local=%s ' "$u" "$(systemctl --user show "$u" -p LoadState --value)"
+#     ssh hapax-podium 'bash -s' <<< "systemctl --user show $u -p LoadState --value"
+#   done
+#
+# A unit belongs here only if it is loaded on at least one host AND not-found on another. A unit
+# absent EVERYWHERE is not host-optional, it is missing, and belongs in neither list until that is
+# explained.
+#
+# The distinction is load-bearing. An earlier version of this fix skipped ANY unit reporting
+# not-found, which meant a required unit disappearing from a host it belongs on would silently
+# satisfy --verify-live: the verifier would report success having verified nothing. That is the
+# fail-quiet class this package exists to eliminate, so the skip is now allow-listed rather than
+# universal.
+host_optional_user_units=(
+    hapax-daimonion.service
+    studio-compositor.service
+    hapax-imagination.service
+)
+
+is_host_optional_user_unit() {
+    local candidate="$1" optional
+    for optional in "${host_optional_user_units[@]}"; do
+        [ "$candidate" = "$optional" ] && return 0
+    done
+    return 1
+}
+
+# Run systemd-analyze AS THE TARGET USER, exactly as user_systemctl does.
+#
+# The installer escalates for root-only steps, so this can execute with EFFECTIVE_UID=0. A bare
+# `systemd-analyze --user unit-paths` under root enumerates ROOT's user manager, whose search path
+# does not include /home/<target>/.config/systemd/user -- so every target-user unit would look
+# absent, every allow-listed unit would become skippable, and --verify-live would pass having
+# verified nothing. That is this package's own defect class (wrong-scope enumeration read as
+# absence) reappearing inside the fix for it. Found by blind review (codex-1) on PR #4499.
+user_systemd_analyze() {
+    if [ "$EFFECTIVE_UID" = "$TARGET_UID" ]; then
+        "$SYSTEMD_ANALYZE" --user "$@"
+    elif [ "$EFFECTIVE_UID" = "0" ]; then
+        "$RUNUSER" -u "$TARGET_USER" -- env XDG_RUNTIME_DIR="/run/user/$TARGET_UID" \
+            "$SYSTEMD_ANALYZE" --user "$@"
+    else
+        return 1
+    fi
+}
+
+# Where the user manager looks for unit files. Asked of systemd rather than hardcoded: the real
+# path includes generator, transient and .control directories that a static list silently omits,
+# and omitting one turns "installed here" into "absent here" -- the exact misread this whole
+# section exists to prevent. The static fallback is for environments with no queryable user
+# manager; it is a floor, not the answer.
+user_unit_search_paths() {
+    if [ -n "${HAPAX_OOM_USER_UNIT_PATHS:-}" ]; then
+        printf '%s\n' "${HAPAX_OOM_USER_UNIT_PATHS//:/$'\n'}"
+        return 0
+    fi
+    if user_systemd_analyze unit-paths 2>/dev/null; then
+        return 0
+    fi
+    # DEGRADED. Mirrors systemd's documented user unit load path, INCLUDING the .control,
+    # transient, generator and user.attached directories an abbreviated list omits -- review
+    # (codex-1, PR #4499) showed that a unit represented only in one of those would be classified
+    # as having no unit file and skipped. Enumerated from `systemd-analyze --user unit-paths`
+    # observed on hapax-appendix 2026-08-04.
+    local runtime="${XDG_RUNTIME_DIR:-/run/user/$TARGET_UID}"
+    printf '%s\n' \
+        "$TARGET_HOME/.config/systemd/user.control" \
+        "$runtime/systemd/user.control" \
+        "$runtime/systemd/transient" \
+        "$runtime/systemd/generator.early" \
+        "$TARGET_HOME/.config/systemd/user" \
+        "$TARGET_HOME/.config/systemd/user.attached" \
+        /etc/systemd/user \
+        "$runtime/systemd/user" \
+        "$runtime/systemd/user.attached" \
+        /run/systemd/user \
+        "$runtime/systemd/generator" \
+        "$runtime/systemd/generator.late" \
+        "$TARGET_HOME/.local/share/systemd/user" \
+        /usr/lib/systemd/user
+    return 2
+}
+
+# Is the unit search path AUTHORITATIVE on this run, or a reconstruction?
+#
+# This distinction is the whole reason the skip is safe. Absence can only be asserted from an
+# authoritative enumeration: if the manager could not be queried, a reconstructed list may omit a
+# directory this system actually uses, and "no unit file found" then means "I did not look
+# everywhere" rather than "it is not installed". Skipping on that is a false host-absence -- the
+# same absent-vs-unevaluable conflation this whole section exists to remove, one level up.
+# So a degraded enumeration may still PROVE presence (finding a file is positive evidence), but it
+# may never be used to prove ABSENCE.
+user_unit_search_paths_are_authoritative() {
+    [ -n "${HAPAX_OOM_USER_UNIT_PATHS:-}" ] && return 0
+    user_systemd_analyze unit-paths >/dev/null 2>&1
+}
+
+# Does a unit FILE for this unit exist on this host, regardless of whether it loaded?
+#
+# This is the discriminator the allow-list alone cannot provide. `host_optional_user_units` says a
+# unit MAY be absent somewhere; it cannot say whether THIS host is such a place, so on its own it
+# would skip an allow-listed unit that vanished from a host it belongs on -- review's exact charge.
+# LoadState cannot settle it either (not-found is not-found), and neither can FragmentPath, which is
+# empty for every not-found unit and therefore just restates LoadState.
+#
+# The file on disk does settle it, and does so WITHOUT asking which host we are:
+#   no unit file  -> the package was never installed here      -> absence is expected
+#   unit file     -> installed here and the manager cannot load it (masked, dangling symlink,
+#                    syntax error) -> absence is ALARMING and must fail closed
+user_unit_file_present() {
+    local unit="$1" dir
+    while IFS= read -r dir; do
+        [ -n "$dir" ] || continue
+        # -e FOLLOWS symlinks and is false for a DANGLING one, so `-e` alone would report a broken
+        # `systemctl --user enable` link as "never installed here" and take the skip -- the exact
+        # installed-here-but-unloadable case this function exists to catch, inverted. A dangling
+        # link is the strongest possible evidence the unit WAS installed on this host. `-L` matches
+        # the link regardless of its target. Found by blind review (codex-1) on PR #4499.
+        if [ -e "$dir/$unit" ] || [ -L "$dir/$unit" ]; then
+            return 0
+        fi
+    done < <(user_unit_search_paths)
+    return 1
+}
 
 src_path() {
     printf '%s/%s\n' "$SOURCE" "$1"
@@ -1681,10 +1822,50 @@ verify_user_manager_oom_score() {
 
 verify_protected_user_unit_oom_scores() {
     local spec unit score pid actual configured rel expected_slice key expected_raw expected_bytes cgroup failed=0
+    local verified=0 skipped=0
     for spec in "${protected_user_unit_scores[@]}"; do
         unit="${spec%%:*}"
         score="${spec##*:}"
         cgroup="${protected_user_cgroup_snapshot[$unit]:-}"
+        # HOST FIT: a unit that does not exist on this host has no live properties to verify.
+        # systemctl STILL answers `show` for an unknown unit, with DEFAULTS -- OOMScoreAdjust=200,
+        # Slice=, MemoryLow=0, MemoryMin=0 -- every one of which this loop then reads as drift and
+        # hard-fails on. Absent is not drifted; it is UNEVALUABLE, and conflating the two is what
+        # bricked source activation on hapax-appendix for three weeks: hapax-daimonion /
+        # studio-compositor / hapax-imagination are LoadState=not-found on appendix, so every run
+        # failed verify, exited 1, rolled the deploy back, and repeated every two minutes -- 2176
+        # incident events before containment stopped it.
+        #
+        # But UNEVALUABLE-AND-EXPECTED and UNEVALUABLE-AND-ALARMING are different states, and only
+        # the first may be skipped. Skipping both is how --verify-live comes to PASS WITHOUT
+        # VERIFYING ANYTHING: a required unit vanishing from a host it belongs on would report
+        # success. The skip is therefore allow-listed to host_optional_user_units; every other
+        # protected unit is required wherever this package installs, and its absence fails closed.
+        if [ "$(user_systemctl show "$unit" -p LoadState --value 2>/dev/null || true)" = "not-found" ]; then
+            # Allow-list membership is necessary but NOT sufficient. It says the unit may be absent
+            # on SOME host; only the unit file says whether THIS host is one of them. Checked first,
+            # so an allow-listed unit that is installed here but unloadable can never reach the skip.
+            if user_unit_file_present "$unit"; then
+                echo "protected user unit $unit reports LoadState=not-found but a unit file for it EXISTS on this host: the package IS installed here and the user manager cannot load it, so this is a load failure, not host-absence, and skipping it would report success having verified nothing; next action: run 'systemctl --user status $unit' and 'systemd-analyze --user verify $unit' to find the masked/dangling/malformed unit, then rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+                failed=1
+                continue
+            fi
+            if is_host_optional_user_unit "$unit"; then
+                # The skip rests on having proven absence, which a reconstructed search path
+                # cannot do. Fail closed rather than skip on a list that may not be complete.
+                if ! user_unit_search_paths_are_authoritative; then
+                    echo "protected user unit $unit is not loaded and no unit file was found, but the user unit search path could NOT be obtained from systemd ('$SYSTEMD_ANALYZE --user unit-paths' failed), so the list searched is a RECONSTRUCTION and may omit a directory this system uses; absence is therefore unproven and skipping it would be a false green; next action: make systemd-analyze usable for the target user, or set HAPAX_OOM_USER_UNIT_PATHS to the authoritative colon-separated search path, then rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+                    failed=1
+                    continue
+                fi
+                skipped=$((skipped + 1))
+                echo "p0-oom: skipping $unit — host-optional protected unit, no unit file on this host (LoadState=not-found); nothing to verify" >&2
+                continue
+            fi
+            echo "required protected user unit $unit is absent on this host (LoadState=not-found): --verify-live cannot confirm OOM policy for a unit that is not loaded, and treating it as verified would be a false green; next action: install/enable $unit on this host, or if it is legitimately host-optional add it to host_optional_user_units in scripts/install-p0-oom-containment with the measurement that justifies it" >&2
+            failed=1
+            continue
+        fi
         configured="$(user_systemctl show "$unit" -p OOMScoreAdjust --value 2>/dev/null || true)"
         if [ "$configured" != "100" ]; then
             echo "user unit startup OOM policy drift for $unit: configured=$configured expected=100; the user manager cannot lower a child score, so root must apply live score $score after start; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
@@ -1732,7 +1913,22 @@ verify_protected_user_unit_oom_scores() {
                 failed=1
             fi
         done < <(snapshotted_user_unit_pids "$unit")
+        verified=$((verified + 1))
     done
+    # VACUOUS-PASS GUARD. Every check above is universally quantified over the units that survived
+    # the skip, and a universally quantified check over an EMPTY set is true. So a --verify-live that
+    # examined nothing returns exactly what a --verify-live that examined everything returns, and the
+    # two are indistinguishable from the exit code -- which is the failure mode this package was
+    # written to stop, reappearing one level up in the package's own verifier.
+    #
+    # The allow-list is the mechanism that could empty the set: it is edited by hand, under pressure,
+    # by whoever is trying to get a host to deploy. Nothing structurally prevents it from growing
+    # until it covers every protected unit, at which point verify-live passes on every host forever.
+    # This makes that state loud instead of green.
+    if [ "$verified" -eq 0 ]; then
+        echo "--verify-live examined 0 of ${#protected_user_unit_scores[@]} protected user units ($skipped skipped as host-optional): a verification that evaluates nothing PASSES VACUOUSLY and cannot be told apart from one that actually verified the policy; next action: confirm this host is meant to run none of the protected units, and if so stop running --verify-live here, otherwise install the units or shrink host_optional_user_units in scripts/install-p0-oom-containment" >&2
+        failed=1
+    fi
     [ "$failed" -eq 0 ]
 }
 
