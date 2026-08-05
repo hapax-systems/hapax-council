@@ -163,6 +163,42 @@ def test_no_claim_allows_valid_new_offered_task_note_and_audits(tmp_path: Path) 
     assert records[0]["role"] == "alpha"
 
 
+def test_nested_task_id_does_not_shadow_top_level(tmp_path: Path) -> None:
+    """Only column-0 keys are the note's own declarations.
+
+    `_split_frontmatter` stripped leading whitespace before splitting, so a
+    nested key was read as top-level and the last occurrence won. A note
+    carrying a nested `task_id:` was therefore validated against the wrong id
+    and rejected for a filename mismatch it did not have. Measured on the real
+    vault: three active notes were failing this way.
+    """
+    task_root = tmp_path / "Documents/Personal/20-projects/hapax-cc-tasks/active"
+    request_root = tmp_path / "Documents/Personal/20-projects/hapax-requests/active"
+    task_root.mkdir(parents=True)
+    request_root.mkdir(parents=True)
+    parent_request = request_root / "REQ-20260517150000-perspective-merge-remediation.md"
+    task_path = task_root / "perspective-pr-merge-to-main.md"
+
+    note = _task_note("perspective-pr-merge-to-main", parent_request)
+    shadowed = note.replace(
+        "tags:\n  - cc-task",
+        "supersedes:\n  task_id: some-other-task-entirely\n  status: withdrawn\ntags:\n  - cc-task",
+    )
+    assert "  task_id: some-other-task-entirely" in shadowed
+
+    result = _run_hook(
+        tmp_path,
+        {"tool_name": "Write", "tool_input": {"file_path": str(task_path), "content": shadowed}},
+    )
+
+    assert result.returncode == 0, result.stderr
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "ledger.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert records[0]["id"] == "perspective-pr-merge-to-main"
+
+
 def test_no_claim_blocks_invalid_task_bootstrap(tmp_path: Path) -> None:
     task_root = tmp_path / "Documents/Personal/20-projects/hapax-cc-tasks/active"
     task_root.mkdir(parents=True)
