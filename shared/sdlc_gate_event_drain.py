@@ -114,6 +114,9 @@ def drain_gate_events(
     skipped_not_witnessed = 0
     skipped_ineligible = 0
     applied_hashes: list[str] = []
+    # In-pass de-dupe so report mode matches apply (first hash wins).
+    seen_this_pass: set[str] = set()
+    applied_persisted = set(router.state.applied_gate_event_hashes)
 
     for event in source:
         total += 1
@@ -127,21 +130,31 @@ def drain_gate_events(
         if skip == "ineligible":
             skipped_ineligible += 1
             continue
+        # Mirror SdlcRouter.record_gate_event llm_acceptor refuse path so
+        # report would_apply does not over-count vs --apply.
+        if event.gate_type == "llm_acceptor" and not (
+            router.judge_promotion is not None and router.judge_promotion.allowed
+        ):
+            skipped_ineligible += 1
+            continue
         eligible += 1
         event_hash = gate_event_hash(event)
-        if event_hash in router.state.applied_gate_event_hashes:
+        if event_hash in applied_persisted or event_hash in seen_this_pass:
             skipped_already += 1
             continue
         would_apply += 1
+        seen_this_pass.add(event_hash)
         if apply:
             if router.record_gate_event(event):
                 applied += 1
                 applied_hashes.append(event_hash)
             else:
-                # e.g. judge_promotion blocked llm_acceptor after eligibility precheck
+                # Prechecks should match record_gate_event; treat residual refuse
+                # as ineligible so report/apply counters stay consistent.
                 skipped_ineligible += 1
                 would_apply -= 1
                 eligible -= 1
+                seen_this_pass.discard(event_hash)
 
     state_written = False
     if apply and applied > 0:
@@ -187,11 +200,11 @@ def observe_status(
         **report.as_dict(),
         "gate_log_exists": log_path.exists(),
         "gate_log_bytes": log_path.stat().st_size if log_path.exists() else 0,
-        "next_actions": _next_actions(report),
+        "next_actions": next_actions_for(report),
     }
 
 
-def _next_actions(report: GateEventDrainReport) -> list[str]:
+def next_actions_for(report: GateEventDrainReport) -> list[str]:
     actions: list[str] = []
     if report.total_events == 0:
         actions.append(

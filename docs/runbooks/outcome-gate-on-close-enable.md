@@ -73,6 +73,12 @@ uv run python scripts/hapax-sdlc-gate-event-drain --status --json
 uv run python scripts/hapax-sdlc-gate-event-drain --apply --json
 ```
 
+**`--apply` scope (N1):** single-operator local tooling. It writes router posteriors only;
+it does **not** change live route selection, envelope enforcement, or close emission.
+Multi-user authorization is out of scope under the `single_user` axiom. Prefer report-only
+until you intentionally want posterior files updated. Concurrent `--apply` against the same
+state file is unsupported (serialize manually if ever needed).
+
 Defaults:
 
 | Path | Env override |

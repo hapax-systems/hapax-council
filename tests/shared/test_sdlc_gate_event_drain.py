@@ -124,3 +124,33 @@ def test_report_selection_invoked_false(tmp_path: Path) -> None:
     )
     assert report.selection_invoked is False
     assert report.as_dict()["dispatch_selection_changed"] is False
+
+
+def test_report_dedupes_duplicate_hashes_in_log(tmp_path: Path) -> None:
+    """Report would_apply matches apply: first hash wins within one pass."""
+    log = tmp_path / "gate-events.jsonl"
+    evt = _accept_event()
+    append_gate_event(evt, path=log)
+    append_gate_event(evt, path=log)  # same hash twice
+
+    report = drain_gate_events(gate_log=log, router_state=tmp_path / "r.json", apply=False)
+    assert report.total_events == 2
+    assert report.would_apply == 1
+    assert report.skipped_already_applied == 1
+
+    apply_report = drain_gate_events(gate_log=log, router_state=tmp_path / "r2.json", apply=True)
+    assert apply_report.applied == 1
+    assert apply_report.skipped_already_applied == 1
+
+
+def test_report_skips_llm_acceptor_without_judge_promotion(tmp_path: Path) -> None:
+    log = tmp_path / "gate-events.jsonl"
+    append_gate_event(_accept_event(gate_type="llm_acceptor"), path=log)
+
+    report = drain_gate_events(gate_log=log, router_state=tmp_path / "r.json", apply=False)
+    assert report.would_apply == 0
+    assert report.skipped_ineligible == 1
+
+    apply_report = drain_gate_events(gate_log=log, router_state=tmp_path / "r2.json", apply=True)
+    assert apply_report.applied == 0
+    assert apply_report.skipped_ineligible == 1

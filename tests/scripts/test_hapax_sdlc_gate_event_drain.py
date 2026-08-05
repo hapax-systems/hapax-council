@@ -112,3 +112,26 @@ def test_cli_status_json_includes_flag_and_next_actions(
     assert out["mode"] == "report"
     assert isinstance(out.get("next_actions"), list)
     assert any("HAPAX_OUTCOME_GATE_ON_CLOSE" in a for a in out["next_actions"])
+
+
+def test_cli_status_apply_includes_next_actions(tmp_path: Path, capsys) -> None:
+    log = tmp_path / "g.jsonl"
+    state = tmp_path / "r.json"
+    append_gate_event(_event(), path=log)
+    rc = mod.main(
+        [
+            "--status",
+            "--apply",
+            "--json",
+            "--gate-log",
+            str(log),
+            "--router-state",
+            str(state),
+        ]
+    )
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["mode"] == "apply"
+    assert out["applied"] == 1
+    assert isinstance(out.get("next_actions"), list)
+    assert out["next_actions"]

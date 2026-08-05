@@ -28,6 +28,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from shared.sdlc_gate_event_drain import (  # noqa: E402
     drain_gate_events,
+    next_actions_for,
     observe_status,
 )
 
@@ -61,8 +62,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="Machine-readable JSON on stdout")
     args = parser.parse_args(argv)
 
-    # --status always uses observe_status (report-only + next_actions).
-    # --apply ignores --status for write path; as_dict already carries flag truth.
+    # --status (report): full observe snapshot + next_actions.
+    # --status --apply: apply report + next_actions for that mode.
     if args.status and not args.apply:
         payload = observe_status(gate_log=args.gate_log, router_state=args.router_state)
     else:
@@ -72,6 +73,8 @@ def main(argv: list[str] | None = None) -> int:
             apply=args.apply,
         )
         payload = report.as_dict()
+        if args.status:
+            payload["next_actions"] = next_actions_for(report)
 
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
