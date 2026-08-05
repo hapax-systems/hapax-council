@@ -44,6 +44,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from shared.sdlc_gate_event_drain import (  # noqa: E402
+    OUTCOME_GATE_ON_CLOSE_ENV,
+    outcome_gate_on_close_enabled,
+)
 from shared.sdlc_lifecycle import (  # noqa: E402
     acceptance_criteria_state,
     frontmatter_from_text,
@@ -55,7 +59,8 @@ from shared.sdlc_router import REQUIREMENT_VECTOR_DIMENSIONS  # noqa: E402
 # requirement_vector emits a witnessed learning GateEvent via
 # emit_outcome_gate_event. Incomplete vector → no learning event; modal
 # incomplete_technical is ledgered. Append failure → close refused.
-_OUTCOME_GATE_ENV = "HAPAX_OUTCOME_GATE_ON_CLOSE"
+# Flag reader SSOT: shared.sdlc_gate_event_drain.outcome_gate_on_close_enabled
+_OUTCOME_GATE_ENV = OUTCOME_GATE_ON_CLOSE_ENV
 _CLOSE_MODAL_LEDGER = (
     Path.home() / ".cache" / "hapax" / "sdlc-routing" / "close-modal-outcomes.jsonl"
 )
@@ -149,15 +154,6 @@ def shadow_observe(path: Path) -> None:
         pass  # advisory-only: a failed spawn must never affect closure
 
 
-def _outcome_gate_enabled() -> bool:
-    return os.environ.get(_OUTCOME_GATE_ENV, "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
 def _resolve_close_route(task_fields: dict[str, Any]) -> str:
     """Best-effort route id for the learning event (not a live dispatch decision)."""
     for key in ("route_id", "resolved_route", "platform"):
@@ -205,7 +201,7 @@ def maybe_emit_outcome_on_close(path: Path, text: str) -> tuple[int, str]:
     gate refuses close (enabled + append/build failure). Never emits learning
     events when the requirement_vector is incomplete — ledgers modal instead.
     """
-    if not _outcome_gate_enabled():
+    if not outcome_gate_on_close_enabled():
         return 0, f"{_OUTCOME_GATE_ENV} off — no outcome gate emit"
 
     task_fields = frontmatter_from_text(text)
