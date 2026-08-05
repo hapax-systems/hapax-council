@@ -23,6 +23,7 @@ from shared.platform_capability_receipts import (
     WrapperEvidence,
 )
 from shared.platform_capability_registry import (
+    AGENTIC_TRUST_EVIDENCE_SURFACE_ID,
     REQUIRED_ROUTE_IDS,
     AuthorityCeiling,
     PlatformCapabilityRegistry,
@@ -125,6 +126,66 @@ def test_seed_registry_loads_sanctioned_platform_routes() -> None:
     }
     assert "antigrav" not in {route.platform.value for route in registry.routes}
     assert all(not route_id.startswith("gemini.") for route_id in registry.route_map())
+
+
+@pytest.mark.parametrize("field", ("launcher", "sanctioned_wrapper"))
+def test_registry_rejects_reserved_evaluator_as_executable_identity(field: str) -> None:
+    payload = _payload()
+    route = _route_payload(payload, "codex.headless.full")
+    route[field] = AGENTIC_TRUST_EVIDENCE_SURFACE_ID
+
+    with pytest.raises(ValidationError, match="cannot be an executable registry route"):
+        PlatformCapabilityRegistry.model_validate(payload)
+
+
+def test_registry_rejects_reserved_evaluator_as_available_tool() -> None:
+    payload = _payload()
+    route = next(route for route in payload["routes"] if route["tool_state"])
+    poisoned_tool = deepcopy(route["tool_state"][0])
+    poisoned_tool["tool_id"] = AGENTIC_TRUST_EVIDENCE_SURFACE_ID
+    route["tool_state"].append(poisoned_tool)
+
+    with pytest.raises(ValidationError, match="cannot be represented as a supply tool"):
+        PlatformCapabilityRegistry.model_validate(payload)
+
+
+def test_route_map_revalidates_nested_tool_identity_before_supply_use() -> None:
+    registry = load_platform_capability_registry()
+    route = next(route for route in registry.routes if route.tool_state)
+    route.tool_state[0].tool_id = AGENTIC_TRUST_EVIDENCE_SURFACE_ID
+
+    with pytest.raises(ValidationError, match="cannot be represented as a supply tool"):
+        registry.route_map()
+
+
+def test_supply_projection_revalidates_mutated_executable_identity() -> None:
+    route = (
+        load_platform_capability_registry()
+        .require("codex.headless.full")
+        .model_copy(update={"sanctioned_wrapper": AGENTIC_TRUST_EVIDENCE_SURFACE_ID})
+    )
+
+    with pytest.raises(ValidationError, match="cannot be an executable registry route"):
+        build_supply_vector(route)
+
+
+def test_descriptor_materialization_revalidates_mutated_variant_identity() -> None:
+    from shared.platform_capability_registry import materialize_descriptor_leaves
+
+    registry = load_platform_capability_registry()
+    route = next(route for route in registry.routes if route.descriptor_variants)
+    route.descriptor_variants[0].variant_id = AGENTIC_TRUST_EVIDENCE_SURFACE_ID
+
+    with pytest.raises(ValidationError, match="cannot name an executable descriptor variant"):
+        materialize_descriptor_leaves(registry)
+
+
+def test_supply_projection_revalidates_mutated_mcp_identity() -> None:
+    route = load_platform_capability_registry().require("api.headless.openrouter")
+    route.tool_access.mcp.append(AGENTIC_TRUST_EVIDENCE_SURFACE_ID)
+
+    with pytest.raises(ValidationError, match="cannot be represented as MCP supply"):
+        build_supply_vector(route)
 
 
 def test_registry_route_ids_match_dispatcher_platform_paths() -> None:

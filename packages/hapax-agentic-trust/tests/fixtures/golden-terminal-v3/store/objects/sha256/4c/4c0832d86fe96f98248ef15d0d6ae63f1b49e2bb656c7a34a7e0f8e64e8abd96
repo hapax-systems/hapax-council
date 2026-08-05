@@ -1,0 +1,56 @@
+{
+  "attempt_ordinal": 0,
+  "authority_status": "evidence_only_not_authorized",
+  "contract_version": "agentic-trust-episode-v3",
+  "document_type": "agentic_attempt_witness_pack",
+  "phase": "initial",
+  "scheduled_episode_sha256": "f8523e9979f321324d42d96360d25a15c2579d6cf661e9945a36a835f06fbeef",
+  "schema_version": 1,
+  "witnesses": [
+    {
+      "payload_base64": "dGVybWluYWwtdjM6ZXZhbHVhdG9yLW9wZW5pbmctd2l0bmVzcwo=",
+      "role": "evaluator_opening_witness",
+      "sha256": "f6b2f13b80e66694849c4937c2032879b6dbc7784034687d68adb40435d714ad"
+    },
+    {
+      "payload_base64": "dGVybWluYWwtdjM6cGFpcmVkLXJlcXVlc3QtdmVyaWZpZXItd2l0bmVzcwo=",
+      "role": "paired_request_verifier_witness",
+      "sha256": "08f12223e4de40cc19f59dd04233d03598432992c7f8ac4f52e364f8cd6bbd4a"
+    },
+    {
+      "payload_base64": "dGVybWluYWwtdjM6YXR0YWNrOnByZXN0YXRlLWNvbnN0cnVjdGlvbi13aXRuZXNzCg==",
+      "role": "prestate_construction_witness",
+      "sha256": "24770ca14e9f990d7e38ee5b3519681411a9be2776adbf58b679eaa6a7fd2688"
+    },
+    {
+      "payload_base64": "dGVybWluYWwtdjM6YXR0YWNrOnJlbmRlcmVyLXdpdG5lc3MK",
+      "role": "renderer_witness",
+      "sha256": "da7bccb8e011dd3aa35064aed74776c6c088bbb1c4fdd24498e614dbadd64109"
+    },
+    {
+      "payload_base64": "dGVybWluYWwtdjM6YXR0YWNrOnJ1bnRpbWUtYXR0ZXN0YXRpb24td2l0bmVzcwo=",
+      "role": "runtime_attestation_witness",
+      "sha256": "9cf0d549f754504130a79ca168d15476fe51632e87183329cdd3a101e98be42d"
+    },
+    {
+      "payload_base64": "dGVybWluYWwtdjM6YXR0YWNrOmluaXRpYWw6MDpzZWN1cml0eS13aXRuZXNzCg==",
+      "role": "security_witness",
+      "sha256": "c1029fd855540077e68dba5c6d42dda6998045d09472d7e8bc8641586a1e0abf"
+    },
+    {
+      "payload_base64": "dGVybWluYWwtdjM6YXR0YWNrOmluaXRpYWw6MDp0ZXJtaW5hbC13aXRuZXNzCg==",
+      "role": "terminal_witness",
+      "sha256": "7e42f3aa8875bfdf08e7bc9a2ce50e6523da1a1db8b2c147d384417322fd1669"
+    },
+    {
+      "payload_base64": "dGVybWluYWwtdjM6dHJhbnNmb3JtYXRpb24tdmVyaWZpZXItd2l0bmVzcwo=",
+      "role": "transformation_verifier_witness",
+      "sha256": "a695fff639216d10b94b419f51040dc777dbac11d583716fab1ba830fe2aa319"
+    },
+    {
+      "payload_base64": "dGVybWluYWwtdjM6YXR0YWNrOmluaXRpYWw6MDp1dGlsaXR5LXdpdG5lc3MK",
+      "role": "utility_witness",
+      "sha256": "6d08e47921432fc09819e8e55d5e41810bc6a1ec291edb5c07accd2089281c70"
+    }
+  ]
+}

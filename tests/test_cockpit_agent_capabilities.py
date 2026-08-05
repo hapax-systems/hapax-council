@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -28,6 +29,7 @@ REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
 LEDGER = REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json"
 NOW = datetime(2026, 6, 1, 0, 10, tzinfo=UTC)
 NOW_ISO = "2026-06-01T00:00:00Z"
+RESERVED_EVALUATOR_ID = "local_compute.agentic_trust_evaluator_surface"
 
 
 def _mark_route_fresh(route: dict[str, object]) -> None:
@@ -706,6 +708,171 @@ def test_unsupported_capacity_pool_refuses_with_reason(
 
     assert receipt.admitted is False
     assert receipt.reason_codes == ("unsupported_capacity_pool:unsupported_pool",)
+
+
+def test_cockpit_supply_leaf_refuses_reserved_evaluator_identity_before_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(COCKPIT_QUOTA_SPEND_LEDGER_ENV, str(tmp_path / "must-not-load.json"))
+    base = CockpitSupplyLeaf(
+        capability_id="cockpit.agent.test.synthetic",
+        route_id="local-fast",
+        platform_route_id="local_tool.local.worker",
+        provider="local",
+        model_alias="local-fast",
+        model_route="local-fast",
+        capacity_pool="local_compute",
+        profile="local",
+    )
+
+    for leaf in (
+        replace(base, capability_id=RESERVED_EVALUATOR_ID),
+        replace(base, route_id=f"surface/{RESERVED_EVALUATOR_ID}"),
+        replace(base, platform_route_id=RESERVED_EVALUATOR_ID),
+        replace(base, model_alias=RESERVED_EVALUATOR_ID),
+        replace(base, model_route=RESERVED_EVALUATOR_ID),
+        replace(base, capability_id=f"ROUTE/{RESERVED_EVALUATOR_ID}"),
+        replace(base, route_id=f"route.{RESERVED_EVALUATOR_ID}"),
+        replace(base, platform_route_id=f"ROUTE/{RESERVED_EVALUATOR_ID}"),
+        replace(base, provider="AgenticTrustEvidenceReceiptV1"),
+        replace(base, profile="AgenticTrustEvidenceReceiptV1"),
+        replace(base, task_class="AgenticTrustEvidenceReceiptV1"),
+        replace(base, quality_floor="AgenticTrustEvidenceReceiptV1"),
+        replace(base, tool_refs=("AgenticTrustEvidenceReceiptV1:test-only",)),
+    ):
+        receipt = cockpit_caps._admit_leaf(leaf, now=NOW)
+        assert receipt.admitted is False
+        assert receipt.reason_codes == (
+            "evidence_only_observation_identity_not_admissible_supply",
+            f"reserved_identity:{RESERVED_EVALUATOR_ID}",
+        )
+
+
+def test_cockpit_reserved_evaluator_child_uses_normal_admission_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(COCKPIT_QUOTA_SPEND_LEDGER_ENV, str(tmp_path / "missing-ledger.json"))
+    leaf = CockpitSupplyLeaf(
+        capability_id=f"{RESERVED_EVALUATOR_ID}.child",
+        route_id="local-fast",
+        platform_route_id="local_tool.local.worker",
+        provider="local",
+        model_alias="local-fast",
+        model_route="local-fast",
+        capacity_pool="local_compute",
+        profile="local",
+    )
+
+    receipt = cockpit_caps._admit_leaf(leaf, now=NOW)
+
+    assert receipt.admitted is False
+    assert receipt.reason_codes[0].startswith("quota_spend_ledger_unavailable:")
+    assert not any(
+        "evidence_only_observation_identity" in reason for reason in receipt.reason_codes
+    )
+
+
+def test_cockpit_admitted_receipt_cannot_represent_reserved_identity() -> None:
+    base = {
+        "receipt_id": "cockpit-test",
+        "receipt_ref": "cockpit-capability-admission:cockpit-test",
+        "capability_id": "cockpit.agent.test",
+        "route_id": "local-fast",
+        "platform_route_id": "local_tool.local.worker",
+        "provider": "local",
+        "model_alias": "local-fast",
+        "model_route": "local-fast",
+        "capacity_pool": "local_compute",
+        "admission_action": "admitted",
+        "admitted": True,
+        "reason_codes": ("local_resource_green",),
+    }
+    for field in (
+        "capability_id",
+        "route_id",
+        "platform_route_id",
+        "provider",
+        "profile",
+        "task_class",
+        "quality_floor",
+        "model_alias",
+        "model_route",
+    ):
+        payload = base | {field: RESERVED_EVALUATOR_ID}
+        with pytest.raises(ValueError, match="cannot be represented as admitted"):
+            cockpit_caps.CockpitAdmissionReceipt(**payload)
+
+    with pytest.raises(ValueError, match="cannot support an admitted cockpit capability"):
+        cockpit_caps.CockpitAdmissionReceipt(**(base | {"receipt_ref": RESERVED_EVALUATOR_ID}))
+
+
+@pytest.mark.parametrize(
+    ("alias_map", "alias", "message"),
+    (
+        (
+            {RESERVED_EVALUATOR_ID: "local-fast"},
+            RESERVED_EVALUATOR_ID,
+            "cannot construct a model supply leaf",
+        ),
+        (
+            {"fast": RESERVED_EVALUATOR_ID},
+            "fast",
+            "cannot be an aliased model route",
+        ),
+    ),
+)
+def test_model_leaf_rejects_reserved_identity_before_or_after_alias_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+    alias_map: dict[str, str],
+    alias: str,
+    message: str,
+) -> None:
+    monkeypatch.setattr(cockpit_caps, "_ALIAS_TO_MODEL_ROUTE", alias_map)
+
+    with pytest.raises(ValueError, match=message):
+        cockpit_caps._model_leaf("test", alias)
+
+
+def test_model_alias_map_is_immutable() -> None:
+    with pytest.raises(TypeError):
+        cockpit_caps._ALIAS_TO_MODEL_ROUTE["fast"] = RESERVED_EVALUATOR_ID
+
+
+def test_cockpit_admitted_receipt_rejects_reserved_model_alias() -> None:
+    with pytest.raises(ValueError, match="cannot be represented as admitted"):
+        cockpit_caps.CockpitAdmissionReceipt(
+            receipt_id="cockpit-test",
+            receipt_ref="cockpit-capability-admission:cockpit-test",
+            capability_id="cockpit.agent.test",
+            route_id="local-fast",
+            platform_route_id="local_tool.local.worker",
+            provider="local",
+            model_alias=RESERVED_EVALUATOR_ID,
+            model_route="local-fast",
+            capacity_pool="local_compute",
+            admission_action="admitted",
+            admitted=True,
+            reason_codes=("local_resource_green",),
+        )
+
+
+def test_cockpit_admitted_receipt_rejects_observation_evidence_support() -> None:
+    with pytest.raises(ValueError, match="cannot support an admitted cockpit capability"):
+        cockpit_caps.CockpitAdmissionReceipt(
+            receipt_id="cockpit-test",
+            receipt_ref="cockpit-capability-admission:cockpit-test",
+            capability_id="cockpit.agent.test",
+            route_id="local-fast",
+            platform_route_id="local_tool.local.worker",
+            provider="local",
+            model_alias="local-fast",
+            model_route="local-fast",
+            capacity_pool="local_compute",
+            admission_action="admitted",
+            admitted=True,
+            reason_codes=("local_resource_green",),
+            receipt_refs=("AgenticTrustEvidenceReceiptV1:test-only",),
+        )
 
 
 def test_platform_route_missing_is_reported_directly(

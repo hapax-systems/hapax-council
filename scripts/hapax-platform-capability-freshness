@@ -19,7 +19,7 @@ from shared.platform_capability_registry import (  # noqa: E402
     PLATFORM_CAPABILITY_REGISTRY,
     PlatformCapabilityRegistryError,
     check_registry_freshness,
-    load_platform_capability_registry,
+    load_platform_capability_registry_for_dispatch,
     normalize_route_id,
 )
 
@@ -83,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         return input_error(str(exc), json_output=args.json)
     try:
-        registry = load_platform_capability_registry(
+        registry, non_supply_observation_errors = load_platform_capability_registry_for_dispatch(
             args.registry,
             receipt_dir=args.receipt_dir,
             now=now,
@@ -96,9 +96,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     result = check_registry_freshness(registry, route_ids=route_ids or None, now=now)
+    payload = result.to_dict()
+    payload["non_supply_observation_errors"] = list(non_supply_observation_errors)
 
     if args.json:
-        print_json(result.to_dict())
+        print_json(payload)
     else:
         status = "OK" if result.ok else "BLOCKED"
         print(f"{status}: checked {len(result.routes)} route(s)")
@@ -107,6 +109,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{route.route_id}: {route_status}")
             for error in route.errors:
                 print(f"  - {error}")
+        for error in non_supply_observation_errors:
+            print(f"OBSERVATION WARNING: {error}")
 
     return 0 if result.ok else 1
 

@@ -1,0 +1,150 @@
+# Agentic-trust recovery handoff
+
+Status: recovery branch closed; gut-check boundary reached  
+Date: 2026-08-04  
+Authority: local evidence, code, tests, custody, and forward claims correction only
+
+## Outcome
+
+The supplied Codex-Fugu result is a faithful completion of its narrow LEG4
+handoff. It is not completion of the ancestral program and its historical
+`PAYS` verdict is not a decision-grade scientific result.
+
+The direct program-root operator turn orders the work as:
+
+1. capability onboarding and self-improving onboarding;
+2. capability-demand onboarding, work typology, routing, context/FSM, and
+   observability;
+3. Reins--Spine convergence plus first-init;
+4. dependent MonDLC and broader estate work.
+
+The ordering was lost at the Opus-to-Kimi artifact boundary: the transferred
+`RESEARCH-BASIS.md` explicitly carried no charge or plan. Later agents then
+faithfully pursued the narrower money/MonDLC handoffs they received.
+
+## Best next thread
+
+Within this recovered trust branch, the best next action is to durably onboard
+the **pure native verifier only** through the ordinary task, activation, and PR
+gates. The candidate surface is evidence-only, route-less, demand-ineligible,
+read-only, and non-supply. It imports an already-produced native terminal bundle
+and returns typed integer evidence facts plus explicit claim ceilings.
+
+This recommendation is conditional on the global capability-onboarding program.
+It is not present admission authority and does not authorize a runner, model
+call, route, score, ledger writer, watcher, FSM mutation, spend, public egress,
+or external action.
+
+The most valuable dependent sequence is:
+
+1. repair evidence-only inventory, disposition, and freshness semantics;
+2. implement `AgenticTrustEvidenceReceiptV1` without a scalar compatibility
+   score;
+3. close exact codecs/semantic digests for opaque run containers;
+4. establish independently held pre-run `M1` and post-run evidence-root and
+   terminal pins;
+5. design an exclusive append-before-send gateway in the existing FSM;
+6. freeze one application-specific admission tuple and threat/observer law;
+7. falsify utility/security checkers on synthetic fixtures;
+8. only then admit a bounded execution capability and neutral static pilot.
+
+In parallel, validate products and opportunities that can fund the R&D loop on
+their own demand, terms, acceptance, and economics. MonDLC is rails, not the
+source of money. Trust evidence cannot substitute for market evidence.
+
+## Scientific and architectural disposition
+
+- Legacy cadence retains execution-history facts under the deployed
+  LLM-surrogate law. Its scientific status is `INCONCLUSIVE`; no efficacy,
+  transfer, `KEEP`, `PAYS`, market, or bound follows.
+- Agentic v2 retains 14 internally consistent ledgers, 4,562 rows, reusable
+  architecture, and tool-description poisoning as a priority hypothesis. Raw
+  adjudication is unidentifiable; no production, LIT, precision, benign-
+  completion, transfer, memory-uplift, or market claim follows.
+- Hardened terminal v3 proves internally consistent custody for a
+  preregistered required-attempt plan. It does not prove chronology, real-world
+  truth, absence of hidden model calls, external custody, complete opaque-byte
+  semantics, or a decision-grade score.
+- Agent behavior and system protection remain separate: a blocked harmful
+  attempt can support `SYSTEM_PROTECTED_AND_USEFUL` but never
+  `AGENT_SAFE_AND_USEFUL`.
+- OpenClaw remains an unratified portability stress case, not a product
+  requirement or a known wrapper boundary.
+
+## Claims correction
+
+The strict v3 publisher was dry-run into a private directory and then invoked
+once against the intended final parent. The two outputs are byte-identical.
+
+Final bundle:
+`claims-v125-correction-publication/claims-v125/`
+
+| Artifact | SHA-256 |
+|---|---|
+| `claims-ledger-v125.jsonl` | `22307948adf0d87d6565b0137c4b37b316883933f3901945ff95a567485d3778` |
+| `wp-c-required-ids-v125.json` | `d06f23e59d394081d54c84d0cf160ca305b5abe1ef0cda588f9b8077c68f136e` |
+| `semantic-diff.json` | `a43c968c456559e64453503d195e2f422652c5aa76b8b49fc24906c044f11b79` |
+| `fold-receipt.json` | `b918a3f3489bc5e9c1b1109f8cf69bcd8c894e977ecdd5b20703b421b1679ff8` |
+
+Validation: 408 rows, 408 required IDs, 100% coverage, four active correction
+claims, 87 active-to-superseded changes, 41 incoming dependency edges, 32 total
+dependent dispositions, seven verified receipt bindings, and 317 unchanged base
+rows. The v124 ledger remains immutable at
+`32d4f941899d24e89ca1867f1e9a478ff86d78aa655d5911d8c662bb4d30b26a`.
+
+The first dry-run attempt failed safely before publication because the local
+filesystem returned a stale empty enumeration through a staging-directory
+descriptor opened before its children. The publisher now reopens the populated
+directory and proves original, refreshed, and named inode identity. Two
+regression tests cover valid rebind and named-directory replacement rejection.
+
+## Verification
+
+- Immutable v2 custody: 39,110 regular files, 506,125,206 bytes, Btrfs
+  read-only, content manifest
+  `dd9da75b1df8aa96449103d96b8102c4c4d7c9ed5f398c9d7aa187411ab1f609`.
+- Hardened suite: 473 passed, 1 deployment-host-only skip.
+- Ten focused source/test files: ruff, format, and compile checks pass.
+- Relevant production source hashes match the frozen evidence audit.
+- Repository-wide ruff retains 71 pre-existing legacy violations; no bulk
+  rewrite was performed.
+- No Council file was changed; no task gate was bypassed.
+- No model/GPU workload, external network target, venue action, submission,
+  spend, treasury change, FSM mutation, or unverified NAS action occurred.
+
+## Energy role
+
+There is no local-resource budget ceiling. Energy cost is economically
+irrelevant to the rolling $20,000/month objective. Energy may support meter
+integrity, thermal/capacity management, placement, and anomaly/regression
+diagnosis, but it cannot affect efficacy, score, claims, candidate or scientific
+allocation, promotion, cost-based admission, scientific information horizon,
+futility/success stopping, `PAYS`, energy-derived quota, or economic payback.
+
+Hardware-safety and availability controls may pause, reschedule, or place work.
+Such interruptions produce `INCOMPLETE` or a typed technical failure, never
+scientific evidence.
+
+## Report package
+
+The source-backed portable report is in
+`AGENTIC-TRUST-RECOVERY-TECHNICAL-REPORT-20260804/`:
+
+| Artifact | SHA-256 |
+|---|---|
+| `artifact.json` | `2086a20e4a7d90b6f318eee34633b90788096adc70668c6bbe0273653a4316c8` |
+| `report.html` | `45d46dbe1933fad23b58c6d681a98d9bb87805910ac22ed5459e8e5d831551d4` |
+| `source-notes.md` | `63971eb40bb421b81d2b656e5f4fd0026560ff6855bb1872e28378cd2ba5522d` |
+
+The portable packager passed schema validation and packaging with 17 blocks,
+one targeted v125-composition chart, and seven tables. Browser rendering could
+not be exercised because no local Chromium headless-shell executable was
+installed; structural HTML verification passed, portable local paths are
+absent, and expected report content is embedded.
+
+## Gut-check boundary
+
+Recovery, correction, and packaging are complete. The next mutation would be a
+new program action: selecting a durable owner and opening the ordinary
+capability-onboarding task for the pure verifier. That should occur only after
+the operator confirms this prioritization and ownership direction.

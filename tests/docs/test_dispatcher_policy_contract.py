@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import jsonschema
+import pytest
 
 from shared.dispatcher_policy import DispatchAction, RouteDecision
 
@@ -44,6 +45,20 @@ def test_dispatcher_policy_route_decision_schema_validates_model_dump() -> None:
     jsonschema.Draft202012Validator(schema).validate(decision.model_dump(mode="json"))
 
     assert schema["title"] == "DispatcherPolicyRouteDecision"
+
+    reserved_leaf = decision.model_dump(mode="json")
+    reserved_leaf["selected_descriptor_leaf"] = (
+        "codex.headless.full#local_compute.agentic_trust_evaluator_surface"
+    )
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(schema).validate(reserved_leaf)
+    with pytest.raises(ValueError, match="cannot be a selected descriptor leaf"):
+        RouteDecision.model_validate(reserved_leaf)
+
+    mismatched_leaf = decision.model_dump(mode="python")
+    mismatched_leaf["selected_descriptor_leaf"] = "claude.headless.full#effort_low"
+    with pytest.raises(ValueError, match="must be bound to route_id"):
+        RouteDecision.model_validate(mismatched_leaf)
 
 
 def test_dispatcher_policy_schema_pins_fail_closed_actions() -> None:
