@@ -103,3 +103,24 @@ def test_observe_status_includes_next_actions(tmp_path: Path, monkeypatch) -> No
     assert status["total_events"] == 0
     assert status["outcome_gate_on_close_enabled_now"] is False
     assert any("HAPAX_OUTCOME_GATE_ON_CLOSE" in a for a in status["next_actions"])
+
+
+def test_outcome_gate_truthy_tokens_match_close_side(monkeypatch) -> None:
+    from shared.sdlc_gate_event_drain import outcome_gate_on_close_enabled
+
+    for token in ("1", "true", "TRUE", "yes", "on"):
+        monkeypatch.setenv("HAPAX_OUTCOME_GATE_ON_CLOSE", token)
+        assert outcome_gate_on_close_enabled() is True
+    for token in ("0", "false", "", "no"):
+        monkeypatch.setenv("HAPAX_OUTCOME_GATE_ON_CLOSE", token)
+        assert outcome_gate_on_close_enabled() is False
+
+
+def test_report_selection_invoked_false(tmp_path: Path) -> None:
+    report = drain_gate_events(
+        gate_log=tmp_path / "empty.jsonl",
+        router_state=tmp_path / "r.json",
+        apply=False,
+    )
+    assert report.selection_invoked is False
+    assert report.as_dict()["dispatch_selection_changed"] is False

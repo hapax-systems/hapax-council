@@ -56,11 +56,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--status",
         action="store_true",
-        help="Include enable-flag + next_actions (implies report-only unless --apply)",
+        help="Include enable-flag + next_actions (report-only path via observe_status)",
     )
     parser.add_argument("--json", action="store_true", help="Machine-readable JSON on stdout")
     args = parser.parse_args(argv)
 
+    # --status always uses observe_status (report-only + next_actions).
+    # --apply ignores --status for write path; as_dict already carries flag truth.
     if args.status and not args.apply:
         payload = observe_status(gate_log=args.gate_log, router_state=args.router_state)
     else:
@@ -70,10 +72,6 @@ def main(argv: list[str] | None = None) -> int:
             apply=args.apply,
         )
         payload = report.as_dict()
-        if args.status:
-            payload["outcome_gate_on_close_enabled_now"] = __import__(
-                "shared.sdlc_gate_event_drain", fromlist=["outcome_gate_on_close_enabled"]
-            ).outcome_gate_on_close_enabled()
 
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))

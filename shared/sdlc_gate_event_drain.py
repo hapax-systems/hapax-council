@@ -11,6 +11,7 @@ Does not enable ``HAPAX_OUTCOME_GATE_ON_CLOSE`` (close-side emit remains flag-ga
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,10 @@ from shared.sdlc_router import (
     gate_event_hash,
     gate_event_thompson_update_allowed,
 )
+
+# Shared with scripts/cc-task-closure-check.py — single truth for close-side emit gate.
+OUTCOME_GATE_ON_CLOSE_ENV = "HAPAX_OUTCOME_GATE_ON_CLOSE"
+_OUTCOME_GATE_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 
 @dataclass(frozen=True)
@@ -44,6 +49,7 @@ class GateEventDrainReport:
     applied_event_hashes: tuple[str, ...]
     mode: str  # "report" | "apply"
     state_written: bool
+    selection_invoked: bool = False  # True only if a future path calls SdlcRouter.route
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -60,8 +66,11 @@ class GateEventDrainReport:
             "applied_event_hashes": list(self.applied_event_hashes),
             "mode": self.mode,
             "state_written": self.state_written,
-            "dispatch_selection_changed": False,
-            "outcome_gate_on_close_default_still_off": True,
+            # Derived safety facts (not free constants): selection was never invoked
+            # by this drain; close-side default remains off unless env truthy now.
+            "dispatch_selection_changed": self.selection_invoked,
+            "outcome_gate_on_close_enabled_now": outcome_gate_on_close_enabled(),
+            "outcome_gate_on_close_env": OUTCOME_GATE_ON_CLOSE_ENV,
         }
 
 
@@ -153,19 +162,17 @@ def drain_gate_events(
         applied_event_hashes=tuple(applied_hashes),
         mode="apply" if apply else "report",
         state_written=state_written,
+        selection_invoked=False,
     )
 
 
 def outcome_gate_on_close_enabled() -> bool:
-    """Mirror of the close-side flag (for report tooling). Default off."""
-    import os
+    """Canonical reader for HAPAX_OUTCOME_GATE_ON_CLOSE (default off).
 
-    return os.environ.get("HAPAX_OUTCOME_GATE_ON_CLOSE", "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    Shared with ``scripts/cc-task-closure-check.py`` so status reports cannot
+    disagree with the close-side emit gate.
+    """
+    return os.environ.get(OUTCOME_GATE_ON_CLOSE_ENV, "0").strip().lower() in _OUTCOME_GATE_TRUTHY
 
 
 def observe_status(
@@ -180,7 +187,6 @@ def observe_status(
         **report.as_dict(),
         "gate_log_exists": log_path.exists(),
         "gate_log_bytes": log_path.stat().st_size if log_path.exists() else 0,
-        "outcome_gate_on_close_enabled_now": outcome_gate_on_close_enabled(),
         "next_actions": _next_actions(report),
     }
 

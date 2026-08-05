@@ -47,8 +47,18 @@ systemctl --user restart <unit>
 **Killswitch:**
 
 ```bash
+# Shell-only enable:
 export HAPAX_OUTCOME_GATE_ON_CLOSE=0
-# or remove the drop-in and daemon-reload
+
+# If a systemd drop-in was used — remove it AND restart the unit (daemon-reload alone is not enough):
+rm -f ~/.config/systemd/user/<unit>.d/outcome-gate-on-close.conf
+systemctl --user daemon-reload
+systemctl --user restart <unit>
+systemctl --user show <unit> -p Environment   # confirm flag absent
+
+# Recheck from tooling:
+uv run python scripts/hapax-sdlc-gate-event-drain --status --json
+# expect outcome_gate_on_close_enabled_now: false
 ```
 
 ## Observe / drain (no selection)
