@@ -4307,10 +4307,12 @@ from shared.sdlc_gate_event_drain import (  # noqa: E402
     outcome_gate_on_close_enabled,
 )
 
-drain_gate_events
-observe_status
-outcome_gate_on_close_enabled
-demand_shape_ref_for_classify
+_ = (
+    drain_gate_events,
+    observe_status,
+    outcome_gate_on_close_enabled,
+    demand_shape_ref_for_classify,
+)
 
 # Additive CCEF/H STEP 2: the dispatch-frontier public API — callers land in the shadow-wire
 # (STEP 9); referenced here so the vulture gate does not flag the as-yet caller-less functions.
