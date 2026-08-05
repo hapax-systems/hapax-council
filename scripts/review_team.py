@@ -77,6 +77,7 @@ from shared.quota_spend_ledger import (  # noqa: E402
     load_quota_spend_ledger_resolved,
     subscription_quota_state_for_route,
 )
+from shared.sdlc_lifecycle import TASK_TERMINAL_STATUSES  # noqa: E402
 
 DEFAULT_REGISTRY_PATH = REPO_ROOT / "config" / "review-lenses" / "registry.yaml"
 LENS_DIR = REPO_ROOT / "config" / "review-lenses"
@@ -1107,8 +1108,23 @@ def find_task_notes(
     *,
     pr_number: int | None = None,
     head_ref: str | None = None,
+    pr_repo: str | None = None,
 ) -> tuple[tuple[Path, dict[str, Any]], ...]:
-    """All cc-task notes linked to a PR: by ``pr`` field first, else by branch."""
+    """All cc-task notes linked to a PR: by ``pr`` field first, else by branch.
+
+    A PR number alone is not a link. Two guards keep unrelated notes out of the
+    matched set, because callers do not merely *report* it — cc-pr-review-dispatch
+    derives the dispatch batch, the assigned lane and ``strongest_team_class`` from
+    it, so a stray match spends real provider capacity and can raise this PR's
+    review floor:
+
+    * terminal-status notes never match. A closed task must not be re-reviewed,
+      and ``TASK_TERMINAL_STATUSES`` is the single source of truth every other
+      status consumer already references (shared/sdlc_lifecycle.py).
+    * when the caller names a repo *and* the note declares ``pr_repo``, they must
+      agree. Notes predating that convention declare no ``pr_repo`` and keep
+      number-only matching, so existing links do not break.
+    """
 
     pr_matches: list[tuple[Path, dict[str, Any]]] = []
     branch_matches: list[tuple[Path, dict[str, Any]]] = []
@@ -1120,11 +1136,15 @@ def find_task_notes(
             fm = _note_frontmatter(path)
             if not fm or fm.get("type") != "cc-task":
                 continue
+            if str(fm.get("status") or "").strip() in TASK_TERMINAL_STATUSES:
+                continue
             try:
                 note_pr = int(fm.get("pr")) if fm.get("pr") is not None else None
             except (TypeError, ValueError):
                 note_pr = None
-            if pr_number is not None and note_pr == pr_number:
+            note_repo = str(fm.get("pr_repo") or "").strip()
+            repo_agrees = not (pr_repo and note_repo) or note_repo == pr_repo
+            if pr_number is not None and note_pr == pr_number and repo_agrees:
                 pr_matches.append((path, fm))
             elif head_ref and str(fm.get("branch") or "") == head_ref:
                 branch_matches.append((path, fm))

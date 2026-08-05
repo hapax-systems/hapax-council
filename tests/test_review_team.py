@@ -3042,3 +3042,67 @@ class TestClassifyFailureReceipt:
         assert rt.is_reviewer_route_unavailable(text, process_failed=True)
         assert rt.is_provider_outage(text, process_failed=True)
         assert rt.classify_failure(text, process_failed=True).code is FailureCode.ROUTE_UNAVAILABLE
+
+
+class TestFindTaskNotesLinkage:
+    """A bare PR number is not a link.
+
+    ``cc-pr-review-dispatch`` does not merely report this match set: it derives
+    the dispatch batch, the assigned lane and ``strongest_team_class`` from it.
+    A stray match therefore spends real provider capacity, writes a dossier onto
+    unrelated work, and can raise the PR's review floor.
+    """
+
+    @staticmethod
+    def _note(root, name, **fm):
+        root.mkdir(parents=True, exist_ok=True)
+        body = {"type": "cc-task", "task_id": name, **fm}
+        (root / f"{name}.md").write_text(
+            "---\n" + yaml.safe_dump(body, sort_keys=False) + "---\n\n# note\n",
+            encoding="utf-8",
+        )
+
+    def test_terminal_status_notes_never_match(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._note(
+            tmp_path / "active",
+            "live-task",
+            status="pr_open",
+            pr=7,
+            pr_repo="hapax-systems/reins",
+        )
+        self._note(tmp_path / "closed", "done-task", status="done", pr=7)
+        found = rt.find_task_notes(tmp_path, pr_number=7, pr_repo="hapax-systems/reins")
+        assert [fm["task_id"] for _, fm in found] == ["live-task"]
+
+    def test_declared_pr_repo_must_agree(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._note(
+            tmp_path / "active",
+            "reins-task",
+            status="pr_open",
+            pr=7,
+            pr_repo="hapax-systems/reins",
+        )
+        self._note(
+            tmp_path / "active",
+            "council-task",
+            status="pr_open",
+            pr=7,
+            pr_repo="hapax-systems/hapax-council",
+        )
+        found = rt.find_task_notes(tmp_path, pr_number=7, pr_repo="hapax-systems/reins")
+        assert [fm["task_id"] for _, fm in found] == ["reins-task"]
+
+    def test_legacy_note_without_pr_repo_still_matches(self, tmp_path: Path) -> None:
+        """Notes predating the pr_repo convention must not break."""
+        rt = _load_review_team_module()
+        self._note(tmp_path / "active", "legacy-task", status="pr_open", pr=7)
+        found = rt.find_task_notes(tmp_path, pr_number=7, pr_repo="hapax-systems/reins")
+        assert [fm["task_id"] for _, fm in found] == ["legacy-task"]
+
+    def test_branch_fallback_still_works(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._note(tmp_path / "active", "branch-task", status="in_progress", branch="feat/x")
+        found = rt.find_task_notes(tmp_path, pr_number=99, head_ref="feat/x")
+        assert [fm["task_id"] for _, fm in found] == ["branch-task"]

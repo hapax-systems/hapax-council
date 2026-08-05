@@ -2590,7 +2590,7 @@ def review_pr(
         }
 
     matches = review_team.find_task_notes(
-        vault_root, pr_number=pr_number, head_ref=pr_info.head_ref
+        vault_root, pr_number=pr_number, head_ref=pr_info.head_ref, pr_repo=repo
     )
     if not matches:
         LOG.warning("PR #%d has no linked cc-task note — cannot review-team it", pr_number)
