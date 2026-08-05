@@ -4266,6 +4266,19 @@ from shared.gate_outcome_producer import (  # noqa: E402
 build_outcome_gate_event
 emit_outcome_gate_event
 
+# DemandShapeRef pure public API (capability onboarding Edge C / PR 4504): pure identity
+# helpers for content-addressed demand acts. Callers land with admission-tuple + reins
+# fingerprint convergence; referenced here so vulture does not flag the pure entrypoints.
+from shared.demand_shape_ref import (  # noqa: E402
+    build_demand_shape_ref_payload,
+    demand_shape_ref,
+    demand_shape_ref_from_parts,
+)
+
+build_demand_shape_ref_payload
+demand_shape_ref
+demand_shape_ref_from_parts
+
 # Additive CCEF/H STEP 2: the dispatch-frontier public API — callers land in the shadow-wire
 # (STEP 9); referenced here so the vulture gate does not flag the as-yet caller-less functions.
 from shared.dispatch_frontier import dominates, non_dominated_set  # noqa: E402
