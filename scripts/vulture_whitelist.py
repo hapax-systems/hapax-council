@@ -4299,6 +4299,17 @@ from shared.capability_onboarding_ledger import (  # noqa: E402
 append_classify_result
 classify_and_ledger
 read_ledger
+
+# N1 world-to-record observe drain
+from shared.sdlc_gate_event_drain import (  # noqa: E402
+    drain_gate_events,
+    observe_status,
+    outcome_gate_on_close_enabled,
+)
+
+drain_gate_events
+observe_status
+outcome_gate_on_close_enabled
 demand_shape_ref_for_classify
 
 # Additive CCEF/H STEP 2: the dispatch-frontier public API — callers land in the shadow-wire
