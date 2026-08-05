@@ -46,6 +46,26 @@ def test_cli_demo_json_no_write(tmp_path: Path, capsys) -> None:
     assert not log.exists()
 
 
+def test_cli_candidates_file_must_be_list(tmp_path: Path, capsys) -> None:
+    bad = tmp_path / "cands.json"
+    bad.write_text('{"not": "a list"}', encoding="utf-8")
+    rc = mod.main(
+        [
+            "--task-id",
+            "cli-bad",
+            "--candidates-file",
+            str(bad),
+            "--no-write",
+            "--router-state",
+            str(tmp_path / "r.json"),
+        ]
+    )
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "JSON list" in err
+    assert "next action" in err
+
+
 def test_cli_writes_log(tmp_path: Path, capsys) -> None:
     log = tmp_path / "sc.jsonl"
     rc = mod.main(

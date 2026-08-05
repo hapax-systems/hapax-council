@@ -83,8 +83,14 @@ def compare_route(
     router_state: Path | str | None = None,
 ) -> ShadowCompareRecord:
     """Run one shadow compare; does not write dispatch state."""
-    state_path = Path(router_state) if router_state is not None else DEFAULT_SDLC_ROUTER_STATE
-    engine = router if router is not None else SdlcRouter.load(state_path)
+    if router is not None:
+        engine = router
+        # Caller-supplied in-memory router — do not claim a filesystem state path.
+        state_path_label = "in_memory"
+    else:
+        state_path = Path(router_state) if router_state is not None else DEFAULT_SDLC_ROUTER_STATE
+        engine = SdlcRouter.load(state_path)
+        state_path_label = str(state_path)
     decision = engine.route(request, candidates)
 
     live = decision.selected_route_id
@@ -116,7 +122,7 @@ def compare_route(
         reason_codes=tuple(decision.reason_codes),
         candidate_scores=scores,
         dispatch_mutated=False,
-        router_state_path=str(state_path),
+        router_state_path=state_path_label,
     )
 
 

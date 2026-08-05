@@ -135,7 +135,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.candidates_file:
         raw = json.loads(Path(args.candidates_file).read_text(encoding="utf-8"))
         if not isinstance(raw, list):
-            print("candidates-file must be a JSON list", file=sys.stderr)
+            print(
+                "candidates-file must be a JSON list of SdlcRouteCandidate objects; "
+                "next action: pass a file like "
+                '[{"route_id":"...","capability_scores":{...},...}] '
+                "or omit --candidates-file to use the built-in demo pair "
+                "(see docs/runbooks/sdlc-router-shadow-compare.md)",
+                file=sys.stderr,
+            )
             return 2
         candidates = tuple(SdlcRouteCandidate.model_validate(item) for item in raw)
     else:

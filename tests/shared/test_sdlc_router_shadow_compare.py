@@ -82,6 +82,7 @@ def test_inactive_class_shadow_disagrees_with_weaker_frontier() -> None:
     assert record.router_would_prefer == "local_tool.local.worker"
     assert record.agree is False
     assert record.dispatch_mutated is False
+    assert record.router_state_path == "in_memory"
 
 
 def test_active_class_route_agrees_with_winner() -> None:
