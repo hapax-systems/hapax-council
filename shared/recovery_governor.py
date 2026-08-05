@@ -22,9 +22,7 @@ from dataclasses import dataclass, replace
 PERMIT, BACKOFF, CLOSED = 0, 75, 2  # compatibility exit codes
 OFF_ENV = "HAPAX_RECOVERY_GOVERNOR_OFF"
 MODE_ENV = "HAPAX_RECOVERY_GOVERNOR_MODE"
-HOLD_REASON = (
-    "hold:missing-valid-authority-grant-admission-decision-exact-execution-lease"
-)
+HOLD_REASON = "hold:missing-valid-authority-grant-admission-decision-exact-execution-lease"
 AUTHORITY_CEILING = "support_non_authoritative"
 
 
@@ -250,14 +248,10 @@ class RecoveryGovernor:
 
         return self.assess(target_id, critical=critical, now=now)
 
-    def permit_batch(
-        self, targets, *, now: float | None = None
-    ) -> list[RecoveryAssessment]:
+    def permit_batch(self, targets, *, now: float | None = None) -> list[RecoveryAssessment]:
         return [self.assess(target, now=now) for target in targets]
 
-    def record_outcome(
-        self, target_id: str, success: bool, *, now: float | None = None
-    ) -> None:
+    def record_outcome(self, target_id: str, success: bool, *, now: float | None = None) -> None:
         """Retired compatibility no-op; outcome persistence requires admission."""
 
         del target_id, success, now
@@ -303,7 +297,9 @@ def main(argv: list[str] | None = None, *, governor: RecoveryGovernor | None = N
         _print_hold()
         return BACKOFF
 
-    print("usage: recovery_governor --state|--stats|--permit|--permit-batch|--record", file=sys.stderr)
+    print(
+        "usage: recovery_governor --state|--stats|--permit|--permit-batch|--record", file=sys.stderr
+    )
     return CLOSED
 
 

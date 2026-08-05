@@ -705,8 +705,7 @@ class Coordinator:
         unbound_refs = [
             entry.path.relative_to(index.vault_root).as_posix()
             for entry in index.unbound_entries
-            if entry.path.relative_to(index.vault_root).as_posix()
-            not in classified_legacy_paths
+            if entry.path.relative_to(index.vault_root).as_posix() not in classified_legacy_paths
         ]
         tasks: list[Task] = []
         parse_refused_refs: list[str] = []
@@ -728,14 +727,10 @@ class Coordinator:
             "disposition": "hold" if hold else "current",
             "reason_code": "task_store_integrity_hold" if hold else None,
             "frontier_ref": f"task-identity-index-frontier@sha256:{index.frontier_hash}",
-            "assessment_ref": (
-                f"task-store-assessment@sha256:{assessment.assessment_hash}"
-            ),
+            "assessment_ref": (f"task-store-assessment@sha256:{assessment.assessment_hash}"),
             "blocking_unbound_refs": list(assessment.blocking_unbound_refs),
             "duplicate_task_ids": duplicate_task_ids,
-            "legacy_snapshots": [
-                snapshot.to_record() for snapshot in assessment.legacy_snapshots
-            ],
+            "legacy_snapshots": [snapshot.to_record() for snapshot in assessment.legacy_snapshots],
             "unbound_refs": unbound_refs,
             "parse_refused_refs": parse_refused_refs,
             "candidate_count": 0 if hold else len(tasks),

@@ -60,9 +60,7 @@ MAX_SOURCE_BYTES = 64 * 1024 * 1024
 MAX_LINE_BYTES = 1024 * 1024
 MAX_ID_LENGTH = 256
 DEFAULT_FRESHNESS_WINDOW_S = 86_400.0
-_ISO_TS_RE = re.compile(
-    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$"
-)
+_ISO_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$")
 
 
 # ── statistics ────────────────────────────────────────────────────────────────
@@ -844,9 +842,7 @@ def _sources(args: argparse.Namespace) -> list[Path]:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Dispatch service-time support fold")
     parser.add_argument("--report", action="store_true", help="print the distribution table")
-    parser.add_argument(
-        "--recompute", action="store_true", help="recompute the support-only cache"
-    )
+    parser.add_argument("--recompute", action="store_true", help="recompute the support-only cache")
     parser.add_argument(
         "--tau", action="store_true", help="print diagnostic tau candidate for --lineage"
     )

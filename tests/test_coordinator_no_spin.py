@@ -38,9 +38,7 @@ def make_ledger(**kwargs: object) -> tuple[DispatchRefusalLedger, EscalationReco
         ("validation failed", False),
     ],
 )
-def test_reason_classification_is_diagnostic_only(
-    reason: str, expected: bool
-) -> None:
+def test_reason_classification_is_diagnostic_only(reason: str, expected: bool) -> None:
     assert is_transient_reason(reason) is expected
 
 
@@ -145,9 +143,7 @@ def test_clear_is_bounded_to_named_task() -> None:
         (("task-a", "cx-alpha", ""), "reason"),
     ],
 )
-def test_invalid_identity_is_rejected(
-    args: tuple[str, str, str], reason: str
-) -> None:
+def test_invalid_identity_is_rejected(args: tuple[str, str, str], reason: str) -> None:
     ledger, _ = make_ledger()
     with pytest.raises(ValueError, match=f"dispatch_refusal_{reason}_invalid"):
         ledger.record_refusal(*args, now=1.0)

@@ -36,7 +36,11 @@ def test_import_has_no_runtime_bootstrap_or_legacy_actuator_call() -> None:
         and isinstance(node.func, ast.Attribute)
         and (
             (isinstance(node.func.value, ast.Name) and node.func.value.id == "subprocess")
-            or (isinstance(node.func.value, ast.Name) and node.func.value.id == "os" and node.func.attr == "execvpe")
+            or (
+                isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "os"
+                and node.func.attr == "execvpe"
+            )
             or node.func.attr
             in {"unlink", "launch", "consume", "mkdir", "open", "write_text", "write_bytes"}
         )

@@ -223,9 +223,7 @@ class TestInSessionReassert:
 
 
 class TestStaleClaimSweeperRetirement:
-    def test_sweep_holds_before_changing_any_claim_or_task_byte(
-        self, tmp_path: Path
-    ) -> None:
+    def test_sweep_holds_before_changing_any_claim_or_task_byte(self, tmp_path: Path) -> None:
         mod = _load_dispatch()
         claims = tmp_path / "claims"
         active = tmp_path / "active"

@@ -389,8 +389,7 @@ def rename_task_store_no_replace(
     """Publish one descriptor-anchored Linux directory entry without replacement."""
 
     if any(
-        not name or name in {".", ".."} or "/" in name
-        for name in (source_name, destination_name)
+        not name or name in {".", ".."} or "/" in name for name in (source_name, destination_name)
     ):
         raise TaskStoreError(
             "task_store_rename_name_unsafe",

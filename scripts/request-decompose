@@ -41,6 +41,10 @@ from agents.request_decomposer.writer import (
     inspect_decomposition_journals,
     write_decomposition,
 )
+from shared.execution_admission import (
+    ExecutionAdmissionError,
+    require_protected_action,
+)
 from shared.frontmatter import parse_frontmatter
 from shared.sdlc_task_store import (
     TaskIdentityIndex,
@@ -285,6 +289,8 @@ def _unassociated_invalid_journals() -> tuple[DecompositionJournalInspection, ..
 
 
 def _persist_decomposition_hold(payload: dict[str, Any], *, dry_run: bool) -> str:
+    if not dry_run:
+        require_protected_action("support-receipt.publish")
     unsigned = yaml.safe_dump(payload, sort_keys=False, allow_unicode=False).encode("utf-8")
     hold_id = hashlib.sha256(unsigned).hexdigest()
     payload["hold_id"] = hold_id
@@ -850,6 +856,7 @@ def _limit_scan_requests(requests: list[Path], limit: int | None) -> list[Path]:
 
 def _decompose_with_llm(request_data: dict) -> RequestDecomposition | None:
     """Call LLM to decompose. Returns None on failure (fail-closed)."""
+    require_protected_action("provider.invoke")
     try:
         from shared.config import LITELLM_KEY, MODELS
 
@@ -1355,5 +1362,13 @@ def main() -> int:
     return 1
 
 
+def _cli_main() -> int:
+    try:
+        return main()
+    except ExecutionAdmissionError as exc:
+        _log.error("Request decomposition HOLD: %s", exc)
+        return 1
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(_cli_main())

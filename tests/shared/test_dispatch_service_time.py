@@ -233,7 +233,9 @@ def test_query_time_must_be_finite_and_nonnegative(tmp_path: Path, now: object) 
 def test_window_must_be_finite_and_positive(tmp_path: Path, window: object) -> None:
     with pytest.raises(ValueError, match="service_time_window_invalid"):
         load_service_time_distribution(
-            [tmp_path / "absent"], now=_NOW, window_s=window  # type: ignore[arg-type]
+            [tmp_path / "absent"],
+            now=_NOW,
+            window_s=window,  # type: ignore[arg-type]
         )
 
 

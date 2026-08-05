@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import hashlib
 import importlib.util
 import json
@@ -28,6 +29,7 @@ from agents.request_decomposer.writer import (
     request_admission_sha256,
     write_decomposition,
 )
+from shared.execution_admission import ExecutionAdmissionError
 from shared.frontmatter import parse_frontmatter
 from shared.route_metadata_schema import RouteMetadataStatus, assess_route_metadata
 from shared.sdlc_task_store import TaskStoreError
@@ -46,6 +48,19 @@ def _load_request_decompose_module() -> ModuleType:
     sys.modules["request_decompose_script"] = module
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture
+def test_effect_executor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise writer mechanics without weakening the production default-HOLD."""
+
+    script = _load_request_decompose_module()
+
+    def allow(_operation: str) -> None:
+        return None
+
+    monkeypatch.setattr(decomposition_writer, "require_protected_action", allow)
+    monkeypatch.setattr(script, "require_protected_action", allow)
 
 
 def _requirement_vector(**overrides: int) -> dict[str, int]:
@@ -692,6 +707,230 @@ class TestRequestDecomposition:
             )
 
 
+class TestGate0ARequestDecompositionNoEscape:
+    @staticmethod
+    def _legacy_decomposition(tmp_path: Path) -> tuple[RequestDecomposition, Path]:
+        request = tmp_path / "REQ-gate0a.md"
+        request.write_text(
+            """---
+type: hapax-request
+request_id: REQ-gate0a
+status: accepted_for_planning
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+        request_bytes = request.read_bytes()
+        return (
+            RequestDecomposition(
+                request_id="REQ-gate0a",
+                request_path=str(request),
+                request_source_sha256=hashlib.sha256(request_bytes).hexdigest(),
+                tasks=[
+                    TaskSpec(
+                        task_id="gate0a-task",
+                        title="Gate0A task",
+                        parent_request=request.name,
+                        authority_case="CASE-GATE0A",
+                        acceptance_criteria=["Held without effects"],
+                    )
+                ],
+            ),
+            request,
+        )
+
+    @staticmethod
+    def _tree_snapshot(
+        root: Path,
+    ) -> dict[str, tuple[int, int, int, int, int, str | None]]:
+        snapshot: dict[str, tuple[int, int, int, int, int, str | None]] = {}
+        for path in sorted(root.rglob("*"), key=lambda item: str(item.relative_to(root))):
+            metadata = path.lstat()
+            digest = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+            snapshot[str(path.relative_to(root))] = (
+                metadata.st_mode,
+                metadata.st_ino,
+                metadata.st_mtime_ns,
+                metadata.st_size,
+                metadata.st_nlink,
+                digest,
+            )
+        return snapshot
+
+    def test_provider_invocation_holds_before_import_or_call(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        script = _load_request_decompose_module()
+        calls: list[dict[str, object]] = []
+        imports: list[str] = []
+        real_import = builtins.__import__
+
+        def guarded_import(
+            name: str,
+            globals: dict[str, object] | None = None,
+            locals: dict[str, object] | None = None,
+            fromlist: tuple[str, ...] = (),
+            level: int = 0,
+        ) -> object:
+            if name in {"shared.config", "litellm"}:
+                imports.append(name)
+                raise AssertionError("provider dependencies must not be imported")
+            return real_import(name, globals, locals, fromlist, level)
+
+        def completion(**kwargs: object) -> None:
+            calls.append(kwargs)
+            raise AssertionError("provider must not be called")
+
+        monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(completion=completion))
+        monkeypatch.setattr(builtins, "__import__", guarded_import)
+        request_data = {
+            "path": str(tmp_path / "REQ-gate0a.md"),
+            "filename": "REQ-gate0a.md",
+            "frontmatter": {
+                "status": "accepted_for_planning",
+                "authority_level": "authoritative",
+                "planning_case": "CASE-GATE0A",
+                "parent_spec": "/specs/gate0a.md",
+                "cctv_intake_receipt": "receipt://REQ-gate0a",
+                "cctv_intake_verdict": "ready_to_plan",
+                "cctv_route_resource_admission": "admitted",
+                "cctv_capability_receipts": ["cctv-capability-admission:REQ-gate0a"],
+                "provider_spend_authorized": True,
+            },
+            "body": "# Request\n",
+        }
+
+        with pytest.raises(ExecutionAdmissionError) as raised:
+            script._decompose_with_llm(request_data)
+
+        assert raised.value.reason_code == "execution_admission_prerequisites_unavailable"
+        assert raised.value.detail == "provider.invoke"
+        assert (
+            raised.value.repair_action
+            == "resolve one exact ProtectedActionRequest and invoke through the executor pipeline"
+        )
+        assert calls == []
+        assert imports == []
+
+    def test_hold_publication_holds_before_payload_or_filesystem_mutation(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        script = _load_request_decompose_module()
+        task_root = tmp_path / "tasks"
+        payload = {
+            "schema": "hapax.request-decomposition-hold.v1",
+            "reason_codes": ["gate0a-test"],
+        }
+        before = dict(payload)
+        monkeypatch.setattr(script, "TASKS_DIR", task_root)
+
+        with pytest.raises(ExecutionAdmissionError) as raised:
+            script._persist_decomposition_hold(payload, dry_run=False)
+
+        assert raised.value.reason_code == "execution_admission_prerequisites_unavailable"
+        assert raised.value.detail == "support-receipt.publish"
+        assert payload == before
+        assert not task_root.exists()
+
+    def test_non_dry_writer_holds_before_task_root_or_request_mutation(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        decomposition, request = self._legacy_decomposition(tmp_path)
+        task_root = tmp_path / "tasks"
+        request_before = request.read_bytes()
+
+        with pytest.raises(ExecutionAdmissionError) as raised:
+            write_decomposition(decomposition, task_root)
+
+        assert raised.value.reason_code == "execution_admission_prerequisites_unavailable"
+        assert raised.value.detail == "task-graph.publish"
+        assert request.read_bytes() == request_before
+        assert not task_root.exists()
+
+    def test_writer_dry_run_remains_provider_free_and_zero_write(self, tmp_path: Path) -> None:
+        decomposition, request = self._legacy_decomposition(tmp_path)
+        task_root = tmp_path / "tasks"
+        request_before = request.read_bytes()
+
+        paths = write_decomposition(decomposition, task_root, dry_run=True)
+
+        assert paths == [task_root / "active" / "gate0a-task.md"]
+        assert request.read_bytes() == request_before
+        assert not task_root.exists()
+
+    def test_prepared_journal_recovery_holds_before_lock_or_mutation(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        decomposition, request = self._legacy_decomposition(tmp_path)
+        task_root = tmp_path / "tasks"
+        request_before = request.read_bytes()
+
+        with monkeypatch.context() as setup:
+            setup.setattr(
+                decomposition_writer,
+                "require_protected_action",
+                lambda _operation: None,
+            )
+            [task_path] = write_decomposition(decomposition, task_root)
+
+        task_fields, _body = parse_frontmatter(task_path)
+        receipt_path = Path(task_fields["decomposition_commit_receipt"])
+        task_path.unlink()
+        receipt_path.unlink()
+        transaction_root = task_root / ".request-decompose-transactions"
+        assert len(list(transaction_root.iterdir())) == 1
+        before = self._tree_snapshot(task_root)
+
+        with pytest.raises(ExecutionAdmissionError) as raised:
+            write_decomposition(decomposition, task_root)
+
+        assert raised.value.reason_code == "execution_admission_prerequisites_unavailable"
+        assert raised.value.detail == "task-graph.publish"
+        assert request.read_bytes() == request_before
+        assert not task_path.exists()
+        assert not receipt_path.exists()
+        assert self._tree_snapshot(task_root) == before
+
+    def test_cli_boundary_catches_only_typed_execution_refusal(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        script = _load_request_decompose_module()
+        refusal = ExecutionAdmissionError(
+            "execution_admission_prerequisites_unavailable",
+            "resolve the executor pipeline",
+            "task-graph.publish",
+        )
+
+        def raise_refusal() -> int:
+            raise refusal
+
+        monkeypatch.setattr(script, "main", raise_refusal)
+        with caplog.at_level(logging.ERROR):
+            assert script._cli_main() == 1
+        assert refusal.reason_code in caplog.text
+        assert refusal.repair_action in caplog.text
+        assert refusal.detail in caplog.text
+
+        def raise_programming_error() -> int:
+            raise ValueError("not an execution refusal")
+
+        monkeypatch.setattr(script, "main", raise_programming_error)
+        with pytest.raises(ValueError, match="not an execution refusal"):
+            script._cli_main()
+
+
+@pytest.mark.usefixtures("test_effect_executor")
 class TestPrecomputedDecompositionPlan:
     def _fixture(
         self,
@@ -1111,9 +1350,7 @@ custom_field: preserve-exactly
         assert swapped is True
         assert list(outside.iterdir()) == []
         published = [
-            path
-            for path in displaced.iterdir()
-            if re.fullmatch(r"[0-9a-f]{64}", path.name)
+            path for path in displaced.iterdir() if re.fullmatch(r"[0-9a-f]{64}", path.name)
         ]
         assert len(published) == 1
         assert (published[0] / "manifest.yaml").is_file()
@@ -1998,6 +2235,7 @@ provider_spend_authorized: true
             RequestDecompositionPlan.model_validate(payload)
 
 
+@pytest.mark.usefixtures("test_effect_executor")
 class TestWriter:
     def _make_decomp(self) -> RequestDecomposition:
         return RequestDecomposition(
@@ -2412,6 +2650,7 @@ status: accepted_for_planning
             assert request.read_text(encoding="utf-8") == original
 
 
+@pytest.mark.usefixtures("test_effect_executor")
 class TestRequestDecomposeScan:
     def _admitted_cctv_frontmatter(self, receipt: str = "receipt://REQ-test") -> dict[str, object]:
         return {

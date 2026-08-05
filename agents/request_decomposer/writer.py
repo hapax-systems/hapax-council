@@ -25,6 +25,7 @@ from agents.request_decomposer.models import (
     RequestDecompositionPlan,
     TaskSpec,
 )
+from shared.execution_admission import require_protected_action
 from shared.frontmatter import parse_frontmatter
 from shared.sdlc_task_store import (
     TaskIdentityWriteGuard,
@@ -134,6 +135,7 @@ class _TaskRootAnchor:
                 raise FileExistsError("task root identity changed during decomposition commit")
         finally:
             os.close(current)
+
 
 def _utc_now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1495,13 +1497,9 @@ def _install_no_replace(stage: Path, final: Path, expected_hash: str) -> None:
                     try:
                         raced = _read_named_file(parent_fd, final.name)
                     except (OSError, ValueError) as exc:
-                        raise FileExistsError(
-                            f"refusing to overwrite raced path {final}"
-                        ) from exc
+                        raise FileExistsError(f"refusing to overwrite raced path {final}") from exc
                     if _sha256_bytes(raced) != expected_hash:
-                        raise FileExistsError(
-                            f"refusing to overwrite raced path {final}"
-                        ) from None
+                        raise FileExistsError(f"refusing to overwrite raced path {final}") from None
                 os.fsync(parent_fd)
                 _assert_path_directory_identity(final.parent, parent_fd)
                 _assert_path_directory_identity(stage.parent, stage_parent_fd)
@@ -1731,6 +1729,8 @@ def write_decomposition(
     The receipt is a module-local recoverable last marker. System-wide atomic
     publication remains held for the single-committer generation fence.
     """
+    if not dry_run:
+        require_protected_action("task-graph.publish")
     if isinstance(decomposition, RequestDecompositionPlan):
         if dry_run:
             existing = _inspect_or_recover_planned_commit(

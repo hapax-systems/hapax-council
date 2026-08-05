@@ -19,6 +19,7 @@ from shared.execution_admission import (
     APPLIED_CLAIM_OWNERSHIP_SCHEMA,
     CLAIM_PUBLICATION_COMPLETION_EVIDENCE_SCHEMA,
     EXECUTION_ADMISSION_SCHEMA,
+    EXECUTION_LEASE_SCHEMA,
     OUTCOME_PIPELINE_READINESS_QUERY_SCHEMA,
     OUTCOME_RECEIPT_SCHEMA,
     VALID_AUTHORITY_GRANT_SCHEMA,
@@ -646,19 +647,85 @@ def _active_admission_fixture(
         issuer_receipt=issuer_receipt,
         queried_at=now + timedelta(minutes=1),
     )
-    lease = mint_execution_lease(
-        admission,
-        action,
-        grant,
-        basis,
-        target,
-        bound_call,
-        effect_manifest,
-        descriptor,
-        registry,
-        issuer_receipt=issuer_receipt,
-        now=now + timedelta(minutes=1),
-        trust_resolver=_trusted_resolver(issuer_query, valid_until),
+    issuer_resolver = _trusted_resolver(issuer_query, valid_until)
+    with pytest.raises(
+        ExecutionAdmissionError,
+        match="independent_execution_lease_issuer_unavailable",
+    ):
+        mint_execution_lease(
+            admission,
+            action,
+            grant,
+            basis,
+            target,
+            bound_call,
+            effect_manifest,
+            descriptor,
+            registry,
+            issuer_receipt=issuer_receipt,
+            now=now + timedelta(minutes=1),
+            trust_resolver=issuer_resolver,
+        )
+    issuer_envelope = issuer_resolver.require_trusted(issuer_query)
+    assert effect_manifest.reconciliation_contract is not None
+    lease_body: dict[str, object] = {
+        "schema": EXECUTION_LEASE_SCHEMA,
+        "admission": ContentAddress(
+            ref=admission.admission_ref,
+            sha256=admission.admission_hash,
+        ).model_dump(mode="json"),
+        "authority_grant": grant_address.model_dump(mode="json"),
+        "claim_basis": basis.model_dump(mode="json", by_alias=True),
+        "claim_coordinates": coordinates.model_dump(mode="json", by_alias=True),
+        "bound_call": bound_call.model_dump(mode="json", by_alias=True),
+        "task_ref": basis.task_ref,
+        "lane": basis.lane,
+        "session_ref": basis.session_ref,
+        "claim_epoch": basis.claim_epoch,
+        "capability_role": action.capability_role,
+        "selected_descriptor_leaf": admission.selected_descriptor_leaf,
+        "execution_target": target_address.model_dump(mode="json"),
+        "runtime_identity": target.runtime_identity.model_dump(mode="json"),
+        "active_generation_roots": tuple(
+            item.model_dump(mode="json") for item in target.active_generation_roots
+        ),
+        "invocation_id": bound_call.invocation_id,
+        "idempotency_key": admission.idempotency_key,
+        "attempt_fence": bound_call.attempt_fence,
+        "effect_manifest": manifest_address.model_dump(mode="json"),
+        "executor_descriptor": descriptor_address.model_dump(mode="json"),
+        "executor_registry_projection": registry_address.model_dump(mode="json"),
+        "executor": descriptor.executor.model_dump(mode="json"),
+        "issuer_receipt": issuer_receipt.model_dump(mode="json"),
+        "issuer_trust_query": issuer_query.model_dump(mode="json", by_alias=True),
+        "issuer_trust_envelope": issuer_envelope.model_dump(mode="json", by_alias=True),
+        "observation_contract": effect_manifest.observation_contract.model_dump(mode="json"),
+        "completion_predicate": effect_manifest.completion_predicate.model_dump(mode="json"),
+        "idempotence_class": effect_manifest.idempotence_class,
+        "reconciliation_contract": effect_manifest.reconciliation_contract.model_dump(mode="json"),
+        "compensation": None,
+        "issued_at": issuer_query.queried_at,
+        "not_before": issuer_query.queried_at,
+        "expires_at": min(
+            admission.valid_until,
+            grant.valid_until,
+            target.stale_after,
+            registry.stale_after,
+            issuer_envelope.stale_after,
+        ),
+        "supersession_frontier_ref": admission.supersession_frontier_ref,
+        "supersedes_refs": (),
+        "authorizes_machine_adapter": True,
+        "authorizes_operator": False,
+        "may_mint_sovereign_act": False,
+    }
+    lease_hash = _domain_hash(EXECUTION_LEASE_SCHEMA, lease_body)
+    lease = ExecutionLease.model_validate(
+        {
+            **lease_body,
+            "lease_ref": f"execution-lease@sha256:{lease_hash}",
+            "lease_hash": lease_hash,
+        }
     )
 
     proof_root = tmp_path / "admission-proofs"
@@ -1083,9 +1150,7 @@ def test_actual_outcome_receipt_matches_context_observability_protocol(
         exclude={"receipt_ref", "receipt_hash"},
     )
     expected_hash = hashlib.sha256(
-        OUTCOME_RECEIPT_SCHEMA.encode("ascii")
-        + b"\0"
-        + canonical_json_bytes(body)
+        OUTCOME_RECEIPT_SCHEMA.encode("ascii") + b"\0" + canonical_json_bytes(body)
     ).hexdigest()
 
     validated = context_contract._validated_committed_outcome_receipt(receipt)
@@ -1100,9 +1165,7 @@ def test_actual_outcome_receipt_matches_context_observability_protocol(
     assert actual.append_receipt.ref == (
         f"event-append-receipt@sha256:{actual.append_receipt.sha256}"
     )
-    assert actual.event_frontier.ref.endswith(
-        f"@sha256:{actual.event_frontier.sha256}"
-    )
+    assert actual.event_frontier.ref.endswith(f"@sha256:{actual.event_frontier.sha256}")
 
 
 def _inspect_without_effect(
@@ -1504,9 +1567,7 @@ def test_task_evolution_changes_current_position_not_publication_completion(
         for item in ownership.publication_completion_evidence.artifacts
         if item.kind == "task_note"
     )
-    assert task_artifact.content_sha256 == hashlib.sha256(
-        fixture.intent.note_after
-    ).hexdigest()
+    assert task_artifact.content_sha256 == hashlib.sha256(fixture.intent.note_after).hexdigest()
 
     published.current_task.path.write_bytes(
         published.current_task.content + b"\noperator progress note\n"
@@ -1587,9 +1648,7 @@ def test_rehashed_completion_rejects_false_intrinsic_postimage(
         CLAIM_PUBLICATION_COMPLETION_EVIDENCE_SCHEMA,
         completion_body,
     )
-    completion["evidence_ref"] = (
-        f"claim-publication-completion-evidence@sha256:{completion_hash}"
-    )
+    completion["evidence_ref"] = f"claim-publication-completion-evidence@sha256:{completion_hash}"
     completion["evidence_hash"] = completion_hash
     proof_body = {
         key: value for key, value in proof.items() if key not in {"proof_ref", "proof_hash"}

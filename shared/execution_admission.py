@@ -2759,7 +2759,7 @@ def validate_authority(
         supersession_frontier_ref=evidence.supersession_frontier_ref,
         queried_at=checked_at,
     )
-    reasons: list[str] = []
+    reasons: list[str] = ["independent_authority_root_unavailable"]
     trust_envelope: ExecutionTrustEnvelope | None = None
     try:
         trust_envelope = _seal_execution_trust_resolver(trust_resolver).evaluate(trust_query)
@@ -2800,51 +2800,14 @@ def validate_authority(
         reasons.append("authority_evidence_flags_insufficient")
     if any(not position_flags.get(name, False) for name in intent.required_authorization_flags):
         reasons.append("authority_position_flags_insufficient")
-    if reasons:
-        return _authority_hold(
-            intent,
-            evidence,
-            position,
-            trust_query=trust_query,
-            trust_envelope=trust_envelope,
-            checked_at=checked_at,
-            reason_codes=reasons,
-        )
-    if trust_envelope is None:
-        raise AssertionError("trusted authority validation requires an envelope")
-
-    body: dict[str, object] = {
-        "schema": VALID_AUTHORITY_GRANT_SCHEMA,
-        "intent_ref": intent.intent_ref,
-        "intent_hash": intent.intent_hash,
-        "evidence_ref": evidence.evidence_ref,
-        "evidence_hash": evidence.evidence_hash,
-        "authority_source": evidence.authority_source,
-        "authenticated_receipt": evidence.authenticated_receipt,
-        "authority_issuer": evidence.issuer,
-        "acting_subject": intent.acting_subject,
-        "authority_trust_query": trust_query.model_dump(mode="json", by_alias=True),
-        "authority_trust_envelope": trust_envelope.model_dump(mode="json", by_alias=True),
-        "position_ref": position.position_ref,
-        "position_hash": position.position_hash,
-        "task_ref": position.task_ref,
-        "authority_case": position.authority_case,
-        "authority_ceiling": evidence.authority_ceiling,
-        "action_class": intent.action_class,
-        "operation": intent.operation,
-        "authorized_flags": intent.required_authorization_flags,
-        "scope_refs": intent.requested_scope_refs,
-        "issued_at": checked_at,
-        "valid_until": min(evidence.valid_until, trust_envelope.stale_after),
-        "supersession_frontier_ref": evidence.supersession_frontier_ref,
-        "validation_method_ref": _nonblank(validation_method_ref),
-        "authorizes_machine_admission": True,
-        "authorizes_operator": False,
-        "may_mint_sovereign_act": False,
-    }
-    digest = _self_hash(VALID_AUTHORITY_GRANT_SCHEMA, body)
-    return ValidAuthorityGrant.model_validate(
-        {**body, "grant_ref": f"authority-grant@sha256:{digest}", "grant_hash": digest}
+    return _authority_hold(
+        intent,
+        evidence,
+        position,
+        trust_query=trust_query,
+        trust_envelope=trust_envelope,
+        checked_at=checked_at,
+        reason_codes=reasons,
     )
 
 
@@ -3438,8 +3401,7 @@ class ClaimPublicationCompletionEvidence(_FrozenModel):
             or any(self.artifacts[index].content_sha256 != claim_hash for index in (3, 6))
             or any(self.artifacts[index].content_sha256 != epoch_hash for index in (4, 7))
             or any(
-                self.artifacts[index].content_sha256
-                != self.dispatch_binding_postimage_sha256
+                self.artifacts[index].content_sha256 != self.dispatch_binding_postimage_sha256
                 for index in (5, 8)
             )
         ):
@@ -4901,6 +4863,7 @@ def admit_execution(
     if isinstance(authority, AuthorityHold):
         reasons.extend(f"authority:{reason}" for reason in authority.reason_codes)
     else:
+        reasons.append("authority:independent_authority_root_unavailable")
         if (
             authority.intent_ref != intent.intent_ref
             or authority.intent_hash != intent.intent_hash
@@ -5097,6 +5060,9 @@ def admit_execution(
         quota_reservation=quota_reservation,
         execution_target=execution_target,
     )
+    if reasons:
+        values["authority_grant"] = None
+        values["authorized_flags"] = ()
     horizons = [
         frame.stale_after,
         trace.stale_after,
@@ -7986,9 +7952,7 @@ class OutcomeReplayCatalogSnapshot(_FrozenModel):
         )
         if validity_keys != tuple(sorted(set(validity_keys))):
             raise ValueError("outcome validity envelopes must be sorted and interval-unique")
-        subjects = {
-            (item.snapshot_ref, item.snapshot_hash) for item in self.projections
-        }
+        subjects = {(item.snapshot_ref, item.snapshot_hash) for item in self.projections}
         projection_by_subject = {
             (item.snapshot_ref, item.snapshot_hash): item for item in self.projections
         }
@@ -8010,11 +7974,9 @@ class OutcomeReplayCatalogSnapshot(_FrozenModel):
             raise ValueError("outcome validity cannot predate its outcome commit")
         for index, first in enumerate(self.validity_envelopes):
             for second in self.validity_envelopes[index + 1 :]:
-                if (
-                    first.subject_projection == second.subject_projection
-                    and max(first.checked_at, second.checked_at)
-                    < min(first.stale_after, second.stale_after)
-                ):
+                if first.subject_projection == second.subject_projection and max(
+                    first.checked_at, second.checked_at
+                ) < min(first.stale_after, second.stale_after):
                     raise ValueError("outcome validity intervals must not overlap")
         if any(item.checked_at > self.observed_at for item in self.validity_envelopes):
             raise ValueError("catalog observation cannot predate frontier validation")
@@ -8131,9 +8093,8 @@ class OutcomeReplayResult(_FrozenModel):
             ref=self.projection.snapshot_ref,
             sha256=self.projection.snapshot_hash,
         )
-        if (
-            self.validity.subject_projection != subject
-            or not (self.validity.checked_at <= self.queried_at < self.validity.stale_after)
+        if self.validity.subject_projection != subject or not (
+            self.validity.checked_at <= self.queried_at < self.validity.stale_after
         ):
             raise ValueError("outcome replay result is outside its exact validity interval")
         expected_roots = outcome_projection_validity_roots(
@@ -8256,9 +8217,7 @@ class OutcomeCommitter:
                 "query at or after the catalog observation time",
                 query_time,
             )
-        return ContentAddress.model_validate(
-            snapshot.checked_frontier.model_dump(mode="json")
-        )
+        return ContentAddress.model_validate(snapshot.checked_frontier.model_dump(mode="json"))
 
     def replay(
         self,
@@ -8398,14 +8357,12 @@ class OutcomeCommitter:
     ) -> OutcomeReceipt:
         """Gate-0A HOLD: outcome append requires activated universal dispatch."""
 
-        del (
-            lease,
-            observation,
-            evaluation,
-            readiness,
-            completion_evaluator,
-            readiness_resolver,
-        )
+        del lease
+        del observation
+        del evaluation
+        del readiness
+        del completion_evaluator
+        del readiness_resolver
         raise ExecutionAdmissionError(
             "execution_composition_activation_unvalidated",
             "commit through a Gate-0B activated universal executor",
@@ -9001,278 +8958,9 @@ def mint_execution_lease(
 ) -> ExecutionLease:
     """Issue one lease for either prospective claim publication or applied ownership."""
 
-    issued_at = _canonical_timestamp(now)
-    try:
-        admission = ExecutionAdmission.model_validate(
-            admission.model_dump(mode="json", by_alias=True)
-        )
-        intent = ActionIntent.model_validate(intent.model_dump(mode="json", by_alias=True))
-        grant = ValidAuthorityGrant.model_validate(grant.model_dump(mode="json", by_alias=True))
-        if isinstance(claim_basis, ProspectiveClaimPublicationBasis):
-            claim_basis = ProspectiveClaimPublicationBasis.model_validate(
-                claim_basis.model_dump(mode="json", by_alias=True)
-            )
-        elif isinstance(claim_basis, AppliedClaimOwnershipProof):
-            claim_basis = AppliedClaimOwnershipProof.model_validate(
-                claim_basis.model_dump(mode="json", by_alias=True)
-            )
-        else:
-            raise TypeError("unsupported claim basis")
-        target = ExecutionTargetEvidence.model_validate(
-            target.model_dump(mode="json", by_alias=True)
-        )
-        bound_call = BoundExecutionCall.model_validate(
-            bound_call.model_dump(mode="json", by_alias=True)
-        )
-        effect_manifest = EffectManifest.model_validate(
-            effect_manifest.model_dump(mode="json", by_alias=True)
-        )
-        executor_descriptor = ExecutorDescriptor.model_validate(
-            executor_descriptor.model_dump(mode="json", by_alias=True)
-        )
-        executor_registry_projection = ExecutorRegistryProjection.model_validate(
-            executor_registry_projection.model_dump(mode="json", by_alias=True)
-        )
-    except Exception as exc:
-        raise ExecutionAdmissionError(
-            "execution_lease_input_malformed",
-            "restore the exact self-validating admission, intent, grant, claim, and target",
-            type(exc).__name__,
-        ) from exc
-    if admission.decision != "admit" or not admission.lease_eligible:
-        raise ExecutionAdmissionError(
-            "execution_admission_not_lease_eligible",
-            "repair and reissue an admitted decision before minting a lease",
-            admission.admission_ref,
-        )
-    expected_admission = ContentAddress(
-        ref=admission.admission_ref, sha256=admission.admission_hash
-    )
-    expected_grant = ContentAddress(ref=grant.grant_ref, sha256=grant.grant_hash)
-    expected_target = ContentAddress(ref=target.target_ref, sha256=target.target_hash)
-    expected_manifest = ContentAddress(
-        ref=effect_manifest.manifest_ref,
-        sha256=effect_manifest.manifest_hash,
-    )
-    expected_descriptor = ContentAddress(
-        ref=executor_descriptor.descriptor_ref,
-        sha256=executor_descriptor.descriptor_hash,
-    )
-    expected_registry = ContentAddress(
-        ref=executor_registry_projection.projection_ref,
-        sha256=executor_registry_projection.projection_hash,
-    )
-    if isinstance(claim_basis, ProspectiveClaimPublicationBasis):
-        basis_address = ContentAddress(
-            ref=claim_basis.basis_ref,
-            sha256=claim_basis.basis_hash,
-        )
-        prospective = True
-    else:
-        basis_address = ContentAddress(
-            ref=claim_basis.proof_ref,
-            sha256=claim_basis.proof_hash,
-        )
-        prospective = False
-    mismatches: list[str] = []
-    if admission.intent != ContentAddress(ref=intent.intent_ref, sha256=intent.intent_hash):
-        mismatches.append("intent")
-    if admission.authority_grant != expected_grant:
-        mismatches.append("authority_grant")
-    if grant.acting_subject != intent.acting_subject:
-        mismatches.append("authority_subject")
-    if (
-        admission.task_ref != claim_basis.task_ref
-        or admission.lane != claim_basis.lane
-        or admission.session_ref != claim_basis.session_ref
-        or admission.authority_case != claim_basis.authority_case
-    ):
-        mismatches.append("claim_identity")
-    if admission.claim_publication_intent != claim_basis.claim_publication_intent:
-        mismatches.append("claim_publication_intent")
-    if admission.dispatch_message_id != claim_basis.dispatch_message_id:
-        mismatches.append("dispatch_root")
-    if prospective:
-        if (
-            not isinstance(claim_basis, ProspectiveClaimPublicationBasis)
-            or bound_call.claim_coordinates.state != "prospective"
-            or intent.operation != "claim.publish"
-            or intent.action_class != "claim_publication"
-            or admission.idempotency_key != claim_basis.coord_dispatch_idempotency_key
-        ):
-            mismatches.append("prospective_claim_publication")
-    else:
-        assert isinstance(claim_basis, AppliedClaimOwnershipProof)
-        _require_current_claim_position(
-            claim_basis,
-            admission.task_note,
-            target,
-            current_claim_position,
-            claim_resolution=current_claim_resolution,
-            queried_at=issued_at,
-        )
-        reused = tuple(
-            label
-            for label, current, publication in (
-                (
-                    "action_intent",
-                    ContentAddress(ref=intent.intent_ref, sha256=intent.intent_hash),
-                    claim_basis.publication_action_intent,
-                ),
-                (
-                    "execution_admission",
-                    expected_admission,
-                    claim_basis.publication_execution_admission,
-                ),
-                (
-                    "valid_authority_grant",
-                    expected_grant,
-                    claim_basis.publication_valid_authority_grant,
-                ),
-            )
-            if current == publication
-        )
-        if reused:
-            raise ExecutionAdmissionError(
-                "publication_authority_reuse_prohibited",
-                "mint a distinct current action intent, admission, and narrowed grant",
-                ",".join(reused),
-            )
-        if bound_call.claim_coordinates.state != "applied" or intent.operation == "claim.publish":
-            mismatches.append("applied_claim_ownership")
-    if admission.execution_target != expected_target:
-        mismatches.append("execution_target")
-    if (
-        admission.effect_manifest != expected_manifest
-        or intent.effect_manifest != expected_manifest
-        or target.effect_manifest != expected_manifest
-        or bound_call.effect_manifest != expected_manifest
-    ):
-        mismatches.append("effect_manifest")
-    if (
-        target.executor_descriptor != expected_descriptor
-        or bound_call.executor_descriptor != expected_descriptor
-        or target.executor_registry_projection != expected_registry
-        or bound_call.executor_registry_projection != expected_registry
-        or expected_descriptor not in executor_registry_projection.descriptors
-        or target.executor != executor_descriptor.executor
-        or target.adapter != executor_descriptor.adapter
-        or target.harness != executor_descriptor.harness
-        or target.runtime_identity != executor_descriptor.runtime_identity
-        or target.active_generation_roots != executor_descriptor.active_generation_roots
-    ):
-        mismatches.append("executor_registry")
-    if admission.selected_descriptor_leaf != target.selected_descriptor_leaf:
-        mismatches.append("target_harness_leaf")
-    if grant.valid_until <= issued_at or admission.valid_until <= issued_at:
-        mismatches.append("admission_or_grant_stale")
-    evidence_floor = max(admission.issued_at, grant.issued_at, target.checked_at)
-    if isinstance(claim_basis, AppliedClaimOwnershipProof):
-        evidence_floor = max(
-            evidence_floor,
-            claim_basis.publication_checked_at,
-            claim_basis.publication_outcome_committed_at,
-        )
-    if issued_at < evidence_floor:
-        mismatches.append("lease_backdated_before_evidence")
-    if (
-        bound_call.admission != expected_admission
-        or bound_call.claim_basis != basis_address
-        or bound_call.action_intent
-        != ContentAddress(ref=intent.intent_ref, sha256=intent.intent_hash)
-        or bound_call.authority_grant != expected_grant
-        or bound_call.execution_target != expected_target
-        or bound_call.selected_descriptor_leaf != admission.selected_descriptor_leaf
-    ):
-        mismatches.append("bound_execution_call")
-    if mismatches:
-        raise ExecutionAdmissionError(
-            "execution_lease_input_mismatch",
-            "rebuild the lease from one exact admitted action and typed claim basis",
-            ",".join(mismatches),
-        )
-
-    issuer_trust_query = build_execution_lease_issuer_trust_query(
-        admission,
-        grant,
-        claim_basis,
-        target,
-        bound_call,
-        effect_manifest,
-        executor_descriptor,
-        executor_registry_projection,
-        issuer_receipt=issuer_receipt,
-        queried_at=issued_at,
-    )
-    issuer_trust_envelope = _seal_execution_trust_resolver(trust_resolver).require_trusted(
-        issuer_trust_query
-    )
-
-    requested_expiry = (
-        _canonical_timestamp(expires_at) if expires_at is not None else admission.valid_until
-    )
-    effective_expiry = min(
-        requested_expiry,
-        admission.valid_until,
-        grant.valid_until,
-        target.stale_after,
-        executor_registry_projection.stale_after,
-        issuer_trust_envelope.stale_after,
-    )
-    if effective_expiry <= issued_at:
-        raise ExecutionAdmissionError(
-            "execution_lease_empty_validity_interval",
-            "refresh admission, authority, and target evidence before issuing a lease",
-        )
-    body: dict[str, object] = {
-        "schema": EXECUTION_LEASE_SCHEMA,
-        "admission": expected_admission,
-        "authority_grant": expected_grant,
-        "claim_basis": claim_basis.model_dump(mode="json", by_alias=True),
-        "claim_coordinates": bound_call.claim_coordinates.model_dump(
-            mode="json",
-            by_alias=True,
-        ),
-        "bound_call": bound_call.model_dump(mode="json", by_alias=True),
-        "task_ref": claim_basis.task_ref,
-        "lane": claim_basis.lane,
-        "session_ref": claim_basis.session_ref,
-        "claim_epoch": claim_basis.claim_epoch,
-        "capability_role": intent.capability_role,
-        "selected_descriptor_leaf": admission.selected_descriptor_leaf,
-        "execution_target": expected_target,
-        "runtime_identity": target.runtime_identity,
-        "active_generation_roots": target.active_generation_roots,
-        "invocation_id": bound_call.invocation_id,
-        "idempotency_key": admission.idempotency_key,
-        "attempt_fence": bound_call.attempt_fence,
-        "effect_manifest": expected_manifest,
-        "executor_descriptor": expected_descriptor,
-        "executor_registry_projection": expected_registry,
-        "executor": executor_descriptor.executor,
-        "issuer_receipt": issuer_receipt,
-        "issuer_trust_query": issuer_trust_query.model_dump(mode="json", by_alias=True),
-        "issuer_trust_envelope": issuer_trust_envelope.model_dump(
-            mode="json",
-            by_alias=True,
-        ),
-        "observation_contract": effect_manifest.observation_contract,
-        "completion_predicate": effect_manifest.completion_predicate,
-        "idempotence_class": effect_manifest.idempotence_class,
-        "reconciliation_contract": effect_manifest.reconciliation_contract,
-        "compensation": effect_manifest.compensation,
-        "issued_at": issued_at,
-        "not_before": issued_at,
-        "expires_at": effective_expiry,
-        "supersession_frontier_ref": admission.supersession_frontier_ref,
-        "supersedes_refs": tuple(sorted(set(supersedes_refs))),
-        "authorizes_machine_adapter": True,
-        "authorizes_operator": False,
-        "may_mint_sovereign_act": False,
-    }
-    digest = _self_hash(EXECUTION_LEASE_SCHEMA, body)
-    return ExecutionLease.model_validate(
-        {**body, "lease_ref": f"execution-lease@sha256:{digest}", "lease_hash": digest}
+    raise ExecutionAdmissionError(
+        "independent_execution_lease_issuer_unavailable",
+        "install an independently authenticated Gate-0B lease issuer before minting a lease",
     )
 
 
@@ -9570,219 +9258,10 @@ def require_current_execution_lease(
 ) -> tuple[ExecutionLease, ExecutionCurrentnessQuery, ExecutionCurrentnessEnvelope]:
     """Revalidate every mutable/current root immediately before adapter invocation."""
 
-    checked = require_admitted_execution_lease(lease)
-    try:
-        admission = ExecutionAdmission.model_validate(
-            admission.model_dump(mode="json", by_alias=True)
-        )
-        intent = ActionIntent.model_validate(intent.model_dump(mode="json", by_alias=True))
-        grant = ValidAuthorityGrant.model_validate(grant.model_dump(mode="json", by_alias=True))
-        if isinstance(claim_basis, ProspectiveClaimPublicationBasis):
-            claim_basis = ProspectiveClaimPublicationBasis.model_validate(
-                claim_basis.model_dump(mode="json", by_alias=True)
-            )
-        elif isinstance(claim_basis, AppliedClaimOwnershipProof):
-            claim_basis = AppliedClaimOwnershipProof.model_validate(
-                claim_basis.model_dump(mode="json", by_alias=True)
-            )
-        else:
-            raise TypeError("unsupported claim basis")
-        current_task_note = ContentAddress.model_validate(current_task_note.model_dump(mode="json"))
-        frame = ContextFrame.model_validate(frame.model_dump(mode="json", by_alias=True))
-        trace = EpistemicImpingementTrace.model_validate(
-            trace.model_dump(mode="json", by_alias=True)
-        )
-        target = ExecutionTargetEvidence.model_validate(
-            target.model_dump(mode="json", by_alias=True)
-        )
-        route_decision = RouteDecision.model_validate(route_decision.model_dump(mode="json"))
-        effect_manifest = EffectManifest.model_validate(
-            effect_manifest.model_dump(mode="json", by_alias=True)
-        )
-        executor_descriptor = ExecutorDescriptor.model_validate(
-            executor_descriptor.model_dump(mode="json", by_alias=True)
-        )
-        executor_registry_projection = ExecutorRegistryProjection.model_validate(
-            executor_registry_projection.model_dump(mode="json", by_alias=True)
-        )
-    except Exception as exc:
-        raise ExecutionAdmissionError(
-            "execution_lease_current_input_malformed",
-            "restore the exact self-validating current admission inputs",
-            type(exc).__name__,
-        ) from exc
-    checked_at = _canonical_timestamp(queried_at)
-    if isinstance(claim_basis, AppliedClaimOwnershipProof):
-        _require_current_claim_position(
-            claim_basis,
-            current_task_note,
-            target,
-            current_claim_position,
-            claim_resolution=current_claim_resolution,
-            queried_at=checked_at,
-        )
-    authority_trust_query = build_execution_trust_query(
-        trust_class=grant.authority_trust_query.trust_class,
-        subject_roots=grant.authority_trust_query.subject_roots,
-        presented_receipt=grant.authority_trust_query.presented_receipt,
-        required_roots=grant.authority_trust_query.required_roots,
-        supersession_frontier_ref=grant.supersession_frontier_ref,
-        queried_at=checked_at,
+    raise ExecutionAdmissionError(
+        "independent_execution_lease_issuer_unavailable",
+        "install an independently authenticated Gate-0B lease issuer before currentness use",
     )
-    configured_trust = _seal_execution_trust_resolver(trust_resolver)
-    authority_trust_envelope = configured_trust.require_trusted(authority_trust_query)
-    issuer_trust_query = build_execution_trust_query(
-        trust_class=checked.issuer_trust_query.trust_class,
-        subject_roots=checked.issuer_trust_query.subject_roots,
-        presented_receipt=checked.issuer_trust_query.presented_receipt,
-        required_roots=checked.issuer_trust_query.required_roots,
-        supersession_frontier_ref=checked.supersession_frontier_ref,
-        queried_at=checked_at,
-    )
-    issuer_trust_envelope = configured_trust.require_trusted(issuer_trust_query)
-    reasons: list[str] = []
-    if not checked.not_before <= checked_at < checked.expires_at:
-        reasons.append("execution_lease_stale")
-    if checked.admission != ContentAddress(
-        ref=admission.admission_ref, sha256=admission.admission_hash
-    ):
-        reasons.append("execution_lease_admission_mismatch")
-    if admission.decision != "admit" or not admission.lease_eligible:
-        reasons.append("execution_admission_not_current")
-    if checked.authority_grant != ContentAddress(ref=grant.grant_ref, sha256=grant.grant_hash):
-        reasons.append("execution_lease_authority_mismatch")
-    if checked.claim_basis != claim_basis:
-        reasons.append("execution_lease_claim_basis_mismatch")
-    if (
-        checked.task_ref != claim_basis.task_ref
-        or checked.lane != claim_basis.lane
-        or checked.session_ref != claim_basis.session_ref
-        or checked.claim_epoch != claim_basis.claim_epoch
-    ):
-        reasons.append("execution_lease_claim_identity_mismatch")
-    if (
-        admission.task_note != current_task_note
-        or checked.bound_call.task_note != current_task_note
-    ):
-        reasons.append("execution_lease_task_note_mismatch")
-    if admission.intent != ContentAddress(ref=intent.intent_ref, sha256=intent.intent_hash):
-        reasons.append("execution_lease_intent_mismatch")
-    if (
-        checked.effect_manifest != intent.effect_manifest
-        or checked.capability_role != intent.capability_role
-        or checked.bound_call.acting_subject != intent.acting_subject
-        or checked.bound_call.requested_effect_targets != intent.requested_effect_targets
-    ):
-        reasons.append("execution_lease_effect_or_role_mismatch")
-    manifest_address = ContentAddress(
-        ref=effect_manifest.manifest_ref,
-        sha256=effect_manifest.manifest_hash,
-    )
-    descriptor_address = ContentAddress(
-        ref=executor_descriptor.descriptor_ref,
-        sha256=executor_descriptor.descriptor_hash,
-    )
-    registry_address = ContentAddress(
-        ref=executor_registry_projection.projection_ref,
-        sha256=executor_registry_projection.projection_hash,
-    )
-    if (
-        checked.effect_manifest != manifest_address
-        or checked.observation_contract != effect_manifest.observation_contract
-        or checked.completion_predicate != effect_manifest.completion_predicate
-        or checked.idempotence_class != effect_manifest.idempotence_class
-        or checked.reconciliation_contract != effect_manifest.reconciliation_contract
-        or checked.compensation != effect_manifest.compensation
-        or effect_manifest.effect_targets != intent.requested_effect_targets
-    ):
-        reasons.append("execution_lease_manifest_mismatch")
-    if (
-        checked.executor_descriptor != descriptor_address
-        or checked.executor_registry_projection != registry_address
-        or descriptor_address not in executor_registry_projection.descriptors
-        or checked.executor != executor_descriptor.executor
-        or not executor_registry_projection.checked_at
-        <= checked_at
-        < executor_registry_projection.stale_after
-    ):
-        reasons.append("execution_lease_executor_registry_mismatch")
-    if (
-        admission.claim_publication_intent != claim_basis.claim_publication_intent
-        or frame.position.claim_ref != claim_basis.claim_publication_intent.ref
-    ):
-        reasons.append("execution_lease_claim_position_mismatch")
-    if (
-        frame.frame_ref != admission.context_frame.ref
-        or frame.frame_hash != admission.context_frame.sha256
-        or frame.position.position_ref != admission.context_position.ref
-        or frame.position.position_hash != admission.context_position.sha256
-        or intent.position_ref != frame.position.position_ref
-    ):
-        reasons.append("execution_lease_context_position_mismatch")
-    if not frame.checked_at <= checked_at < frame.stale_after:
-        reasons.append("execution_lease_context_stale")
-    try:
-        require_current_epistemic_trace(trace, frame.position, now=checked_at)
-    except EpistemicImpingementError as exc:
-        reasons.append(exc.reason_code)
-    if checked.execution_target != ContentAddress(ref=target.target_ref, sha256=target.target_hash):
-        reasons.append("execution_lease_target_mismatch")
-    if admission.route_decision != content_address(route_decision.decision_id, route_decision):
-        reasons.append("execution_lease_route_decision_mismatch")
-    observed_descriptor_leaf = (
-        route_decision.selected_descriptor_leaf or f"{route_decision.route_id}#base"
-    )
-    if (
-        checked.runtime_identity != target.runtime_identity
-        or checked.active_generation_roots != target.active_generation_roots
-        or target.execution_host != intent.execution_host
-        or (
-            route_decision.local_execution_target is not None
-            and route_decision.local_execution_target != target.execution_host
-        )
-        or target.selected_descriptor_leaf != checked.selected_descriptor_leaf
-        or not target.checked_at <= checked_at < target.stale_after
-    ):
-        reasons.append("execution_lease_generation_or_host_mismatch")
-    if checked.selected_descriptor_leaf != observed_descriptor_leaf:
-        reasons.append("execution_lease_descriptor_leaf_mismatch")
-    if reasons:
-        raise ExecutionAdmissionError(
-            "execution_lease_not_current",
-            "hold effects and reissue from the exact current Gate-0 position",
-            ",".join(sorted(set(reasons))),
-        )
-    resolved_manifest = _seal_effect_manifest_resolver(manifest_resolver).resolve(
-        checked.effect_manifest
-    )
-    if resolved_manifest != effect_manifest:
-        raise ExecutionAdmissionError(
-            "execution_manifest_resolution_mismatch",
-            "resolve the lease manifest from the exact installed immutable manifest set",
-        )
-    query = build_execution_currentness_query(
-        checked,
-        admission,
-        intent,
-        grant,
-        claim_basis,
-        frame,
-        trace,
-        target,
-        route_decision,
-        effect_manifest,
-        executor_descriptor,
-        executor_registry_projection,
-        authority_trust_query,
-        authority_trust_envelope,
-        issuer_trust_query,
-        issuer_trust_envelope,
-        queried_at=checked_at,
-        current_claim_position=current_claim_position,
-        current_claim_resolution=current_claim_resolution,
-    )
-    envelope = _seal_execution_currentness_resolver(currentness_resolver).resolve(query)
-    return checked, query, envelope
 
 
 @dataclass(frozen=True)
@@ -10081,9 +9560,7 @@ class ExecutionInvocationContext:
                 or live.current_task_note != checked.bound_call.task_note
             ):
                 reasons.append("execution_invocation_live_task_note_mismatch")
-            if target.host_scoped_claim != _current_claim_position_address(
-                live.current_position
-            ):
+            if target.host_scoped_claim != _current_claim_position_address(live.current_position):
                 reasons.append("execution_invocation_current_claim_position_mismatch")
         elif (
             type(checked.claim_basis) is ProspectiveClaimPublicationBasis

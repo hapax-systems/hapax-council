@@ -4752,15 +4752,14 @@ def test_pre_observability_checkpoint_is_lossless_and_replayable() -> None:
     assert parent.resolve().is_relative_to(fixtures.resolve())
     parent_payload = parent.read_bytes()
     assert len(parent_payload) == manifest["lineage_parent"]["bytes"]
-    assert (
-        hashlib.sha256(parent_payload).hexdigest()
-        == manifest["lineage_parent"]["sha256"]
-    )
+    assert hashlib.sha256(parent_payload).hexdigest() == manifest["lineage_parent"]["sha256"]
     replay_script = (checkpoint / manifest["replay"]["replay_script"]["path"]).read_text()
     assert 'lineage_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' in replay_script
     assert "replay root must be disk-backed" in replay_script
-    assert 'PYTHONPATH="$replay_root/packages/hapax-context-canon/src:$replay_root"' in replay_script
-    assert "git -C \"$replay_root\" apply --check" in replay_script
+    assert (
+        'PYTHONPATH="$replay_root/packages/hapax-context-canon/src:$replay_root"' in replay_script
+    )
+    assert 'git -C "$replay_root" apply --check' in replay_script
     assert "mktemp -d /tmp" not in replay_script
 
 
@@ -4834,10 +4833,7 @@ def test_contract_semantic_supersession_binds_current_and_predecessor(rich_conte
         assert hashlib.sha256(payload).hexdigest() == expected["sha256"]
 
     predecessor_frame = json.loads(
-        (
-            fixtures
-            / "checkpoints/pre-observability-extension-20260713/gate0-frame.json"
-        ).read_text()
+        (fixtures / "checkpoints/pre-observability-extension-20260713/gate0-frame.json").read_text()
     )
     for field, expected in receipt["protected_commitments"].items():
         assert getattr(frame.position, field) == expected["current"]

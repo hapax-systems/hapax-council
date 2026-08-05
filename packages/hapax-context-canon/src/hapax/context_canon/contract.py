@@ -441,9 +441,7 @@ class ContextBundleWire(FrozenModel):
 
 
 _CANONICAL_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
-_OUTCOME_RECEIPT_TIMESTAMP_RE = re.compile(
-    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$"
-)
+_OUTCOME_RECEIPT_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$")
 
 
 def _validate_timestamp(value: str, field_name: str) -> str:
@@ -2123,9 +2121,7 @@ class ContextExposureSegment(FrozenModel):
             raise ValueError("included segments require present stage-local evidence")
         if self.disposition == "truncated" and self.state.value_state == "present":
             raise ValueError("truncated segments must disclose a non-present state")
-        body = self.model_dump(
-            mode="json", by_alias=True, exclude={"segment_ref", "segment_hash"}
-        )
+        body = self.model_dump(mode="json", by_alias=True, exclude={"segment_ref", "segment_hash"})
         expected_hash = _domain_hash("hapax.context-exposure-segment.v1", body)
         if self.segment_hash != expected_hash:
             raise ValueError("segment_hash does not bind the complete segment")
@@ -2259,8 +2255,7 @@ def _derived_context_exposure_stage_state(
     carried = [
         segment
         for segment in stage_segments
-        if segment.disposition in {"included", "truncated"}
-        and segment.artifact_ref is not None
+        if segment.disposition in {"included", "truncated"} and segment.artifact_ref is not None
     ]
     if "refused" in segment_states:
         value_state = "refused"
@@ -2312,9 +2307,7 @@ class ContextExposure(FrozenModel):
     pre_exposure_inspection_projection_ref: str
     pre_exposure_inspection_projection_hash: str = Field(pattern=_HASH_PATTERN)
     pre_exposure_inspection_audience: Literal["operator_private"]
-    pre_exposure_inspection_claim_ceiling: Literal[
-        "frozen_frame_selection_only_no_actual_carriage"
-    ]
+    pre_exposure_inspection_claim_ceiling: Literal["frozen_frame_selection_only_no_actual_carriage"]
     carrier_audience: Literal[
         "operator_private",
         "yard_context",
@@ -2398,9 +2391,7 @@ class ContextExposure(FrozenModel):
         )
         for ref, digest, label in addressed:
             _validate_content_address(ref, digest, label)
-        if self.demand_shape_ref != (
-            f"demand-shape@sha256:{self.demand_shape_fingerprint}"
-        ):
+        if self.demand_shape_ref != (f"demand-shape@sha256:{self.demand_shape_fingerprint}"):
             raise ValueError("demand_shape_ref does not bind demand_shape_fingerprint")
         if _CONTENT_ADDRESS_PATTERN.fullmatch(self.position_ref) is None:
             raise ValueError("position_ref must be content-addressed")
@@ -2454,12 +2445,9 @@ class ContextExposure(FrozenModel):
         carried_segment_refs = {
             segment.segment_ref
             for segment in self.segments
-            if segment.disposition in {"included", "truncated"}
-            and segment.artifact_ref is not None
+            if segment.disposition in {"included", "truncated"} and segment.artifact_ref is not None
         }
-        ordered_segment_refs = {
-            ref for stage in self.stages for ref in stage.ordered_segment_refs
-        }
+        ordered_segment_refs = {ref for stage in self.stages for ref in stage.ordered_segment_refs}
         if ordered_segment_refs != carried_segment_refs:
             raise ValueError("only every carried artifact segment may occur in stage order")
         stage_components: list[set[str]] = []
@@ -2483,8 +2471,7 @@ class ContextExposure(FrozenModel):
             ):
                 raise ValueError("stage segment ordinals must be contiguous in rendered order")
             if any(
-                segment.disposition not in {"included", "truncated"}
-                or segment.artifact_ref is None
+                segment.disposition not in {"included", "truncated"} or segment.artifact_ref is None
                 for segment in stage_segments
             ):
                 raise ValueError(
@@ -2504,8 +2491,7 @@ class ContextExposure(FrozenModel):
                 if segment.segment_ref not in stage.ordered_segment_refs
             )
             if any(
-                segment.disposition not in {"omitted", "dark"}
-                or segment.artifact_ref is not None
+                segment.disposition not in {"omitted", "dark"} or segment.artifact_ref is not None
                 for segment in uncarried_segments
             ):
                 raise ValueError(
@@ -2827,9 +2813,7 @@ class CapabilityBehaviorObservation(FrozenModel):
             raise ValueError("behavior frontier must name the frozen context frontier as parent")
         if self.behavior_event_frontier_ref == self.context_frontier_ref:
             raise ValueError("behavior evidence requires a later descendant event frontier")
-        if self.demand_shape_ref != (
-            f"demand-shape@sha256:{self.demand_shape_fingerprint}"
-        ):
+        if self.demand_shape_ref != (f"demand-shape@sha256:{self.demand_shape_fingerprint}"):
             raise ValueError("demand_shape_ref does not bind demand_shape_fingerprint")
         if _CONTENT_ADDRESS_PATTERN.fullmatch(self.position_ref) is None:
             raise ValueError("behavior position_ref must be content-addressed")
@@ -2892,9 +2876,7 @@ class CapabilityBehaviorObservation(FrozenModel):
             unobserved_dimensions | covered_dimensions
         ) or not datum_dark.issubset(dark_dimensions | covered_dimensions):
             raise ValueError("non-present behavior data must resolve to its unavailable basis set")
-        if (
-            covered_dimensions | unobserved_dimensions | dark_dimensions
-        ) != required_dimensions:
+        if (covered_dimensions | unobserved_dimensions | dark_dimensions) != required_dimensions:
             raise ValueError("observed, unobserved, and DARK dimensions must partition the basis")
         if any(
             _CONTENT_ADDRESS_PATTERN.fullmatch(ref) is None
@@ -2913,9 +2895,7 @@ class CapabilityBehaviorObservation(FrozenModel):
         )
         if coverage != derived_coverage:
             raise ValueError("basis coverage must be mechanically derived from the basis partition")
-        if any(
-            _CONTENT_ADDRESS_PATTERN.fullmatch(ref) is None for ref in self.contradiction_refs
-        ):
+        if any(_CONTENT_ADDRESS_PATTERN.fullmatch(ref) is None for ref in self.contradiction_refs):
             raise ValueError("behavior contradiction refs must be content-addressed")
         root_reasons = {
             f"basis_dimension:{ref}:unobserved" for ref in self.unobserved_basis_dimension_refs
@@ -2962,9 +2942,7 @@ class CapabilityBehaviorObservation(FrozenModel):
         expected_hash = _domain_hash("hapax.capability-behavior-observation.v1", body)
         if self.behavior_hash != expected_hash:
             raise ValueError("behavior_hash does not bind the complete behavior observation")
-        if self.behavior_ref != (
-            f"capability-behavior-observation@sha256:{expected_hash}"
-        ):
+        if self.behavior_ref != (f"capability-behavior-observation@sha256:{expected_hash}"):
             raise ValueError("behavior_ref does not bind behavior_hash")
         return self
 
@@ -3279,9 +3257,7 @@ class MeasurementApplicationReceipt(FrozenModel):
         expected_hash = _domain_hash("hapax.measurement-application-receipt.v1", body)
         if self.application_hash != expected_hash:
             raise ValueError("application_hash does not bind the application receipt")
-        if self.application_ref != (
-            f"measurement-application-receipt@sha256:{expected_hash}"
-        ):
+        if self.application_ref != (f"measurement-application-receipt@sha256:{expected_hash}"):
             raise ValueError("application_ref does not bind application_hash")
         return self
 
@@ -3713,9 +3689,7 @@ def validate_context_behavior_learning_join(
     ):
         raise ValueError("behavior must descend from, not reuse, the frozen context frontier")
 
-    presented_at = exposure.stages[
-        _CONTEXT_EXPOSURE_STAGE_ORDER.index("presented")
-    ].occurred_at
+    presented_at = exposure.stages[_CONTEXT_EXPOSURE_STAGE_ORDER.index("presented")].occurred_at
     if any(item.observed_at < presented_at for item in behavior.observations):
         raise ValueError("behavior evidence cannot predate context presentation")
     if any(
@@ -3743,8 +3717,7 @@ def validate_context_behavior_learning_join(
         exposure_event.kind != "context_exposure_recorded"
         or exposure_event.subject_ref != exposure.exposure_ref
         or getattr(exposure_event.payload, "exposure_ref", None) != exposure.exposure_ref
-        or getattr(exposure_event.payload, "exposure_state", None)
-        != exposure.state.value_state
+        or getattr(exposure_event.payload, "exposure_state", None) != exposure.state.value_state
         or exposure.exposure_ref not in exposure_event.source_refs
     ):
         raise ValueError("exposure event does not exactly record the joined exposure")
@@ -3752,8 +3725,7 @@ def validate_context_behavior_learning_join(
         behavior_event.kind != "capability_behavior_observed"
         or behavior_event.subject_ref != behavior.behavior_ref
         or getattr(behavior_event.payload, "behavior_ref", None) != behavior.behavior_ref
-        or getattr(behavior_event.payload, "behavior_state", None)
-        != behavior.state.value_state
+        or getattr(behavior_event.payload, "behavior_state", None) != behavior.state.value_state
         or behavior.behavior_ref not in behavior_event.source_refs
         or exposure.exposure_ref not in behavior_event.source_refs
     ):
@@ -3766,8 +3738,10 @@ def validate_context_behavior_learning_join(
         exposure_event.occurred_at >= behavior_event.occurred_at
     ):
         raise ValueError("behavior event generation and time must follow exposure recording")
-    if not exposure.observed_at <= exposure_event.occurred_at <= min(
-        item.observed_at for item in behavior.observations
+    if (
+        not exposure.observed_at
+        <= exposure_event.occurred_at
+        <= min(item.observed_at for item in behavior.observations)
     ):
         raise ValueError("exposure recording must precede the externally observed behavior")
     if behavior_event.occurred_at < behavior.observed_at:
@@ -3837,18 +3811,15 @@ def validate_context_behavior_learning_join(
         or application_receipt.behavior_hash != behavior.behavior_hash
         or application_receipt.outcome_ref != outcome_receipt.receipt_ref
         or application_receipt.outcome_hash != outcome_receipt.receipt_hash
-        or application_receipt.outcome_append_receipt_ref
-        != outcome.append_receipt.ref
-        or application_receipt.outcome_append_receipt_hash
-        != outcome.append_receipt.sha256
+        or application_receipt.outcome_append_receipt_ref != outcome.append_receipt.ref
+        or application_receipt.outcome_append_receipt_hash != outcome.append_receipt.sha256
         or application_receipt.measurement_basis_ref != behavior.measurement_basis_ref
         or application_receipt.measurement_basis_hash != behavior.measurement_basis_hash
         or application_receipt.fitness_boundary_refs != expected_boundaries
         or application_receipt.update_target_ref != learning.update_target_ref
         or not application_receipt.producer_verification_refs
         or application_receipt.producer_resolution_state.value_state != "present"
-        or application_receipt.application_frontier_ref
-        == outcome.event_frontier.ref
+        or application_receipt.application_frontier_ref == outcome.event_frontier.ref
         or datetime.strptime(
             application_receipt.applied_at,
             "%Y-%m-%dT%H:%M:%SZ",

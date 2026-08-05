@@ -16,6 +16,7 @@ from unittest import mock
 import pytest
 from hapax.context_canon import (
     ContextFrame,
+    ContextPosition,
     ContextSelection,
     ContextSelectionEntry,
     build_context_selection,
@@ -44,10 +45,14 @@ from shared.dispatcher_policy import DispatchAction, DispatchRequest, RouteDecis
 from shared.epistemic_impingement import build_epistemic_impingement_trace
 from shared.execution_admission import (
     DEFAULT_EXECUTION_COMPOSITION_ROOT,
+    ActionIntent,
+    AuthorityEvidence,
     AuthorityHold,
+    BoundExecutionCall,
     CompletionEvaluator,
     ContentAddress,
     EffectManifestResolver,
+    ExecutionAdmission,
     ExecutionAdmissionError,
     ExecutionCompositionManifest,
     ExecutionCompositionPorts,
@@ -61,6 +66,8 @@ from shared.execution_admission import (
     ExecutionInvocationBundleStore,
     ExecutionInvocationContext,
     ExecutionLease,
+    ExecutionTrustEnvelope,
+    ExecutionTrustQuery,
     ExecutionTrustResolver,
     HistoricalSupportDisposition,
     OutcomeCommitter,
@@ -763,6 +770,96 @@ def _trust_resolver(
     )
 
 
+def _test_valid_authority_grant(
+    *,
+    intent: ActionIntent,
+    evidence: AuthorityEvidence,
+    position: ContextPosition,
+    trust_query: ExecutionTrustQuery,
+    trust_resolver: ExecutionTrustResolver,
+) -> ValidAuthorityGrant:
+    """Build a structural Gate-0B record without a production issuer."""
+
+    trust_envelope = trust_resolver.require_trusted(trust_query)
+    body: dict[str, object] = {
+        "schema": execution_admission.VALID_AUTHORITY_GRANT_SCHEMA,
+        "intent_ref": intent.intent_ref,
+        "intent_hash": intent.intent_hash,
+        "evidence_ref": evidence.evidence_ref,
+        "evidence_hash": evidence.evidence_hash,
+        "authority_source": evidence.authority_source.model_dump(mode="json"),
+        "authenticated_receipt": evidence.authenticated_receipt.model_dump(mode="json"),
+        "authority_issuer": evidence.issuer.model_dump(mode="json"),
+        "acting_subject": intent.acting_subject.model_dump(mode="json"),
+        "authority_trust_query": trust_query.model_dump(mode="json", by_alias=True),
+        "authority_trust_envelope": trust_envelope.model_dump(mode="json", by_alias=True),
+        "position_ref": position.position_ref,
+        "position_hash": position.position_hash,
+        "task_ref": position.task_ref,
+        "authority_case": position.authority_case,
+        "authority_ceiling": evidence.authority_ceiling,
+        "action_class": intent.action_class,
+        "operation": intent.operation,
+        "authorized_flags": intent.required_authorization_flags,
+        "scope_refs": intent.requested_scope_refs,
+        "issued_at": trust_query.queried_at,
+        "valid_until": min(evidence.valid_until, trust_envelope.stale_after),
+        "supersession_frontier_ref": evidence.supersession_frontier_ref,
+        "validation_method_ref": "test-only:structural-authority-grant",
+        "authorizes_machine_admission": True,
+        "authorizes_operator": False,
+        "may_mint_sovereign_act": False,
+    }
+    digest = execution_admission._self_hash(
+        execution_admission.VALID_AUTHORITY_GRANT_SCHEMA,
+        body,
+    )
+    return ValidAuthorityGrant.model_validate(
+        {
+            **body,
+            "grant_ref": f"authority-grant@sha256:{digest}",
+            "grant_hash": digest,
+        }
+    )
+
+
+def _test_admitted_execution(
+    held: ExecutionAdmission,
+    grant: ValidAuthorityGrant,
+) -> ExecutionAdmission:
+    """Build a structural Gate-0B admission record for downstream parser tests."""
+
+    body = held.model_dump(
+        mode="json",
+        by_alias=True,
+        exclude={"admission_ref", "admission_hash"},
+    )
+    body.update(
+        {
+            "decision": "admit",
+            "lease_eligible": True,
+            "authority_grant": ContentAddress(
+                ref=grant.grant_ref,
+                sha256=grant.grant_hash,
+            ).model_dump(mode="json"),
+            "authorized_flags": grant.authorized_flags,
+            "reason_codes": (),
+            "repair_refs": (),
+        }
+    )
+    digest = execution_admission._self_hash(
+        execution_admission.EXECUTION_ADMISSION_SCHEMA,
+        body,
+    )
+    return ExecutionAdmission.model_validate(
+        {
+            **body,
+            "admission_ref": f"execution-admission@sha256:{digest}",
+            "admission_hash": digest,
+        }
+    )
+
+
 def _currentness_resolver(
     query: object,
     *,
@@ -1223,12 +1320,24 @@ def _execution_admission_fixture(
         (manifest,),
         resolver=_execution_address("port:effect-manifest-resolver"),
     )
-    grant = validate_authority(
+    authority_result = validate_authority(
         intent,
         authority,
         position,
         now=now,
         trust_resolver=trust_resolver,
+    )
+    assert isinstance(authority_result, AuthorityHold)
+    grant = (
+        _test_valid_authority_grant(
+            intent=intent,
+            evidence=authority,
+            position=position,
+            trust_query=trust_query,
+            trust_resolver=trust_resolver,
+        )
+        if trusted_authority
+        else authority_result
     )
 
     demand = build_demand_vector(
@@ -1345,7 +1454,7 @@ def _execution_admission_fixture(
         reserved_at=now,
         expires_at=now + timedelta(minutes=20),
     )
-    admission = admit_execution(
+    evaluated_admission = admit_execution(
         intent,
         grant,
         frame,
@@ -1371,6 +1480,16 @@ def _execution_admission_fixture(
         trust_resolver=trust_resolver,
         manifest_resolver=manifest_resolver,
     )
+    admission = (
+        _test_admitted_execution(evaluated_admission, grant)
+        if (
+            isinstance(grant, ValidAuthorityGrant)
+            and selection_case is None
+            and include_demand_receipt
+            and local_execution_target == "appendix"
+        )
+        else evaluated_admission
+    )
     fixture = SimpleNamespace(
         aperture=aperture,
         protected_claim=protected_claim,
@@ -1379,7 +1498,9 @@ def _execution_admission_fixture(
         prospective_carrier=prospective_carrier,
         task_note=task_note,
         authority=authority,
+        authority_result=authority_result,
         grant=grant,
+        evaluated_admission=evaluated_admission,
         admission=admission,
         intent=intent,
         frame=frame,
@@ -1490,6 +1611,96 @@ def _claim_admission_consumption(
     return consumption
 
 
+def _test_execution_lease(
+    fixture: SimpleNamespace,
+    bound_call: BoundExecutionCall,
+    issuer_receipt: ContentAddress,
+    issuer_query: ExecutionTrustQuery,
+    issuer_envelope: ExecutionTrustEnvelope,
+) -> ExecutionLease:
+    """Build a structural Gate-0B lease record for parser and containment tests."""
+
+    admission = fixture.admission
+    grant = fixture.grant
+    basis = fixture.prospective_basis
+    target = fixture.target
+    manifest = fixture.manifest
+    descriptor = fixture.descriptor
+    registry = fixture.executor_registry
+    issued_at = issuer_query.queried_at
+    assert manifest.reconciliation_contract is not None
+    body: dict[str, object] = {
+        "schema": execution_admission.EXECUTION_LEASE_SCHEMA,
+        "admission": ContentAddress(
+            ref=admission.admission_ref,
+            sha256=admission.admission_hash,
+        ).model_dump(mode="json"),
+        "authority_grant": ContentAddress(
+            ref=grant.grant_ref,
+            sha256=grant.grant_hash,
+        ).model_dump(mode="json"),
+        "claim_basis": basis.model_dump(mode="json", by_alias=True),
+        "claim_coordinates": bound_call.claim_coordinates.model_dump(mode="json", by_alias=True),
+        "bound_call": bound_call.model_dump(mode="json", by_alias=True),
+        "task_ref": basis.task_ref,
+        "lane": basis.lane,
+        "session_ref": basis.session_ref,
+        "claim_epoch": basis.claim_epoch,
+        "capability_role": fixture.intent.capability_role,
+        "selected_descriptor_leaf": admission.selected_descriptor_leaf,
+        "execution_target": ContentAddress(
+            ref=target.target_ref,
+            sha256=target.target_hash,
+        ).model_dump(mode="json"),
+        "runtime_identity": target.runtime_identity.model_dump(mode="json"),
+        "active_generation_roots": tuple(
+            item.model_dump(mode="json") for item in target.active_generation_roots
+        ),
+        "invocation_id": bound_call.invocation_id,
+        "idempotency_key": admission.idempotency_key,
+        "attempt_fence": bound_call.attempt_fence,
+        "effect_manifest": ContentAddress(
+            ref=manifest.manifest_ref,
+            sha256=manifest.manifest_hash,
+        ).model_dump(mode="json"),
+        "executor_descriptor": ContentAddress(
+            ref=descriptor.descriptor_ref,
+            sha256=descriptor.descriptor_hash,
+        ).model_dump(mode="json"),
+        "executor_registry_projection": ContentAddress(
+            ref=registry.projection_ref,
+            sha256=registry.projection_hash,
+        ).model_dump(mode="json"),
+        "executor": descriptor.executor.model_dump(mode="json"),
+        "issuer_receipt": issuer_receipt.model_dump(mode="json"),
+        "issuer_trust_query": issuer_query.model_dump(mode="json", by_alias=True),
+        "issuer_trust_envelope": issuer_envelope.model_dump(mode="json", by_alias=True),
+        "observation_contract": manifest.observation_contract.model_dump(mode="json"),
+        "completion_predicate": manifest.completion_predicate.model_dump(mode="json"),
+        "idempotence_class": manifest.idempotence_class,
+        "reconciliation_contract": manifest.reconciliation_contract.model_dump(mode="json"),
+        "compensation": None,
+        "issued_at": issued_at,
+        "not_before": issued_at,
+        "expires_at": min(
+            admission.valid_until,
+            grant.valid_until,
+            target.stale_after,
+            registry.stale_after,
+            issuer_envelope.stale_after,
+        ),
+        "supersession_frontier_ref": admission.supersession_frontier_ref,
+        "supersedes_refs": (),
+        "authorizes_machine_adapter": True,
+        "authorizes_operator": False,
+        "may_mint_sovereign_act": False,
+    }
+    digest = execution_admission._self_hash(execution_admission.EXECUTION_LEASE_SCHEMA, body)
+    return ExecutionLease.model_validate(
+        {**body, "lease_ref": f"execution-lease@sha256:{digest}", "lease_hash": digest}
+    )
+
+
 def _lease_for_fixture(fixture: SimpleNamespace):
     bound_call = build_bound_execution_call(
         fixture.admission,
@@ -1525,19 +1736,13 @@ def _lease_for_fixture(fixture: SimpleNamespace):
         issuer_query,
         resolver_address=fixture.ports.trust.resolver,
     )
-    lease = mint_execution_lease(
-        fixture.admission,
-        fixture.intent,
-        fixture.grant,
-        fixture.prospective_basis,
-        fixture.target,
+    issuer_envelope = mint_trust.require_trusted(issuer_query)
+    lease = _test_execution_lease(
+        fixture,
         bound_call,
-        fixture.manifest,
-        fixture.descriptor,
-        fixture.executor_registry,
-        issuer_receipt=issuer,
-        now=fixture.now + timedelta(minutes=1),
-        trust_resolver=mint_trust,
+        issuer,
+        issuer_query,
+        issuer_envelope,
     )
     checked_at = fixture.now + timedelta(minutes=2)
 
@@ -1584,6 +1789,7 @@ def _lease_for_fixture(fixture: SimpleNamespace):
         trust=current_trust,
         currentness=_currentness_resolver(currentness_query),
     )
+    fixture.currentness_query = currentness_query
     return lease
 
 
@@ -1795,18 +2001,32 @@ def test_module_address_detects_bytes_changed_after_request(tmp_path: Path) -> N
         execution_admission._require_current_module_address(address)
 
 
-def test_authority_validation_uses_module_owned_trust_and_never_authorizes_operator() -> None:
+def test_caller_built_trust_is_diagnostic_and_cannot_lift_authority_hold() -> None:
     fixture = _execution_admission_fixture()
+    assert isinstance(fixture.authority_result, AuthorityHold)
+    assert fixture.authority_result.reason_codes == ("independent_authority_root_unavailable",)
     assert isinstance(fixture.grant, ValidAuthorityGrant)
     assert fixture.grant.authorizes_machine_admission is True
     assert fixture.grant.authorizes_operator is False
     assert fixture.grant.may_mint_sovereign_act is False
 
+    admission = fixture.evaluated_admission
+    assert admission.decision == "hold"
+    assert admission.lease_eligible is False
+    assert admission.authority_grant is None
+    assert admission.authorized_flags == ()
+    assert "authority:independent_authority_root_unavailable" in admission.reason_codes
+    assert admission.authority_trust_envelope is not None
+    assert admission.authority_trust_envelope.decision == "trusted"
+
     held = _execution_admission_fixture(trusted_authority=False)
     assert isinstance(held.grant, AuthorityHold)
-    assert held.grant.reason_codes == ("authority_receipt_untrusted",)
-    assert held.admission.decision == "hold"
-    assert held.admission.authority_grant is None
+    assert held.grant.reason_codes == (
+        "authority_receipt_untrusted",
+        "independent_authority_root_unavailable",
+    )
+    assert held.evaluated_admission.decision == "hold"
+    assert held.evaluated_admission.authority_grant is None
 
 
 def test_execution_admission_is_complete_content_addressed_and_non_authorizing() -> None:
@@ -1839,7 +2059,7 @@ def test_execution_admission_holds_on_context_selection_drift_or_loss(
     selection_case: str,
     reason_code: str,
 ) -> None:
-    admission = _execution_admission_fixture(selection_case=selection_case).admission
+    admission = _execution_admission_fixture(selection_case=selection_case).evaluated_admission
     assert admission.decision == "hold"
     assert admission.lease_eligible is False
     assert reason_code in admission.reason_codes
@@ -1851,13 +2071,13 @@ def test_execution_admission_rejects_legacy_opaque_context_selection_address() -
 
 
 def test_missing_proof_derived_demand_receipt_holds_instead_of_defaulting() -> None:
-    admission = _execution_admission_fixture(include_demand_receipt=False).admission
+    admission = _execution_admission_fixture(include_demand_receipt=False).evaluated_admission
     assert admission.decision == "hold"
     assert "demand_derivation_receipt_missing" in admission.reason_codes
 
 
 def test_route_host_drift_holds_before_lease() -> None:
-    admission = _execution_admission_fixture(local_execution_target="podium").admission
+    admission = _execution_admission_fixture(local_execution_target="podium").evaluated_admission
     assert admission.decision == "hold"
     assert "route_decision_position_mismatch" in admission.reason_codes
 
@@ -1894,21 +2114,28 @@ def test_public_claim_publishers_hold_without_mutation_in_gate0a(tmp_path: Path)
     assert not prepared.receipts.exists()
 
 
-def test_lease_and_currentness_bind_every_root_and_fail_closed(tmp_path: Path) -> None:
+def test_structural_lease_query_is_inspectable_but_currentness_use_holds(tmp_path: Path) -> None:
     prepared = _prepared_execution_claim(tmp_path)
     fixture = _execution_admission_fixture(
         publication_intent=prepared.intent,
     )
     lease = _lease_for_fixture(fixture)
+    query = fixture.currentness_query
+    envelope = fixture.ports.currentness.resolve(query)
+
     assert lease.authorizes_machine_adapter is True
     assert lease.authorizes_operator is False
     assert lease.issuer_trust_envelope.decision == "trusted"
+    assert envelope.query.ref == query.query_ref
+    root_refs = {item.ref for item in query.required_roots}
+    assert fixture.admission.demand_vector.ref in root_refs
+    assert fixture.admission.demand_derivation_receipt.ref in root_refs
+    assert lease.issuer_trust_envelope.event_frontier.ref in root_refs
+    assert query.historical_support_roots == ()
+    assert envelope.historical_support_dispositions == ()
 
-    with mock.patch(
-        "shared.execution_admission._utc_now",
-        side_effect=AssertionError("explicit currentness query reached ambient clock"),
-    ):
-        current_lease, query, envelope = require_current_execution_lease(
+    with pytest.raises(ExecutionAdmissionError) as raised:
+        require_current_execution_lease(
             lease,
             fixture.admission,
             fixture.intent,
@@ -1927,41 +2154,13 @@ def test_lease_and_currentness_bind_every_root_and_fail_closed(tmp_path: Path) -
             currentness_resolver=fixture.ports.currentness,
             queried_at=fixture.now + timedelta(minutes=2),
         )
-    assert current_lease == lease
-    assert envelope.query.ref == query.query_ref
-    root_refs = {item.ref for item in query.required_roots}
-    assert fixture.admission.demand_vector.ref in root_refs
-    assert fixture.admission.demand_derivation_receipt.ref in root_refs
-    assert lease.issuer_trust_envelope.event_frontier.ref in root_refs
-    assert query.historical_support_roots == ()
-    assert envelope.historical_support_dispositions == ()
+    assert raised.value.reason_code == "independent_execution_lease_issuer_unavailable"
 
-    with mock.patch(
-        "shared.execution_admission._utc_now",
-        side_effect=AssertionError("explicit currentness query reached ambient clock"),
-    ):
-        with pytest.raises(ExecutionAdmissionError, match="execution_currentness_not_current"):
-            require_current_execution_lease(
-                lease,
-                fixture.admission,
-                fixture.intent,
-                fixture.grant,
-                fixture.prospective_basis,
-                fixture.task_note,
-                fixture.frame,
-                fixture.trace,
-                fixture.target,
-                fixture.decision,
-                fixture.manifest,
-                fixture.descriptor,
-                fixture.executor_registry,
-                trust_resolver=fixture.ports.trust,
-                manifest_resolver=fixture.ports.manifests,
-                currentness_resolver=_currentness_resolver(
-                    query, noncurrent_ref=lease.executor_descriptor.ref
-                ),
-                queried_at=fixture.now + timedelta(minutes=2),
-            )
+    with pytest.raises(ExecutionAdmissionError, match="execution_currentness_not_current"):
+        _currentness_resolver(
+            query,
+            noncurrent_ref=lease.executor_descriptor.ref,
+        ).resolve(query)
 
 
 def test_default_ports_hold_without_effect_or_lease(tmp_path: Path) -> None:
@@ -1985,7 +2184,26 @@ def test_default_ports_hold_without_effect_or_lease(tmp_path: Path) -> None:
         invocation_id="invocation:test",
         attempt_fence="c" * 64,
     )
-    with pytest.raises(ExecutionAdmissionError, match="execution_trust_resolver_unavailable"):
+    issuer = _execution_address("lease-issuer:test")
+    issuer_query = build_execution_lease_issuer_trust_query(
+        fixture.admission,
+        fixture.grant,
+        fixture.prospective_basis,
+        fixture.target,
+        bound_call,
+        fixture.manifest,
+        fixture.descriptor,
+        fixture.executor_registry,
+        issuer_receipt=issuer,
+        queried_at=fixture.now + timedelta(minutes=1),
+    )
+    trusted_issuer = _trust_resolver(
+        issuer_query,
+        resolver_address=fixture.ports.trust.resolver,
+    )
+    with pytest.raises(
+        ExecutionAdmissionError, match="independent_execution_lease_issuer_unavailable"
+    ):
         mint_execution_lease(
             fixture.admission,
             fixture.intent,
@@ -1996,38 +2214,69 @@ def test_default_ports_hold_without_effect_or_lease(tmp_path: Path) -> None:
             fixture.manifest,
             fixture.descriptor,
             fixture.executor_registry,
-            issuer_receipt=_execution_address("lease-issuer:test"),
+            issuer_receipt=issuer,
             now=fixture.now + timedelta(minutes=1),
+            trust_resolver=trusted_issuer,
         )
+
+
+def test_lease_mint_refuses_before_inspecting_any_caller_object_or_resolver() -> None:
+    attribute_reads: list[str] = []
+
+    class Hostile:
+        def __getattribute__(self, name: str) -> object:
+            attribute_reads.append(name)
+            raise AssertionError(f"caller object inspected: {name}")
+
+    hostile = Hostile()
+    with pytest.raises(ExecutionAdmissionError) as raised:
+        mint_execution_lease(
+            hostile,  # type: ignore[arg-type]
+            hostile,  # type: ignore[arg-type]
+            hostile,  # type: ignore[arg-type]
+            hostile,  # type: ignore[arg-type]
+            hostile,  # type: ignore[arg-type]
+            hostile,  # type: ignore[arg-type]
+            hostile,  # type: ignore[arg-type]
+            hostile,  # type: ignore[arg-type]
+            hostile,  # type: ignore[arg-type]
+            issuer_receipt=hostile,  # type: ignore[arg-type]
+            now=hostile,  # type: ignore[arg-type]
+            trust_resolver=hostile,  # type: ignore[arg-type]
+        )
+
+    assert raised.value.reason_code == "independent_execution_lease_issuer_unavailable"
+    assert attribute_reads == []
+
+    with pytest.raises(ExecutionAdmissionError) as currentness_raised:
+        require_current_execution_lease(
+            hostile,  # type: ignore[arg-type]
+            hostile,  # type: ignore[arg-type]
+            hostile,  # type: ignore[arg-type]
+            hostile,  # type: ignore[arg-type]
+            hostile,  # type: ignore[arg-type]
+            hostile,  # type: ignore[arg-type]
+            hostile,  # type: ignore[arg-type]
+            hostile,  # type: ignore[arg-type]
+            hostile,  # type: ignore[arg-type]
+            hostile,  # type: ignore[arg-type]
+            hostile,  # type: ignore[arg-type]
+            hostile,  # type: ignore[arg-type]
+            hostile,  # type: ignore[arg-type]
+            trust_resolver=hostile,  # type: ignore[arg-type]
+            manifest_resolver=hostile,  # type: ignore[arg-type]
+            currentness_resolver=hostile,  # type: ignore[arg-type]
+            queried_at=hostile,  # type: ignore[arg-type]
+        )
+    assert currentness_raised.value.reason_code == "independent_execution_lease_issuer_unavailable"
+    assert attribute_reads == []
 
 
 def test_currentness_keeps_historical_support_out_of_action_current_roots(
     tmp_path: Path,
 ) -> None:
     fixture = _real_execution_invocation(tmp_path)
-    with mock.patch(
-        "shared.execution_admission._utc_now",
-        side_effect=AssertionError("explicit currentness query reached ambient clock"),
-    ):
-        _, query, _ = require_current_execution_lease(
-            fixture.lease,
-            fixture.admission,
-            fixture.intent,
-            fixture.grant,
-            fixture.prospective_basis,
-            fixture.task_note,
-            fixture.frame,
-            fixture.trace,
-            fixture.target,
-            fixture.decision,
-            fixture.manifest,
-            fixture.descriptor,
-            fixture.executor_registry,
-            trust_resolver=fixture.ports.trust,
-            manifest_resolver=fixture.ports.manifests,
-            currentness_resolver=fixture.ports.currentness,
-            queried_at=fixture.now + timedelta(minutes=2),
-        )
+    query = fixture.currentness_query
     historical_root = _execution_address("historical-support:test")
     payload = query.model_dump(mode="json", by_alias=True)
     payload["historical_support_roots"] = [historical_root.model_dump(mode="json")]

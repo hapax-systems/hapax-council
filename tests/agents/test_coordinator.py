@@ -2975,9 +2975,7 @@ status: offered
         assert observation["disposition"] == "hold"
         assert observation["reason_code"] == "task_store_frontier_changed_since_index"
         assert observation["candidate_count"] == 0
-        assert observation["frontier_ref"].startswith(
-            "task-identity-index-frontier@sha256:"
-        )
+        assert observation["frontier_ref"].startswith("task-identity-index-frontier@sha256:")
 
     def test_scan_holds_on_unbound_artifact(self, tmp_path: Path):
         active = tmp_path / "active"
@@ -3038,9 +3036,7 @@ status: done
         assert observation["unbound_refs"] == []
         assert observation["blocking_unbound_refs"] == []
         assert observation["candidate_count"] == 1
-        assert observation["assessment_ref"].startswith(
-            "task-store-assessment@sha256:"
-        )
+        assert observation["assessment_ref"].startswith("task-store-assessment@sha256:")
         assert observation["legacy_snapshots"] == [
             {
                 "authority_ceiling": "support_non_authoritative",

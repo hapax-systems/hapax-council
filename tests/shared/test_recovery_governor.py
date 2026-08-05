@@ -74,9 +74,7 @@ def test_all_pressure_states_hold_without_execution_chain(tmp_path: Path) -> Non
 
 
 def test_critical_signal_cannot_mint_permission(tmp_path: Path) -> None:
-    assessment = _gov(tmp_path, state="closed").permit(
-        "coordinator", critical=True, now=0.0
-    )
+    assessment = _gov(tmp_path, state="closed").permit("coordinator", critical=True, now=0.0)
     assert assessment.critical
     assert assessment.modulation_allows
     assert not assessment.permitted
@@ -139,9 +137,7 @@ def test_permit_record_and_batch_never_create_state(tmp_path: Path) -> None:
     assert not state_dir.exists()
 
 
-def test_main_effect_verbs_visibly_hold_and_do_no_io(
-    tmp_path: Path, capsys, monkeypatch
-) -> None:
+def test_main_effect_verbs_visibly_hold_and_do_no_io(tmp_path: Path, capsys, monkeypatch) -> None:
     killed: list[tuple[int, int]] = []
     monkeypatch.setattr(rg.os, "kill", lambda pid, sig: killed.append((pid, sig)))
     governor = _gov(tmp_path / "state")

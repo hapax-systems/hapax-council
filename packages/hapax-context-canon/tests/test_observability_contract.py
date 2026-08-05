@@ -230,8 +230,7 @@ def _stage(
 ) -> canon.ContextExposureStage:
     declared = (*segments, *uncarried)
     reasons = {
-        f"stage:{stage}:segment:{segment.ordinal}:{segment.disposition}:"
-        f"{segment.state.value_state}"
+        f"stage:{stage}:segment:{segment.ordinal}:{segment.disposition}:{segment.state.value_state}"
         for segment in declared
         if segment.disposition != "included" or segment.state.value_state != "present"
     }
@@ -425,9 +424,7 @@ def _build_exposure(
         pre_exposure_inspection_projection_ref=projection_ref,
         pre_exposure_inspection_projection_hash=projection_hash,
         pre_exposure_inspection_audience="operator_private",
-        pre_exposure_inspection_claim_ceiling=(
-            "frozen_frame_selection_only_no_actual_carriage"
-        ),
+        pre_exposure_inspection_claim_ceiling=("frozen_frame_selection_only_no_actual_carriage"),
         carrier_audience=audience,
         audience_seal_ref=seal_ref,
         audience_seal_hash=seal_hash,
@@ -446,9 +443,7 @@ def _build_exposure(
         producer_resolution_obligation_ref=resolution_obligation_ref,
         producer_verification_refs=(producer_verification_ref,) if producer_verified else (),
         producer_resolution_state=(
-            _state()
-            if producer_verified
-            else _state("hold", "gate0b_producer_resolution_required")
+            _state() if producer_verified else _state("hold", "gate0b_producer_resolution_required")
         ),
         authority_ceiling="observation_only",
         effective_attention_observed=False,
@@ -486,9 +481,7 @@ def _event(
         privacy_class="operator_private",
         authority_ceiling="observation_only",
         source_refs=(
-            (behavior.behavior_ref, exposure.exposure_ref)
-            if behavior
-            else (exposure.exposure_ref,)
+            (behavior.behavior_ref, exposure.exposure_ref) if behavior else (exposure.exposure_ref,)
         ),
         caused_by=caused_by,
         supersedes_refs=(),
@@ -653,9 +646,7 @@ def _build_behavior(
         carrier_audience=exposure.carrier_audience,
         privacy_class="operator_private",
         air=_air(
-            public_or_air=(
-                "allow" if exposure.carrier_audience == "public_or_air" else "deny"
-            )
+            public_or_air=("allow" if exposure.carrier_audience == "public_or_air" else "deny")
         ),
         audience_seal_ref=behavior_seal_ref,
         audience_seal_hash=behavior_seal_hash,
@@ -694,9 +685,7 @@ def _build_behavior(
         producer_resolution_obligation_ref=resolution_obligation_ref,
         producer_verification_refs=(producer_verification_ref,) if producer_verified else (),
         producer_resolution_state=(
-            _state()
-            if producer_verified
-            else _state("hold", "gate0b_producer_resolution_required")
+            _state() if producer_verified else _state("hold", "gate0b_producer_resolution_required")
         ),
         observation_plane="capability_behavior",
         correlation_only=True,
@@ -880,9 +869,7 @@ def test_exposure_separates_semantic_components_from_stage_artifacts() -> None:
 
     assert rebuilt == exposure
     assert exposure.selection_ref.startswith("context-selection@sha256:")
-    assert exposure.pre_exposure_inspection_projection_ref.startswith(
-        "projection-envelope@sha256:"
-    )
+    assert exposure.pre_exposure_inspection_projection_ref.startswith("projection-envelope@sha256:")
     assert exposure.pre_exposure_inspection_audience == "operator_private"
     assert (
         exposure.pre_exposure_inspection_claim_ceiling
@@ -896,16 +883,13 @@ def test_exposure_separates_semantic_components_from_stage_artifacts() -> None:
     assert len(exposure.stages[0].ordered_segment_refs) == 2
     assert len(exposure.stages[1].ordered_segment_refs) == 1
     assert len(exposure.stages[2].ordered_segment_refs) == 3
-    rendered_segments = [
-        segment for segment in exposure.segments if segment.stage == "rendered"
-    ]
+    rendered_segments = [segment for segment in exposure.segments if segment.stage == "rendered"]
     assert sum(
         exposure.components[0].component_ref in segment.component_refs
         for segment in rendered_segments
     ) in {1, 2}
     assert any(
-        sum(component.component_ref in segment.component_refs for segment in rendered_segments)
-        == 2
+        sum(component.component_ref in segment.component_refs for segment in rendered_segments) == 2
         for component in exposure.components
     )
     assert all(segment.byte_count.value is not None for segment in exposure.segments)
@@ -975,8 +959,7 @@ def test_stage_removals_are_exact_and_root_state_is_derived() -> None:
         dark=True,
     )
     bad_segments = tuple(
-        dark_segment if item.segment_ref == presented_ref else item
-        for item in exposure.segments
+        dark_segment if item.segment_ref == presented_ref else item for item in exposure.segments
     )
     bad_stages = list(exposure.stages)
     bad_stages[presented_index] = bad_stages[presented_index].model_copy(
@@ -1118,15 +1101,18 @@ def test_applied_learning_requires_exact_join_and_committed_outcome() -> None:
         event_id="event:behavior-same-second",
         occurred_at="2026-07-12T16:01:00Z",
     )
-    assert canon.validate_context_behavior_learning_join(
-        exposure=exposure,
-        behavior=behavior,
-        learning=same_second_learning,
-        exposure_event=exposure_event,
-        behavior_event=same_second_behavior_event,
-        outcome_receipt=same_second_outcome,
-        application_receipt=same_second_application,
-    )[3] == same_second_outcome.receipt_ref
+    assert (
+        canon.validate_context_behavior_learning_join(
+            exposure=exposure,
+            behavior=behavior,
+            learning=same_second_learning,
+            exposure_event=exposure_event,
+            behavior_event=same_second_behavior_event,
+            outcome_receipt=same_second_outcome,
+            application_receipt=same_second_application,
+        )[3]
+        == same_second_outcome.receipt_ref
+    )
 
     fractional_outcome = _outcome(
         exposure,
@@ -1179,9 +1165,7 @@ def test_applied_learning_requires_exact_join_and_committed_outcome() -> None:
             application_receipt=whole_second_application,
         )
 
-    wrong_schema_outcome = _OutcomeFixture(
-        {**outcome._body, "schema": "other.outcome-receipt.v1"}
-    )
+    wrong_schema_outcome = _OutcomeFixture({**outcome._body, "schema": "other.outcome-receipt.v1"})
     wrong_schema_application = _build_application(
         exposure,
         behavior,
@@ -1305,15 +1289,18 @@ def test_applied_learning_requires_exact_join_and_committed_outcome() -> None:
 
     divergent_attributes = _OutcomeFixture(dict(outcome._body))
     divergent_attributes.attempt_fence = hashlib.sha256(b"ignored-duck-attribute").hexdigest()
-    assert canon.validate_context_behavior_learning_join(
-        exposure=exposure,
-        behavior=behavior,
-        learning=learning,
-        exposure_event=exposure_event,
-        behavior_event=behavior_event,
-        outcome_receipt=divergent_attributes,
-        application_receipt=application,
-    )[3] == outcome.receipt_ref
+    assert (
+        canon.validate_context_behavior_learning_join(
+            exposure=exposure,
+            behavior=behavior,
+            learning=learning,
+            exposure_event=exposure_event,
+            behavior_event=behavior_event,
+            outcome_receipt=divergent_attributes,
+            application_receipt=application,
+        )[3]
+        == outcome.receipt_ref
+    )
 
     forged_outcome = _OutcomeFixture(dict(outcome._body))
     forged_outcome.receipt_hash = "0" * 64
@@ -1580,16 +1567,19 @@ def test_correction_invalidates_old_learning_and_allows_current_successor() -> N
     assert current_application.application_ref not in invalidated
     assert invalidation.fanout_state == _state()
 
-    assert canon.validate_context_behavior_learning_join(
-        exposure=current_exposure,
-        behavior=current_behavior,
-        learning=current_learning,
-        exposure_event=current_exposure_event,
-        behavior_event=current_behavior_event,
-        outcome_receipt=current_outcome,
-        application_receipt=current_application,
-        invalidated_refs=invalidated,
-    )[2] == current_learning.learning_ref
+    assert (
+        canon.validate_context_behavior_learning_join(
+            exposure=current_exposure,
+            behavior=current_behavior,
+            learning=current_learning,
+            exposure_event=current_exposure_event,
+            behavior_event=current_behavior_event,
+            outcome_receipt=current_outcome,
+            application_receipt=current_application,
+            invalidated_refs=invalidated,
+        )[2]
+        == current_learning.learning_ref
+    )
 
     with pytest.raises(ValueError, match="invalidated"):
         canon.validate_context_behavior_learning_join(

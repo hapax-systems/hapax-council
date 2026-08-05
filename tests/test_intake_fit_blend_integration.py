@@ -32,7 +32,7 @@ def test_fit_blend_cannot_reorder_equal_wsjf_candidates() -> None:
     dark = _task("task-a", 5.0)
     lanes = [QueueLane(role="cx-alpha", platform="codex")]
 
-    for blend in (-10**9, 0.0, 10**9):
+    for blend in (-(10**9), 0.0, 10**9):
         assert plan_dispatches(
             [high_fit, dark],
             lanes,
