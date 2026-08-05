@@ -4288,6 +4288,17 @@ from shared.capability_onboarding_classify import (  # noqa: E402
 
 admission_tuple_id
 classify_onboarding_surface
+
+# Onboarding disposition ledgers (F2 explore-ledger residual)
+from shared.capability_onboarding_ledger import (  # noqa: E402
+    append_classify_result,
+    classify_and_ledger,
+    read_ledger,
+)
+
+append_classify_result
+classify_and_ledger
+read_ledger
 demand_shape_ref_for_classify
 
 # Additive CCEF/H STEP 2: the dispatch-frontier public API — callers land in the shadow-wire
