@@ -4279,6 +4279,17 @@ build_demand_shape_ref_payload
 demand_shape_ref
 demand_shape_ref_from_parts
 
+# F2 onboarding classify pure API (Edge B/C residual / post-#4504)
+from shared.capability_onboarding_classify import (  # noqa: E402
+    admission_tuple_id,
+    classify_onboarding_surface,
+    demand_shape_ref_for_classify,
+)
+
+admission_tuple_id
+classify_onboarding_surface
+demand_shape_ref_for_classify
+
 # Additive CCEF/H STEP 2: the dispatch-frontier public API — callers land in the shadow-wire
 # (STEP 9); referenced here so the vulture gate does not flag the as-yet caller-less functions.
 from shared.dispatch_frontier import dominates, non_dominated_set  # noqa: E402
