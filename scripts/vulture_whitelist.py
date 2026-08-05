@@ -4882,4 +4882,3 @@ _ = (
     shadow_compare,
     append_compare_record,
 )
-
