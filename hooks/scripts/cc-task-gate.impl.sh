@@ -779,6 +779,15 @@ while idx < len(lines):
     raw = lines[idx]
     line = raw.strip()
     idx += 1
+    # Depth-aware: ONLY column-0 keys are this note's own declarations. An
+    # indented key belongs to a nested block and asserts something else, so
+    # reading it as top-level (last-occurrence-wins) inverted meaning:
+    # `required_authority_grant.source_mutation_authorized: true` is a REQUEST
+    # for authority, and it was handing lanes authority the note denies at
+    # column 0. A nested exception `status:` masked the real status the same
+    # way. Fail-closed over fail-silent.
+    if raw[:1] in (" ", "\t"):
+        continue
     if not line or line.startswith("#") or ":" not in line:
         continue
     key, _, val = line.partition(":")
