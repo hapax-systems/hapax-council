@@ -37,7 +37,12 @@ from shared.sdlc_claim import (
     ClaimPublicationIntent,
     inspect_claim_publications,
 )
-from shared.sdlc_close import CloseGateEvidence, TerminalCloseError, close_task
+from shared.sdlc_close import (
+    CANON_BOUND_CLOSE_ENV,
+    CloseGateEvidence,
+    TerminalCloseError,
+    close_task,
+)
 from shared.sdlc_task_store import (
     ClaimDispatchBinding,
     resolve_task_note,
@@ -684,6 +689,10 @@ def test_non_done_close_requires_operator_disposition_receipt(
     final_status: str,
 ) -> None:
     fixture = _fixture(tmp_path, monkeypatch, acceptance_receipt=False)
+    # Strict mode. The refusal demands a governed override receipt that does not
+    # exist yet, so holding it unconditionally made non-done close impossible by
+    # any route. It is gated on this switch; assert it under the mode that owns it.
+    monkeypatch.setenv(CANON_BOUND_CLOSE_ENV, "1")
 
     with pytest.raises(
         TerminalCloseError,
@@ -776,7 +785,10 @@ def test_receipt_changed_by_gate_is_refused_before_echo_or_projection(
     assert not (fixture.vault / "closed" / fixture.note.name).exists()
 
 
-def test_raw_debt_override_refuses_without_touching_state(tmp_path: Path) -> None:
+def test_raw_debt_override_refuses_without_touching_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CANON_BOUND_CLOSE_ENV, "1")
     with pytest.raises(TerminalCloseError, match="terminal_close_debt_override_requires_receipt"):
         close_task(
             "task-close",
@@ -786,4 +798,33 @@ def test_raw_debt_override_refuses_without_touching_state(tmp_path: Path) -> Non
             vault_root=tmp_path / "vault",
             cache_dir=tmp_path / "cache",
         )
+    assert not list(tmp_path.rglob("*"))
+
+
+def test_debt_close_is_not_wedged_outside_canon_bound_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The escape path codex-1 found missing: outside strict mode, debt is not a dead end.
+
+    `terminal_close_debt_override_requires_receipt` demands a governed override
+    receipt, and no mechanism exists to produce one — `close_task` takes no
+    receipt argument and reads no receipt file. Held unconditionally, a
+    debt-bearing task could therefore never reach terminal closure by ANY route.
+
+    Outside strict mode that refusal must not fire. The close still fails here,
+    on unrelated grounds (no vault fixture), and that is the point: it fails on
+    something an operator can actually satisfy, rather than on a receipt that
+    cannot be produced.
+    """
+    monkeypatch.delenv(CANON_BOUND_CLOSE_ENV, raising=False)
+    with pytest.raises(TerminalCloseError) as raised:
+        close_task(
+            "task-close",
+            actor="alpha",
+            session_id="session-test",
+            debt_reason="incident response",
+            vault_root=tmp_path / "vault",
+            cache_dir=tmp_path / "cache",
+        )
+    assert raised.value.reason_code != "terminal_close_debt_override_requires_receipt"
     assert not list(tmp_path.rglob("*"))

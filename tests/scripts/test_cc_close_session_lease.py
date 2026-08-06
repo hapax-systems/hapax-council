@@ -74,6 +74,11 @@ def _run_close(
     env = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
     env["HOME"] = str(home)
     env["HAPAX_AGENT_ROLE"] = role
+    # Strict close mode. The disposition-receipt refusal asserted below is gated
+    # on this switch: held unconditionally it demanded a governed override
+    # receipt no mechanism can produce, so a withdrawal could never complete by
+    # any route. Assert it under the mode that owns it.
+    env["HAPAX_CANON_BOUND_CLOSE_ENFORCEMENT"] = "1"
     if session_id is not None:
         env["HAPAX_SESSION_ID"] = session_id
     # --status withdrawn isolates the claim-clearing block (the done-only gates —

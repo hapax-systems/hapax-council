@@ -59,6 +59,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_VAULT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
 DEFAULT_CACHE = Path.home() / ".cache" / "hapax"
 
+# Selects the strict, canon-bound close mode. The SAME switch already selects
+# strict behaviour in scripts/cc-close-acceptance-receipt-check.py; this module
+# is the other half of that pair and must read the same one, or the two gates
+# disagree about which mode the system is in.
+CANON_BOUND_CLOSE_ENV = "HAPAX_CANON_BOUND_CLOSE_ENFORCEMENT"
+
 
 class TerminalCloseError(RuntimeError):
     def __init__(self, reason_code: str, repair_action: str, detail: str | None = None) -> None:
@@ -439,18 +445,31 @@ def close_task(
             "use done, withdrawn, or superseded",
             final_status,
         )
-    if final_status != "done":
+    # These three refusals demand a governed override receipt that does not yet
+    # exist: close_task takes no receipt argument and reads no receipt file. Held
+    # unconditionally they were unsatisfiable, so a debt-bearing,
+    # withdrawn/superseded, or retroactive task could not reach terminal closure
+    # by ANY route — a wedge, not a gate. Flagged by codex-1 on 2026-08-06 as
+    # "canon-bound close has no emergency escape path", and it is this landing's
+    # own defect: neither the refusals nor their tests exist on main.
+    #
+    # Their own repair actions already presume a way through — "raw --debt is
+    # legacy-only" only means something if a legacy path exists. Gated here on
+    # the same switch the sibling gate reads, so strict mode still refuses
+    # pending the receipt contract while incident response stays possible.
+    canon_bound_close = os.environ.get(CANON_BOUND_CLOSE_ENV) == "1"
+    if canon_bound_close and final_status != "done":
         raise TerminalCloseError(
             "terminal_close_operator_disposition_receipt_required",
             "keep the task active until an operator-minted withdrawn or superseded receipt is available",
             final_status,
         )
-    if debt_reason:
+    if canon_bound_close and debt_reason:
         raise TerminalCloseError(
             "terminal_close_debt_override_requires_receipt",
             "record a governed override receipt before canon-bound close; raw --debt is legacy-only",
         )
-    if retroactive:
+    if canon_bound_close and retroactive:
         raise TerminalCloseError(
             "terminal_close_retroactive_receipt_required",
             "bind typed operator evidence through the admitted close contract; a raw retroactive assertion cannot authorize close",
