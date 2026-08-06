@@ -1130,12 +1130,15 @@ def find_task_notes(
       and a closed task must not be re-reviewed. Terminal statuses still
       living in ``active/`` are filtered through ``TASK_TERMINAL_STATUSES``
       (the single source of truth in shared/sdlc_lifecycle.py).
-    * when the caller names a repo, the note must declare the same
-      ``pr_repo`` (case-insensitive, via shared/cc_task_pr_link.same_repo);
-      an undeclared ``pr_repo`` is not a wildcard. Repo-less calls keep
-      number-only matching for legacy notes, and a repo-less call that finds
-      multiple number matches gets a refusal with the corrective action
-      logged — ambiguous admission is worse than a named miss.
+    * when the caller names a repo *and* the note declares ``pr_repo``, they
+      must agree (case-insensitive, via shared/cc_task_pr_link.same_repo).
+      A note that declares nothing keeps number-only matching even under a
+      named caller — the task's acceptance criteria require that legacy
+      compatibility explicitly (the estate measured zero live legacy notes
+      with PR links, 2026-08-06). Repo-less calls keep number-only matching,
+      and a repo-less call that finds multiple number matches gets a refusal
+      with the corrective action logged — ambiguous admission is worse than
+      a named miss.
     * the repo guard binds the branch-fallback arm too: a note rejected for
       repo disagreement must not re-enter through a shared branch name.
     """
@@ -1160,11 +1163,11 @@ def find_task_notes(
             note_repo = str(fm.get("pr_repo") or "").strip()
             if is_nullish(note_repo):
                 note_repo = ""
-            if caller_repo:
-                # The caller named a repository: the note must declare the same
-                # one. An undeclared pr_repo is not a wildcard — number-only
-                # admission across repos is the contamination being repaired.
-                repo_agrees = bool(note_repo) and same_repo(note_repo, caller_repo)
+            if caller_repo and note_repo:
+                # Both declare: they must agree. A note that declares nothing keeps
+                # number-only matching under a named caller — the task's acceptance
+                # criteria require that legacy compatibility explicitly.
+                repo_agrees = same_repo(note_repo, caller_repo)
             else:
                 repo_agrees = True
             if pr_number is not None and note_pr == pr_number and repo_agrees:

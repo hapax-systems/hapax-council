@@ -3101,12 +3101,13 @@ class TestFindTaskNotesLinkage:
         found = rt.find_task_notes(tmp_path, pr_number=7)
         assert [fm["task_id"] for _, fm in found] == ["legacy-task"]
 
-    def test_undeclared_note_repo_is_not_a_wildcard(self, tmp_path: Path) -> None:
-        """A named caller repo never matches a note that declares none."""
+    def test_undeclared_note_repo_matches_under_a_named_caller(self, tmp_path: Path) -> None:
+        """AC3: a legacy note with pr but no pr_repo still matches when the
+        caller supplies a repo (no silent breakage of existing links)."""
         rt = _load_review_team_module()
         self._note(tmp_path / "active", "legacy-task", status="pr_open", pr=7)
         found = rt.find_task_notes(tmp_path, pr_number=7, pr_repo="hapax-systems/reins")
-        assert found == ()
+        assert [fm["task_id"] for _, fm in found] == ["legacy-task"]
 
     def test_branch_fallback_still_works(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
