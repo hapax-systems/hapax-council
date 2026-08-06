@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1151,6 +1152,26 @@ def _write_claimable_task(home: Path, task_id: str, *, status: str = "offered") 
     return note
 
 
+# The all-or-none dispatch binding (scripts/cc-claim:71-90). Claim publication is
+# an operational effect and is always bound to its dispatch, so under canon echo
+# enforcement — which is now unconditional — a claim without these six refuses
+# with exit 2. Fixtures that want a SUCCESSFUL claim must supply them.
+_CLAIM_DISPATCH_ARGS = (
+    "--dispatch-message-id",
+    "message-gate",
+    "--dispatch-binding-hash",
+    "b" * 64,
+    "--dispatch-platform",
+    "claude",
+    "--dispatch-mode",
+    "interactive",
+    "--dispatch-profile",
+    "full",
+    "--dispatch-authority-case",
+    "CASE-TEST-001",
+)
+
+
 def _run_cc_claim(
     home: Path,
     task_id: str,
@@ -1159,6 +1180,7 @@ def _run_cc_claim(
     role_env: str = "HAPAX_AGENT_ROLE",
     extra_env: dict | None = None,
     cwd: Path | None = None,
+    dispatch: bool = True,
 ) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["HOME"] = str(home)
@@ -1168,8 +1190,11 @@ def _run_cc_claim(
         env[role_env] = role
     if extra_env:
         env.update(extra_env)
+    argv = ["bash", str(CC_CLAIM), task_id]
+    if dispatch:
+        argv.extend(_CLAIM_DISPATCH_ARGS)
     return subprocess.run(
-        ["bash", str(CC_CLAIM), task_id],
+        argv,
         env=env,
         text=True,
         capture_output=True,
@@ -1178,41 +1203,123 @@ def _run_cc_claim(
 
 
 class TestCcClaimSessionKeyed:
-    """cc-claim writes a session-keyed lease + the legacy file (FM-2), TTL reaps."""
+    """cc-claim identity + lease semantics. Publication itself is a Gate 0A HOLD.
+
+    The class previously asserted that cc-claim writes the session-keyed and
+    legacy lease files and reaps expired ones. Both are Gate 0B effects that
+    Gate 0A forbids, and one of them (reaping) was explicitly inverted — expiry
+    is now evidence for a governed release, never permission to delete another
+    session's lease.
+    """
 
     # cc-claim now refuses low-entropy / pid-shaped claim keys
     # (shared/session_identity.py), so writer-side fixtures use a realistic id.
     _SID = "11111111-2222-4333-8444-5555aaaa6666"
 
-    def test_writes_session_keyed_and_legacy(self, tmp_path: Path) -> None:
+    def test_session_keyed_publication_is_a_gate0a_hold_without_mutation(
+        self, tmp_path: Path
+    ) -> None:
+        """Was "writes the session-keyed + legacy lease"; Gate 0A forbids the effect.
+
+        Claim publication is a Gate 0B effect. Under Gate 0A `publish_claim`
+        always refuses with `unadmitted_claim_publication_forbidden` and mutates
+        nothing — see
+        `tests/shared/test_sdlc_claim.py::test_publish_claim_is_gate0a_hold_without_mutation`.
+
+        Asserting that files ARE written was therefore a guard for behaviour the
+        gate is supposed to prevent: had publication ever leaked at Gate 0A, this
+        test would have gone green on the leak. It now pins the hold and the
+        absence of any claim file, which is the property that actually matters.
+        """
         _write_claimable_task(tmp_path, "task-sk")
+        cache = tmp_path / ".cache" / "hapax"
+        before = sorted(p.name for p in cache.glob("*")) if cache.is_dir() else []
+
         r = _run_cc_claim(
             tmp_path, "task-sk", role="delta", extra_env={"HAPAX_SESSION_ID": self._SID}
         )
-        assert r.returncode == 0, r.stderr
-        cache = tmp_path / ".cache" / "hapax"
-        # Legacy file kept for the ~11 out-of-scope consumers (cc-close, session-context, …).
-        assert (cache / "cc-active-task-delta").read_text().strip() == "task-sk"
-        # Session-keyed lease the gate prefers.
-        assert (cache / f"cc-active-task-delta-{self._SID}").read_text().strip() == "task-sk"
 
-    def test_legacy_only_without_session_id(self, tmp_path: Path) -> None:
+        assert r.returncode != 0, r.stdout
+        # A typed reason, not a bare failure — the refusal vocabulary is closed.
+        assert re.search(r"HOLD — [a-z_]+:", r.stderr), r.stderr
+        after = sorted(p.name for p in cache.glob("*")) if cache.is_dir() else []
+        assert after == before, "Gate 0A claim publication must not mutate the cache"
+        if cache.is_dir():
+            assert not list(cache.glob("cc-active-task-delta*"))
+
+    def test_claim_without_session_id_is_refused_under_canon_enforcement(
+        self, tmp_path: Path
+    ) -> None:
+        """Was "legacy-only claim succeeds"; canon enforcement inverted it.
+
+        Canon-bound publication binds a claim to a session, so an unkeyed claim is
+        not representable. This asserted exit 0 with a legacy-only file until
+        `canon_enforced` became unconditional (`scripts/cc-claim:39`); it now
+        refuses at `:131-134`. Keeping the old assertion would have left a guard
+        that contradicts the shipped contract.
+        """
         _write_claimable_task(tmp_path, "task-ns")
         r = _run_cc_claim(tmp_path, "task-ns", role="delta")
-        assert r.returncode == 0, r.stderr
+        assert r.returncode == 2, r.stderr
+        assert "claim-keyable session id" in r.stderr
         cache = tmp_path / ".cache" / "hapax"
-        assert (cache / "cc-active-task-delta").read_text().strip() == "task-ns"
-        assert not list(cache.glob("cc-active-task-delta-*"))
+        assert not list(cache.glob("cc-active-task-delta*"))
 
-    def test_roleless_session_can_claim(self, tmp_path: Path) -> None:
-        # No role env but a session id → claims under the governed roleless identity.
+    def test_claim_without_dispatch_binding_is_refused(self, tmp_path: Path) -> None:
+        """Claim publication is an operational effect and must echo its dispatch."""
+        _write_claimable_task(tmp_path, "task-nodispatch")
+        r = _run_cc_claim(
+            tmp_path,
+            "task-nodispatch",
+            role="delta",
+            extra_env={"HAPAX_SESSION_ID": self._SID},
+            dispatch=False,
+        )
+        assert r.returncode == 2, r.stderr
+        assert "exact dispatch binding flags" in r.stderr
+        cache = tmp_path / ".cache" / "hapax"
+        assert not list(cache.glob("cc-active-task-delta*"))
+
+    def test_roleless_session_resolves_identity_and_still_holds_at_gate0a(
+        self, tmp_path: Path
+    ) -> None:
+        """Roleless identity still resolves (FM-1: "no role" never means "no escape").
+
+        The identity half of the original assertion is still live and worth
+        guarding — a session with no role but a session id must resolve to the
+        governed `roleless` identity rather than failing to identify. What cannot
+        be asserted at Gate 0A is the resulting file write, which the gate holds.
+        So this pins that identity resolution got far enough to reach the
+        publication hold, rather than dying earlier at identity.
+        """
         _write_claimable_task(tmp_path, "task-rl")
         r = _run_cc_claim(tmp_path, "task-rl", role=None, extra_env={"HAPAX_SESSION_ID": self._SID})
-        assert r.returncode == 0, r.stderr
-        cache = tmp_path / ".cache" / "hapax"
-        assert (cache / f"cc-active-task-roleless-{self._SID}").read_text().strip() == "task-rl"
 
-    def test_expired_lease_is_reaped_and_does_not_block(self, tmp_path: Path) -> None:
+        # Reaching a claim-publication HOLD proves identity resolved; an identity
+        # failure exits 1 at scripts/cc-claim:105-107 with a different message.
+        assert "cannot determine identity" not in r.stderr
+        assert re.search(
+            r"HOLD — claim_publication_[a-z_]+:|unadmitted_claim_publication", r.stderr
+        ), r.stderr
+        cache = tmp_path / ".cache" / "hapax"
+        if cache.is_dir():
+            assert not list(cache.glob("cc-active-task-roleless*"))
+
+    def test_expired_lease_holds_and_is_never_reaped(self, tmp_path: Path) -> None:
+        """Inverted contract: expiry is EVIDENCE for a governed release, not permission.
+
+        This asserted that a stale lease was auto-reaped and the new claim
+        proceeded. `scripts/cc-claim:142-158` now states the opposite outright —
+        *"Expiry is evidence for a governed release, never permission for this
+        claim attempt to delete another lease"* — and HOLDs with exit 7 instead.
+
+        The old assertion did not merely go stale, it contradicted
+        `tests/scripts/test_cc_claim.py::test_expired_claim_requires_governed_release_and_is_not_reaped`,
+        which asserts exit 7 and an unchanged tree. Two guards claiming opposite
+        behaviour on the same boundary is worse than either being wrong alone:
+        whichever ran would look authoritative. This one now matches the shipped
+        contract, and additionally pins that the other session's lease survives.
+        """
         _write_claimable_task(tmp_path, "task-new")
         cache = tmp_path / ".cache" / "hapax"
         cache.mkdir(parents=True, exist_ok=True)
@@ -1224,10 +1331,13 @@ class TestCcClaimSessionKeyed:
             tmp_path,
             "task-new",
             role="delta",
-            extra_env={"HAPAX_SESSION_ID": "sidNew", "HAPAX_CLAIM_LEASE_TTL_SECS": "21600"},
+            extra_env={"HAPAX_SESSION_ID": self._SID, "HAPAX_CLAIM_LEASE_TTL_SECS": "21600"},
         )
-        assert r.returncode == 0, r.stderr
-        assert not stale.exists()  # dead session's lease auto-expired (reaped)
+        assert r.returncode == 7, r.stderr
+        assert "requires governed release" in r.stderr
+        # The other session's lease MUST survive — reaping it is the failure mode.
+        assert stale.exists()
+        assert stale.read_text().strip() == "task-old"
 
 
 _SPAWNERS = [
