@@ -4869,3 +4869,27 @@ _ = (
     _check_omitted_shape_freshness,
     _CapabilityShapeDescriptor,
 )
+
+# N2 thin SdlcRouter shadow-compare
+from shared.sdlc_router_shadow_compare import (  # noqa: E402
+    append_compare_record,
+    compare_route,
+    shadow_compare,
+)
+
+_ = (
+    compare_route,
+    shadow_compare,
+    append_compare_record,
+)
+
+# N3 surface_delta → classify discover
+from shared.capability_onboarding_discover import (  # noqa: E402
+    delta_to_classify_kwargs,
+    discover_from_deltas,
+)
+
+_ = (
+    delta_to_classify_kwargs,
+    discover_from_deltas,
+)

@@ -64,6 +64,12 @@ def _split_frontmatter(content: str) -> tuple[dict[str, Any], set[str], str, lis
         line = lines[idx]
         stripped = line.strip()
         idx += 1
+        # Depth-aware, same defect and same fix as cc-task-gate.impl.sh section 7:
+        # only column-0 keys are the note's own declarations. Counting an indented
+        # key as top-level let a nested `task_id:` / `status:` shadow the real one,
+        # last occurrence winning.
+        if line[:1] in (" ", "\t"):
+            continue
         if not stripped or stripped.startswith("#") or ":" not in stripped:
             continue
         key, raw_value = stripped.split(":", 1)

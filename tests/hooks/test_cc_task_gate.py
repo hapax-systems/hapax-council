@@ -117,6 +117,7 @@ def _make_vault(
     authority: bool = True,
     source_authorized: bool = True,
     runtime_authorized: bool = False,
+    extra_frontmatter: str = "",
 ) -> tuple[Path, Path]:
     """Build a fixture vault under tmp_path/Documents/Personal/20-projects/hapax-cc-tasks/.
     Returns (vault_root, note_path)."""
@@ -151,7 +152,7 @@ assigned_to: {assigned}
 priority: normal{blocked_line}{witness_line}
 created_at: 2026-04-20T00:00:00Z
 updated_at: 2026-04-20T00:00:00Z
-{authority_block.rstrip()}
+{authority_block.rstrip()}{extra_frontmatter}
 ---
 
 # Fixture task
@@ -2126,3 +2127,102 @@ class TestCognitionCarveoutParityGatesCutover:
         assert verdict["parity_ok"] is False  # the new cutover-gate term
         assert verdict["clean"] is False  # cutover BLOCKED on the parity break
         assert any("parity" in str(r).lower() for r in verdict["reasons"])
+
+
+class TestFrontmatterDepthAwareness:
+    """Only column-0 keys are a note's own declarations.
+
+    The section-7 parser used to read every `key: value` line after stripping
+    leading whitespace, so a nested key was indistinguishable from a top-level
+    one and the LAST occurrence won. Measured consequences on the real vault
+    before the fix:
+
+      - `cc-task-sdlc-fsm-canon-impingement-lockstep-bootstrap-20260710`
+        declares `status: pr_open` at column 0 and carries 76 indented
+        `status:` lines; the gate read the last one
+        (`ACTIVE_ONLY_UNDER_EXACT_OPERATOR_AMENDMENT_AND_ONE_USE_COMPOUND`) and
+        refused every mutation on the task.
+      - six active tasks declare `implementation_authorized: false` /
+        `source_mutation_authorized: false` / `runtime_mutation_authorized:
+        false` at column 0 while a nested `required_authority_grant:` block
+        names them `true`. A block describing the authority a task WOULD NEED
+        was being read as the authority it HAS — the fail-silent direction.
+
+    These pin both directions: the status read, and the authority read.
+    """
+
+    def test_nested_status_does_not_shadow_top_level(self, tmp_path: Path) -> None:
+        _make_vault(
+            tmp_path,
+            status="pr_open",
+            assigned="alpha",
+            extra_frontmatter=(
+                "\none_use_exception:"
+                "\n  status: ACTIVE_ONLY_UNDER_EXACT_OPERATOR_AMENDMENT_AND_ONE_USE_COMPOUND"
+            ),
+        )
+        _write_claim(tmp_path, "alpha", "test-001")
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 0, f"stderr={result.stderr}"
+        assert "unknown status" not in result.stderr
+
+    def test_nested_authority_request_does_not_grant_source_mutation(self, tmp_path: Path) -> None:
+        _make_vault(
+            tmp_path,
+            status="in_progress",
+            assigned="alpha",
+            source_authorized=False,
+            extra_frontmatter=(
+                "\nrequired_authority_grant:"
+                "\n  implementation_authorized: true"
+                "\n  source_mutation_authorized: true"
+            ),
+        )
+        _write_claim(tmp_path, "alpha", "test-001")
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 2
+        assert "does not authorize source mutation" in result.stderr
+
+    def test_nested_authority_request_does_not_grant_runtime_mutation(self, tmp_path: Path) -> None:
+        _make_vault(
+            tmp_path,
+            status="in_progress",
+            assigned="alpha",
+            runtime_authorized=False,
+            extra_frontmatter=("\nrequired_authority_grant:\n  runtime_mutation_authorized: true"),
+        )
+        _write_claim(tmp_path, "alpha", "test-001")
+        result = _run_hook(
+            {"tool_name": "Bash", "tool_input": {"command": "systemctl --user restart x"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 2
+        assert "does not authorize runtime mutation" in result.stderr
+
+    def test_top_level_scope_list_survives_a_nested_list(self, tmp_path: Path) -> None:
+        """A nested block's own `mutation_scope_refs` must not replace the real one.
+
+        The fixture's column-0 scope is `/tmp/x`. Pre-fix the nested list won
+        (last occurrence), so editing the in-scope path was refused as
+        out-of-scope.
+        """
+        _make_vault(
+            tmp_path,
+            status="in_progress",
+            assigned="alpha",
+            extra_frontmatter=(
+                "\nsuperseded_scope:\n  mutation_scope_refs:\n    - /tmp/never-authorized"
+            ),
+        )
+        _write_claim(tmp_path, "alpha", "test-001")
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 0, f"stderr={result.stderr}"
