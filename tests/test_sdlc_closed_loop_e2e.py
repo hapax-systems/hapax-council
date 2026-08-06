@@ -260,22 +260,29 @@ def test_canon_bound_close_fails_closed_on_an_unreadable_note(
 
 
 def test_close_under_debt_is_refused_and_names_no_available_override() -> None:
-    """Behavioural complement to the structural deadlock proof.
+    """Close under debt is refused, and the receipt it demands does not exist.
 
-    The 2026-08-06 review asked for one case walking a real close under debt
-    *with a governed override receipt present*, to turn "no back-edge exists"
-    into "the loop closes". That test cannot be written, and the reason is the
-    finding: **no override receipt mechanism exists.**
-    ``admit_terminal_close`` takes no receipt argument, reads no receipt file,
-    and its debt branch is an unconditional ``if debt_reason: raise``.
+    ``close_task`` takes no receipt argument and reads no receipt file, so
+    ``terminal_close_debt_override_requires_receipt`` cannot currently be
+    satisfied. codex-1 flagged this on 2026-08-06 as "canon-bound close has no
+    emergency escape path".
 
-    So this asserts what is actually true — the refusal is total — and pins it,
-    so that if an override path is ever implemented this test fails and forces
-    both it and the operator documentation to be updated together.
+    **It is deliberate, not an accident.** Four tests assert these refusals by
+    name — ``tests/shared/test_sdlc_close.py::test_non_done_close_requires_
+    operator_disposition_receipt`` (withdrawn and superseded),
+    ``::test_raw_debt_override_refuses_without_touching_state``, and
+    ``tests/scripts/test_cc_close_session_lease.py::test_unadmitted_withdrawal_
+    preserves_all_claim_state``. Gating them on an env switch to restore an
+    escape hatch breaks all four: the close then proceeds and fails later at
+    ``canon_echo_projection_required`` instead. That was tried and reverted.
 
-    This is a genuine wedge while canon-bound close is on: a task carrying debt
-    cannot be closed at all. Pinning it keeps that visible instead of letting it
-    read as an ordinary "supply the receipt" refusal.
+    So the standing constraint is: while the receipt mechanism is unimplemented,
+    a debt-bearing / withdrawn / superseded / retroactive task cannot reach
+    terminal closure. That is a governance gap to close deliberately, with the
+    receipt contract, not by weakening a tested gate.
+
+    This pins the current contract so the gap stays visible and cannot be
+    silently widened or silently removed.
     """
     import inspect
 
@@ -292,8 +299,9 @@ def test_close_under_debt_is_refused_and_names_no_available_override() -> None:
 
     source = inspect.getsource(close_task)
     assert "terminal_close_debt_override_requires_receipt" in source
-    # The branch is unconditional on the truthiness of debt_reason alone — no
-    # receipt lookup guards it. If that ever changes, this pin fails on purpose.
+    # Unconditional on debt_reason alone — no receipt lookup guards it, because
+    # no receipt mechanism exists to look up. If that ever changes, this pin
+    # fails on purpose and forces the operator documentation to change with it.
     assert "if debt_reason:" in source
 
 

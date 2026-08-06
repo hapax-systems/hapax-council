@@ -37,15 +37,22 @@ admission (``:843``), where it can only ever refuse. The same holds for the
 siblings ``terminal_close_operator_disposition_receipt_required`` (any
 non-``done`` final status) and ``terminal_close_retroactive_receipt_required``.
 
-So the operator's real next action under canon-bound close is **not** to hunt for
-a mint command — there isn't one. It is to resolve the debt, or close as
-``done`` without a debt reason, or (where the task legitimately predates
-canon-bound close) run the legacy path with ``HAPAX_CANON_BOUND_CLOSE_ENFORCEMENT``
-unset, where the env bypass above still applies.
+So the operator's real next action is **not** to hunt for a mint command — there
+isn't one. It is to resolve the debt and close as ``done`` without a debt reason.
 
-Stated plainly because the gap is load-bearing: while canon-bound close is on, a
-task carrying debt **cannot be closed at all**. Treat that as a wedge to escalate,
-not a procedure to follow. Covered by
+Stated plainly because it is load bearing: those three refusals in
+``shared/sdlc_close.py`` are **unconditional**, so while the receipt mechanism is
+unimplemented a debt-bearing, withdrawn, superseded, or retroactive task cannot
+reach terminal closure by any route. That is deliberate and pinned by four tests
+(``tests/shared/test_sdlc_close.py::test_non_done_close_requires_operator_disposition_receipt``
+for withdrawn and superseded, ``::test_raw_debt_override_refuses_without_touching_state``,
+and ``tests/scripts/test_cc_close_session_lease.py::test_unadmitted_withdrawal_preserves_all_claim_state``).
+
+Do not "fix" it by gating the refusals on ``HAPAX_CANON_BOUND_CLOSE_ENFORCEMENT``
+to restore an escape hatch: that breaks all four tests, because the close then
+proceeds and fails later at ``canon_echo_projection_required``. Closing this gap
+means implementing the governed override receipt, which is a governance decision,
+not a gate weakening. Covered by
 ``tests/test_sdlc_closed_loop_e2e.py::test_close_under_debt_is_refused_and_names_no_available_override``.
 
 Failure mode: fail-OPEN on infrastructure errors reading the NOTE (missing /
