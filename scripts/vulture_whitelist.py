@@ -4882,3 +4882,14 @@ _ = (
     shadow_compare,
     append_compare_record,
 )
+
+# N3 surface_delta → classify discover
+from shared.capability_onboarding_discover import (  # noqa: E402
+    delta_to_classify_kwargs,
+    discover_from_deltas,
+)
+
+_ = (
+    delta_to_classify_kwargs,
+    discover_from_deltas,
+)
