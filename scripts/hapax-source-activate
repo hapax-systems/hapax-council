@@ -772,53 +772,305 @@ sync_dependency_environment() {
 
 sync_dependency_environment "$candidate_worktree"
 run_activation_health_probes "$candidate_worktree"
+LOCAL_BIN="${HAPAX_SOURCE_ACTIVATE_LOCAL_BIN:-$HOME/.local/bin}"
+if ! mkdir -p "$LOCAL_BIN"; then
+    write_receipt "failed" "not_started" "2" "managed launcher directory unavailable"
+    echo "hapax-source-activate: unable to prepare managed launcher directory $LOCAL_BIN; next action: repair its permissions or free space, then rerun governed source activation" >&2
+    exit 2
+fi
 promote_active_worktree "$candidate_worktree"
 
 if [[ "$active_head" != "$origin_sha" ]]; then
+    rollback_active_worktree "active source head mismatch" || true
     write_receipt "failed" "not_started" "2" "active source head does not match origin/main"
-    echo "hapax-source-activate: active source $active_head != origin/main $origin_sha" >&2
+    echo "hapax-source-activate: active source $active_head != origin/main $origin_sha; next action: inspect the activation alias and release worktree, then rerun governed source activation" >&2
     exit 2
 fi
 
-LOCAL_BIN="${HAPAX_SOURCE_ACTIVATE_LOCAL_BIN:-$HOME/.local/bin}"
-mkdir -p "$LOCAL_BIN"
 sweep_count=0
 config_sync_count=0
+launcher_snapshot_dir=""
+launcher_snapshot_ready=0
+predeploy_failure_message=""
+active_config_dest="$HOME/.config/hapax/usb-topology-policy.json"
+
+snapshot_managed_launchers() {
+    local root script base dest
+    local -A managed=()
+    for root in "$candidate_worktree" "$previous_active_target"; do
+        [[ -d "$root/scripts" ]] || continue
+        for script in "$root"/scripts/hapax-*; do
+            [[ -f "$script" ]] || continue
+            base="${script##*/}"
+            [[ "$base" =~ ^hapax-[A-Za-z0-9._-]+$ ]] || {
+                echo "hapax-source-activate: refusing unsafe managed launcher name: $base; next action: rename the source launcher to hapax-[A-Za-z0-9._-]+ and rerun governed source activation" >&2
+                return 1
+            }
+            managed["$base"]=1
+        done
+        for base in cc-claim cc-close; do
+            [[ -f "$root/scripts/$base" ]] && managed["$base"]=1
+        done
+    done
+
+    if ! launcher_snapshot_dir="$(mktemp -d "$STATE_DIR/launcher-rollback.XXXXXX")"; then
+        launcher_snapshot_dir=""
+        echo "hapax-source-activate: unable to reserve managed launcher snapshot; next action: verify $STATE_DIR is writable with free space, then rerun governed source activation" >&2
+        return 1
+    fi
+    if ! mkdir -p "$launcher_snapshot_dir/present"; then
+        echo "hapax-source-activate: unable to create managed launcher snapshot storage at $launcher_snapshot_dir; next action: preserve the path for inspection, repair state-directory permissions or free space, then rerun governed source activation" >&2
+        return 1
+    fi
+    if ! : > "$launcher_snapshot_dir/names"; then
+        echo "hapax-source-activate: unable to initialize managed launcher snapshot inventory at $launcher_snapshot_dir/names; next action: preserve the path for inspection, repair state-directory permissions or free space, then rerun governed source activation" >&2
+        return 1
+    fi
+    for base in "${!managed[@]}"; do
+        if ! printf '%s\n' "$base" >> "$launcher_snapshot_dir/names"; then
+            echo "hapax-source-activate: unable to record managed launcher $base in $launcher_snapshot_dir/names; next action: preserve the snapshot path, repair state-directory permissions or free space, then rerun governed source activation" >&2
+            return 1
+        fi
+        dest="$LOCAL_BIN/$base"
+        if [[ -e "$dest" || -L "$dest" ]]; then
+            if [[ ! -f "$dest" && ! -L "$dest" ]]; then
+                echo "hapax-source-activate: refusing non-file managed launcher during snapshot: $dest; next action: move the non-file entry aside without following it and rerun governed source activation" >&2
+                return 1
+            fi
+            if ! cp -a -- "$dest" "$launcher_snapshot_dir/present/$base"; then
+                echo "hapax-source-activate: unable to snapshot managed launcher $dest; next action: leave the launcher unchanged, preserve $launcher_snapshot_dir for inspection, repair state-directory permissions or free space, then rerun governed source activation" >&2
+                return 1
+            fi
+        fi
+    done
+    if [[ -e "$active_config_dest" || -L "$active_config_dest" ]]; then
+        if [[ ! -f "$active_config_dest" && ! -L "$active_config_dest" ]]; then
+            echo "hapax-source-activate: refusing non-file active config during snapshot: $active_config_dest; next action: move the non-file entry aside without following it and rerun governed source activation" >&2
+            return 1
+        fi
+        if ! cp -a -- "$active_config_dest" "$launcher_snapshot_dir/config-present"; then
+            echo "hapax-source-activate: unable to snapshot active config $active_config_dest; next action: leave the config unchanged, preserve $launcher_snapshot_dir for inspection, repair state-directory permissions or free space, then rerun governed source activation" >&2
+            return 1
+        fi
+    fi
+    launcher_snapshot_ready=1
+}
+
+restore_managed_launchers() {
+    [[ "$launcher_snapshot_ready" == "1" ]] || return 0
+    local base dest saved restore_temp_dir
+    if [[ ! -f "$launcher_snapshot_dir/names" || -L "$launcher_snapshot_dir/names" ]]; then
+        echo "hapax-source-activate: managed launcher snapshot inventory is missing or unsafe at $launcher_snapshot_dir/names; next action: preserve $launcher_snapshot_dir and restore launchers from its present directory before rerunning governed source activation" >&2
+        return 1
+    fi
+    while IFS= read -r base; do
+        [[ -n "$base" ]] || continue
+        dest="$LOCAL_BIN/$base"
+        saved="$launcher_snapshot_dir/present/$base"
+        if [[ -d "$dest" && ! -L "$dest" ]]; then
+            echo "hapax-source-activate: cannot restore launcher over directory: $dest; next action: move the directory aside, preserve $launcher_snapshot_dir, and rerun governed source activation" >&2
+            return 1
+        fi
+        if [[ -e "$saved" || -L "$saved" ]]; then
+            if [[ ! -f "$saved" && ! -L "$saved" ]]; then
+                echo "hapax-source-activate: refusing unsafe saved launcher during restore: $saved; next action: preserve $launcher_snapshot_dir for inspection and restore $dest manually before rerunning governed source activation" >&2
+                return 1
+            fi
+            if ! restore_temp_dir="$(mktemp -d "$LOCAL_BIN/.${base}.restore.XXXXXX")"; then
+                echo "hapax-source-activate: unable to reserve atomic restore storage for $dest; next action: leave $dest unchanged, preserve $launcher_snapshot_dir, repair $LOCAL_BIN permissions or free space, then restore from $saved" >&2
+                return 1
+            fi
+            if ! cp -a -- "$saved" "$restore_temp_dir/$base"; then
+                echo "hapax-source-activate: unable to stage saved launcher $saved for atomic restore; next action: leave $dest unchanged, preserve $launcher_snapshot_dir, repair $LOCAL_BIN permissions or free space, then restore the saved launcher manually" >&2
+                if ! rm -rf -- "$restore_temp_dir"; then
+                    echo "hapax-source-activate: temporary restore storage also remains at $restore_temp_dir; next action: preserve it until launcher recovery is complete" >&2
+                fi
+                return 1
+            fi
+            if ! mv -fT -- "$restore_temp_dir/$base" "$dest"; then
+                echo "hapax-source-activate: unable to atomically restore $dest from $saved; next action: leave the current launcher unchanged, preserve $launcher_snapshot_dir and $restore_temp_dir, then restore the saved launcher manually" >&2
+                return 1
+            fi
+            if ! rmdir -- "$restore_temp_dir"; then
+                echo "hapax-source-activate: restored $dest but could not remove empty temporary directory $restore_temp_dir; next action: verify the restored launcher, remove only the confirmed empty directory, and rerun governed source activation" >&2
+                return 1
+            fi
+        elif ! rm -f -- "$dest"; then
+            echo "hapax-source-activate: unable to restore the prior absent state for $dest; next action: preserve $launcher_snapshot_dir, remove the failed-candidate launcher without following it, and rerun governed source activation" >&2
+            return 1
+        fi
+    done < "$launcher_snapshot_dir/names"
+}
+
+restore_active_config() {
+    [[ "$launcher_snapshot_ready" == "1" ]] || return 0
+    local dest="$active_config_dest" saved="$launcher_snapshot_dir/config-present"
+    local dest_dir base restore_temp_dir
+    dest_dir="$(dirname "$dest")"
+    base="${dest##*/}"
+    if [[ -d "$dest" && ! -L "$dest" ]]; then
+        echo "hapax-source-activate: cannot restore active config over directory: $dest; next action: move the directory aside, preserve $launcher_snapshot_dir, and restore the prior config before rerunning governed source activation" >&2
+        return 1
+    fi
+    if [[ -e "$saved" || -L "$saved" ]]; then
+        if [[ ! -f "$saved" && ! -L "$saved" ]]; then
+            echo "hapax-source-activate: refusing unsafe saved active config during restore: $saved; next action: preserve $launcher_snapshot_dir for inspection and restore $dest manually before rerunning governed source activation" >&2
+            return 1
+        fi
+        if ! mkdir -p "$dest_dir"; then
+            echo "hapax-source-activate: unable to prepare active config restore directory $dest_dir; next action: preserve $launcher_snapshot_dir, repair the directory, and restore $dest from $saved" >&2
+            return 1
+        fi
+        if ! restore_temp_dir="$(mktemp -d "$dest_dir/.${base}.restore.XXXXXX")"; then
+            echo "hapax-source-activate: unable to reserve atomic config restore storage for $dest; next action: leave $dest unchanged, preserve $launcher_snapshot_dir, repair $dest_dir permissions or free space, then restore from $saved" >&2
+            return 1
+        fi
+        if ! cp -a -- "$saved" "$restore_temp_dir/$base"; then
+            echo "hapax-source-activate: unable to stage saved active config $saved for atomic restore; next action: leave $dest unchanged, preserve $launcher_snapshot_dir and $restore_temp_dir, then restore the saved config manually" >&2
+            rm -rf -- "$restore_temp_dir" 2>/dev/null || true
+            return 1
+        fi
+        if ! mv -fT -- "$restore_temp_dir/$base" "$dest"; then
+            echo "hapax-source-activate: unable to atomically restore $dest from $saved; next action: leave the current config unchanged, preserve $launcher_snapshot_dir and $restore_temp_dir, then restore the saved config manually" >&2
+            return 1
+        fi
+        if ! rmdir -- "$restore_temp_dir"; then
+            echo "hapax-source-activate: restored $dest but could not remove empty temporary directory $restore_temp_dir; next action: verify the restored config, remove only the confirmed empty directory, and rerun governed source activation" >&2
+            return 1
+        fi
+    elif ! rm -f -- "$dest"; then
+        echo "hapax-source-activate: unable to restore the prior absent state for $dest; next action: preserve $launcher_snapshot_dir, remove the failed-candidate config without following it, and rerun governed source activation" >&2
+        return 1
+    fi
+}
+
+discard_launcher_snapshot() {
+    if [[ -n "$launcher_snapshot_dir" ]] && ! rm -rf -- "$launcher_snapshot_dir"; then
+        echo "hapax-source-activate: unable to discard managed launcher snapshot at $launcher_snapshot_dir; next action: preserve it until launcher state is verified, then remove it and rerun governed source activation" >&2
+        return 1
+    fi
+    launcher_snapshot_dir=""
+    launcher_snapshot_ready=0
+}
+
+rollback_activation() {
+    local reason="$1" worktree_rollback=0 launcher_rollback=0 config_rollback=0
+    rollback_active_worktree "$reason" || worktree_rollback=$?
+    restore_managed_launchers || launcher_rollback=$?
+    restore_active_config || config_rollback=$?
+    if [[ "$launcher_rollback" -ne 0 || "$config_rollback" -ne 0 ]]; then
+        rollback_status="failed"
+        rollback_message="active runtime restore failed after: $reason (launchers=$launcher_rollback config=$config_rollback)"
+        return 1
+    fi
+    if ! discard_launcher_snapshot; then
+        rollback_status="failed"
+        rollback_message="active runtime restored but rollback snapshot cleanup failed after: $reason"
+        return 1
+    fi
+    return "$worktree_rollback"
+}
 
 link_active_script() {
     local script="$1"
     [[ -f "$script" ]] || return 0
-    [[ -x "$script" ]] || chmod +x "$script"
-    local base target
+    if [[ ! -x "$script" ]] && ! chmod +x "$script"; then
+        predeploy_failure_message="managed launcher source mode repair failed: $script"
+        echo "hapax-source-activate: unable to make managed launcher source executable: $script; next action: restore its executable Git mode and rerun governed source activation" >&2
+        return 1
+    fi
+    local base dest target
     base="$(basename "$script")"
-    target="$(readlink "$LOCAL_BIN/$base" 2>/dev/null || true)"
+    dest="$LOCAL_BIN/$base"
+    # Post-merge deploy installs changed hapax-* launchers as regular copies.
+    # Preserve only an executable copy whose bytes match this commit-addressed
+    # release. Stale/tampered copies and cc-task tools remain symlink-owned.
+    if [[ "$base" == hapax-* && -f "$dest" && ! -L "$dest" && -x "$dest" ]] \
+        && [[ "$(stat -c %h -- "$dest" 2>/dev/null || true)" == "1" ]] \
+        && cmp -s "$script" "$dest"; then
+        return 0
+    fi
+    target="$(readlink "$dest" 2>/dev/null || true)"
     if [[ "$target" != "$script" ]]; then
-        ln -sf "$script" "$LOCAL_BIN/$base"
+        if ! ln -sfnT "$script" "$dest"; then
+            predeploy_failure_message="managed launcher publication failed: $dest"
+            echo "hapax-source-activate: unable to publish managed launcher $dest; next action: preserve the rollback receipt, repair $LOCAL_BIN permissions or free space, then rerun governed source activation" >&2
+            return 1
+        fi
         sweep_count=$((sweep_count + 1))
     fi
 }
 
-for script in "$ACTIVE_WORKTREE"/scripts/hapax-*; do
-    link_active_script "$script"
-done
-for script in cc-claim cc-close; do
-    link_active_script "$ACTIVE_WORKTREE/scripts/$script"
-done
+previous_success="$(cat "$LAST_SUCCESS_SHA" 2>/dev/null || true)"
+if ! snapshot_managed_launchers; then
+    rollback_active_worktree "managed launcher snapshot failed" || true
+    discard_launcher_snapshot || true
+    write_receipt "failed" "not_started" "2" "managed launcher snapshot failed"
+    exit 2
+fi
 
 sync_active_config() {
     local src="$1"
     local dst="$2"
-    [[ -f "$src" ]] || return 0
-    if [[ -f "$dst" ]] && cmp -s "$src" "$dst"; then
+    local dst_dir temp
+    [[ -e "$src" || -L "$src" ]] || return 0
+    if [[ ! -f "$src" || -L "$src" ]]; then
+        predeploy_failure_message="active config source is not a release regular file: $src"
+        echo "hapax-source-activate: refusing non-regular active config source $src; next action: restore it as a Git-tracked regular file and rerun governed source activation" >&2
+        return 1
+    fi
+    if [[ -f "$dst" && ! -L "$dst" ]] \
+        && [[ "$(stat -c %h -- "$dst" 2>/dev/null || true)" == "1" ]] \
+        && [[ "$(stat -c %a -- "$dst" 2>/dev/null || true)" == "644" ]] \
+        && cmp -s "$src" "$dst"; then
         return 0
     fi
-    install -Dm 0644 "$src" "$dst"
+    dst_dir="$(dirname "$dst")"
+    if ! mkdir -p "$dst_dir"; then
+        predeploy_failure_message="active config directory unavailable: $dst_dir"
+        echo "hapax-source-activate: unable to prepare active config directory $dst_dir; next action: repair its permissions or free space, then rerun governed source activation" >&2
+        return 1
+    fi
+    if ! temp="$(mktemp "$dst_dir/.${dst##*/}.activate.XXXXXX")"; then
+        predeploy_failure_message="active config staging reservation failed: $dst"
+        echo "hapax-source-activate: unable to reserve atomic config staging for $dst; next action: repair $dst_dir permissions or free space, then rerun governed source activation" >&2
+        return 1
+    fi
+    if ! install -m 0644 "$src" "$temp"; then
+        predeploy_failure_message="active config staging failed: $dst"
+        echo "hapax-source-activate: unable to stage active config $dst; next action: preserve the prior config, repair $dst_dir permissions or free space, then rerun governed source activation" >&2
+        rm -f -- "$temp" 2>/dev/null || true
+        return 1
+    fi
+    if ! mv -fT -- "$temp" "$dst"; then
+        predeploy_failure_message="active config publication failed: $dst"
+        echo "hapax-source-activate: unable to atomically publish active config $dst; next action: preserve the prior config, repair $dst_dir permissions or free space, then rerun governed source activation" >&2
+        rm -f -- "$temp" 2>/dev/null || true
+        return 1
+    fi
     config_sync_count=$((config_sync_count + 1))
 }
 
-sync_active_config \
-    "$ACTIVE_WORKTREE/config/usb-topology-policy.json" \
-    "$HOME/.config/hapax/usb-topology-policy.json"
+prepare_active_runtime_surface() {
+    local script
+    for script in "$ACTIVE_WORKTREE"/scripts/hapax-*; do
+        link_active_script "$script" || return 1
+    done
+    for script in cc-claim cc-close; do
+        link_active_script "$ACTIVE_WORKTREE/scripts/$script" || return 1
+    done
+    sync_active_config \
+        "$ACTIVE_WORKTREE/config/usb-topology-policy.json" \
+        "$active_config_dest" || return 1
+}
+
+if ! prepare_active_runtime_surface; then
+    predeploy_failure_message="${predeploy_failure_message:-active runtime publication failed}"
+    rollback_activation "$predeploy_failure_message" || true
+    write_receipt "failed" "not_started" "2" "$predeploy_failure_message"
+    echo "hapax-source-activate: active runtime publication failed and deployment was not started; next action: inspect the rollback receipt, repair the reported destination, then rerun governed source activation" >&2
+    exit 2
+fi
 
 if [[ "$sweep_count" -gt 0 ]]; then
     echo "hapax-source-activate: swept $sweep_count symlinks to activation worktree"
@@ -827,14 +1079,15 @@ if [[ "$config_sync_count" -gt 0 ]]; then
     echo "hapax-source-activate: synced $config_sync_count config files from activation worktree"
 fi
 
-previous_success="$(cat "$LAST_SUCCESS_SHA" 2>/dev/null || true)"
 if [[ "$FORCE" != "1" && "$SKIP_DEPLOY" != "1" && "$previous_success" == "$origin_sha" ]]; then
+    discard_launcher_snapshot
     write_receipt "no_op" "skipped_already_active" "0" "origin/main already activated"
     echo "hapax-source-activate: origin/main already activated at ${origin_sha:0:8}"
     exit 0
 fi
 
 if [[ "$SKIP_DEPLOY" == "1" ]]; then
+    discard_launcher_snapshot
     write_receipt "completed_skip_deploy" "skipped_by_flag" "0" "activation worktree refreshed; deploy skipped by flag"
     echo "hapax-source-activate: refreshed active source at ${origin_sha:0:8}; deploy skipped"
     exit 0
@@ -842,7 +1095,7 @@ fi
 
 DEPLOY_SCRIPT="${HAPAX_SOURCE_ACTIVATE_DEPLOY_SCRIPT:-$ACTIVE_WORKTREE/scripts/hapax-post-merge-deploy}"
 if [[ ! -x "$DEPLOY_SCRIPT" ]]; then
-    rollback_active_worktree "deploy script missing" || true
+    rollback_activation "deploy script missing" || true
     write_receipt "failed" "not_started" "2" "deploy script missing or not executable"
     echo "hapax-source-activate: deploy script missing or not executable: $DEPLOY_SCRIPT" >&2
     if [[ "$rollback_status" == "success" ]]; then
@@ -874,7 +1127,7 @@ deploy_rc=$?
 set -e
 
 if [[ "$deploy_rc" -ne 0 ]]; then
-    rollback_active_worktree "post-merge deploy failed" || true
+    rollback_activation "post-merge deploy failed" || true
     write_receipt "failed" "failed" "$deploy_rc" "post-merge deploy failed"
     echo "hapax-source-activate: post-merge deploy failed for ${origin_sha:0:8}" >&2
     if [[ "$rollback_status" == "success" ]]; then
@@ -885,6 +1138,7 @@ if [[ "$deploy_rc" -ne 0 ]]; then
     exit "$deploy_rc"
 fi
 
+discard_launcher_snapshot
 printf '%s\n' "$origin_sha" > "$LAST_SUCCESS_SHA"
 refresh_active_source_fields
 write_receipt "completed" "success" "0" "origin/main activated"

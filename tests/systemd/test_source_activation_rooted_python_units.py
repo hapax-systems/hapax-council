@@ -63,6 +63,7 @@ MIGRATED_UNITS = (
     "hapax-datacite-snapshot.service",
     "hapax-orcid-verifier.service",
     "hapax-publish-orchestrator.service",
+    "hapax-live-cuepoints.service",
 )
 
 # ── canonical-rooted python -m units intentionally NOT yet migrated. Each is
@@ -86,7 +87,6 @@ KNOWN_CANONICAL_EXCEPTIONS = frozenset(
         "hapax-broadcast-egress-loopback-producer.service",
         "hapax-channel-trailer.service",
         "hapax-feedback-loop-detector.service",
-        "hapax-live-cuepoints.service",
         "hapax-lufs-panic-cap.service",
         "hapax-overlay-producer.service",
         "hapax-pipewire-graph-shadow.service",

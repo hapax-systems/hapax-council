@@ -31,6 +31,7 @@ __all__ = [
     "CapabilityAction",
     "CapabilityDomain",
     "CapabilityHarnessDescriptor",
+    "CapabilityInventoryDelta",
     "CapabilityShape",
     "CapabilitySurfaceDelta",
     "CostSource",
@@ -277,7 +278,7 @@ class DeltaKind(StrEnum):
     MISSING = "missing"
 
 
-class CapabilitySurfaceDelta(BaseModel):
+class CapabilityInventoryDelta(BaseModel):
     """The deterministic delta between observed capability surfaces and registered descriptors.
 
     This is the taxonomy's ``discover()`` output (§"Minimum Harness Contract" line 221): compare observed
@@ -309,6 +310,12 @@ class CapabilitySurfaceDelta(BaseModel):
         out.extend((cid, DeltaKind.CHANGED) for cid in self.changed_capability_ids)
         out.extend((cid, DeltaKind.MISSING) for cid in self.missing_capability_ids)
         return out
+
+
+# Compatibility alias: this three-list object is an inventory diff, not the
+# richer SDLC ``shared.capability_surface_delta.CapabilitySurfaceDelta`` intake
+# wire type. Existing imports retain identity while new code uses the precise name.
+CapabilitySurfaceDelta = CapabilityInventoryDelta
 
 
 def descriptor_fingerprint(descriptor: CapabilityHarnessDescriptor) -> str:
@@ -360,7 +367,7 @@ def descriptor_fingerprint(descriptor: CapabilityHarnessDescriptor) -> str:
 def discover(
     observed: Sequence[CapabilityHarnessDescriptor],
     registered: dict[str, str],
-) -> CapabilitySurfaceDelta:
+) -> CapabilityInventoryDelta:
     """Compare observed capability descriptors to the registered fingerprint map.
 
     ``registered`` maps ``capability_id -> last-known fingerprint``. Emits the deterministic
@@ -382,7 +389,7 @@ def discover(
         cid for cid, fp in observed_fp.items() if cid in registered and registered[cid] != fp
     ]
     missing_ids = [cid for cid in registered if cid not in observed_fp]
-    return CapabilitySurfaceDelta(
+    return CapabilityInventoryDelta(
         new_capability_ids=sorted(new_ids),
         changed_capability_ids=sorted(changed_ids),
         missing_capability_ids=sorted(missing_ids),

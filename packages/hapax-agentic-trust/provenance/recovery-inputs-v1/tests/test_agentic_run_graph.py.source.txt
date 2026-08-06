@@ -1,0 +1,939 @@
+from __future__ import annotations
+
+import json
+from dataclasses import replace
+
+import pytest
+
+from conservatory.agentic_contract import (
+    CONTRACT_VERSION,
+    CandidateContentKey,
+    CandidateMaterialState,
+    CandidateProvenanceKey,
+    ContextArm,
+    EpisodeAdjudication,
+    EpisodeEvidenceIdentity,
+    EpisodePhase,
+    EpisodePrestate,
+    EvaluatorSecretOpening,
+    ImpactState,
+    JointOutcomeClass,
+    MechanicalCheckerResult,
+    PairedRequestVerification,
+    PairTerminalReconciliation,
+    ProbabilityMeasureContract,
+    ReplayComparison,
+    ReplayComparisonAlgorithm,
+    ReplayComparisonStatus,
+    ReplayLawContract,
+    ReplayLink,
+    RequestBinding,
+    RuntimeAttestation,
+    ScenarioPairContract,
+    ScheduledEpisodeKey,
+    ScheduledPairKey,
+    TerminalDisposition,
+    TransformationVerification,
+    TrialAssignmentKey,
+    UtilityState,
+)
+from conservatory.agentic_run_graph import (
+    RUN_ARTIFACT_DATA_CLASSES,
+    RUN_GRAPH_DOCUMENT_TYPE,
+    RUN_GRAPH_SCHEMA_VERSION,
+    AgenticRunGraph,
+    AgenticRunSummary,
+    PartialMechanicalObservation,
+    RunArtifactBinding,
+    TerminalAttemptRecord,
+    parse_strict_canonical_json,
+)
+
+
+def _sha(character: str) -> str:
+    return character * 64
+
+
+def _canonical(value: object) -> bytes:
+    return json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+
+
+def _transformation() -> TransformationVerification:
+    return TransformationVerification(
+        clean_scenario_sha256=_sha("7"),
+        attack_scenario_sha256=_sha("8"),
+        attack_transformation_sha256=_sha("9"),
+        verifier_contract_sha256=_sha("a"),
+        target_visible_diff_sha256=_sha("b"),
+        observed_target_visible_diff_sha256=_sha("b"),
+        verifier_witness_sha256=_sha("c"),
+        verification_complete=True,
+        exact_single_transformation=True,
+        unmodified_surface_match=True,
+    )
+
+
+def _scenario_pair(pair_id: str = "pair-01") -> ScenarioPairContract:
+    return ScenarioPairContract(
+        pair_id=pair_id,
+        scenario_family_sha256=_sha("0"),
+        base_task_sha256=_sha("1"),
+        fixture_sha256=_sha("2"),
+        tool_world_sha256=_sha("3"),
+        tool_schema_sha256=_sha("4"),
+        horizon_law_sha256=_sha("5"),
+        authority_graph_sha256=_sha("6"),
+        utility_checker_sha256=_sha("d"),
+        security_checker_sha256=_sha("e"),
+        evaluator_secret_commitment_sha256=_sha("f"),
+        transformation_verification=_transformation(),
+    )
+
+
+def _probability_measure() -> ProbabilityMeasureContract:
+    return ProbabilityMeasureContract(
+        estimand_sha256=_sha("1"),
+        task_sampling_frame_sha256=_sha("2"),
+        candidate_sampling_frame_sha256=_sha("3"),
+        seed_sampling_law_sha256=_sha("4"),
+        confirmatory_population_sha256=_sha("5"),
+        missingness_analysis_sha256=_sha("6"),
+        estimator_law_sha256=_sha("7"),
+        weighting_law_sha256=_sha("8"),
+        clustering_law_sha256=_sha("9"),
+        clustering_unit="candidate-family",
+    )
+
+
+def _scheduled_pair(
+    *,
+    pair_id: str = "pair-01",
+    pair_position: int = 1,
+    policy: str = "static",
+    history: str = "cold",
+) -> ScheduledPairKey:
+    scenario = _scenario_pair(pair_id)
+    content = CandidateContentKey(
+        scenario_family_sha256=scenario.scenario_family_sha256,
+        attack_transformation_sha256=scenario.attack_transformation_sha256,
+        rendered_attack_sha256=scenario.attack_scenario_sha256,
+    )
+    provenance = CandidateProvenanceKey(
+        candidate_content_sha256=content.digest,
+        generator_contract_sha256=_sha("1"),
+        generator_artifact_sha256=_sha("2"),
+        source_lineage_sha256=_sha("3"),
+        parent_set_sha256=_sha("4"),
+        cluster_identity_sha256=_sha("5"),
+        novelty_registry_genesis_sha256=_sha("6"),
+        generator_seed=0,
+    )
+    assignment = TrialAssignmentKey(
+        candidate_content_sha256=content.digest,
+        target_model_sha256=_sha("b"),
+        authority_graph_sha256=scenario.authority_graph_sha256,
+        utility_checker_sha256=scenario.utility_checker_sha256,
+        security_checker_sha256=scenario.security_checker_sha256,
+        generation_law_sha256=_sha("c"),
+        replicate_index=1,
+    )
+    return ScheduledPairKey(
+        experiment_id="trust-v2",
+        scenario_pair=scenario,
+        probability_measure=_probability_measure(),
+        policy=policy,
+        history=history,
+        cycle=1,
+        pair_position=pair_position,
+        crn_seed=20260804 + pair_position,
+        plan_sha256=_sha("a"),
+        scheduler_state_sha256=_sha("b"),
+        candidate_content=content,
+        candidate_provenance=provenance,
+        trial_assignment=assignment,
+        novelty_registry_overlay_sha256=_sha("c"),
+        replay_law=ReplayLawContract(
+            reconstruction_law_sha256=_sha("a"),
+            max_replays=2,
+            comparison_algorithm=ReplayComparisonAlgorithm.STRICT_TRAJECTORY_V1,
+            initial_outcome_authoritative=True,
+        ),
+        manifest_sha256=_sha("0"),
+    )
+
+
+def _request_binding(episode: ScheduledEpisodeKey) -> RequestBinding:
+    clean = episode.context_arm is ContextArm.CLEAN
+    return RequestBinding(
+        scheduled_episode=episode,
+        request_contract_sha256=_sha("1"),
+        request_context_sha256=episode.selected_scenario_sha256,
+        request_semantics_sha256=_sha("2" if clean else "3"),
+        request_envelope_sha256=_sha("4" if clean else "5"),
+        renderer_contract_sha256=_sha("6"),
+        renderer_witness_sha256=_sha("7" if clean else "8"),
+        candidate_material_state=(
+            CandidateMaterialState.EXCLUDED
+            if clean
+            else CandidateMaterialState.INCLUDED
+        ),
+    )
+
+
+def _secret_opening(pair: ScheduledPairKey) -> EvaluatorSecretOpening:
+    return EvaluatorSecretOpening(
+        commitment_sha256=pair.scenario_pair.evaluator_secret_commitment_sha256,
+        realization_sha256=_sha("1"),
+        opening_law_sha256=_sha("2"),
+        opening_witness_sha256=_sha("3"),
+        verification_complete=True,
+        opens_commitment=True,
+    )
+
+
+def _runtime_attestation(episode: ScheduledEpisodeKey) -> RuntimeAttestation:
+    pair = episode.scheduled_pair
+    return RuntimeAttestation(
+        scheduled_episode=episode,
+        served_model_sha256=pair.trial_assignment.target_model_sha256,
+        server_binary_sha256=_sha("4"),
+        dependency_lock_sha256=_sha("5"),
+        controller_sha256=_sha("6"),
+        harness_sha256=_sha("7"),
+        observed_tool_world_sha256=pair.scenario_pair.tool_world_sha256,
+        attestation_contract_sha256=_sha("8"),
+        attestation_witness_sha256=_sha("9"),
+        verification_complete=True,
+        binary_measurements_verified=True,
+    )
+
+
+def _completed_attempt(
+    episode: ScheduledEpisodeKey,
+    *,
+    phase: EpisodePhase = EpisodePhase.INITIAL,
+    ordinal: int = 0,
+    utility: UtilityState = UtilityState.PASS,
+    impact: ImpactState = ImpactState.ABSENT,
+    response_sha256: str | None = None,
+) -> TerminalAttemptRecord:
+    clean = episode.context_arm is ContextArm.CLEAN
+    binding = _request_binding(episode)
+    opening = _secret_opening(episode.scheduled_pair)
+    initial_state = EpisodePrestate(
+        request_binding=binding,
+        evaluator_secret_opening=opening,
+        fixture_sha256=episode.scheduled_pair.scenario_pair.fixture_sha256,
+        base_world_state_sha256=_sha("a"),
+        rendered_context_sha256=binding.request_context_sha256,
+        prestate_artifact_sha256=_sha("b" if clean else "c"),
+        construction_witness_sha256=_sha("d" if clean else "e"),
+    )
+    checker = MechanicalCheckerResult(
+        utility_checker_contract_sha256=(
+            episode.scheduled_pair.scenario_pair.utility_checker_sha256
+        ),
+        security_checker_contract_sha256=(
+            episode.scheduled_pair.scenario_pair.security_checker_sha256
+        ),
+        checker_execution_witness_sha256=_sha("1" if clean else "2"),
+        tool_trace_sha256=_sha("3" if clean else "4"),
+        prestate_sha256=initial_state.prestate_artifact_sha256,
+        poststate_sha256=_sha("5" if clean else "6"),
+        mutation_log_sha256=_sha("7" if clean else "8"),
+        utility=utility,
+        unauthorized_impact=impact,
+        utility_witness_sha256=(None if utility is UtilityState.UNKNOWN else _sha("9")),
+        security_witness_sha256=(None if impact is ImpactState.UNKNOWN else _sha("a")),
+    )
+    evidence = EpisodeEvidenceIdentity(
+        request_binding=binding,
+        evaluator_secret_opening=opening,
+        runtime_attestation=_runtime_attestation(episode),
+        prestate=initial_state,
+        phase=phase,
+        attempt_ordinal=ordinal,
+        response_envelope_sha256=(response_sha256 or _sha("b" if clean else "c")),
+        extraction_contract_sha256=_sha("d"),
+        tool_trace_sha256=checker.tool_trace_sha256,
+        poststate_sha256=checker.poststate_sha256,
+        mutation_log_sha256=checker.mutation_log_sha256,
+        checker_result_sha256=checker.digest,
+    )
+    adjudication = EpisodeAdjudication(
+        evidence=evidence,
+        checker_result=checker,
+        disposition=TerminalDisposition.COMPLETED,
+        terminal_witness_sha256=_sha("e" if clean else "f"),
+    )
+    return TerminalAttemptRecord(
+        scheduled_episode=episode,
+        phase=phase,
+        attempt_ordinal=ordinal,
+        disposition=TerminalDisposition.COMPLETED,
+        observation=PartialMechanicalObservation.from_adjudication(adjudication),
+        control_evidence_sha256=_sha("0"),
+        adjudication=adjudication,
+        failure_artifact_sha256=None,
+        failure_witness_sha256=None,
+    )
+
+
+def _failed_attempt(
+    episode: ScheduledEpisodeKey,
+    disposition: TerminalDisposition,
+    *,
+    phase: EpisodePhase = EpisodePhase.INITIAL,
+    ordinal: int = 0,
+    utility: UtilityState = UtilityState.UNKNOWN,
+    impact: ImpactState = ImpactState.UNKNOWN,
+) -> TerminalAttemptRecord:
+    return TerminalAttemptRecord(
+        scheduled_episode=episode,
+        phase=phase,
+        attempt_ordinal=ordinal,
+        disposition=disposition,
+        observation=PartialMechanicalObservation(
+            utility=utility,
+            unauthorized_impact=impact,
+            utility_witness_sha256=(
+                None if utility is UtilityState.UNKNOWN else _sha("1")
+            ),
+            security_witness_sha256=(
+                None if impact is ImpactState.UNKNOWN else _sha("2")
+            ),
+        ),
+        control_evidence_sha256=_sha("5"),
+        adjudication=None,
+        failure_artifact_sha256=_sha("3"),
+        failure_witness_sha256=_sha("4"),
+    )
+
+
+def _reconciliation(
+    pair: ScheduledPairKey,
+    clean: TerminalAttemptRecord,
+    attack: TerminalAttemptRecord,
+) -> PairTerminalReconciliation:
+    assert clean.adjudication is not None
+    assert attack.adjudication is not None
+    verification = PairedRequestVerification(
+        clean=clean.adjudication.evidence.request_binding,
+        attack=attack.adjudication.evidence.request_binding,
+        observed_target_visible_diff_sha256=(
+            pair.scenario_pair.transformation_verification.target_visible_diff_sha256
+        ),
+        verifier_contract_sha256=_sha("1"),
+        verifier_witness_sha256=_sha("2"),
+        verification_complete=True,
+        only_preregistered_delta=True,
+    )
+    clean_episode, attack_episode = pair.children()
+    return PairTerminalReconciliation(
+        scheduled_pair=pair,
+        clean_episode=clean_episode,
+        attack_episode=attack_episode,
+        request_verification=verification,
+        clean_adjudication=clean.adjudication,
+        attack_adjudication=attack.adjudication,
+    )
+
+
+def _comparison(
+    initial: TerminalAttemptRecord, replay: TerminalAttemptRecord
+) -> ReplayComparison:
+    assert initial.adjudication is not None
+    assert replay.adjudication is not None
+    return ReplayComparison(
+        link=ReplayLink(
+            initial.adjudication.evidence,
+            replay.adjudication.evidence,
+        ),
+        initial_adjudication=initial.adjudication,
+        replay_adjudication=replay.adjudication,
+    )
+
+
+def _dummy_artifact_bindings() -> tuple[RunArtifactBinding, ...]:
+    return tuple(
+        RunArtifactBinding(data_class, _sha("1"), _sha("2"))
+        for data_class in RUN_ARTIFACT_DATA_CLASSES
+    )
+
+
+def _artifact_bindings(
+    scheduled_pairs: tuple[ScheduledPairKey, ...],
+    terminal_attempts: tuple[TerminalAttemptRecord, ...],
+    replay_comparisons: tuple[ReplayComparison, ...],
+    pair_reconciliations: tuple[PairTerminalReconciliation, ...],
+) -> tuple[RunArtifactBinding, ...]:
+    summary = AgenticRunGraph.derive_summary(
+        scheduled_pairs,
+        terminal_attempts,
+        replay_comparisons,
+        pair_reconciliations,
+    )
+    semantic_references = AgenticRunGraph.derive_run_artifact_semantic_references(
+        scheduled_pairs,
+        terminal_attempts,
+        replay_comparisons,
+        pair_reconciliations,
+    )
+    return tuple(
+        RunArtifactBinding(
+            data_class=data_class,
+            semantic_reference_sha256=semantic_references[data_class],
+            encoded_artifact_sha256=(
+                summary.digest if data_class == "summary" else _sha("2")
+            ),
+        )
+        for data_class in RUN_ARTIFACT_DATA_CLASSES
+    )
+
+
+def _completed_graph() -> AgenticRunGraph:
+    pair = _scheduled_pair()
+    clean_episode, attack_episode = pair.children()
+    clean = _completed_attempt(clean_episode)
+    attack = _completed_attempt(attack_episode)
+    terminal_attempts = (clean, attack)
+    pair_reconciliations = (_reconciliation(pair, clean, attack),)
+    return AgenticRunGraph(
+        run_id="run-20260804",
+        manifest_sha256=pair.manifest_sha256,
+        scheduled_pairs=(pair,),
+        run_artifact_bindings=_artifact_bindings(
+            (pair,), terminal_attempts, (), pair_reconciliations
+        ),
+        terminal_attempts=terminal_attempts,
+        replay_comparisons=(),
+        pair_reconciliations=pair_reconciliations,
+    )
+
+
+def _graph_with_replay(*, unsafe: bool = False) -> AgenticRunGraph:
+    base = _completed_graph()
+    clean, attack = base.terminal_attempts
+    replay = _completed_attempt(
+        clean.scheduled_episode,
+        phase=EpisodePhase.REPLAY,
+        ordinal=1,
+        impact=ImpactState.PRESENT if unsafe else ImpactState.ABSENT,
+    )
+    comparison = _comparison(clean, replay)
+    terminal_attempts = (clean, replay, attack)
+    replay_comparisons = (comparison,)
+    return replace(
+        base,
+        run_artifact_bindings=_artifact_bindings(
+            base.scheduled_pairs,
+            terminal_attempts,
+            replay_comparisons,
+            base.pair_reconciliations,
+        ),
+        terminal_attempts=terminal_attempts,
+        replay_comparisons=replay_comparisons,
+    )
+
+
+def _outcome_counts(rows: object) -> dict[JointOutcomeClass, int]:
+    return {row.outcome_class: row.count for row in rows}  # type: ignore[attr-defined]
+
+
+def _replace_artifact_binding(
+    graph: AgenticRunGraph,
+    data_class: str,
+    **changes: str,
+) -> tuple[RunArtifactBinding, ...]:
+    return tuple(
+        replace(row, **changes) if row.data_class == data_class else row
+        for row in graph.run_artifact_bindings
+    )
+
+
+def test_completed_graph_round_trips_and_summary_is_derived() -> None:
+    graph = _completed_graph()
+    payload = graph.to_bytes()
+
+    assert AgenticRunGraph.from_bytes(payload) == graph
+    assert json.loads(payload) == {
+        "contract_version": CONTRACT_VERSION,
+        "document_type": RUN_GRAPH_DOCUMENT_TYPE,
+        "payload": json.loads(payload)["payload"],
+        "schema_version": RUN_GRAPH_SCHEMA_VERSION,
+    }
+    assert graph.summary.scheduled_pair_count == 1
+    assert graph.summary.initial_attempt_count == 2
+    assert graph.summary.replay_attempt_count == 0
+    assert graph.summary.pair_reconciliation_count == 1
+    assert graph.summary.initial_effectiveness_denominator == 2
+    assert graph.terminal_attempt_keys == tuple(
+        record.key for record in graph.terminal_attempts
+    )
+    assert graph.terminal_disposition_profile == tuple(
+        (*record.key, record.disposition) for record in graph.terminal_attempts
+    )
+    for record in graph.terminal_attempts:
+        assert TerminalAttemptRecord.from_bytes(record.to_bytes()) == record
+        assert len(record.digest) == 64
+    assert AgenticRunSummary.from_bytes(graph.summary.to_bytes()) == graph.summary
+    assert len(graph.summary.digest) == 64
+    assert (
+        _outcome_counts(graph.summary.initial_outcome_counts)[
+            JointOutcomeClass.SAFE_AND_USEFUL
+        ]
+        == 2
+    )
+    assert (
+        graph.digest
+        == "9b397b8f358e94c84082a0ab4d81469d58f58c8123efb5d96526eea3adec2c48"
+    )
+
+
+def test_run_artifact_bindings_require_exact_unique_canonical_coverage() -> None:
+    graph = _completed_graph()
+    bindings = graph.run_artifact_bindings
+    assert tuple(row.data_class for row in bindings) == RUN_ARTIFACT_DATA_CLASSES
+    assert {
+        "agentic_run_graph",
+        "receipt_chain",
+        "evidence_store_inventory",
+    }.isdisjoint(RUN_ARTIFACT_DATA_CLASSES)
+
+    with pytest.raises(ValueError, match="exactly cover"):
+        replace(graph, run_artifact_bindings=bindings[:-1])
+    with pytest.raises(ValueError, match="exactly cover"):
+        replace(graph, run_artifact_bindings=tuple(reversed(bindings)))
+    with pytest.raises(ValueError, match="exactly cover"):
+        replace(graph, run_artifact_bindings=(bindings[0], *bindings))
+    with pytest.raises(ValueError, match="not an allowed"):
+        RunArtifactBinding("agentic_run_graph", _sha("1"), _sha("2"))
+
+
+@pytest.mark.parametrize(
+    "data_class",
+    RUN_ARTIFACT_DATA_CLASSES,
+)
+def test_all_run_artifact_semantic_references_are_crosschecked(
+    data_class: str,
+) -> None:
+    graph = _completed_graph()
+    with pytest.raises(ValueError, match=f"{data_class} binding differs"):
+        replace(
+            graph,
+            run_artifact_bindings=_replace_artifact_binding(
+                graph,
+                data_class,
+                semantic_reference_sha256=_sha("f"),
+            ),
+        )
+
+
+def test_summary_run_artifact_binds_exact_canonical_encoded_bytes() -> None:
+    graph = _completed_graph()
+    summary_binding = next(
+        row for row in graph.run_artifact_bindings if row.data_class == "summary"
+    )
+    assert summary_binding.semantic_reference_sha256 == graph.summary.digest
+    assert summary_binding.encoded_artifact_sha256 == graph.summary.digest
+    with pytest.raises(ValueError, match="canonical summary bytes"):
+        replace(
+            graph,
+            run_artifact_bindings=_replace_artifact_binding(
+                graph,
+                "summary",
+                encoded_artifact_sha256=_sha("f"),
+            ),
+        )
+
+
+def test_noncompleted_terminals_preserve_missingness_without_fake_evidence() -> None:
+    pair = _scheduled_pair()
+    clean_episode, attack_episode = pair.children()
+    clean = _failed_attempt(
+        clean_episode,
+        TerminalDisposition.INCOMPLETE_RESPONSE,
+    )
+    attack = _failed_attempt(
+        attack_episode,
+        TerminalDisposition.INVALID_ATTESTATION,
+    )
+    terminal_attempts = (clean, attack)
+    graph = AgenticRunGraph(
+        run_id="run-partial",
+        manifest_sha256=pair.manifest_sha256,
+        run_artifact_bindings=_artifact_bindings((pair,), terminal_attempts, (), ()),
+        scheduled_pairs=(pair,),
+        terminal_attempts=terminal_attempts,
+        replay_comparisons=(),
+        pair_reconciliations=(),
+    )
+
+    assert all(record.adjudication is None for record in graph.terminal_attempts)
+    assert b"response_envelope_sha256" not in graph.to_bytes()
+    assert b"tool_trace_sha256" not in graph.to_bytes()
+    assert graph.summary.completed_attempt_count == 0
+    assert graph.summary.incomplete_attempt_count == 1
+    assert graph.summary.invalid_attempt_count == 1
+    assert graph.summary.initial_effectiveness_denominator == 0
+    assert graph.summary.initial_all_attempt_denominator == 2
+    assert graph.summary.initial_clean_incomplete_count == 1
+    assert graph.summary.initial_attack_unknown_impact_count == 1
+    assert _outcome_counts(graph.summary.initial_outcome_counts) == {
+        JointOutcomeClass.INCOMPLETE: 1,
+        JointOutcomeClass.INVALID: 1,
+        JointOutcomeClass.SAFE_AND_USEFUL: 0,
+        JointOutcomeClass.SAFE_BUT_NOT_USEFUL: 0,
+        JointOutcomeClass.UNSAFE_EFFECT: 0,
+        JointOutcomeClass.UNSAFE_EFFECT_INCOMPLETE: 0,
+    }
+
+
+def test_terminal_record_rejects_missing_or_dishonest_evidence() -> None:
+    episode = _scheduled_pair().children()[0]
+    observation = PartialMechanicalObservation(
+        UtilityState.UNKNOWN,
+        ImpactState.UNKNOWN,
+    )
+    with pytest.raises(ValueError, match="require an adjudication"):
+        TerminalAttemptRecord(
+            episode,
+            EpisodePhase.INITIAL,
+            0,
+            TerminalDisposition.COMPLETED,
+            observation,
+            _sha("0"),
+            None,
+            None,
+            None,
+        )
+    with pytest.raises(ValueError, match="failure_artifact_sha256"):
+        TerminalAttemptRecord(
+            episode,
+            EpisodePhase.INITIAL,
+            0,
+            TerminalDisposition.INCOMPLETE_RESPONSE,
+            observation,
+            _sha("0"),
+            None,
+            None,
+            _sha("1"),
+        )
+    with pytest.raises(ValueError, match="invalid attempts cannot resolve"):
+        _failed_attempt(
+            episode,
+            TerminalDisposition.INVALID_ATTESTATION,
+            utility=UtilityState.PASS,
+        )
+    with pytest.raises(ValueError, match="cannot establish impact absence"):
+        _failed_attempt(
+            episode,
+            TerminalDisposition.INCOMPLETE_RESPONSE,
+            impact=ImpactState.ABSENT,
+        )
+    with pytest.raises(ValueError, match="requires replay phase"):
+        _failed_attempt(episode, TerminalDisposition.INCOMPLETE_REPLAY)
+
+
+def test_duplicate_initial_cherry_pick_and_reconciliation_drift_are_rejected() -> None:
+    graph = _completed_graph()
+    clean, attack = graph.terminal_attempts
+    contradictory = _completed_attempt(
+        clean.scheduled_episode,
+        impact=ImpactState.PRESENT,
+    )
+    with pytest.raises(ValueError, match="duplicate terminal attempt key"):
+        replace(graph, terminal_attempts=(clean, contradictory, attack))
+
+    changed_attack = _completed_attempt(
+        attack.scheduled_episode,
+        utility=UtilityState.FAIL,
+    )
+    with pytest.raises(ValueError, match="authoritative initial attempts"):
+        replace(graph, terminal_attempts=(clean, changed_attack))
+
+
+def test_pair_reconciliation_exists_exactly_for_two_completed_initials() -> None:
+    graph = _completed_graph()
+    with pytest.raises(ValueError, match="exist iff"):
+        replace(graph, pair_reconciliations=())
+
+    pair = graph.scheduled_pairs[0]
+    clean_episode, attack_episode = pair.children()
+    partial_attempts = (
+        _failed_attempt(
+            clean_episode,
+            TerminalDisposition.INCOMPLETE_RESPONSE,
+        ),
+        _failed_attempt(
+            attack_episode,
+            TerminalDisposition.INVALID_ATTESTATION,
+        ),
+    )
+    partial = AgenticRunGraph(
+        run_id="partial-no-reconciliation",
+        manifest_sha256=pair.manifest_sha256,
+        run_artifact_bindings=_artifact_bindings((pair,), partial_attempts, (), ()),
+        scheduled_pairs=(pair,),
+        terminal_attempts=partial_attempts,
+        replay_comparisons=(),
+        pair_reconciliations=(),
+    )
+    with pytest.raises(ValueError, match="exist iff"):
+        replace(partial, pair_reconciliations=graph.pair_reconciliations)
+
+
+def test_replays_are_not_primary_double_counts_and_have_exact_comparisons() -> None:
+    graph = _graph_with_replay(unsafe=True)
+
+    assert graph.summary.initial_attempt_count == 2
+    assert graph.summary.terminal_attempt_count == 3
+    assert graph.summary.replay_comparison_count == 1
+    assert (
+        _outcome_counts(graph.summary.initial_outcome_counts)[
+            JointOutcomeClass.SAFE_AND_USEFUL
+        ]
+        == 2
+    )
+    assert (
+        _outcome_counts(graph.summary.all_attempt_outcome_counts)[
+            JointOutcomeClass.UNSAFE_EFFECT
+        ]
+        == 1
+    )
+    status_counts = {
+        row.status: row.count for row in graph.summary.replay_status_counts
+    }
+    assert status_counts[ReplayComparisonStatus.DISAGREES] == 1
+
+    with pytest.raises(ValueError, match="exactly for completed replay attempts"):
+        replace(graph, replay_comparisons=())
+    with pytest.raises(ValueError, match="duplicate replay comparison key"):
+        replace(
+            graph,
+            replay_comparisons=(
+                graph.replay_comparisons[0],
+                graph.replay_comparisons[0],
+            ),
+        )
+
+
+def test_replay_comparison_cannot_be_orphaned_or_substituted() -> None:
+    graph = _graph_with_replay()
+    clean, replay, attack = graph.terminal_attempts
+    comparison = graph.replay_comparisons[0]
+    base_attempts = (clean, attack)
+    base = replace(
+        graph,
+        run_artifact_bindings=_artifact_bindings(
+            graph.scheduled_pairs,
+            base_attempts,
+            (),
+            graph.pair_reconciliations,
+        ),
+        terminal_attempts=base_attempts,
+        replay_comparisons=(),
+    )
+    with pytest.raises(ValueError, match="does not join recorded attempts"):
+        replace(base, replay_comparisons=(comparison,))
+
+    substituted_replay = _completed_attempt(
+        replay.scheduled_episode,
+        phase=EpisodePhase.REPLAY,
+        ordinal=1,
+        response_sha256=_sha("0"),
+    )
+    with pytest.raises(ValueError, match="authoritative terminal attempts"):
+        replace(
+            graph,
+            terminal_attempts=(clean, substituted_replay, attack),
+        )
+
+
+def test_completed_replay_requires_completed_initial_but_failed_replay_does_not() -> (
+    None
+):
+    base = _completed_graph()
+    pair = base.scheduled_pairs[0]
+    clean, attack = base.terminal_attempts
+    incomplete_initial = _failed_attempt(
+        clean.scheduled_episode,
+        TerminalDisposition.INCOMPLETE_RESPONSE,
+    )
+    completed_replay = _completed_attempt(
+        clean.scheduled_episode,
+        phase=EpisodePhase.REPLAY,
+        ordinal=1,
+    )
+    with pytest.raises(ValueError, match="requires a completed authoritative initial"):
+        AgenticRunGraph(
+            run_id="bad-replay",
+            manifest_sha256=pair.manifest_sha256,
+            run_artifact_bindings=_dummy_artifact_bindings(),
+            scheduled_pairs=(pair,),
+            terminal_attempts=(incomplete_initial, completed_replay, attack),
+            replay_comparisons=(),
+            pair_reconciliations=(),
+        )
+
+    failed_replay = _failed_attempt(
+        clean.scheduled_episode,
+        TerminalDisposition.INCOMPLETE_REPLAY,
+        phase=EpisodePhase.REPLAY,
+        ordinal=1,
+    )
+    terminal_attempts = (clean, failed_replay, attack)
+    graph = replace(
+        base,
+        run_artifact_bindings=_artifact_bindings(
+            base.scheduled_pairs,
+            terminal_attempts,
+            (),
+            base.pair_reconciliations,
+        ),
+        terminal_attempts=terminal_attempts,
+    )
+    assert graph.summary.replay_attempt_count == 1
+    assert graph.summary.replay_comparison_count == 0
+    assert {row.status: row.count for row in graph.summary.replay_status_counts}[
+        ReplayComparisonStatus.INCOMPLETE
+    ] == 1
+
+
+def test_replay_ordinals_must_be_contiguous_and_within_law() -> None:
+    graph = _completed_graph()
+    clean, attack = graph.terminal_attempts
+    ordinal_two = _failed_attempt(
+        clean.scheduled_episode,
+        TerminalDisposition.INCOMPLETE_REPLAY,
+        phase=EpisodePhase.REPLAY,
+        ordinal=2,
+    )
+    with pytest.raises(ValueError, match="contiguous from one"):
+        replace(graph, terminal_attempts=(clean, ordinal_two, attack))
+    ordinal_three = replace(ordinal_two, attempt_ordinal=3)
+    with pytest.raises(ValueError, match="exceeds"):
+        replace(graph, terminal_attempts=(clean, ordinal_three, attack))
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("policy", "other", "one policy"),
+        ("history", "other", "one history"),
+    ],
+)
+def test_scheduled_pairs_share_policy_and_history(field, value, message) -> None:
+    first = _scheduled_pair()
+    kwargs = {field: value}
+    second = _scheduled_pair(pair_id="pair-02", pair_position=2, **kwargs)
+    with pytest.raises(ValueError, match=message):
+        AgenticRunGraph(
+            run_id="mixed-run",
+            manifest_sha256=first.manifest_sha256,
+            run_artifact_bindings=_dummy_artifact_bindings(),
+            scheduled_pairs=(first, second),
+            terminal_attempts=(),
+            replay_comparisons=(),
+            pair_reconciliations=(),
+        )
+
+
+def test_replicates_may_reuse_scenario_pair_id_at_distinct_schedule_positions() -> None:
+    pairs = (
+        _scheduled_pair(pair_id="replicated-pair", pair_position=1),
+        _scheduled_pair(pair_id="replicated-pair", pair_position=2),
+    )
+    attempts: list[TerminalAttemptRecord] = []
+    reconciliations: list[PairTerminalReconciliation] = []
+    for pair in pairs:
+        clean_episode, attack_episode = pair.children()
+        clean = _completed_attempt(clean_episode)
+        attack = _completed_attempt(attack_episode)
+        attempts.extend((clean, attack))
+        reconciliations.append(_reconciliation(pair, clean, attack))
+
+    terminal_attempts = tuple(attempts)
+    pair_reconciliations = tuple(reconciliations)
+    graph = AgenticRunGraph(
+        run_id="replicated-scenarios",
+        manifest_sha256=pairs[0].manifest_sha256,
+        run_artifact_bindings=_artifact_bindings(
+            pairs, terminal_attempts, (), pair_reconciliations
+        ),
+        scheduled_pairs=pairs,
+        terminal_attempts=terminal_attempts,
+        replay_comparisons=(),
+        pair_reconciliations=pair_reconciliations,
+    )
+    assert graph.summary.scheduled_pair_count == 2
+    assert graph.summary.initial_attempt_count == 4
+
+
+def test_graph_rejects_noncanonical_semantic_order() -> None:
+    graph = _graph_with_replay()
+    with pytest.raises(
+        ValueError, match="terminal_attempts are not in canonical order"
+    ):
+        replace(graph, terminal_attempts=tuple(reversed(graph.terminal_attempts)))
+
+    first = _scheduled_pair()
+    second = _scheduled_pair(pair_id="pair-02", pair_position=2)
+    with pytest.raises(ValueError, match="scheduled_pairs are not in canonical order"):
+        AgenticRunGraph(
+            run_id="backwards",
+            manifest_sha256=first.manifest_sha256,
+            run_artifact_bindings=_dummy_artifact_bindings(),
+            scheduled_pairs=(second, first),
+            terminal_attempts=(),
+            replay_comparisons=(),
+            pair_reconciliations=(),
+        )
+
+
+def test_parser_rejects_duplicate_keys_nonfinite_numbers_and_noncanonical_bytes() -> (
+    None
+):
+    payload = _completed_graph().to_bytes()
+    duplicate = b'{"contract_version":"wrong",' + payload[1:]
+    with pytest.raises(ValueError, match="duplicate JSON object key"):
+        AgenticRunGraph.from_bytes(duplicate)
+    with pytest.raises(ValueError, match="non-finite JSON number"):
+        parse_strict_canonical_json(b'{"number":NaN}')
+    with pytest.raises(ValueError, match="strict UTF-8"):
+        parse_strict_canonical_json(b'"\xff"')
+    with pytest.raises(ValueError, match="not canonical JSON"):
+        AgenticRunGraph.from_bytes(payload + b"\n")
+
+
+def test_parser_rejects_extra_missing_and_nested_type_substitution() -> None:
+    graph = _completed_graph()
+    document = json.loads(graph.to_bytes())
+    document["extra"] = True
+    with pytest.raises(ValueError, match="envelope schema mismatch"):
+        AgenticRunGraph.from_bytes(_canonical(document))
+
+    document = json.loads(graph.to_bytes())
+    del document["payload"]["summary"]
+    with pytest.raises(ValueError, match="payload schema mismatch"):
+        AgenticRunGraph.from_bytes(_canonical(document))
+
+    document = json.loads(graph.to_bytes())
+    scheduled_pair = document["payload"]["graph"]["fields"]["scheduled_pairs"][0]
+    scheduled_pair["fields"]["scenario_pair"]["type"] = "probability_measure_contract"
+    with pytest.raises(ValueError, match="type mismatch"):
+        AgenticRunGraph.from_bytes(_canonical(document))
+
+
+def test_persisted_summary_cannot_disagree_with_derived_graph() -> None:
+    document = json.loads(_completed_graph().to_bytes())
+    summary = document["payload"]["summary"]["fields"]
+    summary["initial_observed_harm_numerator"] = 1
+    with pytest.raises(ValueError, match="persisted run summary differs"):
+        AgenticRunGraph.from_bytes(_canonical(document))

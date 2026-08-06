@@ -10,14 +10,24 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections.abc import Sequence
 from pathlib import Path
 
+from pydantic import ValidationError
+
+from shared.agentic_trust_boundary import is_agentic_trust_supply_evidence_reference
 from shared.capability_harness_descriptor import (
     CapabilityHarnessDescriptor,
     validate_descriptor,
 )
 from shared.capability_harness_seed import SEED_CAPABILITY_DESCRIPTORS
+from shared.capability_inventory_contract import (
+    CapabilityInventoryBaselineRecord,
+    CapabilityInventoryBaselineV2,
+    InventoryDisposition,
+    wrap_supply_descriptor_fingerprint,
+)
 
 # full_inventory_delta is imported lazily inside main(--delta) to avoid pulling
 # all adapter modules at import time for users who only want the seed inventory.
@@ -27,18 +37,65 @@ __all__ = ["inventory_report", "project_inventory"]
 _BASELINE_PATH = (
     Path(__file__).resolve().parent.parent / "config" / "capability-inventory-baseline.json"
 )
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
-def _load_registered_baseline(path: Path = _BASELINE_PATH) -> dict[str, str]:
+def _load_inventory_baseline(
+    path: Path = _BASELINE_PATH,
+) -> dict[str, CapabilityInventoryBaselineRecord]:
+    """Load tagged v2 baseline records, upgrading v1 supply hashes explicitly.
+
+    A v1 baseline can match its admitted-supply rows, but it cannot silently bless
+    omitted shapes: those appear NEW until the baseline is intentionally regenerated.
+    """
+
     if not path.is_file():
         return {}
     payload = json.loads(path.read_text(encoding="utf-8"))
-    fingerprints = payload.get("fingerprints", {})
-    return (
-        {str(cid): str(fp) for cid, fp in fingerprints.items()}
-        if isinstance(fingerprints, dict)
-        else {}
-    )
+    if not isinstance(payload, dict):
+        raise ValueError("capability inventory baseline must be a JSON object")
+    if "schema_version" in payload:
+        if payload["schema_version"] != 2 or type(payload["schema_version"]) is not int:
+            raise ValueError(
+                f"unsupported capability inventory baseline schema_version: "
+                f"{payload['schema_version']!r}"
+            )
+        return CapabilityInventoryBaselineV2.model_validate(payload).records
+
+    if set(payload) != {"count", "fingerprints"}:
+        raise ValueError(
+            "legacy capability inventory baseline must contain exactly count and fingerprints"
+        )
+    count = payload["count"]
+    if type(count) is not int or count < 0:
+        raise ValueError(
+            "legacy capability inventory baseline count must be a non-negative integer"
+        )
+    fingerprints = payload["fingerprints"]
+    if not isinstance(fingerprints, dict):
+        raise ValueError("legacy capability inventory baseline fingerprints must be an object")
+    if count != len(fingerprints):
+        raise ValueError("legacy capability inventory baseline count does not match fingerprints")
+    for capability_id, fingerprint in fingerprints.items():
+        if type(capability_id) is not str or not capability_id.strip():
+            raise ValueError("legacy capability inventory IDs must be non-empty strings")
+        if type(fingerprint) is not str or _SHA256_RE.fullmatch(fingerprint) is None:
+            raise ValueError(
+                f"legacy capability inventory fingerprint for {capability_id!r} "
+                "must be a lowercase SHA-256 digest"
+            )
+        if is_agentic_trust_supply_evidence_reference(capability_id):
+            raise ValueError(
+                "legacy capability inventory cannot classify the agentic-trust evaluator; "
+                "migrate it explicitly to evidence_only_non_supply schema v2"
+            )
+    return {
+        capability_id: CapabilityInventoryBaselineRecord(
+            inventory_disposition=InventoryDisposition.ADMITTED_SUPPLY,
+            fingerprint=wrap_supply_descriptor_fingerprint(fingerprint),
+        )
+        for capability_id, fingerprint in fingerprints.items()
+    }
 
 
 def _rows(descriptors: Sequence[CapabilityHarnessDescriptor]) -> list[dict[str, object]]:
@@ -134,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--delta",
         action="store_true",
-        help="run the full capability_surface_delta over ALL 7 vocabularies (the real failing check)",
+        help="run the tagged capability inventory delta over supply and non-supply planes",
     )
     parser.add_argument(
         "--baseline",
@@ -145,12 +202,19 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.delta:
-        from shared.capability_inventory_aggregator import full_inventory_delta
+        from shared.capability_inventory_aggregator import full_capability_inventory_delta
 
-        observed, delta = full_inventory_delta(_load_registered_baseline(args.baseline))
+        try:
+            registered = _load_inventory_baseline(args.baseline)
+        except (OSError, json.JSONDecodeError, ValidationError, ValueError) as exc:
+            print(f"capability_inventory_baseline_invalid: {exc}")
+            print("NEXT: repair or regenerate the tagged v2 capability inventory baseline.")
+            return 2
+        snapshot, delta = full_capability_inventory_delta(registered)
+        admitted_supply = snapshot.admitted_supply_descriptors()
         invalid = {
             descriptor.capability_id: validate_descriptor(descriptor)
-            for descriptor in observed
+            for descriptor in admitted_supply
             if validate_descriptor(descriptor)
         }
         if invalid:
@@ -160,17 +224,17 @@ def main(argv: list[str] | None = None) -> int:
             print("NEXT: fill the missing descriptor facts before regenerating the baseline.")
             return 1
         print(
-            f"capability_surface_delta: {len(delta.new_capability_ids)} new, "
+            f"capability_inventory_delta: {len(delta.new_capability_ids)} new, "
             f"{len(delta.changed_capability_ids)} changed, "
             f"{len(delta.missing_capability_ids)} missing "
-            f"(of {len(observed)} observed)"
+            f"(of {len(snapshot.records)} observed; inventory_schema=2)"
         )
         for cid, kind in delta.kinds():
             print(f"  {kind.value}: {cid}")
         if not delta.is_empty:
             print(
                 "NEXT: repair the descriptor source or regenerate "
-                "config/capability-inventory-baseline.json after an intentional capability change."
+                "config/capability-inventory-baseline.json after an intentional tagged inventory change."
             )
         return 1 if not delta.is_empty else 0
 

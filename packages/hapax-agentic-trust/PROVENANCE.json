@@ -1,0 +1,302 @@
+{
+  "schema_version": 1,
+  "record_type": "unsigned_local_source_transformation_record",
+  "attestation_status": "not_signed_not_slsa_not_in_toto",
+  "prepared_on": "2026-08-04",
+  "package": {
+    "name": "hapax-agentic-trust",
+    "version": "0.1.0"
+  },
+  "repository": {
+    "base_commit": "fcb740f332c242820f13b6482fd8a998bbe8df8a",
+    "introduced_commit": "eb7277750af5ef5b42299ce35c7c344f0c1e0154",
+    "task_id": "cc-task-agentic-trust-evidence-only-onboarding-20260804",
+    "worktree_state": "committed_feature_branch_not_released"
+  },
+  "scope": {
+    "role": "evidence_only_non_supply",
+    "activation": false,
+    "route_id": null,
+    "demand_eligible": false,
+    "may_execute": false,
+    "may_authorize_external_action": false,
+    "may_authorize_spend": false,
+    "may_authorize_public_egress": false
+  },
+  "lineage": {
+    "recovery_handoff_sha256": "369bd67ed984c15b3090b784e2f152c8f6775a96aa1ddbcb719b31966bdc0510",
+    "recovery_manifest_sha256": "87f29f2a93e13704252f9a35efdef45f8e74ff789d31e287b5647eef6b1976f8",
+    "technical_report": {
+      "artifact_json_sha256": "2086a20e4a7d90b6f318eee34633b90788096adc70668c6bbe0273653a4316c8",
+      "report_html_sha256": "45d46dbe1933fad23b58c6d681a98d9bb87805910ac22ed5459e8e5d831551d4",
+      "source_notes_sha256": "63971eb40bb421b81d2b656e5f4fd0026560ff6855bb1872e28378cd2ba5522d"
+    },
+    "claims_v125_correction_sha256": "d8dbaa27e11572f42bda8c0b41a351ab3eb8adab85c21cb6ce1630852d2e958e",
+    "inputs": [
+      {
+        "original_path": "hardened-build/src/conservatory/agentic_contract.py",
+        "archived_path": "provenance/recovery-inputs-v1/src/conservatory/agentic_contract.py.source.txt",
+        "size": 70266,
+        "sha256": "d2ced4940dade61ba33f3e49e51dd7bcb309113bd8d5fc22f0617127e43664b4",
+        "transformation_class": "dependency_reduction_import_adaptation_formatting_and_hardening",
+        "output_paths": [
+          "src/hapax_agentic_trust/contract.py"
+        ]
+      },
+      {
+        "original_path": "hardened-build/src/conservatory/agentic_run_graph.py",
+        "archived_path": "provenance/recovery-inputs-v1/src/conservatory/agentic_run_graph.py.source.txt",
+        "size": 69555,
+        "sha256": "ee5f4de4596734b67c51a49bae639a7c2de4c80bdb7d07143bb398d4289dc89d",
+        "transformation_class": "semantic_derivation_invariant_and_resource_hardening",
+        "output_paths": [
+          "src/hapax_agentic_trust/run_graph.py"
+        ]
+      },
+      {
+        "original_path": "hardened-build/src/conservatory/evidence_store.py",
+        "archived_path": "provenance/recovery-inputs-v1/src/conservatory/evidence_store.py.source.txt",
+        "size": 60952,
+        "sha256": "8a553df116e4ea7c86aecd94b027d138477437116dbaa05f9dcf807fbdfe1643",
+        "transformation_class": "manual_read_side_custody_extraction_writer_paths_omitted",
+        "output_paths": [
+          "src/hapax_agentic_trust/custody.py"
+        ]
+      },
+      {
+        "original_path": "hardened-build/src/conservatory/terminal_bundle.py",
+        "archived_path": "provenance/recovery-inputs-v1/src/conservatory/terminal_bundle.py.source.txt",
+        "size": 119361,
+        "sha256": "c87947e7bc0ac1d55cc04854cf043213d20f1f8a68d8058d3796c88e2291652a",
+        "transformation_class": "manual_read_side_terminal_extraction_and_verifier_hardening",
+        "output_paths": [
+          "src/hapax_agentic_trust/terminal.py"
+        ]
+      },
+      {
+        "original_path": "hardened-build/src/conservatory/durable_jsonl_sink.py",
+        "archived_path": "provenance/recovery-inputs-v1/src/conservatory/durable_jsonl_sink.py.source.txt",
+        "size": 27384,
+        "sha256": "24aca2721be382f6f9398d0c761c772bb40b7574e51fc7e8414e67bbde467b81",
+        "transformation_class": "two_wire_constants_only_implementation_omitted",
+        "output_paths": [
+          "src/hapax_agentic_trust/_receipt_chain.py"
+        ]
+      },
+      {
+        "original_path": "hardened-build/tests/test_agentic_contract.py",
+        "archived_path": "provenance/recovery-inputs-v1/tests/test_agentic_contract.py.source.txt",
+        "size": 32598,
+        "sha256": "4ab5708b116c0d506bac5662a7cd9d7392bf8289ba74318c8c28111382ea5928",
+        "transformation_class": "adapted_seed_tests_plus_new_local_adversarial_coverage",
+        "output_paths": [
+          "tests/test_contract.py"
+        ]
+      },
+      {
+        "original_path": "hardened-build/tests/test_agentic_run_graph.py",
+        "archived_path": "provenance/recovery-inputs-v1/tests/test_agentic_run_graph.py.source.txt",
+        "size": 33251,
+        "sha256": "236c1a6664f283386e88b638e6f32fecdffc5d104c563a2cac6cc8980b632a38",
+        "transformation_class": "adapted_seed_tests_plus_new_local_adversarial_coverage",
+        "output_paths": [
+          "tests/test_run_graph.py"
+        ]
+      }
+    ],
+    "preserved_handoff": {
+      "path": "provenance/recovery-inputs-v1/RECOVERY-HANDOFF-20260804.md.source.txt",
+      "size": 7390,
+      "sha256": "369bd67ed984c15b3090b784e2f152c8f6775a96aa1ddbcb719b31966bdc0510",
+      "role": "lineage_context_not_scientific_input"
+    }
+  },
+  "payload": {
+    "manifest_path": "provenance/package-payload-v1.sha256",
+    "manifest_sha256": "4ac5c7ce52f8b62159518b9c0ecf7ae7b0d4717670a5171299c4e3d51aeb0604",
+    "manifest_format": "sha256sum_lines_sorted_by_posix_path_lc_all_c",
+    "file_count": 24,
+    "total_bytes": 521670,
+    "self_digest_excluded_to_avoid_recursive_manifest": true,
+    "files": [
+      {
+        "path": "PROVENANCE.md",
+        "size": 6344,
+        "sha256": "ecc8af7034dcf24b7efb3a095656227f8b54ee2ab5d745d9013f9bf53e687f90",
+        "role": "documentation"
+      },
+      {
+        "path": "README.md",
+        "size": 5360,
+        "sha256": "e8b726a545672f7e8292a31d574714e69570dc20677375c80213a11014829437",
+        "role": "documentation"
+      },
+      {
+        "path": "pyproject.toml",
+        "size": 2192,
+        "sha256": "0ebb1eb3a139efc6d21146ef512ba9b9698f46ad646c72808c63e37b5cfd0b5f",
+        "role": "build_configuration"
+      },
+      {
+        "path": "schemas/agentic-trust-evidence-receipt-v1.schema.json",
+        "size": 9474,
+        "sha256": "bc9f6d0cdf88e2d380163323b2186a57074c1cf8f69240fe3426682688959709",
+        "role": "schema"
+      },
+      {
+        "path": "src/hapax_agentic_trust/__init__.py",
+        "size": 790,
+        "sha256": "939544822a0ff07609d1680ce8b6af768dbb165738076dd901c2e18c89fda8f5",
+        "role": "source"
+      },
+      {
+        "path": "src/hapax_agentic_trust/_receipt_chain.py",
+        "size": 132,
+        "sha256": "2a25fcfbd226f52c557c31ca9cce777bec08bbdf9e1f0ea2a41e514627572d64",
+        "role": "source"
+      },
+      {
+        "path": "src/hapax_agentic_trust/contract.py",
+        "size": 68938,
+        "sha256": "555fb13d4130f6b518d4bccbf390d795378f4f1799f26715ac62d72955676d7e",
+        "role": "source"
+      },
+      {
+        "path": "src/hapax_agentic_trust/custody.py",
+        "size": 36415,
+        "sha256": "4e9deb27db2f287c994ffea8f95251c38e6db0c4e6c5a798dc69c622fa9dcddf",
+        "role": "source"
+      },
+      {
+        "path": "src/hapax_agentic_trust/errors.py",
+        "size": 518,
+        "sha256": "8989941c28cd1225ef6e1a9fed39867a786d6316112355d6806badb9c1b21e94",
+        "role": "source"
+      },
+      {
+        "path": "src/hapax_agentic_trust/evidence_receipt.py",
+        "size": 22575,
+        "sha256": "cc5db0ad4ca603e362ffd4a99ddfd3d72420eeb636a0073a15fc5b7f251e7f02",
+        "role": "source"
+      },
+      {
+        "path": "src/hapax_agentic_trust/limits.py",
+        "size": 4433,
+        "sha256": "cb895c5c0d5cd2bc361a6979e46b75a9c73fa4da5ada4b2fc6e25b9b6d545e01",
+        "role": "source"
+      },
+      {
+        "path": "src/hapax_agentic_trust/py.typed",
+        "size": 1,
+        "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+        "role": "typing_marker"
+      },
+      {
+        "path": "src/hapax_agentic_trust/run_graph.py",
+        "size": 75630,
+        "sha256": "09d3f2333c3fc0989d055f0ed25b2ae24db113cee52a52f473c60f25415eb6f3",
+        "role": "source"
+      },
+      {
+        "path": "src/hapax_agentic_trust/terminal.py",
+        "size": 119211,
+        "sha256": "aa5f1e2e1612ac4b21b4bc620d0db1bf8722f0972d8dce8cd422980f7465cc3a",
+        "role": "source"
+      },
+      {
+        "path": "tests/conftest.py",
+        "size": 1409,
+        "sha256": "3ec849b81e31a03405e630f211dafed9bd6b2d41046a50cebbc6c380c31d7467",
+        "role": "test"
+      },
+      {
+        "path": "tests/test_api_topology.py",
+        "size": 6115,
+        "sha256": "2046639670b02a64f1955824b4c3656bc37172c289fa1260d540a50f61dbbae9",
+        "role": "test"
+      },
+      {
+        "path": "tests/test_contract.py",
+        "size": 32379,
+        "sha256": "5307d2b37eb4b014d5e45ae486bb91a88a1c9e3a3abc18115d84d0b4f445bf9a",
+        "role": "test"
+      },
+      {
+        "path": "tests/test_evidence_receipt.py",
+        "size": 11426,
+        "sha256": "e3c6fd7247cc755720fc76508cbc70f09f5a849ba5e2bd1eeb26b637ce2bd135",
+        "role": "test"
+      },
+      {
+        "path": "tests/test_provenance.py",
+        "size": 5093,
+        "sha256": "2e15d2e36382a4737b1fc95e822c07b2f31b19397412f8982e090efcc53668a4",
+        "role": "test"
+      },
+      {
+        "path": "tests/test_receipt_schema.py",
+        "size": 2698,
+        "sha256": "19202f565806aaf351e24324cb1dd4b76cf4c66d0a466f06c61ac8e6b14683b4",
+        "role": "test"
+      },
+      {
+        "path": "tests/test_run_graph.py",
+        "size": 33004,
+        "sha256": "1db36ec80cb8b465998523fe99996eeddbdc116640b775853592a51feb7a123a",
+        "role": "test"
+      },
+      {
+        "path": "tests/test_verification_limits.py",
+        "size": 11954,
+        "sha256": "df0e66288c4a6ff4d271c6db82fbb91d4ac5dd9d057966e9eba36015e36e852d",
+        "role": "test"
+      },
+      {
+        "path": "tests/test_verifier.py",
+        "size": 19776,
+        "sha256": "bcb14a44d44faba4718250d7ed47e399248d4396a55319bb31a45ca27902a507",
+        "role": "test"
+      },
+      {
+        "path": "uv.lock",
+        "size": 45803,
+        "sha256": "ec11f2ca9e3b042395e61ef901a6c9addcdbc19b1d34bfdf911f46b99eebc4f6",
+        "role": "dependency_lock"
+      }
+    ]
+  },
+  "fixture": {
+    "path": "tests/fixtures/golden-terminal-v3",
+    "kind": "synthetic_known_answer",
+    "empirical_evidence": false,
+    "independent_anchor": false,
+    "generation_reproducible": false,
+    "file_count": 54,
+    "total_bytes": 520667,
+    "manifest_path": "provenance/golden-terminal-v3.sha256",
+    "manifest_sha256": "9441c571e93956721c4d77be5a1de6416cafd0857b177ee3895c2344c89f9ce6",
+    "anchors_json_sha256": "0a222bdf48c0293c4f547e9b42446e70d4f426624d8239b4675be5b20f926c0c",
+    "terminal_bundle_sha256": "96b1aacfe42240366d240efecbd2de27c3ba33c1c8909cba1d65f2a02c74d750",
+    "materialized_file_mode": "0400_in_test_copy"
+  },
+  "claim_ceiling": {
+    "run_result_asserted_by_this_record": false,
+    "maximum_positive_run_claim": "caller_digest_values_matched_observed_content_only",
+    "maximum_positive_run_claim_applies_per_verified_receipt_only": true,
+    "anchor_origin_authenticated": false,
+    "chronology_verified": false,
+    "filesystem_immutability_verified": false,
+    "world_truth_verified": false,
+    "model_wide_claim": false,
+    "application_admission_binding": false,
+    "market_claim": false,
+    "may_authorize_external_action": false
+  },
+  "build": {
+    "backend": "hatchling==1.31.0",
+    "lock_path": "uv.lock",
+    "source_date_epoch_spec": "https://reproducible-builds.org/specs/source-date-epoch/",
+    "final_build_receipt_path": "BUILD-RECEIPT.json",
+    "status": "external_receipt_required_not_embedded_to_avoid_recursive_subject"
+  }
+}

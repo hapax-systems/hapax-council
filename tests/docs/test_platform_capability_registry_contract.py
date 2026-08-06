@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, get_type_hints
 
@@ -62,6 +63,95 @@ def test_platform_capability_schema_validates_seed_registry() -> None:
 
     assert schema["title"] == "PlatformCapabilityRegistry"
     assert registry["registry_schema"] == 1
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "launcher",
+        "sanctioned_wrapper",
+        "model_or_engine",
+        "descriptor_variant",
+        "tool_id",
+        "mcp",
+        "equivalence_evidence",
+        "freshness_evidence",
+        "score_evidence",
+        "tool_evidence",
+    ),
+)
+def test_schema_and_runtime_reject_observation_evidence_in_supply_fields(case: str) -> None:
+    from shared.platform_capability_registry import PlatformCapabilityRegistry
+
+    schema = _json(SCHEMA)
+    payload = deepcopy(_json(REGISTRY))
+    route = next(route for route in payload["routes"] if route.get("descriptor_variants"))
+    identity = "local_compute.agentic_trust_evaluator_surface"
+    receipt_ref = "AgenticTrustEvidenceReceiptV1:test-only"
+
+    if case in {"launcher", "sanctioned_wrapper", "model_or_engine"}:
+        route[case] = identity
+    elif case == "descriptor_variant":
+        route["descriptor_variants"][0]["variant_id"] = identity
+    elif case == "tool_id":
+        route["tool_state"][0]["tool_id"] = identity
+    elif case == "mcp":
+        route["tool_access"]["mcp"] = [identity]
+    elif case == "equivalence_evidence":
+        route["quality_envelope"]["explicit_equivalence_records"] = [receipt_ref]
+    elif case == "freshness_evidence":
+        route["freshness"]["evidence"]["capability"]["evidence_refs"] = [receipt_ref]
+    elif case == "score_evidence":
+        route["capability_scores"]["grounding"]["evidence_refs"] = [receipt_ref]
+    elif case == "tool_evidence":
+        route["tool_state"][0]["evidence_ref"] = receipt_ref
+    else:  # pragma: no cover - parameter list is closed above
+        raise AssertionError(case)
+
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(schema).validate(payload)
+    with pytest.raises(ValidationError):
+        PlatformCapabilityRegistry.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "identity",
+    (
+        "local_compute.agentic_trust_evaluator_surface",
+        "LOCAL_COMPUTE.AGENTIC_TRUST_EVALUATOR_SURFACE",
+        "local_compute/agentic_trust_evaluator_surface",
+        "surface/local_compute/agentic_trust_evaluator_surface",
+        "ROUTE/local_compute/agentic_trust_evaluator_surface",
+    ),
+)
+def test_schema_and_runtime_reject_every_reserved_variant_transport_spelling(
+    identity: str,
+) -> None:
+    from shared.platform_capability_registry import PlatformCapabilityRegistry
+
+    schema = _json(SCHEMA)
+    payload = deepcopy(_json(REGISTRY))
+    route = next(route for route in payload["routes"] if route.get("descriptor_variants"))
+    route["descriptor_variants"][0]["variant_id"] = identity
+
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(schema).validate(payload)
+    with pytest.raises(ValidationError, match="cannot name an executable descriptor variant"):
+        PlatformCapabilityRegistry.model_validate(payload)
+
+
+def test_reserved_identity_child_remains_a_distinct_variant_subject_to_normal_intake() -> None:
+    from shared.platform_capability_registry import PlatformCapabilityRegistry
+
+    schema = _json(SCHEMA)
+    payload = deepcopy(_json(REGISTRY))
+    route = next(route for route in payload["routes"] if route.get("descriptor_variants"))
+    route["descriptor_variants"][0]["variant_id"] = (
+        "local_compute.agentic_trust_evaluator_surface.child"
+    )
+
+    jsonschema.Draft202012Validator(schema).validate(payload)
+    PlatformCapabilityRegistry.model_validate(payload)
 
 
 def test_platform_capability_schema_rejects_antigrav_route_platform() -> None:
@@ -262,7 +352,12 @@ def test_seed_registry_records_omitted_shapes_as_evidence_only_non_supply() -> N
         assert shape["route_ids"] == []
         assert shape["measurement_plan_refs"]
         assert shape["remediation_refs"]
-        assert shape["surface_delta_signal"].startswith("capability_surface_delta:")
+        if shape["shape_state"] == "evidence_only":
+            assert shape["surface_delta_signal"] is None
+            assert shape["observation_receipt_class"]
+            assert shape["authority_ceiling"] == "read_only"
+        else:
+            assert shape["surface_delta_signal"].startswith("capability_surface_delta:")
         assert shape["observed_at"] or shape["blocked_reasons"]
 
     publication = shapes["publication_bus.public_event_surface"]
@@ -273,6 +368,14 @@ def test_seed_registry_records_omitted_shapes_as_evidence_only_non_supply() -> N
     assert antigrav["shape_state"] == "deprecated"
     assert antigrav["route_ids"] == []
     assert any(ref == "refuse:antigrav-live-route" for ref in antigrav["remediation_refs"])
+
+    evaluator = shapes["local_compute.agentic_trust_evaluator_surface"]
+    assert evaluator["shape_state"] == "evidence_only"
+    assert evaluator["freshness_state"] == "missing"
+    assert evaluator["observation_receipt_class"] == "AgenticTrustEvidenceReceiptV1"
+    assert "local-energy-technical-telemetry-only" in evaluator["spend_semantics"]
+    assert "no-economic-payback-effect" in evaluator["spend_semantics"]
+    assert "production_evidence_absent" in evaluator["blocked_reasons"]
 
 
 def test_seed_registry_excises_antigrav_live_route_but_records_deprecated_shape() -> None:
@@ -410,6 +513,68 @@ def test_canonical_fixture_surface_delta_holds_registered_omitted_shape() -> Non
     assert "known_omitted_capability_shape" in disposition.reason_codes
 
 
+@pytest.mark.parametrize(
+    "surface_id",
+    (
+        "local_compute.agentic_trust_evaluator_surface",
+        "surface.local_compute.agentic_trust_evaluator_surface",
+        "SURFACE/LOCAL_COMPUTE/AGENTIC_TRUST_EVALUATOR_SURFACE",
+    ),
+)
+def test_evidence_only_shape_observes_without_dispatch_hold(surface_id: str) -> None:
+    from shared.platform_capability_registry import (
+        CapabilitySurfaceDeltaAction,
+        disposition_for_capability_surface_delta,
+        load_platform_capability_registry,
+    )
+
+    registry = load_platform_capability_registry()
+    disposition = disposition_for_capability_surface_delta(
+        registry,
+        _surface_delta(surface_id),
+    )
+
+    assert disposition.action is CapabilitySurfaceDeltaAction.KNOWN_EVIDENCE_ONLY_OBSERVE
+    assert disposition.demand_eligible is False
+    assert disposition.descriptor_id == "local_compute.agentic_trust_evaluator_surface"
+    assert "evidence_only_observation_not_dispatch_supply" in disposition.reason_codes
+
+
+def test_evidence_only_shape_does_not_claim_child_namespace() -> None:
+    from shared.platform_capability_registry import (
+        CapabilitySurfaceDeltaAction,
+        disposition_for_capability_surface_delta,
+        load_platform_capability_registry,
+    )
+
+    registry = load_platform_capability_registry()
+    disposition = disposition_for_capability_surface_delta(
+        registry,
+        _surface_delta("local_compute.agentic_trust_evaluator_surface.child"),
+    )
+
+    assert disposition.action is CapabilitySurfaceDeltaAction.MINT_INTAKE
+    assert disposition.demand_eligible is False
+    assert disposition.descriptor_id is None
+
+
+def test_prefixed_evidence_only_child_uses_generic_intake_not_evidence_observation() -> None:
+    from shared.platform_capability_registry import (
+        CapabilitySurfaceDeltaAction,
+        disposition_for_capability_surface_delta,
+        load_platform_capability_registry,
+    )
+
+    registry = load_platform_capability_registry()
+    disposition = disposition_for_capability_surface_delta(
+        registry,
+        _surface_delta("SURFACE.LOCAL_COMPUTE.AGENTIC_TRUST_EVALUATOR_SURFACE.CHILD"),
+    )
+
+    assert disposition.action is not CapabilitySurfaceDeltaAction.KNOWN_EVIDENCE_ONLY_OBSERVE
+    assert disposition.demand_eligible is False
+
+
 def test_same_carrier_unknown_surface_delta_mints_intake_not_hold() -> None:
     from shared.platform_capability_registry import (
         CapabilitySurfaceDeltaAction,
@@ -525,6 +690,154 @@ def test_observed_omitted_shape_requires_evidence_refs() -> None:
 
     with pytest.raises(ValidationError, match="observed capability shapes require"):
         CapabilityShapeDescriptor.model_validate(poisoned)
+
+
+def test_evidence_only_shape_rejects_surface_delta_signal() -> None:
+    from shared.platform_capability_registry import CapabilityShapeDescriptor
+
+    shape = next(
+        shape
+        for shape in _json(REGISTRY)["omitted_capability_shapes"]
+        if shape["shape_id"] == "local_compute.agentic_trust_evaluator_surface"
+    )
+    poisoned = {**shape, "surface_delta_signal": "capability_surface_delta:local_compute"}
+
+    with pytest.raises(ValidationError, match="cannot emit capability-surface deltas"):
+        CapabilityShapeDescriptor.model_validate(poisoned)
+
+
+def test_evidence_only_shape_requires_native_observation_receipt() -> None:
+    from shared.platform_capability_registry import CapabilityShapeDescriptor
+
+    shape = next(
+        shape
+        for shape in _json(REGISTRY)["omitted_capability_shapes"]
+        if shape["shape_id"] == "local_compute.agentic_trust_evaluator_surface"
+    )
+    poisoned = {**shape, "observation_receipt_class": None}
+
+    with pytest.raises(ValidationError, match="require an observation_receipt_class"):
+        CapabilityShapeDescriptor.model_validate(poisoned)
+
+
+def test_agentic_trust_surface_pins_exact_receipt_class_and_permanent_state() -> None:
+    from shared.platform_capability_registry import CapabilityShapeDescriptor
+
+    shape = next(
+        shape
+        for shape in _json(REGISTRY)["omitted_capability_shapes"]
+        if shape["shape_id"] == "local_compute.agentic_trust_evaluator_surface"
+    )
+
+    with pytest.raises(ValidationError, match="AgenticTrustEvidenceReceiptV1"):
+        CapabilityShapeDescriptor.model_validate(
+            {**shape, "observation_receipt_class": "RouteAuthorityReceipt"}
+        )
+    with pytest.raises(ValidationError, match="permanently evidence_only"):
+        CapabilityShapeDescriptor.model_validate(
+            {
+                **shape,
+                "shape_state": "intake_required",
+                "surface_delta_signal": "capability_surface_delta:local_compute",
+                "observation_receipt_class": None,
+            }
+        )
+
+
+def test_platform_registry_cannot_drop_permanent_agentic_trust_shape() -> None:
+    from shared.platform_capability_registry import PlatformCapabilityRegistry
+
+    payload = _json(REGISTRY)
+    payload["omitted_capability_shapes"] = [
+        shape
+        for shape in payload["omitted_capability_shapes"]
+        if shape["shape_id"] != "local_compute.agentic_trust_evaluator_surface"
+    ]
+
+    with pytest.raises(ValidationError, match="must retain the permanent"):
+        PlatformCapabilityRegistry.model_validate(payload)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(_json(SCHEMA)).validate(payload)
+
+
+@pytest.mark.parametrize(
+    "shape_id",
+    (
+        "surface.codex.headless.full",
+        "route.codex.headless.full",
+    ),
+)
+def test_omitted_shape_cannot_alias_an_admitted_route_identity(shape_id: str) -> None:
+    from shared.platform_capability_registry import PlatformCapabilityRegistry
+
+    payload = _json(REGISTRY)
+    template = next(
+        shape
+        for shape in payload["omitted_capability_shapes"]
+        if shape["shape_id"] == "local_compute.agentic_trust_evaluator_surface"
+    )
+    payload["omitted_capability_shapes"].append({**template, "shape_id": shape_id})
+
+    with pytest.raises(ValidationError, match="must not collide with admitted route ids"):
+        PlatformCapabilityRegistry.model_validate(payload)
+
+
+def test_omitted_shapes_cannot_duplicate_evaluator_through_transport_alias() -> None:
+    from shared.platform_capability_registry import PlatformCapabilityRegistry
+
+    payload = _json(REGISTRY)
+    template = next(
+        shape
+        for shape in payload["omitted_capability_shapes"]
+        if shape["shape_id"] == "local_compute.agentic_trust_evaluator_surface"
+    )
+    payload["omitted_capability_shapes"].append(
+        {
+            **template,
+            "shape_id": "surface.local_compute.agentic_trust_evaluator_surface",
+        }
+    )
+
+    with pytest.raises(ValidationError, match="collide after canonicalization"):
+        PlatformCapabilityRegistry.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "shape_id",
+    (
+        "CODEx/HEADLESS/FULL",
+        "SURFACE/LOCAL_COMPUTE/AGENTIC_TRUST_EVALUATOR_SURFACE",
+    ),
+)
+def test_registry_shape_ids_require_canonical_lowercase_dot_spelling(shape_id: str) -> None:
+    from shared.platform_capability_registry import CapabilityShapeDescriptor
+
+    template = _json(REGISTRY)["omitted_capability_shapes"][0]
+    poisoned = {**template, "shape_id": shape_id}
+    payload = _json(REGISTRY)
+    payload["omitted_capability_shapes"][0] = poisoned
+
+    with pytest.raises(ValidationError, match="string_pattern_mismatch"):
+        CapabilityShapeDescriptor.model_validate(poisoned)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(_json(SCHEMA)).validate(payload)
+
+
+def test_observation_and_supply_identity_normalizers_keep_route_claim_visible() -> None:
+    from shared.platform_capability_registry import (
+        is_agentic_trust_evidence_surface_identity,
+        is_registered_evidence_only_surface,
+        load_platform_capability_registry,
+    )
+
+    registry = load_platform_capability_registry()
+    route_spelling = "route.local_compute.agentic_trust_evaluator_surface"
+    route_child = f"{route_spelling}.child"
+
+    assert is_agentic_trust_evidence_surface_identity(route_spelling) is True
+    assert is_registered_evidence_only_surface(registry, route_spelling) is False
+    assert is_agentic_trust_evidence_surface_identity(route_child) is False
+    assert is_registered_evidence_only_surface(registry, route_child) is False
 
 
 def test_runtime_registry_requires_omitted_shapes() -> None:

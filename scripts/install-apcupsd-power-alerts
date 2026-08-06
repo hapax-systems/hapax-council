@@ -1,0 +1,1015 @@
+#!/usr/bin/env bash
+# Install Hapax apcupsd config/hooks and verify power-event provenance paths.
+set -euo pipefail
+ORIGINAL_ARGS=("$@")
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SOURCE="$ROOT"
+SRC="$SOURCE/config/apcupsd"
+DEST="${HAPAX_APCUPSD_DEST:-/etc/apcupsd}"
+DEFAULT_AUDIT_DIR="/var/log/hapax"
+DEFAULT_AUDIT_GROUP="hapax"
+DEFAULT_AUDIT_LOG="$DEFAULT_AUDIT_DIR/ups-power-events.jsonl"
+AUDIT_DIR="${HAPAX_APCUPSD_AUDIT_DIR:-$DEFAULT_AUDIT_DIR}"
+AUDIT_GROUP="${HAPAX_APCUPSD_AUDIT_GROUP:-$DEFAULT_AUDIT_GROUP}"
+AUDIT_LOG="${HAPAX_UPS_AUDIT_LOG:-$AUDIT_DIR/ups-power-events.jsonl}"
+AUDIT_LOG_OWNER_UID="${HAPAX_UPS_AUDIT_LOG_OWNER_UID:-}"
+AUDIT_LOG_OWNER_GID="${HAPAX_UPS_AUDIT_LOG_OWNER_GID:-}"
+LOGROTATE_DEST="${HAPAX_APCUPSD_LOGROTATE_DEST:-/etc/logrotate.d/hapax-ups-power-events}"
+UPOWER_CONF_DEST="${HAPAX_UPOWER_CONF_DEST:-/etc/UPower/UPower.conf.d/90-hapax-apcupsd-owner.conf}"
+SYSTEMCTL="${HAPAX_APCUPSD_SYSTEMCTL:-systemctl}"
+BUSCTL="${HAPAX_APCUPSD_BUSCTL:-busctl}"
+APCACCESS="${HAPAX_APCUPSD_APCACCESS:-apcaccess}"
+SUDO="${HAPAX_APCUPSD_INSTALL_SUDO-sudo}"
+ACTUAL_UID="$(/usr/bin/id -u)"
+if [ "$ACTUAL_UID" != "0" ] && [ "${HAPAX_APCUPSD_INSTALL_TEST_ACTUAL_UID:-}" = "0" ]; then
+    ACTUAL_UID=0
+fi
+TARGET_UID="${HAPAX_APCUPSD_TARGET_UID:-1000}"
+TARGET_HOME="${HAPAX_APCUPSD_TARGET_HOME:-}"
+TARGET_GID="${HAPAX_APCUPSD_TARGET_GID:-}"
+if [ -z "$TARGET_HOME" ]; then
+    TARGET_HOME="$(getent passwd "$TARGET_UID" | cut -d: -f6 || true)"
+fi
+if [ -z "$TARGET_GID" ]; then
+    TARGET_GID="$(getent passwd "$TARGET_UID" | cut -d: -f4 || true)"
+fi
+if [ -z "$TARGET_HOME" ] || [ -z "$TARGET_GID" ]; then
+    echo "unable to resolve home/group for apcupsd target UID $TARGET_UID; next action: set HAPAX_APCUPSD_TARGET_UID, HAPAX_APCUPSD_TARGET_HOME, and HAPAX_APCUPSD_TARGET_GID explicitly" >&2
+    exit 2
+fi
+ROOT_REQUIRED_STATE_ROOT="${HAPAX_ROOT_REQUIRED_STATE_ROOT:-$TARGET_HOME/.local/state/hapax/root-required}"
+ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$ROOT_REQUIRED_STATE_ROOT/current-source}"
+ROOT_REQUIRED_DEFER_ROOT="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-}"
+if [ -z "$ROOT_REQUIRED_DEFER_ROOT" ] && [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ]; then
+    ROOT_REQUIRED_DEFER_ROOT="$(dirname "$(dirname "$HAPAX_ROOT_REQUIRED_DRAIN_DIR")")"
+fi
+ROOT_REQUIRED_DEFER_ROOT="${ROOT_REQUIRED_DEFER_ROOT:-$TARGET_HOME/.cache/hapax/post-merge-root-required}"
+ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/installed-receipts}"
+ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/desired-receipts}"
+ROOT_REQUIRED_GIT_REPO="${HAPAX_ROOT_REQUIRED_GIT_REPO:-$TARGET_HOME/.cache/hapax/source-activation/worktree}"
+ROOT_REQUIRED_PACKAGE_SHA="${HAPAX_ROOT_REQUIRED_PACKAGE_SHA:-}"
+ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_STATE_ROOT/.lock}"
+ROOT_REQUIRED_RECEIPT="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/apcupsd-power-alerts.sha"
+ROOT_REQUIRED_DESIRED_RECEIPT="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/apcupsd-power-alerts.sha"
+SKIP_SUPERSEDED_INSTALL=0
+ROOT_REQUIRED_RC=77
+RESTART=1
+INSTALL=0
+CHECK=0
+VERIFY_LIVE=0
+APCUPSD_LIVE_POLICY_DETAIL=""
+UPOWER_LIVE_POLICY_DETAIL=""
+package_manifest_source="config/root-required/apcupsd-power-alerts.files"
+package_files=(
+    "$package_manifest_source"
+    scripts/install-apcupsd-power-alerts
+    config/apcupsd/apcupsd.conf
+    config/apcupsd/hapax-power-event.py
+    config/apcupsd/onbattery
+    config/apcupsd/offbattery
+    config/apcupsd/doshutdown
+    config/upower/90-hapax-apcupsd-owner.conf
+    systemd/logrotate.d/hapax-ups-power-events
+)
+
+usage() {
+    cat <<'USAGE'
+usage: scripts/install-apcupsd-power-alerts [--source DIR] [--check] [--install] [--verify-live] [--no-restart]
+
+Installs:
+  config/apcupsd/apcupsd.conf        -> /etc/apcupsd/apcupsd.conf
+  config/apcupsd/hapax-power-event.py -> /etc/apcupsd/hapax-power-event.py
+  config/apcupsd/onbattery           -> /etc/apcupsd/onbattery
+  config/apcupsd/offbattery          -> /etc/apcupsd/offbattery
+  config/apcupsd/doshutdown          -> /etc/apcupsd/doshutdown
+  config/upower/90-hapax-apcupsd-owner.conf -> /etc/UPower/UPower.conf.d/90-hapax-apcupsd-owner.conf
+  systemd/logrotate.d/hapax-ups-power-events -> /etc/logrotate.d/hapax-ups-power-events
+
+Power events are recorded at /var/log/hapax/ups-power-events.jsonl before/after
+ntfy delivery state is known. Run the installer as the target account; it uses
+sudo only for root-owned destinations and refuses whole-script root execution.
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --source) SOURCE="${2:?source dir required after --source}"; SRC="$SOURCE/config/apcupsd"; shift ;;
+        --check) CHECK=1 ;;
+        --install) INSTALL=1 ;;
+        --verify-live) VERIFY_LIVE=1 ;;
+        --no-restart) RESTART=0 ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
+    esac
+    shift
+done
+
+if [ "$INSTALL" -eq 1 ]; then
+    VERIFY_LIVE=1
+fi
+
+if [ "$CHECK" -eq 0 ] && [ "$INSTALL" -eq 0 ] && [ "$VERIFY_LIVE" -eq 0 ]; then
+    CHECK=1
+fi
+
+expect_header() {
+    local file="$1"
+    local first
+    first="$(head -n1 "$file")"
+    [ "$first" = "## apcupsd.conf v1.1 ##" ] || {
+        echo "bad apcupsd header in $file: $first; next action: restore config/apcupsd/apcupsd.conf and rerun scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    }
+}
+
+run_root() {
+    if [ -n "$SUDO" ]; then
+        "$SUDO" "$@"
+    else
+        "$@"
+    fi
+}
+
+preflight_root() {
+    if [ -n "$SUDO" ] && [ "$INSTALL" -eq 1 ]; then
+        "$SUDO" -n true 2>/dev/null || {
+            echo "sudo non-interactive access is required for apcupsd power-alert install; next action: run sudo -v or grant the target account NOPASSWD for the governed install/systemctl commands, then rerun as that account" >&2
+            return "$ROOT_REQUIRED_RC"
+        }
+    fi
+}
+
+refuse_whole_script_root() {
+    if [ "$INSTALL" -eq 1 ] && [ "$ACTUAL_UID" = "0" ]; then
+        echo "whole-script root execution is refused because durable package state and its shared lock are owned by UID $TARGET_UID; next action: run this installer as UID $TARGET_UID after sudo -v so only run_root commands cross the privilege boundary" >&2
+        return 2
+    fi
+}
+
+install_audit_dir() {
+    if [ -n "$AUDIT_GROUP" ] && getent group "$AUDIT_GROUP" >/dev/null 2>&1 && { [ -n "$SUDO" ] || [ "$(id -u)" = "0" ]; }; then
+        run_root install -d -m 2775 -g "$AUDIT_GROUP" "$AUDIT_DIR"
+    else
+        run_root install -d -m 0775 "$AUDIT_DIR"
+    fi
+}
+
+resolve_audit_log_identity() {
+    local group_entry required_gid
+    if [ "$AUDIT_LOG" = "$DEFAULT_AUDIT_LOG" ]; then
+        if [ "$AUDIT_GROUP" != "$DEFAULT_AUDIT_GROUP" ]; then
+            echo "canonical UPS audit log requires group $DEFAULT_AUDIT_GROUP, not $AUDIT_GROUP; next action: remove HAPAX_APCUPSD_AUDIT_GROUP or use a noncanonical audit-log path" >&2
+            return 1
+        fi
+        if ! group_entry="$(getent group "$DEFAULT_AUDIT_GROUP" 2>/dev/null)" \
+            || [ -z "$group_entry" ]; then
+            echo "required UPS audit group is missing: $DEFAULT_AUDIT_GROUP; next action: restore the canonical $DEFAULT_AUDIT_GROUP group before installing or verifying apcupsd power alerts" >&2
+            return 1
+        fi
+        required_gid="$(printf '%s\n' "$group_entry" | cut -d: -f3)"
+        if ! [[ "$required_gid" =~ ^[0-9]+$ ]]; then
+            echo "required UPS audit group has an invalid gid: $DEFAULT_AUDIT_GROUP; next action: repair the canonical group entry before installing or verifying apcupsd power alerts" >&2
+            return 1
+        fi
+        if [ -n "$AUDIT_LOG_OWNER_UID" ] && [ "$AUDIT_LOG_OWNER_UID" != "0" ]; then
+            echo "canonical UPS audit log requires owner uid 0, not $AUDIT_LOG_OWNER_UID; next action: remove HAPAX_UPS_AUDIT_LOG_OWNER_UID or set it to 0" >&2
+            return 1
+        fi
+        if [ -n "$AUDIT_LOG_OWNER_GID" ] && [ "$AUDIT_LOG_OWNER_GID" != "$required_gid" ]; then
+            echo "canonical UPS audit log requires gid $required_gid from group $DEFAULT_AUDIT_GROUP, not $AUDIT_LOG_OWNER_GID; next action: remove HAPAX_UPS_AUDIT_LOG_OWNER_GID or set it to the canonical group gid" >&2
+            return 1
+        fi
+        AUDIT_LOG_OWNER_UID=0
+        AUDIT_LOG_OWNER_GID="$required_gid"
+    fi
+    if [ -z "$AUDIT_LOG_OWNER_UID" ]; then
+        if [[ "$AUDIT_LOG" == /var/log/* ]]; then
+            AUDIT_LOG_OWNER_UID=0
+        else
+            AUDIT_LOG_OWNER_UID="$(/usr/bin/id -u)"
+        fi
+    fi
+    if [ -z "$AUDIT_LOG_OWNER_GID" ]; then
+        if [[ "$AUDIT_LOG" == /var/log/* ]] \
+            && [ -n "$AUDIT_GROUP" ] \
+            && getent group "$AUDIT_GROUP" >/dev/null 2>&1; then
+            AUDIT_LOG_OWNER_GID="$(getent group "$AUDIT_GROUP" | cut -d: -f3)"
+        else
+            AUDIT_LOG_OWNER_GID="$(/usr/bin/id -g)"
+        fi
+    fi
+    if ! [[ "$AUDIT_LOG_OWNER_UID" =~ ^[0-9]+$ && "$AUDIT_LOG_OWNER_GID" =~ ^[0-9]+$ ]]; then
+        echo "invalid UPS audit-log owner identity uid=$AUDIT_LOG_OWNER_UID gid=$AUDIT_LOG_OWNER_GID; next action: remove invalid HAPAX_UPS_AUDIT_LOG_OWNER_UID/GID overrides and rerun the installer" >&2
+        return 1
+    fi
+}
+
+verify_audit_log_parent() {
+    local parent_expected_mode=""
+    resolve_audit_log_identity
+    if [ "$AUDIT_LOG" = "$DEFAULT_AUDIT_LOG" ]; then
+        parent_expected_mode=2775
+    fi
+    /usr/bin/python3 - "$AUDIT_LOG" "$AUDIT_LOG_OWNER_UID" "$AUDIT_LOG_OWNER_GID" \
+        "$parent_expected_mode" <<'PY'
+from __future__ import annotations
+
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+owner_uid = int(sys.argv[2])
+owner_gid = int(sys.argv[3])
+parent_expected_mode = int(sys.argv[4], 8) if sys.argv[4] else None
+parent = os.path.dirname(path) or "."
+try:
+    inode = os.lstat(parent)
+except OSError as exc:
+    print(
+        f"UPS audit log parent is missing or unreadable: {parent}: {exc}; next action: "
+        "repair the lexical parent and rerun scripts/install-apcupsd-power-alerts "
+        "--install --verify-live",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+if not stat.S_ISDIR(inode.st_mode) or (
+    parent_expected_mode is not None
+    and (
+        inode.st_uid != owner_uid
+        or inode.st_gid != owner_gid
+        or stat.S_IMODE(inode.st_mode) != parent_expected_mode
+    )
+):
+    print(
+        f"UPS audit log parent trust drift: {parent} owner={inode.st_uid}:{inode.st_gid} "
+        f"mode={stat.S_IMODE(inode.st_mode):04o}; expected a lexical non-symlink "
+        + (
+            f"directory with {owner_uid}:{owner_gid}:{parent_expected_mode:04o}"
+            if parent_expected_mode is not None
+            else "directory"
+        )
+        + "; next action: repair the audit-log directory and rerun "
+        "scripts/install-apcupsd-power-alerts --install --verify-live",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+PY
+}
+
+prepare_audit_log() {
+    resolve_audit_log_identity
+    verify_audit_log_parent
+    run_root /usr/bin/python3 - "$AUDIT_LOG" "$AUDIT_LOG_OWNER_UID" "$AUDIT_LOG_OWNER_GID" <<'PY'
+from __future__ import annotations
+
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+owner_uid = int(sys.argv[2])
+owner_gid = int(sys.argv[3])
+try:
+    fd = os.open(
+        path,
+        os.O_APPEND
+        | os.O_CLOEXEC
+        | os.O_CREAT
+        | os.O_NOFOLLOW
+        | os.O_NONBLOCK
+        | os.O_RDWR,
+        0o640,
+    )
+except OSError as exc:
+    print(
+        f"refused unsafe UPS audit log {path}: {exc}; next action: preserve any valid log "
+        "content, remove only a confirmed symlink/non-regular inode, and rerun the installer",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+try:
+    inode = os.fstat(fd)
+    if not stat.S_ISREG(inode.st_mode) or inode.st_nlink != 1:
+        print(
+            f"refused unsafe UPS audit log inode {path}; expected a single-link regular file; "
+            "next action: preserve any valid log content, remove the unsafe inode, and rerun",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    os.fchown(fd, owner_uid, owner_gid)
+    os.fchmod(fd, 0o640)
+finally:
+    os.close(fd)
+PY
+}
+
+verify_audit_log_target() {
+    resolve_audit_log_identity
+    verify_audit_log_parent
+    /usr/bin/python3 - "$AUDIT_LOG" "$AUDIT_LOG_OWNER_UID" "$AUDIT_LOG_OWNER_GID" <<'PY'
+from __future__ import annotations
+
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+owner_uid = int(sys.argv[2])
+owner_gid = int(sys.argv[3])
+try:
+    inode = os.lstat(path)
+except OSError as exc:
+    print(
+        f"UPS audit log is missing or unreadable: {path}: {exc}; next action: rerun "
+        "scripts/install-apcupsd-power-alerts --install --verify-live",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+if (
+    not stat.S_ISREG(inode.st_mode)
+    or inode.st_nlink != 1
+    or inode.st_uid != owner_uid
+    or inode.st_gid != owner_gid
+    or stat.S_IMODE(inode.st_mode) != 0o640
+):
+    print(
+        f"UPS audit log trust drift: {path} owner={inode.st_uid}:{inode.st_gid} "
+        f"mode={stat.S_IMODE(inode.st_mode):03o} links={inode.st_nlink}; expected "
+        f"{owner_uid}:{owner_gid}:640 with one regular link; next action: rerun "
+        "scripts/install-apcupsd-power-alerts --install --verify-live",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+PY
+}
+
+canonical_dir() {
+    local dir="$1"
+    [ -d "$dir" ] || return 1
+    (cd "$dir" && pwd -P)
+}
+
+acquire_root_required_lock() {
+    local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
+    if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ]; then
+        echo "apcupsd installer internal error: safe shared lock descriptor is absent; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun the unmodified installer as UID $TARGET_UID" >&2
+        return 1
+    fi
+    /usr/bin/python3 - "$lock_fd" "$ROOT_REQUIRED_LOCK_FILE" <<'PY'
+from __future__ import annotations
+
+import fcntl
+import os
+import stat
+import sys
+
+fd = int(sys.argv[1])
+lock_path = sys.argv[2]
+try:
+    inode = os.fstat(fd)
+    path_inode = os.lstat(lock_path)
+except OSError as exc:
+    print(
+        f"apcupsd installer refused invalid shared lock descriptor for {lock_path}: {exc}; "
+        "next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+if (
+    not stat.S_ISREG(inode.st_mode)
+    or not stat.S_ISREG(path_inode.st_mode)
+    or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
+    or inode.st_uid != os.geteuid()
+    or inode.st_nlink != 1
+    or inode.st_mode & 0o022
+):
+    print(
+        f"apcupsd installer refused invalid shared lock descriptor for {lock_path}; expected "
+        "the caller-owned, single-link, non-group-writable regular path inode; next action: "
+        "remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+os.fchmod(fd, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+PY
+    mkdir -p "$ROOT_REQUIRED_DEFER_ROOT"
+    migrate_legacy_root_required_state
+}
+
+reexec_with_safe_root_required_lock() {
+    [ -z "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" ] || return 0
+    exec /usr/bin/python3 - "$ROOT_REQUIRED_LOCK_FILE" "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
+from __future__ import annotations
+
+import fcntl
+import os
+import stat
+import subprocess
+import sys
+
+lock_path, script, *args = sys.argv[1:]
+os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+try:
+    fd = os.open(
+        lock_path,
+        os.O_CLOEXEC | os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR,
+        0o600,
+    )
+except OSError as exc:
+    print(
+        f"apcupsd installer refused unsafe shared lock {lock_path}: {exc}; "
+        "next action: remove only a confirmed symlink/non-regular lock and rerun as the target account",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+try:
+    inode = os.fstat(fd)
+    if (
+        not stat.S_ISREG(inode.st_mode)
+        or inode.st_uid != os.geteuid()
+        or inode.st_nlink != 1
+        or inode.st_mode & 0o022
+    ):
+        print(
+            f"apcupsd installer refused unsafe shared lock inode {lock_path}; expected one "
+            "regular, caller-owned, non-group-writable file; next action: remove only a "
+            "confirmed unsafe lock and rerun as the target account",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    os.fchmod(fd, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    env = os.environ.copy()
+    env.pop("HAPAX_ROOT_REQUIRED_LOCK_HELD", None)
+    env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
+    result = subprocess.run(
+        [os.path.abspath(script), *args],
+        env=env,
+        pass_fds=(fd,),
+        check=False,
+    )
+    raise SystemExit(result.returncode)
+finally:
+    os.close(fd)
+PY
+}
+
+migrate_legacy_root_required_state() {
+    local label legacy receipt temp
+    legacy="$ROOT_REQUIRED_DEFER_ROOT/current-source"
+    if [ ! -e "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" ] && [ -d "$legacy" ]; then
+        mkdir -p "$(dirname "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT")"
+        temp="$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT.migrate.$$"
+        rm -rf "$temp"
+        cp -a "$legacy" "$temp"
+        mv "$temp" "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"
+        echo "migrated root-required installed-source snapshot to durable state"
+    fi
+    for label in oom-containment apcupsd-power-alerts; do
+        legacy="$ROOT_REQUIRED_DEFER_ROOT/installed-receipts/$label.sha"
+        receipt="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/$label.sha"
+        if [ ! -f "$receipt" ] && [ "$legacy" != "$receipt" ] && [ -f "$legacy" ]; then
+            mkdir -p "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT"
+            cp "$legacy" "$receipt.migrate.$$"
+            mv -f "$receipt.migrate.$$" "$receipt"
+            echo "migrated $label installed-package receipt to durable state"
+        fi
+        receipt="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/$label.sha"
+        if [ ! -f "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha" ] && [ -f "$receipt" ]; then
+            mkdir -p "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT"
+            cp "$receipt" "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha.migrate.$$"
+            mv -f "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha.migrate.$$" "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha"
+            echo "initialized $label desired-package receipt from installed state"
+        fi
+    done
+}
+
+package_commits_equivalent() {
+    local installed_sha="$1" candidate_sha="$2" rel installed_mode candidate_mode
+    cmp -s \
+        <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$installed_sha:$package_manifest_source" 2>/dev/null) \
+        <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$candidate_sha:$package_manifest_source" 2>/dev/null) || return 1
+    for rel in "${package_files[@]}"; do
+        git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$installed_sha:$rel" 2>/dev/null || return 1
+        git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$candidate_sha:$rel" 2>/dev/null || return 1
+        cmp -s \
+            <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$installed_sha:$rel") \
+            <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$candidate_sha:$rel") || return 1
+        installed_mode="$(git -C "$ROOT_REQUIRED_GIT_REPO" ls-tree "$installed_sha" -- "$rel" | awk 'NR == 1 {print $1}')"
+        candidate_mode="$(git -C "$ROOT_REQUIRED_GIT_REPO" ls-tree "$candidate_sha" -- "$rel" | awk 'NR == 1 {print $1}')"
+        [ -n "$installed_mode" ] && [ "$installed_mode" = "$candidate_mode" ] || return 1
+    done
+}
+
+validate_candidate_against_receipt() {
+    local receipt_kind="$1" receipt_path="$2" receipt_sha
+    [ -f "$receipt_path" ] || return 0
+    receipt_sha="$(tr -d '[:space:]' < "$receipt_path")"
+    [[ "$receipt_sha" =~ ^[0-9a-f]{40}$ ]] || {
+        echo "invalid $receipt_kind apcupsd package receipt: $receipt_path; next action: inspect the receipt and rerun the newest governed post-merge package" >&2
+        return 1
+    }
+    [ "$receipt_sha" != "$ROOT_REQUIRED_PACKAGE_SHA" ] || return 0
+    if ! git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$receipt_sha^{commit}" 2>/dev/null; then
+        echo "cannot validate apcupsd package order for $receipt_kind=$receipt_sha candidate=$ROOT_REQUIRED_PACKAGE_SHA; next action: fetch both commits into $ROOT_REQUIRED_GIT_REPO and rerun the staged RUNBOOK" >&2
+        return 1
+    fi
+    if git -C "$ROOT_REQUIRED_GIT_REPO" merge-base --is-ancestor "$receipt_sha" "$ROOT_REQUIRED_PACKAGE_SHA"; then
+        return 0
+    fi
+    if git -C "$ROOT_REQUIRED_GIT_REPO" merge-base --is-ancestor "$ROOT_REQUIRED_PACKAGE_SHA" "$receipt_sha"; then
+        SKIP_SUPERSEDED_INSTALL=1
+        echo "root-required apcupsd package $ROOT_REQUIRED_PACKAGE_SHA is superseded by $receipt_kind $receipt_sha; live files and durable desired state will not be rolled back"
+        return 0
+    fi
+    if package_commits_equivalent "$receipt_sha" "$ROOT_REQUIRED_PACKAGE_SHA"; then
+        echo "root-required apcupsd package and $receipt_kind receipt are ancestry-divergent but package-content equivalent; accepting squash/rebase transition"
+        return 0
+    fi
+    echo "refusing divergent apcupsd package $receipt_kind=$receipt_sha candidate=$ROOT_REQUIRED_PACKAGE_SHA; next action: dispatch a governed reconciliation from current main and leave this RUNBOOK pending" >&2
+    return 1
+}
+
+validate_root_required_package_order() {
+    local staged_sha package_sha_file
+    package_sha_file="$SOURCE/.hapax-root-required-package-sha"
+    if [ -f "$package_sha_file" ]; then
+        staged_sha="$(tr -d '[:space:]' < "$package_sha_file")"
+        if [ -z "$ROOT_REQUIRED_PACKAGE_SHA" ]; then
+            ROOT_REQUIRED_PACKAGE_SHA="$staged_sha"
+        elif [ "$ROOT_REQUIRED_PACKAGE_SHA" != "$staged_sha" ]; then
+            echo "root-required apcupsd package SHA mismatch: env=$ROOT_REQUIRED_PACKAGE_SHA staged=$staged_sha; next action: rerun the unmodified command from this package's RUNBOOK.txt" >&2
+            return 1
+        fi
+    fi
+    if [ -z "$ROOT_REQUIRED_PACKAGE_SHA" ]; then
+        ROOT_REQUIRED_PACKAGE_SHA="$(git -C "$SOURCE" rev-parse HEAD 2>/dev/null || true)"
+    fi
+    if [ -z "$ROOT_REQUIRED_PACKAGE_SHA" ]; then
+        echo "apcupsd install source has no package SHA; next action: run from a Git worktree or the exact staged RUNBOOK command" >&2
+        return 1
+    fi
+    [[ "$ROOT_REQUIRED_PACKAGE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+        echo "invalid root-required package SHA: $ROOT_REQUIRED_PACKAGE_SHA; next action: rerun the exact command from the staged RUNBOOK.txt" >&2
+        return 1
+    }
+    git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$ROOT_REQUIRED_PACKAGE_SHA^{commit}" 2>/dev/null || {
+        echo "root-required apcupsd package commit is unavailable: $ROOT_REQUIRED_PACKAGE_SHA; next action: fetch it into $ROOT_REQUIRED_GIT_REPO and rerun the staged RUNBOOK" >&2
+        return 1
+    }
+    validate_candidate_against_receipt installed "$ROOT_REQUIRED_RECEIPT"
+    validate_candidate_against_receipt desired "$ROOT_REQUIRED_DESIRED_RECEIPT"
+}
+
+record_root_required_package_receipt() {
+    local temp desired_temp
+    mkdir -p "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT"
+    temp="$ROOT_REQUIRED_RECEIPT.tmp.$$"
+    printf '%s\n' "$ROOT_REQUIRED_PACKAGE_SHA" > "$temp"
+    mv -f "$temp" "$ROOT_REQUIRED_RECEIPT"
+    desired_temp="$ROOT_REQUIRED_DESIRED_RECEIPT.tmp.$$"
+    printf '%s\n' "$ROOT_REQUIRED_PACKAGE_SHA" > "$desired_temp"
+    mv -f "$desired_temp" "$ROOT_REQUIRED_DESIRED_RECEIPT"
+}
+
+expected_package_git_mode() {
+    case "$1" in
+        scripts/*|config/apcupsd/hapax-power-event.py|config/apcupsd/onbattery|config/apcupsd/offbattery|config/apcupsd/doshutdown)
+            printf '%s\n' 100755
+            ;;
+        *) printf '%s\n' 100644 ;;
+    esac
+}
+
+validate_package_source_matches_commit() {
+    local rel git_mode expected_mode
+    for rel in "${package_files[@]}"; do
+        git_mode="$(git -C "$ROOT_REQUIRED_GIT_REPO" ls-tree "$ROOT_REQUIRED_PACKAGE_SHA" -- "$rel" | awk 'NR == 1 {print $1}')"
+        expected_mode="$(expected_package_git_mode "$rel")"
+        if [ "$git_mode" != "$expected_mode" ]; then
+            echo "apcupsd package Git mode violates the destination contract at $rel: actual=$git_mode expected=$expected_mode; next action: restore the tracked executable class and rerun from a clean Git worktree or exact staged RUNBOOK" >&2
+            return 1
+        fi
+        if ! /usr/bin/python3 - "$SOURCE/$rel" "$git_mode" <<'PY'
+from __future__ import annotations
+
+import os
+import stat
+import sys
+
+path, git_mode = sys.argv[1:]
+try:
+    inode = os.lstat(path)
+except OSError:
+    raise SystemExit(1)
+if not stat.S_ISREG(inode.st_mode):
+    raise SystemExit(1)
+worktree_mode = "100755" if stat.S_IMODE(inode.st_mode) & 0o111 else "100644"
+if git_mode not in {"100644", "100755"} or worktree_mode != git_mode:
+    raise SystemExit(1)
+PY
+        then
+            echo "apcupsd install source is not a regular file with the claimed Git mode at $rel; next action: discard the substituted or mode-drifted package and rerun from a clean Git worktree or exact staged RUNBOOK" >&2
+            return 1
+        fi
+        if ! cmp -s <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$ROOT_REQUIRED_PACKAGE_SHA:$rel") "$SOURCE/$rel"; then
+            echo "apcupsd install source does not match claimed commit $ROOT_REQUIRED_PACKAGE_SHA at $rel; next action: discard the modified package and rerun from a clean Git worktree or exact staged RUNBOOK" >&2
+            return 1
+        fi
+    done
+}
+
+validate_no_unhandled_package_removals() {
+    local installed_sha rel
+    [ -f "$ROOT_REQUIRED_RECEIPT" ] || return 0
+    installed_sha="$(tr -d '[:space:]' < "$ROOT_REQUIRED_RECEIPT")"
+    if ! git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$installed_sha:$package_manifest_source" 2>/dev/null; then
+        echo "installed apcupsd commit predates the versioned ownership manifest; package-removal guard is using the one-time legacy bridge"
+        return 0
+    fi
+    while IFS= read -r rel; do
+        if ! awk -v wanted="$rel" 'NF && $1 !~ /^#/ && $1 == wanted { found = 1 } END { exit !found }' "$SOURCE/$package_manifest_source"; then
+            echo "refusing apcupsd package removal or rename of $rel; next action: retain the owned path or add explicit governed live-removal handling before advancing receipts" >&2
+            return 1
+        fi
+    done < <(
+        git -C "$ROOT_REQUIRED_GIT_REPO" show "$installed_sha:$package_manifest_source" |
+            awk 'NF && $1 !~ /^#/ {print $1}'
+    )
+}
+
+validate_root_required_deferral_dir() {
+    local drain="$1" root_real drain_real expected_real source_real
+    [ -n "$drain" ] || return 0
+    case "$drain" in
+        /*) ;;
+        *)
+            echo "refusing relative root-required drain dir: $drain; next action: set HAPAX_ROOT_REQUIRED_DRAIN_DIR to the absolute deferral directory named in its RUNBOOK.txt" >&2
+            return 1
+            ;;
+    esac
+    [ -f "$drain/RUNBOOK.txt" ] || {
+        echo "root-required drain dir missing RUNBOOK.txt: $drain; next action: inspect the staged deferral and rerun with the exact directory named by hapax-post-merge-deploy" >&2
+        return 1
+    }
+    root_real="$(canonical_dir "$ROOT_REQUIRED_DEFER_ROOT")" || {
+        echo "root-required defer root missing: $ROOT_REQUIRED_DEFER_ROOT; next action: set HAPAX_POST_MERGE_ROOT_DEFER_DIR to the parent of the requested deferral" >&2
+        return 1
+    }
+    drain_real="$(canonical_dir "$drain")" || {
+        echo "root-required drain dir missing: $drain; next action: clear HAPAX_ROOT_REQUIRED_DRAIN_DIR if it was already drained, or use the extant staged directory" >&2
+        return 1
+    }
+    case "$drain_real" in
+        "$root_real"/*) ;;
+        *)
+            echo "refusing root-required drain dir outside defer root: $drain; next action: set HAPAX_POST_MERGE_ROOT_DEFER_DIR to its governed parent and retry" >&2
+            return 1
+            ;;
+    esac
+    expected_real="$(canonical_dir "$ROOT_REQUIRED_DEFER_ROOT/$ROOT_REQUIRED_PACKAGE_SHA/apcupsd-power-alerts")" || {
+        echo "expected apcupsd deferral package is missing: $ROOT_REQUIRED_DEFER_ROOT/$ROOT_REQUIRED_PACKAGE_SHA/apcupsd-power-alerts; next action: rerun the exact command from that package's RUNBOOK.txt" >&2
+        return 1
+    }
+    source_real="$(canonical_dir "$SOURCE")" || {
+        echo "apcupsd install source is missing: $SOURCE; next action: rerun the exact staged RUNBOOK command" >&2
+        return 1
+    }
+    if [ "$drain_real" != "$expected_real" ] || [ "$source_real" != "$expected_real" ]; then
+        echo "refusing mismatched apcupsd deferral drain: source=$source_real drain=$drain_real expected=$expected_real; next action: use the unmodified command from $expected_real/RUNBOOK.txt" >&2
+        return 1
+    fi
+    ROOT_REQUIRED_DRAIN_REAL="$drain_real"
+}
+
+validate_root_required_deferral() {
+    [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ] || return 0
+    validate_root_required_deferral_dir "$HAPAX_ROOT_REQUIRED_DRAIN_DIR"
+}
+
+drain_root_required_deferral() {
+    [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ] || return 0
+    [ -n "${ROOT_REQUIRED_DRAIN_REAL:-}" ] || validate_root_required_deferral
+    mv "$ROOT_REQUIRED_DRAIN_REAL/RUNBOOK.txt" "$ROOT_REQUIRED_DRAIN_REAL/DRAINED.txt"
+    echo "root-required deferral marked drained: $ROOT_REQUIRED_DRAIN_REAL"
+}
+
+publish_installed_source_file() {
+    local source="$1" dest="$2" dest_dir temp
+    dest_dir="$(dirname "$dest")"
+    mkdir -p "$dest_dir"
+    if ! temp="$(mktemp "$dest_dir/.${dest##*/}.tmp.XXXXXX")"; then
+        echo "unable to reserve installed-source snapshot for $dest; next action: verify durable state ownership and capacity, then rerun the apcupsd installer" >&2
+        return 1
+    fi
+    if ! cp -a -- "$source" "$temp"; then
+        rm -f "$temp" 2>/dev/null || true
+        echo "unable to materialize installed-source snapshot for $dest; next action: verify the package source and durable state capacity, then rerun the apcupsd installer" >&2
+        return 1
+    fi
+    if ! mv -fT -- "$temp" "$dest"; then
+        rm -f "$temp" 2>/dev/null || true
+        echo "unable to atomically publish installed-source snapshot $dest; next action: remove unsafe destination drift and rerun the apcupsd installer" >&2
+        return 1
+    fi
+}
+
+record_installed_source() {
+    local rel dest
+    for rel in "${package_files[@]}"; do
+        dest="$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT/$rel"
+        publish_installed_source_file "$SOURCE/$rel" "$dest"
+    done
+}
+
+validate_package_manifest() {
+    local -a declared=()
+    local index
+    mapfile -t declared < <(awk 'NF && $1 !~ /^#/ {print $1}' "$SOURCE/$package_manifest_source")
+    if [ "${#declared[@]}" -ne "${#package_files[@]}" ]; then
+        echo "apcupsd package ownership manifest count mismatch; next action: reconcile $package_manifest_source with package_files in scripts/install-apcupsd-power-alerts" >&2
+        return 1
+    fi
+    for index in "${!package_files[@]}"; do
+        if [ "${declared[$index]}" != "${package_files[$index]}" ]; then
+            echo "apcupsd package ownership manifest mismatch at index $index: declared=${declared[$index]} runtime=${package_files[$index]}; next action: update both lists in the same governed change" >&2
+            return 1
+        fi
+    done
+}
+
+check_source() {
+    validate_package_manifest
+    expect_header "$SRC/apcupsd.conf"
+    [ -x "$SRC/hapax-power-event.py" ] || {
+        echo "source helper is not executable: $SRC/hapax-power-event.py; next action: chmod +x config/apcupsd/hapax-power-event.py and rerun scripts/install-apcupsd-power-alerts --check" >&2
+        return 1
+    }
+    [ "$(head -n 1 "$SRC/hapax-power-event.py")" = "#!/usr/bin/python3" ] || {
+        echo "source helper must pin /usr/bin/python3 before root execution: $SRC/hapax-power-event.py; next action: restore the absolute interpreter shebang and rerun scripts/install-apcupsd-power-alerts --check" >&2
+        return 1
+    }
+    [ -x "$SRC/onbattery" ] || {
+        echo "source hook is not executable: $SRC/onbattery; next action: chmod +x config/apcupsd/onbattery and rerun scripts/install-apcupsd-power-alerts --check" >&2
+        return 1
+    }
+    [ -x "$SRC/offbattery" ] || {
+        echo "source hook is not executable: $SRC/offbattery; next action: chmod +x config/apcupsd/offbattery and rerun scripts/install-apcupsd-power-alerts --check" >&2
+        return 1
+    }
+    [ -x "$SRC/doshutdown" ] || {
+        echo "source hook is not executable: $SRC/doshutdown; next action: chmod +x config/apcupsd/doshutdown and rerun scripts/install-apcupsd-power-alerts --check" >&2
+        return 1
+    }
+    [ -f "$SOURCE/config/upower/90-hapax-apcupsd-owner.conf" ] || {
+        echo "source UPower policy-owner config missing: $SOURCE/config/upower/90-hapax-apcupsd-owner.conf; next action: restore config/upower and rerun scripts/install-apcupsd-power-alerts --check" >&2
+        return 1
+    }
+    grep -Eq '^CriticalPowerAction=Ignore$' "$SOURCE/config/upower/90-hapax-apcupsd-owner.conf" || {
+        echo "source UPower policy must leave apcupsd as sole shutdown owner; next action: restore CriticalPowerAction=Ignore and rerun scripts/install-apcupsd-power-alerts --check" >&2
+        return 1
+    }
+    [ -f "$SOURCE/systemd/logrotate.d/hapax-ups-power-events" ] || {
+        echo "source logrotate config missing: $SOURCE/systemd/logrotate.d/hapax-ups-power-events; next action: restore the UPS logrotate source and rerun scripts/install-apcupsd-power-alerts --check" >&2
+        return 1
+    }
+}
+
+install_live() {
+    local apcupsd_changed=0 upower_changed=0 source_path dest_path
+    resolve_audit_log_identity
+    check_source
+    preflight_root
+    for source_path in \
+        "$SRC/apcupsd.conf" \
+        "$SRC/hapax-power-event.py" \
+        "$SRC/onbattery" \
+        "$SRC/offbattery" \
+        "$SRC/doshutdown"; do
+        dest_path="$DEST/${source_path##*/}"
+        if [ ! -f "$dest_path" ] || ! cmp -s "$source_path" "$dest_path"; then
+            apcupsd_changed=1
+            break
+        fi
+    done
+    if [ ! -f "$UPOWER_CONF_DEST" ] || ! cmp -s "$SOURCE/config/upower/90-hapax-apcupsd-owner.conf" "$UPOWER_CONF_DEST"; then
+        upower_changed=1
+    fi
+    if ! apcupsd_live_policy_matches_source; then
+        apcupsd_changed=1
+    fi
+    if ! upower_live_policy_matches_source; then
+        upower_changed=1
+    fi
+    run_root install -d -m 0755 "$DEST"
+    install_audit_dir
+    prepare_audit_log
+    run_root install -m 0644 "$SRC/apcupsd.conf" "$DEST/apcupsd.conf"
+    run_root install -m 0755 "$SRC/hapax-power-event.py" "$DEST/hapax-power-event.py"
+    run_root install -m 0755 "$SRC/onbattery" "$DEST/onbattery"
+    run_root install -m 0755 "$SRC/offbattery" "$DEST/offbattery"
+    run_root install -m 0755 "$SRC/doshutdown" "$DEST/doshutdown"
+    run_root install -d -m 0755 "$(dirname "$LOGROTATE_DEST")"
+    run_root install -m 0644 "$SOURCE/systemd/logrotate.d/hapax-ups-power-events" "$LOGROTATE_DEST"
+    run_root install -d -m 0755 "$(dirname "$UPOWER_CONF_DEST")"
+    run_root install -m 0644 "$SOURCE/config/upower/90-hapax-apcupsd-owner.conf" "$UPOWER_CONF_DEST"
+    run_root "$SYSTEMCTL" enable --now apcupsd.service || {
+        echo "unable to enable and start apcupsd.service; next action: run sudo systemctl enable --now apcupsd.service and inspect journalctl -u apcupsd.service" >&2
+        return 1
+    }
+    if [ "$RESTART" -eq 1 ] && [ "$apcupsd_changed" -eq 1 ]; then
+        run_root "$SYSTEMCTL" restart apcupsd.service || {
+            echo "unable to reload apcupsd's shutdown policy; next action: run sudo systemctl restart apcupsd.service and inspect journalctl -u apcupsd.service" >&2
+            return 1
+        }
+    fi
+    if [ "$RESTART" -eq 1 ] && [ "$upower_changed" -eq 1 ]; then
+        run_root "$SYSTEMCTL" try-restart upower.service || {
+            echo "unable to reload UPower's shutdown policy; next action: run sudo systemctl restart upower.service and verify busctl call org.freedesktop.UPower /org/freedesktop/UPower org.freedesktop.UPower GetCriticalAction returns Ignore" >&2
+            return 1
+        }
+    fi
+}
+
+apcupsd_live_policy_matches_source() {
+    local status spec config_key status_key expected actual
+    APCUPSD_LIVE_POLICY_DETAIL=""
+    if ! status="$("$APCACCESS" status 2>/dev/null)"; then
+        APCUPSD_LIVE_POLICY_DETAIL="status unavailable"
+        return 1
+    fi
+    for spec in BATTERYLEVEL:MBATTCHG MINUTES:MINTIMEL TIMEOUT:MAXTIME; do
+        config_key="${spec%%:*}"
+        status_key="${spec##*:}"
+        expected="$(awk -v key="$config_key" '$1 == key {print $2; exit}' "$SRC/apcupsd.conf")"
+        actual="$(printf '%s\n' "$status" | awk -F: -v key="$status_key" '
+            {
+                name = $1
+                gsub(/[[:space:]]/, "", name)
+                if (name == key) {
+                    value = $2
+                    sub(/^[[:space:]]*/, "", value)
+                    split(value, fields, /[[:space:]]+/)
+                    print fields[1]
+                    exit
+                }
+            }
+        ')"
+        if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then
+            APCUPSD_LIVE_POLICY_DETAIL="$status_key=${actual:-unavailable} expected $expected from $config_key"
+            return 1
+        fi
+    done
+}
+
+verify_apcupsd_live_policy() {
+    if ! apcupsd_live_policy_matches_source; then
+        echo "apcupsd loaded shutdown policy drift: ${APCUPSD_LIVE_POLICY_DETAIL:-unknown}; next action: run sudo systemctl restart apcupsd.service and rerun scripts/install-apcupsd-power-alerts --verify-live" >&2
+        return 1
+    fi
+}
+
+upower_live_policy_matches_source() {
+    local loaded
+    UPOWER_LIVE_POLICY_DETAIL=""
+    if ! loaded="$("$BUSCTL" call org.freedesktop.UPower /org/freedesktop/UPower org.freedesktop.UPower GetCriticalAction 2>/dev/null)"; then
+        UPOWER_LIVE_POLICY_DETAIL="status unavailable"
+        return 1
+    fi
+    UPOWER_LIVE_POLICY_DETAIL="$loaded"
+    [ "$loaded" = 's "Ignore"' ]
+}
+
+verify_upower_live_policy() {
+    if ! upower_live_policy_matches_source; then
+        echo "UPower still owns a loaded shutdown action: ${UPOWER_LIVE_POLICY_DETAIL:-unknown}; next action: run sudo systemctl restart upower.service and rerun scripts/install-apcupsd-power-alerts --verify-live" >&2
+        return 1
+    fi
+}
+
+verify_root_artifact_trust() {
+    local path="$1" expected_mode="$2" expected_uid expected_gid actual parent parent_actual parent_mode
+    case "$path" in
+        /etc/*|/usr/local/*)
+            expected_uid=0
+            expected_gid=0
+            ;;
+        *)
+            expected_uid="$(/usr/bin/id -u)"
+            expected_gid="$(/usr/bin/id -g)"
+            ;;
+    esac
+    if [ ! -f "$path" ] || [ -L "$path" ]; then
+        echo "root-owned UPS artifact is missing, symlinked, or not a regular file: $path; next action: rerun scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    fi
+    actual="$(stat -c '%u:%g:%a' "$path" 2>/dev/null || true)"
+    if [ "$actual" != "$expected_uid:$expected_gid:$expected_mode" ]; then
+        echo "root-owned UPS artifact trust drift: $path owner/mode=${actual:-unavailable} expected=$expected_uid:$expected_gid:$expected_mode; next action: rerun scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    fi
+    parent="$(dirname "$path")"
+    parent_actual="$(stat -c '%u:%g' "$parent" 2>/dev/null || true)"
+    parent_mode="$(stat -c '%a' "$parent" 2>/dev/null || true)"
+    if [ ! -d "$parent" ] || [ -L "$parent" ] \
+        || [ "$parent_actual" != "$expected_uid:$expected_gid" ] \
+        || ! [[ "$parent_mode" =~ ^[0-7]+$ ]] \
+        || (( (8#$parent_mode & 8#022) != 0 )); then
+        echo "root-owned UPS artifact parent trust drift: $parent owner/mode=${parent_actual:-unavailable}:${parent_mode:-unavailable}; next action: repair the root-owned directory and rerun scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    fi
+}
+
+verify_live() {
+    resolve_audit_log_identity
+    verify_root_artifact_trust "$DEST/apcupsd.conf" 644
+    verify_root_artifact_trust "$DEST/hapax-power-event.py" 755
+    verify_root_artifact_trust "$DEST/onbattery" 755
+    verify_root_artifact_trust "$DEST/offbattery" 755
+    verify_root_artifact_trust "$DEST/doshutdown" 755
+    verify_root_artifact_trust "$UPOWER_CONF_DEST" 644
+    verify_root_artifact_trust "$LOGROTATE_DEST" 644
+    expect_header "$DEST/apcupsd.conf"
+    cmp -s "$SRC/apcupsd.conf" "$DEST/apcupsd.conf" || {
+        echo "live config differs from source: $DEST; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    }
+    [ -x "$DEST/hapax-power-event.py" ] || {
+        echo "live helper is not executable: $DEST/hapax-power-event.py; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    }
+    cmp -s "$SRC/hapax-power-event.py" "$DEST/hapax-power-event.py" || {
+        echo "live helper differs from source: $DEST/hapax-power-event.py; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    }
+    [ -x "$DEST/onbattery" ] || {
+        echo "live onbattery hook is not executable; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    }
+    cmp -s "$SRC/onbattery" "$DEST/onbattery" || {
+        echo "live onbattery hook differs from source; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    }
+    [ -x "$DEST/offbattery" ] || {
+        echo "live offbattery hook is not executable; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    }
+    cmp -s "$SRC/offbattery" "$DEST/offbattery" || {
+        echo "live offbattery hook differs from source; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    }
+    [ -x "$DEST/doshutdown" ] || {
+        echo "live doshutdown hook is not executable; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    }
+    cmp -s "$SRC/doshutdown" "$DEST/doshutdown" || {
+        echo "live doshutdown hook differs from source; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    }
+    cmp -s "$SOURCE/config/upower/90-hapax-apcupsd-owner.conf" "$UPOWER_CONF_DEST" || {
+        echo "live UPower policy-owner config differs from source; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    }
+    verify_upower_live_policy
+    cmp -s "$SOURCE/systemd/logrotate.d/hapax-ups-power-events" "$LOGROTATE_DEST" || {
+        echo "live UPS logrotate config differs from source; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    }
+    [ -d "$AUDIT_DIR" ] || {
+        echo "audit directory missing: $AUDIT_DIR; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    }
+    verify_audit_log_target
+    run_root "$SYSTEMCTL" is-enabled --quiet apcupsd.service || {
+        echo "apcupsd.service is not enabled; next action: run sudo systemctl enable --now apcupsd.service" >&2
+        return 1
+    }
+    run_root "$SYSTEMCTL" is-active --quiet apcupsd.service || {
+        echo "apcupsd.service is not active; next action: run sudo systemctl enable --now apcupsd.service and inspect journalctl -u apcupsd.service" >&2
+        return 1
+    }
+    verify_apcupsd_live_policy
+}
+
+[ "$CHECK" -eq 0 ] || check_source
+[ "$INSTALL" -eq 0 ] || refuse_whole_script_root
+[ "$INSTALL" -eq 0 ] || reexec_with_safe_root_required_lock
+[ "$INSTALL" -eq 0 ] || acquire_root_required_lock
+[ "$INSTALL" -eq 0 ] || validate_root_required_package_order
+if [ "$INSTALL" -eq 1 ] && [ "$SKIP_SUPERSEDED_INSTALL" -eq 1 ]; then
+    drain_root_required_deferral
+    echo "apcupsd superseded deferral drained without live mutation"
+    exit 0
+fi
+[ "$INSTALL" -eq 0 ] || validate_package_source_matches_commit
+[ "$INSTALL" -eq 0 ] || validate_no_unhandled_package_removals
+[ "$INSTALL" -eq 0 ] || validate_root_required_deferral
+[ "$INSTALL" -eq 0 ] || install_live
+[ "$VERIFY_LIVE" -eq 0 ] || verify_live
+[ "$INSTALL" -eq 0 ] || record_installed_source
+[ "$INSTALL" -eq 0 ] || record_root_required_package_receipt
+[ "$INSTALL" -eq 0 ] || drain_root_required_deferral
+echo "apcupsd power alert install/check complete"

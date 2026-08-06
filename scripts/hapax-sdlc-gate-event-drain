@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""Drain gate-events into SdlcRouter posteriors (N1 world-to-record observe).
+
+Default is **report-only** (no router state write, no dispatch selection).
+
+Examples::
+
+  # Observe how many witnessed events would apply
+  hapax-sdlc-gate-event-drain --json
+
+  # Apply posteriors to router state (explicit; still no live selection)
+  hapax-sdlc-gate-event-drain --apply --json
+
+  # Custom paths (tests / alternate hosts)
+  hapax-sdlc-gate-event-drain --gate-log /tmp/g.jsonl --router-state /tmp/r.json --json
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.sdlc_gate_event_drain import (  # noqa: E402
+    drain_gate_events,
+    next_actions_for,
+    observe_status,
+)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="hapax-sdlc-gate-event-drain",
+        description=(
+            "Report-only (default) or apply drain of gate-events into SdlcRouter "
+            "posteriors. Never changes live route selection."
+        ),
+    )
+    parser.add_argument(
+        "--gate-log",
+        help="Path to gate-events.jsonl (default: HAPAX_GATE_LOG / cache path)",
+    )
+    parser.add_argument(
+        "--router-state",
+        help="Path to router-state.json (default: HAPAX_SDLC_ROUTER_STATE / cache path)",
+    )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply eligible events and save router state (default: report-only)",
+    )
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help="Include enable-flag + next_actions (report-only path via observe_status)",
+    )
+    parser.add_argument("--json", action="store_true", help="Machine-readable JSON on stdout")
+    args = parser.parse_args(argv)
+
+    # --status (report): full observe snapshot + next_actions.
+    # --status --apply: apply report + next_actions for that mode.
+    if args.status and not args.apply:
+        payload = observe_status(gate_log=args.gate_log, router_state=args.router_state)
+    else:
+        report = drain_gate_events(
+            gate_log=args.gate_log,
+            router_state=args.router_state,
+            apply=args.apply,
+        )
+        payload = report.as_dict()
+        if args.status:
+            payload["next_actions"] = next_actions_for(report)
+
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        mode = payload.get("mode", "report")
+        print(
+            f"mode={mode} total={payload.get('total_events')} "
+            f"eligible={payload.get('eligible_witnessed_learning')} "
+            f"would_apply/applied={payload.get('would_apply')}/{payload.get('applied')} "
+            f"state_written={payload.get('state_written')}"
+        )
+        for action in payload.get("next_actions") or []:
+            print(f"next: {action}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

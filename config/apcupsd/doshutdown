@@ -1,0 +1,14 @@
+#!/bin/sh
+if [ "${HAPAX_APCUPSD_TEST_MODE:-0}" = "1" ]; then
+    HELPER="${HAPAX_APCUPSD_HELPER:-/etc/apcupsd/hapax-power-event.py}"
+    TIMEOUT="${HAPAX_APCUPSD_TIMEOUT:-/usr/bin/timeout}"
+    DEADLINE="${HAPAX_APCUPSD_SHUTDOWN_DEADLINE:-5s}"
+else
+    HELPER="/etc/apcupsd/hapax-power-event.py"
+    TIMEOUT="/usr/bin/timeout"
+    DEADLINE="5s"
+fi
+
+# Provenance must never suppress or indefinitely delay apccontrol's shutdown.
+"$TIMEOUT" --signal=KILL "$DEADLINE" "$HELPER" doshutdown "$@" || :
+exit 0

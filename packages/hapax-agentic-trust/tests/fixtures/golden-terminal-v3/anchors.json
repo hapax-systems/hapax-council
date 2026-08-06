@@ -1,0 +1,8 @@
+{
+  "bundle_sha256": "96b1aacfe42240366d240efecbd2de27c3ba33c1c8909cba1d65f2a02c74d750",
+  "evidence_root_sha256": "da437ff81002319367208bf206d140ae4ef04edc789d9fc9eb9917de6d53f45b",
+  "graph_digest": "3ece5f0c2c4898589b86511c724f719f32c1c054e6909c926b6439df7f0318ab",
+  "manifest_snapshot_artifact_sha256": "4cc2ff29ac78ecaf82f1dbca81fa3b8d79342c7c12c82158d1b26b4fe631ceaa",
+  "run_id": "run-20260804",
+  "summary_digest": "b5ab3e33d7977c85fd67ff4de3748f7624505a2d06702276f462d81ec0344ad8"
+}

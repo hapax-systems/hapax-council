@@ -25,6 +25,8 @@ from pydantic import (
     model_validator,
 )
 
+from shared.agentic_trust_boundary import is_agentic_trust_supply_evidence_reference
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 QUOTA_SPEND_LEDGER_FIXTURES = REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json"
 
@@ -390,6 +392,18 @@ class TransitionBudget(StrictModel):
         if self.capacity_pool is CapacityPool.BOOTSTRAP_BUDGET:
             if not self.steady_state_replacement.complete():
                 raise ValueError(f"{self.budget_id} bootstrap budgets require replacement plan")
+        if any(
+            is_agentic_trust_supply_evidence_reference(value)
+            for value in (
+                *self.providers_allowed,
+                *self.profiles_allowed,
+                *self.task_classes_allowed,
+                *self.quality_floors_allowed,
+            )
+        ):
+            raise ValueError(
+                "agentic-trust observation evidence cannot define transition-budget eligibility"
+            )
         _reject_private_or_identity_refs(
             _refs(
                 self.budget_id,
@@ -740,6 +754,19 @@ class PaidRouteRequest(StrictModel):
     def _paid_route_request_contract(self) -> Self:
         if self.capacity_pool.value not in PAID_CAPACITY_POOLS:
             raise ValueError("paid route eligibility can only evaluate paid/API capacity pools")
+        if any(
+            is_agentic_trust_supply_evidence_reference(value)
+            for value in (
+                self.route_id,
+                self.provider,
+                self.profile,
+                self.task_class,
+                self.quality_floor,
+            )
+        ):
+            raise ValueError(
+                "agentic-trust observation evidence cannot define paid-route eligibility"
+            )
         _reject_private_or_identity_refs(
             [
                 self.route_id,
@@ -747,6 +774,7 @@ class PaidRouteRequest(StrictModel):
                 self.provider,
                 self.profile,
                 self.task_class,
+                self.quality_floor,
             ],
             "paid route request",
         )

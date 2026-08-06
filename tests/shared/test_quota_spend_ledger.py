@@ -342,6 +342,35 @@ def _request(**overrides: object) -> PaidRouteRequest:
     return PaidRouteRequest.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    "field",
+    ("route_id", "provider", "profile", "task_class", "quality_floor"),
+)
+def test_paid_route_request_rejects_observation_identity_selectors(field: str) -> None:
+    with pytest.raises(ValidationError):
+        _request(**{field: "AgenticTrustEvidenceReceiptV1"})
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "providers_allowed",
+        "profiles_allowed",
+        "task_classes_allowed",
+        "quality_floors_allowed",
+    ),
+)
+def test_transition_budget_rejects_observation_identity_selectors(field: str) -> None:
+    payload = _active_budget_payload()
+    payload["transition_budgets"][0][field] = ["AgenticTrustEvidenceReceiptV1"]
+    with pytest.raises(ValidationError):
+        QuotaSpendLedger.model_validate(payload)
+
+
+def test_paid_route_selector_child_identity_is_not_reserved() -> None:
+    assert _request(provider="AgenticTrustEvidenceReceiptV1Child").provider.endswith("Child")
+
+
 def test_default_fixture_reconciles_expired_bootstrap_without_reopening_spend() -> None:
     ledger = load_quota_spend_ledger()
     bootstrap_budget = ledger.budget_by_id("tb-20260509-bootstrap-expired")

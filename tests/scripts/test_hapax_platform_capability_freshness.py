@@ -230,6 +230,41 @@ def test_json_succeeds_for_fresh_route_fixture(tmp_path: Path) -> None:
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["routes"][0]["errors"] == []
+    assert payload["non_supply_observation_errors"] == []
+
+
+def test_route_freshness_fails_local_on_unrelated_observation_metadata(
+    tmp_path: Path,
+) -> None:
+    payload = load_platform_capability_registry().model_dump(mode="json")
+    route = next(route for route in payload["routes"] if route["route_id"] == "codex.headless.full")
+    _mark_fresh(route)
+    target = next(
+        row
+        for row in payload["omitted_capability_shapes"]
+        if row["shape_id"] == "local_compute.agentic_trust_evaluator_surface"
+    )
+    target["summary"] = []
+    path = _write_registry(tmp_path, payload)
+
+    result = _run(
+        "--registry",
+        str(path),
+        "--json",
+        "--now",
+        FRESH_NOW,
+        "--route",
+        "codex.headless.full",
+        "--receipt-dir",
+        str(tmp_path / "empty-receipts"),
+    )
+
+    assert result.returncode == 0, result.stdout
+    observed = json.loads(result.stdout)
+    assert observed["ok"] is True
+    assert observed["routes"][0]["errors"] == []
+    assert len(observed["non_supply_observation_errors"]) == 1
+    assert "agentic_trust_evaluator_surface" in observed["non_supply_observation_errors"][0]
 
 
 def test_json_applies_receipt_overlay_and_current_codex_session_availability(

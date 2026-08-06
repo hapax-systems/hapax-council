@@ -1,0 +1,15 @@
+{
+  "authority_status": "evidence_only_not_authorized",
+  "contract_version": "agentic-trust-episode-v3",
+  "coverage_manifest_sha256": "ad980c23cb81dc99697b2950226b9740f676ce18fc35d4681e5d3939e3fdc59d",
+  "execution_identity_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "preregistration_core_domain": "pre_run_core_excludes_snapshot_pair_coverage_bytes_v1",
+  "preregistration_core_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "probability_measure_contract_sha256": "ad8b1398c4f03beb24d40263385ac17dab9fd68f339383531f4bf69d07636d74",
+  "run_id": "run-20260804",
+  "schedule_plan_domain": "pre_pair_plan_law_and_seed_v1",
+  "schedule_plan_sha256": "01a8d292a004da18b659f2727e87feca95bc35c7afc903fe3953be87b7d4720f",
+  "scheduled_pair_contracts_sha256": "53fbb9412779dede396ca1aa0352f26014a64d4a245e1d8f5d05e84c141d927a",
+  "schema_registry_sha256": "8521b6cdb6ba44495f3227e293ca6a79795acd750d3af072b726fc2d928a73e1",
+  "schema_version": 2
+}

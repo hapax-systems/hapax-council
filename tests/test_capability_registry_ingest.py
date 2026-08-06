@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from copy import deepcopy
 from pathlib import Path
 
 from shared.capability_harness_descriptor import (
@@ -15,9 +16,12 @@ from shared.capability_harness_descriptor import (
     validate_descriptor,
 )
 from shared.capability_registry_ingest import (
+    ingest_platform_capability_inventory,
     ingest_platform_capability_registry,
     ingest_routes,
 )
+
+RESERVED_EVALUATOR_ID = "local_compute.agentic_trust_evaluator_surface"
 
 # A minimal fixture covering the shape inferences (agent / review / local_tool / gateway / hosted).
 _FIXTURE_ROUTES = [
@@ -96,6 +100,14 @@ class IngestRoutesMappingTest(unittest.TestCase):
         self.assertEqual(desc.shape, CapabilityShape.EXISTING_AGENT_HARNESS)
         self.assertEqual(desc.domain, CapabilityDomain.LLM_WORKER)
 
+    def test_reserved_executable_identity_cannot_be_ingested_as_supply(self) -> None:
+        for field in ("launcher", "sanctioned_wrapper"):
+            with self.subTest(field=field):
+                route = deepcopy(_FIXTURE_ROUTES[0])
+                route[field] = RESERVED_EVALUATOR_ID
+                with self.assertRaisesRegex(ValueError, "cannot be ingested as admitted supply"):
+                    ingest_routes([route])
+
     def test_review_seat_shape(self) -> None:
         desc = self.descriptors["glmcp.review.direct"]
         self.assertEqual(desc.shape, CapabilityShape.REVIEW_SEAT)
@@ -148,6 +160,13 @@ class IngestRoutesMappingTest(unittest.TestCase):
             self.descriptors["local_tool.local.worker"].freshness_state, FreshnessState.FRESH
         )
 
+    def test_active_route_maps_to_fresh_inventory_descriptor(self) -> None:
+        active = {**_FIXTURE_ROUTES[0], "route_state": "active"}
+
+        [descriptor] = ingest_routes([active])
+
+        self.assertEqual(descriptor.freshness_state, FreshnessState.FRESH)
+
     def test_spend_authority_for_subscription_pool(self) -> None:
         self.assertTrue(self.descriptors["claude.headless.full"].spend_authority_required)
         self.assertTrue(self.descriptors["api.headless.api_frontier"].spend_authority_required)
@@ -178,6 +197,34 @@ class IngestRealConfigSmokeTest(unittest.TestCase):
         for desc in descriptors:
             self.assertTrue(desc.route_id)
             self.assertEqual(validate_descriptor(desc), [], f"{desc.capability_id} has gaps")
+
+    def test_ingests_omitted_shapes_separately_from_routes(self) -> None:
+        config = (
+            Path(__file__).resolve().parent.parent / "config" / "platform-capability-registry.json"
+        )
+
+        routes, omitted_shapes = ingest_platform_capability_inventory(config)
+
+        route_ids = {descriptor.capability_id for descriptor in routes}
+        shape_ids = {descriptor.shape_id for descriptor in omitted_shapes}
+        self.assertTrue(route_ids)
+        self.assertIn("local_compute.agentic_trust_evaluator_surface", shape_ids)
+        self.assertTrue(route_ids.isdisjoint(shape_ids))
+        for descriptor in omitted_shapes:
+            self.assertFalse(descriptor.demand_eligible)
+            self.assertEqual(descriptor.route_ids, [])
+
+    def test_legacy_ingest_remains_routes_only(self) -> None:
+        config = (
+            Path(__file__).resolve().parent.parent / "config" / "platform-capability-registry.json"
+        )
+
+        descriptors = ingest_platform_capability_registry(config)
+
+        self.assertNotIn(
+            "local_compute.agentic_trust_evaluator_surface",
+            {descriptor.capability_id for descriptor in descriptors},
+        )
 
 
 if __name__ == "__main__":

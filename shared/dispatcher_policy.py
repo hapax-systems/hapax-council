@@ -20,6 +20,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 
+from shared.agentic_trust_boundary import is_syntactically_typed_policy_evidence_reference
 from shared.capability_availability_guarantor import (
     CapabilityAvailabilityReceipt,
     availability_dispatch_reason_codes,
@@ -40,12 +41,16 @@ from shared.platform_capability_registry import (
     PlatformCapabilityRegistry,
     PlatformCapabilityRegistryError,
     PlatformCapabilityRoute,
+    PrivacyPosture,
     SupplyDescriptor,
     SupplyVector,
     build_supply_vector,
     check_registry_freshness,
-    load_platform_capability_registry,
+    is_agentic_trust_supply_evidence_reference,
+    load_platform_capability_registry_for_dispatch,
+    normalize_capability_surface_identity,
     normalize_route_id,
+    normalize_supply_admission_identity,
 )
 from shared.quota_spend_ledger import (
     QUOTA_SPEND_LEDGER_LIVE_ENV,
@@ -145,7 +150,7 @@ class RouteCapabilityState(_PolicyModel):
     sanctioned_wrapper: str | None = None
     paid_provider: str | None = None
     paid_profile: str | None = None
-    privacy_posture: str | None = None
+    privacy_posture: PrivacyPosture | None = None
     eligible_quality_floors: tuple[str, ...] = Field(default=())
     explicit_equivalence_records: tuple[str, ...] = Field(default=())
     excluded_task_classes: tuple[str, ...] = Field(default=())
@@ -161,6 +166,22 @@ class RouteCapabilityState(_PolicyModel):
     availability_reason_codes: tuple[str, ...] = Field(default=())
     availability_refresh_status: str | None = None
     availability_recomposition_required: bool = False
+
+    @model_validator(mode="after")
+    def _observation_evidence_cannot_become_route_capability(self) -> RouteCapabilityState:
+        identities = (
+            self.route_id,
+            self.sanctioned_wrapper,
+            self.paid_provider,
+            self.paid_profile,
+            *self.eligible_quality_floors,
+            *self.explicit_equivalence_records,
+            *self.surface_delta_refs,
+            self.availability_receipt_ref,
+        )
+        if any(is_agentic_trust_supply_evidence_reference(value) for value in identities):
+            raise ValueError("agentic-trust observation evidence cannot establish route capability")
+        return self
 
 
 class QuotaSpendState(_PolicyModel):
@@ -268,6 +289,12 @@ class RouteAuthorityReceipt(_PolicyModel):
         _parse_duration_spec(self.stale_after)
         if not self.signed_by.strip():
             raise ValueError("signed_by is required")
+        if any(
+            not is_syntactically_typed_policy_evidence_reference(ref) for ref in self.evidence_refs
+        ):
+            raise ValueError(
+                "route-authority evidence_refs must be namespaced non-observation policy references"
+            )
         expected = route_authority_receipt_payload_hash(self)
         if self.signed_payload_sha256 != expected:
             raise ValueError("signed payload hash mismatch")
@@ -351,6 +378,14 @@ class DispatchRequest(_PolicyModel):
     legacy_route_supported: bool = False
     legacy_route_mutable: bool = False
 
+    @model_validator(mode="after")
+    def _observation_evidence_cannot_define_requested_quality(self) -> DispatchRequest:
+        if is_agentic_trust_supply_evidence_reference(self.quality_floor):
+            raise ValueError(
+                "agentic-trust observation evidence cannot define a dispatch quality floor"
+            )
+        return self
+
 
 class RouteDecision(_PolicyModel):
     decision_schema: Literal[1] = ROUTE_DECISION_SCHEMA_VERSION
@@ -376,9 +411,9 @@ class RouteDecision(_PolicyModel):
     route_selection_authority: Literal[False] = False
     quality_floor_satisfied: bool
     authority_allowed: bool
-    # advisory result metadata: the descriptor LEAF (route_id#variant_id) the launcher should run
-    # for the demanded execution axes, or None when the base descriptor satisfies. The base
-    # route_id stays the dispatch key; the launcher reads this to set the effort/context knob.
+    # Advisory result metadata: the descriptor leaf (route_id#variant_id) selected for the
+    # demanded execution axes, or None when the base descriptor satisfies. The current launch
+    # adapter still launches only the governed base route and does not consume this field.
     selected_descriptor_leaf: str | None = None
     cloud_burst_eligible: bool = False
     cloud_burst_guard_state: str = "not_applicable"
@@ -390,6 +425,22 @@ class RouteDecision(_PolicyModel):
     quota_evidence_refs: tuple[str, ...] = Field(default=())
     resource_state_refs: tuple[str, ...] = Field(default=())
     _dimensional_receipt: DimensionalRouteReceipt | None = PrivateAttr(default=None)
+
+    @model_validator(mode="after")
+    def _selected_leaf_is_bound_to_the_non_reserved_route(self) -> RouteDecision:
+        if self.selected_descriptor_leaf is None:
+            return self
+        prefix = f"{self.route_id}#"
+        if not self.selected_descriptor_leaf.startswith(prefix):
+            raise ValueError("selected_descriptor_leaf must be bound to route_id")
+        variant_id = self.selected_descriptor_leaf.removeprefix(prefix)
+        if not variant_id or "#" in variant_id:
+            raise ValueError("selected_descriptor_leaf must name exactly one descriptor variant")
+        if is_agentic_trust_supply_evidence_reference(variant_id):
+            raise ValueError(
+                "agentic-trust observation evidence cannot be a selected descriptor leaf"
+            )
+        return self
 
     @property
     def dimensional_receipt(self) -> DimensionalRouteReceipt | None:
@@ -404,6 +455,7 @@ class DispatchPolicySources(_PolicyModel):
     quota_ledger_source: str | None = None
     quota_live_error: str | None = None
     route_authority_receipts: tuple[RouteAuthorityReceipt, ...] = Field(default=())
+    non_supply_observation_errors: tuple[str, ...] = Field(default=())
     surface_delta_refs_by_route: dict[str, tuple[str, ...]] = Field(default_factory=dict)
     surface_delta_blockers_by_route: dict[str, tuple[str, ...]] = Field(default_factory=dict)
 
@@ -429,12 +481,13 @@ def load_dispatch_policy_sources(
     quota_ledger_source: str | None = None
     quota_live_error: str | None = None
     route_authority_receipts: tuple[RouteAuthorityReceipt, ...] = ()
+    non_supply_observation_errors: tuple[str, ...] = ()
     surface_delta_refs_by_route: dict[str, tuple[str, ...]] = {}
     surface_delta_blockers_by_route: dict[str, tuple[str, ...]] = {}
 
     try:
         effective_receipt_dir = receipt_dir or _receipt_dir_from_env()
-        registry = load_platform_capability_registry(
+        registry, non_supply_observation_errors = load_platform_capability_registry_for_dispatch(
             registry_path or PLATFORM_CAPABILITY_REGISTRY,
             receipt_dir=effective_receipt_dir,
             now=now,
@@ -482,6 +535,13 @@ def load_dispatch_policy_sources(
             ) = _surface_delta_route_index(
                 surface_delta_file,
                 known_route_ids=registry.route_map().keys() if registry is not None else None,
+                evidence_only_surface_ids=(
+                    shape.shape_id
+                    for shape in registry.omitted_capability_shapes
+                    if shape.shape_state.value == "evidence_only"
+                )
+                if registry is not None
+                else None,
             )
         except (CapabilitySurfaceDeltaError, OSError, ValueError) as exc:
             error_ref = _surface_delta_producer_error_ref(surface_delta_file, exc)
@@ -496,6 +556,7 @@ def load_dispatch_policy_sources(
         quota_ledger_source=quota_ledger_source,
         quota_live_error=quota_live_error,
         route_authority_receipts=route_authority_receipts,
+        non_supply_observation_errors=non_supply_observation_errors,
         surface_delta_refs_by_route=surface_delta_refs_by_route,
         surface_delta_blockers_by_route=surface_delta_blockers_by_route,
     )
@@ -546,13 +607,22 @@ def _surface_delta_route_index(
     path: Path,
     *,
     known_route_ids: Iterable[str] | None = None,
+    evidence_only_surface_ids: Iterable[str] | None = None,
 ) -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
     producer_file = load_capability_surface_delta_file(path)
+    known_route_values = tuple(known_route_ids) if known_route_ids is not None else None
     known_routes = (
-        {normalize_route_id(route_id) for route_id in known_route_ids}
-        if known_route_ids is not None
+        {normalize_route_id(route_id) for route_id in known_route_values}
+        if known_route_values is not None
         else None
     )
+    known_route_identities = {
+        normalize_supply_admission_identity(route_id) for route_id in known_route_values or ()
+    }
+    evidence_only_surfaces = {
+        normalize_capability_surface_identity(surface_id)
+        for surface_id in evidence_only_surface_ids or ()
+    }
     descriptor_keys_by_ref: dict[str, set[str]] = {}
     for descriptor in producer_file.descriptors:
         keys = set(_surface_delta_descriptor_route_keys(descriptor))
@@ -568,6 +638,15 @@ def _surface_delta_route_index(
     refs: dict[str, list[str]] = {}
     blockers: dict[str, list[str]] = {}
     for delta in producer_file.deltas:
+        normalized_surface = normalize_capability_surface_identity(delta.surface_id)
+        if (
+            normalized_surface in evidence_only_surfaces
+            and normalize_supply_admission_identity(delta.surface_id) not in known_route_identities
+        ):
+            # Evidence-only identity dominates untrusted route/ref joins. A row
+            # mislabeled with this exact permanent non-supply surface cannot
+            # become either a route blocker or a global blocker.
+            continue
         delta_ref = _surface_delta_ref(delta)
         route_keys, dispatch_keys = _surface_delta_route_key_sets(
             delta,
@@ -770,7 +849,23 @@ def evaluate_dispatch_policy(
 ) -> RouteDecision:
     """Return a fail-closed route decision without side effects."""
 
+    request = DispatchRequest.model_validate(request.model_dump(mode="python"))
+    if candidate_requests is not None:
+        candidate_requests = tuple(
+            DispatchRequest.model_validate(candidate.model_dump(mode="python"))
+            for candidate in candidate_requests
+        )
     checked_at = now_utc() if now is None else _coerce_utc(now)
+    request_supply_reason = _request_supply_identity_reason(request)
+    if request_supply_reason is not None:
+        return _decision(
+            request,
+            DispatchAction.HOLD,
+            (request_supply_reason,),
+            checked_at,
+            quality_floor_satisfied=False,
+            authority_allowed=False,
+        )
     if request.rollback_mode:
         return _decision(
             request,
@@ -1660,6 +1755,15 @@ def _dimensional_vetoes(
             )
         )
         return tuple(vetoes)
+    supply_identity_reason = _request_supply_identity_reason(request)
+    if supply_identity_reason is not None:
+        vetoes.append(
+            DimensionalVeto(
+                code=supply_identity_reason,
+                field="supply_vector.route.route_id",
+                message="supply route identity is not cross-bound to the dispatch request",
+            )
+        )
     if not supply.operator_constraints.allowed:
         vetoes.append(
             DimensionalVeto(
@@ -1725,6 +1829,19 @@ def _dimensional_vetoes(
             )
         )
     return tuple(vetoes)
+
+
+def _request_supply_identity_reason(request: DispatchRequest) -> str | None:
+    supply = request.supply_vector
+    if is_agentic_trust_supply_evidence_reference(request.route_id):
+        return "evidence_only_observation_identity_not_dispatch_supply"
+    if supply is None:
+        return None
+    if is_agentic_trust_supply_evidence_reference(supply.route.route_id):
+        return "evidence_only_observation_identity_not_dispatch_supply"
+    if normalize_route_id(supply.route.route_id) != normalize_route_id(request.route_id):
+        return "supply_route_identity_mismatch"
+    return None
 
 
 def _stale_supply_metadata(
@@ -1857,7 +1974,7 @@ def _capability_fit_scores(request: DispatchRequest) -> tuple[DimensionalScore, 
     supply = request.supply_vector
     if demand is None or supply is None or supply.supply_descriptor is None:
         return ()
-    descriptor = supply.supply_descriptor
+    descriptor = SupplyDescriptor.model_validate(supply.supply_descriptor.model_dump(mode="python"))
     task_demand = demand.task_demand
     fits: list[DimensionalScore] = []
 
