@@ -24,6 +24,7 @@ from __future__ import annotations
 import ast
 import fnmatch
 import json
+import logging
 import os
 import re
 import subprocess
@@ -36,10 +37,13 @@ from typing import Any
 
 import yaml
 
+LOG = logging.getLogger(__name__)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from shared.cc_task_pr_link import is_nullish, same_repo  # noqa: E402
 from shared.failure_classification import (  # noqa: E402
     STRUCTURED_PROVIDER_OUTAGE_ACTIONS,
     STRUCTURED_PROVIDER_OUTAGE_ERROR_CLASSES,
@@ -1112,23 +1116,30 @@ def find_task_notes(
 ) -> tuple[tuple[Path, dict[str, Any]], ...]:
     """All cc-task notes linked to a PR: by ``pr`` field first, else by branch.
 
-    A PR number alone is not a link. Two guards keep unrelated notes out of the
-    matched set, because callers do not merely *report* it — cc-pr-review-dispatch
-    derives the dispatch batch, the assigned lane and ``strongest_team_class`` from
-    it, so a stray match spends real provider capacity and can raise this PR's
-    review floor:
+    A PR number alone is not a link. Three guards keep unrelated notes out of
+    the matched set, because callers do not merely *report* it —
+    cc-pr-review-dispatch derives the dispatch batch, the assigned lane and
+    ``strongest_team_class`` from it, so a stray match spends real provider
+    capacity and can raise this PR's review floor:
 
-    * terminal-status notes never match. A closed task must not be re-reviewed,
-      and ``TASK_TERMINAL_STATUSES`` is the single source of truth every other
-      status consumer already references (shared/sdlc_lifecycle.py).
-    * when the caller names a repo *and* the note declares ``pr_repo``, they must
-      agree. Notes predating that convention declare no ``pr_repo`` and keep
-      number-only matching, so existing links do not break.
+    * only ``active/`` is scanned. ``closed/`` is archival: a note there is
+      terminal by location regardless of what its frontmatter status says,
+      and a closed task must not be re-reviewed. Terminal statuses still
+      living in ``active/`` are filtered through ``TASK_TERMINAL_STATUSES``
+      (the single source of truth in shared/sdlc_lifecycle.py).
+    * when the caller names a repo *and* the note declares ``pr_repo``, they
+      must agree (case-insensitive). Notes predating that convention declare
+      no ``pr_repo`` and keep number-only matching, so existing links do not
+      break; a caller that cannot name a repo logs a warning on multi-match
+      instead of silently degrading to number-only matching.
+    * the repo guard binds the branch-fallback arm too: a note rejected for
+      repo disagreement must not re-enter through a shared branch name.
     """
 
     pr_matches: list[tuple[Path, dict[str, Any]]] = []
     branch_matches: list[tuple[Path, dict[str, Any]]] = []
-    for folder in ("active", "closed"):
+    caller_repo = (pr_repo or "").strip()
+    for folder in ("active",):
         root = vault_root / folder
         if not root.is_dir():
             continue
@@ -1136,18 +1147,27 @@ def find_task_notes(
             fm = _note_frontmatter(path)
             if not fm or fm.get("type") != "cc-task":
                 continue
-            if str(fm.get("status") or "").strip() in TASK_TERMINAL_STATUSES:
+            if str(fm.get("status") or "").strip().casefold() in TASK_TERMINAL_STATUSES:
                 continue
             try:
                 note_pr = int(fm.get("pr")) if fm.get("pr") is not None else None
             except (TypeError, ValueError):
                 note_pr = None
             note_repo = str(fm.get("pr_repo") or "").strip()
-            repo_agrees = not (pr_repo and note_repo) or note_repo == pr_repo
+            if is_nullish(note_repo):
+                note_repo = ""
+            repo_agrees = not (caller_repo and note_repo) or same_repo(note_repo, caller_repo)
             if pr_number is not None and note_pr == pr_number and repo_agrees:
                 pr_matches.append((path, fm))
-            elif head_ref and str(fm.get("branch") or "") == head_ref:
+            elif head_ref and str(fm.get("branch") or "") == head_ref and repo_agrees:
                 branch_matches.append((path, fm))
+    if pr_number is not None and not caller_repo and len(pr_matches) > 1:
+        LOG.warning(
+            "find_task_notes: %d notes match PR #%d by number and the caller "
+            "named no repo — cross-repo contamination is possible",
+            len(pr_matches),
+            pr_number,
+        )
     return tuple(pr_matches or branch_matches)
 
 

@@ -3106,3 +3106,55 @@ class TestFindTaskNotesLinkage:
         self._note(tmp_path / "active", "branch-task", status="in_progress", branch="feat/x")
         found = rt.find_task_notes(tmp_path, pr_number=99, head_ref="feat/x")
         assert [fm["task_id"] for _, fm in found] == ["branch-task"]
+
+    def test_closed_folder_is_terminal_by_location(self, tmp_path: Path) -> None:
+        """A note in closed/ must not match even with a stale open status."""
+        rt = _load_review_team_module()
+        self._note(
+            tmp_path / "active",
+            "live-task",
+            status="pr_open",
+            pr=7,
+            pr_repo="hapax-systems/reins",
+        )
+        self._note(tmp_path / "closed", "misfiled-task", status="pr_open", pr=7)
+        found = rt.find_task_notes(tmp_path, pr_number=7, pr_repo="hapax-systems/reins")
+        assert [fm["task_id"] for _, fm in found] == ["live-task"]
+
+    def test_terminal_status_match_is_case_insensitive(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._note(tmp_path / "active", "done-task", status="Done", pr=7)
+        self._note(tmp_path / "active", "live-task", status="pr_open", pr=7)
+        found = rt.find_task_notes(tmp_path, pr_number=7)
+        assert [fm["task_id"] for _, fm in found] == ["live-task"]
+
+    def test_repo_guard_binds_the_branch_arm(self, tmp_path: Path) -> None:
+        """A repo-rejected note must not re-enter through a shared branch name."""
+        rt = _load_review_team_module()
+        self._note(
+            tmp_path / "active",
+            "wrong-repo",
+            status="pr_open",
+            pr=7,
+            pr_repo="hapax-systems/hapax-council",
+            branch="feat/shared",
+        )
+        found = rt.find_task_notes(
+            tmp_path,
+            pr_number=7,
+            head_ref="feat/shared",
+            pr_repo="hapax-systems/reins",
+        )
+        assert [fm["task_id"] for _, fm in found] == []
+
+    def test_repo_match_is_case_insensitive(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._note(
+            tmp_path / "active",
+            "reins-task",
+            status="pr_open",
+            pr=7,
+            pr_repo="Hapax-Systems/Reins",
+        )
+        found = rt.find_task_notes(tmp_path, pr_number=7, pr_repo="hapax-systems/reins")
+        assert [fm["task_id"] for _, fm in found] == ["reins-task"]
