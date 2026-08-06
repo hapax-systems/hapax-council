@@ -39,12 +39,24 @@ _UUID = "12345678-1234-4321-8765-123456789abc"
 
 # Identity inputs that must be cleared so a developer's real session cannot leak
 # into a test claim.
+#
+# This list is the full precedence chain of
+# ``hooks/scripts/agent-role.sh::hapax_agent_identity``, which returns the first
+# variable that is set. ``HAPAX_AGENT_NAME`` is checked **before**
+# ``HAPAX_AGENT_ROLE``, so setting the role alone is not enough: inside a lane
+# session the ambient name wins and every claim runs as that lane's role. The
+# failure is silent and one-directional — assertions that a claim file was *not*
+# written pass vacuously, because they glob for a role the script never used.
 _IDENTITY_ENV = (
+    "HAPAX_AGENT_NAME",
+    "CODEX_THREAD_NAME",
+    "CODEX_SESSION_NAME",
+    "CODEX_SESSION",
+    "CODEX_ROLE",
+    "CLAUDE_ROLE",
     "HAPAX_SESSION_ID",
     "CLAUDE_CODE_SESSION_ID",
-    "CODEX_SESSION",
     "CODEX_THREAD_ID",
-    "CODEX_THREAD_NAME",
 )
 
 # The all-or-none dispatch binding set (scripts/cc-claim:71-87). The idempotency
@@ -108,6 +120,7 @@ def _claim(
         env.pop(var, None)
     env["HOME"] = str(home)
     env["HAPAX_AGENT_ROLE"] = "epsilon"
+    env["HAPAX_AGENT_NAME"] = "epsilon"
     if session_id is not None:
         env["HAPAX_SESSION_ID"] = session_id
     if dispatch:
@@ -125,6 +138,36 @@ def _claim_keys(home: Path) -> list[Path]:
     if not cache.is_dir():
         return []
     return sorted(cache.glob("cc-active-task-epsilon-*"))
+
+
+def test_the_script_actually_resolves_the_intended_role(tmp_path: Path) -> None:
+    """Guard against every "no claim file was written" assertion passing vacuously.
+
+    ``hapax_agent_identity`` returns the first identity variable that is set, and
+    ``HAPAX_AGENT_NAME`` outranks ``HAPAX_AGENT_ROLE``. If the ambient lane
+    identity leaks in, the script runs as *that* role — and the negative
+    assertions in this module (``not _claim_keys(home)``, which globs for
+    ``epsilon``) would all pass while testing nothing.
+
+    This forces the role into the output: the multi-claim refusal names it. If
+    the role ever resolves to something other than ``epsilon``, this fails loudly
+    instead of the rest of the module going quietly green.
+    """
+    home = tmp_path / "home"
+    _write_task(home, "claim-target")
+    _write_task(home, "other-task")
+    # A FRESH claim file: fresh so the expiry HOLD does not fire first, leaving
+    # the multi-claim path — the one that prints the resolved role — to answer.
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True, exist_ok=True)
+    (cache / f"cc-active-task-epsilon-{_UUID}").write_text("other-task\n", encoding="utf-8")
+
+    result = _claim(home, "claim-target", session_id=_UUID, dispatch=_DISPATCH_ENV)
+
+    assert "role 'epsilon'" in result.stderr, (
+        f"cc-claim did not resolve role 'epsilon' — ambient identity leaked. stderr: {result.stderr}"
+    )
+    assert result.returncode == 7, result.stderr
 
 
 def test_pid_shaped_session_id_is_refused_as_claim_key(tmp_path: Path) -> None:

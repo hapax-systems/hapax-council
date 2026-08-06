@@ -26,6 +26,28 @@ DISPATCH_ARGS = (
     "dispatch-a",
 )
 
+# Identity inputs that outrank (or compete with) HAPAX_AGENT_ROLE in
+# hooks/scripts/agent-role.sh::hapax_agent_identity, in its precedence order.
+# These MUST be cleared: the helper returns the first one set, and
+# HAPAX_AGENT_NAME is checked *before* HAPAX_AGENT_ROLE — so a test that only
+# sets HAPAX_AGENT_ROLE silently runs as the ambient lane's role when executed
+# inside a lane session. That is not hypothetical: it made
+# test_expired_claim_requires_governed_release_and_is_not_reaped fail locally
+# (role resolved to the lane, so the session-keyed claim glob missed the fixture
+# and the expiry HOLD never fired) while passing in CI, where no lane identity
+# is exported. Assertions of the form "no claim file was written" are the
+# dangerous case — they pass vacuously under the wrong role.
+_AMBIENT_IDENTITY_ENV = (
+    "HAPAX_AGENT_NAME",
+    "CODEX_THREAD_NAME",
+    "CODEX_SESSION_NAME",
+    "CODEX_SESSION",
+    "CODEX_ROLE",
+    "CLAUDE_ROLE",
+    "CODEX_THREAD_ID",
+    "CLAUDE_CODE_SESSION_ID",
+)
+
 
 def _task_root(home: Path) -> Path:
     root = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
@@ -90,6 +112,8 @@ def _run(
     env_update: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
+    for var in _AMBIENT_IDENTITY_ENV:
+        env.pop(var, None)
     env.update(
         HOME=str(home),
         HAPAX_AGENT_ROLE="cx-test",
@@ -186,7 +210,7 @@ def test_expired_claim_requires_governed_release_and_is_not_reaped(tmp_path: Pat
     os.utime(claim, (1, 1))
     before = _tree_snapshot(home)
     result = _run(home, "claim-target", args=DISPATCH_ARGS)
-    assert result.returncode == 7
+    assert result.returncode == 7, result.stderr
     assert "requires governed release" in result.stderr
     assert _tree_snapshot(home) == before
 
