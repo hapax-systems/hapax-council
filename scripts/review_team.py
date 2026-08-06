@@ -1116,6 +1116,9 @@ def find_task_notes(
 ) -> tuple[tuple[Path, dict[str, Any]], ...]:
     """All cc-task notes linked to a PR: by ``pr`` field first, else by branch.
 
+    Review lineage: incident 2026-08-05 (reins#7 batch contamination); fix rounds
+    through PR #4511/#4512 review (claude/glm/codex/grok seats + machine dossier).
+
     A PR number alone is not a link. Three guards keep unrelated notes out of
     the matched set, because callers do not merely *report* it —
     cc-pr-review-dispatch derives the dispatch batch, the assigned lane and
