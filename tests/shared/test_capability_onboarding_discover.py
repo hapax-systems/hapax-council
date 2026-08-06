@@ -78,3 +78,28 @@ def test_apply_writes_ledger(tmp_path: Path) -> None:
     assert path.exists()
     assert path.name == "explore.jsonl"
     assert "EXPLORE" in path.read_text(encoding="utf-8") or "explore" in path.name
+
+
+def test_admit_supply_refused_before_ledger_write(tmp_path: Path, monkeypatch) -> None:
+    """Security property: admit_supply must not land on disk via discover."""
+
+    def _fake_classify(**_kwargs):
+        return {
+            "disposition": OnboardingDisposition.ADMIT_SUPPLY.value,
+            "modal_class": "permitted",
+            "reasons": ["forced"],
+            "surface_id": "x",
+            "success": True,
+            "may_fulfill_demand": True,
+        }
+
+    monkeypatch.setattr(
+        "shared.capability_onboarding_discover.classify_onboarding_surface",
+        _fake_classify,
+    )
+    try:
+        discover_from_deltas([_new_capability_delta()], dry_run=False, ledger_root=tmp_path)
+        raise AssertionError("expected RuntimeError for admit_supply")
+    except RuntimeError as exc:
+        assert "admit_supply" in str(exc)
+    assert list(tmp_path.glob("*.jsonl")) == []

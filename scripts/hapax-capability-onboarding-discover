@@ -26,20 +26,30 @@ from shared.capability_surface_delta import (  # noqa: E402
 
 
 def _load_deltas(path: Path) -> list[CapabilitySurfaceDelta]:
+    last: Exception | None = None
     # Fixture set shape (config/capability-surface-delta-fixtures.json)
     try:
         fixtures = load_capability_surface_delta_fixtures(path)
         return list(fixtures.deltas)
-    except Exception:
-        pass
+    except Exception as exc_fixtures:
+        last = exc_fixtures
     # Producer file shape
     try:
         producer = load_capability_surface_delta_file(path)
         return list(producer.deltas)
-    except Exception:
-        pass
+    except Exception as exc_producer:
+        last = exc_producer
     # Bare list or {deltas:[...]}
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(
+            f"could not read/parse deltas JSON at {path}: {exc}; next action: pass "
+            "fixture set JSON, producer file, or a JSON list of "
+            "CapabilitySurfaceDelta objects",
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from exc
     if isinstance(payload, list):
         return [CapabilitySurfaceDelta.model_validate(item) for item in payload]
     if isinstance(payload, dict) and isinstance(payload.get("deltas"), list):
@@ -47,7 +57,7 @@ def _load_deltas(path: Path) -> list[CapabilitySurfaceDelta]:
     print(
         "could not parse deltas file; next action: pass fixture set JSON, producer "
         "file, or a JSON list of CapabilitySurfaceDelta objects "
-        f"(path={path})",
+        f"(path={path}; last_error={last!r})",
         file=sys.stderr,
     )
     raise SystemExit(2)

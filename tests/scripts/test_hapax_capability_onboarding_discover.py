@@ -36,6 +36,15 @@ def test_cli_dry_run_fixtures_json(capsys) -> None:
         assert item["classify"]["disposition"] != "admit_supply"
 
 
+def test_cli_missing_deltas_file(tmp_path: Path, capsys) -> None:
+    missing = tmp_path / "nope.json"
+    rc = mod.main(["--deltas", str(missing), "--json"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "missing" in err.lower() or "not" in err.lower()
+    assert "next action" in err
+
+
 def test_cli_apply_writes_under_tmp(tmp_path: Path, capsys) -> None:
     rc = mod.main(
         [

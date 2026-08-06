@@ -19,7 +19,7 @@ from shared.capability_onboarding_classify import (
     OnboardingDisposition,
     classify_onboarding_surface,
 )
-from shared.capability_onboarding_ledger import classify_and_ledger
+from shared.capability_onboarding_ledger import append_classify_result
 from shared.capability_surface_delta import (
     AuthorityCeiling,
     CapabilitySurfaceDelta,
@@ -123,13 +123,14 @@ def discover_from_deltas(
         src = source_ref or (
             f"surface_delta:{(raw.delta_id if isinstance(raw, CapabilitySurfaceDelta) else raw.get('delta_id'))}"
         )
+        # Classify first; refuse admit_supply before any durable write.
+        classify = classify_onboarding_surface(**kwargs)
+        if classify.get("disposition") == OnboardingDisposition.ADMIT_SUPPLY.value:
+            raise RuntimeError(
+                "discover path produced admit_supply; next action: inspect "
+                "delta_to_classify_kwargs floors (must keep demand_eligible=false)"
+            )
         if dry_run:
-            classify = classify_onboarding_surface(**kwargs)
-            if classify.get("disposition") == OnboardingDisposition.ADMIT_SUPPLY.value:
-                raise RuntimeError(
-                    "discover path produced admit_supply; next action: inspect "
-                    "delta_to_classify_kwargs floors (must keep demand_eligible=false)"
-                )
             results.append(
                 {
                     "classify": classify,
@@ -140,16 +141,20 @@ def discover_from_deltas(
                 }
             )
             continue
-        packed = classify_and_ledger(
+        path, row = append_classify_result(
+            classify,
             root=ledger_root,
             source_ref=src,
             demand_shape_ref=None,
             admission_tuple_id=None,
-            **kwargs,
         )
-        if packed["classify"].get("disposition") == OnboardingDisposition.ADMIT_SUPPLY.value:
-            raise RuntimeError(
-                "discover path ledgers admit_supply; next action: refuse and fix classify floors"
-            )
-        results.append({**packed, "dry_run": False, "source_ref": src})
+        results.append(
+            {
+                "classify": classify,
+                "ledger_path": str(path),
+                "row": row,
+                "dry_run": False,
+                "source_ref": src,
+            }
+        )
     return results
