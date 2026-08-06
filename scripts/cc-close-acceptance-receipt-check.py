@@ -21,6 +21,20 @@ Bypass: ``HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1`` (legacy incident response only).
 Canon-bound close ignores this raw bypass; governed override evidence belongs in
 the shared terminal-close admission rather than an ambient environment variable.
 
+Killswitch under canon-bound close (``HAPAX_CANON_BOUND_CLOSE_ENFORCEMENT=1``,
+see ``CANON_BOUND_CLOSE_ENV`` below): the raw env bypass above is inert, and the
+live escape hatch is a governed override *receipt* consumed by
+``shared.sdlc_close.admit_terminal_close``. Closing under debt without one is
+refused with the typed reason ``terminal_close_debt_override_requires_receipt``
+("record a governed override receipt before canon-bound close; raw ``--debt`` is
+legacy-only", ``shared/sdlc_close.py:449-452``). The sibling refusals name the
+same path for their own cases —
+``terminal_close_operator_disposition_receipt_required`` (non-``done`` final
+status) and ``terminal_close_retroactive_receipt_required`` (retroactive close).
+Minting those receipts is an operator act; a lane that hits one of these reasons
+should stop and surface it rather than reach for the legacy env var, which will
+not help under canon-bound close.
+
 Failure mode: fail-OPEN on infrastructure errors reading the NOTE (missing /
 unreadable file — a broken gate must not brick closures), but fail-CLOSED on
 receipt problems (an absent or invalid receipt is exactly what this gate
