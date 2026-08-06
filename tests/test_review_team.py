@@ -3095,11 +3095,18 @@ class TestFindTaskNotesLinkage:
         assert [fm["task_id"] for _, fm in found] == ["reins-task"]
 
     def test_legacy_note_without_pr_repo_still_matches(self, tmp_path: Path) -> None:
-        """Notes predating the pr_repo convention must not break."""
+        """Repo-less calls keep number-only matching for undeclared notes."""
+        rt = _load_review_team_module()
+        self._note(tmp_path / "active", "legacy-task", status="pr_open", pr=7)
+        found = rt.find_task_notes(tmp_path, pr_number=7)
+        assert [fm["task_id"] for _, fm in found] == ["legacy-task"]
+
+    def test_undeclared_note_repo_is_not_a_wildcard(self, tmp_path: Path) -> None:
+        """A named caller repo never matches a note that declares none."""
         rt = _load_review_team_module()
         self._note(tmp_path / "active", "legacy-task", status="pr_open", pr=7)
         found = rt.find_task_notes(tmp_path, pr_number=7, pr_repo="hapax-systems/reins")
-        assert [fm["task_id"] for _, fm in found] == ["legacy-task"]
+        assert found == ()
 
     def test_branch_fallback_still_works(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
@@ -3166,3 +3173,96 @@ class TestFindTaskNotesLinkage:
         self._note(tmp_path / "active", "task-b", status="in_progress", pr=7)
         found = rt.find_task_notes(tmp_path, pr_number=7)
         assert found == ()
+
+
+def _load_pr_review_dispatch_module():
+    import importlib.util
+    import sys
+
+    if "cc_pr_review_dispatch" in sys.modules:
+        return sys.modules["cc_pr_review_dispatch"]
+    path = REPO_ROOT / "scripts" / "cc-pr-review-dispatch.py"
+    spec = importlib.util.spec_from_file_location("cc_pr_review_dispatch", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["cc_pr_review_dispatch"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestDispatcherRepoThreading:
+    """Durable witnesses for the dispatcher's real call path (review dossier
+    majors: the one-line caller change must be covered where it lives)."""
+
+    def test_review_pr_threads_repo_into_the_matcher(self, tmp_path: Path, monkeypatch) -> None:
+        dispatch = _load_pr_review_dispatch_module()
+        rt = _load_review_team_module()
+        calls: list[dict] = []
+
+        def fake_find_task_notes(vault_root, **kwargs):
+            calls.append(kwargs)
+            return ()
+
+        class _PrInfo:
+            is_draft = False
+            files = ["scripts/review_team.py"]
+            changed_file_count = 1
+            head_ref = "fix/branch"
+
+        monkeypatch.setattr(rt, "find_task_notes", fake_find_task_notes)
+        monkeypatch.setattr(dispatch, "fetch_pr", lambda *a, **k: _PrInfo())
+        result = dispatch.review_pr(
+            7,
+            repo="hapax-systems/reins",
+            vault_root=tmp_path,
+            route_blocked_families={},
+        )
+        assert result == {"status": "no_task", "pr": 7}
+        assert calls, "review_pr never reached the matcher"
+        assert calls[0].get("pr_repo") == "hapax-systems/reins"
+        assert calls[0].get("head_ref") == "fix/branch"
+
+    def test_review_pr_repo_qualified_dispatch_finds_exactly_one_task(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The reins#7 exit predicate as a durable witness: with three
+        terminal/done notes and one live note sharing a PR number, the
+        dispatcher's match set is exactly the live one."""
+        dispatch = _load_pr_review_dispatch_module()
+        rt = _load_review_team_module()
+        for name, status in (("done-1", "done"), ("done-2", "superseded"), ("done-3", "closed")):
+            TestFindTaskNotesLinkage._note(tmp_path / "closed", name, status=status, pr=7)
+        TestFindTaskNotesLinkage._note(
+            tmp_path / "active",
+            "live-task",
+            status="pr_open",
+            pr=7,
+            pr_repo="hapax-systems/reins",
+        )
+
+        class _PrInfo:
+            is_draft = False
+            files = ["scripts/review_team.py"]
+            changed_file_count = 1
+            head_ref = "k0/complete-6-of-6"
+            head_sha = "0" * 40
+            changed_files = ["scripts/review_team.py"]
+
+        monkeypatch.setattr(dispatch, "fetch_pr", lambda *a, **k: _PrInfo())
+        seen: list[tuple] = []
+        real = rt.find_task_notes
+
+        def recording(vault_root, **kwargs):
+            found = real(vault_root, **kwargs)
+            seen.append(found)
+            return found
+
+        monkeypatch.setattr(rt, "find_task_notes", recording)
+        dispatch.review_pr(
+            7,
+            repo="hapax-systems/reins",
+            vault_root=tmp_path,
+            route_blocked_families={},
+        )
+        assert seen, "matcher never called"
+        assert [fm["task_id"] for _, fm in seen[0]] == ["live-task"]
