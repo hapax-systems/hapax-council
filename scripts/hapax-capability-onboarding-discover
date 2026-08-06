@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""N3: classify capability-surface deltas into onboarding disposition ledgers.
+
+Default is dry-run (classify only). Pass ``--apply`` to append ledger rows.
+Never admits supply.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.capability_onboarding_discover import discover_from_deltas  # noqa: E402
+from shared.capability_surface_delta import (  # noqa: E402
+    CAPABILITY_SURFACE_DELTA_FIXTURES,
+    CapabilitySurfaceDelta,
+    load_capability_surface_delta_file,
+    load_capability_surface_delta_fixtures,
+)
+
+
+def _load_deltas(path: Path) -> list[CapabilitySurfaceDelta]:
+    # Fixture set shape (config/capability-surface-delta-fixtures.json)
+    try:
+        fixtures = load_capability_surface_delta_fixtures(path)
+        return list(fixtures.deltas)
+    except Exception:
+        pass
+    # Producer file shape
+    try:
+        producer = load_capability_surface_delta_file(path)
+        return list(producer.deltas)
+    except Exception:
+        pass
+    # Bare list or {deltas:[...]}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(payload, list):
+        return [CapabilitySurfaceDelta.model_validate(item) for item in payload]
+    if isinstance(payload, dict) and isinstance(payload.get("deltas"), list):
+        return [CapabilitySurfaceDelta.model_validate(item) for item in payload["deltas"]]
+    print(
+        "could not parse deltas file; next action: pass fixture set JSON, producer "
+        "file, or a JSON list of CapabilitySurfaceDelta objects "
+        f"(path={path})",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="hapax-capability-onboarding-discover",
+        description=(
+            "Map capability-surface deltas → onboarding classify/ledger "
+            "(EXPLORE/HOLD/evidence_only/refuse). Never admit_supply."
+        ),
+    )
+    parser.add_argument(
+        "--deltas",
+        default=str(CAPABILITY_SURFACE_DELTA_FIXTURES),
+        help="Path to delta fixtures/producer JSON (default: config fixtures)",
+    )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Append classify results to disposition ledgers (default: dry-run)",
+    )
+    parser.add_argument("--ledger-root", default=None, help="Override ledger root")
+    parser.add_argument("--source-ref", default=None, help="Override ledger source_ref")
+    parser.add_argument("--json", action="store_true", help="Machine-readable JSON")
+    args = parser.parse_args(argv)
+
+    path = Path(args.deltas).expanduser()
+    if not path.exists():
+        print(
+            f"deltas file missing: {path}; next action: pass --deltas PATH to a "
+            "fixture/producer JSON file",
+            file=sys.stderr,
+        )
+        return 2
+
+    deltas = _load_deltas(path)
+    results = discover_from_deltas(
+        deltas,
+        dry_run=not args.apply,
+        ledger_root=args.ledger_root,
+        source_ref=args.source_ref or f"discover:{path}",
+    )
+
+    summary = {
+        "schema": "hapax.capability_onboarding_discover.v0",
+        "deltas_path": str(path),
+        "count": len(results),
+        "apply": bool(args.apply),
+        "dispositions": {},
+        "results": results,
+    }
+    for item in results:
+        disp = str((item.get("classify") or {}).get("disposition") or "unknown")
+        summary["dispositions"][disp] = summary["dispositions"].get(disp, 0) + 1
+        if (item.get("classify") or {}).get("disposition") == "admit_supply":
+            print(
+                "FATAL: discover produced admit_supply; refusing success exit",
+                file=sys.stderr,
+            )
+            return 3
+
+    if args.json:
+        print(json.dumps(summary, indent=2, sort_keys=True, default=str))
+    else:
+        mode = "apply" if args.apply else "dry-run"
+        print(f"mode={mode} count={summary['count']} dispositions={summary['dispositions']}")
+        for item in results:
+            c = item.get("classify") or {}
+            print(f"  {c.get('surface_id')}: {c.get('disposition')} reasons={c.get('reasons')}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
