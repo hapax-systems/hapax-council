@@ -3158,3 +3158,11 @@ class TestFindTaskNotesLinkage:
         )
         found = rt.find_task_notes(tmp_path, pr_number=7, pr_repo="hapax-systems/reins")
         assert [fm["task_id"] for _, fm in found] == ["reins-task"]
+
+    def test_repoless_caller_ambiguity_refuses(self, tmp_path: Path) -> None:
+        """No caller repo + multiple number matches: fail closed, not silent."""
+        rt = _load_review_team_module()
+        self._note(tmp_path / "active", "task-a", status="pr_open", pr=7)
+        self._note(tmp_path / "active", "task-b", status="in_progress", pr=7)
+        found = rt.find_task_notes(tmp_path, pr_number=7)
+        assert found == ()

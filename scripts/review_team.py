@@ -1128,10 +1128,12 @@ def find_task_notes(
       living in ``active/`` are filtered through ``TASK_TERMINAL_STATUSES``
       (the single source of truth in shared/sdlc_lifecycle.py).
     * when the caller names a repo *and* the note declares ``pr_repo``, they
-      must agree (case-insensitive). Notes predating that convention declare
-      no ``pr_repo`` and keep number-only matching, so existing links do not
-      break; a caller that cannot name a repo logs a warning on multi-match
-      instead of silently degrading to number-only matching.
+      must agree (case-insensitive, via shared/cc_task_pr_link.same_repo).
+      Notes predating that convention declare no ``pr_repo`` and keep
+      number-only matching, so existing links do not break. A caller that
+      cannot name a repo and finds multiple number matches gets a refusal
+      with the corrective action logged — ambiguous admission is worse than
+      a named miss.
     * the repo guard binds the branch-fallback arm too: a note rejected for
       repo disagreement must not re-enter through a shared branch name.
     """
@@ -1164,10 +1166,12 @@ def find_task_notes(
     if pr_number is not None and not caller_repo and len(pr_matches) > 1:
         LOG.warning(
             "find_task_notes: %d notes match PR #%d by number and the caller "
-            "named no repo — cross-repo contamination is possible",
+            "named no repo — refusing the ambiguous set; supply pr_repo to "
+            "disambiguate",
             len(pr_matches),
             pr_number,
         )
+        return ()
     return tuple(pr_matches or branch_matches)
 
 
