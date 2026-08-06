@@ -22,18 +22,31 @@ Canon-bound close ignores this raw bypass; governed override evidence belongs in
 the shared terminal-close admission rather than an ambient environment variable.
 
 Killswitch under canon-bound close (``HAPAX_CANON_BOUND_CLOSE_ENFORCEMENT=1``,
-see ``CANON_BOUND_CLOSE_ENV`` below): the raw env bypass above is inert, and the
-live escape hatch is a governed override *receipt* consumed by
-``shared.sdlc_close.admit_terminal_close``. Closing under debt without one is
-refused with the typed reason ``terminal_close_debt_override_requires_receipt``
-("record a governed override receipt before canon-bound close; raw ``--debt`` is
-legacy-only", ``shared/sdlc_close.py:449-452``). The sibling refusals name the
-same path for their own cases —
-``terminal_close_operator_disposition_receipt_required`` (non-``done`` final
-status) and ``terminal_close_retroactive_receipt_required`` (retroactive close).
-Minting those receipts is an operator act; a lane that hits one of these reasons
-should stop and surface it rather than reach for the legacy env var, which will
-not help under canon-bound close.
+see ``CANON_BOUND_CLOSE_ENV`` below): the raw env bypass above is inert. Read the
+next paragraph before reaching for anything else, because the replacement it
+points at is **not implemented yet** and no command will produce it.
+
+``shared/sdlc_close.py:448-452`` refuses any close carrying a debt reason with
+``terminal_close_debt_override_requires_receipt`` — "record a governed override
+receipt before canon-bound close; raw ``--debt`` is legacy-only". That branch is
+``if debt_reason: raise``, **unconditional**: ``shared.sdlc_close.close_task``
+takes no receipt argument, reads no receipt file, and has no code path that
+accepts one.
+``--debt`` is still parsed (``shared/sdlc_close.py:826``) and threaded to the
+admission (``:843``), where it can only ever refuse. The same holds for the
+siblings ``terminal_close_operator_disposition_receipt_required`` (any
+non-``done`` final status) and ``terminal_close_retroactive_receipt_required``.
+
+So the operator's real next action under canon-bound close is **not** to hunt for
+a mint command — there isn't one. It is to resolve the debt, or close as
+``done`` without a debt reason, or (where the task legitimately predates
+canon-bound close) run the legacy path with ``HAPAX_CANON_BOUND_CLOSE_ENFORCEMENT``
+unset, where the env bypass above still applies.
+
+Stated plainly because the gap is load-bearing: while canon-bound close is on, a
+task carrying debt **cannot be closed at all**. Treat that as a wedge to escalate,
+not a procedure to follow. Covered by
+``tests/test_sdlc_closed_loop_e2e.py::test_close_under_debt_is_refused_and_names_no_available_override``.
 
 Failure mode: fail-OPEN on infrastructure errors reading the NOTE (missing /
 unreadable file — a broken gate must not brick closures), but fail-CLOSED on
