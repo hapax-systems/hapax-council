@@ -39,15 +39,20 @@ satisfied by minting, beside the task note::
       verdict:   accepted
       timestamp: <ISO-8601>
       artifact:  <ref to the incident or decision>
-      task_id:   <task_id>          # optional; if present it must match
+      task_id:   <task_id>          # REQUIRED, and must match this task
 
 Deliberately the same shape as ``<task_id>.acceptance.yaml`` — one receipt idiom,
 one validator shape, no new instrument. Validated by
 ``shared.sdlc_lifecycle.close_override_receipt_blockers``: absent, unreadable,
 malformed, field-incomplete, non-``accepted``, or naming a different task all
-fail closed, and the refusal's ``detail`` names which. The ``task_id`` binding
-exists so a valid receipt cannot be copied beside another note to authorize an
-unrelated close.
+fail closed, and the refusal's ``detail`` names which.
+
+The ``task_id`` binding is load-bearing and therefore **required**, not merely
+checked-when-present. An earlier revision validated it only if present, so a
+receipt omitting it returned no blockers and could be copied or renamed beside
+any note to satisfy that task's refusals — authorization evidence failing OPEN,
+while this very docstring called the binding load-bearing. Found by review
+(codex-1, 2026-08-07). Absence and mismatch now both fail closed.
 
 It authorizes exactly one thing — proceeding past those three refusals for the
 task it names. No release, publication, runtime, or provider authority follows

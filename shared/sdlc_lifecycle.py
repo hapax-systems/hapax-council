@@ -308,7 +308,18 @@ ACCEPTANCE_RECEIPT_ACCEPTED_VERDICTS = frozenset({"accepted"})
 #: authority, and it is not consumed outside canon-bound close.
 CLOSE_OVERRIDE_RECEIPT_SUFFIX = ".close-override.yaml"
 
-CLOSE_OVERRIDE_RECEIPT_REQUIRED_FIELDS = ("acceptor", "verdict", "timestamp", "artifact")
+#: ``task_id`` is REQUIRED, not optional. Checking it only when present made the
+#: binding advisory: a receipt omitting it returned no blockers and could be
+#: copied or renamed beside any note to satisfy that task's close refusals. That
+#: is authorization evidence failing OPEN, and it contradicted the binding this
+#: contract documents as load-bearing. Found by review (codex-1, 2026-08-07).
+CLOSE_OVERRIDE_RECEIPT_REQUIRED_FIELDS = (
+    "acceptor",
+    "verdict",
+    "timestamp",
+    "artifact",
+    "task_id",
+)
 
 CLOSE_OVERRIDE_RECEIPT_ACCEPTED_VERDICTS = frozenset({"accepted"})
 
@@ -348,8 +359,10 @@ def close_override_receipt_blockers(note_path: Path, task_id: str) -> tuple[str,
     verdict = _frontmatter_non_null_scalar(loaded.get("verdict"))
     if verdict and verdict.lower() not in CLOSE_OVERRIDE_RECEIPT_ACCEPTED_VERDICTS:
         blockers.append(f"close_override_receipt_verdict_not_accepted:{verdict.lower()}")
-    # Bind the receipt to the task it authorizes: a receipt naming a different
-    # task must not be usable by copying it next to another note.
+    # Bind the receipt to the task it authorizes. Absence is already a blocker
+    # via the required-field check above (fail CLOSED); this rejects a receipt
+    # that names a DIFFERENT task, so a valid one cannot be copied or renamed
+    # beside another note to authorize an unrelated close.
     named = _frontmatter_non_null_scalar(loaded.get("task_id"))
     if named and named != task_id:
         blockers.append(f"close_override_receipt_task_mismatch:{named}")

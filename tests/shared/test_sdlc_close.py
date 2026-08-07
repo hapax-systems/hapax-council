@@ -863,6 +863,11 @@ def test_strict_mode_debt_close_accepts_a_governed_override_receipt(
         ({"verdict": "rejected"}, "verdict_not_accepted"),
         ({"acceptor": None}, "missing_field:acceptor"),
         ({"task_id": "some-other-task"}, "task_mismatch"),
+        # An ABSENT task_id must fail closed. Checking the binding only when
+        # present made it advisory: such a receipt returned no blockers and could
+        # be copied or renamed beside any note to satisfy that task's refusals.
+        # Authorization evidence must never fail open. (codex-1, 2026-08-07)
+        ({"task_id": None}, "missing_field:task_id"),
     ],
 )
 def test_strict_mode_rejects_an_invalid_close_override_receipt(
