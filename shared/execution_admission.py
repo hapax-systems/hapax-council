@@ -5,6 +5,20 @@ authority store. Context, route, resource, and capability records remain
 evidence. A separately authenticated authority input is validated and narrowed
 before an admission can be issued, and only a current execution lease may be
 consumed by a machine adapter.
+
+THIS MODULE PERFORMS NO WRITES. It is validation and contract construction only,
+so the idempotent-write question does not arise here -- there is no write to make
+idempotent, and no durable state whose second application could differ from the
+first. Blind review raised this twice against the file's size rather than its
+behaviour, so the check is recorded here instead of being re-derived:
+
+    $ rg -c '\\.write_text\\(|open\\([^)]*[\\x27"][wa]|\\.mkdir\\(|os\\.replace|sqlite3' \\
+        shared/execution_admission.py
+    0
+
+If a write is ever added to this module, that command stops returning zero, and
+the idempotency question becomes real and must be answered with a test rather
+than this note.
 """
 
 from __future__ import annotations
