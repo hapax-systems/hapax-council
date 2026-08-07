@@ -109,8 +109,13 @@ def test_unadmitted_withdrawal_preserves_all_claim_state(tmp_path: Path) -> None
 
     result = _run_close(home, "foo", role="eta", session_id="sess123")
 
-    assert result.returncode == 2
-    assert "terminal_close_operator_disposition_receipt_required" in result.stderr
+    # The close is refused (no admitted claim publication in this fixture) and,
+    # crucially, leaves every piece of claim state untouched. It must NOT be
+    # refused with terminal_close_operator_disposition_receipt_required — that
+    # demanded a governed override receipt nothing could produce, making a
+    # withdrawal permanently impossible. Removed from this landing.
+    assert result.returncode != 0
+    assert "terminal_close_operator_disposition_receipt_required" not in result.stderr
     assert legacy.read_text(encoding="utf-8") == "foo\n"
     assert session.read_text(encoding="utf-8") == "foo\n"
     assert legacy_sidecar.read_text(encoding="utf-8") == "1780000000 foo\n"

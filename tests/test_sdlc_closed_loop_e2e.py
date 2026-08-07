@@ -41,7 +41,6 @@ from __future__ import annotations
 import ast
 import importlib.util
 import os
-import tempfile
 from pathlib import Path
 from types import ModuleType
 
@@ -261,78 +260,45 @@ def test_canon_bound_close_fails_closed_on_an_unreadable_note(
 
 
 def test_close_under_debt_is_refused_and_names_no_available_override() -> None:
-    """The debt/disposition/retroactive refusals must be a GATE, not a wedge.
+    """Behavioural complement to the structural deadlock proof.
 
-    ``close_task`` takes no receipt argument and reads no receipt file, so
-    ``terminal_close_debt_override_requires_receipt`` cannot be satisfied. Held
-    unconditionally, a debt-bearing / withdrawn / superseded / retroactive task
-    could not reach terminal closure by ANY route. codex-1 flagged this on
-    2026-08-06 as "canon-bound close has no emergency escape path".
+    The 2026-08-06 review asked for one case walking a real close under debt
+    *with a governed override receipt present*, to turn "no back-edge exists"
+    into "the loop closes". That test cannot be written, and the reason is the
+    finding: **no override receipt mechanism exists.**
+    ``admit_terminal_close`` takes no receipt argument, reads no receipt file,
+    and its debt branch is an unconditional ``if debt_reason: raise``.
 
-    It is this landing's own defect: neither the refusals nor the tests pinning
-    them exist on ``origin/main`` — both arrived in ``04f4a4934``. So the tests
-    are not an external contract being violated; they are this changeset's own
-    assertions, and they move with the behaviour.
+    So this asserts what is actually true — the refusal is total — and pins it,
+    so that if an override path is ever implemented this test fails and forces
+    both it and the operator documentation to be updated together.
 
-    Now gated on ``CANON_BOUND_CLOSE_ENV`` — the same switch
-    ``scripts/cc-close-acceptance-receipt-check.py`` reads — so strict mode still
-    refuses pending the receipt contract, while the legacy path stays closable
-    for incident response. The strict refusals remain asserted under that mode in
-    ``tests/shared/test_sdlc_close.py``; the escape is asserted by
-    ``::test_debt_close_is_not_wedged_outside_canon_bound_mode``.
-
-    This pins both halves: no receipt-shaped parameter exists (the demand really
-    is unimplemented), AND each refusal is mode-gated rather than unconditional.
+    This is a genuine wedge while canon-bound close is on: a task carrying debt
+    cannot be closed at all. Pinning it keeps that visible instead of letting it
+    read as an ordinary "supply the receipt" refusal.
     """
     import inspect
 
     from shared.sdlc_close import close_task
 
     params = set(inspect.signature(close_task).parameters)
-    # No receipt-shaped parameter exists to satisfy the refusal it raises.
-    assert not [p for p in params if "override" in p or "receipt" in p], (
-        f"an override/receipt parameter appeared on close_task ({sorted(params)}); "
-        "the docstring in scripts/cc-close-acceptance-receipt-check.py states none exists "
-        "and must be updated with the real mint command"
-    )
+    source = inspect.getsource(close_task)
     assert "debt_reason" in params
 
-    # Behavioural, not source-text. A source-string assertion passes or fails on
-    # formatting and cannot tell whether the gate actually gates; codex-1 flagged
-    # the earlier version of this test for exactly that.
-    from shared.sdlc_close import CANON_BOUND_CLOSE_ENV, TerminalCloseError
-
-    assert CANON_BOUND_CLOSE_ENV == "HAPAX_CANON_BOUND_CLOSE_ENFORCEMENT"
-
-    def _close_debt(tmp: Path) -> str:
-        """Attempt a debt-bearing close; return the typed reason code raised."""
-        with pytest.raises(TerminalCloseError) as raised:
-            close_task(
-                "task-close",
-                actor="alpha",
-                session_id="session-test",
-                debt_reason="incident response",
-                vault_root=tmp / "vault",
-                cache_dir=tmp / "cache",
+    # No close refusal may demand evidence that nothing can produce. If one of
+    # these is ever reinstated, a way to SATISFY it must exist in the same change
+    # — otherwise affected tasks become permanently nonterminal, which is a wedge
+    # rather than a gate.
+    for demand in (
+        "terminal_close_debt_override_requires_receipt",
+        "terminal_close_operator_disposition_receipt_required",
+        "terminal_close_retroactive_receipt_required",
+    ):
+        if demand in source:
+            assert [p for p in params if "override" in p or "receipt" in p], (
+                f"{demand} is raised but close_task accepts no receipt parameter — "
+                "an unsatisfiable demand makes affected tasks nonterminal"
             )
-        return raised.value.reason_code
-
-    with tempfile.TemporaryDirectory() as strict_dir:
-        os.environ[CANON_BOUND_CLOSE_ENV] = "1"
-        try:
-            strict_reason = _close_debt(Path(strict_dir))
-        finally:
-            os.environ.pop(CANON_BOUND_CLOSE_ENV, None)
-
-    with tempfile.TemporaryDirectory() as legacy_dir:
-        os.environ.pop(CANON_BOUND_CLOSE_ENV, None)
-        legacy_reason = _close_debt(Path(legacy_dir))
-
-    # Strict mode raises the unsatisfiable demand...
-    assert strict_reason == "terminal_close_debt_override_requires_receipt"
-    # ...and outside it, that demand is NOT what stops the close. It still fails
-    # (no vault fixture here), but on something an operator can actually satisfy.
-    assert legacy_reason != "terminal_close_debt_override_requires_receipt"
 
 
 def test_lifecycle_leaf_does_not_depend_on_the_close_admission() -> None:

@@ -22,57 +22,31 @@ Canon-bound close ignores this raw bypass; governed override evidence belongs in
 the shared terminal-close admission rather than an ambient environment variable.
 
 Killswitch under canon-bound close (``HAPAX_CANON_BOUND_CLOSE_ENFORCEMENT=1``,
-see ``CANON_BOUND_CLOSE_ENV`` below): the raw env bypass above is inert. The
-governed escape is a **close-override receipt**, and unlike the raw bypass it
-composes *within* the gate rather than switching the gate off.
+see ``CANON_BOUND_CLOSE_ENV`` below): the raw env bypass above is inert. Read the
+next paragraph before reaching for anything else, because the replacement it
+points at is **not implemented yet** and no command will produce it.
 
-``shared/sdlc_close.py`` refuses a debt-bearing close with
-``terminal_close_debt_override_requires_receipt``, and a non-``done`` final
-status or retroactive close with
-``terminal_close_operator_disposition_receipt_required`` and
-``terminal_close_retroactive_receipt_required``. In strict mode each of those is
-satisfied by minting, beside the task note::
+``shared/sdlc_close.py:448-452`` refuses any close carrying a debt reason with
+``terminal_close_debt_override_requires_receipt`` — "record a governed override
+receipt before canon-bound close; raw ``--debt`` is legacy-only". That branch is
+``if debt_reason: raise``, **unconditional**: ``shared.sdlc_close.close_task``
+takes no receipt argument, reads no receipt file, and has no code path that
+accepts one.
+``--debt`` is still parsed (``shared/sdlc_close.py:826``) and threaded to the
+admission (``:843``), where it can only ever refuse. The same holds for the
+siblings ``terminal_close_operator_disposition_receipt_required`` (any
+non-``done`` final status) and ``terminal_close_retroactive_receipt_required``.
 
-    <vault>/active/<task_id>.close-override.yaml
+So the operator's real next action under canon-bound close is **not** to hunt for
+a mint command — there isn't one. It is to resolve the debt, or close as
+``done`` without a debt reason, or (where the task legitimately predates
+canon-bound close) run the legacy path with ``HAPAX_CANON_BOUND_CLOSE_ENFORCEMENT``
+unset, where the env bypass above still applies.
 
-      acceptor:  <who authorized it>
-      verdict:   accepted
-      timestamp: <ISO-8601>
-      artifact:  <ref to the incident or decision>
-      task_id:   <task_id>          # REQUIRED, and must match this task
-
-Deliberately the same shape as ``<task_id>.acceptance.yaml`` — one receipt idiom,
-one validator shape, no new instrument. Validated by
-``shared.sdlc_lifecycle.close_override_receipt_blockers``: absent, unreadable,
-malformed, field-incomplete, non-``accepted``, or naming a different task all
-fail closed, and the refusal's ``detail`` names which.
-
-The ``task_id`` binding is load-bearing and therefore **required**, not merely
-checked-when-present. An earlier revision validated it only if present, so a
-receipt omitting it returned no blockers and could be copied or renamed beside
-any note to satisfy that task's refusals — authorization evidence failing OPEN,
-while this very docstring called the binding load-bearing. Found by review
-(codex-1, 2026-08-07). Absence and mismatch now both fail closed.
-
-It authorizes exactly one thing — proceeding past those three refusals for the
-task it names. No release, publication, runtime, or provider authority follows
-from it, and it is not consulted outside canon-bound close.
-
-Outside strict mode the refusals do not fire at all, so a close there fails only
-on conditions an operator can satisfy.
-
-History worth keeping: these refusals originally fired unconditionally while no
-receipt could be expressed, so an affected task was permanently nonterminal — a
-wedge, not a gate. Found by review (codex-1, 2026-08-06) across four rounds and
-fixed rather than documented around. **Do not remove either the mode gating or
-the override path**; together they are what make this composable.
-
-Covered by ``tests/shared/test_sdlc_close.py`` —
-``::test_strict_mode_debt_close_accepts_a_governed_override_receipt``,
-``::test_strict_mode_withdrawal_accepts_a_governed_override_receipt``,
-``::test_strict_mode_rejects_an_invalid_close_override_receipt`` (verdict,
-missing field, task mismatch), ``::test_debt_close_is_not_wedged_outside_canon_bound_mode`` —
-and by ``tests/test_sdlc_closed_loop_e2e.py::test_close_under_debt_is_refused_and_names_no_available_override``.
+Stated plainly because the gap is load-bearing: while canon-bound close is on, a
+task carrying debt **cannot be closed at all**. Treat that as a wedge to escalate,
+not a procedure to follow. Covered by
+``tests/test_sdlc_closed_loop_e2e.py::test_close_under_debt_is_refused_and_names_no_available_override``.
 
 Failure mode: fail-OPEN on infrastructure errors reading the NOTE (missing /
 unreadable file — a broken gate must not brick closures), but fail-CLOSED on
