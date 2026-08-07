@@ -81,6 +81,7 @@ title: "{task_id}"
 status: pr_open
 assigned_to: {assigned_to}
 pr: {pr}
+pr_repo: owner/repo
 branch: feat/{pr}
 risk_tier: {risk_tier}
 quality_floor: {quality_floor}

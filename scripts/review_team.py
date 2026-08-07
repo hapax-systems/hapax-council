@@ -24,6 +24,7 @@ from __future__ import annotations
 import ast
 import fnmatch
 import json
+import logging
 import os
 import re
 import subprocess
@@ -36,10 +37,13 @@ from typing import Any
 
 import yaml
 
+LOG = logging.getLogger(__name__)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from shared.cc_task_pr_link import is_nullish, same_repo  # noqa: E402
 from shared.failure_classification import (  # noqa: E402
     STRUCTURED_PROVIDER_OUTAGE_ACTIONS,
     STRUCTURED_PROVIDER_OUTAGE_ERROR_CLASSES,
@@ -77,6 +81,7 @@ from shared.quota_spend_ledger import (  # noqa: E402
     load_quota_spend_ledger_resolved,
     subscription_quota_state_for_route,
 )
+from shared.sdlc_lifecycle import TASK_TERMINAL_STATUSES  # noqa: E402
 
 DEFAULT_REGISTRY_PATH = REPO_ROOT / "config" / "review-lenses" / "registry.yaml"
 LENS_DIR = REPO_ROOT / "config" / "review-lenses"
@@ -1107,12 +1112,40 @@ def find_task_notes(
     *,
     pr_number: int | None = None,
     head_ref: str | None = None,
+    pr_repo: str | None = None,
 ) -> tuple[tuple[Path, dict[str, Any]], ...]:
-    """All cc-task notes linked to a PR: by ``pr`` field first, else by branch."""
+    """All cc-task notes linked to a PR: by ``pr`` field first, else by branch.
+
+    Review lineage: incident 2026-08-05 (reins#7 batch contamination); fix rounds
+    through PR #4511/#4512 review (claude/glm/codex/grok seats + machine dossier).
+
+    A PR number alone is not a link. Three guards keep unrelated notes out of
+    the matched set, because callers do not merely *report* it —
+    cc-pr-review-dispatch derives the dispatch batch, the assigned lane and
+    ``strongest_team_class`` from it, so a stray match spends real provider
+    capacity and can raise this PR's review floor:
+
+    * only ``active/`` is scanned. ``closed/`` is archival: a note there is
+      terminal by location regardless of what its frontmatter status says,
+      and a closed task must not be re-reviewed. Terminal statuses still
+      living in ``active/`` are filtered through ``TASK_TERMINAL_STATUSES``
+      (the single source of truth in shared/sdlc_lifecycle.py).
+    * when the caller names a repo, the note must declare the same
+      ``pr_repo`` (case-insensitive, via shared/cc_task_pr_link.same_repo);
+      an undeclared ``pr_repo`` is not a wildcard (legacy compat dropped by
+      operator ratification 2026-08-06 after measuring zero live legacy
+      notes). Repo-less calls keep number-only matching, and a repo-less
+      call that finds multiple number matches gets a refusal with the
+      corrective action logged — ambiguous admission is worse than a named
+      miss.
+    * the repo guard binds the branch-fallback arm too: a note rejected for
+      repo disagreement must not re-enter through a shared branch name.
+    """
 
     pr_matches: list[tuple[Path, dict[str, Any]]] = []
     branch_matches: list[tuple[Path, dict[str, Any]]] = []
-    for folder in ("active", "closed"):
+    caller_repo = (pr_repo or "").strip()
+    for folder in ("active",):
         root = vault_root / folder
         if not root.is_dir():
             continue
@@ -1120,14 +1153,67 @@ def find_task_notes(
             fm = _note_frontmatter(path)
             if not fm or fm.get("type") != "cc-task":
                 continue
-            try:
-                note_pr = int(fm.get("pr")) if fm.get("pr") is not None else None
-            except (TypeError, ValueError):
+            if str(fm.get("status") or "").strip().casefold() in TASK_TERMINAL_STATUSES:
+                continue
+            raw_pr = fm.get("pr")
+            if raw_pr is None or is_nullish(str(raw_pr)):
                 note_pr = None
+                pr_malformed = False
+            else:
+                try:
+                    note_pr = int(raw_pr)
+                    pr_malformed = False
+                except (TypeError, ValueError):
+                    # Malformed linkage metadata is not a pre-PR note: it
+                    # matches on neither arm (fail closed; codex r11).
+                    note_pr = None
+                    pr_malformed = True
+            note_repo = str(fm.get("pr_repo") or "").strip()
+            if is_nullish(note_repo):
+                note_repo = ""
+            if caller_repo:
+                # The caller named a repository: the note must declare the same
+                # one. An undeclared pr_repo is not a wildcard — the estate
+                # measured zero live legacy notes (69/69 declare pr_repo), and
+                # the task's amended acceptance criteria dropped legacy compat
+                # by operator ratification 2026-08-06.
+                repo_agrees = bool(note_repo) and same_repo(note_repo, caller_repo)
+            else:
+                repo_agrees = True
+            # The branch arm serves pre-PR discovery: 30 active notes carry a
+            # branch with no pr_repo (measured 2026-08-07), so the fallback
+            # must admit undeclared repos or discovery deadlocks. A DECLARED,
+            # disagreeing repo still may not re-enter through a shared branch
+            # name. Branch matches never mix with pr_matches (either-or), so
+            # discovery cannot inflate a batch, and a misdirected discovery
+            # fails safe at the downstream task-link check.
+            branch_repo_agrees = (
+                not note_repo or not caller_repo or same_repo(note_repo, caller_repo)
+            )
             if pr_number is not None and note_pr == pr_number:
-                pr_matches.append((path, fm))
-            elif head_ref and str(fm.get("branch") or "") == head_ref:
+                # A note linking by PR number is adjudicated on the pr arm
+                # alone — it must never re-enter through the branch arm when
+                # the repo rule refuses it (ratified amendment; codex r9).
+                if repo_agrees:
+                    pr_matches.append((path, fm))
+            elif (
+                head_ref
+                and note_pr is None  # pre-PR discovery only — a note linked to
+                # another PR belongs to that PR, not to this one's batch
+                and not pr_malformed  # and malformed linkage matches nothing
+                and str(fm.get("branch") or "") == head_ref
+                and branch_repo_agrees
+            ):
                 branch_matches.append((path, fm))
+    if pr_number is not None and not caller_repo and len(pr_matches) > 1:
+        LOG.warning(
+            "find_task_notes: %d notes match PR #%d by number and the caller "
+            "named no repo — refusing the ambiguous set; supply pr_repo to "
+            "disambiguate",
+            len(pr_matches),
+            pr_number,
+        )
+        return ()
     return tuple(pr_matches or branch_matches)
 
 

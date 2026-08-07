@@ -8,7 +8,7 @@
     {
       "bytes": 296487,
       "path": "docs/architecture/system-dynamics-map-viewer.html",
-      "sha256": "4cc17ec55edd2d8639efde917e1f2a47149d0904fa2771632db1b77ac0ef99cd"
+      "sha256": "0ec1c16723e7e321a65c2da98ebe965ac487cc1754a2101f0931f78d92e3d86b"
     },
     {
       "bytes": 435328,
@@ -38,7 +38,7 @@
     {
       "bytes": 3375,
       "path": "docs/architecture/system-dynamics-map.observations.jsonl",
-      "sha256": "9047c86e34592cded4eacede23aee4964e20ed9ee78bc085eaae10cce1fda500"
+      "sha256": "ff3b1ffeac0a1ae90f33def6757fe24abf37473fd32d7123d46c5fd80c2b36e6"
     },
     {
       "bytes": 24510,
