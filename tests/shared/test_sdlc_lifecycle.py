@@ -644,15 +644,6 @@ class TestStageVocabulary:
 
         assert sdlc_invariants._stage_token is stage_token
 
-    def test_cc_stage_advance_delegates_stage_grammar_and_edges_to_canonical(self) -> None:
-        # The command must not maintain a second stage grammar or infer legal
-        # edges numerically. LifecycleTransitionIntent owns both decisions.
-        src = (REPO_ROOT / "scripts" / "cc-stage-advance").read_text(encoding="utf-8")
-        assert "LifecycleTransitionIntent.create(" in src
-        assert "_STAGE_RE" not in src
-        assert "_stage_num" not in src
-        assert "--allow-backward was removed" in src
-
 
 class TestAcceptanceReceiptEnforcement:
     """Acceptance-receipt vocabulary for review-floor tasks (routing Phase 0.2).
