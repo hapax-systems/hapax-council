@@ -1181,8 +1181,12 @@ def find_task_notes(
             branch_repo_agrees = (
                 not note_repo or not caller_repo or same_repo(note_repo, caller_repo)
             )
-            if pr_number is not None and note_pr == pr_number and repo_agrees:
-                pr_matches.append((path, fm))
+            if pr_number is not None and note_pr == pr_number:
+                # A note linking by PR number is adjudicated on the pr arm
+                # alone — it must never re-enter through the branch arm when
+                # the repo rule refuses it (ratified amendment; codex r9).
+                if repo_agrees:
+                    pr_matches.append((path, fm))
             elif head_ref and str(fm.get("branch") or "") == head_ref and branch_repo_agrees:
                 branch_matches.append((path, fm))
     if pr_number is not None and not caller_repo and len(pr_matches) > 1:

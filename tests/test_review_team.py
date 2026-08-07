@@ -3288,3 +3288,18 @@ class TestDispatcherRepoThreading:
             tmp_path, pr_number=99, head_ref="feat/x", pr_repo="hapax-systems/reins"
         )
         assert [fm["task_id"] for _, fm in found] == ["branch-only"]
+
+    def test_pr_number_note_never_reenters_via_branch(self, tmp_path: Path) -> None:
+        """codex r9: a note with the queried PR number but no pr_repo is
+        refused on the pr arm and must not re-enter via the branch arm."""
+        rt = _load_review_team_module()
+        TestFindTaskNotesLinkage._note(
+            tmp_path / "active", "number-only", status="pr_open", pr=7, branch="feat/x"
+        )
+        TestFindTaskNotesLinkage._note(
+            tmp_path / "active", "branch-discovery", status="in_progress", branch="feat/x"
+        )
+        found = rt.find_task_notes(
+            tmp_path, pr_number=7, head_ref="feat/x", pr_repo="hapax-systems/reins"
+        )
+        assert [fm["task_id"] for _, fm in found] == ["branch-discovery"]
