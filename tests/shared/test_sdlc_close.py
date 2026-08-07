@@ -1029,6 +1029,58 @@ def test_strict_mode_debt_close_completes_with_a_valid_override_receipt(
     assert (fixture.vault / "closed" / fixture.note.name).is_file()
 
 
+@pytest.mark.parametrize("final_status", ["withdrawn", "superseded"])
+def test_strict_mode_disposition_close_completes_with_a_valid_override_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, final_status: str
+) -> None:
+    """The disposition paths commit too, not just the debt path.
+
+    codex-1, 2026-08-07: only the debt path had a terminal-commit test, so
+    ``withdrawn``/``superseded`` were proven to stop refusing but never proven to
+    actually reach closure. Each refusal has its own branch in close_task; a
+    commit test per path is what shows the escape composes for all of them.
+    """
+    monkeypatch.setenv(CANON_BOUND_CLOSE_ENV, "1")
+    fixture = _fixture(tmp_path, monkeypatch)
+    _inject_trusted_echo_projection(fixture, monkeypatch)
+    _write_close_override_receipt(fixture.vault, fixture.task_id)
+
+    _close(fixture, final_status=final_status)
+
+    assert not fixture.note.exists()
+    assert (fixture.vault / "closed" / fixture.note.name).is_file()
+
+
+def test_strict_mode_retroactive_close_completes_with_a_valid_override_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The retroactive path commits with a valid override receipt.
+
+    Third of the three strict-mode refusals. Without this the retroactive branch
+    was only ever shown refusing, never completing.
+    """
+    monkeypatch.setenv(CANON_BOUND_CLOSE_ENV, "1")
+    fixture = _fixture(tmp_path, monkeypatch)
+    _inject_trusted_echo_projection(fixture, monkeypatch)
+    _write_close_override_receipt(fixture.vault, fixture.task_id)
+
+    close_task(
+        fixture.task_id,
+        final_status="done",
+        actor=fixture.lane,
+        session_id=fixture.session_id,
+        retroactive=True,
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        relay_db=fixture.relay_db,
+        dispatch_ledger=fixture.dispatch_ledger,
+        event_log=fixture.event_log,
+    )
+
+    assert not fixture.note.exists()
+    assert (fixture.vault / "closed" / fixture.note.name).is_file()
+
+
 def test_strict_mode_withdrawal_accepts_a_governed_override_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
