@@ -168,7 +168,15 @@ def _row_to_envelope(row: sqlite3.Row) -> Envelope:
     if d.get("tags"):
         d["tags"] = deserialize_tags(d["tags"])
     d.pop("id", None)
-    return Envelope.model_validate(d)
+    # HYDRATION STAYS UNVALIDATED. Switching this read path to model_validate is
+    # the right fail-closed direction in the abstract, but the relay MQ is the
+    # live dispatch bus and its SQLite store is already populated: any pre-existing
+    # row that does not satisfy the current Envelope schema would raise on read
+    # instead of hydrating, wedging queue drain for every consumer. Harden this
+    # only together with a legacy-row migration, a typed refusal naming the repair
+    # action, and a test that reads an invalid row. Flagged by blind review
+    # (claude-1) on PR #4483.
+    return Envelope.model_construct(**d)
 
 
 # Canonical Claude coordination-lane names (greek slots). Codex lanes are

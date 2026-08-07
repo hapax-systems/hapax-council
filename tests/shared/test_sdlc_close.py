@@ -805,3 +805,89 @@ def test_debt_close_is_not_wedged_and_touches_no_state(tmp_path: Path) -> None:
         )
     assert raised.value.reason_code != "terminal_close_debt_override_requires_receipt"
     assert not list(tmp_path.rglob("*"))
+
+
+# ---------------------------------------------------------------------------
+# Gate-0A dormancy declarations must expire on their own
+# ---------------------------------------------------------------------------
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_ALLOWLIST = _REPO_ROOT / "config" / "new-module-allowlist.json"
+
+# Only the entries THIS landing added. The pre-existing ones are not this PR's
+# to police, and asserting on them would couple these tests to unrelated churn.
+_GATE0A_DORMANT_MODULES = ("shared.sdlc_close", "shared.methodology_dispatch_carrier")
+_SOURCE_DIRS = ("shared", "scripts", "agents", "hooks")
+
+
+def _imports_module(path: Path, module: str) -> bool:
+    """True if ``path`` imports ``module`` — parsed, not grepped.
+
+    A substring search would count the module's name inside a comment, a
+    docstring, or the allowlist-explaining prose that motivated these tests, and
+    would then report a consumer that does not exist.
+    """
+    import ast
+
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (SyntaxError, UnicodeDecodeError, OSError):
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(a.name == module or a.name.startswith(module + ".") for a in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom):
+            if node.module and (node.module == module or node.module.startswith(module + ".")):
+                return True
+    return False
+
+
+def _consumers(module: str) -> list[str]:
+    own = _REPO_ROOT / (module.replace(".", "/") + ".py")
+    found = []
+    for directory in _SOURCE_DIRS:
+        for path in (_REPO_ROOT / directory).rglob("*.py"):
+            if path == own or "test" in path.name:
+                continue
+            if _imports_module(path, module):
+                found.append(str(path.relative_to(_REPO_ROOT)))
+    return sorted(found)
+
+
+@pytest.mark.parametrize("module", _GATE0A_DORMANT_MODULES)
+def test_allowlisted_module_is_still_dormant(module: str) -> None:
+    """The dormancy declaration deletes itself once Gate 0B wires a consumer.
+
+    Landing a module with no committer is honest at Gate 0A and dishonest the
+    moment a consumer appears — but nothing forces anyone to notice the
+    transition, so "dormant" can quietly become "permanently exempt from the
+    consumer gate". This makes the transition loud, so the exit predicate for
+    the dormancy is a command rather than a promise.
+    """
+    consumers = _consumers(module)
+    assert not consumers, (
+        f"{module} now has non-test consumers: {consumers}. It is no longer a "
+        f"dormant Gate-0A seam, so remove it from {_ALLOWLIST.name} and let the "
+        "new-module-consumer gate cover it normally."
+    )
+
+
+@pytest.mark.parametrize("module", _GATE0A_DORMANT_MODULES)
+def test_dormant_module_is_actually_declared(module: str) -> None:
+    """Guards the inverse: a declaration dropped while the module stays dormant.
+
+    Without this, deleting an allowlist entry breaks CI's consumer gate on some
+    later unrelated PR, far away from the edit that caused it.
+    """
+    entries = json.loads(_ALLOWLIST.read_text(encoding="utf-8"))
+    assert module in entries, (
+        f"{module} has no consumer yet is missing from {_ALLOWLIST.name}; the "
+        "new-module-consumer gate will fail. Either wire a consumer or restore "
+        "the declaration."
+    )
+
+
+def test_the_dormant_set_is_not_empty() -> None:
+    """An empty tuple would make both parametrized suites vacuously pass."""
+    assert _GATE0A_DORMANT_MODULES

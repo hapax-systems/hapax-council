@@ -4542,12 +4542,6 @@ ClaimAdmissionConsumption.require_source_proofs
 is_legal_stage_edge
 stage_edges
 
-# shared/sdlc_pressure_gate.py
-# Gate-0A dormant seam: its only caller was the Gate-0A coordinator tick, which is
-# descoped -- the live coordinator records real dispatch counts instead. Remove
-# from the whitelist when Gate 0B wires an admission observer to it.
-observe_admission_state
-
 # shared/sdlc_task_store.py
 refresh_task_identity_index
 resolve_claim_leases_for_task
