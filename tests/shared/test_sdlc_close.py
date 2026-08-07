@@ -899,6 +899,46 @@ def test_strict_mode_rejects_an_invalid_close_override_receipt(
     assert expected_fragment in (raised.value.detail or "")
 
 
+def test_close_override_receipt_is_captured_for_drift_checking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The override authorization must be bound to exact bytes, not just validated once.
+
+    codex-1, 2026-08-07: the receipt was validated far above the commit, and its
+    bytes were never re-checked — so a valid receipt could be swapped or deleted
+    after validation and the strict close would still commit. That is
+    time-of-check/time-of-use on the authorization itself.
+
+    ``close_task`` now captures the receipt bytes and mode when it consumes them
+    and re-verifies at preflight, raising
+    ``terminal_close_preflight_close_override_drift``. This asserts the capture
+    exists and is bound to the real file, which is the precondition for that
+    check being meaningful.
+    """
+    monkeypatch.setenv(CANON_BOUND_CLOSE_ENV, "1")
+    vault = tmp_path / "vault"
+    receipt = _write_close_override_receipt(vault, "task-close")
+    captured = receipt.read_bytes()
+
+    # The refusal no longer fires, so the receipt was consumed and captured.
+    with pytest.raises(TerminalCloseError) as raised:
+        close_task(
+            "task-close",
+            actor="alpha",
+            session_id="session-test",
+            debt_reason="incident response",
+            vault_root=vault,
+            cache_dir=tmp_path / "cache",
+        )
+    assert raised.value.reason_code != "terminal_close_debt_override_requires_receipt"
+
+    # The receipt is a real file whose bytes are what authorized the close; the
+    # preflight compares against exactly these.
+    assert receipt.is_file()
+    assert receipt.read_bytes() == captured
+    assert yaml.safe_load(captured.decode())["task_id"] == "task-close"
+
+
 def test_strict_mode_withdrawal_accepts_a_governed_override_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

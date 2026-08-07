@@ -47,6 +47,7 @@ from shared.sdlc_lifecycle import (
     acceptance_receipt_blockers,
     acceptance_receipt_path,
     close_override_receipt_blockers,
+    close_override_receipt_path,
     requires_acceptance_receipt,
     stage_token,
 )
@@ -396,6 +397,19 @@ class TerminalCloseAdmission:
     position_ref: str
     echo_message_id: str
     gate_evidence: tuple[CloseGateEvidence, ...]
+    #: The governed close-override receipt, when one authorized this close, kept
+    #: on the in-memory admission so callers and tests can inspect what permitted
+    #: the close. Deliberately NOT emitted by ``to_record``: that payload is
+    #: self-hashed as ``hapax.terminal-close-admission.v2`` and the lifecycle
+    #: transition validator binds that exact shape, so adding a field silently
+    #: breaks every terminal transition. Persisting it in the dossier requires a
+    #: v3 schema bump plus the consumer side, which is follow-up work — the
+    #: exploitable half of the finding (drift between validation and commit) is
+    #: closed by the preflight check in ``close_task``. Defaulted, so these must
+    #: stay last in the field order.
+    close_override_receipt_path: str | None = None
+    close_override_receipt_mode: int | None = None
+    close_override_receipt_sha256: str | None = None
 
     @property
     def gate_refs(self) -> tuple[str, ...]:
@@ -472,15 +486,34 @@ def close_task(
     # the same switch the sibling gate reads, so strict mode still refuses
     # pending the receipt contract while incident response stays possible.
     canon_bound_close = os.environ.get(CANON_BOUND_CLOSE_ENV) == "1"
+    # None means "no override receipt authorized this close". Set only when a
+    # valid receipt is consumed, and re-verified at preflight below.
+    close_override_path: Path | None = None
+    close_override_bytes: bytes | None = None
+    close_override_mode: int | None = None
+    close_override_sha256: str | None = None
     if canon_bound_close and (final_status != "done" or debt_reason or retroactive):
         # The escape that composes WITHIN strict mode. Previously these refusals
         # demanded a governed override receipt that had no representation, so an
         # affected task was permanently nonterminal and the only way out was to
         # switch strict mode off globally — which exits the gate rather than
         # satisfying it. Now the demand can be met in place.
+        override_receipt_path = close_override_receipt_path(
+            _override_receipt_note_path(task_id, vault_root), task_id
+        )
         override_blockers = close_override_receipt_blockers(
             _override_receipt_note_path(task_id, vault_root), task_id
         )
+        # Capture the exact bytes that authorized this close, so the preflight can
+        # prove they did not change between validation and commit. Without this
+        # the check is time-of-check/time-of-use: a valid receipt could be swapped
+        # or deleted after validation and the close would still commit, and the
+        # admission would carry no durable evidence of the authority it used.
+        if not override_blockers and override_receipt_path.is_file():
+            close_override_path = override_receipt_path
+            close_override_bytes = override_receipt_path.read_bytes()
+            close_override_mode = _mode(override_receipt_path)
+            close_override_sha256 = _sha256(close_override_bytes)
         if override_blockers:
             if final_status != "done":
                 raise TerminalCloseError(
@@ -592,6 +625,27 @@ def close_task(
             "terminal_close_preflight_receipt_drift",
             "rerun close against the exact acceptance receipt validated by the gates",
         )
+    # Same drift discipline for the governed close-override receipt. It is
+    # validated far above, before the note is resolved; without re-verifying it
+    # here the authorization is time-of-check/time-of-use — a valid receipt could
+    # be replaced or removed after validation and the strict close would still
+    # commit. Flagged by codex-1, 2026-08-07.
+    if close_override_path is not None:
+        observed_override = (
+            close_override_path.read_bytes() if close_override_path.is_file() else None
+        )
+        observed_override_mode = (
+            _mode(close_override_path) if observed_override is not None else None
+        )
+        if (
+            observed_override != close_override_bytes
+            or observed_override_mode != close_override_mode
+        ):
+            raise TerminalCloseError(
+                "terminal_close_preflight_close_override_drift",
+                "rerun close against the exact close-override receipt validated by the gates",
+                str(close_override_path),
+            )
     relay_db = relay_db or cache_dir / "relay" / "messages.db"
     try:
         rendered_payload = _render_expected_payload(expected)
@@ -662,6 +716,11 @@ def close_task(
         note_mode=snapshot.mode,
         note_sha256=snapshot.sha256,
         receipt_path=str(receipt_path) if receipt_bytes is not None else None,
+        close_override_receipt_path=(
+            str(close_override_path) if close_override_path is not None else None
+        ),
+        close_override_receipt_mode=close_override_mode,
+        close_override_receipt_sha256=close_override_sha256,
         receipt_mode=receipt_mode,
         receipt_sha256=_sha256(receipt_bytes) if receipt_bytes is not None else None,
         claim_publication_proof=claim_publication_proof,
