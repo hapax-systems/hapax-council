@@ -890,6 +890,28 @@ def close_task(
                 "terminal_close_locked_receipt_drift",
                 "rerun the done gates against the exact current acceptance receipt",
             )
+        # The override authorization must survive to the LOCK, not merely to the
+        # unlocked preflight. Without this recheck the receipt could be replaced,
+        # removed, or mode-changed between the unlocked check and the transaction
+        # lock, and the close would still commit on the previously captured
+        # authorization. Flagged by codex-1, 2026-08-07, after the unlocked check
+        # alone proved insufficient.
+        if close_override_path is not None:
+            current_override = (
+                close_override_path.read_bytes() if close_override_path.is_file() else None
+            )
+            current_override_mode = (
+                _mode(close_override_path) if current_override is not None else None
+            )
+            if (
+                current_override != close_override_bytes
+                or current_override_mode != close_override_mode
+            ):
+                raise TerminalCloseError(
+                    "terminal_close_locked_close_override_drift",
+                    "rerun close against the exact current close-override receipt",
+                    str(close_override_path),
+                )
         current_expected = resolve_claim_bound_canon_position(
             leases[0].binding,
             stage_token="S10",
