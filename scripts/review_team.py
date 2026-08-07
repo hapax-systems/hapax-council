@@ -1171,9 +1171,16 @@ def find_task_notes(
                 repo_agrees = bool(note_repo) and same_repo(note_repo, caller_repo)
             else:
                 repo_agrees = True
+            # The branch fallback exists for notes that have not linked a PR
+            # number yet — often no pr_repo either. An undeclared repo may
+            # branch-match; a DECLARED, disagreeing repo may not re-enter
+            # through a shared branch name (review: claude + codex rounds).
+            branch_repo_agrees = (
+                not note_repo or not caller_repo or same_repo(note_repo, caller_repo)
+            )
             if pr_number is not None and note_pr == pr_number and repo_agrees:
                 pr_matches.append((path, fm))
-            elif head_ref and str(fm.get("branch") or "") == head_ref and repo_agrees:
+            elif head_ref and str(fm.get("branch") or "") == head_ref and branch_repo_agrees:
                 branch_matches.append((path, fm))
     if pr_number is not None and not caller_repo and len(pr_matches) > 1:
         LOG.warning(
