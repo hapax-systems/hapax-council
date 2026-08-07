@@ -9,12 +9,24 @@ from pathlib import Path
 # Consumers must import these names rather than re-declare local copies.
 COORDINATOR_HEADLESS_DISPATCHABLE_PLATFORMS = ("claude", "codex", "vibe")
 
+# A staleness guard must name markers that a CURRENT cc-claim actually contains.
+#
+# Two aspirational markers were added here ahead of the cc-claim that would carry
+# them — `execution_admission_prerequisites_unavailable` and
+# `publish_admitted_claim`. Neither appears in main's cc-claim, and
+# `publish_admitted_claim` appears in NO cc-claim in any branch. The effect was
+# that check_worktree_claim_guard rejected every worktree as "stale", so
+# dispatch-into-worktree refused unconditionally — a guard that can never pass is
+# a wedge, not a guard.
+#
+# Markers are therefore the three that a current cc-claim genuinely carries: the
+# AuthorityCase/ISAP refusal string plus the two required frontmatter fields it
+# validates. Re-add an admission marker only together with the cc-claim that
+# contains it, or this refuses everything again.
 DISPATCH_CLAIM_GUARD_MARKERS = (
     "missing required AuthorityCase/ISAP fields",
     "authority_case",
     "parent_spec",
-    "execution_admission_prerequisites_unavailable",
-    "publish_admitted_claim",
 )
 
 DISPATCH_CLOSE_GUARD_MARKERS = (
