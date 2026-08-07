@@ -946,10 +946,87 @@ def test_close_override_changed_after_validation_is_refused(
     with pytest.raises(TerminalCloseError) as raised:
         _close(fixture, final_status="withdrawn")
 
-    assert "close_override_drift" in raised.value.reason_code, raised.value.reason_code
+    # Exact reason code, not a substring: the UNLOCKED preflight is what catches
+    # a mutation made by the done-gate runner.
+    assert raised.value.reason_code == "terminal_close_preflight_close_override_drift"
     # Nothing committed: the note stays active and is not moved to closed/.
     assert fixture.note.is_file()
     assert not (fixture.vault / "closed" / fixture.note.name).exists()
+
+
+def test_close_override_changed_inside_the_lock_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Drift caught by the LOCKED preflight specifically, not the unlocked one.
+
+    The unlocked check runs before the transaction lock is taken; a receipt
+    mutated after that but before commit would slip past it. locked_preflight is
+    the last line, and this proves it holds independently — mutating from inside
+    ``resolve_task_note``, which locked_preflight calls first.
+    """
+    monkeypatch.setenv(CANON_BOUND_CLOSE_ENV, "1")
+    fixture = _fixture(tmp_path, monkeypatch)
+    _inject_trusted_echo_projection(fixture, monkeypatch)
+    override = _write_close_override_receipt(fixture.vault, fixture.task_id)
+
+    real_resolve = sdlc_close.resolve_task_note
+    fired = {"n": 0}
+
+    def racing_resolve(*args: object, **kwargs: object):
+        # close_task calls resolve_task_note exactly once, and that call is the
+        # FIRST statement of locked_preflight — i.e. already inside the
+        # transaction lock and after the unlocked preflight has passed. Mutating
+        # here therefore reaches only the locked drift check.
+        fired["n"] += 1
+        if override.exists():
+            override.write_text("acceptor: swapped-inside-lock\n", encoding="utf-8")
+        return real_resolve(*args, **kwargs)
+
+    monkeypatch.setattr("shared.sdlc_close.resolve_task_note", racing_resolve)
+
+    with pytest.raises(TerminalCloseError) as raised:
+        _close(fixture, final_status="withdrawn")
+
+    assert raised.value.reason_code == "terminal_close_locked_close_override_drift"
+    assert fixture.note.is_file()
+    assert not (fixture.vault / "closed" / fixture.note.name).exists()
+
+
+def test_strict_mode_debt_close_completes_with_a_valid_override_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The escape works end to end: a debt-bearing close COMMITS in strict mode.
+
+    Every other override test asserts a refusal. This is the positive one glm-1
+    asked for, and it is the proof that the mechanism is a gate rather than
+    decoration: with a valid governed receipt present, a close carrying a debt
+    reason runs to terminal closure under canon-bound enforcement — the note
+    leaves active/ and lands in closed/.
+
+    Without the override receipt this exact call refuses with
+    terminal_close_debt_override_requires_receipt (see
+    ::test_raw_debt_override_refuses_without_touching_state).
+    """
+    monkeypatch.setenv(CANON_BOUND_CLOSE_ENV, "1")
+    fixture = _fixture(tmp_path, monkeypatch)
+    _inject_trusted_echo_projection(fixture, monkeypatch)
+    _write_close_override_receipt(fixture.vault, fixture.task_id)
+
+    close_task(
+        fixture.task_id,
+        final_status="done",
+        actor=fixture.lane,
+        session_id=fixture.session_id,
+        debt_reason="incident response",
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        relay_db=fixture.relay_db,
+        dispatch_ledger=fixture.dispatch_ledger,
+        event_log=fixture.event_log,
+    )
+
+    assert not fixture.note.exists()
+    assert (fixture.vault / "closed" / fixture.note.name).is_file()
 
 
 def test_strict_mode_withdrawal_accepts_a_governed_override_receipt(
