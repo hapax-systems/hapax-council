@@ -787,7 +787,49 @@ updated_at: {now_s}
 parent_request: {DEFAULT_PARENT_REQUEST}
 parent_spec: {DEFAULT_PARENT_SPEC}
 authority_case: {DEFAULT_AUTHORITY_CASE}
-exit_predicate: "Root cause identified, remediation applied or explicitly refused, source/runtime fix verified, and the alert no longer recurs through the P0 incident-intake ledger."
+exit_predicate: "Pre-release source/runtime remediation is accepted under closure_contract.pre_release and post-activation non-recurrence is accepted under closure_contract.post_activation; unknown evidence remains HOLD."
+closure_contract_schema: hapax.p0-incident-closure.v1
+closure_contract:
+  overall_status: HOLD
+  pre_release:
+    gate: source_runtime_remediation_acceptance
+    status: HOLD
+    root_cause: null
+    remediation_disposition: null
+    source_verification: null
+    runtime_verification: null
+    acceptance_receipt: null
+  post_activation:
+    gate: deployed_non_recurrence_closure
+    status: HOLD
+    requires_pre_release_status: accepted
+    deployed_head:
+      status: HOLD
+      value: null
+    intended_producer_topology:
+      status: HOLD
+      producers: []
+    live_producer_state:
+      status: HOLD
+      evidence: null
+    baseline_event:
+      status: HOLD
+      cursor: null
+      count: null
+    incident_fingerprint:
+      status: bound
+      value: {_quote_yaml(record["fingerprint"])}
+    observation:
+      status: HOLD
+      bounded_duration_seconds: null
+      complete_producer_intervals: []
+    downstream_replay:
+      applicability: unknown
+      status: HOLD
+      evidence: null
+    final_observed_state:
+      status: HOLD
+      value: null
 tags: [cc-task, p0, incident-intake, technical-alert, auto-minted]
 stage: S6_IMPLEMENTATION
 implementation_authorized: true
@@ -833,8 +875,9 @@ last_incident_fingerprint: {record["fingerprint"]}
 
 ## Acceptance criteria
 
-- [ ] Root cause, remediation or explicit refusal, and recurrence-prevention notes are written in `## Post-mortem`.
-- [ ] The specific alert predicate has been rechecked and its output is cited in `## Post-mortem`.
+- [ ] `closure_contract.pre_release` binds root cause, remediation or explicit refusal, source/runtime verification, recurrence-prevention notes are written, and an acceptance receipt.
+- [ ] `closure_contract.post_activation` remains `HOLD` until it binds the deployed head, intended and live producer topology, baseline cursor/count, incident fingerprint, a bounded observation or complete producer intervals, applicable downstream replay, and final observed state.
+- [ ] The specific alert predicate has been rechecked and its output is cited without treating pre-release verification as deployed non-recurrence.
 - [ ] The P0 incident ledger/state were reviewed after remediation, including prior recurrence context when present.
 - [ ] Any follow-up work that remains is linked as a cc-task or explicitly refused with reason.
 
