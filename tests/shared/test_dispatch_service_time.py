@@ -338,17 +338,29 @@ def test_planning_projects_stable_candidates_for_held_methodology_carriage() -> 
     ]
 
 
-def test_planning_ignores_age_cache_dials_legacy_and_observed_cooldown() -> None:
+def test_planning_ignores_age_cache_dials_and_legacy_but_honours_cooldown() -> None:
+    """Age/fit/legacy dials must not reorder the plan; cooldown must still exclude.
+
+    An earlier revision asserted that cooldown was ignored TOO, which made the
+    scheduler's per-lane rate limit untestable by construction: a lane one tick
+    into a cooldown was re-selected immediately, defeating the retry protection
+    the cooldown exists to provide. Cooldown is not a ranking dial like the
+    others -- it is an eligibility bound. Caught by blind review (codex-1) on
+    PR #4483.
+    """
     tasks = [
         QueueTask("raw-high", 8.0, ("claude",), age_s=0.0),
         QueueTask("aged-low", 5.0, ("claude",), age_s=10**30),
     ]
-    lanes = [QueueLane("epsilon", "claude", cooldown_remaining_s=10**30)]
+    ready = [QueueLane("epsilon", "claude")]
     baseline = [("raw-high", "epsilon")]
 
-    assert plan_dispatches(tasks, lanes, max_dispatches=1, age_norm_s=0.001) == baseline
-    assert plan_dispatches(tasks, lanes, max_dispatches=1, fit_blend=10**30) == baseline
-    assert plan_dispatches(tasks, lanes, max_dispatches=1, legacy=True) == baseline
+    assert plan_dispatches(tasks, ready, max_dispatches=1, age_norm_s=0.001) == baseline
+    assert plan_dispatches(tasks, ready, max_dispatches=1, fit_blend=10**30) == baseline
+    assert plan_dispatches(tasks, ready, max_dispatches=1, legacy=True) == baseline
+
+    cooling = [QueueLane("epsilon", "claude", cooldown_remaining_s=10**30)]
+    assert plan_dispatches(tasks, cooling, max_dispatches=1) == []
 
 
 def test_planning_uses_governed_route_and_dispatchable_lane_inputs() -> None:

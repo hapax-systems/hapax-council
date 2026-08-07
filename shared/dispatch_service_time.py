@@ -617,8 +617,15 @@ def _baseline_candidate_plan(
     ):
         return []
 
+    # COOLDOWN IS A RATE LIMIT, NOT A HINT. The coordinator supplies
+    # cooldown_remaining_s per lane specifically to stop the scheduler re-selecting
+    # a lane it just dispatched to; without this filter the same lane is chosen
+    # again on the next tick, defeating the retry/idempotency protection the
+    # cooldown exists to provide. is_dispatchable_lane() does not cover this -- it
+    # excludes live operator-pool sessions, a different question entirely.
+    # Found by blind review (codex-1) on PR #4483 after the filter was dropped here.
     available = sorted(
-        (lane for lane in lanes if is_dispatchable_lane(lane)),
+        (lane for lane in lanes if is_dispatchable_lane(lane) and lane.cooldown_remaining_s <= 0),
         key=lambda lane: (lane.role, lane.platform),
     )
     remaining = [
@@ -640,16 +647,6 @@ def _baseline_candidate_plan(
         plan.append((best.task_id, lane.role))
         remaining.remove(best)
     return plan
-
-
-def _plan_legacy(
-    tasks: Sequence[QueueTask],
-    lanes: Sequence[QueueLane],
-    max_dispatches: int,
-) -> list[tuple[str, str]]:
-    """Legacy compatibility delegates to the same Gate-0A candidate projection."""
-
-    return _baseline_candidate_plan(tasks, lanes, max_dispatches)
 
 
 # ── derived support cache ─────────────────────────────────────────────────────

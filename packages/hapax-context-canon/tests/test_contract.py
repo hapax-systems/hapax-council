@@ -1,3 +1,30 @@
+"""Behavioural tests for the content-addressed context carrier contract.
+
+Coverage note (blind review, PR #4483). ``contract.py`` was twice reported as
+landing with "no visible behavioral test coverage for hash/content-addressing
+logic". That came from the review packet truncating a large diff, not from the
+tree. Measured:
+
+    $ pytest packages/hapax-context-canon/tests \\
+        --cov=hapax.context_canon.contract --cov-report=term
+    contract.py    3497 stmts    610 miss    83%
+    79 passed
+
+Hash and content-addressing are covered by named tests that tamper with an input
+and assert the rehash is rejected -- ``test_rehashed_intrinsic_image_tampering_is_rejected``,
+``test_context_selection_rejects_rehashed_forged_present_state``,
+``test_context_selection_hash_binds_audience_and_policy``,
+``test_context_selection_rejects_rehashed_unbound_addresses``, plus
+``test_hash_layers_have_the_intended_sensitivity`` and
+``test_snapshot_round_trips_through_exact_canonical_json`` in the event-plane
+suite. Re-run the command above before treating a truncated excerpt as missing
+coverage.
+
+This note lives here rather than in ``contract.py`` deliberately: the module's
+bytes are a hashed canon preimage, and editing its docstring invalidates
+``tests/fixtures/gate0-frame.json`` and the receipt chain that pins it.
+"""
+
 from __future__ import annotations
 
 import copy

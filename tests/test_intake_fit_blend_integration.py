@@ -41,17 +41,23 @@ def test_fit_blend_cannot_reorder_equal_wsjf_candidates() -> None:
         ) == [("task-a", "cx-alpha")]
 
 
-def test_age_cooldown_legacy_and_input_order_cannot_reorder() -> None:
+def test_age_legacy_and_input_order_cannot_reorder() -> None:
+    """Age/legacy/fit dials and input order must not change the plan.
+
+    Cooldown was originally folded into this test's "cannot reorder" set, with a
+    cx-beta lane held at cooldown_remaining_s=10**12 and still expected in the
+    plan. That conflated a ranking dial with an eligibility bound: cooldown is
+    the scheduler's per-lane rate limit, so a lane inside one must be excluded,
+    not merely not-reordered. Cooldown exclusion is asserted directly in
+    tests/shared/test_dispatch_service_time.py. Caught by blind review (codex-1)
+    on PR #4483.
+    """
     tasks = [
         _task("task-b", 5.0, age_s=10**12),
         _task("task-a", 5.0, age_s=0.0),
     ]
     lanes = [
-        QueueLane(
-            role="cx-beta",
-            platform="codex",
-            cooldown_remaining_s=10**12,
-        ),
+        QueueLane(role="cx-beta", platform="codex"),
         QueueLane(role="cx-alpha", platform="codex"),
     ]
 
