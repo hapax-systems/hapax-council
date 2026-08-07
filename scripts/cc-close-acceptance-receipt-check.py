@@ -17,36 +17,8 @@ Used by ``scripts/cc-close`` in the ``done`` path, before the note moves to
 closed/. Verdicts other than ``accepted`` block: a rejected review is not a
 closeable outcome.
 
-Bypass: ``HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1`` (legacy incident response only).
-Canon-bound close ignores this raw bypass; governed override evidence belongs in
-the shared terminal-close admission rather than an ambient environment variable.
-
-Killswitch under canon-bound close (``HAPAX_CANON_BOUND_CLOSE_ENFORCEMENT=1``,
-see ``CANON_BOUND_CLOSE_ENV`` below): the raw env bypass above is inert. Read the
-next paragraph before reaching for anything else, because the replacement it
-points at is **not implemented yet** and no command will produce it.
-
-``shared/sdlc_close.py:448-452`` refuses any close carrying a debt reason with
-``terminal_close_debt_override_requires_receipt`` — "record a governed override
-receipt before canon-bound close; raw ``--debt`` is legacy-only". That branch is
-``if debt_reason: raise``, **unconditional**: ``shared.sdlc_close.close_task``
-takes no receipt argument, reads no receipt file, and has no code path that
-accepts one.
-``--debt`` is still parsed (``shared/sdlc_close.py:826``) and threaded to the
-admission (``:843``), where it can only ever refuse. The same holds for the
-siblings ``terminal_close_operator_disposition_receipt_required`` (any
-non-``done`` final status) and ``terminal_close_retroactive_receipt_required``.
-
-So the operator's real next action under canon-bound close is **not** to hunt for
-a mint command — there isn't one. It is to resolve the debt, or close as
-``done`` without a debt reason, or (where the task legitimately predates
-canon-bound close) run the legacy path with ``HAPAX_CANON_BOUND_CLOSE_ENFORCEMENT``
-unset, where the env bypass above still applies.
-
-Stated plainly because the gap is load-bearing: while canon-bound close is on, a
-task carrying debt **cannot be closed at all**. Treat that as a wedge to escalate,
-not a procedure to follow. Covered by
-``tests/test_sdlc_closed_loop_e2e.py::test_close_under_debt_is_refused_and_names_no_available_override``.
+Bypass: ``HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1`` (incident response only),
+honored here so every caller shares one mechanism.
 
 Failure mode: fail-OPEN on infrastructure errors reading the NOTE (missing /
 unreadable file — a broken gate must not brick closures), but fail-CLOSED on
@@ -72,33 +44,26 @@ from shared.sdlc_lifecycle import (  # noqa: E402
     requires_acceptance_receipt,
 )
 
-CANON_BOUND_CLOSE_ENV = "HAPAX_CANON_BOUND_CLOSE_ENFORCEMENT"
-
 
 def gate(path: Path) -> tuple[int, str]:
     """Return ``(exit_code, message)``; 0 permits closure, 2 blocks it."""
 
-    canon_bound = os.environ.get(CANON_BOUND_CLOSE_ENV) == "1"
-    if os.environ.get("HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF") == "1" and not canon_bound:
+    if os.environ.get("HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF") == "1":
         return 0, "acceptance-receipt gate disabled by HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1"
 
-    if not path.is_file() and canon_bound:
-        return 2, f"canon-bound close fail-CLOSED: source path missing or not a file ({path})"
     if not path.is_file():
         return 0, f"fail-OPEN: source path missing or not a file ({path})"
 
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
-        if canon_bound:
-            return 2, f"canon-bound close fail-CLOSED: source unreadable ({exc})"
         return 0, f"fail-OPEN: source unreadable ({exc})"
 
     frontmatter = frontmatter_from_text(text)
     if not requires_acceptance_receipt(frontmatter):
         return 0, "not a review-floor task — acceptance-receipt gate does not apply"
 
-    blockers = list(acceptance_receipt_blockers(frontmatter, path))
+    blockers = acceptance_receipt_blockers(frontmatter, path)
     if not blockers:
         return 0, "valid acceptance receipt present"
 
@@ -123,11 +88,7 @@ def gate(path: Path) -> tuple[int, str]:
         "A verdict other than 'accepted' keeps the task open — address the review",
         "feedback instead of closing.",
         "",
-        (
-            "Canon-bound close requires governed override evidence; raw bypass is ignored."
-            if canon_bound
-            else "Bypass for incident response: HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1"
-        ),
+        "Bypass for incident response: HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1",
     ]
     return 2, "\n".join(lines)
 

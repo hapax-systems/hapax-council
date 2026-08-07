@@ -4440,13 +4440,7 @@ inspect_decomposition_journals
 _update_frontmatter_bytes
 
 # shared/capability_dispatch.py
-build_dispatch_carrier
-catalogued_aliases
-catalogued_route_ids
 default_dispatch_ledger
-dispatch_carrier_hash
-utilization_status
-verify_dispatch_carrier
 
 # shared/coord_projection.py
 # Gate-0A dormant seams: retained as explicit refusal boundaries.

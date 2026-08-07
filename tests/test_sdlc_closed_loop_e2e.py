@@ -194,64 +194,51 @@ def test_close_stage_permits_a_task_that_does_not_declare_the_floor(tmp_path: Pa
 
 
 # --------------------------------------------------------------------------
-# Killswitch semantics under canon-bound close
+# Killswitch reachability
 # --------------------------------------------------------------------------
 
 
-def test_legacy_env_bypass_still_works_outside_canon_bound_close(
+def test_incident_response_bypass_stays_reachable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The legacy incident-response bypass remains available on the legacy path."""
+    """``HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1`` must always be able to open the gate.
+
+    An earlier revision of this landing added a canon-bound close mode whose only
+    live effect was to make this bypass inert -- while nothing in the tree ever set
+    the variable that switched the mode on. The result was a gate whose sole
+    documented escape hatch could be disabled by an ambient variable, with no
+    governed override yet built to replace it.
+
+    A closure gate may fail closed, but the operator's incident-response killswitch
+    must not be removable by anything short of an override that actually exists.
+    Reinstate a mode that disables this only together with the replacement escape
+    hatch, in the same change.
+    """
     gate_module = _load_receipt_gate()
     note = _write_review_floor_note(tmp_path, "cc-task-legacy-bypass")
 
     monkeypatch.setenv("HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF", "1")
-    monkeypatch.delenv(gate_module.CANON_BOUND_CLOSE_ENV, raising=False)
 
     exit_code, _ = gate_module.gate(note)
 
     assert exit_code == 0
 
 
-def test_legacy_env_bypass_is_inert_under_canon_bound_close(
+def test_gate_fails_open_on_an_unreadable_note(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The documented killswitch claim, machine-checked.
+    """Infrastructure errors fail OPEN, deliberately.
 
-    ``scripts/cc-close-acceptance-receipt-check.py`` documents that canon-bound
-    close ignores the raw env bypass and that the live escape hatch is a governed
-    override receipt. If the env var ever regained force under canon-bound close,
-    an ambient variable would silently re-open a t1_critical closure gate.
-    """
-    gate_module = _load_receipt_gate()
-    note = _write_review_floor_note(tmp_path, "cc-task-canon-bypass")
-
-    monkeypatch.setenv("HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF", "1")
-    monkeypatch.setenv(gate_module.CANON_BOUND_CLOSE_ENV, "1")
-
-    exit_code, message = gate_module.gate(note)
-
-    assert exit_code == 2, f"env bypass must be inert under canon-bound close: {message}"
-
-
-def test_canon_bound_close_fails_closed_on_an_unreadable_note(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Infrastructure errors fail OPEN on the legacy path and CLOSED under canon.
-
-    Asserting both directions matters: the legacy fail-open is deliberate ("a
-    broken gate must not brick closures") and must not be mistaken for a bug and
-    "fixed" into a hang, while canon-bound close must not inherit it.
+    Worth asserting so the behaviour is not mistaken for a bug and "fixed" into a
+    hang: a gate that cannot read its own input must not brick every closure in
+    the system.
     """
     gate_module = _load_receipt_gate()
     missing = tmp_path / "does-not-exist.md"
 
     monkeypatch.delenv("HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF", raising=False)
-    monkeypatch.delenv(gate_module.CANON_BOUND_CLOSE_ENV, raising=False)
-    assert gate_module.gate(missing)[0] == 0
 
-    monkeypatch.setenv(gate_module.CANON_BOUND_CLOSE_ENV, "1")
-    assert gate_module.gate(missing)[0] == 2
+    assert gate_module.gate(missing)[0] == 0
 
 
 # --------------------------------------------------------------------------
