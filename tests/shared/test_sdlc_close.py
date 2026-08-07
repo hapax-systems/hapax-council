@@ -899,44 +899,57 @@ def test_strict_mode_rejects_an_invalid_close_override_receipt(
     assert expected_fragment in (raised.value.detail or "")
 
 
-def test_close_override_receipt_is_captured_for_drift_checking(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("mutation", ["replaced", "removed"])
+def test_close_override_changed_after_validation_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
 ) -> None:
-    """The override authorization must be bound to exact bytes, not just validated once.
+    """Drift on the override receipt must be caught between validation and commit.
 
-    codex-1, 2026-08-07: the receipt was validated far above the commit, and its
-    bytes were never re-checked — so a valid receipt could be swapped or deleted
-    after validation and the strict close would still commit. That is
-    time-of-check/time-of-use on the authorization itself.
+    The previous version of this test was **vacuous** — flagged independently by
+    codex-1 and glm-1, correctly. It never changed the receipt during the close
+    and never asserted the drift guard fired; it only checked the file still
+    existed afterwards. It would have passed with the guard deleted.
 
-    ``close_task`` now captures the receipt bytes and mode when it consumes them
-    and re-verifies at preflight, raising
-    ``terminal_close_preflight_close_override_drift``. This asserts the capture
-    exists and is bound to the real file, which is the precondition for that
-    check being meaningful.
+    This races the receipt exactly as
+    ``test_receipt_changed_by_gate_is_refused_before_echo_or_projection`` races
+    the acceptance receipt: the done-gate runner, which executes AFTER the
+    override is validated and captured but BEFORE the preflight recheck, mutates
+    it. Both mutations must be refused — swapping the bytes and deleting the file
+    outright — because either would otherwise let the close commit on an
+    authorization that no longer exists.
     """
     monkeypatch.setenv(CANON_BOUND_CLOSE_ENV, "1")
-    vault = tmp_path / "vault"
-    receipt = _write_close_override_receipt(vault, "task-close")
-    captured = receipt.read_bytes()
+    fixture = _fixture(tmp_path, monkeypatch)
+    override = _write_close_override_receipt(fixture.vault, fixture.task_id)
 
-    # The refusal no longer fires, so the receipt was consumed and captured.
-    with pytest.raises(TerminalCloseError) as raised:
-        close_task(
-            "task-close",
-            actor="alpha",
-            session_id="session-test",
-            debt_reason="incident response",
-            vault_root=vault,
-            cache_dir=tmp_path / "cache",
+    def racing_gate(*_args: object, **_kwargs: object) -> tuple[CloseGateEvidence, ...]:
+        if mutation == "replaced":
+            override.write_text("acceptor: someone-else\n", encoding="utf-8")
+        else:
+            override.unlink()
+        return (
+            CloseGateEvidence(
+                gate="test-race-override",
+                outcome="pass",
+                task_id=fixture.task_id,
+                note_sha256=hashlib.sha256(fixture.note.read_bytes()).hexdigest(),
+                authority_case=fixture.authority_case,
+                final_status="done",
+                observed_at=datetime.now(UTC).isoformat(),
+            ),
         )
-    assert raised.value.reason_code != "terminal_close_debt_override_requires_receipt"
 
-    # The receipt is a real file whose bytes are what authorized the close; the
-    # preflight compares against exactly these.
-    assert receipt.is_file()
-    assert receipt.read_bytes() == captured
-    assert yaml.safe_load(captured.decode())["task_id"] == "task-close"
+    monkeypatch.setattr("shared.sdlc_close._default_done_gate_runner", racing_gate)
+
+    with pytest.raises(TerminalCloseError) as raised:
+        _close(fixture, final_status="withdrawn")
+
+    assert "close_override_drift" in raised.value.reason_code, raised.value.reason_code
+    # Nothing committed: the note stays active and is not moved to closed/.
+    assert fixture.note.is_file()
+    assert not (fixture.vault / "closed" / fixture.note.name).exists()
 
 
 def test_strict_mode_withdrawal_accepts_a_governed_override_receipt(
