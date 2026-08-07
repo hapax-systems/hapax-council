@@ -1,4 +1,5 @@
 [
   "shared.some_library_module",
-  "scripts/check-new-module-consumers.py"
+  "scripts/check-new-module-consumers.py",
+  "shared.sdlc_close"
 ]

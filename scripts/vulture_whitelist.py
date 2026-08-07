@@ -4546,6 +4546,15 @@ stage_edges
 refresh_task_identity_index
 resolve_claim_leases_for_task
 write_claim_dispatch_binding
+# Gate-0A dormant seam: the task-identity write API. Its only caller was the
+# decomposer writer's admitted publication path, which is descoped to Gate 0B --
+# the store lands as a source contract with no live committer. Remove these from
+# the whitelist when Gate 0B wires a publisher to them.
+load_task_identity_write_guard
+prepare_task_identity_writes
+reconcile_task_identity_writes
+rename_task_store_no_replace
+resolve_task_identity_projection
 
 # shared/session_context_canon.py
 _runtime_dependency_record_observation
