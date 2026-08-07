@@ -43,6 +43,7 @@ from shared.sdlc_close import (
     TerminalCloseError,
     close_task,
 )
+from shared.sdlc_lifecycle import CLOSE_OVERRIDE_RECEIPT_SUFFIX
 from shared.sdlc_task_store import (
     ClaimDispatchBinding,
     resolve_task_note,
@@ -799,6 +800,119 @@ def test_raw_debt_override_refuses_without_touching_state(
             cache_dir=tmp_path / "cache",
         )
     assert not list(tmp_path.rglob("*"))
+
+
+def _write_close_override_receipt(
+    vault_root: Path, task_id: str, overrides: dict[str, object] | None = None
+) -> Path:
+    """Mint a governed close-override receipt beside where the note lives.
+
+    ``overrides`` is a dict rather than ``**kwargs`` so a case can override the
+    receipt's own ``task_id`` field (to exercise the binding check) without
+    colliding with the positional argument that names the file.
+    """
+    active = vault_root / "active"
+    active.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, object] = {
+        "acceptor": "operator",
+        "verdict": "accepted",
+        "timestamp": "2026-08-07T00:00:00Z",
+        "artifact": "incident://close-override",
+        "task_id": task_id,
+    }
+    payload.update(overrides or {})
+    path = active / f"{task_id}{CLOSE_OVERRIDE_RECEIPT_SUFFIX}"
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    return path
+
+
+def test_strict_mode_debt_close_accepts_a_governed_override_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The escape codex-1 required: one that composes WITHIN strict mode.
+
+    Without this, strict mode demanded a receipt that had no representation, so
+    the only way past was to switch strict mode off globally — which exits the
+    gate rather than satisfying it, leaving affected tasks permanently
+    nonterminal. With a valid receipt present the refusal must no longer fire.
+
+    The close still fails afterwards (no vault/canon fixture here) and that is
+    the point: it fails on something an operator can satisfy, not on the
+    unsatisfiable demand.
+    """
+    monkeypatch.setenv(CANON_BOUND_CLOSE_ENV, "1")
+    vault = tmp_path / "vault"
+    _write_close_override_receipt(vault, "task-close")
+
+    with pytest.raises(TerminalCloseError) as raised:
+        close_task(
+            "task-close",
+            actor="alpha",
+            session_id="session-test",
+            debt_reason="incident response",
+            vault_root=vault,
+            cache_dir=tmp_path / "cache",
+        )
+
+    assert raised.value.reason_code != "terminal_close_debt_override_requires_receipt"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_fragment"),
+    [
+        ({"verdict": "rejected"}, "verdict_not_accepted"),
+        ({"acceptor": None}, "missing_field:acceptor"),
+        ({"task_id": "some-other-task"}, "task_mismatch"),
+    ],
+)
+def test_strict_mode_rejects_an_invalid_close_override_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, object],
+    expected_fragment: str,
+) -> None:
+    """A present-but-invalid receipt must not open the gate.
+
+    The task_id case matters most: without binding, a valid receipt could be
+    copied beside another note to authorize an unrelated close.
+    """
+    monkeypatch.setenv(CANON_BOUND_CLOSE_ENV, "1")
+    vault = tmp_path / "vault"
+    _write_close_override_receipt(vault, "task-close", overrides)
+
+    with pytest.raises(TerminalCloseError) as raised:
+        close_task(
+            "task-close",
+            actor="alpha",
+            session_id="session-test",
+            debt_reason="incident response",
+            vault_root=vault,
+            cache_dir=tmp_path / "cache",
+        )
+
+    assert raised.value.reason_code == "terminal_close_debt_override_requires_receipt"
+    assert expected_fragment in (raised.value.detail or "")
+
+
+def test_strict_mode_withdrawal_accepts_a_governed_override_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The disposition sibling composes too — not just the debt one."""
+    monkeypatch.setenv(CANON_BOUND_CLOSE_ENV, "1")
+    vault = tmp_path / "vault"
+    _write_close_override_receipt(vault, "task-close")
+
+    with pytest.raises(TerminalCloseError) as raised:
+        close_task(
+            "task-close",
+            final_status="withdrawn",
+            actor="alpha",
+            session_id="session-test",
+            vault_root=vault,
+            cache_dir=tmp_path / "cache",
+        )
+
+    assert raised.value.reason_code != "terminal_close_operator_disposition_receipt_required"
 
 
 def test_debt_close_is_not_wedged_outside_canon_bound_mode(

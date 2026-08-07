@@ -290,6 +290,72 @@ ACCEPTANCE_RECEIPT_REQUIRED_FIELDS = ("acceptor", "verdict", "timestamp", "artif
 ACCEPTANCE_RECEIPT_ACCEPTED_VERDICTS = frozenset({"accepted"})
 
 
+#: Governed emergency escape for canon-bound close. Deliberately the SAME shape
+#: as the acceptance receipt above — an operator-minted YAML sidecar beside the
+#: note — so there is one receipt idiom to learn, one validator shape to audit,
+#: and no new instrument invented for this purpose.
+#:
+#: It exists because the strict-mode close refusals
+#: (``terminal_close_debt_override_requires_receipt`` and its disposition and
+#: retroactive siblings) demand a governed override that previously had no
+#: representation at all. A gate whose demand cannot be expressed is not a gate,
+#: it is a wedge: an affected task becomes permanently nonterminal. This is the
+#: escape that composes WITHIN strict mode, rather than requiring strict mode to
+#: be switched off globally.
+#:
+#: It authorizes exactly one thing: proceeding past those three refusals for the
+#: task it names. It grants no release, publication, runtime, or provider
+#: authority, and it is not consumed outside canon-bound close.
+CLOSE_OVERRIDE_RECEIPT_SUFFIX = ".close-override.yaml"
+
+CLOSE_OVERRIDE_RECEIPT_REQUIRED_FIELDS = ("acceptor", "verdict", "timestamp", "artifact")
+
+CLOSE_OVERRIDE_RECEIPT_ACCEPTED_VERDICTS = frozenset({"accepted"})
+
+
+def close_override_receipt_path(note_path: Path, task_id: str) -> Path:
+    """Canonical location: ``<task_id>.close-override.yaml`` beside the note."""
+
+    return note_path.parent / f"{task_id}{CLOSE_OVERRIDE_RECEIPT_SUFFIX}"
+
+
+def close_override_receipt_blockers(note_path: Path, task_id: str) -> tuple[str, ...]:
+    """Blockers for the governed close override; empty tuple means it is valid.
+
+    Fail-closed at every step: absent, unreadable, malformed, field-incomplete,
+    or non-``accepted`` all block. An unresolvable ``task_id`` blocks too — the
+    receipt is keyed by it, so without one there is nothing to bind the override
+    to and a stray file must not authorize an unrelated close.
+    """
+
+    if not task_id:
+        return ("missing_close_override_receipt",)
+    receipt_path = close_override_receipt_path(note_path, task_id)
+    if not receipt_path.is_file():
+        return ("missing_close_override_receipt",)
+    try:
+        loaded = yaml.safe_load(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        return (f"close_override_receipt_malformed:{type(exc).__name__}",)
+    if not isinstance(loaded, Mapping):
+        return (f"close_override_receipt_malformed:not_a_mapping:{type(loaded).__name__}",)
+
+    blockers = [
+        f"close_override_receipt_missing_field:{field}"
+        for field in CLOSE_OVERRIDE_RECEIPT_REQUIRED_FIELDS
+        if not _frontmatter_non_null_scalar(loaded.get(field))
+    ]
+    verdict = _frontmatter_non_null_scalar(loaded.get("verdict"))
+    if verdict and verdict.lower() not in CLOSE_OVERRIDE_RECEIPT_ACCEPTED_VERDICTS:
+        blockers.append(f"close_override_receipt_verdict_not_accepted:{verdict.lower()}")
+    # Bind the receipt to the task it authorizes: a receipt naming a different
+    # task must not be usable by copying it next to another note.
+    named = _frontmatter_non_null_scalar(loaded.get("task_id"))
+    if named and named != task_id:
+        blockers.append(f"close_override_receipt_task_mismatch:{named}")
+    return tuple(blockers)
+
+
 def requires_acceptance_receipt(frontmatter: Mapping[str, Any]) -> bool:
     """True when the task declares the review floor (top-level or nested).
 

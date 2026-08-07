@@ -42,9 +42,11 @@ from shared.sdlc_claim import (
     resolve_applied_claim_publication,
 )
 from shared.sdlc_lifecycle import (
+    CLOSE_OVERRIDE_RECEIPT_SUFFIX,
     acceptance_criteria_state,
     acceptance_receipt_blockers,
     acceptance_receipt_path,
+    close_override_receipt_blockers,
     requires_acceptance_receipt,
     stage_token,
 )
@@ -64,6 +66,18 @@ DEFAULT_CACHE = Path.home() / ".cache" / "hapax"
 # is the other half of that pair and must read the same one, or the two gates
 # disagree about which mode the system is in.
 CANON_BOUND_CLOSE_ENV = "HAPAX_CANON_BOUND_CLOSE_ENFORCEMENT"
+
+
+def _override_receipt_note_path(task_id: str, vault_root: Path) -> Path:
+    """A path whose PARENT is the directory the close-override receipt sits in.
+
+    The strict-mode refusals fire before the task note is resolved, so the note's
+    real filename (which may carry a descriptor suffix) is not known yet. The
+    receipt is keyed by ``task_id`` and lives beside the note in ``active/``, so
+    the directory is all that is needed to locate it.
+    """
+
+    return vault_root / "active" / f"{task_id}.md"
 
 
 class TerminalCloseError(RuntimeError):
@@ -458,22 +472,36 @@ def close_task(
     # the same switch the sibling gate reads, so strict mode still refuses
     # pending the receipt contract while incident response stays possible.
     canon_bound_close = os.environ.get(CANON_BOUND_CLOSE_ENV) == "1"
-    if canon_bound_close and final_status != "done":
-        raise TerminalCloseError(
-            "terminal_close_operator_disposition_receipt_required",
-            "keep the task active until an operator-minted withdrawn or superseded receipt is available",
-            final_status,
+    if canon_bound_close and (final_status != "done" or debt_reason or retroactive):
+        # The escape that composes WITHIN strict mode. Previously these refusals
+        # demanded a governed override receipt that had no representation, so an
+        # affected task was permanently nonterminal and the only way out was to
+        # switch strict mode off globally — which exits the gate rather than
+        # satisfying it. Now the demand can be met in place.
+        override_blockers = close_override_receipt_blockers(
+            _override_receipt_note_path(task_id, vault_root), task_id
         )
-    if canon_bound_close and debt_reason:
-        raise TerminalCloseError(
-            "terminal_close_debt_override_requires_receipt",
-            "record a governed override receipt before canon-bound close; raw --debt is legacy-only",
-        )
-    if canon_bound_close and retroactive:
-        raise TerminalCloseError(
-            "terminal_close_retroactive_receipt_required",
-            "bind typed operator evidence through the admitted close contract; a raw retroactive assertion cannot authorize close",
-        )
+        if override_blockers:
+            if final_status != "done":
+                raise TerminalCloseError(
+                    "terminal_close_operator_disposition_receipt_required",
+                    "mint the governed close-override receipt beside the note "
+                    f"(<task_id>{CLOSE_OVERRIDE_RECEIPT_SUFFIX}) or keep the task active",
+                    ",".join((final_status, *override_blockers)),
+                )
+            if debt_reason:
+                raise TerminalCloseError(
+                    "terminal_close_debt_override_requires_receipt",
+                    "mint the governed close-override receipt beside the note "
+                    f"(<task_id>{CLOSE_OVERRIDE_RECEIPT_SUFFIX}); raw --debt is legacy-only",
+                    ",".join(override_blockers),
+                )
+            raise TerminalCloseError(
+                "terminal_close_retroactive_receipt_required",
+                "mint the governed close-override receipt beside the note "
+                f"(<task_id>{CLOSE_OVERRIDE_RECEIPT_SUFFIX}); a raw retroactive assertion cannot authorize close",
+                ",".join(override_blockers),
+            )
     if not actor or actor == "unknown" or not session_id:
         raise TerminalCloseError(
             "terminal_close_identity_missing",
