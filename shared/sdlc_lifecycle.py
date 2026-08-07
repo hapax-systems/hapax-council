@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import re
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -319,7 +321,11 @@ CLOSE_OVERRIDE_RECEIPT_REQUIRED_FIELDS = (
     "timestamp",
     "artifact",
     "task_id",
+    "grant_id",
 )
+
+#: The gate name a close-override escape grant must cover.
+CLOSE_OVERRIDE_GRANT_SCOPE = "cc-close"
 
 CLOSE_OVERRIDE_RECEIPT_ACCEPTED_VERDICTS = frozenset({"accepted"})
 
@@ -366,7 +372,67 @@ def close_override_receipt_blockers(note_path: Path, task_id: str) -> tuple[str,
     named = _frontmatter_non_null_scalar(loaded.get("task_id"))
     if named and named != task_id:
         blockers.append(f"close_override_receipt_task_mismatch:{named}")
+
+    # Authenticate the authority. Without this the receipt is a self-asserted
+    # YAML sidecar — `acceptor: operator` is just a string, so anyone able to
+    # write the vault directory could mint their own authorization. Flagged by
+    # codex-1, 2026-08-07, and correct.
+    #
+    # The named grant must be a signed EscapeGrant covering CLOSE_OVERRIDE_GRANT_SCOPE:
+    # HMAC over the canonical payload against the 0600 key at
+    # ~/.cache/hapax/coord/grant-key, unexpired, and scoped. Only a holder of that
+    # key can produce one, which is the operator (scripts/coord-grant-mint).
+    # Verification is pure — signature, expiry, scope — with no daemon or network,
+    # so it cannot be wedged.
+    grant_id = _frontmatter_non_null_scalar(loaded.get("grant_id"))
+    if grant_id:
+        blockers.extend(_close_override_grant_blockers(grant_id))
     return tuple(blockers)
+
+
+def _close_override_grant_blockers(grant_id: str) -> tuple[str, ...]:
+    """Blockers for the signed escape grant a close-override receipt names.
+
+    Fail-closed on every path: unreadable key, missing grant, malformed grant,
+    bad signature, expiry, or wrong scope. A grant that does not verify must
+    never be treated as weaker-but-acceptable evidence.
+    """
+
+    try:
+        from shared.coord_event_log import default_grant_dir, default_grant_key
+        from shared.governance.coord_capabilities import EscapeGrant, verify_escape_grant
+    except Exception as exc:  # noqa: BLE001 - unavailable verifier must not open the gate
+        return (f"close_override_grant_verifier_unavailable:{type(exc).__name__}",)
+
+    try:
+        key = Path(default_grant_key()).read_bytes()
+    except OSError as exc:
+        return (f"close_override_grant_key_unreadable:{type(exc).__name__}",)
+
+    grant_path = Path(default_grant_dir()) / f"{grant_id}.grant"
+    if not grant_path.is_file():
+        return (f"close_override_grant_absent:{grant_id}",)
+    try:
+        record = json.loads(grant_path.read_text(encoding="utf-8"))
+        grant = EscapeGrant(
+            grant_id=str(record["grant_id"]),
+            grantor=str(record["grantor"]),
+            scope=str(record["scope"]),
+            reason=str(record["reason"]),
+            issued_at=float(record["issued_at"]),
+            expires_at=float(record["expires_at"]),
+            signature=str(record["signature"]),
+        )
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return (f"close_override_grant_malformed:{type(exc).__name__}",)
+
+    if grant.grant_id != grant_id:
+        return (f"close_override_grant_id_mismatch:{grant.grant_id}",)
+    if not verify_escape_grant(grant, key=key, now=time.time(), gate=CLOSE_OVERRIDE_GRANT_SCOPE):
+        # One reason code: distinguishing bad-signature from expired from
+        # out-of-scope would tell a forger which part to fix.
+        return (f"close_override_grant_unverified:{grant_id}",)
+    return ()
 
 
 def requires_acceptance_receipt(frontmatter: Mapping[str, Any]) -> bool:

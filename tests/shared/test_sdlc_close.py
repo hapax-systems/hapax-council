@@ -802,15 +802,73 @@ def test_raw_debt_override_refuses_without_touching_state(
     assert not list(tmp_path.rglob("*"))
 
 
+def _mint_close_override_grant(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> str:
+    """Mint a real signed EscapeGrant covering the close gate; return its id.
+
+    The override receipt authenticates against this. Only a holder of the 0600
+    signing key can produce one, which is what stops a hand-written YAML sidecar
+    from authorizing its own close.
+    """
+    import json as _json
+    import time as _time
+
+    from shared.governance.coord_capabilities import mint_escape_grant
+    from shared.sdlc_lifecycle import CLOSE_OVERRIDE_GRANT_SCOPE
+
+    grant_dir = tmp_path / "coord" / "grants"
+    grant_dir.mkdir(parents=True, exist_ok=True)
+    key_path = tmp_path / "coord" / "grant-key"
+    key = b"test-close-override-signing-key"
+    key_path.write_bytes(key)
+    key_path.chmod(0o600)
+
+    monkeypatch.setattr("shared.coord_event_log.default_grant_dir", lambda: grant_dir)
+    monkeypatch.setattr("shared.coord_event_log.default_grant_key", lambda: key_path)
+
+    grant = mint_escape_grant(
+        grantor="operator",
+        scope=CLOSE_OVERRIDE_GRANT_SCOPE,
+        reason="test close override",
+        ttl_s=3600,
+        key=key,
+        now=_time.time(),
+    )
+    (grant_dir / f"{grant.grant_id}.grant").write_text(
+        _json.dumps(
+            {
+                "kind": "escape",
+                "grant_id": grant.grant_id,
+                "grantor": grant.grantor,
+                "scope": grant.scope,
+                "reason": grant.reason,
+                "issued_at": grant.issued_at,
+                "expires_at": grant.expires_at,
+                "signature": grant.signature,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return grant.grant_id
+
+
 def _write_close_override_receipt(
-    vault_root: Path, task_id: str, overrides: dict[str, object] | None = None
+    vault_root: Path,
+    task_id: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    overrides: dict[str, object] | None = None,
 ) -> Path:
     """Mint a governed close-override receipt beside where the note lives.
+
+    Also mints the signed EscapeGrant it authenticates against, so the default
+    receipt is genuinely valid rather than self-asserted. A receipt naming no
+    grant, or a grant that does not verify, fails closed.
 
     ``overrides`` is a dict rather than ``**kwargs`` so a case can override the
     receipt's own ``task_id`` field (to exercise the binding check) without
     colliding with the positional argument that names the file.
     """
+    grant_id = _mint_close_override_grant(monkeypatch, tmp_path)
     active = vault_root / "active"
     active.mkdir(parents=True, exist_ok=True)
     payload: dict[str, object] = {
@@ -819,6 +877,7 @@ def _write_close_override_receipt(
         "timestamp": "2026-08-07T00:00:00Z",
         "artifact": "incident://close-override",
         "task_id": task_id,
+        "grant_id": grant_id,
     }
     payload.update(overrides or {})
     path = active / f"{task_id}{CLOSE_OVERRIDE_RECEIPT_SUFFIX}"
@@ -842,7 +901,7 @@ def test_strict_mode_debt_close_accepts_a_governed_override_receipt(
     """
     monkeypatch.setenv(CANON_BOUND_CLOSE_ENV, "1")
     vault = tmp_path / "vault"
-    _write_close_override_receipt(vault, "task-close")
+    _write_close_override_receipt(vault, "task-close", monkeypatch, tmp_path)
 
     with pytest.raises(TerminalCloseError) as raised:
         close_task(
@@ -883,7 +942,7 @@ def test_strict_mode_rejects_an_invalid_close_override_receipt(
     """
     monkeypatch.setenv(CANON_BOUND_CLOSE_ENV, "1")
     vault = tmp_path / "vault"
-    _write_close_override_receipt(vault, "task-close", overrides)
+    _write_close_override_receipt(vault, "task-close", monkeypatch, tmp_path, overrides)
 
     with pytest.raises(TerminalCloseError) as raised:
         close_task(
@@ -922,7 +981,7 @@ def test_close_override_changed_after_validation_is_refused(
     """
     monkeypatch.setenv(CANON_BOUND_CLOSE_ENV, "1")
     fixture = _fixture(tmp_path, monkeypatch)
-    override = _write_close_override_receipt(fixture.vault, fixture.task_id)
+    override = _write_close_override_receipt(fixture.vault, fixture.task_id, monkeypatch, tmp_path)
 
     def racing_gate(*_args: object, **_kwargs: object) -> tuple[CloseGateEvidence, ...]:
         if mutation == "replaced":
@@ -967,7 +1026,7 @@ def test_close_override_changed_inside_the_lock_is_refused(
     monkeypatch.setenv(CANON_BOUND_CLOSE_ENV, "1")
     fixture = _fixture(tmp_path, monkeypatch)
     _inject_trusted_echo_projection(fixture, monkeypatch)
-    override = _write_close_override_receipt(fixture.vault, fixture.task_id)
+    override = _write_close_override_receipt(fixture.vault, fixture.task_id, monkeypatch, tmp_path)
 
     real_resolve = sdlc_close.resolve_task_note
     fired = {"n": 0}
@@ -1010,7 +1069,7 @@ def test_strict_mode_debt_close_completes_with_a_valid_override_receipt(
     monkeypatch.setenv(CANON_BOUND_CLOSE_ENV, "1")
     fixture = _fixture(tmp_path, monkeypatch)
     _inject_trusted_echo_projection(fixture, monkeypatch)
-    _write_close_override_receipt(fixture.vault, fixture.task_id)
+    _write_close_override_receipt(fixture.vault, fixture.task_id, monkeypatch, tmp_path)
 
     close_task(
         fixture.task_id,
@@ -1043,7 +1102,7 @@ def test_strict_mode_disposition_close_completes_with_a_valid_override_receipt(
     monkeypatch.setenv(CANON_BOUND_CLOSE_ENV, "1")
     fixture = _fixture(tmp_path, monkeypatch)
     _inject_trusted_echo_projection(fixture, monkeypatch)
-    _write_close_override_receipt(fixture.vault, fixture.task_id)
+    _write_close_override_receipt(fixture.vault, fixture.task_id, monkeypatch, tmp_path)
 
     _close(fixture, final_status=final_status)
 
@@ -1062,7 +1121,7 @@ def test_strict_mode_retroactive_close_completes_with_a_valid_override_receipt(
     monkeypatch.setenv(CANON_BOUND_CLOSE_ENV, "1")
     fixture = _fixture(tmp_path, monkeypatch)
     _inject_trusted_echo_projection(fixture, monkeypatch)
-    _write_close_override_receipt(fixture.vault, fixture.task_id)
+    _write_close_override_receipt(fixture.vault, fixture.task_id, monkeypatch, tmp_path)
 
     close_task(
         fixture.task_id,
@@ -1087,7 +1146,7 @@ def test_strict_mode_withdrawal_accepts_a_governed_override_receipt(
     """The disposition sibling composes too — not just the debt one."""
     monkeypatch.setenv(CANON_BOUND_CLOSE_ENV, "1")
     vault = tmp_path / "vault"
-    _write_close_override_receipt(vault, "task-close")
+    _write_close_override_receipt(vault, "task-close", monkeypatch, tmp_path)
 
     with pytest.raises(TerminalCloseError) as raised:
         close_task(
@@ -1100,6 +1159,77 @@ def test_strict_mode_withdrawal_accepts_a_governed_override_receipt(
         )
 
     assert raised.value.reason_code != "terminal_close_operator_disposition_receipt_required"
+
+
+def test_self_asserted_override_receipt_without_a_grant_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hand-written sidecar cannot authorize its own close.
+
+    codex-1, 2026-08-07: before this, close_override_receipt_blockers accepted
+    any YAML containing self-asserted fields — ``acceptor: operator`` is just a
+    string, so anyone able to write the vault directory could mint their own
+    authorization. The receipt must now name a signed EscapeGrant, and only a
+    holder of the 0600 signing key can produce one.
+    """
+    monkeypatch.setenv(CANON_BOUND_CLOSE_ENV, "1")
+    vault = tmp_path / "vault"
+    active = vault / "active"
+    active.mkdir(parents=True, exist_ok=True)
+    # Every field a forger would think to supply — except a real grant.
+    (active / "task-close.close-override.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "acceptor": "operator",
+                "verdict": "accepted",
+                "timestamp": "2026-08-07T00:00:00Z",
+                "artifact": "incident://forged",
+                "task_id": "task-close",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TerminalCloseError) as raised:
+        close_task(
+            "task-close",
+            actor="alpha",
+            session_id="session-test",
+            debt_reason="forged",
+            vault_root=vault,
+            cache_dir=tmp_path / "cache",
+        )
+
+    assert raised.value.reason_code == "terminal_close_debt_override_requires_receipt"
+    assert "missing_field:grant_id" in (raised.value.detail or "")
+
+
+def test_override_receipt_naming_an_unverifiable_grant_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Naming a grant is not enough — it must verify.
+
+    A grant id that does not resolve to a signed, unexpired, correctly scoped
+    grant file must fail closed, or the binding would be decorative.
+    """
+    monkeypatch.setenv(CANON_BOUND_CLOSE_ENV, "1")
+    vault = tmp_path / "vault"
+    _write_close_override_receipt(
+        vault, "task-close", monkeypatch, tmp_path, {"grant_id": "deadbeefdeadbeef"}
+    )
+
+    with pytest.raises(TerminalCloseError) as raised:
+        close_task(
+            "task-close",
+            actor="alpha",
+            session_id="session-test",
+            debt_reason="incident response",
+            vault_root=vault,
+            cache_dir=tmp_path / "cache",
+        )
+
+    assert raised.value.reason_code == "terminal_close_debt_override_requires_receipt"
+    assert "close_override_grant_absent" in (raised.value.detail or "")
 
 
 def test_debt_close_is_not_wedged_outside_canon_bound_mode(
