@@ -1155,10 +1155,19 @@ def find_task_notes(
                 continue
             if str(fm.get("status") or "").strip().casefold() in TASK_TERMINAL_STATUSES:
                 continue
-            try:
-                note_pr = int(fm.get("pr")) if fm.get("pr") is not None else None
-            except (TypeError, ValueError):
+            raw_pr = fm.get("pr")
+            if raw_pr is None or is_nullish(str(raw_pr)):
                 note_pr = None
+                pr_malformed = False
+            else:
+                try:
+                    note_pr = int(raw_pr)
+                    pr_malformed = False
+                except (TypeError, ValueError):
+                    # Malformed linkage metadata is not a pre-PR note: it
+                    # matches on neither arm (fail closed; codex r11).
+                    note_pr = None
+                    pr_malformed = True
             note_repo = str(fm.get("pr_repo") or "").strip()
             if is_nullish(note_repo):
                 note_repo = ""
@@ -1191,6 +1200,7 @@ def find_task_notes(
                 head_ref
                 and note_pr is None  # pre-PR discovery only — a note linked to
                 # another PR belongs to that PR, not to this one's batch
+                and not pr_malformed  # and malformed linkage matches nothing
                 and str(fm.get("branch") or "") == head_ref
                 and branch_repo_agrees
             ):

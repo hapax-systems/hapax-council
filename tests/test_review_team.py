@@ -3323,3 +3323,21 @@ class TestDispatcherRepoThreading:
             tmp_path, pr_number=7, head_ref="feat/x", pr_repo="hapax-systems/reins"
         )
         assert [fm["task_id"] for _, fm in found] == ["discovery"]
+
+    def test_malformed_pr_matches_nothing(self, tmp_path: Path) -> None:
+        """codex r11: a non-integer pr is not a pre-PR note — fail closed."""
+        rt = _load_review_team_module()
+        TestFindTaskNotesLinkage._note(
+            tmp_path / "active",
+            "malformed",
+            status="in_progress",
+            pr="not-a-number",
+            branch="feat/x",
+        )
+        TestFindTaskNotesLinkage._note(
+            tmp_path / "active", "discovery", status="in_progress", branch="feat/x"
+        )
+        found = rt.find_task_notes(
+            tmp_path, pr_number=7, head_ref="feat/x", pr_repo="hapax-systems/reins"
+        )
+        assert [fm["task_id"] for _, fm in found] == ["discovery"]
