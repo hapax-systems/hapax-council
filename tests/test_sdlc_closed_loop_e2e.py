@@ -41,6 +41,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import os
+import tempfile
 from pathlib import Path
 from types import ModuleType
 
@@ -296,20 +297,42 @@ def test_close_under_debt_is_refused_and_names_no_available_override() -> None:
     )
     assert "debt_reason" in params
 
-    source = inspect.getsource(close_task)
-    assert "terminal_close_debt_override_requires_receipt" in source
-
-    # Mode-gated, not unconditional. An unsatisfiable refusal is a wedge: a task
-    # that can never close poisons the FSM for everything issued after it.
-    from shared.sdlc_close import CANON_BOUND_CLOSE_ENV
+    # Behavioural, not source-text. A source-string assertion passes or fails on
+    # formatting and cannot tell whether the gate actually gates; codex-1 flagged
+    # the earlier version of this test for exactly that.
+    from shared.sdlc_close import CANON_BOUND_CLOSE_ENV, TerminalCloseError
 
     assert CANON_BOUND_CLOSE_ENV == "HAPAX_CANON_BOUND_CLOSE_ENFORCEMENT"
-    for guarded in (
-        "canon_bound_close and debt_reason",
-        'canon_bound_close and final_status != "done"',
-        "canon_bound_close and retroactive",
-    ):
-        assert guarded in source, f"refusal must be mode-gated, not unconditional: {guarded}"
+
+    def _close_debt(tmp: Path) -> str:
+        """Attempt a debt-bearing close; return the typed reason code raised."""
+        with pytest.raises(TerminalCloseError) as raised:
+            close_task(
+                "task-close",
+                actor="alpha",
+                session_id="session-test",
+                debt_reason="incident response",
+                vault_root=tmp / "vault",
+                cache_dir=tmp / "cache",
+            )
+        return raised.value.reason_code
+
+    with tempfile.TemporaryDirectory() as strict_dir:
+        os.environ[CANON_BOUND_CLOSE_ENV] = "1"
+        try:
+            strict_reason = _close_debt(Path(strict_dir))
+        finally:
+            os.environ.pop(CANON_BOUND_CLOSE_ENV, None)
+
+    with tempfile.TemporaryDirectory() as legacy_dir:
+        os.environ.pop(CANON_BOUND_CLOSE_ENV, None)
+        legacy_reason = _close_debt(Path(legacy_dir))
+
+    # Strict mode raises the unsatisfiable demand...
+    assert strict_reason == "terminal_close_debt_override_requires_receipt"
+    # ...and outside it, that demand is NOT what stops the close. It still fails
+    # (no vault fixture here), but on something an operator can actually satisfy.
+    assert legacy_reason != "terminal_close_debt_override_requires_receipt"
 
 
 def test_lifecycle_leaf_does_not_depend_on_the_close_admission() -> None:
