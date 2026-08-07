@@ -1,5 +1,6 @@
 [
   "shared.some_library_module",
   "scripts/check-new-module-consumers.py",
-  "shared.sdlc_close"
+  "shared.sdlc_close",
+  "shared.methodology_dispatch_carrier"
 ]
