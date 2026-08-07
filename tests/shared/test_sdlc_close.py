@@ -802,7 +802,9 @@ def test_raw_debt_override_refuses_without_touching_state(
     assert not list(tmp_path.rglob("*"))
 
 
-def _mint_close_override_grant(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> str:
+def _mint_close_override_grant(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, task_id: str
+) -> str:
     """Mint a real signed EscapeGrant covering the close gate; return its id.
 
     The override receipt authenticates against this. Only a holder of the 0600
@@ -813,7 +815,7 @@ def _mint_close_override_grant(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     import time as _time
 
     from shared.governance.coord_capabilities import mint_escape_grant
-    from shared.sdlc_lifecycle import CLOSE_OVERRIDE_GRANT_SCOPE
+    from shared.sdlc_lifecycle import close_override_grant_scope
 
     grant_dir = tmp_path / "coord" / "grants"
     grant_dir.mkdir(parents=True, exist_ok=True)
@@ -827,7 +829,7 @@ def _mint_close_override_grant(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
 
     grant = mint_escape_grant(
         grantor="operator",
-        scope=CLOSE_OVERRIDE_GRANT_SCOPE,
+        scope=close_override_grant_scope(task_id),
         reason="test close override",
         ttl_s=3600,
         key=key,
@@ -868,7 +870,7 @@ def _write_close_override_receipt(
     receipt's own ``task_id`` field (to exercise the binding check) without
     colliding with the positional argument that names the file.
     """
-    grant_id = _mint_close_override_grant(monkeypatch, tmp_path)
+    grant_id = _mint_close_override_grant(monkeypatch, tmp_path, task_id)
     active = vault_root / "active"
     active.mkdir(parents=True, exist_ok=True)
     payload: dict[str, object] = {
@@ -1230,6 +1232,90 @@ def test_override_receipt_naming_an_unverifiable_grant_is_refused(
 
     assert raised.value.reason_code == "terminal_close_debt_override_requires_receipt"
     assert "close_override_grant_absent" in (raised.value.detail or "")
+
+
+@pytest.mark.parametrize("foreign_scope", ["cc-close:some-other-task", "cc-close", "*"])
+def test_override_grant_for_another_scope_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, foreign_scope: str
+) -> None:
+    """A grant must be bound to THIS task; nothing broader will do.
+
+    codex-1, 2026-08-07: "close override still trusts lane-mintable, task-unbound
+    authority". A generic ``cc-close`` grant would authorize closing any task,
+    and a blanket ``*`` grant minted for some unrelated escape would satisfy
+    ``EscapeGrant.covers`` too — which is why the scope is compared exactly
+    rather than through ``covers()``.
+
+    All three of these are correctly signed and unexpired. They fail purely on
+    scope, which is the property under test.
+    """
+    import json as _json
+    import time as _time
+
+    from shared.governance.coord_capabilities import mint_escape_grant
+
+    monkeypatch.setenv(CANON_BOUND_CLOSE_ENV, "1")
+    grant_dir = tmp_path / "coord" / "grants"
+    grant_dir.mkdir(parents=True, exist_ok=True)
+    key_path = tmp_path / "coord" / "grant-key"
+    key = b"test-close-override-signing-key"
+    key_path.write_bytes(key)
+    monkeypatch.setattr("shared.coord_event_log.default_grant_dir", lambda: grant_dir)
+    monkeypatch.setattr("shared.coord_event_log.default_grant_key", lambda: key_path)
+
+    grant = mint_escape_grant(
+        grantor="operator",
+        scope=foreign_scope,
+        reason="wrong scope",
+        ttl_s=3600,
+        key=key,
+        now=_time.time(),
+    )
+    (grant_dir / f"{grant.grant_id}.grant").write_text(
+        _json.dumps(
+            {
+                "kind": "escape",
+                "grant_id": grant.grant_id,
+                "grantor": grant.grantor,
+                "scope": grant.scope,
+                "reason": grant.reason,
+                "issued_at": grant.issued_at,
+                "expires_at": grant.expires_at,
+                "signature": grant.signature,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    vault = tmp_path / "vault"
+    active = vault / "active"
+    active.mkdir(parents=True, exist_ok=True)
+    (active / "task-close.close-override.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "acceptor": "operator",
+                "verdict": "accepted",
+                "timestamp": "2026-08-07T00:00:00Z",
+                "artifact": "incident://scope",
+                "task_id": "task-close",
+                "grant_id": grant.grant_id,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TerminalCloseError) as raised:
+        close_task(
+            "task-close",
+            actor="alpha",
+            session_id="session-test",
+            debt_reason="incident response",
+            vault_root=vault,
+            cache_dir=tmp_path / "cache",
+        )
+
+    assert raised.value.reason_code == "terminal_close_debt_override_requires_receipt"
+    assert "close_override_grant_scope_mismatch" in (raised.value.detail or "")
 
 
 def test_debt_close_is_not_wedged_outside_canon_bound_mode(

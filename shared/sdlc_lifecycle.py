@@ -324,8 +324,22 @@ CLOSE_OVERRIDE_RECEIPT_REQUIRED_FIELDS = (
     "grant_id",
 )
 
-#: The gate name a close-override escape grant must cover.
-CLOSE_OVERRIDE_GRANT_SCOPE = "cc-close"
+
+#: The gate name a close-override escape grant must cover, per task.
+#:
+#: TASK-BOUND on purpose. A generic ``cc-close`` scope would let one grant
+#: authorize closing ANY task, and a blanket ``*`` grant minted for some
+#: unrelated gate would satisfy it too — `EscapeGrant.covers` treats ``*`` as
+#: covering everything. Both were real: flagged by codex-1, 2026-08-07, as
+#: "close override still trusts lane-mintable, task-unbound authority".
+#:
+#: Requiring ``cc-close:<task_id>`` means the operator mints one grant per close
+#: they actually intend, and a grant for task A is inert against task B.
+def close_override_grant_scope(task_id: str) -> str:
+    """The exact scope a close-override grant must carry for ``task_id``."""
+
+    return f"cc-close:{task_id}"
+
 
 CLOSE_OVERRIDE_RECEIPT_ACCEPTED_VERDICTS = frozenset({"accepted"})
 
@@ -386,11 +400,11 @@ def close_override_receipt_blockers(note_path: Path, task_id: str) -> tuple[str,
     # so it cannot be wedged.
     grant_id = _frontmatter_non_null_scalar(loaded.get("grant_id"))
     if grant_id:
-        blockers.extend(_close_override_grant_blockers(grant_id))
+        blockers.extend(_close_override_grant_blockers(grant_id, task_id))
     return tuple(blockers)
 
 
-def _close_override_grant_blockers(grant_id: str) -> tuple[str, ...]:
+def _close_override_grant_blockers(grant_id: str, task_id: str) -> tuple[str, ...]:
     """Blockers for the signed escape grant a close-override receipt names.
 
     Fail-closed on every path: unreadable key, missing grant, malformed grant,
@@ -428,9 +442,17 @@ def _close_override_grant_blockers(grant_id: str) -> tuple[str, ...]:
 
     if grant.grant_id != grant_id:
         return (f"close_override_grant_id_mismatch:{grant.grant_id}",)
-    if not verify_escape_grant(grant, key=key, now=time.time(), gate=CLOSE_OVERRIDE_GRANT_SCOPE):
-        # One reason code: distinguishing bad-signature from expired from
-        # out-of-scope would tell a forger which part to fix.
+
+    # Require the EXACT task-bound scope, checked directly rather than through
+    # EscapeGrant.covers — covers() treats "*" as covering every gate, so a
+    # blanket grant minted for some unrelated escape would otherwise authorize
+    # this close. A grant for another task is inert here.
+    required_scope = close_override_grant_scope(task_id)
+    if grant.scope != required_scope:
+        return (f"close_override_grant_scope_mismatch:{grant.scope}",)
+    if not verify_escape_grant(grant, key=key, now=time.time(), gate=required_scope):
+        # One reason code: distinguishing bad-signature from expired would tell a
+        # forger which part to fix.
         return (f"close_override_grant_unverified:{grant_id}",)
     return ()
 
