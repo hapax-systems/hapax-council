@@ -3268,14 +3268,19 @@ class TestDispatcherRepoThreading:
         assert seen, "matcher never called"
         assert [fm["task_id"] for _, fm in seen[0]] == ["live-task"]
 
-    def test_branch_only_note_without_pr_repo_branch_matches(self, tmp_path: Path) -> None:
-        """The branch fallback serves notes with no PR number AND no pr_repo
-        (claude r6 critical): they must still match on the real call path."""
+    def test_branch_arm_requires_declared_repo_under_named_caller(self, tmp_path: Path) -> None:
+        """Ratified amendment governs both arms: an undeclared pr_repo does
+        not branch-match under a named caller; it does match on a repo-less
+        call (the fallback's preserved surface)."""
         rt = _load_review_team_module()
         TestFindTaskNotesLinkage._note(
             tmp_path / "active", "branch-only", status="in_progress", branch="feat/x"
         )
-        found = rt.find_task_notes(
-            tmp_path, pr_number=99, head_ref="feat/x", pr_repo="hapax-systems/reins"
+        assert (
+            rt.find_task_notes(
+                tmp_path, pr_number=99, head_ref="feat/x", pr_repo="hapax-systems/reins"
+            )
+            == ()
         )
+        found = rt.find_task_notes(tmp_path, pr_number=99, head_ref="feat/x")
         assert [fm["task_id"] for _, fm in found] == ["branch-only"]
