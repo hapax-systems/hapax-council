@@ -14,7 +14,9 @@ from shared.relay_mq import (
     CANON_ECHO_REPAIR_TAG,
     CanonEchoError,
     MessageFilters,
+    RelayHydrationError,
     _connect,
+    _row_to_envelope,
     ack_message,
     assess_canon_echo,
     build_canon_echo_envelope,
@@ -1322,6 +1324,85 @@ class TestRecipientExpansion(unittest.TestCase):
     def test_expand_normalizes_roles(self) -> None:
         result = expand_recipients("Alpha, CX_Red")
         self.assertEqual(sorted(result), ["alpha", "cx-red"])
+
+
+class TestHydrationFailsClosedWithARepair(unittest.TestCase):
+    """A stored row that violates the Envelope schema must not hydrate silently.
+
+    Blind review split on this read path: hydrating with ``model_construct``
+    skips Envelope's invariants, so a row missing a freshness bound stays
+    consumable forever; hydrating with ``model_validate`` raises on any row the
+    current schema rejects, which on a populated store could wedge queue drain.
+
+    Measurement settled it -- the live store holds 67,150 rows, none with a null
+    ``stale_after`` and none failing validation -- so this path validates. These
+    tests pin the two properties that decision rests on: a good row still
+    hydrates, and a bad row raises a refusal that names its repair rather than a
+    bare pydantic error a caller cannot act on.
+    """
+
+    # The live table's CHECK constraints reject exactly the values pydantic would,
+    # so no row can be inserted through the writer that fails validation on read.
+    # That is the point: a legacy row is one written before today's constraints
+    # existed. Hydration is therefore exercised directly against a permissive
+    # table, which is what an older store looks like.
+    _PERMISSIVE_DDL = """
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            message_id TEXT UNIQUE NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            sender TEXT NOT NULL,
+            message_type TEXT NOT NULL,
+            priority INTEGER NOT NULL DEFAULT 2,
+            subject TEXT NOT NULL,
+            authority_case TEXT,
+            authority_item TEXT,
+            parent_message_id TEXT,
+            recipients_spec TEXT NOT NULL,
+            payload TEXT,
+            payload_path TEXT,
+            payload_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT,
+            stale_after TEXT,
+            tags TEXT
+        )
+    """
+
+    def _legacy_row(self, message_type: str) -> sqlite3.Row:
+        con = sqlite3.connect(":memory:")
+        con.row_factory = sqlite3.Row
+        con.execute(self._PERMISSIVE_DDL)
+        con.execute(
+            "INSERT INTO messages (message_id, sender, message_type, priority, subject, "
+            "recipients_spec, payload, payload_hash, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "hydrate-probe",
+                "alpha",
+                message_type,
+                2,
+                "probe",
+                "beta",
+                "{}",
+                "sha256:" + "0" * 64,
+                datetime.now(UTC).isoformat(),
+            ),
+        )
+        return con.execute("SELECT * FROM messages").fetchone()
+
+    def test_a_well_formed_row_still_hydrates(self) -> None:
+        """Without this, a gate that rejected everything would pass the test below."""
+        envelope = _row_to_envelope(self._legacy_row("advisory"))
+        self.assertEqual(envelope.message_id, "hydrate-probe")
+
+    def test_a_schema_violating_row_raises_a_typed_refusal_naming_the_repair(self) -> None:
+        # message_type is a closed literal today; 'status' stands in for any value a
+        # store predating the constraint could hold.
+        with self.assertRaises(RelayHydrationError) as raised:
+            _row_to_envelope(self._legacy_row("status"))
+        self.assertEqual(raised.exception.reason_code, "relay_row_failed_envelope_validation")
+        self.assertIn("quarantine or migrate", raised.exception.repair_action)
 
 
 if __name__ == "__main__":

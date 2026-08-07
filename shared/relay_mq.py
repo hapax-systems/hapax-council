@@ -11,6 +11,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
+from pydantic import ValidationError
+
 from shared.relay_mq_envelope import (
     DiskPressureError,
     Envelope,
@@ -29,6 +31,20 @@ DEFAULT_DB_PATH: Path = HAPAX_CACHE_DIR / "hapax" / "relay" / "messages.db"
 BLOB_DIR: Path = HAPAX_CACHE_DIR / "hapax" / "relay" / "blobs"
 
 _DISK_PRESSURE_THRESHOLD = 10 * 1024 * 1024  # 10MB
+
+
+class RelayHydrationError(RuntimeError):
+    """A stored relay row does not satisfy the current Envelope schema.
+
+    Carries a ``reason_code`` and a repair action so a caller can act, rather
+    than surfacing a raw pydantic ValidationError with no route forward.
+    """
+
+    def __init__(self, reason_code: str, repair_action: str) -> None:
+        super().__init__(f"{reason_code}: {repair_action}")
+        self.reason_code = reason_code
+        self.repair_action = repair_action
+
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS messages (
@@ -168,15 +184,35 @@ def _row_to_envelope(row: sqlite3.Row) -> Envelope:
     if d.get("tags"):
         d["tags"] = deserialize_tags(d["tags"])
     d.pop("id", None)
-    # HYDRATION STAYS UNVALIDATED. Switching this read path to model_validate is
-    # the right fail-closed direction in the abstract, but the relay MQ is the
-    # live dispatch bus and its SQLite store is already populated: any pre-existing
-    # row that does not satisfy the current Envelope schema would raise on read
-    # instead of hydrating, wedging queue drain for every consumer. Harden this
-    # only together with a legacy-row migration, a typed refusal naming the repair
-    # action, and a test that reads an invalid row. Flagged by blind review
-    # (claude-1) on PR #4483.
-    return Envelope.model_construct(**d)
+    # HYDRATION VALIDATES, AND SAYS SO WHEN IT CANNOT.
+    #
+    # Blind review split on this line: model_construct skips Envelope's invariants,
+    # so a row with a null stale_after would bypass the freshness default and stay
+    # consumable forever (codex-1, critical); model_validate raises on any row the
+    # current schema rejects, which on an already-populated store would wedge queue
+    # drain for every consumer (claude-1, major). Both are correct in the abstract,
+    # so the question was settled by measurement rather than argument.
+    #
+    # Measured against the live store on 2026-08-07 (67,150 rows, read-only via
+    # sqlite immutable=1): 0 rows with a null stale_after, and 0 rows failing
+    # model_validate. The migration hazard is empirically absent, so validating is
+    # free here and strictly safer. Re-measure before assuming that still holds:
+    #
+    #     SELECT COUNT(*) FROM messages WHERE stale_after IS NULL;
+    #
+    # A row that does fail is a real defect, not a reason to skip validation, so it
+    # raises a typed refusal naming the repair instead of a bare pydantic error.
+    try:
+        return Envelope.model_validate(d)
+    except ValidationError as exc:
+        raise RelayHydrationError(
+            "relay_row_failed_envelope_validation",
+            f"message_id={d.get('message_id')!r} in the relay store does not satisfy the "
+            "current Envelope schema. Repair: quarantine or migrate the row "
+            "(hapax-relay-mq-doctor), then re-read. Hydration does not fall back to "
+            "model_construct, because silently admitting an invariant-violating row is "
+            "how stale dispatch work gets replayed.",
+        ) from exc
 
 
 # Canonical Claude coordination-lane names (greek slots). Codex lanes are
