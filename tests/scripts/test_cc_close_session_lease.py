@@ -188,6 +188,19 @@ def test_raw_retroactive_and_bypass_environment_cannot_mutate(tmp_path: Path) ->
         check=False,
     )
     assert result.returncode == 2
-    assert "raw --retroactive is retired" in result.stderr
+    # A retroactive close is still refused here, but with a TYPED reason from the
+    # admission rather than the old raw "raw --retroactive is retired" string.
+    #
+    # That string was a wrapper-level refusal in scripts/cc-close that fired
+    # unconditionally, carried no reason code, and named a repair path that did
+    # not exist. It also made scripts/cc-pr-merge-watcher.py permanently
+    # inoperable — it builds every automatic close with --retroactive, so no task
+    # could auto-close after its PR merged. The flag is now threaded to
+    # shared.sdlc_close, which declares it.
+    #
+    # The invariant worth keeping is the one this test is named for: a refused
+    # close mutates nothing.
+    assert "raw --retroactive is retired" not in result.stderr
+    assert "terminal_close_" in result.stderr, result.stderr
     assert note.read_bytes() == before_note
     assert claim.read_bytes() == before_claim

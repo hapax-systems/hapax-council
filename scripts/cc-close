@@ -29,15 +29,20 @@ shift
 pr=""
 final_status="done"
 debt_reason=""
+retroactive=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --pr) pr="${2:-}"; shift 2 ;;
     --status) final_status="${2:-}"; shift 2 ;;
     --debt) debt_reason="${2:-}"; shift 2 ;;
-    --retroactive)
-      echo "cc-close: HOLD - raw --retroactive is retired; supply typed operator evidence through the admitted close contract" >&2
-      exit 2
-      ;;
+    # Threaded through to shared.sdlc_close (which declares --retroactive) rather
+    # than refused here. Refusing it made scripts/cc-pr-merge-watcher.py
+    # permanently inoperable: it builds EVERY automatic close as
+    #   cc-close <task> --pr <n> --retroactive
+    # so no task could ever auto-close after its PR merged. The refusal also
+    # carried no typed reason and named a repair path ("supply typed operator
+    # evidence through the admitted close contract") that does not exist.
+    --retroactive) retroactive=true; shift ;;
     *) echo "cc-close: unknown arg '$1'" >&2; exit 1 ;;
   esac
 done
@@ -76,6 +81,9 @@ if [[ -n "$pr" ]]; then
 fi
 if [[ -n "$debt_reason" ]]; then
   close_args+=(--debt "$debt_reason")
+fi
+if [[ "$retroactive" == "true" ]]; then
+  close_args+=(--retroactive)
 fi
 
 set +e
