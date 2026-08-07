@@ -1187,7 +1187,13 @@ def find_task_notes(
                 # the repo rule refuses it (ratified amendment; codex r9).
                 if repo_agrees:
                     pr_matches.append((path, fm))
-            elif head_ref and str(fm.get("branch") or "") == head_ref and branch_repo_agrees:
+            elif (
+                head_ref
+                and note_pr is None  # pre-PR discovery only — a note linked to
+                # another PR belongs to that PR, not to this one's batch
+                and str(fm.get("branch") or "") == head_ref
+                and branch_repo_agrees
+            ):
                 branch_matches.append((path, fm))
     if pr_number is not None and not caller_repo and len(pr_matches) > 1:
         LOG.warning(

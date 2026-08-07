@@ -3303,3 +3303,23 @@ class TestDispatcherRepoThreading:
             tmp_path, pr_number=7, head_ref="feat/x", pr_repo="hapax-systems/reins"
         )
         assert [fm["task_id"] for _, fm in found] == ["branch-discovery"]
+
+    def test_note_linked_to_another_pr_never_branch_matches(self, tmp_path: Path) -> None:
+        """codex r10: a note already linked to PR 8 must not contaminate
+        PR 7's batch through a shared branch name."""
+        rt = _load_review_team_module()
+        TestFindTaskNotesLinkage._note(
+            tmp_path / "active",
+            "other-pr",
+            status="pr_open",
+            pr=8,
+            pr_repo="hapax-systems/reins",
+            branch="feat/x",
+        )
+        TestFindTaskNotesLinkage._note(
+            tmp_path / "active", "discovery", status="in_progress", branch="feat/x"
+        )
+        found = rt.find_task_notes(
+            tmp_path, pr_number=7, head_ref="feat/x", pr_repo="hapax-systems/reins"
+        )
+        assert [fm["task_id"] for _, fm in found] == ["discovery"]
