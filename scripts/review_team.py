@@ -1171,12 +1171,19 @@ def find_task_notes(
                 repo_agrees = bool(note_repo) and same_repo(note_repo, caller_repo)
             else:
                 repo_agrees = True
-            # The branch arm applies the SAME repo rule (ratified amendment):
-            # under a named caller, a note must declare a matching pr_repo on
-            # either arm — a branch name is not a repository identifier.
+            # The branch arm serves pre-PR discovery: 30 active notes carry a
+            # branch with no pr_repo (measured 2026-08-07), so the fallback
+            # must admit undeclared repos or discovery deadlocks. A DECLARED,
+            # disagreeing repo still may not re-enter through a shared branch
+            # name. Branch matches never mix with pr_matches (either-or), so
+            # discovery cannot inflate a batch, and a misdirected discovery
+            # fails safe at the downstream task-link check.
+            branch_repo_agrees = (
+                not note_repo or not caller_repo or same_repo(note_repo, caller_repo)
+            )
             if pr_number is not None and note_pr == pr_number and repo_agrees:
                 pr_matches.append((path, fm))
-            elif head_ref and str(fm.get("branch") or "") == head_ref and repo_agrees:
+            elif head_ref and str(fm.get("branch") or "") == head_ref and branch_repo_agrees:
                 branch_matches.append((path, fm))
     if pr_number is not None and not caller_repo and len(pr_matches) > 1:
         LOG.warning(

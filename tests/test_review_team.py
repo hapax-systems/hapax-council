@@ -3268,19 +3268,23 @@ class TestDispatcherRepoThreading:
         assert seen, "matcher never called"
         assert [fm["task_id"] for _, fm in seen[0]] == ["live-task"]
 
-    def test_branch_arm_requires_declared_repo_under_named_caller(self, tmp_path: Path) -> None:
-        """Ratified amendment governs both arms: an undeclared pr_repo does
-        not branch-match under a named caller; it does match on a repo-less
-        call (the fallback's preserved surface)."""
+    def test_branch_arm_admits_undeclared_rejects_declared_disagreeing(
+        self, tmp_path: Path
+    ) -> None:
+        """The synthesis: undeclared notes branch-match (30 live discovery
+        notes measured 2026-08-07); declared-disagreeing never re-enter."""
         rt = _load_review_team_module()
         TestFindTaskNotesLinkage._note(
             tmp_path / "active", "branch-only", status="in_progress", branch="feat/x"
         )
-        assert (
-            rt.find_task_notes(
-                tmp_path, pr_number=99, head_ref="feat/x", pr_repo="hapax-systems/reins"
-            )
-            == ()
+        TestFindTaskNotesLinkage._note(
+            tmp_path / "active",
+            "foreign",
+            status="in_progress",
+            branch="feat/x",
+            pr_repo="hapax-systems/hapax-council",
         )
-        found = rt.find_task_notes(tmp_path, pr_number=99, head_ref="feat/x")
+        found = rt.find_task_notes(
+            tmp_path, pr_number=99, head_ref="feat/x", pr_repo="hapax-systems/reins"
+        )
         assert [fm["task_id"] for _, fm in found] == ["branch-only"]
