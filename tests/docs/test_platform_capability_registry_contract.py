@@ -27,6 +27,30 @@ SCHEMA = REPO_ROOT / "schemas" / "platform-capability-registry.schema.json"
 REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
 
 
+#: The F7 byte pin (first-init R3.10): the assembly annex promises that while the optional
+#: composite_assemblies field is absent, the registry's behavior is byte-identical — and the
+#: promise was aspiration, not fact. This pins the file's sha256: a registry edit must move the
+#: pin in the same commit, so the byte surface changes only deliberately and diff-visibly.
+REGISTRY_BYTE_PIN = "9cc5d81a64225588c0a3c6b879075300b81b9dc04427bf8f6ba0dae6964b5a92"
+
+
+def test_registry_bytes_are_pinned() -> None:
+    """R3.10 — the annex's byte-identical promise, made fact.
+
+    A drift pin that recomputes itself is not a pin, so the expected hash is a literal here.
+    A legitimate registry change fails this test until the pin moves in the SAME commit — the
+    deliberate-act discipline, not a freeze.
+    """
+    import hashlib
+
+    actual = hashlib.sha256(REGISTRY.read_bytes()).hexdigest()
+    assert actual == REGISTRY_BYTE_PIN, (
+        "config/platform-capability-registry.json changed bytes without moving the pin. If the "
+        "change is intentional, update REGISTRY_BYTE_PIN in this commit; if not, the registry "
+        "drifted — the annex's byte-identity promise is enforced here."
+    )
+
+
 def _json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
