@@ -22,9 +22,11 @@ from shared.dispatcher_policy import (
     build_route_authority_receipt,
     evaluate_dispatch_policy,
     load_dispatch_policy_sources,
+    rotate_route_decision_ledger,
     write_route_authority_receipt,
     write_route_decision_receipt,
 )
+from shared.mcp_connector_policy import _latest_route_decision
 from shared.platform_capability_registry import (
     PLATFORM_CAPABILITY_REGISTRY,
     CapacityPool,
@@ -2489,6 +2491,72 @@ def test_writes_route_decision_jsonl_receipt(tmp_path: Path) -> None:
     assert '"route_policy_green": true' in line
     assert '"clog_state": "policy_green"' in line
     assert decision.decision_id in line
+
+
+def test_rotation_is_a_noop_below_the_cap(tmp_path: Path) -> None:
+    ledger = tmp_path / "route-decisions.jsonl"
+    ledger.write_text("a\nb\nc\n", encoding="utf-8")
+
+    assert rotate_route_decision_ledger(ledger) is False
+    assert ledger.read_text(encoding="utf-8") == "a\nb\nc\n"
+    assert not (tmp_path / "route-decisions.jsonl.1").exists()
+
+
+def test_rotation_carries_the_newest_rows_forward(tmp_path: Path) -> None:
+    """The trap this guards: a rotation that truncated would hard-block every MCP call.
+
+    ``_latest_route_decision`` refuses when it finds no recent row for the task,
+    so the rows at the tail must survive rotation.
+    """
+    ledger = tmp_path / "route-decisions.jsonl"
+    ledger.write_text(
+        "".join(f'{{"n": {i}, "pad": "{"x" * 200}"}}\n' for i in range(5_000)),
+        encoding="utf-8",
+    )
+    original_size = ledger.stat().st_size
+
+    assert rotate_route_decision_ledger(ledger, max_bytes=1024) is True
+
+    kept = [json.loads(line)["n"] for line in ledger.read_text(encoding="utf-8").splitlines()]
+    assert kept, "rotation must never leave an empty ledger"
+    assert kept[-1] == 4_999, "the newest row must survive"
+    assert kept == list(range(kept[0], 5_000)), "carried rows must stay contiguous and ordered"
+    assert ledger.stat().st_size < original_size
+
+    archive = tmp_path / "route-decisions.jsonl.1"
+    assert archive.exists(), "one generation is retained for audit"
+    assert archive.stat().st_size == original_size
+
+
+def test_rotation_keeps_the_newest_row_findable_by_the_connector_gate(tmp_path: Path) -> None:
+    ledger = tmp_path / "route-decisions.jsonl"
+    now = datetime.now(UTC)
+    rows = [
+        {"task_id": "old-task", "lane": "beta", "created_at": now.isoformat(), "pad": "y" * 300}
+        for _ in range(4_000)
+    ]
+    rows.append({"task_id": "live-task", "lane": "beta", "created_at": now.isoformat()})
+    ledger.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+    assert rotate_route_decision_ledger(ledger, max_bytes=1024) is True
+
+    found = _latest_route_decision(task_id="live-task", role="beta", ledger_path=ledger)
+    assert found is not None, "rotation stripped the row the connector gate needs"
+    assert found["task_id"] == "live-task"
+
+
+def test_rotation_failure_leaves_the_ledger_intact(tmp_path: Path) -> None:
+    """A held lock means another writer is rotating; this one must just append."""
+    ledger = tmp_path / "route-decisions.jsonl"
+    payload = "".join(f'{{"n": {i}}}\n' for i in range(100))
+    ledger.write_text(payload, encoding="utf-8")
+    (tmp_path / "route-decisions.jsonl.rotate.lock").write_text("", encoding="utf-8")
+
+    assert rotate_route_decision_ledger(ledger, max_bytes=1) is False
+    assert ledger.read_text(encoding="utf-8") == payload
 
 
 def test_glmcp_launch_receipt_persists_quota_evidence(tmp_path: Path) -> None:

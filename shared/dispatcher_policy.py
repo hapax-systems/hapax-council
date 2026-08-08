@@ -31,6 +31,7 @@ from shared.capability_surface_delta import (
     CapabilitySurfaceDeltaError,
     load_capability_surface_delta_file,
 )
+from shared.jsonl_tail import read_tail_lines
 from shared.platform_capability_receipts import (
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
@@ -75,6 +76,13 @@ from shared.route_metadata_schema import (
 
 ROUTE_DECISION_SCHEMA_VERSION = 1
 ROUTE_DECISION_LEDGER = "route-decisions.jsonl"
+# Rotation bounds for the append-only route-decision ledger. It reached 2.5 GB
+# once because nothing capped it, and every reader paid for that. The carry
+# window is sized well above a day of dispatch volume so that rotation can never
+# strip the rows the connector gate needs (see rotate_route_decision_ledger).
+ROUTE_DECISION_LEDGER_MAX_BYTES = 64 * 1024 * 1024
+ROUTE_DECISION_LEDGER_CARRY_LINES = 2_000
+ROUTE_DECISION_LEDGER_CARRY_BYTES = 16 * 1024 * 1024
 DIMENSIONAL_ROUTE_RECEIPT_SCHEMA_VERSION = 1
 ROUTE_AUTHORITY_RECEIPT_SCHEMA_VERSION = 1
 ROUTE_AUTHORITY_RECEIPT_DIRNAME = "route-authority"
@@ -1098,6 +1106,64 @@ def evaluate_dispatch_policy(
     )
 
 
+def rotate_route_decision_ledger(
+    path: Path,
+    *,
+    max_bytes: int = ROUTE_DECISION_LEDGER_MAX_BYTES,
+) -> bool:
+    """Cap the append-only route-decision ledger, carrying the recent tail forward.
+
+    Returns True when a rotation happened.
+
+    The carry-forward is the entire point. ``_latest_route_decision`` refuses
+    every side-effecting MCP call when it cannot find a recent row for the task,
+    so a rotation that merely truncated would hard-block the system it exists to
+    protect — and the unblock path itself runs through MCP. Rotation therefore
+    always leaves the newest rows in place, and the previous file survives one
+    generation as ``.1`` for audit.
+
+    Best-effort by construction: any failure returns False and leaves the ledger
+    untouched, because a write path must never lose a receipt to housekeeping.
+    """
+    try:
+        if path.stat().st_size <= max_bytes:
+            return False
+    except OSError:
+        return False
+
+    lock = path.with_name(path.name + ".rotate.lock")
+    try:
+        lock_fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except OSError:
+        # Either another writer holds the lock or the directory is unwritable.
+        # Appending to the oversized file is strictly better than failing.
+        return False
+
+    os.close(lock_fd)
+    staged = path.with_name(path.name + ".rotating")
+    archive = path.with_name(path.name + ".1")
+    try:
+        carried = read_tail_lines(
+            path,
+            max_lines=ROUTE_DECISION_LEDGER_CARRY_LINES,
+            max_bytes=ROUTE_DECISION_LEDGER_CARRY_BYTES,
+        )
+        staged.write_text(
+            "".join(f"{line}\n" for line in carried if line.strip()), encoding="utf-8"
+        )
+        # Link before replace so the ledger path is never absent: a concurrent
+        # appender must always find a file to append to.
+        archive.unlink(missing_ok=True)
+        os.link(path, archive)
+        staged.replace(path)
+    except OSError:
+        staged.unlink(missing_ok=True)
+        return False
+    finally:
+        lock.unlink(missing_ok=True)
+    return True
+
+
 def write_route_decision_receipt(
     decision: RouteDecision,
     *,
@@ -1106,6 +1172,7 @@ def write_route_decision_receipt(
     target_dir = ledger_dir or Path.home() / ".cache" / "hapax" / "orchestration"
     target_dir.mkdir(parents=True, exist_ok=True)
     path = target_dir / ROUTE_DECISION_LEDGER
+    rotate_route_decision_ledger(path)
     payload = decision.model_dump(mode="json")
     if decision.dimensional_receipt is not None:
         payload.update(decision.dimensional_receipt.model_dump(mode="json"))
