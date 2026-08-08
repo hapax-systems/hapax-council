@@ -104,8 +104,28 @@ def test_pr_admission_slice_still_excludes_the_pin_file() -> None:
     ), "admission slice now runs the pin file — re-evaluate egress-boundary-pin's role"
 
 
-def test_full_shard_stays_merge_group_only() -> None:
-    # The full suite (every egress-behavior pin) must remain merge_group-only:
+def test_docs_only_sentinel_matches_the_test_job_doctrine() -> None:
+    # The docs-only sentinel is inherited doctrine, not a new bypass: the `test`
+    # job already reports success without running pytest on docs-only diffs.
+    # Pin the parity so any future divergence is a deliberate act. The trust in
+    # docs_only_filter is the estate's own (its patterns are pinned by
+    # tests/test_ci_required_coverage_claims.py).
+    def sentinel_runs(job: dict) -> list[str]:
+        return [
+            str(step.get("run", ""))
+            for step in job["steps"]
+            if "docs_only" in str(step.get("if", ""))
+        ]
+
+    assert sentinel_runs(_ci()["jobs"]["egress-boundary-pin"]), (
+        "egress-boundary-pin lost its docs-only sentinel — a divergence from the test-job doctrine"
+    )
+    assert sentinel_runs(_ci()["jobs"]["test"]), (
+        "test job lost its docs-only sentinel — re-evaluate the parity argument in ci.yml"
+    )
+
+
+def test_full_shard_stays_merge_group_only() -> None:    # The full suite (every egress-behavior pin) must remain merge_group-only:
     # skipped on pull_request, executed before any queued PR can land.
     condition = str(_ci()["jobs"]["test-full-shard"]["if"])
     assert "github.event_name == 'merge_group'" in condition

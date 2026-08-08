@@ -464,17 +464,23 @@ jobs:
   egress-boundary-pin:
     # The audio/live-egress release class's BEHAVIORAL arm-time evidence
     # (RELEASE_MITIGATION_CHECKS, shared/sdlc_lifecycle.py): runs the
-    # egress-behavior pins — authority-before-send, fail-closed, receipt
-    # privacy — on every PR and in the merge queue. The PR admission slice
-    # deliberately does NOT include this file; without this job the class's
-    # behavioral evidence existed only at merge-queue time (test-full-shard).
-    # Composition pinned by tests/ci/test_release_gate_ci_composition.py.
-    # The docs-only sentinel is consistent with sibling jobs and safe here:
-    # a docs-only-classified diff cannot change send behavior, and a task
-    # titled egress-sensitive whose diff carries no egress code has no
-    # egress behavior to mitigate. Required transitively: branch protection
-    # requires all-green, and all-green needs this job (single-aggregate
-    # required-context design).
+    # egress-behavior pins on every PR and in the merge queue. At main today
+    # those pins are authority-before-send, fail-closed refusal, and
+    # type-level send capability; the wired-send and receipt-privacy pins
+    # arrive with #4440's diff and this job executes them at that head from
+    # then on — so no wired send can land without its privacy pins green.
+    # The PR admission slice deliberately does NOT include this file; without
+    # this job the class's behavioral evidence existed only at merge-queue
+    # time (test-full-shard). The pin set is content-addressed by
+    # tests/ci/test_release_gate_ci_composition.py (AST-checked REQUIRED_EGRESS_PINS).
+    # The docs-only sentinel is doctrine parity with the `test` job: the
+    # estate already trusts docs_only_filter for the test sentinel; a diff
+    # the filter calls docs-only carries no executable egress behavior, and
+    # the class's other four checks (authority case, surface declaration,
+    # secrets, quorum) still gate. If the filter misclassifies code as docs,
+    # every check on the PR is equally vacuous — that trust is shared, not new.
+    # Required transitively: branch protection requires all-green, and
+    # all-green needs this job (single-aggregate required-context design).
     needs: [docs_only_filter, post_merge_duplicate_filter]
     runs-on: ubuntu-latest
     timeout-minutes: 10
