@@ -12,8 +12,11 @@ The supervisor's reaper leg is the PID-targeted backstop. For a lane with a live
 launcher it reaps (SIGTERM, single pid — NEVER a process group) when:
   1. the claimed task is terminal (note left active/, terminal status, or PR
      merged), gated on admission_state so a pressure-closed window defers; or
-  2. the launcher exceeds a hard lifetime ceiling (escalate + reap), regardless
-     of task state.
+  2. the launcher exceeds a hard lifetime ceiling, regardless of task state.
+
+The ceiling reap is routine and silent — every launcher parks there once its
+lane idles after a completed turn, and the reap self-heals. Only a ceiling reap
+that does NOT take (same pid still over it after the grace window) escalates.
 
 Regression pin (exit-144 cascade): the reaper must SIGTERM the EXACT launcher
 pid, never ``kill -- -PGID`` / a negative pid / killpg.
@@ -229,14 +232,31 @@ def test_supervisor_reap_deferred_when_admission_closed(tmp_path: Path) -> None:
         _cleanup(proc)
 
 
-def test_supervisor_reaps_launcher_over_lifetime_ceiling(tmp_path: Path) -> None:
-    """A launcher past the hard lifetime ceiling is reaped + escalated even when
-    its task is still live."""
-    notify_log = tmp_path / "notify.txt"
+def _write_notify_recorder(tmp_path: Path) -> Path:
+    """A stand-in for the escalation channel. Its log is the P0-mint evidence:
+    notify() is what feeds shared.p0_incident_intake."""
+    log = tmp_path / "notify.txt"
     _write_executable(
         tmp_path / "bin" / "notify-recorder",
-        f'#!/usr/bin/env bash\nprintf \'%s|%s\\n\' "$1" "$2" >> "{notify_log}"\n',
+        f'#!/usr/bin/env bash\nprintf \'%s|%s\\n\' "$1" "$2" >> "{log}"\n',
     )
+    return log
+
+
+def test_supervisor_reaps_launcher_over_lifetime_ceiling_without_escalating(
+    tmp_path: Path,
+) -> None:
+    """A launcher past the hard lifetime ceiling is reaped even when its task is
+    still live — but the FIRST crossing does not escalate.
+
+    A launcher parks here as a matter of course: claude never EOFs the FIFO the
+    launcher holds open, so it idles after a completed turn, and its only
+    self-teardown fires on task terminality. The ceiling reap is the routine
+    garbage collection for that, and it self-heals (the next sweep brings the
+    lane back into idle-await). Escalating it minted a governed P0 cc-task per
+    lane per 6h of launcher life for a fault that was never there.
+    """
+    notify_log = _write_notify_recorder(tmp_path)
     env, calls, runtime_dir = _base(
         tmp_path,
         HAPAX_SUPERVISOR_LAUNCHER_MAX_LIFETIME_S="0",  # any age exceeds → reap
@@ -252,19 +272,69 @@ def test_supervisor_reaps_launcher_over_lifetime_ceiling(tmp_path: Path) -> None
         assert result.returncode == 0, result.stderr
         assert _wait_dead(proc), "launcher past lifetime ceiling was not reaped"
         assert "lifetime" in result.stdout
-        assert notify_log.exists() and "lifetime ceiling" in notify_log.read_text()
+        assert not notify_log.exists(), (
+            f"routine ceiling reap must not escalate: {notify_log.read_text()}"
+        )
+    finally:
+        _cleanup(proc)
+
+
+def test_supervisor_escalates_when_lifetime_reap_does_not_take(tmp_path: Path) -> None:
+    """A launcher that SURVIVES its ceiling reap is the pathological case, and
+    that one does escalate.
+
+    Discriminator: a reap that worked ends the launcher, so the next crossing is
+    always a fresh pid. Seeing the SAME pid still over the ceiling after the
+    grace window means the SIGTERM did not take.
+    """
+    notify_log = _write_notify_recorder(tmp_path)
+    env, calls, runtime_dir = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_LAUNCHER_MAX_LIFETIME_S="0",
+        HAPAX_SUPERVISOR_LIFETIME_REAP_GRACE_S="0",  # no wait between sweeps in test
+        HAPAX_SUPERVISOR_NOTIFY_CMD=str(tmp_path / "bin" / "notify-recorder"),
+    )
+    _make_worktree(env, "delta")
+    _mark_claude_alive(runtime_dir, "delta")
+    _write_claim(env, "delta", "live-task", status="in_progress")
+    # A launcher that ignores SIGTERM — the reap cannot take.
+    proc = subprocess.Popen(
+        [
+            "bash",
+            "-c",
+            (
+                'exec -a "$2" python3 -c '
+                "'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                'time.sleep(600)\' "$1"'
+            ),
+            "_",
+            "delta",
+            "hapax-claude-headless",
+        ],
+        env=env,
+        start_new_session=True,
+    )
+    (runtime_dir / "delta.launcher.pid").write_text(f"{proc.pid}\n", encoding="utf-8")
+    time.sleep(1.2)
+    try:
+        first = _run(env)
+        assert first.returncode == 0, first.stderr
+        assert _alive(proc), "SIGTERM-immune launcher should still be alive"
+        assert not notify_log.exists(), "first crossing must stay quiet"
+
+        second = _run(env)
+        assert second.returncode == 0, second.stderr
+        assert notify_log.exists(), "a ceiling reap that did not take must escalate"
+        assert "lifetime ceiling" in notify_log.read_text()
     finally:
         _cleanup(proc)
 
 
 def test_supervisor_reaps_pidfile_free_launcher_over_lifetime_ceiling(tmp_path: Path) -> None:
     """A lock-holding launcher without launcher.pid is still found through /proc
-    and reaped once it exceeds the lifetime ceiling."""
-    notify_log = tmp_path / "notify.txt"
-    _write_executable(
-        tmp_path / "bin" / "notify-recorder",
-        f'#!/usr/bin/env bash\nprintf \'%s|%s\\n\' "$1" "$2" >> "{notify_log}"\n',
-    )
+    and reaped once it exceeds the lifetime ceiling (still quiet on first
+    crossing)."""
+    notify_log = _write_notify_recorder(tmp_path)
     env, calls, runtime_dir = _base(
         tmp_path,
         HAPAX_SUPERVISOR_LAUNCHER_MAX_LIFETIME_S="0",
@@ -297,7 +367,9 @@ def test_supervisor_reaps_pidfile_free_launcher_over_lifetime_ceiling(tmp_path: 
         assert result.returncode == 0, result.stderr
         assert _wait_dead(proc), "pidfile-free launcher past lifetime ceiling was not reaped"
         assert "lifetime" in result.stdout
-        assert notify_log.exists() and "lifetime ceiling" in notify_log.read_text()
+        assert not notify_log.exists(), (
+            f"routine ceiling reap must not escalate: {notify_log.read_text()}"
+        )
     finally:
         _cleanup(proc)
 

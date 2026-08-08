@@ -116,9 +116,14 @@ PROGRESS_NTFY_TOPIC="${HAPAX_NTFY_TOPIC:-hapax}"
 # and (b) any future wedge need a supervisor-side backstop. This leg SIGTERMs the
 # EXACT launcher pid (single positive pid — NEVER a process group, the pinned
 # exit-144 cascade) when the lane's task is terminal (gated on admission_state)
-# or the launcher exceeds a hard lifetime ceiling (escalate + reap).
+# or the launcher exceeds a hard lifetime ceiling. The ceiling reap is routine
+# and does not escalate — see reap_guard.
 REAP_OFF="${HAPAX_SUPERVISOR_REAP_OFF:-0}"
 LAUNCHER_MAX_LIFETIME_S="${HAPAX_SUPERVISOR_LAUNCHER_MAX_LIFETIME_S:-21600}"  # 6h
+# Grace between SIGTERMing a launcher for the ceiling and calling that reap
+# failed. One sweep is 60s; a launcher whose EXIT trap is mid-teardown must not
+# be mistaken for one that ignored the signal.
+LIFETIME_REAP_GRACE_S="${HAPAX_SUPERVISOR_LIFETIME_REAP_GRACE_S:-120}"
 PROC_SCAN_LAUNCHERS="${HAPAX_SUPERVISOR_PROC_SCAN_LAUNCHERS:-1}"
 
 # Repo root for `python3 -m shared.…`. Resolve $0 through the deploy symlink
@@ -791,10 +796,11 @@ progress_ntfy() {
 
 emit_progress_metrics() {
   [ -n "$METRICS_FILE" ] || return 0
-  local resumed exhausted reaped dir
+  local resumed exhausted reaped lifetime_reaped dir
   resumed="$(cat "$STATE_DIR/lanes_resumed_total" 2>/dev/null || echo 0)"
   exhausted="$(cat "$STATE_DIR/resume_exhausted_total" 2>/dev/null || echo 0)"
   reaped="$(cat "$STATE_DIR/launchers_reaped_total" 2>/dev/null || echo 0)"
+  lifetime_reaped="$(cat "$STATE_DIR/launcher_lifetime_reaps_total" 2>/dev/null || echo 0)"
   dir="$(dirname "$METRICS_FILE")"
   mkdir -p "$dir" 2>/dev/null || return 0
   {
@@ -810,6 +816,12 @@ emit_progress_metrics() {
     printf '# HELP hapax_lane_supervisor_launchers_reaped_total Cumulative zombie launchers reaped\n'
     printf '# TYPE hapax_lane_supervisor_launchers_reaped_total counter\n'
     printf 'hapax_lane_supervisor_launchers_reaped_total %s\n' "$reaped"
+    # The routine ceiling reap no longer escalates, so this counter (not the
+    # alert bus) is where launcher-lifetime pressure is read. A rising rate is
+    # normal; a rate that jumps means lanes are parking idle sooner.
+    printf '# HELP hapax_lane_supervisor_launcher_lifetime_reaps_total Cumulative launcher lifetime-ceiling reaps\n'
+    printf '# TYPE hapax_lane_supervisor_launcher_lifetime_reaps_total counter\n'
+    printf 'hapax_lane_supervisor_launcher_lifetime_reaps_total %s\n' "$lifetime_reaped"
   } > "$METRICS_FILE.tmp" 2>/dev/null && mv "$METRICS_FILE.tmp" "$METRICS_FILE" 2>/dev/null || true
 }
 
@@ -1086,10 +1098,45 @@ reap_launcher() {
   bump_counter launchers_reaped_total
 }
 
+# note_lifetime_reap <lane> <pid>: count the ceiling reap and remember the pid we
+# are about to SIGTERM, so the next crossing can tell "fresh launcher" from "the
+# same one survived". Dry-run signals nothing, so it records nothing — a later
+# dry-run sweep seeing the same pid is expected, not a reap that failed.
+note_lifetime_reap() {
+  if [ "$DRY_RUN" != "1" ]; then
+    bump_counter launcher_lifetime_reaps_total
+    echo "$2 $now" > "$STATE_DIR/$1.launcher-lifetime-reaped"
+  fi
+}
+
+# lifetime_reap_failed <lane> <pid>: 0 if we already SIGTERMed THIS pid for the
+# ceiling more than the grace window ago and it is still over it. A reap that
+# took effect ends the launcher, so a healthy fleet always crosses with a fresh
+# pid; the same pid surviving means the signal did not land.
+lifetime_reap_failed() {
+  local marker="$STATE_DIR/$1.launcher-lifetime-reaped" prev_pid="" prev_ts=""
+  [ -f "$marker" ] || return 1
+  read -r prev_pid prev_ts < "$marker" 2>/dev/null || return 1
+  [ "$prev_pid" = "$2" ] || return 1
+  case "$prev_ts" in '' | *[!0-9]*) return 1 ;; esac
+  [ "$(( now - prev_ts ))" -ge "$LIFETIME_REAP_GRACE_S" ]
+}
+
 # reap_guard <lane>: reap a zombie headless launcher that has outlived its task.
 # Two triggers: (1) the claimed task is terminal (closed/merged) — gated on
 # admission_state so a pressure-closed window defers (queued, retried next tick);
-# (2) a hard lifetime ceiling — pathological regardless of task, escalate + reap.
+# (2) a hard lifetime ceiling.
+#
+# The ceiling reap is ROUTINE, not an incident. Every launcher parks there
+# eventually: claude reads stdin from a FIFO the launcher holds open, so it never
+# EOFs after a completed turn, and the launcher's own teardown watchdog only
+# fires on task terminality — a lane whose task is live but not in_progress
+# (pr_open/claimed/blocked) is correctly idle and has no other exit. The reap is
+# the garbage collection for that and it self-heals: the next sweep brings the
+# lane back read-only into idle-await. Escalating it minted a governed P0 cc-task
+# per lane per 6h of launcher life for a fault that was never there
+# (p0-incident-lane-supervisor-alert-launcher-lifetime-*). So the routine case is
+# journal + counter only, and ONLY a reap that does not take escalates.
 reap_guard() {
   local lane="$1"
   [ "$REAP_OFF" = "1" ] && return 0
@@ -1098,9 +1145,14 @@ reap_guard() {
 
   local age
   if age="$(launcher_etimes "$pid")" && [ "$age" -ge "$LAUNCHER_MAX_LIFETIME_S" ]; then
-    escalate "$lane" launcher-lifetime \
-      "Hapax lane-supervisor: $lane launcher over lifetime ceiling" \
-      "Headless launcher pid=$pid for lane '$lane' has run ${age}s (>=${LAUNCHER_MAX_LIFETIME_S}s) — reaping (SIGTERM, single pid)."
+    if lifetime_reap_failed "$lane" "$pid"; then
+      escalate "$lane" launcher-lifetime \
+        "Hapax lane-supervisor: $lane launcher over lifetime ceiling" \
+        "Headless launcher pid=$pid for lane '$lane' has run ${age}s (>=${LAUNCHER_MAX_LIFETIME_S}s) and SURVIVED an earlier SIGTERM — the lifetime reap is not taking. Next action: inspect pid $pid (trapped SIGTERM? uninterruptible sleep?) and terminate it by hand."
+    else
+      log "$lane: launcher pid=$pid past lifetime ceiling (${age}s >= ${LAUNCHER_MAX_LIFETIME_S}s) — routine reap, no escalation (escalates only if this pid survives it)"
+    fi
+    note_lifetime_reap "$lane" "$pid"
     reap_launcher "$lane" "$pid" "lifetime-ceiling ${age}s"
     return 0
   fi
