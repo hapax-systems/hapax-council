@@ -1915,10 +1915,22 @@ def _apply_route_authority_receipts_from_dir(
 
 
 def _receipt_dir_from_env() -> Path | None:
+    """Resolve the receipt directory for the dispatch read-path.
+
+    Defaults to ``DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR`` when
+    ``HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR`` is unset, so minted receipts are
+    discovered without the env var being set — otherwise admission silently
+    reads every route as receipt-absent while fresh receipts sit on disk
+    (capability_admission.py:619's loader call supplies no receipt_dir).
+    Set the env var to a path to override, or to one of
+    ``{"", "0", "none", "false"}`` (``none``/``false`` case-insensitive) to
+    disable receipt loading entirely. Mirrors dispatcher_policy's copy, which
+    carries the established docstring and test pin.
+    """
     configured = os.environ.get(PLATFORM_CAPABILITY_RECEIPT_DIR_ENV)
-    if not configured:
-        return None
-    if configured.strip() in {"0", "none", "None", "false", "False"}:
+    if configured is None:
+        return DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR
+    if configured.strip() in {"", "0", "none", "None", "false", "False"}:
         return None
     return Path(configured).expanduser()
 
