@@ -156,6 +156,7 @@ def test_audio_or_live_egress_mitigation_contract_is_exact() -> None:
     # live-egress class. Extending or narrowing it changes what the system will
     # release — a ratification act, never an edit. Update this test deliberately.
     assert RELEASE_MITIGATION_CHECKS["audio_or_live_egress_sensitive"] == (
+        "test",
         "authority-case-check",
         "capability-surface-delta",
         "secrets-scan",

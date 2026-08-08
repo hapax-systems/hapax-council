@@ -504,25 +504,28 @@ RELEASE_MITIGATION_CHECKS: dict[str, tuple[str, ...]] = {
     # checks every PR already carries.
     "privacy_or_secret_sensitive": ("secrets-scan",),
     # A live-egress/audio-sensitive change (relay/send boundaries, live-surface
-    # wiring) auto-arms on four machine-verified evidences: the authority case
-    # binds the boundary to its ratified spec; the capability-surface delta gate
-    # proves any capability-surface change is declared under the typed contract
-    # (the job runs in ci.yml on every PR — if that ever stops being true the
-    # gate holds PRs closed rather than releasing blind, the safe direction);
-    # the secret scanner proves the diff carries no committed credential; and
-    # quorum-accept at the current head covers the boundary logic itself. The
-    # mitigation answers the class's named risk directly: nothing reaches the
-    # live surface unbound-to-a-case, undeclared, credential-bearing, or
-    # unreviewed. These are the ARM-time evidences; the BEHAVIORAL evidence is
-    # the merge queue itself — all-green (required) needs test-full-shard,
-    # merge_group-only, which runs the full suite with every egress-behavior
-    # pin (authority-before-send, fail-closed, receipt privacy) before any
-    # armed PR can land. Audio-routing changes (config/pipewire/) remain
+    # wiring) auto-arms on five machine-verified evidences, three layers deep:
+    # (1) BEHAVIORAL, per-PR: the `test` check runs the default pytest shard,
+    #     which includes the egress-behavior pins (authority-before-send,
+    #     fail-closed, receipt privacy — tests/test_capability_adapter_protocol.py);
+    # (2) BEHAVIORAL, at landing: the required all-green aggregate needs
+    #     test-full-shard (merge_group-only full suite), so no armed PR lands
+    #     without the complete behavior suite — both layers pinned by
+    #     tests/ci/test_release_gate_ci_composition.py;
+    # (3) PROCEDURAL: authority-case-check binds the boundary to its ratified
+    #     spec; capability-surface-delta proves any capability-surface change is
+    #     declared under the typed contract; secrets-scan proves the diff carries
+    #     no committed credential; quorum-accept at the current head assesses
+    #     whether the behavior pins cover THIS diff's egress paths.
+    # Emergency recovery for miswired evidence is the autoqueue killswitch
+    # (HAPAX_CC_PR_AUTOQUEUE_OFF=1 / HAPAX_CC_HYGIENE_OFF=1), documented above —
+    # a pause, never a release. Audio-routing changes (config/pipewire/) remain
     # human-released through the sensitive-path gate (SENSITIVE_PATH_MARKERS),
     # so this class in practice holds relay/send-boundary work — the shape this
     # evidence covers. Defined per this map's own doctrine (extend the map,
     # never add a manual-arm path): cc-task-release-arm-held-sensitive-class-20260808.
     "audio_or_live_egress_sensitive": (
+        "test",
         "authority-case-check",
         "capability-surface-delta",
         "secrets-scan",
