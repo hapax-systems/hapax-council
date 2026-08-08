@@ -35,17 +35,27 @@ PROTOCOL_FILE = REPO_ROOT / "shared" / "capability_adapter_protocol.py"
 
 #: The behavior pins the egress-boundary-pin job exists to execute, each mapped
 #: to the behavior-defining symbols its body must reference (semantic anchors —
-#: an `assert object()` forgery fails here). Extend deliberately: PR #4440 adds
-#: the wired-send and receipt-privacy pins with their own anchors.
+#: an `assert object()` forgery fails here). The wired-send + receipt-privacy
+#: pins landed with #4440; the coupling test keeps this set locked to the send
+#: surface's phase.
 REQUIRED_EGRESS_PINS: dict[str, tuple[str, ...]] = {
     # authority-first: no relay execution before a LAUNCH decision
     "test_launch_raises_authority_violation_before_side_effect": ("AuthorityViolation",),
-    # the send boundary asserts authority, then refuses not-yet-wired
-    # (the wired-send assertions land with #4440)
-    "test_send_asserts_authority_then_is_not_yet_wired": (
-        "AuthorityViolation",
-        "NotImplementedError",
+    # the wired send boundary: authority before any egress side effect
+    "test_send_asserts_authority_before_any_egress_side_effect": ("AuthorityViolation",),
+    # receipt privacy: the evidence bus never persists message content
+    "test_send_receipt_carries_no_message_body": ("not in on_disk", "hexdigest"),
+    # canonical relay + receipt minted on every governed send
+    "test_send_routes_through_canonical_relay_and_mints_receipt": (
+        "message_sha256",
+        "exit_code",
     ),
+    # fail-closed: a bare mixin has no governed relay target
+    "test_send_on_bare_mixin_fails_closed": ("TypeError",),
+    # no boutique send paths: send cannot be overridden in a subclass
+    "test_send_cannot_be_overridden_no_boutique_paths": ("__init_subclass__",),
+    # no runtime supports_send flag anywhere
+    "test_no_runtime_supports_send_flag_anywhere": ("supports_send",),
     # send capability is type-level — never a runtime flag, never overridable
     "test_sendcapable_is_not_a_capability_adapter_subclass": ("SendCapableAdapter",),
     "test_worker_has_launch_and_sendcapable_has_send": ("hasattr", '"send"'),
@@ -156,9 +166,12 @@ def test_composition_suite_itself_runs_in_the_required_full_shard() -> None:
 #: obligation: once send executes the relay, these names MUST be in the set.
 WIRED_SEND_PINS: dict[str, tuple[str, ...]] = {
     "test_send_asserts_authority_before_any_egress_side_effect": ("AuthorityViolation",),
-    "test_send_receipt_carries_no_message_body": ("message_sha256",),
-    "test_send_routes_through_canonical_relay_and_mints_receipt": ("receipt",),
-    "test_send_on_bare_mixin_fails_closed": ("send",),
+    "test_send_receipt_carries_no_message_body": ("not in on_disk", "hexdigest"),
+    "test_send_routes_through_canonical_relay_and_mints_receipt": (
+        "message_sha256",
+        "exit_code",
+    ),
+    "test_send_on_bare_mixin_fails_closed": ("TypeError",),
     "test_send_cannot_be_overridden_no_boutique_paths": ("__init_subclass__",),
     "test_no_runtime_supports_send_flag_anywhere": ("supports_send",),
 }
@@ -258,23 +271,19 @@ def test_authority_pins_kill_the_authority_bypass_mutant(tmp_path: Path) -> None
     assert "test_send_asserts_authority" in run.stdout
 
 
-def test_refusal_pins_kill_the_refusal_removal_mutant(tmp_path: Path) -> None:
-    # The fail-closed refusal property: send with the not-yet-wired refusal
-    # removed becomes a silent no-op — the refusal pin MUST fail.
-    refusal = (
-        "        raise NotImplementedError(\n"
-        '            "relay send is wired per-platform in the glue slices; the protocol layer only marks "\n'
-        '            "the capability and gates authority."\n'
-        "        )"
-    )
+def test_privacy_pins_kill_the_body_persistence_mutant(tmp_path: Path) -> None:
+    # The receipt-privacy property: if the receipt ever persists the message
+    # body instead of its digest, the privacy pin MUST fail.
     run = _run_pin_file_against_mutant(
         tmp_path,
-        mutant_label="refusal-removal",
+        mutant_label="body-persistence",
         mutate=lambda src: _replace_once(
-            src, refusal, '        return ""  # MUTANT: refusal removed'
+            src,
+            'message_sha256=sha256(message.encode("utf-8")).hexdigest(),',
+            "message_sha256=message,  # MUTANT: body persisted in the receipt",
         ),
     )
-    assert "test_send_asserts_authority" in run.stdout
+    assert "test_send_receipt_carries_no_message_body" in run.stdout
 
 
 def test_capability_pins_kill_the_send_graft_mutant(tmp_path: Path) -> None:
