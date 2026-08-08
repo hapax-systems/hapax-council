@@ -132,10 +132,21 @@ SDLC_LADDER = Ladder(
 )
 
 
-#: INV-2 stage terminals are exactly the proof-plane terminal set. S7 is runtime
-#: verification and S8 is the in-progress release/merge stage; neither proves
-#: completion. A terminal task-note status remains a separate operational witness.
-LIVENESS_TERMINAL = SDLC_LADDER.terminal
+#: INV-2 *operational* terminals — deliberately NOT the proof-plane terminal set.
+#:
+#: This landing briefly set it to ``SDLC_LADDER.terminal`` (``{"S11"}``) on the
+#: argument that S7 is runtime verification and does not prove completion. That is
+#: right about the proof plane and wrong about this monitor: INV-2 reads the
+#: OPERATIONAL authority-case ledger, where a task's done-state is ``S7_RELEASE``.
+#: Dropping S7 re-fires the exact false positive main's comment records fixing --
+#: INV-2 paging on ~47 released tasks as "stuck". A Gate-0A landing must not
+#: reintroduce that. Found by blind review (codex-1, glm-1) on PR #4483.
+#:
+#: Kept SEPARATE from ``SDLC_LADDER.terminal`` on purpose: widening the ladder's
+#: terminal set instead would perturb INV-1, which permits only a terminal stage to
+#: lack a successor. S11 stays terminal here too, so a proof-closed task is live as
+#: well.
+LIVENESS_TERMINAL = frozenset({"S7", "S11"})
 #: Operational terminal task statuses. INV-2 consumes stage transitions, but the
 #: cc-task note is the work-state surface; a closed/done task whose historical stage
 #: never advanced to S7 must not page forever as stale S6.
@@ -224,14 +235,6 @@ def check_inv2_liveness(
             if task_id not in latest or ts >= latest[task_id][1]:
                 latest[task_id] = (str(record.get("to_stage", "")).strip(), ts, dict(record))
         for task_id, (stage, ts, record) in latest.items():
-            stage_resolution_error = str(record.get("stage_resolution_error", "")).strip()
-            if stage_resolution_error:
-                # Name the raw written value when one was recorded: ``to_stage``
-                # carries main's normalized form for parity, which would hide the
-                # very drift this violation reports.
-                drifted = str(record.get("stage_resolution_raw", "")).strip() or stage
-                violations.append(f"{task_id}:{stage_resolution_error}:{drifted or '<blank>'}")
-                continue
             status = _record_task_status(record)
             if status in LIVENESS_TERMINAL_STATUSES:
                 continue
@@ -577,40 +580,35 @@ def _load_ledger_trace(path: Path, *, vault_tasks: Path | None = None) -> list[d
         except (TypeError, ValueError):
             ts = 0.0
         task_id = str(record.get("case_id") or record.get("task_id") or "")
-        stage_resolution_error = ""
+        # MAIN'S NORMALIZATION, SILENTLY -- no new trace key, no new violation.
+        #
+        # ``stage_token`` is strict (it refuses whitespace drift, case drift, and
+        # aliases absent from the metadata catalog). This monitor is LIVE, and main
+        # normalized every shaped alias here (``S6_UNKNOWN`` -> ``S6``) and emitted
+        # its own violation vocabulary for what remained unknown. Surfacing the
+        # refusal -- even as an extra key with a typed reason -- changes the trace
+        # records and the violation strings this monitor produces, which a Gate-0A
+        # source-only landing must not do: a blank stage read ``bad:unknown_stage:
+        # <blank>`` on main and would read ``bad:stage_blank:<blank>`` here.
+        #
+        # So the strict resolver is used where it agrees and main's normalization
+        # where it refuses, and nothing about the refusal reaches the trace. The
+        # typed vocabulary lands with the callers that consume it, at Gate 0B.
+        # Found by blind review (codex-1, glm-1) on PR #4483.
         try:
             resolved_stage = _stage_token(to_stage_raw)
-        except StageMetadataError as exc:
-            # FALL BACK TO MAIN'S NORMALIZATION, NOT THE RAW VALUE.
-            #
-            # The canonical resolver is strict (it refuses whitespace drift, case
-            # drift, and aliases absent from the metadata catalog). This monitor is
-            # LIVE, and main normalized every shaped alias here -- `S6_UNKNOWN` ->
-            # `S6`. Emitting the raw string instead would change the trace records
-            # this monitor produces, which a Gate-0A source-only landing must not do.
-            # So the refusal is recorded as an explicit reason_code for legibility
-            # while `to_stage` keeps exactly the value main would have emitted.
-            # Found by blind review (codex-1) on PR #4483.
+        except StageMetadataError:
             token = to_stage_raw.strip().replace(".", "_")
             resolved_stage = (
                 token.split("_")[0]
                 if (token[:1] == "S" and "_" in token and token != "S3_5")
                 else token
             )
-            stage_resolution_error = exc.reason_code
         trace_record: dict[str, object] = {
             "task_id": task_id,
             "to_stage": resolved_stage,
             "timestamp": ts,
         }
-        if stage_resolution_error:
-            trace_record["stage_resolution_error"] = stage_resolution_error
-            # The violation must name what was actually written, not the
-            # normalized form -- "S6_UNKNOWN" is the diagnostic; "S6" is what the
-            # monitor emits for main parity. Keeping both means tightening the
-            # resolver changes neither the trace's ``to_stage`` nor the
-            # legibility of its refusal.
-            trace_record["stage_resolution_raw"] = to_stage_raw
         trace_record.update(task_metadata.get(task_id, {}))
         trace.append(trace_record)
     return trace
