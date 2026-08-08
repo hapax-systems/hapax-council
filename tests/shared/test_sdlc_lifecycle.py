@@ -324,6 +324,46 @@ class TestStageVocabulary:
         assert caught.value.reason_code == reason
         assert caught.value.repair_action
 
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("S6", "S6"),
+            ("S6_IMPLEMENTATION", "S6"),
+            ("S6_UNKNOWN", "S6"),
+            (" S6 ", "S6"),
+            ("s6", "s6"),
+            ("S12", "S12"),
+            ("S3.5", "S3_5"),
+            ("BLOCKED", "BLOCKED"),
+        ],
+    )
+    def test_live_invariants_monitor_still_emits_mains_stage_value(
+        self, raw: str, expected: str
+    ) -> None:
+        """The strict resolver must not change what the LIVE monitor emits.
+
+        ``stage_token`` is deliberately strict, but ``shared/sdlc_invariants.py``
+        calls it on every observed transition and main normalized every shaped
+        alias there (``S6_UNKNOWN`` -> ``S6``). Falling back to the raw string on
+        refusal would change the monitor's trace records, which a Gate-0A
+        source-only landing must not do. This pins the fallback to main's exact
+        normalization for both the accepted and the refused inputs, so tightening
+        the resolver stays invisible to the running monitor. Caught by blind
+        review (codex-1) on PR #4483.
+        """
+        from shared.sdlc_lifecycle import StageMetadataError as _Err
+
+        try:
+            resolved = stage_token(raw)
+        except _Err:
+            token = raw.strip().replace(".", "_")
+            resolved = (
+                token.split("_")[0]
+                if (token[:1] == "S" and "_" in token and token != "S3_5")
+                else token
+            )
+        assert resolved == expected
+
     def test_legal_edges_keep_next_and_fall_distinct(self) -> None:
         assert is_legal_stage_edge("S3", "S3_5", edge_class="next")
         assert is_legal_stage_edge("S3_5", "S0", edge_class="next")

@@ -226,7 +226,11 @@ def check_inv2_liveness(
         for task_id, (stage, ts, record) in latest.items():
             stage_resolution_error = str(record.get("stage_resolution_error", "")).strip()
             if stage_resolution_error:
-                violations.append(f"{task_id}:{stage_resolution_error}:{stage or '<blank>'}")
+                # Name the raw written value when one was recorded: ``to_stage``
+                # carries main's normalized form for parity, which would hide the
+                # very drift this violation reports.
+                drifted = str(record.get("stage_resolution_raw", "")).strip() or stage
+                violations.append(f"{task_id}:{stage_resolution_error}:{drifted or '<blank>'}")
                 continue
             status = _record_task_status(record)
             if status in LIVENESS_TERMINAL_STATUSES:
@@ -577,7 +581,22 @@ def _load_ledger_trace(path: Path, *, vault_tasks: Path | None = None) -> list[d
         try:
             resolved_stage = _stage_token(to_stage_raw)
         except StageMetadataError as exc:
-            resolved_stage = to_stage_raw
+            # FALL BACK TO MAIN'S NORMALIZATION, NOT THE RAW VALUE.
+            #
+            # The canonical resolver is strict (it refuses whitespace drift, case
+            # drift, and aliases absent from the metadata catalog). This monitor is
+            # LIVE, and main normalized every shaped alias here -- `S6_UNKNOWN` ->
+            # `S6`. Emitting the raw string instead would change the trace records
+            # this monitor produces, which a Gate-0A source-only landing must not do.
+            # So the refusal is recorded as an explicit reason_code for legibility
+            # while `to_stage` keeps exactly the value main would have emitted.
+            # Found by blind review (codex-1) on PR #4483.
+            token = to_stage_raw.strip().replace(".", "_")
+            resolved_stage = (
+                token.split("_")[0]
+                if (token[:1] == "S" and "_" in token and token != "S3_5")
+                else token
+            )
             stage_resolution_error = exc.reason_code
         trace_record: dict[str, object] = {
             "task_id": task_id,
@@ -586,6 +605,12 @@ def _load_ledger_trace(path: Path, *, vault_tasks: Path | None = None) -> list[d
         }
         if stage_resolution_error:
             trace_record["stage_resolution_error"] = stage_resolution_error
+            # The violation must name what was actually written, not the
+            # normalized form -- "S6_UNKNOWN" is the diagnostic; "S6" is what the
+            # monitor emits for main parity. Keeping both means tightening the
+            # resolver changes neither the trace's ``to_stage`` nor the
+            # legibility of its refusal.
+            trace_record["stage_resolution_raw"] = to_stage_raw
         trace_record.update(task_metadata.get(task_id, {}))
         trace.append(trace_record)
     return trace

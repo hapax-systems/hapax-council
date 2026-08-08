@@ -386,7 +386,13 @@ class TestLoadLedgerTrace:
             result = check_inv2_liveness(trace, now=expected + 60.0, stale_after_s=3600)
         finally:
             path.unlink(missing_ok=True)
-        assert trace[0]["to_stage"] == " S8_RELEASE "
+        # ``to_stage`` carries MAIN's normalization (" S8_RELEASE " -> "S8"), not
+        # the raw string: this monitor is live and a Gate-0A landing must not
+        # change the trace records it emits. The drift is still reported -- via
+        # stage_resolution_error, and by name in the violation below, which reads
+        # the separately-recorded raw value. Caught by blind review (codex-1) on
+        # PR #4483.
+        assert trace[0]["to_stage"] == "S8"
         assert trace[0]["stage_resolution_error"] == "stage_whitespace_drift"
         assert not result.holds
         assert result.violations == ("t1:stage_whitespace_drift:S8_RELEASE",)
