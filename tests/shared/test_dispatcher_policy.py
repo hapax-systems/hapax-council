@@ -2693,6 +2693,59 @@ def test_the_receipt_write_appends_inside_one_lock_acquisition(
     assert decision.decision_id in ledger.read_text(encoding="utf-8")
 
 
+def test_an_unserialised_append_rotated_away_is_detected_and_redone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The scenario the safety ARGUMENT could not cover, now checked instead.
+
+    The fallback used to rest on the claim that a lock failure here implies every
+    other process also skips rotation. That is sound for "cannot open the
+    sidecar" and for a filesystem without flock, but not for an I/O error that is
+    persistent for this process across retries while another process locks fine
+    and rotates. Reviewers were right that the claim was not airtight, so the
+    append is now verified against the live inode rather than argued about.
+
+    Here this process cannot lock, and a rotation happens underneath its append —
+    exactly the uncovered case. The row must still end up in the live ledger.
+    """
+    ledger = tmp_path / "route-decisions.jsonl"
+    ledger.write_text("".join(f'{{"n": {i}}}\n' for i in range(200)), encoding="utf-8")
+
+    real_flock = fcntl.flock
+
+    def always_fail(fd: int, op: int) -> None:
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(dispatcher_policy.fcntl, "flock", always_fail)
+    monkeypatch.setattr(dispatcher_policy, "_LEDGER_LOCK_RETRY_S", 0)
+
+    real_open = os.open
+    rotated = {"done": False}
+
+    def rotate_under_the_append(path, flags, *args):  # type: ignore[no-untyped-def]
+        fd = real_open(path, flags, *args)
+        # After this process opens the ledger for append but before it writes,
+        # simulate another process completing a rotation: replace the inode.
+        if str(path).endswith("route-decisions.jsonl") and not rotated["done"]:
+            rotated["done"] = True
+            replacement = tmp_path / "route-decisions.jsonl.new"
+            replacement.write_text('{"carried": true}\n', encoding="utf-8")
+            os.replace(replacement, ledger)
+        return fd
+
+    monkeypatch.setattr(dispatcher_policy.os, "open", rotate_under_the_append)
+
+    decision = evaluate_dispatch_policy(_request(), now=NOW)
+    with caplog.at_level(logging.WARNING, logger="shared.dispatcher_policy"):
+        write_route_decision_receipt(decision, ledger_dir=tmp_path)
+
+    monkeypatch.setattr(dispatcher_policy.fcntl, "flock", real_flock)
+    assert decision.decision_id in ledger.read_text(encoding="utf-8"), (
+        "a receipt appended into a rotated-away inode must be detected and redone"
+    )
+    assert "rotated away" in caplog.text, "the recovery must be visible to an operator"
+
+
 def test_a_transient_flock_failure_is_retried_into_a_held_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

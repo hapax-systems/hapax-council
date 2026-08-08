@@ -94,6 +94,8 @@ ROUTE_DECISION_LEDGER_CARRY_BYTES = 16 * 1024 * 1024
 # which is what makes the unserialised-append fallback safe. See _ledger_lock.
 _LEDGER_LOCK_ATTEMPTS = 3
 _LEDGER_LOCK_RETRY_S = 0.05
+# Unserialised appends are confirmed against the live inode; see _append_row.
+_LEDGER_APPEND_ATTEMPTS = 3
 DIMENSIONAL_ROUTE_RECEIPT_SCHEMA_VERSION = 1
 ROUTE_AUTHORITY_RECEIPT_SCHEMA_VERSION = 1
 ROUTE_AUTHORITY_RECEIPT_DIRNAME = "route-authority"
@@ -1274,6 +1276,52 @@ def _rotate_locked(path: Path, *, max_bytes: int) -> bool:
     return True
 
 
+def _append_row(path: Path, blob: bytes, *, verify: bool) -> None:
+    """Append one complete row; when ``verify``, confirm it landed in the live inode.
+
+    ``verify`` is for the unserialised path only. Without the lock, a rotation in
+    another process can replace the ledger between our ``open`` and our ``write``,
+    so the bytes go to an inode that survives only as the ``.1`` archive and the
+    receipt is invisible to ``_latest_route_decision``. Comparing the fd's inode
+    against the one the path now names detects exactly that, and re-appending
+    puts the row in the live file. This turns the fallback's safety from an
+    argument about which failures are global into a checked postcondition.
+    """
+    for attempt in range(_LEDGER_APPEND_ATTEMPTS):
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            # os.write may write fewer bytes than asked. Ignoring the count
+            # leaves a truncated JSONL row while reporting success, and the
+            # connector reader then meets malformed data and fails closed — the
+            # exact outcome this module exists to prevent. Loop to completion.
+            written = 0
+            while written < len(blob):
+                written += os.write(fd, blob[written:])
+            if not verify:
+                return
+            try:
+                rotated_away = os.fstat(fd).st_ino != os.stat(path).st_ino
+            except OSError:
+                return  # cannot compare; the write itself succeeded
+        finally:
+            os.close(fd)
+        if not rotated_away:
+            return
+        logger.warning(
+            "route-decision receipt landed in a ledger inode that was rotated away "
+            "at %s (attempt %d); re-appending. Next: confirm the filesystem supports "
+            "flock, since this only happens on the unserialised path.",
+            path,
+            attempt + 1,
+        )
+    logger.warning(
+        "route-decision receipt could not be confirmed in the live ledger at %s after "
+        "%d attempts. Next: check for a rotation loop and confirm flock support.",
+        path,
+        _LEDGER_APPEND_ATTEMPTS,
+    )
+
+
 def write_route_decision_receipt(
     decision: RouteDecision,
     *,
@@ -1295,26 +1343,22 @@ def write_route_decision_receipt(
     # the inode about to be replaced and is lost from the active ledger.
     #
     # Holding one lock makes rotate+append a single critical section. When the
-    # lock cannot be taken at all the append still happens unserialised, which is
-    # safe for the reason that matters: _ledger_lock yields False under exactly
-    # the conditions that also make every other process skip rotation, so there
-    # is no rotation to race. A receipt is worth more than serialisation — losing
-    # one fails the connector gate closed — and a genuinely unwritable ledger
-    # still raises, which is the pre-existing contract.
+    # lock cannot be taken the append still happens unserialised, because a
+    # receipt is worth more than serialisation — losing one fails the connector
+    # gate closed — and a genuinely unwritable ledger still raises.
+    #
+    # That fallback used to rest on an ARGUMENT: that _ledger_lock yields False
+    # only under conditions that make every other process skip rotation too.
+    # That argument is sound for "cannot open the sidecar" and for a filesystem
+    # without flock, but it is not airtight — an I/O error persistent for this
+    # process across retries while another process locks successfully would let
+    # that process rotate under our unlocked append. Rather than reason about how
+    # likely that is, _append_row CHECKS it: an append is confirmed only if the
+    # inode written to is still the one the ledger path names.
     with _ledger_lock(path) as locked:
         if locked:
             _rotate_locked(path, max_bytes=ROUTE_DECISION_LEDGER_MAX_BYTES)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        try:
-            # os.write may write fewer bytes than asked. Ignoring the count
-            # leaves a truncated JSONL row while reporting success, and the
-            # connector reader then meets malformed data and fails closed — the
-            # exact outcome this module exists to prevent. Loop to completion.
-            written = 0
-            while written < len(blob):
-                written += os.write(fd, blob[written:])
-        finally:
-            os.close(fd)
+        _append_row(path, blob, verify=not locked)
     return path
 
 
