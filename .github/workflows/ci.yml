@@ -471,8 +471,9 @@ jobs:
     # then on — so no wired send can land without its privacy pins green.
     # The PR admission slice deliberately does NOT include this file; without
     # this job the class's behavioral evidence existed only at merge-queue
-    # time (test-full-shard). The pin set is content-addressed by
-    # tests/ci/test_release_gate_ci_composition.py (AST-checked REQUIRED_EGRESS_PINS).
+    # time (test-full-shard). The pin set is structurally pinned with semantic
+    # anchors by tests/ci/test_release_gate_ci_composition.py; semantic fidelity
+    # is the quorum's layer, as for every test file in the repo.
     # Unlike sibling jobs this job has NO docs-only sentinel: the class's
     # behavioral evidence must always execute (~40s); a green check that ran
     # nothing is not evidence. The duplicate-merge-group sentinel stays — it

@@ -511,7 +511,8 @@ RELEASE_MITIGATION_CHECKS: dict[str, tuple[str, ...]] = {
     #     capability; the wired-send + receipt-privacy pins land with #4440
     #     and the same job runs them from then on). The PR admission
     #     slice does NOT include that file — this job exists because of that,
-    #     and the pin set is content-addressed by the composition suite.
+    #     and the pin set is structurally pinned with semantic anchors by the
+    #     composition suite (semantic fidelity itself is the quorum's layer).
     # (2) BEHAVIORAL, at landing: the required all-green aggregate needs
     #     test-full-shard (merge_group-only full suite), so no armed PR lands
     #     without the complete behavior suite. Both layers plus the job wiring

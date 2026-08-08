@@ -5,7 +5,9 @@ entry for the audio/live-egress sensitive class names per-PR and merge-queue
 checks as machine-verified evidence. Those names are only evidence while
 (a) the behavioral job stays in the required aggregate's needs,
 (b) the job's run step executes the egress pin file — and the file still
-    CONTAINS the named behavior pins (content-addressed, not name-addressed),
+    CONTAINS the named pins, each carrying a substantive assertion and its
+    behavior-defining symbols (structurally pinned with semantic anchors;
+    semantic fidelity itself is the quorum's layer, as for every test file),
 (c) the merge-queue full shard stays merge_group-only (so an armed PR cannot
     land without the full suite), and
 (d) the arm-time evidence workflows keep their per-PR triggers.
@@ -26,21 +28,23 @@ CI_YML = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 AUTHORITY_CASE_YML = REPO_ROOT / ".github" / "workflows" / "authority-case-check.yml"
 PIN_FILE = REPO_ROOT / "tests" / "test_capability_adapter_protocol.py"
 
-#: The behavior pins the egress-boundary-pin job exists to execute. Extend
-#: deliberately: PR #4440 adds the wired-send and receipt-privacy pins.
-REQUIRED_EGRESS_PINS = (
+#: The behavior pins the egress-boundary-pin job exists to execute, each mapped
+#: to the behavior-defining symbols its body must reference (semantic anchors —
+#: an `assert object()` forgery fails here). Extend deliberately: PR #4440 adds
+#: the wired-send and receipt-privacy pins with their own anchors.
+REQUIRED_EGRESS_PINS: dict[str, tuple[str, ...]] = {
     # authority-first: no relay execution before a LAUNCH decision
-    "test_launch_raises_authority_violation_before_side_effect",
+    "test_launch_raises_authority_violation_before_side_effect": ("AuthorityViolation",),
     # the send boundary asserts authority (refuses not-yet-wired at main;
     # the wired-send assertions land with #4440)
-    "test_send_asserts_authority_then_is_not_yet_wired",
+    "test_send_asserts_authority_then_is_not_yet_wired": ("send",),
     # send capability is type-level — never a runtime flag, never overridable
-    "test_sendcapable_is_not_a_capability_adapter_subclass",
-    "test_worker_has_launch_and_sendcapable_has_send",
+    "test_sendcapable_is_not_a_capability_adapter_subclass": ("SendCapableAdapter",),
+    "test_worker_has_launch_and_sendcapable_has_send": ("hasattr", '"send"'),
     # non-send adapters carry no send surface at all
-    "test_budget_authority_has_no_launch_or_send",
-    "test_review_seat_has_no_launch_or_send",
-)
+    "test_budget_authority_has_no_launch_or_send": ("BudgetAuthorityAdapter",),
+    "test_review_seat_has_no_launch_or_send": ("ReviewSeatAdapter",),
+}
 
 
 def _ci() -> dict:
@@ -80,14 +84,15 @@ def test_egress_boundary_pin_job_executes_the_pin_file_per_pr() -> None:
 
 
 def test_egress_pin_file_still_contains_the_named_behavior_pins() -> None:
-    # Content-addressed, not name-addressed. Each required pin must exist AND
-    # carry a NON-CONSTANT behavioral assertion: an `assert` whose test is not
-    # a bare constant (assert True/1/... fails here), or a pytest.raises guard
-    # naming a concrete exception. A gutted body, or one reseeded with
-    # `assert True`, both fail. Beyond non-vacuity, semantic fidelity is the
-    # quorum's and the merge-queue full suite's layer — execution on every PR
-    # plus the full suite at landing, reviewed at the head.
+    # Structurally pinned with semantic anchors. Threat model, stated honestly:
+    # this guard defeats SILENT STRUCTURAL drift — deleted functions, gutted
+    # bodies, constant/assert-object forgeries, renamed symbols. It cannot
+    # defeat a crafted semantically-vacuous forgery that still references the
+    # anchored symbols; no static check can — semantic fidelity is the
+    # quorum's layer (the same trust model every test file in this repo
+    # stands on), with execution on every PR and the full suite at landing.
     tree = ast.parse(PIN_FILE.read_text(encoding="utf-8"))
+    source = PIN_FILE.read_text(encoding="utf-8")
     functions = {
         node.name: node
         for node in ast.walk(tree)
@@ -112,10 +117,17 @@ def test_egress_pin_file_still_contains_the_named_behavior_pins() -> None:
                         return True
         return False
 
-    vacuous = [
-        name for name in REQUIRED_EGRESS_PINS if not has_substantive_assertion(functions[name])
-    ]
-    assert not vacuous, f"egress pins lost their substantive assertions: {vacuous}"
+    failures: list[str] = []
+    for name, anchors in REQUIRED_EGRESS_PINS.items():
+        node = functions[name]
+        if not has_substantive_assertion(node):
+            failures.append(f"{name}: no substantive assertion")
+            continue
+        body = ast.get_source_segment(source, node) or ""
+        absent = [anchor for anchor in anchors if anchor not in body]
+        if absent:
+            failures.append(f"{name}: lost its semantic anchors {absent}")
+    assert not failures, "egress pins degraded: " + "; ".join(failures)
 
 
 def test_composition_suite_itself_runs_in_the_required_full_shard() -> None:
