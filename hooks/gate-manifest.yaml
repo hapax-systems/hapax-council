@@ -230,6 +230,7 @@ runtimes:
       - public_surface_freshness
       - lint
       - capability-surface-delta
+      - egress-boundary-pin
       - typecheck
       - test-full-shard
       - test-title-cards
