@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import logging
@@ -2813,6 +2814,41 @@ def test_a_short_write_still_produces_a_complete_row(
     assert isinstance(parsed, dict) and parsed, "the row must round-trip as an object"
 
 
+def test_a_filesystem_without_flock_still_writes_the_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """ENOLCK means NO process can lock, so none can rotate — the append is safe.
+
+    Refusing this case as well would be its own defect: on a locking-less
+    filesystem every MCP mutation becomes impossible, including the ones that
+    would repair the estate. The distinguishing fact is not "did we get the lock"
+    but "can anyone else be rotating", and errno answers it.
+
+    Rotation is still skipped, because rotation replaces the inode and must never
+    happen unserialised.
+    """
+
+    def unsupported_flock(fd: int, op: int) -> None:
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(dispatcher_policy, "ROUTE_DECISION_LEDGER_MAX_BYTES", 1)
+    monkeypatch.setattr(dispatcher_policy.fcntl, "flock", unsupported_flock)
+    ledger = tmp_path / "route-decisions.jsonl"
+    ledger.write_text("".join(f'{{"n": {i}}}\n' for i in range(300)), encoding="utf-8")
+
+    decision = evaluate_dispatch_policy(_request(), now=NOW)
+    with caplog.at_level(logging.WARNING, logger="shared.dispatcher_policy"):
+        path = write_route_decision_receipt(decision, ledger_dir=tmp_path)
+
+    assert decision.decision_id in path.read_text(encoding="utf-8"), (
+        "a locking-less filesystem must not make every MCP mutation impossible"
+    )
+    assert not (tmp_path / "route-decisions.jsonl.1").exists(), (
+        "rotation replaces the inode and must never run unserialised"
+    )
+    assert "unsupported" in caplog.text
+
+
 def test_a_persistent_flock_failure_warns_and_refuses_without_exploding_rotation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -2845,7 +2881,10 @@ def test_a_persistent_flock_failure_warns_and_refuses_without_exploding_rotation
         "the raw OSError must be swallowed and translated, not propagated"
     )
     assert "Next:" in str(exc.value)
-    assert "could not be taken" in caplog.text, "the lock failure must still be logged"
+    assert "classified failed" in caplog.text, (
+        "the lock failure must still be logged, and classified as failed rather "
+        "than unsupported — EBADF means locking works here and we did not get it"
+    )
     assert ledger.read_text(encoding="utf-8") == original, "the ledger must be untouched"
     assert not (tmp_path / "route-decisions.jsonl.1").exists(), "rotation must be skipped"
 
