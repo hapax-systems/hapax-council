@@ -56,6 +56,10 @@ IMAGE_DIGEST_RE = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 # past any plausible transient, so the audit calls the workflow dead.
 STARTUP_FAILURE_STREAK_LIMIT = 3
 STARTUP_FAILURE = "startup_failure"
+# Run-history sample size. Three pages covers several full CI cycles for a repo
+# that fires every workflow per push, which is what the streak check needs.
+RUN_SAMPLE_PAGES = 3
+RUN_SAMPLE_PAGE_SIZE = 100
 
 
 @dataclass(frozen=True)
@@ -346,24 +350,46 @@ def active_workflows(repo: str) -> list[dict[str, object]]:
     ]
 
 
-def recent_run_conclusions(repo: str, workflow_id: object, limit: int) -> list[str]:
-    data = gh_json(
-        "api",
-        f"repos/{repo}/actions/workflows/{workflow_id}/runs"
-        f"?per_page={limit}&status=completed&exclude_pull_requests=true",
-    )
-    if not isinstance(data, dict) or not isinstance(data.get("workflow_runs"), list):
-        raise RuntimeError(f"could not list runs for {repo} workflow {workflow_id}")
-    return [
-        str(run.get("conclusion") or "") for run in data["workflow_runs"] if isinstance(run, dict)
-    ]
+def recent_run_conclusions(repo: str) -> dict[int, list[str]]:
+    """Map workflow id -> recent completed run conclusions, newest first.
+
+    Deliberately one paged sweep of the repo-wide runs endpoint rather than a
+    query per workflow: this repo has 38 active workflows, and an audit that
+    burned 38 API calls per repo would itself become a rate-limit hazard. The
+    cost is that a workflow which runs too rarely to appear in the sample is not
+    judged — the same "not enough runs to earn the verdict" case handled below.
+    """
+    conclusions: dict[int, list[str]] = {}
+    for page in range(1, RUN_SAMPLE_PAGES + 1):
+        data = gh_json(
+            "api",
+            f"repos/{repo}/actions/runs?status=completed&per_page={RUN_SAMPLE_PAGE_SIZE}"
+            f"&page={page}",
+        )
+        if not isinstance(data, dict) or not isinstance(data.get("workflow_runs"), list):
+            raise RuntimeError(f"could not list runs for {repo}")
+        runs = data["workflow_runs"]
+        for run in runs:
+            if not isinstance(run, dict):
+                continue
+            workflow_id = run.get("workflow_id")
+            if not isinstance(workflow_id, int):
+                continue
+            bucket = conclusions.setdefault(workflow_id, [])
+            if len(bucket) < STARTUP_FAILURE_STREAK_LIMIT:
+                bucket.append(str(run.get("conclusion") or ""))
+        if len(runs) < RUN_SAMPLE_PAGE_SIZE:
+            break
+    return conclusions
 
 
 def audit_workflow_health(repo: str) -> list[Finding]:
     """Flag active workflows whose recent runs are an unbroken startup_failure streak."""
     findings: list[Finding] = []
+    by_workflow = recent_run_conclusions(repo)
     for workflow in active_workflows(repo):
-        conclusions = recent_run_conclusions(repo, workflow.get("id"), STARTUP_FAILURE_STREAK_LIMIT)
+        workflow_id = workflow.get("id")
+        conclusions = by_workflow.get(workflow_id, []) if isinstance(workflow_id, int) else []
         # A workflow with fewer runs than the limit has not yet earned the verdict.
         if len(conclusions) < STARTUP_FAILURE_STREAK_LIMIT:
             continue

@@ -140,6 +140,40 @@ def test_startup_failure_streak_counts_only_the_head_run() -> None:
     assert audit.startup_failure_streak(["startup_failure", "success", "startup_failure"]) == 1
 
 
+def test_recent_run_conclusions_groups_by_workflow_and_stops_paging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    audit = _load(
+        "hapax_github_repo_standards_audit_runs",
+        REPO / "scripts/hapax-github-repo-standards-audit.py",
+    )
+
+    calls: list[str] = []
+
+    def fake_gh_json(*args: str) -> object:
+        calls.append(args[-1])
+        # One short page: paging must stop rather than spending the full budget.
+        return {
+            "workflow_runs": [
+                {"workflow_id": 1, "conclusion": "startup_failure"},
+                {"workflow_id": 2, "conclusion": "success"},
+                {"workflow_id": 1, "conclusion": "startup_failure"},
+                {"workflow_id": 1, "conclusion": "startup_failure"},
+                {"workflow_id": 1, "conclusion": "success"},
+                {"not_a_dict": True},
+            ]
+        }
+
+    monkeypatch.setattr(audit, "gh_json", fake_gh_json)
+
+    grouped = audit.recent_run_conclusions("hapax-systems/hapax-council")
+
+    assert len(calls) == 1, "a short page means no more runs exist"
+    # Newest-first order preserved, and capped at the streak limit per workflow.
+    assert grouped[1] == ["startup_failure", "startup_failure", "startup_failure"]
+    assert grouped[2] == ["success"]
+
+
 def test_audit_workflow_health_flags_dead_workflow(monkeypatch: pytest.MonkeyPatch) -> None:
     audit = _load(
         "hapax_github_repo_standards_audit_health",
@@ -153,14 +187,16 @@ def test_audit_workflow_health_flags_dead_workflow(monkeypatch: pytest.MonkeyPat
             {"id": 1, "path": ".github/workflows/security-extras.yml"},
             {"id": 2, "path": ".github/workflows/ci.yml"},
             {"id": 3, "path": ".github/workflows/brand-new.yml"},
+            {"id": 4, "path": ".github/workflows/never-runs.yml"},
         ],
     )
     runs = {
         1: ["startup_failure", "startup_failure", "startup_failure"],
         2: ["success", "success", "startup_failure"],
         3: ["startup_failure"],  # too few runs to earn the verdict
+        # id 4 absent entirely: too rare to appear in the run sample.
     }
-    monkeypatch.setattr(audit, "recent_run_conclusions", lambda repo, wid, limit: runs[wid][:limit])
+    monkeypatch.setattr(audit, "recent_run_conclusions", lambda repo: runs)
 
     messages = [f.message for f in audit.audit_workflow_health("hapax-systems/hapax-council")]
 
