@@ -168,6 +168,18 @@ class TestDispatchWorktreeGuard:
             dispatcher.DISPATCH_CLOSE_GUARD_MARKERS
         )
 
+    def test_dispatch_guard_markers_exist_in_the_canonical_scripts(self):
+        """A staleness guard may only name markers a current cc-claim/cc-close
+        actually carries (REQ-20260807163000: the tuple drifted from the scripts
+        once, and dispatch refused every worktree unconditionally)."""
+        repo_root = Path(__file__).resolve().parents[2]
+        claim_text = (repo_root / "scripts" / "cc-claim").read_text(encoding="utf-8")
+        close_text = (repo_root / "scripts" / "cc-close").read_text(encoding="utf-8")
+        for marker in _DISPATCH_CLAIM_GUARD_MARKERS:
+            assert marker in claim_text, f"guard marker not in canonical cc-claim: {marker!r}"
+        for marker in _DISPATCH_CLOSE_GUARD_MARKERS:
+            assert marker in close_text, f"guard marker not in canonical cc-close: {marker!r}"
+
     def test_dispatch_tool_blocker_reports_missing_close_with_next_action(self, tmp_path: Path):
         worktree = tmp_path / "projects" / "hapax-council--beta"
         (worktree / "scripts").mkdir(parents=True)
