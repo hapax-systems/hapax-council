@@ -463,7 +463,7 @@ jobs:
 
   egress-boundary-pin:
     # The audio/live-egress release class's BEHAVIORAL arm-time evidence
-    # (RELEASE_MITIGATION_CHECKS, shared/sdlc_lifecycle.py): runs the
+    # (LIVE_EGRESS_MITIGATION_CHECKS, shared/release_gate.py): runs the
     # egress-behavior pins on every PR and in the merge queue. At main today
     # those pins are authority-before-send, fail-closed refusal, and
     # type-level send capability; the wired-send and receipt-privacy pins

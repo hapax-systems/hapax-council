@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
@@ -809,3 +809,120 @@ def check_public_currentness(witness: PublicCurrentnessWitness) -> list[str]:
     if not witness.claim_safe:
         issues.append("Public claims not verified as safe")
     return issues
+
+
+# ── Estate mitigation extensions (post-Gate-0A canon freeze) ─────────────────
+#
+# shared/sdlc_lifecycle.py is a Gate 0A canon byte-hashed source: its sha256 is bound
+# into packages/hapax-context-canon/tests/fixtures/gate0-frame.json, so ANY edit —
+# comment included — fails the frozen fixture in the merge-queue full suite. The
+# release auto-arm mitigation map (RELEASE_MITIGATION_CHECKS) froze with it. The
+# map's own doctrine says "extend the map, never add a manual-arm path"; until
+# Gate 0B (REQ-20260807163000) folds extensions into the canon-hashed map with the
+# fixture supersession ceremony, extensions land HERE with mechanically identical
+# semantics, outside the hashed surface. cc-task-release-arm-held-sensitive-class-20260808.
+#
+# Self-retiring: when the canon map gains a class entry, the `unmitigable_risk_flag`
+# blocker stops appearing and this wrapper passes the canon assessment through
+# unchanged.
+
+from dataclasses import replace as _dataclass_replace  # noqa: E402
+
+from shared.sdlc_lifecycle import (  # noqa: E402
+    REVIEW_TEAM_QUORUM_EVIDENCE,
+    _effective_sensitive_flags,
+    assess_release_auto_arm,
+)
+
+#: The audio/live-egress sensitive class's mitigation evidence, estate extension
+#: form. Five machine-verified evidences, three layers deep:
+#: (1) BEHAVIORAL per-PR: the egress-boundary-pin CI job runs exactly the
+#:     egress-behavior pins (tests/test_capability_adapter_protocol.py) — and
+#:     carries NO docs-only sentinel: behavioral evidence must execute.
+#: (2) BEHAVIORAL at landing: the required all-green aggregate needs
+#:     test-full-shard (merge_group-only full suite), so no armed PR lands
+#:     without the complete behavior suite. The wiring and pin contents are
+#:     pinned by tests/ci/test_release_gate_ci_composition.py, with
+#:     mutation-kill witnesses for the semantic layer.
+#: (3) PROCEDURAL: authority-case binding, capability-surface declaration,
+#:     secrets scan, quorum-accept at the current head.
+#: Audio-routing changes (config/pipewire/) remain human-released through the
+#: sensitive-path gate (SENSITIVE_PATH_MARKERS), so this class in practice
+#: holds relay/send-boundary work — the shape this evidence covers.
+LIVE_EGRESS_MITIGATION_CHECKS: tuple[str, ...] = (
+    "egress-boundary-pin",
+    "authority-case-check",
+    "capability-surface-delta",
+    "secrets-scan",
+    REVIEW_TEAM_QUORUM_EVIDENCE,
+)
+
+#: The non-doc paths whose live-egress behavior the pin job actually covers. A
+#: live-egress-sensitive PR changing any other non-doc path has NO machine
+#: behavioral evidence for its change — held even with every check green.
+#: Extend only by extending the pin suite first: evidence follows coverage.
+LIVE_EGRESS_AUTO_ARM_COVERAGE: tuple[str, ...] = (
+    "shared/capability_adapter_protocol.py",
+    "tests/test_capability_adapter_protocol.py",
+)
+
+_LIVE_EGRESS_FLAG = "audio_or_live_egress_sensitive"
+
+
+def _egress_uncovered_paths(changed_files: Sequence[str]) -> list[str]:
+    def _is_doc(path: str) -> bool:
+        lowered = path.strip().lower()
+        return lowered.endswith((".md", ".rst", ".txt")) or lowered.startswith("docs/")
+
+    return sorted(
+        {
+            path.strip()
+            for path in changed_files
+            if path.strip()
+            and not _is_doc(path)
+            and path.strip() not in LIVE_EGRESS_AUTO_ARM_COVERAGE
+        }
+    )
+
+
+def assess_release_auto_arm_estate(
+    frontmatter: Mapping[str, Any],
+    *,
+    now: float | datetime | None = None,
+    verified_checks: set[str] | None = None,
+    changed_files: Sequence[str] | None = None,
+):
+    """assess_release_auto_arm with the estate's post-canon-freeze extensions.
+
+    Applies LIVE_EGRESS_MITIGATION_CHECKS to the audio/live-egress sensitive
+    class when the canon map reports it unmitigable, plus the coverage bound
+    (LIVE_EGRESS_AUTO_ARM_COVERAGE) when the PR's changed files are supplied.
+    Everything else is the canon assessment verbatim.
+
+    Scope boundary: this wrapper governs the autoqueue's admission and
+    release-head REVALIDATION reads. The arm-time apply path
+    (apply_release_auto_arm, lane-death rescue) still runs the canon map and
+    holds this class — a deliberate fail-closed boundary until Gate 0B folds
+    the extension into the canon-hashed map.
+    """
+    base = assess_release_auto_arm(frontmatter, now=now, verified_checks=verified_checks)
+    if not base.needs_arming:
+        return base
+    unmitigable = f"unmitigable_risk_flag:{_LIVE_EGRESS_FLAG}"
+    if (
+        _LIVE_EGRESS_FLAG not in _effective_sensitive_flags(frontmatter)
+        or verified_checks is None
+        or unmitigable not in base.blockers
+    ):
+        return base
+    blockers = [blocker for blocker in base.blockers if blocker != unmitigable]
+    missing_evidence = False
+    for check in LIVE_EGRESS_MITIGATION_CHECKS:
+        if check not in verified_checks:
+            blockers.append(f"needs_mitigation:{_LIVE_EGRESS_FLAG}:{check}")
+            missing_evidence = True
+    if not missing_evidence and changed_files is not None:
+        uncovered = _egress_uncovered_paths(changed_files)
+        if uncovered:
+            blockers.append("egress_evidence_uncovered_paths:" + ",".join(uncovered))
+    return _dataclass_replace(base, blockers=tuple(blockers), eligible=not blockers)

@@ -69,7 +69,10 @@ from shared.merge_queue_lineage import (  # noqa: E402
     reconcile_flake_quarantines,
     write_quarantine,
 )
-from shared.release_gate import evaluate_avsdlc_release_gate  # noqa: E402
+from shared.release_gate import (  # noqa: E402
+    assess_release_auto_arm_estate,
+    evaluate_avsdlc_release_gate,
+)
 from shared.sdlc_lifecycle import (  # noqa: E402
     RELEASE_MITIGATION_CHECKS,
     REVIEW_TEAM_QUORUM_EVIDENCE,
@@ -1770,7 +1773,7 @@ def _release_auto_arm_current_evidence_blockers(
         return ()
     probe = dict(frontmatter)
     probe["release_authorized"] = False
-    assessment = assess_release_auto_arm(
+    assessment = assess_release_auto_arm_estate(
         probe, verified_checks=verified_checks, changed_files=changed_files
     )
     blockers = assessment.blockers

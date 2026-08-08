@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from importlib import resources
@@ -503,72 +503,10 @@ RELEASE_MITIGATION_CHECKS: dict[str, tuple[str, ...]] = {
     # CORRECTNESS of such a change is separately gated by the general test/review
     # checks every PR already carries.
     "privacy_or_secret_sensitive": ("secrets-scan",),
-    # A live-egress/audio-sensitive change (relay/send boundaries, live-surface
-    # wiring) auto-arms on five machine-verified evidences, three layers deep:
-    # (1) BEHAVIORAL, per-PR: the egress-boundary-pin CI job runs exactly the
-    #     egress-behavior pins (tests/test_capability_adapter_protocol.py:
-    #     authority-before-send, fail-closed refusal, type-level send
-    #     capability; the wired-send + receipt-privacy pins land with #4440
-    #     and the same job runs them from then on). The PR admission
-    #     slice does NOT include that file — this job exists because of that,
-    #     and the pin set is structurally pinned with semantic anchors by the
-    #     composition suite (semantic fidelity itself is the quorum's layer).
-    # (2) BEHAVIORAL, at landing: the required all-green aggregate needs
-    #     test-full-shard (merge_group-only full suite), so no armed PR lands
-    #     without the complete behavior suite. Both layers plus the job wiring
-    #     are pinned by tests/ci/test_release_gate_ci_composition.py.
-    # (3) PROCEDURAL: authority-case-check binds the boundary to its ratified
-    #     spec; capability-surface-delta proves any capability-surface change is
-    #     declared under the typed contract; secrets-scan proves the diff carries
-    #     no committed credential; quorum-accept at the current head assesses
-    #     whether the behavior pins cover THIS diff's egress paths.
-    # Emergency recovery for miswired evidence is the autoqueue killswitch
-    # (HAPAX_CC_PR_AUTOQUEUE_OFF=1 / HAPAX_CC_HYGIENE_OFF=1), documented above —
-    # a pause, never a release. Audio-routing changes (config/pipewire/) remain
-    # human-released through the sensitive-path gate (SENSITIVE_PATH_MARKERS),
-    # so this class in practice holds relay/send-boundary work — the shape this
-    # evidence covers. Defined per this map's own doctrine (extend the map,
-    # never add a manual-arm path): cc-task-release-arm-held-sensitive-class-20260808.
-    "audio_or_live_egress_sensitive": (
-        "egress-boundary-pin",
-        "authority-case-check",
-        "capability-surface-delta",
-        "secrets-scan",
-        REVIEW_TEAM_QUORUM_EVIDENCE,
-    ),
 }
 
 #: Mutation surfaces too high-stakes for the system to auto-authorize release.
 AUTO_ARM_INELIGIBLE_MUTATION_SURFACES = frozenset({"public", "provider_spend"})
-
-#: The non-doc paths whose live-egress behavior the egress-boundary-pin CI job
-#: actually pins. A live-egress-sensitive task whose PR changes files OUTSIDE
-#: this coverage has no machine behavioral evidence for what it changed —
-#: procedural checks and quorum still gate, but the system must not auto-arm on
-#: pins that say nothing about the diff (round-13 codex critical). Extend the
-#: coverage only by extending the pin suite — evidence follows coverage, never
-#: the reverse.
-LIVE_EGRESS_AUTO_ARM_COVERAGE = (
-    "shared/capability_adapter_protocol.py",
-    "tests/test_capability_adapter_protocol.py",
-)
-
-
-def _egress_coverage_uncovered(changed_files: Sequence[str]) -> list[str]:
-    def _is_doc(path: str) -> bool:
-        lowered = path.strip().lower()
-        return lowered.endswith((".md", ".rst", ".txt")) or lowered.startswith("docs/")
-
-    return sorted(
-        {
-            path.strip()
-            for path in changed_files
-            if path.strip()
-            and not _is_doc(path)
-            and path.strip() not in LIVE_EGRESS_AUTO_ARM_COVERAGE
-        }
-    )
-
 
 #: Governance-protected / off-limits path fragments (mirrors the workspace
 #: off-limits set + CODEOWNERS-governed surfaces). A task whose mutation scope
@@ -1533,7 +1471,6 @@ def _release_auto_arm_blockers(
     *,
     now: float | datetime | None,
     verified_checks: set[str] | None = None,
-    changed_files: Sequence[str] | None = None,
 ) -> list[str]:
     from shared.release_gate import evaluate_avsdlc_release_gate
 
@@ -1551,8 +1488,7 @@ def _release_auto_arm_blockers(
     # Blocker reason-code contract: `risk_flag:` is the no-evidence legacy veto,
     # `needs_mitigation:` is emitted once per missing check (not grouped), and
     # `unmitigable_risk_flag:` means no automated mitigation gate is defined.
-    flag_names = _effective_sensitive_flags(frontmatter)
-    for name in flag_names:
+    for name in _effective_sensitive_flags(frontmatter):
         if verified_checks is None:
             blockers.append(f"risk_flag:{name}")
             continue
@@ -1563,19 +1499,6 @@ def _release_auto_arm_blockers(
         for check in required:
             if check not in verified_checks:
                 blockers.append(f"needs_mitigation:{name}:{check}")
-    # Live-egress coverage bound: when the class's mitigation evidence is
-    # present and the caller supplies the PR's changed files, every changed
-    # non-doc path must be inside the pin suite's coverage — the behavioral
-    # evidence must cover the surface actually being changed.
-    if (
-        "audio_or_live_egress_sensitive" in flag_names
-        and verified_checks is not None
-        and changed_files is not None
-        and not any("audio_or_live_egress_sensitive" in blocker for blocker in blockers)
-    ):
-        uncovered = _egress_coverage_uncovered(changed_files)
-        if uncovered:
-            blockers.append("egress_evidence_uncovered_paths:" + ",".join(uncovered))
     # High-stakes mutation surfaces.
     surface = str(frontmatter.get("mutation_surface") or "").strip().lower()
     if surface in AUTO_ARM_INELIGIBLE_MUTATION_SURFACES:
@@ -1602,7 +1525,6 @@ def assess_release_auto_arm(
     *,
     now: float | datetime | None = None,
     verified_checks: set[str] | None = None,
-    changed_files: Sequence[str] | None = None,
 ) -> ReleaseAutoArmAssessment:
     """Assess whether the system may auto-arm (authorize release for) a task.
 
@@ -1618,10 +1540,6 @@ def assess_release_auto_arm(
     classes from a hard veto to evidence-gating: a class is satisfied when its
     ``RELEASE_MITIGATION_CHECKS`` all passed. Omitted (the default) preserves the
     historical pure-frontmatter hard veto for backward compatibility.
-
-    ``changed_files`` (the PR's actual changed paths) bounds the live-egress
-    class's behavioral evidence to the surface the pin suite covers; omitted,
-    the coverage bound is not evaluated (pure-frontmatter callers).
     """
 
     subject = "release_authorized" in frontmatter
@@ -1635,9 +1553,7 @@ def assess_release_auto_arm(
             eligible=False,
             blockers=(),
         )
-    blockers = _release_auto_arm_blockers(
-        frontmatter, now=now, verified_checks=verified_checks, changed_files=changed_files
-    )
+    blockers = _release_auto_arm_blockers(frontmatter, now=now, verified_checks=verified_checks)
     return ReleaseAutoArmAssessment(
         subject=True,
         armed=False,
