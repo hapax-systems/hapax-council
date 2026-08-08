@@ -1819,8 +1819,8 @@ def test_haiku_and_local_tool_routes_are_required_and_routable() -> None:
 def test_receipt_dir_from_env_defaults_to_the_estate_dir(monkeypatch: pytest.MonkeyPatch) -> None:
     """Unset env must discover minted receipts (the capability_admission defect):
     no argument and no env var means the default dir, never None."""
-    from shared.platform_capability_registry import _receipt_dir_from_env
     from shared.platform_capability_receipts import DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR
+    from shared.platform_capability_registry import _receipt_dir_from_env
 
     monkeypatch.delenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", raising=False)
     assert _receipt_dir_from_env() == DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR
