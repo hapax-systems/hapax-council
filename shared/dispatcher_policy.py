@@ -1229,7 +1229,16 @@ def rotate_route_decision_ledger(
     which passes no cap — had no test: exercising it meant writing 64 MiB.
     """
     cap = ROUTE_DECISION_LEDGER_MAX_BYTES if max_bytes is None else max_bytes
-    with _ledger_lock(path):
+    with _ledger_lock(path) as locked:
+        if not locked:
+            # No lock means no mutual exclusion against append_jsonl, and an
+            # unserialised rotation is the very race this function was rewritten
+            # to close: an append landing between the tail snapshot and the
+            # replace goes to the old inode and vanishes from the active ledger.
+            # Skipping rotation only leaves the ledger oversized; proceeding can
+            # lose a receipt that was written successfully and fail the connector
+            # gate closed. _ledger_lock has already warned.
+            return False
         return _rotate_locked(path, max_bytes=cap)
 
 

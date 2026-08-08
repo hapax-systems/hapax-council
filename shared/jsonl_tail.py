@@ -15,9 +15,11 @@ covers a ledger whose rows are enormous or whose newlines are missing entirely.
 stopped at a bound is indistinguishable from one that reached the start of the
 file, so a caller that scans for malformed rows learns "no malformed rows *in the
 window we read*" and cannot tell it apart from "no malformed rows". Consumers
-that treat absence as an all-clear — ``shared/mcp_connector_policy`` reads this
-ledger to answer route-decision questions — are narrowing their evidence without
-being told. That is a deliberate trade for bounded cost, but it belongs where the
+that treat absence as an all-clear — concretely
+``shared.mcp_connector_policy._latest_route_decision``, which reads
+``route-decisions.jsonl`` through this function to decide whether a
+side-effecting MCP call may proceed — are narrowing their evidence without being
+told. That is a deliberate trade for bounded cost, but it belongs where the
 result is consumed and not only where the bound was introduced. Anything that
 needs to distinguish the two cases must compare against the file size itself, or
 this function needs to grow a returned truncation flag.
@@ -45,6 +47,14 @@ def read_tail_lines(
     of a row whose beginning was never read, so parsing it would surface a
     spurious malformed-row error. When the scan reaches the start of the file no
     line is partial and nothing is dropped.
+
+    The dropped element is always the one split by the *window* boundary, never
+    the last line of the file. A file with no trailing newline is therefore
+    returned complete: its final line sits at the END of the window, and only
+    ``lines[0]`` is discarded. This is worth stating because the two cases look
+    alike and only one is a partial row — ``max_bytes`` and the newline bound both
+    stop the scan mid-file, and it is the leading fragment they create, not a
+    missing terminator, that must be dropped.
 
     Raises ``OSError`` like any other read; callers that already treat an
     unreadable ledger as empty should keep doing so.

@@ -66,6 +66,21 @@ def test_max_bytes_caps_the_scan(tmp_path: Path) -> None:
     assert read_tail_lines(ledger, max_lines=10, max_bytes=4096, chunk_bytes=1024) == []
 
 
+def test_unbounded_default_scans_to_the_start_of_the_file(tmp_path: Path) -> None:
+    """``max_bytes`` defaults to None; that branch had no targeted assertion.
+
+    Every other max_bytes test passes an explicit value, so the default was only
+    exercised incidentally. Pin it: with no byte bound and a line bound larger
+    than the file, the scan reaches BOF and returns every line — including the
+    final one on a file with no trailing newline.
+    """
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text("a\nb\nc", encoding="utf-8")  # no trailing newline
+
+    assert read_tail_lines(ledger, max_lines=10) == ["a", "b", "c"]
+    assert read_tail_lines(ledger, max_lines=10, chunk_bytes=1) == ["a", "b", "c"]
+
+
 def test_max_bytes_is_a_strict_bound_on_a_non_divisible_budget(tmp_path: Path) -> None:
     """The cap must hold for budgets that are not a multiple of the chunk size.
 

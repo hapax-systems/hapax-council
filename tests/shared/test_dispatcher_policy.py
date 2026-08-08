@@ -2600,6 +2600,38 @@ def test_a_lock_file_left_by_a_dead_process_does_not_wedge_rotation(
     assert ledger.read_text(encoding="utf-8").strip(), "ledger must not be emptied"
 
 
+def test_rotation_is_skipped_when_the_lock_cannot_be_opened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No lock means no mutual exclusion, so rotation must NOT proceed.
+
+    The first version of this fix took the lock but ignored whether it got it, so
+    an unopenable sidecar (permissions, full filesystem) silently reverted to
+    exactly the unserialised rotation the lock was added to prevent. Skipping
+    only leaves the ledger oversized; proceeding can lose a receipt that was
+    written successfully and fail the connector gate closed.
+    """
+    ledger = tmp_path / "route-decisions.jsonl"
+    payload = "".join(f'{{"n": {i}}}\n' for i in range(200))
+    ledger.write_text(payload, encoding="utf-8")
+
+    real_open = os.open
+
+    def refuse_lock(path, flags, *args):  # type: ignore[no-untyped-def]
+        if str(path).endswith(".jsonl.lock"):
+            raise PermissionError(13, "Permission denied")
+        return real_open(path, flags, *args)
+
+    monkeypatch.setattr(dispatcher_policy.os, "open", refuse_lock)
+
+    with caplog.at_level(logging.WARNING, logger="shared.dispatcher_policy"):
+        assert rotate_route_decision_ledger(ledger, max_bytes=1) is False
+
+    assert ledger.read_text(encoding="utf-8") == payload, "the ledger must be untouched"
+    assert not (tmp_path / "route-decisions.jsonl.1").exists(), "no rotation may have happened"
+    assert "unserialised" in caplog.text, "an unlockable ledger must say so"
+
+
 def test_rotation_and_append_share_one_lock(tmp_path: Path) -> None:
     """Rotation must take the SAME sidecar append_jsonl takes.
 
