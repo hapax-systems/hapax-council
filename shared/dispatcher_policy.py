@@ -100,9 +100,24 @@ _LEDGER_LOCK_RETRY_S = 0.05
 _LOCK_HELD = "held"
 _LOCK_UNSUPPORTED = "unsupported"
 _LOCK_FAILED = "failed"
-# errnos that mean flock is not implemented here, so NO process can hold this
-# lock and therefore no process can rotate.
-_FLOCK_UNSUPPORTED_ERRNOS = frozenset({errno.ENOLCK, errno.EOPNOTSUPP, errno.ENOSYS, errno.EINVAL})
+# errnos that mean flock is NOT IMPLEMENTED here, so no process can hold this
+# lock and therefore none can rotate. Membership is a SAFETY CLAIM — it licenses
+# an unserialised append — so it admits only errnos meaning "this operation does
+# not exist on this target":
+#
+#   ENOSYS                 the syscall is not implemented
+#   EOPNOTSUPP / ENOTSUP   unsupported on this fd or filesystem
+#
+# Deliberately EXCLUDED, because they are failures rather than capability facts,
+# and reading them as "nobody can lock" would license an unserialised append
+# while other writers hold locks and rotate underneath it:
+#
+#   ENOLCK  the kernel ran out of lock records — resource EXHAUSTION, which
+#           usually means locks are in heavy USE, the opposite of absent
+#   EINVAL  a malformed call (bad operation flags) — a bug here, not a property
+#           of the filesystem
+#   EACCES / EAGAIN / EBADF / EIO  locking works and we simply did not get it
+_FLOCK_UNSUPPORTED_ERRNOS = frozenset({errno.ENOSYS, errno.EOPNOTSUPP, errno.ENOTSUP})
 DIMENSIONAL_ROUTE_RECEIPT_SCHEMA_VERSION = 1
 ROUTE_AUTHORITY_RECEIPT_SCHEMA_VERSION = 1
 ROUTE_AUTHORITY_RECEIPT_DIRNAME = "route-authority"

@@ -2829,7 +2829,7 @@ def test_a_filesystem_without_flock_still_writes_the_receipt(
     """
 
     def unsupported_flock(fd: int, op: int) -> None:
-        raise OSError(errno.ENOLCK, "No locks available")
+        raise OSError(errno.EOPNOTSUPP, "Operation not supported")
 
     monkeypatch.setattr(dispatcher_policy, "ROUTE_DECISION_LEDGER_MAX_BYTES", 1)
     monkeypatch.setattr(dispatcher_policy.fcntl, "flock", unsupported_flock)
@@ -2847,6 +2847,49 @@ def test_a_filesystem_without_flock_still_writes_the_receipt(
         "rotation replaces the inode and must never run unserialised"
     )
     assert "unsupported" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("code", "name"),
+    [
+        (errno.ENOLCK, "ENOLCK"),
+        (errno.EINVAL, "EINVAL"),
+        (errno.EACCES, "EACCES"),
+        (errno.EIO, "EIO"),
+    ],
+)
+def test_lock_failures_that_are_not_capability_facts_refuse_the_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: int, name: str
+) -> None:
+    """Only "this operation does not exist here" licenses an unserialised append.
+
+    ENOLCK is the trap, and an earlier revision of this module got it wrong:
+    flock(2) returns it when the kernel runs out of lock RECORDS — resource
+    exhaustion, which usually means locks are in heavy use. Reading that as
+    "nobody can lock" would license an unlocked append at exactly the moment
+    other writers are locking and rotating. EINVAL is a malformed call, and
+    EACCES/EIO plainly mean locking works and we did not get it.
+
+    All of these must refuse rather than append.
+    """
+
+    def failing_flock(fd: int, op: int) -> None:
+        raise OSError(code, name)
+
+    monkeypatch.setattr(dispatcher_policy, "ROUTE_DECISION_LEDGER_MAX_BYTES", 1)
+    monkeypatch.setattr(dispatcher_policy, "_LEDGER_LOCK_RETRY_S", 0)
+    monkeypatch.setattr(dispatcher_policy.fcntl, "flock", failing_flock)
+    ledger = tmp_path / "route-decisions.jsonl"
+    original = "".join(f'{{"n": {i}}}\n' for i in range(120))
+    ledger.write_text(original, encoding="utf-8")
+
+    decision = evaluate_dispatch_policy(_request(), now=NOW)
+    with pytest.raises(RuntimeError):
+        write_route_decision_receipt(decision, ledger_dir=tmp_path)
+
+    assert ledger.read_text(encoding="utf-8") == original, (
+        f"{name} must not license an unserialised append"
+    )
 
 
 def test_a_persistent_flock_failure_warns_and_refuses_without_exploding_rotation(
