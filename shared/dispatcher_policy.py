@@ -8,11 +8,13 @@ route decision receipts.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
+import logging
 import os
-import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
@@ -32,6 +34,7 @@ from shared.capability_surface_delta import (
     CapabilitySurfaceDeltaError,
     load_capability_surface_delta_file,
 )
+from shared.jsonl_append import append_jsonl, lock_path_for
 from shared.jsonl_tail import read_tail_lines
 from shared.platform_capability_receipts import (
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
@@ -75,6 +78,8 @@ from shared.route_metadata_schema import (
     stable_payload_hash,
 )
 
+logger = logging.getLogger(__name__)
+
 ROUTE_DECISION_SCHEMA_VERSION = 1
 ROUTE_DECISION_LEDGER = "route-decisions.jsonl"
 # Rotation bounds for the append-only route-decision ledger. It reached 2.5 GB
@@ -84,9 +89,6 @@ ROUTE_DECISION_LEDGER = "route-decisions.jsonl"
 ROUTE_DECISION_LEDGER_MAX_BYTES = 64 * 1024 * 1024
 ROUTE_DECISION_LEDGER_CARRY_LINES = 2_000
 ROUTE_DECISION_LEDGER_CARRY_BYTES = 16 * 1024 * 1024
-# A rotation is seconds of work, so a lock held this long belongs to a process
-# that died holding it.
-ROUTE_DECISION_LEDGER_LOCK_STALE_S = 300.0
 DIMENSIONAL_ROUTE_RECEIPT_SCHEMA_VERSION = 1
 ROUTE_AUTHORITY_RECEIPT_SCHEMA_VERSION = 1
 ROUTE_AUTHORITY_RECEIPT_DIRNAME = "route-authority"
@@ -1110,70 +1112,62 @@ def evaluate_dispatch_policy(
     )
 
 
-def _acquire_rotate_lock(lock: Path) -> int | None:
-    """Take the rotation lock, reclaiming one abandoned by a dead process.
+@contextmanager
+def _ledger_lock(path: Path) -> Iterator[bool]:
+    """Hold the ledger's ``<name>.lock`` sidecar exclusively; yield whether we got it.
 
-    Without reclamation a process killed mid-rotation would leave the lock file
-    behind forever, rotation would never run again, and the ledger would resume
-    the unbounded growth this exists to stop — a silent regression back to the
-    2.5 GB state, which is exactly the failure mode that stayed invisible for
-    weeks the first time.
+    This is deliberately the SAME lock ``append_jsonl`` takes, obtained through
+    ``lock_path_for`` rather than re-derived, because rotation and append must
+    exclude each other. Rotation replaces the ledger inode; an append that slips
+    between the tail read and the replace lands in the old inode, survives only
+    in the ``.1`` archive, and is invisible to ``_latest_route_decision`` — which
+    then fails the connector gate closed on a receipt that was written
+    successfully. A lock that excludes only other rotations does not prevent that.
+
+    ``flock`` and not a lock file: the kernel drops it when the holder exits, so
+    a process killed mid-rotation cannot wedge rotation off forever. The previous
+    mtime-staleness reclamation was itself a loss vector — the mtime was fixed at
+    creation and never refreshed, so a live holder past the staleness window had
+    its lock stolen and two rotations interleaved.
     """
+    lock_fd: int | None = None
     try:
-        return os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        pass
-    except OSError:
-        return None
-
+        lock_fd = os.open(lock_path_for(path), os.O_WRONLY | os.O_CREAT, 0o600)
+    except OSError as exc:
+        logger.warning(
+            "route-decision ledger lock unavailable at %s (%s); appending unserialised. "
+            "Next: check the directory exists and is writable.",
+            lock_path_for(path),
+            exc,
+        )
+        yield False
+        return
     try:
-        held_for = time.time() - lock.stat().st_mtime
-    except OSError:
-        return None
-    if held_for < ROUTE_DECISION_LEDGER_LOCK_STALE_S:
-        return None
-
-    try:
-        lock.unlink()
-        return os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except OSError:
-        # Lost the race to another reclaimer; it will do the work.
-        return None
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)  # blocking; rotation is one bounded copy
+        yield True
+    finally:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(lock_fd)
 
 
-def rotate_route_decision_ledger(
-    path: Path,
-    *,
-    max_bytes: int = ROUTE_DECISION_LEDGER_MAX_BYTES,
-) -> bool:
-    """Cap the append-only route-decision ledger, carrying the recent tail forward.
-
-    Returns True when a rotation happened.
-
-    The carry-forward is the entire point. ``_latest_route_decision`` refuses
-    every side-effecting MCP call when it cannot find a recent row for the task,
-    so a rotation that merely truncated would hard-block the system it exists to
-    protect — and the unblock path itself runs through MCP. Rotation therefore
-    always leaves the newest rows in place, and the previous file survives one
-    generation as ``.1`` for audit.
-
-    Best-effort by construction: any failure returns False and leaves the ledger
-    untouched, because a write path must never lose a receipt to housekeeping.
-    """
+def _rotate_locked(path: Path, *, max_bytes: int) -> bool:
+    """Rotate assuming the ledger lock is already held. See the public wrapper."""
+    # Re-stat under the lock: a rotation we queued behind may already have done
+    # the work, and rotating again would discard the surviving generation.
     try:
         if path.stat().st_size <= max_bytes:
             return False
-    except OSError:
+    except OSError as exc:
+        logger.warning(
+            "route-decision ledger %s could not be stat'd for rotation (%s); "
+            "size capping is OFF for this write. Next: check the path and permissions.",
+            path,
+            exc,
+        )
         return False
 
-    lock = path.with_name(path.name + ".rotate.lock")
-    lock_fd = _acquire_rotate_lock(lock)
-    if lock_fd is None:
-        # Either another writer holds the lock or the directory is unwritable.
-        # Appending to the oversized file is strictly better than failing.
-        return False
-
-    os.close(lock_fd)
     staged = path.with_name(path.name + ".rotating")
     archive = path.with_name(path.name + ".1")
     try:
@@ -1186,16 +1180,57 @@ def rotate_route_decision_ledger(
             "".join(f"{line}\n" for line in carried if line.strip()), encoding="utf-8"
         )
         # Link before replace so the ledger path is never absent: a concurrent
-        # appender must always find a file to append to.
+        # reader must always find a file.
         archive.unlink(missing_ok=True)
         os.link(path, archive)
         staged.replace(path)
-    except OSError:
-        staged.unlink(missing_ok=True)
+    except OSError as exc:
+        # The cleanup must not raise on top of the failure it is cleaning up:
+        # an exception here escapes into write_route_decision_receipt and turns a
+        # contained housekeeping failure into a lost receipt.
+        with suppress(OSError):
+            staged.unlink(missing_ok=True)
+        logger.warning(
+            "route-decision ledger rotation of %s failed (%s); the ledger is intact but "
+            "UNCAPPED and will keep growing. Next: check free space and permissions on %s.",
+            path,
+            exc,
+            path.parent,
+        )
         return False
-    finally:
-        lock.unlink(missing_ok=True)
     return True
+
+
+def rotate_route_decision_ledger(
+    path: Path,
+    *,
+    max_bytes: int | None = None,
+) -> bool:
+    """Cap the append-only route-decision ledger, carrying the recent tail forward.
+
+    Returns True when a rotation happened.
+
+    The carry-forward is the entire point. ``_latest_route_decision`` refuses
+    every side-effecting MCP call when it cannot find a recent row for the task,
+    so a rotation that merely truncated would hard-block the system it exists to
+    protect — and the unblock path itself runs through MCP. Rotation therefore
+    always leaves the newest rows in place, and the previous file survives one
+    generation as ``.1`` for audit.
+
+    Failure leaves the ledger untouched — a write path must never lose a receipt
+    to housekeeping — but it is no longer silent. Degrading back to an uncapped
+    ledger is the exact regression this exists to stop, and it stayed invisible
+    for weeks the first time, so every non-noop failure path logs at WARNING with
+    a next action. The below-cap return is a normal no-op and stays quiet.
+
+    ``max_bytes=None`` resolves the cap at call time rather than binding it as a
+    default at import. Binding it made the constant unpatchable, which is a large
+    part of why the only production call site — ``write_route_decision_receipt``,
+    which passes no cap — had no test: exercising it meant writing 64 MiB.
+    """
+    cap = ROUTE_DECISION_LEDGER_MAX_BYTES if max_bytes is None else max_bytes
+    with _ledger_lock(path):
+        return _rotate_locked(path, max_bytes=cap)
 
 
 def write_route_decision_receipt(
@@ -1206,12 +1241,15 @@ def write_route_decision_receipt(
     target_dir = ledger_dir or Path.home() / ".cache" / "hapax" / "orchestration"
     target_dir.mkdir(parents=True, exist_ok=True)
     path = target_dir / ROUTE_DECISION_LEDGER
-    rotate_route_decision_ledger(path)
     payload = decision.model_dump(mode="json")
     if decision.dimensional_receipt is not None:
         payload.update(decision.dimensional_receipt.model_dump(mode="json"))
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(payload, sort_keys=True) + "\n")
+    # Rotate first so the newest receipt always lands in the ledger the gate reads,
+    # then append under the same lock. Both take <name>.lock, so no append can fall
+    # into the inode being rotated away. raising=True keeps the pre-existing
+    # contract that an unwritable ledger surfaces rather than being swallowed.
+    rotate_route_decision_ledger(path)
+    append_jsonl(path, payload, sort_keys=True, raising=True)
     return path
 
 

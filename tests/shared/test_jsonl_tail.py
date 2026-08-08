@@ -66,6 +66,45 @@ def test_max_bytes_caps_the_scan(tmp_path: Path) -> None:
     assert read_tail_lines(ledger, max_lines=10, max_bytes=4096, chunk_bytes=1024) == []
 
 
+def test_max_bytes_is_a_strict_bound_on_a_non_divisible_budget(tmp_path: Path) -> None:
+    """The cap must hold for budgets that are not a multiple of the chunk size.
+
+    The guard used to be checked only *before* each read while the read always
+    took a whole chunk, so the scan could exceed max_bytes by up to one
+    chunk_bytes. Evenly divisible test values hid it. This is the documented
+    defence against a ledger whose rows are enormous or whose newlines are
+    missing entirely, so an overshoot is the bound failing exactly where it is
+    load-bearing.
+    """
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text("x" * 1_000_000, encoding="utf-8")
+
+    read_bytes = 0
+    real_open = Path.open
+
+    def counting_open(self: Path, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        handle = real_open(self, *args, **kwargs)  # type: ignore[arg-type]
+        real_read = handle.read
+
+        def counting_read(*read_args: object, **read_kwargs: object):  # type: ignore[no-untyped-def]
+            nonlocal read_bytes
+            data = real_read(*read_args, **read_kwargs)  # type: ignore[arg-type]
+            read_bytes += len(data)
+            return data
+
+        handle.read = counting_read  # type: ignore[method-assign]
+        return handle
+
+    Path.open = counting_open  # type: ignore[method-assign]
+    try:
+        # 5000 is not a multiple of 1024: the old code read 5 full chunks (5120).
+        read_tail_lines(ledger, max_lines=10, max_bytes=5000, chunk_bytes=1024)
+    finally:
+        Path.open = real_open  # type: ignore[method-assign]
+
+    assert read_bytes <= 5000, f"scan read {read_bytes} bytes against a 5000-byte budget"
+
+
 def test_reads_far_less_than_the_file(tmp_path: Path) -> None:
     ledger = tmp_path / "ledger.jsonl"
     _write(ledger, [f"row-{i:06d}" for i in range(200_000)])

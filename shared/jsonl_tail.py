@@ -52,9 +52,16 @@ def read_tail_lines(
         end = handle.tell()
         pos = end
         while pos > 0:
-            if max_bytes is not None and (end - pos) >= max_bytes:
-                break
             step = min(chunk_bytes, pos)
+            if max_bytes is not None:
+                # Clamp to the remaining budget rather than only checking before
+                # the read: an unclamped step overshoots max_bytes by up to one
+                # chunk, so the documented defence against a ledger of enormous
+                # or newline-free rows was one chunk_bytes weaker than it reads.
+                remaining = max_bytes - (end - pos)
+                if remaining <= 0:
+                    break
+                step = min(step, remaining)
             pos -= step
             handle.seek(pos)
             block = handle.read(step)

@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
+from shared import dispatcher_policy
 from shared.dispatcher_policy import (
     LOCAL_DEV_PLATFORMS,
-    ROUTE_DECISION_LEDGER_LOCK_STALE_S,
     CandidateStatus,
     ClogRouteState,
     DispatchAction,
@@ -29,6 +32,7 @@ from shared.dispatcher_policy import (
     write_route_authority_receipt,
     write_route_decision_receipt,
 )
+from shared.jsonl_append import append_jsonl, lock_path_for
 from shared.mcp_connector_policy import _latest_route_decision
 from shared.platform_capability_registry import (
     PLATFORM_CAPABILITY_REGISTRY,
@@ -2551,30 +2555,130 @@ def test_rotation_keeps_the_newest_row_findable_by_the_connector_gate(tmp_path: 
     assert found["task_id"] == "live-task"
 
 
-def test_rotation_failure_leaves_the_ledger_intact(tmp_path: Path) -> None:
-    """A held lock means another writer is rotating; this one must just append."""
+def test_rotation_failure_leaves_the_ledger_intact_and_says_so(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Degrading back to an uncapped ledger must never be silent.
+
+    The failure this module exists to stop stayed invisible for weeks and reached
+    2.5 GB. A rotation that quietly returns False restores exactly that condition,
+    so the operator has to be told, with a next action.
+    """
     ledger = tmp_path / "route-decisions.jsonl"
     payload = "".join(f'{{"n": {i}}}\n' for i in range(100))
     ledger.write_text(payload, encoding="utf-8")
-    (tmp_path / "route-decisions.jsonl.rotate.lock").write_text("", encoding="utf-8")
+    # Occupy the staging name with a directory so replace() cannot succeed.
+    (tmp_path / "route-decisions.jsonl.rotating").mkdir()
 
-    assert rotate_route_decision_ledger(ledger, max_bytes=1) is False
+    with caplog.at_level(logging.WARNING, logger="shared.dispatcher_policy"):
+        assert rotate_route_decision_ledger(ledger, max_bytes=1) is False
+
     assert ledger.read_text(encoding="utf-8") == payload
+    assert caplog.records, "a failed rotation must not be silent"
+    assert "UNCAPPED" in caplog.text
+    assert "Next:" in caplog.text, "the warning must carry an operator next action"
 
 
-def test_rotation_reclaims_a_lock_abandoned_by_a_dead_process(tmp_path: Path) -> None:
-    """Otherwise one crash mid-rotation disables rotation forever and the ledger
-    resumes the unbounded growth this exists to stop."""
+def test_a_lock_file_left_by_a_dead_process_does_not_wedge_rotation(
+    tmp_path: Path,
+) -> None:
+    """The kernel drops flock when the holder exits, so no reclamation is needed.
+
+    The previous mtime-staleness scheme was itself a loss vector: the lock mtime
+    was fixed at creation and never refreshed, so a live holder that ran past the
+    window had its lock stolen and two rotations interleaved.
+    """
     ledger = tmp_path / "route-decisions.jsonl"
     ledger.write_text("".join(f'{{"n": {i}}}\n' for i in range(100)), encoding="utf-8")
-    lock = tmp_path / "route-decisions.jsonl.rotate.lock"
+    # A stale sidecar with an ancient mtime — the old code's "dead process" shape.
+    lock = tmp_path / "route-decisions.jsonl.lock"
     lock.write_text("", encoding="utf-8")
-    stale = time.time() - (ROUTE_DECISION_LEDGER_LOCK_STALE_S + 60)
-    os.utime(lock, (stale, stale))
+    ancient = time.time() - 86_400
+    os.utime(lock, (ancient, ancient))
 
     assert rotate_route_decision_ledger(ledger, max_bytes=1) is True
-    assert not lock.exists(), "the reclaimed lock must be released again"
     assert ledger.read_text(encoding="utf-8").strip(), "ledger must not be emptied"
+
+
+def test_rotation_and_append_share_one_lock(tmp_path: Path) -> None:
+    """Rotation must take the SAME sidecar append_jsonl takes.
+
+    A separately-derived lock path looks like mutual exclusion and provides none.
+    """
+    ledger = tmp_path / "route-decisions.jsonl"
+    assert lock_path_for(ledger) == tmp_path / "route-decisions.jsonl.lock"
+
+
+def test_rotation_does_not_discard_a_concurrently_appended_receipt(
+    tmp_path: Path,
+) -> None:
+    """The reported critical: an append landing mid-rotation was lost.
+
+    Rotation reads the tail, then links the ledger to ``.1`` and replaces the
+    path. An appender that slipped into that gap wrote to the old inode, so its
+    row survived only in the archive and was invisible to the connector gate —
+    which then failed closed on a receipt that had been written successfully.
+
+    The appender runs on a thread and blocks on the shared flock; a separate
+    ``open`` is a separate open-file-description, so the kernel denies it even
+    within one process. The barrier makes it deterministic: rotation does not
+    proceed past the tail read until the appender is committed to writing.
+    """
+    ledger = tmp_path / "route-decisions.jsonl"
+    ledger.write_text("".join(f'{{"n": {i}}}\n' for i in range(500)), encoding="utf-8")
+
+    appender_started = threading.Event()
+    appended = {"row": '{"receipt": "written-during-rotation"}'}
+
+    def _append() -> None:
+        appender_started.set()
+        append_jsonl(ledger, json.loads(appended["row"]), sort_keys=True)
+
+    thread = threading.Thread(target=_append, daemon=True)
+    real_tail = dispatcher_policy.read_tail_lines
+
+    def _tail_then_race(*args: object, **kwargs: object) -> list[str]:
+        carried = real_tail(*args, **kwargs)
+        thread.start()
+        appender_started.wait(timeout=5)
+        time.sleep(0.2)  # let the appender reach and block on the flock
+        return carried
+
+    with mock.patch.object(dispatcher_policy, "read_tail_lines", _tail_then_race):
+        assert rotate_route_decision_ledger(ledger, max_bytes=1) is True
+    thread.join(timeout=5)
+    assert not thread.is_alive(), "the appender must not still be blocked"
+
+    active = ledger.read_text(encoding="utf-8")
+    assert "written-during-rotation" in active, (
+        "a receipt appended during rotation was lost from the active ledger"
+    )
+
+
+def test_write_receipt_rotates_an_over_cap_ledger_and_still_appends(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The only production call site of rotation, and it had no test.
+
+    Every rotation test called the function directly, so a regression that
+    rotated *after* the append — dropping the row just written — or removed the
+    call entirely would have passed the whole suite.
+    """
+    monkeypatch.setattr(dispatcher_policy, "ROUTE_DECISION_LEDGER_MAX_BYTES", 1)
+    ledger = tmp_path / "route-decisions.jsonl"
+    ledger.write_text("".join(f'{{"n": {i}}}\n' for i in range(500)), encoding="utf-8")
+
+    decision = evaluate_dispatch_policy(_request(), now=NOW)
+    path = write_route_decision_receipt(decision, ledger_dir=tmp_path)
+
+    assert path == ledger
+    assert (tmp_path / "route-decisions.jsonl.1").exists(), "rotation must have run"
+    assert decision.decision_id in ledger.read_text(encoding="utf-8"), (
+        "the receipt written after rotation must survive in the ledger the gate reads"
+    )
+    assert (
+        _latest_route_decision(task_id=decision.task_id, role=None, ledger_path=ledger) is not None
+    ), "the connector gate must still find the row it needs"
 
 
 def test_glmcp_launch_receipt_persists_quota_evidence(tmp_path: Path) -> None:
