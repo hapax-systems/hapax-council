@@ -163,9 +163,11 @@ jobs:
             fi
           done < "$changed_files"
 
-          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
-          echo "changed_count=$changed_count" >> "$GITHUB_OUTPUT"
-          echo "python_prod_dependency_witness=$python_prod_dependency_witness" >> "$GITHUB_OUTPUT"
+          {
+            echo "docs_only=$docs_only"
+            echo "changed_count=$changed_count"
+            echo "python_prod_dependency_witness=$python_prod_dependency_witness"
+          } >> "$GITHUB_OUTPUT"
           if [ "$docs_only" = true ]; then
             echo "Docs-only change set detected; required jobs will report sentinel success."
           else

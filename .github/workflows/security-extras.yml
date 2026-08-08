@@ -21,9 +21,32 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
-      - uses: docker://rhysd/actionlint:1.7.12
-        with:
-          args: -color
+      # This job ran `docker://rhysd/actionlint:1.7.12` until 2026-08-08. The repo
+      # sets `sha_pinning_required: true`, and a `:tag` docker reference is not a
+      # pinned reference, so every run since 2026-06-25 died as `startup_failure`
+      # — which files no check-run, so `all-green` never observed the outage and
+      # workflow-file lint went unenforced for 44 days. Digest-pinning the image
+      # would trade one startup failure for another: the allowlist entry is
+      # `docker://rhysd/actionlint:*`, which a `@sha256:` reference does not match.
+      # A checksum-verified binary in a `run:` step is subject to neither the
+      # pinning policy nor the allowlist, so this job can no longer be killed by a
+      # settings change made elsewhere.
+      - name: Install actionlint (checksum-pinned)
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --retry 3 -o "$tarball" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
+          echo "${ACTIONLINT_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" actionlint
+          install -m 0755 actionlint "${RUNNER_TEMP}/actionlint"
+      - name: Run actionlint
+        run: |
+          set -euo pipefail
+          "${RUNNER_TEMP}/actionlint" -color
 
   rust-audit:
     runs-on: ubuntu-latest
