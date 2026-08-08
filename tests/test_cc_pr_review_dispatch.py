@@ -1855,6 +1855,19 @@ checklist:
         )
         assert seen.get("repo_root") == Path("/tmp/other")
 
+    def test_repo_root_flag_plumbs_to_review_all_open_prs(self, monkeypatch) -> None:
+        """The --all path takes the flag too (codex r1) — a scan over another repo must not
+        excerpt from the council checkout either."""
+        seen: dict = {}
+
+        def fake_review_all(**kwargs):
+            seen.update(kwargs)
+            return []
+
+        monkeypatch.setattr(dispatch, "review_all_open_prs", fake_review_all)
+        assert dispatch.main(["--all", "--repo", "owner/other", "--repo-root", "/tmp/other"]) == 0
+        assert seen.get("repo_root") == Path("/tmp/other")
+
     def test_repo_root_default_keeps_the_script_checkout(self, monkeypatch) -> None:
         seen: dict = {}
 
