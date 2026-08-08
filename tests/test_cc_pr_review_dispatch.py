@@ -1839,6 +1839,33 @@ checklist:
             assert "[diff truncated" in prompt
             assert "balanced later file sentinel" in prompt
 
+    def test_repo_root_flag_plumbs_to_review_pr(self, monkeypatch) -> None:
+        """REQ-20260807: --repo-root must reach review_pr/review_all_open_prs — without it the
+        excerpt builder reads the council checkout for every --repo and ships
+        evidence_unavailable cross-repo."""
+        seen: dict = {}
+
+        def fake_review_pr(pr_number, **kwargs):
+            seen.update(kwargs)
+            return {"status": "plan"}
+
+        monkeypatch.setattr(dispatch, "review_pr", fake_review_pr)
+        assert (
+            dispatch.main(["--pr", "7", "--repo", "owner/other", "--repo-root", "/tmp/other"]) == 0
+        )
+        assert seen.get("repo_root") == Path("/tmp/other")
+
+    def test_repo_root_default_keeps_the_script_checkout(self, monkeypatch) -> None:
+        seen: dict = {}
+
+        def fake_review_pr(pr_number, **kwargs):
+            seen.update(kwargs)
+            return {"status": "plan"}
+
+        monkeypatch.setattr(dispatch, "review_pr", fake_review_pr)
+        assert dispatch.main(["--pr", "7"]) == 0
+        assert seen.get("repo_root") is None  # review_pr applies REPO_ROOT
+
     def test_dispatcher_killswitch_exits_without_action(self, monkeypatch) -> None:
         def fail_if_called(*args, **kwargs):
             raise AssertionError("dispatcher passed the killswitch")

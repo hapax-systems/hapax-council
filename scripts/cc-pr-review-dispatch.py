@@ -3044,6 +3044,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--apply", action="store_true", help="dispatch reviewers (default: plan)")
     parser.add_argument("--force", action="store_true", help="re-review an already-reviewed sha")
     parser.add_argument("--repo", default=DEFAULT_REPO)
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=None,
+        help=(
+            "local checkout of --repo used to pin current-source excerpts via git show at the "
+            "PR head (default: this script's own checkout — correct only when --repo IS that "
+            "checkout's repo; without this, cross-repo excerpts degrade to evidence_unavailable "
+            "and seats review blind — REQ-20260807)"
+        ),
+    )
     parser.add_argument("--vault-root", type=Path, default=DEFAULT_VAULT_ROOT)
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
@@ -3051,17 +3062,28 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(levelname)s %(name)s: %(message)s",
     )
+    if args.repo != DEFAULT_REPO and args.repo_root is None:
+        LOG.warning(
+            "--repo %s without --repo-root: current-source excerpts will degrade to "
+            "evidence_unavailable (the checkout backing this script is not that repo)",
+            args.repo,
+        )
     if os.environ.get(KILLSWITCH_ENV, "").strip().lower() in TRUTHY_ENV_VALUES:
         LOG.warning("%s set — dispatcher disabled, exiting without action", KILLSWITCH_ENV)
         return 0
     if args.all:
         results: Any = review_all_open_prs(
-            repo=args.repo, vault_root=args.vault_root, apply=args.apply, force=args.force
+            repo=args.repo,
+            repo_root=args.repo_root,
+            vault_root=args.vault_root,
+            apply=args.apply,
+            force=args.force,
         )
     else:
         results = review_pr(
             args.pr,
             repo=args.repo,
+            repo_root=args.repo_root,
             vault_root=args.vault_root,
             apply=args.apply,
             force=args.force,
