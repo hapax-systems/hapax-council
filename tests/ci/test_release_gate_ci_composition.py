@@ -18,7 +18,11 @@ file makes it loud instead.
 from __future__ import annotations
 
 import ast
+import os
 import re
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -186,6 +190,60 @@ def test_pin_set_tracks_the_send_surface_state() -> None:
         assert "test_send_asserts_authority_then_is_not_yet_wired" not in names
         missing = set(WIRED_SEND_PINS) - names
         assert not missing, f"send is wired but the required pin set lacks: {sorted(missing)}"
+
+
+def test_authority_pins_kill_the_authority_bypass_mutant(tmp_path: Path) -> None:
+    # Mutation-kill: the semantic layer, machine-witnessed. Every static guard
+    # against vacuity is ultimately syntactic; the durable validation of a
+    # pin's SEMANTICS is that it kills mutants. Overlay shared/ + the pin file,
+    # remove the send authority gate, and run the authority pins: they MUST
+    # fail against the mutant. If the pins ever go vacuous (assert True,
+    # assert object(), a raises-guard around nothing), they stop failing
+    # against the mutant and THIS test fails instead. This is the layer no
+    # AST guard can be: execution against a deliberately broken boundary.
+    overlay = tmp_path / "overlay"
+    (overlay / "tests").mkdir(parents=True)
+    shutil.copytree(REPO_ROOT / "shared", overlay / "shared")
+    shutil.copy(PIN_FILE, overlay / "tests" / PIN_FILE.name)
+    protocol = overlay / "shared" / "capability_adapter_protocol.py"
+    source = protocol.read_text(encoding="utf-8")
+    gate = '_require_launch_authority(decision, op="send")'
+    assert gate in source, "send authority gate line moved — re-target the mutant"
+    protocol.write_text(
+        source.replace(gate, "None  # MUTANT: send authority gate removed", 1),
+        encoding="utf-8",
+    )
+
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    env["PYTHONPATH"] = str(overlay)
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--confcutdir=tests",
+            f"tests/{PIN_FILE.name}",
+            "-q",
+            "--no-header",
+            "-p",
+            "no:cacheprovider",
+            "-k",
+            "send_asserts_authority or launch_raises_authority",
+        ],
+        cwd=overlay,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=180,
+        check=False,
+    )
+    assert run.returncode != 0 and "failed" in run.stdout, (
+        "the authority pins did not FAIL against an authority-bypassed mutant "
+        "(or the mutant run never executed) — they are semantically vacuous, "
+        "and the egress class's behavioral evidence is unreal:\n"
+        + run.stdout[-800:]
+        + run.stderr[-400:]
+    )
 
 
 def test_pr_admission_slice_still_excludes_the_pin_file() -> (
