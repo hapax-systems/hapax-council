@@ -342,7 +342,11 @@ def startup_failure_streak(conclusions: Sequence[str]) -> int:
 def active_workflows(repo: str) -> list[dict[str, object]]:
     data = gh_json("api", f"repos/{repo}/actions/workflows?per_page=100")
     if not isinstance(data, dict) or not isinstance(data.get("workflows"), list):
-        raise RuntimeError(f"could not list workflows for {repo}")
+        raise RuntimeError(
+            f"could not list workflows for {repo}. "
+            "Next: check `gh auth status`, confirm the token can read Actions on "
+            f"{repo}, check `gh api rate_limit`, then re-run the audit."
+        )
     return [
         item
         for item in data["workflows"]
@@ -367,7 +371,11 @@ def recent_run_conclusions(repo: str) -> dict[int, list[str]]:
             f"&page={page}",
         )
         if not isinstance(data, dict) or not isinstance(data.get("workflow_runs"), list):
-            raise RuntimeError(f"could not list runs for {repo}")
+            raise RuntimeError(
+                f"could not list runs for {repo} (page {page}). "
+                "Next: check `gh auth status`, confirm the token can read Actions on "
+                f"{repo}, check `gh api rate_limit`, then re-run the audit."
+            )
         runs = data["workflow_runs"]
         for run in runs:
             if not isinstance(run, dict):

@@ -31,6 +31,17 @@ jobs:
       # A checksum-verified binary in a `run:` step is subject to neither the
       # pinning policy nor the allowlist, so this job can no longer be killed by a
       # settings change made elsewhere.
+      # ACTIONLINT_SHA256 is the sole integrity control on a binary fetched from
+      # the network and then executed in CI, so its provenance and refresh
+      # procedure belong next to the value rather than in a commit message.
+      # Source: the `actionlint_<version>_checksums.txt` asset on the upstream
+      # release. To bump the version, replace both values together and verify:
+      #   v=1.7.13  # the new version
+      #   curl -fsSL -O "https://github.com/rhysd/actionlint/releases/download/v$v/actionlint_${v}_checksums.txt"
+      #   grep "actionlint_${v}_linux_amd64.tar.gz" "actionlint_${v}_checksums.txt"
+      # The digest printed there is what ACTIONLINT_SHA256 must equal. A bump
+      # that changes the version without the checksum fails `sha256sum -c` and
+      # stops the job, which is the intended behaviour.
       - name: Install actionlint (checksum-pinned)
         env:
           ACTIONLINT_VERSION: 1.7.12

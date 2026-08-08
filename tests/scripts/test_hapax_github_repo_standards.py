@@ -5,10 +5,8 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    import pytest
+import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -172,6 +170,60 @@ def test_recent_run_conclusions_groups_by_workflow_and_stops_paging(
     # Newest-first order preserved, and capped at the streak limit per workflow.
     assert grouped[1] == ["startup_failure", "startup_failure", "startup_failure"]
     assert grouped[2] == ["success"]
+
+
+def test_active_workflows_filters_state_and_guards_non_dict_items(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The only function in this group that was never tested directly.
+
+    Everywhere else it is monkeypatched away, so its ``state == "active"``
+    filter and its non-dict guard were both unexercised.
+    """
+    audit = _load(
+        "hapax_github_repo_standards_audit_active",
+        REPO / "scripts/hapax-github-repo-standards-audit.py",
+    )
+    monkeypatch.setattr(
+        audit,
+        "gh_json",
+        lambda *args: {
+            "workflows": [
+                {"id": 1, "state": "active"},
+                {"id": 2, "state": "disabled_manually"},
+                {"id": 3, "state": "disabled_inactivity"},
+                "not-a-dict",
+                {"id": 4, "state": "active"},
+            ]
+        },
+    )
+
+    assert [w["id"] for w in audit.active_workflows("o/r")] == [1, 4]
+
+
+def test_workflow_listing_errors_name_an_operator_next_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed API response is what audit_repo converts into a Finding.
+
+    Both error paths were untested, and an error with no next action violates
+    the executive_function axiom the audit itself reports against.
+    """
+    audit = _load(
+        "hapax_github_repo_standards_audit_errs",
+        REPO / "scripts/hapax-github-repo-standards-audit.py",
+    )
+
+    monkeypatch.setattr(audit, "gh_json", lambda *args: {"unexpected": True})
+    with pytest.raises(RuntimeError) as workflows_exc:
+        audit.active_workflows("o/r")
+    with pytest.raises(RuntimeError) as runs_exc:
+        audit.recent_run_conclusions("o/r")
+
+    for exc in (workflows_exc, runs_exc):
+        assert "Next:" in str(exc.value), "an error must tell the operator what to do"
+        assert "gh auth status" in str(exc.value)
+        assert "rate_limit" in str(exc.value)
 
 
 def test_audit_workflow_health_flags_dead_workflow(monkeypatch: pytest.MonkeyPatch) -> None:

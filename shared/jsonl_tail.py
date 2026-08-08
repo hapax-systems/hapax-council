@@ -10,6 +10,17 @@ in front of every side-effecting MCP call.
 lines, so cost is proportional to what the caller asked for rather than to the
 file. Both bounds matter: ``max_lines`` covers the normal case, ``max_bytes``
 covers a ledger whose rows are enormous or whose newlines are missing entirely.
+
+**Truncation is not observable to the caller.** The return value of a scan that
+stopped at a bound is indistinguishable from one that reached the start of the
+file, so a caller that scans for malformed rows learns "no malformed rows *in the
+window we read*" and cannot tell it apart from "no malformed rows". Consumers
+that treat absence as an all-clear — ``shared/mcp_connector_policy`` reads this
+ledger to answer route-decision questions — are narrowing their evidence without
+being told. That is a deliberate trade for bounded cost, but it belongs where the
+result is consumed and not only where the bound was introduced. Anything that
+needs to distinguish the two cases must compare against the file size itself, or
+this function needs to grow a returned truncation flag.
 """
 
 from __future__ import annotations

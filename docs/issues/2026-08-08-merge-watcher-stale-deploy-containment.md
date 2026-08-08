@@ -59,6 +59,33 @@ Either is sufficient, and the second supersedes the first:
 1. `systemctl --user stop hapax-cc-pr-merge-watcher.timer`
 2. Refresh `~/.cache/hapax/source-activation/worktree` to `origin/main`
 
+## Recheck
+
+Every state claim above is a one-off observation from 2026-08-08 and may no
+longer hold. These reproduce all of them. The last one is the check whose
+absence this document is about, written out so a reader can run the comparison
+that no automation currently makes:
+
+```bash
+# Which tree does the unit actually run from?
+systemctl --user cat hapax-cc-pr-merge-watcher.service | grep ExecStart
+
+# Is the containment applied?
+systemctl --user is-active hapax-cc-pr-merge-watcher.timer
+systemctl --user is-enabled hapax-cc-pr-merge-watcher.timer
+systemctl --user show hapax-cc-pr-merge-watcher.timer -p LastTriggerUSec
+
+# Does the deployed copy carry the pr_repo fix? (0 = stale, >0 = fixed)
+grep -c pr_repo ~/.cache/hapax/source-activation/worktree/scripts/cc-pr-merge-watcher.py
+
+# THE GAP: deployed HEAD vs origin/main. Equal output means the deploy is current.
+git -C ~/.cache/hapax/source-activation/worktree rev-parse HEAD
+git -C ~/projects/hapax-council rev-parse origin/main
+```
+
+A reader who finds the last two SHAs unequal is looking at the same class of
+staleness this document reports, whatever the current commits happen to be.
+
 ## The deploy dependency is the actual point
 
 **A code change to `scripts/cc-pr-merge-watcher.py` cannot fix this.** The fix
