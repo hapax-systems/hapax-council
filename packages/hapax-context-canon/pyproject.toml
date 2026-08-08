@@ -44,6 +44,12 @@ include = [
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+# MUST be declared HERE, not inherited. Ruff's config discovery is hierarchical:
+# this file is the config root for its own subtree, so the repo-root ruff.toml's
+# `exclude = ["*.md"]` cannot reach it. A package config without this exclusion is
+# how markdown got formatted by ruff and sealed the merge queue for 23 days on
+# 2026-07-11. Pinned by tests/test_ruff_markdown_exclusion.py.
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
