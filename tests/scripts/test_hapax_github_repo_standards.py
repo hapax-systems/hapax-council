@@ -110,6 +110,66 @@ def test_unpinned_container_images_flags_floating_images() -> None:
     assert audit.unpinned_container_images(workflow) == ["semgrep/semgrep"]
 
 
+def test_unpinned_docker_uses_flags_tag_refs_but_not_digests() -> None:
+    audit = _load(
+        "hapax_github_repo_standards_audit_docker",
+        REPO / "scripts/hapax-github-repo-standards-audit.py",
+    )
+
+    digest = "sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667"
+    workflow = f"""
+    steps:
+      - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744
+      - uses: docker://rhysd/actionlint:1.7.12
+      - uses: docker://rhysd/actionlint@{digest}
+    """
+
+    assert audit.unpinned_docker_uses(workflow) == ["docker://rhysd/actionlint:1.7.12"]
+
+
+def test_startup_failure_streak_counts_only_the_head_run() -> None:
+    audit = _load(
+        "hapax_github_repo_standards_audit_streak",
+        REPO / "scripts/hapax-github-repo-standards-audit.py",
+    )
+
+    assert audit.startup_failure_streak([]) == 0
+    assert audit.startup_failure_streak(["startup_failure"] * 3) == 3
+    # Recovered: the outage is history, not a current fault.
+    assert audit.startup_failure_streak(["success", "startup_failure", "startup_failure"]) == 0
+    assert audit.startup_failure_streak(["startup_failure", "success", "startup_failure"]) == 1
+
+
+def test_audit_workflow_health_flags_dead_workflow(monkeypatch: pytest.MonkeyPatch) -> None:
+    audit = _load(
+        "hapax_github_repo_standards_audit_health",
+        REPO / "scripts/hapax-github-repo-standards-audit.py",
+    )
+
+    monkeypatch.setattr(
+        audit,
+        "active_workflows",
+        lambda repo: [
+            {"id": 1, "path": ".github/workflows/security-extras.yml"},
+            {"id": 2, "path": ".github/workflows/ci.yml"},
+            {"id": 3, "path": ".github/workflows/brand-new.yml"},
+        ],
+    )
+    runs = {
+        1: ["startup_failure", "startup_failure", "startup_failure"],
+        2: ["success", "success", "startup_failure"],
+        3: ["startup_failure"],  # too few runs to earn the verdict
+    }
+    monkeypatch.setattr(audit, "recent_run_conclusions", lambda repo, wid, limit: runs[wid][:limit])
+
+    messages = [f.message for f in audit.audit_workflow_health("hapax-systems/hapax-council")]
+
+    assert len(messages) == 1
+    assert messages[0].startswith(
+        ".github/workflows/security-extras.yml is active but dead: 3 consecutive startup_failure"
+    )
+
+
 def test_audit_repo_reports_owner_and_workflow_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
     audit = _load(
         "hapax_github_repo_standards_audit_repo",
@@ -124,6 +184,8 @@ def test_audit_repo_reports_owner_and_workflow_baseline(monkeypatch: pytest.Monk
 
     monkeypatch.setattr(audit, "gh_ok", lambda *args: args[-1] in audit.REQUIRED_FILES)
     monkeypatch.setattr(audit, "read_file", lambda repo, path: files.get(path))
+    # Run health needs the live Actions API; covered by its own test above.
+    monkeypatch.setattr(audit, "audit_workflow_health", lambda repo: [])
     monkeypatch.setattr(audit, "default_branch", lambda repo: "main")
     monkeypatch.setattr(audit, "workflow_paths", lambda repo, ref: [".github/workflows/ci.yml"])
     monkeypatch.setattr(
