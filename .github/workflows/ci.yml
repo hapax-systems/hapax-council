@@ -469,6 +469,12 @@ jobs:
     # deliberately does NOT include this file; without this job the class's
     # behavioral evidence existed only at merge-queue time (test-full-shard).
     # Composition pinned by tests/ci/test_release_gate_ci_composition.py.
+    # The docs-only sentinel is consistent with sibling jobs and safe here:
+    # a docs-only-classified diff cannot change send behavior, and a task
+    # titled egress-sensitive whose diff carries no egress code has no
+    # egress behavior to mitigate. Required transitively: branch protection
+    # requires all-green, and all-green needs this job (single-aggregate
+    # required-context design).
     needs: [docs_only_filter, post_merge_duplicate_filter]
     runs-on: ubuntu-latest
     timeout-minutes: 10
