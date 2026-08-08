@@ -80,11 +80,13 @@ def test_egress_boundary_pin_job_executes_the_pin_file_per_pr() -> None:
 
 
 def test_egress_pin_file_still_contains_the_named_behavior_pins() -> None:
-    # Content-addressed, not name-addressed: each required pin must exist AND
-    # carry a behavioral assertion (an `assert` statement or a pytest.raises
-    # guard) — a gutted body with a kept name still fails here. Beyond that,
-    # semantic fidelity is the quorum's and the merge-queue full suite's layer;
-    # this suite's job is that the evidence can never silently go vacuous.
+    # Content-addressed, not name-addressed. Each required pin must exist AND
+    # carry a NON-CONSTANT behavioral assertion: an `assert` whose test is not
+    # a bare constant (assert True/1/... fails here), or a pytest.raises guard
+    # naming a concrete exception. A gutted body, or one reseeded with
+    # `assert True`, both fail. Beyond non-vacuity, semantic fidelity is the
+    # quorum's and the merge-queue full suite's layer — execution on every PR
+    # plus the full suite at landing, reviewed at the head.
     tree = ast.parse(PIN_FILE.read_text(encoding="utf-8"))
     functions = {
         node.name: node
@@ -94,9 +96,9 @@ def test_egress_pin_file_still_contains_the_named_behavior_pins() -> None:
     missing = [name for name in REQUIRED_EGRESS_PINS if name not in functions]
     assert not missing, f"egress pin file lost behavior pins: {missing}"
 
-    def has_assertion(node: ast.AST) -> bool:
+    def has_substantive_assertion(node: ast.AST) -> bool:
         for child in ast.walk(node):
-            if isinstance(child, ast.Assert):
+            if isinstance(child, ast.Assert) and not isinstance(child.test, ast.Constant):
                 return True
             if isinstance(child, ast.With):
                 for item in child.items:
@@ -105,12 +107,28 @@ def test_egress_pin_file_still_contains_the_named_behavior_pins() -> None:
                         isinstance(call, ast.Call)
                         and isinstance(call.func, ast.Attribute)
                         and call.func.attr == "raises"
+                        and call.args
                     ):
                         return True
         return False
 
-    vacuous = [name for name in REQUIRED_EGRESS_PINS if not has_assertion(functions[name])]
-    assert not vacuous, f"egress pins lost their assertions (vacuous bodies): {vacuous}"
+    vacuous = [
+        name for name in REQUIRED_EGRESS_PINS if not has_substantive_assertion(functions[name])
+    ]
+    assert not vacuous, f"egress pins lost their substantive assertions: {vacuous}"
+
+
+def test_composition_suite_itself_runs_in_the_required_full_shard() -> None:
+    # This file is the evidence-integrity layer for the class; it must itself
+    # execute in a required job. test-full-shard collects from the tests/ root
+    # (so tests/ci/ is inside it) and is in all-green's needs — the landing
+    # gate cannot pass without this suite running.
+    shard_job = _ci()["jobs"]["test-full-shard"]
+    run_steps = [str(step.get("run", "")) for step in shard_job["steps"]]
+    assert any(re.search(r"pytest\s+tests/\s+--collect-only", run) for run in run_steps), (
+        "test-full-shard no longer collects from the tests/ root — is tests/ci/ still inside?"
+    )
+    assert "test-full-shard" in set(_ci()["jobs"]["all-green"]["needs"])
 
 
 def test_pr_admission_slice_still_excludes_the_pin_file() -> None:
