@@ -41,24 +41,31 @@ def read_tail_lines(
     if max_lines <= 0:
         return []
 
+    # Collect chunks newest-first and join once. Prepending to a bytes buffer per
+    # chunk would recopy the whole window each time — quadratic in chunk count,
+    # which for an 8 MiB window is hundreds of MB of pointless copying on a path
+    # that runs before every side-effecting MCP call.
+    chunks: list[bytes] = []
+    newlines = 0
     with path.open("rb") as handle:
         handle.seek(0, io.SEEK_END)
         end = handle.tell()
         pos = end
-        buffer = b""
         while pos > 0:
             if max_bytes is not None and (end - pos) >= max_bytes:
                 break
             step = min(chunk_bytes, pos)
             pos -= step
             handle.seek(pos)
-            buffer = handle.read(step) + buffer
+            block = handle.read(step)
+            chunks.append(block)
+            newlines += block.count(b"\n")
             # Strictly more newlines than requested lines guarantees that
             # max_lines complete lines survive dropping the leading partial.
-            if buffer.count(b"\n") > max_lines:
+            if newlines > max_lines:
                 break
 
-    lines = buffer.decode(encoding, errors="replace").splitlines()
+    lines = b"".join(reversed(chunks)).decode(encoding, errors="replace").splitlines()
     if pos > 0 and lines:
         lines = lines[1:]
     return lines[-max_lines:]
