@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from shared.sdlc_lifecycle import (
     RELEASE_MITIGATION_CHECKS,
+    REVIEW_TEAM_QUORUM_EVIDENCE,
     apply_release_auto_arm,
     assess_release_auto_arm,
     release_auto_arm_waivers,
@@ -132,7 +133,9 @@ def test_audio_or_live_egress_sensitive_held_per_missing_mitigation_check() -> N
 
 def test_audio_path_scope_stays_human_released_with_full_evidence() -> None:
     # config/pipewire/ is a SENSITIVE_PATH_MARKERS hit: the audio lane keeps its
-    # human release even when the class's mitigation evidence is complete.
+    # human release even when the class's mitigation evidence is complete. The
+    # remaining hold is exactly the path gate — with full evidence supplied, no
+    # flag-derived blocker survives (the independence pin for the new entry).
     fm = _eligible_frontmatter(
         risk_flags={"audio_or_live_egress_sensitive": True},
         mutation_scope_refs=["config/pipewire/routes.conf", "scripts/hapax-audio-routing-check"],
@@ -144,6 +147,19 @@ def test_audio_path_scope_stays_human_released_with_full_evidence() -> None:
     assert any(
         "sensitive_path:config/pipewire/routes.conf" in blocker
         for blocker in assessment.blockers
+    )
+    assert not any("audio_or_live_egress" in blocker for blocker in assessment.blockers)
+
+
+def test_audio_or_live_egress_mitigation_contract_is_exact() -> None:
+    # Drift pin: this tuple IS what the release gate accepts as mitigation for a
+    # live-egress class. Extending or narrowing it changes what the system will
+    # release — a ratification act, never an edit. Update this test deliberately.
+    assert RELEASE_MITIGATION_CHECKS["audio_or_live_egress_sensitive"] == (
+        "authority-case-check",
+        "capability-surface-delta",
+        "secrets-scan",
+        REVIEW_TEAM_QUORUM_EVIDENCE,
     )
 
 

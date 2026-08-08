@@ -507,14 +507,17 @@ RELEASE_MITIGATION_CHECKS: dict[str, tuple[str, ...]] = {
     # wiring) auto-arms on four machine-verified evidences: the authority case
     # binds the boundary to its ratified spec; the capability-surface delta gate
     # proves any capability-surface change is declared under the typed contract
-    # (the job runs in ci.yml on every PR, so the gate never holds a PR for a
-    # check that never ran); the secret scanner proves the diff carries no
-    # committed credential; and quorum-accept at the current head covers the
-    # boundary logic itself. Audio-routing changes (config/pipewire/) remain
-    # human-released through the sensitive-path gate (SENSITIVE_PATH_MARKERS),
-    # so this class in practice holds relay/send-boundary work — the shape this
-    # evidence covers. Defined per this map's own doctrine (extend the map,
-    # never add a manual-arm path): cc-task-release-arm-held-sensitive-class-20260808.
+    # (the job runs in ci.yml on every PR — if that ever stops being true the
+    # gate holds PRs closed rather than releasing blind, the safe direction);
+    # the secret scanner proves the diff carries no committed credential; and
+    # quorum-accept at the current head covers the boundary logic itself. The
+    # mitigation answers the class's named risk directly: nothing reaches the
+    # live surface unbound-to-a-case, undeclared, credential-bearing, or
+    # unreviewed. Audio-routing changes (config/pipewire/) remain human-released
+    # through the sensitive-path gate (SENSITIVE_PATH_MARKERS), so this class in
+    # practice holds relay/send-boundary work — the shape this evidence covers.
+    # Defined per this map's own doctrine (extend the map, never add a
+    # manual-arm path): cc-task-release-arm-held-sensitive-class-20260808.
     "audio_or_live_egress_sensitive": (
         "authority-case-check",
         "capability-surface-delta",
