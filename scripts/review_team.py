@@ -1961,7 +1961,10 @@ def _dossier_validity_blockers(
                     # claim a degradation that never existed — every recorded reason must be
                     # live. Exact equality instead made degraded dossiers unmergeable whenever
                     # the live reason set drifted between dispatch and evaluation (receipt
-                    # freshness is volatile state). See cc-task-...-degradation-subset-20260808.
+                    # freshness is volatile state). Empty recorded reasons still refuse here:
+                    # the recorded route-id set (empty) fails the exact route-id clause above
+                    # before the subset clause is consulted. See
+                    # cc-task-review-gate-degradation-subset-20260808.
                     or not recorded_reasons <= live_reasons
                 ):
                     reason_mismatches.append(family)

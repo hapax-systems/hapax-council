@@ -1327,7 +1327,51 @@ class TestVerdictBlockers:
             pr_head_sha="a" * 40,
         )
 
-        assert "review_dossier_route_block_degradation_reason_mismatch:glm" not in blockers
+        # Full blocker-set assertion (not negative membership): the drift dossier is
+        # admissible outright, not merely missing the mismatch reason.
+        assert blockers == ()
+
+    def test_route_block_reason_subset_still_refuses_empty_recorded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Subset semantics is not vacuous admission: a dossier that declares a family
+        route-blocked but records NO reason notes still refuses — the recorded route-id set
+        (empty) fails the exact route-id clause before the subset clause is consulted."""
+        rt = _load_review_team_module()
+        notes = (
+            "degraded_family_route_blocked:glm",
+            "degraded_to:t2_standard",
+            "post_route_receipt_rereview_required",
+        )
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "accept"),
+            ],
+            team_class="t1_critical",
+            constitution_notes=notes,
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+
+        monkeypatch.setattr(
+            rt,
+            "task_scoped_paid_review_route_blocked_families",
+            lambda registry, route_blocked, task_ids, *, now=None: {
+                "glm": (
+                    "glmcp.review.direct:task_scoped_paid_spend_gate:refused_exhausted_budget",
+                )
+            },
+        )
+
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+        )
+
+        assert "review_dossier_route_block_degradation_reason_mismatch:glm" in blockers
 
     def test_recovered_route_block_invalidates_pending_degraded_admission(
         self, tmp_path: Path
