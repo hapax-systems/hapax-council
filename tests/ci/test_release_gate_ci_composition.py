@@ -68,7 +68,7 @@ def test_egress_boundary_pin_job_executes_the_pin_file_per_pr() -> None:
     # the filter itself is pinned by tests/test_ci_required_coverage_claims.py).
     job = _ci()["jobs"]["egress-boundary-pin"]
     assert "pull_request" in _on_block(_ci())
-    assert "docs_only_filter" in set(job["needs"])
+    assert "post_merge_duplicate_filter" in set(job["needs"])
     run_steps = [str(step.get("run", "")) for step in job["steps"]]
     assert any(
         re.search(
@@ -104,28 +104,22 @@ def test_pr_admission_slice_still_excludes_the_pin_file() -> None:
     ), "admission slice now runs the pin file — re-evaluate egress-boundary-pin's role"
 
 
-def test_docs_only_sentinel_matches_the_test_job_doctrine() -> None:
-    # The docs-only sentinel is inherited doctrine, not a new bypass: the `test`
-    # job already reports success without running pytest on docs-only diffs.
-    # Pin the parity so any future divergence is a deliberate act. The trust in
-    # docs_only_filter is the estate's own (its patterns are pinned by
-    # tests/test_ci_required_coverage_claims.py).
-    def sentinel_runs(job: dict) -> list[str]:
-        return [
-            str(step.get("run", ""))
-            for step in job["steps"]
-            if "docs_only" in str(step.get("if", ""))
-        ]
-
-    assert sentinel_runs(_ci()["jobs"]["egress-boundary-pin"]), (
-        "egress-boundary-pin lost its docs-only sentinel — a divergence from the test-job doctrine"
-    )
-    assert sentinel_runs(_ci()["jobs"]["test"]), (
-        "test job lost its docs-only sentinel — re-evaluate the parity argument in ci.yml"
-    )
+def test_egress_boundary_pin_never_reports_success_without_running() -> None:
+    # Behavioral evidence must EXECUTE: unlike sibling jobs, this job carries
+    # no docs-only sentinel — a docs-only-classified diff still runs the pins
+    # (~40s; the class's evidence may never be vacuous). The duplicate
+    # merge-group sentinel stays: it means the queue already validated the SHA.
+    job = _ci()["jobs"]["egress-boundary-pin"]
+    for step in job["steps"]:
+        condition = str(step.get("if", ""))
+        assert "docs_only" not in condition, (
+            f"step {step.get('name')!r} gained a docs-only bypass — behavioral evidence "
+            "for the egress class must always execute"
+        )
 
 
-def test_full_shard_stays_merge_group_only() -> None:    # The full suite (every egress-behavior pin) must remain merge_group-only:
+def test_full_shard_stays_merge_group_only() -> None:
+    # The full suite (every egress-behavior pin) must remain merge_group-only:
     # skipped on pull_request, executed before any queued PR can land.
     condition = str(_ci()["jobs"]["test-full-shard"]["if"])
     assert "github.event_name == 'merge_group'" in condition
