@@ -115,10 +115,12 @@ def test_ineligible_when_audio_or_live_egress_sensitive() -> None:
 def test_audio_or_live_egress_sensitive_with_full_evidence_auto_arms() -> None:
     # The class is evidence-gated through the estate extension
     # (cc-task-release-arm-held-sensitive-class-20260808): every mitigation
-    # check passing discharges the veto.
+    # check passing, over a covered change surface, discharges the veto.
     fm = _eligible_frontmatter(risk_flags={"audio_or_live_egress_sensitive": True})
     assessment = assess_release_auto_arm_estate(
-        fm, verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS)
+        fm,
+        verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS),
+        changed_files=["shared/capability_adapter_protocol.py"],
     )
     assert not any("audio_or_live_egress" in blocker for blocker in assessment.blockers)
     assert assessment.eligible is True
@@ -213,14 +215,15 @@ def test_egress_auto_arm_coverage_bound_holds_uncovered_paths() -> None:
     )
 
 
-def test_egress_coverage_bound_inactive_without_changed_files() -> None:
-    # Pure-frontmatter callers (no PR file list) keep the legacy behavior —
-    # the bound only evaluates with real changed paths.
+def test_egress_coverage_bound_unevaluable_without_changed_files() -> None:
+    # A caller that supplies no PR file list cannot evaluate the coverage bound —
+    # the wrapper holds closed (unbounded behavioral evidence is no evidence).
     assessment = assess_release_auto_arm_estate(
         _egress_frontmatter(),
         verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS),
     )
-    assert not any("egress_evidence_uncovered" in b for b in assessment.blockers)
+    assert assessment.eligible is False
+    assert "egress_evidence_coverage_unevaluable:no_changed_files" in assessment.blockers
 
 
 def test_account_live_quota_evidence_does_not_false_block_release_auto_arm() -> None:

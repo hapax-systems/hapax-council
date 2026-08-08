@@ -921,8 +921,13 @@ def assess_release_auto_arm_estate(
         if check not in verified_checks:
             blockers.append(f"needs_mitigation:{_LIVE_EGRESS_FLAG}:{check}")
             missing_evidence = True
-    if not missing_evidence and changed_files is not None:
-        uncovered = _egress_uncovered_paths(changed_files)
-        if uncovered:
-            blockers.append("egress_evidence_uncovered_paths:" + ",".join(uncovered))
+    if not missing_evidence:
+        if changed_files is None:
+            # The coverage bound is unevaluable without the PR's real file list —
+            # hold closed rather than arm on unbounded behavioral evidence.
+            blockers.append("egress_evidence_coverage_unevaluable:no_changed_files")
+        else:
+            uncovered = _egress_uncovered_paths(changed_files)
+            if uncovered:
+                blockers.append("egress_evidence_uncovered_paths:" + ",".join(uncovered))
     return _dataclass_replace(base, blockers=tuple(blockers), eligible=not blockers)
