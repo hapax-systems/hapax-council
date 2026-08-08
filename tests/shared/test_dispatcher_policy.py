@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
@@ -2690,6 +2691,71 @@ def test_the_receipt_write_appends_inside_one_lock_acquisition(
         f"the append must happen inside a single lock acquisition; saw {events}"
     )
     assert decision.decision_id in ledger.read_text(encoding="utf-8")
+
+
+def test_a_transient_flock_failure_is_retried_into_a_held_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transient failure must NOT degrade to an unserialised append.
+
+    Giving up is only safe when every other writer is failing too — true for a
+    filesystem without flock, false for a per-call EINTR. If a transient failure
+    here dropped straight to an unserialised append while another process locked
+    successfully, that process could rotate under our append and the receipt
+    would land in the inode being replaced.
+
+    The earlier test made EVERY flock call fail, which validated the assumption
+    instead of challenging it. This one fails once and then succeeds.
+    """
+    monkeypatch.setattr(dispatcher_policy, "ROUTE_DECISION_LEDGER_MAX_BYTES", 1)
+    ledger = tmp_path / "route-decisions.jsonl"
+    ledger.write_text("".join(f'{{"n": {i}}}\n' for i in range(300)), encoding="utf-8")
+
+    real_flock = fcntl.flock
+    calls = {"n": 0}
+
+    def flaky_flock(fd: int, op: int) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise InterruptedError(4, "Interrupted system call")
+        real_flock(fd, op)
+
+    monkeypatch.setattr(dispatcher_policy.fcntl, "flock", flaky_flock)
+
+    decision = evaluate_dispatch_policy(_request(), now=NOW)
+    write_route_decision_receipt(decision, ledger_dir=tmp_path)
+
+    assert calls["n"] >= 2, "a transient flock failure must be retried, not surrendered to"
+    assert (tmp_path / "route-decisions.jsonl.1").exists(), (
+        "the retry must yield a held lock, so rotation proceeds normally"
+    )
+    assert decision.decision_id in ledger.read_text(encoding="utf-8")
+
+
+def test_a_short_write_still_produces_a_complete_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """os.write may write fewer bytes than asked; ignoring the count truncates the row.
+
+    A truncated JSONL row is worse than a missing one: the connector reader meets
+    malformed data and fails closed, which is the outcome this module exists to
+    prevent.
+    """
+    ledger = tmp_path / "route-decisions.jsonl"
+    real_write = os.write
+
+    def short_write(fd: int, data: bytes) -> int:
+        return real_write(fd, data[:1])  # one byte at a time
+
+    monkeypatch.setattr(dispatcher_policy.os, "write", short_write)
+
+    decision = evaluate_dispatch_policy(_request(), now=NOW)
+    write_route_decision_receipt(decision, ledger_dir=tmp_path)
+
+    line = ledger.read_text(encoding="utf-8").splitlines()[-1]
+    parsed = json.loads(line)  # must not raise: a truncated row is unparseable
+    assert decision.decision_id in line, "the row must be complete despite short writes"
+    assert isinstance(parsed, dict) and parsed, "the row must round-trip as an object"
 
 
 def test_a_flock_failure_skips_rotation_without_costing_the_receipt(

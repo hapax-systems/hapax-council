@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta
@@ -89,6 +90,10 @@ ROUTE_DECISION_LEDGER = "route-decisions.jsonl"
 ROUTE_DECISION_LEDGER_MAX_BYTES = 64 * 1024 * 1024
 ROUTE_DECISION_LEDGER_CARRY_LINES = 2_000
 ROUTE_DECISION_LEDGER_CARRY_BYTES = 16 * 1024 * 1024
+# Lock acquisition is retried so that giving up means the failure is PERSISTENT,
+# which is what makes the unserialised-append fallback safe. See _ledger_lock.
+_LEDGER_LOCK_ATTEMPTS = 3
+_LEDGER_LOCK_RETRY_S = 0.05
 DIMENSIONAL_ROUTE_RECEIPT_SCHEMA_VERSION = 1
 ROUTE_AUTHORITY_RECEIPT_SCHEMA_VERSION = 1
 ROUTE_AUTHORITY_RECEIPT_DIRNAME = "route-authority"
@@ -1144,21 +1149,39 @@ def _ledger_lock(path: Path) -> Iterator[bool]:
         return
     held = False
     try:
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)  # blocking; rotation is one bounded copy
-            held = True
-        except OSError as exc:
-            # flock itself can fail — EINTR, or a filesystem that does not
-            # implement it. This MUST NOT propagate: the caller rotates before
-            # appending, so an exception here escapes rotation and aborts the
-            # receipt write, which inverts the whole contract. Housekeeping is
-            # allowed to be skipped; it is never allowed to cost a receipt.
+        # RETRY, because the difference between a transient and a persistent lock
+        # failure is the whole safety argument for what happens when we give up.
+        #
+        # Giving up means appending unserialised, which is only safe if every
+        # other writer is failing too — true for a filesystem that does not
+        # implement flock, false for a per-call transient like EINTR. A transient
+        # failure here while another process locks successfully lets that process
+        # rotate under an unserialised append, and the receipt lands in the inode
+        # being replaced. Retrying collapses the transient case into success, so
+        # by the time we yield False the condition really is persistent and the
+        # unserialised append really is safe.
+        last_exc: OSError | None = None
+        for attempt in range(_LEDGER_LOCK_ATTEMPTS):
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)  # blocking; rotation is bounded
+                held = True
+                break
+            except OSError as exc:
+                last_exc = exc
+                if attempt + 1 < _LEDGER_LOCK_ATTEMPTS:
+                    time.sleep(_LEDGER_LOCK_RETRY_S)
+        if not held:
+            # Never propagate: the caller rotates before appending, so an
+            # exception here escapes rotation and aborts the receipt write, which
+            # inverts the contract. Housekeeping may be skipped; it may never
+            # cost a receipt.
             logger.warning(
-                "route-decision ledger lock at %s could not be taken (%s); skipping "
-                "rotation, the receipt still writes. Next: confirm the filesystem "
-                "supports flock and the sidecar is writable.",
+                "route-decision ledger lock at %s could not be taken after %d attempts "
+                "(%s); skipping rotation, the receipt still writes. Next: confirm the "
+                "filesystem supports flock and the sidecar is writable.",
                 lock_path_for(path),
-                exc,
+                _LEDGER_LOCK_ATTEMPTS,
+                last_exc,
             )
         yield held
     finally:
@@ -1283,7 +1306,13 @@ def write_route_decision_receipt(
             _rotate_locked(path, max_bytes=ROUTE_DECISION_LEDGER_MAX_BYTES)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
-            os.write(fd, blob)  # single syscall, so the row cannot interleave
+            # os.write may write fewer bytes than asked. Ignoring the count
+            # leaves a truncated JSONL row while reporting success, and the
+            # connector reader then meets malformed data and fails closed — the
+            # exact outcome this module exists to prevent. Loop to completion.
+            written = 0
+            while written < len(blob):
+                written += os.write(fd, blob[written:])
         finally:
             os.close(fd)
     return path
