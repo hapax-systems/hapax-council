@@ -482,3 +482,63 @@ def test_sendcapable_is_not_a_capability_adapter_subclass() -> None:
     assert issubclass(VibeAdapter, CapabilityAdapter)
     assert issubclass(VibeAdapter, WorkerAdapter)
     assert issubclass(VibeAdapter, SendCapableAdapter)
+
+
+def _module():
+    return sys.modules[_MOD]
+
+
+def test_send_missing_relay_table_row_fails_closed(tmp_path, monkeypatch) -> None:
+    # A send-capable platform with no canonical relay row must not send — never
+    # substitute an ad-hoc path (round-2 codex: this branch was untested).
+    decision = _decision(action=DispatchAction.LAUNCH, launch_allowed=True, lane="eta")
+    monkeypatch.delitem(_module()._SESSION_SEND_RELAYS, Platform.CLAUDE)
+    runner = mock.Mock(return_value=0)
+    receipts = tmp_path / "receipts.jsonl"
+    with pytest.raises(ValueError, match="no canonical session relay"):
+        ClaudeAdapter().send(decision, "x", relay_runner=runner, receipts_path=receipts)
+    runner.assert_not_called()
+    assert not receipts.exists()
+
+
+def test_send_missing_wrapper_fails_closed(tmp_path, monkeypatch) -> None:
+    # The canonical relay row exists but the wrapper is absent on disk — fail
+    # closed, do NOT substitute (round-2 codex: this branch was untested).
+    decision = _decision(action=DispatchAction.LAUNCH, launch_allowed=True, lane="eta")
+    monkeypatch.setattr(_module(), "_SCRIPTS_DIR", tmp_path / "empty-scripts")
+    runner = mock.Mock(return_value=0)
+    receipts = tmp_path / "receipts.jsonl"
+    with pytest.raises(FileNotFoundError, match="canonical relay wrapper missing"):
+        ClaudeAdapter().send(decision, "x", relay_runner=runner, receipts_path=receipts)
+    runner.assert_not_called()
+    assert not receipts.exists()
+
+
+def test_real_relay_runner_returns_exit_codes() -> None:
+    # The default subprocess runner, unmocked (round-2 codex: untested path).
+    assert _module()._run_session_relay(("/bin/true",)) == 0
+    assert _module()._run_session_relay(("/bin/false",)) == 1
+
+
+def test_receipt_write_failure_surfaces_oserror(tmp_path) -> None:
+    # A lost egress receipt must surface, never silently pass: an unwritable
+    # target raises the OSError to the caller.
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x", encoding="utf-8")
+    decision = _decision(action=DispatchAction.LAUNCH, launch_allowed=True, lane="eta")
+    with pytest.raises(OSError):
+        ClaudeAdapter().send(
+            decision, "x", relay_runner=lambda argv: 0, receipts_path=blocker / "r.jsonl"
+        )
+
+
+def test_receipts_env_override_resolves_at_call_time(tmp_path, monkeypatch) -> None:
+    # The runbook-advertised override must work even when set after import
+    # (round-2 claude: import-time-only resolution silently ignored it).
+    override = tmp_path / "override" / "receipts.jsonl"
+    monkeypatch.setenv("HAPAX_SESSION_SEND_RECEIPTS", str(override))
+    decision = _decision(action=DispatchAction.LAUNCH, launch_allowed=True, lane="eta")
+    ClaudeAdapter().send(decision, "x", relay_runner=lambda argv: 0)
+    assert override.exists()
+    row = json.loads(override.read_text(encoding="utf-8"))
+    assert row["receipt_schema"] == 1 and row["op"] == "session_send"

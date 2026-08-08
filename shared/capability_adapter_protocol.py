@@ -95,6 +95,7 @@ __all__ = [
     "VibeAdapter",
     "SessionSendReceipt",
     "append_session_send_receipt",
+    "default_session_send_receipts_path",
     "DEFAULT_SESSION_SEND_RECEIPTS",
 ]
 
@@ -310,12 +311,27 @@ class WorkerAdapter(CapabilityAdapter):
 #: Persistent (NOT tmpfs) SESSION-send evidence bus — one JSON line per governed egress. The reins
 #: send-gate consumer lights up ONLY on receipts read from this path; keep it out of /tmp and
 #: /dev/shm (the tmpfs-swap-trap) so the evidence survives a reboot, mirroring ``shared.gate_log``.
-DEFAULT_SESSION_SEND_RECEIPTS = Path(
-    os.environ.get(
-        "HAPAX_SESSION_SEND_RECEIPTS",
-        str(Path.home() / ".cache" / "hapax" / "sdlc-routing" / "session-send-receipts.jsonl"),
-    )
+_DEFAULT_RECEIPTS_FALLBACK = (
+    Path.home() / ".cache" / "hapax" / "sdlc-routing" / "session-send-receipts.jsonl"
 )
+
+#: Import-time snapshot, retained for introspection compatibility. Callers that want the
+#: CURRENT override must use ``default_session_send_receipts_path()`` — this constant cannot
+#: observe ``HAPAX_SESSION_SEND_RECEIPTS`` set after import.
+DEFAULT_SESSION_SEND_RECEIPTS = Path(
+    os.environ.get("HAPAX_SESSION_SEND_RECEIPTS", str(_DEFAULT_RECEIPTS_FALLBACK))
+)
+
+
+def default_session_send_receipts_path() -> Path:
+    """The evidence bus path, resolved at CALL time.
+
+    The runbook advertises the ``HAPAX_SESSION_SEND_RECEIPTS`` env override; only a call-time
+    read honors it for processes that set the variable after import (launchers that export env
+    late, pytest monkeypatch).
+    """
+
+    return Path(os.environ.get("HAPAX_SESSION_SEND_RECEIPTS", str(_DEFAULT_RECEIPTS_FALLBACK)))
 
 #: The ONLY per-platform variation point of the SESSION gate: platform -> canonical relay wrapper
 #: (already-governed transports under ``scripts/``). A send-capable platform missing here fails
@@ -364,7 +380,7 @@ def append_session_send_receipt(
     a lost egress receipt must surface, never silently pass (same contract as the gate log).
     """
 
-    target = Path(path) if path is not None else DEFAULT_SESSION_SEND_RECEIPTS
+    target = Path(path) if path is not None else default_session_send_receipts_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("a", encoding="utf-8") as fh:
         fh.write(receipt.model_dump_json() + "\n")
