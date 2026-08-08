@@ -6579,3 +6579,13 @@ def test_egress_revalidation_without_changed_files_holds_coverage_unevaluable(
         verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS),
     )
     assert "egress_evidence_coverage_unevaluable:no_changed_files" in blockers
+
+
+def test_canon_assessor_reports_armed_for_authorized_egress_task() -> None:
+    # Round-16 glm/claude claimed the canon .armed read in the suppression
+    # branch is dead for this class. It is not: armed reflects the frontmatter
+    # field, not the map — an already-authorized egress task reads armed under
+    # the canon assessor, so the post-authorization suppression stays live.
+    from shared.sdlc_lifecycle import assess_release_auto_arm as canon_assess
+
+    assert canon_assess(_egress_armed_frontmatter()).armed is True
