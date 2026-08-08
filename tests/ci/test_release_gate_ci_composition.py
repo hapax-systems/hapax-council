@@ -192,27 +192,20 @@ def test_pin_set_tracks_the_send_surface_state() -> None:
         assert not missing, f"send is wired but the required pin set lacks: {sorted(missing)}"
 
 
-def test_authority_pins_kill_the_authority_bypass_mutant(tmp_path: Path) -> None:
-    # Mutation-kill: the semantic layer, machine-witnessed. Every static guard
-    # against vacuity is ultimately syntactic; the durable validation of a
-    # pin's SEMANTICS is that it kills mutants. Overlay shared/ + the pin file,
-    # remove the send authority gate, and run the authority pins: they MUST
-    # fail against the mutant. If the pins ever go vacuous (assert True,
-    # assert object(), a raises-guard around nothing), they stop failing
-    # against the mutant and THIS test fails instead. This is the layer no
-    # AST guard can be: execution against a deliberately broken boundary.
+def _run_pin_file_against_mutant(
+    tmp_path: Path,
+    *,
+    mutant_label: str,
+    mutate,
+) -> subprocess.CompletedProcess[str]:
+    """Overlay shared/ + the pin file, apply the mutation, run the pin file."""
     overlay = tmp_path / "overlay"
     (overlay / "tests").mkdir(parents=True)
     shutil.copytree(REPO_ROOT / "shared", overlay / "shared")
     shutil.copy(PIN_FILE, overlay / "tests" / PIN_FILE.name)
     protocol = overlay / "shared" / "capability_adapter_protocol.py"
     source = protocol.read_text(encoding="utf-8")
-    gate = '_require_launch_authority(decision, op="send")'
-    assert gate in source, "send authority gate line moved — re-target the mutant"
-    protocol.write_text(
-        source.replace(gate, "None  # MUTANT: send authority gate removed", 1),
-        encoding="utf-8",
-    )
+    protocol.write_text(mutate(source), encoding="utf-8")
 
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     env["PYTHONPATH"] = str(overlay)
@@ -227,8 +220,6 @@ def test_authority_pins_kill_the_authority_bypass_mutant(tmp_path: Path) -> None
             "--no-header",
             "-p",
             "no:cacheprovider",
-            "-k",
-            "send_asserts_authority or launch_raises_authority",
         ],
         cwd=overlay,
         capture_output=True,
@@ -238,12 +229,65 @@ def test_authority_pins_kill_the_authority_bypass_mutant(tmp_path: Path) -> None
         check=False,
     )
     assert run.returncode != 0 and "failed" in run.stdout, (
-        "the authority pins did not FAIL against an authority-bypassed mutant "
-        "(or the mutant run never executed) — they are semantically vacuous, "
-        "and the egress class's behavioral evidence is unreal:\n"
-        + run.stdout[-800:]
-        + run.stderr[-400:]
+        f"no pin FAILED against the {mutant_label} mutant (or the mutant run never "
+        "executed) — the pins are semantically vacuous, and the egress class's "
+        "behavioral evidence is unreal:\n" + run.stdout[-800:] + run.stderr[-400:]
     )
+    return run
+
+
+def _replace_once(source: str, target: str, replacement: str) -> str:
+    assert target in source, f"mutation target moved — re-target the mutant: {target[:60]!r}"
+    return source.replace(target, replacement, 1)
+
+
+def test_authority_pins_kill_the_authority_bypass_mutant(tmp_path: Path) -> None:
+    # Mutation-kill: the semantic layer, machine-witnessed. Every static guard
+    # against vacuity is ultimately syntactic; the durable validation of a
+    # pin's SEMANTICS is that it kills mutants. Remove the send authority gate:
+    # the authority pins MUST fail.
+    run = _run_pin_file_against_mutant(
+        tmp_path,
+        mutant_label="authority-bypass",
+        mutate=lambda src: _replace_once(
+            src,
+            '_require_launch_authority(decision, op="send")',
+            "None  # MUTANT: send authority gate removed",
+        ),
+    )
+    assert "test_send_asserts_authority" in run.stdout
+
+
+def test_refusal_pins_kill_the_refusal_removal_mutant(tmp_path: Path) -> None:
+    # The fail-closed refusal property: send with the not-yet-wired refusal
+    # removed becomes a silent no-op — the refusal pin MUST fail.
+    refusal = (
+        "        raise NotImplementedError(\n"
+        '            "relay send is wired per-platform in the glue slices; the protocol layer only marks "\n'
+        '            "the capability and gates authority."\n'
+        "        )"
+    )
+    run = _run_pin_file_against_mutant(
+        tmp_path,
+        mutant_label="refusal-removal",
+        mutate=lambda src: _replace_once(
+            src, refusal, '        return ""  # MUTANT: refusal removed'
+        ),
+    )
+    assert "test_send_asserts_authority" in run.stdout
+
+
+def test_capability_pins_kill_the_send_graft_mutant(tmp_path: Path) -> None:
+    # The type-level capability property: graft a send surface onto an adapter
+    # that must never have one — the absence pins MUST fail.
+    run = _run_pin_file_against_mutant(
+        tmp_path,
+        mutant_label="send-graft",
+        mutate=lambda src: (
+            src + '\n\nBudgetAuthorityAdapter.send = lambda self, decision, message: ""  # MUTANT\n'
+        ),
+    )
+    assert "test_budget_authority_has_no_launch_or_send" in run.stdout
 
 
 def test_pr_admission_slice_still_excludes_the_pin_file() -> (
