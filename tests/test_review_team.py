@@ -1359,9 +1359,7 @@ class TestVerdictBlockers:
             rt,
             "task_scoped_paid_review_route_blocked_families",
             lambda registry, route_blocked, task_ids, *, now=None: {
-                "glm": (
-                    "glmcp.review.direct:task_scoped_paid_spend_gate:refused_exhausted_budget",
-                )
+                "glm": ("glmcp.review.direct:task_scoped_paid_spend_gate:refused_exhausted_budget",)
             },
         )
 
