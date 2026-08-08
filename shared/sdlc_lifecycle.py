@@ -505,13 +505,14 @@ RELEASE_MITIGATION_CHECKS: dict[str, tuple[str, ...]] = {
     "privacy_or_secret_sensitive": ("secrets-scan",),
     # A live-egress/audio-sensitive change (relay/send boundaries, live-surface
     # wiring) auto-arms on five machine-verified evidences, three layers deep:
-    # (1) BEHAVIORAL, per-PR: the `test` check runs the default pytest shard,
-    #     which includes the egress-behavior pins (authority-before-send,
-    #     fail-closed, receipt privacy — tests/test_capability_adapter_protocol.py);
+    # (1) BEHAVIORAL, per-PR: the egress-boundary-pin CI job runs exactly the
+    #     egress-behavior pins (tests/test_capability_adapter_protocol.py:
+    #     authority-before-send, fail-closed, receipt privacy). The PR admission
+    #     slice does NOT include that file — this job exists because of that.
     # (2) BEHAVIORAL, at landing: the required all-green aggregate needs
     #     test-full-shard (merge_group-only full suite), so no armed PR lands
-    #     without the complete behavior suite — both layers pinned by
-    #     tests/ci/test_release_gate_ci_composition.py;
+    #     without the complete behavior suite. Both layers plus the job wiring
+    #     are pinned by tests/ci/test_release_gate_ci_composition.py.
     # (3) PROCEDURAL: authority-case-check binds the boundary to its ratified
     #     spec; capability-surface-delta proves any capability-surface change is
     #     declared under the typed contract; secrets-scan proves the diff carries
@@ -525,7 +526,7 @@ RELEASE_MITIGATION_CHECKS: dict[str, tuple[str, ...]] = {
     # evidence covers. Defined per this map's own doctrine (extend the map,
     # never add a manual-arm path): cc-task-release-arm-held-sensitive-class-20260808.
     "audio_or_live_egress_sensitive": (
-        "test",
+        "egress-boundary-pin",
         "authority-case-check",
         "capability-surface-delta",
         "secrets-scan",

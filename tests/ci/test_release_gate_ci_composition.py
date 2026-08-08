@@ -27,13 +27,41 @@ def _ci() -> dict:
 
 
 def test_all_green_aggregate_keeps_the_behavioral_and_declaration_layers() -> None:
-    # all-green is the single required aggregate on main. The per-PR `test`
-    # shard (runs the egress-behavior pins in tests/test_capability_adapter_protocol.py),
-    # the merge-queue `test-full-shard`, and the `capability-surface-delta`
-    # declaration gate must all stay in its needs.
+    # all-green is the single required aggregate on main. The per-PR
+    # egress-boundary-pin job (runs the egress-behavior pins in
+    # tests/test_capability_adapter_protocol.py), the merge-queue
+    # test-full-shard, and the capability-surface-delta declaration gate
+    # must all stay in its needs.
     needs = set(_ci()["jobs"]["all-green"]["needs"])
-    for job in ("test", "test-full-shard", "capability-surface-delta"):
+    for job in ("egress-boundary-pin", "test-full-shard", "capability-surface-delta"):
         assert job in needs, f"all-green lost its dependency on {job}"
+
+
+def test_egress_boundary_pin_job_runs_the_pin_file_per_pr() -> None:
+    # The behavioral premise of the release gate: the job exists, triggers on
+    # pull_request (via the workflow-level `on`), and its run step executes
+    # exactly the egress-behavior pin file — not a near approximation.
+    job = _ci()["jobs"]["egress-boundary-pin"]
+    assert "pull_request" in _on_block(_ci())
+    steps = job["steps"]
+    run_steps = [str(step.get("run", "")) for step in steps]
+    assert any(
+        "tests/test_capability_adapter_protocol.py" in run and "pytest" in run
+        for run in run_steps
+    ), "egress-boundary-pin no longer runs the egress-behavior pin file"
+
+
+def test_pr_admission_slice_still_excludes_the_pin_file() -> None:
+    # The fact that justifies the dedicated job: if the PR admission slice ever
+    # grows to include the pin file, say so deliberately (the job may then be
+    # redundant), rather than letting the two drift into silent disagreement.
+    test_job = _ci()["jobs"]["test"]
+    run_steps = [str(step.get("run", "")) for step in test_job["steps"]]
+    admission = [run for run in run_steps if "admission" in run or "--confcutdir" in run]
+    assert admission, "PR admission slice step not found — has the test job changed shape?"
+    assert not any(
+        "tests/test_capability_adapter_protocol.py" in run for run in admission
+    ), "admission slice now runs the pin file — re-evaluate egress-boundary-pin's role"
 
 
 def test_full_shard_stays_merge_group_only() -> None:
