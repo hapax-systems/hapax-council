@@ -69,7 +69,10 @@ from shared.merge_queue_lineage import (  # noqa: E402
     reconcile_flake_quarantines,
     write_quarantine,
 )
-from shared.release_gate import evaluate_avsdlc_release_gate  # noqa: E402
+from shared.release_gate import (  # noqa: E402
+    assess_release_auto_arm_estate,
+    evaluate_avsdlc_release_gate,
+)
 from shared.sdlc_lifecycle import (  # noqa: E402
     RELEASE_MITIGATION_CHECKS,
     REVIEW_TEAM_QUORUM_EVIDENCE,
@@ -1764,12 +1767,15 @@ def _release_auto_arm_current_evidence_blockers(
     frontmatter: dict[str, Any],
     *,
     verified_checks: set[str],
+    changed_files: tuple[str, ...] | None = None,
 ) -> tuple[str, ...]:
     if "release_authorized" not in frontmatter:
         return ()
     probe = dict(frontmatter)
     probe["release_authorized"] = False
-    assessment = assess_release_auto_arm(probe, verified_checks=verified_checks)
+    assessment = assess_release_auto_arm_estate(
+        probe, verified_checks=verified_checks, changed_files=changed_files
+    )
     blockers = assessment.blockers
     if assess_release_auto_arm(frontmatter, verified_checks=verified_checks).armed:
         # These are auto-arm vetoes, not post-authorization vetoes. Once a task
@@ -1919,6 +1925,7 @@ def _release_head_boundary_blocker(
     evidence_blockers = _release_auto_arm_current_evidence_blockers(
         current_frontmatter,
         verified_checks=current_verified_checks,
+        changed_files=decision.pr.files if changed_files is None else changed_files,
     )
     if evidence_blockers:
         return "current_release_auto_arm_blocked:" + ",".join(evidence_blockers)
