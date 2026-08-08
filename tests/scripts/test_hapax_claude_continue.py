@@ -33,7 +33,17 @@ def _run(tmp_path: Path, *args: str) -> str:
         "HAPAX_FAKE_CLAUDE_ARGV": str(argv_file),
     }
     run = subprocess.run(
-        [str(SCRIPT), "--terminal", "none", "--readonly", *args],
+        [
+            str(SCRIPT),
+            "--terminal",
+            "none",
+            "--readonly",
+            "--role",
+            "dev",
+            "--cd",
+            str(tmp_path),
+            *args,
+        ],
         env=env,
         capture_output=True,
         text=True,
@@ -45,17 +55,17 @@ def _run(tmp_path: Path, *args: str) -> str:
 
 
 def test_continue_flag_reaches_claude_argv(tmp_path: Path) -> None:
-    argv = _run(tmp_path, "dev", "--continue")
+    argv = _run(tmp_path, "--continue")
     assert "--continue" in argv.splitlines()
 
 
 def test_short_continue_flag_reaches_claude_argv(tmp_path: Path) -> None:
-    argv = _run(tmp_path, "dev", "-c")
+    argv = _run(tmp_path, "-c")
     assert "--continue" in argv.splitlines()
 
 
 def test_no_continue_flag_means_fresh_session(tmp_path: Path) -> None:
-    argv = _run(tmp_path, "dev")
+    argv = _run(tmp_path)
     assert "--continue" not in argv.splitlines()
 
 
