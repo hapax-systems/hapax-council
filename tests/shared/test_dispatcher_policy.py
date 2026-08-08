@@ -2606,16 +2606,19 @@ def test_a_lock_file_left_by_a_dead_process_does_not_wedge_rotation(
     assert ledger.read_text(encoding="utf-8").strip(), "ledger must not be emptied"
 
 
-def test_rotation_is_skipped_when_the_lock_cannot_be_opened(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+def test_an_unopenable_lock_refuses_the_write_instead_of_risking_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No lock means no mutual exclusion, so rotation must NOT proceed.
+    """A lock we cannot take is a receipt we cannot guarantee, so say so.
 
-    The first version of this fix took the lock but ignored whether it got it, so
-    an unopenable sidecar (permissions, full filesystem) silently reverted to
-    exactly the unserialised rotation the lock was added to prevent. Skipping
-    only leaves the ledger oversized; proceeding can lose a receipt that was
-    written successfully and fail the connector gate closed.
+    Three attempts to make an unserialised fallback safe were all unsound for the
+    same reason: without mutual exclusion a rotation elsewhere can replace the
+    inode around the write, and every mitigation short of the lock is a
+    check-then-act with a gap after the check. Raising is deliberate and loud;
+    the alternative is a receipt that vanishes and fails the connector gate
+    closed with no explanation.
+
+    Rotation is still skipped rather than exploding, and the ledger is untouched.
     """
     ledger = tmp_path / "route-decisions.jsonl"
     payload = "".join(f'{{"n": {i}}}\n' for i in range(200))
@@ -2632,14 +2635,13 @@ def test_rotation_is_skipped_when_the_lock_cannot_be_opened(
     monkeypatch.setattr(dispatcher_policy.os, "open", refuse_lock)
 
     decision = evaluate_dispatch_policy(_request(), now=NOW)
-    with caplog.at_level(logging.WARNING, logger="shared.dispatcher_policy"):
+    with pytest.raises(RuntimeError) as exc:
         write_route_decision_receipt(decision, ledger_dir=tmp_path)
 
-    active = ledger.read_text(encoding="utf-8")
-    assert active.startswith(payload), "the pre-existing rows must be untouched"
-    assert decision.decision_id in active, "the receipt must still be written"
+    assert "cannot be written safely" in str(exc.value)
+    assert "Next:" in str(exc.value), "the refusal must name its own remedy"
+    assert ledger.read_text(encoding="utf-8") == payload, "the ledger must be untouched"
     assert not (tmp_path / "route-decisions.jsonl.1").exists(), "no rotation may have happened"
-    assert "unserialised" in caplog.text, "an unlockable ledger must say so"
 
 
 def test_the_receipt_write_appends_inside_one_lock_acquisition(
@@ -2693,20 +2695,19 @@ def test_the_receipt_write_appends_inside_one_lock_acquisition(
     assert decision.decision_id in ledger.read_text(encoding="utf-8")
 
 
-def test_an_unserialised_append_rotated_away_is_detected_and_redone(
+def test_no_row_is_written_when_a_rotation_could_race_the_append(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The scenario the safety ARGUMENT could not cover, now checked instead.
+    """The scenario no fallback could cover, now excluded by construction.
 
-    The fallback used to rest on the claim that a lock failure here implies every
-    other process also skips rotation. That is sound for "cannot open the
-    sidecar" and for a filesystem without flock, but not for an I/O error that is
-    persistent for this process across retries while another process locks fine
-    and rotates. Reviewers were right that the claim was not airtight, so the
-    append is now verified against the live inode rather than argued about.
+    This process cannot lock while a rotation completes underneath what would
+    have been its append. Successive fallbacks tried to survive this: arguing
+    other processes must also be failing (unsound for transient errors), then
+    verifying the inode afterwards (a check-then-act that still lost the row on a
+    final attempt). Both families ultimately called it unresolved, and they were
+    right — the window cannot be closed without the lock.
 
-    Here this process cannot lock, and a rotation happens underneath its append —
-    exactly the uncovered case. The row must still end up in the live ledger.
+    So nothing is written at all, and the caller is told why.
     """
     ledger = tmp_path / "route-decisions.jsonl"
     ledger.write_text("".join(f'{{"n": {i}}}\n' for i in range(200)), encoding="utf-8")
@@ -2737,13 +2738,14 @@ def test_an_unserialised_append_rotated_away_is_detected_and_redone(
 
     decision = evaluate_dispatch_policy(_request(), now=NOW)
     with caplog.at_level(logging.WARNING, logger="shared.dispatcher_policy"):
-        write_route_decision_receipt(decision, ledger_dir=tmp_path)
+        with pytest.raises(RuntimeError):
+            write_route_decision_receipt(decision, ledger_dir=tmp_path)
 
     monkeypatch.setattr(dispatcher_policy.fcntl, "flock", real_flock)
-    assert decision.decision_id in ledger.read_text(encoding="utf-8"), (
-        "a receipt appended into a rotated-away inode must be detected and redone"
+    assert decision.decision_id not in ledger.read_text(encoding="utf-8"), (
+        "no row may be written into a ledger this process cannot lock"
     )
-    assert "rotated away" in caplog.text, "the recovery must be visible to an operator"
+    assert not rotated["done"], "the append must not even be attempted"
 
 
 def test_a_transient_flock_failure_is_retried_into_a_held_lock(
@@ -2811,33 +2813,41 @@ def test_a_short_write_still_produces_a_complete_row(
     assert isinstance(parsed, dict) and parsed, "the row must round-trip as an object"
 
 
-def test_a_flock_failure_skips_rotation_without_costing_the_receipt(
+def test_a_persistent_flock_failure_warns_and_refuses_without_exploding_rotation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """flock itself can fail — EINTR, or a filesystem that does not implement it.
 
-    write_route_decision_receipt rotates BEFORE it appends, so an exception here
-    escapes rotation and aborts the receipt write. Housekeeping may be skipped;
-    it may never cost a receipt.
+    Two properties, and they are different. _ledger_lock must SWALLOW the OSError
+    and warn rather than let it escape rotation as an unexplained crash — that was
+    a review finding in its own right. And the caller must then refuse the write,
+    because an unserialised append can be discarded by a concurrent rotation.
+
+    The refusal names its remedy; the raw OSError did not.
     """
 
     def refuse_flock(fd: int, op: int) -> None:
         raise OSError(9, "Bad file descriptor")
 
     monkeypatch.setattr(dispatcher_policy, "ROUTE_DECISION_LEDGER_MAX_BYTES", 1)
+    monkeypatch.setattr(dispatcher_policy, "_LEDGER_LOCK_RETRY_S", 0)
     monkeypatch.setattr(dispatcher_policy.fcntl, "flock", refuse_flock)
     ledger = tmp_path / "route-decisions.jsonl"
-    ledger.write_text("".join(f'{{"n": {i}}}\n' for i in range(300)), encoding="utf-8")
+    original = "".join(f'{{"n": {i}}}\n' for i in range(300))
+    ledger.write_text(original, encoding="utf-8")
 
     decision = evaluate_dispatch_policy(_request(), now=NOW)
     with caplog.at_level(logging.WARNING, logger="shared.dispatcher_policy"):
-        path = write_route_decision_receipt(decision, ledger_dir=tmp_path)
+        with pytest.raises(RuntimeError) as exc:
+            write_route_decision_receipt(decision, ledger_dir=tmp_path)
 
-    assert decision.decision_id in path.read_text(encoding="utf-8"), (
-        "a lock failure must never cost the receipt the caller was writing"
+    assert "Bad file descriptor" not in str(exc.value), (
+        "the raw OSError must be swallowed and translated, not propagated"
     )
+    assert "Next:" in str(exc.value)
+    assert "could not be taken" in caplog.text, "the lock failure must still be logged"
+    assert ledger.read_text(encoding="utf-8") == original, "the ledger must be untouched"
     assert not (tmp_path / "route-decisions.jsonl.1").exists(), "rotation must be skipped"
-    assert "could not be taken" in caplog.text
 
 
 def test_a_failed_archive_link_preserves_the_previous_generation(
