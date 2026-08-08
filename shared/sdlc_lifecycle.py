@@ -507,8 +507,11 @@ RELEASE_MITIGATION_CHECKS: dict[str, tuple[str, ...]] = {
     # wiring) auto-arms on five machine-verified evidences, three layers deep:
     # (1) BEHAVIORAL, per-PR: the egress-boundary-pin CI job runs exactly the
     #     egress-behavior pins (tests/test_capability_adapter_protocol.py:
-    #     authority-before-send, fail-closed, receipt privacy). The PR admission
-    #     slice does NOT include that file — this job exists because of that.
+    #     authority-before-send, fail-closed refusal, type-level send
+    #     capability; the wired-send + receipt-privacy pins land with #4440
+    #     and the same job runs them from then on). The PR admission
+    #     slice does NOT include that file — this job exists because of that,
+    #     and the pin set is content-addressed by the composition suite.
     # (2) BEHAVIORAL, at landing: the required all-green aggregate needs
     #     test-full-shard (merge_group-only full suite), so no armed PR lands
     #     without the complete behavior suite. Both layers plus the job wiring
