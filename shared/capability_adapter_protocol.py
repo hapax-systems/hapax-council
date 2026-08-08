@@ -351,6 +351,12 @@ class SessionSendReceipt(BaseModel):
 
     Deliberately carries NO message body (the send route is privacy/secret-sensitive): the sha256 +
     length prove WHICH payload egressed without persisting content on the evidence bus.
+
+    Write-ahead pairing: every send appends an ``attempted`` line BEFORE the relay executes
+    and the final ``sent``/``failed`` line after, sharing one ``receipt_id``. If the final
+    append fails, the egress is still durably evidenced (round-3 codex: execute-then-append
+    alone could egress with no receipt). The reins consumer lights ONLY on ``outcome=sent`` —
+    an ``attempted`` line never lights the send-gate.
     """
 
     receipt_schema: Literal[1] = 1
@@ -368,7 +374,7 @@ class SessionSendReceipt(BaseModel):
     message_sha256: str
     message_chars: int
     exit_code: int
-    outcome: Literal["sent", "failed"]
+    outcome: Literal["sent", "failed", "attempted"]
 
 
 def append_session_send_receipt(
@@ -460,10 +466,8 @@ class SendCapableAdapter:
                 "ad-hoc send path"
             )
         argv = (str(wrapper), "--session", decision.lane, "--", message)
-        exit_code = (relay_runner or _run_session_relay)(argv)
-        receipt = SessionSendReceipt(
-            receipt_id=uuid4().hex,
-            created_at=(now or datetime.now(UTC)).isoformat(),
+        receipt_id = uuid4().hex
+        receipt_fields = dict(
             decision_id=decision.decision_id,
             task_id=decision.task_id,
             lane=decision.lane,
@@ -474,8 +478,27 @@ class SendCapableAdapter:
             relay_wrapper=f"scripts/{relay_name}",
             message_sha256=sha256(message.encode("utf-8")).hexdigest(),
             message_chars=len(message),
+        )
+        # Write-ahead: the attempted line lands BEFORE the relay executes, so an
+        # egress can never go unevidenced. If THIS append fails, the relay has
+        # not run — fail closed with the OSError (no send without a receipt).
+        append_session_send_receipt(
+            SessionSendReceipt(
+                receipt_id=receipt_id,
+                created_at=(now or datetime.now(UTC)).isoformat(),
+                exit_code=-1,
+                outcome="attempted",
+                **receipt_fields,
+            ),
+            path=receipts_path,
+        )
+        exit_code = (relay_runner or _run_session_relay)(argv)
+        receipt = SessionSendReceipt(
+            receipt_id=receipt_id,
+            created_at=(now or datetime.now(UTC)).isoformat(),
             exit_code=exit_code,
             outcome="sent" if exit_code == 0 else "failed",
+            **receipt_fields,
         )
         append_session_send_receipt(receipt, path=receipts_path)
         return receipt

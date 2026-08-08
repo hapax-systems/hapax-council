@@ -31,11 +31,14 @@ Not send-capable: `AgyAdapter`, `BudgetAuthorityAdapter` (api), `ReviewSeatAdapt
 ## The evidence bus
 
 - Path: `~/.cache/hapax/sdlc-routing/session-send-receipts.jsonl`
-  (env override `HAPAX_SESSION_SEND_RECEIPTS`; persistent NVMe, NOT tmpfs — same
-  tmpfs-swap-trap rationale as `shared/gate_log.py`).
-- One JSON line per governed egress: route/decision/task/lane identifiers, the authority result
-  (`authority_action`, `authority_launch_allowed`), the relay wrapper, exit code, and outcome
-  (`sent` / `failed`).
+  (env override `HAPAX_SESSION_SEND_RECEIPTS`, resolved at call time; persistent NVMe, NOT
+  tmpfs — same tmpfs-swap-trap rationale as `shared/gate_log.py`).
+- Two JSON lines per governed egress (write-ahead pair, one `receipt_id`): an `attempted`
+  line BEFORE the relay executes and the final line after, with route/decision/task/lane
+  identifiers, the authority result (`authority_action`, `authority_launch_allowed`), the
+  relay wrapper, exit code, and outcome (`sent` / `failed`; the attempted line carries
+  `exit_code: -1`). If the first append fails the relay never runs; if the second fails the
+  egress is still evidenced — no send without a durable receipt line.
 - **Privacy:** the receipt NEVER carries the message body — only `message_sha256` +
   `message_chars` (the send route is privacy/secret-sensitive).
 
@@ -46,7 +49,7 @@ Reins remains honest-dark in this council PR: the paired consumer work lives in 
 send-gate still renders `NOT WIRED` in Reins. The intended
 consumer contract is: read `~/.cache/hapax/sdlc-routing/session-send-receipts.jsonl` and light
 ONLY on a receipt with `receipt_schema=1`, `op=session_send`, and `outcome=sent`; missing files,
-corrupt lines, failed relays, and unknown schemas must remain dark.
+corrupt lines, failed relays, `attempted` write-ahead lines, and unknown schemas must remain dark.
 
 No Reins commit is included in PR #4440. A stale worker briefly edited the shared dirty Reins
 checkout on `reins-cockpit-overhaul-20260627`; those edits were reversed because that checkout is

@@ -292,10 +292,14 @@ def test_send_routes_through_canonical_relay_and_mints_receipt(
     assert receipt.authority_action == "launch" and receipt.authority_launch_allowed is True
     assert receipt.message_sha256 == sha256(b"do the thing").hexdigest()
     assert receipt.message_chars == len("do the thing")
-    # ... and it was appended to the evidence bus as one JSON line
+    # ... and it was write-ahead appended to the evidence bus: the attempted
+    # line BEFORE the relay ran, the sent line after, sharing the receipt_id.
     lines = receipts.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 1
-    assert json.loads(lines[0])["receipt_id"] == receipt.receipt_id
+    assert len(lines) == 2
+    attempted, final = (json.loads(line) for line in lines)
+    assert attempted["outcome"] == "attempted" and attempted["exit_code"] == -1
+    assert final["outcome"] == "sent"
+    assert attempted["receipt_id"] == final["receipt_id"] == receipt.receipt_id
 
 
 def test_send_receipt_carries_no_message_body(tmp_path) -> None:
@@ -317,7 +321,8 @@ def test_send_failed_relay_mints_failed_receipt(tmp_path) -> None:
     )
     assert receipt.outcome == "failed" and receipt.exit_code == 3
     # a failed relay still leaves lossless evidence — but it is NOT a "sent" light-up signal
-    assert json.loads(receipts.read_text(encoding="utf-8"))["outcome"] == "failed"
+    lines = receipts.read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["outcome"] for line in lines] == ["attempted", "failed"]
 
 
 def test_send_platform_mismatch_is_wiring_bug_not_authority_breach(tmp_path) -> None:
@@ -522,14 +527,40 @@ def test_real_relay_runner_returns_exit_codes() -> None:
 
 def test_receipt_write_failure_surfaces_oserror(tmp_path) -> None:
     # A lost egress receipt must surface, never silently pass: an unwritable
-    # target raises the OSError to the caller.
+    # target raises the OSError to the caller — and because the write-ahead
+    # attempted line lands FIRST, the relay never runs when it fails (no
+    # unevidenced egress).
     blocker = tmp_path / "not-a-dir"
     blocker.write_text("x", encoding="utf-8")
     decision = _decision(action=DispatchAction.LAUNCH, launch_allowed=True, lane="eta")
+    runner = mock.Mock(return_value=0)
     with pytest.raises(OSError):
         ClaudeAdapter().send(
-            decision, "x", relay_runner=lambda argv: 0, receipts_path=blocker / "r.jsonl"
+            decision, "x", relay_runner=runner, receipts_path=blocker / "r.jsonl"
         )
+    runner.assert_not_called()
+
+
+def test_final_receipt_write_failure_still_leaves_attempted_evidence(tmp_path, monkeypatch) -> None:
+    # If the relay ran but the final append fails, the attempted line must
+    # already be durable — an egress is never unevidenced (round-3 codex).
+    decision = _decision(action=DispatchAction.LAUNCH, launch_allowed=True, lane="eta")
+    receipts = tmp_path / "receipts.jsonl"
+    module = _module()
+    original_append = module.append_session_send_receipt
+    calls = {"n": 0}
+
+    def flaky_append(receipt, *, path=None):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("disk full (simulated)")
+        return original_append(receipt, path=path)
+
+    monkeypatch.setattr(module, "append_session_send_receipt", flaky_append)
+    with pytest.raises(OSError, match="disk full"):
+        ClaudeAdapter().send(decision, "x", relay_runner=lambda argv: 0, receipts_path=receipts)
+    rows = [json.loads(line) for line in receipts.read_text(encoding="utf-8").splitlines()]
+    assert [row["outcome"] for row in rows] == ["attempted"]
 
 
 def test_receipts_env_override_resolves_at_call_time(tmp_path, monkeypatch) -> None:
@@ -540,5 +571,6 @@ def test_receipts_env_override_resolves_at_call_time(tmp_path, monkeypatch) -> N
     decision = _decision(action=DispatchAction.LAUNCH, launch_allowed=True, lane="eta")
     ClaudeAdapter().send(decision, "x", relay_runner=lambda argv: 0)
     assert override.exists()
-    row = json.loads(override.read_text(encoding="utf-8"))
-    assert row["receipt_schema"] == 1 and row["op"] == "session_send"
+    rows = [json.loads(line) for line in override.read_text(encoding="utf-8").splitlines()]
+    assert all(row["receipt_schema"] == 1 and row["op"] == "session_send" for row in rows)
+    assert [row["outcome"] for row in rows] == ["attempted", "sent"]
