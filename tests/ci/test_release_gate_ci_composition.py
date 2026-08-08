@@ -63,9 +63,12 @@ def test_all_green_aggregate_keeps_the_behavioral_and_declaration_layers() -> No
 
 def test_egress_boundary_pin_job_executes_the_pin_file_per_pr() -> None:
     # Anchored command shape: the run step must be a uv-run pytest invocation
-    # over the pin file (not an echo or a passing mention), and the job must
-    # keep its docs_only_filter wiring (the sentinel the sibling jobs share;
-    # the filter itself is pinned by tests/test_ci_required_coverage_claims.py).
+    # over the pin file (not an echo or a passing mention). The job deliberately
+    # carries NO docs_only conditions (asserted below); its only sentinel is the
+    # duplicate-merge-group one, which reports success only when the queue
+    # already validated the same SHA — deferred evidence, never skipped
+    # evidence. The filter's own logic is pinned by
+    # tests/test_ci_required_coverage_claims.py.
     job = _ci()["jobs"]["egress-boundary-pin"]
     assert "pull_request" in _on_block(_ci())
     assert "post_merge_duplicate_filter" in set(job["needs"])
@@ -77,16 +80,37 @@ def test_egress_boundary_pin_job_executes_the_pin_file_per_pr() -> None:
 
 
 def test_egress_pin_file_still_contains_the_named_behavior_pins() -> None:
-    # Content-addressed, not name-addressed: the job is behavioral evidence
-    # only while the file it runs actually contains these pins.
+    # Content-addressed, not name-addressed: each required pin must exist AND
+    # carry a behavioral assertion (an `assert` statement or a pytest.raises
+    # guard) — a gutted body with a kept name still fails here. Beyond that,
+    # semantic fidelity is the quorum's and the merge-queue full suite's layer;
+    # this suite's job is that the evidence can never silently go vacuous.
     tree = ast.parse(PIN_FILE.read_text(encoding="utf-8"))
-    defined = {
-        node.name
+    functions = {
+        node.name: node
         for node in ast.walk(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
-    missing = [name for name in REQUIRED_EGRESS_PINS if name not in defined]
+    missing = [name for name in REQUIRED_EGRESS_PINS if name not in functions]
     assert not missing, f"egress pin file lost behavior pins: {missing}"
+
+    def has_assertion(node: ast.AST) -> bool:
+        for child in ast.walk(node):
+            if isinstance(child, ast.Assert):
+                return True
+            if isinstance(child, ast.With):
+                for item in child.items:
+                    call = item.context_expr
+                    if (
+                        isinstance(call, ast.Call)
+                        and isinstance(call.func, ast.Attribute)
+                        and call.func.attr == "raises"
+                    ):
+                        return True
+        return False
+
+    vacuous = [name for name in REQUIRED_EGRESS_PINS if not has_assertion(functions[name])]
+    assert not vacuous, f"egress pins lost their assertions (vacuous bodies): {vacuous}"
 
 
 def test_pr_admission_slice_still_excludes_the_pin_file() -> None:
