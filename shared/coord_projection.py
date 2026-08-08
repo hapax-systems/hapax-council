@@ -8726,12 +8726,33 @@ class CoordProjection:
                 return
             state = self.tasks.setdefault(event.subject, TaskState(task_id=event.subject))
             if state.stage is not None:
+                # COMPARE WITH MAIN'S NORMALIZATION, NOT THE STRICT RESOLVER.
+                #
+                # stage_token now resolves against the declared stage catalog and
+                # raises StageMetadataError (a ValueError) for whitespace drift,
+                # case drift and undeclared aliases. This is a LIVE path --
+                # cc-stage-advance, coord-drift-check, cc-scope-widen and
+                # hooks/scripts/sense_reissue_capture.py consume this projection --
+                # and main normalized those shapes and proceeded. Letting the
+                # refusal reach the `except` below would silently RETURN, dropping
+                # a stage transition that main applied. A Gate-0A landing must not
+                # change that. Found by blind review (codex-1, glm-1) on PR #4483,
+                # whose blast radius this call site had been missing from.
                 try:
                     from shared.sdlc_lifecycle import stage_token
 
-                    if stage_token(state.stage) != from_stage:
+                    try:
+                        observed = stage_token(state.stage)
+                    except ValueError:
+                        token = state.stage.strip().replace(".", "_")
+                        observed = (
+                            token.split("_")[0]
+                            if (token[:1] == "S" and "_" in token and token != "S3_5")
+                            else token
+                        )
+                    if observed != from_stage:
                         return
-                except ValueError:
+                except Exception:  # noqa: BLE001 — projection must never raise here
                     return
             state.stage = to_stage
             if event.authority_case:
