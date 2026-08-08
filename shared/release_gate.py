@@ -861,9 +861,12 @@ LIVE_EGRESS_MITIGATION_CHECKS: tuple[str, ...] = (
 #: live-egress-sensitive PR changing any other non-doc path has NO machine
 #: behavioral evidence for its change — held even with every check green.
 #: Extend only by extending the pin suite first: evidence follows coverage.
+#: The composition suite is covered because it IS the pin suite's guard — it
+#: pins the wiring, the pin contents, and the mutation witnesses.
 LIVE_EGRESS_AUTO_ARM_COVERAGE: tuple[str, ...] = (
     "shared/capability_adapter_protocol.py",
     "tests/test_capability_adapter_protocol.py",
+    "tests/ci/test_release_gate_ci_composition.py",
 )
 
 _LIVE_EGRESS_FLAG = "audio_or_live_egress_sensitive"
