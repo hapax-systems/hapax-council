@@ -12,6 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_SRC_ROOTS = {
     ".",
     "packages/agentgov/src",
+    "packages/hapax-context-canon/src",
     "packages/hapax-axioms/src",
     "packages/hapax-refusals/src",
     "packages/hapax-swarm/src",
