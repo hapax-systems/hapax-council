@@ -1172,7 +1172,27 @@ def _ledger_lock(path: Path) -> Iterator[bool]:
 
 
 def _rotate_locked(path: Path, *, max_bytes: int) -> bool:
-    """Rotate assuming the ledger lock is already held. See the public wrapper."""
+    """Cap the ledger, carrying the recent tail forward. Assumes the lock is HELD.
+
+    Returns True when a rotation happened. There is deliberately no public
+    lock-taking wrapper: the only caller is ``write_route_decision_receipt``,
+    which must hold one lock across rotate-and-append, and a second entry point
+    that took the lock itself would invite exactly the two-acquisition structure
+    that leaves a gap for another writer to rotate through.
+
+    The carry-forward is the entire point. ``_latest_route_decision`` refuses
+    every side-effecting MCP call when it cannot find a recent row for the task,
+    so a rotation that merely truncated would hard-block the system it exists to
+    protect — and the unblock path itself runs through MCP. Rotation therefore
+    always leaves the newest rows in place, and the previous file survives one
+    generation as ``.1`` for audit.
+
+    Failure leaves the ledger untouched — a write path must never lose a receipt
+    to housekeeping — but it is no longer silent. Degrading back to an uncapped
+    ledger is the exact regression this exists to stop, and it stayed invisible
+    for weeks the first time, so every non-noop failure path logs at WARNING with
+    a next action. The below-cap return is a normal no-op and stays quiet.
+    """
     # Re-stat under the lock: a rotation we queued behind may already have done
     # the work, and rotating again would discard the surviving generation.
     try:
@@ -1229,47 +1249,6 @@ def _rotate_locked(path: Path, *, max_bytes: int) -> bool:
         )
         return False
     return True
-
-
-def rotate_route_decision_ledger(
-    path: Path,
-    *,
-    max_bytes: int | None = None,
-) -> bool:
-    """Cap the append-only route-decision ledger, carrying the recent tail forward.
-
-    Returns True when a rotation happened.
-
-    The carry-forward is the entire point. ``_latest_route_decision`` refuses
-    every side-effecting MCP call when it cannot find a recent row for the task,
-    so a rotation that merely truncated would hard-block the system it exists to
-    protect — and the unblock path itself runs through MCP. Rotation therefore
-    always leaves the newest rows in place, and the previous file survives one
-    generation as ``.1`` for audit.
-
-    Failure leaves the ledger untouched — a write path must never lose a receipt
-    to housekeeping — but it is no longer silent. Degrading back to an uncapped
-    ledger is the exact regression this exists to stop, and it stayed invisible
-    for weeks the first time, so every non-noop failure path logs at WARNING with
-    a next action. The below-cap return is a normal no-op and stays quiet.
-
-    ``max_bytes=None`` resolves the cap at call time rather than binding it as a
-    default at import. Binding it made the constant unpatchable, which is a large
-    part of why the only production call site — ``write_route_decision_receipt``,
-    which passes no cap — had no test: exercising it meant writing 64 MiB.
-    """
-    cap = ROUTE_DECISION_LEDGER_MAX_BYTES if max_bytes is None else max_bytes
-    with _ledger_lock(path) as locked:
-        if not locked:
-            # No lock means no mutual exclusion against append_jsonl, and an
-            # unserialised rotation is the very race this function was rewritten
-            # to close: an append landing between the tail snapshot and the
-            # replace goes to the old inode and vanishes from the active ledger.
-            # Skipping rotation only leaves the ledger oversized; proceeding can
-            # lose a receipt that was written successfully and fail the connector
-            # gate closed. _ledger_lock has already warned.
-            return False
-        return _rotate_locked(path, max_bytes=cap)
 
 
 def write_route_decision_receipt(

@@ -29,7 +29,6 @@ from shared.dispatcher_policy import (
     build_route_authority_receipt,
     evaluate_dispatch_policy,
     load_dispatch_policy_sources,
-    rotate_route_decision_ledger,
     write_route_authority_receipt,
     write_route_decision_receipt,
 )
@@ -2505,7 +2504,12 @@ def test_rotation_is_a_noop_below_the_cap(tmp_path: Path) -> None:
     ledger = tmp_path / "route-decisions.jsonl"
     ledger.write_text("a\nb\nc\n", encoding="utf-8")
 
-    assert rotate_route_decision_ledger(ledger) is False
+    assert (
+        dispatcher_policy._rotate_locked(
+            ledger, max_bytes=dispatcher_policy.ROUTE_DECISION_LEDGER_MAX_BYTES
+        )
+        is False
+    )
     assert ledger.read_text(encoding="utf-8") == "a\nb\nc\n"
     assert not (tmp_path / "route-decisions.jsonl.1").exists()
 
@@ -2523,7 +2527,7 @@ def test_rotation_carries_the_newest_rows_forward(tmp_path: Path) -> None:
     )
     original_size = ledger.stat().st_size
 
-    assert rotate_route_decision_ledger(ledger, max_bytes=1024) is True
+    assert dispatcher_policy._rotate_locked(ledger, max_bytes=1024) is True
 
     kept = [json.loads(line)["n"] for line in ledger.read_text(encoding="utf-8").splitlines()]
     assert kept, "rotation must never leave an empty ledger"
@@ -2549,7 +2553,7 @@ def test_rotation_keeps_the_newest_row_findable_by_the_connector_gate(tmp_path: 
         encoding="utf-8",
     )
 
-    assert rotate_route_decision_ledger(ledger, max_bytes=1024) is True
+    assert dispatcher_policy._rotate_locked(ledger, max_bytes=1024) is True
 
     found = _latest_route_decision(task_id="live-task", role="beta", ledger_path=ledger)
     assert found is not None, "rotation stripped the row the connector gate needs"
@@ -2572,7 +2576,7 @@ def test_rotation_failure_leaves_the_ledger_intact_and_says_so(
     (tmp_path / "route-decisions.jsonl.rotating").mkdir()
 
     with caplog.at_level(logging.WARNING, logger="shared.dispatcher_policy"):
-        assert rotate_route_decision_ledger(ledger, max_bytes=1) is False
+        assert dispatcher_policy._rotate_locked(ledger, max_bytes=1) is False
 
     assert ledger.read_text(encoding="utf-8") == payload
     assert caplog.records, "a failed rotation must not be silent"
@@ -2597,7 +2601,7 @@ def test_a_lock_file_left_by_a_dead_process_does_not_wedge_rotation(
     ancient = time.time() - 86_400
     os.utime(lock, (ancient, ancient))
 
-    assert rotate_route_decision_ledger(ledger, max_bytes=1) is True
+    assert dispatcher_policy._rotate_locked(ledger, max_bytes=1) is True
     assert ledger.read_text(encoding="utf-8").strip(), "ledger must not be emptied"
 
 
@@ -2623,12 +2627,16 @@ def test_rotation_is_skipped_when_the_lock_cannot_be_opened(
             raise PermissionError(13, "Permission denied")
         return real_open(path, flags, *args)
 
+    monkeypatch.setattr(dispatcher_policy, "ROUTE_DECISION_LEDGER_MAX_BYTES", 1)
     monkeypatch.setattr(dispatcher_policy.os, "open", refuse_lock)
 
+    decision = evaluate_dispatch_policy(_request(), now=NOW)
     with caplog.at_level(logging.WARNING, logger="shared.dispatcher_policy"):
-        assert rotate_route_decision_ledger(ledger, max_bytes=1) is False
+        write_route_decision_receipt(decision, ledger_dir=tmp_path)
 
-    assert ledger.read_text(encoding="utf-8") == payload, "the ledger must be untouched"
+    active = ledger.read_text(encoding="utf-8")
+    assert active.startswith(payload), "the pre-existing rows must be untouched"
+    assert decision.decision_id in active, "the receipt must still be written"
     assert not (tmp_path / "route-decisions.jsonl.1").exists(), "no rotation may have happened"
     assert "unserialised" in caplog.text, "an unlockable ledger must say so"
 
@@ -2733,7 +2741,7 @@ def test_a_failed_archive_link_preserves_the_previous_generation(
 
     monkeypatch.setattr(dispatcher_policy.os, "link", refuse_link)
 
-    assert rotate_route_decision_ledger(ledger, max_bytes=1) is False
+    assert dispatcher_policy._rotate_locked(ledger, max_bytes=1) is False
     assert archive.read_text(encoding="utf-8") == '{"generation": "previous"}\n', (
         "a failed rotation must not destroy the retained archive"
     )
@@ -2750,7 +2758,7 @@ def test_rotation_and_append_share_one_lock(tmp_path: Path) -> None:
 
 
 def test_rotation_does_not_discard_a_concurrently_appended_receipt(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The reported critical: an append landing mid-rotation was lost.
 
@@ -2784,8 +2792,13 @@ def test_rotation_does_not_discard_a_concurrently_appended_receipt(
         time.sleep(0.2)  # let the appender reach and block on the flock
         return carried
 
+    # Drive the PRODUCTION path: _rotate_locked assumes the lock is already
+    # held, so calling it bare would leave the competing appender unexcluded and
+    # test nothing. write_route_decision_receipt is what takes the lock.
+    monkeypatch.setattr(dispatcher_policy, "ROUTE_DECISION_LEDGER_MAX_BYTES", 1)
+    decision = evaluate_dispatch_policy(_request(), now=NOW)
     with mock.patch.object(dispatcher_policy, "read_tail_lines", _tail_then_race):
-        assert rotate_route_decision_ledger(ledger, max_bytes=1) is True
+        write_route_decision_receipt(decision, ledger_dir=tmp_path)
     thread.join(timeout=5)
     assert not thread.is_alive(), "the appender must not still be blocked"
 
@@ -2793,6 +2806,7 @@ def test_rotation_does_not_discard_a_concurrently_appended_receipt(
     assert "written-during-rotation" in active, (
         "a receipt appended during rotation was lost from the active ledger"
     )
+    assert decision.decision_id in active, "the receipt itself was lost"
 
 
 def test_write_receipt_rotates_an_over_cap_ledger_and_still_appends(
