@@ -152,6 +152,7 @@ SESSION_PREFIXES = (
     ("hapax-claude-", "claude"),
     ("hapax-codex-", "codex"),
     ("hapax-gemini-", "gemini"),
+    ("hapax-kimi-", "kimi"),
 )
 DISPATCH_COOLDOWN_S = 120.0
 DISPATCH_TIMEOUT_S = _positive_env_float("HAPAX_COORDINATOR_DISPATCH_TIMEOUT_S", 30.0)
