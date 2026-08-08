@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -10,6 +12,7 @@ import pytest
 
 from shared.dispatcher_policy import (
     LOCAL_DEV_PLATFORMS,
+    ROUTE_DECISION_LEDGER_LOCK_STALE_S,
     CandidateStatus,
     ClogRouteState,
     DispatchAction,
@@ -2557,6 +2560,21 @@ def test_rotation_failure_leaves_the_ledger_intact(tmp_path: Path) -> None:
 
     assert rotate_route_decision_ledger(ledger, max_bytes=1) is False
     assert ledger.read_text(encoding="utf-8") == payload
+
+
+def test_rotation_reclaims_a_lock_abandoned_by_a_dead_process(tmp_path: Path) -> None:
+    """Otherwise one crash mid-rotation disables rotation forever and the ledger
+    resumes the unbounded growth this exists to stop."""
+    ledger = tmp_path / "route-decisions.jsonl"
+    ledger.write_text("".join(f'{{"n": {i}}}\n' for i in range(100)), encoding="utf-8")
+    lock = tmp_path / "route-decisions.jsonl.rotate.lock"
+    lock.write_text("", encoding="utf-8")
+    stale = time.time() - (ROUTE_DECISION_LEDGER_LOCK_STALE_S + 60)
+    os.utime(lock, (stale, stale))
+
+    assert rotate_route_decision_ledger(ledger, max_bytes=1) is True
+    assert not lock.exists(), "the reclaimed lock must be released again"
+    assert ledger.read_text(encoding="utf-8").strip(), "ledger must not be emptied"
 
 
 def test_glmcp_launch_receipt_persists_quota_evidence(tmp_path: Path) -> None:

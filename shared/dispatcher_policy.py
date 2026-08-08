@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -83,6 +84,9 @@ ROUTE_DECISION_LEDGER = "route-decisions.jsonl"
 ROUTE_DECISION_LEDGER_MAX_BYTES = 64 * 1024 * 1024
 ROUTE_DECISION_LEDGER_CARRY_LINES = 2_000
 ROUTE_DECISION_LEDGER_CARRY_BYTES = 16 * 1024 * 1024
+# A rotation is seconds of work, so a lock held this long belongs to a process
+# that died holding it.
+ROUTE_DECISION_LEDGER_LOCK_STALE_S = 300.0
 DIMENSIONAL_ROUTE_RECEIPT_SCHEMA_VERSION = 1
 ROUTE_AUTHORITY_RECEIPT_SCHEMA_VERSION = 1
 ROUTE_AUTHORITY_RECEIPT_DIRNAME = "route-authority"
@@ -1106,6 +1110,37 @@ def evaluate_dispatch_policy(
     )
 
 
+def _acquire_rotate_lock(lock: Path) -> int | None:
+    """Take the rotation lock, reclaiming one abandoned by a dead process.
+
+    Without reclamation a process killed mid-rotation would leave the lock file
+    behind forever, rotation would never run again, and the ledger would resume
+    the unbounded growth this exists to stop — a silent regression back to the
+    2.5 GB state, which is exactly the failure mode that stayed invisible for
+    weeks the first time.
+    """
+    try:
+        return os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        pass
+    except OSError:
+        return None
+
+    try:
+        held_for = time.time() - lock.stat().st_mtime
+    except OSError:
+        return None
+    if held_for < ROUTE_DECISION_LEDGER_LOCK_STALE_S:
+        return None
+
+    try:
+        lock.unlink()
+        return os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except OSError:
+        # Lost the race to another reclaimer; it will do the work.
+        return None
+
+
 def rotate_route_decision_ledger(
     path: Path,
     *,
@@ -1132,9 +1167,8 @@ def rotate_route_decision_ledger(
         return False
 
     lock = path.with_name(path.name + ".rotate.lock")
-    try:
-        lock_fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except OSError:
+    lock_fd = _acquire_rotate_lock(lock)
+    if lock_fd is None:
         # Either another writer holds the lock or the directory is unwritable.
         # Appending to the oversized file is strictly better than failing.
         return False
