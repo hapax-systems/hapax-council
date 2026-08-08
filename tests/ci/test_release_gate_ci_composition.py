@@ -71,9 +71,7 @@ def test_egress_boundary_pin_job_executes_the_pin_file_per_pr() -> None:
     assert "post_merge_duplicate_filter" in set(job["needs"])
     run_steps = [str(step.get("run", "")) for step in job["steps"]]
     assert any(
-        re.search(
-            r"uv run\b.*\bpytest\b[^\n]*tests/test_capability_adapter_protocol\.py", run
-        )
+        re.search(r"uv run\b.*\bpytest\b[^\n]*tests/test_capability_adapter_protocol\.py", run)
         for run in run_steps
     ), "egress-boundary-pin no longer executes the egress pin file"
 
@@ -99,9 +97,9 @@ def test_pr_admission_slice_still_excludes_the_pin_file() -> None:
     run_steps = [str(step.get("run", "")) for step in test_job["steps"]]
     admission = [run for run in run_steps if "admission" in run or "--confcutdir" in run]
     assert admission, "PR admission slice step not found — has the test job changed shape?"
-    assert not any(
-        "tests/test_capability_adapter_protocol.py" in run for run in admission
-    ), "admission slice now runs the pin file — re-evaluate egress-boundary-pin's role"
+    assert not any("tests/test_capability_adapter_protocol.py" in run for run in admission), (
+        "admission slice now runs the pin file — re-evaluate egress-boundary-pin's role"
+    )
 
 
 def test_egress_boundary_pin_never_reports_success_without_running() -> None:

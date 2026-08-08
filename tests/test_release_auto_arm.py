@@ -126,9 +126,7 @@ def test_audio_or_live_egress_sensitive_held_per_missing_mitigation_check() -> N
     for missing in sorted(full):
         assessment = assess_release_auto_arm(fm, verified_checks=full - {missing})
         assert assessment.eligible is False
-        assert (
-            f"needs_mitigation:audio_or_live_egress_sensitive:{missing}" in assessment.blockers
-        )
+        assert f"needs_mitigation:audio_or_live_egress_sensitive:{missing}" in assessment.blockers
 
 
 def test_audio_path_scope_stays_human_released_with_full_evidence() -> None:
@@ -145,8 +143,7 @@ def test_audio_path_scope_stays_human_released_with_full_evidence() -> None:
     )
     assert assessment.eligible is False
     assert any(
-        "sensitive_path:config/pipewire/routes.conf" in blocker
-        for blocker in assessment.blockers
+        "sensitive_path:config/pipewire/routes.conf" in blocker for blocker in assessment.blockers
     )
     assert not any("audio_or_live_egress" in blocker for blocker in assessment.blockers)
 
