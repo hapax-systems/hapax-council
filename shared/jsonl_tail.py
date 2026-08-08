@@ -15,11 +15,12 @@ covers a ledger whose rows are enormous or whose newlines are missing entirely.
 stopped at a bound is indistinguishable from one that reached the start of the
 file, so a caller that scans for malformed rows learns "no malformed rows *in the
 window we read*" and cannot tell it apart from "no malformed rows". Consumers
-that treat absence as an all-clear — concretely
-``shared.mcp_connector_policy._latest_route_decision``, which reads
-``route-decisions.jsonl`` through this function to decide whether a
-side-effecting MCP call may proceed — are narrowing their evidence without being
-told. That is a deliberate trade for bounded cost, but it belongs where the
+that treat absence as an all-clear are narrowing their evidence without being
+told. The consumer that matters today is ``shared.mcp_connector_policy``, whose
+route-decision lookup reads ``route-decisions.jsonl`` through this function to
+decide whether a side-effecting MCP call may proceed. (Named at module rather
+than function level deliberately: the private entry point can be renamed, but the
+module's dependence on this bound is the durable fact.) That is a deliberate trade for bounded cost, but it belongs where the
 result is consumed and not only where the bound was introduced. Anything that
 needs to distinguish the two cases must compare against the file size itself, or
 this function needs to grow a returned truncation flag.

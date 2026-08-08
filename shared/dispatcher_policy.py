@@ -34,7 +34,7 @@ from shared.capability_surface_delta import (
     CapabilitySurfaceDeltaError,
     load_capability_surface_delta_file,
 )
-from shared.jsonl_append import append_jsonl, lock_path_for
+from shared.jsonl_append import lock_path_for
 from shared.jsonl_tail import read_tail_lines
 from shared.platform_capability_receipts import (
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
@@ -1283,29 +1283,30 @@ def write_route_decision_receipt(
     payload = decision.model_dump(mode="json")
     if decision.dimensional_receipt is not None:
         payload.update(decision.dimensional_receipt.model_dump(mode="json"))
-    # Rotate first so the newest receipt always lands in the ledger the gate reads,
-    # then append under the same lock. Both take <name>.lock, so no append can fall
-    # into the inode being rotated away. raising=True keeps the pre-existing
-    # contract that an unwritable ledger surfaces rather than being swallowed.
-    rotate_route_decision_ledger(path)
-    try:
-        append_jsonl(path, payload, sort_keys=True, raising=True)
-    except OSError as exc:
-        # append_jsonl flocks the same sidecar, so a filesystem that cannot flock
-        # fails the append as well as the rotation. Serialisation is a guard
-        # against interleaving; it is not worth more than the receipt itself,
-        # and a lost receipt fails the connector gate closed. Fall back to a
-        # direct append, loudly. If THAT fails the ledger is genuinely
-        # unwritable, and raising is the pre-existing contract.
-        logger.warning(
-            "route-decision receipt could not be appended under the ledger lock at %s "
-            "(%s); writing unserialised so the receipt is not lost. Next: confirm the "
-            "filesystem supports flock.",
-            lock_path_for(path),
-            exc,
-        )
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(payload, sort_keys=True) + "\n")
+    blob = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
+    # ONE lock across rotate-then-append, not two acquisitions with a gap.
+    #
+    # Taking the lock twice left two holes. A rotation in another process could
+    # land between this process's rotate-release and its append-acquire; and when
+    # the append failed, falling back to an UNLOCKED write reintroduced exactly
+    # the race the lock exists to close — an append landing mid-rotation goes to
+    # the inode about to be replaced and is lost from the active ledger.
+    #
+    # Holding one lock makes rotate+append a single critical section. When the
+    # lock cannot be taken at all the append still happens unserialised, which is
+    # safe for the reason that matters: _ledger_lock yields False under exactly
+    # the conditions that also make every other process skip rotation, so there
+    # is no rotation to race. A receipt is worth more than serialisation — losing
+    # one fails the connector gate closed — and a genuinely unwritable ledger
+    # still raises, which is the pre-existing contract.
+    with _ledger_lock(path) as locked:
+        if locked:
+            _rotate_locked(path, max_bytes=ROUTE_DECISION_LEDGER_MAX_BYTES)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.write(fd, blob)  # single syscall, so the row cannot interleave
+        finally:
+            os.close(fd)
     return path
 
 

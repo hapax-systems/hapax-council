@@ -7,6 +7,7 @@ import logging
 import os
 import threading
 import time
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
@@ -2630,6 +2631,57 @@ def test_rotation_is_skipped_when_the_lock_cannot_be_opened(
     assert ledger.read_text(encoding="utf-8") == payload, "the ledger must be untouched"
     assert not (tmp_path / "route-decisions.jsonl.1").exists(), "no rotation may have happened"
     assert "unserialised" in caplog.text, "an unlockable ledger must say so"
+
+
+def test_the_receipt_write_appends_inside_one_lock_acquisition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rotate and append must share ONE lock acquisition, with the append inside it.
+
+    Two acquisitions left a gap where another writer could rotate between this
+    process's rotate-release and its append-acquire, and the unlocked-fallback
+    escape hatch that briefly existed reintroduced the original race outright —
+    an append landing mid-rotation goes to the inode about to be replaced.
+
+    This asserts the STRUCTURE, because the behavioural version does not
+    discriminate: a competing ``append_jsonl`` takes the same sidecar, so it
+    blocks on rotation's own lock and its row survives either way. Ordering the
+    observed events is what actually distinguishes one critical section from two.
+    """
+    monkeypatch.setattr(dispatcher_policy, "ROUTE_DECISION_LEDGER_MAX_BYTES", 1)
+    ledger = tmp_path / "route-decisions.jsonl"
+    ledger.write_text("".join(f'{{"n": {i}}}\n' for i in range(400)), encoding="utf-8")
+
+    events: list[str] = []
+    real_lock = dispatcher_policy._ledger_lock
+    real_write = os.write
+
+    @contextmanager
+    def recording_lock(path: Path):  # type: ignore[no-untyped-def]
+        events.append("lock-enter")
+        with real_lock(path) as held:
+            yield held
+        events.append("lock-exit")
+
+    def recording_write(fd: int, data: bytes) -> int:
+        if data == blob:
+            events.append("append")
+        return real_write(fd, data)
+
+    decision = evaluate_dispatch_policy(_request(), now=NOW)
+    payload = decision.model_dump(mode="json")
+    if decision.dimensional_receipt is not None:
+        payload.update(decision.dimensional_receipt.model_dump(mode="json"))
+    blob = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
+
+    monkeypatch.setattr(dispatcher_policy, "_ledger_lock", recording_lock)
+    monkeypatch.setattr(dispatcher_policy.os, "write", recording_write)
+    write_route_decision_receipt(decision, ledger_dir=tmp_path)
+
+    assert events == ["lock-enter", "append", "lock-exit"], (
+        f"the append must happen inside a single lock acquisition; saw {events}"
+    )
+    assert decision.decision_id in ledger.read_text(encoding="utf-8")
 
 
 def test_a_flock_failure_skips_rotation_without_costing_the_receipt(
