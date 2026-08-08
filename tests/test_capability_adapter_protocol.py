@@ -535,9 +535,7 @@ def test_receipt_write_failure_surfaces_oserror(tmp_path) -> None:
     decision = _decision(action=DispatchAction.LAUNCH, launch_allowed=True, lane="eta")
     runner = mock.Mock(return_value=0)
     with pytest.raises(OSError):
-        ClaudeAdapter().send(
-            decision, "x", relay_runner=runner, receipts_path=blocker / "r.jsonl"
-        )
+        ClaudeAdapter().send(decision, "x", relay_runner=runner, receipts_path=blocker / "r.jsonl")
     runner.assert_not_called()
 
 

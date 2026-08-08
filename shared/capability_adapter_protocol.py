@@ -333,6 +333,7 @@ def default_session_send_receipts_path() -> Path:
 
     return Path(os.environ.get("HAPAX_SESSION_SEND_RECEIPTS", str(_DEFAULT_RECEIPTS_FALLBACK)))
 
+
 #: The ONLY per-platform variation point of the SESSION gate: platform -> canonical relay wrapper
 #: (already-governed transports under ``scripts/``). A send-capable platform missing here fails
 #: closed; a platform gains egress by adding a row — never by a new ``hapax-<engine>`` send script
