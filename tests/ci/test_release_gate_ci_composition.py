@@ -27,6 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_YML = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 AUTHORITY_CASE_YML = REPO_ROOT / ".github" / "workflows" / "authority-case-check.yml"
 PIN_FILE = REPO_ROOT / "tests" / "test_capability_adapter_protocol.py"
+PROTOCOL_FILE = REPO_ROOT / "shared" / "capability_adapter_protocol.py"
 
 #: The behavior pins the egress-boundary-pin job exists to execute, each mapped
 #: to the behavior-defining symbols its body must reference (semantic anchors —
@@ -35,9 +36,12 @@ PIN_FILE = REPO_ROOT / "tests" / "test_capability_adapter_protocol.py"
 REQUIRED_EGRESS_PINS: dict[str, tuple[str, ...]] = {
     # authority-first: no relay execution before a LAUNCH decision
     "test_launch_raises_authority_violation_before_side_effect": ("AuthorityViolation",),
-    # the send boundary asserts authority (refuses not-yet-wired at main;
-    # the wired-send assertions land with #4440)
-    "test_send_asserts_authority_then_is_not_yet_wired": ("send",),
+    # the send boundary asserts authority, then refuses not-yet-wired
+    # (the wired-send assertions land with #4440)
+    "test_send_asserts_authority_then_is_not_yet_wired": (
+        "AuthorityViolation",
+        "NotImplementedError",
+    ),
     # send capability is type-level — never a runtime flag, never overridable
     "test_sendcapable_is_not_a_capability_adapter_subclass": ("SendCapableAdapter",),
     "test_worker_has_launch_and_sendcapable_has_send": ("hasattr", '"send"'),
@@ -143,8 +147,50 @@ def test_composition_suite_itself_runs_in_the_required_full_shard() -> None:
     assert "test-full-shard" in set(_ci()["jobs"]["all-green"]["needs"])
 
 
-def test_pr_admission_slice_still_excludes_the_pin_file() -> None:
-    # The fact that justifies the dedicated job: if the PR admission slice ever
+#: The pins #4440's wired send must add to REQUIRED_EGRESS_PINS. The coupling
+#: test below makes the extension machine-enforced rather than a comment
+#: obligation: once send executes the relay, these names MUST be in the set.
+WIRED_SEND_PINS: dict[str, tuple[str, ...]] = {
+    "test_send_asserts_authority_before_any_egress_side_effect": ("AuthorityViolation",),
+    "test_send_receipt_carries_no_message_body": ("message_sha256",),
+    "test_send_routes_through_canonical_relay_and_mints_receipt": ("receipt",),
+    "test_send_on_bare_mixin_fails_closed": ("send",),
+    "test_send_cannot_be_overridden_no_boutique_paths": ("__init_subclass__",),
+    "test_no_runtime_supports_send_flag_anywhere": ("supports_send",),
+}
+
+
+def _send_body() -> str:
+    source = PROTOCOL_FILE.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "send":
+            return ast.get_source_segment(source, node) or ""
+    return ""
+
+
+def test_pin_set_tracks_the_send_surface_state() -> None:
+    # The behavioral evidence set is COUPLED to the send surface: while send is
+    # the not-yet-wired refusal, the refusal pin is required and the wired pins
+    # stay out; once send executes the relay (#4440), the wired-send and
+    # receipt-privacy pins MUST be in the required set and the refusal pin is
+    # superseded. The obligation to extend the evidence with the surface is
+    # machine-enforced here, not a comment promise.
+    wired = "NotImplementedError" not in _send_body()
+    names = set(REQUIRED_EGRESS_PINS)
+    if not wired:
+        assert "test_send_asserts_authority_then_is_not_yet_wired" in names
+        overlap = set(WIRED_SEND_PINS) & names
+        assert not overlap, f"wired-send pins required before send is wired: {sorted(overlap)}"
+    else:
+        assert "test_send_asserts_authority_then_is_not_yet_wired" not in names
+        missing = set(WIRED_SEND_PINS) - names
+        assert not missing, f"send is wired but the required pin set lacks: {sorted(missing)}"
+
+
+def test_pr_admission_slice_still_excludes_the_pin_file() -> (
+    None
+):  # The fact that justifies the dedicated job: if the PR admission slice ever
     # grows to include the pin file, say so deliberately (the job may then be
     # redundant), rather than letting the two drift into silent disagreement.
     test_job = _ci()["jobs"]["test"]
