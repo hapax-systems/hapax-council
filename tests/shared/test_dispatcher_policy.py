@@ -2632,6 +2632,62 @@ def test_rotation_is_skipped_when_the_lock_cannot_be_opened(
     assert "unserialised" in caplog.text, "an unlockable ledger must say so"
 
 
+def test_a_flock_failure_skips_rotation_without_costing_the_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """flock itself can fail — EINTR, or a filesystem that does not implement it.
+
+    write_route_decision_receipt rotates BEFORE it appends, so an exception here
+    escapes rotation and aborts the receipt write. Housekeeping may be skipped;
+    it may never cost a receipt.
+    """
+
+    def refuse_flock(fd: int, op: int) -> None:
+        raise OSError(9, "Bad file descriptor")
+
+    monkeypatch.setattr(dispatcher_policy, "ROUTE_DECISION_LEDGER_MAX_BYTES", 1)
+    monkeypatch.setattr(dispatcher_policy.fcntl, "flock", refuse_flock)
+    ledger = tmp_path / "route-decisions.jsonl"
+    ledger.write_text("".join(f'{{"n": {i}}}\n' for i in range(300)), encoding="utf-8")
+
+    decision = evaluate_dispatch_policy(_request(), now=NOW)
+    with caplog.at_level(logging.WARNING, logger="shared.dispatcher_policy"):
+        path = write_route_decision_receipt(decision, ledger_dir=tmp_path)
+
+    assert decision.decision_id in path.read_text(encoding="utf-8"), (
+        "a lock failure must never cost the receipt the caller was writing"
+    )
+    assert not (tmp_path / "route-decisions.jsonl.1").exists(), "rotation must be skipped"
+    assert "could not be taken" in caplog.text
+
+
+def test_a_failed_archive_link_preserves_the_previous_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The retained .1 must survive a rotation that fails while creating its replacement.
+
+    The archive used to be unlinked before os.link created the new one, so a
+    link failure destroyed the prior audit generation outright — and the warning
+    then reported only that the ledger was uncapped, understating a loss that
+    had already happened.
+    """
+    ledger = tmp_path / "route-decisions.jsonl"
+    ledger.write_text("".join(f'{{"n": {i}}}\n' for i in range(300)), encoding="utf-8")
+    archive = tmp_path / "route-decisions.jsonl.1"
+    archive.write_text('{"generation": "previous"}\n', encoding="utf-8")
+
+    def refuse_link(src: object, dst: object) -> None:
+        raise OSError(18, "Invalid cross-device link")
+
+    monkeypatch.setattr(dispatcher_policy.os, "link", refuse_link)
+
+    assert rotate_route_decision_ledger(ledger, max_bytes=1) is False
+    assert archive.read_text(encoding="utf-8") == '{"generation": "previous"}\n', (
+        "a failed rotation must not destroy the retained archive"
+    )
+    assert not (tmp_path / "route-decisions.jsonl.1.staging").exists(), "staging must be cleaned up"
+
+
 def test_rotation_and_append_share_one_lock(tmp_path: Path) -> None:
     """Rotation must take the SAME sidecar append_jsonl takes.
 

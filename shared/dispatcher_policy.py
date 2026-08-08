@@ -1142,14 +1142,33 @@ def _ledger_lock(path: Path) -> Iterator[bool]:
         )
         yield False
         return
+    held = False
     try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)  # blocking; rotation is one bounded copy
-        yield True
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)  # blocking; rotation is one bounded copy
+            held = True
+        except OSError as exc:
+            # flock itself can fail — EINTR, or a filesystem that does not
+            # implement it. This MUST NOT propagate: the caller rotates before
+            # appending, so an exception here escapes rotation and aborts the
+            # receipt write, which inverts the whole contract. Housekeeping is
+            # allowed to be skipped; it is never allowed to cost a receipt.
+            logger.warning(
+                "route-decision ledger lock at %s could not be taken (%s); skipping "
+                "rotation, the receipt still writes. Next: confirm the filesystem "
+                "supports flock and the sidecar is writable.",
+                lock_path_for(path),
+                exc,
+            )
+        yield held
     finally:
         try:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            if held:
+                with suppress(OSError):
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
         finally:
-            os.close(lock_fd)
+            with suppress(OSError):
+                os.close(lock_fd)
 
 
 def _rotate_locked(path: Path, *, max_bytes: int) -> bool:
@@ -1179,10 +1198,19 @@ def _rotate_locked(path: Path, *, max_bytes: int) -> bool:
         staged.write_text(
             "".join(f"{line}\n" for line in carried if line.strip()), encoding="utf-8"
         )
+        # Link into a staging name and rename over the archive, rather than
+        # unlinking the archive first. Unlinking first destroys the retained
+        # audit generation the moment os.link fails — cross-device, link-count,
+        # or permissions — and the failure path then reports only that the
+        # ledger is uncapped, understating a loss that already happened.
+        # os.replace is atomic, so the previous .1 survives until its
+        # replacement genuinely exists.
+        archive_staged = path.with_name(path.name + ".1.staging")
+        archive_staged.unlink(missing_ok=True)
+        os.link(path, archive_staged)
+        os.replace(archive_staged, archive)
         # Link before replace so the ledger path is never absent: a concurrent
         # reader must always find a file.
-        archive.unlink(missing_ok=True)
-        os.link(path, archive)
         staged.replace(path)
     except OSError as exc:
         # The cleanup must not raise on top of the failure it is cleaning up:
@@ -1190,6 +1218,8 @@ def _rotate_locked(path: Path, *, max_bytes: int) -> bool:
         # contained housekeeping failure into a lost receipt.
         with suppress(OSError):
             staged.unlink(missing_ok=True)
+        with suppress(OSError):
+            path.with_name(path.name + ".1.staging").unlink(missing_ok=True)
         logger.warning(
             "route-decision ledger rotation of %s failed (%s); the ledger is intact but "
             "UNCAPPED and will keep growing. Next: check free space and permissions on %s.",
@@ -1258,7 +1288,24 @@ def write_route_decision_receipt(
     # into the inode being rotated away. raising=True keeps the pre-existing
     # contract that an unwritable ledger surfaces rather than being swallowed.
     rotate_route_decision_ledger(path)
-    append_jsonl(path, payload, sort_keys=True, raising=True)
+    try:
+        append_jsonl(path, payload, sort_keys=True, raising=True)
+    except OSError as exc:
+        # append_jsonl flocks the same sidecar, so a filesystem that cannot flock
+        # fails the append as well as the rotation. Serialisation is a guard
+        # against interleaving; it is not worth more than the receipt itself,
+        # and a lost receipt fails the connector gate closed. Fall back to a
+        # direct append, loudly. If THAT fails the ledger is genuinely
+        # unwritable, and raising is the pre-existing contract.
+        logger.warning(
+            "route-decision receipt could not be appended under the ledger lock at %s "
+            "(%s); writing unserialised so the receipt is not lost. Next: confirm the "
+            "filesystem supports flock.",
+            lock_path_for(path),
+            exc,
+        )
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, sort_keys=True) + "\n")
     return path
 
 
