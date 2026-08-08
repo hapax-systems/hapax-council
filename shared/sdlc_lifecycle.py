@@ -503,6 +503,24 @@ RELEASE_MITIGATION_CHECKS: dict[str, tuple[str, ...]] = {
     # CORRECTNESS of such a change is separately gated by the general test/review
     # checks every PR already carries.
     "privacy_or_secret_sensitive": ("secrets-scan",),
+    # A live-egress/audio-sensitive change (relay/send boundaries, live-surface
+    # wiring) auto-arms on four machine-verified evidences: the authority case
+    # binds the boundary to its ratified spec; the capability-surface delta gate
+    # proves any capability-surface change is declared under the typed contract
+    # (the job runs in ci.yml on every PR, so the gate never holds a PR for a
+    # check that never ran); the secret scanner proves the diff carries no
+    # committed credential; and quorum-accept at the current head covers the
+    # boundary logic itself. Audio-routing changes (config/pipewire/) remain
+    # human-released through the sensitive-path gate (SENSITIVE_PATH_MARKERS),
+    # so this class in practice holds relay/send-boundary work — the shape this
+    # evidence covers. Defined per this map's own doctrine (extend the map,
+    # never add a manual-arm path): cc-task-release-arm-held-sensitive-class-20260808.
+    "audio_or_live_egress_sensitive": (
+        "authority-case-check",
+        "capability-surface-delta",
+        "secrets-scan",
+        REVIEW_TEAM_QUORUM_EVIDENCE,
+    ),
 }
 
 #: Mutation surfaces too high-stakes for the system to auto-authorize release.

@@ -107,6 +107,46 @@ def test_ineligible_when_audio_or_live_egress_sensitive() -> None:
     assert any("audio_or_live_egress" in blocker for blocker in assessment.blockers)
 
 
+def test_audio_or_live_egress_sensitive_with_full_evidence_auto_arms() -> None:
+    # The class is evidence-gated (cc-task-release-arm-held-sensitive-class-20260808):
+    # every mitigation check passing discharges the veto.
+    fm = _eligible_frontmatter(risk_flags={"audio_or_live_egress_sensitive": True})
+    assessment = assess_release_auto_arm(
+        fm, verified_checks=set(RELEASE_MITIGATION_CHECKS["audio_or_live_egress_sensitive"])
+    )
+    assert not any("audio_or_live_egress" in blocker for blocker in assessment.blockers)
+    assert assessment.eligible is True
+
+
+def test_audio_or_live_egress_sensitive_held_per_missing_mitigation_check() -> None:
+    # Each missing check is its own needs_mitigation blocker.
+    fm = _eligible_frontmatter(risk_flags={"audio_or_live_egress_sensitive": True})
+    full = set(RELEASE_MITIGATION_CHECKS["audio_or_live_egress_sensitive"])
+    for missing in sorted(full):
+        assessment = assess_release_auto_arm(fm, verified_checks=full - {missing})
+        assert assessment.eligible is False
+        assert (
+            f"needs_mitigation:audio_or_live_egress_sensitive:{missing}" in assessment.blockers
+        )
+
+
+def test_audio_path_scope_stays_human_released_with_full_evidence() -> None:
+    # config/pipewire/ is a SENSITIVE_PATH_MARKERS hit: the audio lane keeps its
+    # human release even when the class's mitigation evidence is complete.
+    fm = _eligible_frontmatter(
+        risk_flags={"audio_or_live_egress_sensitive": True},
+        mutation_scope_refs=["config/pipewire/routes.conf", "scripts/hapax-audio-routing-check"],
+    )
+    assessment = assess_release_auto_arm(
+        fm, verified_checks=set(RELEASE_MITIGATION_CHECKS["audio_or_live_egress_sensitive"])
+    )
+    assert assessment.eligible is False
+    assert any(
+        "sensitive_path:config/pipewire/routes.conf" in blocker
+        for blocker in assessment.blockers
+    )
+
+
 def test_account_live_quota_evidence_does_not_false_block_release_auto_arm() -> None:
     fm = _eligible_frontmatter(
         title="Claude subscription quota receipts require account-live evidence",
