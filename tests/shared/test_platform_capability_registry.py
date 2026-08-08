@@ -38,6 +38,16 @@ from shared.platform_capability_registry import (
 )
 from shared.quota_spend_ledger import QUOTA_SPEND_LEDGER_FIXTURES
 
+
+@pytest.fixture(autouse=True)
+def _isolated_receipt_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The loader now defaults to the estate receipt dir when the env var is
+    unset (the capability_admission fix: minted receipts must be discovered
+    without configuration). Tests that call the loader bare must isolate
+    explicitly, or live on-disk receipts leak into fixture expectations."""
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", str(tmp_path / "no-receipts"))
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DISPATCHER = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
 FRESH_NOW = datetime(2026, 5, 9, 21, 0, tzinfo=UTC)
@@ -1306,7 +1316,11 @@ def test_claude_review_quota_receipt_removable_reasons_preserve_route_specific_b
 
 def test_claude_review_platform_receipt_alone_keeps_quota_gate_blocked(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Pin the live ledger away too: a fresh on-disk mint must not leak into
+    # this fixture's expectations (pre-existing leak, fails on live machines).
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(tmp_path / "no-ledger.json"))
     receipt_dir = tmp_path / "receipts"
     receipt_dir.mkdir()
     receipt_time = datetime(2026, 7, 8, 14, 1, tzinfo=UTC)
@@ -1800,3 +1814,25 @@ def test_haiku_and_local_tool_routes_are_required_and_routable() -> None:
     leaves = materialize_descriptor_leaves(registry)
     variant_leaf = leaves["local_tool.local.worker#worker@quantization_exl3_5_0bpw"]
     assert variant_leaf.quantization.value == "exl3_5_0bpw"
+
+
+def test_receipt_dir_from_env_defaults_to_the_estate_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset env must discover minted receipts (the capability_admission defect):
+    no argument and no env var means the default dir, never None."""
+    from shared.platform_capability_receipts import DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR
+    from shared.platform_capability_registry import _receipt_dir_from_env
+
+    monkeypatch.delenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", raising=False)
+    assert _receipt_dir_from_env() == DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR
+
+
+def test_receipt_dir_from_env_honors_override_and_opt_out(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from shared.platform_capability_registry import _receipt_dir_from_env
+
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", str(tmp_path))
+    assert _receipt_dir_from_env() == tmp_path
+    for kill in ("", "0", "none", "false"):
+        monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", kill)
+        assert _receipt_dir_from_env() is None
