@@ -4404,6 +4404,184 @@ from agents.hapax_daimonion.interview_conductor import (
 _InterviewConductor
 _InterviewStateWriter
 
+# ---------------------------------------------------------------------------
+# Gate 0 canon + execution-admission landing (PR #4483,
+# cc-task-sdlc-fsm-canon-impingement-lockstep-bootstrap-20260710).
+#
+# Three categories, all landing ahead of their callers:
+#   * Pydantic validators and classmethods invoked dynamically by the framework.
+#   * Producer-side API whose consumers are the Reins repo, not this one
+#     (verified: none of these names appears in any local Reins checkout).
+#   * Gate-0A dormant seams: the claim-publication engine deliberately refuses
+#     ("Dormant Gate-0A engine; Gate-0B must supply a typed effect carrier"), so
+#     its validators and builders are unreachable until Gate 0B activation.
+#     Remove these from the whitelist when Gate 0B wires them.
+#
+# Placed here rather than at end-of-file on purpose: main appends to the tail of
+# this file often, and an end-of-file insertion collides with those appends on
+# every merge.
+# ---------------------------------------------------------------------------
+
+# agents/coordinator/core.py
+Coordinator._claim_release_requires_governance
+# Gate-0A dormant seam: only the admitted claim adapter may clear the signal.
+Coordinator._clear_claim_signal
+
+# agents/request_decomposer/models.py
+PlannedTaskSpec._planned_requirement_validity_mask
+PlannedTaskSpec._planned_requirement_vector
+PlannedTaskSpec._scope_state_is_lossless
+RequestDecompositionPlan._validate_graph
+
+# agents/request_decomposer/writer.py
+decomposition_commit_state
+inspect_decomposition_journals
+# Gate-0A dormant seam: unreachable until Gate 0B.
+_update_frontmatter_bytes
+
+# shared/capability_dispatch.py
+default_dispatch_ledger
+
+# shared/coord_projection.py
+# Gate-0A dormant seams: retained as explicit refusal boundaries.
+_inspect_lifecycle_transactions_legacy
+_load_legacy_transaction_manifest
+lifecycle_transition_intent_ref
+
+# shared/epistemic_impingement.py
+build_epistemic_impingement_trace
+consume_portal
+project_legacy_impingement
+PortalConsumptionReceipt.validate_receipt
+PortalConsumptionReceipt.validate_string
+EpistemicImpingementTrace.validate_string_set
+PortalConsumptionReceipt.validate_timestamp
+EpistemicImpingementTrace.validate_trace
+
+# shared/execution_admission.py
+ExecutionCompositionRoot.persist_invocation
+require_historical_applied_claim_ownership_proof
+ExecutionCompositionRoot.resolve_invocation
+ProtectedActionRequest.validate_address_sets
+ExecutionAdmission.validate_admission
+ProspectiveClaimPublicationBasis.validate_basis
+BoundExecutionCall.validate_call
+ProspectiveClaimPublicationCarrier.validate_carrier
+DependencyClosureEvidence.validate_closure
+ProtectedClaimCoordinates.validate_coordinates
+ExecutionCompositionPortDescriptors.validate_descriptors
+HistoricalSupportDisposition.validate_disposition
+BoundExecutionCall.validate_effect_targets
+OutcomePipelineReadinessEnvelope.validate_envelope
+CompletionEvaluation.validate_evaluation
+OutcomeEvent.validate_event
+CompletionEvaluation.validate_evidence
+ExecutionLease.validate_generation_roots
+ValidAuthorityGrant.validate_grant
+HistoricalExecutionLeaseV1.validate_historical_lease
+AuthorityHold.validate_hold
+ActionIntent.validate_intent
+CurrentClaimLeaseFile.validate_key
+ExecutionLease.validate_lease
+ExecutionCompositionManifest.validate_manifest
+EffectObservation.validate_observation
+ExecutionAdmission.validate_optional_string
+CurrentClaimLeaseFile.validate_path
+ProtectedApertureDecision.validate_paths
+ExecutionInvocationBundlePointer.validate_pointer
+CurrentClaimPosition.validate_position
+ExecutorRegistryProjection.validate_projection
+AppliedClaimOwnershipProof.validate_proof
+OutcomePipelineReadinessQuery.validate_query
+ProtectedApertureDecision.validate_reason_sets
+OutcomeReceipt.validate_receipt
+ContentAddress.validate_ref
+QuotaReservationEvidence.validate_reservation
+OutcomeReplayResult.validate_result
+OutcomeProjectionSnapshot.validate_roots
+ProtectedActionRequest.validate_scope
+OutcomeReplayCatalogSnapshot.validate_snapshot
+ExecutionInvocationBundlePointer.validate_string
+ExecutionLease.validate_supersedes
+RootDisposition.validate_superseding
+ExecutionTargetEvidence.validate_target
+EffectManifest.validate_targets
+OutcomeReplayResult.validate_timestamp
+# Gate-0A dormant seam: unreachable until Gate 0B.
+_bound_call_executor_key
+
+# shared/recovery_governor.py
+RecoveryGovernor.backoff_entry
+RecoveryGovernor.permit
+RecoveryGovernor.permit_batch
+
+# shared/relay_mq.py
+build_canon_echo_envelope
+build_successor_canon_position
+build_successor_outbox
+drain_successor_outboxes
+ensure_successor_outbox_task_directory
+load_dispatch_echo_expectation
+load_latest_canon_echo_expectation
+load_latest_dispatch_echo_expectation
+send_successor_canon_position
+# Gate-0A dormant seams: unreachable until Gate 0B.
+ensure_canon_echo_repair
+persist_exact_envelope
+
+# shared/sdlc_claim.py
+# Gate-0A dormant seams. The engine itself refuses at Gate 0A, so its preflight,
+# postimage, source-proof and recovery paths have no caller until Gate 0B.
+_apply_admitted_claim_publication_transaction
+_locked_preflight
+_recover_one
+_require_exact_task_postimage
+ClaimAdmissionConsumption.require_source_proofs
+
+# shared/sdlc_lifecycle.py
+is_legal_stage_edge
+stage_edges
+
+# shared/sdlc_task_store.py
+refresh_task_identity_index
+resolve_claim_leases_for_task
+write_claim_dispatch_binding
+# Gate-0A dormant seam: the task-identity write API. Its only caller was the
+# decomposer writer's admitted publication path, which is descoped to Gate 0B --
+# the store lands as a source contract with no live committer. Remove these from
+# the whitelist when Gate 0B wires a publisher to them.
+load_task_identity_write_guard
+prepare_task_identity_writes
+reconcile_task_identity_writes
+rename_task_store_no_replace
+resolve_task_identity_projection
+
+# shared/session_context_canon.py
+_runtime_dependency_record_observation
+build_context_frame
+build_context_position
+checked_bundle_json_schema_bytes
+context_bundle_fsm
+forward_cone
+load_canon_source
+load_materialized_bundle
+materialize_bundle
+_ReleaseArtifact.validate_ascii_scalar
+CanonSource.validate_atoms
+CanonAtom.validate_content
+WireContract.validate_fields
+CanonAtom.validate_identity
+CanonImage.validate_image
+CanonKernel.validate_kernel
+_RuntimeDependencyReleaseManifest.validate_manifest
+FsmStrata.validate_partition
+_RuntimeDependencyRelease.validate_release_set
+CanonAtom.validate_string_tuple
+# Gate-0A dormant seams: unreachable until Gate 0B.
+_atom
+_lifecycle_fsm_source_refs
+
+
 # HKP validator-first slice — Pydantic invokes field/model validators
 # dynamically during bundle validation, and the extensionless
 # scripts/hapax-hkp-validate CLI imports validate_bundle outside vulture's

@@ -91,10 +91,31 @@ def _write_task(
     return path
 
 
+# Identity inputs that outrank HAPAX_AGENT_ROLE in
+# hooks/scripts/agent-role.sh::hapax_agent_identity, which returns the FIRST one
+# set. HAPAX_AGENT_NAME is checked BEFORE HAPAX_AGENT_ROLE, so setting only the
+# role leaves a lane's ambient name in place and every claim runs as that lane —
+# silently, and in the dangerous direction: assertions that a claim file was NOT
+# written pass vacuously because they glob for a role the script never used.
+_AMBIENT_IDENTITY_ENV = (
+    "HAPAX_AGENT_NAME",
+    "CODEX_THREAD_NAME",
+    "CODEX_SESSION_NAME",
+    "CODEX_SESSION",
+    "CODEX_ROLE",
+    "CLAUDE_ROLE",
+    "CLAUDE_CODE_SESSION_ID",
+    "HAPAX_SESSION_ID",
+)
+
+
 def _claim(home: Path, task_id: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
+    for leaked in _AMBIENT_IDENTITY_ENV:
+        env.pop(leaked, None)
     env["HOME"] = str(home)
     env["HAPAX_AGENT_ROLE"] = "cx-test"
+    env["HAPAX_AGENT_NAME"] = "cx-test"
     return subprocess.run(
         ["bash", str(SCRIPT), task_id],
         env=env,
@@ -752,8 +773,14 @@ def test_claim_writes_session_keyed_epoch_sidecar(tmp_path: Path) -> None:
     _write_task(home, "active", "cc-sidecar-session")
     sid = "0f9f9f9f-1111-2222-3333-444455556666"
     env = os.environ.copy()
+    # Same identity-precedence clearing as _claim: HAPAX_AGENT_NAME outranks
+    # HAPAX_AGENT_ROLE, so without this the ambient lane's name wins and the
+    # sidecar lands under that role instead of cx-test.
+    for leaked in _AMBIENT_IDENTITY_ENV:
+        env.pop(leaked, None)
     env["HOME"] = str(home)
     env["HAPAX_AGENT_ROLE"] = "cx-test"
+    env["HAPAX_AGENT_NAME"] = "cx-test"
     env["HAPAX_SESSION_ID"] = sid
 
     result = subprocess.run(

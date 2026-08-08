@@ -25,12 +25,27 @@ def _run_hook(
     }
     for bypass in ("HAPAX_CC_TASK_GATE_OFF", "HAPAX_METHODOLOGY_EMERGENCY"):
         env.pop(bypass, None)
+    # Clear the FULL identity precedence chain of
+    # hooks/scripts/agent-role.sh::hapax_agent_identity, which returns the first
+    # variable that is set. HAPAX_AGENT_NAME is checked BEFORE HAPAX_AGENT_ROLE,
+    # so popping only the role trio left the ambient lane's name in place: inside
+    # a lane session `role=None` resolved to that lane instead of "unknown", and
+    # an explicit role was silently overridden by it. Both directions are wrong,
+    # and the second is the dangerous one — it makes a role-scoped assertion pass
+    # while testing the wrong role.
+    for leaked in (
+        "HAPAX_AGENT_NAME",
+        "CODEX_THREAD_NAME",
+        "CODEX_SESSION_NAME",
+        "CODEX_SESSION",
+        "CODEX_ROLE",
+        "CLAUDE_ROLE",
+        "HAPAX_AGENT_ROLE",
+    ):
+        env.pop(leaked, None)
     if role is not None:
         env["HAPAX_AGENT_ROLE"] = role
-    else:
-        env.pop("HAPAX_AGENT_ROLE", None)
-        env.pop("CODEX_ROLE", None)
-        env.pop("CLAUDE_ROLE", None)
+        env["HAPAX_AGENT_NAME"] = role
     return subprocess.run(
         [str(HOOK)],
         input=json.dumps(payload),

@@ -1,0 +1,336 @@
+schema: hapax.coordination-canon.source.v1
+canon_version: 1
+domain: sdlc
+generator_version: hapax.session-context-canon.v1
+projection_algorithm: hapax.sdlc-forward-cone.v1
+encoder_id: python-toon@0.1.3
+reference_tokenizer_id: hapax.ascii-lexeme.v1
+wire_contract:
+  kind: context_bundle
+  sha256: 8204a2b2804aa41ac95f75414b58fa88ae1e76a48e6ef731807f544f4148fbd9
+  fsm_fields: [what, how, must]
+atoms:
+  - id: what.grounding.stage-vocabulary
+    ordinal: 10
+    stratum: what
+    content: S0 S1 S2 S3 S3_5 S4 S5 S6 S7 S8 S9 S10 S11 BLOCKED
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [docs/formal/sdlc-stage-metadata.yaml, docs/formal/sdlc-ladder.tla]
+  - id: what.grounding.disconfirmation-repair
+    ordinal: 20
+    stratum: what
+    content: "S3 -> S3_5; S3_5 -> {S4, S0}"
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [docs/formal/sdlc-stage-metadata.yaml, docs/formal/sdlc-ladder.tla]
+  - id: what.grounding.blocked-repair
+    ordinal: 30
+    stratum: what
+    content: "Fall(nonterminal, nonblocked) -> BLOCKED; S6 -> BLOCKED; S7 -> BLOCKED; BLOCKED -> {S6, S0}"
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [docs/formal/sdlc-stage-metadata.yaml, docs/formal/sdlc-ladder.tla]
+  - id: must.coordinator-engagement
+    ordinal: 100
+    stratum: must
+    content: >-
+      The single coordinating session MUST dispatch appropriate slices and MAY do support mutations,
+      but must NEVER operate outside the SDLC + capability surface.
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
+  - id: must.raw-prose-gate
+    ordinal: 110
+    stratum: must
+    content: Operator prose, relay notes, dashboards, terminal paste, and session memory are intake, not implementation authority.
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [AGENTS.md]
+  - id: must.scope-mask-before-objective
+    ordinal: 120
+    stratum: must
+    content: NEVER unions and ONLY intersects across scope; malformed or missing constraints fail-closed before routing objective evaluation.
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
+  - id: must.authorization-absence
+    ordinal: 130
+    stratum: must
+    content: An absent *_authorized flag means not authorized.
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [hooks/scripts/cc-task-gate.impl.sh]
+  - id: must.binding-vocabulary
+    ordinal: 140
+    stratum: must
+    content: cc-task AuthorityCase mutation_scope_refs route_id NEVER ONLY fail-closed governed-override-not-bypass
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [AGENTS.md, hooks/scripts/cc-task-gate.impl.sh]
+  - id: must.grounding.authorization-vocabulary
+    ordinal: 145
+    stratum: must
+    content: axiom_mutation_authorized decision_minting_authorized docs_mutation_authorized implementation_authorized provider_spend_authorized public_current release_authorized runtime_mutation_authorized source_mutation_authorized vault_mutation_authorized
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [shared/coord_projection.py, hooks/scripts/cc-task-gate.impl.sh]
+  - id: must.grounding.gate-verdict-vocabulary
+    ordinal: 146
+    stratum: must
+    content: pass refuse BLOCKED
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
+  - id: must.grounding.atomic-position-vocabulary
+    ordinal: 147
+    stratum: must
+    content: task_id stage_token legal_successors authority_case authorized_flags mutation_scope_refs claim_identity route_decision canon_hash canon_version canon_level effective_constraint_digest impingement_hash portal_set receipt_lineage
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/20-projects/hapax-cc-tasks/active/cc-task-sdlc-fsm-canon-impingement-lockstep-bootstrap-20260710.md]
+  - id: must.gate-is-authority
+    ordinal: 150
+    stratum: must
+    content: The canon informs and the external gate enforces; injected prose never substitutes for claim, scope, route, mutation, transition, or close admission.
+    grounding: false
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
+  - id: must.no-silent-downgrade
+    ordinal: 160
+    stratum: must
+    content: Missing, stale, malformed, mismatched, or below-floor context refuses the action with a typed repair path; it never becomes an empty or unconstrained default.
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
+  - id: must.atomic-position-chain
+    ordinal: 170
+    stratum: must
+    content: Task, claim, relay, receipt, FSM position, canon, and impingement hashes must describe one current position before a protected action can proceed.
+    grounding: false
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/20-projects/hapax-cc-tasks/active/cc-task-sdlc-fsm-canon-impingement-lockstep-bootstrap-20260710.md]
+  - id: must.escape-grant
+    ordinal: 180
+    stratum: must
+    content: EscapeGrant is explicit, receipted, reversible, and cannot suppress the position, canon, or impingement record.
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [docs/formal/sdlc-stage-metadata.yaml]
+  - id: must.transition-reconsult
+    ordinal: 190
+    stratum: must
+    content: At pi2 or pi3, re-consult and re-emit the successor state slice atomically at every FSM transition.
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
+  - id: must.singleton-lease
+    ordinal: 200
+    stratum: must
+    content: One session holds one active cc-task lease; no pool self-claim and no bulk claim.
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [AGENTS.md]
+  - id: must.reins-never-authority
+    ordinal: 210
+    stratum: must
+    content: Reins is a readout and demand-shape projection; an affordance, projection, or freshness signal never grants execution authority.
+    grounding: false
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/shared-demand-shape-contract-2026-07-03.md]
+  - id: must.inv1-deadlock-freedom
+    ordinal: 220
+    stratum: must
+    content: "INV-1: every non-terminal stage has at least one outgoing transition."
+    grounding: false
+    applies_to: ["*"]
+    source_refs: [shared/sdlc_invariants.py, docs/formal/sdlc-ladder.tla]
+  - id: must.inv2-liveness
+    ordinal: 230
+    stratum: must
+    content: "INV-2: every claimed task eventually reaches a terminal stage or is explicitly reported stuck."
+    grounding: false
+    applies_to: ["*"]
+    source_refs: [shared/sdlc_invariants.py, docs/formal/sdlc-ladder.tla]
+  - id: must.inv3-escape
+    ordinal: 240
+    stratum: must
+    content: "INV-3: every BLOCKED state has an operator escape transition out."
+    grounding: false
+    applies_to: ["*"]
+    source_refs: [shared/sdlc_invariants.py, docs/formal/sdlc-ladder.tla]
+  - id: must.inv4-authority-escapable
+    ordinal: 250
+    stratum: must
+    content: "INV-4: escape never depends on the process it governs."
+    grounding: false
+    applies_to: ["*"]
+    source_refs: [shared/sdlc_invariants.py]
+  - id: must.inv5-cognition-writable
+    ordinal: 260
+    stratum: must
+    content: "INV-5: a blocked lane can always write its cognition surfaces."
+    grounding: false
+    applies_to: ["*"]
+    source_refs: [shared/sdlc_invariants.py]
+  - id: must.off-limits-surface-principle
+    ordinal: 270
+    stratum: must
+    content: Off-limits surfaces narrow authority; a carrier-specific list is delta and absence never broadens scope.
+    grounding: false
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
+  - id: must.canon-echo-repair
+    ordinal: 280
+    stratum: must
+    content: Canon echo absence or mismatch permits one same-level reinjection; a second failure means BLOCKED with canon_echo_failed.
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
+  - id: must.impingement-offer-plane
+    ordinal: 290
+    stratum: must
+    content: An orienting portal is pull-only and non-consumption is conformant; it never grants authority, satisfies a MUST, or weakens a MUST.
+    grounding: false
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/20-projects/hapax-cc-tasks/active/cc-task-sdlc-fsm-canon-impingement-lockstep-bootstrap-20260710.md]
+  - id: must.lockstep-protected-actions
+    ordinal: 300
+    stratum: must
+    content: claim dispatch transition mutation close acceptance require one fresh matching position canon impingement task authority scope claim route receipt chain; absence staleness or mismatch means refuse.
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/20-projects/hapax-cc-tasks/active/cc-task-sdlc-fsm-canon-impingement-lockstep-bootstrap-20260710.md]
+  - id: must.lossless-canon
+    ordinal: 310
+    stratum: must
+    content: Canon content permits only byte-preserving or bijective lossless recoding; soft or embedding compression is forbidden.
+    grounding: false
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
+  - id: must.pi-floor-mask-before-objective
+    ordinal: 320
+    stratum: must
+    content: A leaf below the measured pi3 floor is inadmissible and masked before routing objective evaluation.
+    grounding: false
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
+  - id: must.canon-before-prune
+    ordinal: 330
+    stratum: must
+    content: Build, inject, and verify a passing canon echo per participating leaf before pruning onboard canon prose.
+    grounding: false
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
+  - id: must.conformance-before-dispatch
+    ordinal: 340
+    stratum: must
+    content: No leaf receives dispatched SDLC work before its canon level and retention are measured and conformant.
+    grounding: false
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
+  - id: must.two-kernel-separation
+    ordinal: 350
+    stratum: must
+    content: Canon obligation-plane fidelity and orienting offer-plane decision-regret are separate kernels and neither substitutes for the other.
+    grounding: false
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
+  - id: must.source-admission-before-derivation
+    ordinal: 360
+    stratum: must
+    content: Every derivation fact estimate signal lens constellation or learning receipt must trace to an admitted source; AIR joins every dependency before count sort relation aggregation utility or rendering.
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/convergence-first-init-recursive-onboarding-throughline-2026-07-10.md]
+  - id: must.orthogonal-context-coordinates
+    ordinal: 370
+    stratum: must
+    content: Scope lifecycle position temporal scale temporal tense semantic resolution environment scope audience and purpose remain independent; surprise is a signal estimate and never a temporal axis.
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/convergence-first-init-recursive-onboarding-throughline-2026-07-10.md]
+  - id: must.signal-estimate-offer-separation
+    ordinal: 380
+    stratum: must
+    content: A SignalEstimate is evidence-derived state; an OrientingSignal is a no-effect attention offer bound to estimates lens constellation position and optional portal; neither may authorize.
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/convergence-first-init-recursive-onboarding-throughline-2026-07-10.md]
+  - id: must.constraint-mask-before-signal-utility
+    ordinal: 390
+    stratum: must
+    content: A signal lens applies the exact constraint mask before utility weighting or constellation formation; no score signal or pickup can weaken WHAT MUST authority or admission.
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/convergence-first-init-recursive-onboarding-throughline-2026-07-10.md]
+  - id: must.learning-receipt-specificity
+    ordinal: 400
+    stratum: must
+    content: A learning update requires exposure candidate set selection policy propensity action outcome effect cost witnesses receipt correction and exactly one named update target.
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/convergence-first-init-recursive-onboarding-throughline-2026-07-10.md]
+  - id: must.context-action-lifecycle-admission
+    ordinal: 410
+    stratum: must
+    content: Every lifecycle operation or transition shown as an action binds the exact current position and matching lifecycle admission; unavailable evidence or authority cannot render the action legal.
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/convergence-first-init-recursive-onboarding-throughline-2026-07-10.md]
+  - id: must.projection-loss-manifest
+    ordinal: 420
+    stratum: must
+    content: Every projection carries one content-addressed static field mapping and exhaustive omission manifest plus a deny-oblivious instance loss receipt; hashes prove structure not producer authenticity.
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/convergence-first-init-recursive-onboarding-throughline-2026-07-10.md]
+  - id: must.provenance-kind-source-binding
+    ordinal: 430
+    stratum: must
+    content: Every fact provenance kind must be admitted by each direct source class or be explicitly derived; constitutional provenance requires constitutional evidence and stipulation or consent requires its typed position receipt.
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/convergence-first-init-recursive-onboarding-throughline-2026-07-10.md]
+  - id: how.command-paths
+    ordinal: 500
+    stratum: how
+    content: scripts/hapax-methodology-dispatch scripts/cc-claim scripts/cc-close scripts/cc-stage-advance
+    grounding: true
+    applies_to: ["*"]
+    source_refs: [AGENTS.md]
+  - id: how.intake-and-formation
+    ordinal: 510
+    stratum: how
+    content: Materialize the task note, research anchors, design failure predicates, review synthesis, acceptance record, and implementation authorization in stage order.
+    grounding: false
+    applies_to: [S0, S1, S2, S3, S3_5, S4, S5]
+    source_refs: [docs/formal/sdlc-stage-metadata.yaml]
+  - id: how.scoped-source-mutation
+    ordinal: 520
+    stratum: how
+    content: Claim the exact task, mutate only declared mutation_scope_refs, run declared quality gates, and append evidence without rewriting history.
+    grounding: false
+    applies_to: [S6, S7, S8, S9, S10]
+    source_refs: [hooks/scripts/cc-task-gate.impl.sh]
+  - id: how.relay-and-receipt
+    ordinal: 530
+    stratum: how
+    content: Report the current position and evidence through the existing relay and receipt ledger; retain exact task, route, canon, and claim identifiers.
+    grounding: false
+    applies_to: ["*"]
+    source_refs: [shared/relay_mq.py]
+  - id: how.blocked-repair
+    ordinal: 540
+    stratum: how
+    content: Record blocked_reason, blocked_witness, and relay_receipt; resume only through a valid operator escape to S6 or S0.
+    grounding: false
+    applies_to: [BLOCKED]
+    source_refs: [docs/formal/sdlc-stage-metadata.yaml]
+  - id: how.close
+    ordinal: 550
+    stratum: how
+    content: Validate production and acceptance evidence, prepare closure receipts, then use cc-close only when S10 guards are satisfied.
+    grounding: false
+    applies_to: [S9, S10, S11]
+    source_refs: [scripts/cc-close, scripts/cc-close-acceptance-receipt-check.py]

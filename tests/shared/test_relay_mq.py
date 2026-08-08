@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -7,26 +9,119 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+from shared.coord_event_log import CoordEvent, CoordEventLog, CoordWriter
 from shared.relay_mq import (
+    CANON_ECHO_REPAIR_TAG,
+    CanonEchoError,
     MessageFilters,
     _connect,
     ack_message,
+    assess_canon_echo,
+    build_canon_echo_envelope,
+    build_successor_canon_position,
+    build_successor_outbox,
     consume_messages,
     dead_letters,
+    drain_successor_outboxes,
     ensure_schema,
     expand_recipients,
     inspect_message,
     list_messages,
+    load_dispatch_echo_expectation,
+    load_latest_canon_echo_expectation,
+    load_latest_dispatch_echo_expectation,
+    parse_canon_echo,
     purge_expired,
+    reconcile_canon_echo,
+    resolve_claim_bound_canon_position,
     send_message,
+    send_successor_canon_position,
+    successor_outbox_task_directory,
 )
 from shared.relay_mq_envelope import (
     DiskPressureError,
     Envelope,
     TransitionError,
 )
+from shared.sdlc_task_store import ClaimDispatchBinding
 
 DB = Path(":memory:")  # only for non-schema tests that use a single function call
+
+
+def _canon_hash(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=True,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("ascii")
+    ).hexdigest()
+
+
+def _tree_bytes(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def _dispatch_record(source_message_id: str) -> dict:
+    canon = {
+        "canon_hash": "a" * 64,
+        "canon_version": 1,
+        "image_hash": "b" * 64,
+        "level": "pi0",
+        "payload_sha256": hashlib.sha256(b"exact canon payload").hexdigest(),
+        "stage_token": "S6",
+    }
+    position_body = {
+        "authority_case": "CASE-ECHO-001",
+        "declared_task_constraint_digest": "c" * 64,
+        "effective_constraint_state": "unresolved_scope_chain",
+        "lane": "cx-red",
+        "legal_successors": ["S7", "BLOCKED"],
+        "stage_token": "S6",
+        "task_id": "task-echo",
+    }
+    position_hash = _canon_hash(position_body)
+    position = {
+        **position_body,
+        "position_hash": position_hash,
+        "position_ref": f"dispatch-position@sha256:{position_hash}",
+    }
+    binding_body = {
+        "advisory_carriage": True,
+        "canon": canon,
+        "may_authorize": False,
+        "position": position,
+        "receipt_is_admission": False,
+        "schema": "hapax.dispatch-canon-binding.v1",
+    }
+    binding_hash = _canon_hash(binding_body)
+    binding = {
+        **binding_body,
+        "binding_hash": binding_hash,
+        "binding_ref": f"dispatch-canon-binding@sha256:{binding_hash}",
+    }
+    return {
+        "event": "methodology_dispatch",
+        "ok": True,
+        "launched": True,
+        "launch_returncode": 0,
+        "launch_eligible": True,
+        "durable_mq_dispatch_bound": True,
+        "durable_mq_message_id": source_message_id,
+        "may_authorize": False,
+        "receipt_is_admission": False,
+        "canon_binding": binding,
+        "canon_binding_hash": binding_hash,
+        "canon_binding_ref": binding["binding_ref"],
+        "dispatch_position_hash": position_hash,
+        "dispatch_position_ref": position["position_ref"],
+    }
 
 
 def _make_envelope(**overrides) -> Envelope:
@@ -546,6 +641,553 @@ class TestPurge(unittest.TestCase):
         self.assertIsNotNone(row)
 
 
+class TestCanonEcho(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.db_path = self.root / "messages.db"
+        self.source_message_id = "dispatch-echo-source"
+        self.parent = Envelope(
+            message_id=self.source_message_id,
+            sender="hapax-coordinator",
+            message_type="dispatch",
+            priority=0,
+            subject="task-echo",
+            authority_case="CASE-ECHO-001",
+            authority_item="task-echo",
+            recipients_spec="cx-red",
+            payload='{"task_id":"task-echo"}',
+        )
+        send_message(self.db_path, self.parent)
+        self.ledger = self.root / "methodology-dispatch.jsonl"
+        self.ledger.write_text(
+            json.dumps(_dispatch_record(self.source_message_id), sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        self.expected = load_dispatch_echo_expectation(
+            self.ledger,
+            source_message_id=self.source_message_id,
+            task_id="task-echo",
+            lane="cx-red",
+        )
+        self.now = datetime(2026, 7, 11, 15, 0, tzinfo=UTC)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _tampered_echo(
+        self, *, observed_at: datetime, repair_message_id: str | None = None
+    ) -> Envelope:
+        valid = build_canon_echo_envelope(
+            self.expected,
+            sender="cx-red",
+            session_id="session-1",
+            observed_at=observed_at,
+            repair_message_id=repair_message_id,
+        )
+        payload = json.loads(valid.payload or "{}")
+        payload["position"]["task_id"] = "copied-from-another-task"
+        body = {key: value for key, value in payload.items() if key != "echo_hash"}
+        payload["echo_hash"] = _canon_hash(body)
+        return Envelope(
+            sender=valid.sender,
+            message_type=valid.message_type,
+            priority=valid.priority,
+            subject=valid.subject,
+            authority_case=valid.authority_case,
+            authority_item=valid.authority_item,
+            parent_message_id=valid.parent_message_id,
+            recipients_spec=valid.recipients_spec,
+            payload=json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            created_at=observed_at,
+            stale_after=valid.stale_after,
+            tags=valid.tags,
+        )
+
+    def test_dispatch_receipt_derives_exact_honest_expectation(self) -> None:
+        self.assertEqual(self.expected.task_id, "task-echo")
+        self.assertEqual(self.expected.stage_token, "S6")
+        self.assertEqual(self.expected.legal_successors, ("S7", "BLOCKED"))
+        self.assertEqual(self.expected.constraint_state, "unresolved_scope_chain")
+        self.assertEqual(
+            self.expected.constraint_digest_kind,
+            "declared_task_constraint_digest",
+        )
+        self.assertEqual(
+            load_latest_dispatch_echo_expectation(
+                self.ledger,
+                task_id="task-echo",
+                lane="cx-red",
+            ),
+            self.expected,
+        )
+
+    def test_legacy_dispatch_chain_cannot_authorize_claim_currentness(self) -> None:
+        binding = ClaimDispatchBinding.create(
+            task_id="task-echo",
+            lane="cx-red",
+            session_id="session-1",
+            claim_epoch=1,
+            dispatch_message_id=self.source_message_id,
+            platform="codex",
+            mode="headless",
+            profile="full",
+            authority_case="CASE-ECHO-001",
+            binding_hash=self.expected.binding_hash,
+        )
+
+        with self.assertRaises(CanonEchoError) as raised:
+            resolve_claim_bound_canon_position(
+                binding,
+                stage_token="S6",
+            )
+
+        self.assertEqual(
+            raised.exception.reason_code,
+            "canon_pre_gate0_claim_migration_required",
+        )
+
+    def test_echo_roundtrip_matches_mechanically(self) -> None:
+        envelope = build_canon_echo_envelope(
+            self.expected,
+            sender="cx-red",
+            session_id="session-1",
+            observed_at=self.now,
+        )
+        echo = parse_canon_echo(envelope)
+        assessment = assess_canon_echo(
+            self.expected,
+            echo,
+            now=self.now + timedelta(seconds=1),
+        )
+        self.assertEqual(assessment.status, "matched")
+        self.assertEqual(assessment.reason_codes, ())
+
+    def test_echo_duplicate_json_key_is_refused(self) -> None:
+        envelope = build_canon_echo_envelope(
+            self.expected,
+            sender="cx-red",
+            session_id="session-1",
+            observed_at=self.now,
+        )
+        malformed = Envelope(
+            sender=envelope.sender,
+            message_type="advisory",
+            priority=0,
+            subject=envelope.subject,
+            authority_case=envelope.authority_case,
+            parent_message_id=envelope.parent_message_id,
+            recipients_spec=envelope.recipients_spec,
+            payload='{"schema":"x","schema":"y"}',
+            created_at=self.now,
+            tags=envelope.tags,
+        )
+        with self.assertRaisesRegex(CanonEchoError, "canon_echo_payload_malformed"):
+            parse_canon_echo(malformed)
+
+    def test_absence_holds_without_publishing_a_repair(self) -> None:
+        before = _tree_bytes(self.root)
+
+        result = reconcile_canon_echo(
+            self.db_path,
+            self.expected,
+            rendered_payload="exact canon payload",
+            now=self.now,
+        )
+
+        self.assertEqual(result.action, "hold")
+        self.assertEqual(result.reason_code, "canon_echo_projection_required")
+        self.assertEqual(_tree_bytes(self.root), before)
+
+    def test_absent_database_holds_without_creating_a_database(self) -> None:
+        absent_root = self.root / "absent-relay"
+        absent_db = absent_root / "messages.db"
+        before = _tree_bytes(self.root)
+
+        result = reconcile_canon_echo(
+            absent_db,
+            self.expected,
+            rendered_payload="exact canon payload",
+            now=self.now,
+        )
+
+        self.assertEqual(result.action, "hold")
+        self.assertEqual(result.reason_code, "canon_echo_repair_required")
+        self.assertEqual(_tree_bytes(self.root), before)
+        self.assertFalse(absent_root.exists())
+
+    def test_observation_preserves_database_and_existing_sidecar_bytes(self) -> None:
+        writer = _connect(self.db_path)
+        try:
+            writer.execute("SELECT 1").fetchone()
+            sidecars = [Path(f"{self.db_path}-wal"), Path(f"{self.db_path}-shm")]
+            self.assertTrue(all(path.exists() for path in sidecars))
+            before = _tree_bytes(self.root)
+
+            result = reconcile_canon_echo(
+                self.db_path,
+                self.expected,
+                rendered_payload="exact canon payload",
+                now=self.now,
+            )
+
+            self.assertEqual(result.action, "hold")
+            self.assertEqual(result.reason_code, "canon_echo_projection_required")
+            self.assertEqual(_tree_bytes(self.root), before)
+        finally:
+            writer.close()
+
+    def test_live_database_echo_cannot_ground_without_current_projection(self) -> None:
+
+        echo = build_canon_echo_envelope(
+            self.expected,
+            sender="cx-red",
+            session_id="session-1",
+            observed_at=self.now + timedelta(seconds=2),
+        )
+        send_message(self.db_path, echo)
+        before = _tree_bytes(self.root)
+        held = reconcile_canon_echo(
+            self.db_path,
+            self.expected,
+            rendered_payload="exact canon payload",
+            now=self.now + timedelta(seconds=3),
+        )
+        self.assertEqual(held.action, "hold")
+        self.assertEqual(held.reason_code, "canon_echo_projection_required")
+        self.assertEqual(_tree_bytes(self.root), before)
+
+        rows = list_messages(self.db_path, MessageFilters(limit=20))
+        repairs = [
+            row for row in rows if row["tags"] and CANON_ECHO_REPAIR_TAG in json.loads(row["tags"])
+        ]
+        self.assertEqual(len(repairs), 0)
+
+    def test_direct_send_and_global_latest_successor_apis_are_retired(self) -> None:
+        with self.assertRaises(CanonEchoError) as direct:
+            send_successor_canon_position(
+                self.db_path,
+                self.expected,
+                transition_id="sdlc-txn-test",
+                stage_token="S7",
+                legal_successors=("S8", "BLOCKED"),
+                canon_hash=self.expected.canon_hash,
+                canon_version=1,
+                canon_image_hash="d" * 64,
+                canon_level="pi0",
+                rendered_payload="successor canon payload",
+                now=self.now,
+            )
+        self.assertEqual(direct.exception.reason_code, "canon_successor_direct_send_retired")
+        with self.assertRaises(CanonEchoError) as latest:
+            load_latest_canon_echo_expectation(
+                task_id="task-echo",
+                lane="cx-red",
+                stage_token="S7",
+            )
+        self.assertEqual(latest.exception.reason_code, "canon_global_latest_position_retired")
+
+    def _successor_outbox_fixture(self) -> tuple[CoordEventLog, object, Path]:
+        intent = {
+            "authority_case": self.expected.authority_case,
+            "from_stage": self.expected.stage_token,
+            "predecessor_position_ref": self.expected.position_ref,
+            "task_id": self.expected.task_id,
+            "to_stage": "S7",
+        }
+        transition_ref = f"transition-intent@sha256:{_canon_hash(intent)}"
+        successor, envelope = build_successor_canon_position(
+            self.expected,
+            transition_id=transition_ref,
+            stage_token="S7",
+            legal_successors=("S8", "BLOCKED"),
+            canon_hash=self.expected.canon_hash,
+            canon_version=self.expected.canon_version,
+            canon_image_hash="d" * 64,
+            canon_level=self.expected.canon_level,
+            rendered_payload="successor canon payload",
+            now=self.now,
+        )
+        outbox = build_successor_outbox(
+            self.expected,
+            successor,
+            envelope,
+            transition_ref=transition_ref,
+        )
+        outbox_dir = successor_outbox_task_directory(
+            self.root / "outbox",
+            self.expected.task_id,
+        )
+        outbox_dir.mkdir(parents=True)
+        path = outbox_dir / f"{outbox.action_id}.json"
+        event_log = CoordEventLog(
+            db_path=self.root / "coord" / "ledger.db",
+            jsonl_path=self.root / "coord" / "ledger.jsonl",
+            spool_dir=self.root / "coord" / "spool",
+        )
+        event_log.append(
+            CoordEvent(
+                event_id="transition-applied-test",
+                timestamp=str(self.now),
+                event_type="sdlc.transition_applied",
+                actor="test",
+                subject=self.expected.task_id,
+                authority_case=self.expected.authority_case,
+                payload={
+                    "intent": intent,
+                    "phase": "applied",
+                    "projections": [
+                        {
+                            "after_mode": 0o600,
+                            "after_present": True,
+                            "after_sha256": hashlib.sha256(outbox.payload).hexdigest(),
+                            "before_mode": None,
+                            "before_present": False,
+                            "before_sha256": None,
+                            "path": str(path),
+                        }
+                    ],
+                },
+            ),
+            writer=CoordWriter.daemon("test"),
+        )
+        path.write_bytes(outbox.payload)
+        return event_log, outbox, outbox_dir
+
+    def test_successor_outbox_drain_is_applied_only_and_idempotent(self) -> None:
+        event_log, outbox, outbox_dir = self._successor_outbox_fixture()
+
+        first = drain_successor_outboxes(
+            self.db_path,
+            event_log,
+            outbox_dir,
+            task_id=self.expected.task_id,
+        )
+        second = drain_successor_outboxes(
+            self.db_path,
+            event_log,
+            outbox_dir,
+            task_id=self.expected.task_id,
+        )
+
+        self.assertEqual(first, (outbox.action_id,))
+        self.assertEqual(second, (outbox.action_id,))
+        self.assertIsNotNone(inspect_message(self.db_path, outbox.envelope.message_id))
+        delivery_ids = [
+            event.event_id
+            for event in event_log.replay(fail_open=False).events
+            if event.event_type == "sdlc.transition_outbox_delivered"
+        ]
+        self.assertEqual(delivery_ids, [f"{outbox.action_id}.delivered"])
+        self.assertTrue((outbox_dir / f"{outbox.action_id}.json").is_file())
+
+    def test_successor_delivery_recovers_message_commit_before_receipt(self) -> None:
+        event_log, outbox, outbox_dir = self._successor_outbox_fixture()
+        send_message(self.db_path, outbox.envelope)
+
+        delivered = drain_successor_outboxes(self.db_path, event_log, outbox_dir)
+
+        self.assertEqual(delivered, (outbox.action_id,))
+        receipts = [
+            event
+            for event in event_log.replay(fail_open=False).events
+            if event.event_type == "sdlc.transition_outbox_delivered"
+        ]
+        self.assertEqual(len(receipts), 1)
+
+    def test_successor_delivery_accepts_processed_or_exact_expired_lineage(self) -> None:
+        event_log, outbox, outbox_dir = self._successor_outbox_fixture()
+        drain_successor_outboxes(self.db_path, event_log, outbox_dir)
+        with _connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE recipients SET state = 'processed' WHERE message_id = ?",
+                (outbox.envelope.message_id,),
+            )
+            conn.commit()
+        self.assertEqual(
+            drain_successor_outboxes(self.db_path, event_log, outbox_dir),
+            (outbox.action_id,),
+        )
+
+        assert outbox.envelope.expires_at is not None
+        moved_at = (outbox.envelope.expires_at + timedelta(seconds=1)).isoformat()
+        with _connect(self.db_path) as conn:
+            conn.execute(
+                "DELETE FROM recipients WHERE message_id = ?", (outbox.envelope.message_id,)
+            )
+            conn.execute(
+                "INSERT INTO dead_letters "
+                "(message_id, recipient, reason, original_state, retry_count, moved_at) "
+                "VALUES (?, ?, 'expired', 'offered', 0, ?)",
+                (outbox.envelope.message_id, self.expected.lane, moved_at),
+            )
+            conn.commit()
+        self.assertEqual(
+            drain_successor_outboxes(self.db_path, event_log, outbox_dir),
+            (outbox.action_id,),
+        )
+
+    def test_successor_delivery_refuses_missing_or_ambiguous_lineage(self) -> None:
+        event_log, outbox, outbox_dir = self._successor_outbox_fixture()
+        drain_successor_outboxes(self.db_path, event_log, outbox_dir)
+        with _connect(self.db_path) as conn:
+            conn.execute(
+                "DELETE FROM recipients WHERE message_id = ?", (outbox.envelope.message_id,)
+            )
+            conn.execute("DELETE FROM messages WHERE message_id = ?", (outbox.envelope.message_id,))
+            conn.commit()
+        with self.assertRaises(CanonEchoError) as missing:
+            drain_successor_outboxes(self.db_path, event_log, outbox_dir)
+        self.assertEqual(missing.exception.reason_code, "canon_successor_delivery_lineage_missing")
+
+        send_message(self.db_path, outbox.envelope)
+        with _connect(self.db_path) as conn:
+            conn.execute(
+                "DELETE FROM recipients WHERE message_id = ?", (outbox.envelope.message_id,)
+            )
+            for offset in (1, 2):
+                assert outbox.envelope.expires_at is not None
+                conn.execute(
+                    "INSERT INTO dead_letters "
+                    "(message_id, recipient, reason, original_state, retry_count, moved_at) "
+                    "VALUES (?, ?, 'expired', 'offered', 0, ?)",
+                    (
+                        outbox.envelope.message_id,
+                        self.expected.lane,
+                        (outbox.envelope.expires_at + timedelta(seconds=offset)).isoformat(),
+                    ),
+                )
+            conn.commit()
+        with self.assertRaises(CanonEchoError) as duplicate:
+            drain_successor_outboxes(self.db_path, event_log, outbox_dir)
+        self.assertEqual(
+            duplicate.exception.reason_code, "canon_successor_delivery_lineage_mismatch"
+        )
+
+    def test_successor_outbox_refuses_without_applied_receipt(self) -> None:
+        event_log, outbox, outbox_dir = self._successor_outbox_fixture()
+        empty_log = CoordEventLog(
+            db_path=self.root / "empty" / "ledger.db",
+            jsonl_path=self.root / "empty" / "ledger.jsonl",
+            spool_dir=self.root / "empty" / "spool",
+        )
+
+        with self.assertRaises(CanonEchoError) as raised:
+            drain_successor_outboxes(self.db_path, empty_log, outbox_dir)
+
+        self.assertEqual(raised.exception.reason_code, "canon_successor_applied_receipt_missing")
+        self.assertIsNone(inspect_message(self.db_path, outbox.envelope.message_id))
+        self.assertEqual(
+            event_log.replay(fail_open=False).events[-1].event_id, "transition-applied-test"
+        )
+
+    def test_same_intent_without_exact_outbox_projection_cannot_deliver(self) -> None:
+        event_log, outbox, outbox_dir = self._successor_outbox_fixture()
+        applied = event_log.replay(fail_open=False).events[-1]
+        wrong_log = CoordEventLog(
+            db_path=self.root / "wrong" / "ledger.db",
+            jsonl_path=self.root / "wrong" / "ledger.jsonl",
+            spool_dir=self.root / "wrong" / "spool",
+        )
+        wrong_log.append(
+            CoordEvent(
+                event_id="same-intent-wrong-projection",
+                timestamp=applied.timestamp,
+                event_type="sdlc.transition_applied",
+                actor=applied.actor,
+                subject=applied.subject,
+                authority_case=applied.authority_case,
+                payload={**applied.payload, "projections": []},
+            ),
+            writer=CoordWriter.daemon("test"),
+        )
+
+        with self.assertRaises(CanonEchoError) as raised:
+            drain_successor_outboxes(self.db_path, wrong_log, outbox_dir)
+
+        self.assertEqual(
+            raised.exception.reason_code,
+            "canon_successor_outbox_projection_not_applied",
+        )
+        self.assertIsNone(inspect_message(self.db_path, outbox.envelope.message_id))
+
+    def test_successor_outbox_task_filter_does_not_deliver_other_task(self) -> None:
+        event_log, outbox, outbox_dir = self._successor_outbox_fixture()
+
+        delivered = drain_successor_outboxes(
+            self.db_path,
+            event_log,
+            outbox_dir,
+            task_id="different-task",
+        )
+
+        self.assertEqual(delivered, ())
+        self.assertIsNone(inspect_message(self.db_path, outbox.envelope.message_id))
+
+    def test_successor_outbox_refuses_filename_mismatch_and_symlink(self) -> None:
+        event_log, outbox, outbox_dir = self._successor_outbox_fixture()
+        exact_path = outbox_dir / f"{outbox.action_id}.json"
+        wrong_path = outbox_dir / "canon-successor-outbox-wrong.json"
+        exact_path.rename(wrong_path)
+        with self.assertRaises(CanonEchoError) as wrong_name:
+            drain_successor_outboxes(self.db_path, event_log, outbox_dir)
+        self.assertEqual(
+            wrong_name.exception.reason_code, "canon_successor_outbox_filename_mismatch"
+        )
+
+        wrong_path.unlink()
+        outside = self.root / "outside.json"
+        outside.write_bytes(outbox.payload)
+        exact_path.symlink_to(outside)
+        with self.assertRaises(CanonEchoError) as symlink:
+            drain_successor_outboxes(self.db_path, event_log, outbox_dir)
+        self.assertEqual(symlink.exception.reason_code, "canon_successor_outbox_unreadable")
+
+    def test_successor_outbox_refuses_noncanonical_equivalent_bytes(self) -> None:
+        event_log, outbox, outbox_dir = self._successor_outbox_fixture()
+        path = outbox_dir / f"{outbox.action_id}.json"
+        path.write_bytes(outbox.payload + b"\n")
+
+        with self.assertRaises(CanonEchoError) as raised:
+            drain_successor_outboxes(self.db_path, event_log, outbox_dir)
+
+        self.assertEqual(raised.exception.reason_code, "canon_successor_outbox_not_canonical")
+
+    def test_task_partition_isolates_unrelated_corrupt_outbox(self) -> None:
+        event_log, outbox, outbox_dir = self._successor_outbox_fixture()
+        other = successor_outbox_task_directory(self.root / "outbox", "other-task")
+        other.mkdir()
+        (other / "canon-successor-outbox-corrupt.json").write_text("not json\n")
+
+        delivered = drain_successor_outboxes(
+            self.db_path,
+            event_log,
+            outbox_dir,
+            task_id=self.expected.task_id,
+        )
+
+        self.assertEqual(delivered, (outbox.action_id,))
+
+    def test_successor_outbox_refuses_symlinked_directory_ancestor(self) -> None:
+        outside = self.root / "outside"
+        outside.mkdir()
+        linked_root = self.root / "linked-root"
+        linked_root.symlink_to(outside, target_is_directory=True)
+
+        with self.assertRaises(CanonEchoError) as raised:
+            drain_successor_outboxes(
+                self.db_path,
+                CoordEventLog(
+                    db_path=self.root / "coord" / "unused.db",
+                    jsonl_path=self.root / "coord" / "unused.jsonl",
+                    spool_dir=self.root / "coord" / "unused-spool",
+                ),
+                linked_root / "task-partition",
+            )
+
+        self.assertEqual(raised.exception.reason_code, "canon_successor_outbox_directory_unsafe")
+
+
 class TestRecipientExpansion(unittest.TestCase):
     def test_expand_direct_single(self) -> None:
         result = expand_recipients("alpha")
@@ -684,3 +1326,5 @@ class TestRecipientExpansion(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+    (load_dispatch_echo_expectation,)
+    (parse_canon_echo,)

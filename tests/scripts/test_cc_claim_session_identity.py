@@ -26,12 +26,22 @@ SCRIPT = REPO_ROOT / "scripts" / "cc-claim"
 
 _UUID = "12345678-1234-4321-8765-123456789abc"
 
+# The FULL precedence chain of hapax_agent_identity, which returns the first
+# variable that is set. HAPAX_AGENT_NAME is checked BEFORE HAPAX_AGENT_ROLE, so
+# omitting it lets a lane's ambient identity win: inside a lane session every
+# claim runs as that lane, and the negative assertions below (`not
+# cache.glob("cc-active-task-epsilon-*")`) pass VACUOUSLY because they glob for a
+# role the script never used.
 _IDENTITY_ENV = (
+    "HAPAX_AGENT_NAME",
+    "CODEX_THREAD_NAME",
+    "CODEX_SESSION_NAME",
+    "CODEX_SESSION",
+    "CODEX_ROLE",
+    "CLAUDE_ROLE",
     "HAPAX_SESSION_ID",
     "CLAUDE_CODE_SESSION_ID",
-    "CODEX_SESSION",
     "CODEX_THREAD_ID",
-    "CODEX_THREAD_NAME",
 )
 
 
@@ -75,6 +85,7 @@ def _claim(home: Path, task_id: str, *, session_id: str | None) -> subprocess.Co
         env.pop(var, None)
     env["HOME"] = str(home)
     env["HAPAX_AGENT_ROLE"] = "epsilon"
+    env["HAPAX_AGENT_NAME"] = "epsilon"
     if session_id is not None:
         env["HAPAX_SESSION_ID"] = session_id
     return subprocess.run(

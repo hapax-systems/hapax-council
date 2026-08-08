@@ -88,6 +88,14 @@ surfaces:
     max_ratio: 0.40
     alert_threshold: 0.80
     route_constraint: any
+  coordination_canon:
+    tier: lossless_only
+    codec: toon
+    headroom_enabled: false
+    max_ratio: 1.00
+    floor: 1.00
+    alert_threshold: 1.00
+    route_constraint: any
 
   # ── deny: NEVER compress — governance / consent / operator-speech / person-adjacent ────
   imagination_thought:
