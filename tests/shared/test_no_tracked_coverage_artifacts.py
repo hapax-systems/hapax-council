@@ -46,7 +46,14 @@ def test_no_tracked_coverage_artifacts() -> None:
 
 
 def test_coverage_family_is_gitignored() -> None:
-    """The ignore rule is the durable half — the guard above only catches regressions."""
+    """The ignore rule is the durable half — the guard above only catches regressions.
+
+    ``--verbose`` is load-bearing. Plain ``git check-ignore`` reports a path as ignored
+    no matter which source ignored it, including ``.git/info/exclude`` and the user's
+    ``core.excludesFile``. Both are machine-local and invisible to the repo, so without
+    the source check this guard keeps passing on the one machine that has a local rule
+    while the tracked ``.gitignore`` entry is gone for everyone else.
+    """
     probes = (
         ".coverage",
         ".coverage.host.1234.567890",
@@ -54,13 +61,22 @@ def test_coverage_family_is_gitignored() -> None:
         "htmlcov/index.html",
     )
     result = subprocess.run(
-        ["git", "check-ignore", "--stdin"],
+        ["git", "check-ignore", "--verbose", "--stdin"],
         cwd=REPO_ROOT,
         input="\n".join(probes),
         capture_output=True,
         text=True,
         check=False,
     )
-    ignored = set(result.stdout.split())
-    missing = [p for p in probes if p not in ignored]
-    assert not missing, f".gitignore must cover the coverage family; unignored: {missing}"
+    # Each matched line is "<source>:<linenum>:<pattern>\t<pathname>".
+    covered = set()
+    for line in result.stdout.splitlines():
+        prefix, _, pathname = line.partition("\t")
+        source = prefix.split(":", 2)[0]
+        if source == ".gitignore":
+            covered.add(pathname)
+    missing = [p for p in probes if p not in covered]
+    assert not missing, (
+        f"the tracked root .gitignore must cover the coverage family; "
+        f"not covered by .gitignore: {missing}"
+    )
