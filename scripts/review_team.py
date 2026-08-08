@@ -1957,7 +1957,12 @@ def _dossier_validity_blockers(
                 if (
                     not expected_route_id
                     or recorded_route_ids != {expected_route_id}
-                    or recorded_reasons != live_reasons
+                    # SUBSET, not equality: the anti-fraud intent is that a dossier may not
+                    # claim a degradation that never existed — every recorded reason must be
+                    # live. Exact equality instead made degraded dossiers unmergeable whenever
+                    # the live reason set drifted between dispatch and evaluation (receipt
+                    # freshness is volatile state). See cc-task-...-degradation-subset-20260808.
+                    or not recorded_reasons <= live_reasons
                 ):
                     reason_mismatches.append(family)
             if reason_mismatches:
