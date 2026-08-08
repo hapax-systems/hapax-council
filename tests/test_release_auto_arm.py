@@ -161,6 +161,52 @@ def test_audio_or_live_egress_mitigation_contract_is_exact() -> None:
     )
 
 
+def _egress_frontmatter() -> dict[str, object]:
+    return _eligible_frontmatter(risk_flags={"audio_or_live_egress_sensitive": True})
+
+
+def test_egress_auto_arm_coverage_bound_admits_covered_paths() -> None:
+    # The behavioral evidence covers exactly the pinned surface; a PR changing
+    # only it (plus docs) auto-arms with the full mitigation set.
+    assessment = assess_release_auto_arm(
+        _egress_frontmatter(),
+        verified_checks=set(RELEASE_MITIGATION_CHECKS["audio_or_live_egress_sensitive"]),
+        changed_files=[
+            "shared/capability_adapter_protocol.py",
+            "tests/test_capability_adapter_protocol.py",
+            "docs/runbooks/capabilityio-session-gate.md",
+        ],
+    )
+    assert not any("egress_evidence_uncovered" in b for b in assessment.blockers)
+    assert assessment.eligible is True
+
+
+def test_egress_auto_arm_coverage_bound_holds_uncovered_paths() -> None:
+    # A live-egress-sensitive PR changing a non-doc path the pin suite does not
+    # cover has NO machine behavioral evidence for its change — held, even with
+    # every mitigation check green (evidence must cover the surface changed).
+    assessment = assess_release_auto_arm(
+        _egress_frontmatter(),
+        verified_checks=set(RELEASE_MITIGATION_CHECKS["audio_or_live_egress_sensitive"]),
+        changed_files=["shared/capability_adapter_protocol.py", "scripts/hapax-operator-message"],
+    )
+    assert assessment.eligible is False
+    assert any(
+        blocker.startswith("egress_evidence_uncovered_paths:scripts/hapax-operator-message")
+        for blocker in assessment.blockers
+    )
+
+
+def test_egress_coverage_bound_inactive_without_changed_files() -> None:
+    # Pure-frontmatter callers (no PR file list) keep the legacy behavior —
+    # the bound only evaluates with real changed paths.
+    assessment = assess_release_auto_arm(
+        _egress_frontmatter(),
+        verified_checks=set(RELEASE_MITIGATION_CHECKS["audio_or_live_egress_sensitive"]),
+    )
+    assert not any("egress_evidence_uncovered" in b for b in assessment.blockers)
+
+
 def test_account_live_quota_evidence_does_not_false_block_release_auto_arm() -> None:
     fm = _eligible_frontmatter(
         title="Claude subscription quota receipts require account-live evidence",

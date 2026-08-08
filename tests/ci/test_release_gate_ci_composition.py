@@ -318,6 +318,19 @@ def test_egress_boundary_pin_never_reports_success_without_running() -> None:
         )
 
 
+def test_egress_boundary_pin_is_unskippable_and_names_itself() -> None:
+    # all-green treats `skipped` as acceptable, so the evidence job must be
+    # impossible to skip wholesale: no job-level `if`. And the mitigation map
+    # names the job by its key, so no `name:` override may drift the produced
+    # check-run name away from the map's string (the producer binding).
+    job = _ci()["jobs"]["egress-boundary-pin"]
+    assert "if" not in job, "egress-boundary-pin must never be skippable at job level"
+    assert job.get("name", "egress-boundary-pin") == "egress-boundary-pin", (
+        "the job's produced check-run name must stay its key — "
+        "RELEASE_MITIGATION_CHECKS names it verbatim"
+    )
+
+
 def test_full_shard_stays_merge_group_only() -> None:
     # The full suite (every egress-behavior pin) must remain merge_group-only:
     # skipped on pull_request, executed before any queued PR can land.
