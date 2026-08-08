@@ -513,11 +513,15 @@ RELEASE_MITIGATION_CHECKS: dict[str, tuple[str, ...]] = {
     # quorum-accept at the current head covers the boundary logic itself. The
     # mitigation answers the class's named risk directly: nothing reaches the
     # live surface unbound-to-a-case, undeclared, credential-bearing, or
-    # unreviewed. Audio-routing changes (config/pipewire/) remain human-released
-    # through the sensitive-path gate (SENSITIVE_PATH_MARKERS), so this class in
-    # practice holds relay/send-boundary work — the shape this evidence covers.
-    # Defined per this map's own doctrine (extend the map, never add a
-    # manual-arm path): cc-task-release-arm-held-sensitive-class-20260808.
+    # unreviewed. These are the ARM-time evidences; the BEHAVIORAL evidence is
+    # the merge queue itself — all-green (required) needs test-full-shard,
+    # merge_group-only, which runs the full suite with every egress-behavior
+    # pin (authority-before-send, fail-closed, receipt privacy) before any
+    # armed PR can land. Audio-routing changes (config/pipewire/) remain
+    # human-released through the sensitive-path gate (SENSITIVE_PATH_MARKERS),
+    # so this class in practice holds relay/send-boundary work — the shape this
+    # evidence covers. Defined per this map's own doctrine (extend the map,
+    # never add a manual-arm path): cc-task-release-arm-held-sensitive-class-20260808.
     "audio_or_live_egress_sensitive": (
         "authority-case-check",
         "capability-surface-delta",
