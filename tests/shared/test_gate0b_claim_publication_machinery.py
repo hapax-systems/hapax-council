@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import ast
+import json
 import stat
+import subprocess
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,11 +17,13 @@ from shared.execution_admission import (
 )
 from shared.gate0b_claim_publication_effect import (
     ClaimPublicationEffectInvocation,
+    apply_claim_publication_effect,
     publish_gate0b_claim,
 )
 from shared.gate0b_claim_publication_install import (
     GATE0B_SLICE1_RATIFIED_INFLECTION_REF,
     ClaimPublicationCompositionRoots,
+    claim_publication_install_receipt_bytes,
     install_claim_publication_composition,
     load_claim_publication_composition,
     require_claim_publication_install_receipt,
@@ -32,6 +37,7 @@ from shared.sdlc_claim import (
     ClaimAdmissionConsumption,
     ClaimPublicationError,
     ClaimPublicationIntent,
+    recover_claim_publications,
 )
 from shared.sdlc_task_store import ClaimDispatchBinding, resolve_task_note
 
@@ -116,6 +122,37 @@ def _install(tmp_path: Path, fixture: Gate0BFixture):
     )
 
 
+def test_no_live_path_imports_gate0b_effect_carrier() -> None:
+    allowed_prefixes = ("tests/",)
+    allowed_files = {
+        "shared/gate0b_claim_publication_effect.py",
+    }
+    result = subprocess.run(
+        ["git", "ls-files", "*.py"],
+        cwd=Path.cwd(),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    offenders: list[str] = []
+    for relpath in result.stdout.splitlines():
+        if relpath in allowed_files or relpath.startswith(allowed_prefixes):
+            continue
+        tree = ast.parse(Path(relpath).read_text(encoding="utf-8"), filename=relpath)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "shared.gate0b_claim_publication_effect":
+                        offenders.append(f"{relpath}:{node.lineno}")
+            elif (
+                isinstance(node, ast.ImportFrom)
+                and node.module == "shared.gate0b_claim_publication_effect"
+            ):
+                offenders.append(f"{relpath}:{node.lineno}")
+
+    assert offenders == []
+
+
 def test_install_receipt_activates_only_claim_publication_root(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     install = _install(tmp_path, fixture)
@@ -132,6 +169,27 @@ def test_install_receipt_activates_only_claim_publication_root(tmp_path: Path) -
     (Path(fixture.roots.invocation_store_root) / "activation-receipt.json").unlink()
     with pytest.raises(ExecutionAdmissionError, match="gate0b_install_receipt_missing"):
         install.root.require_effect_activation()
+
+
+def test_install_receipt_rejects_noncanonical_receipt_bytes(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    install = _install(tmp_path, fixture)
+    receipt_path = Path(fixture.roots.invocation_store_root) / "activation-receipt.json"
+    record = json.loads(claim_publication_install_receipt_bytes(install.receipt).decode("ascii"))
+    receipt_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="ascii")
+
+    with pytest.raises(ExecutionAdmissionError, match="gate0b_install_receipt_noncanonical"):
+        require_claim_publication_install_receipt(install.root)
+
+
+def test_install_rejects_existing_receipt_collision(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    receipt_path = Path(fixture.roots.invocation_store_root) / "activation-receipt.json"
+    receipt_path.parent.mkdir(parents=True)
+    receipt_path.write_text("{}\n", encoding="ascii")
+
+    with pytest.raises(ExecutionAdmissionError, match="gate0b_install_file_collision"):
+        _install(tmp_path, fixture)
 
 
 def test_install_rejects_undeclared_overlapping_roots(tmp_path: Path) -> None:
@@ -217,6 +275,23 @@ def test_lease_materialization_rejects_existing_proof_collision(tmp_path: Path) 
         materialize_claim_publication_proofs(package)
 
 
+def test_lease_materialization_rejects_existing_proof_mode_drift(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    install = _install(tmp_path, fixture)
+    package = prepare_claim_publication_admission(
+        fixture.intent,
+        root=install.root,
+        install_receipt=install.receipt,
+        now=datetime(2026, 8, 9, 17, 1, tzinfo=UTC),
+        proof_root=tmp_path / "proofs",
+    )
+    materialize_claim_publication_proofs(package)
+    package.action_intent_path.chmod(0o644)
+
+    with pytest.raises(ClaimPublicationError, match="claim_publication_proof_mode_mismatch"):
+        materialize_claim_publication_proofs(package)
+
+
 def test_authority_receipt_rejects_noncanonical_timestamp(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     install = _install(tmp_path, fixture)
@@ -292,6 +367,44 @@ def test_effect_carrier_validates_but_remains_dormant_without_mutation(tmp_path:
     ).read_bytes() == fixture.intent.note_before
 
 
+def test_effect_carrier_rejects_wrong_installed_root_without_mutation(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path / "one")
+    install = _install(tmp_path / "one", fixture)
+    package = prepare_claim_publication_admission(
+        fixture.intent,
+        root=install.root,
+        install_receipt=install.receipt,
+        now=datetime(2026, 8, 9, 17, 1, tzinfo=UTC),
+        proof_root=tmp_path / "proofs",
+    )
+    consumption = materialize_claim_publication_proofs(package)
+    assert install.root.composition_manifest is not None
+    invocation = ClaimPublicationEffectInvocation.create(
+        intent=fixture.intent,
+        consumption=consumption,
+        package=package,
+        install_receipt=install.receipt,
+        composition_manifest=ContentAddress(
+            ref=install.root.composition_manifest.manifest_ref,
+            sha256=install.root.composition_manifest.manifest_hash,
+        ),
+    )
+    other_fixture = _fixture(tmp_path / "two", task_id="task-beta")
+    other_install = _install(tmp_path / "two", other_fixture)
+
+    with pytest.raises(
+        ClaimPublicationError,
+        match="claim_publication_effect_invocation_mismatch",
+    ):
+        apply_claim_publication_effect(invocation, root=other_install.root)
+
+    assert not Path(fixture.roots.claim_transaction_root).exists()
+    assert not Path(fixture.roots.claim_receipt_root).exists()
+    assert (
+        fixture.vault / "active" / f"{fixture.intent.task_id}.md"
+    ).read_bytes() == fixture.intent.note_before
+
+
 def test_effect_invocation_identity_mismatch_has_repair_action(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     install = _install(tmp_path, fixture)
@@ -317,3 +430,21 @@ def test_effect_invocation_identity_mismatch_has_repair_action(tmp_path: Path) -
 
     with pytest.raises(ValueError, match="recreate the carrier"):
         replace(invocation, invocation_hash="0" * 64)
+
+
+def test_recovery_path_remains_fail_closed_with_next_action(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
+
+    with pytest.raises(ClaimPublicationError) as raised:
+        recover_claim_publications(
+            cache_dir=fixture.cache,
+            transaction_root=Path(fixture.roots.claim_transaction_root),
+            receipt_root=Path(fixture.roots.claim_receipt_root),
+            lock_root=Path(fixture.roots.claim_lock_root),
+            task_id=fixture.intent.task_id,
+        )
+
+    assert raised.value.reason_code == "claim_publication_recovery_activation_unvalidated"
+    assert "Next action: dispatch recovery" in str(raised.value)
+    assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")) == before

@@ -3322,7 +3322,7 @@ def publish_admitted_claim(
     del consumption, transaction_root, receipt_root, lock_root, now, failure_hook
     raise ClaimPublicationError(
         "claim_publication_effect_activation_unvalidated",
-        "dispatch the publication lease through a Gate-0B activated universal executor",
+        "Next action: dispatch the publication lease through a Gate-0B activated universal executor",
         intent.task_id,
     )
 
@@ -3342,7 +3342,7 @@ def _apply_admitted_claim_publication_transaction(
     del consumption, transaction_root, receipt_root, lock_root, now, failure_hook
     raise ClaimPublicationError(
         "claim_publication_effect_activation_unvalidated",
-        "bind a validated generation and currentness carrier before restoring mutation",
+        "Next action: bind a validated generation and currentness carrier before restoring mutation",
         intent.task_id,
     )
 
@@ -4168,7 +4168,7 @@ def _recover_one(
     del lock_root, receipt_root
     raise ClaimPublicationError(
         "claim_publication_recovery_activation_unvalidated",
-        "dispatch recovery through a Gate-0B activated universal executor",
+        "Next action: dispatch recovery through a Gate-0B activated universal executor",
         str(manifest_path),
     )
 
@@ -4943,7 +4943,7 @@ def recover_claim_publications(
     del cache_dir, transaction_root, receipt_root, lock_root
     raise ClaimPublicationError(
         "claim_publication_recovery_activation_unvalidated",
-        "dispatch recovery through a Gate-0B activated universal executor",
+        "Next action: dispatch recovery through a Gate-0B activated universal executor",
         task_id,
     )
 

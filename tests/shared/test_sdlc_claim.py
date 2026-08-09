@@ -66,6 +66,7 @@ from shared.execution_admission import (
     mint_execution_lease,
     outcome_projection_validity_roots,
     require_applied_claim_ownership_proof,
+    require_current_execution_lease,
     require_historical_applied_claim_ownership_proof,
 )
 from shared.sdlc_claim import (
@@ -646,6 +647,20 @@ def _active_admission_fixture(
         issuer_receipt=issuer_receipt,
         queried_at=now + timedelta(minutes=1),
     )
+    with pytest.raises(ExecutionAdmissionError, match="execution_trust_resolver_unavailable"):
+        mint_execution_lease(
+            admission,
+            action,
+            grant,
+            basis,
+            target,
+            bound_call,
+            effect_manifest,
+            descriptor,
+            registry,
+            issuer_receipt=issuer_receipt,
+            now=now + timedelta(minutes=1),
+        )
     issuer_resolver = _trusted_resolver(issuer_query, valid_until)
     lease = mint_execution_lease(
         admission,
@@ -694,6 +709,34 @@ def _active_admission_fixture(
         checked_at=checked_at,
         proof_paths=paths,
     )
+
+
+def test_current_execution_lease_retains_independent_issuer_refusal(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+
+    with pytest.raises(ExecutionAdmissionError) as raised:
+        require_current_execution_lease(
+            active.lease,
+            active.admission,
+            active.action,
+            active.grant,
+            object(),
+            object(),
+            object(),
+            object(),
+            object(),
+            object(),
+            object(),
+            object(),
+            object(),
+            queried_at=active.checked_at,
+        )
+
+    assert raised.value.reason_code == "independent_execution_lease_issuer_unavailable"
+    assert "install an independently authenticated Gate-0B lease issuer" in str(raised.value)
 
 
 def _apply_projection_postimages(projections: tuple[object, ...]) -> None:
