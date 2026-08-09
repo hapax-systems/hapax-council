@@ -7,16 +7,30 @@ fresh account-live subscription quota. It is patterned after
 positive receipts are consumed by ``scripts/hapax-quota-telemetry-writer`` before that route is
 treated as quota-fresh.
 
-Codex account-live subscription quota is NOT mechanically observable. The telemetry writer's
-``codex exec`` saved-login sentinel proves AUTH (the login is valid and not invalidated), which is a
-different claim than HEADROOM (the subscription has quota left) — a valid login says nothing about
-remaining quota, so ``codex.headless.full`` holds on ``account_live_quota_receipt_absent`` even
-while its capability evidence is ``observed``. This writer therefore records an OPERATOR /
-governed-probe attestation of a bounded account-live observation (an evidence ref naming what was
-observed), NEVER a live Codex smoke (no runtime side effect, no provider spend) and NEVER
-lane/tmux/session presence. It persists no secret value and no prompt/response content, and the
-receipt is short-lived so it cannot stand as stale evidence. Fail-closed: an unsafe/invalid
-observation exits non-zero and writes nothing, so the route stays held.
+Codex account-live subscription quota IS mechanically observable, contrary to
+CASE-CAPACITY-ROUTING-001 R2 ("use receipts and manual refresh until observable"). As of
+codex-cli 0.146.0 the CLI writes the provider's entitlement limits into its own session rollouts
+(``~/.codex/sessions/**/rollout-*.jsonl``): ``limit_id: "codex"`` with a primary window carrying
+``used_percent`` / ``window_minutes`` / ``resets_at``, plus a credits balance. That is a real
+headroom magnitude for the SUBSCRIPTION — not an API key — and ``--from-rollout`` reads it with
+zero provider calls and no spend. Prefer it: a measurement beats an attestation.
+
+The telemetry writer's ``codex exec`` saved-login sentinel proves AUTH (the login is valid and not
+invalidated), which is a different claim than HEADROOM — a valid login says nothing about remaining
+quota. That distinction is why this writer exists and why an auth-probe evidence ref is refused.
+
+Without ``--from-rollout`` this records an OPERATOR / governed-probe attestation of a bounded
+account-live observation (an evidence ref naming what was observed), NEVER a live Codex smoke (no
+runtime side effect, no provider spend) and NEVER lane/tmux/session presence. It persists no secret
+value and no prompt/response content, and the receipt is short-lived so it cannot stand as stale
+evidence. Fail-closed throughout: an unsafe, stale, or exhausted observation exits non-zero and
+writes nothing, so the route stays held.
+
+Note ``codex.headless.full`` still holds on ``account_live_quota_receipt_absent`` after this runs.
+That blocker is a platform-capability-receipt concern, and the honest repair is for
+``scripts/hapax-platform-capability-receipts`` to stop reporting ``quota-probe:unobservable`` and
+observe the same rollout — not for this receipt to be folded into the ledger snapshot, whose
+codex-fresh-on-saved-login behaviour is deliberate and test-pinned.
 """
 
 from __future__ import annotations
