@@ -6,25 +6,20 @@ evidence. A separately authenticated authority input is validated and narrowed
 before an admission can be issued, and only a current execution lease may be
 consumed by a machine adapter.
 
-THIS MODULE PERFORMS NO WRITES. It is validation and contract construction only,
-so the idempotent-write question does not arise here -- there is no write to make
-idempotent, and no durable state whose second application could differ from the
-first. Blind review raised this twice against the file's size rather than its
-behaviour, so the check is recorded here instead of being re-derived:
-
-    $ rg -c '\\.write_text\\(|open\\([^)]*[\\x27"][wa]|\\.mkdir\\(|os\\.replace|sqlite3' \\
-        shared/execution_admission.py
-    0
-
-If a write is ever added to this module, that command stops returning zero, and
-the idempotency question becomes real and must be answered with a test rather
-than this note.
+The default module surface performs no writes. The only writer here is the
+private invocation-bundle store, and it remains dormant until a Gate-0B
+claim-publication composition root validates an activation receipt. Store writes
+are content addressed and idempotent: the same canonical bundle bytes resolve to
+the same object path, and an existing matching object is accepted without a
+second mutation. Recheck the narrow writer surface with
+``rg -n "write_bytes|os\\.open|os\\.replace|mkdir" shared/execution_admission.py``.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import secrets
 import sys
 from collections.abc import Iterable, Mapping, Sequence
@@ -8972,9 +8967,223 @@ def mint_execution_lease(
 ) -> ExecutionLease:
     """Issue one lease for either prospective claim publication or applied ownership."""
 
-    raise ExecutionAdmissionError(
-        "independent_execution_lease_issuer_unavailable",
-        "install an independently authenticated Gate-0B lease issuer before minting a lease",
+    try:
+        admission = ExecutionAdmission.model_validate(
+            admission.model_dump(mode="json", by_alias=True)
+        )
+        intent = ActionIntent.model_validate(intent.model_dump(mode="json", by_alias=True))
+        grant = ValidAuthorityGrant.model_validate(grant.model_dump(mode="json", by_alias=True))
+        if isinstance(claim_basis, ProspectiveClaimPublicationBasis):
+            claim_basis = ProspectiveClaimPublicationBasis.model_validate(
+                claim_basis.model_dump(mode="json", by_alias=True)
+            )
+        elif isinstance(claim_basis, AppliedClaimOwnershipProof):
+            claim_basis = AppliedClaimOwnershipProof.model_validate(
+                claim_basis.model_dump(mode="json", by_alias=True)
+            )
+        else:
+            raise TypeError("unsupported claim basis")
+        target = ExecutionTargetEvidence.model_validate(
+            target.model_dump(mode="json", by_alias=True)
+        )
+        bound_call = BoundExecutionCall.model_validate(
+            bound_call.model_dump(mode="json", by_alias=True)
+        )
+        effect_manifest = EffectManifest.model_validate(
+            effect_manifest.model_dump(mode="json", by_alias=True)
+        )
+        executor_descriptor = ExecutorDescriptor.model_validate(
+            executor_descriptor.model_dump(mode="json", by_alias=True)
+        )
+        executor_registry_projection = ExecutorRegistryProjection.model_validate(
+            executor_registry_projection.model_dump(mode="json", by_alias=True)
+        )
+        issuer_receipt = ContentAddress.model_validate(issuer_receipt.model_dump(mode="json"))
+    except Exception as exc:
+        raise ExecutionAdmissionError(
+            "execution_lease_input_malformed",
+            "restore the exact admitted action, target, call, and issuer receipt",
+            type(exc).__name__,
+        ) from exc
+    issued_at = _canonical_timestamp(now)
+    if admission.decision != "admit" or not admission.lease_eligible:
+        raise ExecutionAdmissionError(
+            "execution_lease_admission_not_eligible",
+            "mint leases only for a current admitted execution",
+            admission.admission_ref,
+        )
+    if admission.authority_grant != ContentAddress(
+        ref=grant.grant_ref,
+        sha256=grant.grant_hash,
+    ):
+        raise ExecutionAdmissionError(
+            "execution_lease_authority_mismatch",
+            "bind the lease to the exact grant consumed by admission",
+            admission.admission_ref,
+        )
+    if not (
+        admission.issued_at <= issued_at < admission.valid_until
+        and grant.issued_at <= issued_at < grant.valid_until
+        and target.checked_at <= issued_at < target.stale_after
+        and executor_registry_projection.checked_at
+        <= issued_at
+        < executor_registry_projection.stale_after
+    ):
+        raise ExecutionAdmissionError(
+            "execution_lease_inputs_not_current",
+            "refresh admission, authority, target, and registry projections before minting",
+            admission.admission_ref,
+        )
+    basis_address = (
+        ContentAddress(ref=claim_basis.basis_ref, sha256=claim_basis.basis_hash)
+        if isinstance(claim_basis, ProspectiveClaimPublicationBasis)
+        else ContentAddress(ref=claim_basis.proof_ref, sha256=claim_basis.proof_hash)
+    )
+    target_address = ContentAddress(ref=target.target_ref, sha256=target.target_hash)
+    manifest_address = ContentAddress(
+        ref=effect_manifest.manifest_ref,
+        sha256=effect_manifest.manifest_hash,
+    )
+    descriptor_address = ContentAddress(
+        ref=executor_descriptor.descriptor_ref,
+        sha256=executor_descriptor.descriptor_hash,
+    )
+    registry_address = ContentAddress(
+        ref=executor_registry_projection.projection_ref,
+        sha256=executor_registry_projection.projection_hash,
+    )
+    mismatches: list[str] = []
+    if bound_call.admission != ContentAddress(
+        ref=admission.admission_ref,
+        sha256=admission.admission_hash,
+    ):
+        mismatches.append("admission")
+    if bound_call.claim_basis != basis_address:
+        mismatches.append("claim_basis")
+    if bound_call.authority_grant != ContentAddress(
+        ref=grant.grant_ref,
+        sha256=grant.grant_hash,
+    ):
+        mismatches.append("authority_grant")
+    if bound_call.execution_target != target_address:
+        mismatches.append("execution_target")
+    if (
+        bound_call.effect_manifest != manifest_address
+        or bound_call.executor_descriptor != descriptor_address
+        or bound_call.executor_registry_projection != registry_address
+        or target.effect_manifest != manifest_address
+        or target.executor_descriptor != descriptor_address
+        or target.executor_registry_projection != registry_address
+        or descriptor_address not in executor_registry_projection.descriptors
+    ):
+        mismatches.append("effect_target")
+    if (
+        admission.task_ref != bound_call.task_ref
+        or admission.lane != bound_call.lane
+        or admission.session_ref != bound_call.session_ref
+        or admission.idempotency_key != bound_call.idempotency_key
+        or admission.selected_descriptor_leaf != bound_call.selected_descriptor_leaf
+        or grant.task_ref != bound_call.task_ref
+        or grant.operation != bound_call.operation
+        or grant.action_class != bound_call.action_class
+        or grant.authorized_flags != bound_call.required_authorization_flags
+    ):
+        mismatches.append("identity")
+    if admission.intent != ContentAddress(ref=intent.intent_ref, sha256=intent.intent_hash):
+        mismatches.append("admission_intent")
+    if (
+        intent.intent_ref != grant.intent_ref
+        or intent.intent_hash != grant.intent_hash
+        or intent.effect_manifest != manifest_address
+        or intent.operation != bound_call.operation
+        or intent.action_class != bound_call.action_class
+        or intent.capability_role != bound_call.capability_role
+        or intent.acting_subject != grant.acting_subject
+    ):
+        mismatches.append("intent")
+    if mismatches:
+        raise ExecutionAdmissionError(
+            "execution_lease_input_mismatch",
+            "rebuild the lease from one exact admitted bound call",
+            ",".join(sorted(set(mismatches))),
+        )
+    issuer_query = build_execution_lease_issuer_trust_query(
+        admission,
+        grant,
+        claim_basis,
+        target,
+        bound_call,
+        effect_manifest,
+        executor_descriptor,
+        executor_registry_projection,
+        issuer_receipt=issuer_receipt,
+        queried_at=issued_at,
+    )
+    issuer_envelope = _seal_execution_trust_resolver(trust_resolver).require_trusted(issuer_query)
+    expiry_candidates = (
+        admission.valid_until,
+        grant.valid_until,
+        target.stale_after,
+        executor_registry_projection.stale_after,
+        issuer_envelope.stale_after,
+    )
+    effective_expires_at = (
+        min(expiry_candidates)
+        if expires_at is None
+        else min(_canonical_timestamp(expires_at), *expiry_candidates)
+    )
+    if issued_at >= effective_expires_at:
+        raise ExecutionAdmissionError(
+            "execution_lease_validity_empty",
+            "refresh the issuer projection so the minted lease has a future horizon",
+            admission.admission_ref,
+        )
+    body: dict[str, object] = {
+        "schema": EXECUTION_LEASE_SCHEMA,
+        "admission": ContentAddress(
+            ref=admission.admission_ref,
+            sha256=admission.admission_hash,
+        ),
+        "authority_grant": ContentAddress(ref=grant.grant_ref, sha256=grant.grant_hash),
+        "claim_basis": claim_basis,
+        "claim_coordinates": bound_call.claim_coordinates,
+        "bound_call": bound_call,
+        "task_ref": claim_basis.task_ref,
+        "lane": claim_basis.lane,
+        "session_ref": claim_basis.session_ref,
+        "claim_epoch": claim_basis.claim_epoch,
+        "capability_role": intent.capability_role,
+        "selected_descriptor_leaf": bound_call.selected_descriptor_leaf,
+        "execution_target": target_address,
+        "runtime_identity": target.runtime_identity,
+        "active_generation_roots": target.active_generation_roots,
+        "invocation_id": bound_call.invocation_id,
+        "idempotency_key": admission.idempotency_key,
+        "attempt_fence": bound_call.attempt_fence,
+        "effect_manifest": manifest_address,
+        "executor_descriptor": descriptor_address,
+        "executor_registry_projection": registry_address,
+        "executor": executor_descriptor.executor,
+        "issuer_receipt": issuer_receipt,
+        "issuer_trust_query": issuer_query,
+        "issuer_trust_envelope": issuer_envelope,
+        "observation_contract": effect_manifest.observation_contract,
+        "completion_predicate": effect_manifest.completion_predicate,
+        "idempotence_class": effect_manifest.idempotence_class,
+        "reconciliation_contract": effect_manifest.reconciliation_contract,
+        "compensation": effect_manifest.compensation,
+        "issued_at": issued_at,
+        "not_before": issued_at,
+        "expires_at": effective_expires_at,
+        "supersession_frontier_ref": admission.supersession_frontier_ref,
+        "supersedes_refs": tuple(sorted(set(supersedes_refs))),
+        "authorizes_machine_adapter": True,
+        "authorizes_operator": False,
+        "may_mint_sovereign_act": False,
+    }
+    digest = _self_hash(EXECUTION_LEASE_SCHEMA, body)
+    return ExecutionLease.model_validate(
+        {**body, "lease_ref": f"execution-lease@sha256:{digest}", "lease_hash": digest}
     )
 
 
@@ -10837,14 +11046,87 @@ class ExecutionInvocationBundleStore:
         return observed.captured.content
 
     def put(self, bundle: ExecutionInvocationBundle) -> ExecutionInvocationBundlePointer:
-        """Gate-0A HOLD: persistence is an effect and requires activated dispatch."""
+        """Persist one canonical bundle only after the installed root is activated."""
 
-        del bundle
-        raise ExecutionAdmissionError(
-            "execution_invocation_store_activation_unvalidated",
-            "persist through a Gate-0B activated universal executor",
-            self.composition_manifest.manifest_ref,
+        from shared.gate0b_claim_publication_install import require_invocation_store_activation
+
+        require_invocation_store_activation(self)
+        checked = ExecutionInvocationBundle.model_validate(
+            bundle.model_dump(mode="json", by_alias=True)
         )
+        payload = _execution_invocation_bundle_bytes(checked)
+        if len(payload) > self.max_bundle_bytes:
+            raise ExecutionAdmissionError(
+                "execution_invocation_bundle_size_invalid",
+                "reduce the bounded invocation bundle before persistence",
+                checked.bundle_ref,
+            )
+        pointer = build_execution_invocation_bundle_pointer(checked)
+        manifest_payload = execution_composition_manifest_bytes(self.composition_manifest)
+        self._ensure_private_directory(self.root)
+        self._ensure_private_directory(self.objects_root)
+        self._install_private_file(self.manifest_path, manifest_payload, mode=0o600)
+        object_path = self._object_path(pointer.canonical_bytes.sha256)
+        self._install_private_file(object_path, payload, mode=0o600)
+        return pointer
+
+    @staticmethod
+    def _ensure_private_directory(path: Path) -> None:
+        normalized = _bounded_absolute_path(path, label="execution invocation private directory")
+        normalized.mkdir(parents=True, exist_ok=True, mode=0o700)
+        metadata = normalized.stat(follow_symlinks=False)
+        if (
+            not normalized.is_dir()
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_mode & 0o777 != 0o700
+        ):
+            raise ExecutionAdmissionError(
+                "execution_invocation_store_directory_unsafe",
+                "restore euid-owned mode-0700 invocation store directories",
+                str(normalized),
+            )
+
+    @staticmethod
+    def _install_private_file(path: Path, payload: bytes, *, mode: int) -> None:
+        normalized = _bounded_absolute_path(path, label="execution invocation object")
+        try:
+            existing = normalized.read_bytes()
+        except FileNotFoundError:
+            existing = None
+        if existing == payload:
+            if normalized.stat(follow_symlinks=False).st_mode & 0o777 != mode:
+                raise ExecutionAdmissionError(
+                    "execution_invocation_store_object_mode_mismatch",
+                    "restore immutable invocation store objects to their private mode",
+                    str(normalized),
+                )
+            return
+        if existing is not None:
+            raise ExecutionAdmissionError(
+                "execution_invocation_store_object_collision",
+                "quarantine the colliding invocation store object",
+                str(normalized),
+            )
+        tmp = normalized.with_name(f".{normalized.name}.tmp-{os.getpid()}-{secrets.token_hex(8)}")
+        fd = os.open(
+            tmp,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+            mode,
+        )
+        try:
+            os.write(fd, payload)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        try:
+            os.replace(tmp, normalized)
+            os.chmod(normalized, mode, follow_symlinks=False)
+        except Exception:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
+            raise
 
     def inspect(
         self,
@@ -11113,18 +11395,19 @@ class ExecutionCompositionRoot:
         return store
 
     def require_effect_activation(self) -> None:
-        """Gate-0A has no authority to validate or activate an installed generation."""
+        """Require the narrow Gate-0B claim-publication activation receipt."""
 
-        detail = (
-            "composition-uninstalled"
-            if self.composition_manifest is None
-            else self.composition_manifest.manifest_ref
+        if self.composition_manifest is None:
+            raise ExecutionAdmissionError(
+                "execution_composition_activation_unvalidated",
+                "obtain a Gate-0B validated install receipt before any effect path",
+                "composition-uninstalled",
+            )
+        from shared.gate0b_claim_publication_install import (
+            require_claim_publication_install_receipt,
         )
-        raise ExecutionAdmissionError(
-            "execution_composition_activation_unvalidated",
-            "obtain a Gate-0B validated install receipt before any effect path",
-            detail,
-        )
+
+        require_claim_publication_install_receipt(self)
 
     def persist_invocation(
         self,

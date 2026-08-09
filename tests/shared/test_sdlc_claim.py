@@ -17,26 +17,32 @@ from shared.dispatcher_policy import DispatchAction, RouteDecision
 from shared.execution_admission import (
     ACTION_INTENT_SCHEMA,
     APPLIED_CLAIM_OWNERSHIP_SCHEMA,
+    BOUND_EXECUTION_CALL_SCHEMA,
     CLAIM_PUBLICATION_COMPLETION_EVIDENCE_SCHEMA,
     EXECUTION_ADMISSION_SCHEMA,
-    EXECUTION_LEASE_SCHEMA,
     OUTCOME_PIPELINE_READINESS_QUERY_SCHEMA,
     OUTCOME_RECEIPT_SCHEMA,
     VALID_AUTHORITY_GRANT_SCHEMA,
     ActionIntent,
     AppliedClaimOwnershipProof,
     AppliedClaimResolution,
+    BoundExecutionCall,
     ClaimPublicationArtifact,
     ContentAddress,
+    EffectManifest,
     ExecutionAdmission,
     ExecutionAdmissionError,
     ExecutionLease,
+    ExecutionTargetEvidence,
     ExecutionTrustResolver,
+    ExecutorDescriptor,
+    ExecutorRegistryProjection,
     FrontierValidityEnvelope,
     HistoricalAppliedClaimOwnershipProofV3,
     OutcomeCommitter,
     OutcomePipelineReadinessQuery,
     OutcomeProjectionSnapshot,
+    ProspectiveClaimPublicationBasis,
     RootDisposition,
     ValidAuthorityGrant,
     applied_claim_proof,
@@ -67,6 +73,7 @@ from shared.execution_admission import (
     mint_execution_lease,
     outcome_projection_validity_roots,
     require_applied_claim_ownership_proof,
+    require_current_execution_lease,
     require_historical_applied_claim_ownership_proof,
 )
 from shared.sdlc_claim import (
@@ -119,8 +126,17 @@ class AdmissionFixture:
     action: ActionIntent
     admission: ExecutionAdmission
     grant: ValidAuthorityGrant
+    basis: ProspectiveClaimPublicationBasis
+    target: ExecutionTargetEvidence
+    bound_call: BoundExecutionCall
+    effect_manifest: EffectManifest
+    executor_descriptor: ExecutorDescriptor
+    executor_registry_projection: ExecutorRegistryProjection
+    issuer_receipt: ContentAddress
+    issuer_resolver: ExecutionTrustResolver
     lease: ExecutionLease
     checked_at: datetime
+    valid_until: datetime
     proof_paths: tuple[Path, ...]
 
 
@@ -648,85 +664,22 @@ def _active_admission_fixture(
         queried_at=now + timedelta(minutes=1),
     )
     issuer_resolver = _trusted_resolver(issuer_query, valid_until)
-    with pytest.raises(
-        ExecutionAdmissionError,
-        match="independent_execution_lease_issuer_unavailable",
-    ):
-        mint_execution_lease(
-            admission,
-            action,
-            grant,
-            basis,
-            target,
-            bound_call,
-            effect_manifest,
-            descriptor,
-            registry,
-            issuer_receipt=issuer_receipt,
-            now=now + timedelta(minutes=1),
-            trust_resolver=issuer_resolver,
-        )
-    issuer_envelope = issuer_resolver.require_trusted(issuer_query)
-    assert effect_manifest.reconciliation_contract is not None
-    lease_body: dict[str, object] = {
-        "schema": EXECUTION_LEASE_SCHEMA,
-        "admission": ContentAddress(
-            ref=admission.admission_ref,
-            sha256=admission.admission_hash,
-        ).model_dump(mode="json"),
-        "authority_grant": grant_address.model_dump(mode="json"),
-        "claim_basis": basis.model_dump(mode="json", by_alias=True),
-        "claim_coordinates": coordinates.model_dump(mode="json", by_alias=True),
-        "bound_call": bound_call.model_dump(mode="json", by_alias=True),
-        "task_ref": basis.task_ref,
-        "lane": basis.lane,
-        "session_ref": basis.session_ref,
-        "claim_epoch": basis.claim_epoch,
-        "capability_role": action.capability_role,
-        "selected_descriptor_leaf": admission.selected_descriptor_leaf,
-        "execution_target": target_address.model_dump(mode="json"),
-        "runtime_identity": target.runtime_identity.model_dump(mode="json"),
-        "active_generation_roots": tuple(
-            item.model_dump(mode="json") for item in target.active_generation_roots
-        ),
-        "invocation_id": bound_call.invocation_id,
-        "idempotency_key": admission.idempotency_key,
-        "attempt_fence": bound_call.attempt_fence,
-        "effect_manifest": manifest_address.model_dump(mode="json"),
-        "executor_descriptor": descriptor_address.model_dump(mode="json"),
-        "executor_registry_projection": registry_address.model_dump(mode="json"),
-        "executor": descriptor.executor.model_dump(mode="json"),
-        "issuer_receipt": issuer_receipt.model_dump(mode="json"),
-        "issuer_trust_query": issuer_query.model_dump(mode="json", by_alias=True),
-        "issuer_trust_envelope": issuer_envelope.model_dump(mode="json", by_alias=True),
-        "observation_contract": effect_manifest.observation_contract.model_dump(mode="json"),
-        "completion_predicate": effect_manifest.completion_predicate.model_dump(mode="json"),
-        "idempotence_class": effect_manifest.idempotence_class,
-        "reconciliation_contract": effect_manifest.reconciliation_contract.model_dump(mode="json"),
-        "compensation": None,
-        "issued_at": issuer_query.queried_at,
-        "not_before": issuer_query.queried_at,
-        "expires_at": min(
-            admission.valid_until,
-            grant.valid_until,
-            target.stale_after,
-            registry.stale_after,
-            issuer_envelope.stale_after,
-        ),
-        "supersession_frontier_ref": admission.supersession_frontier_ref,
-        "supersedes_refs": (),
-        "authorizes_machine_adapter": True,
-        "authorizes_operator": False,
-        "may_mint_sovereign_act": False,
-    }
-    lease_hash = _domain_hash(EXECUTION_LEASE_SCHEMA, lease_body)
-    lease = ExecutionLease.model_validate(
-        {
-            **lease_body,
-            "lease_ref": f"execution-lease@sha256:{lease_hash}",
-            "lease_hash": lease_hash,
-        }
+    lease = mint_execution_lease(
+        admission,
+        action,
+        grant,
+        basis,
+        target,
+        bound_call,
+        effect_manifest,
+        descriptor,
+        registry,
+        issuer_receipt=issuer_receipt,
+        now=now + timedelta(minutes=1),
+        trust_resolver=issuer_resolver,
     )
+    assert lease.issuer_trust_query == issuer_query
+    assert lease.issuer_trust_envelope == issuer_resolver.require_trusted(issuer_query)
 
     proof_root = tmp_path / "admission-proofs"
     proof_root.mkdir()
@@ -754,10 +707,251 @@ def _active_admission_fixture(
         action=action,
         admission=admission,
         grant=grant,
+        basis=basis,
+        target=target,
+        bound_call=bound_call,
+        effect_manifest=effect_manifest,
+        executor_descriptor=descriptor,
+        executor_registry_projection=registry,
+        issuer_receipt=issuer_receipt,
+        issuer_resolver=issuer_resolver,
         lease=lease,
         checked_at=checked_at,
+        valid_until=valid_until,
         proof_paths=paths,
     )
+
+
+def _rebuild_admission(admission: ExecutionAdmission, **updates: object) -> ExecutionAdmission:
+    body = admission.model_dump(
+        mode="json",
+        by_alias=True,
+        exclude={"admission_ref", "admission_hash"},
+    )
+    body.update(updates)
+    digest = _domain_hash(EXECUTION_ADMISSION_SCHEMA, body)
+    return ExecutionAdmission.model_validate(
+        {
+            **body,
+            "admission_ref": f"execution-admission@sha256:{digest}",
+            "admission_hash": digest,
+        }
+    )
+
+
+def _rebuild_bound_call(call: BoundExecutionCall, **updates: object) -> BoundExecutionCall:
+    body = call.model_dump(mode="json", by_alias=True, exclude={"call_ref", "call_hash"})
+    body.update(updates)
+    digest = _domain_hash(BOUND_EXECUTION_CALL_SCHEMA, body)
+    return BoundExecutionCall.model_validate(
+        {
+            **body,
+            "call_ref": f"bound-execution-call@sha256:{digest}",
+            "call_hash": digest,
+        }
+    )
+
+
+def _mint_lease(active: AdmissionFixture, **overrides: object) -> ExecutionLease:
+    args: dict[str, object] = {
+        "admission": active.admission,
+        "intent": active.action,
+        "grant": active.grant,
+        "claim_basis": active.basis,
+        "target": active.target,
+        "bound_call": active.bound_call,
+        "effect_manifest": active.effect_manifest,
+        "executor_descriptor": active.executor_descriptor,
+        "executor_registry_projection": active.executor_registry_projection,
+        "issuer_receipt": active.issuer_receipt,
+        "now": active.lease.issued_at,
+        "trust_resolver": active.issuer_resolver,
+    }
+    args.update(overrides)
+    return mint_execution_lease(
+        args["admission"],  # type: ignore[arg-type]
+        args["intent"],  # type: ignore[arg-type]
+        args["grant"],  # type: ignore[arg-type]
+        args["claim_basis"],  # type: ignore[arg-type]
+        args["target"],  # type: ignore[arg-type]
+        args["bound_call"],  # type: ignore[arg-type]
+        args["effect_manifest"],  # type: ignore[arg-type]
+        args["executor_descriptor"],  # type: ignore[arg-type]
+        args["executor_registry_projection"],  # type: ignore[arg-type]
+        issuer_receipt=args["issuer_receipt"],  # type: ignore[arg-type]
+        now=args["now"],  # type: ignore[arg-type]
+        trust_resolver=args["trust_resolver"],  # type: ignore[arg-type]
+        expires_at=args.get("expires_at"),  # type: ignore[arg-type]
+        supersedes_refs=args.get("supersedes_refs", ()),  # type: ignore[arg-type]
+    )
+
+
+def test_mint_execution_lease_requires_trusted_issuer_resolver(tmp_path: Path) -> None:
+    active = _active_admission_fixture(tmp_path, _fixture(tmp_path))
+
+    with pytest.raises(ExecutionAdmissionError) as raised:
+        _mint_lease(active, trust_resolver=None)
+
+    assert raised.value.reason_code == "execution_trust_resolver_unavailable"
+
+
+def test_mint_execution_lease_binds_roots_and_clamps_expiry(tmp_path: Path) -> None:
+    active = _active_admission_fixture(tmp_path, _fixture(tmp_path))
+
+    lease = _mint_lease(
+        active,
+        expires_at=active.checked_at,
+        supersedes_refs=("z-ref", "a-ref", "z-ref"),
+    )
+
+    assert lease.admission == ContentAddress(
+        ref=active.admission.admission_ref,
+        sha256=active.admission.admission_hash,
+    )
+    assert lease.authority_grant == ContentAddress(
+        ref=active.grant.grant_ref,
+        sha256=active.grant.grant_hash,
+    )
+    assert lease.claim_basis == active.basis
+    assert lease.bound_call == active.bound_call
+    assert lease.effect_manifest == ContentAddress(
+        ref=active.effect_manifest.manifest_ref,
+        sha256=active.effect_manifest.manifest_hash,
+    )
+    assert lease.executor_descriptor == ContentAddress(
+        ref=active.executor_descriptor.descriptor_ref,
+        sha256=active.executor_descriptor.descriptor_hash,
+    )
+    assert lease.executor_registry_projection == ContentAddress(
+        ref=active.executor_registry_projection.projection_ref,
+        sha256=active.executor_registry_projection.projection_hash,
+    )
+    assert lease.issuer_trust_envelope == active.issuer_resolver.require_trusted(
+        lease.issuer_trust_query
+    )
+    assert lease.issued_at == lease.not_before == active.lease.issued_at
+    assert lease.expires_at == _wire_time(active.checked_at)
+    assert lease.supersedes_refs == ("a-ref", "z-ref")
+    assert lease.authorizes_machine_adapter is True
+    assert lease.authorizes_operator is False
+
+
+def test_mint_execution_lease_rejects_admission_intent_mismatch(tmp_path: Path) -> None:
+    active = _active_admission_fixture(tmp_path, _fixture(tmp_path))
+    other_intent = _address("other-action-intent:test")
+    tampered_admission = _rebuild_admission(
+        active.admission,
+        intent=other_intent.model_dump(mode="json"),
+    )
+    tampered_bound_call = _rebuild_bound_call(
+        active.bound_call,
+        admission=ContentAddress(
+            ref=tampered_admission.admission_ref,
+            sha256=tampered_admission.admission_hash,
+        ).model_dump(mode="json"),
+        action_intent=other_intent.model_dump(mode="json"),
+    )
+
+    with pytest.raises(ExecutionAdmissionError) as raised:
+        _mint_lease(active, admission=tampered_admission, bound_call=tampered_bound_call)
+
+    assert raised.value.reason_code == "execution_lease_input_mismatch"
+    assert "admission_intent" in str(raised.value)
+
+
+def test_mint_execution_lease_rejects_malformed_input(tmp_path: Path) -> None:
+    active = _active_admission_fixture(tmp_path, _fixture(tmp_path))
+
+    with pytest.raises(ExecutionAdmissionError) as raised:
+        _mint_lease(active, claim_basis=object())
+
+    assert raised.value.reason_code == "execution_lease_input_malformed"
+
+
+def test_mint_execution_lease_rejects_ineligible_admission(tmp_path: Path) -> None:
+    active = _active_admission_fixture(tmp_path, _fixture(tmp_path))
+    held = _rebuild_admission(
+        active.admission,
+        decision="hold",
+        lease_eligible=False,
+        reason_codes=("issuer_hold",),
+        repair_refs=("repair:issuer_hold",),
+    )
+
+    with pytest.raises(ExecutionAdmissionError) as raised:
+        _mint_lease(active, admission=held)
+
+    assert raised.value.reason_code == "execution_lease_admission_not_eligible"
+
+
+def test_mint_execution_lease_rejects_authority_mismatch(tmp_path: Path) -> None:
+    active = _active_admission_fixture(tmp_path, _fixture(tmp_path))
+    mismatched = _rebuild_admission(
+        active.admission,
+        authority_grant=_address("other-authority-grant:test").model_dump(mode="json"),
+    )
+
+    with pytest.raises(ExecutionAdmissionError) as raised:
+        _mint_lease(active, admission=mismatched)
+
+    assert raised.value.reason_code == "execution_lease_authority_mismatch"
+
+
+def test_mint_execution_lease_rejects_noncurrent_inputs(tmp_path: Path) -> None:
+    active = _active_admission_fixture(tmp_path, _fixture(tmp_path))
+
+    with pytest.raises(ExecutionAdmissionError) as raised:
+        _mint_lease(active, now=active.valid_until)
+
+    assert raised.value.reason_code == "execution_lease_inputs_not_current"
+
+
+def test_mint_execution_lease_rejects_bound_call_mismatch(tmp_path: Path) -> None:
+    active = _active_admission_fixture(tmp_path / "one", _fixture(tmp_path / "one"))
+    other = _active_admission_fixture(tmp_path / "two", _fixture(tmp_path / "two", task_id="beta"))
+
+    with pytest.raises(ExecutionAdmissionError) as raised:
+        _mint_lease(active, target=other.target)
+
+    assert raised.value.reason_code == "execution_lease_input_mismatch"
+    assert "execution_target" in str(raised.value)
+
+
+def test_mint_execution_lease_rejects_empty_validity_window(tmp_path: Path) -> None:
+    active = _active_admission_fixture(tmp_path, _fixture(tmp_path))
+
+    with pytest.raises(ExecutionAdmissionError) as raised:
+        _mint_lease(active, expires_at=active.lease.issued_at)
+
+    assert raised.value.reason_code == "execution_lease_validity_empty"
+
+
+def test_current_execution_lease_retains_independent_issuer_refusal(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+
+    with pytest.raises(ExecutionAdmissionError) as raised:
+        require_current_execution_lease(
+            active.lease,
+            active.admission,
+            active.action,
+            active.grant,
+            object(),
+            object(),
+            object(),
+            object(),
+            object(),
+            object(),
+            object(),
+            object(),
+            object(),
+            queried_at=active.checked_at,
+        )
+
+    assert raised.value.reason_code == "independent_execution_lease_issuer_unavailable"
+    assert "install an independently authenticated Gate-0B lease issuer" in str(raised.value)
 
 
 def _apply_projection_postimages(projections: tuple[object, ...]) -> None:
