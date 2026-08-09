@@ -10,6 +10,11 @@ writes tasks atomically.
 
 Scan mode: finds all accepted_for_planning requests with zero downstream
 tasks and decomposes each.
+
+Admission-blocked requests are annotated in place: the gate writes
+``intake_hold_reasons`` / ``intake_hold_at`` onto the request frontmatter
+(idempotent, self-clearing once the blockers resolve), so a hold is visible
+where the request lives — not only as a remediation task in the queue.
 """
 
 from __future__ import annotations
@@ -306,7 +311,12 @@ def _annotate_intake_hold(
         try:
             path.write_text(_render_note(fm, request_data["body"]), encoding="utf-8")
         except OSError as exc:
-            _log.warning("intake hold annotation failed for %s: %s", path.name, exc)
+            _log.warning(
+                "intake hold annotation failed for %s: %s "
+                "(the remediation task still records the hold; annotation retries next run)",
+                path.name,
+                exc,
+            )
             return "error"
         return "annotated"
     if "intake_hold_reasons" in fm or "intake_hold_at" in fm:
@@ -317,7 +327,12 @@ def _annotate_intake_hold(
         try:
             path.write_text(_render_note(fm, request_data["body"]), encoding="utf-8")
         except OSError as exc:
-            _log.warning("intake hold clear failed for %s: %s", path.name, exc)
+            _log.warning(
+                "intake hold clear failed for %s: %s "
+                "(the stale hold fields remain; the clear retries next run)",
+                path.name,
+                exc,
+            )
             return "error"
         return "cleared"
     return "unchanged"
@@ -970,9 +985,9 @@ def main() -> int:
                     hold_result,
                 )
                 continue
-            _annotate_intake_hold(
-                req_data, blockers, dry_run=args.dry_run
-            )  # self-clear a prior hold
+            hold_clear = _annotate_intake_hold(req_data, blockers, dry_run=args.dry_run)
+            if hold_clear == "cleared":
+                _log.info("Cleared intake hold on %s (blockers resolved)", req_path.name)
             if scan_limit is not None and admitted_attempts >= scan_limit:
                 break
             admitted_attempts += 1

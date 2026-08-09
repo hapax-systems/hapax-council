@@ -2369,3 +2369,74 @@ status: accepted_for_planning
             == "dry_run"
         )
         assert request.read_text(encoding="utf-8") == original
+
+    def test_intake_hold_annotation_error_paths_fail_safe(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        request = tmp_path / "REQ-err.md"
+        request.write_text(
+            """---
+type: hapax-request
+request_id: REQ-err
+status: accepted_for_planning
+intake_hold_reasons:
+- missing_authority_case
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+
+        def explode(*_args, **_kwargs):
+            raise OSError("read-only filesystem")
+
+        monkeypatch.setattr(Path, "write_text", explode)
+
+        data = script._read_request(request)
+        # a failed annotate returns "error" and must not raise into the scan loop
+        assert (
+            script._annotate_intake_hold(data, ["missing_cctv_intake_receipt"], dry_run=False)
+            == "error"
+        )
+        # a failed clear likewise
+        assert script._annotate_intake_hold(data, [], dry_run=False) == "error"
+
+    def test_scan_writes_hold_onto_blocked_request(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        requests = tmp_path / "requests" / "active"
+        tasks = tmp_path / "tasks"
+        requests.mkdir(parents=True)
+        (tasks / "active").mkdir(parents=True)
+        (tasks / "closed").mkdir(parents=True)
+        request = requests / "REQ-scan-held.md"
+        request.write_text(
+            """---
+type: hapax-request
+request_id: REQ-scan-held
+status: accepted_for_planning
+planning_case: CASE-TEST-001
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+
+        def fail_if_called(_request_data):
+            raise AssertionError("LLM should not run before CCTV admission")
+
+        monkeypatch.setattr(script, "REQUESTS_DIR", requests)
+        monkeypatch.setattr(script, "TASKS_DIR", tasks)
+        monkeypatch.setattr(script, "_decompose_with_llm", fail_if_called)
+        monkeypatch.setattr(sys, "argv", ["request-decompose", "--scan"])
+
+        assert script.main() == 0
+
+        held = script._read_request(request)
+        assert "missing_cctv_route_resource_admission" in held["frontmatter"]["intake_hold_reasons"]
+        assert "intake_hold_at" in held["frontmatter"]
+
+        # a second scan with nothing changed must not rewrite the request
+        first_render = request.read_text(encoding="utf-8")
+        assert script.main() == 0
+        assert request.read_text(encoding="utf-8") == first_render
