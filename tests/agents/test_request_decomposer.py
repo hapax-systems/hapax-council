@@ -2309,3 +2309,63 @@ status: offered
         frontmatter, _body = parse_frontmatter(remediation_task)
         assert frontmatter["remediates_request_id"] == "REQ-single-conflict"
         assert frontmatter["decompose_failure_class"] == "write_conflict"
+
+    def test_intake_hold_annotation_writes_idempotent_and_clears(self, tmp_path):
+        script = _load_request_decompose_module()
+        request = tmp_path / "REQ-held.md"
+        request.write_text(
+            """---
+type: hapax-request
+request_id: REQ-held
+status: accepted_for_planning
+planning_case: CASE-TEST-001
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+        blockers = ["missing_cctv_route_resource_admission", "missing_authority_case"]
+
+        data = script._read_request(request)
+        assert script._annotate_intake_hold(data, blockers, dry_run=False) == "annotated"
+
+        held = script._read_request(request)
+        assert held["frontmatter"]["intake_hold_reasons"] == blockers
+        assert "intake_hold_at" in held["frontmatter"]
+
+        # idempotent: same reasons -> no rewrite, no churn
+        assert script._annotate_intake_hold(held, blockers, dry_run=False) == "unchanged"
+
+        # changed blockers re-annotate with the new set
+        new_blockers = ["missing_cctv_intake_receipt"]
+        assert script._annotate_intake_hold(held, new_blockers, dry_run=False) == "annotated"
+        held = script._read_request(request)
+        assert held["frontmatter"]["intake_hold_reasons"] == new_blockers
+
+        # self-clears once the blockers are gone
+        assert script._annotate_intake_hold(held, [], dry_run=False) == "cleared"
+        cleared = script._read_request(request)
+        assert "intake_hold_reasons" not in cleared["frontmatter"]
+        assert "intake_hold_at" not in cleared["frontmatter"]
+        # and stays quiet when there is nothing to clear
+        assert script._annotate_intake_hold(cleared, [], dry_run=False) == "unchanged"
+
+    def test_intake_hold_annotation_dry_run_writes_nothing(self, tmp_path):
+        script = _load_request_decompose_module()
+        request = tmp_path / "REQ-dry.md"
+        original = """---
+type: hapax-request
+request_id: REQ-dry
+status: accepted_for_planning
+---
+
+# Request
+"""
+        request.write_text(original, encoding="utf-8")
+        data = script._read_request(request)
+        assert (
+            script._annotate_intake_hold(data, ["missing_authority_case"], dry_run=True)
+            == "dry_run"
+        )
+        assert request.read_text(encoding="utf-8") == original
