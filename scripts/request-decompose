@@ -288,6 +288,13 @@ def _task_parent_reference_keys(value: Any) -> set[str]:
     return keys
 
 
+def _write_request_note_atomic(path: Path, text: str) -> None:
+    """Same rename-over idiom as the remediation writer: never a torn note."""
+    tmp = path.with_suffix(".md.intake-hold-tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
 def _annotate_intake_hold(
     request_data: dict[str, Any], blockers: list[str], *, dry_run: bool
 ) -> str:
@@ -309,7 +316,7 @@ def _annotate_intake_hold(
         fm["intake_hold_reasons"] = list(blockers)
         fm["intake_hold_at"] = _utc_now()
         try:
-            path.write_text(_render_note(fm, request_data["body"]), encoding="utf-8")
+            _write_request_note_atomic(path, _render_note(fm, request_data["body"]))
         except OSError as exc:
             _log.warning(
                 "intake hold annotation failed for %s: %s "
@@ -325,7 +332,7 @@ def _annotate_intake_hold(
         fm.pop("intake_hold_reasons", None)
         fm.pop("intake_hold_at", None)
         try:
-            path.write_text(_render_note(fm, request_data["body"]), encoding="utf-8")
+            _write_request_note_atomic(path, _render_note(fm, request_data["body"]))
         except OSError as exc:
             _log.warning(
                 "intake hold clear failed for %s: %s "

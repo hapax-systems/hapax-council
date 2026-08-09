@@ -2390,7 +2390,8 @@ intake_hold_reasons:
         def explode(*_args, **_kwargs):
             raise OSError("read-only filesystem")
 
-        monkeypatch.setattr(Path, "write_text", explode)
+        # scoped to the script's own writer — never a global Path patch
+        monkeypatch.setattr(script, "_write_request_note_atomic", explode)
 
         data = script._read_request(request)
         # a failed annotate returns "error" and must not raise into the scan loop
@@ -2440,3 +2441,46 @@ planning_case: CASE-TEST-001
         first_render = request.read_text(encoding="utf-8")
         assert script.main() == 0
         assert request.read_text(encoding="utf-8") == first_render
+
+    def test_scan_clears_stale_hold_on_admitted_request(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        requests = tmp_path / "requests" / "active"
+        tasks = tmp_path / "tasks"
+        requests.mkdir(parents=True)
+        (tasks / "active").mkdir(parents=True)
+        (tasks / "closed").mkdir(parents=True)
+        request = requests / "REQ-scan-clears.md"
+        request.write_text(
+            """---
+type: hapax-request
+request_id: REQ-scan-clears
+status: accepted_for_planning
+cctv_intake_receipt: receipt://REQ-scan-clears
+cctv_intake_verdict: ready_to_plan
+cctv_route_resource_admission: admitted
+cctv_capability_receipts:
+- receipt://cap-1
+authority_case: CASE-TEST-001
+planning_case: CASE-TEST-001
+parent_spec: docs/some-spec.md
+intake_hold_reasons:
+- missing_cctv_route_resource_admission
+intake_hold_at: "2026-08-09T00:00:00Z"
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+
+        # admitted, but the LLM fails -> the hold must STILL have been cleared first
+        monkeypatch.setattr(script, "REQUESTS_DIR", requests)
+        monkeypatch.setattr(script, "TASKS_DIR", tasks)
+        monkeypatch.setattr(script, "_decompose_with_llm", lambda _d: None)
+        monkeypatch.setattr(sys, "argv", ["request-decompose", "--scan"])
+
+        assert script.main() == 0
+
+        after = script._read_request(request)
+        assert "intake_hold_reasons" not in after["frontmatter"]
+        assert "intake_hold_at" not in after["frontmatter"]
