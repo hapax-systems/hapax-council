@@ -983,12 +983,21 @@ def fetch_merge_queue_pr_numbers(
     except json.JSONDecodeError as exc:
         LOG.error("gh merge queue query emitted non-JSON: %s", exc)
         return None
-    nodes = (
-        payload.get("data", {})
-        .get("repository", {})
-        .get("mergeQueue", {})
-        .get("entries", {})
-        .get("nodes", [])
+
+    # Each hop coerces an explicit JSON null to {}: `.get(key, {})` returns None when the key is
+    # PRESENT with a null value, so the default never applies. A repo with no merge queue
+    # configured sends mergeQueue: null, which crashed this with an AttributeError before any PR
+    # could be classified.
+    #
+    # Absence is answered, not indeterminate: a repo without a merge queue definitively has zero
+    # queued PRs, so this yields an empty set. The None returns above mean "could not tell" — a
+    # different claim, and conflating them would make an answerable repo look unqueryable.
+    def _obj(parent: object, key: str) -> dict:
+        value = parent.get(key) if isinstance(parent, dict) else None
+        return value if isinstance(value, dict) else {}
+
+    nodes = _obj(_obj(_obj(_obj(payload, "data"), "repository"), "mergeQueue"), "entries").get(
+        "nodes", []
     )
     queued: set[int] = set()
     if isinstance(nodes, list):
