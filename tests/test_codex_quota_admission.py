@@ -10,6 +10,7 @@ free-form observations can never become quota evidence, and that every refusal i
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -169,6 +170,165 @@ def test_secretish_refs_are_refused(tmp_path: Path, ref: str) -> None:
 def test_receipt_name_must_be_identifiable(tmp_path: Path) -> None:
     assert _run(tmp_path, "--evidence-ref", VALID_REF, "--receipt-name", "something-else.yaml") == 2
     assert _receipts(tmp_path) == []
+
+
+def _rollout(
+    tmp_path: Path,
+    *,
+    observed: str,
+    used_percent: float = 2.0,
+    window: int = 10080,
+    secret: str = "OPERATOR PROMPT: do not leak me",
+) -> Path:
+    """A rollout shaped like Codex CLI's, including content the extractor must never touch."""
+    sessions = tmp_path / "sessions" / "2026" / "08" / "09"
+    sessions.mkdir(parents=True, exist_ok=True)
+    path = sessions / "rollout-2026-08-09T11-29-08-019fe75b.jsonl"
+    lines = [
+        json.dumps({"timestamp": observed, "type": "event_msg", "payload": {"message": secret}}),
+        json.dumps(
+            {
+                "timestamp": observed,
+                "type": "event_msg",
+                "payload": {
+                    "rate_limits": {
+                        "limit_id": "codex",
+                        "primary": {
+                            "used_percent": used_percent,
+                            "window_minutes": window,
+                            "resets_at": 1786825858,
+                        },
+                        "secondary": None,
+                        "credits": {"has_credits": True, "unlimited": False, "balance": "9245.38"},
+                    }
+                },
+            }
+        ),
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return tmp_path / "sessions"
+
+
+def test_from_rollout_mints_a_measured_observation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The headroom number Codex already wrote to disk is a measurement, not an attestation."""
+    sessions = _rollout(tmp_path, observed="2026-08-09T21:19:03.426Z")
+    rc = mod.main(
+        [
+            "--receipt-dir",
+            str(tmp_path / "r"),
+            "--json",
+            "--from-rollout",
+            "--sessions-dir",
+            str(sessions),
+            "--now",
+            "2026-08-09T21:25:00Z",
+        ]
+    )
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["observation"] == "subscription_quota_headroom_observed"
+    # Stamped with the observation's own time, never "now" — a later stamp would overstate it.
+    assert out["observed_at"] == "2026-08-09T21:19:03Z"
+    assert out["measured"]["primary_remaining_percent"] == 98.0
+    assert out["measured"]["provider_calls_made"] == 0
+    written = sorted((tmp_path / "r").glob("*.yaml"))
+    assert len(written) == 1
+    fields = _fields(written[0])
+    assert fields["evidence_ref"] == "codex-subscription-headroom-observed-20260809t2119z"
+    assert fields["account_live_quota_observed"] == "true"
+
+
+def test_from_rollout_never_carries_rollout_content(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Rollouts hold operator prompts and model output. Only the numbers may leave."""
+    secret = "OPERATOR PROMPT: nuclear codes and /home/someone/private/path"
+    sessions = _rollout(tmp_path, observed="2026-08-09T21:19:03.426Z", secret=secret)
+    assert (
+        mod.main(
+            [
+                "--receipt-dir",
+                str(tmp_path / "r"),
+                "--json",
+                "--from-rollout",
+                "--sessions-dir",
+                str(sessions),
+                "--now",
+                "2026-08-09T21:25:00Z",
+            ]
+        )
+        == 0
+    )
+    captured = capsys.readouterr()
+    receipt = (sorted((tmp_path / "r").glob("*.yaml"))[0]).read_text(encoding="utf-8")
+    for blob in (captured.out, captured.err, receipt):
+        assert "nuclear codes" not in blob
+        assert "/home/someone" not in blob
+        assert "OPERATOR PROMPT" not in blob
+
+
+def test_from_rollout_refuses_a_stale_observation(tmp_path: Path) -> None:
+    sessions = _rollout(tmp_path, observed="2026-08-09T10:00:00Z")
+    assert (
+        mod.main(
+            [
+                "--receipt-dir",
+                str(tmp_path / "r"),
+                "--from-rollout",
+                "--sessions-dir",
+                str(sessions),
+                "--now",
+                "2026-08-09T21:25:00Z",
+            ]
+        )
+        == 2
+    )
+    assert not list((tmp_path / "r").glob("*.yaml"))
+
+
+def test_from_rollout_refuses_an_exhausted_window(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A full window is a wall, not headroom — admitting on fumes is the failure to avoid."""
+    sessions = _rollout(tmp_path, observed="2026-08-09T21:19:03Z", used_percent=100.0)
+    assert (
+        mod.main(
+            [
+                "--receipt-dir",
+                str(tmp_path / "r"),
+                "--from-rollout",
+                "--sessions-dir",
+                str(sessions),
+                "--now",
+                "2026-08-09T21:25:00Z",
+            ]
+        )
+        == 2
+    )
+    assert "quota wall, not headroom" in capsys.readouterr().err
+    assert not list((tmp_path / "r").glob("*.yaml"))
+
+
+def test_from_rollout_refuses_when_no_snapshot_exists(tmp_path: Path) -> None:
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    (sessions / "rollout-empty.jsonl").write_text('{"timestamp":"x","type":"event_msg"}\n')
+    assert (
+        mod.main(
+            [
+                "--receipt-dir",
+                str(tmp_path / "r"),
+                "--from-rollout",
+                "--sessions-dir",
+                str(sessions),
+                "--now",
+                "2026-08-09T21:25:00Z",
+            ]
+        )
+        == 2
+    )
 
 
 def test_unstamped_witness_is_refused(tmp_path: Path) -> None:
