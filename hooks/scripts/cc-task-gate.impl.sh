@@ -779,6 +779,15 @@ while idx < len(lines):
     raw = lines[idx]
     line = raw.strip()
     idx += 1
+    # Depth-aware: ONLY column-0 keys are this note's own declarations. An
+    # indented key belongs to a nested block and asserts something else, so
+    # reading it as top-level (last-occurrence-wins) inverted meaning:
+    # `required_authority_grant.source_mutation_authorized: true` is a REQUEST
+    # for authority, and it was handing lanes authority the note denies at
+    # column 0. A nested exception `status:` masked the real status the same
+    # way. Fail-closed over fail-silent.
+    if raw[:1] in (" ", "\t"):
+        continue
     if not line or line.startswith("#") or ":" not in line:
         continue
     key, _, val = line.partition(":")
@@ -791,10 +800,63 @@ while idx < len(lines):
     while idx < len(lines):
         child = lines[idx].strip()
         if child.startswith("- "):
-            items.append(child[2:].strip().strip('"').strip("'"))
+            value = child[2:].strip()
+            # QUOTED SCALARS FIRST. Inside quotes a `#` is a literal path character, and a comment
+            # can only begin AFTER the closing quote. Stripping before unquoting truncated
+            # `- "~/a/b #2.py"` to `~/a/b`, which matches no file and silently narrows the
+            # authorized surface — the same fail-quiet defect this collector exists to remove,
+            # reintroduced by the fix for it. Caught by blind review on PR #4501.
+            if value[:1] in ('"', "'"):
+                # ESCAPE FORMS MATTER. `find(quote, 1)` stops at the FIRST quote, but a
+                # double-quoted scalar escapes one as \" and a single-quoted scalar doubles it
+                # (''). Either would terminate the value early and silently truncate the path --
+                # the same narrowing this collector exists to prevent, one layer down. Found by
+                # blind review (codex-1) on PR #4501.
+                quote = value[0]
+                buf = []
+                pos = 1
+                closed = False
+                while pos < len(value):
+                    ch = value[pos]
+                    if quote == '"' and ch == "\\" and pos + 1 < len(value):
+                        buf.append(value[pos + 1])
+                        pos += 2
+                        continue
+                    if ch == quote:
+                        if quote == "'" and value[pos : pos + 2] == "''":
+                            buf.append("'")
+                            pos += 2
+                            continue
+                        closed = True
+                        break
+                    buf.append(ch)
+                    pos += 1
+                if closed:
+                    items.append("".join(buf))
+                    idx += 1
+                    continue
+                # Unterminated quote: fall through and treat it as a plain scalar rather than
+                # guessing where the value ends.
+            # PLAIN SCALAR: strip a trailing comment. YAML starts a comment at a `#` that follows
+            # whitespace, so `- ~/a/b.py   # widened 2026-08-04` has the value `~/a/b.py`, not the
+            # whole line. Fixing full-line comments and not trailing ones left the same hole one
+            # keystroke away, and a trailing note is the MORE natural way to annotate a single ref.
+            # A `#` not preceded by whitespace is kept: it is a legal character in a path.
+            for sep in ("\t#", " #"):
+                pos = value.find(sep)
+                if pos != -1:
+                    value = value[:pos].rstrip()
+            items.append(value.strip().strip('"').strip("'"))
             idx += 1
             continue
-        if not child:
+        # Blank lines and COMMENTS are not list terminators. Before this, a `#` line inside a
+        # block sequence hit the `break` below and SILENTLY DROPPED every remaining item —
+        # measured on a live note: 6 refs written, 4 parsed, 2 lost with no diagnostic. That
+        # is a fail-quiet scope reduction, and worse, it is invited: mutation_scope_refs is
+        # exactly the field an author wants to annotate when widening it, so documenting the
+        # change is what discards it. YAML permits comments anywhere in a block sequence; this
+        # parser must too.
+        if not child or child.startswith("#"):
             idx += 1
             continue
         break

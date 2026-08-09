@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""Classify a capability surface and append to onboarding disposition ledgers.
+
+Pure intake → classify → ledger. Does not register supply routes, enable
+outcome-gate learning, or activate agentic-trust as supply.
+
+Examples::
+
+  hapax-capability-onboarding-intake --json <<'EOF'
+  {"surface_id":"new.local.slice","measurement_sufficiency":"partial","modal_class":"permitted"}
+  EOF
+
+  hapax-capability-onboarding-intake \\
+    --surface-id new.local.slice \\
+    --measurement-sufficiency partial \\
+    --modal-class permitted \\
+    --ledger-root /tmp/onboarding-ledger-test
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.capability_onboarding_ledger import (  # noqa: E402
+    classify_and_ledger,
+)
+
+
+def _load_json_arg(raw: str | None) -> dict[str, Any]:
+    if not raw:
+        return {}
+    if raw == "-":
+        text = sys.stdin.read()
+    else:
+        path = Path(raw)
+        if path.is_file():
+            text = path.read_text(encoding="utf-8")
+        else:
+            text = raw
+    payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise SystemExit("JSON input must be an object")
+    return payload
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="hapax-capability-onboarding-intake",
+        description="Classify a capability surface into onboarding disposition ledgers",
+    )
+    parser.add_argument(
+        "--json",
+        metavar="PATH_OR_JSON",
+        help="JSON object path, inline JSON, or '-' for stdin",
+    )
+    parser.add_argument("--surface-id")
+    parser.add_argument("--instrument-disposition")
+    parser.add_argument("--instrument-id")
+    parser.add_argument("--modal-class")
+    parser.add_argument("--measurement-sufficiency")
+    parser.add_argument(
+        "--equal-definition-complete",
+        choices=("true", "false", "unset"),
+        default="unset",
+    )
+    parser.add_argument(
+        "--demand-eligible-candidate",
+        choices=("true", "false", "unset"),
+        default="unset",
+    )
+    parser.add_argument(
+        "--evidence-ref",
+        action="append",
+        default=[],
+        help="May be repeated; agentic-trust refs force evidence_only",
+    )
+    parser.add_argument("--source-ref", help="Caller/provenance ref for the ledger row")
+    parser.add_argument("--demand-shape-ref")
+    parser.add_argument("--admission-tuple-id")
+    parser.add_argument(
+        "--ledger-root",
+        help="Override HAPAX_CAPABILITY_ONBOARDING_LEDGER_ROOT",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Classify only; do not append to ledger",
+    )
+    args = parser.parse_args(argv)
+
+    payload = _load_json_arg(args.json)
+
+    # CLI flags override JSON keys when provided
+    def pick(key: str, flag: Any) -> Any:
+        return flag if flag is not None else payload.get(key)
+
+    equal: bool | None
+    if args.equal_definition_complete == "true":
+        equal = True
+    elif args.equal_definition_complete == "false":
+        equal = False
+    else:
+        raw = payload.get("equal_definition_complete")
+        equal = None if raw is None else bool(raw)
+
+    demand: bool | None
+    if args.demand_eligible_candidate == "true":
+        demand = True
+    elif args.demand_eligible_candidate == "false":
+        demand = False
+    else:
+        raw = payload.get("demand_eligible_candidate")
+        demand = None if raw is None else bool(raw)
+
+    evidence_refs = list(args.evidence_ref) or list(payload.get("evidence_refs") or [])
+
+    kwargs: dict[str, Any] = {
+        "surface_id": pick("surface_id", args.surface_id),
+        "instrument_disposition": pick("instrument_disposition", args.instrument_disposition),
+        "instrument_id": pick("instrument_id", args.instrument_id),
+        "modal_class": pick("modal_class", args.modal_class),
+        "measurement_sufficiency": pick("measurement_sufficiency", args.measurement_sufficiency),
+        "equal_definition_complete": equal,
+        "demand_eligible_candidate": demand,
+        "evidence_refs": evidence_refs or None,
+    }
+
+    if args.dry_run:
+        from shared.capability_onboarding_classify import classify_onboarding_surface
+
+        result = classify_onboarding_surface(**kwargs)
+        print(json.dumps({"classify": result, "dry_run": True}, indent=2, sort_keys=True))
+        return 0
+
+    out = classify_and_ledger(
+        root=args.ledger_root,
+        source_ref=args.source_ref or payload.get("source_ref"),
+        demand_shape_ref=args.demand_shape_ref or payload.get("demand_shape_ref"),
+        admission_tuple_id=args.admission_tuple_id or payload.get("admission_tuple_id"),
+        **kwargs,
+    )
+    print(json.dumps(out, indent=2, sort_keys=True, default=str))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

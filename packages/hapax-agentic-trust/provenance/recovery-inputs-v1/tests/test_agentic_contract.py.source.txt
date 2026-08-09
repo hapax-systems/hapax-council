@@ -1,0 +1,886 @@
+from dataclasses import replace
+
+import pytest
+
+from conservatory.agentic_contract import (
+    REQUIRED_RAW_EVIDENCE_CLASSES,
+    CandidateContentKey,
+    CandidateMaterialState,
+    CandidateProvenanceKey,
+    ContextArm,
+    EpisodeAdjudication,
+    EpisodeEvidenceIdentity,
+    EpisodePhase,
+    EpisodePrestate,
+    EvaluatorSecretOpening,
+    ImpactState,
+    JointOutcome,
+    JointOutcomeClass,
+    MechanicalCheckerResult,
+    PairedRequestVerification,
+    PairTerminalReconciliation,
+    ProbabilityMeasureContract,
+    ReplayComparison,
+    ReplayComparisonAlgorithm,
+    ReplayComparisonStatus,
+    ReplayLawContract,
+    ReplayLink,
+    RequestBinding,
+    RuntimeAttestation,
+    ScenarioPairContract,
+    ScheduledEpisodeKey,
+    ScheduledPairKey,
+    TerminalDisposition,
+    TransformationVerification,
+    TrialAssignmentKey,
+    UtilityState,
+    VerificationDecision,
+    require_execution_authority,
+)
+
+
+def transformation() -> TransformationVerification:
+    return TransformationVerification(
+        clean_scenario_sha256="7" * 64,
+        attack_scenario_sha256="8" * 64,
+        attack_transformation_sha256="9" * 64,
+        verifier_contract_sha256="a" * 64,
+        target_visible_diff_sha256="b" * 64,
+        observed_target_visible_diff_sha256="b" * 64,
+        verifier_witness_sha256="c" * 64,
+        verification_complete=True,
+        exact_single_transformation=True,
+        unmodified_surface_match=True,
+    )
+
+
+def scenario_pair() -> ScenarioPairContract:
+    return ScenarioPairContract(
+        pair_id="pair-01",
+        scenario_family_sha256="0" * 64,
+        base_task_sha256="1" * 64,
+        fixture_sha256="2" * 64,
+        tool_world_sha256="3" * 64,
+        tool_schema_sha256="4" * 64,
+        horizon_law_sha256="5" * 64,
+        authority_graph_sha256="6" * 64,
+        utility_checker_sha256="d" * 64,
+        security_checker_sha256="e" * 64,
+        evaluator_secret_commitment_sha256="f" * 64,
+        transformation_verification=transformation(),
+    )
+
+
+def probability_measure() -> ProbabilityMeasureContract:
+    return ProbabilityMeasureContract(
+        estimand_sha256="1" * 64,
+        task_sampling_frame_sha256="2" * 64,
+        candidate_sampling_frame_sha256="3" * 64,
+        seed_sampling_law_sha256="4" * 64,
+        confirmatory_population_sha256="5" * 64,
+        missingness_analysis_sha256="6" * 64,
+        estimator_law_sha256="7" * 64,
+        weighting_law_sha256="8" * 64,
+        clustering_law_sha256="9" * 64,
+        clustering_unit="candidate-family",
+    )
+
+
+def candidate_content() -> CandidateContentKey:
+    return CandidateContentKey(
+        scenario_family_sha256=scenario_pair().scenario_family_sha256,
+        attack_transformation_sha256=transformation().attack_transformation_sha256,
+        rendered_attack_sha256=transformation().attack_scenario_sha256,
+    )
+
+
+def provenance(content: CandidateContentKey | None = None) -> CandidateProvenanceKey:
+    material = content or candidate_content()
+    return CandidateProvenanceKey(
+        candidate_content_sha256=material.digest,
+        generator_contract_sha256="1" * 64,
+        generator_artifact_sha256="2" * 64,
+        source_lineage_sha256="3" * 64,
+        parent_set_sha256="4" * 64,
+        cluster_identity_sha256="5" * 64,
+        novelty_registry_genesis_sha256="6" * 64,
+        generator_seed=0,
+    )
+
+
+def assignment(content: CandidateContentKey | None = None) -> TrialAssignmentKey:
+    material = content or candidate_content()
+    pair = scenario_pair()
+    return TrialAssignmentKey(
+        candidate_content_sha256=material.digest,
+        target_model_sha256="b" * 64,
+        authority_graph_sha256=pair.authority_graph_sha256,
+        utility_checker_sha256=pair.utility_checker_sha256,
+        security_checker_sha256=pair.security_checker_sha256,
+        generation_law_sha256="c" * 64,
+        replicate_index=1,
+    )
+
+
+def replay_law() -> ReplayLawContract:
+    return ReplayLawContract(
+        reconstruction_law_sha256="a" * 64,
+        max_replays=2,
+        comparison_algorithm=ReplayComparisonAlgorithm.STRICT_TRAJECTORY_V1,
+        initial_outcome_authoritative=True,
+    )
+
+
+def scheduled_pair() -> ScheduledPairKey:
+    content = candidate_content()
+    return ScheduledPairKey(
+        experiment_id="trust-v2",
+        scenario_pair=scenario_pair(),
+        probability_measure=probability_measure(),
+        policy="static",
+        history="cold",
+        cycle=1,
+        pair_position=1,
+        crn_seed=20260804,
+        plan_sha256="a" * 64,
+        scheduler_state_sha256="b" * 64,
+        candidate_content=content,
+        candidate_provenance=provenance(content),
+        trial_assignment=assignment(content),
+        novelty_registry_overlay_sha256="c" * 64,
+        replay_law=replay_law(),
+        manifest_sha256="0" * 64,
+    )
+
+
+def scheduled(arm: ContextArm = ContextArm.ATTACK) -> ScheduledEpisodeKey:
+    parent = scheduled_pair()
+    return ScheduledEpisodeKey(parent, arm, parent.scenario_pair.scenario_for(arm))
+
+
+def request_binding(episode: ScheduledEpisodeKey) -> RequestBinding:
+    clean = episode.context_arm is ContextArm.CLEAN
+    return RequestBinding(
+        scheduled_episode=episode,
+        request_contract_sha256="1" * 64,
+        request_context_sha256=episode.selected_scenario_sha256,
+        request_semantics_sha256=("2" if clean else "3") * 64,
+        request_envelope_sha256=("4" if clean else "5") * 64,
+        renderer_contract_sha256="6" * 64,
+        renderer_witness_sha256=("7" if clean else "8") * 64,
+        candidate_material_state=(
+            CandidateMaterialState.EXCLUDED
+            if clean
+            else CandidateMaterialState.INCLUDED
+        ),
+    )
+
+
+def secret_opening() -> EvaluatorSecretOpening:
+    return EvaluatorSecretOpening(
+        commitment_sha256=scenario_pair().evaluator_secret_commitment_sha256,
+        realization_sha256="1" * 64,
+        opening_law_sha256="2" * 64,
+        opening_witness_sha256="3" * 64,
+        verification_complete=True,
+        opens_commitment=True,
+    )
+
+
+def runtime_attestation(episode: ScheduledEpisodeKey) -> RuntimeAttestation:
+    parent = episode.scheduled_pair
+    return RuntimeAttestation(
+        scheduled_episode=episode,
+        served_model_sha256=parent.trial_assignment.target_model_sha256,
+        server_binary_sha256="4" * 64,
+        dependency_lock_sha256="5" * 64,
+        controller_sha256="6" * 64,
+        harness_sha256="7" * 64,
+        observed_tool_world_sha256=parent.scenario_pair.tool_world_sha256,
+        attestation_contract_sha256="8" * 64,
+        attestation_witness_sha256="9" * 64,
+        verification_complete=True,
+        binary_measurements_verified=True,
+    )
+
+
+def prestate(
+    binding: RequestBinding, opening: EvaluatorSecretOpening
+) -> EpisodePrestate:
+    clean = binding.scheduled_episode.context_arm is ContextArm.CLEAN
+    return EpisodePrestate(
+        request_binding=binding,
+        evaluator_secret_opening=opening,
+        fixture_sha256=binding.scheduled_episode.scheduled_pair.scenario_pair.fixture_sha256,
+        base_world_state_sha256="a" * 64,
+        rendered_context_sha256=binding.request_context_sha256,
+        prestate_artifact_sha256=("b" if clean else "c") * 64,
+        construction_witness_sha256=("d" if clean else "e") * 64,
+    )
+
+
+def evidence_and_checker(
+    phase: EpisodePhase = EpisodePhase.INITIAL,
+    *,
+    episode: ScheduledEpisodeKey | None = None,
+    utility: UtilityState = UtilityState.PASS,
+    impact: ImpactState = ImpactState.ABSENT,
+    response_sha256: str = "4" * 64,
+    tool_trace_sha256: str = "5" * 64,
+    poststate_sha256: str = "6" * 64,
+    mutation_log_sha256: str = "7" * 64,
+) -> tuple[EpisodeEvidenceIdentity, MechanicalCheckerResult]:
+    selected = episode or scheduled()
+    binding = request_binding(selected)
+    opening = secret_opening()
+    initial_state = prestate(binding, opening)
+    pair = selected.scheduled_pair.scenario_pair
+    checker = MechanicalCheckerResult(
+        utility_checker_contract_sha256=pair.utility_checker_sha256,
+        security_checker_contract_sha256=pair.security_checker_sha256,
+        checker_execution_witness_sha256="8" * 64,
+        tool_trace_sha256=tool_trace_sha256,
+        prestate_sha256=initial_state.prestate_artifact_sha256,
+        poststate_sha256=poststate_sha256,
+        mutation_log_sha256=mutation_log_sha256,
+        utility=utility,
+        unauthorized_impact=impact,
+        utility_witness_sha256=None if utility is UtilityState.UNKNOWN else "9" * 64,
+        security_witness_sha256=None if impact is ImpactState.UNKNOWN else "a" * 64,
+    )
+    evidence = EpisodeEvidenceIdentity(
+        request_binding=binding,
+        evaluator_secret_opening=opening,
+        runtime_attestation=runtime_attestation(selected),
+        prestate=initial_state,
+        phase=phase,
+        attempt_ordinal=0 if phase is EpisodePhase.INITIAL else 1,
+        response_envelope_sha256=response_sha256,
+        extraction_contract_sha256="b" * 64,
+        tool_trace_sha256=tool_trace_sha256,
+        poststate_sha256=poststate_sha256,
+        mutation_log_sha256=mutation_log_sha256,
+        checker_result_sha256=checker.digest,
+    )
+    return evidence, checker
+
+
+def adjudication(
+    evidence: EpisodeEvidenceIdentity | None = None,
+    checker: MechanicalCheckerResult | None = None,
+    *,
+    disposition: TerminalDisposition = TerminalDisposition.COMPLETED,
+    utility: UtilityState = UtilityState.PASS,
+    impact: ImpactState = ImpactState.ABSENT,
+    terminal_witness_sha256: str = "0" * 64,
+) -> EpisodeAdjudication:
+    if evidence is None or checker is None:
+        evidence, checker = evidence_and_checker(utility=utility, impact=impact)
+    return EpisodeAdjudication(evidence, checker, disposition, terminal_witness_sha256)
+
+
+@pytest.mark.parametrize(
+    "utility,impact,expected",
+    [
+        (UtilityState.PASS, ImpactState.ABSENT, JointOutcomeClass.SAFE_AND_USEFUL),
+        (UtilityState.FAIL, ImpactState.ABSENT, JointOutcomeClass.SAFE_BUT_NOT_USEFUL),
+        (UtilityState.PASS, ImpactState.PRESENT, JointOutcomeClass.UNSAFE_EFFECT),
+        (UtilityState.FAIL, ImpactState.PRESENT, JointOutcomeClass.UNSAFE_EFFECT),
+    ],
+)
+def test_joint_outcome_lattice(utility, impact, expected):
+    witness = "a" * 64 if impact is ImpactState.PRESENT else None
+    result = JointOutcome.classify(
+        TerminalDisposition.COMPLETED,
+        utility=utility,
+        unauthorized_impact=impact,
+        impact_witness_sha256=witness,
+    )
+    assert result.outcome_class is expected
+
+
+def test_incomplete_episode_never_establishes_impact_absence():
+    unknown = JointOutcome.classify(TerminalDisposition.INCOMPLETE_TRANSPORT)
+    assert unknown.outcome_class is JointOutcomeClass.INCOMPLETE
+    with pytest.raises(ValueError, match="cannot establish impact absence"):
+        JointOutcome.classify(
+            TerminalDisposition.INCOMPLETE_RESPONSE,
+            utility=UtilityState.FAIL,
+            unauthorized_impact=ImpactState.ABSENT,
+        )
+
+
+def test_incomplete_observed_harm_is_witnessed_and_stays_denominator_ineligible():
+    result = JointOutcome.classify(
+        TerminalDisposition.INCOMPLETE_RESPONSE,
+        utility=UtilityState.FAIL,
+        unauthorized_impact=ImpactState.PRESENT,
+        impact_witness_sha256="a" * 64,
+    )
+    assert result.outcome_class is JointOutcomeClass.UNSAFE_EFFECT_INCOMPLETE
+    assert result.counts_in_all_attempt_harm_lower_bound is True
+    assert result.effectiveness_eligible is False
+
+
+def test_invalid_episode_cannot_carry_adjudicated_observations():
+    with pytest.raises(ValueError, match="cannot carry adjudicated"):
+        JointOutcome.classify(
+            TerminalDisposition.INVALID_RETENTION,
+            utility=UtilityState.PASS,
+            unauthorized_impact=ImpactState.PRESENT,
+            impact_witness_sha256="a" * 64,
+        )
+
+
+def test_joint_outcome_parser_recomputes_fields_and_rejects_integer_booleans():
+    outcome = JointOutcome.classify(
+        TerminalDisposition.COMPLETED,
+        utility=UtilityState.PASS,
+        unauthorized_impact=ImpactState.ABSENT,
+    )
+    assert JointOutcome.from_document(outcome.document()) == outcome
+    with pytest.raises(TypeError, match="exact boolean"):
+        JointOutcome.from_document({**outcome.document(), "effectiveness_eligible": 1})
+    with pytest.raises(ValueError, match="schema mismatch"):
+        JointOutcome.from_document({**outcome.document(), "extra": True})
+
+
+def test_transformation_decision_is_derived_and_cannot_flip_one_witness():
+    accepted = transformation()
+    rejected = replace(accepted, exact_single_transformation=False)
+    assert accepted.decision is VerificationDecision.ACCEPTED
+    assert rejected.decision is VerificationDecision.REJECTED
+    assert accepted.digest != rejected.digest
+    with pytest.raises(ValueError, match="accepted transformation"):
+        replace(scenario_pair(), transformation_verification=rejected)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "verification_complete",
+        "exact_single_transformation",
+        "unmodified_surface_match",
+    ],
+)
+def test_transformation_verifier_requires_exact_booleans(field):
+    with pytest.raises(TypeError, match="exact boolean"):
+        replace(transformation(), **{field: 1})
+
+
+def test_pair_contract_binds_tools_horizon_checkers_and_visible_diff():
+    pair = scenario_pair()
+    variants = (
+        replace(pair, tool_world_sha256="1" * 64),
+        replace(pair, tool_schema_sha256="1" * 64),
+        replace(pair, horizon_law_sha256="1" * 64),
+        replace(pair, utility_checker_sha256="1" * 64),
+        replace(
+            pair,
+            transformation_verification=replace(
+                transformation(),
+                target_visible_diff_sha256="1" * 64,
+                observed_target_visible_diff_sha256="1" * 64,
+            ),
+        ),
+    )
+    assert len({pair.digest, *(variant.digest for variant in variants)}) == 6
+
+
+def test_scheduled_pair_factory_emits_exactly_clean_and_attack_children():
+    parent = scheduled_pair()
+    clean, attack = parent.children()
+    assert (clean.context_arm, attack.context_arm) == (
+        ContextArm.CLEAN,
+        ContextArm.ATTACK,
+    )
+    parent.validate_children([attack, clean])
+    with pytest.raises(ValueError, match="exactly two"):
+        parent.validate_children([clean])
+    with pytest.raises(ValueError, match="exactly CLEAN and ATTACK"):
+        parent.validate_children([clean, clean])
+
+
+def test_schedule_rejects_candidate_from_unrelated_family_or_transform():
+    parent = scheduled_pair()
+    wrong_family = replace(parent.candidate_content, scenario_family_sha256="1" * 64)
+    with pytest.raises(ValueError, match="different scenario family"):
+        replace(
+            parent,
+            candidate_content=wrong_family,
+            candidate_provenance=provenance(wrong_family),
+            trial_assignment=assignment(wrong_family),
+        )
+    wrong_transform = replace(
+        parent.candidate_content, attack_transformation_sha256="1" * 64
+    )
+    with pytest.raises(ValueError, match="pair transformation"):
+        replace(
+            parent,
+            candidate_content=wrong_transform,
+            candidate_provenance=provenance(wrong_transform),
+            trial_assignment=assignment(wrong_transform),
+        )
+
+
+def test_schedule_rejects_candidate_bytes_other_than_scheduled_attack_scenario():
+    parent = scheduled_pair()
+    wrong_rendering = replace(parent.candidate_content, rendered_attack_sha256="1" * 64)
+    with pytest.raises(ValueError, match="not the scheduled attack scenario"):
+        replace(
+            parent,
+            candidate_content=wrong_rendering,
+            candidate_provenance=provenance(wrong_rendering),
+            trial_assignment=assignment(wrong_rendering),
+        )
+
+
+def test_schedule_precommits_provenance_assignment_genesis_overlay_and_replay_law():
+    parent = scheduled_pair()
+    variants = (
+        replace(
+            parent,
+            candidate_provenance=replace(parent.candidate_provenance, generator_seed=1),
+        ),
+        replace(parent, novelty_registry_overlay_sha256="1" * 64),
+        replace(parent, replay_law=replace(parent.replay_law, max_replays=1)),
+        replace(
+            parent,
+            trial_assignment=replace(parent.trial_assignment, replicate_index=2),
+        ),
+    )
+    assert len({parent.digest, *(variant.digest for variant in variants)}) == 5
+
+
+def test_schedule_rejects_provenance_or_assignment_for_other_content_and_law():
+    parent = scheduled_pair()
+    with pytest.raises(ValueError, match="provenance"):
+        replace(
+            parent,
+            candidate_provenance=replace(
+                parent.candidate_provenance, candidate_content_sha256="1" * 64
+            ),
+        )
+    with pytest.raises(ValueError, match="trial assignment"):
+        replace(
+            parent,
+            trial_assignment=replace(
+                parent.trial_assignment, security_checker_sha256="1" * 64
+            ),
+        )
+
+
+def test_content_novelty_is_unchanged_by_verifier_execution_or_provenance():
+    content = candidate_content()
+    changed_verifier = replace(transformation(), verifier_witness_sha256="1" * 64)
+    assert changed_verifier.digest != transformation().digest
+    assert (
+        CandidateContentKey(
+            scenario_family_sha256=content.scenario_family_sha256,
+            attack_transformation_sha256=changed_verifier.attack_transformation_sha256,
+            rendered_attack_sha256=content.rendered_attack_sha256,
+        ).digest
+        == content.digest
+    )
+    assert (
+        replace(provenance(content), generator_artifact_sha256="1" * 64).digest
+        != provenance(content).digest
+    )
+
+
+def test_probability_measure_binds_estimator_weighting_and_clustering_laws():
+    measure = probability_measure()
+    variants = (
+        replace(measure, estimator_law_sha256="0" * 64),
+        replace(measure, weighting_law_sha256="0" * 64),
+        replace(measure, clustering_law_sha256="0" * 64),
+    )
+    assert len({measure.digest, *(variant.digest for variant in variants)}) == 4
+
+
+def test_request_binding_joins_arm_context_material_and_schedule_law():
+    clean, attack = scheduled_pair().children()
+    clean_request = request_binding(clean)
+    attack_request = request_binding(attack)
+    assert clean_request.candidate_material_state is CandidateMaterialState.EXCLUDED
+    assert attack_request.candidate_material_state is CandidateMaterialState.INCLUDED
+    assert clean_request.document()["crn_seed"] == clean.scheduled_pair.crn_seed
+    with pytest.raises(ValueError, match="contradicts"):
+        replace(clean_request, candidate_material_state=CandidateMaterialState.INCLUDED)
+    with pytest.raises(ValueError, match="selected scenario"):
+        replace(attack_request, request_context_sha256=clean.selected_scenario_sha256)
+
+
+def test_secret_opening_and_prestate_are_joined_to_pair_and_request():
+    attack = scheduled()
+    binding = request_binding(attack)
+    opening = secret_opening()
+    state = prestate(binding, opening)
+    assert state.request_binding.digest == binding.digest
+    with pytest.raises(ValueError, match="wrong commitment"):
+        prestate(binding, replace(opening, commitment_sha256="0" * 64))
+    with pytest.raises(ValueError, match="not verified"):
+        prestate(binding, replace(opening, opens_commitment=False))
+
+
+def test_runtime_attestation_opens_scheduled_model_and_tool_world():
+    episode = scheduled()
+    runtime = runtime_attestation(episode)
+    assert runtime.accepted is True
+    assert replace(runtime, served_model_sha256="0" * 64).accepted is False
+    assert replace(runtime, observed_tool_world_sha256="0" * 64).accepted is False
+
+
+def test_evidence_rejects_runtime_or_prestate_for_another_episode():
+    clean, attack = scheduled_pair().children()
+    clean_evidence, _ = evidence_and_checker(episode=clean)
+    attack_evidence, _ = evidence_and_checker(episode=attack)
+    with pytest.raises(ValueError, match="different scheduled episode"):
+        replace(clean_evidence, runtime_attestation=attack_evidence.runtime_attestation)
+    with pytest.raises(ValueError, match="different request"):
+        replace(clean_evidence, prestate=attack_evidence.prestate)
+
+
+def test_evidence_identity_includes_mutation_log_and_attempt_ordinal():
+    initial, _ = evidence_and_checker()
+    changed = replace(initial, mutation_log_sha256="0" * 64)
+    assert initial.digest != changed.digest
+    with pytest.raises(ValueError, match="ordinal zero"):
+        replace(initial, attempt_ordinal=1)
+
+
+def test_checker_result_is_the_only_source_of_outcome_predicates():
+    evidence, safe_checker = evidence_and_checker()
+    safe = adjudication(evidence, safe_checker)
+    assert safe.outcome.outcome_class is JointOutcomeClass.SAFE_AND_USEFUL
+    unsafe_checker = replace(
+        safe_checker,
+        unauthorized_impact=ImpactState.PRESENT,
+        security_witness_sha256="a" * 64,
+    )
+    assert safe_checker.digest != unsafe_checker.digest
+    with pytest.raises(ValueError, match="not bound"):
+        adjudication(evidence, unsafe_checker)
+
+
+def test_adjudication_rejects_checker_contract_or_state_drift():
+    evidence, checker = evidence_and_checker()
+    with pytest.raises(ValueError, match="not bound"):
+        adjudication(
+            evidence,
+            replace(checker, security_checker_contract_sha256="0" * 64),
+        )
+    drifted_checker = replace(checker, poststate_sha256="0" * 64)
+    drifted_evidence = replace(evidence, checker_result_sha256=drifted_checker.digest)
+    with pytest.raises(ValueError, match="poststate"):
+        adjudication(drifted_evidence, drifted_checker)
+
+
+def test_invalid_or_incomplete_disposition_cannot_misstate_checker_observation():
+    safe_evidence, safe_checker = evidence_and_checker()
+    with pytest.raises(ValueError, match="cannot carry adjudicated"):
+        adjudication(
+            safe_evidence,
+            safe_checker,
+            disposition=TerminalDisposition.INVALID_RETENTION,
+        )
+    with pytest.raises(ValueError, match="cannot establish impact absence"):
+        adjudication(
+            safe_evidence,
+            safe_checker,
+            disposition=TerminalDisposition.INCOMPLETE_RESPONSE,
+        )
+
+
+def test_incomplete_replay_disposition_rejects_initial_evidence():
+    evidence, checker = evidence_and_checker(
+        utility=UtilityState.UNKNOWN,
+        impact=ImpactState.UNKNOWN,
+    )
+    with pytest.raises(ValueError, match="requires replay-phase evidence"):
+        adjudication(
+            evidence,
+            checker,
+            disposition=TerminalDisposition.INCOMPLETE_REPLAY,
+        )
+
+
+def test_replay_link_requires_exact_frozen_request_prestate_secret_and_runtime():
+    initial, _ = evidence_and_checker()
+    replay, _ = evidence_and_checker(EpisodePhase.REPLAY)
+    link = ReplayLink(initial, replay)
+    assert link.document()["replay_ordinal"] == 1
+    with pytest.raises(ValueError, match="different request"):
+        replace(
+            replay,
+            request_binding=replace(
+                replay.request_binding, request_envelope_sha256="0" * 64
+            ),
+        )
+    with pytest.raises(ValueError, match="different evaluator secret"):
+        replace(
+            replay,
+            evaluator_secret_opening=replace(
+                replay.evaluator_secret_opening, opening_witness_sha256="0" * 64
+            ),
+        )
+    changed_runtime = replace(
+        replay,
+        runtime_attestation=replace(
+            replay.runtime_attestation, server_binary_sha256="0" * 64
+        ),
+    )
+    with pytest.raises(ValueError, match="invariant drift"):
+        ReplayLink(initial, changed_runtime)
+
+
+def test_replay_ordinal_cannot_exceed_precommitted_law():
+    initial, _ = evidence_and_checker()
+    replay, _ = evidence_and_checker(EpisodePhase.REPLAY)
+    with pytest.raises(ValueError, match="exceeds"):
+        ReplayLink(initial, replace(replay, attempt_ordinal=3))
+
+
+def test_replay_comparison_is_typed_and_agrees_only_on_all_bound_dimensions():
+    initial_evidence, initial_checker = evidence_and_checker()
+    replay_evidence, replay_checker = evidence_and_checker(EpisodePhase.REPLAY)
+    link = ReplayLink(initial_evidence, replay_evidence)
+    comparison = link.comparison(
+        adjudication(initial_evidence, initial_checker),
+        adjudication(replay_evidence, replay_checker),
+    )
+    assert isinstance(comparison, ReplayComparison)
+    assert comparison.status is ReplayComparisonStatus.AGREES
+    assert len(comparison.digest) == 64
+
+
+def test_replay_comparison_detects_witness_disagreement_and_incomplete():
+    initial_evidence, initial_checker = evidence_and_checker()
+    replay_evidence, replay_checker = evidence_and_checker(EpisodePhase.REPLAY)
+    link = ReplayLink(initial_evidence, replay_evidence)
+    initial = adjudication(initial_evidence, initial_checker)
+    assert (
+        link.comparison(
+            initial,
+            adjudication(
+                replay_evidence,
+                replay_checker,
+                terminal_witness_sha256="1" * 64,
+            ),
+        ).status
+        is ReplayComparisonStatus.DISAGREES
+    )
+    incomplete_evidence, incomplete_checker = evidence_and_checker(
+        EpisodePhase.REPLAY,
+        utility=UtilityState.UNKNOWN,
+        impact=ImpactState.UNKNOWN,
+    )
+    incomplete_link = ReplayLink(initial_evidence, incomplete_evidence)
+    incomplete = adjudication(
+        incomplete_evidence,
+        incomplete_checker,
+        disposition=TerminalDisposition.INCOMPLETE_REPLAY,
+    )
+    assert (
+        incomplete_link.comparison(initial, incomplete).status
+        is ReplayComparisonStatus.INCOMPLETE
+    )
+
+
+def paired_request_verification(
+    clean: RequestBinding, attack: RequestBinding
+) -> PairedRequestVerification:
+    return PairedRequestVerification(
+        clean=clean,
+        attack=attack,
+        observed_target_visible_diff_sha256=(
+            clean.scheduled_episode.scheduled_pair.scenario_pair.transformation_verification.target_visible_diff_sha256
+        ),
+        verifier_contract_sha256="1" * 64,
+        verifier_witness_sha256="2" * 64,
+        verification_complete=True,
+        only_preregistered_delta=True,
+    )
+
+
+def paired_reconciliation() -> PairTerminalReconciliation:
+    parent = scheduled_pair()
+    clean, attack = parent.children()
+    clean_evidence, clean_checker = evidence_and_checker(episode=clean)
+    attack_evidence, attack_checker = evidence_and_checker(episode=attack)
+    proof = paired_request_verification(
+        clean_evidence.request_binding,
+        attack_evidence.request_binding,
+    )
+    return PairTerminalReconciliation(
+        parent,
+        clean,
+        attack,
+        proof,
+        adjudication(clean_evidence, clean_checker),
+        adjudication(attack_evidence, attack_checker),
+    )
+
+
+def test_pair_reconciliation_binds_two_requests_and_both_adjudications():
+    reconciliation = paired_reconciliation()
+    assert len(reconciliation.digest) == 64
+    unrelated_attack = replace(
+        reconciliation.request_verification.attack,
+        renderer_witness_sha256="3" * 64,
+    )
+    with pytest.raises(ValueError, match="paired-request proof"):
+        replace(
+            reconciliation,
+            request_verification=replace(
+                reconciliation.request_verification,
+                attack=unrelated_attack,
+            ),
+        )
+
+
+def test_paired_request_proof_rejects_identical_semantics_or_wrong_diff():
+    parent = scheduled_pair()
+    clean, attack = parent.children()
+    clean_request = request_binding(clean)
+    attack_request = request_binding(attack)
+    with pytest.raises(ValueError, match="identical context-bearing"):
+        paired_request_verification(
+            clean_request,
+            replace(
+                attack_request,
+                request_semantics_sha256=clean_request.request_semantics_sha256,
+            ),
+        )
+    with pytest.raises(ValueError, match="does not match"):
+        PairedRequestVerification(
+            clean_request,
+            attack_request,
+            "0" * 64,
+            "1" * 64,
+            "2" * 64,
+            True,
+            True,
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "server_binary_sha256",
+        "dependency_lock_sha256",
+        "controller_sha256",
+        "harness_sha256",
+    ],
+)
+def test_pair_reconciliation_rejects_cross_arm_runtime_drift(field):
+    reconciliation = paired_reconciliation()
+    attack_adjudication = reconciliation.attack_adjudication
+    attack_evidence = attack_adjudication.evidence
+    drifted_runtime = replace(attack_evidence.runtime_attestation, **{field: "0" * 64})
+    drifted_evidence = replace(attack_evidence, runtime_attestation=drifted_runtime)
+    drifted_checker = replace(
+        attack_adjudication.checker_result,
+    )
+    drifted_adjudication = adjudication(drifted_evidence, drifted_checker)
+    with pytest.raises(ValueError, match="runtime invariant drift"):
+        replace(reconciliation, attack_adjudication=drifted_adjudication)
+
+
+def test_pair_reconciliation_rejects_cross_arm_renderer_contract_drift():
+    reconciliation = paired_reconciliation()
+    attack = reconciliation.attack_adjudication
+    binding = replace(
+        attack.evidence.request_binding,
+        renderer_contract_sha256="0" * 64,
+    )
+    state = replace(attack.evidence.prestate, request_binding=binding)
+    evidence = replace(
+        attack.evidence,
+        request_binding=binding,
+        prestate=state,
+    )
+    proof = replace(reconciliation.request_verification, attack=binding)
+    with pytest.raises(ValueError, match="runtime invariant drift"):
+        replace(
+            reconciliation,
+            request_verification=proof,
+            attack_adjudication=adjudication(evidence, attack.checker_result),
+        )
+
+
+def test_pair_reconciliation_rejects_secret_or_base_world_drift():
+    reconciliation = paired_reconciliation()
+    attack = reconciliation.attack_adjudication
+    opening = replace(
+        attack.evidence.evaluator_secret_opening, realization_sha256="0" * 64
+    )
+    state = replace(attack.evidence.prestate, evaluator_secret_opening=opening)
+    evidence = replace(
+        attack.evidence,
+        evaluator_secret_opening=opening,
+        prestate=state,
+    )
+    checker = replace(
+        attack.checker_result, prestate_sha256=state.prestate_artifact_sha256
+    )
+    evidence = replace(evidence, checker_result_sha256=checker.digest)
+    with pytest.raises(ValueError, match="evaluator-secret openings"):
+        replace(reconciliation, attack_adjudication=adjudication(evidence, checker))
+
+
+def test_required_evidence_includes_relational_and_probability_contracts():
+    assert set(REQUIRED_RAW_EVIDENCE_CLASSES) >= {
+        "probability_measure_contract",
+        "agentic_run_graph",
+        "scheduled_pair_contracts",
+        "pair_reconciliation",
+        "candidate_content_registry",
+        "candidate_provenance",
+        "evaluator_commitment",
+        "evaluator_reveal",
+        "checker_witness",
+        "adjudication",
+        "replay_comparison",
+        "mutation_log",
+        "runtime_attestation",
+        "failure_artifact",
+        "failure_witness",
+    }
+
+
+def test_domain_separated_golden_digests_are_stable():
+    assert (
+        scenario_pair().digest
+        == "0573db733bd388868a4577fe76a98c7fa0e97b0c3a563a0ed86750582bd04c8d"
+    )
+    assert (
+        candidate_content().digest
+        == "7bae926711d55a6b642dcc947b9ee037a0343b7599cbd1fa7cf9a7a274383666"
+    )
+    assert (
+        probability_measure().digest
+        == "418a0d2711a639920194078b668014a6285a8d8e4652fcd2e749fc4b182fc059"
+    )
+    assert (
+        scheduled_pair().digest
+        == "d38538dd840b9d4eb50e78c65389b29cefba4f333fddabe3fed91f28ac30b2e5"
+    )
+    evidence, checker = evidence_and_checker()
+    result = adjudication(evidence, checker)
+    assert (
+        evidence.digest
+        == "c2900c7156cc5a02f5869f9d53073896e66b3a625cd9145e4e6f36eecf8f54bd"
+    )
+    assert (
+        result.digest
+        == "fd3f0529f9b87e81aab41ee947ded5d87622005bb27ac546ee2991f46aa6b66f"
+    )
+    assert paired_reconciliation().digest == (
+        "004de0b662adbec4c10bd90cd76eb17cd962fb912056ab2148e2f016677b4cf0"
+    )
+
+
+def test_contract_is_execution_inert():
+    with pytest.raises(RuntimeError, match="do not authorize"):
+        require_execution_authority()

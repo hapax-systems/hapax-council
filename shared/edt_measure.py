@@ -55,7 +55,9 @@ from pydantic import BaseModel, ConfigDict
 from shared.dispatcher_policy import DimensionalScore, _dimension_score
 from shared.platform_capability_receipts import EvidenceStatus, PlatformCapabilityReceipt
 from shared.platform_capability_registry import (
+    CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER,
     REQUIRED_ROUTE_IDS,
+    ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS,
     AuthorityCeiling,
     CapacityPool,
     DescriptorVariant,
@@ -579,7 +581,12 @@ def _removable_quota_reasons(route: PlatformCapabilityRoute) -> frozenset[str]:
     """Mirror of ``_quota_unobservable_removable_reasons``: the blocked_reasons the upstream overlay
     is allowed to clear given a quota-unobservable receipt. A route blocked for ANY OTHER reason
     stays blocked — the quota path must not unblock it."""
-    reasons = {"account_live_quota_receipt_absent", "quota_telemetry_unknown"}
+    reasons = {"quota_telemetry_unknown"}
+    if (
+        ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS.get(route.route_id)
+        != CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER
+    ):
+        reasons.add("account_live_quota_receipt_absent")
     if route.capacity_pool in {CapacityPool.API_PAID_SPEND, CapacityPool.BOOTSTRAP_BUDGET}:
         reasons.add("provider_budget_receipt_absent")
     return frozenset(reasons)

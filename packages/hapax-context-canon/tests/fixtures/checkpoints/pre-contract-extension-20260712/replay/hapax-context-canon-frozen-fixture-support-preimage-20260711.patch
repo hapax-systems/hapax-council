@@ -1,0 +1,1017 @@
+diff --git a/config/compression-surface-registry.yaml b/config/compression-surface-registry.yaml
+index 7fd352ca1f1eb734644e72c2a0d44da614bd68bd..81f81056fc086ac5a6f4623884320e7fcd0ee9b2 100644
+--- a/config/compression-surface-registry.yaml
++++ b/config/compression-surface-registry.yaml
+@@ -88,6 +88,14 @@ surfaces:
+     max_ratio: 0.40
+     alert_threshold: 0.80
+     route_constraint: any
++  coordination_canon:
++    tier: lossless_only
++    codec: toon
++    headroom_enabled: false
++    max_ratio: 1.00
++    floor: 1.00
++    alert_threshold: 1.00
++    route_constraint: any
+ 
+   # ── deny: NEVER compress — governance / consent / operator-speech / person-adjacent ────
+   imagination_thought:
+diff --git a/config/coordination-canon/source.yaml b/config/coordination-canon/source.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..bf0e9f039deeafe913dae6df73a24a86a804ecdd
+--- /dev/null
++++ b/config/coordination-canon/source.yaml
+@@ -0,0 +1,336 @@
++schema: hapax.coordination-canon.source.v1
++canon_version: 1
++domain: sdlc
++generator_version: hapax.session-context-canon.v1
++projection_algorithm: hapax.sdlc-forward-cone.v1
++encoder_id: python-toon@0.1.3
++reference_tokenizer_id: hapax.ascii-lexeme.v1
++wire_contract:
++  kind: context_bundle
++  sha256: 8204a2b2804aa41ac95f75414b58fa88ae1e76a48e6ef731807f544f4148fbd9
++  fsm_fields: [what, how, must]
++atoms:
++  - id: what.grounding.stage-vocabulary
++    ordinal: 10
++    stratum: what
++    content: S0 S1 S2 S3 S3_5 S4 S5 S6 S7 S8 S9 S10 S11 BLOCKED
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [docs/formal/sdlc-stage-metadata.yaml, docs/formal/sdlc-ladder.tla]
++  - id: what.grounding.disconfirmation-repair
++    ordinal: 20
++    stratum: what
++    content: "S3 -> S3_5; S3_5 -> {S4, S0}"
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [docs/formal/sdlc-stage-metadata.yaml, docs/formal/sdlc-ladder.tla]
++  - id: what.grounding.blocked-repair
++    ordinal: 30
++    stratum: what
++    content: "Fall(nonterminal, nonblocked) -> BLOCKED; S6 -> BLOCKED; S7 -> BLOCKED; BLOCKED -> {S6, S0}"
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [docs/formal/sdlc-stage-metadata.yaml, docs/formal/sdlc-ladder.tla]
++  - id: must.coordinator-engagement
++    ordinal: 100
++    stratum: must
++    content: >-
++      The single coordinating session MUST dispatch appropriate slices and MAY do support mutations,
++      but must NEVER operate outside the SDLC + capability surface.
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
++  - id: must.raw-prose-gate
++    ordinal: 110
++    stratum: must
++    content: Operator prose, relay notes, dashboards, terminal paste, and session memory are intake, not implementation authority.
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [AGENTS.md]
++  - id: must.scope-mask-before-objective
++    ordinal: 120
++    stratum: must
++    content: NEVER unions and ONLY intersects across scope; malformed or missing constraints fail-closed before routing objective evaluation.
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
++  - id: must.authorization-absence
++    ordinal: 130
++    stratum: must
++    content: An absent *_authorized flag means not authorized.
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [hooks/scripts/cc-task-gate.impl.sh]
++  - id: must.binding-vocabulary
++    ordinal: 140
++    stratum: must
++    content: cc-task AuthorityCase mutation_scope_refs route_id NEVER ONLY fail-closed governed-override-not-bypass
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [AGENTS.md, hooks/scripts/cc-task-gate.impl.sh]
++  - id: must.grounding.authorization-vocabulary
++    ordinal: 145
++    stratum: must
++    content: axiom_mutation_authorized decision_minting_authorized docs_mutation_authorized implementation_authorized provider_spend_authorized public_current release_authorized runtime_mutation_authorized source_mutation_authorized vault_mutation_authorized
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [shared/coord_projection.py, hooks/scripts/cc-task-gate.impl.sh]
++  - id: must.grounding.gate-verdict-vocabulary
++    ordinal: 146
++    stratum: must
++    content: pass refuse BLOCKED
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
++  - id: must.grounding.atomic-position-vocabulary
++    ordinal: 147
++    stratum: must
++    content: task_id stage_token legal_successors authority_case authorized_flags mutation_scope_refs claim_identity route_decision canon_hash canon_version canon_level effective_constraint_digest impingement_hash portal_set receipt_lineage
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/20-projects/hapax-cc-tasks/active/cc-task-sdlc-fsm-canon-impingement-lockstep-bootstrap-20260710.md]
++  - id: must.gate-is-authority
++    ordinal: 150
++    stratum: must
++    content: The canon informs and the external gate enforces; injected prose never substitutes for claim, scope, route, mutation, transition, or close admission.
++    grounding: false
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
++  - id: must.no-silent-downgrade
++    ordinal: 160
++    stratum: must
++    content: Missing, stale, malformed, mismatched, or below-floor context refuses the action with a typed repair path; it never becomes an empty or unconstrained default.
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
++  - id: must.atomic-position-chain
++    ordinal: 170
++    stratum: must
++    content: Task, claim, relay, receipt, FSM position, canon, and impingement hashes must describe one current position before a protected action can proceed.
++    grounding: false
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/20-projects/hapax-cc-tasks/active/cc-task-sdlc-fsm-canon-impingement-lockstep-bootstrap-20260710.md]
++  - id: must.escape-grant
++    ordinal: 180
++    stratum: must
++    content: EscapeGrant is explicit, receipted, reversible, and cannot suppress the position, canon, or impingement record.
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [docs/formal/sdlc-stage-metadata.yaml]
++  - id: must.transition-reconsult
++    ordinal: 190
++    stratum: must
++    content: At pi2 or pi3, re-consult and re-emit the successor state slice atomically at every FSM transition.
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
++  - id: must.singleton-lease
++    ordinal: 200
++    stratum: must
++    content: One session holds one active cc-task lease; no pool self-claim and no bulk claim.
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [AGENTS.md]
++  - id: must.reins-never-authority
++    ordinal: 210
++    stratum: must
++    content: Reins is a readout and demand-shape projection; an affordance, projection, or freshness signal never grants execution authority.
++    grounding: false
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/shared-demand-shape-contract-2026-07-03.md]
++  - id: must.inv1-deadlock-freedom
++    ordinal: 220
++    stratum: must
++    content: "INV-1: every non-terminal stage has at least one outgoing transition."
++    grounding: false
++    applies_to: ["*"]
++    source_refs: [shared/sdlc_invariants.py, docs/formal/sdlc-ladder.tla]
++  - id: must.inv2-liveness
++    ordinal: 230
++    stratum: must
++    content: "INV-2: every claimed task eventually reaches a terminal stage or is explicitly reported stuck."
++    grounding: false
++    applies_to: ["*"]
++    source_refs: [shared/sdlc_invariants.py, docs/formal/sdlc-ladder.tla]
++  - id: must.inv3-escape
++    ordinal: 240
++    stratum: must
++    content: "INV-3: every BLOCKED state has an operator escape transition out."
++    grounding: false
++    applies_to: ["*"]
++    source_refs: [shared/sdlc_invariants.py, docs/formal/sdlc-ladder.tla]
++  - id: must.inv4-authority-escapable
++    ordinal: 250
++    stratum: must
++    content: "INV-4: escape never depends on the process it governs."
++    grounding: false
++    applies_to: ["*"]
++    source_refs: [shared/sdlc_invariants.py]
++  - id: must.inv5-cognition-writable
++    ordinal: 260
++    stratum: must
++    content: "INV-5: a blocked lane can always write its cognition surfaces."
++    grounding: false
++    applies_to: ["*"]
++    source_refs: [shared/sdlc_invariants.py]
++  - id: must.off-limits-surface-principle
++    ordinal: 270
++    stratum: must
++    content: Off-limits surfaces narrow authority; a carrier-specific list is delta and absence never broadens scope.
++    grounding: false
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
++  - id: must.canon-echo-repair
++    ordinal: 280
++    stratum: must
++    content: Canon echo absence or mismatch permits one same-level reinjection; a second failure means BLOCKED with canon_echo_failed.
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
++  - id: must.impingement-offer-plane
++    ordinal: 290
++    stratum: must
++    content: An orienting portal is pull-only and non-consumption is conformant; it never grants authority, satisfies a MUST, or weakens a MUST.
++    grounding: false
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/20-projects/hapax-cc-tasks/active/cc-task-sdlc-fsm-canon-impingement-lockstep-bootstrap-20260710.md]
++  - id: must.lockstep-protected-actions
++    ordinal: 300
++    stratum: must
++    content: claim dispatch transition mutation close acceptance require one fresh matching position canon impingement task authority scope claim route receipt chain; absence staleness or mismatch means refuse.
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/20-projects/hapax-cc-tasks/active/cc-task-sdlc-fsm-canon-impingement-lockstep-bootstrap-20260710.md]
++  - id: must.lossless-canon
++    ordinal: 310
++    stratum: must
++    content: Canon content permits only byte-preserving or bijective lossless recoding; soft or embedding compression is forbidden.
++    grounding: false
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
++  - id: must.pi-floor-mask-before-objective
++    ordinal: 320
++    stratum: must
++    content: A leaf below the measured pi3 floor is inadmissible and masked before routing objective evaluation.
++    grounding: false
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
++  - id: must.canon-before-prune
++    ordinal: 330
++    stratum: must
++    content: Build, inject, and verify a passing canon echo per participating leaf before pruning onboard canon prose.
++    grounding: false
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
++  - id: must.conformance-before-dispatch
++    ordinal: 340
++    stratum: must
++    content: No leaf receives dispatched SDLC work before its canon level and retention are measured and conformant.
++    grounding: false
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
++  - id: must.two-kernel-separation
++    ordinal: 350
++    stratum: must
++    content: Canon obligation-plane fidelity and orienting offer-plane decision-regret are separate kernels and neither substitutes for the other.
++    grounding: false
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/fsm-session-context-what-how-must-canon-v2-2026-07-02.md]
++  - id: must.source-admission-before-derivation
++    ordinal: 360
++    stratum: must
++    content: Every derivation fact estimate signal lens constellation or learning receipt must trace to an admitted source; AIR joins every dependency before count sort relation aggregation utility or rendering.
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/convergence-first-init-recursive-onboarding-throughline-2026-07-10.md]
++  - id: must.orthogonal-context-coordinates
++    ordinal: 370
++    stratum: must
++    content: Scope lifecycle position temporal scale temporal tense semantic resolution environment scope audience and purpose remain independent; surprise is a signal estimate and never a temporal axis.
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/convergence-first-init-recursive-onboarding-throughline-2026-07-10.md]
++  - id: must.signal-estimate-offer-separation
++    ordinal: 380
++    stratum: must
++    content: A SignalEstimate is evidence-derived state; an OrientingSignal is a no-effect attention offer bound to estimates lens constellation position and optional portal; neither may authorize.
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/convergence-first-init-recursive-onboarding-throughline-2026-07-10.md]
++  - id: must.constraint-mask-before-signal-utility
++    ordinal: 390
++    stratum: must
++    content: A signal lens applies the exact constraint mask before utility weighting or constellation formation; no score signal or pickup can weaken WHAT MUST authority or admission.
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/convergence-first-init-recursive-onboarding-throughline-2026-07-10.md]
++  - id: must.learning-receipt-specificity
++    ordinal: 400
++    stratum: must
++    content: A learning update requires exposure candidate set selection policy propensity action outcome effect cost witnesses receipt correction and exactly one named update target.
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/convergence-first-init-recursive-onboarding-throughline-2026-07-10.md]
++  - id: must.context-action-lifecycle-admission
++    ordinal: 410
++    stratum: must
++    content: Every lifecycle operation or transition shown as an action binds the exact current position and matching lifecycle admission; unavailable evidence or authority cannot render the action legal.
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/convergence-first-init-recursive-onboarding-throughline-2026-07-10.md]
++  - id: must.projection-loss-manifest
++    ordinal: 420
++    stratum: must
++    content: Every projection carries one content-addressed static field mapping and exhaustive omission manifest plus a deny-oblivious instance loss receipt; hashes prove structure not producer authenticity.
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/convergence-first-init-recursive-onboarding-throughline-2026-07-10.md]
++  - id: must.provenance-kind-source-binding
++    ordinal: 430
++    stratum: must
++    content: Every fact provenance kind must be admitted by each direct source class or be explicitly derived; constitutional provenance requires constitutional evidence and stipulation or consent requires its typed position receipt.
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [/home/hapax/Documents/Personal/30-areas/hapax/convergence-first-init-recursive-onboarding-throughline-2026-07-10.md]
++  - id: how.command-paths
++    ordinal: 500
++    stratum: how
++    content: scripts/hapax-methodology-dispatch scripts/cc-claim scripts/cc-close scripts/cc-stage-advance
++    grounding: true
++    applies_to: ["*"]
++    source_refs: [AGENTS.md]
++  - id: how.intake-and-formation
++    ordinal: 510
++    stratum: how
++    content: Materialize the task note, research anchors, design failure predicates, review synthesis, acceptance record, and implementation authorization in stage order.
++    grounding: false
++    applies_to: [S0, S1, S2, S3, S3_5, S4, S5]
++    source_refs: [docs/formal/sdlc-stage-metadata.yaml]
++  - id: how.scoped-source-mutation
++    ordinal: 520
++    stratum: how
++    content: Claim the exact task, mutate only declared mutation_scope_refs, run declared quality gates, and append evidence without rewriting history.
++    grounding: false
++    applies_to: [S6, S7, S8, S9, S10]
++    source_refs: [hooks/scripts/cc-task-gate.impl.sh]
++  - id: how.relay-and-receipt
++    ordinal: 530
++    stratum: how
++    content: Report the current position and evidence through the existing relay and receipt ledger; retain exact task, route, canon, and claim identifiers.
++    grounding: false
++    applies_to: ["*"]
++    source_refs: [shared/relay_mq.py]
++  - id: how.blocked-repair
++    ordinal: 540
++    stratum: how
++    content: Record blocked_reason, blocked_witness, and relay_receipt; resume only through a valid operator escape to S6 or S0.
++    grounding: false
++    applies_to: [BLOCKED]
++    source_refs: [docs/formal/sdlc-stage-metadata.yaml]
++  - id: how.close
++    ordinal: 550
++    stratum: how
++    content: Validate production and acceptance evidence, prepare closure receipts, then use cc-close only when S10 guards are satisfied.
++    grounding: false
++    applies_to: [S9, S10, S11]
++    source_refs: [scripts/cc-close, scripts/cc-close-acceptance-receipt-check.py]
+diff --git a/docs/formal/sdlc-stage-metadata.yaml b/docs/formal/sdlc-stage-metadata.yaml
+index 15f52eff2b030aa7da0a66f6fd792300b9612641..35e7d4aa340f237b8616f464ed4fdac83ed11f40 100644
+--- a/docs/formal/sdlc-stage-metadata.yaml
++++ b/docs/formal/sdlc-stage-metadata.yaml
+@@ -1,4 +1,4 @@
+-schema: hapax.sdlc-stage-metadata.v1
++schema: hapax.sdlc-stage-metadata.v2
+ formal_model: docs/formal/sdlc-ladder.tla
+ edge_classes:
+   next: TLA Next(s), including BLOCKED escape edges
+@@ -16,12 +16,14 @@ stages:
+     operation_admissions: []
+     next:
+       - to: S1
++        projection_role: advance
+         authority_capability: coord.case.advance
+         guards: [cc_task_shape_valid, parent_spec_present, authority_case_present]
+         actions: [append_stage_transition, begin_research]
+         enforcement: declared
+     fall:
+       - to: BLOCKED
++        projection_role: repair
+         authority_capability: system.gate.refusal
+         guards: [gate_refused]
+         actions: [record_blocker_report, append_stage_transition]
+@@ -38,12 +40,14 @@ stages:
+     operation_admissions: []
+     next:
+       - to: S2
++        projection_role: advance
+         authority_capability: coord.case.advance
+         guards: [research_anchors_present]
+         actions: [append_stage_transition, begin_design]
+         enforcement: declared
+     fall:
+       - to: BLOCKED
++        projection_role: repair
+         authority_capability: system.gate.refusal
+         guards: [gate_refused]
+         actions: [record_blocker_report, append_stage_transition]
+@@ -60,12 +64,14 @@ stages:
+     operation_admissions: []
+     next:
+       - to: S3
++        projection_role: advance
+         authority_capability: coord.case.advance
+         guards: [standards_present, failure_predicates_present, frontier_review_floor_declared]
+         actions: [append_stage_transition, begin_review]
+         enforcement: declared
+     fall:
+       - to: BLOCKED
++        projection_role: repair
+         authority_capability: system.gate.refusal
+         guards: [gate_refused]
+         actions: [record_blocker_report, append_stage_transition]
+@@ -82,17 +88,20 @@ stages:
+     operation_admissions: []
+     next:
+       - to: S4
++        projection_role: advance
+         authority_capability: coord.case.advance
+         guards: [disconfirmation_not_selected]
+         actions: [append_stage_transition, begin_acceptance]
+         enforcement: declared
+       - to: S3_5
++        projection_role: branch
+         authority_capability: coord.case.advance
+         guards: [disconfirmation_selected]
+         actions: [append_stage_transition, begin_disconfirmation]
+         enforcement: declared
+     fall:
+       - to: BLOCKED
++        projection_role: repair
+         authority_capability: system.gate.refusal
+         guards: [gate_refused]
+         actions: [record_blocker_report, append_stage_transition]
+@@ -109,17 +118,20 @@ stages:
+     operation_admissions: []
+     next:
+       - to: S4
++        projection_role: advance
+         authority_capability: coord.case.advance
+         guards: [disconfirmation_allows_advance]
+         actions: [append_stage_transition, begin_acceptance]
+         enforcement: declared
+       - to: S0
++        projection_role: repair
+         authority_capability: coord.case.advance
+         guards: [disconfirmation_requires_restart]
+         actions: [append_stage_transition, restart_intake]
+         enforcement: declared
+     fall:
+       - to: BLOCKED
++        projection_role: repair
+         authority_capability: system.gate.refusal
+         guards: [gate_refused]
+         actions: [record_blocker_report, append_stage_transition]
+@@ -136,12 +148,14 @@ stages:
+     operation_admissions: []
+     next:
+       - to: S5
++        projection_role: advance
+         authority_capability: coord.case.advance
+         guards: [formation_records_present, plan_accepted]
+         actions: [append_stage_transition, begin_implementation_authorization]
+         enforcement: declared
+     fall:
+       - to: BLOCKED
++        projection_role: repair
+         authority_capability: system.gate.refusal
+         guards: [gate_refused]
+         actions: [record_blocker_report, append_stage_transition]
+@@ -158,12 +172,14 @@ stages:
+     operation_admissions: []
+     next:
+       - to: S6
++        projection_role: advance
+         authority_capability: coord.case.advance
+         guards: [authority_case_granted, evidence_collection_plan_present, implementation_authorized]
+         actions: [append_stage_transition, begin_implementation]
+         enforcement: declared
+     fall:
+       - to: BLOCKED
++        projection_role: repair
+         authority_capability: system.gate.refusal
+         guards: [gate_refused]
+         actions: [record_blocker_report, append_stage_transition]
+@@ -190,17 +206,20 @@ stages:
+         enforcement_ref: hooks/scripts/cc-task-gate.impl.sh
+     next:
+       - to: S7
++        projection_role: advance
+         authority_capability: coord.case.advance
+         guards: [implementation_complete, evidence_present]
+         actions: [append_stage_transition, begin_runtime_verification]
+         enforcement: declared
+       - to: BLOCKED
++        projection_role: repair
+         authority_capability: system.gate.refusal
+         guards: [implementation_gate_refused]
+         actions: [record_blocker_report, append_stage_transition]
+         enforcement: declared
+     fall:
+       - to: BLOCKED
++        projection_role: repair
+         authority_capability: system.gate.refusal
+         guards: [gate_refused]
+         actions: [record_blocker_report, append_stage_transition]
+@@ -228,17 +247,20 @@ stages:
+         enforcement_ref: hooks/scripts/cc-task-gate.impl.sh
+     next:
+       - to: S8
++        projection_role: advance
+         authority_capability: coord.case.advance
+         guards: [live_witness_present, release_authorized]
+         actions: [append_stage_transition, begin_release]
+         enforcement: declared
+       - to: BLOCKED
++        projection_role: repair
+         authority_capability: system.gate.refusal
+         guards: [runtime_gate_refused]
+         actions: [record_blocker_report, append_stage_transition]
+         enforcement: declared
+     fall:
+       - to: BLOCKED
++        projection_role: repair
+         authority_capability: system.gate.refusal
+         guards: [gate_refused]
+         actions: [record_blocker_report, append_stage_transition]
+@@ -265,12 +287,14 @@ stages:
+         enforcement_ref: hooks/scripts/cc-task-gate.impl.sh
+     next:
+       - to: S9
++        projection_role: advance
+         authority_capability: coord.case.advance
+         guards: [pr_merged]
+         actions: [append_stage_transition, begin_post_merge_verification]
+         enforcement: declared
+     fall:
+       - to: BLOCKED
++        projection_role: repair
+         authority_capability: system.gate.refusal
+         guards: [gate_refused]
+         actions: [record_blocker_report, append_stage_transition]
+@@ -297,12 +321,14 @@ stages:
+         enforcement_ref: hooks/scripts/cc-task-gate.impl.sh
+     next:
+       - to: S10
++        projection_role: advance
+         authority_capability: coord.case.advance
+         guards: [production_regression_witness_present, acceptance_receipt_valid]
+         actions: [append_stage_transition, begin_closure]
+         enforcement: declared
+     fall:
+       - to: BLOCKED
++        projection_role: repair
+         authority_capability: system.gate.refusal
+         guards: [gate_refused]
+         actions: [record_blocker_report, append_stage_transition]
+@@ -329,12 +355,14 @@ stages:
+         enforcement_ref: hooks/scripts/cc-task-gate.impl.sh
+     next:
+       - to: S11
++        projection_role: advance
+         authority_capability: coord.case.advance
+         guards: [closure_receipts_present, cc_close_ready]
+         actions: [append_stage_transition, close_task]
+         enforcement: declared
+     fall:
+       - to: BLOCKED
++        projection_role: repair
+         authority_capability: system.gate.refusal
+         guards: [gate_refused]
+         actions: [record_blocker_report, append_stage_transition]
+@@ -363,11 +391,13 @@ stages:
+     operation_admissions: []
+     next:
+       - to: S6
++        projection_role: repair
+         authority_capability: coord.grant.mint
+         guards: [escape_grant_valid, resume_authorized]
+         actions: [record_escape_grant, append_stage_transition, resume_implementation]
+         enforcement: declared
+       - to: S0
++        projection_role: repair
+         authority_capability: coord.grant.mint
+         guards: [escape_grant_valid, restart_authorized]
+         actions: [record_escape_grant, append_stage_transition, restart_intake]
+diff --git a/shared/compression/registry.py b/shared/compression/registry.py
+index 8c19803a0109063e2400e72fd70fa2c4ca40fcf8..230170d60a737f20e5baa4c3a7b5d2d4c42d4b3c 100644
+--- a/shared/compression/registry.py
++++ b/shared/compression/registry.py
+@@ -20,7 +20,9 @@ from __future__ import annotations
+ 
+ import enum
+ import functools
++import math
+ from dataclasses import dataclass
++from importlib import resources
+ from pathlib import Path
+ 
+ import yaml
+@@ -31,6 +33,7 @@ __all__ = [
+     "SurfaceSpec",
+     "RegistryError",
+     "DENY_DEFAULT",
++    "parse_registry",
+     "load_registry",
+     "get_surface_spec",
+ ]
+@@ -91,15 +94,80 @@ DENY_DEFAULT = SurfaceSpec(
+ )
+ 
+ _PROTECTED_TIERS = (Tier.DENY, Tier.HOT_PATH)
++_SURFACE_FIELDS = {
++    "alert_threshold",
++    "codec",
++    "floor",
++    "headroom_enabled",
++    "max_ratio",
++    "route_constraint",
++    "tier",
++}
++
++
++class _UniqueKeyLoader(yaml.SafeLoader):
++    """Safe YAML loader that rejects last-wins duplicate mappings."""
++
++
++def _construct_unique_mapping(
++    loader: _UniqueKeyLoader, node: yaml.MappingNode, deep: bool = False
++) -> dict[object, object]:
++    mapping: dict[object, object] = {}
++    for key_node, value_node in node.value:
++        key = loader.construct_object(key_node, deep=deep)
++        try:
++            duplicate = key in mapping
++        except TypeError as exc:
++            raise RegistryError("compression registry mapping keys MUST be scalar") from exc
++        if duplicate:
++            raise RegistryError(f"compression registry duplicate YAML key: {key}")
++        mapping[key] = loader.construct_object(value_node, deep=deep)
++    return mapping
++
++
++_UniqueKeyLoader.add_constructor(
++    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping
++)
++
++
++def _strict_unit_float(raw: dict, field: str, default: float) -> float:
++    value = raw.get(field, default)
++    if isinstance(value, bool) or not isinstance(value, (int, float)):
++        raise RegistryError(f"surface numeric field {field!r} MUST be a number")
++    result = float(value)
++    if not math.isfinite(result) or not 0.0 <= result <= 1.0:
++        raise RegistryError(f"surface numeric field {field!r} MUST be within [0, 1]")
++    return result
+ 
+ 
+ def _build_spec(surface: str, raw: dict) -> SurfaceSpec:
++    unknown_fields = set(raw) - _SURFACE_FIELDS
++    if unknown_fields:
++        raise RegistryError(f"surface {surface!r}: unknown fields {sorted(unknown_fields)!r}")
++    raw_tier = raw.get("tier")
++    if not isinstance(raw_tier, str):
++        raise RegistryError(f"surface {surface!r}: invalid/missing tier")
+     try:
+-        tier = Tier(raw["tier"])
+-    except (KeyError, ValueError) as exc:
++        tier = Tier(raw_tier)
++    except ValueError as exc:
+         raise RegistryError(f"surface {surface!r}: invalid/missing tier") from exc
+-    codec = Codec(raw.get("codec", "passthrough"))
+-    headroom = bool(raw.get("headroom_enabled", False))
++    raw_codec = raw.get("codec", "passthrough")
++    if not isinstance(raw_codec, str):
++        raise RegistryError(f"surface {surface!r}: codec MUST be a string")
++    try:
++        codec = Codec(raw_codec)
++    except ValueError as exc:
++        raise RegistryError(f"surface {surface!r}: codec is invalid") from exc
++    headroom = raw.get("headroom_enabled", False)
++    if not isinstance(headroom, bool):
++        raise RegistryError(f"surface {surface!r}: headroom_enabled MUST be boolean")
++    route_constraint = raw.get("route_constraint", "any")
++    if (
++        not isinstance(route_constraint, str)
++        or not route_constraint.strip()
++        or route_constraint != route_constraint.strip()
++    ):
++        raise RegistryError(f"surface {surface!r}: route_constraint MUST be nonblank")
+ 
+     # Fail-closed structural invariants.
+     if tier in _PROTECTED_TIERS:
+@@ -118,25 +186,70 @@ def _build_spec(surface: str, raw: dict) -> SurfaceSpec:
+         tier=tier,
+         codec=codec,
+         headroom_enabled=headroom,
+-        max_ratio=float(raw.get("max_ratio", 1.0)),
+-        floor=float(raw.get("floor", 0.0)),
+-        alert_threshold=float(raw.get("alert_threshold", 1.0)),
+-        route_constraint=str(raw.get("route_constraint", "any")),
++        max_ratio=_strict_unit_float(raw, "max_ratio", 1.0),
++        floor=_strict_unit_float(raw, "floor", 0.0),
++        alert_threshold=_strict_unit_float(raw, "alert_threshold", 1.0),
++        route_constraint=route_constraint,
+     )
+ 
+ 
+-def load_registry(path: Path | None = None) -> dict[str, SurfaceSpec]:
+-    """Parse + validate the surface registry YAML into ``{surface: SurfaceSpec}``.
++def _read_registry(path: Path | None) -> str:
++    if path is not None:
++        try:
++            return path.read_text(encoding="utf-8")
++        except OSError as exc:
++            raise RegistryError(f"compression registry unreadable: {path}") from exc
++    if _REGISTRY_PATH.is_file():
++        return _read_registry(_REGISTRY_PATH)
++    packaged = resources.files("shared").joinpath("_data", "compression-surface-registry.yaml")
++    try:
++        return packaged.read_text(encoding="utf-8")
++    except OSError as exc:
++        raise RegistryError("packaged compression registry is missing or unreadable") from exc
++
++
++def parse_registry(raw_text: str) -> dict[str, SurfaceSpec]:
++    """Parse one already-read registry snapshot into ``{surface: SurfaceSpec}``.
+ 
+     Raises ``RegistryError`` on any fail-closed invariant violation.
+     """
+-    registry_path = path or _REGISTRY_PATH
+-    data = yaml.safe_load(registry_path.read_text(encoding="utf-8")) or {}
+-    default_tier = Tier(data.get("default_tier", "deny"))
++    try:
++        data = yaml.load(raw_text, Loader=_UniqueKeyLoader)
++    except yaml.YAMLError as exc:
++        raise RegistryError("compression registry YAML is malformed") from exc
++    if not isinstance(data, dict):
++        raise RegistryError("compression registry root MUST be a mapping")
++    if set(data) != {"version", "default_tier", "surfaces"}:
++        raise RegistryError(
++            "compression registry root requires only version, default_tier, and surfaces"
++        )
++    if type(data["version"]) is not int or data["version"] != 1:
++        raise RegistryError("compression registry version MUST be integer 1")
++    if not isinstance(data["default_tier"], str):
++        raise RegistryError("compression registry default_tier MUST be a string")
++    try:
++        default_tier = Tier(data.get("default_tier", "deny"))
++    except ValueError as exc:
++        raise RegistryError("compression registry default_tier is invalid") from exc
+     if default_tier is not Tier.DENY:
+         raise RegistryError("default_tier MUST be 'deny' (fail-closed)")
+-    surfaces = data.get("surfaces", {}) or {}
+-    return {name: _build_spec(name, raw or {}) for name, raw in surfaces.items()}
++    surfaces = data.get("surfaces", {})
++    if not isinstance(surfaces, dict):
++        raise RegistryError("compression registry surfaces MUST be a mapping")
++    result: dict[str, SurfaceSpec] = {}
++    for name, raw in surfaces.items():
++        if not isinstance(name, str) or not name.strip() or name != name.strip():
++            raise RegistryError("compression registry surface names MUST be nonblank strings")
++        if raw is not None and not isinstance(raw, dict):
++            raise RegistryError(f"surface {name!r}: definition MUST be a mapping")
++        result[name] = _build_spec(name, raw or {})
++    return result
++
++
++def load_registry(path: Path | None = None) -> dict[str, SurfaceSpec]:
++    """Read, parse, and validate the surface registry without fallback."""
++
++    return parse_registry(_read_registry(path))
+ 
+ 
+ @functools.lru_cache(maxsize=1)
+diff --git a/shared/sdlc_lifecycle.py b/shared/sdlc_lifecycle.py
+index 3e07e1dcc25539adbcee745a1ec8fc9fdc3cab44..8e4d99964ae3a3dbb2b3e4390bf8ae9ccc0ead13 100644
+--- a/shared/sdlc_lifecycle.py
++++ b/shared/sdlc_lifecycle.py
+@@ -555,6 +555,11 @@ _CANONICAL_STAGE_TOKENS = (
+     "S11",
+     "BLOCKED",
+ )
++_PROJECTION_ROLES = frozenset({"advance", "branch", "repair"})
++_REPAIR_ACTIONS = frozenset(
++    {"record_blocker_report", "record_escape_grant", "restart_intake", "resume_implementation"}
++)
++_BRANCH_ACTIONS = frozenset({"begin_disconfirmation"})
+ 
+ 
+ class StageMetadataError(ValueError):
+@@ -605,6 +610,7 @@ class StageEdgeMetadata:
+     """One typed normal, escape, or fall edge from the stage SSOT."""
+ 
+     to: str
++    projection_role: str
+     authority_capability: str
+     guards: tuple[str, ...]
+     actions: tuple[str, ...]
+@@ -759,7 +765,14 @@ def _edge_tuple(value: object, *, row: str, edge_class: str) -> tuple[StageEdgeM
+             )
+         _assert_exact_keys(
+             item,
+-            {"to", "authority_capability", "guards", "actions", "enforcement"},
++            {
++                "to",
++                "projection_role",
++                "authority_capability",
++                "guards",
++                "actions",
++                "enforcement",
++            },
+             optional={"enforcement_ref"},
+             row=edge_row,
+         )
+@@ -771,6 +784,37 @@ def _edge_tuple(value: object, *, row: str, edge_class: str) -> tuple[StageEdgeM
+                 edge_row,
+             )
+         destinations.add(destination)
++        projection_role = _required_string(item, "projection_role", row=edge_row)
++        if projection_role not in _PROJECTION_ROLES:
++            raise _metadata_error(
++                "stage_metadata_invalid_projection_role",
++                "use advance, branch, or repair",
++                edge_row,
++            )
++        actions = _string_tuple(
++            item.get("actions"), row=edge_row, field_name="actions", allow_empty=False
++        )
++        repair_marked = bool(set(actions) & _REPAIR_ACTIONS)
++        branch_marked = bool(set(actions) & _BRANCH_ACTIONS)
++        if repair_marked and branch_marked:
++            raise _metadata_error(
++                "stage_metadata_projection_action_conflict",
++                "declare an edge as repair or branch, never both",
++                edge_row,
++            )
++        expected_role = (
++            "repair"
++            if edge_class == "fall" or repair_marked
++            else "branch"
++            if branch_marked
++            else "advance"
++        )
++        if projection_role != expected_role:
++            raise _metadata_error(
++                "stage_metadata_projection_role_action_mismatch",
++                f"set projection_role to {expected_role} for the declared edge actions",
++                edge_row,
++            )
+         enforcement = _required_string(item, "enforcement", row=edge_row)
+         if enforcement not in {"declared", "enforced"}:
+             raise _metadata_error(
+@@ -791,15 +835,12 @@ def _edge_tuple(value: object, *, row: str, edge_class: str) -> tuple[StageEdgeM
+         edges.append(
+             StageEdgeMetadata(
+                 to=destination,
+-                authority_capability=_required_string(
+-                    item, "authority_capability", row=edge_row
+-                ),
++                projection_role=projection_role,
++                authority_capability=_required_string(item, "authority_capability", row=edge_row),
+                 guards=_string_tuple(
+                     item.get("guards"), row=edge_row, field_name="guards", allow_empty=False
+                 ),
+-                actions=_string_tuple(
+-                    item.get("actions"), row=edge_row, field_name="actions", allow_empty=False
+-                ),
++                actions=actions,
+                 enforcement=enforcement,
+                 enforcement_ref=enforcement_ref,
+             )
+@@ -908,9 +949,7 @@ def _parse_stage_row(payload: object, *, index: int) -> StageMetadata:
+         raise _metadata_error(
+             "stage_metadata_invalid_deliverable", "set deliverable to a mapping", token
+         )
+-    _assert_exact_keys(
+-        deliverable_payload, {"id", "required_fields"}, row=f"{token}.deliverable"
+-    )
++    _assert_exact_keys(deliverable_payload, {"id", "required_fields"}, row=f"{token}.deliverable")
+     terminal = payload.get("terminal")
+     blocked = payload.get("blocked")
+     if not isinstance(terminal, bool) or not isinstance(blocked, bool):
+@@ -995,10 +1034,11 @@ def _read_stage_metadata(path: Path | None) -> tuple[str, str]:
+         ) from exc
+ 
+ 
+-def load_sdlc_stage_metadata(path: Path | None = None) -> StageMetadataCatalog:
+-    """Load and strictly validate the canonical stage table without fallback."""
++def parse_sdlc_stage_metadata(
++    raw: str, *, source_label: str = "<stage-metadata-snapshot>"
++) -> StageMetadataCatalog:
++    """Parse and strictly validate one already-read stage-metadata snapshot."""
+ 
+-    raw, source_label = _read_stage_metadata(path)
+     try:
+         payload = yaml.load(raw, Loader=_UniqueKeyLoader)
+     except StageMetadataError:
+@@ -1011,14 +1051,12 @@ def load_sdlc_stage_metadata(path: Path | None = None) -> StageMetadataCatalog:
+         raise _metadata_error(
+             "stage_metadata_root_invalid", "make the YAML root a mapping", source_label
+         )
+-    _assert_exact_keys(
+-        payload, {"schema", "formal_model", "edge_classes", "stages"}, row="root"
+-    )
++    _assert_exact_keys(payload, {"schema", "formal_model", "edge_classes", "stages"}, row="root")
+     schema = payload.get("schema")
+-    if schema != "hapax.sdlc-stage-metadata.v1":
++    if schema != "hapax.sdlc-stage-metadata.v2":
+         raise _metadata_error(
+             "stage_metadata_schema_unknown",
+-            "set schema to hapax.sdlc-stage-metadata.v1",
++            "set schema to hapax.sdlc-stage-metadata.v2",
+             str(schema or "<missing>"),
+         )
+     if payload.get("formal_model") != "docs/formal/sdlc-ladder.tla":
+@@ -1072,9 +1110,7 @@ def load_sdlc_stage_metadata(path: Path | None = None) -> StageMetadataCatalog:
+             )
+         for alias in declared_aliases:
+             alias_match = STAGE_RE.fullmatch(alias)
+-            special_owner = {"S3.5": "S3_5", "S3_5": "S3_5", "BLOCKED": "BLOCKED"}.get(
+-                alias
+-            )
++            special_owner = {"S3.5": "S3_5", "S3_5": "S3_5", "BLOCKED": "BLOCKED"}.get(alias)
+             if alias_match is None and special_owner is None:
+                 raise _metadata_error(
+                     "stage_metadata_alias_shape_invalid",
+@@ -1128,6 +1164,27 @@ def load_sdlc_stage_metadata(path: Path | None = None) -> StageMetadataCatalog:
+                 "give BLOCKED escape next edges and no fall edges",
+                 stage.token,
+             )
++        if any(edge.projection_role != "repair" for edge in stage.fall_edges):
++            raise _metadata_error(
++                "stage_metadata_fall_projection_role_invalid",
++                "mark every fall edge as repair",
++                stage.token,
++            )
++        if stage.blocked and any(edge.projection_role != "repair" for edge in stage.next_edges):
++            raise _metadata_error(
++                "stage_metadata_escape_projection_role_invalid",
++                "mark every BLOCKED escape edge as repair",
++                stage.token,
++            )
++        if any(
++            edge.to == blocked_token and edge.projection_role != "repair"
++            for edge in stage.next_edges
++        ):
++            raise _metadata_error(
++                "stage_metadata_blocked_projection_role_invalid",
++                "mark every next edge to BLOCKED as repair",
++                stage.token,
++            )
+         if not stage.terminal and not stage.blocked and not stage.next_edges:
+             raise _metadata_error(
+                 "stage_metadata_nonterminal_dead_end",
+@@ -1148,6 +1205,33 @@ def load_sdlc_stage_metadata(path: Path | None = None) -> StageMetadataCatalog:
+                     f"give {stage.token} exactly one fall edge to {blocked_token}",
+                     stage.token,
+                 )
++
++    projection_graph = {
++        stage.token: tuple(
++            edge.to for edge in stage.next_edges if edge.projection_role in {"advance", "branch"}
++        )
++        for stage in stages
++    }
++    visiting: set[str] = set()
++    visited: set[str] = set()
++
++    def visit_projection(token: str) -> None:
++        if token in visiting:
++            raise _metadata_error(
++                "stage_metadata_projection_cycle",
++                "mark restart or escape edges as repair so state-cone traversal is acyclic",
++                token,
++            )
++        if token in visited:
++            return
++        visiting.add(token)
++        for destination in projection_graph[token]:
++            visit_projection(destination)
++        visiting.remove(token)
++        visited.add(token)
++
++    for token in tokens:
++        visit_projection(token)
+     return StageMetadataCatalog(
+         schema=str(schema),
+         stages=stages,
+@@ -1156,6 +1240,13 @@ def load_sdlc_stage_metadata(path: Path | None = None) -> StageMetadataCatalog:
+     )
+ 
+ 
++def load_sdlc_stage_metadata(path: Path | None = None) -> StageMetadataCatalog:
++    """Read and validate the canonical stage table without fallback."""
++
++    raw, source_label = _read_stage_metadata(path)
++    return parse_sdlc_stage_metadata(raw, source_label=source_label)
++
++
+ SDLC_STAGE_METADATA = load_sdlc_stage_metadata()
+ 
+ 
+@@ -1175,9 +1266,7 @@ def stage_token(raw: str) -> str:
+     folded = {alias.casefold(): alias for alias in SDLC_STAGE_METADATA.alias_to_token}
+     if candidate.casefold() in folded:
+         canonical = folded[candidate.casefold()]
+-        raise _metadata_error(
+-            "stage_case_drift", f"use exact case: {canonical}", candidate
+-        )
++        raise _metadata_error("stage_case_drift", f"use exact case: {canonical}", candidate)
+     if STAGE_RE.fullmatch(candidate):
+         raise _metadata_error(
+             "stage_alias_unknown",

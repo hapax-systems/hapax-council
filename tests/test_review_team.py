@@ -274,16 +274,17 @@ class TestLensRegistry:
     def test_claude_family_forces_bare_fence_output(self) -> None:
         """Claude (a reasoning model) must be given a bare-fence output directive,
         or it prepends prose and the strict dossier parser discards its verdict as
-        invalid-output (a lost vote — PR #4119 rounds 6-8). It carries the same
-        no-prose contract gemini gets, delivered via --append-system-prompt."""
+        invalid-output (a lost vote). The wrapper owns the no-prose contract,
+        model pin, and tool denial so the registry does not carry a raw CLI."""
         roster = _registry()["families"]
         claude = next(entry for entry in roster if entry["family"] == "claude")
         cmd = claude["reviewer_command"]
-        assert "--append-system-prompt" in cmd, "claude needs a system-prompt directive"
-        command = " ".join(str(part) for part in cmd)
-        # the directive must demand a single bare yaml fence with no prose
-        assert "one fenced yaml code block" in command
-        assert "invalid-output" in command  # states the consequence
+        assert cmd == ["scripts/hapax-claude-reviewer"]
+        wrapper = (REPO_ROOT / "scripts" / "hapax-claude-reviewer").read_text(encoding="utf-8")
+        assert 'PINNED_REVIEW_MODEL = "opus"' in wrapper
+        assert '"--allowedTools"' in wrapper
+        assert "exactly one fenced yaml" in wrapper
+        assert "invalid-output" in wrapper
 
     def test_surface_rows_cover_spec_table(self) -> None:
         reg = _registry()
@@ -604,9 +605,54 @@ class TestConstitution:
             entry["family"] for entry in reg["families"]
         ]
         assert rt.review_family_route_ids(reg) == {
+            "claude": "claude.review.opus",
             "gemini": "agy.review.direct",
             "glm": "glmcp.review.direct",
         }
+
+    def test_route_backed_reviewer_commands_resolve_to_executable_wrappers(self) -> None:
+        rt = _load_review_team_module()
+        entries = rt.review_family_entries(_registry())
+
+        for entry in entries:
+            if not entry.get("route_id"):
+                continue
+            command = entry.get("reviewer_command") or []
+            assert command, entry
+            wrapper = REPO_ROOT / command[0]
+            assert wrapper.is_file(), entry
+            assert os.access(wrapper, os.X_OK), entry
+
+    def test_claude_review_route_blocks_claude_until_receipts_are_fresh(self) -> None:
+        rt = _load_review_team_module()
+        reg = _registry()
+        platform_registry = rt.PlatformCapabilityRegistry.model_validate(
+            _platform_registry_payload()
+        )
+
+        blocked = rt.review_route_blocked_families(reg, platform_registry=platform_registry)
+
+        assert "claude" in blocked
+        assert any(
+            "claude_review_seat_receipt_admission_required" in reason
+            for reason in blocked["claude"]
+        )
+        assert any(
+            "claude_review_route_specific_quota_receipt_absent" in reason
+            for reason in blocked["claude"]
+        )
+
+    def test_admitted_claude_review_route_keeps_claude_family_available(self) -> None:
+        rt = _load_review_team_module()
+        reg = _registry()
+        payload = _platform_registry_payload()
+        route = next(row for row in payload["routes"] if row["route_id"] == "claude.review.opus")
+        _mark_route_fresh(route)
+        platform_registry = rt.PlatformCapabilityRegistry.model_validate(payload)
+
+        blocked = rt.review_route_blocked_families(reg, platform_registry=platform_registry)
+
+        assert "claude" not in blocked
 
     def test_t2_team_can_seat_glm_as_independent_family(self) -> None:
         rt = _load_review_team_module()
@@ -1227,6 +1273,93 @@ class TestVerdictBlockers:
             "task_scoped_paid_review_route_blocked_families",
             lambda registry, route_blocked, task_ids, *, now=None: {
                 "glm": ("glmcp.review.direct:task_scoped_paid_spend_gate:other_state",)
+            },
+        )
+
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+        )
+
+        assert "review_dossier_route_block_degradation_reason_mismatch:glm" in blockers
+
+    def test_route_block_reason_subset_does_not_mismatch_on_drift(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The anti-fraud intent is subset, not equality: a dossier whose recorded reasons are
+        all still live is honest, even when the live set grew between dispatch and evaluation
+        (receipt freshness is volatile state)."""
+        rt = _load_review_team_module()
+        notes = (
+            "degraded_family_route_blocked:glm",
+            "route_blocked_family_reason:glm:glmcp.review.direct:"
+            "task_scoped_paid_spend_gate:refused_exhausted_budget",
+            "degraded_to:t2_standard",
+            "post_route_receipt_rereview_required",
+        )
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "accept"),
+            ],
+            team_class="t1_critical",
+            constitution_notes=notes,
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+
+        monkeypatch.setattr(
+            rt,
+            "task_scoped_paid_review_route_blocked_families",
+            lambda registry, route_blocked, task_ids, *, now=None: {
+                "glm": (
+                    "glmcp.review.direct:task_scoped_paid_spend_gate:refused_exhausted_budget",
+                    "glmcp.review.direct:task_scoped_paid_spend_gate:other_state",
+                )
+            },
+        )
+
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+        )
+
+        # Full blocker-set assertion (not negative membership): the drift dossier is
+        # admissible outright, not merely missing the mismatch reason.
+        assert blockers == ()
+
+    def test_route_block_reason_subset_still_refuses_empty_recorded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Subset semantics is not vacuous admission: a dossier that declares a family
+        route-blocked but records NO reason notes still refuses — the recorded route-id set
+        (empty) fails the exact route-id clause before the subset clause is consulted."""
+        rt = _load_review_team_module()
+        notes = (
+            "degraded_family_route_blocked:glm",
+            "degraded_to:t2_standard",
+            "post_route_receipt_rereview_required",
+        )
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "accept"),
+            ],
+            team_class="t1_critical",
+            constitution_notes=notes,
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+
+        monkeypatch.setattr(
+            rt,
+            "task_scoped_paid_review_route_blocked_families",
+            lambda registry, route_blocked, task_ids, *, now=None: {
+                "glm": ("glmcp.review.direct:task_scoped_paid_spend_gate:refused_exhausted_budget",)
             },
         )
 
@@ -2996,3 +3129,302 @@ class TestClassifyFailureReceipt:
         assert rt.is_reviewer_route_unavailable(text, process_failed=True)
         assert rt.is_provider_outage(text, process_failed=True)
         assert rt.classify_failure(text, process_failed=True).code is FailureCode.ROUTE_UNAVAILABLE
+
+
+class TestFindTaskNotesLinkage:
+    """A bare PR number is not a link.
+
+    ``cc-pr-review-dispatch`` does not merely report this match set: it derives
+    the dispatch batch, the assigned lane and ``strongest_team_class`` from it.
+    A stray match therefore spends real provider capacity, writes a dossier onto
+    unrelated work, and can raise the PR's review floor.
+    """
+
+    @staticmethod
+    def _note(root, name, **fm):
+        root.mkdir(parents=True, exist_ok=True)
+        body = {"type": "cc-task", "task_id": name, **fm}
+        (root / f"{name}.md").write_text(
+            "---\n" + yaml.safe_dump(body, sort_keys=False) + "---\n\n# note\n",
+            encoding="utf-8",
+        )
+
+    def test_terminal_status_notes_never_match(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._note(
+            tmp_path / "active",
+            "live-task",
+            status="pr_open",
+            pr=7,
+            pr_repo="hapax-systems/reins",
+        )
+        self._note(tmp_path / "closed", "done-task", status="done", pr=7)
+        found = rt.find_task_notes(tmp_path, pr_number=7, pr_repo="hapax-systems/reins")
+        assert [fm["task_id"] for _, fm in found] == ["live-task"]
+
+    def test_declared_pr_repo_must_agree(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._note(
+            tmp_path / "active",
+            "reins-task",
+            status="pr_open",
+            pr=7,
+            pr_repo="hapax-systems/reins",
+        )
+        self._note(
+            tmp_path / "active",
+            "council-task",
+            status="pr_open",
+            pr=7,
+            pr_repo="hapax-systems/hapax-council",
+        )
+        found = rt.find_task_notes(tmp_path, pr_number=7, pr_repo="hapax-systems/reins")
+        assert [fm["task_id"] for _, fm in found] == ["reins-task"]
+
+    def test_legacy_note_without_pr_repo_still_matches(self, tmp_path: Path) -> None:
+        """Repo-less calls keep number-only matching for undeclared notes."""
+        rt = _load_review_team_module()
+        self._note(tmp_path / "active", "legacy-task", status="pr_open", pr=7)
+        found = rt.find_task_notes(tmp_path, pr_number=7)
+        assert [fm["task_id"] for _, fm in found] == ["legacy-task"]
+
+    def test_undeclared_note_repo_is_not_a_wildcard(self, tmp_path: Path) -> None:
+        """AC3 as amended (operator-ratified 2026-08-06): a named caller repo
+        never matches a note that declares none."""
+        rt = _load_review_team_module()
+        self._note(tmp_path / "active", "legacy-task", status="pr_open", pr=7)
+        found = rt.find_task_notes(tmp_path, pr_number=7, pr_repo="hapax-systems/reins")
+        assert found == ()
+
+    def test_branch_fallback_still_works(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._note(tmp_path / "active", "branch-task", status="in_progress", branch="feat/x")
+        found = rt.find_task_notes(tmp_path, pr_number=99, head_ref="feat/x")
+        assert [fm["task_id"] for _, fm in found] == ["branch-task"]
+
+    def test_closed_folder_is_terminal_by_location(self, tmp_path: Path) -> None:
+        """A note in closed/ must not match even with a stale open status."""
+        rt = _load_review_team_module()
+        self._note(
+            tmp_path / "active",
+            "live-task",
+            status="pr_open",
+            pr=7,
+            pr_repo="hapax-systems/reins",
+        )
+        self._note(tmp_path / "closed", "misfiled-task", status="pr_open", pr=7)
+        found = rt.find_task_notes(tmp_path, pr_number=7, pr_repo="hapax-systems/reins")
+        assert [fm["task_id"] for _, fm in found] == ["live-task"]
+
+    def test_terminal_status_match_is_case_insensitive(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._note(tmp_path / "active", "done-task", status="Done", pr=7)
+        self._note(tmp_path / "active", "live-task", status="pr_open", pr=7)
+        found = rt.find_task_notes(tmp_path, pr_number=7)
+        assert [fm["task_id"] for _, fm in found] == ["live-task"]
+
+    def test_repo_guard_binds_the_branch_arm(self, tmp_path: Path) -> None:
+        """A repo-rejected note must not re-enter through a shared branch name."""
+        rt = _load_review_team_module()
+        self._note(
+            tmp_path / "active",
+            "wrong-repo",
+            status="pr_open",
+            pr=7,
+            pr_repo="hapax-systems/hapax-council",
+            branch="feat/shared",
+        )
+        found = rt.find_task_notes(
+            tmp_path,
+            pr_number=7,
+            head_ref="feat/shared",
+            pr_repo="hapax-systems/reins",
+        )
+        assert [fm["task_id"] for _, fm in found] == []
+
+    def test_repo_match_is_case_insensitive(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._note(
+            tmp_path / "active",
+            "reins-task",
+            status="pr_open",
+            pr=7,
+            pr_repo="Hapax-Systems/Reins",
+        )
+        found = rt.find_task_notes(tmp_path, pr_number=7, pr_repo="hapax-systems/reins")
+        assert [fm["task_id"] for _, fm in found] == ["reins-task"]
+
+    def test_repoless_caller_ambiguity_refuses(self, tmp_path: Path) -> None:
+        """No caller repo + multiple number matches: fail closed, not silent."""
+        rt = _load_review_team_module()
+        self._note(tmp_path / "active", "task-a", status="pr_open", pr=7)
+        self._note(tmp_path / "active", "task-b", status="in_progress", pr=7)
+        found = rt.find_task_notes(tmp_path, pr_number=7)
+        assert found == ()
+
+
+def _load_pr_review_dispatch_module():
+    import importlib.util
+    import sys
+
+    if "cc_pr_review_dispatch" in sys.modules:
+        return sys.modules["cc_pr_review_dispatch"]
+    path = REPO_ROOT / "scripts" / "cc-pr-review-dispatch.py"
+    spec = importlib.util.spec_from_file_location("cc_pr_review_dispatch", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["cc_pr_review_dispatch"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestDispatcherRepoThreading:
+    """Durable witnesses for the dispatcher's real call path (review dossier
+    majors: the one-line caller change must be covered where it lives)."""
+
+    def test_review_pr_threads_repo_into_the_matcher(self, tmp_path: Path, monkeypatch) -> None:
+        dispatch = _load_pr_review_dispatch_module()
+        rt = _load_review_team_module()
+        calls: list[dict] = []
+
+        def fake_find_task_notes(vault_root, **kwargs):
+            calls.append(kwargs)
+            return ()
+
+        class _PrInfo:
+            is_draft = False
+            files = ["scripts/review_team.py"]
+            changed_file_count = 1
+            head_ref = "fix/branch"
+
+        monkeypatch.setattr(rt, "find_task_notes", fake_find_task_notes)
+        monkeypatch.setattr(dispatch, "fetch_pr", lambda *a, **k: _PrInfo())
+        result = dispatch.review_pr(
+            7,
+            repo="hapax-systems/reins",
+            vault_root=tmp_path,
+            route_blocked_families={},
+        )
+        assert result == {"status": "no_task", "pr": 7}
+        assert calls, "review_pr never reached the matcher"
+        assert calls[0].get("pr_repo") == "hapax-systems/reins"
+        assert calls[0].get("head_ref") == "fix/branch"
+
+    def test_review_pr_repo_qualified_dispatch_finds_exactly_one_task(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The reins#7 exit predicate as a durable witness: with three
+        terminal/done notes and one live note sharing a PR number, the
+        dispatcher's match set is exactly the live one."""
+        dispatch = _load_pr_review_dispatch_module()
+        rt = _load_review_team_module()
+        for name, status in (("done-1", "done"), ("done-2", "superseded"), ("done-3", "closed")):
+            TestFindTaskNotesLinkage._note(tmp_path / "closed", name, status=status, pr=7)
+        TestFindTaskNotesLinkage._note(
+            tmp_path / "active",
+            "live-task",
+            status="pr_open",
+            pr=7,
+            pr_repo="hapax-systems/reins",
+        )
+
+        class _PrInfo:
+            is_draft = False
+            files = ["scripts/review_team.py"]
+            changed_file_count = 1
+            head_ref = "k0/complete-6-of-6"
+            head_sha = "0" * 40
+            changed_files = ["scripts/review_team.py"]
+
+        monkeypatch.setattr(dispatch, "fetch_pr", lambda *a, **k: _PrInfo())
+        seen: list[tuple] = []
+        real = rt.find_task_notes
+
+        def recording(vault_root, **kwargs):
+            found = real(vault_root, **kwargs)
+            seen.append(found)
+            return found
+
+        monkeypatch.setattr(rt, "find_task_notes", recording)
+        dispatch.review_pr(
+            7,
+            repo="hapax-systems/reins",
+            vault_root=tmp_path,
+            route_blocked_families={},
+        )
+        assert seen, "matcher never called"
+        assert [fm["task_id"] for _, fm in seen[0]] == ["live-task"]
+
+    def test_branch_arm_admits_undeclared_rejects_declared_disagreeing(
+        self, tmp_path: Path
+    ) -> None:
+        """The synthesis: undeclared notes branch-match (30 live discovery
+        notes measured 2026-08-07); declared-disagreeing never re-enter."""
+        rt = _load_review_team_module()
+        TestFindTaskNotesLinkage._note(
+            tmp_path / "active", "branch-only", status="in_progress", branch="feat/x"
+        )
+        TestFindTaskNotesLinkage._note(
+            tmp_path / "active",
+            "foreign",
+            status="in_progress",
+            branch="feat/x",
+            pr_repo="hapax-systems/hapax-council",
+        )
+        found = rt.find_task_notes(
+            tmp_path, pr_number=99, head_ref="feat/x", pr_repo="hapax-systems/reins"
+        )
+        assert [fm["task_id"] for _, fm in found] == ["branch-only"]
+
+    def test_pr_number_note_never_reenters_via_branch(self, tmp_path: Path) -> None:
+        """codex r9: a note with the queried PR number but no pr_repo is
+        refused on the pr arm and must not re-enter via the branch arm."""
+        rt = _load_review_team_module()
+        TestFindTaskNotesLinkage._note(
+            tmp_path / "active", "number-only", status="pr_open", pr=7, branch="feat/x"
+        )
+        TestFindTaskNotesLinkage._note(
+            tmp_path / "active", "branch-discovery", status="in_progress", branch="feat/x"
+        )
+        found = rt.find_task_notes(
+            tmp_path, pr_number=7, head_ref="feat/x", pr_repo="hapax-systems/reins"
+        )
+        assert [fm["task_id"] for _, fm in found] == ["branch-discovery"]
+
+    def test_note_linked_to_another_pr_never_branch_matches(self, tmp_path: Path) -> None:
+        """codex r10: a note already linked to PR 8 must not contaminate
+        PR 7's batch through a shared branch name."""
+        rt = _load_review_team_module()
+        TestFindTaskNotesLinkage._note(
+            tmp_path / "active",
+            "other-pr",
+            status="pr_open",
+            pr=8,
+            pr_repo="hapax-systems/reins",
+            branch="feat/x",
+        )
+        TestFindTaskNotesLinkage._note(
+            tmp_path / "active", "discovery", status="in_progress", branch="feat/x"
+        )
+        found = rt.find_task_notes(
+            tmp_path, pr_number=7, head_ref="feat/x", pr_repo="hapax-systems/reins"
+        )
+        assert [fm["task_id"] for _, fm in found] == ["discovery"]
+
+    def test_malformed_pr_matches_nothing(self, tmp_path: Path) -> None:
+        """codex r11: a non-integer pr is not a pre-PR note — fail closed."""
+        rt = _load_review_team_module()
+        TestFindTaskNotesLinkage._note(
+            tmp_path / "active",
+            "malformed",
+            status="in_progress",
+            pr="not-a-number",
+            branch="feat/x",
+        )
+        TestFindTaskNotesLinkage._note(
+            tmp_path / "active", "discovery", status="in_progress", branch="feat/x"
+        )
+        found = rt.find_task_notes(
+            tmp_path, pr_number=7, head_ref="feat/x", pr_repo="hapax-systems/reins"
+        )
+        assert [fm["task_id"] for _, fm in found] == ["discovery"]

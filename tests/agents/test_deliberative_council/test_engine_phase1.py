@@ -264,6 +264,8 @@ class TestRunPhase1:
 
         class _FakeMember:
             _cctv_capability_admission = admission
+            _cctv_route_id = "claude-opus"
+            _cctv_model_alias = "opus"
 
             async def run(self, prompt, **kwargs):
                 if "output_type" in kwargs:
@@ -307,6 +309,8 @@ class TestRunPhase1:
 
         class _FakeMember:
             _cctv_capability_admission = member_admission
+            _cctv_route_id = "claude-opus"
+            _cctv_model_alias = "opus"
 
             async def run(self, prompt, **kwargs):
                 if "output_type" not in kwargs:

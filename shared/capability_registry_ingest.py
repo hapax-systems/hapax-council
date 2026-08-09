@@ -28,8 +28,16 @@ from shared.capability_harness_descriptor import (
     QuotaSource,
     validate_descriptor,
 )
+from shared.platform_capability_registry import (
+    CapabilityShapeDescriptor,
+    is_agentic_trust_supply_evidence_reference,
+)
 
-__all__ = ["ingest_platform_capability_registry", "ingest_routes"]
+__all__ = [
+    "ingest_platform_capability_inventory",
+    "ingest_platform_capability_registry",
+    "ingest_routes",
+]
 
 
 _AGENT_PLATFORMS = frozenset({"antigrav", "claude", "codex", "vibe"})
@@ -113,7 +121,7 @@ def _mutation_surfaces(
 def _freshness_state(route_state: object) -> FreshnessState:
     """Map the route_state to the descriptor's freshness_state."""
     state = str(route_state or "").lower()
-    if state in {"live", "available", "fresh"}:
+    if state in {"active", "live", "available", "fresh"}:
         return FreshnessState.FRESH
     if state in {"blocked", "stale"}:
         return FreshnessState.STALE
@@ -127,6 +135,17 @@ def _descriptor_from_route(route: dict[str, object]) -> CapabilityHarnessDescrip
     route_id = str(route.get("route_id") or "")
     platform = str(route.get("platform") or "")
     profile = str(route.get("profile") or "")
+    if any(
+        is_agentic_trust_supply_evidence_reference(identity)
+        for identity in (
+            route_id,
+            str(route.get("launcher") or ""),
+            str(route.get("sanctioned_wrapper") or ""),
+        )
+    ):
+        raise ValueError(
+            "agentic-trust evaluator observation identity cannot be ingested as admitted supply"
+        )
     shape = _shape_for_route(route_id, platform, profile)
     exec_desc = route.get("execution_descriptor") or {}
     if not isinstance(exec_desc, dict):
@@ -211,3 +230,21 @@ def ingest_platform_capability_registry(path: str | Path) -> list[CapabilityHarn
     """
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     return ingest_routes(payload.get("routes") or [])
+
+
+def ingest_platform_capability_inventory(
+    path: str | Path,
+) -> tuple[list[CapabilityHarnessDescriptor], list[CapabilityShapeDescriptor]]:
+    """Ingest admitted routes and omitted shapes into separate typed planes.
+
+    The second list is deliberately not coerced into ``CapabilityHarnessDescriptor``:
+    omitted shapes are visible inventory, but they are not dispatch supply.
+    """
+
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    routes = ingest_routes(payload.get("routes") or [])
+    shapes = [
+        CapabilityShapeDescriptor.model_validate(shape)
+        for shape in payload.get("omitted_capability_shapes") or []
+    ]
+    return routes, shapes

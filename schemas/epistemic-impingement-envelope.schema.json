@@ -1,0 +1,431 @@
+{
+  "$defs": {
+    "ContextImpingement": {
+      "additionalProperties": false,
+      "properties": {
+        "impingement_id": {
+          "title": "Impingement Id",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "legal_next": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Legal Next",
+          "type": "array"
+        },
+        "may_authorize": {
+          "const": false,
+          "title": "May Authorize",
+          "type": "boolean"
+        },
+        "protects": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Protects",
+          "type": "array"
+        },
+        "source_fact_refs": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Source Fact Refs",
+          "type": "array"
+        },
+        "state": {
+          "$ref": "#/$defs/ContextState"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "impingement_id",
+        "kind",
+        "summary",
+        "source_fact_refs",
+        "protects",
+        "legal_next",
+        "state",
+        "may_authorize"
+      ],
+      "title": "ContextImpingement",
+      "type": "object"
+    },
+    "ContextState": {
+      "additionalProperties": false,
+      "properties": {
+        "reason_codes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reason Codes",
+          "type": "array"
+        },
+        "value_state": {
+          "enum": [
+            "present",
+            "partial",
+            "absent",
+            "dark",
+            "hold",
+            "stale",
+            "refused",
+            "uncertain"
+          ],
+          "title": "Value State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "value_state",
+        "reason_codes"
+      ],
+      "title": "ContextState",
+      "type": "object"
+    },
+    "EpistemicImpingementTrace": {
+      "additionalProperties": false,
+      "properties": {
+        "checked_at": {
+          "title": "Checked At",
+          "type": "string"
+        },
+        "fact_frontier_ref": {
+          "title": "Fact Frontier Ref",
+          "type": "string"
+        },
+        "fact_refs": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Fact Refs",
+          "type": "array"
+        },
+        "impingement_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Impingement Digest",
+          "type": "string"
+        },
+        "impingements": {
+          "items": {
+            "$ref": "#/$defs/ContextImpingement"
+          },
+          "title": "Impingements",
+          "type": "array"
+        },
+        "max_bytes": {
+          "maximum": 65536,
+          "minimum": 1024,
+          "title": "Max Bytes",
+          "type": "integer"
+        },
+        "may_authorize": {
+          "const": false,
+          "title": "May Authorize",
+          "type": "boolean"
+        },
+        "method_ref": {
+          "title": "Method Ref",
+          "type": "string"
+        },
+        "observed_at": {
+          "title": "Observed At",
+          "type": "string"
+        },
+        "portal_offers": {
+          "items": {
+            "$ref": "#/$defs/PortalOffer"
+          },
+          "title": "Portal Offers",
+          "type": "array"
+        },
+        "portal_set_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Portal Set Digest",
+          "type": "string"
+        },
+        "position_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Position Hash",
+          "type": "string"
+        },
+        "position_ref": {
+          "title": "Position Ref",
+          "type": "string"
+        },
+        "schema": {
+          "const": "hapax.epistemic-impingement-trace.v1",
+          "title": "Schema",
+          "type": "string"
+        },
+        "session_ref": {
+          "title": "Session Ref",
+          "type": "string"
+        },
+        "source_event_refs": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Source Event Refs",
+          "type": "array"
+        },
+        "stage_token": {
+          "title": "Stage Token",
+          "type": "string"
+        },
+        "stale_after": {
+          "title": "Stale After",
+          "type": "string"
+        },
+        "task_ref": {
+          "title": "Task Ref",
+          "type": "string"
+        },
+        "trace_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Trace Hash",
+          "type": "string"
+        },
+        "trace_ref": {
+          "title": "Trace Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "trace_ref",
+        "trace_hash",
+        "session_ref",
+        "task_ref",
+        "position_ref",
+        "position_hash",
+        "stage_token",
+        "fact_frontier_ref",
+        "fact_refs",
+        "source_event_refs",
+        "impingements",
+        "portal_offers",
+        "impingement_digest",
+        "portal_set_digest",
+        "method_ref",
+        "observed_at",
+        "checked_at",
+        "stale_after",
+        "max_bytes",
+        "may_authorize"
+      ],
+      "title": "EpistemicImpingementTrace",
+      "type": "object"
+    },
+    "PortalConsumptionReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "budget_receipt_ref": {
+          "title": "Budget Receipt Ref",
+          "type": "string"
+        },
+        "budget_ref": {
+          "title": "Budget Ref",
+          "type": "string"
+        },
+        "consumed_at": {
+          "title": "Consumed At",
+          "type": "string"
+        },
+        "may_authorize": {
+          "const": false,
+          "title": "May Authorize",
+          "type": "boolean"
+        },
+        "no_effect": {
+          "const": true,
+          "title": "No Effect",
+          "type": "boolean"
+        },
+        "outcome": {
+          "const": "consumed",
+          "title": "Outcome",
+          "type": "string"
+        },
+        "portal_ref": {
+          "title": "Portal Ref",
+          "type": "string"
+        },
+        "position_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Position Hash",
+          "type": "string"
+        },
+        "position_ref": {
+          "title": "Position Ref",
+          "type": "string"
+        },
+        "projection_ref": {
+          "title": "Projection Ref",
+          "type": "string"
+        },
+        "purpose": {
+          "title": "Purpose",
+          "type": "string"
+        },
+        "receipt_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Receipt Hash",
+          "type": "string"
+        },
+        "receipt_ref": {
+          "title": "Receipt Ref",
+          "type": "string"
+        },
+        "requested_at": {
+          "title": "Requested At",
+          "type": "string"
+        },
+        "requester_ref": {
+          "title": "Requester Ref",
+          "type": "string"
+        },
+        "schema": {
+          "const": "hapax.portal-consumption-receipt.v1",
+          "title": "Schema",
+          "type": "string"
+        },
+        "session_ref": {
+          "title": "Session Ref",
+          "type": "string"
+        },
+        "stage_token": {
+          "title": "Stage Token",
+          "type": "string"
+        },
+        "task_ref": {
+          "title": "Task Ref",
+          "type": "string"
+        },
+        "trace_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Trace Hash",
+          "type": "string"
+        },
+        "trace_ref": {
+          "title": "Trace Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "receipt_ref",
+        "receipt_hash",
+        "trace_ref",
+        "trace_hash",
+        "session_ref",
+        "task_ref",
+        "position_ref",
+        "position_hash",
+        "stage_token",
+        "portal_ref",
+        "requester_ref",
+        "purpose",
+        "requested_at",
+        "consumed_at",
+        "projection_ref",
+        "budget_ref",
+        "budget_receipt_ref",
+        "outcome",
+        "no_effect",
+        "may_authorize"
+      ],
+      "title": "PortalConsumptionReceipt",
+      "type": "object"
+    },
+    "PortalOffer": {
+      "additionalProperties": false,
+      "properties": {
+        "budget_ref": {
+          "title": "Budget Ref",
+          "type": "string"
+        },
+        "effectivity_basis": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Effectivity Basis",
+          "type": "array"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "may_authorize": {
+          "const": false,
+          "title": "May Authorize",
+          "type": "boolean"
+        },
+        "no_effect": {
+          "const": true,
+          "title": "No Effect",
+          "type": "boolean"
+        },
+        "portal_ref": {
+          "title": "Portal Ref",
+          "type": "string"
+        },
+        "privacy_class": {
+          "title": "Privacy Class",
+          "type": "string"
+        },
+        "purpose": {
+          "title": "Purpose",
+          "type": "string"
+        },
+        "source_fact_refs": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Source Fact Refs",
+          "type": "array"
+        },
+        "state": {
+          "$ref": "#/$defs/ContextState"
+        }
+      },
+      "required": [
+        "portal_ref",
+        "kind",
+        "purpose",
+        "source_fact_refs",
+        "state",
+        "effectivity_basis",
+        "privacy_class",
+        "budget_ref",
+        "no_effect",
+        "may_authorize"
+      ],
+      "title": "PortalOffer",
+      "type": "object"
+    }
+  },
+  "$id": "https://hapax.systems/schemas/epistemic-impingement-envelope.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/EpistemicImpingementTrace"
+    },
+    {
+      "$ref": "#/$defs/PortalConsumptionReceipt"
+    }
+  ]
+}

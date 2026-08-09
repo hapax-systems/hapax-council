@@ -4,6 +4,8 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-source-activate"
 
@@ -113,6 +115,101 @@ def _run_activate(
         check=False,
         env=env,
     )
+
+
+def _path_with_failing_launcher_cp(tmp_path: Path, *, phase: str) -> str:
+    fake_bin = tmp_path / f"failing-cp-{phase}"
+    fake_bin.mkdir()
+    fake_cp = fake_bin / "cp"
+    _write(
+        fake_cp,
+        textwrap.dedent(
+            f"""\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            source_path="${{@: -2:1}}"
+            dest_path="${{@: -1}}"
+            if [[ "{phase}" == "snapshot" && "$dest_path" == *"/launcher-rollback."*"/present/"* ]]; then
+                exit 73
+            fi
+            if [[ "{phase}" == "restore" && "$source_path" == *"/launcher-rollback."*"/present/hapax-post-merge-deploy" ]]; then
+                exit 74
+            fi
+            exec /usr/bin/cp "$@"
+            """
+        ),
+        executable=True,
+    )
+    return f"{fake_bin}:{os.environ['PATH']}"
+
+
+def _path_with_failing_predeploy_command(
+    tmp_path: Path,
+    *,
+    command: str,
+    launcher_name: str = "",
+) -> str:
+    fake_bin = tmp_path / f"failing-predeploy-{command}"
+    fake_bin.mkdir()
+    fake_command = fake_bin / command
+    if command == "ln":
+        body = textwrap.dedent(
+            f"""\
+            #!/usr/bin/env bash
+            destination="${{@: -1}}"
+            if [[ "$destination" == */.local/bin/{launcher_name} ]]; then
+                exit 75
+            fi
+            exec /usr/bin/ln "$@"
+            """
+        )
+    elif command == "install":
+        body = textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            destination="${@: -1}"
+            if [[ "$destination" == */.config/hapax/.usb-topology-policy.json.activate.* ]]; then
+                exit 76
+            fi
+            exec /usr/bin/install "$@"
+            """
+        )
+    else:
+        raise ValueError(f"unsupported predeploy failure command: {command}")
+    _write(fake_command, body, executable=True)
+    return f"{fake_bin}:{os.environ['PATH']}"
+
+
+def _path_with_failing_config_restore_command(tmp_path: Path, *, command: str) -> str:
+    fake_bin = tmp_path / f"failing-config-restore-{command}"
+    fake_bin.mkdir()
+    fake_command = fake_bin / command
+    if command == "cp":
+        body = textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            source_path="${@: -2:1}"
+            if [[ "$source_path" == *"/launcher-rollback."*"/config-present" ]]; then
+                exit 77
+            fi
+            exec /usr/bin/cp "$@"
+            """
+        )
+    elif command == "mv":
+        body = textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            source_path="${@: -2:1}"
+            if [[ "$source_path" == *"/.usb-topology-policy.json.restore."* ]]; then
+                exit 78
+            fi
+            exec /usr/bin/mv "$@"
+            """
+        )
+    else:
+        raise ValueError(f"unsupported config restore failure command: {command}")
+    _write(fake_command, body, executable=True)
+    return f"{fake_bin}:{os.environ['PATH']}"
 
 
 def _current_receipt(tmp_path: Path) -> dict:
@@ -373,6 +470,341 @@ def test_failed_deploy_rolls_back_active_symlink_to_previous_release(tmp_path: P
     ).strip() == active_sha
 
 
+def test_failed_deploy_restores_previous_release_launcher(tmp_path: Path) -> None:
+    canonical, origin, active_sha = _make_repos(tmp_path)
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    previous_script = tmp_path / "active-source" / "scripts" / "hapax-post-merge-deploy"
+    previous_content = previous_script.read_text(encoding="utf-8")
+    local_launcher = tmp_path / "home" / ".local" / "bin" / "hapax-post-merge-deploy"
+    local_cc_claim = tmp_path / "home" / ".local" / "bin" / "cc-claim"
+    previous_cc_claim_target = os.readlink(local_cc_claim)
+    failed_only_launcher = tmp_path / "home" / ".local" / "bin" / "hapax-failed-candidate"
+    local_launcher.unlink()
+    _write(local_launcher, previous_content, executable=True)
+
+    updater = tmp_path / "updater-failed-launcher"
+    _git(tmp_path, "clone", str(origin), str(updater))
+    _git(updater, "config", "user.email", "source-activate@example.test")
+    _git(updater, "config", "user.name", "Source Activate")
+    _write(
+        updater / "scripts" / "hapax-post-merge-deploy",
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            rm -f "$HOME/.local/bin/hapax-post-merge-deploy"
+            printf '#!/usr/bin/env bash\\necho failed candidate\\n' > "$HOME/.local/bin/hapax-post-merge-deploy"
+            chmod 0755 "$HOME/.local/bin/hapax-post-merge-deploy"
+            rm -f "$HOME/.local/bin/cc-claim"
+            printf '#!/usr/bin/env bash\\necho failed cc claim\\n' > "$HOME/.local/bin/cc-claim"
+            chmod 0755 "$HOME/.local/bin/cc-claim"
+            printf '#!/usr/bin/env bash\\necho failed-only launcher\\n' > "$HOME/.local/bin/hapax-failed-candidate"
+            chmod 0755 "$HOME/.local/bin/hapax-failed-candidate"
+            exit 7
+            """
+        ),
+        executable=True,
+    )
+    _write(
+        updater / "scripts" / "hapax-failed-candidate",
+        "#!/usr/bin/env bash\necho candidate source\n",
+        executable=True,
+    )
+    _git(updater, "add", "scripts/hapax-post-merge-deploy", "scripts/hapax-failed-candidate")
+    _git(updater, "commit", "-m", "candidate deploy fails after launcher install")
+    _git(updater, "push", "origin", "main")
+    failed_sha = _git(updater, "rev-parse", "HEAD")
+
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 7
+    assert failed_sha != active_sha
+    assert _git(tmp_path / "active-source", "rev-parse", "HEAD") == active_sha
+    assert local_launcher.is_file()
+    assert not local_launcher.is_symlink()
+    assert local_launcher.read_text(encoding="utf-8") == previous_content
+    assert local_cc_claim.is_symlink()
+    assert os.readlink(local_cc_claim) == previous_cc_claim_target
+    assert not failed_only_launcher.exists()
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["source_cutover"]["rollback_status"] == "success"
+
+
+def test_launcher_snapshot_copy_failure_aborts_before_sweep_or_deploy(tmp_path: Path) -> None:
+    canonical, origin, active_sha = _make_repos(tmp_path)
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    latest_sha = _advance_origin(tmp_path, origin, "advance before snapshot failure")
+    assert latest_sha != active_sha
+    launcher = tmp_path / "home" / ".local" / "bin" / "hapax-post-merge-deploy"
+    prior_target = os.readlink(launcher)
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": _path_with_failing_launcher_cp(tmp_path, phase="snapshot")},
+    )
+
+    assert second.returncode == 2
+    assert "unable to snapshot managed launcher" in second.stderr
+    assert _git(tmp_path / "active-source", "rev-parse", "HEAD") == active_sha
+    assert launcher.is_symlink()
+    assert os.readlink(launcher) == prior_target
+    assert (tmp_path / "deploy-record.txt").read_text(encoding="utf-8").splitlines() == [active_sha]
+    assert list((tmp_path / "state").glob("launcher-rollback.*")) == []
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["deploy_status"] == "not_started"
+
+
+def test_launcher_publication_failure_rolls_back_before_deploy(tmp_path: Path) -> None:
+    canonical, origin, active_sha = _make_repos(tmp_path)
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    local_bin = tmp_path / "home" / ".local" / "bin"
+    existing_launcher = local_bin / "hapax-post-merge-deploy"
+    existing_target = os.readlink(existing_launcher)
+    replaced_name = "hapax-a-publication"
+    replaced_launcher = local_bin / replaced_name
+    replaced_content = "#!/usr/bin/env bash\necho prior launcher\n"
+    _write(replaced_launcher, replaced_content, executable=True)
+
+    updater = tmp_path / "updater-launcher-publication-failure"
+    _git(tmp_path, "clone", str(origin), str(updater))
+    _git(updater, "config", "user.email", "source-activate@example.test")
+    _git(updater, "config", "user.name", "Source Activate")
+    failed_name = "hapax-z-publication-failure"
+    _write(
+        updater / "scripts" / replaced_name,
+        "#!/usr/bin/env bash\necho candidate launcher\n",
+        executable=True,
+    )
+    _write(
+        updater / "scripts" / failed_name,
+        "#!/usr/bin/env bash\nexit 0\n",
+        executable=True,
+    )
+    _git(updater, "add", f"scripts/{replaced_name}", f"scripts/{failed_name}")
+    _git(updater, "commit", "-m", "add launcher whose publication fails")
+    _git(updater, "push", "origin", "main")
+    failed_sha = _git(updater, "rev-parse", "HEAD")
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": _path_with_failing_predeploy_command(
+                tmp_path,
+                command="ln",
+                launcher_name=failed_name,
+            )
+        },
+    )
+
+    assert second.returncode == 2
+    assert failed_sha != active_sha
+    assert "unable to publish managed launcher" in second.stderr
+    assert "deployment was not started" in second.stderr
+    assert _git(tmp_path / "active-source", "rev-parse", "HEAD") == active_sha
+    assert existing_launcher.is_symlink()
+    assert os.readlink(existing_launcher) == existing_target
+    assert replaced_launcher.is_file()
+    assert not replaced_launcher.is_symlink()
+    assert replaced_launcher.read_text(encoding="utf-8") == replaced_content
+    assert not (local_bin / failed_name).exists()
+    assert (tmp_path / "deploy-record.txt").read_text(encoding="utf-8").splitlines() == [active_sha]
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["deploy_status"] == "not_started"
+    assert receipt["source_cutover"]["rollback_status"] == "success"
+    assert "managed launcher publication failed" in receipt["message"]
+
+
+def test_active_config_staging_failure_rolls_back_before_deploy(tmp_path: Path) -> None:
+    canonical, origin, active_sha = _make_repos(tmp_path)
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    installed_policy = tmp_path / "home" / ".config" / "hapax" / "usb-topology-policy.json"
+    previous_policy = installed_policy.read_text(encoding="utf-8")
+
+    updater = tmp_path / "updater-config-staging-failure"
+    _git(tmp_path, "clone", str(origin), str(updater))
+    _git(updater, "config", "user.email", "source-activate@example.test")
+    _git(updater, "config", "user.name", "Source Activate")
+    _write(updater / "config" / "usb-topology-policy.json", '{"known_absences":{"new":true}}\n')
+    _git(updater, "add", "config/usb-topology-policy.json")
+    _git(updater, "commit", "-m", "change config whose staging fails")
+    _git(updater, "push", "origin", "main")
+    failed_sha = _git(updater, "rev-parse", "HEAD")
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": _path_with_failing_predeploy_command(tmp_path, command="install")},
+    )
+
+    assert second.returncode == 2
+    assert failed_sha != active_sha
+    assert "unable to stage active config" in second.stderr
+    assert "deployment was not started" in second.stderr
+    assert _git(tmp_path / "active-source", "rev-parse", "HEAD") == active_sha
+    assert installed_policy.read_text(encoding="utf-8") == previous_policy
+    assert (tmp_path / "deploy-record.txt").read_text(encoding="utf-8").splitlines() == [active_sha]
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["deploy_status"] == "not_started"
+    assert receipt["source_cutover"]["rollback_status"] == "success"
+    assert "active config staging failed" in receipt["message"]
+
+
+def test_postpublication_deploy_failure_restores_prior_active_config_alias(
+    tmp_path: Path,
+) -> None:
+    canonical, origin, active_sha = _make_repos(tmp_path)
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    active_source = tmp_path / "active-source"
+    installed_policy = tmp_path / "home" / ".config" / "hapax" / "usb-topology-policy.json"
+    prior_target = active_source / "config" / "usb-topology-policy.json"
+    prior_content = prior_target.read_text(encoding="utf-8")
+    installed_policy.unlink()
+    installed_policy.symlink_to(prior_target)
+
+    updater = tmp_path / "updater-config-deploy-failure"
+    _git(tmp_path, "clone", str(origin), str(updater))
+    _git(updater, "config", "user.email", "source-activate@example.test")
+    _git(updater, "config", "user.name", "Source Activate")
+    _write(updater / "config" / "usb-topology-policy.json", '{"known_absences":{"new":true}}\n')
+    _git(updater, "add", "config/usb-topology-policy.json")
+    _git(updater, "commit", "-m", "change config before failed deploy")
+    _git(updater, "push", "origin", "main")
+    failed_sha = _git(updater, "rev-parse", "HEAD")
+
+    second = _run_activate(tmp_path, canonical, deploy_exit=7)
+
+    assert second.returncode == 7
+    assert failed_sha != active_sha
+    assert "synced 1 config files" in second.stdout
+    assert _git(active_source, "rev-parse", "HEAD") == active_sha
+    assert installed_policy.is_symlink()
+    assert os.readlink(installed_policy) == str(prior_target)
+    assert installed_policy.read_text(encoding="utf-8") == prior_content
+    assert (tmp_path / "deploy-record.txt").read_text(encoding="utf-8").splitlines() == [
+        active_sha,
+        failed_sha,
+    ]
+    assert list((tmp_path / "state").glob("launcher-rollback.*")) == []
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["deploy_status"] == "failed"
+    assert receipt["source_cutover"]["rollback_status"] == "success"
+
+
+@pytest.mark.parametrize("command", ["cp", "mv"])
+def test_active_config_restore_failure_preserves_destination_and_snapshot(
+    tmp_path: Path,
+    command: str,
+) -> None:
+    canonical, origin, active_sha = _make_repos(tmp_path)
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    installed_policy = tmp_path / "home" / ".config" / "hapax" / "usb-topology-policy.json"
+    prior_content = installed_policy.read_text(encoding="utf-8")
+    candidate_content = '{"known_absences":{"failed_candidate":true}}\n'
+
+    updater = tmp_path / f"updater-config-restore-{command}-failure"
+    _git(tmp_path, "clone", str(origin), str(updater))
+    _git(updater, "config", "user.email", "source-activate@example.test")
+    _git(updater, "config", "user.name", "Source Activate")
+    _write(updater / "config" / "usb-topology-policy.json", candidate_content)
+    _git(updater, "add", "config/usb-topology-policy.json")
+    _git(updater, "commit", "-m", f"change config before {command} restore failure")
+    _git(updater, "push", "origin", "main")
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        deploy_exit=7,
+        env_overrides={
+            "PATH": _path_with_failing_config_restore_command(tmp_path, command=command)
+        },
+    )
+
+    assert second.returncode == 7
+    expected_error = (
+        "unable to stage saved active config" if command == "cp" else "unable to atomically restore"
+    )
+    assert expected_error in second.stderr
+    assert _git(tmp_path / "active-source", "rev-parse", "HEAD") == active_sha
+    assert installed_policy.is_file()
+    assert not installed_policy.is_symlink()
+    assert installed_policy.read_text(encoding="utf-8") == candidate_content
+    snapshots = list((tmp_path / "state").glob("launcher-rollback.*"))
+    assert len(snapshots) == 1
+    saved = snapshots[0] / "config-present"
+    assert saved.is_file()
+    assert saved.read_text(encoding="utf-8") == prior_content
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["source_cutover"]["rollback_status"] == "failed"
+    assert "config=1" in receipt["source_cutover"]["rollback_message"]
+
+
+def test_launcher_restore_copy_failure_is_reported_without_removing_destination(
+    tmp_path: Path,
+) -> None:
+    canonical, origin, active_sha = _make_repos(tmp_path)
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    launcher = tmp_path / "home" / ".local" / "bin" / "hapax-post-merge-deploy"
+    prior_target = os.readlink(launcher)
+
+    updater = tmp_path / "updater-restore-copy-failure"
+    _git(tmp_path, "clone", str(origin), str(updater))
+    _git(updater, "config", "user.email", "source-activate@example.test")
+    _git(updater, "config", "user.name", "Source Activate")
+    _write(
+        updater / "scripts" / "hapax-post-merge-deploy",
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            rm -f "$HOME/.local/bin/hapax-post-merge-deploy"
+            printf '#!/usr/bin/env bash\necho failed candidate\n' > "$HOME/.local/bin/hapax-post-merge-deploy"
+            chmod 0755 "$HOME/.local/bin/hapax-post-merge-deploy"
+            exit 7
+            """
+        ),
+        executable=True,
+    )
+    _git(updater, "add", "scripts/hapax-post-merge-deploy")
+    _git(updater, "commit", "-m", "fail after replacing launcher")
+    _git(updater, "push", "origin", "main")
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": _path_with_failing_launcher_cp(tmp_path, phase="restore")},
+    )
+
+    assert second.returncode == 7
+    assert "unable to stage saved launcher" in second.stderr
+    assert _git(tmp_path / "active-source", "rev-parse", "HEAD") == active_sha
+    assert launcher.is_file()
+    assert not launcher.is_symlink()
+    assert "failed candidate" in launcher.read_text(encoding="utf-8")
+    snapshots = list((tmp_path / "state").glob("launcher-rollback.*"))
+    assert len(snapshots) == 1
+    saved = snapshots[0] / "present" / "hapax-post-merge-deploy"
+    assert saved.is_symlink()
+    assert os.readlink(saved) == prior_target
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["source_cutover"]["rollback_status"] == "failed"
+    assert "active runtime restore failed" in receipt["source_cutover"]["rollback_message"]
+
+
 def test_failed_deploy_after_legacy_worktree_migration_does_not_self_link(
     tmp_path: Path,
 ) -> None:
@@ -434,6 +866,69 @@ def test_activation_sweeps_cc_task_tools_into_local_bin(tmp_path: Path) -> None:
     assert os.readlink(local_bin / "cc-close") == str(active_source / "scripts" / "cc-close")
 
 
+def test_activation_preserves_release_pinned_regular_launcher(tmp_path: Path) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+    local_bin = tmp_path / "home" / ".local" / "bin"
+    pinned = local_bin / "hapax-post-merge-deploy"
+    release_content = (canonical / "scripts" / "hapax-post-merge-deploy").read_text(
+        encoding="utf-8"
+    )
+    _write(pinned, release_content, executable=True)
+
+    result = _run_activate(tmp_path, canonical)
+
+    assert result.returncode == 0, result.stderr
+    assert pinned.is_file()
+    assert not pinned.is_symlink()
+    assert pinned.read_text(encoding="utf-8") == release_content
+
+
+def test_activation_replaces_stale_or_unowned_regular_launchers(tmp_path: Path) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+    local_bin = tmp_path / "home" / ".local" / "bin"
+    stale = local_bin / "hapax-post-merge-deploy"
+    regular_cc_claim = local_bin / "cc-claim"
+    _write(stale, "#!/usr/bin/env bash\necho tampered\n", executable=True)
+    _write(
+        regular_cc_claim,
+        (canonical / "scripts" / "cc-claim").read_text(encoding="utf-8"),
+        executable=True,
+    )
+
+    result = _run_activate(tmp_path, canonical)
+
+    assert result.returncode == 0, result.stderr
+    active_source = tmp_path / "active-source"
+    assert stale.is_symlink()
+    assert os.readlink(stale) == str(active_source / "scripts" / "hapax-post-merge-deploy")
+    assert regular_cc_claim.is_symlink()
+    assert os.readlink(regular_cc_claim) == str(active_source / "scripts" / "cc-claim")
+
+
+def test_activation_replaces_hard_linked_release_launcher(tmp_path: Path) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+    local_bin = tmp_path / "home" / ".local" / "bin"
+    launcher = local_bin / "hapax-post-merge-deploy"
+    peer = tmp_path / "launcher-peer"
+    release_content = (canonical / "scripts" / "hapax-post-merge-deploy").read_text(
+        encoding="utf-8"
+    )
+    _write(peer, release_content, executable=True)
+    local_bin.mkdir(parents=True, exist_ok=True)
+    os.link(peer, launcher)
+
+    result = _run_activate(tmp_path, canonical)
+
+    assert result.returncode == 0, result.stderr
+    active_source = tmp_path / "active-source"
+    assert launcher.is_symlink()
+    assert os.readlink(launcher) == str(active_source / "scripts" / "hapax-post-merge-deploy")
+    assert peer.is_file()
+    assert not peer.is_symlink()
+    assert peer.read_text(encoding="utf-8") == release_content
+    assert peer.stat().st_nlink == 1
+
+
 def test_activation_syncs_usb_topology_policy_config(tmp_path: Path) -> None:
     canonical, _origin, _new_sha = _make_repos(tmp_path)
 
@@ -443,6 +938,43 @@ def test_activation_syncs_usb_topology_policy_config(tmp_path: Path) -> None:
     installed_policy = tmp_path / "home" / ".config" / "hapax" / "usb-topology-policy.json"
     active_policy = tmp_path / "active-source" / "config" / "usb-topology-policy.json"
     assert installed_policy.read_text(encoding="utf-8") == active_policy.read_text(encoding="utf-8")
+    assert not installed_policy.is_symlink()
+    assert installed_policy.stat().st_nlink == 1
+    assert installed_policy.stat().st_mode & 0o777 == 0o644
+
+
+def test_activation_normalizes_matching_active_config_aliases(tmp_path: Path) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    installed_policy = tmp_path / "home" / ".config" / "hapax" / "usb-topology-policy.json"
+    active_policy = tmp_path / "active-source" / "config" / "usb-topology-policy.json"
+
+    installed_policy.unlink()
+    installed_policy.symlink_to(active_policy)
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 0, second.stderr
+    assert not installed_policy.is_symlink()
+    assert installed_policy.read_text(encoding="utf-8") == active_policy.read_text(encoding="utf-8")
+    assert installed_policy.stat().st_nlink == 1
+    assert installed_policy.stat().st_mode & 0o777 == 0o644
+
+    peer = tmp_path / "matching-policy-peer.json"
+    peer.write_text(active_policy.read_text(encoding="utf-8"), encoding="utf-8")
+    peer.chmod(0o600)
+    installed_policy.unlink()
+    os.link(peer, installed_policy)
+    assert installed_policy.stat().st_nlink == 2
+    third = _run_activate(tmp_path, canonical)
+
+    assert third.returncode == 0, third.stderr
+    assert not installed_policy.is_symlink()
+    assert installed_policy.stat().st_nlink == 1
+    assert installed_policy.stat().st_mode & 0o777 == 0o644
+    assert peer.stat().st_nlink == 1
+    assert peer.stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / "deploy-record.txt").read_text(encoding="utf-8").splitlines() == [new_sha]
 
 
 def test_activation_syncs_active_source_dependencies_before_deploy(tmp_path: Path) -> None:

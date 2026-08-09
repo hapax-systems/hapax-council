@@ -28,9 +28,10 @@ import os
 import secrets
 import time
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from types import MappingProxyType
 
 from shared.coord_event_log import default_grant_dir, default_grant_key
 from shared.governance.coord_capabilities import (
@@ -44,7 +45,9 @@ from shared.policy_decide import ToolCall, policy_decide
 from shared.policy_decision import Decision, FailMode, Verdict
 from shared.policy_floor import evaluate_floor
 from shared.sdlc_lifecycle import (
+    SDLC_STAGE_METADATA,
     TASK_TERMINAL_STATUSES,
+    StageMetadataError,
     frontmatter_from_text,
     is_active_blocked_with_evidence,
 )
@@ -90,58 +93,59 @@ class Ladder:
     transitions: Mapping[str, frozenset[str]]
     terminal: frozenset[str]
     blocked: frozenset[str]
+    fall_transitions: Mapping[str, frozenset[str]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "transitions",
+            MappingProxyType(
+                {token: frozenset(destinations) for token, destinations in self.transitions.items()}
+            ),
+        )
+        object.__setattr__(
+            self,
+            "fall_transitions",
+            MappingProxyType(
+                {
+                    token: frozenset(destinations)
+                    for token, destinations in self.fall_transitions.items()
+                }
+            ),
+        )
 
 
-#: The canonical S0..S11 ladder + the S3.5 disconfirmation branch + a BLOCKED
-#: pseudo-state with operator escape edges. Forward by default; S3 may branch to
-#: disconfirmation; S6/S7 may fall to BLOCKED; BLOCKED always escapes (INV-3);
-#: S11 is the only terminal (INV-1 permits it to have no successor).
+#: Runtime projection of the machine-readable stage metadata SSOT. Normal Next
+#: edges and universal gate-fall edges stay distinct, matching the TLA model.
 SDLC_LADDER = Ladder(
-    stages=(
-        "S0",
-        "S1",
-        "S2",
-        "S3",
-        "S3_5",
-        "S4",
-        "S5",
-        "S6",
-        "S7",
-        "S8",
-        "S9",
-        "S10",
-        "S11",
-        "BLOCKED",
-    ),
+    stages=SDLC_STAGE_METADATA.tokens,
     transitions={
-        "S0": frozenset({"S1"}),
-        "S1": frozenset({"S2"}),
-        "S2": frozenset({"S3"}),
-        "S3": frozenset({"S4", "S3_5"}),
-        "S3_5": frozenset({"S4", "S0"}),
-        "S4": frozenset({"S5"}),
-        "S5": frozenset({"S6"}),
-        "S6": frozenset({"S7", "BLOCKED"}),
-        "S7": frozenset({"S8", "BLOCKED"}),
-        "S8": frozenset({"S9"}),
-        "S9": frozenset({"S10"}),
-        "S10": frozenset({"S11"}),
-        "S11": frozenset(),  # terminal
-        "BLOCKED": frozenset({"S6", "S0"}),  # operator escape — always non-empty
+        stage.token: frozenset(edge.to for edge in stage.next_edges)
+        for stage in SDLC_STAGE_METADATA.stages
     },
-    terminal=frozenset({"S11"}),
-    blocked=frozenset({"BLOCKED"}),
+    terminal=frozenset(stage.token for stage in SDLC_STAGE_METADATA.stages if stage.terminal),
+    blocked=frozenset(stage.token for stage in SDLC_STAGE_METADATA.stages if stage.blocked),
+    fall_transitions={
+        stage.token: frozenset(edge.to for edge in stage.fall_edges)
+        for stage in SDLC_STAGE_METADATA.stages
+    },
 )
 
 
-#: INV-2 *operational* terminals — deliberately distinct from the proof-plane ladder
-#: terminal (``SDLC_LADDER.terminal == {S11}``). INV-2 reads the OPERATIONAL
-#: authority-case ledger, where a task's done-state is ``S7_RELEASE`` (token ``S7``):
-#: merged and released, hence done — not stuck — even though the S0..S11 proof
-#: vocabulary marks only S11 terminal. Kept SEPARATE from the shared ladder on
-#: purpose: widening ``SDLC_LADDER.terminal`` would perturb INV-1 (deadlock-freedom
-#: permits only a terminal stage to lack a successor). S11 stays terminal here too,
-#: so a fully proof-closed task is live as well.
+#: INV-2 *operational* terminals — deliberately NOT the proof-plane terminal set.
+#:
+#: This landing briefly set it to ``SDLC_LADDER.terminal`` (``{"S11"}``) on the
+#: argument that S7 is runtime verification and does not prove completion. That is
+#: right about the proof plane and wrong about this monitor: INV-2 reads the
+#: OPERATIONAL authority-case ledger, where a task's done-state is ``S7_RELEASE``.
+#: Dropping S7 re-fires the exact false positive main's comment records fixing --
+#: INV-2 paging on ~47 released tasks as "stuck". A Gate-0A landing must not
+#: reintroduce that. Found by blind review (codex-1, glm-1) on PR #4483.
+#:
+#: Kept SEPARATE from ``SDLC_LADDER.terminal`` on purpose: widening the ladder's
+#: terminal set instead would perturb INV-1, which permits only a terminal stage to
+#: lack a successor. S11 stays terminal here too, so a proof-closed task is live as
+#: well.
 LIVENESS_TERMINAL = frozenset({"S7", "S11"})
 #: Operational terminal task statuses. INV-2 consumes stage transitions, but the
 #: cc-task note is the work-state surface; a closed/done task whose historical stage
@@ -211,8 +215,8 @@ def check_inv2_liveness(
     A runtime approximation of the temporal liveness property: a task violates if
     its latest observed stage is unknown, or non-terminal and stale beyond
     ``stale_after_s`` (no progress) — i.e. effectively stuck. "Terminal" here is the
-    OPERATIONAL ``LIVENESS_TERMINAL`` ({S7 release, S11}), not the proof-plane ladder
-    terminal: a released task (``S7_RELEASE`` → token ``S7``) is done, not stuck.
+    exact proof-plane ``LIVENESS_TERMINAL`` ({S11}). S7 runtime verification and
+    S8 release/merge are deliberately nonterminal.
     When records carry cc-task vault metadata, a terminal task status is also live,
     and an active blocked task with a recorded blocker+witness is acknowledged
     blocked work, not an unbounded liveness failure.
@@ -561,10 +565,10 @@ def _load_ledger_trace(path: Path, *, vault_tasks: Path | None = None) -> list[d
         except json.JSONDecodeError:
             continue
         kind = str(record.get("kind", "")).strip()
-        to_stage_raw = str(record.get("to_stage", "")).strip()
+        to_stage_raw = str(record.get("to_stage", ""))
         if kind and kind != "stage_transition":
             continue
-        if not to_stage_raw and kind != "stage_transition":
+        if not to_stage_raw.strip() and kind != "stage_transition":
             continue
         # The producer (cc-stage-advance) keys the ISO timestamp "ts"; tolerate the
         # legacy "timestamp" key too. Reading the wrong key silently fell back to 0.0,
@@ -576,9 +580,33 @@ def _load_ledger_trace(path: Path, *, vault_tasks: Path | None = None) -> list[d
         except (TypeError, ValueError):
             ts = 0.0
         task_id = str(record.get("case_id") or record.get("task_id") or "")
+        # MAIN'S NORMALIZATION, SILENTLY -- no new trace key, no new violation.
+        #
+        # ``stage_token`` is strict (it refuses whitespace drift, case drift, and
+        # aliases absent from the metadata catalog). This monitor is LIVE, and main
+        # normalized every shaped alias here (``S6_UNKNOWN`` -> ``S6``) and emitted
+        # its own violation vocabulary for what remained unknown. Surfacing the
+        # refusal -- even as an extra key with a typed reason -- changes the trace
+        # records and the violation strings this monitor produces, which a Gate-0A
+        # source-only landing must not do: a blank stage read ``bad:unknown_stage:
+        # <blank>`` on main and would read ``bad:stage_blank:<blank>`` here.
+        #
+        # So the strict resolver is used where it agrees and main's normalization
+        # where it refuses, and nothing about the refusal reaches the trace. The
+        # typed vocabulary lands with the callers that consume it, at Gate 0B.
+        # Found by blind review (codex-1, glm-1) on PR #4483.
+        try:
+            resolved_stage = _stage_token(to_stage_raw)
+        except StageMetadataError:
+            token = to_stage_raw.strip().replace(".", "_")
+            resolved_stage = (
+                token.split("_")[0]
+                if (token[:1] == "S" and "_" in token and token != "S3_5")
+                else token
+            )
         trace_record: dict[str, object] = {
             "task_id": task_id,
-            "to_stage": _stage_token(to_stage_raw),
+            "to_stage": resolved_stage,
             "timestamp": ts,
         }
         trace_record.update(task_metadata.get(task_id, {}))

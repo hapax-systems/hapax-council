@@ -34,7 +34,18 @@
     "omitted_capability_shapes": {
       "type": "array",
       "minItems": 1,
-      "items": {"$ref": "#/$defs/capability_shape_descriptor"}
+      "items": {"$ref": "#/$defs/capability_shape_descriptor"},
+      "contains": {
+        "type": "object",
+        "required": ["shape_id", "shape_state", "observation_receipt_class"],
+        "properties": {
+          "shape_id": {"const": "local_compute.agentic_trust_evaluator_surface"},
+          "shape_state": {"const": "evidence_only"},
+          "observation_receipt_class": {"const": "AgenticTrustEvidenceReceiptV1"}
+        }
+      },
+      "minContains": 1,
+      "maxContains": 1
     },
     "routes": {
       "type": "array",
@@ -43,6 +54,38 @@
     }
   },
   "$defs": {
+    "non_agentic_trust_supply_identity": {
+      "type": "string",
+      "minLength": 1,
+      "allOf": [
+        {
+          "not": {
+            "pattern": "^(?:(?:[sS][uU][rR][fF][aA][cC][eE]|[rR][oO][uU][tT][eE])[./])?[lL][oO][cC][aA][lL]_[cC][oO][mM][pP][uU][tT][eE][./][aA][gG][eE][nN][tT][iI][cC]_[tT][rR][uU][sS][tT]_[eE][vV][aA][lL][uU][aA][tT][oO][rR]_[sS][uU][rR][fF][aA][cC][eE]$"
+          }
+        },
+        {
+          "not": {
+            "pattern": "(^|[^a-zA-Z0-9_-])(?:[aA][gG][eE][nN][tT][iI][cC][tT][rR][uU][sS][tT][eE][vV][iI][dD][eE][nN][cC][eE][rR][eE][cC][eE][iI][pP][tT][vV]1|[aA][gG][eE][nN][tT][iI][cC]-[tT][rR][uU][sS][tT]-[eE][vV][iI][dD][eE][nN][cC][eE]-[rR][eE][cC][eE][iI][pP][tT]-[vV]1)($|[^a-zA-Z0-9_-])"
+          }
+        }
+      ]
+    },
+    "non_agentic_trust_supply_evidence_ref": {
+      "type": "string",
+      "minLength": 1,
+      "allOf": [
+        {
+          "not": {
+            "pattern": "(^|[^a-zA-Z0-9_.-])(?:(?:[sS][uU][rR][fF][aA][cC][eE]|[rR][oO][uU][tT][eE])[./])?[lL][oO][cC][aA][lL]_[cC][oO][mM][pP][uU][tT][eE][./][aA][gG][eE][nN][tT][iI][cC]_[tT][rR][uU][sS][tT]_[eE][vV][aA][lL][uU][aA][tT][oO][rR]_[sS][uU][rR][fF][aA][cC][eE]($|[^a-zA-Z0-9_.-])"
+          }
+        },
+        {
+          "not": {
+            "pattern": "(^|[^a-zA-Z0-9_-])(?:[aA][gG][eE][nN][tT][iI][cC][tT][rR][uU][sS][tT][eE][vV][iI][dD][eE][nN][cC][eE][rR][eE][cC][eE][iI][pP][tT][vV]1|[aA][gG][eE][nN][tT][iI][cC]-[tT][rR][uU][sS][tT]-[eE][vV][iI][dD][eE][nN][cC][eE]-[rR][eE][cC][eE][iI][pP][tT]-[vV]1)($|[^a-zA-Z0-9_-])"
+          }
+        }
+      ]
+    },
     "platform": {
       "enum": ["agy", "api", "claude", "codex", "gemini", "glmcp", "grok", "local_tool", "vibe"]
     },
@@ -179,7 +222,7 @@
       "properties": {
         "evidence_refs": {
           "type": "array",
-          "items": {"type": "string", "minLength": 1}
+          "items": {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"}
         },
         "blocked_reasons": {
           "type": "array",
@@ -207,7 +250,7 @@
         "confidence": {"type": "integer", "minimum": 0, "maximum": 5},
         "evidence_refs": {
           "type": "array",
-          "items": {"type": "string", "minLength": 1}
+          "items": {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"}
         },
         "observed_at": {"$ref": "#/$defs/timestamp_or_null"},
         "stale_after": {"$ref": "#/$defs/duration"}
@@ -260,15 +303,15 @@
         "coverage_state": {"$ref": "#/$defs/benchmark_coverage_state"},
         "benchmark_refs": {
           "type": "array",
-          "items": {"type": "string", "minLength": 1}
+          "items": {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"}
         },
         "gap_refs": {
           "type": "array",
-          "items": {"type": "string", "minLength": 1}
+          "items": {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"}
         },
         "evidence_refs": {
           "type": "array",
-          "items": {"type": "string", "minLength": 1}
+          "items": {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"}
         }
       }
     },
@@ -290,10 +333,13 @@
         "coordination_steps": {"type": "integer", "minimum": 0},
         "evidence_refs": {
           "type": "array",
-          "items": {"type": "string", "minLength": 1}
+          "items": {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"}
         },
         "projection_ref": {
-          "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
+          "anyOf": [
+            {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"},
+            {"type": "null"}
+          ]
         }
       }
     },
@@ -305,11 +351,11 @@
         "source": {"type": "string", "minLength": 1},
         "posterior_receipt_refs": {
           "type": "array",
-          "items": {"type": "string", "minLength": 1}
+          "items": {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"}
         },
         "evidence_refs": {
           "type": "array",
-          "items": {"type": "string", "minLength": 1}
+          "items": {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"}
         },
         "observed_at": {"$ref": "#/$defs/timestamp_or_null"},
         "stale_after": {"$ref": "#/$defs/duration"}
@@ -330,7 +376,7 @@
         "calibration_window": {"type": "string", "minLength": 1},
         "evidence_refs": {
           "type": "array",
-          "items": {"type": "string", "minLength": 1}
+          "items": {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"}
         },
         "class_posteriors": {
           "type": "object",
@@ -349,7 +395,7 @@
       "additionalProperties": false,
       "required": ["tool_id", "available", "authority_use", "observed_at", "stale_after", "evidence_ref"],
       "properties": {
-        "tool_id": {"type": "string", "minLength": 1},
+        "tool_id": {"$ref": "#/$defs/non_agentic_trust_supply_identity"},
         "available": {"type": "boolean"},
         "authority_use": {
           "type": "array",
@@ -357,7 +403,7 @@
         },
         "observed_at": {"$ref": "#/$defs/timestamp_or_null"},
         "stale_after": {"$ref": "#/$defs/duration"},
-        "evidence_ref": {"type": "string", "minLength": 1}
+        "evidence_ref": {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"}
       }
     },
     "mutability": {
@@ -382,7 +428,7 @@
         "browser": {"type": "boolean"},
         "mcp": {
           "type": "array",
-          "items": {"type": "string"}
+          "items": {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"}
         }
       }
     },
@@ -402,7 +448,7 @@
         },
         "explicit_equivalence_records": {
           "type": "array",
-          "items": {"type": "string"}
+          "items": {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"}
         },
         "excluded_task_classes": {
           "type": "array",
@@ -502,7 +548,7 @@
       "additionalProperties": false,
       "required": ["variant_id"],
       "properties": {
-        "variant_id": {"type": "string", "minLength": 1},
+        "variant_id": {"$ref": "#/$defs/non_agentic_trust_supply_identity"},
         "knobs_override": {
           "type": "object",
           "additionalProperties": {"type": "string"}
@@ -541,6 +587,7 @@
         "measurement_plan_refs",
         "remediation_refs",
         "surface_delta_signal",
+        "observation_receipt_class",
         "observed_at",
         "stale_after",
         "freshness_state",
@@ -549,7 +596,11 @@
       ],
       "properties": {
         "descriptor_schema": {"const": 1},
-        "shape_id": {"type": "string", "minLength": 1},
+        "shape_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
         "shape_class": {"$ref": "#/$defs/capability_shape_class"},
         "carrier_family": {"type": "string", "minLength": 1},
         "summary": {"type": "string", "minLength": 1},
@@ -588,7 +639,12 @@
           "minItems": 1,
           "items": {"type": "string", "minLength": 1}
         },
-        "surface_delta_signal": {"type": "string", "minLength": 1},
+        "surface_delta_signal": {
+          "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
+        },
+        "observation_receipt_class": {
+          "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
+        },
         "observed_at": {"$ref": "#/$defs/timestamp_or_null"},
         "stale_after": {"$ref": "#/$defs/duration"},
         "freshness_state": {"$ref": "#/$defs/capability_shape_freshness_state"},
@@ -600,7 +656,43 @@
           "type": "array",
           "items": {"type": "string", "minLength": 1}
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"shape_state": {"const": "evidence_only"}},
+            "required": ["shape_state"]
+          },
+          "then": {
+            "properties": {
+              "authority_ceiling": {"const": "read_only"},
+              "surface_delta_signal": {"type": "null"},
+              "observation_receipt_class": {"type": "string", "minLength": 1}
+            }
+          },
+          "else": {
+            "properties": {
+              "surface_delta_signal": {"type": "string", "minLength": 1}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "shape_id": {"const": "local_compute.agentic_trust_evaluator_surface"}
+            },
+            "required": ["shape_id"]
+          },
+          "then": {
+            "properties": {
+              "authority_ceiling": {"const": "read_only"},
+              "shape_state": {"const": "evidence_only"},
+              "surface_delta_signal": {"type": "null"},
+              "observation_receipt_class": {"const": "AgenticTrustEvidenceReceiptV1"}
+            }
+          }
+        }
+      ]
     },
     "platform_capability_route": {
       "type": "object",
@@ -638,12 +730,17 @@
       ],
       "properties": {
         "registry_schema": {"const": 1},
-        "route_id": {"type": "string", "pattern": "^[a-z0-9_]+\\.[a-z0-9_]+\\.[a-z0-9_]+$"},
+        "route_id": {
+          "allOf": [
+            {"type": "string", "pattern": "^[a-z0-9_]+\\.[a-z0-9_]+\\.[a-z0-9_]+$"},
+            {"$ref": "#/$defs/non_agentic_trust_supply_identity"}
+          ]
+        },
         "platform": {"$ref": "#/$defs/platform"},
         "mode": {"$ref": "#/$defs/mode"},
         "profile": {"$ref": "#/$defs/profile"},
-        "launcher": {"type": "string", "minLength": 1},
-        "sanctioned_wrapper": {"type": "string", "minLength": 1},
+        "launcher": {"$ref": "#/$defs/non_agentic_trust_supply_identity"},
+        "sanctioned_wrapper": {"$ref": "#/$defs/non_agentic_trust_supply_identity"},
         "summary": {"type": "string", "minLength": 1},
         "notes": {"type": "string", "minLength": 1},
         "route_state": {"$ref": "#/$defs/route_state"},
@@ -652,7 +749,10 @@
           "items": {"type": "string", "minLength": 1}
         },
         "model_or_engine": {
-          "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
+          "anyOf": [
+            {"$ref": "#/$defs/non_agentic_trust_supply_identity"},
+            {"type": "null"}
+          ]
         },
         "execution_descriptor": {"$ref": "#/$defs/execution_descriptor"},
         "descriptor_variants": {
@@ -660,10 +760,16 @@
           "items": {"$ref": "#/$defs/descriptor_variant"}
         },
         "paid_provider": {
-          "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
+          "anyOf": [
+            {"$ref": "#/$defs/non_agentic_trust_supply_identity"},
+            {"type": "null"}
+          ]
         },
         "paid_profile": {
-          "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
+          "anyOf": [
+            {"$ref": "#/$defs/non_agentic_trust_supply_identity"},
+            {"type": "null"}
+          ]
         },
         "approval_posture": {"$ref": "#/$defs/approval_posture"},
         "capability_tier": {"$ref": "#/$defs/capability_tier"},

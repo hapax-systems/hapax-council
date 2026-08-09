@@ -16,8 +16,13 @@ exists for that sensitive class.
 
 from __future__ import annotations
 
+from shared.release_gate import (
+    LIVE_EGRESS_MITIGATION_CHECKS,
+    assess_release_auto_arm_estate,
+)
 from shared.sdlc_lifecycle import (
     RELEASE_MITIGATION_CHECKS,
+    REVIEW_TEAM_QUORUM_EVIDENCE,
     apply_release_auto_arm,
     assess_release_auto_arm,
     release_auto_arm_waivers,
@@ -105,6 +110,139 @@ def test_ineligible_when_audio_or_live_egress_sensitive() -> None:
     assessment = assess_release_auto_arm(fm)
     assert assessment.eligible is False
     assert any("audio_or_live_egress" in blocker for blocker in assessment.blockers)
+
+
+def test_audio_or_live_egress_sensitive_with_full_evidence_auto_arms() -> None:
+    # The class is evidence-gated through the estate extension
+    # (cc-task-release-arm-held-sensitive-class-20260808): every mitigation
+    # check passing, over a covered change surface, discharges the veto.
+    fm = _eligible_frontmatter(risk_flags={"audio_or_live_egress_sensitive": True})
+    assessment = assess_release_auto_arm_estate(
+        fm,
+        verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS),
+        changed_files=["shared/capability_adapter_protocol.py"],
+    )
+    assert not any("audio_or_live_egress" in blocker for blocker in assessment.blockers)
+    assert assessment.eligible is True
+
+
+def test_canon_map_still_fails_the_class_closed_without_the_wrapper() -> None:
+    # The canon-hashed map (sdlc_lifecycle.py, byte-pinned by the Gate 0A
+    # fixture) is deliberately UNCHANGED: the plain canon assessment still
+    # fails the class closed. The extension lives only in the estate wrapper.
+    fm = _eligible_frontmatter(risk_flags={"audio_or_live_egress_sensitive": True})
+    assessment = assess_release_auto_arm(fm, verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS))
+    assert assessment.eligible is False
+    assert "unmitigable_risk_flag:audio_or_live_egress_sensitive" in assessment.blockers
+    assert "audio_or_live_egress_sensitive" not in RELEASE_MITIGATION_CHECKS
+
+
+def test_audio_or_live_egress_sensitive_held_per_missing_mitigation_check() -> None:
+    # Each missing check is its own needs_mitigation blocker.
+    fm = _eligible_frontmatter(risk_flags={"audio_or_live_egress_sensitive": True})
+    full = set(LIVE_EGRESS_MITIGATION_CHECKS)
+    for missing in sorted(full):
+        assessment = assess_release_auto_arm_estate(fm, verified_checks=full - {missing})
+        assert assessment.eligible is False
+        assert f"needs_mitigation:audio_or_live_egress_sensitive:{missing}" in assessment.blockers
+
+
+def test_audio_path_scope_stays_human_released_with_full_evidence() -> None:
+    # config/pipewire/ is a SENSITIVE_PATH_MARKERS hit: the audio lane keeps its
+    # human release even when the class's mitigation evidence is complete. The
+    # remaining hold is exactly the path gate — with full evidence supplied, no
+    # flag-derived blocker survives (the independence pin for the new entry).
+    fm = _eligible_frontmatter(
+        risk_flags={"audio_or_live_egress_sensitive": True},
+        mutation_scope_refs=["config/pipewire/routes.conf", "scripts/hapax-audio-routing-check"],
+    )
+    assessment = assess_release_auto_arm_estate(
+        fm, verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS)
+    )
+    assert assessment.eligible is False
+    assert any(
+        "sensitive_path:config/pipewire/routes.conf" in blocker for blocker in assessment.blockers
+    )
+    assert not any("audio_or_live_egress" in blocker for blocker in assessment.blockers)
+
+
+def test_audio_or_live_egress_mitigation_contract_is_exact() -> None:
+    # Drift pin: this tuple IS what the release gate accepts as mitigation for a
+    # live-egress class. Extending or narrowing it changes what the system will
+    # release — a ratification act, never an edit. Update this test deliberately.
+    assert LIVE_EGRESS_MITIGATION_CHECKS == (
+        "egress-boundary-pin",
+        "authority-case-check",
+        "capability-surface-delta",
+        "secrets-scan",
+        REVIEW_TEAM_QUORUM_EVIDENCE,
+    )
+
+
+def _egress_frontmatter() -> dict[str, object]:
+    return _eligible_frontmatter(risk_flags={"audio_or_live_egress_sensitive": True})
+
+
+def test_egress_auto_arm_coverage_bound_admits_covered_paths() -> None:
+    # The behavioral evidence covers exactly the pinned surface; a PR changing
+    # only it (plus docs) auto-arms with the full mitigation set.
+    assessment = assess_release_auto_arm_estate(
+        _egress_frontmatter(),
+        verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS),
+        changed_files=[
+            "shared/capability_adapter_protocol.py",
+            "tests/test_capability_adapter_protocol.py",
+            "docs/runbooks/capabilityio-session-gate.md",
+        ],
+    )
+    assert not any("egress_evidence_uncovered" in b for b in assessment.blockers)
+    assert assessment.eligible is True
+
+
+def test_egress_auto_arm_coverage_bound_holds_uncovered_paths() -> None:
+    # A live-egress-sensitive PR changing a non-doc path the pin suite does not
+    # cover has NO machine behavioral evidence for its change — held, even with
+    # every mitigation check green (evidence must cover the surface changed).
+    assessment = assess_release_auto_arm_estate(
+        _egress_frontmatter(),
+        verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS),
+        changed_files=["shared/capability_adapter_protocol.py", "scripts/hapax-operator-message"],
+    )
+    assert assessment.eligible is False
+    assert any(
+        blocker.startswith("egress_evidence_uncovered_paths:scripts/hapax-operator-message")
+        for blocker in assessment.blockers
+    )
+
+
+def test_egress_coverage_bound_unevaluable_without_changed_files() -> None:
+    # A caller that supplies no PR file list cannot evaluate the coverage bound —
+    # the wrapper holds closed (unbounded behavioral evidence is no evidence).
+    assessment = assess_release_auto_arm_estate(
+        _egress_frontmatter(),
+        verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS),
+    )
+    assert assessment.eligible is False
+    assert "egress_evidence_coverage_unevaluable:no_changed_files" in assessment.blockers
+
+
+def test_account_live_quota_evidence_does_not_false_block_release_auto_arm() -> None:
+    fm = _eligible_frontmatter(
+        title="Claude subscription quota receipts require account-live evidence",
+        risk_flags={
+            "governance_sensitive": True,
+            "privacy_or_secret_sensitive": True,
+        },
+        tags=["cc-task", "quota", "receipt", "subscription"],
+    )
+    verified_checks = set(RELEASE_MITIGATION_CHECKS["governance_sensitive"]) | set(
+        RELEASE_MITIGATION_CHECKS["privacy_or_secret_sensitive"]
+    )
+
+    assessment = assess_release_auto_arm(fm, verified_checks=verified_checks)
+
+    assert assessment.eligible is True
+    assert not any("audio_or_live_egress_sensitive" in blocker for blocker in assessment.blockers)
 
 
 def test_ineligible_when_public_claim_sensitive() -> None:

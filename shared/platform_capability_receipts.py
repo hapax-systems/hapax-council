@@ -16,6 +16,8 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from shared.agentic_trust_boundary import is_syntactically_typed_policy_evidence_reference
+
 DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR = (
     Path.home() / ".cache" / "hapax" / "platform-capability-receipts"
 )
@@ -66,6 +68,14 @@ class ToolEvidence(StrictReceiptModel):
     authority_use: list[str] = Field(default_factory=list)
     evidence_ref: str
 
+    @model_validator(mode="after")
+    def _evidence_reference_retains_its_type(self) -> Self:
+        if not is_syntactically_typed_policy_evidence_reference(self.evidence_ref):
+            raise ValueError(
+                "tool evidence_ref must be a namespaced non-observation policy reference"
+            )
+        return self
+
 
 class SurfaceEvidence(StrictReceiptModel):
     status: EvidenceStatus
@@ -80,6 +90,12 @@ class SurfaceEvidence(StrictReceiptModel):
         parse_duration_spec(self.stale_after)
         if self.status is EvidenceStatus.OBSERVED and not self.evidence_refs:
             raise ValueError("observed surface evidence requires evidence_refs")
+        if any(
+            not is_syntactically_typed_policy_evidence_reference(ref) for ref in self.evidence_refs
+        ):
+            raise ValueError(
+                "surface evidence_refs must be namespaced non-observation policy references"
+            )
         if self.status is not EvidenceStatus.OBSERVED and not self.reason_codes:
             raise ValueError("non-observed surface evidence requires reason_codes")
         return self
@@ -94,6 +110,10 @@ class ProviderDocsEvidence(StrictReceiptModel):
     @model_validator(mode="after")
     def _duration_is_valid(self) -> Self:
         parse_duration_spec(self.stale_after)
+        if any(not is_syntactically_typed_policy_evidence_reference(ref) for ref in self.refs):
+            raise ValueError(
+                "provider-doc refs must be namespaced non-observation policy references"
+            )
         return self
 
 
@@ -106,6 +126,7 @@ class PlatformCapabilityReceipt(StrictReceiptModel):
     stale_after: str
     cli: CliEvidence
     wrapper: WrapperEvidence
+    route_wrappers: dict[str, WrapperEvidence] = Field(default_factory=dict)
     config_refs: list[ConfigEvidence] = Field(default_factory=list)
     tool_state: list[ToolEvidence] = Field(default_factory=list)
     mcp_status: list[str] = Field(default_factory=list)

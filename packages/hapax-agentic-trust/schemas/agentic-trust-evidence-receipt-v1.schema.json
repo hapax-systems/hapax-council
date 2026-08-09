@@ -1,0 +1,244 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.local/schemas/agentic-trust-evidence-receipt-v1.schema.json",
+  "title": "AgenticTrustEvidenceReceiptV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "receipt_type",
+    "evaluator_surface_id",
+    "claim_ceiling",
+    "contract_version",
+    "authority_status",
+    "terminal_closure_law",
+    "temporal_anchor_status",
+    "anchor_status",
+    "anchor_origin_status",
+    "chronology_status",
+    "custody_observation_status",
+    "authenticity_status",
+    "technical_telemetry_origin_status",
+    "technical_telemetry_measurement_status",
+    "run_id",
+    "preregistration_core_sha256",
+    "manifest_snapshot_artifact_sha256",
+    "terminal_bundle_sha256",
+    "evidence_root_sha256",
+    "graph_sha256",
+    "summary_sha256",
+    "integer_facts",
+    "technical_telemetry",
+    "route_id",
+    "demand_eligible",
+    "policy_effect",
+    "may_authorize_external_action",
+    "may_authorize_spend",
+    "may_authorize_public_egress"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "receipt_type": {"const": "AgenticTrustEvidenceReceiptV1"},
+    "evaluator_surface_id": {"const": "local_compute.agentic_trust_evaluator_surface"},
+    "claim_ceiling": {"const": "caller_pinned_terminal_mechanical_evidence_only"},
+    "contract_version": {"const": "agentic-trust-episode-v3"},
+    "authority_status": {"const": "evidence_only_not_authorized"},
+    "terminal_closure_law": {"const": "raw_receipt_custody_terminal_v1"},
+    "temporal_anchor_status": {"const": "external_pre_run_anchor_required"},
+    "anchor_status": {"const": "caller_supplied_three_anchor_values_matched"},
+    "anchor_origin_status": {"const": "caller_supplied_not_authenticated"},
+    "chronology_status": {"const": "not_verified"},
+    "custody_observation_status": {
+      "const": "sequential_revalidation_not_filesystem_immutability"
+    },
+    "authenticity_status": {"const": "content_addressed_not_authenticated"},
+    "technical_telemetry_origin_status": {"const": "caller_supplied_not_authenticated"},
+    "technical_telemetry_measurement_status": {"const": "not_verified"},
+    "run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "preregistration_core_sha256": {"$ref": "#/$defs/sha256"},
+    "manifest_snapshot_artifact_sha256": {"$ref": "#/$defs/sha256"},
+    "terminal_bundle_sha256": {"$ref": "#/$defs/sha256"},
+    "evidence_root_sha256": {"$ref": "#/$defs/sha256"},
+    "graph_sha256": {"$ref": "#/$defs/sha256"},
+    "summary_sha256": {"$ref": "#/$defs/sha256"},
+    "integer_facts": {"$ref": "#/$defs/integer_facts"},
+    "technical_telemetry": {
+      "anyOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["gpu_energy_millijoules", "wall_time_milliseconds", "peak_vram_bytes"],
+          "properties": {
+            "gpu_energy_millijoules": {"$ref": "#/$defs/optional_nonnegative_integer"},
+            "wall_time_milliseconds": {"$ref": "#/$defs/optional_nonnegative_integer"},
+            "peak_vram_bytes": {"$ref": "#/$defs/optional_nonnegative_integer"}
+          }
+        }
+      ]
+    },
+    "route_id": {"type": "null"},
+    "demand_eligible": {"const": false},
+    "policy_effect": {"const": "none"},
+    "may_authorize_external_action": {"const": false},
+    "may_authorize_spend": {"const": false},
+    "may_authorize_public_egress": {"const": false}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "nonnegative_integer": {"type": "integer", "minimum": 0},
+    "optional_nonnegative_integer": {
+      "anyOf": [{"$ref": "#/$defs/nonnegative_integer"}, {"type": "null"}]
+    },
+    "safe_and_useful_count": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "count"],
+      "properties": {
+        "name": {"const": "safe_and_useful"},
+        "count": {"$ref": "#/$defs/nonnegative_integer"}
+      }
+    },
+    "safe_but_not_useful_count": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "count"],
+      "properties": {
+        "name": {"const": "safe_but_not_useful"},
+        "count": {"$ref": "#/$defs/nonnegative_integer"}
+      }
+    },
+    "unsafe_effect_count": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "count"],
+      "properties": {
+        "name": {"const": "unsafe_effect"},
+        "count": {"$ref": "#/$defs/nonnegative_integer"}
+      }
+    },
+    "unsafe_effect_incomplete_count": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "count"],
+      "properties": {
+        "name": {"const": "unsafe_effect_incomplete"},
+        "count": {"$ref": "#/$defs/nonnegative_integer"}
+      }
+    },
+    "incomplete_count": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "count"],
+      "properties": {
+        "name": {"const": "incomplete"},
+        "count": {"$ref": "#/$defs/nonnegative_integer"}
+      }
+    },
+    "invalid_count": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "count"],
+      "properties": {
+        "name": {"const": "invalid"},
+        "count": {"$ref": "#/$defs/nonnegative_integer"}
+      }
+    },
+    "outcome_counts": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "prefixItems": [
+        {"$ref": "#/$defs/incomplete_count"},
+        {"$ref": "#/$defs/invalid_count"},
+        {"$ref": "#/$defs/safe_and_useful_count"},
+        {"$ref": "#/$defs/safe_but_not_useful_count"},
+        {"$ref": "#/$defs/unsafe_effect_count"},
+        {"$ref": "#/$defs/unsafe_effect_incomplete_count"}
+      ],
+      "items": false
+    },
+    "replay_status_counts": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "prefixItems": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "count"],
+          "properties": {
+            "name": {"const": "agrees"},
+            "count": {"$ref": "#/$defs/nonnegative_integer"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "count"],
+          "properties": {
+            "name": {"const": "disagrees"},
+            "count": {"$ref": "#/$defs/nonnegative_integer"}
+          }
+        },
+        {"$ref": "#/$defs/incomplete_count"},
+        {"$ref": "#/$defs/invalid_count"}
+      ],
+      "items": false
+    },
+    "integer_facts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scheduled_pair_count",
+        "scheduled_episode_count",
+        "terminal_attempt_count",
+        "initial_attempt_count",
+        "replay_attempt_count",
+        "completed_attempt_count",
+        "incomplete_attempt_count",
+        "invalid_attempt_count",
+        "initial_effectiveness_denominator",
+        "initial_all_attempt_denominator",
+        "initial_observed_harm_numerator",
+        "all_attempt_denominator",
+        "all_attempt_observed_harm_numerator",
+        "unknown_impact_attempt_count",
+        "initial_clean_incomplete_count",
+        "initial_attack_incomplete_count",
+        "initial_clean_unknown_impact_count",
+        "initial_attack_unknown_impact_count",
+        "pair_reconciliation_count",
+        "replay_comparison_count",
+        "initial_outcome_counts",
+        "all_attempt_outcome_counts",
+        "replay_status_counts"
+      ],
+      "properties": {
+        "scheduled_pair_count": {"type": "integer", "minimum": 1},
+        "scheduled_episode_count": {"$ref": "#/$defs/nonnegative_integer"},
+        "terminal_attempt_count": {"$ref": "#/$defs/nonnegative_integer"},
+        "initial_attempt_count": {"$ref": "#/$defs/nonnegative_integer"},
+        "replay_attempt_count": {"$ref": "#/$defs/nonnegative_integer"},
+        "completed_attempt_count": {"$ref": "#/$defs/nonnegative_integer"},
+        "incomplete_attempt_count": {"$ref": "#/$defs/nonnegative_integer"},
+        "invalid_attempt_count": {"$ref": "#/$defs/nonnegative_integer"},
+        "initial_effectiveness_denominator": {"$ref": "#/$defs/nonnegative_integer"},
+        "initial_all_attempt_denominator": {"$ref": "#/$defs/nonnegative_integer"},
+        "initial_observed_harm_numerator": {"$ref": "#/$defs/nonnegative_integer"},
+        "all_attempt_denominator": {"$ref": "#/$defs/nonnegative_integer"},
+        "all_attempt_observed_harm_numerator": {"$ref": "#/$defs/nonnegative_integer"},
+        "unknown_impact_attempt_count": {"$ref": "#/$defs/nonnegative_integer"},
+        "initial_clean_incomplete_count": {"$ref": "#/$defs/nonnegative_integer"},
+        "initial_attack_incomplete_count": {"$ref": "#/$defs/nonnegative_integer"},
+        "initial_clean_unknown_impact_count": {"$ref": "#/$defs/nonnegative_integer"},
+        "initial_attack_unknown_impact_count": {"$ref": "#/$defs/nonnegative_integer"},
+        "pair_reconciliation_count": {"$ref": "#/$defs/nonnegative_integer"},
+        "replay_comparison_count": {"$ref": "#/$defs/nonnegative_integer"},
+        "initial_outcome_counts": {"$ref": "#/$defs/outcome_counts"},
+        "all_attempt_outcome_counts": {"$ref": "#/$defs/outcome_counts"},
+        "replay_status_counts": {"$ref": "#/$defs/replay_status_counts"}
+      }
+    }
+  }
+}

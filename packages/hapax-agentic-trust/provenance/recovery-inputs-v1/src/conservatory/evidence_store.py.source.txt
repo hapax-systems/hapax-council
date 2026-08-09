@@ -1,0 +1,1703 @@
+"""Immutable, content-addressed custody for terminal evidence.
+
+This module is execution-inert.  It copies already-produced local evidence into
+an immutable SHA-256 namespace and seals the logical-to-physical mapping.  It
+does not authorize a controller, model, tool, external action, or local run.
+
+The public operation holds source and store directory descriptors for its full
+duration.  Every path walk is descriptor-relative and refuses symlinks.  Bytes
+are copied into a private temporary inode, verified, fsynced, and then published
+with Linux ``renameat2(RENAME_NOREPLACE)`` semantics.  Existing objects are only
+reused after an exact content, size, mode, link-count, and path-binding check.
+"""
+
+from __future__ import annotations
+
+import ctypes
+import errno
+import hashlib
+import json
+import os
+import re
+import secrets
+import stat
+from collections.abc import Iterable
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+from typing import Any, Final
+
+EVIDENCE_INVENTORY_SCHEMA_VERSION: Final = 1
+HASH_ALGORITHM: Final = "sha256"
+OBJECT_LAYOUT: Final = "objects/sha256/{first_two_hex}/{sha256}"
+INVENTORY_LAYOUT: Final = "inventories/sha256/{first_two_hex}/{sha256}"
+AUTHORITY_STATUS: Final = "evidence_only_not_authorized"
+READ_SIZE: Final = 1024 * 1024
+SHA_RE: Final = re.compile(r"^[0-9a-f]{64}$")
+RENAME_NOREPLACE: Final = 1
+
+_LIBC = ctypes.CDLL(None, use_errno=True)
+_LIBC_RENAMEAT2 = getattr(_LIBC, "renameat2", None)
+if _LIBC_RENAMEAT2 is not None:
+    _LIBC_RENAMEAT2.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    _LIBC_RENAMEAT2.restype = ctypes.c_int
+
+
+def _canonical_bytes(document: dict[str, Any]) -> bytes:
+    return (
+        json.dumps(
+            document,
+            allow_nan=False,
+            ensure_ascii=True,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("ascii")
+
+
+def _canonical_compact_bytes(document: dict[str, Any]) -> bytes:
+    return json.dumps(
+        document,
+        allow_nan=False,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+
+
+def _canonical_compact_sha256(document: dict[str, Any]) -> str:
+    return hashlib.sha256(_canonical_compact_bytes(document)).hexdigest()
+
+
+def _validate_sha256(name: str, value: str) -> str:
+    if not isinstance(value, str) or SHA_RE.fullmatch(value) is None:
+        raise ValueError(f"{name} must be a lowercase SHA-256 digest")
+    return value
+
+
+def _validate_size(name: str, value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if value < 0:
+        raise ValueError(f"{name} cannot be negative")
+    return value
+
+
+def _validate_relative_path(name: str, value: str) -> PurePosixPath:
+    if not isinstance(value, str) or not value or "\\" in value or "\x00" in value:
+        raise ValueError(f"{name} must be a non-empty canonical POSIX path")
+    path = PurePosixPath(value)
+    if path.is_absolute() or path.as_posix() != value:
+        raise ValueError(f"{name} must be canonical and relative")
+    if any(part in {"", ".", ".."} for part in path.parts):
+        raise ValueError(f"{name} cannot contain empty, dot, or parent components")
+    return path
+
+
+def _object_relative_path(digest: str) -> str:
+    _validate_sha256("object digest", digest)
+    return f"objects/sha256/{digest[:2]}/{digest}"
+
+
+def _inventory_relative_path(digest: str) -> str:
+    _validate_sha256("inventory digest", digest)
+    return f"inventories/sha256/{digest[:2]}/{digest}"
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceSource:
+    """One logical terminal-evidence path and its confined source file."""
+
+    logical_path: str
+    source_relative_path: str
+
+    def __post_init__(self) -> None:
+        _validate_relative_path("logical evidence path", self.logical_path)
+        _validate_relative_path("source evidence path", self.source_relative_path)
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceInventoryEntry:
+    """One sealed logical-path to immutable-object mapping."""
+
+    logical_path: str
+    object_relative_path: str
+    sha256: str
+    size: int
+
+    def __post_init__(self) -> None:
+        _validate_relative_path("logical evidence path", self.logical_path)
+        _validate_relative_path("object path", self.object_relative_path)
+        _validate_sha256("object sha256", self.sha256)
+        _validate_size("object size", self.size)
+        if self.object_relative_path != _object_relative_path(self.sha256):
+            raise ValueError("object path is not derived from its SHA-256 digest")
+
+    def document(self) -> dict[str, Any]:
+        return {
+            "logical_path": self.logical_path,
+            "object_relative_path": self.object_relative_path,
+            "sha256": self.sha256,
+            "size": self.size,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceInventoryExpectation:
+    """The terminal bundle's expected logical evidence projection."""
+
+    logical_path: str
+    sha256: str
+    size: int
+
+    def __post_init__(self) -> None:
+        _validate_relative_path("expected logical evidence path", self.logical_path)
+        _validate_sha256("expected evidence sha256", self.sha256)
+        _validate_size("expected evidence size", self.size)
+
+
+@dataclass(frozen=True, slots=True)
+class PublishedContent:
+    """Operational publication result; ``reused`` is not part of the seal."""
+
+    relative_path: str
+    sha256: str
+    size: int
+    reused: bool
+
+    def __post_init__(self) -> None:
+        _validate_relative_path("published path", self.relative_path)
+        _validate_sha256("published sha256", self.sha256)
+        _validate_size("published size", self.size)
+        if not isinstance(self.reused, bool):
+            raise TypeError("reused must be a boolean")
+
+
+@dataclass(frozen=True, slots=True)
+class SealedEvidenceInventory:
+    """Canonical logical evidence inventory with an inner Merkle-style root."""
+
+    encoded: bytes
+    inventory_root_sha256: str
+    sha256: str
+    entries: tuple[EvidenceInventoryEntry, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.encoded, bytes):
+            raise TypeError("inventory encoding must be bytes")
+        _validate_sha256("inventory root sha256", self.inventory_root_sha256)
+        _validate_sha256("inventory encoded sha256", self.sha256)
+        if not isinstance(self.entries, tuple) or not self.entries:
+            raise ValueError("inventory must contain at least one evidence entry")
+        if any(not isinstance(entry, EvidenceInventoryEntry) for entry in self.entries):
+            raise TypeError("inventory entries must be EvidenceInventoryEntry values")
+        validated = _validate_inventory_bytes(self.encoded)
+        if validated.inventory_root_sha256 != self.inventory_root_sha256:
+            raise ValueError("inventory root field mismatch")
+        if validated.sha256 != self.sha256:
+            raise ValueError("inventory encoded hash mismatch")
+        if validated.entries != self.entries:
+            raise ValueError("inventory entry field mismatch")
+
+    @property
+    def document(self) -> dict[str, Any]:
+        document = json.loads(self.encoded)
+        if not isinstance(document, dict):
+            raise TypeError("validated inventory decoded to a non-object")
+        return document
+
+    @classmethod
+    def build(
+        cls,
+        entries: Iterable[EvidenceInventoryEntry],
+    ) -> SealedEvidenceInventory:
+        values = tuple(entries)
+        _validate_inventory_entries(values)
+        core = {
+            "authority_status": AUTHORITY_STATUS,
+            "entries": [entry.document() for entry in values],
+            "hash_algorithm": HASH_ALGORITHM,
+            "may_authorize_external_action": False,
+            "object_layout": OBJECT_LAYOUT,
+            "schema_version": EVIDENCE_INVENTORY_SCHEMA_VERSION,
+        }
+        inventory_root_sha256 = _canonical_compact_sha256(core)
+        encoded = _canonical_bytes(
+            {**core, "inventory_root_sha256": inventory_root_sha256}
+        )
+        return cls(
+            encoded=encoded,
+            inventory_root_sha256=inventory_root_sha256,
+            sha256=hashlib.sha256(encoded).hexdigest(),
+            entries=values,
+        )
+
+    @classmethod
+    def from_bytes(cls, raw: bytes) -> SealedEvidenceInventory:
+        validated = _validate_inventory_bytes(raw)
+        return cls(
+            encoded=raw,
+            inventory_root_sha256=validated.inventory_root_sha256,
+            sha256=validated.sha256,
+            entries=validated.entries,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceStoreSnapshot:
+    """A sealed inventory, its publication, and per-source object results."""
+
+    inventory: SealedEvidenceInventory
+    inventory_publication: PublishedContent
+    object_publications: tuple[PublishedContent, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.inventory, SealedEvidenceInventory):
+            raise TypeError("inventory must be a SealedEvidenceInventory")
+        if not isinstance(self.inventory_publication, PublishedContent):
+            raise TypeError("inventory_publication must be PublishedContent")
+        if self.inventory_publication.relative_path != _inventory_relative_path(
+            self.inventory.sha256
+        ):
+            raise ValueError("inventory publication path mismatch")
+        if (
+            self.inventory_publication.sha256 != self.inventory.sha256
+            or self.inventory_publication.size != len(self.inventory.encoded)
+        ):
+            raise ValueError("inventory publication content mismatch")
+        if not isinstance(self.object_publications, tuple) or any(
+            not isinstance(publication, PublishedContent)
+            for publication in self.object_publications
+        ):
+            raise TypeError("object_publications must be PublishedContent values")
+        if len(self.object_publications) != len(self.inventory.entries):
+            raise ValueError("object publication count must match inventory entries")
+        for entry, publication in zip(
+            self.inventory.entries,
+            self.object_publications,
+            strict=True,
+        ):
+            if (
+                publication.relative_path != entry.object_relative_path
+                or publication.sha256 != entry.sha256
+                or publication.size != entry.size
+            ):
+                raise ValueError("object publication does not match inventory entry")
+
+    @property
+    def terminal_binding(self) -> dict[str, Any]:
+        """Exact fields a terminal manifest can pin without trusting source paths."""
+
+        return {
+            "evidence_store_inventory_entry_count": len(self.inventory.entries),
+            "evidence_store_inventory_relative_path": (
+                self.inventory_publication.relative_path
+            ),
+            "evidence_store_inventory_root_sha256": (
+                self.inventory.inventory_root_sha256
+            ),
+            "evidence_store_inventory_schema_version": (
+                EVIDENCE_INVENTORY_SCHEMA_VERSION
+            ),
+            "evidence_store_inventory_sha256": self.inventory.sha256,
+            "evidence_store_inventory_size": len(self.inventory.encoded),
+        }
+
+
+class EvidenceObjectCollisionError(ValueError):
+    """A digest-addressed destination exists but is not the exact object."""
+
+    def __init__(self, relative_path: str, expected_sha256: str, detail: str) -> None:
+        self.relative_path = relative_path
+        self.expected_sha256 = expected_sha256
+        super().__init__(
+            f"content-addressed object collision at {relative_path}: {detail}; "
+            "next action: quarantine the store and audit the preexisting object"
+        )
+
+
+class EvidencePublicationIndeterminateError(RuntimeError):
+    """Publication crossed or may have crossed its final no-replace rename."""
+
+    def __init__(
+        self,
+        *,
+        store_root: Path,
+        candidate_relative_path: str,
+        expected_sha256: str,
+        detail: str,
+    ) -> None:
+        self.store_root = store_root
+        self.candidate_relative_path = candidate_relative_path
+        self.candidate_path = store_root.joinpath(
+            *PurePosixPath(candidate_relative_path).parts
+        )
+        self.expected_sha256 = expected_sha256
+        self.publication_may_exist = True
+        super().__init__(
+            f"evidence publication is indeterminate at {self.candidate_path}: "
+            f"{detail}; next action: do not retry blindly, verify the candidate "
+            f"path against SHA-256 {expected_sha256}"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _ValidatedInventory:
+    inventory_root_sha256: str
+    sha256: str
+    entries: tuple[EvidenceInventoryEntry, ...]
+
+
+def _validate_inventory_entries(
+    entries: tuple[EvidenceInventoryEntry, ...],
+) -> None:
+    if not entries:
+        raise ValueError("inventory must contain at least one evidence entry")
+    if any(not isinstance(entry, EvidenceInventoryEntry) for entry in entries):
+        raise TypeError("inventory entries must be EvidenceInventoryEntry values")
+    logical_paths = [entry.logical_path for entry in entries]
+    if logical_paths != sorted(logical_paths):
+        raise ValueError(
+            "inventory entries must be canonically ordered by logical path"
+        )
+    if len(logical_paths) != len(set(logical_paths)):
+        raise ValueError("inventory logical paths must be unique")
+
+
+def _validate_inventory_bytes(raw: bytes) -> _ValidatedInventory:
+    if not isinstance(raw, bytes):
+        raise TypeError("inventory encoding must be bytes")
+    try:
+        document = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("inventory is not valid UTF-8 JSON") from exc
+    if not isinstance(document, dict):
+        raise TypeError("inventory must be a JSON object")
+    expected_fields = {
+        "authority_status",
+        "entries",
+        "hash_algorithm",
+        "inventory_root_sha256",
+        "may_authorize_external_action",
+        "object_layout",
+        "schema_version",
+    }
+    if set(document) != expected_fields:
+        raise ValueError("inventory has unknown or missing top-level fields")
+    if (
+        isinstance(document["schema_version"], bool)
+        or not isinstance(document["schema_version"], int)
+        or document["schema_version"] != EVIDENCE_INVENTORY_SCHEMA_VERSION
+    ):
+        raise ValueError("inventory schema_version mismatch")
+    if document["hash_algorithm"] != HASH_ALGORITHM:
+        raise ValueError("inventory hash algorithm mismatch")
+    if document["object_layout"] != OBJECT_LAYOUT:
+        raise ValueError("inventory object layout mismatch")
+    if document["authority_status"] != AUTHORITY_STATUS:
+        raise ValueError("inventory cannot grant execution authority")
+    if document["may_authorize_external_action"] is not False:
+        raise ValueError("inventory cannot authorize external action")
+    rows = document["entries"]
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("inventory entries must be a non-empty array")
+    entries: list[EvidenceInventoryEntry] = []
+    expected_entry_fields = {
+        "logical_path",
+        "object_relative_path",
+        "sha256",
+        "size",
+    }
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != expected_entry_fields:
+            raise ValueError("inventory entry has unknown or missing fields")
+        entries.append(
+            EvidenceInventoryEntry(
+                logical_path=row["logical_path"],
+                object_relative_path=row["object_relative_path"],
+                sha256=row["sha256"],
+                size=row["size"],
+            )
+        )
+    values = tuple(entries)
+    _validate_inventory_entries(values)
+    root = _validate_sha256(
+        "inventory_root_sha256",
+        document["inventory_root_sha256"],
+    )
+    core = {
+        key: value for key, value in document.items() if key != "inventory_root_sha256"
+    }
+    if _canonical_compact_sha256(core) != root:
+        raise ValueError("inventory root digest mismatch")
+    if _canonical_bytes(document) != raw:
+        raise ValueError("inventory is not canonical JSON")
+    return _ValidatedInventory(root, hashlib.sha256(raw).hexdigest(), values)
+
+
+@dataclass(slots=True)
+class _HeldRoot:
+    path: Path
+    fd: int
+    identity: tuple[int, int]
+
+
+def _open_absolute_directory_nofollow(path: Path) -> int:
+    if not path.is_absolute():
+        raise ValueError("held root path must be absolute")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    directory_fd = os.open("/", flags)
+    try:
+        for part in path.parts[1:]:
+            child_fd = os.open(part, flags, dir_fd=directory_fd)
+            os.close(directory_fd)
+            directory_fd = child_fd
+        return directory_fd
+    except Exception:
+        os.close(directory_fd)
+        raise
+
+
+def _open_held_root(path: Path, *, label: str) -> _HeldRoot:
+    absolute = path.absolute()
+    try:
+        path_info = absolute.lstat()
+    except FileNotFoundError as exc:
+        raise ValueError(f"{label} root does not exist") from exc
+    if stat.S_ISLNK(path_info.st_mode) or not stat.S_ISDIR(path_info.st_mode):
+        raise ValueError(f"{label} root must be a real directory, not a symlink")
+    try:
+        fd = _open_absolute_directory_nofollow(absolute)
+    except OSError as exc:
+        raise ValueError(
+            f"{label} root could not be opened without following symlinks"
+        ) from exc
+    try:
+        opened = os.fstat(fd)
+        identity = (opened.st_dev, opened.st_ino)
+        if identity != (path_info.st_dev, path_info.st_ino):
+            raise RuntimeError(f"{label} root changed while acquiring its descriptor")
+        return _HeldRoot(absolute, fd, identity)
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _assert_root_still_bound(root: _HeldRoot, *, label: str) -> None:
+    try:
+        path_info = root.path.lstat()
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"{label} root path disappeared while held") from exc
+    reopened_fd = -1
+    try:
+        reopened_fd = _open_absolute_directory_nofollow(root.path)
+        reopened = os.fstat(reopened_fd)
+        opened = os.fstat(root.fd)
+        if (
+            stat.S_ISLNK(path_info.st_mode)
+            or (path_info.st_dev, path_info.st_ino) != root.identity
+            or (reopened.st_dev, reopened.st_ino) != root.identity
+            or (opened.st_dev, opened.st_ino) != root.identity
+        ):
+            raise RuntimeError(
+                f"{label} root path changed while its descriptor was held"
+            )
+    except OSError as exc:
+        raise RuntimeError(
+            f"{label} root path changed while its descriptor was held"
+        ) from exc
+    finally:
+        if reopened_fd >= 0:
+            os.close(reopened_fd)
+
+
+def _open_parent_directory(root_fd: int, relative_path: str) -> tuple[int, str]:
+    relative = _validate_relative_path("evidence path", relative_path)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    directory_fd = os.dup(root_fd)
+    try:
+        for part in relative.parts[:-1]:
+            try:
+                child_fd = os.open(part, flags, dir_fd=directory_fd)
+            except OSError as exc:
+                raise ValueError(
+                    "evidence path parent is absent, non-directory, or a symlink: "
+                    f"{relative_path}"
+                ) from exc
+            os.close(directory_fd)
+            directory_fd = child_fd
+        return directory_fd, relative.parts[-1]
+    except Exception:
+        os.close(directory_fd)
+        raise
+
+
+def _open_or_create_directory(parent_fd: int, name: str) -> int:
+    if "/" in name or name in {"", ".", ".."}:
+        raise ValueError("directory name must be one safe path component")
+    created = False
+    try:
+        os.mkdir(name, 0o700, dir_fd=parent_fd)
+        created = True
+    except FileExistsError:
+        pass
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    try:
+        directory_fd = os.open(name, flags, dir_fd=parent_fd)
+    except OSError as exc:
+        raise ValueError(
+            f"store layout component is non-directory or a symlink: {name}"
+        ) from exc
+    try:
+        if created:
+            os.fsync(parent_fd)
+        _assert_child_directory_still_bound(parent_fd, name, directory_fd)
+        return directory_fd
+    except Exception:
+        os.close(directory_fd)
+        raise
+
+
+def _assert_child_directory_still_bound(
+    parent_fd: int,
+    name: str,
+    child_fd: int,
+) -> None:
+    try:
+        path_info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"held store directory disappeared: {name}") from exc
+    opened = os.fstat(child_fd)
+    if not stat.S_ISDIR(path_info.st_mode) or (path_info.st_dev, path_info.st_ino) != (
+        opened.st_dev,
+        opened.st_ino,
+    ):
+        raise RuntimeError(f"held store directory path was replaced: {name}")
+
+
+@dataclass(slots=True)
+class _StoreLayout:
+    root_fd: int
+    objects_fd: int
+    object_sha_fd: int
+    inventories_fd: int
+    inventory_sha_fd: int
+    staging_fd: int
+
+    def close(self) -> None:
+        for fd in (
+            self.staging_fd,
+            self.inventory_sha_fd,
+            self.inventories_fd,
+            self.object_sha_fd,
+            self.objects_fd,
+        ):
+            os.close(fd)
+
+    def assert_still_bound(self) -> None:
+        _assert_child_directory_still_bound(self.root_fd, "objects", self.objects_fd)
+        _assert_child_directory_still_bound(
+            self.objects_fd,
+            "sha256",
+            self.object_sha_fd,
+        )
+        _assert_child_directory_still_bound(
+            self.root_fd,
+            "inventories",
+            self.inventories_fd,
+        )
+        _assert_child_directory_still_bound(
+            self.inventories_fd,
+            "sha256",
+            self.inventory_sha_fd,
+        )
+        _assert_child_directory_still_bound(
+            self.root_fd,
+            ".staging",
+            self.staging_fd,
+        )
+
+
+def _open_store_layout(store_root_fd: int) -> _StoreLayout:
+    objects_fd = _open_or_create_directory(store_root_fd, "objects")
+    object_sha_fd = -1
+    inventories_fd = -1
+    inventory_sha_fd = -1
+    staging_fd = -1
+    try:
+        object_sha_fd = _open_or_create_directory(objects_fd, "sha256")
+        inventories_fd = _open_or_create_directory(store_root_fd, "inventories")
+        inventory_sha_fd = _open_or_create_directory(inventories_fd, "sha256")
+        staging_fd = _open_or_create_directory(store_root_fd, ".staging")
+        layout = _StoreLayout(
+            root_fd=store_root_fd,
+            objects_fd=objects_fd,
+            object_sha_fd=object_sha_fd,
+            inventories_fd=inventories_fd,
+            inventory_sha_fd=inventory_sha_fd,
+            staging_fd=staging_fd,
+        )
+        layout.assert_still_bound()
+        return layout
+    except Exception:
+        for fd in (staging_fd, inventory_sha_fd, inventories_fd, object_sha_fd):
+            if fd >= 0:
+                os.close(fd)
+        os.close(objects_fd)
+        raise
+
+
+def _stable_stat_identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
+def _write_all(fd: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    offset = 0
+    while offset < len(view):
+        written = os.write(fd, view[offset:])
+        if written < 1:
+            raise OSError("short write while copying evidence")
+        offset += written
+
+
+def _hash_regular_fd(
+    fd: int,
+    *,
+    display_name: str,
+) -> tuple[str, int, int, int]:
+    os.lseek(fd, 0, os.SEEK_SET)
+    before = os.fstat(fd)
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"evidence object is not a regular file: {display_name}")
+    digest = hashlib.sha256()
+    observed_size = 0
+    while True:
+        chunk = os.read(fd, READ_SIZE)
+        if not chunk:
+            break
+        digest.update(chunk)
+        observed_size += len(chunk)
+    after = os.fstat(fd)
+    if _stable_stat_identity(before) != _stable_stat_identity(after):
+        raise RuntimeError(f"evidence object changed while hashing: {display_name}")
+    if observed_size != before.st_size:
+        raise RuntimeError(
+            f"evidence object size changed while hashing: {display_name}"
+        )
+    return (
+        digest.hexdigest(),
+        observed_size,
+        stat.S_IMODE(before.st_mode),
+        before.st_nlink,
+    )
+
+
+def _assert_named_entry_matches_fd(
+    parent_fd: int,
+    name: str,
+    fd: int,
+    *,
+    display_name: str,
+) -> None:
+    try:
+        path_info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"evidence source path disappeared: {display_name}") from exc
+    opened = os.fstat(fd)
+    if not stat.S_ISREG(path_info.st_mode) or (path_info.st_dev, path_info.st_ino) != (
+        opened.st_dev,
+        opened.st_ino,
+    ):
+        raise RuntimeError(f"evidence source path was replaced: {display_name}")
+
+
+def _assert_source_path_still_bound(
+    source_root_fd: int,
+    relative_path: str,
+    expected: os.stat_result,
+) -> None:
+    parent_fd, final_name = _open_parent_directory(source_root_fd, relative_path)
+    try:
+        try:
+            path_info = os.stat(
+                final_name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                f"evidence source path disappeared: {relative_path}"
+            ) from exc
+        if not stat.S_ISREG(path_info.st_mode) or _stable_stat_identity(
+            path_info
+        ) != _stable_stat_identity(expected):
+            raise RuntimeError(f"evidence source path was replaced: {relative_path}")
+    finally:
+        os.close(parent_fd)
+
+
+def _new_temporary_file(staging_fd: int, *, label: str) -> tuple[int, str]:
+    name = f".{label}.tmp-{os.getpid()}-{secrets.token_hex(12)}"
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW
+    fd = os.open(name, flags, 0o400, dir_fd=staging_fd)
+    try:
+        os.fchmod(fd, 0o400)
+    except Exception:
+        os.close(fd)
+        os.unlink(name, dir_fd=staging_fd)
+        raise
+    return fd, name
+
+
+@dataclass(slots=True)
+class _HeldSourceObservation:
+    root_fd: int
+    parent_fd: int
+    final_name: str
+    relative_path: str
+    identity: os.stat_result
+
+    def close(self) -> None:
+        os.close(self.parent_fd)
+
+    def assert_still_bound(self) -> None:
+        try:
+            path_info = os.stat(
+                self.final_name,
+                dir_fd=self.parent_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                f"evidence source path disappeared: {self.relative_path}"
+            ) from exc
+        if not stat.S_ISREG(path_info.st_mode) or _stable_stat_identity(
+            path_info
+        ) != _stable_stat_identity(self.identity):
+            raise RuntimeError(
+                f"evidence source path was replaced: {self.relative_path}"
+            )
+        _assert_source_path_still_bound(
+            self.root_fd,
+            self.relative_path,
+            self.identity,
+        )
+
+
+def _copy_source_to_temporary(
+    source_root: _HeldRoot,
+    source_relative_path: str,
+    staging_fd: int,
+) -> tuple[_HeldSourceObservation, str, str, int]:
+    source_parent_fd, source_name = _open_parent_directory(
+        source_root.fd,
+        source_relative_path,
+    )
+    source_fd = -1
+    temporary_fd = -1
+    temporary_name = ""
+    try:
+        try:
+            source_fd = os.open(
+                source_name,
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+                dir_fd=source_parent_fd,
+            )
+        except OSError as exc:
+            raise ValueError(
+                f"evidence source is absent or a forbidden symlink: "
+                f"{source_relative_path}"
+            ) from exc
+        before = os.fstat(source_fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError(
+                f"evidence source is not a regular file: {source_relative_path}"
+            )
+        _assert_named_entry_matches_fd(
+            source_parent_fd,
+            source_name,
+            source_fd,
+            display_name=source_relative_path,
+        )
+        temporary_fd, temporary_name = _new_temporary_file(
+            staging_fd,
+            label="evidence",
+        )
+        digest = hashlib.sha256()
+        copied_size = 0
+        while True:
+            chunk = os.read(source_fd, READ_SIZE)
+            if not chunk:
+                break
+            digest.update(chunk)
+            copied_size += len(chunk)
+            _write_all(temporary_fd, chunk)
+        after = os.fstat(source_fd)
+        if _stable_stat_identity(before) != _stable_stat_identity(after):
+            raise RuntimeError(
+                f"evidence source changed while copying: {source_relative_path}"
+            )
+        if copied_size != before.st_size:
+            raise RuntimeError(
+                f"evidence source size changed while copying: {source_relative_path}"
+            )
+        _assert_named_entry_matches_fd(
+            source_parent_fd,
+            source_name,
+            source_fd,
+            display_name=source_relative_path,
+        )
+        _assert_source_path_still_bound(
+            source_root.fd,
+            source_relative_path,
+            after,
+        )
+        _assert_root_still_bound(source_root, label="source")
+        os.fsync(temporary_fd)
+        copied_digest = digest.hexdigest()
+        verified_digest, verified_size, mode, link_count = _hash_regular_fd(
+            temporary_fd,
+            display_name=temporary_name,
+        )
+        if (
+            verified_digest != copied_digest
+            or verified_size != copied_size
+            or mode != 0o400
+            or link_count != 1
+        ):
+            raise RuntimeError("temporary evidence copy failed verification")
+        _assert_named_entry_matches_fd(
+            staging_fd,
+            temporary_name,
+            temporary_fd,
+            display_name=temporary_name,
+        )
+        os.close(temporary_fd)
+        temporary_fd = -1
+        observation = _HeldSourceObservation(
+            root_fd=source_root.fd,
+            parent_fd=source_parent_fd,
+            final_name=source_name,
+            relative_path=source_relative_path,
+            identity=after,
+        )
+        return observation, temporary_name, copied_digest, copied_size
+    except Exception:
+        if temporary_fd >= 0:
+            os.close(temporary_fd)
+        if temporary_name:
+            try:
+                os.unlink(temporary_name, dir_fd=staging_fd)
+                os.fsync(staging_fd)
+            except FileNotFoundError:
+                pass
+        os.close(source_parent_fd)
+        raise
+    finally:
+        if source_fd >= 0:
+            os.close(source_fd)
+
+
+def _rename_noreplace(
+    source_directory_fd: int,
+    source_name: str,
+    destination_directory_fd: int,
+    destination_name: str,
+) -> None:
+    if _LIBC_RENAMEAT2 is None:
+        raise OSError(
+            errno.ENOSYS,
+            "renameat2 is unavailable; atomic no-replace publication is required",
+        )
+    ctypes.set_errno(0)
+    result = _LIBC_RENAMEAT2(
+        source_directory_fd,
+        os.fsencode(source_name),
+        destination_directory_fd,
+        os.fsencode(destination_name),
+        RENAME_NOREPLACE,
+    )
+    if result != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number), destination_name)
+
+
+def _observe_named_regular_file(
+    parent_fd: int,
+    name: str,
+    *,
+    display_name: str,
+    retain_bytes: bool,
+) -> tuple[str, int, int, int, bytes | None]:
+    try:
+        path_before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError as exc:
+        raise ValueError(f"stored object is absent: {display_name}") from exc
+    if stat.S_ISLNK(path_before.st_mode) or not stat.S_ISREG(path_before.st_mode):
+        raise ValueError(f"stored object is not a regular file: {display_name}")
+    try:
+        fd = os.open(
+            name,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+    except OSError as exc:
+        raise ValueError(
+            f"stored object is absent or a forbidden symlink: {display_name}"
+        ) from exc
+    try:
+        opened = os.fstat(fd)
+        if (path_before.st_dev, path_before.st_ino) != (
+            opened.st_dev,
+            opened.st_ino,
+        ):
+            raise RuntimeError(f"stored object changed while opening: {display_name}")
+        digest = hashlib.sha256()
+        retained: list[bytes] | None = [] if retain_bytes else None
+        observed_size = 0
+        while True:
+            chunk = os.read(fd, READ_SIZE)
+            if not chunk:
+                break
+            digest.update(chunk)
+            observed_size += len(chunk)
+            if retained is not None:
+                retained.append(chunk)
+        after = os.fstat(fd)
+        if _stable_stat_identity(opened) != _stable_stat_identity(after):
+            raise RuntimeError(f"stored object changed while hashing: {display_name}")
+        if observed_size != opened.st_size:
+            raise RuntimeError(
+                f"stored object size changed while hashing: {display_name}"
+            )
+        path_after = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if not stat.S_ISREG(path_after.st_mode) or _stable_stat_identity(
+            path_after
+        ) != _stable_stat_identity(after):
+            raise RuntimeError(f"stored object path was replaced: {display_name}")
+        raw = b"".join(retained) if retained is not None else None
+        return (
+            digest.hexdigest(),
+            observed_size,
+            stat.S_IMODE(opened.st_mode),
+            opened.st_nlink,
+            raw,
+        )
+    finally:
+        os.close(fd)
+
+
+def _verify_exact_stored_object(
+    parent_fd: int,
+    final_name: str,
+    *,
+    relative_path: str,
+    expected_sha256: str,
+    expected_size: int,
+    collision: bool,
+) -> bytes | None:
+    try:
+        digest, size, mode, link_count, raw = _observe_named_regular_file(
+            parent_fd,
+            final_name,
+            display_name=relative_path,
+            retain_bytes=False,
+        )
+    except Exception as exc:
+        if collision:
+            raise EvidenceObjectCollisionError(
+                relative_path,
+                expected_sha256,
+                str(exc) or type(exc).__name__,
+            ) from exc
+        raise
+    if (
+        digest != expected_sha256
+        or size != expected_size
+        or mode != 0o400
+        or link_count != 1
+    ):
+        detail = (
+            f"expected digest={expected_sha256} size={expected_size} mode=0400 "
+            f"links=1, observed digest={digest} size={size} mode={mode:04o} "
+            f"links={link_count}"
+        )
+        if collision:
+            raise EvidenceObjectCollisionError(relative_path, expected_sha256, detail)
+        raise RuntimeError(f"published object failed verification: {detail}")
+    return raw
+
+
+def _cleanup_temporary(staging_fd: int, temporary_name: str) -> None:
+    try:
+        os.unlink(temporary_name, dir_fd=staging_fd)
+    except FileNotFoundError:
+        return
+    os.fsync(staging_fd)
+
+
+def _publish_temporary_noreplace(
+    *,
+    store_root: _HeldRoot,
+    staging_fd: int,
+    temporary_name: str,
+    destination_directory_fd: int,
+    final_name: str,
+    relative_path: str,
+    expected_sha256: str,
+    expected_size: int,
+) -> PublishedContent:
+    if os.fstat(staging_fd).st_dev != os.fstat(destination_directory_fd).st_dev:
+        _cleanup_temporary(staging_fd, temporary_name)
+        raise ValueError(
+            "store layout crosses filesystems; atomic rename is impossible"
+        )
+    published = False
+    try:
+        try:
+            _rename_noreplace(
+                staging_fd,
+                temporary_name,
+                destination_directory_fd,
+                final_name,
+            )
+        except OSError as exc:
+            if exc.errno != errno.EEXIST:
+                detail = "the final no-replace rename returned an uncertain error"
+                try:
+                    _cleanup_temporary(staging_fd, temporary_name)
+                except OSError as cleanup_error:
+                    detail += f"; temporary cleanup was also uncertain: {cleanup_error}"
+                raise EvidencePublicationIndeterminateError(
+                    store_root=store_root.path,
+                    candidate_relative_path=relative_path,
+                    expected_sha256=expected_sha256,
+                    detail=detail,
+                ) from exc
+            _verify_exact_stored_object(
+                destination_directory_fd,
+                final_name,
+                relative_path=relative_path,
+                expected_sha256=expected_sha256,
+                expected_size=expected_size,
+                collision=True,
+            )
+            _cleanup_temporary(staging_fd, temporary_name)
+            return PublishedContent(
+                relative_path,
+                expected_sha256,
+                expected_size,
+                reused=True,
+            )
+        published = True
+        os.fsync(destination_directory_fd)
+        os.fsync(staging_fd)
+        _verify_exact_stored_object(
+            destination_directory_fd,
+            final_name,
+            relative_path=relative_path,
+            expected_sha256=expected_sha256,
+            expected_size=expected_size,
+            collision=False,
+        )
+        _assert_root_still_bound(store_root, label="store")
+        return PublishedContent(
+            relative_path,
+            expected_sha256,
+            expected_size,
+            reused=False,
+        )
+    except Exception as exc:
+        if not published and not isinstance(
+            exc,
+            EvidencePublicationIndeterminateError,
+        ):
+            _cleanup_temporary(staging_fd, temporary_name)
+        if published and not isinstance(exc, EvidencePublicationIndeterminateError):
+            raise EvidencePublicationIndeterminateError(
+                store_root=store_root.path,
+                candidate_relative_path=relative_path,
+                expected_sha256=expected_sha256,
+                detail=str(exc) or type(exc).__name__,
+            ) from exc
+        raise
+
+
+def _publish_object_copy(
+    *,
+    source_root: _HeldRoot,
+    store_root: _HeldRoot,
+    layout: _StoreLayout,
+    source_relative_path: str,
+) -> tuple[PublishedContent, _HeldSourceObservation]:
+    observation, temporary_name, digest, size = _copy_source_to_temporary(
+        source_root,
+        source_relative_path,
+        layout.staging_fd,
+    )
+    shard_fd = -1
+    try:
+        _assert_root_still_bound(source_root, label="source")
+        _assert_root_still_bound(store_root, label="store")
+        layout.assert_still_bound()
+        shard_fd = _open_or_create_directory(layout.object_sha_fd, digest[:2])
+        relative_path = _object_relative_path(digest)
+        publication = _publish_temporary_noreplace(
+            store_root=store_root,
+            staging_fd=layout.staging_fd,
+            temporary_name=temporary_name,
+            destination_directory_fd=shard_fd,
+            final_name=digest,
+            relative_path=relative_path,
+            expected_sha256=digest,
+            expected_size=size,
+        )
+        try:
+            _assert_child_directory_still_bound(
+                layout.object_sha_fd,
+                digest[:2],
+                shard_fd,
+            )
+        except Exception as exc:
+            raise EvidencePublicationIndeterminateError(
+                store_root=store_root.path,
+                candidate_relative_path=relative_path,
+                expected_sha256=digest,
+                detail="object shard path changed after publication",
+            ) from exc
+        return publication, observation
+    except Exception:
+        observation.close()
+        raise
+    finally:
+        if shard_fd >= 0:
+            os.close(shard_fd)
+
+
+def _publish_bytes(
+    *,
+    store_root: _HeldRoot,
+    layout: _StoreLayout,
+    payload: bytes,
+) -> PublishedContent:
+    temporary_fd, temporary_name = _new_temporary_file(
+        layout.staging_fd,
+        label="inventory",
+    )
+    try:
+        _write_all(temporary_fd, payload)
+        os.fsync(temporary_fd)
+        digest, size, mode, link_count = _hash_regular_fd(
+            temporary_fd,
+            display_name=temporary_name,
+        )
+        if (
+            digest != hashlib.sha256(payload).hexdigest()
+            or size != len(payload)
+            or mode != 0o400
+            or link_count != 1
+        ):
+            raise RuntimeError("temporary inventory failed verification")
+        _assert_named_entry_matches_fd(
+            layout.staging_fd,
+            temporary_name,
+            temporary_fd,
+            display_name=temporary_name,
+        )
+        os.close(temporary_fd)
+        temporary_fd = -1
+        shard_fd = _open_or_create_directory(layout.inventory_sha_fd, digest[:2])
+        try:
+            relative_path = _inventory_relative_path(digest)
+            publication = _publish_temporary_noreplace(
+                store_root=store_root,
+                staging_fd=layout.staging_fd,
+                temporary_name=temporary_name,
+                destination_directory_fd=shard_fd,
+                final_name=digest,
+                relative_path=relative_path,
+                expected_sha256=digest,
+                expected_size=size,
+            )
+            try:
+                _assert_child_directory_still_bound(
+                    layout.inventory_sha_fd,
+                    digest[:2],
+                    shard_fd,
+                )
+            except Exception as exc:
+                raise EvidencePublicationIndeterminateError(
+                    store_root=store_root.path,
+                    candidate_relative_path=relative_path,
+                    expected_sha256=digest,
+                    detail="inventory shard path changed after publication",
+                ) from exc
+            return publication
+        finally:
+            os.close(shard_fd)
+    except Exception:
+        if temporary_fd >= 0:
+            os.close(temporary_fd)
+        try:
+            _cleanup_temporary(layout.staging_fd, temporary_name)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def capture_evidence(
+    source_root: Path,
+    store_root: Path,
+    sources: Iterable[EvidenceSource],
+) -> EvidenceStoreSnapshot:
+    """Copy, seal, and publish a complete local evidence snapshot.
+
+    The source and store roots must already exist.  Store layout directories are
+    created descriptor-relatively and fsynced.  The source iterable must be
+    explicit, non-empty, and have unique logical paths.  Input ordering has no
+    effect on the sealed inventory.
+    """
+
+    values = tuple(sources)
+    if not values:
+        raise ValueError("evidence snapshot requires at least one source")
+    if any(not isinstance(source, EvidenceSource) for source in values):
+        raise TypeError("sources must be EvidenceSource values")
+    logical_paths = [source.logical_path for source in values]
+    if len(logical_paths) != len(set(logical_paths)):
+        raise ValueError("logical evidence paths must be unique")
+    values = tuple(sorted(values, key=lambda source: source.logical_path))
+
+    held_source = _open_held_root(source_root, label="source")
+    held_store: _HeldRoot | None = None
+    layout: _StoreLayout | None = None
+    inventory_publication: PublishedContent | None = None
+    source_observations: list[_HeldSourceObservation] = []
+    try:
+        held_store = _open_held_root(store_root, label="store")
+        layout = _open_store_layout(held_store.fd)
+        _assert_root_still_bound(held_source, label="source")
+        _assert_root_still_bound(held_store, label="store")
+        publications: list[PublishedContent] = []
+        entries: list[EvidenceInventoryEntry] = []
+        for source in values:
+            publication, observation = _publish_object_copy(
+                source_root=held_source,
+                store_root=held_store,
+                layout=layout,
+                source_relative_path=source.source_relative_path,
+            )
+            source_observations.append(observation)
+            publications.append(publication)
+            entries.append(
+                EvidenceInventoryEntry(
+                    logical_path=source.logical_path,
+                    object_relative_path=publication.relative_path,
+                    sha256=publication.sha256,
+                    size=publication.size,
+                )
+            )
+        _assert_root_still_bound(held_source, label="source")
+        _assert_root_still_bound(held_store, label="store")
+        layout.assert_still_bound()
+        for observation in source_observations:
+            observation.assert_still_bound()
+        inventory = SealedEvidenceInventory.build(tuple(entries))
+        inventory_publication = _publish_bytes(
+            store_root=held_store,
+            layout=layout,
+            payload=inventory.encoded,
+        )
+        try:
+            _assert_root_still_bound(held_source, label="source")
+            _assert_root_still_bound(held_store, label="store")
+            layout.assert_still_bound()
+            for observation in source_observations:
+                observation.assert_still_bound()
+        except Exception as exc:
+            raise EvidencePublicationIndeterminateError(
+                store_root=held_store.path,
+                candidate_relative_path=inventory_publication.relative_path,
+                expected_sha256=inventory.sha256,
+                detail="a held root or store layout changed after inventory publication",
+            ) from exc
+        return EvidenceStoreSnapshot(
+            inventory=inventory,
+            inventory_publication=inventory_publication,
+            object_publications=tuple(publications),
+        )
+    finally:
+        for observation in source_observations:
+            observation.close()
+        if layout is not None:
+            layout.close()
+        if held_store is not None:
+            os.close(held_store.fd)
+        os.close(held_source.fd)
+
+
+def _validate_expected_projection(
+    expected_entries: Iterable[EvidenceInventoryExpectation],
+    *,
+    expected_entry_count: int,
+) -> tuple[EvidenceInventoryExpectation, ...]:
+    _validate_size("expected inventory entry count", expected_entry_count)
+    if expected_entry_count < 1:
+        raise ValueError("expected inventory entry count must be positive")
+    values = tuple(expected_entries)
+    if any(not isinstance(entry, EvidenceInventoryExpectation) for entry in values):
+        raise TypeError(
+            "expected_entries must contain EvidenceInventoryExpectation values"
+        )
+    if len(values) != expected_entry_count:
+        raise ValueError(
+            "expected inventory entry count does not match expected_entries"
+        )
+    values = tuple(sorted(values, key=lambda entry: entry.logical_path))
+    logical_paths = [entry.logical_path for entry in values]
+    if len(logical_paths) != len(set(logical_paths)):
+        raise ValueError("expected logical evidence paths must be unique")
+    return values
+
+
+def _verify_evidence_inventory_from_root_fd(
+    root_fd: int,
+    inventory_relative_path: str,
+    *,
+    expected_sha256: str | None = None,
+    expected_root_sha256: str | None = None,
+    expected_size: int | None = None,
+    expected_entry_count: int | None = None,
+    expected_entries: tuple[EvidenceInventoryExpectation, ...] | None = None,
+) -> SealedEvidenceInventory:
+    relative = _validate_relative_path("inventory path", inventory_relative_path)
+    if len(relative.parts) != 4 or relative.parts[:2] != ("inventories", "sha256"):
+        raise ValueError("inventory path does not use the trusted inventory layout")
+    digest = _validate_sha256("inventory path digest", relative.parts[-1])
+    if relative.parts[-2] != digest[:2] or inventory_relative_path != (
+        _inventory_relative_path(digest)
+    ):
+        raise ValueError("inventory path is not derived from its SHA-256 digest")
+    if expected_sha256 is not None:
+        _validate_sha256("expected inventory sha256", expected_sha256)
+        if expected_sha256 != digest:
+            raise ValueError("inventory path digest does not match the expected digest")
+    if expected_root_sha256 is not None:
+        _validate_sha256("expected inventory root sha256", expected_root_sha256)
+    if expected_size is not None:
+        _validate_size("expected inventory size", expected_size)
+    root_before = os.fstat(root_fd)
+    if not stat.S_ISDIR(root_before.st_mode):
+        raise ValueError("evidence-store root fd must refer to a directory")
+
+    inventory_parent_fd, inventory_name = _open_parent_directory(
+        root_fd,
+        inventory_relative_path,
+    )
+    try:
+        observed_digest, size, mode, links, raw = _observe_named_regular_file(
+            inventory_parent_fd,
+            inventory_name,
+            display_name=inventory_relative_path,
+            retain_bytes=True,
+        )
+    finally:
+        os.close(inventory_parent_fd)
+    if (
+        observed_digest != digest
+        or mode != 0o400
+        or links != 1
+        or raw is None
+        or size != len(raw)
+    ):
+        raise ValueError("published inventory object failed custody verification")
+    if expected_size is not None and size != expected_size:
+        raise ValueError("inventory size does not match the expected size")
+    inventory = SealedEvidenceInventory.from_bytes(raw)
+    if expected_root_sha256 is not None and (
+        inventory.inventory_root_sha256 != expected_root_sha256
+    ):
+        raise ValueError("inventory root does not match the expected root")
+    if expected_entry_count is not None and (
+        len(inventory.entries) != expected_entry_count
+    ):
+        raise ValueError("inventory entry count does not match the expected count")
+    if expected_entries is not None:
+        observed_projection = tuple(
+            (entry.logical_path, entry.sha256, entry.size)
+            for entry in inventory.entries
+        )
+        expected_projection = tuple(
+            (entry.logical_path, entry.sha256, entry.size) for entry in expected_entries
+        )
+        if observed_projection != expected_projection:
+            raise ValueError("inventory expected-entry projection mismatch")
+    for entry in inventory.entries:
+        object_parent_fd, object_name = _open_parent_directory(
+            root_fd,
+            entry.object_relative_path,
+        )
+        try:
+            _verify_exact_stored_object(
+                object_parent_fd,
+                object_name,
+                relative_path=entry.object_relative_path,
+                expected_sha256=entry.sha256,
+                expected_size=entry.size,
+                collision=False,
+            )
+        finally:
+            os.close(object_parent_fd)
+    # Rewalk every named path from the held root after the first complete pass.
+    # A descriptor to a detached parent is not proof that the current path still
+    # names that parent; the second pass closes that replacement window before
+    # returning custody as verified.
+    rebound_parent_fd, rebound_name = _open_parent_directory(
+        root_fd,
+        inventory_relative_path,
+    )
+    try:
+        rebound_digest, rebound_size, rebound_mode, rebound_links, _ = (
+            _observe_named_regular_file(
+                rebound_parent_fd,
+                rebound_name,
+                display_name=inventory_relative_path,
+                retain_bytes=False,
+            )
+        )
+    finally:
+        os.close(rebound_parent_fd)
+    if (
+        rebound_digest != digest
+        or rebound_size != size
+        or rebound_mode != 0o400
+        or rebound_links != 1
+    ):
+        raise RuntimeError("inventory path was rebound during verification")
+    for entry in inventory.entries:
+        rebound_parent_fd, rebound_name = _open_parent_directory(
+            root_fd,
+            entry.object_relative_path,
+        )
+        try:
+            _verify_exact_stored_object(
+                rebound_parent_fd,
+                rebound_name,
+                relative_path=entry.object_relative_path,
+                expected_sha256=entry.sha256,
+                expected_size=entry.size,
+                collision=False,
+            )
+        finally:
+            os.close(rebound_parent_fd)
+    root_after = os.fstat(root_fd)
+    if not stat.S_ISDIR(root_after.st_mode) or (
+        root_before.st_dev,
+        root_before.st_ino,
+    ) != (root_after.st_dev, root_after.st_ino):
+        raise RuntimeError("evidence-store root fd changed during verification")
+    return inventory
+
+
+def verify_evidence_inventory_with_root_fd(
+    root_fd: int,
+    inventory_relative_path: str,
+    *,
+    expected_sha256: str,
+    expected_root_sha256: str,
+    expected_size: int,
+    expected_entry_count: int,
+    expected_entries: Iterable[EvidenceInventoryExpectation],
+) -> SealedEvidenceInventory:
+    """Verify inventory and objects through a borrowed, already-held root fd.
+
+    The descriptor is never closed or path-reopened.  A private duplicate is
+    held for the complete verification.  ``expected_entries`` is the exact
+    terminal artifact projection excluding the inventory artifact itself.
+    """
+
+    if isinstance(root_fd, bool) or not isinstance(root_fd, int):
+        raise TypeError("evidence-store root fd must be an integer")
+    if root_fd < 0:
+        raise ValueError("evidence-store root fd cannot be negative")
+    _validate_sha256("expected inventory sha256", expected_sha256)
+    _validate_sha256("expected inventory root sha256", expected_root_sha256)
+    _validate_size("expected inventory size", expected_size)
+    projection = _validate_expected_projection(
+        expected_entries,
+        expected_entry_count=expected_entry_count,
+    )
+    try:
+        owned_fd = os.dup(root_fd)
+    except OSError as exc:
+        raise ValueError("evidence-store root fd is not open") from exc
+    try:
+        return _verify_evidence_inventory_from_root_fd(
+            owned_fd,
+            inventory_relative_path,
+            expected_sha256=expected_sha256,
+            expected_root_sha256=expected_root_sha256,
+            expected_size=expected_size,
+            expected_entry_count=expected_entry_count,
+            expected_entries=projection,
+        )
+    finally:
+        os.close(owned_fd)
+
+
+def load_evidence_inventory_with_root_fd(
+    root_fd: int,
+    inventory_relative_path: str,
+    *,
+    expected_sha256: str,
+    expected_root_sha256: str,
+    expected_size: int,
+    expected_entry_count: int,
+) -> SealedEvidenceInventory:
+    """Load a fully verified inventory from an already-held store root.
+
+    This is the bootstrap half of terminal closure.  It validates the sealed
+    inventory, every object it names, and all externally supplied inventory
+    pins before a caller has an exact logical projection to compare.  Callers
+    must subsequently reconcile the returned entries to their independent
+    receipt or terminal projection; this function deliberately does not treat
+    the inventory as self-authorizing evidence of completeness.
+    """
+
+    if isinstance(root_fd, bool) or not isinstance(root_fd, int):
+        raise TypeError("evidence-store root fd must be an integer")
+    if root_fd < 0:
+        raise ValueError("evidence-store root fd cannot be negative")
+    _validate_sha256("expected inventory sha256", expected_sha256)
+    _validate_sha256("expected inventory root sha256", expected_root_sha256)
+    _validate_size("expected inventory size", expected_size)
+    _validate_size("expected inventory entry count", expected_entry_count)
+    if expected_entry_count < 1:
+        raise ValueError("expected inventory entry count must be positive")
+    try:
+        owned_fd = os.dup(root_fd)
+    except OSError as exc:
+        raise ValueError("evidence-store root fd is not open") from exc
+    try:
+        return _verify_evidence_inventory_from_root_fd(
+            owned_fd,
+            inventory_relative_path,
+            expected_sha256=expected_sha256,
+            expected_root_sha256=expected_root_sha256,
+            expected_size=expected_size,
+            expected_entry_count=expected_entry_count,
+        )
+    finally:
+        os.close(owned_fd)
+
+
+def read_verified_evidence_object_with_root_fd(
+    root_fd: int,
+    entry: EvidenceInventoryEntry,
+) -> bytes:
+    """Read one immutable object through a borrowed evidence-store root fd.
+
+    Terminal validators use this after exact inventory reconciliation so that
+    semantic parsing reads the custodied object, not a mutable logical source
+    path.  The object is nevertheless verified again during this read; a prior
+    successful inventory check is not treated as a timeless capability.
+    """
+
+    if isinstance(root_fd, bool) or not isinstance(root_fd, int):
+        raise TypeError("evidence-store root fd must be an integer")
+    if root_fd < 0:
+        raise ValueError("evidence-store root fd cannot be negative")
+    if not isinstance(entry, EvidenceInventoryEntry):
+        raise TypeError("entry must be an EvidenceInventoryEntry")
+    try:
+        owned_fd = os.dup(root_fd)
+    except OSError as exc:
+        raise ValueError("evidence-store root fd is not open") from exc
+    try:
+        root_before = os.fstat(owned_fd)
+        if not stat.S_ISDIR(root_before.st_mode):
+            raise ValueError("evidence-store root fd must refer to a directory")
+        parent_fd, final_name = _open_parent_directory(
+            owned_fd,
+            entry.object_relative_path,
+        )
+        try:
+            digest, size, mode, links, raw = _observe_named_regular_file(
+                parent_fd,
+                final_name,
+                display_name=entry.object_relative_path,
+                retain_bytes=True,
+            )
+        finally:
+            os.close(parent_fd)
+        if (
+            digest != entry.sha256
+            or size != entry.size
+            or mode != 0o400
+            or links != 1
+            or raw is None
+            or len(raw) != entry.size
+        ):
+            raise ValueError(
+                "custodied evidence object no longer matches its inventory entry"
+            )
+        rebound_parent_fd, rebound_name = _open_parent_directory(
+            owned_fd,
+            entry.object_relative_path,
+        )
+        try:
+            _verify_exact_stored_object(
+                rebound_parent_fd,
+                rebound_name,
+                relative_path=entry.object_relative_path,
+                expected_sha256=entry.sha256,
+                expected_size=entry.size,
+                collision=False,
+            )
+        finally:
+            os.close(rebound_parent_fd)
+        root_after = os.fstat(owned_fd)
+        if not stat.S_ISDIR(root_after.st_mode) or (
+            root_before.st_dev,
+            root_before.st_ino,
+        ) != (root_after.st_dev, root_after.st_ino):
+            raise RuntimeError("evidence-store root fd changed during object read")
+        return raw
+    finally:
+        os.close(owned_fd)
+
+
+def verify_evidence_inventory(
+    store_root: Path,
+    inventory_relative_path: str,
+    *,
+    expected_sha256: str | None = None,
+    expected_root_sha256: str | None = None,
+) -> SealedEvidenceInventory:
+    """Verify a published inventory and every object it names by root path."""
+
+    held_store = _open_held_root(store_root, label="store")
+    try:
+        inventory = _verify_evidence_inventory_from_root_fd(
+            held_store.fd,
+            inventory_relative_path,
+            expected_sha256=expected_sha256,
+            expected_root_sha256=expected_root_sha256,
+        )
+        _assert_root_still_bound(held_store, label="store")
+        return inventory
+    finally:
+        os.close(held_store.fd)

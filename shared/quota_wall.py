@@ -35,6 +35,20 @@ RELAY_RECEIPT_DIR = Path(
     )
 )
 
+CLAUDE_HEADLESS_ROLES = frozenset(
+    {"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"}
+)
+CLAUDE_HEADLESS_ROUTE_ID = "claude.headless.full"
+
+
+def _route_id_for_role(role: str) -> str | None:
+    """Return route scope only when the role is an unambiguous route binding."""
+
+    normalized = role.lower().replace("_", "-")
+    if normalized in CLAUDE_HEADLESS_ROLES:
+        return CLAUDE_HEADLESS_ROUTE_ID
+    return None
+
 
 def detect_quota_wall(output_path: Path, tail_lines: int = 50) -> QuotaWallSignal | None:
     """Scan the tail of a lane's output.jsonl for rate-limit signals.
@@ -214,6 +228,8 @@ def write_quota_wall_receipt(role: str, signal: QuotaWallSignal) -> Path:
         resets_at_str = (
             datetime.fromtimestamp(signal.resets_at, tz=UTC).isoformat().replace("+00:00", "Z")
         )
+    route_id = _route_id_for_role(role)
+    route_line = f"route_id: {route_id}\n" if route_id else ""
 
     content = (
         f"role: {role}\n"
@@ -223,6 +239,7 @@ def write_quota_wall_receipt(role: str, signal: QuotaWallSignal) -> Path:
         f"rate_limit_type: {signal.rate_limit_type or 'unknown'}\n"
         f"resets_at: {resets_at_str or 'unknown'}\n"
         f"is_overage: {signal.is_overage}\n"
+        f"{route_line}"
         f"action: exit_clean_await_restart\n"
     )
     receipt_path.write_text(content, encoding="utf-8")

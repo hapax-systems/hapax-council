@@ -135,6 +135,11 @@ if [[ -z "$pr_url" ]]; then
   exit 0
 fi
 pr_number="$(printf '%s' "$pr_url" | sed -E 's#.*/pull/([0-9]+)$#\1#')"
+# THE REPOSITORY, from the URL this hook already validated. Derived here rather than re-parsed in
+# the Python block below: a second parser is a second thing that can disagree with the first, and
+# the defensive branch it needed was unreachable given the grep above -- dead code, plus a test
+# that passed over it vacuously. One parser, no divergence, nothing to test that cannot happen.
+pr_repo="$(printf '%s' "$pr_url" | sed -E 's#^https://github\.com/([^/]+/[^/]+)/pull/[0-9]+$#\1#')"
 if [[ -z "$pr_number" ]]; then
   echo "cc-task-pr-link: could not parse PR number from URL '$pr_url'" >&2
   exit 0
@@ -265,18 +270,19 @@ if ! command -v python3 &>/dev/null; then
 fi
 
 set +e
-python3 - "$note_path" "$pr_number" "$branch_name" "$role" "$pr_url" <<'PYEOF'
+python3 - "$note_path" "$pr_number" "$branch_name" "$role" "$pr_url" "$pr_repo" <<'PYEOF'
 import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-note_path, pr_number, branch_name, role, pr_url = (
+note_path, pr_number, branch_name, role, pr_url, pr_repo = (
     Path(sys.argv[1]),
     sys.argv[2],
     sys.argv[3],
     sys.argv[4],
     sys.argv[5],
+    sys.argv[6],
 )
 text = note_path.read_text(encoding="utf-8")
 
@@ -310,6 +316,16 @@ def _replace_or_insert(body: str, key: str, value: str) -> str:
             return body[:close_idx] + new_line + "\n" + body[close_idx:]
     return body
 
+# THE REPOSITORY IS RECORDED AT BIRTH, from the URL this hook already parsed.
+#
+# A bare `pr:` is not a link: the merge watcher scans one repository and would otherwise match any
+# task carrying that number, which closed a task meaning reins#6 against a merged council#6 while
+# the real PR was open. Both closure gates now REQUIRE pr_repo, so a task written without it can
+# never close -- and with several sessions creating tasks in parallel until reins-spine
+# convergence, "the author will remember to add it" is not a mechanism.
+#
+# The writer knew the repository all along; it simply was not writing it down.
+text = _replace_or_insert(text, "pr_repo", pr_repo)
 text = _replace_or_insert(text, "pr", str(pr_number))
 text = _replace_or_insert(text, "branch", branch_name)
 text = _replace_or_insert(text, "status", "pr_open")

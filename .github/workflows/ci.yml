@@ -222,13 +222,26 @@ jobs:
           cache-dependency-glob: |
             pyproject.toml
             uv.lock
+      # The action is SHA-pinned but installs whatever ruff is newest unless `version:` is given, so
+      # a ruff release can change this gate's behaviour with no commit here. That is exactly what
+      # happened: ruff 0.16 promoted MARKDOWN formatting out of preview, ~24 untouched docs went red,
+      # `lint` failed, `all-green` failed with it, and because all-green is REQUIRED the whole merge
+      # queue jammed — hapax-council merged nothing between 2026-07-11 and 2026-08-03 while 75 PRs
+      # piled up. Pin the tool, not just the action.
       - uses: astral-sh/ruff-action@0ce1b0bf8b818ef400413f810f8a11cdbda0034b
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         with:
+          version: "0.16.1"
           args: "check"
+      # The markdown exclusion is DECLARED IN CONFIG, not passed here. An `--exclude *.md` in this
+      # args string is unquoted when the action interpolates it into a shell, so it glob-expands
+      # against the repo root (AGENTS.md, CLAUDE.md, CONTRIBUTING.md, GOVERNANCE.md, NOTICE.md,
+      # README.md) and silently becomes "--exclude <those six>" plus stray positional args — the
+      # nested docs it was meant to cover would still be checked. Config cannot be word-split.
       - uses: astral-sh/ruff-action@0ce1b0bf8b818ef400413f810f8a11cdbda0034b
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         with:
+          version: "0.16.1"
           args: "format --check"
       # Task #155 Stage 5 — anti-personification fail-loud CI gate.
       # Scans axioms/**/*.md and prompt-surface modules; exits non-zero
@@ -446,6 +459,50 @@ jobs:
       - name: Run capability surface delta gate
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         run: uv run --no-project --with pydantic==2.13.4 --with pyyaml==6.0.3 python scripts/hapax-capability-surface-delta-gate
+
+
+  egress-boundary-pin:
+    # The audio/live-egress release class's BEHAVIORAL arm-time evidence
+    # (LIVE_EGRESS_MITIGATION_CHECKS, shared/release_gate.py): runs the
+    # egress-behavior pins on every PR and in the merge queue. At main today
+    # those pins are authority-before-send, fail-closed refusal, and
+    # type-level send capability; the wired-send and receipt-privacy pins
+    # arrive with #4440's diff and this job executes them at that head from
+    # then on — so no wired send can land without its privacy pins green.
+    # The PR admission slice deliberately does NOT include this file; without
+    # this job the class's behavioral evidence existed only at merge-queue
+    # time (test-full-shard). The pin set is structurally pinned with semantic
+    # anchors by tests/ci/test_release_gate_ci_composition.py; semantic fidelity
+    # is the quorum's layer, as for every test file in the repo.
+    # Unlike sibling jobs this job has NO docs-only sentinel: the class's
+    # behavioral evidence must always execute (~40s); a green check that ran
+    # nothing is not evidence. The duplicate-merge-group sentinel stays — it
+    # means the queue already validated the SHA, never that the pins were
+    # skipped. Required transitively: branch protection requires all-green,
+    # and all-green needs this job (single-aggregate required-context design).
+    needs: [post_merge_duplicate_filter]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Post-merge duplicate required-check sentinel
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group == 'true'
+        run: echo "Merge queue already validated this SHA; egress-boundary-pin reports success."
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        with:
+          enable-cache: true
+          restore-cache: true
+          save-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+      - name: Run egress-boundary behavior pins
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        run: >
+          uv run --no-project --with pytest==9.0.2 --with pyyaml --with pydantic
+          pytest --confcutdir=tests tests/test_capability_adapter_protocol.py -q --tb=short
 
 
   typecheck:
@@ -1401,7 +1458,7 @@ jobs:
     # preserves the fast/slow split: `test-full-shard` is merge_group-only, so it
     # is `skipped` on pull_request events and all-green still passes there.
     name: all-green
-    needs: [lint, capability-surface-delta, typecheck, test, test-full-shard, web-build, vscode-build, public_surface_freshness]
+    needs: [lint, capability-surface-delta, egress-boundary-pin, typecheck, test, test-full-shard, web-build, vscode-build, public_surface_freshness]
     if: always()
     runs-on: ubuntu-latest
     steps:

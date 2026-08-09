@@ -7,13 +7,14 @@ import sqlite3
 import subprocess
 import sys
 import textwrap
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
 
 from shared.platform_capability_registry import PlatformCapabilityRegistry
+from shared.quota_spend_ledger import QUOTA_SPEND_LEDGER_FIXTURES
 from shared.relay_mq import send_message
 from shared.relay_mq_envelope import Envelope
 
@@ -21,6 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
 RECEIPT_SCRIPT = REPO_ROOT / "scripts" / "hapax-platform-capability-receipts"
 REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
+CLAUDE_DISPATCH_ADMISSION_WITNESS = "claude-subscription-headroom-observed-20260709t0710z"
 
 
 def _dispatcher_module() -> ModuleType:
@@ -34,9 +36,14 @@ def _dispatcher_module() -> ModuleType:
     return module
 
 
-def _fresh_registry(tmp_path: Path) -> Path:
+def _fresh_registry(tmp_path: Path, *, codex_exec_auth_host: str = "appendix") -> Path:
     payload = json.loads(REGISTRY.read_text(encoding="utf-8"))
     checked_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    codex_host = (
+        "hapax-appendix"
+        if codex_exec_auth_host in {"appendix", "hapax-appendix"}
+        else codex_exec_auth_host
+    )
     for route in payload["routes"]:
         quota_refs = [f"test:{route['route_id']}:quota"]
         if route.get("capacity_pool") == "subscription_quota":
@@ -67,7 +74,7 @@ def _fresh_registry(tmp_path: Path) -> Path:
         }
         if route.get("platform") == "codex" and route.get("auth_surface") == "oauth":
             route["freshness"]["evidence"]["capability"]["evidence_refs"].append(
-                "local:codex:exec:auth:observed"
+                f"host:{codex_host}:codex:exec:auth:saved-login:observed"
             )
         for score in route["capability_scores"].values():
             score["observed_at"] = checked_at
@@ -128,6 +135,71 @@ def _availability_degraded_registry(tmp_path: Path, route_id: str) -> Path:
     return degraded_path
 
 
+def _iso(dt: datetime) -> str:
+    return dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _claude_subscription_quota_ledger(
+    tmp_path: Path,
+    *,
+    state: str,
+    evidence_refs: list[str] | None = None,
+    fresh_until: datetime | None = None,
+) -> Path:
+    now = datetime.now(UTC).replace(microsecond=0)
+    payload = json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))
+    payload["captured_at"] = _iso(now)
+    payload["paid_api_budget_freshness_ttl_s"] = 3600
+    generated_from = list(payload.get("generated_from", []))
+    if "scripts/hapax-quota-telemetry-writer" not in generated_from:
+        generated_from.append("scripts/hapax-quota-telemetry-writer")
+    payload["generated_from"] = generated_from
+    payload["quota_snapshots"] = [
+        snapshot
+        for snapshot in payload.get("quota_snapshots", [])
+        if snapshot.get("route_id") != "claude.headless.full"
+    ]
+    snapshot: dict[str, object] = {
+        "quota_snapshot_schema": 1,
+        "snapshot_id": f"quota-claude-headless-full-{state}-dispatch-test",
+        "captured_at": _iso(now),
+        "route_id": "claude.headless.full",
+        "provider": "anthropic-claude-subscription",
+        "capacity_pool": "subscription_quota",
+        "subscription_quota_state": state,
+        "evidence_refs": evidence_refs
+        if evidence_refs is not None
+        else ["relay-receipt:claude:quota-admission:absent"],
+        "operator_visible_reason": f"dispatch test claude account-live quota {state}",
+    }
+    if fresh_until is not None:
+        snapshot["fresh_until"] = _iso(fresh_until)
+    payload["quota_snapshots"].append(snapshot)
+    path = tmp_path / "fixtures" / f"quota-spend-ledger-claude-{state}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _fresh_claude_subscription_quota_ledger(tmp_path: Path) -> Path:
+    now = datetime.now(UTC).replace(microsecond=0)
+    fresh_until = now + timedelta(minutes=15)
+    evidence_ref = (
+        "relay-receipt:claude-subscription-quota-admission-dispatch-test.yaml:"
+        f"witness:{CLAUDE_DISPATCH_ADMISSION_WITNESS}:"
+        "observation:subscription_quota_headroom_observed:"
+        f"observed_at:{_iso(now)}:"
+        f"fresh_until:{_iso(fresh_until)}:"
+        "account-live-quota:observed"
+    )
+    return _claude_subscription_quota_ledger(
+        tmp_path,
+        state="fresh",
+        evidence_refs=[evidence_ref],
+        fresh_until=fresh_until,
+    )
+
+
 def _registry_from_path(path: Path) -> PlatformCapabilityRegistry:
     return PlatformCapabilityRegistry.model_validate(json.loads(path.read_text(encoding="utf-8")))
 
@@ -157,6 +229,46 @@ def _fake_binary(bin_dir: Path, name: str, output: str) -> None:
     target = bin_dir / name
     target.write_text(f"#!/bin/sh\nprintf '%s\\n' '{output}'\n", encoding="utf-8")
     target.chmod(0o755)
+
+
+def _codex_only_build_frontmatter(spec: Path) -> str:
+    return f"""
+    kind: build
+    authority_case: CASE-TEST-001
+    parent_spec: {spec}
+    route_metadata_schema: 1
+    quality_floor: frontier_required
+    authority_level: authoritative
+    mutation_surface: source
+    mutation_scope_refs: []
+    risk_flags:
+      governance_sensitive: false
+      privacy_or_secret_sensitive: false
+      public_claim_sensitive: false
+      aesthetic_theory_sensitive: false
+      audio_or_live_egress_sensitive: false
+      provider_billing_sensitive: false
+    context_shape:
+      codebase_locality: module
+      vault_context_required: true
+      external_docs_required: false
+      currentness_required: false
+    verification_surface:
+      deterministic_tests: []
+      static_checks: []
+      runtime_observation: []
+      operator_only: false
+    route_constraints:
+      preferred_platforms: [codex]
+      allowed_platforms: [codex]
+      prohibited_platforms: []
+      required_mode: headless
+      required_profile: full
+    review_requirement:
+      support_artifact_allowed: false
+      independent_review_required: false
+      authoritative_acceptor_profile: null
+    """
 
 
 def _default_route_metadata(frontmatter: str) -> str:
@@ -244,6 +356,11 @@ def _governed_source_frontmatter(
     *,
     extra: str = "",
     mutation_scope_refs: str = "[]",
+    preferred_platforms: str = "[]",
+    allowed_platforms: str = "[]",
+    prohibited_platforms: str = "[]",
+    required_mode: str = "null",
+    required_profile: str = "null",
 ) -> str:
     return f"""
     kind: build
@@ -273,11 +390,11 @@ def _governed_source_frontmatter(
       runtime_observation: []
       operator_only: false
     route_constraints:
-      preferred_platforms: []
-      allowed_platforms: []
-      prohibited_platforms: []
-      required_mode: null
-      required_profile: null
+      preferred_platforms: {preferred_platforms}
+      allowed_platforms: {allowed_platforms}
+      prohibited_platforms: {prohibited_platforms}
+      required_mode: {required_mode}
+      required_profile: {required_profile}
     review_requirement:
       support_artifact_allowed: false
       independent_review_required: false
@@ -690,7 +807,8 @@ def _run(
     env["HAPAX_CC_TASK_ROOT"] = str(tmp_path / "tasks")
     env["HAPAX_DISPATCH_WORKTREE"] = str(tmp_path / "worktree")
     env["HAPAX_ORCHESTRATION_LEDGER_DIR"] = str(tmp_path / "ledger")
-    env["HAPAX_PLATFORM_CAPABILITY_REGISTRY"] = str(_fresh_registry(tmp_path))
+    env["HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR"] = str(tmp_path / "platform-receipts")
+    env["HAPAX_QUOTA_SPEND_LEDGER"] = str(_fresh_claude_subscription_quota_ledger(tmp_path))
     env["HAPAX_COORD_LEDGER_DB"] = str(tmp_path / "coord" / "ledger.db")
     env["HAPAX_COORD_JSONL_MIRROR"] = str(tmp_path / "coord" / "ledger.jsonl")
     env["HAPAX_COORD_SPOOL_DIR"] = str(tmp_path / "coord" / "spool")
@@ -704,6 +822,16 @@ def _run(
         env["HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID"] = "missing-message-id"
     if extra_env:
         env.update(extra_env)
+    codex_exec_auth_host = (
+        env.get("HAPAX_CODEX_EXEC_AUTH_HOST")
+        or env.get("HAPAX_DISPATCH_HOST")
+        or env.get("HAPAX_DEFAULT_DISPATCH_HOST")
+        or "appendix"
+    )
+    env.setdefault(
+        "HAPAX_PLATFORM_CAPABILITY_REGISTRY",
+        str(_fresh_registry(tmp_path, codex_exec_auth_host=codex_exec_auth_host)),
+    )
     return subprocess.run(
         [str(SCRIPT), *args],
         env=env,
@@ -915,15 +1043,7 @@ def test_codex_receipt_only_prints_governed_prompt_without_launch_route(
 ) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
-    _task(
-        tmp_path / "tasks",
-        "governed-build",
-        f"""
-        kind: build
-        authority_case: CASE-TEST-001
-        parent_spec: {spec}
-        """,
-    )
+    _task(tmp_path / "tasks", "governed-build", _codex_only_build_frontmatter(spec))
 
     result = _run(
         tmp_path,
@@ -1168,15 +1288,8 @@ def test_dispatch_main_uses_adapter_admit_for_route_decision(
     module = _dispatcher_module()
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
-    _task(
-        tmp_path / "tasks",
-        "governed-build",
-        f"""
-        kind: build
-        authority_case: CASE-TEST-001
-        parent_spec: {spec}
-        """,
-    )
+    _task(tmp_path / "tasks", "governed-build", _codex_only_build_frontmatter(spec))
+    (tmp_path / "home" / ".cache" / "hapax" / "stage0-durable-sink").mkdir(parents=True)
     seen_platforms: list[str] = []
     seen_requests: list[object] = []
     seen_candidate_requests: list[object] = []
@@ -1213,6 +1326,10 @@ def test_dispatch_main_uses_adapter_admit_for_route_decision(
     monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
     monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
     monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_fresh_registry(tmp_path)))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", str(tmp_path / "platform-receipts"))
+    monkeypatch.setenv(
+        "HAPAX_QUOTA_SPEND_LEDGER", str(_fresh_claude_subscription_quota_ledger(tmp_path))
+    )
     monkeypatch.setenv("HAPAX_DISPATCH_CLAIM_SWEEP", "0")
     monkeypatch.setattr(module, "_capability_adapter_for_admission", adapter_for_admission)
 
@@ -1468,12 +1585,15 @@ def test_launch_authority_violation_writes_blocked_receipt(
     _task(
         tmp_path / "tasks",
         "governed-build",
-        f"""
-        kind: build
-        authority_case: CASE-TEST-001
-        parent_spec: {spec}
-        """,
+        _governed_source_frontmatter(
+            spec,
+            allowed_platforms="[codex]",
+            required_mode="headless",
+            required_profile="full",
+        ),
+        route_metadata_defaults=False,
     )
+    (tmp_path / "home" / ".cache" / "hapax" / "stage0-durable-sink").mkdir(parents=True)
     args = (
         "--task",
         "governed-build",
@@ -1493,6 +1613,10 @@ def test_launch_authority_violation_writes_blocked_receipt(
     monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
     monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
     monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_fresh_registry(tmp_path)))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", str(tmp_path / "platform-receipts"))
+    monkeypatch.setenv(
+        "HAPAX_QUOTA_SPEND_LEDGER", str(_fresh_claude_subscription_quota_ledger(tmp_path))
+    )
     monkeypatch.setenv("HAPAX_COORD_LEDGER_DB", str(tmp_path / "coord" / "ledger.db"))
     monkeypatch.setenv("HAPAX_COORD_JSONL_MIRROR", str(tmp_path / "coord" / "ledger.jsonl"))
     monkeypatch.setenv("HAPAX_COORD_SPOOL_DIR", str(tmp_path / "coord" / "spool"))
@@ -1531,15 +1655,8 @@ def test_dispatch_main_launches_through_worker_adapter(
     module = _dispatcher_module()
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
-    _task(
-        tmp_path / "tasks",
-        "governed-build",
-        f"""
-        kind: build
-        authority_case: CASE-TEST-001
-        parent_spec: {spec}
-        """,
-    )
+    _task(tmp_path / "tasks", "governed-build", _codex_only_build_frontmatter(spec))
+    (tmp_path / "home" / ".cache" / "hapax" / "stage0-durable-sink").mkdir(parents=True)
     args = (
         "--task",
         "governed-build",
@@ -1580,6 +1697,10 @@ printf '%s\\n' "$@" > {launcher_args}
     monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
     monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
     monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_fresh_registry(tmp_path)))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", str(tmp_path / "platform-receipts"))
+    monkeypatch.setenv(
+        "HAPAX_QUOTA_SPEND_LEDGER", str(_fresh_claude_subscription_quota_ledger(tmp_path))
+    )
     monkeypatch.setenv("HAPAX_COORD_LEDGER_DB", str(tmp_path / "coord" / "ledger.db"))
     monkeypatch.setenv("HAPAX_COORD_JSONL_MIRROR", str(tmp_path / "coord" / "ledger.jsonl"))
     monkeypatch.setenv("HAPAX_COORD_SPOOL_DIR", str(tmp_path / "coord" / "spool"))
@@ -2841,6 +2962,7 @@ def test_governed_relay_reactivation_passes_force_to_headless_launcher(tmp_path:
     home = tmp_path / "home"
     relay = home / ".cache" / "hapax" / "relay"
     relay.mkdir(parents=True)
+    (home / ".cache" / "hapax" / "stage0-durable-sink").mkdir(parents=True)
     (relay / "cx-fugu.yaml").write_text("status: wind_down_idle\n", encoding="utf-8")
     launcher_env = tmp_path / "launcher-env.txt"
     launcher_args = tmp_path / "launcher-args.txt"
@@ -2907,6 +3029,10 @@ def test_codex_p0_incident_drain_lane_force_preserves_live_pid_guard(tmp_path: P
     _write(
         bin_dir / "codex",
         f"""#!/usr/bin/env bash
+if [ "${{1:-}}" = "exec" ] && [[ "$*" == *HAPAX_CODEX_EXEC_AUTH_OK* ]]; then
+  printf '%s\\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":"HAPAX_CODEX_EXEC_AUTH_OK"}}}}'
+  exit 0
+fi
 if [ "${{1:-}}" = "debug" ] && [ "${{2:-}}" = "models" ]; then
   printf '%s\\n' '{{"models":[{{"slug":"gpt-5.5"}}]}}'
   exit 0
@@ -2978,6 +3104,7 @@ def test_governed_codex_dispatch_reactivates_clean_retired_relay(tmp_path: Path)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     relay = home / ".cache" / "hapax" / "relay"
     relay.mkdir(parents=True)
+    (home / ".cache" / "hapax" / "stage0-durable-sink").mkdir(parents=True)
     (relay / "cx-fugu.yaml").write_text("status: wind_down_idle\n", encoding="utf-8")
     pid_dir = tmp_path / "pids"
     pid_dir.mkdir()
@@ -2986,6 +3113,10 @@ def test_governed_codex_dispatch_reactivates_clean_retired_relay(tmp_path: Path)
     _write(
         bin_dir / "codex",
         f"""#!/usr/bin/env bash
+if [ "${{1:-}}" = "exec" ] && [[ "$*" == *HAPAX_CODEX_EXEC_AUTH_OK* ]]; then
+  printf '%s\\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":"HAPAX_CODEX_EXEC_AUTH_OK"}}}}'
+  exit 0
+fi
 if [ "${{1:-}}" = "debug" ] && [ "${{2:-}}" = "models" ]; then
   printf '%s\\n' '{{"models":[{{"slug":"gpt-5.5"}}]}}'
   exit 0
@@ -3918,9 +4049,67 @@ printf '%s\\n' "$HAPAX_CLAUDE_MODEL" "$@" > {launcher_env}
     assert receipt["route_policy_action"] == "refuse"
 
 
+def test_claude_headless_launch_holds_without_account_live_quota_receipt(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    quota_ledger = _claude_subscription_quota_ledger(tmp_path, state="unknown")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    launcher_args = tmp_path / "claude-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-claude-headless"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "beta",
+        "--platform",
+        "claude",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={
+            "HAPAX_METHODOLOGY_CLAUDE_HEADLESS": str(fake_launcher),
+            "HAPAX_QUOTA_SPEND_LEDGER": str(quota_ledger),
+        },
+    )
+
+    assert result.returncode == 10
+    assert not launcher_args.exists()
+    assert "subscription_route_quota_not_fresh" in result.stderr
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["launched"] is False
+    assert receipt["route_policy_action"] == "hold"
+    reasons = set(receipt["route_policy_reason_codes"])
+    assert "subscription_route_quota_not_fresh" in reasons
+    assert "route_subscription_quota_state:unknown" in reasons
+    assert "relay-receipt:claude:quota-admission:absent" in reasons
+
+
 def test_launches_claude_headless_with_task_binding(tmp_path: Path) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
+    quota_ledger = _fresh_claude_subscription_quota_ledger(tmp_path)
     _task(
         tmp_path / "tasks",
         "governed-build",
@@ -3952,7 +4141,10 @@ printf '%s\\n' "$HAPAX_METHODOLOGY_DISPATCH_TASK" "$HAPAX_CLAUDE_HEADLESS_WORKDI
         "--mode",
         "headless",
         "--launch",
-        extra_env={"HAPAX_METHODOLOGY_CLAUDE_HEADLESS": str(fake_launcher)},
+        extra_env={
+            "HAPAX_METHODOLOGY_CLAUDE_HEADLESS": str(fake_launcher),
+            "HAPAX_QUOTA_SPEND_LEDGER": str(quota_ledger),
+        },
     )
 
     assert result.returncode == 0, result.stderr
@@ -3961,6 +4153,18 @@ printf '%s\\n' "$HAPAX_METHODOLOGY_DISPATCH_TASK" "$HAPAX_CLAUDE_HEADLESS_WORKDI
     assert args[1] == str(tmp_path / "worktree")
     assert args[2:5] == ["--task", "governed-build", "beta"]
     assert "SDLC GOVERNED DISPATCH." in "\n".join(args[5:])
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["route_policy_action"] == "launch"
+    assert receipt["route_policy_launch_allowed"] is True
+    assert receipt["route_policy_quota_freshness_green"] is True
+    assert not any(
+        reason.startswith("route_subscription_quota_state:")
+        for reason in receipt["route_policy_reason_codes"]
+    )
 
 
 def test_sliced_call_preserves_dispatch_env_and_marks_attached(monkeypatch) -> None:

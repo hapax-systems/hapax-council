@@ -26,7 +26,7 @@ usage() {
   cat <<'EOF'
 usage: hapax-claude [--role alpha|…|theta | dev|dev2|…] [--cd DIR]
                     [--terminal none|tmux|foot] [--force] [--task TASK_ID|--readonly]
-                    [--] [claude args...]
+                    [--continue] [--] [claude args...]
 
 Roles:
   - greek alpha..theta : the supervised headless reform lanes
@@ -40,6 +40,8 @@ Defaults:
   - terminal=none: exec claude in the current terminal
   - terminal=tmux: detach into a tmux session named hapax-claude-<role>
   - terminal=foot: tmux + a foot window attached to the same session
+  - --continue/-c: resume the lane's previous session (claude --continue) —
+    the restart/resume path, symmetric with hapax-kimi --continue
 EOF
 }
 
@@ -94,6 +96,10 @@ while [ $# -gt 0 ]; do
       ;;
     --readonly|--read-only)
       READONLY=1
+      shift
+      ;;
+    --continue|-c)
+      CLAUDE_EXTRA+=("--continue")
       shift
       ;;
     --help|-h)

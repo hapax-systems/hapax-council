@@ -10,6 +10,11 @@ writes tasks atomically.
 
 Scan mode: finds all accepted_for_planning requests with zero downstream
 tasks and decomposes each.
+
+Admission-blocked requests are annotated in place: the gate writes
+``intake_hold_reasons`` / ``intake_hold_at`` onto the request frontmatter
+(idempotent, self-clearing once the blockers resolve), so a hold is visible
+where the request lives — not only as a remediation task in the queue.
 """
 
 from __future__ import annotations
@@ -281,6 +286,63 @@ def _task_parent_reference_keys(value: Any) -> set[str]:
         if base.endswith(".md"):
             keys.add(base.removesuffix(".md"))
     return keys
+
+
+def _write_request_note_atomic(path: Path, text: str) -> None:
+    """Same rename-over idiom as the remediation writer: never a torn note."""
+    tmp = path.with_suffix(".md.intake-hold-tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def _annotate_intake_hold(
+    request_data: dict[str, Any], blockers: list[str], *, dry_run: bool
+) -> str:
+    """Write the admission hold onto the request's own frontmatter.
+
+    The remediation cc-task records the hold in the TASK queue; nothing on the
+    REQUEST says why it is stuck. This annotates the request so the hold is
+    visible where the request lives — idempotent (no write while the reasons
+    are unchanged) and self-clearing (the fields are removed once the blockers
+    clear). Pure annotation: no status flip, no disposition change.
+    """
+    path = Path(request_data["path"])
+    fm = dict(request_data["frontmatter"])
+    if blockers:
+        if fm.get("intake_hold_reasons") == list(blockers):
+            return "unchanged"
+        if dry_run:
+            return "dry_run"
+        fm["intake_hold_reasons"] = list(blockers)
+        fm["intake_hold_at"] = _utc_now()
+        try:
+            _write_request_note_atomic(path, _render_note(fm, request_data["body"]))
+        except OSError as exc:
+            _log.warning(
+                "intake hold annotation failed for %s: %s "
+                "(the remediation task still records the hold; annotation retries next run)",
+                path.name,
+                exc,
+            )
+            return "error"
+        return "annotated"
+    if "intake_hold_reasons" in fm or "intake_hold_at" in fm:
+        if dry_run:
+            return "dry_run"
+        fm.pop("intake_hold_reasons", None)
+        fm.pop("intake_hold_at", None)
+        try:
+            _write_request_note_atomic(path, _render_note(fm, request_data["body"]))
+        except OSError as exc:
+            _log.warning(
+                "intake hold clear failed for %s: %s "
+                "(the stale hold fields remain; the clear retries next run)",
+                path.name,
+                exc,
+            )
+            return "error"
+        return "cleared"
+    return "unchanged"
 
 
 def _record_decomposition_remediation(
@@ -909,6 +971,7 @@ def main() -> int:
             blockers = _decomposition_admission_blockers(req_data)
             if blockers:
                 skipped_admission += 1
+                hold_result = _annotate_intake_hold(req_data, blockers, dry_run=args.dry_run)
                 remediation_result = _record_decomposition_remediation(
                     req_data,
                     "admission_blocked",
@@ -922,12 +985,16 @@ def main() -> int:
                 elif remediation_result == "dry_run":
                     remediation_dry_run += 1
                 _log.warning(
-                    "Skipping %s: decomposition admission blocked: %s (remediation: %s)",
+                    "Skipping %s: decomposition admission blocked: %s (remediation: %s, hold: %s)",
                     req_path.name,
                     ", ".join(blockers),
                     remediation_result,
+                    hold_result,
                 )
                 continue
+            hold_clear = _annotate_intake_hold(req_data, blockers, dry_run=args.dry_run)
+            if hold_clear == "cleared":
+                _log.info("Cleared intake hold on %s (blockers resolved)", req_path.name)
             if scan_limit is not None and admitted_attempts >= scan_limit:
                 break
             admitted_attempts += 1

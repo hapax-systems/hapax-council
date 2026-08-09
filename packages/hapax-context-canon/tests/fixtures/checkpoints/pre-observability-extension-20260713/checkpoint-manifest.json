@@ -1,0 +1,72 @@
+{
+  "authority": {
+    "authority_case": "CASE-CAPACITY-ROUTING-001",
+    "governing_task": "cc-task-sdlc-fsm-canon-impingement-lockstep-bootstrap-20260710",
+    "may_authorize": false,
+    "operator_session_id": "019f47f5-9d09-7160-a9b3-4c14a6514876"
+  },
+  "checkpoint_id": "pre-observability-extension-20260713",
+  "files": {
+    "context-canon-carrier.schema.json": {
+      "bytes": 82711,
+      "sha256": "c0172f13062d28e970fb75c9aeb638ac0a0533a5daa4062c017cf4360343dfe1"
+    },
+    "coordination-canon.schema.json": {
+      "bytes": 88265,
+      "sha256": "8d2761d8af902fe05979ca301476642969c172c821275194890c7d03f1eb6a96"
+    },
+    "gate0-compatibility.json": {
+      "bytes": 13972,
+      "sha256": "4c22e3825b34acff01d0b944b63354ee5a10e69229ab9e8d1002ba6b9afdf2ad"
+    },
+    "gate0-contract-semantic-supersession.json": {
+      "bytes": 4072,
+      "sha256": "e3b1f7798d646149dfe6c4afe239bd64eec19524713a4d3aba5762436ccc6d51"
+    },
+    "gate0-frame.json": {
+      "bytes": 194566,
+      "sha256": "74316ba8095be5902ec1e67f4351c8d6445a88b0ba064a0ca981726e87ae52f5"
+    },
+    "gate0-hashes.json": {
+      "bytes": 2095,
+      "sha256": "35581c21abc693395919d23bccd3e723bf62d06ac2ec7b167f2aaa8455012eed"
+    },
+    "gate0-projections.json": {
+      "bytes": 333421,
+      "sha256": "5ab4b5da5bfaabe8a944e601ba054555477fe2545294de6e9f33d0ea4a98686a"
+    },
+    "gate0-purpose-projections.json": {
+      "bytes": 238372,
+      "sha256": "ea86dd69cbbcb9bc71edd901ceb7a7ec6ceec4785614bd1f4e930c9e91b570ee"
+    },
+    "gate0-source-supersession.json": {
+      "bytes": 598,
+      "sha256": "3146bd84626e86ec5e8a2404a4598a14643d2e573a3dd67b9e83a70ce134105a"
+    }
+  },
+  "historical_scope": {
+    "current_contract_compatible": true,
+    "exact_bytes_preserved": true,
+    "source_supersession_proof_applies_only_to_its_named_predecessor": true,
+    "wire_schema_ids": "unreleased_gate0_v1_pre_observability"
+  },
+  "lineage_parent": {
+    "bytes": 2085,
+    "path": "../pre-contract-extension-20260712/checkpoint-manifest.json",
+    "sha256": "3eedac6414e2c1c3e82d8fb23b301fd977fb01a6151c20546da889e6040674eb"
+  },
+  "replay": {
+    "replay_script": {
+      "bytes": 5699,
+      "path": "replay/replay-pre-observability-fixtures.sh",
+      "sha256": "614bd08bd540d2ecef91a7fcc7253c973779f259bc3e91fd60af3672344c1115"
+    },
+    "source_head": "f4e97c367ec6467fc4ca516535ecc3be553cb46b",
+    "source_patch": {
+      "bytes": 143372,
+      "path": "replay/pre-observability-source.patch.gz",
+      "sha256": "d1ce63711c0912c7c74abc24b02399c72c724eeaf308def33cd263580656e416"
+    }
+  },
+  "schema": "hapax.context-canon.checkpoint-manifest.v1"
+}

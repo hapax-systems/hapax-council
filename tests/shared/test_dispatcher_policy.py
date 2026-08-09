@@ -17,6 +17,7 @@ from shared.dispatcher_policy import (
     QuotaSpendState,
     RouteCapabilityState,
     _resource_state_refs,
+    _surface_delta_route_index,
     build_dispatch_request,
     build_route_authority_receipt,
     evaluate_dispatch_policy,
@@ -25,6 +26,7 @@ from shared.dispatcher_policy import (
     write_route_decision_receipt,
 )
 from shared.platform_capability_registry import (
+    PLATFORM_CAPABILITY_REGISTRY,
     CapacityPool,
     PlatformCapabilityRegistry,
     PlatformCapabilityRoute,
@@ -188,6 +190,28 @@ def _request(**overrides: object) -> DispatchRequest:
     if "demand_vector" not in overrides and payload.get("route_metadata_status") == "explicit":
         payload["demand_vector"] = _demand()
     return DispatchRequest.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "marker",
+    ("AgenticTrustEvidenceReceiptV1", "agentic-trust-evidence-receipt-v1"),
+)
+def test_observation_receipt_cannot_be_a_quality_selector(marker: str) -> None:
+    with pytest.raises(ValueError, match="cannot establish route capability"):
+        _capability(eligible_quality_floors=(marker,))
+    with pytest.raises(ValueError, match="cannot define a dispatch quality floor"):
+        _request(quality_floor=marker)
+
+
+def test_observation_receipt_child_remains_an_ordinary_quality_identity() -> None:
+    child = "AgenticTrustEvidenceReceiptV1Child"
+    assert _capability(eligible_quality_floors=(child,)).eligible_quality_floors == (child,)
+    assert _request(quality_floor=child).quality_floor == child
+
+
+def test_route_capability_privacy_posture_is_closed_vocabulary() -> None:
+    with pytest.raises(ValueError):
+        _capability(privacy_posture="AgenticTrustEvidenceReceiptV1")
 
 
 def _route_envelope(*, admission_action: str = "route") -> dict[str, object]:
@@ -434,12 +458,19 @@ def _dimensional_request(
     }
     if capability_overrides:
         capability_payload.update(capability_overrides)
+    quota = _quota()
+    if route_id == "claude.headless.full":
+        quota = _quota(
+            route_subscription_quota_state="fresh",
+            route_quota_evidence_refs=("test:claude-headless-full:account-live-quota:observed",),
+        )
     return _request(
         route_id=route_id,
         platform=platform or parts[0],
         mode=parts[1],
         profile=profile or parts[2],
         capability=_capability(**capability_payload),
+        quota=quota,
         demand_vector=demand or _demand(),
         supply_vector=build_supply_vector(
             _route_with_scores(route_id, score=score, confidence=confidence), now=NOW
@@ -1155,6 +1186,139 @@ def test_unjoined_blocking_surface_delta_fails_closed_globally(
     assert "capability_surface_delta_pending" in decision.reason_codes
 
 
+@pytest.mark.parametrize(
+    "surface_id",
+    (
+        "surface.local_compute.agentic_trust_evaluator_surface",
+        "SURFACE.LOCAL_COMPUTE.AGENTIC_TRUST_EVALUATOR_SURFACE",
+    ),
+)
+def test_registered_evidence_only_surface_delta_is_dispatch_inert(
+    tmp_path: Path,
+    surface_id: str,
+) -> None:
+    surface_delta_path = tmp_path / "agentic-trust-evidence-only-delta.json"
+    surface_delta_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "schema_ref": "schemas/capability-surface-delta.schema.json",
+                "generated_from": ["unit-test-adversarial-wrong-channel"],
+                "declared_at": "2026-05-09T22:00:00Z",
+                "descriptors": [
+                    {
+                        "descriptor_schema": 1,
+                        "surface_id": surface_id,
+                        "descriptor_ref": "inventory:local_compute.agentic_trust_evaluator_surface",
+                        "surface_kind": "local_tool",
+                        "authority_ceiling": "read_only",
+                        "observed_at": "2026-05-09T22:00:00Z",
+                        "stale_after": "1h",
+                        "evidence_refs": ["test:evidence-only-observation"],
+                        "route_id": "codex.headless.full",
+                        "resource_pools": ["local_compute"],
+                    }
+                ],
+                "deltas": [
+                    {
+                        "delta_schema": 1,
+                        "delta_id": "test:evidence-only-wrong-channel",
+                        "source": "unit-test",
+                        "observed_at": "2026-05-09T22:00:00Z",
+                        "detected_by": "unit-test",
+                        "surface_id": surface_id,
+                        "delta_kind": "stale_determination",
+                        "prior_descriptor_ref": "agentic-trust-receipt:previous",
+                        "observed_descriptor_ref": "agentic-trust-receipt:expired",
+                        "evidence_refs": ["agentic-trust-receipt:expired"],
+                        "authority_ceiling": "read_only",
+                        "affected_resource_pools": ["local_compute"],
+                        "privacy_sensitive": False,
+                        "public_egress": False,
+                        "money_rail": False,
+                        "freshness_state": "stale",
+                        "required_intake_action": "refresh_receipt",
+                        "remediation_ref": "cc-task-agentic-trust-evidence-only-onboarding-20260804",
+                        "summary": "adversarial evidence-only observation in the rich delta channel",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    sources = load_dispatch_policy_sources(
+        registry_path=None,
+        quota_ledger_path=QUOTA_SPEND_LEDGER_FIXTURES,
+        receipt_dir=tmp_path / "empty-receipts",
+        surface_delta_path=surface_delta_path,
+        now=NOW,
+    )
+
+    assert sources.surface_delta_refs_by_route == {}
+    assert sources.surface_delta_blockers_by_route == {}
+    registry = _registry_with_fresh_route("codex.headless.full")
+    with_observation = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=_task_fields(),
+        registry=registry,
+        quota_ledger=sources.quota_ledger,
+        surface_delta_refs_by_route=sources.surface_delta_refs_by_route,
+        surface_delta_blockers_by_route=sources.surface_delta_blockers_by_route,
+        now=NOW,
+    )
+    without_observation = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=_task_fields(),
+        registry=registry,
+        quota_ledger=sources.quota_ledger,
+        now=NOW,
+    )
+
+    observed_decision = evaluate_dispatch_policy(with_observation, now=NOW)
+    baseline_decision = evaluate_dispatch_policy(without_observation, now=NOW)
+    assert with_observation.capability is not None
+    assert with_observation.capability.surface_delta_refs == ()
+    assert with_observation.capability.surface_delta_blockers == ()
+    assert observed_decision.model_dump(mode="json") == baseline_decision.model_dump(mode="json")
+
+    child_payload = json.loads(surface_delta_path.read_text(encoding="utf-8"))
+    child_payload["descriptors"][0]["surface_id"] += ".child"
+    child_payload["deltas"][0]["surface_id"] += ".child"
+    surface_delta_path.write_text(json.dumps(child_payload), encoding="utf-8")
+    child_sources = load_dispatch_policy_sources(
+        registry_path=None,
+        quota_ledger_path=QUOTA_SPEND_LEDGER_FIXTURES,
+        receipt_dir=tmp_path / "empty-receipts",
+        surface_delta_path=surface_delta_path,
+        now=NOW,
+    )
+
+    assert child_sources.surface_delta_blockers_by_route["codex.headless.full"]
+
+    route_alias_payload = json.loads(surface_delta_path.read_text(encoding="utf-8"))
+    route_alias_payload["descriptors"][0]["surface_id"] = "route.codex.headless.full"
+    route_alias_payload["deltas"][0]["surface_id"] = "route.codex.headless.full"
+    surface_delta_path.write_text(json.dumps(route_alias_payload), encoding="utf-8")
+    route_alias_refs, route_alias_blockers = _surface_delta_route_index(
+        surface_delta_path,
+        known_route_ids=("codex.headless.full",),
+        evidence_only_surface_ids=("route.codex.headless.full",),
+    )
+
+    # Even a malicious evidence-only list cannot suppress a known admitted route.
+    assert route_alias_refs["codex.headless.full"]
+    assert route_alias_blockers["codex.headless.full"]
+
+
 def test_plain_descriptor_ref_without_route_id_fails_closed_globally(
     tmp_path: Path,
 ) -> None:
@@ -1728,6 +1892,52 @@ def test_glmcp_subscription_route_holds_when_route_quota_unknown() -> None:
     assert decision.quota_freshness_green is False
     assert "subscription_route_quota_not_fresh" in decision.reason_codes
     assert "route_subscription_quota_state:unknown" in decision.reason_codes
+
+
+def test_claude_subscription_route_holds_when_route_quota_unknown() -> None:
+    request = _request(
+        platform="claude",
+        mode="headless",
+        profile="full",
+        route_id="claude.headless.full",
+        capability=_capability(route_id="claude.headless.full"),
+        quota=_quota(
+            subscription_quota_state="fresh",
+            route_subscription_quota_state="unknown",
+            route_quota_evidence_refs=("relay-receipt:claude:quota-admission:absent",),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.HOLD
+    assert decision.route_policy_green is False
+    assert decision.quota_freshness_green is False
+    assert "subscription_route_quota_not_fresh" in decision.reason_codes
+    assert "route_subscription_quota_state:unknown" in decision.reason_codes
+
+
+def test_claude_subscription_route_launches_with_fresh_route_quota() -> None:
+    request = _request(
+        platform="claude",
+        mode="headless",
+        profile="full",
+        route_id="claude.headless.full",
+        capability=_capability(route_id="claude.headless.full"),
+        quota=_quota(
+            subscription_quota_state="fresh",
+            route_subscription_quota_state="fresh",
+            route_quota_evidence_refs=("test:claude-headless-full:account-live-quota:observed",),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert decision.route_policy_green is True
+    assert decision.quota_freshness_green is True
+    assert "policy_launch" in decision.reason_codes
+    assert "subscription_route_quota_not_fresh" not in decision.reason_codes
 
 
 def test_glmcp_subscription_route_missing_quota_is_not_fresh_green() -> None:
@@ -2505,6 +2715,100 @@ def test_policy_sources_prefer_live_quota_ledger(
     assert sources.quota_ledger.ledger_id == "quota-spend-ledger-live-policy-test"
     assert sources.quota_ledger_source == "live"
     assert sources.quota_live_error is None
+
+
+def test_non_supply_observation_metadata_fails_local_to_dispatch(
+    tmp_path: Path,
+) -> None:
+    payload = json.loads(PLATFORM_CAPABILITY_REGISTRY.read_text(encoding="utf-8"))
+    target = next(
+        shape
+        for shape in payload["omitted_capability_shapes"]
+        if shape["shape_id"] == "local_compute.agentic_trust_evaluator_surface"
+    )
+    target["stale_after"] = "not-a-duration"
+    poisoned_registry = tmp_path / "platform-capability-registry.json"
+    poisoned_registry.write_text(json.dumps(payload), encoding="utf-8")
+    empty_receipts = tmp_path / "empty-receipts"
+
+    baseline = load_dispatch_policy_sources(
+        registry_path=PLATFORM_CAPABILITY_REGISTRY,
+        quota_ledger_path=QUOTA_SPEND_LEDGER_FIXTURES,
+        receipt_dir=empty_receipts,
+        now=NOW,
+    )
+    observed = load_dispatch_policy_sources(
+        registry_path=poisoned_registry,
+        quota_ledger_path=QUOTA_SPEND_LEDGER_FIXTURES,
+        receipt_dir=empty_receipts,
+        now=NOW,
+    )
+
+    assert baseline.registry is not None
+    assert observed.registry is not None
+    assert observed.registry_error is None
+    assert observed.non_supply_observation_errors
+    assert "not-a-duration" in observed.non_supply_observation_errors[0]
+    assert observed.surface_delta_refs_by_route == baseline.surface_delta_refs_by_route
+    assert observed.surface_delta_blockers_by_route == baseline.surface_delta_blockers_by_route
+    assert [route.model_dump(mode="json") for route in observed.registry.routes] == [
+        route.model_dump(mode="json") for route in baseline.registry.routes
+    ]
+
+    baseline_request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=_task_fields(),
+        registry=baseline.registry,
+        quota_ledger=baseline.quota_ledger,
+        now=NOW,
+    )
+    observed_request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=_task_fields(),
+        registry=observed.registry,
+        quota_ledger=observed.quota_ledger,
+        now=NOW,
+    )
+
+    observed_decision = evaluate_dispatch_policy(observed_request, now=NOW)
+    baseline_decision = evaluate_dispatch_policy(baseline_request, now=NOW)
+    assert observed_decision.model_dump(mode="json") == baseline_decision.model_dump(mode="json")
+    serialized_decision = json.dumps(observed_decision.model_dump(mode="json"), sort_keys=True)
+    assert "observation_metadata_invalid_fail_local" not in serialized_decision
+    assert "not-a-duration" not in serialized_decision
+
+
+def test_non_supply_dispatch_identity_violation_still_fails_registry_closed(
+    tmp_path: Path,
+) -> None:
+    payload = json.loads(PLATFORM_CAPABILITY_REGISTRY.read_text(encoding="utf-8"))
+    target = next(
+        shape
+        for shape in payload["omitted_capability_shapes"]
+        if shape["shape_id"] == "local_compute.agentic_trust_evaluator_surface"
+    )
+    target["demand_eligible"] = True
+    poisoned_registry = tmp_path / "platform-capability-registry.json"
+    poisoned_registry.write_text(json.dumps(payload), encoding="utf-8")
+
+    sources = load_dispatch_policy_sources(
+        registry_path=poisoned_registry,
+        quota_ledger_path=QUOTA_SPEND_LEDGER_FIXTURES,
+        receipt_dir=tmp_path / "empty-receipts",
+        now=NOW,
+    )
+
+    assert sources.registry is None
+    assert sources.registry_error is not None
+    assert "cannot become demand eligible" in sources.registry_error
 
 
 def test_policy_sources_fall_back_to_fixtures_without_live_ledger(

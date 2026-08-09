@@ -2309,3 +2309,178 @@ status: offered
         frontmatter, _body = parse_frontmatter(remediation_task)
         assert frontmatter["remediates_request_id"] == "REQ-single-conflict"
         assert frontmatter["decompose_failure_class"] == "write_conflict"
+
+    def test_intake_hold_annotation_writes_idempotent_and_clears(self, tmp_path):
+        script = _load_request_decompose_module()
+        request = tmp_path / "REQ-held.md"
+        request.write_text(
+            """---
+type: hapax-request
+request_id: REQ-held
+status: accepted_for_planning
+planning_case: CASE-TEST-001
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+        blockers = ["missing_cctv_route_resource_admission", "missing_authority_case"]
+
+        data = script._read_request(request)
+        assert script._annotate_intake_hold(data, blockers, dry_run=False) == "annotated"
+
+        held = script._read_request(request)
+        assert held["frontmatter"]["intake_hold_reasons"] == blockers
+        assert "intake_hold_at" in held["frontmatter"]
+
+        # idempotent: same reasons -> no rewrite, no churn
+        assert script._annotate_intake_hold(held, blockers, dry_run=False) == "unchanged"
+
+        # changed blockers re-annotate with the new set
+        new_blockers = ["missing_cctv_intake_receipt"]
+        assert script._annotate_intake_hold(held, new_blockers, dry_run=False) == "annotated"
+        held = script._read_request(request)
+        assert held["frontmatter"]["intake_hold_reasons"] == new_blockers
+
+        # self-clears once the blockers are gone
+        assert script._annotate_intake_hold(held, [], dry_run=False) == "cleared"
+        cleared = script._read_request(request)
+        assert "intake_hold_reasons" not in cleared["frontmatter"]
+        assert "intake_hold_at" not in cleared["frontmatter"]
+        # and stays quiet when there is nothing to clear
+        assert script._annotate_intake_hold(cleared, [], dry_run=False) == "unchanged"
+
+    def test_intake_hold_annotation_dry_run_writes_nothing(self, tmp_path):
+        script = _load_request_decompose_module()
+        request = tmp_path / "REQ-dry.md"
+        original = """---
+type: hapax-request
+request_id: REQ-dry
+status: accepted_for_planning
+---
+
+# Request
+"""
+        request.write_text(original, encoding="utf-8")
+        data = script._read_request(request)
+        assert (
+            script._annotate_intake_hold(data, ["missing_authority_case"], dry_run=True)
+            == "dry_run"
+        )
+        assert request.read_text(encoding="utf-8") == original
+
+    def test_intake_hold_annotation_error_paths_fail_safe(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        request = tmp_path / "REQ-err.md"
+        request.write_text(
+            """---
+type: hapax-request
+request_id: REQ-err
+status: accepted_for_planning
+intake_hold_reasons:
+- missing_authority_case
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+
+        def explode(*_args, **_kwargs):
+            raise OSError("read-only filesystem")
+
+        # scoped to the script's own writer — never a global Path patch
+        monkeypatch.setattr(script, "_write_request_note_atomic", explode)
+
+        data = script._read_request(request)
+        # a failed annotate returns "error" and must not raise into the scan loop
+        assert (
+            script._annotate_intake_hold(data, ["missing_cctv_intake_receipt"], dry_run=False)
+            == "error"
+        )
+        # a failed clear likewise
+        assert script._annotate_intake_hold(data, [], dry_run=False) == "error"
+
+    def test_scan_writes_hold_onto_blocked_request(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        requests = tmp_path / "requests" / "active"
+        tasks = tmp_path / "tasks"
+        requests.mkdir(parents=True)
+        (tasks / "active").mkdir(parents=True)
+        (tasks / "closed").mkdir(parents=True)
+        request = requests / "REQ-scan-held.md"
+        request.write_text(
+            """---
+type: hapax-request
+request_id: REQ-scan-held
+status: accepted_for_planning
+planning_case: CASE-TEST-001
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+
+        def fail_if_called(_request_data):
+            raise AssertionError("LLM should not run before CCTV admission")
+
+        monkeypatch.setattr(script, "REQUESTS_DIR", requests)
+        monkeypatch.setattr(script, "TASKS_DIR", tasks)
+        monkeypatch.setattr(script, "_decompose_with_llm", fail_if_called)
+        monkeypatch.setattr(sys, "argv", ["request-decompose", "--scan"])
+
+        assert script.main() == 0
+
+        held = script._read_request(request)
+        assert "missing_cctv_route_resource_admission" in held["frontmatter"]["intake_hold_reasons"]
+        assert "intake_hold_at" in held["frontmatter"]
+
+        # a second scan with nothing changed must not rewrite the request
+        first_render = request.read_text(encoding="utf-8")
+        assert script.main() == 0
+        assert request.read_text(encoding="utf-8") == first_render
+
+    def test_scan_clears_stale_hold_on_admitted_request(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        requests = tmp_path / "requests" / "active"
+        tasks = tmp_path / "tasks"
+        requests.mkdir(parents=True)
+        (tasks / "active").mkdir(parents=True)
+        (tasks / "closed").mkdir(parents=True)
+        request = requests / "REQ-scan-clears.md"
+        request.write_text(
+            """---
+type: hapax-request
+request_id: REQ-scan-clears
+status: accepted_for_planning
+cctv_intake_receipt: receipt://REQ-scan-clears
+cctv_intake_verdict: ready_to_plan
+cctv_route_resource_admission: admitted
+cctv_capability_receipts:
+- receipt://cap-1
+authority_case: CASE-TEST-001
+planning_case: CASE-TEST-001
+parent_spec: docs/some-spec.md
+intake_hold_reasons:
+- missing_cctv_route_resource_admission
+intake_hold_at: "2026-08-09T00:00:00Z"
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+
+        # admitted, but the LLM fails -> the hold must STILL have been cleared first
+        monkeypatch.setattr(script, "REQUESTS_DIR", requests)
+        monkeypatch.setattr(script, "TASKS_DIR", tasks)
+        monkeypatch.setattr(script, "_decompose_with_llm", lambda _d: None)
+        monkeypatch.setattr(sys, "argv", ["request-decompose", "--scan"])
+
+        assert script.main() == 0
+
+        after = script._read_request(request)
+        assert "intake_hold_reasons" not in after["frontmatter"]
+        assert "intake_hold_at" not in after["frontmatter"]

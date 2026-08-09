@@ -1,0 +1,966 @@
+#!/usr/bin/bash
+# Fail when post-merge root-required deploy actions were deferred and not drained.
+set -euo pipefail
+ORIGINAL_ARGS=("$@")
+PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+export PATH
+
+ROOT_DEFER_DIR="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$HOME/.cache/hapax/post-merge-root-required}"
+# Deferrals are cleared only by the explicit HAPAX_ROOT_REQUIRED_DRAIN_DIR path
+# in the owning installer; this audit intentionally never mutates them.
+ROOT_REQUIRED_STATE_ROOT="${HAPAX_ROOT_REQUIRED_STATE_ROOT:-$HOME/.local/state/hapax/root-required}"
+INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$ROOT_REQUIRED_STATE_ROOT/current-source}"
+INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/installed-receipts}"
+DESIRED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/desired-receipts}"
+ROOT_REQUIRED_GIT_REPO="${HAPAX_ROOT_REQUIRED_GIT_REPO:-$HOME/.cache/hapax/source-activation/worktree}"
+ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_STATE_ROOT/.lock}"
+OOM_ENFORCER_DEST="${HAPAX_OOM_ENFORCER_DEST:-/usr/local/sbin/hapax-oom-score-enforce}"
+OOM_TRIGGER_DEST="${HAPAX_OOM_TRIGGER_DEST:-/usr/local/bin/hapax-oom-score-trigger}"
+OOM_SUDOERS_DEST="${HAPAX_OOM_SUDOERS_DEST:-/etc/sudoers.d/hapax-oom-score-enforce}"
+OOM_SUDOERS_REFERENCE_DEST="${HAPAX_OOM_SUDOERS_REFERENCE_DEST:-/usr/local/share/hapax/root-required/hapax-oom-score-enforce.sudoers}"
+OOM_SUDOERS_OWNER_UID="${HAPAX_OOM_SUDOERS_OWNER_UID:-0}"
+OOM_SUDOERS_OWNER_GID="${HAPAX_OOM_SUDOERS_OWNER_GID:-0}"
+if [ "$OOM_SUDOERS_REFERENCE_DEST" = "/usr/local/share/hapax/root-required/hapax-oom-score-enforce.sudoers" ]; then
+    OOM_SUDOERS_OWNER_UID=0
+    OOM_SUDOERS_OWNER_GID=0
+fi
+ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapax-root-failure-intake}"
+OOM_POLICY_AUDIT_DEST="${HAPAX_OOM_POLICY_AUDIT_DEST:-/usr/local/sbin/hapax-oom-policy-audit}"
+ROOT_REQUIRED_AUDIT_DEST="${HAPAX_ROOT_REQUIRED_AUDIT_DEST:-/usr/local/sbin/hapax-root-required-deploy-audit}"
+EARLYOOM_DEST="${HAPAX_OOM_EARLYOOM_DEST:-/etc/default/earlyoom}"
+SYSTEMD_SYSTEM_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
+SYSTEMD_USER_DIR="${HAPAX_OOM_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
+APCUPSD_DEST="${HAPAX_APCUPSD_DEST:-/etc/apcupsd}"
+APCUPSD_AUDIT_LOG="${HAPAX_UPS_AUDIT_LOG:-/var/log/hapax/ups-power-events.jsonl}"
+APCUPSD_CANONICAL_AUDIT_LOG="/var/log/hapax/ups-power-events.jsonl"
+APCUPSD_CANONICAL_AUDIT_GROUP="hapax"
+APCUPSD_AUDIT_LOG_OWNER_UID="${HAPAX_UPS_AUDIT_LOG_OWNER_UID:-}"
+APCUPSD_AUDIT_LOG_OWNER_GID="${HAPAX_UPS_AUDIT_LOG_OWNER_GID:-}"
+APCUPSD_LOGROTATE_DEST="${HAPAX_APCUPSD_LOGROTATE_DEST:-/etc/logrotate.d/hapax-ups-power-events}"
+UPOWER_CONF_DEST="${HAPAX_UPOWER_CONF_DEST:-/etc/UPower/UPower.conf.d/90-hapax-apcupsd-owner.conf}"
+SYSTEMCTL="${HAPAX_ROOT_AUDIT_SYSTEMCTL:-/usr/bin/systemctl}"
+BUSCTL="${HAPAX_ROOT_AUDIT_BUSCTL:-/usr/bin/busctl}"
+APCACCESS="${HAPAX_ROOT_AUDIT_APCACCESS:-/usr/bin/apcaccess}"
+CMP="${HAPAX_ROOT_AUDIT_CMP:-/usr/bin/cmp}"
+GETENT="${HAPAX_ROOT_AUDIT_GETENT:-/usr/bin/getent}"
+SUDO="${HAPAX_ROOT_AUDIT_SUDO:-/usr/bin/sudo}"
+VISUDO="${HAPAX_ROOT_AUDIT_VISUDO:-/usr/bin/visudo}"
+ROOT_ARTIFACT_TEST_UID="${HAPAX_ROOT_AUDIT_TEST_ROOT_UID:-$(/usr/bin/id -u)}"
+ROOT_ARTIFACT_TEST_GID="${HAPAX_ROOT_AUDIT_TEST_ROOT_GID:-$(/usr/bin/id -g)}"
+
+acquire_inherited_root_required_lock() {
+    local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
+    local lock_mode="${HAPAX_ROOT_REQUIRED_LOCK_MODE:-shared}"
+    if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ]; then
+        echo "root-required audit safe lock descriptor is absent; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun the installed audit" >&2
+        return 1
+    fi
+    /usr/bin/python3 - "$lock_fd" "$ROOT_REQUIRED_LOCK_FILE" "$lock_mode" <<'PY'
+from __future__ import annotations
+
+import fcntl
+import os
+import stat
+import sys
+
+fd = int(sys.argv[1])
+lock_path = sys.argv[2]
+lock_mode = sys.argv[3]
+try:
+    inode = os.fstat(fd)
+    path_inode = os.lstat(lock_path)
+except OSError as exc:
+    print(
+        f"root-required audit refused invalid shared lock descriptor for {lock_path}: {exc}; "
+        "next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+if (
+    not stat.S_ISREG(inode.st_mode)
+    or not stat.S_ISREG(path_inode.st_mode)
+    or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
+    or inode.st_uid != os.geteuid()
+    or inode.st_nlink != 1
+    or inode.st_mode & 0o022
+):
+    print(
+        f"root-required audit refused invalid shared lock descriptor for {lock_path}; expected "
+        "the caller-owned, single-link, non-group-writable regular path inode; next action: "
+        "remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+os.fchmod(fd, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX if lock_mode == "exclusive" else fcntl.LOCK_SH)
+PY
+}
+
+reexec_with_safe_root_required_lock() {
+    if [ -n "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" ]; then
+        acquire_inherited_root_required_lock
+        return
+    fi
+    exec /usr/bin/python3 - "$ROOT_REQUIRED_LOCK_FILE" "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
+from __future__ import annotations
+
+import fcntl
+import os
+import stat
+import subprocess
+import sys
+
+lock_path, script, *args = sys.argv[1:]
+os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+try:
+    fd = os.open(
+        lock_path,
+        os.O_CLOEXEC | os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR,
+        0o600,
+    )
+except OSError as exc:
+    print(
+        f"root-required audit refused unsafe shared lock {lock_path}: {exc}; "
+        "next action: remove only a confirmed symlink/non-regular lock and rerun",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+try:
+    inode = os.fstat(fd)
+    if (
+        not stat.S_ISREG(inode.st_mode)
+        or inode.st_uid != os.geteuid()
+        or inode.st_nlink != 1
+        or inode.st_mode & 0o022
+    ):
+        print(
+            f"root-required audit refused unsafe shared lock inode {lock_path}; expected one "
+            "caller-owned, single-link, non-group-writable regular file; next action: remove "
+            "only a confirmed unsafe lock and rerun",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    os.fchmod(fd, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_SH)
+    env = os.environ.copy()
+    env.pop("HAPAX_ROOT_REQUIRED_LOCK_HELD", None)
+    env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
+    env["HAPAX_ROOT_REQUIRED_LOCK_MODE"] = "shared"
+    result = subprocess.run(
+        [os.path.abspath(script), *args],
+        env=env,
+        pass_fds=(fd,),
+        check=False,
+    )
+    raise SystemExit(result.returncode)
+finally:
+    os.close(fd)
+PY
+}
+
+resolve_apcupsd_audit_log_identity() {
+    local group_entry required_gid
+    if [ "$APCUPSD_AUDIT_LOG" = "$APCUPSD_CANONICAL_AUDIT_LOG" ]; then
+        if ! group_entry="$("$GETENT" group "$APCUPSD_CANONICAL_AUDIT_GROUP" 2>/dev/null)" \
+            || [ -z "$group_entry" ]; then
+            echo "root-required install drift: required UPS audit group missing: $APCUPSD_CANONICAL_AUDIT_GROUP" >&2
+            echo "  next action: restore the canonical $APCUPSD_CANONICAL_AUDIT_GROUP group and rerun the installed audit" >&2
+            return 1
+        fi
+        required_gid="$(printf '%s\n' "$group_entry" | /usr/bin/cut -d: -f3)"
+        if ! [[ "$required_gid" =~ ^[0-9]+$ ]]; then
+            echo "root-required install drift: required UPS audit group has an invalid gid: $APCUPSD_CANONICAL_AUDIT_GROUP" >&2
+            echo "  next action: repair the canonical group entry and rerun the installed audit" >&2
+            return 1
+        fi
+        if [ -n "$APCUPSD_AUDIT_LOG_OWNER_UID" ] \
+            && [ "$APCUPSD_AUDIT_LOG_OWNER_UID" != "0" ]; then
+            echo "root-required install drift: canonical UPS audit log requires owner uid 0, not $APCUPSD_AUDIT_LOG_OWNER_UID" >&2
+            echo "  next action: remove HAPAX_UPS_AUDIT_LOG_OWNER_UID or set it to 0, then rerun the installed audit" >&2
+            return 1
+        fi
+        if [ -n "$APCUPSD_AUDIT_LOG_OWNER_GID" ] \
+            && [ "$APCUPSD_AUDIT_LOG_OWNER_GID" != "$required_gid" ]; then
+            echo "root-required install drift: canonical UPS audit log requires gid $required_gid from group $APCUPSD_CANONICAL_AUDIT_GROUP, not $APCUPSD_AUDIT_LOG_OWNER_GID" >&2
+            echo "  next action: remove HAPAX_UPS_AUDIT_LOG_OWNER_GID or set it to the canonical group gid, then rerun the installed audit" >&2
+            return 1
+        fi
+        APCUPSD_AUDIT_LOG_OWNER_UID=0
+        APCUPSD_AUDIT_LOG_OWNER_GID="$required_gid"
+    fi
+    if [ -z "$APCUPSD_AUDIT_LOG_OWNER_UID" ]; then
+        if [[ "$APCUPSD_AUDIT_LOG" == /var/log/* ]]; then
+            APCUPSD_AUDIT_LOG_OWNER_UID=0
+        else
+            APCUPSD_AUDIT_LOG_OWNER_UID="$(/usr/bin/id -u)"
+        fi
+    fi
+    if [ -z "$APCUPSD_AUDIT_LOG_OWNER_GID" ]; then
+        if [[ "$APCUPSD_AUDIT_LOG" == /var/log/* ]] && "$GETENT" group hapax >/dev/null 2>&1; then
+            APCUPSD_AUDIT_LOG_OWNER_GID="$("$GETENT" group hapax | /usr/bin/cut -d: -f3)"
+        else
+            APCUPSD_AUDIT_LOG_OWNER_GID="$(/usr/bin/id -g)"
+        fi
+    fi
+    if ! [[ "$APCUPSD_AUDIT_LOG_OWNER_UID" =~ ^[0-9]+$ \
+        && "$APCUPSD_AUDIT_LOG_OWNER_GID" =~ ^[0-9]+$ ]]; then
+        echo "root-required install drift: invalid UPS audit-log owner identity uid=$APCUPSD_AUDIT_LOG_OWNER_UID gid=$APCUPSD_AUDIT_LOG_OWNER_GID" >&2
+        echo "  next action: remove invalid HAPAX_UPS_AUDIT_LOG_OWNER_UID/GID overrides and rerun the installed audit" >&2
+        return 1
+    fi
+}
+
+audit_apcupsd_audit_log() {
+    local parent_expected_mode=""
+    resolve_apcupsd_audit_log_identity || return 1
+    if [ "$APCUPSD_AUDIT_LOG" = "$APCUPSD_CANONICAL_AUDIT_LOG" ]; then
+        parent_expected_mode=2775
+    fi
+    /usr/bin/python3 - "$APCUPSD_AUDIT_LOG" \
+        "$APCUPSD_AUDIT_LOG_OWNER_UID" "$APCUPSD_AUDIT_LOG_OWNER_GID" \
+        "$parent_expected_mode" <<'PY'
+from __future__ import annotations
+
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+owner_uid = int(sys.argv[2])
+owner_gid = int(sys.argv[3])
+parent_expected_mode = int(sys.argv[4], 8) if sys.argv[4] else None
+parent = os.path.dirname(path) or "."
+try:
+    parent_inode = os.lstat(parent)
+except OSError as exc:
+    print(
+        f"root-required install drift: UPS audit log parent missing: {parent}: {exc}",
+        file=sys.stderr,
+    )
+    print(
+        "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+if not stat.S_ISDIR(parent_inode.st_mode) or (
+    parent_expected_mode is not None
+    and (
+        parent_inode.st_uid != owner_uid
+        or parent_inode.st_gid != owner_gid
+        or stat.S_IMODE(parent_inode.st_mode) != parent_expected_mode
+    )
+):
+    print(
+        f"root-required install drift: UPS audit log parent trust drift: {parent} "
+        f"owner={parent_inode.st_uid}:{parent_inode.st_gid} "
+        f"mode={stat.S_IMODE(parent_inode.st_mode):04o}; expected a lexical non-symlink "
+        + (
+            f"directory with {owner_uid}:{owner_gid}:{parent_expected_mode:04o}"
+            if parent_expected_mode is not None
+            else "directory"
+        ),
+        file=sys.stderr,
+    )
+    print(
+        "  next action: repair the audit-log directory and run "
+        "scripts/install-apcupsd-power-alerts --install --verify-live",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+try:
+    inode = os.lstat(path)
+except OSError as exc:
+    print(f"root-required install drift: UPS audit log missing: {path}: {exc}", file=sys.stderr)
+    print(
+        "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+if (
+    not stat.S_ISREG(inode.st_mode)
+    or inode.st_nlink != 1
+    or inode.st_uid != owner_uid
+    or inode.st_gid != owner_gid
+    or stat.S_IMODE(inode.st_mode) != 0o640
+):
+    print(
+        f"root-required install drift: unsafe UPS audit log {path} "
+        f"owner={inode.st_uid}:{inode.st_gid} mode={stat.S_IMODE(inode.st_mode):03o} "
+        f"links={inode.st_nlink}; expected {owner_uid}:{owner_gid}:640 with one regular link",
+        file=sys.stderr,
+    )
+    print(
+        "  next action: preserve valid content and run "
+        "scripts/install-apcupsd-power-alerts --install --verify-live",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+PY
+}
+
+oom_package_files=(
+    config/root-required/oom-containment.files
+    scripts/install-p0-oom-containment
+    config/root-required/hapax-oom-score-enforce.sudoers
+    scripts/hapax-oom-score-enforce
+    scripts/hapax-oom-score-trigger
+    scripts/hapax-root-failure-intake
+    scripts/hapax-oom-policy-audit
+    scripts/hapax-root-required-deploy-audit
+    config/earlyoom/default
+    systemd/system/system.slice.d/oom-containment.conf
+    systemd/system/user.slice.d/oom-containment.conf
+    systemd/system/user-1000.slice.d/oom-containment.conf
+    systemd/system/user@1000.service.d/oom.conf
+    systemd/system/apcupsd.service.d/oom-protect.conf
+    systemd/system/systemd-logind.service.d/oom-protect.conf
+    systemd/system/systemd-resolved.service.d/oom-protect.conf
+    systemd/system/systemd-timesyncd.service.d/oom-protect.conf
+    systemd/system/NetworkManager.service.d/oom-protect.conf
+    systemd/system/dbus-broker.service.d/oom-protect.conf
+    systemd/system/sshd.service.d/oom-protect.conf
+    systemd/units/hapax-root-failure-intake@.service
+    systemd/units/hapax-oom-score-enforce.service
+    systemd/units/hapax-oom-score-enforce.timer
+    systemd/units/hapax-oom-policy-audit.service
+    systemd/units/hapax-oom-policy-audit.timer
+    systemd/units/hapax-root-required-deploy-audit.service
+    systemd/units/hapax-root-required-deploy-audit.timer
+    systemd/units/app.slice.d/oom-containment.conf
+    systemd/units/session.slice.d/oom-containment.conf
+    systemd/units/pipewire.service.d/oom-protect.conf
+    systemd/units/pipewire-pulse.service.d/oom-protect.conf
+    systemd/units/wireplumber.service.d/oom-protect.conf
+    systemd/units/hapax-daimonion.service.d/oom-protect.conf
+    systemd/units/studio-compositor.service.d/oom-protect.conf
+    systemd/units/hapax-imagination.service.d/oom-protect.conf
+)
+apcupsd_package_files=(
+    config/root-required/apcupsd-power-alerts.files
+    scripts/install-apcupsd-power-alerts
+    config/apcupsd/apcupsd.conf
+    config/apcupsd/hapax-power-event.py
+    config/apcupsd/onbattery
+    config/apcupsd/offbattery
+    config/apcupsd/doshutdown
+    config/upower/90-hapax-apcupsd-owner.conf
+    systemd/logrotate.d/hapax-ups-power-events
+)
+
+mkdir -p "$ROOT_DEFER_DIR"
+reexec_with_safe_root_required_lock
+
+rc=0
+
+pending_runbooks() {
+    [ -d "$ROOT_DEFER_DIR" ] || return 0
+    find "$ROOT_DEFER_DIR" -mindepth 3 -maxdepth 3 -name RUNBOOK.txt -type f | sort
+}
+
+source_for_rel() {
+    local rel="$1"
+    printf '%s/%s\n' "$INSTALLED_SOURCE_ROOT" "$rel"
+}
+
+audit_package_receipt() {
+    local label="$1" receipt sha rel failed=0
+    shift
+    receipt="$INSTALLED_RECEIPT_ROOT/$label.sha"
+    if [ ! -f "$receipt" ]; then
+        echo "root-required installed receipt missing: $receipt" >&2
+        echo "  next action: rerun the newest governed $label installer package" >&2
+        return 1
+    fi
+    sha="$(tr -d '[:space:]' < "$receipt")"
+    if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || ! git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$sha^{commit}" 2>/dev/null; then
+        echo "root-required installed receipt is invalid or unavailable: $receipt sha=$sha" >&2
+        echo "  next action: fetch the installed commit into $ROOT_REQUIRED_GIT_REPO and rerun the newest governed $label installer package" >&2
+        return 1
+    fi
+    for rel in "$@"; do
+        case "$rel" in
+            config/root-required/*.files)
+                if ! git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$sha:$rel" 2>/dev/null; then
+                    if [ ! -e "$INSTALLED_SOURCE_ROOT/$rel" ]; then
+                        continue
+                    fi
+                    echo "root-required installed manifest is not bound to legacy $label receipt $sha: $INSTALLED_SOURCE_ROOT/$rel" >&2
+                    echo "  next action: rerun the newest governed $label installer package" >&2
+                    failed=1
+                    continue
+                fi
+                ;;
+        esac
+        if [ ! -f "$INSTALLED_SOURCE_ROOT/$rel" ] \
+            || [ -L "$INSTALLED_SOURCE_ROOT/$rel" ] \
+            || ! cmp -s <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$sha:$rel") "$INSTALLED_SOURCE_ROOT/$rel"; then
+            echo "root-required installed source is not bound to $label receipt $sha: $INSTALLED_SOURCE_ROOT/$rel" >&2
+            echo "  next action: rerun the newest governed $label installer package from an exact staged RUNBOOK" >&2
+            failed=1
+        fi
+    done
+    [ "$failed" -eq 0 ]
+}
+
+audit_desired_receipt() {
+    local label="$1" desired installed desired_sha installed_sha
+    desired="$DESIRED_RECEIPT_ROOT/$label.sha"
+    installed="$INSTALLED_RECEIPT_ROOT/$label.sha"
+    if [ ! -f "$desired" ]; then
+        echo "root-required desired receipt missing: $desired" >&2
+        echo "  next action: rerun hapax-post-merge-deploy for current main or the newest governed $label installer" >&2
+        return 1
+    fi
+    desired_sha="$(tr -d '[:space:]' < "$desired")"
+    if ! [[ "$desired_sha" =~ ^[0-9a-f]{40}$ ]] || ! git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$desired_sha^{commit}" 2>/dev/null; then
+        echo "root-required desired receipt is invalid or unavailable: $desired sha=$desired_sha" >&2
+        echo "  next action: fetch the desired commit into $ROOT_REQUIRED_GIT_REPO and rerun hapax-post-merge-deploy" >&2
+        return 1
+    fi
+    installed_sha=""
+    if [ -f "$installed" ]; then
+        installed_sha="$(tr -d '[:space:]' < "$installed")"
+    fi
+    if [ "$installed_sha" != "$desired_sha" ]; then
+        echo "root-required desired package is not installed: $label desired=$desired_sha installed=${installed_sha:-missing}" >&2
+        echo "  next action: regenerate the exact package from $desired_sha and run its governed installer, even if the cached RUNBOOK was lost" >&2
+        return 1
+    fi
+}
+
+compare_root_file() {
+    local rel="$1" dest="$2" mode_override="${3:-}" source expected_mode actual_mode
+    source="$(source_for_rel "$rel")"
+    if [ ! -f "$source" ] || [ -L "$source" ]; then
+        echo "root-required source missing or not a regular stable copy: $source" >&2
+        echo "  next action: rerun the owning root installer to refresh the receipt-bound snapshot at $INSTALLED_SOURCE_ROOT" >&2
+        return 1
+    fi
+    if [ ! -f "$dest" ] || [ -L "$dest" ]; then
+        echo "root-required install missing or not a regular stable copy: $dest" >&2
+        case "$rel" in
+            config/apcupsd/*|config/upower/*|systemd/logrotate.d/hapax-ups-power-events)
+                echo "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+                ;;
+            *)
+                echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+                ;;
+        esac
+        return 1
+    fi
+    expected_mode="${mode_override:-$(expected_install_mode "$rel")}"
+    actual_mode="$(stat -c '%a' "$dest" 2>/dev/null || true)"
+    if [ "$actual_mode" != "$expected_mode" ]; then
+        echo "root-required install mode drift: $dest mode=${actual_mode:-unavailable} expected=$expected_mode" >&2
+        case "$rel" in
+            config/apcupsd/*|config/upower/*|systemd/logrotate.d/hapax-ups-power-events)
+                echo "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+                ;;
+            *)
+                echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+                ;;
+        esac
+        return 1
+    fi
+    if [ "$dest" = "$OOM_SUDOERS_DEST" ]; then
+        "$SUDO" -n "$CMP" -s "$OOM_SUDOERS_REFERENCE_DEST" "$dest"
+    else
+        cmp -s "$source" "$dest"
+    fi || {
+        echo "root-required install drift: $dest differs from $source" >&2
+        case "$rel" in
+            config/apcupsd/*|config/upower/*|systemd/logrotate.d/hapax-ups-power-events)
+                echo "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+                ;;
+            *)
+                echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+                ;;
+        esac
+        return 1
+    }
+}
+
+audit_root_artifact_trust() {
+    local path="$1" expected_uid expected_gid actual parent parent_actual parent_mode
+    case "$path" in
+        "$SYSTEMD_USER_DIR"/*)
+            return 0
+            ;;
+        /etc/*|/usr/local/*)
+            expected_uid=0
+            expected_gid=0
+            ;;
+        *)
+            expected_uid="$ROOT_ARTIFACT_TEST_UID"
+            expected_gid="$ROOT_ARTIFACT_TEST_GID"
+            ;;
+    esac
+    actual="$(stat -c '%u:%g' "$path" 2>/dev/null || true)"
+    if [ "$actual" != "$expected_uid:$expected_gid" ]; then
+        echo "root-required root-artifact ownership drift: $path owner=${actual:-unavailable} expected=$expected_uid:$expected_gid" >&2
+        echo "  next action: rerun the owning installer as the target account after sudo -v" >&2
+        return 1
+    fi
+    parent="$(dirname "$path")"
+    if [ ! -d "$parent" ] || [ -L "$parent" ]; then
+        echo "root-required root-artifact parent is missing, symlinked, or not a directory: $parent" >&2
+        echo "  next action: repair the root-owned destination directory and rerun the owning installer" >&2
+        return 1
+    fi
+    parent_actual="$(stat -c '%u:%g' "$parent" 2>/dev/null || true)"
+    parent_mode="$(stat -c '%a' "$parent" 2>/dev/null || true)"
+    if [ "$parent_actual" != "$expected_uid:$expected_gid" ] \
+        || ! [[ "$parent_mode" =~ ^[0-7]+$ ]] \
+        || (( (8#$parent_mode & 8#022) != 0 )); then
+        echo "root-required root-artifact parent trust drift: $parent owner/mode=${parent_actual:-unavailable}:${parent_mode:-unavailable} expected=$expected_uid:$expected_gid and no group/other write bits" >&2
+        echo "  next action: repair the root-owned destination directory and rerun the owning installer" >&2
+        return 1
+    fi
+}
+
+audit_sudoers_trust() {
+    local path="$1" expected_mode="$2" label="$3" actual failed=0
+    if [ ! -f "$path" ] || [ -L "$path" ]; then
+        echo "root-required $label missing or not a regular stable copy: $path" >&2
+        echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    actual="$(stat -c '%u:%g:%a' "$path" 2>/dev/null || true)"
+    if [ "$actual" != "$OOM_SUDOERS_OWNER_UID:$OOM_SUDOERS_OWNER_GID:$expected_mode" ]; then
+        echo "root-required $label ownership/mode drift: $path owner/mode=${actual:-unavailable} expected=$OOM_SUDOERS_OWNER_UID:$OOM_SUDOERS_OWNER_GID:$expected_mode" >&2
+        echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        failed=1
+    fi
+    if [ "$path" = "$OOM_SUDOERS_REFERENCE_DEST" ] \
+        && [ "$OOM_SUDOERS_REFERENCE_DEST" = "/usr/local/share/hapax/root-required/hapax-oom-score-enforce.sudoers" ]; then
+        for path in /usr/local/share/hapax /usr/local/share/hapax/root-required; do
+            actual="$(stat -c '%u:%g:%a:%F' "$path" 2>/dev/null || true)"
+            if [ -L "$path" ] || [ "$actual" != "0:0:755:directory" ]; then
+                echo "root-required sudoers reference directory trust drift: $path owner/mode/type=${actual:-unavailable} expected=0:0:755:directory" >&2
+                echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+                failed=1
+            fi
+        done
+    fi
+    return "$failed"
+}
+
+expected_install_mode() {
+    case "$1" in
+        config/root-required/hapax-oom-score-enforce.sudoers)
+            printf '440\n'
+            ;;
+        scripts/hapax-oom-score-enforce|scripts/hapax-oom-score-trigger|scripts/hapax-root-failure-intake|scripts/hapax-oom-policy-audit|scripts/hapax-root-required-deploy-audit|config/apcupsd/hapax-power-event.py|config/apcupsd/onbattery|config/apcupsd/offbattery|config/apcupsd/doshutdown)
+            printf '755\n'
+            ;;
+        *)
+            printf '644\n'
+            ;;
+    esac
+}
+
+verify_executable() {
+    local rel="$1" dest="$2"
+    [ -x "$dest" ] || {
+        echo "root-required executable mode drift: $dest is not executable" >&2
+        case "$rel" in
+            config/apcupsd/*)
+                echo "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+                ;;
+            *)
+                echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+                ;;
+        esac
+        return 1
+    }
+}
+
+installed_unit_value() {
+    local rel="$1" key="$2"
+    awk -v key="$key" '$0 ~ "^" key "=" {sub(/^[^=]*=/, ""); print; exit}' \
+        "$INSTALLED_SOURCE_ROOT/$rel" 2>/dev/null || true
+}
+
+loaded_unit_property() {
+    local manager="$1" unit="$2" property="$3"
+    if [ "$manager" = "user" ]; then
+        "$SYSTEMCTL" --user show "$unit" -p "$property" --value 2>/dev/null
+    else
+        "$SYSTEMCTL" show "$unit" -p "$property" --value 2>/dev/null
+    fi
+}
+
+audit_effective_service_unit() {
+    local manager="$1" unit="$2" rel="$3" expected_fragment="$4"
+    local expected_exec expected_failure expected_user actual_fragment actual_dropins
+    local actual_exec actual_failure actual_user
+    expected_exec="$(installed_unit_value "$rel" ExecStart)"
+    expected_failure="$(installed_unit_value "$rel" OnFailure)"
+    expected_failure="${expected_failure//%n/$unit}"
+    expected_user="$(installed_unit_value "$rel" User)"
+    actual_fragment="$(loaded_unit_property "$manager" "$unit" FragmentPath)" || actual_fragment=""
+    actual_dropins="$(loaded_unit_property "$manager" "$unit" DropInPaths)" || actual_dropins="query-error"
+    actual_exec="$(loaded_unit_property "$manager" "$unit" ExecStart)" || actual_exec=""
+    actual_failure="$(loaded_unit_property "$manager" "$unit" OnFailure)" || actual_failure="query-error"
+    actual_user="$(loaded_unit_property "$manager" "$unit" User)" || actual_user="query-error"
+    if [ -z "$expected_exec" ] || [ "$actual_fragment" != "$expected_fragment" ] \
+        || [ -n "$actual_dropins" ]; then
+        echo "root-required effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins" >&2
+        echo "  next action: remove unauthorized overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    case "$actual_exec" in
+        *"argv[]=$expected_exec ;"*) ;;
+        *)
+            echo "root-required effective $unit ExecStart drift: actual=${actual_exec:-unavailable} expected=$expected_exec" >&2
+            echo "  next action: remove unauthorized overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+            return 1
+            ;;
+    esac
+    if [ "$actual_failure" != "$expected_failure" ] || [ "$actual_user" != "$expected_user" ]; then
+        echo "root-required effective $unit failure/identity drift: OnFailure=${actual_failure:-none} User=${actual_user:-default} expected OnFailure=${expected_failure:-none} User=${expected_user:-default}" >&2
+        echo "  next action: remove unauthorized overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+}
+
+audit_effective_failure_intake_unit() {
+    local unit="hapax-root-failure-intake@hapax-oom-score-enforce.service.service"
+    local instance="hapax-oom-score-enforce.service"
+    local rel="systemd/units/hapax-root-failure-intake@.service"
+    local expected_fragment="$SYSTEMD_SYSTEM_DIR/hapax-root-failure-intake@.service"
+    local expected_exec expected_user expected_environment expected_interval expected_burst
+    local actual_fragment actual_dropins actual_exec actual_user actual_environment
+    local actual_interval actual_burst
+    expected_exec="$(installed_unit_value "$rel" ExecStart)"
+    expected_exec="${expected_exec//%i/$instance}"
+    expected_user="$(installed_unit_value "$rel" User)"
+    expected_environment="$(installed_unit_value "$rel" Environment)"
+    expected_interval="$(installed_unit_value "$rel" StartLimitIntervalSec)"
+    expected_burst="$(installed_unit_value "$rel" StartLimitBurst)"
+    actual_fragment="$(loaded_unit_property system "$unit" FragmentPath)" || actual_fragment=""
+    actual_dropins="$(loaded_unit_property system "$unit" DropInPaths)" || actual_dropins="query-error"
+    actual_exec="$(loaded_unit_property system "$unit" ExecStart)" || actual_exec=""
+    actual_user="$(loaded_unit_property system "$unit" User)" || actual_user="query-error"
+    actual_environment="$(loaded_unit_property system "$unit" Environment)" || actual_environment="query-error"
+    actual_interval="$(loaded_unit_property system "$unit" StartLimitIntervalUSec)" || actual_interval="query-error"
+    actual_burst="$(loaded_unit_property system "$unit" StartLimitBurst)" || actual_burst="query-error"
+    if [ -z "$expected_exec" ] || [ -z "$expected_user" ] || [ -z "$expected_environment" ] \
+        || [ -z "$expected_interval" ] || [ -z "$expected_burst" ] \
+        || [ "$actual_fragment" != "$expected_fragment" ] || [ -n "$actual_dropins" ]; then
+        echo "root-required effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins" >&2
+        echo "  next action: remove unauthorized template or instance overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    case "$actual_exec" in
+        *"argv[]=$expected_exec ;"*) ;;
+        *)
+            echo "root-required effective $unit ExecStart drift: actual=${actual_exec:-unavailable} expected=$expected_exec" >&2
+            echo "  next action: remove unauthorized template or instance overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+            return 1
+            ;;
+    esac
+    if [ "$actual_user" != "$expected_user" ] || [ "$actual_environment" != "$expected_environment" ] \
+        || [ "$actual_interval" != "$expected_interval" ] || [ "$actual_burst" != "$expected_burst" ]; then
+        echo "root-required effective $unit identity/limit drift: User=${actual_user:-default} Environment=${actual_environment:-none} StartLimitIntervalUSec=${actual_interval:-none} StartLimitBurst=${actual_burst:-none} expected User=$expected_user Environment=$expected_environment StartLimitIntervalUSec=$expected_interval StartLimitBurst=$expected_burst" >&2
+        echo "  next action: remove unauthorized template or instance overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+}
+
+audit_effective_timer_unit() {
+    local manager="$1" unit="$2" rel="$3" expected_fragment="$4"
+    local expected_target expected_boot expected_active actual_fragment actual_dropins
+    local actual_target actual_timers
+    expected_target="$(installed_unit_value "$rel" Unit)"
+    expected_boot="$(installed_unit_value "$rel" OnBootSec)"
+    expected_active="$(installed_unit_value "$rel" OnUnitActiveSec)"
+    actual_fragment="$(loaded_unit_property "$manager" "$unit" FragmentPath)" || actual_fragment=""
+    actual_dropins="$(loaded_unit_property "$manager" "$unit" DropInPaths)" || actual_dropins="query-error"
+    actual_target="$(loaded_unit_property "$manager" "$unit" Unit)" || actual_target="query-error"
+    actual_timers="$(loaded_unit_property "$manager" "$unit" TimersMonotonic)" || actual_timers="query-error"
+    if [ -z "$expected_target" ] || [ -z "$expected_boot" ] || [ -z "$expected_active" ] \
+        || [ "$actual_fragment" != "$expected_fragment" ] || [ -n "$actual_dropins" ]; then
+        echo "root-required effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins" >&2
+        echo "  next action: remove unauthorized overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    if [ "$actual_target" != "$expected_target" ]; then
+        echo "root-required effective $unit target drift: actual=${actual_target:-unavailable} expected=$expected_target" >&2
+        echo "  next action: remove unauthorized overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    case "$actual_timers" in
+        *"OnBootUSec=$expected_boot"*"OnUnitActiveUSec=$expected_active"*|*"OnUnitActiveUSec=$expected_active"*"OnBootUSec=$expected_boot"*) ;;
+        *)
+            echo "root-required effective $unit cadence drift: actual=${actual_timers:-unavailable} expected OnBootUSec=$expected_boot and OnUnitActiveUSec=$expected_active" >&2
+            echo "  next action: remove unauthorized overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+            return 1
+            ;;
+    esac
+}
+
+audit_effective_safety_units() {
+    local failed=0
+    audit_effective_service_unit system hapax-oom-score-enforce.service \
+        systemd/units/hapax-oom-score-enforce.service \
+        "$SYSTEMD_SYSTEM_DIR/hapax-oom-score-enforce.service" || failed=1
+    audit_effective_failure_intake_unit || failed=1
+    audit_effective_timer_unit system hapax-oom-score-enforce.timer \
+        systemd/units/hapax-oom-score-enforce.timer \
+        "$SYSTEMD_SYSTEM_DIR/hapax-oom-score-enforce.timer" || failed=1
+    audit_effective_service_unit user hapax-oom-policy-audit.service \
+        systemd/units/hapax-oom-policy-audit.service \
+        "$SYSTEMD_USER_DIR/hapax-oom-policy-audit.service" || failed=1
+    audit_effective_timer_unit user hapax-oom-policy-audit.timer \
+        systemd/units/hapax-oom-policy-audit.timer \
+        "$SYSTEMD_USER_DIR/hapax-oom-policy-audit.timer" || failed=1
+    audit_effective_service_unit user hapax-root-required-deploy-audit.service \
+        systemd/units/hapax-root-required-deploy-audit.service \
+        "$SYSTEMD_USER_DIR/hapax-root-required-deploy-audit.service" || failed=1
+    audit_effective_timer_unit user hapax-root-required-deploy-audit.timer \
+        systemd/units/hapax-root-required-deploy-audit.timer \
+        "$SYSTEMD_USER_DIR/hapax-root-required-deploy-audit.timer" || failed=1
+    return "$failed"
+}
+
+audit_systemd_state() {
+    local failed=0 loaded_upower_action expected_enforcer_timeout loaded_enforcer_timeout
+    local spec unit rel expected_audit_timeout loaded_audit_timeout
+    local expected_audit_environment loaded_audit_environment
+    if ! "$SYSTEMCTL" is-enabled --quiet hapax-oom-score-enforce.timer; then
+        echo "root-required activation drift: hapax-oom-score-enforce.timer is not enabled" >&2
+        echo "  next action: run sudo systemctl enable --now hapax-oom-score-enforce.timer" >&2
+        failed=1
+    fi
+    if ! "$SYSTEMCTL" is-active --quiet hapax-oom-score-enforce.timer; then
+        echo "root-required activation drift: hapax-oom-score-enforce.timer is not active" >&2
+        echo "  next action: run sudo systemctl enable --now hapax-oom-score-enforce.timer" >&2
+        failed=1
+    fi
+    expected_enforcer_timeout="$(awk -F= '$1 == "TimeoutStartSec" {print $2; exit}' "$INSTALLED_SOURCE_ROOT/systemd/units/hapax-oom-score-enforce.service" 2>/dev/null || true)"
+    if ! loaded_enforcer_timeout="$("$SYSTEMCTL" show hapax-oom-score-enforce.service -p TimeoutStartUSec --value 2>/dev/null)"; then
+        loaded_enforcer_timeout=""
+    fi
+    if [ -z "$expected_enforcer_timeout" ] || [ "$loaded_enforcer_timeout" != "$expected_enforcer_timeout" ]; then
+        echo "root-required activation drift: hapax-oom-score-enforce.service loaded TimeoutStartUSec=${loaded_enforcer_timeout:-unavailable}, expected ${expected_enforcer_timeout:-source value missing}" >&2
+        echo "  next action: run sudo systemctl daemon-reload and scripts/install-p0-oom-containment --install --verify-live" >&2
+        failed=1
+    fi
+    if ! "$SYSTEMCTL" is-active --quiet apcupsd.service; then
+        echo "root-required activation drift: apcupsd.service is not active" >&2
+        echo "  next action: run sudo systemctl restart apcupsd.service and inspect journalctl -u apcupsd.service" >&2
+        failed=1
+    fi
+    if ! "$SYSTEMCTL" is-enabled --quiet apcupsd.service; then
+        echo "root-required activation drift: apcupsd.service is not enabled" >&2
+        echo "  next action: run sudo systemctl enable --now apcupsd.service" >&2
+        failed=1
+    fi
+    loaded_upower_action="$("$BUSCTL" call org.freedesktop.UPower /org/freedesktop/UPower org.freedesktop.UPower GetCriticalAction 2>/dev/null || true)"
+    if [ "$loaded_upower_action" != 's "Ignore"' ]; then
+        echo "root-required activation drift: UPower loaded critical action is ${loaded_upower_action:-unavailable}, expected Ignore" >&2
+        echo "  next action: run sudo systemctl restart upower.service and scripts/install-apcupsd-power-alerts --verify-live" >&2
+        failed=1
+    fi
+    if ! "$SYSTEMCTL" is-enabled --quiet earlyoom.service; then
+        echo "root-required activation drift: earlyoom.service is not enabled" >&2
+        echo "  next action: run sudo systemctl enable --now earlyoom.service" >&2
+        failed=1
+    fi
+    if ! "$SYSTEMCTL" is-active --quiet earlyoom.service; then
+        echo "root-required activation drift: earlyoom.service is not active" >&2
+        echo "  next action: run sudo systemctl enable --now earlyoom.service and inspect journalctl -u earlyoom.service" >&2
+        failed=1
+    fi
+    for timer in hapax-oom-policy-audit.timer hapax-root-required-deploy-audit.timer; do
+        if ! "$SYSTEMCTL" --user is-enabled --quiet "$timer"; then
+            echo "root-required activation drift: $timer is not enabled" >&2
+            echo "  next action: run systemctl --user enable --now $timer" >&2
+            failed=1
+        fi
+        if ! "$SYSTEMCTL" --user is-active --quiet "$timer"; then
+            echo "root-required activation drift: $timer is not active" >&2
+            echo "  next action: run systemctl --user enable --now $timer" >&2
+            failed=1
+        fi
+    done
+    for spec in \
+        "hapax-oom-policy-audit.service|systemd/units/hapax-oom-policy-audit.service" \
+        "hapax-root-required-deploy-audit.service|systemd/units/hapax-root-required-deploy-audit.service"; do
+        unit="${spec%%|*}"
+        rel="${spec#*|}"
+        expected_audit_timeout="$(awk -F= '$1 == "TimeoutStartSec" {print $2; exit}' "$INSTALLED_SOURCE_ROOT/$rel" 2>/dev/null || true)"
+        if ! loaded_audit_timeout="$("$SYSTEMCTL" --user show "$unit" -p TimeoutStartUSec --value 2>/dev/null)"; then
+            loaded_audit_timeout=""
+        fi
+        if [ -z "$expected_audit_timeout" ] || [ "$loaded_audit_timeout" != "$expected_audit_timeout" ]; then
+            echo "root-required activation drift: $unit loaded TimeoutStartUSec=${loaded_audit_timeout:-unavailable}, expected ${expected_audit_timeout:-source value missing}" >&2
+            echo "  next action: run systemctl --user daemon-reload and scripts/install-p0-oom-containment --install --verify-live" >&2
+            failed=1
+        fi
+        expected_audit_environment="$(awk '$0 ~ /^Environment=/ {sub(/^[^=]*=/, ""); print; exit}' "$INSTALLED_SOURCE_ROOT/$rel" 2>/dev/null || true)"
+        if ! loaded_audit_environment="$("$SYSTEMCTL" --user show "$unit" -p Environment --value 2>/dev/null)"; then
+            loaded_audit_environment=""
+        fi
+        case " $loaded_audit_environment " in
+            *" $expected_audit_environment "*)
+                [ -n "$expected_audit_environment" ] || {
+                    echo "root-required activation drift: $unit source Environment is missing" >&2
+                    echo "  next action: restore the receipt-bound unit and run scripts/install-p0-oom-containment --install --verify-live" >&2
+                    failed=1
+                }
+                ;;
+            *)
+                echo "root-required activation drift: $unit loaded Environment=${loaded_audit_environment:-unavailable}, expected to contain ${expected_audit_environment:-source value missing}" >&2
+                echo "  next action: run systemctl --user daemon-reload and scripts/install-p0-oom-containment --install --verify-live" >&2
+                failed=1
+                ;;
+        esac
+    done
+    audit_effective_safety_units || failed=1
+    [ "$failed" -eq 0 ]
+}
+
+audit_apcupsd_loaded_policy() {
+    local status spec config_key status_key expected actual source_config failed=0
+    source_config="$INSTALLED_SOURCE_ROOT/config/apcupsd/apcupsd.conf"
+    status="$("$APCACCESS" status 2>/dev/null)" || {
+        echo "root-required activation drift: unable to query apcupsd loaded shutdown policy" >&2
+        echo "  next action: inspect systemctl status apcupsd.service and run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    }
+    for spec in BATTERYLEVEL:MBATTCHG MINUTES:MINTIMEL TIMEOUT:MAXTIME; do
+        config_key="${spec%%:*}"
+        status_key="${spec##*:}"
+        expected="$(awk -v key="$config_key" '$1 == key {print $2; exit}' "$source_config" 2>/dev/null || true)"
+        actual="$(printf '%s\n' "$status" | awk -F: -v key="$status_key" '
+            {
+                name = $1
+                gsub(/[[:space:]]/, "", name)
+                if (name == key) {
+                    value = $2
+                    sub(/^[[:space:]]*/, "", value)
+                    split(value, fields, /[[:space:]]+/)
+                    print fields[1]
+                    exit
+                }
+            }
+        ')"
+        if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then
+            echo "root-required activation drift: apcupsd loaded $status_key=${actual:-unavailable}, expected $expected from $config_key" >&2
+            echo "  next action: run sudo systemctl restart apcupsd.service and scripts/install-apcupsd-power-alerts --verify-live" >&2
+            failed=1
+        fi
+    done
+    [ "$failed" -eq 0 ]
+}
+
+audit_root_installs() {
+    local -a manifest=(
+        "scripts/hapax-oom-score-enforce|$OOM_ENFORCER_DEST"
+        "scripts/hapax-oom-score-trigger|$OOM_TRIGGER_DEST"
+        "config/root-required/hapax-oom-score-enforce.sudoers|$OOM_SUDOERS_DEST"
+        "scripts/hapax-root-failure-intake|$ROOT_FAILURE_INTAKE_DEST"
+        "scripts/hapax-oom-policy-audit|$OOM_POLICY_AUDIT_DEST"
+        "scripts/hapax-root-required-deploy-audit|$ROOT_REQUIRED_AUDIT_DEST"
+        "config/earlyoom/default|$EARLYOOM_DEST"
+        "systemd/system/system.slice.d/oom-containment.conf|$SYSTEMD_SYSTEM_DIR/system.slice.d/oom-containment.conf"
+        "systemd/system/user.slice.d/oom-containment.conf|$SYSTEMD_SYSTEM_DIR/user.slice.d/oom-containment.conf"
+        "systemd/system/user-1000.slice.d/oom-containment.conf|$SYSTEMD_SYSTEM_DIR/user-1000.slice.d/oom-containment.conf"
+        "systemd/system/user@1000.service.d/oom.conf|$SYSTEMD_SYSTEM_DIR/user@1000.service.d/oom.conf"
+        "systemd/system/apcupsd.service.d/oom-protect.conf|$SYSTEMD_SYSTEM_DIR/apcupsd.service.d/oom-protect.conf"
+        "systemd/system/systemd-logind.service.d/oom-protect.conf|$SYSTEMD_SYSTEM_DIR/systemd-logind.service.d/oom-protect.conf"
+        "systemd/system/systemd-resolved.service.d/oom-protect.conf|$SYSTEMD_SYSTEM_DIR/systemd-resolved.service.d/oom-protect.conf"
+        "systemd/system/systemd-timesyncd.service.d/oom-protect.conf|$SYSTEMD_SYSTEM_DIR/systemd-timesyncd.service.d/oom-protect.conf"
+        "systemd/system/NetworkManager.service.d/oom-protect.conf|$SYSTEMD_SYSTEM_DIR/NetworkManager.service.d/oom-protect.conf"
+        "systemd/system/dbus-broker.service.d/oom-protect.conf|$SYSTEMD_SYSTEM_DIR/dbus-broker.service.d/oom-protect.conf"
+        "systemd/system/sshd.service.d/oom-protect.conf|$SYSTEMD_SYSTEM_DIR/sshd.service.d/oom-protect.conf"
+        "systemd/units/hapax-root-failure-intake@.service|$SYSTEMD_SYSTEM_DIR/hapax-root-failure-intake@.service"
+        "systemd/units/hapax-oom-score-enforce.service|$SYSTEMD_SYSTEM_DIR/hapax-oom-score-enforce.service"
+        "systemd/units/hapax-oom-score-enforce.timer|$SYSTEMD_SYSTEM_DIR/hapax-oom-score-enforce.timer"
+        "systemd/units/hapax-oom-policy-audit.service|$SYSTEMD_USER_DIR/hapax-oom-policy-audit.service"
+        "systemd/units/hapax-oom-policy-audit.timer|$SYSTEMD_USER_DIR/hapax-oom-policy-audit.timer"
+        "systemd/units/hapax-root-required-deploy-audit.service|$SYSTEMD_USER_DIR/hapax-root-required-deploy-audit.service"
+        "systemd/units/hapax-root-required-deploy-audit.timer|$SYSTEMD_USER_DIR/hapax-root-required-deploy-audit.timer"
+        "systemd/units/app.slice.d/oom-containment.conf|$SYSTEMD_USER_DIR/app.slice.d/oom-containment.conf"
+        "systemd/units/session.slice.d/oom-containment.conf|$SYSTEMD_USER_DIR/session.slice.d/oom-containment.conf"
+        "systemd/units/pipewire.service.d/oom-protect.conf|$SYSTEMD_USER_DIR/pipewire.service.d/oom-protect.conf"
+        "systemd/units/pipewire-pulse.service.d/oom-protect.conf|$SYSTEMD_USER_DIR/pipewire-pulse.service.d/oom-protect.conf"
+        "systemd/units/wireplumber.service.d/oom-protect.conf|$SYSTEMD_USER_DIR/wireplumber.service.d/oom-protect.conf"
+        "systemd/units/hapax-daimonion.service.d/oom-protect.conf|$SYSTEMD_USER_DIR/hapax-daimonion.service.d/oom-protect.conf"
+        "systemd/units/studio-compositor.service.d/oom-protect.conf|$SYSTEMD_USER_DIR/studio-compositor.service.d/oom-protect.conf"
+        "systemd/units/hapax-imagination.service.d/oom-protect.conf|$SYSTEMD_USER_DIR/hapax-imagination.service.d/oom-protect.conf"
+        "config/apcupsd/apcupsd.conf|$APCUPSD_DEST/apcupsd.conf"
+        "config/apcupsd/hapax-power-event.py|$APCUPSD_DEST/hapax-power-event.py"
+        "config/apcupsd/onbattery|$APCUPSD_DEST/onbattery"
+        "config/apcupsd/offbattery|$APCUPSD_DEST/offbattery"
+        "config/apcupsd/doshutdown|$APCUPSD_DEST/doshutdown"
+        "config/upower/90-hapax-apcupsd-owner.conf|$UPOWER_CONF_DEST"
+        "systemd/logrotate.d/hapax-ups-power-events|$APCUPSD_LOGROTATE_DEST"
+    )
+    local entry rel dest failed=0
+    for entry in "${manifest[@]}"; do
+        rel="${entry%%|*}"
+        dest="${entry#*|}"
+        compare_root_file "$rel" "$dest" || failed=1
+        audit_root_artifact_trust "$dest" || failed=1
+        case "$rel" in
+            scripts/hapax-oom-score-enforce|scripts/hapax-oom-score-trigger|scripts/hapax-root-failure-intake|scripts/hapax-oom-policy-audit|scripts/hapax-root-required-deploy-audit|config/apcupsd/hapax-power-event.py|config/apcupsd/onbattery|config/apcupsd/offbattery|config/apcupsd/doshutdown)
+                verify_executable "$rel" "$dest" || failed=1
+                ;;
+        esac
+    done
+    for rel in \
+        systemd/units/hapax-root-failure-intake@.service \
+        systemd/units/hapax-oom-score-enforce.service \
+        systemd/units/hapax-oom-score-enforce.timer; do
+        dest="$SYSTEMD_USER_DIR/$(basename "$rel")"
+        if [ -e "$dest" ] || [ -L "$dest" ]; then
+            echo "root-required install drift: stale user-scope copy of system unit remains: $dest" >&2
+            echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+            failed=1
+        fi
+    done
+    audit_sudoers_trust "$OOM_SUDOERS_DEST" 440 "sudoers policy" || failed=1
+    audit_sudoers_trust "$OOM_SUDOERS_REFERENCE_DEST" 444 "sudoers audit reference" || failed=1
+    compare_root_file \
+        config/root-required/hapax-oom-score-enforce.sudoers \
+        "$OOM_SUDOERS_REFERENCE_DEST" 444 || failed=1
+    if ! "$SUDO" -n "$VISUDO" -cf "$OOM_SUDOERS_DEST" >/dev/null; then
+        echo "root-required install drift: sudoers policy does not parse: $OOM_SUDOERS_DEST" >&2
+        echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        failed=1
+    fi
+    audit_systemd_state || failed=1
+    audit_apcupsd_loaded_policy || failed=1
+    audit_apcupsd_audit_log || failed=1
+    [ "$failed" -eq 0 ]
+}
+
+mapfile -t runbooks < <(pending_runbooks)
+if [ "${#runbooks[@]}" -eq 0 ]; then
+    audit_desired_receipt "oom-containment" || rc=1
+    audit_desired_receipt "apcupsd-power-alerts" || rc=1
+    audit_package_receipt "oom-containment" "${oom_package_files[@]}" || rc=1
+    audit_package_receipt "apcupsd-power-alerts" "${apcupsd_package_files[@]}" || rc=1
+    audit_root_installs || rc=1
+    if [ "$rc" -ne 0 ]; then
+        exit "$rc"
+    fi
+    echo "root-required post-merge deploy deferrals: none"
+    exit 0
+fi
+
+echo "root-required post-merge deploy deferrals pending (${#runbooks[@]}):" >&2
+for runbook in "${runbooks[@]}"; do
+    dir="$(dirname "$runbook")"
+    command="$(awk '/^  .*--install --verify-live$/ {sub(/^  /, ""); print; exit}' "$runbook")"
+    echo "  $dir" >&2
+    if [ -n "$command" ]; then
+        echo "    next action: $command" >&2
+    else
+        echo "    next action: inspect $runbook and run the root-required installer" >&2
+    fi
+done
+exit 1

@@ -7,6 +7,12 @@ __pycache__/
 profiles/
 tests/
 docs/
+!docs/
+docs/*
+!docs/formal/
+docs/formal/*
+!docs/formal/sdlc-stage-metadata.yaml
+!docs/formal/sdlc-ladder.tla
 output/
 *.png
 *.mp4

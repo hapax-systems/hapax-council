@@ -6511,3 +6511,81 @@ def test_review_floor_receipt_detected_from_nested_route_metadata(tmp_path: Path
 
     assert report["counts"]["blocked"] == 1
     assert "missing_acceptance_receipt" in report["decisions"][0]["reasons"]
+
+
+def _egress_armed_frontmatter() -> dict[str, object]:
+    return {
+        "type": "cc-task",
+        "task_id": "egress-revalidation-plumbing",
+        "title": "Wire the governed relay-send boundary for session harnesses",
+        "status": "pr_open",
+        "stage": "S7_RELEASE",
+        "authority_case": "CASE-CAPACITY-ROUTING-001",
+        "route_metadata_schema": 1,
+        "quality_floor": "frontier_required",
+        "authority_level": "authoritative",
+        "mutation_surface": "source",
+        "risk_tier": "T2",
+        "implementation_authorized": True,
+        "release_authorized": True,
+        "public_current": False,
+        "risk_flags": {"audio_or_live_egress_sensitive": True},
+        "tags": ["cc-task", "sdlc"],
+    }
+
+
+def test_egress_revalidation_plumbs_changed_files_into_the_coverage_bound(tmp_path: Path) -> None:
+    # The release-head revalidation must hand the PR's real changed files to the
+    # estate wrapper: an uncovered non-doc path blocks even with all five
+    # mitigation checks green, and a covered path clears (round-15 claude major —
+    # without this pin the coverage bound is dead code in production).
+    from shared.release_gate import LIVE_EGRESS_MITIGATION_CHECKS
+
+    fm = _egress_armed_frontmatter()
+    checks = set(LIVE_EGRESS_MITIGATION_CHECKS)
+
+    uncovered = autoqueue._release_auto_arm_current_evidence_blockers(
+        fm,
+        verified_checks=checks,
+        changed_files=("shared/capability_adapter_protocol.py", "scripts/hapax-operator-message"),
+    )
+    assert any(
+        blocker.startswith("egress_evidence_uncovered_paths:scripts/hapax-operator-message")
+        for blocker in uncovered
+    ), f"coverage bound not plumbed: {uncovered}"
+
+    covered = autoqueue._release_auto_arm_current_evidence_blockers(
+        fm,
+        verified_checks=checks,
+        changed_files=(
+            "shared/capability_adapter_protocol.py",
+            "docs/runbooks/capabilityio-session-gate.md",
+        ),
+    )
+    assert not any("audio_or_live_egress" in b or "egress_evidence" in b for b in covered), (
+        f"covered paths should revalidate clean: {covered}"
+    )
+
+
+def test_egress_revalidation_without_changed_files_holds_coverage_unevaluable(
+    tmp_path: Path,
+) -> None:
+    # A caller that supplies no file list cannot satisfy the coverage bound; the
+    # class then holds as coverage-unevaluable (fail closed), never silently armed.
+    from shared.release_gate import LIVE_EGRESS_MITIGATION_CHECKS
+
+    blockers = autoqueue._release_auto_arm_current_evidence_blockers(
+        _egress_armed_frontmatter(),
+        verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS),
+    )
+    assert "egress_evidence_coverage_unevaluable:no_changed_files" in blockers
+
+
+def test_canon_assessor_reports_armed_for_authorized_egress_task() -> None:
+    # Round-16 glm/claude claimed the canon .armed read in the suppression
+    # branch is dead for this class. It is not: armed reflects the frontmatter
+    # field, not the map — an already-authorized egress task reads armed under
+    # the canon assessor, so the post-authorization suppression stays live.
+    from shared.sdlc_lifecycle import assess_release_auto_arm as canon_assess
+
+    assert canon_assess(_egress_armed_frontmatter()).armed is True

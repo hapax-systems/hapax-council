@@ -25,12 +25,27 @@ def _run_hook(
     }
     for bypass in ("HAPAX_CC_TASK_GATE_OFF", "HAPAX_METHODOLOGY_EMERGENCY"):
         env.pop(bypass, None)
+    # Clear the FULL identity precedence chain of
+    # hooks/scripts/agent-role.sh::hapax_agent_identity, which returns the first
+    # variable that is set. HAPAX_AGENT_NAME is checked BEFORE HAPAX_AGENT_ROLE,
+    # so popping only the role trio left the ambient lane's name in place: inside
+    # a lane session `role=None` resolved to that lane instead of "unknown", and
+    # an explicit role was silently overridden by it. Both directions are wrong,
+    # and the second is the dangerous one — it makes a role-scoped assertion pass
+    # while testing the wrong role.
+    for leaked in (
+        "HAPAX_AGENT_NAME",
+        "CODEX_THREAD_NAME",
+        "CODEX_SESSION_NAME",
+        "CODEX_SESSION",
+        "CODEX_ROLE",
+        "CLAUDE_ROLE",
+        "HAPAX_AGENT_ROLE",
+    ):
+        env.pop(leaked, None)
     if role is not None:
         env["HAPAX_AGENT_ROLE"] = role
-    else:
-        env.pop("HAPAX_AGENT_ROLE", None)
-        env.pop("CODEX_ROLE", None)
-        env.pop("CLAUDE_ROLE", None)
+        env["HAPAX_AGENT_NAME"] = role
     return subprocess.run(
         [str(HOOK)],
         input=json.dumps(payload),
@@ -161,6 +176,42 @@ def test_no_claim_allows_valid_new_offered_task_note_and_audits(tmp_path: Path) 
     assert records[0]["kind"] == "cc-task"
     assert records[0]["id"] == "perspective-pr-merge-to-main"
     assert records[0]["role"] == "alpha"
+
+
+def test_nested_task_id_does_not_shadow_top_level(tmp_path: Path) -> None:
+    """Only column-0 keys are the note's own declarations.
+
+    `_split_frontmatter` stripped leading whitespace before splitting, so a
+    nested key was read as top-level and the last occurrence won. A note
+    carrying a nested `task_id:` was therefore validated against the wrong id
+    and rejected for a filename mismatch it did not have. Measured on the real
+    vault: three active notes were failing this way.
+    """
+    task_root = tmp_path / "Documents/Personal/20-projects/hapax-cc-tasks/active"
+    request_root = tmp_path / "Documents/Personal/20-projects/hapax-requests/active"
+    task_root.mkdir(parents=True)
+    request_root.mkdir(parents=True)
+    parent_request = request_root / "REQ-20260517150000-perspective-merge-remediation.md"
+    task_path = task_root / "perspective-pr-merge-to-main.md"
+
+    note = _task_note("perspective-pr-merge-to-main", parent_request)
+    shadowed = note.replace(
+        "tags:\n  - cc-task",
+        "supersedes:\n  task_id: some-other-task-entirely\n  status: withdrawn\ntags:\n  - cc-task",
+    )
+    assert "  task_id: some-other-task-entirely" in shadowed
+
+    result = _run_hook(
+        tmp_path,
+        {"tool_name": "Write", "tool_input": {"file_path": str(task_path), "content": shadowed}},
+    )
+
+    assert result.returncode == 0, result.stderr
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "ledger.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert records[0]["id"] == "perspective-pr-merge-to-main"
 
 
 def test_no_claim_blocks_invalid_task_bootstrap(tmp_path: Path) -> None:

@@ -22,13 +22,26 @@ from shared.capability_surface_delta import (  # noqa: E402
     load_capability_surface_delta_file,
     write_capability_surface_delta_tasks,
 )
+from shared.platform_capability_registry import (  # noqa: E402
+    PLATFORM_CAPABILITY_REGISTRY,
+    PlatformCapabilityRegistryError,
+    is_registered_evidence_only_surface,
+    load_platform_capability_registry_for_dispatch,
+)
+
+
+class InvalidNowValue(ValueError):
+    """The operator-supplied --now value is not an ISO-8601 instant."""
 
 
 def parse_utc(value: str) -> datetime:
     raw = value.strip()
     if raw.endswith("Z"):
         raw = raw[:-1] + "+00:00"
-    parsed = datetime.fromisoformat(raw)
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise InvalidNowValue(str(exc)) from exc
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
@@ -55,6 +68,12 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=DEFAULT_CAPABILITY_SURFACE_DELTA_TASK_ROOT,
         help="hapax-cc-tasks root containing active/closed/refused",
+    )
+    parser.add_argument(
+        "--registry",
+        type=Path,
+        default=PLATFORM_CAPABILITY_REGISTRY,
+        help="Platform registry used only to suppress permanent evidence-only surfaces",
     )
     parser.add_argument(
         "--detect-from-descriptors",
@@ -94,18 +113,54 @@ def main(argv: list[str] | None = None) -> int:
                     now=now,
                 )
                 deltas.extend(detected)
+            registry, _observation_errors = load_platform_capability_registry_for_dispatch(
+                args.registry,
+                now=now,
+                apply_receipts=False,
+            )
+            ignored_evidence_only = [
+                {
+                    "delta_id": delta.delta_id,
+                    "surface_id": delta.surface_id,
+                    "reason": "registered_evidence_only_surface_is_not_intake_or_dispatch_supply",
+                }
+                for delta in deltas
+                if is_registered_evidence_only_surface(registry, delta.surface_id)
+            ]
+            deltas = [
+                delta
+                for delta in deltas
+                if not is_registered_evidence_only_surface(registry, delta.surface_id)
+            ]
             result = write_capability_surface_delta_tasks(
                 deltas,
                 task_root=args.task_root,
                 generated_at=now,
                 apply=args.apply,
             )
+            result["ignored_evidence_only"] = ignored_evidence_only
     except CapabilitySurfaceDeltaError as exc:
         result = {"ok": False, "error": str(exc)}
-    except ValueError as exc:
+    except InvalidNowValue as exc:
         result = {
             "ok": False,
             "error": f"invalid --now value: {exc}; next action: pass an ISO-8601 UTC timestamp",
+        }
+    except PlatformCapabilityRegistryError as exc:
+        result = {
+            "ok": False,
+            "error": (
+                f"platform capability registry invalid: {exc}; next action: repair the registry "
+                "identity or observation metadata before retrying"
+            ),
+        }
+    except ValueError as exc:
+        result = {
+            "ok": False,
+            "error": (
+                f"invalid capability-surface intake data: {exc}; next action: repair the producer "
+                "or registry input before retrying"
+            ),
         }
     except OSError as exc:
         result = {

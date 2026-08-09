@@ -169,6 +169,61 @@ class TestTimerEnablementSweep:
         )
 
 
+class TestParkedUnits:
+    def test_installer_disables_and_stops_marker_owned_parked_units(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        state = tmp_path / "cuepoints-state.txt"
+        state.write_text("enabled active failed\n", encoding="utf-8")
+        systemctl = bin_dir / "systemctl"
+        systemctl.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                read -r enabled active result < "{state}"
+                case "$*" in
+                  "--user disable --now hapax-live-cuepoints.service")
+                    enabled=disabled
+                    active=inactive
+                    ;;
+                  "--user reset-failed hapax-live-cuepoints.service")
+                    result=success
+                    ;;
+                  "--user enable hapax-live-cuepoints.service"|"--user enable --now hapax-live-cuepoints.service")
+                    enabled=enabled
+                    active=active
+                    ;;
+                esac
+                printf '%s %s %s\n' "$enabled" "$active" "$result" > "{state}"
+                exit 0
+                """
+            ),
+            encoding="utf-8",
+        )
+        systemctl.chmod(0o755)
+        uv = bin_dir / "uv"
+        uv.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        uv.chmod(0o755)
+
+        env = os.environ.copy()
+        env["ALLOW_NONSTANDARD_REPO"] = "1"
+        env["HOME"] = str(tmp_path / "home")
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        env.pop("SKIP_TIMER_ENABLE", None)
+
+        result = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert state.read_text(encoding="utf-8").strip() == "disabled inactive success"
+        assert "parked: hapax-live-cuepoints.service" in result.stdout
+
+
 class TestServiceDropInInstall:
     """LRR Phase 3 regression pins for the ``*.service.d/`` drop-in
     handling added to install-units.sh.
@@ -212,6 +267,198 @@ class TestServiceDropInInstall:
         # Look for the specific drop-in loop
         assert '"$conf" "$dest_conf"' in body, (
             "drop-in loop must link each .conf individually, not the parent dir"
+        )
+
+    def test_generic_installer_links_all_supported_dropin_classes(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        script = project / "systemd" / "scripts" / "install-units.sh"
+        units = project / "systemd" / "units"
+        script.parent.mkdir(parents=True)
+        units.mkdir(parents=True)
+        script.write_text(INSTALL_SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+        script.chmod(0o755)
+
+        sources: dict[str, Path] = {}
+        for unit_type in ("service", "timer", "slice", "scope"):
+            relative = f"ordinary-{unit_type}.{unit_type}.d/positive.conf"
+            source = units / relative
+            source.parent.mkdir()
+            source.write_text("[Unit]\nDescription=positive drop-in witness\n", encoding="utf-8")
+            sources[relative] = source
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        calls = tmp_path / "systemctl-calls.txt"
+        systemctl = bin_dir / "systemctl"
+        systemctl.write_text(
+            f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> {calls!s}\nexit 0\n",
+            encoding="utf-8",
+        )
+        systemctl.chmod(0o755)
+        uv = bin_dir / "uv"
+        uv.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        uv.chmod(0o755)
+
+        env = os.environ.copy()
+        env["ALLOW_NONSTANDARD_REPO"] = "1"
+        env["HOME"] = str(tmp_path / "home")
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        result = subprocess.run(
+            ["bash", str(script)], check=False, capture_output=True, text=True, env=env
+        )
+
+        assert result.returncode == 0, result.stderr
+        user_dir = Path(env["HOME"]) / ".config" / "systemd" / "user"
+        for relative, source in sources.items():
+            destination = user_dir / relative
+            assert destination.is_symlink()
+            assert destination.resolve() == source.resolve()
+            assert f"dropin-linked: {relative}" in result.stdout
+        assert "--user daemon-reload" in calls.read_text(encoding="utf-8")
+
+    def test_generic_installer_behaviorally_skips_all_dedicated_p0_surfaces(
+        self, tmp_path: Path
+    ) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        calls = tmp_path / "systemctl-calls.txt"
+        systemctl = bin_dir / "systemctl"
+        systemctl.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                printf '%s\n' "$*" >> "{calls}"
+                exit 0
+                """
+            ),
+            encoding="utf-8",
+        )
+        systemctl.chmod(0o755)
+        uv = bin_dir / "uv"
+        uv.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        uv.chmod(0o755)
+
+        env = os.environ.copy()
+        env["ALLOW_NONSTANDARD_REPO"] = "1"
+        env["HOME"] = str(tmp_path / "home")
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+
+        result = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert result.returncode == 0, result.stderr
+        p0_dropins = [
+            "app.slice.d/oom-containment.conf",
+            "session.slice.d/oom-containment.conf",
+            "pipewire.service.d/oom-protect.conf",
+            "pipewire-pulse.service.d/oom-protect.conf",
+            "wireplumber.service.d/oom-protect.conf",
+            "hapax-daimonion.service.d/oom-protect.conf",
+            "studio-compositor.service.d/oom-protect.conf",
+            "hapax-imagination.service.d/oom-protect.conf",
+        ]
+        user_dir = Path(env["HOME"]) / ".config" / "systemd" / "user"
+        for relative in p0_dropins:
+            dest = user_dir / relative
+            assert not dest.exists()
+            assert f"dropin-skipped-dedicated-installer: {relative}" in result.stdout
+        p0_audit_units = [
+            "hapax-oom-policy-audit.service",
+            "hapax-oom-policy-audit.timer",
+            "hapax-root-required-deploy-audit.service",
+            "hapax-root-required-deploy-audit.timer",
+        ]
+        for unit in p0_audit_units:
+            assert not (user_dir / unit).exists()
+            assert f"skipped dedicated P0 OOM unit: {unit}" in result.stdout
+
+    def test_system_install_scope_units_are_not_linked_into_user_dir(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        calls = tmp_path / "systemctl-calls.txt"
+        systemctl = bin_dir / "systemctl"
+        systemctl.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                printf '%s\n' "$*" >> "{calls}"
+                exit 0
+                """
+            ),
+            encoding="utf-8",
+        )
+        systemctl.chmod(0o755)
+        uv = bin_dir / "uv"
+        uv.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        uv.chmod(0o755)
+
+        env = os.environ.copy()
+        env["ALLOW_NONSTANDARD_REPO"] = "1"
+        env["HOME"] = str(tmp_path / "home")
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+
+        result = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert result.returncode == 0, result.stderr
+        user_dir = Path(env["HOME"]) / ".config" / "systemd" / "user"
+        system_units = [
+            "hapax-root-failure-intake@.service",
+            "hapax-oom-score-enforce.service",
+            "hapax-oom-score-enforce.timer",
+        ]
+        for unit in system_units:
+            assert not (user_dir / unit).exists()
+            assert f"skipped system-scope unit: {unit}" in result.stdout
+
+    def test_system_install_scope_removes_stale_user_unit(self, tmp_path: Path) -> None:
+        user_dir = tmp_path / "home" / ".config" / "systemd" / "user"
+        user_dir.mkdir(parents=True)
+        stale = user_dir / "hapax-oom-score-enforce.timer"
+        stale.write_text("[Timer]\nOnUnitActiveSec=30s\n", encoding="utf-8")
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        calls = tmp_path / "systemctl-calls.txt"
+        systemctl = bin_dir / "systemctl"
+        systemctl.write_text(
+            f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> {calls!s}\nexit 0\n",
+            encoding="utf-8",
+        )
+        systemctl.chmod(0o755)
+        uv = bin_dir / "uv"
+        uv.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        uv.chmod(0o755)
+
+        env = os.environ.copy()
+        env["ALLOW_NONSTANDARD_REPO"] = "1"
+        env["HOME"] = str(tmp_path / "home")
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+
+        result = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert not stale.exists()
+        assert (
+            "removed stale user-scope system unit: hapax-oom-score-enforce.timer" in result.stdout
+        )
+        assert "--user disable --now hapax-oom-score-enforce.timer" in calls.read_text(
+            encoding="utf-8"
         )
 
     def test_script_reloads_daemon_when_dropins_change(self) -> None:

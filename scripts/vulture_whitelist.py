@@ -4266,6 +4266,54 @@ from shared.gate_outcome_producer import (  # noqa: E402
 build_outcome_gate_event
 emit_outcome_gate_event
 
+# DemandShapeRef pure public API (capability onboarding Edge C / PR 4504): pure identity
+# helpers for content-addressed demand acts. Callers land with admission-tuple + reins
+# fingerprint convergence; referenced here so vulture does not flag the pure entrypoints.
+from shared.demand_shape_ref import (  # noqa: E402
+    build_demand_shape_ref_payload,
+    demand_shape_ref,
+    demand_shape_ref_from_parts,
+)
+
+build_demand_shape_ref_payload
+demand_shape_ref
+demand_shape_ref_from_parts
+
+# F2 onboarding classify pure API (Edge B/C residual / post-#4504)
+from shared.capability_onboarding_classify import (  # noqa: E402
+    admission_tuple_id,
+    classify_onboarding_surface,
+    demand_shape_ref_for_classify,
+)
+
+admission_tuple_id
+classify_onboarding_surface
+
+# Onboarding disposition ledgers (F2 explore-ledger residual)
+from shared.capability_onboarding_ledger import (  # noqa: E402
+    append_classify_result,
+    classify_and_ledger,
+    read_ledger,
+)
+
+append_classify_result
+classify_and_ledger
+read_ledger
+
+# N1 world-to-record observe drain
+from shared.sdlc_gate_event_drain import (  # noqa: E402
+    drain_gate_events,
+    observe_status,
+    outcome_gate_on_close_enabled,
+)
+
+_ = (
+    drain_gate_events,
+    observe_status,
+    outcome_gate_on_close_enabled,
+    demand_shape_ref_for_classify,
+)
+
 # Additive CCEF/H STEP 2: the dispatch-frontier public API — callers land in the shadow-wire
 # (STEP 9); referenced here so the vulture gate does not flag the as-yet caller-less functions.
 from shared.dispatch_frontier import dominates, non_dominated_set  # noqa: E402
@@ -4355,6 +4403,184 @@ from agents.hapax_daimonion.interview_conductor import (
 
 _InterviewConductor
 _InterviewStateWriter
+
+# ---------------------------------------------------------------------------
+# Gate 0 canon + execution-admission landing (PR #4483,
+# cc-task-sdlc-fsm-canon-impingement-lockstep-bootstrap-20260710).
+#
+# Three categories, all landing ahead of their callers:
+#   * Pydantic validators and classmethods invoked dynamically by the framework.
+#   * Producer-side API whose consumers are the Reins repo, not this one
+#     (verified: none of these names appears in any local Reins checkout).
+#   * Gate-0A dormant seams: the claim-publication engine deliberately refuses
+#     ("Dormant Gate-0A engine; Gate-0B must supply a typed effect carrier"), so
+#     its validators and builders are unreachable until Gate 0B activation.
+#     Remove these from the whitelist when Gate 0B wires them.
+#
+# Placed here rather than at end-of-file on purpose: main appends to the tail of
+# this file often, and an end-of-file insertion collides with those appends on
+# every merge.
+# ---------------------------------------------------------------------------
+
+# agents/coordinator/core.py
+Coordinator._claim_release_requires_governance
+# Gate-0A dormant seam: only the admitted claim adapter may clear the signal.
+Coordinator._clear_claim_signal
+
+# agents/request_decomposer/models.py
+PlannedTaskSpec._planned_requirement_validity_mask
+PlannedTaskSpec._planned_requirement_vector
+PlannedTaskSpec._scope_state_is_lossless
+RequestDecompositionPlan._validate_graph
+
+# agents/request_decomposer/writer.py
+decomposition_commit_state
+inspect_decomposition_journals
+# Gate-0A dormant seam: unreachable until Gate 0B.
+_update_frontmatter_bytes
+
+# shared/capability_dispatch.py
+default_dispatch_ledger
+
+# shared/coord_projection.py
+# Gate-0A dormant seams: retained as explicit refusal boundaries.
+_inspect_lifecycle_transactions_legacy
+_load_legacy_transaction_manifest
+lifecycle_transition_intent_ref
+
+# shared/epistemic_impingement.py
+build_epistemic_impingement_trace
+consume_portal
+project_legacy_impingement
+PortalConsumptionReceipt.validate_receipt
+PortalConsumptionReceipt.validate_string
+EpistemicImpingementTrace.validate_string_set
+PortalConsumptionReceipt.validate_timestamp
+EpistemicImpingementTrace.validate_trace
+
+# shared/execution_admission.py
+ExecutionCompositionRoot.persist_invocation
+require_historical_applied_claim_ownership_proof
+ExecutionCompositionRoot.resolve_invocation
+ProtectedActionRequest.validate_address_sets
+ExecutionAdmission.validate_admission
+ProspectiveClaimPublicationBasis.validate_basis
+BoundExecutionCall.validate_call
+ProspectiveClaimPublicationCarrier.validate_carrier
+DependencyClosureEvidence.validate_closure
+ProtectedClaimCoordinates.validate_coordinates
+ExecutionCompositionPortDescriptors.validate_descriptors
+HistoricalSupportDisposition.validate_disposition
+BoundExecutionCall.validate_effect_targets
+OutcomePipelineReadinessEnvelope.validate_envelope
+CompletionEvaluation.validate_evaluation
+OutcomeEvent.validate_event
+CompletionEvaluation.validate_evidence
+ExecutionLease.validate_generation_roots
+ValidAuthorityGrant.validate_grant
+HistoricalExecutionLeaseV1.validate_historical_lease
+AuthorityHold.validate_hold
+ActionIntent.validate_intent
+CurrentClaimLeaseFile.validate_key
+ExecutionLease.validate_lease
+ExecutionCompositionManifest.validate_manifest
+EffectObservation.validate_observation
+ExecutionAdmission.validate_optional_string
+CurrentClaimLeaseFile.validate_path
+ProtectedApertureDecision.validate_paths
+ExecutionInvocationBundlePointer.validate_pointer
+CurrentClaimPosition.validate_position
+ExecutorRegistryProjection.validate_projection
+AppliedClaimOwnershipProof.validate_proof
+OutcomePipelineReadinessQuery.validate_query
+ProtectedApertureDecision.validate_reason_sets
+OutcomeReceipt.validate_receipt
+ContentAddress.validate_ref
+QuotaReservationEvidence.validate_reservation
+OutcomeReplayResult.validate_result
+OutcomeProjectionSnapshot.validate_roots
+ProtectedActionRequest.validate_scope
+OutcomeReplayCatalogSnapshot.validate_snapshot
+ExecutionInvocationBundlePointer.validate_string
+ExecutionLease.validate_supersedes
+RootDisposition.validate_superseding
+ExecutionTargetEvidence.validate_target
+EffectManifest.validate_targets
+OutcomeReplayResult.validate_timestamp
+# Gate-0A dormant seam: unreachable until Gate 0B.
+_bound_call_executor_key
+
+# shared/recovery_governor.py
+RecoveryGovernor.backoff_entry
+RecoveryGovernor.permit
+RecoveryGovernor.permit_batch
+
+# shared/relay_mq.py
+build_canon_echo_envelope
+build_successor_canon_position
+build_successor_outbox
+drain_successor_outboxes
+ensure_successor_outbox_task_directory
+load_dispatch_echo_expectation
+load_latest_canon_echo_expectation
+load_latest_dispatch_echo_expectation
+send_successor_canon_position
+# Gate-0A dormant seams: unreachable until Gate 0B.
+ensure_canon_echo_repair
+persist_exact_envelope
+
+# shared/sdlc_claim.py
+# Gate-0A dormant seams. The engine itself refuses at Gate 0A, so its preflight,
+# postimage, source-proof and recovery paths have no caller until Gate 0B.
+_apply_admitted_claim_publication_transaction
+_locked_preflight
+_recover_one
+_require_exact_task_postimage
+ClaimAdmissionConsumption.require_source_proofs
+
+# shared/sdlc_lifecycle.py
+is_legal_stage_edge
+stage_edges
+
+# shared/sdlc_task_store.py
+refresh_task_identity_index
+resolve_claim_leases_for_task
+write_claim_dispatch_binding
+# Gate-0A dormant seam: the task-identity write API. Its only caller was the
+# decomposer writer's admitted publication path, which is descoped to Gate 0B --
+# the store lands as a source contract with no live committer. Remove these from
+# the whitelist when Gate 0B wires a publisher to them.
+load_task_identity_write_guard
+prepare_task_identity_writes
+reconcile_task_identity_writes
+rename_task_store_no_replace
+resolve_task_identity_projection
+
+# shared/session_context_canon.py
+_runtime_dependency_record_observation
+build_context_frame
+build_context_position
+checked_bundle_json_schema_bytes
+context_bundle_fsm
+forward_cone
+load_canon_source
+load_materialized_bundle
+materialize_bundle
+_ReleaseArtifact.validate_ascii_scalar
+CanonSource.validate_atoms
+CanonAtom.validate_content
+WireContract.validate_fields
+CanonAtom.validate_identity
+CanonImage.validate_image
+CanonKernel.validate_kernel
+_RuntimeDependencyReleaseManifest.validate_manifest
+FsmStrata.validate_partition
+_RuntimeDependencyRelease.validate_release_set
+CanonAtom.validate_string_tuple
+# Gate-0A dormant seams: unreachable until Gate 0B.
+_atom
+_lifecycle_fsm_source_refs
+
 
 # HKP validator-first slice — Pydantic invokes field/model validators
 # dynamically during bundle validation, and the extensionless
@@ -4739,3 +4965,109 @@ _ = (_classify_entitlement, _is_routable_supply)
 from github_pr_status import get_pr_status_rest as _get_pr_status_rest  # noqa: E402
 
 _ = (_get_pr_status_rest,)
+
+# ---------------------------------------------------------------------------
+# Agentic-trust evidence-only non-supply plane (PR #4503)
+# Pydantic model_validator / model_serializer hooks and observation-plane
+# helpers. Vulture cannot see decorator-driven validation; production tests
+# exercise them. Public helpers below are the intentional non-supply contract
+# surface consumed by the registry/freshness scripts and focused suites.
+# ---------------------------------------------------------------------------
+from agents.deliberative_council.capability_admission import (  # noqa: E402
+    CapabilityAdmissionReceipt as _CapabilityAdmissionReceipt,
+)
+from shared.capability_inventory_contract import (  # noqa: E402
+    AdmittedSupplyInventoryRecord as _AdmittedSupplyInventoryRecord,
+)
+from shared.capability_inventory_contract import (  # noqa: E402
+    CapabilityInventoryBaselineV2 as _CapabilityInventoryBaselineV2,
+)
+from shared.capability_inventory_contract import (  # noqa: E402
+    CapabilityInventorySnapshot as _CapabilityInventorySnapshot,
+)
+from shared.capability_inventory_contract import (  # noqa: E402
+    EvidenceOnlyNonSupplyInventoryRecord as _EvidenceOnlyNonSupplyInventoryRecord,
+)
+from shared.capability_inventory_contract import (  # noqa: E402
+    _DescriptorGuardedRecord as _DescriptorGuardedInventoryRecord,
+)
+from shared.dispatcher_policy import DispatchRequest as _DispatchRequest  # noqa: E402
+from shared.dispatcher_policy import RouteCapabilityState as _RouteCapabilityState  # noqa: E402
+from shared.dispatcher_policy import RouteDecision as _RouteDecision  # noqa: E402
+from shared.platform_capability_receipts import ToolEvidence as _ToolEvidence  # noqa: E402
+from shared.platform_capability_registry import (  # noqa: E402
+    CapabilityShapeDescriptor as _CapabilityShapeDescriptor,
+)
+from shared.platform_capability_registry import (  # noqa: E402
+    DescriptorVariant as _DescriptorVariant,
+)
+from shared.platform_capability_registry import (  # noqa: E402
+    HistoricalPerformance as _HistoricalPerformance,
+)
+from shared.platform_capability_registry import (  # noqa: E402
+    QualityEnvelope as _QualityEnvelope,
+)
+from shared.platform_capability_registry import (  # noqa: E402
+    SupplyDescriptor as _SupplyDescriptor,
+)
+from shared.platform_capability_registry import SupplyRoute as _SupplyRoute  # noqa: E402
+from shared.platform_capability_registry import ToolAccess as _ToolAccess  # noqa: E402
+from shared.platform_capability_registry import (  # noqa: E402
+    check_omitted_shape_freshness as _check_omitted_shape_freshness,
+)
+from shared.platform_capability_registry import (  # noqa: E402
+    is_registered_evidence_only_surface as _is_registered_evidence_only_surface,
+)
+from shared.route_metadata_schema import RequiredTool as _RequiredTool  # noqa: E402
+
+_CapabilityAdmissionReceipt._decision_representation_is_consistent
+_DescriptorGuardedInventoryRecord._serialize_guarded
+_AdmittedSupplyInventoryRecord._id_matches_descriptor
+_EvidenceOnlyNonSupplyInventoryRecord._id_matches_descriptor
+_CapabilityInventorySnapshot._existing_snapshot_is_unchanged
+_CapabilityInventorySnapshot._ids_are_unique_across_planes
+_CapabilityInventorySnapshot._serialize_validated_records
+_CapabilityInventorySnapshot.evidence_only_non_supply_descriptors
+_CapabilityInventoryBaselineV2._existing_baseline_is_unchanged
+_CapabilityInventoryBaselineV2._count_matches_records
+_CapabilityInventoryBaselineV2._serialize_guarded
+_RouteCapabilityState._observation_evidence_cannot_become_route_capability
+_DispatchRequest._observation_evidence_cannot_define_requested_quality
+_RouteDecision._selected_leaf_is_bound_to_the_non_reserved_route
+_ToolEvidence._evidence_reference_retains_its_type
+_ToolAccess._observation_receipt_cannot_create_execution_access
+_DescriptorVariant._observation_identity_cannot_be_an_execution_leaf
+_QualityEnvelope._observation_receipt_cannot_establish_supply_equivalence
+_SupplyRoute._reserved_observation_identity_is_not_supply
+_HistoricalPerformance._observation_receipt_cannot_establish_historical_supply
+_SupplyDescriptor._observation_identity_cannot_be_selected_as_a_supply_leaf
+_RequiredTool._observation_identity_cannot_be_required_supply
+_ = (
+    _is_registered_evidence_only_surface,
+    _check_omitted_shape_freshness,
+    _CapabilityShapeDescriptor,
+)
+
+# N2 thin SdlcRouter shadow-compare
+from shared.sdlc_router_shadow_compare import (  # noqa: E402
+    append_compare_record,
+    compare_route,
+    shadow_compare,
+)
+
+_ = (
+    compare_route,
+    shadow_compare,
+    append_compare_record,
+)
+
+# N3 surface_delta → classify discover
+from shared.capability_onboarding_discover import (  # noqa: E402
+    delta_to_classify_kwargs,
+    discover_from_deltas,
+)
+
+_ = (
+    delta_to_classify_kwargs,
+    discover_from_deltas,
+)

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 from shared.dispatcher_policy import (
     DIMENSION_WEIGHTS,
     DispatchAction,
@@ -377,6 +379,42 @@ def test_effort_demand_resolves_the_effort_leaf_through_a_full_launch() -> None:
     assert decision.action is DispatchAction.LAUNCH
     assert decision.route_id == "codex.headless.full"
     assert decision.selected_descriptor_leaf == "codex.headless.full#effort_low_synth"
+
+
+def test_dispatch_revalidates_mutated_descriptor_leaf_identity() -> None:
+    demand = _demand(task_demand={"effort_demand": "low"})
+    request = _effort_variant_request("codex.headless.full", score=5, demand=demand)
+    assert request.supply_vector is not None
+    assert request.supply_vector.supply_descriptor is not None
+    request.supply_vector.supply_descriptor.effort_to_variant["low"] = (
+        "local_compute.agentic_trust_evaluator_surface"
+    )
+
+    with pytest.raises(ValueError, match="cannot be selected as a supply descriptor leaf"):
+        evaluate_dispatch_policy(request, candidate_requests=(request,), now=NOW)
+
+
+def test_dispatch_holds_supply_vector_substituted_from_another_route() -> None:
+    demand = _demand(task_demand={"effort_demand": "low"})
+    request = _effort_variant_request("codex.headless.full", score=5, demand=demand)
+    assert request.supply_vector is not None
+    substituted = request.model_copy(
+        update={
+            "supply_vector": request.supply_vector.model_copy(
+                update={
+                    "route": request.supply_vector.route.model_copy(
+                        update={"route_id": "claude.headless.full"}
+                    )
+                }
+            )
+        }
+    )
+
+    decision = evaluate_dispatch_policy(substituted, candidate_requests=(substituted,), now=NOW)
+
+    assert decision.action is DispatchAction.HOLD
+    assert "supply_route_identity_mismatch" in decision.reason_codes
+    assert decision.selected_descriptor_leaf is None
 
 
 def test_standard_context_mode_demand_does_not_emit_context_mode_fit() -> None:

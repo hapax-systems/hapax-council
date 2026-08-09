@@ -1,0 +1,893 @@
+from __future__ import annotations
+
+import fcntl
+import json
+import os
+import runpy
+import stat
+import subprocess
+import time
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = REPO_ROOT / "scripts" / "hapax-oom-policy-audit"
+RECOVERY_SYSTEM_UNIT_SCORES = {
+    "apcupsd.service": -900,
+    "systemd-logind.service": -800,
+    "systemd-resolved.service": -800,
+    "systemd-timesyncd.service": -800,
+    "NetworkManager.service": -800,
+    "dbus-broker.service": -900,
+}
+RECOVERY_SYSTEM_UNIT_PIDS = {
+    unit: 930 + index for index, unit in enumerate(RECOVERY_SYSTEM_UNIT_SCORES)
+}
+PROTECTED_USER_UNIT_SCORES = {
+    "pipewire.service": -900,
+    "pipewire-pulse.service": -900,
+    "wireplumber.service": -900,
+    "hapax-daimonion.service": -500,
+    "studio-compositor.service": -800,
+    "hapax-imagination.service": -800,
+}
+PROTECTED_USER_UNIT_MEMORY = {
+    "pipewire.service": (536870912, 268435456),
+    "pipewire-pulse.service": (536870912, 268435456),
+    "wireplumber.service": (536870912, 268435456),
+    "hapax-daimonion.service": (2147483648, 1073741824),
+    "studio-compositor.service": (6442450944, 3221225472),
+    "hapax-imagination.service": (6442450944, 3221225472),
+}
+
+
+def test_audit_resets_hostile_path_before_command_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PATH", "/tmp/hapax-hostile-path")
+    monkeypatch.delenv("HAPAX_SYSTEMCTL", raising=False)
+
+    namespace = runpy.run_path(str(SCRIPT))
+
+    assert os.environ["PATH"] == "/usr/local/sbin:/usr/local/bin:/usr/bin:/bin"
+    assert namespace["_systemctl"]() == "/usr/bin/systemctl"
+
+
+def _protected_user_unit_cases(
+    *,
+    wrong_unit_score: bool = False,
+    wrong_unit_memory: bool = False,
+    wrong_unit_slice: bool = False,
+    wrong_audio_no_new_privileges: bool = False,
+    unit_pids: dict[str, int] | None = None,
+    unit_cgroups: dict[str, str] | None = None,
+) -> str:
+    unit_pids = unit_pids or {}
+    unit_cgroups = unit_cgroups or {}
+    cases = []
+    for unit in PROTECTED_USER_UNIT_SCORES:
+        actual = 0 if wrong_unit_score and unit == "studio-compositor.service" else 100
+        pid = unit_pids.get(unit, 0)
+        cgroup = unit_cgroups.get(unit, "")
+        memory_low, memory_min = PROTECTED_USER_UNIT_MEMORY[unit]
+        if wrong_unit_memory and unit == "studio-compositor.service":
+            memory_min = 0
+        slice_name = (
+            "session.slice" if unit.startswith(("pipewire", "wireplumber")) else "app.slice"
+        )
+        if wrong_unit_slice and unit == "studio-compositor.service":
+            slice_name = "session.slice"
+        no_new_privileges = (
+            "no"
+            if wrong_audio_no_new_privileges and unit == "pipewire.service"
+            else "yes"
+            if unit.startswith(("pipewire", "wireplumber"))
+            else "no"
+        )
+        cases.append(
+            f'  *"--user show {unit} --no-pager -p OOMScoreAdjust -p MainPID"*) '
+            f"printf 'OOMScoreAdjust={actual}\\nMainPID={pid}\\nControlGroup={cgroup}\\n"
+            f"MemoryLow={memory_low}\\nMemoryMin={memory_min}\\nSlice={slice_name}\\n"
+            f"NoNewPrivileges={no_new_privileges}\\n' ;;"
+        )
+    return "\n".join(cases)
+
+
+def _recovery_system_unit_cases(
+    *, wrong_score: bool = False, inactive_unit: str | None = None
+) -> str:
+    cases = []
+    for unit, score in RECOVERY_SYSTEM_UNIT_SCORES.items():
+        actual = -1000 if wrong_score and unit == "apcupsd.service" else score
+        pid = 0 if unit == inactive_unit else RECOVERY_SYSTEM_UNIT_PIDS[unit]
+        cases.append(f"  *\"show {unit}\"*) printf 'OOMScoreAdjust={actual}\\nMainPID={pid}\\n' ;;")
+    return "\n".join(cases)
+
+
+def _fake_systemctl(
+    tmp_path: Path,
+    *,
+    user_oom: int = 100,
+    user_oom_policy: str = "continue",
+    app_bounded: bool = True,
+    tmux_bounded: bool = True,
+    tmux_slice: str = "app.slice",
+    wrong_unit_score: bool = False,
+    wrong_unit_memory: bool = False,
+    wrong_unit_slice: bool = False,
+    wrong_audio_no_new_privileges: bool = False,
+    system_slice_finite_max: bool = False,
+    user_slice_unprotected: bool = False,
+    session_slice_unprotected: bool = False,
+    user_floor_overcommitted: bool = False,
+    protected_unit_pids: dict[str, int] | None = None,
+    protected_unit_cgroups: dict[str, str] | None = None,
+    sshd_score: int = 0,
+    sshd_policy: str = "continue",
+    wrong_recovery_unit_score: bool = False,
+    inactive_recovery_unit: str | None = None,
+) -> Path:
+    path = tmp_path / "systemctl"
+    app_values = (
+        "MemoryHigh=77309411328\n"
+        "MemoryMax=94489280512\n"
+        "MemorySwapMax=8589934592\n"
+        "MemoryLow=17179869184\n"
+        "MemoryMin=8589934592\n"
+        if app_bounded
+        else (
+            "MemoryHigh=infinity\n"
+            "MemoryMax=infinity\n"
+            "MemorySwapMax=infinity\n"
+            "MemoryLow=infinity\n"
+            "MemoryMin=infinity\n"
+        )
+    )
+    uid_memory_values = (
+        "MemoryHigh=85899345920\n"
+        "MemoryMax=103079215104\n"
+        "MemorySwapMax=8589934592\n"
+        f"MemoryLow={'17179869184' if user_floor_overcommitted else '21474836480'}\n"
+        f"MemoryMin={'8589934592' if user_floor_overcommitted else '10737418240'}\n"
+    )
+    tmux_values = (
+        f"MemoryHigh=12884901888\nMemoryMax=19327352832\nMemorySwapMax=3221225472\nSlice={tmux_slice}\n"
+        if tmux_bounded
+        else f"MemoryHigh=infinity\nMemoryMax=infinity\nMemorySwapMax=infinity\nSlice={tmux_slice}\n"
+    )
+    system_slice_values = (
+        "MemoryHigh=infinity\n"
+        f"MemoryMax={'68719476736' if system_slice_finite_max else 'infinity'}\n"
+        "MemorySwapMax=infinity\n"
+        "MemoryLow=25769803776\n"
+        "MemoryMin=12884901888\n"
+    )
+    user_slice_values = (
+        "MemoryHigh=infinity\n"
+        "MemoryMax=infinity\n"
+        "MemorySwapMax=infinity\n"
+        f"MemoryLow={'0' if user_slice_unprotected else '21474836480'}\n"
+        f"MemoryMin={'0' if user_slice_unprotected else '10737418240'}\n"
+    )
+    session_slice_values = (
+        "MemoryHigh=infinity\n"
+        "MemoryMax=infinity\n"
+        "MemorySwapMax=infinity\n"
+        f"MemoryLow={'0' if session_slice_unprotected else '2147483648'}\n"
+        f"MemoryMin={'0' if session_slice_unprotected else '1073741824'}\n"
+    )
+    path.write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  *"show system.slice"*) printf '{system_slice_values}' ;;
+  *"show user.slice"*) printf '{user_slice_values}ControlGroup=/user.slice\n' ;;
+  *"show user-1000.slice"*) printf '{uid_memory_values}ControlGroup=/user.slice/user-1000.slice\n' ;;
+  *"show user@1000.service --no-pager -p MemoryHigh"*) printf '{uid_memory_values}' ;;
+  *"show user@1000.service --no-pager -p MemoryLow"*) printf '{uid_memory_values}ControlGroup=/user.slice/user-1000.slice/user@1000.service\n' ;;
+  *"show user@1000.service"*) printf 'OOMScoreAdjust={user_oom}\\nOOMPolicy={user_oom_policy}\\nDropInPaths=/etc/systemd/system/user@1000.service.d/oom.conf\\nMainPID=900\\n' ;;
+  *"show sshd.service"*) printf 'OOMScoreAdjust={sshd_score}\\nOOMPolicy={sshd_policy}\\nMainPID=920\\n' ;;
+{_recovery_system_unit_cases(wrong_score=wrong_recovery_unit_score, inactive_unit=inactive_recovery_unit)}
+  *"show app.slice"*) printf '{app_values}ControlGroup=/user.slice/user-1000.slice/user@1000.service/app.slice\n' ;;
+  *"show session.slice"*) printf '{session_slice_values}ControlGroup=/user.slice/user-1000.slice/user@1000.service/session.slice\n' ;;
+{_protected_user_unit_cases(wrong_unit_score=wrong_unit_score, wrong_unit_memory=wrong_unit_memory, wrong_unit_slice=wrong_unit_slice, wrong_audio_no_new_privileges=wrong_audio_no_new_privileges, unit_pids=protected_unit_pids, unit_cgroups=protected_unit_cgroups)}
+  *"list-units --type=scope"*) printf 'tmux-spawn-a.scope loaded active running tmux child pane\\n' ;;
+  *"show tmux-spawn-a.scope"*) printf '{tmux_values}' ;;
+  *) echo "unexpected args: $*" >&2; exit 9 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    return path
+
+
+def _write_proc(proc_root: Path, pid: int, *, name: str, uid: int, oom_score: int) -> None:
+    pid_dir = proc_root / str(pid)
+    pid_dir.mkdir(parents=True)
+    (pid_dir / "status").write_text(
+        f"Name:\t{name}\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n", encoding="utf-8"
+    )
+    (pid_dir / "oom_score_adj").write_text(f"{oom_score}\n", encoding="utf-8")
+
+
+def _write_proc_cgroup(proc_root: Path, pid: int, cgroup: str) -> None:
+    (proc_root / str(pid) / "cgroup").write_text(f"0::{cgroup}\n", encoding="utf-8")
+
+
+def _run(
+    tmp_path: Path,
+    *,
+    user_oom: int = 100,
+    user_oom_policy: str = "continue",
+    app_bounded: bool = True,
+    tmux_bounded: bool = True,
+    tmux_slice: str = "app.slice",
+    wrong_unit_score: bool = False,
+    wrong_unit_memory: bool = False,
+    wrong_unit_slice: bool = False,
+    wrong_audio_no_new_privileges: bool = False,
+    system_slice_finite_max: bool = False,
+    user_slice_unprotected: bool = False,
+    session_slice_unprotected: bool = False,
+    user_floor_overcommitted: bool = False,
+    protected_unit_pids: dict[str, int] | None = None,
+    protected_unit_cgroups: dict[str, str] | None = None,
+    sshd_score: int = 0,
+    sshd_policy: str = "continue",
+    wrong_recovery_unit_score: bool = False,
+    wrong_recovery_live_score: bool = False,
+    inactive_recovery_unit: str | None = None,
+    proc_root: Path | None = None,
+    cgroup_root: Path | None = None,
+    extra_direct_child_floor: bool = False,
+    extra_uid_sibling_floor: bool = False,
+    extra_user_sibling_floor: bool = False,
+    extra_app_sibling_floor: bool = False,
+    extra_session_sibling_floor: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    if proc_root is None:
+        proc_root = tmp_path / "proc"
+        proc_root.mkdir(exist_ok=True)
+    if not (proc_root / "900").exists():
+        _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=100)
+    if not (proc_root / "920").exists():
+        _write_proc(proc_root, 920, name="sshd", uid=0, oom_score=0)
+    for unit, pid in RECOVERY_SYSTEM_UNIT_PIDS.items():
+        if not (proc_root / str(pid)).exists():
+            live_score = (
+                100
+                if wrong_recovery_live_score and unit == "apcupsd.service"
+                else RECOVERY_SYSTEM_UNIT_SCORES[unit]
+            )
+            _write_proc(
+                proc_root,
+                pid,
+                name=unit.removesuffix(".service"),
+                uid=0,
+                oom_score=live_score,
+            )
+    if cgroup_root is None:
+        cgroup_root = tmp_path / "cgroup"
+        cgroup_root.mkdir(exist_ok=True)
+    user_slice_cgroup = cgroup_root / "user.slice"
+    uid_cgroup = user_slice_cgroup / "user-1000.slice"
+    manager_cgroup = uid_cgroup / "user@1000.service"
+    uid_cgroup.mkdir(parents=True, exist_ok=True)
+    (uid_cgroup / "memory.low").write_text("21474836480\n", encoding="utf-8")
+    (uid_cgroup / "memory.min").write_text("10737418240\n", encoding="utf-8")
+    manager_cgroup.mkdir(parents=True, exist_ok=True)
+    (manager_cgroup / "memory.low").write_text("21474836480\n", encoding="utf-8")
+    (manager_cgroup / "memory.min").write_text("10737418240\n", encoding="utf-8")
+    if extra_user_sibling_floor:
+        sibling = user_slice_cgroup / "user-1001.slice"
+        sibling.mkdir()
+        (sibling / "memory.low").write_text("2147483648\n", encoding="utf-8")
+        (sibling / "memory.min").write_text("1073741824\n", encoding="utf-8")
+    if extra_uid_sibling_floor:
+        sibling = uid_cgroup / "session-42.scope"
+        sibling.mkdir()
+        (sibling / "memory.low").write_text("2147483648\n", encoding="utf-8")
+        (sibling / "memory.min").write_text("1073741824\n", encoding="utf-8")
+    direct_child_floors = {
+        "app.slice": (17179869184, 8589934592),
+        "session.slice": (2147483648, 1073741824),
+    }
+    if extra_direct_child_floor:
+        direct_child_floors["background.slice"] = (4294967296, 2147483648)
+    for child, (memory_low, memory_min) in direct_child_floors.items():
+        child_dir = manager_cgroup / child
+        child_dir.mkdir(parents=True, exist_ok=True)
+        (child_dir / "memory.low").write_text(f"{memory_low}\n", encoding="utf-8")
+        (child_dir / "memory.min").write_text(f"{memory_min}\n", encoding="utf-8")
+    app_cgroup = manager_cgroup / "app.slice"
+    session_cgroup = manager_cgroup / "session.slice"
+    leaf_floors = {
+        app_cgroup: {
+            "hapax-daimonion.service": (2147483648, 1073741824),
+            "studio-compositor.service": (6442450944, 3221225472),
+            "hapax-imagination.service": (6442450944, 3221225472),
+        },
+        session_cgroup: {
+            "pipewire.service": (536870912, 268435456),
+            "pipewire-pulse.service": (536870912, 268435456),
+            "wireplumber.service": (536870912, 268435456),
+        },
+    }
+    if extra_app_sibling_floor:
+        leaf_floors[app_cgroup]["browser-batch.scope"] = (3221225472, 2147483648)
+    if extra_session_sibling_floor:
+        leaf_floors[session_cgroup]["session-99.scope"] = (1073741824, 536870912)
+    for parent, children in leaf_floors.items():
+        for child, (memory_low, memory_min) in children.items():
+            child_dir = parent / child
+            child_dir.mkdir(parents=True, exist_ok=True)
+            (child_dir / "memory.low").write_text(f"{memory_low}\n", encoding="utf-8")
+            (child_dir / "memory.min").write_text(f"{memory_min}\n", encoding="utf-8")
+    env = {
+        **os.environ,
+        "HAPAX_SYSTEMCTL": str(
+            _fake_systemctl(
+                tmp_path,
+                user_oom=user_oom,
+                user_oom_policy=user_oom_policy,
+                app_bounded=app_bounded,
+                tmux_bounded=tmux_bounded,
+                tmux_slice=tmux_slice,
+                wrong_unit_score=wrong_unit_score,
+                wrong_unit_memory=wrong_unit_memory,
+                wrong_unit_slice=wrong_unit_slice,
+                wrong_audio_no_new_privileges=wrong_audio_no_new_privileges,
+                system_slice_finite_max=system_slice_finite_max,
+                user_slice_unprotected=user_slice_unprotected,
+                session_slice_unprotected=session_slice_unprotected,
+                user_floor_overcommitted=user_floor_overcommitted,
+                protected_unit_pids=protected_unit_pids,
+                protected_unit_cgroups=protected_unit_cgroups,
+                sshd_score=sshd_score,
+                sshd_policy=sshd_policy,
+                wrong_recovery_unit_score=wrong_recovery_unit_score,
+                inactive_recovery_unit=inactive_recovery_unit,
+            )
+        ),
+        "HAPAX_OOM_AUDIT_PROC_ROOT": str(proc_root),
+        "HAPAX_OOM_AUDIT_CGROUP_ROOT": str(cgroup_root),
+        "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(tmp_path / "root-state" / ".lock"),
+    }
+    return subprocess.run(
+        [str(SCRIPT), "--json", "--uid", "1000"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+
+def test_audit_passes_when_user_manager_is_killable_and_app_slice_bounded(tmp_path: Path) -> None:
+    result = _run(tmp_path)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    statuses = {check["name"]: check["status"] for check in payload["checks"]}
+    assert statuses["root_required_package_lock"] == "pass"
+    assert statuses["user_manager_oom_score_adjust"] == "pass"
+    assert statuses["user_manager_OOMPolicy"] == "pass"
+    assert statuses["system_slice_MemoryLow"] == "pass"
+    assert statuses["user_slice_MemoryLow"] == "pass"
+    assert statuses["app_slice_MemorySwapMax"] == "pass"
+    assert statuses["session_slice_MemoryLow"] == "pass"
+    assert statuses["user_slice_child_floor_MemoryLow"] == "pass"
+    assert statuses["user_1000_slice_child_floor_MemoryLow"] == "pass"
+    assert statuses["user_manager_child_floor_MemoryLow"] == "pass"
+    assert statuses["user_manager_child_floor_MemoryMin"] == "pass"
+    assert statuses["app_slice_child_floor_MemoryLow"] == "pass"
+    assert statuses["session_slice_child_floor_MemoryMin"] == "pass"
+    assert statuses["user_unit_pipewire.service_Slice"] == "pass"
+    assert statuses["user_unit_pipewire.service_NoNewPrivileges"] == "pass"
+    assert statuses["user_unit_studio-compositor.service_Slice"] == "pass"
+
+
+def test_audit_waits_for_exclusive_package_install_lock(tmp_path: Path) -> None:
+    lock = tmp_path / "root-state" / ".lock"
+    lock.parent.mkdir(parents=True)
+    calls = tmp_path / "systemctl-calls"
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {calls!s}\nexit 1\n", encoding="utf-8"
+    )
+    fake_systemctl.chmod(0o755)
+
+    with lock.open("w", encoding="utf-8") as lock_file:
+        lock.chmod(0o600)
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        proc = subprocess.Popen(
+            [str(SCRIPT), "--json", "--uid", "1000"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={
+                **os.environ,
+                "HAPAX_SYSTEMCTL": str(fake_systemctl),
+                "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(lock),
+            },
+        )
+        time.sleep(0.25)
+        assert proc.poll() is None
+        assert not calls.exists()
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    stdout, stderr = proc.communicate(timeout=5)
+    assert proc.returncode == 1, stderr
+    assert calls.is_file()
+    payload = json.loads(stdout)
+    lock_check = next(
+        check for check in payload["checks"] if check["name"] == "root_required_package_lock"
+    )
+    assert lock_check["status"] == "pass"
+
+
+@pytest.mark.parametrize("lock_kind", ["symlink", "hardlink"])
+def test_audit_refuses_unsafe_package_lock_without_system_reads(
+    tmp_path: Path, lock_kind: str
+) -> None:
+    state_root = tmp_path / "root-state"
+    state_root.mkdir()
+    protected = tmp_path / "protected"
+    protected.write_text("sentinel\n", encoding="utf-8")
+    lock = state_root / ".lock"
+    if lock_kind == "symlink":
+        lock.symlink_to(protected)
+    else:
+        os.link(protected, lock)
+    calls = tmp_path / "systemctl-calls"
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {calls!s}\nexit 1\n", encoding="utf-8"
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--json", "--uid", "1000"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(lock),
+        },
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert len(payload["checks"]) == 1
+    check = payload["checks"][0]
+    assert check["actual"] == str(lock)
+    assert check["name"] == "root_required_package_lock"
+    assert check["status"] == "error"
+    assert check["target"] == "shared package lock held during readback"
+    assert "package lock" in check["detail"]
+    assert not calls.exists()
+    assert protected.read_text(encoding="utf-8") == "sentinel\n"
+
+
+def test_audit_fails_when_session_slice_audio_reservation_is_missing(tmp_path: Path) -> None:
+    result = _run(tmp_path, session_slice_unprotected=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(item for item in payload["checks"] if item["name"] == "session_slice_MemoryLow")
+    assert check["status"] == "gap"
+    assert check["actual"] == "0"
+    assert check["target"] == "2147483648"
+
+
+def test_audit_fails_when_child_floors_exceed_user_manager_parent(tmp_path: Path) -> None:
+    result = _run(tmp_path, user_floor_overcommitted=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    checks = {item["name"]: item for item in payload["checks"]}
+    assert checks["user_manager_child_floor_MemoryLow"]["status"] == "gap"
+    assert checks["user_manager_child_floor_MemoryMin"]["status"] == "gap"
+    assert "proportionally dilute" in checks["user_manager_child_floor_MemoryLow"]["detail"]
+
+
+def test_audit_fails_when_additional_direct_child_dilutes_user_manager_floor(
+    tmp_path: Path,
+) -> None:
+    result = _run(tmp_path, extra_direct_child_floor=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    checks = {item["name"]: item for item in payload["checks"]}
+    low = checks["user_manager_child_floor_MemoryLow"]
+    minimum = checks["user_manager_child_floor_MemoryMin"]
+    assert low["status"] == "gap"
+    assert minimum["status"] == "gap"
+    assert "background.slice:4294967296" in low["actual"]
+    assert low["target"] == "parent >= all direct children"
+
+
+def test_audit_fails_when_session_scope_dilutes_uid_slice_floor(tmp_path: Path) -> None:
+    result = _run(tmp_path, extra_uid_sibling_floor=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item
+        for item in payload["checks"]
+        if item["name"] == "user_1000_slice_child_floor_MemoryLow"
+    )
+    assert check["status"] == "gap"
+    assert "session-42.scope:2147483648" in check["actual"]
+
+
+def test_audit_fails_when_another_uid_dilutes_user_slice_floor(tmp_path: Path) -> None:
+    result = _run(tmp_path, extra_user_sibling_floor=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item for item in payload["checks"] if item["name"] == "user_slice_child_floor_MemoryLow"
+    )
+    assert check["status"] == "gap"
+    assert "user-1001.slice:2147483648" in check["actual"]
+
+
+def test_audit_fails_when_app_sibling_dilutes_app_slice_floor(tmp_path: Path) -> None:
+    result = _run(tmp_path, extra_app_sibling_floor=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    checks = {item["name"]: item for item in payload["checks"]}
+    assert checks["app_slice_child_floor_MemoryLow"]["status"] == "gap"
+    assert checks["app_slice_child_floor_MemoryMin"]["status"] == "gap"
+    assert "browser-batch.scope:3221225472" in checks["app_slice_child_floor_MemoryLow"]["actual"]
+
+
+def test_audit_fails_when_session_sibling_dilutes_session_slice_floor(tmp_path: Path) -> None:
+    result = _run(tmp_path, extra_session_sibling_floor=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    checks = {item["name"]: item for item in payload["checks"]}
+    assert checks["session_slice_child_floor_MemoryLow"]["status"] == "gap"
+    assert checks["session_slice_child_floor_MemoryMin"]["status"] == "gap"
+    assert "session-99.scope:1073741824" in checks["session_slice_child_floor_MemoryLow"]["actual"]
+
+
+def test_audit_fails_when_protected_unit_leaves_checked_app_slice_chain(tmp_path: Path) -> None:
+    result = _run(tmp_path, wrong_unit_slice=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item
+        for item in payload["checks"]
+        if item["name"] == "user_unit_studio-compositor.service_Slice"
+    )
+    assert check["status"] == "gap"
+    assert check["actual"] == "session.slice"
+    assert check["target"] == "app.slice"
+
+
+def test_audit_fails_when_audio_service_loses_no_new_privileges(tmp_path: Path) -> None:
+    result = _run(tmp_path, wrong_audio_no_new_privileges=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item
+        for item in payload["checks"]
+        if item["name"] == "user_unit_pipewire.service_NoNewPrivileges"
+    )
+    assert check["status"] == "gap"
+    assert check["target"] == "yes"
+    assert "privilege boundary" in check["detail"]
+
+
+def test_audit_fails_when_user_manager_protects_all_descendants(tmp_path: Path) -> None:
+    result = _run(tmp_path, user_oom=-900)
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item for item in payload["checks"] if item["name"] == "user_manager_oom_score_adjust"
+    )
+    assert check["status"] == "gap"
+    assert check["target"] == "100"
+    assert "packaged kill ordering exactly" in check["detail"]
+
+
+def test_audit_fails_when_configured_user_manager_score_is_zero_but_live_score_is_100(
+    tmp_path: Path,
+) -> None:
+    result = _run(tmp_path, user_oom=0)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    checks = {item["name"]: item for item in payload["checks"]}
+    configured = checks["user_manager_oom_score_adjust"]
+    assert configured["status"] == "gap"
+    assert configured["actual"] == "0"
+    assert configured["target"] == "100"
+    assert checks["user_manager_live_oom_score_adj"]["status"] == "pass"
+
+
+def test_audit_fails_when_user_manager_would_stop_after_descendant_oom(tmp_path: Path) -> None:
+    result = _run(tmp_path, user_oom_policy="stop")
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(item for item in payload["checks"] if item["name"] == "user_manager_OOMPolicy")
+    assert check["status"] == "gap"
+    assert "survive descendant OOM" in check["detail"]
+
+
+def test_audit_fails_when_effective_sshd_policy_is_overridden(tmp_path: Path) -> None:
+    result = _run(tmp_path, sshd_score=-1000, sshd_policy="stop")
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    checks = {item["name"]: item for item in payload["checks"]}
+    assert checks["sshd_effective_OOMScoreAdjust"]["status"] == "gap"
+    assert "future sessions" in checks["sshd_effective_OOMScoreAdjust"]["detail"]
+    assert checks["sshd_effective_OOMPolicy"]["status"] == "gap"
+    assert checks["sshd_live_oom_score_adj"]["status"] == "pass"
+
+
+def test_audit_fails_when_effective_recovery_daemon_policy_is_overridden(
+    tmp_path: Path,
+) -> None:
+    result = _run(tmp_path, wrong_recovery_unit_score=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    checks = {item["name"]: item for item in payload["checks"]}
+    effective = checks["system_unit_apcupsd.service_OOMScoreAdjust"]
+    assert effective["status"] == "gap"
+    assert effective["actual"] == "-1000"
+    assert "effective recovery-daemon OOM policy drifted" in effective["detail"]
+    assert checks["system_unit_apcupsd.service_live_oom_score_adj"]["status"] == "pass"
+
+
+def test_audit_fails_when_live_recovery_daemon_score_drifts(tmp_path: Path) -> None:
+    result = _run(tmp_path, wrong_recovery_live_score=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    checks = {item["name"]: item for item in payload["checks"]}
+    assert checks["system_unit_apcupsd.service_OOMScoreAdjust"]["status"] == "pass"
+    live = checks["system_unit_apcupsd.service_live_oom_score_adj"]
+    assert live["status"] == "gap"
+    assert live["actual"] == "100"
+    assert "live recovery-daemon OOM score drifted" in live["detail"]
+
+
+def test_audit_fails_when_recovery_daemon_is_inactive(tmp_path: Path) -> None:
+    result = _run(tmp_path, inactive_recovery_unit="apcupsd.service")
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    checks = {item["name"]: item for item in payload["checks"]}
+    live = checks["system_unit_apcupsd.service_live_oom_score_adj"]
+    assert live["status"] == "gap"
+    assert live["actual"] == "inactive"
+    assert "no live main process" in live["detail"]
+
+
+def test_audit_fails_when_app_slice_backstop_is_unbounded(tmp_path: Path) -> None:
+    result = _run(tmp_path, app_bounded=False)
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    app_checks = [item for item in payload["checks"] if item["name"].startswith("app_slice_")]
+    assert app_checks
+    assert all(item["status"] == "gap" for item in app_checks)
+
+
+def test_audit_fails_when_system_slice_has_finite_hard_ceiling(tmp_path: Path) -> None:
+    result = _run(tmp_path, system_slice_finite_max=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(item for item in payload["checks"] if item["name"] == "system_slice_MemoryMax")
+    assert check["status"] == "gap"
+    assert check["target"] == "infinity"
+
+
+def test_audit_fails_when_user_slice_ancestor_has_no_reservation(tmp_path: Path) -> None:
+    result = _run(tmp_path, user_slice_unprotected=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(item for item in payload["checks"] if item["name"] == "user_slice_MemoryMin")
+    assert check["status"] == "gap"
+    assert "ancestor reservation" in check["detail"]
+
+
+def test_audit_fails_when_protected_user_unit_loses_oom_score(tmp_path: Path) -> None:
+    result = _run(tmp_path, wrong_unit_score=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item
+        for item in payload["checks"]
+        if item["name"] == "user_unit_studio-compositor.service_OOMScoreAdjust"
+    )
+    assert check["status"] == "gap"
+    assert "install-p0-oom-containment" in check["detail"]
+
+
+def test_audit_fails_when_protected_user_unit_loses_memory_reservation(
+    tmp_path: Path,
+) -> None:
+    result = _run(tmp_path, wrong_unit_memory=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item
+        for item in payload["checks"]
+        if item["name"] == "user_unit_studio-compositor.service_MemoryMin"
+    )
+    assert check["status"] == "gap"
+    assert check["target"] == "3221225472"
+    assert "memory reservation drifted" in check["detail"]
+
+
+def test_audit_fails_when_protected_user_unit_cgroup_pid_loses_oom_score(
+    tmp_path: Path,
+) -> None:
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    cgroup_root = tmp_path / "cgroup"
+    cgroup_dir = (
+        cgroup_root / "user.slice/user-1000.slice/user@1000.service/app.slice/pipewire.service"
+    )
+    cgroup_dir.mkdir(parents=True)
+    (cgroup_dir / "cgroup.procs").write_text("910\n916\n", encoding="utf-8")
+    _write_proc(proc_root, 910, name="pipewire", uid=1000, oom_score=-900)
+    _write_proc(proc_root, 916, name="pipewire-worker", uid=1000, oom_score=100)
+    pipewire_cgroup = "/user.slice/user-1000.slice/user@1000.service/app.slice/pipewire.service"
+    _write_proc_cgroup(proc_root, 910, pipewire_cgroup)
+    _write_proc_cgroup(proc_root, 916, pipewire_cgroup)
+
+    result = _run(
+        tmp_path,
+        proc_root=proc_root,
+        cgroup_root=cgroup_root,
+        protected_unit_pids={"pipewire.service": 910},
+        protected_unit_cgroups={
+            "pipewire.service": (
+                "/user.slice/user-1000.slice/user@1000.service/app.slice/pipewire.service"
+            )
+        },
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item
+        for item in payload["checks"]
+        if item["name"] == "user_unit_pipewire.service_pid_916_live_oom_score_adj"
+    )
+    assert check["status"] == "gap"
+
+
+def test_audit_revalidates_protected_pid_cgroup_before_score_and_exemption(
+    tmp_path: Path,
+) -> None:
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    cgroup_root = tmp_path / "cgroup"
+    studio_cgroup = (
+        "/user.slice/user-1000.slice/user@1000.service/app.slice/studio-compositor.service"
+    )
+    moved_cgroup = "/user.slice/user-1000.slice/session.slice/app-niri-foot.scope"
+    cgroup_dir = cgroup_root / studio_cgroup.lstrip("/")
+    cgroup_dir.mkdir(parents=True)
+    (cgroup_dir / "cgroup.procs").write_text("914\n", encoding="utf-8")
+    _write_proc(proc_root, 914, name="python", uid=1000, oom_score=-800)
+    _write_proc_cgroup(proc_root, 914, moved_cgroup)
+
+    result = _run(
+        tmp_path,
+        proc_root=proc_root,
+        cgroup_root=cgroup_root,
+        protected_unit_pids={"studio-compositor.service": 914},
+        protected_unit_cgroups={"studio-compositor.service": studio_cgroup},
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    membership = next(
+        item
+        for item in payload["checks"]
+        if item["name"] == "user_unit_studio-compositor.service_pid_914_cgroup_membership"
+    )
+    assert membership["status"] == "gap"
+    assert membership["actual"] == moved_cgroup
+    residual = next(
+        item for item in payload["checks"] if item["name"] == "user_process_residual_oom_protection"
+    )
+    assert residual["status"] == "gap"
+    assert "914:python=-800" in residual["actual"]
+
+
+def test_audit_passes_when_unbounded_tmux_scope_is_app_slice_backed(tmp_path: Path) -> None:
+    result = _run(tmp_path, tmux_bounded=False, tmux_slice="app.slice")
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    check = next(item for item in payload["checks"] if item["name"].startswith("tmux_scope_tmux"))
+    assert check["detail"] == ""
+    payload = json.loads(result.stdout)
+    check = next(
+        item for item in payload["checks"] if item["name"] == "tmux_scope_tmux-spawn-a.scope"
+    )
+    assert check["status"] == "pass"
+    assert "Slice=app.slice" in check["actual"]
+
+
+def test_audit_fails_when_unbounded_tmux_scope_is_outside_app_slice(tmp_path: Path) -> None:
+    result = _run(tmp_path, tmux_bounded=False, tmux_slice="session.slice")
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item for item in payload["checks"] if item["name"] == "tmux_scope_tmux-spawn-a.scope"
+    )
+    assert check["status"] == "gap"
+    assert "MemoryMax" in check["detail"]
+    assert "Slice=session.slice" in check["detail"]
+
+
+def test_audit_fails_when_user_process_retains_inherited_protection(tmp_path: Path) -> None:
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    _write_proc(proc_root, 101, name="codex", uid=1000, oom_score=-900)
+    _write_proc(proc_root, 102, name="wireplumber", uid=1000, oom_score=-900)
+    _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=100)
+
+    result = _run(tmp_path, proc_root=proc_root)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item for item in payload["checks"] if item["name"] == "user_process_residual_oom_protection"
+    )
+    assert check["status"] == "gap"
+    assert "101:codex=-900" in check["actual"]
+    assert "102:wireplumber=-900" not in check["actual"]
+
+
+def test_audit_allows_python_child_inside_protected_unit_cgroup(tmp_path: Path) -> None:
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    cgroup_root = tmp_path / "cgroup"
+    studio_cgroup = (
+        "/user.slice/user-1000.slice/user@1000.service/app.slice/studio-compositor.service"
+    )
+    cgroup_dir = cgroup_root / studio_cgroup.lstrip("/")
+    cgroup_dir.mkdir(parents=True)
+    (cgroup_dir / "cgroup.procs").write_text("914\n916\n", encoding="utf-8")
+    _write_proc(proc_root, 914, name="python", uid=1000, oom_score=-800)
+    _write_proc(proc_root, 916, name="python", uid=1000, oom_score=-800)
+    _write_proc_cgroup(proc_root, 914, studio_cgroup)
+    _write_proc_cgroup(proc_root, 916, studio_cgroup)
+
+    result = _run(
+        tmp_path,
+        proc_root=proc_root,
+        cgroup_root=cgroup_root,
+        protected_unit_pids={"studio-compositor.service": 914},
+        protected_unit_cgroups={"studio-compositor.service": studio_cgroup},
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    check = next(
+        item for item in payload["checks"] if item["name"] == "user_process_residual_oom_protection"
+    )
+    assert check["status"] == "pass"

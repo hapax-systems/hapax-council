@@ -16,6 +16,10 @@ from shared.capability_harness_descriptor import (
     validate_descriptor,
 )
 from shared.capability_harness_seed import SEED_CAPABILITY_DESCRIPTORS, seed_descriptors_by_shape
+from shared.capability_inventory_contract import (
+    AdmittedSupplyInventoryRecord,
+    CapabilityInventorySnapshot,
+)
 
 
 class SeedRegistryTest(unittest.TestCase):
@@ -135,8 +139,18 @@ class InventoryCliTest(unittest.TestCase):
             spend_authority_required=True,
         )
         with patch(
-            "shared.capability_inventory_aggregator.full_inventory_delta",
-            return_value=([bad], CapabilitySurfaceDelta()),
+            "shared.capability_inventory_aggregator.full_capability_inventory_delta",
+            return_value=(
+                CapabilityInventorySnapshot(
+                    records=(
+                        AdmittedSupplyInventoryRecord(
+                            inventory_id=bad.capability_id,
+                            descriptor=bad,
+                        ),
+                    )
+                ),
+                CapabilitySurfaceDelta(),
+            ),
         ):
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):

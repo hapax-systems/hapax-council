@@ -7,6 +7,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-capability-surface-delta-intake"
 FIXTURES = REPO_ROOT / "config" / "capability-surface-delta-fixtures.json"
+REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
 NOW = "2026-07-01T04:30:00Z"
 
 
@@ -169,6 +170,134 @@ def test_cli_accepts_live_producer_file_without_fixture_set_id(tmp_path: Path) -
     assert 'capability_surface_delta_id: "test:single-live-producer-delta"' in written
     assert 'capability_surface_id: "route.codex.headless.full"' in written
     assert 'required_intake_action: "refresh_receipt"' in written
+
+
+def test_registered_evidence_only_surface_mints_no_intake_task(tmp_path: Path) -> None:
+    producer = tmp_path / "producer.json"
+    task_root = tmp_path / "tasks"
+    _write_live_producer(producer)
+    payload = json.loads(producer.read_text(encoding="utf-8"))
+    surface_id = "surface.local_compute.agentic_trust_evaluator_surface"
+    payload["descriptors"][0]["surface_id"] = surface_id
+    payload["deltas"][0]["surface_id"] = surface_id
+    producer.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = _run(
+        "--fixtures",
+        str(producer),
+        "--task-root",
+        str(task_root),
+        "--now",
+        NOW,
+        "--apply",
+        "--json",
+    )
+
+    assert result.returncode == 0, result.stderr
+    response = json.loads(result.stdout)
+    assert response["loaded"] == 0
+    assert response["written"] == []
+    assert response["would_write"] == []
+    assert response["ignored_evidence_only"] == [
+        {
+            "delta_id": "test:single-live-producer-delta",
+            "surface_id": surface_id,
+            "reason": "registered_evidence_only_surface_is_not_intake_or_dispatch_supply",
+        }
+    ]
+    assert not task_root.exists()
+
+
+def test_evidence_only_child_surface_is_not_suppressed(tmp_path: Path) -> None:
+    producer = tmp_path / "producer.json"
+    task_root = tmp_path / "tasks"
+    _write_live_producer(producer)
+    payload = json.loads(producer.read_text(encoding="utf-8"))
+    child_surface = "surface.local_compute.agentic_trust_evaluator_surface.child"
+    payload["descriptors"][0]["surface_id"] = child_surface
+    payload["deltas"][0]["surface_id"] = child_surface
+    producer.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = _run(
+        "--fixtures",
+        str(producer),
+        "--task-root",
+        str(task_root),
+        "--now",
+        NOW,
+        "--apply",
+        "--json",
+    )
+
+    assert result.returncode == 0, result.stderr
+    response = json.loads(result.stdout)
+    assert response["loaded"] == 1
+    assert len(response["written"]) == 1
+    assert response["ignored_evidence_only"] == []
+
+
+def test_observation_only_registry_error_fails_local_to_intake(tmp_path: Path) -> None:
+    producer = tmp_path / "producer.json"
+    registry = tmp_path / "registry.json"
+    task_root = tmp_path / "tasks"
+    _write_live_producer(producer)
+    payload = json.loads(REGISTRY.read_text(encoding="utf-8"))
+    target = next(
+        row
+        for row in payload["omitted_capability_shapes"]
+        if row["shape_id"] == "local_compute.agentic_trust_evaluator_surface"
+    )
+    target["stale_after"] = "not-a-duration"
+    registry.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = _run(
+        "--fixtures",
+        str(producer),
+        "--registry",
+        str(registry),
+        "--task-root",
+        str(task_root),
+        "--now",
+        NOW,
+        "--apply",
+        "--json",
+    )
+
+    assert result.returncode == 0, result.stderr
+    response = json.loads(result.stdout)
+    assert response["loaded"] == 1
+    assert len(response["written"]) == 1
+
+
+def test_registry_identity_error_is_not_mislabeled_as_bad_now(tmp_path: Path) -> None:
+    producer = tmp_path / "producer.json"
+    registry = tmp_path / "registry.json"
+    _write_live_producer(producer)
+    payload = json.loads(REGISTRY.read_text(encoding="utf-8"))
+    target = next(
+        row
+        for row in payload["omitted_capability_shapes"]
+        if row["shape_id"] == "local_compute.agentic_trust_evaluator_surface"
+    )
+    target["demand_eligible"] = True
+    registry.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = _run(
+        "--fixtures",
+        str(producer),
+        "--registry",
+        str(registry),
+        "--task-root",
+        str(tmp_path / "tasks"),
+        "--now",
+        NOW,
+        "--json",
+    )
+
+    assert result.returncode == 1
+    response = json.loads(result.stdout)
+    assert "platform capability registry invalid" in response["error"]
+    assert "invalid --now value" not in response["error"]
 
 
 def test_cli_detect_from_descriptors_smoke(tmp_path: Path) -> None:

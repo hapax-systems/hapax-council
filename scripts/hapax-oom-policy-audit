@@ -1,0 +1,1038 @@
+#!/usr/bin/python3
+"""Audit Hapax host OOM policy drift."""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import json
+import os
+import stat
+import subprocess
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
+SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/bin:/bin"
+os.environ["PATH"] = SAFE_PATH
+
+BYTES_1G = 1024**3
+BYTES_2G = 2 * 1024**3
+BYTES_12G = 12 * 1024**3
+BYTES_24G = 24 * 1024**3
+BYTES_72G = 72 * 1024**3
+BYTES_80G = 80 * 1024**3
+BYTES_88G = 88 * 1024**3
+BYTES_96G = 96 * 1024**3
+BYTES_16G = 16 * 1024**3
+BYTES_8G = 8 * 1024**3
+BYTES_10G = 10 * 1024**3
+BYTES_20G = 20 * 1024**3
+NEXT_OOM_INSTALL = "next action: scripts/install-p0-oom-containment --install --verify-live"
+PROC_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_PROC_ROOT", "/proc"))
+CGROUP_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_CGROUP_ROOT", "/sys/fs/cgroup"))
+ROOT_REQUIRED_STATE_ROOT = Path(
+    os.environ.get(
+        "HAPAX_ROOT_REQUIRED_STATE_ROOT",
+        str(Path.home() / ".local/state/hapax/root-required"),
+    )
+)
+ROOT_REQUIRED_LOCK_FILE = Path(
+    os.environ.get("HAPAX_ROOT_REQUIRED_LOCK_FILE", str(ROOT_REQUIRED_STATE_ROOT / ".lock"))
+)
+RECOVERY_SYSTEM_UNITS = {
+    "apcupsd.service": -900,
+    "systemd-logind.service": -800,
+    "systemd-resolved.service": -800,
+    "systemd-timesyncd.service": -800,
+    "NetworkManager.service": -800,
+    "dbus-broker.service": -900,
+}
+PROTECTED_USER_UNITS = {
+    "pipewire.service": -900,
+    "pipewire-pulse.service": -900,
+    "wireplumber.service": -900,
+    "hapax-daimonion.service": -500,
+    "studio-compositor.service": -800,
+    "hapax-imagination.service": -800,
+}
+AUDIO_USER_UNITS = frozenset({"pipewire.service", "pipewire-pulse.service", "wireplumber.service"})
+PROTECTED_USER_UNIT_SLICES = {
+    "pipewire.service": "session.slice",
+    "pipewire-pulse.service": "session.slice",
+    "wireplumber.service": "session.slice",
+    "hapax-daimonion.service": "app.slice",
+    "studio-compositor.service": "app.slice",
+    "hapax-imagination.service": "app.slice",
+}
+PROTECTED_USER_UNIT_MEMORY = {
+    "pipewire.service": {"MemoryLow": 512 * 1024**2, "MemoryMin": 256 * 1024**2},
+    "pipewire-pulse.service": {"MemoryLow": 512 * 1024**2, "MemoryMin": 256 * 1024**2},
+    "wireplumber.service": {"MemoryLow": 512 * 1024**2, "MemoryMin": 256 * 1024**2},
+    "hapax-daimonion.service": {"MemoryLow": 2 * 1024**3, "MemoryMin": 1024**3},
+    "studio-compositor.service": {"MemoryLow": 6 * 1024**3, "MemoryMin": 3 * 1024**3},
+    "hapax-imagination.service": {"MemoryLow": 6 * 1024**3, "MemoryMin": 3 * 1024**3},
+}
+
+
+@dataclass
+class Check:
+    name: str
+    status: str
+    target: str
+    actual: str
+    detail: str = ""
+
+
+class AuditLockError(RuntimeError):
+    pass
+
+
+def _validate_lock_fd(fd: int) -> None:
+    try:
+        inode = os.fstat(fd)
+        path_inode = os.lstat(ROOT_REQUIRED_LOCK_FILE)
+    except OSError as exc:
+        raise AuditLockError(f"cannot inspect {ROOT_REQUIRED_LOCK_FILE}: {exc}") from exc
+    if (
+        not stat.S_ISREG(inode.st_mode)
+        or not stat.S_ISREG(path_inode.st_mode)
+        or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
+        or inode.st_uid != os.geteuid()
+        or inode.st_nlink != 1
+        or inode.st_mode & 0o022
+    ):
+        raise AuditLockError(
+            f"unsafe package lock {ROOT_REQUIRED_LOCK_FILE}; expected the caller-owned, "
+            "single-link, non-group-writable regular path inode"
+        )
+    os.fchmod(fd, 0o600)
+
+
+@contextmanager
+def shared_root_required_lock() -> Iterator[None]:
+    inherited = os.environ.get("HAPAX_ROOT_REQUIRED_LOCK_FD", "")
+    owns_fd = not inherited
+    if inherited:
+        try:
+            fd = int(inherited)
+        except ValueError as exc:
+            raise AuditLockError("invalid inherited package lock descriptor") from exc
+        if fd < 3:
+            raise AuditLockError("invalid inherited package lock descriptor")
+        lock_mode = os.environ.get("HAPAX_ROOT_REQUIRED_LOCK_MODE", "shared")
+        if lock_mode not in {"shared", "exclusive"}:
+            raise AuditLockError(f"invalid inherited package lock mode: {lock_mode}")
+    else:
+        ROOT_REQUIRED_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(
+                ROOT_REQUIRED_LOCK_FILE,
+                os.O_CLOEXEC | os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR,
+                0o600,
+            )
+        except OSError as exc:
+            raise AuditLockError(
+                f"cannot open safe package lock {ROOT_REQUIRED_LOCK_FILE}: {exc}"
+            ) from exc
+        lock_mode = "shared"
+    try:
+        _validate_lock_fd(fd)
+        fcntl.flock(fd, fcntl.LOCK_EX if lock_mode == "exclusive" else fcntl.LOCK_SH)
+        yield
+    finally:
+        if owns_fd:
+            os.close(fd)
+
+
+def _systemctl() -> str:
+    return os.environ.get("HAPAX_SYSTEMCTL", "/usr/bin/systemctl")
+
+
+def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=10, check=False)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess(args=args, returncode=127, stdout="", stderr=str(exc))
+
+
+def _show(unit: str, properties: list[str], *, user: bool = False) -> dict[str, str]:
+    args = [_systemctl()]
+    if user:
+        args.append("--user")
+    args.extend(["show", unit, "--no-pager"])
+    for prop in properties:
+        args.extend(["-p", prop])
+    proc = _run(args)
+    if proc.returncode != 0:
+        return {"_error": (proc.stderr or proc.stdout).strip() or f"rc={proc.returncode}"}
+    values: dict[str, str] = {}
+    for line in proc.stdout.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key] = value
+    return values
+
+
+def _int_value(value: str | None) -> int | None:
+    if value is None or value == "" or value == "infinity":
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def audit_user_manager(uid: int) -> Check:
+    unit = f"user@{uid}.service"
+    values = _show(unit, ["OOMScoreAdjust", "DropInPaths"])
+    if "_error" in values:
+        return Check(
+            "user_manager_oom_score_adjust",
+            "error",
+            "100",
+            "N/A",
+            f"{values['_error']}; {NEXT_OOM_INSTALL}",
+        )
+    actual = values.get("OOMScoreAdjust", "")
+    parsed = _int_value(actual)
+    if parsed is None:
+        return Check(
+            "user_manager_oom_score_adjust",
+            "error",
+            "100",
+            actual,
+            f"unparseable; {NEXT_OOM_INSTALL}",
+        )
+    if parsed != 100:
+        return Check(
+            "user_manager_oom_score_adjust",
+            "gap",
+            "100",
+            actual,
+            f"effective user@ score must match the packaged kill ordering exactly; {NEXT_OOM_INSTALL}",
+        )
+    return Check("user_manager_oom_score_adjust", "pass", "100", actual)
+
+
+def audit_user_manager_live_score(uid: int) -> Check:
+    unit = f"user@{uid}.service"
+    values = _show(unit, ["MainPID"])
+    if "_error" in values:
+        return Check(
+            "user_manager_live_oom_score_adj",
+            "error",
+            "100",
+            "N/A",
+            f"{values['_error']}; {NEXT_OOM_INSTALL}",
+        )
+    pid = values.get("MainPID", "0")
+    if not pid or pid == "0":
+        return Check(
+            "user_manager_live_oom_score_adj",
+            "gap",
+            "100",
+            pid,
+            f"user@ has no live MainPID to verify; {NEXT_OOM_INSTALL}",
+        )
+    actual = _proc_oom_score(pid)
+    actual_text = "N/A" if actual is None else str(actual)
+    status = "pass" if actual == 100 else "gap"
+    detail = "" if status == "pass" else f"live user@ OOM score drifted; {NEXT_OOM_INSTALL}"
+    return Check("user_manager_live_oom_score_adj", status, "100", actual_text, detail)
+
+
+def audit_user_manager_policy(uid: int) -> Check:
+    unit = f"user@{uid}.service"
+    values = _show(unit, ["OOMPolicy"])
+    if "_error" in values:
+        return Check(
+            "user_manager_OOMPolicy",
+            "error",
+            "continue",
+            "N/A",
+            f"{values['_error']}; {NEXT_OOM_INSTALL}",
+        )
+    actual = values.get("OOMPolicy", "")
+    status = "pass" if actual == "continue" else "gap"
+    detail = (
+        ""
+        if status == "pass"
+        else f"user manager must survive descendant OOM kills; {NEXT_OOM_INSTALL}"
+    )
+    return Check("user_manager_OOMPolicy", status, "continue", actual, detail)
+
+
+def audit_recovery_system_units() -> list[Check]:
+    checks: list[Check] = []
+    for unit, expected in RECOVERY_SYSTEM_UNITS.items():
+        values = _show(unit, ["OOMScoreAdjust", "MainPID"])
+        if "_error" in values:
+            detail = f"{values['_error']}; {NEXT_OOM_INSTALL}"
+            checks.extend(
+                [
+                    Check(
+                        f"system_unit_{unit}_OOMScoreAdjust",
+                        "error",
+                        str(expected),
+                        "N/A",
+                        detail,
+                    ),
+                    Check(
+                        f"system_unit_{unit}_live_oom_score_adj",
+                        "error",
+                        str(expected),
+                        "N/A",
+                        detail,
+                    ),
+                ]
+            )
+            continue
+
+        configured = values.get("OOMScoreAdjust", "")
+        configured_status = "pass" if _int_value(configured) == expected else "gap"
+        configured_detail = (
+            ""
+            if configured_status == "pass"
+            else f"effective recovery-daemon OOM policy drifted; {NEXT_OOM_INSTALL}"
+        )
+        checks.append(
+            Check(
+                f"system_unit_{unit}_OOMScoreAdjust",
+                configured_status,
+                str(expected),
+                configured,
+                configured_detail,
+            )
+        )
+
+        pid = values.get("MainPID", "0")
+        if pid == "0":
+            checks.append(
+                Check(
+                    f"system_unit_{unit}_live_oom_score_adj",
+                    "gap",
+                    str(expected),
+                    "inactive",
+                    f"recovery daemon has no live main process; {NEXT_OOM_INSTALL}",
+                )
+            )
+            continue
+        if not pid.isdigit():
+            checks.append(
+                Check(
+                    f"system_unit_{unit}_live_oom_score_adj",
+                    "error",
+                    str(expected),
+                    pid,
+                    f"unparseable recovery-daemon MainPID; {NEXT_OOM_INSTALL}",
+                )
+            )
+            continue
+        live = _proc_oom_score(pid)
+        live_actual = "N/A" if live is None else str(live)
+        live_status = "pass" if live == expected else "gap"
+        live_detail = (
+            ""
+            if live_status == "pass"
+            else f"live recovery-daemon OOM score drifted; {NEXT_OOM_INSTALL}"
+        )
+        checks.append(
+            Check(
+                f"system_unit_{unit}_live_oom_score_adj",
+                live_status,
+                str(expected),
+                live_actual,
+                live_detail,
+            )
+        )
+    return checks
+
+
+def audit_sshd_policy() -> list[Check]:
+    values = _show("sshd.service", ["OOMScoreAdjust", "OOMPolicy", "MainPID"])
+    if "_error" in values:
+        detail = f"{values['_error']}; {NEXT_OOM_INSTALL}"
+        return [
+            Check("sshd_effective_OOMScoreAdjust", "error", "0", "N/A", detail),
+            Check("sshd_effective_OOMPolicy", "error", "continue", "N/A", detail),
+            Check("sshd_live_oom_score_adj", "error", "0", "N/A", detail),
+        ]
+
+    score = values.get("OOMScoreAdjust", "")
+    score_status = "pass" if _int_value(score) == 0 else "gap"
+    score_detail = (
+        ""
+        if score_status == "pass"
+        else f"effective sshd policy would be inherited by future sessions; {NEXT_OOM_INSTALL}"
+    )
+    policy = values.get("OOMPolicy", "")
+    policy_status = "pass" if policy == "continue" else "gap"
+    policy_detail = (
+        ""
+        if policy_status == "pass"
+        else f"sshd must remain available after a session OOM; {NEXT_OOM_INSTALL}"
+    )
+
+    pid = values.get("MainPID", "0")
+    live = _proc_oom_score(pid) if pid.isdigit() and pid != "0" else None
+    live_actual = "N/A" if live is None else str(live)
+    live_status = "pass" if live == 0 else "gap"
+    live_detail = (
+        ""
+        if live_status == "pass"
+        else f"sshd has no live neutral-score main process; {NEXT_OOM_INSTALL}"
+    )
+    return [
+        Check("sshd_effective_OOMScoreAdjust", score_status, "0", score, score_detail),
+        Check("sshd_effective_OOMPolicy", policy_status, "continue", policy, policy_detail),
+        Check("sshd_live_oom_score_adj", live_status, "0", live_actual, live_detail),
+    ]
+
+
+def audit_app_slice() -> list[Check]:
+    expected = {
+        "MemoryHigh": BYTES_72G,
+        "MemoryMax": BYTES_88G,
+        "MemorySwapMax": BYTES_8G,
+        "MemoryLow": BYTES_16G,
+        "MemoryMin": BYTES_8G,
+    }
+    values = _show("app.slice", list(expected), user=True)
+    if "_error" in values:
+        return [
+            Check("app_slice", "error", "bounded", "N/A", f"{values['_error']}; {NEXT_OOM_INSTALL}")
+        ]
+    checks: list[Check] = []
+    for key, target in expected.items():
+        actual = values.get(key, "")
+        parsed = _int_value(actual)
+        status = "pass" if parsed == target else "gap"
+        detail = (
+            ""
+            if status == "pass"
+            else f"app.slice aggregate RAM/swap backstop drifted; {NEXT_OOM_INSTALL}"
+        )
+        checks.append(Check(f"app_slice_{key}", status, str(target), actual, detail))
+    return checks
+
+
+def audit_session_slice() -> list[Check]:
+    expected: dict[str, int | None] = {
+        "MemoryHigh": None,
+        "MemoryMax": None,
+        "MemorySwapMax": None,
+        "MemoryLow": BYTES_2G,
+        "MemoryMin": BYTES_1G,
+    }
+    values = _show("session.slice", list(expected), user=True)
+    if "_error" in values:
+        return [
+            Check(
+                "session_slice",
+                "error",
+                "protected",
+                "N/A",
+                f"{values['_error']}; {NEXT_OOM_INSTALL}",
+            )
+        ]
+    checks: list[Check] = []
+    for key, target in expected.items():
+        actual = values.get(key, "")
+        target_text = "infinity" if target is None else str(target)
+        status = "pass" if actual == target_text else "gap"
+        detail = (
+            ""
+            if status == "pass"
+            else f"session.slice audio ancestor reservation drifted; {NEXT_OOM_INSTALL}"
+        )
+        checks.append(Check(f"session_slice_{key}", status, target_text, actual, detail))
+    return checks
+
+
+def _direct_child_floor_sum(control_group: str, key: str) -> tuple[int | None, str]:
+    parent = CGROUP_ROOT / control_group.lstrip("/")
+    filename = {"MemoryLow": "memory.low", "MemoryMin": "memory.min"}[key]
+    try:
+        children = sorted((child for child in parent.iterdir() if child.is_dir()), key=str)
+    except OSError as exc:
+        return None, f"cannot enumerate direct children of {control_group}: {exc}"
+    values: list[tuple[str, int]] = []
+    for child in children:
+        try:
+            raw = (child / filename).read_text(encoding="utf-8").strip()
+            value = int(raw)
+        except (OSError, ValueError) as exc:
+            return None, f"cannot read {filename} for direct child {child.name}: {exc}"
+        if value < 0:
+            return None, f"invalid negative {filename} for direct child {child.name}: {value}"
+        values.append((child.name, value))
+    detail = ",".join(f"{name}:{value}" for name, value in values) or "none"
+    return sum(value for _, value in values), detail
+
+
+def _audit_direct_child_floor_composition(
+    unit: str, check_prefix: str, *, user: bool = False
+) -> list[Check]:
+    parent = _show(unit, ["MemoryLow", "MemoryMin", "ControlGroup"], user=user)
+    if "_error" in parent:
+        return [
+            Check(
+                f"{check_prefix}_composition",
+                "error",
+                "parent >= all direct children",
+                "N/A",
+                f"{parent['_error']}; {NEXT_OOM_INSTALL}",
+            )
+        ]
+    control_group = parent.get("ControlGroup", "")
+    if not control_group:
+        return [
+            Check(
+                f"{check_prefix}_composition",
+                "error",
+                "parent >= all direct children",
+                "N/A",
+                f"{unit} ControlGroup is empty; {NEXT_OOM_INSTALL}",
+            )
+        ]
+    checks: list[Check] = []
+    for key in ("MemoryLow", "MemoryMin"):
+        parent_value = _int_value(parent.get(key, ""))
+        child_sum, child_detail = _direct_child_floor_sum(control_group, key)
+        status = (
+            "pass"
+            if parent_value is not None and child_sum is not None and parent_value >= child_sum
+            else "gap"
+        )
+        actual = f"parent={parent_value};children={child_sum};direct={child_detail}"
+        detail = (
+            ""
+            if status == "pass"
+            else (
+                f"cgroup-v2 would proportionally dilute direct-child {key} floors or their "
+                f"effective cgroup values are unreadable; {NEXT_OOM_INSTALL}"
+            )
+        )
+        checks.append(
+            Check(
+                f"{check_prefix}_{key}",
+                status,
+                "parent >= all direct children",
+                actual,
+                detail,
+            )
+        )
+    return checks
+
+
+def audit_user_child_floor_composition(uid: int) -> list[Check]:
+    checks: list[Check] = []
+    for unit, prefix, user in (
+        ("user.slice", "user_slice_child_floor", False),
+        (f"user-{uid}.slice", f"user_{uid}_slice_child_floor", False),
+        (f"user@{uid}.service", "user_manager_child_floor", False),
+        ("app.slice", "app_slice_child_floor", True),
+        ("session.slice", "session_slice_child_floor", True),
+    ):
+        checks.extend(_audit_direct_child_floor_composition(unit, prefix, user=user))
+    return checks
+
+
+def audit_system_memory_unit(unit: str) -> list[Check]:
+    expected = {
+        "MemoryHigh": BYTES_80G,
+        "MemoryMax": BYTES_96G,
+        "MemorySwapMax": BYTES_8G,
+        "MemoryLow": BYTES_20G,
+        "MemoryMin": BYTES_10G,
+    }
+    values = _show(unit, list(expected))
+    if "_error" in values:
+        return [
+            Check(
+                f"{unit}_memory",
+                "error",
+                "bounded",
+                "N/A",
+                f"{values['_error']}; {NEXT_OOM_INSTALL}",
+            )
+        ]
+    checks: list[Check] = []
+    for key, target in expected.items():
+        actual = values.get(key, "")
+        parsed = _int_value(actual)
+        status = "pass" if parsed == target else "gap"
+        detail = (
+            ""
+            if status == "pass"
+            else f"{unit} aggregate memory policy drifted; {NEXT_OOM_INSTALL}"
+        )
+        checks.append(Check(f"{unit}_{key}", status, str(target), actual, detail))
+    return checks
+
+
+def audit_system_slice_reservation() -> list[Check]:
+    expected: dict[str, int | None] = {
+        "MemoryHigh": None,
+        "MemoryMax": None,
+        "MemorySwapMax": None,
+        "MemoryLow": BYTES_24G,
+        "MemoryMin": BYTES_12G,
+    }
+    values = _show("system.slice", list(expected))
+    if "_error" in values:
+        return [
+            Check(
+                "system_slice_reservation",
+                "error",
+                "protected",
+                "N/A",
+                f"{values['_error']}; {NEXT_OOM_INSTALL}",
+            )
+        ]
+    checks: list[Check] = []
+    for key, target in expected.items():
+        actual = values.get(key, "")
+        target_text = "infinity" if target is None else str(target)
+        status = "pass" if actual == target_text else "gap"
+        detail = (
+            ""
+            if status == "pass"
+            else f"system.slice recovery-plane reservation drifted; {NEXT_OOM_INSTALL}"
+        )
+        checks.append(Check(f"system_slice_{key}", status, target_text, actual, detail))
+    return checks
+
+
+def audit_user_slice_reservation() -> list[Check]:
+    expected: dict[str, int | None] = {
+        "MemoryHigh": None,
+        "MemoryMax": None,
+        "MemorySwapMax": None,
+        "MemoryLow": BYTES_20G,
+        "MemoryMin": BYTES_10G,
+    }
+    values = _show("user.slice", list(expected))
+    if "_error" in values:
+        return [
+            Check(
+                "user_slice_reservation",
+                "error",
+                "protected",
+                "N/A",
+                f"{values['_error']}; {NEXT_OOM_INSTALL}",
+            )
+        ]
+    checks: list[Check] = []
+    for key, target in expected.items():
+        actual = values.get(key, "")
+        target_text = "infinity" if target is None else str(target)
+        status = "pass" if actual == target_text else "gap"
+        detail = (
+            ""
+            if status == "pass"
+            else f"user.slice ancestor reservation drifted; {NEXT_OOM_INSTALL}"
+        )
+        checks.append(Check(f"user_slice_{key}", status, target_text, actual, detail))
+    return checks
+
+
+def _proc_oom_score(pid: str) -> int | None:
+    try:
+        return int((PROC_ROOT / pid / "oom_score_adj").read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _proc_cgroups(pid: str) -> list[str]:
+    try:
+        lines = (PROC_ROOT / pid / "cgroup").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    paths: list[str] = []
+    for line in lines:
+        parts = line.split(":", 2)
+        if len(parts) == 3 and parts[2].startswith("/"):
+            paths.append(parts[2])
+    return paths
+
+
+def _pid_matches_cgroup(pid: str, cgroup: str) -> bool:
+    if not cgroup.startswith("/"):
+        return False
+    prefix = f"{cgroup.rstrip('/')}/"
+    return any(path == cgroup or path.startswith(prefix) for path in _proc_cgroups(pid))
+
+
+def _cgroup_pids(cgroup: str) -> list[str]:
+    if not cgroup:
+        return []
+    root = CGROUP_ROOT / cgroup.lstrip("/")
+    if not root.is_dir():
+        return []
+    pids: set[str] = set()
+    for procs in root.rglob("cgroup.procs"):
+        try:
+            for line in procs.read_text(encoding="utf-8").splitlines():
+                if line.isdigit():
+                    pids.add(line)
+        except OSError:
+            continue
+    return sorted(pids, key=int)
+
+
+def _protected_user_unit_memberships() -> dict[str, set[str]]:
+    protected: dict[str, set[str]] = {}
+    for unit in PROTECTED_USER_UNITS:
+        values = _show(
+            unit,
+            ["OOMScoreAdjust", "MainPID", "ControlGroup", "MemoryLow", "MemoryMin", "Slice"],
+            user=True,
+        )
+        cgroup = values.get("ControlGroup", "")
+        main_pid = values.get("MainPID", "0")
+        candidates = set(_cgroup_pids(cgroup))
+        if main_pid.isdigit() and main_pid != "0":
+            candidates.add(main_pid)
+        if cgroup.startswith("/"):
+            for pid in candidates:
+                protected.setdefault(pid, set()).add(cgroup)
+    return protected
+
+
+def audit_protected_user_units() -> list[Check]:
+    checks: list[Check] = []
+    enforcer_attempted = False
+    for unit, expected in PROTECTED_USER_UNITS.items():
+        values = _show(
+            unit,
+            [
+                "OOMScoreAdjust",
+                "MainPID",
+                "ControlGroup",
+                "MemoryLow",
+                "MemoryMin",
+                "Slice",
+                "NoNewPrivileges",
+            ],
+            user=True,
+        )
+        if "_error" in values:
+            checks.append(
+                Check(
+                    f"user_unit_{unit}_OOMScoreAdjust",
+                    "gap",
+                    str(expected),
+                    "N/A",
+                    f"{values['_error']}; {NEXT_OOM_INSTALL}",
+                )
+            )
+            continue
+        actual = values.get("OOMScoreAdjust", "")
+        parsed = _int_value(actual)
+        status = "pass" if parsed == 100 else "gap"
+        detail = (
+            ""
+            if status == "pass"
+            else (
+                "broadcast-critical user unit must start at the user manager's valid score 100; "
+                f"root applies live score {expected} after startup; {NEXT_OOM_INSTALL}"
+            )
+        )
+        checks.append(Check(f"user_unit_{unit}_OOMScoreAdjust", status, "100", actual, detail))
+        slice_target = PROTECTED_USER_UNIT_SLICES[unit]
+        slice_actual = values.get("Slice", "")
+        slice_status = "pass" if slice_actual == slice_target else "gap"
+        slice_detail = (
+            ""
+            if slice_status == "pass"
+            else (
+                f"broadcast-critical reservation must remain below {slice_target} so its checked "
+                f"ancestor protection is effective; {NEXT_OOM_INSTALL}"
+            )
+        )
+        checks.append(
+            Check(
+                f"user_unit_{unit}_Slice",
+                slice_status,
+                slice_target,
+                slice_actual,
+                slice_detail,
+            )
+        )
+        if unit in AUDIO_USER_UNITS:
+            sandbox_actual = values.get("NoNewPrivileges", "")
+            sandbox_status = "pass" if sandbox_actual == "yes" else "gap"
+            sandbox_detail = (
+                ""
+                if sandbox_status == "pass"
+                else f"audio service must retain its distro privilege boundary; {NEXT_OOM_INSTALL}"
+            )
+            checks.append(
+                Check(
+                    f"user_unit_{unit}_NoNewPrivileges",
+                    sandbox_status,
+                    "yes",
+                    sandbox_actual,
+                    sandbox_detail,
+                )
+            )
+        for key, memory_expected in PROTECTED_USER_UNIT_MEMORY[unit].items():
+            memory_actual = values.get(key, "")
+            memory_status = "pass" if _int_value(memory_actual) == memory_expected else "gap"
+            memory_detail = (
+                ""
+                if memory_status == "pass"
+                else f"broadcast-critical user unit memory reservation drifted; {NEXT_OOM_INSTALL}"
+            )
+            checks.append(
+                Check(
+                    f"user_unit_{unit}_{key}",
+                    memory_status,
+                    str(memory_expected),
+                    memory_actual,
+                    memory_detail,
+                )
+            )
+        control_group = values.get("ControlGroup", "")
+        live_pids = _cgroup_pids(control_group)
+        main_pid = values.get("MainPID", "0")
+        if main_pid.isdigit() and main_pid != "0":
+            live_pids = sorted({*live_pids, main_pid}, key=int)
+        for pid in live_pids:
+            if not _pid_matches_cgroup(pid, control_group):
+                actual_cgroups = _proc_cgroups(pid)
+                checks.append(
+                    Check(
+                        f"user_unit_{unit}_pid_{pid}_cgroup_membership",
+                        "gap",
+                        f"{control_group} or descendant",
+                        ",".join(actual_cgroups) if actual_cgroups else "N/A",
+                        f"protected PID left or was reused outside its authoritative cgroup; {NEXT_OOM_INSTALL}",
+                    )
+                )
+                continue
+            live = _proc_oom_score(pid)
+            if live != expected and not enforcer_attempted:
+                enforcer_attempted = True
+                _run([_systemctl(), "start", "hapax-oom-score-enforce.service"])
+                live = _proc_oom_score(pid)
+            if not _pid_matches_cgroup(pid, control_group):
+                actual_cgroups = _proc_cgroups(pid)
+                checks.append(
+                    Check(
+                        f"user_unit_{unit}_pid_{pid}_cgroup_membership",
+                        "gap",
+                        f"{control_group} or descendant",
+                        ",".join(actual_cgroups) if actual_cgroups else "N/A",
+                        f"protected PID moved during live-score readback; {NEXT_OOM_INSTALL}",
+                    )
+                )
+                continue
+            live_actual = "N/A" if live is None else str(live)
+            live_status = "pass" if live == expected else "gap"
+            live_detail = (
+                ""
+                if live_status == "pass"
+                else f"live broadcast-critical user unit OOM score drifted after enforcer retry; {NEXT_OOM_INSTALL}"
+            )
+            checks.append(
+                Check(
+                    f"user_unit_{unit}_pid_{pid}_live_oom_score_adj",
+                    live_status,
+                    str(expected),
+                    live_actual,
+                    live_detail,
+                )
+            )
+    return checks
+
+
+def audit_tmux_scopes() -> list[Check]:
+    proc = _run([_systemctl(), "--user", "list-units", "--type=scope", "--all", "--no-legend"])
+    if proc.returncode != 0:
+        return [
+            Check(
+                "tmux_scope_scan",
+                "error",
+                "observable",
+                "N/A",
+                f"{(proc.stderr or proc.stdout).strip()}; {NEXT_OOM_INSTALL}",
+            )
+        ]
+    scopes = [line.split()[0] for line in proc.stdout.splitlines() if "tmux-spawn-" in line]
+    checks: list[Check] = [Check("tmux_scope_count", "pass", ">=0", str(len(scopes)))]
+    for scope in scopes:
+        values = _show(scope, ["MemoryHigh", "MemoryMax", "MemorySwapMax", "Slice"], user=True)
+        if "_error" in values:
+            checks.append(
+                Check(
+                    f"tmux_scope_{scope}",
+                    "error",
+                    "bounded-or-app-slice-backed",
+                    "N/A",
+                    f"{values['_error']}; {NEXT_OOM_INSTALL}",
+                )
+            )
+            continue
+        unbounded = [
+            key
+            for key in ("MemoryHigh", "MemoryMax", "MemorySwapMax")
+            if values.get(key) == "infinity"
+        ]
+        slice_name = values.get("Slice", "")
+        outside_app_slice = slice_name != "app.slice"
+        status = "gap" if unbounded and outside_app_slice else "pass"
+        detail_parts = []
+        if unbounded:
+            detail_parts.append(f"unbounded properties: {', '.join(unbounded)}")
+        if outside_app_slice:
+            detail_parts.append(f"Slice={slice_name}")
+        detail = ""
+        if status == "gap" and detail_parts:
+            detail = f"tmux scope not bounded-or-app-slice-backed: {'; '.join(detail_parts)}; {NEXT_OOM_INSTALL}"
+        actual = ",".join(
+            f"{key}={values.get(key, '')}"
+            for key in ("MemoryHigh", "MemoryMax", "MemorySwapMax", "Slice")
+        )
+        checks.append(
+            Check(f"tmux_scope_{scope}", status, "bounded-or-app-slice-backed", actual, detail)
+        )
+    return checks
+
+
+_ALLOWED_USER_PROTECTED_NAMES = {
+    "pipewire",
+    "pipewire-pulse",
+    "wireplumber",
+    "dbus-broker",
+    "dbus-daemon",
+    "systemd",
+}
+
+
+def _status_field(status: Path, key: str) -> str:
+    try:
+        for line in status.read_text(encoding="utf-8", errors="replace").splitlines():
+            parts = line.split()
+            if parts and parts[0] == f"{key}:" and len(parts) > 1:
+                return parts[1]
+    except OSError:
+        return ""
+    return ""
+
+
+def audit_residual_user_process_protection(uid: int) -> Check:
+    proc_root = PROC_ROOT
+    if not proc_root.is_dir():
+        return Check(
+            "user_process_residual_oom_protection",
+            "error",
+            "observable",
+            "N/A",
+            f"proc root unavailable; {NEXT_OOM_INSTALL}",
+        )
+    protected_memberships = _protected_user_unit_memberships()
+    offenders: list[str] = []
+    for adj in proc_root.glob("[0-9]*/oom_score_adj"):
+        pid_dir = adj.parent
+        status = pid_dir / "status"
+        if _status_field(status, "Uid") != str(uid):
+            continue
+        try:
+            score = int(adj.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            continue
+        if score > -800:
+            continue
+        if any(
+            _pid_matches_cgroup(pid_dir.name, cgroup)
+            for cgroup in protected_memberships.get(pid_dir.name, set())
+        ):
+            continue
+        name = _status_field(status, "Name")
+        if name in _ALLOWED_USER_PROTECTED_NAMES:
+            continue
+        offenders.append(f"{pid_dir.name}:{name}={score}")
+    if offenders:
+        shown = ",".join(offenders[:8])
+        extra = "" if len(offenders) <= 8 else f",+{len(offenders) - 8} more"
+        return Check(
+            "user_process_residual_oom_protection",
+            "gap",
+            "no uid processes <= -800 outside allowlist",
+            shown + extra,
+            f"stale inherited OOMScoreAdjust; {NEXT_OOM_INSTALL}",
+        )
+    return Check(
+        "user_process_residual_oom_protection",
+        "pass",
+        "no uid processes <= -800 outside allowlist",
+        "none",
+    )
+
+
+def format_human(checks: list[Check]) -> str:
+    lines = []
+    for check in checks:
+        suffix = f" ({check.detail})" if check.detail else ""
+        lines.append(
+            f"{check.status.upper():5} {check.name}: actual={check.actual} target={check.target}{suffix}"
+        )
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    parser.add_argument("--uid", type=int, default=os.getuid(), help="user manager UID to audit")
+    args = parser.parse_args(argv)
+
+    try:
+        with shared_root_required_lock():
+            checks = [
+                Check(
+                    "root_required_package_lock",
+                    "pass",
+                    "shared package lock held during readback",
+                    str(ROOT_REQUIRED_LOCK_FILE),
+                ),
+                audit_user_manager(args.uid),
+                audit_user_manager_policy(args.uid),
+                audit_user_manager_live_score(args.uid),
+                *audit_recovery_system_units(),
+                *audit_sshd_policy(),
+                *audit_system_slice_reservation(),
+                *audit_user_slice_reservation(),
+                *audit_system_memory_unit(f"user-{args.uid}.slice"),
+                *audit_system_memory_unit(f"user@{args.uid}.service"),
+                *audit_app_slice(),
+                *audit_session_slice(),
+                *audit_user_child_floor_composition(args.uid),
+                *audit_protected_user_units(),
+                audit_residual_user_process_protection(args.uid),
+                *audit_tmux_scopes(),
+            ]
+    except AuditLockError as exc:
+        checks = [
+            Check(
+                "root_required_package_lock",
+                "error",
+                "shared package lock held during readback",
+                str(ROOT_REQUIRED_LOCK_FILE),
+                f"{exc}; {NEXT_OOM_INSTALL}",
+            )
+        ]
+    if args.json:
+        print(json.dumps({"checks": [asdict(check) for check in checks]}, indent=2, sort_keys=True))
+    else:
+        print(format_human(checks))
+    return 1 if any(check.status in {"gap", "error"} for check in checks) else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
