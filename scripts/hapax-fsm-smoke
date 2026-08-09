@@ -22,10 +22,11 @@ esac
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-run_smoke() {
+run_smoke() (
   local smoke_mode="$1"
   local sb task active
   sb="$(mktemp -d /tmp/hapax-fsm-smoke-XXXXXX)"
+  trap 'rm -rf "$sb"' EXIT
   task="cc-task-fsm-smoke-probe-${smoke_mode}"
   active="$sb/Documents/Personal/20-projects/hapax-cc-tasks/active"
   mkdir -p "$active" "$sb/.cache/hapax"
@@ -108,8 +109,8 @@ EOF
   step "recovery governor"
   timeout 30 uv run --no-sync python -m shared.recovery_governor --permit "lane:smoke-${smoke_mode}"
 
-  step "ok $sb"
-}
+  step "ok"
+)
 
 if [[ "$mode" == "both" || "$mode" == "default" ]]; then
   run_smoke default

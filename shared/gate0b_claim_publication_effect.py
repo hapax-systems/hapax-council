@@ -191,8 +191,9 @@ class ClaimPublicationEffectInvocation:
             )
         ):
             raise ValueError(
-                "claim-publication effect invocation identity mismatch; recreate the carrier "
-                "from the original intent, materialized proofs, and installed composition root"
+                "claim-publication effect invocation identity mismatch; Next action: recreate "
+                "the carrier from the original intent, materialized proofs, and installed "
+                "composition root"
             )
 
 

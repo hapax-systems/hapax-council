@@ -9089,6 +9089,8 @@ def mint_execution_lease(
         or grant.authorized_flags != bound_call.required_authorization_flags
     ):
         mismatches.append("identity")
+    if admission.intent != ContentAddress(ref=intent.intent_ref, sha256=intent.intent_hash):
+        mismatches.append("admission_intent")
     if (
         intent.intent_ref != grant.intent_ref
         or intent.intent_hash != grant.intent_hash

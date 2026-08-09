@@ -59,7 +59,7 @@ def _canonical_timestamp(value: str | datetime) -> str:
         datetime.fromisoformat(value.replace("Z", "+00:00")) if isinstance(value, str) else value
     )
     if parsed.tzinfo is None:
-        raise ValueError("timestamp must carry a timezone")
+        raise ValueError("Next action: supply a timezone-aware UTC timestamp")
     return parsed.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
@@ -101,7 +101,7 @@ def _content_address(label: str, body: object) -> ContentAddress:
 def _absolute(path: Path, *, label: str) -> Path:
     expanded = path.expanduser()
     if not expanded.is_absolute() or expanded == Path("/"):
-        raise ValueError(f"{label} must be an absolute bounded path")
+        raise ValueError(f"Next action: set {label} to an absolute bounded path")
     return expanded.resolve(strict=False)
 
 
@@ -157,22 +157,24 @@ class Gate0BClaimPublicationInstallReceipt(_FrozenModel):
     @classmethod
     def validate_string(cls, value: str) -> str:
         if not value or value != value.strip():
-            raise ValueError("receipt strings must be nonblank without edge whitespace")
+            raise ValueError(
+                "Next action: restore receipt strings as nonblank values without edge whitespace"
+            )
         return value
 
     @field_validator("installed_at")
     @classmethod
     def validate_timestamp(cls, value: str) -> str:
         if value != _canonical_timestamp(value):
-            raise ValueError("installed_at must be canonical UTC")
+            raise ValueError("installed_at must be canonical UTC; Next action: rewrite it as UTC Z")
         return value
 
     @model_validator(mode="after")
     def validate_receipt(self) -> Self:
         if self.supported_operations != (GATE0B_CLAIM_PUBLICATION_OPERATION,):
-            raise ValueError("install receipt supports only claim.publish")
+            raise ValueError("Next action: reinstall a receipt that supports only claim.publish")
         if self.receipt_ref != f"gate0b-claim-publication-install@sha256:{self.receipt_hash}":
-            raise ValueError("install receipt reference does not bind its hash")
+            raise ValueError("Next action: restore the install receipt reference bound to its hash")
         body = self.model_dump(
             mode="json",
             by_alias=True,
@@ -180,7 +182,7 @@ class Gate0BClaimPublicationInstallReceipt(_FrozenModel):
         )
         expected = _self_hash(INSTALL_RECEIPT_SCHEMA, body)
         if self.receipt_hash != expected:
-            raise ValueError("install receipt hash does not bind its body")
+            raise ValueError("Next action: restore the exact self-hashed install receipt body")
         return self
 
 

@@ -26,5 +26,5 @@ def test_hapax_fsm_smoke_is_tracked_isolated_and_executable(tmp_path: Path) -> N
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "[default] ok /tmp/hapax-fsm-smoke-" in result.stdout
-    assert "[killswitch] ok /tmp/hapax-fsm-smoke-" in result.stdout
+    assert "[default] ok\n" in result.stdout
+    assert "[killswitch] ok\n" in result.stdout

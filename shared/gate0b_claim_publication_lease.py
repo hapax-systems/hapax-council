@@ -75,7 +75,7 @@ def _canonical_timestamp(value: str | datetime) -> str:
         datetime.fromisoformat(value.replace("Z", "+00:00")) if isinstance(value, str) else value
     )
     if parsed.tzinfo is None:
-        raise ValueError("timestamp must carry a timezone")
+        raise ValueError("Next action: supply a timezone-aware UTC timestamp")
     return parsed.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
@@ -193,7 +193,7 @@ class Gate0BClaimPublicationAuthorityReceipt(_FrozenModel):
     @classmethod
     def validate_string(cls, value: str) -> str:
         if not value or value != value.strip():
-            raise ValueError("authority receipt strings must be nonblank")
+            raise ValueError("Next action: restore authority receipt strings as nonblank values")
         return value
 
     @model_validator(mode="after")
@@ -201,14 +201,19 @@ class Gate0BClaimPublicationAuthorityReceipt(_FrozenModel):
         if self.issued_at != _canonical_timestamp(self.issued_at) or (
             self.valid_until != _canonical_timestamp(self.valid_until)
         ):
-            raise ValueError("authority receipt timestamps must be canonical UTC")
+            raise ValueError(
+                "authority receipt timestamps must be canonical UTC; Next action: rewrite them "
+                "as UTC Z"
+            )
         if (
             self.authorized_operations != (GATE0B_CLAIM_PUBLICATION_OPERATION,)
             or self.authorized_action_classes != ("claim_publication",)
             or self.authorized_flags != ("implementation_authorized",)
             or self.issued_at >= self.valid_until
         ):
-            raise ValueError("authority receipt grants only bounded claim publication")
+            raise ValueError(
+                "Next action: restore a bounded claim.publish authority receipt for this task"
+            )
         body = self.model_dump(
             mode="json",
             by_alias=True,
@@ -219,7 +224,7 @@ class Gate0BClaimPublicationAuthorityReceipt(_FrozenModel):
             self.receipt_hash != expected
             or self.receipt_ref != f"gate0b-claim-publication-authority@sha256:{expected}"
         ):
-            raise ValueError("authority receipt reference/hash do not bind its body")
+            raise ValueError("Next action: restore the exact self-hashed authority receipt body")
         return self
 
 

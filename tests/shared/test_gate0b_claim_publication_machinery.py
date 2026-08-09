@@ -122,10 +122,18 @@ def _install(tmp_path: Path, fixture: Gate0BFixture):
     )
 
 
-def test_no_live_path_imports_gate0b_effect_carrier() -> None:
+def test_no_live_path_imports_gate0b_publication_machinery() -> None:
     allowed_prefixes = ("tests/",)
     allowed_files = {
+        "shared/execution_admission.py",
         "shared/gate0b_claim_publication_effect.py",
+        "shared/gate0b_claim_publication_install.py",
+        "shared/gate0b_claim_publication_lease.py",
+    }
+    dormant_modules = {
+        "shared.gate0b_claim_publication_effect",
+        "shared.gate0b_claim_publication_install",
+        "shared.gate0b_claim_publication_lease",
     }
     result = subprocess.run(
         ["git", "ls-files", "*.py"],
@@ -136,19 +144,29 @@ def test_no_live_path_imports_gate0b_effect_carrier() -> None:
     )
     offenders: list[str] = []
     for relpath in result.stdout.splitlines():
-        if relpath in allowed_files or relpath.startswith(allowed_prefixes):
+        allowed = relpath in allowed_files or relpath.startswith(allowed_prefixes)
+        if allowed:
             continue
         tree = ast.parse(Path(relpath).read_text(encoding="utf-8"), filename=relpath)
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    if alias.name == "shared.gate0b_claim_publication_effect":
+                    if alias.name in dormant_modules:
                         offenders.append(f"{relpath}:{node.lineno}")
+            elif isinstance(node, ast.ImportFrom) and node.module in dormant_modules:
+                offenders.append(f"{relpath}:{node.lineno}")
             elif (
                 isinstance(node, ast.ImportFrom)
-                and node.module == "shared.gate0b_claim_publication_effect"
+                and node.module == "shared.execution_admission"
+                and any(alias.name == "mint_execution_lease" for alias in node.names)
             ):
-                offenders.append(f"{relpath}:{node.lineno}")
+                offenders.append(f"{relpath}:{node.lineno}:mint_execution_lease")
+            elif isinstance(node, ast.Call):
+                called = node.func
+                if isinstance(called, ast.Name) and called.id == "mint_execution_lease":
+                    offenders.append(f"{relpath}:{node.lineno}:mint_execution_lease")
+                if isinstance(called, ast.Attribute) and called.attr == "mint_execution_lease":
+                    offenders.append(f"{relpath}:{node.lineno}:mint_execution_lease")
 
     assert offenders == []
 
@@ -190,6 +208,36 @@ def test_install_rejects_existing_receipt_collision(tmp_path: Path) -> None:
 
     with pytest.raises(ExecutionAdmissionError, match="gate0b_install_file_collision"):
         _install(tmp_path, fixture)
+
+
+def test_invocation_store_private_writer_is_idempotent_and_rejects_collision(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    install = _install(tmp_path, fixture)
+    assert install.root.invocation_store is not None
+    store = install.root.invocation_store
+    store._ensure_private_directory(store.objects_root)
+    object_path = store.objects_root / f"{'a' * 64}.json"
+    payload = b'{"schema":"fixture"}\n'
+
+    store._install_private_file(object_path, payload, mode=0o600)
+    first = object_path.stat(follow_symlinks=False)
+    store._install_private_file(object_path, payload, mode=0o600)
+    second = object_path.stat(follow_symlinks=False)
+
+    assert object_path.read_bytes() == payload
+    assert stat.S_IMODE(second.st_mode) == 0o600
+    assert (second.st_ino, second.st_mtime_ns, second.st_size) == (
+        first.st_ino,
+        first.st_mtime_ns,
+        first.st_size,
+    )
+
+    with pytest.raises(
+        ExecutionAdmissionError, match="execution_invocation_store_object_collision"
+    ):
+        store._install_private_file(object_path, b'{"schema":"different"}\n', mode=0o600)
 
 
 def test_install_rejects_undeclared_overlapping_roots(tmp_path: Path) -> None:
