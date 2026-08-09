@@ -22,6 +22,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from shared.codex_rollout_quota import (  # noqa: E402
+    RolloutQuotaUnavailable,
+    latest_rollout_observation,
+)
 from shared.platform_capability_receipts import (  # noqa: E402
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
@@ -568,15 +572,42 @@ def build_receipt(
             f"local:{item.path}:executable:{str(item.executable).lower()}",
         )
     ]
-    quota_reason = "account_live_quota_receipt_absent"
-    quota = surface_evidence(
-        status=EvidenceStatus.UNOBSERVABLE,
-        source="local_receipt_probe",
-        observed_at=observed_at,
-        stale_after="15m",
-        evidence_refs=[f"local:{platform}:quota-probe:unobservable"],
-        reason_codes=[quota_reason],
-    )
+    # Codex is the one platform whose entitlement headroom is readable without calling the
+    # provider: codex-cli writes the limits it was served into its own session rollouts. Observe it
+    # rather than declaring the surface unobservable — the "not mechanically observable" note in
+    # CASE-CAPACITY-ROUTING-001 R2 stopped being true upstream and nothing was watching. Falls back
+    # to unobservable when no fresh snapshot exists, so a quiet codex still fails closed.
+    rollout_quota = None
+    if platform == "codex":
+        try:
+            rollout_quota = latest_rollout_observation(now=observed_at)
+        except RolloutQuotaUnavailable:
+            rollout_quota = None
+    if rollout_quota is not None:
+        quota = surface_evidence(
+            status=EvidenceStatus.OBSERVED,
+            source="local_receipt_probe",
+            observed_at=observed_at,
+            stale_after="15m",
+            evidence_refs=[
+                # Terminal token shape the availability guarantor attests on for a non-claude
+                # route (_account_live_quota_observed_ref accepts a quota-status-observed suffix).
+                f"local:{platform}:quota-status:observed",
+                f"local:{platform}:quota-window-minutes:{rollout_quota.window_minutes}",
+                f"local:{platform}:quota-remaining-percent:{rollout_quota.remaining_percent}",
+            ],
+            reason_codes=[],
+        )
+    else:
+        quota_reason = "account_live_quota_receipt_absent"
+        quota = surface_evidence(
+            status=EvidenceStatus.UNOBSERVABLE,
+            source="local_receipt_probe",
+            observed_at=observed_at,
+            stale_after="15m",
+            evidence_refs=[f"local:{platform}:quota-probe:unobservable"],
+            reason_codes=[quota_reason],
+        )
     provider_refs = provider_doc_refs(routes)
     if not provider_refs:
         provider_refs = [f"platform-capability-registry:{platform}:provider-docs:absent"]
