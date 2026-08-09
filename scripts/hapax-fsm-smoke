@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+usage() {
+  cat >&2 <<'USAGE'
+usage: scripts/hapax-fsm-smoke [--mode default|killswitch|both]
+USAGE
+}
+
+mode="both"
+if [[ "${1:-}" == "--mode" ]]; then
+  mode="${2:-}"
+elif [[ $# -gt 0 ]]; then
+  usage
+  exit 2
+fi
+
+case "$mode" in
+  default|killswitch|both) ;;
+  *) usage; exit 2 ;;
+esac
+
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+run_smoke() {
+  local smoke_mode="$1"
+  local sb task active
+  sb="$(mktemp -d /tmp/hapax-fsm-smoke-XXXXXX)"
+  task="cc-task-fsm-smoke-probe-${smoke_mode}"
+  active="$sb/Documents/Personal/20-projects/hapax-cc-tasks/active"
+  mkdir -p "$active" "$sb/.cache/hapax"
+
+  export HOME="$sb"
+  export HAPAX_AGENT_ROLE="alpha"
+  export HAPAX_AGENT_NAME="alpha"
+  export HAPAX_SESSION_ID="smoke-session-${smoke_mode}"
+  export HAPAX_COORD_DIR="$sb/.cache/hapax/coord"
+  export HAPAX_CC_HYGIENE_OFF=1
+  export HAPAX_RAPID_CLOSE_OFF=1
+
+  if [[ "$smoke_mode" == "killswitch" ]]; then
+    export HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1
+    export HAPAX_PR_MERGE_GATE_OFF=1
+    export HAPAX_ARTIFACT_DISPOSITION_GATE_OFF=1
+    export HAPAX_REVIEW_TEAM_GATE_OFF=1
+    export HAPAX_RECOVERY_GOVERNOR_OFF=1
+    export HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1
+  else
+    export HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1
+    export HAPAX_PR_MERGE_GATE_OFF=1
+    export HAPAX_ARTIFACT_DISPOSITION_GATE_OFF=1
+    export HAPAX_REVIEW_TEAM_GATE_OFF=1
+    unset HAPAX_RECOVERY_GOVERNOR_OFF
+    unset HAPAX_GATE0B_CLAIM_PUBLICATION_OFF
+  fi
+
+  cat > "$active/$task.md" <<EOF
+---
+type: cc-task
+task_id: $task
+title: "FSM smoke probe"
+status: offered
+authority_case: CASE-TEST-001
+parent_spec: docs/specs/fsm-smoke.md
+stage: S6_IMPLEMENTATION
+claimable: true
+assigned_to: unassigned
+updated_at: 2026-01-01T00:00:00Z
+---
+# FSM smoke probe
+
+Disposable task note for scripts/hapax-fsm-smoke.
+EOF
+
+  step() { printf '[%s] %s\n' "$smoke_mode" "$*"; }
+  require_file() {
+    if [[ ! -f "$1" ]]; then
+      printf '[%s] missing expected file: %s\n' "$smoke_mode" "$1" >&2
+      exit 1
+    fi
+  }
+  require_grep() {
+    if ! grep -q "$1" "$2"; then
+      printf '[%s] expected %s in %s\n' "$smoke_mode" "$1" "$2" >&2
+      exit 1
+    fi
+  }
+
+  cd "$repo"
+  step "claim"
+  timeout 30 uv run --no-sync bash scripts/cc-claim "$task"
+  require_file "$sb/.cache/hapax/cc-active-task-alpha"
+  require_grep "$task" "$sb/.cache/hapax/cc-active-task-alpha"
+  require_grep "status: claimed" "$active/$task.md"
+
+  step "stage S7_RELEASE"
+  timeout 30 uv run --no-sync python scripts/cc-stage-advance "$task" S7_RELEASE
+  require_grep "stage: S7_RELEASE" "$active/$task.md"
+
+  step "stage S10_CLOSURE"
+  timeout 30 uv run --no-sync python scripts/cc-stage-advance "$task" S10_CLOSURE
+  require_grep "stage: S10_CLOSURE" "$active/$task.md"
+
+  step "close"
+  timeout 30 uv run --no-sync bash scripts/cc-close "$task" --status done
+  require_file "$sb/Documents/Personal/20-projects/hapax-cc-tasks/closed/$task.md"
+
+  step "recovery governor"
+  timeout 30 uv run --no-sync python -m shared.recovery_governor --permit "lane:smoke-${smoke_mode}"
+
+  step "ok $sb"
+}
+
+if [[ "$mode" == "both" || "$mode" == "default" ]]; then
+  run_smoke default
+fi
+if [[ "$mode" == "both" || "$mode" == "killswitch" ]]; then
+  run_smoke killswitch
+fi
