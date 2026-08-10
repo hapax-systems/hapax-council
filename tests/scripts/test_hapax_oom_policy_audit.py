@@ -842,6 +842,45 @@ def test_host_policy_refuses_invalid_or_overlapping_memory_intervals(
     assert "test-override host profile table" in result.stdout
 
 
+@pytest.mark.parametrize(
+    ("hostname", "floor_gib", "row"),
+    [
+        (
+            "hapax-appendix",
+            60,
+            "hapax-appendix\t59\t61\tpodium\t46G\t54G\t48G\t56G\t16384\n",
+        ),
+        (
+            "hapax-podium",
+            124,
+            "hapax-podium\t123\t125\tappendix\t72G\t88G\t80G\t96G\t32768\n",
+        ),
+    ],
+)
+def test_host_policy_refuses_swapped_hostname_profile_semantics(
+    tmp_path: Path, hostname: str, floor_gib: int, row: str
+) -> None:
+    table = tmp_path / "oom-host-profiles.tsv"
+    table.write_text(row, encoding="utf-8")
+    result = subprocess.run(
+        [str(SCRIPT), "--host-policy-lines"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_AUDIT_TEST_MODE": "1",
+            "HAPAX_OOM_AUDIT_PROFILE_TABLE": str(table),
+            "HAPAX_OOM_AUDIT_MEMTOTAL_KIB": str(floor_gib * 1024**2),
+            "HAPAX_OOM_AUDIT_HOSTNAME": hostname,
+        },
+    )
+
+    assert result.returncode == 1
+    assert "hostname/profile mismatch" in result.stdout
+    assert f"{hostname} requires profile {hostname.removeprefix('hapax-')}" in result.stdout
+
+
 def test_host_policy_requires_ceiling_below_the_interval_minimum(tmp_path: Path) -> None:
     table = tmp_path / "oom-host-profiles.tsv"
     table.write_text(
