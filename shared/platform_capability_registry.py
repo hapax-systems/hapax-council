@@ -448,6 +448,25 @@ class DescriptorVariant(StrictModel):
         return self
 
 
+SCORES_INHERITED_ACROSS_MODEL_BOUNDARY = "scores_inherited_across_model_boundary"
+
+
+def _variant_crosses_model_boundary(variant: DescriptorVariant, route_model: str | None) -> bool:
+    """True when the variant runs a DIFFERENT model from the route whose scores it inherits.
+
+    Compared case-insensitively on the raw strings: a route's ``model_or_engine`` may name a
+    HARNESS rather than a model (``agy-universal-harness``), in which case every model_id
+    override crosses a boundary — which is correct, because the route-level field then says
+    nothing about what any leaf actually runs.
+    """
+    override = variant.knobs_override.get("model_id")
+    if not override:
+        return False
+    if route_model is None:
+        return True
+    return override.strip().lower() != route_model.strip().lower()
+
+
 class CapabilityShapeDescriptor(StrictModel):
     """Evidence-only descriptor for an observed but not-yet-admitted capability surface.
 
@@ -1001,6 +1020,40 @@ class PlatformCapabilityRoute(StrictModel):
                     raise ValueError(
                         f"variant {variant.variant_id!r} is inert; give it a knobs_override that changes an "
                         "axis or a blocked_reasons entry, or remove the variant"
+                    )
+
+                # A variant that overrides model_id is a DIFFERENT MODEL wearing the route's
+                # scores. `_resolve_effort_leaf` picks the CHEAPEST reachable leaf meeting an
+                # effort demand, so a task selected on the route model's scores can resolve onto
+                # a leaf running something else entirely — the silent downgrade named in
+                # harness-implications-doctrine-2026-07-09 §2. Measured 2026-08-10 on
+                # agy.review.direct: seven variants across four models, every one
+                # scores_inherited_from the route with score_delta {}, and the only unblocked
+                # medium leaf was agy@gpt-oss-120b-medium.
+                #
+                # The guard is a VALIDATOR rather than a hand-maintained blocker list because the
+                # closed PR #4473 tried the list and the list is exactly what rots: a new
+                # M-crossing variant added later would silently rejoin the defect. Here the
+                # registry refuses to LOAD instead.
+                #
+                # The escape is the SPECIFIC blocker, not any blocker. Accepting an unrelated
+                # blocked_reason would let a variant blocked for, say, a failed smoke satisfy the
+                # guard — and the hazard would return silently the day that unrelated reason
+                # cleared. Scores may still legitimately cross a model boundary when the variant
+                # states its own measured numbers via score_delta.
+                if (
+                    _variant_crosses_model_boundary(variant, self.model_or_engine)
+                    and not variant.score_delta
+                    and SCORES_INHERITED_ACROSS_MODEL_BOUNDARY not in variant.blocked_reasons
+                ):
+                    raise ValueError(
+                        f"variant {variant.variant_id!r} on {self.route_id} overrides model_id to "
+                        f"{variant.knobs_override.get('model_id')!r} while inheriting the route's "
+                        f"scores for {self.model_or_engine!r} with no score_delta. That is a silent "
+                        "cross-model downgrade: effort-leaf resolution picks the cheapest meeting "
+                        "leaf, so work selected on the route model's scores would run on this one. "
+                        f"Next: add '{SCORES_INHERITED_ACROSS_MODEL_BOUNDARY}' to the variant's "
+                        "blocked_reasons, or give it a measured score_delta."
                     )
 
         return self
