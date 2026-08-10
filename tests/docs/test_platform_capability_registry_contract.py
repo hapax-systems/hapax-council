@@ -31,7 +31,9 @@ REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
 #: composite_assemblies field is absent, the registry's behavior is byte-identical — and the
 #: promise was aspiration, not fact. This pins the file's sha256: a registry edit must move the
 #: pin in the same commit, so the byte surface changes only deliberately and diff-visibly.
-REGISTRY_BYTE_PIN = "9cc5d81a64225588c0a3c6b879075300b81b9dc04427bf8f6ba0dae6964b5a92"
+#: Moved 2026-08-10, same commit that minted scores_inherited_across_model_boundary onto the six
+#: M-crossing variants of agy.review.direct. Six blocked_reasons lines changed, nothing else.
+REGISTRY_BYTE_PIN = "a05c2cad48f2915ec235ad58d38ed2f9481537b35fdd4b931a2e1482a310b394"
 
 
 def test_registry_bytes_are_pinned() -> None:
@@ -455,14 +457,21 @@ def test_seed_registry_records_agy_review_route_as_blocked_review_supply() -> No
         "agy@gpt-oss-120b-medium",
     }
     variants = {variant["variant_id"]: variant for variant in route["descriptor_variants"]}
+    # scores_inherited_across_model_boundary was minted onto every M-crossing variant on
+    # 2026-08-10. These three carry it alongside their pre-existing smoke blocker precisely
+    # because an unrelated blocker must NOT satisfy the cross-model guard: if the smoke were
+    # fixed tomorrow, the downgrade hazard would otherwise return unguarded.
     assert variants["agy@gemini-3.5-flash-low"]["blocked_reasons"] == [
-        "engine_exact_token_smoke_failed"
+        "engine_exact_token_smoke_failed",
+        "scores_inherited_across_model_boundary",
     ]
     assert variants["agy@gemini-3.5-flash-medium"]["blocked_reasons"] == [
-        "engine_exact_token_smoke_failed"
+        "engine_exact_token_smoke_failed",
+        "scores_inherited_across_model_boundary",
     ]
     assert variants["agy@gemini-3.5-flash-high"]["blocked_reasons"] == [
-        "engine_exact_token_smoke_failed"
+        "engine_exact_token_smoke_failed",
+        "scores_inherited_across_model_boundary",
     ]
 
 
@@ -900,3 +909,122 @@ def test_supply_history_contract_projects_benchmark_overhead_and_calibration_fie
     assert "fixed_route_overhead" in history_fields
     assert "local_calibration_provenance" in history_fields
     assert history.fixed_route_overhead.fixed_cost_score == 0
+
+
+def _agy_route_payload() -> dict[str, Any]:
+    from shared.platform_capability_registry import load_platform_capability_registry
+
+    registry = load_platform_capability_registry()
+    return registry.require("agy.review.direct").model_dump(mode="python")
+
+
+def test_every_cross_model_variant_in_the_shipped_registry_is_guarded() -> None:
+    """The armed silent-downgrade path, disarmed and kept disarmed.
+
+    A variant overriding model_id runs a DIFFERENT model from the route whose scores it
+    inherits, and `_resolve_effort_leaf` selects the CHEAPEST leaf meeting an effort demand.
+    Measured 2026-08-10 on agy.review.direct: seven variants across four models, all
+    scores_inherited_from the route with score_delta {}, and the only unblocked medium leaf
+    was agy@gpt-oss-120b-medium. So an effort_demand=medium task chosen on gemini-3.1-pro's
+    scores would have run on gpt-oss-120b. harness-implications-doctrine-2026-07-09 §2 named
+    this a month before; its disarm PR #4473 was closed unmerged.
+    """
+    from shared.platform_capability_registry import (
+        SCORES_INHERITED_ACROSS_MODEL_BOUNDARY,
+        load_platform_capability_registry,
+    )
+
+    unguarded: list[str] = []
+    for route in load_platform_capability_registry().routes:
+        route_model = (route.model_or_engine or "").strip().lower()
+        for variant in route.descriptor_variants:
+            override = variant.knobs_override.get("model_id")
+            if not override or override.strip().lower() == route_model:
+                continue
+            guarded = (
+                bool(variant.score_delta)
+                or SCORES_INHERITED_ACROSS_MODEL_BOUNDARY in variant.blocked_reasons
+            )
+            if not guarded:
+                unguarded.append(f"{route.route_id}::{variant.variant_id} -> {override}")
+
+    assert not unguarded, (
+        "cross-model variants inherit route scores unguarded, which re-arms the silent "
+        f"downgrade: {unguarded}"
+    )
+
+
+def test_registry_refuses_to_load_an_unguarded_cross_model_variant() -> None:
+    """The guard must REFUSE, not merely be satisfiable.
+
+    PR #4473 proposed a hand-maintained blocker list. A list is exactly what rots — the next
+    M-crossing variant rejoins the defect silently. This makes the registry fail to load
+    instead, so the list cannot fall behind the data.
+    """
+    from shared.platform_capability_registry import (
+        SCORES_INHERITED_ACROSS_MODEL_BOUNDARY,
+        PlatformCapabilityRoute,
+    )
+
+    payload = _agy_route_payload()
+    stripped = False
+    for variant in payload["descriptor_variants"]:
+        if variant["variant_id"] == "agy@gpt-oss-120b-medium":
+            variant["blocked_reasons"] = [
+                reason
+                for reason in variant["blocked_reasons"]
+                if reason != SCORES_INHERITED_ACROSS_MODEL_BOUNDARY
+            ]
+            stripped = True
+    assert stripped, "fixture drift: agy@gpt-oss-120b-medium is no longer in the registry"
+
+    with pytest.raises(ValidationError, match="silent cross-model downgrade"):
+        PlatformCapabilityRoute.model_validate(payload)
+
+
+def test_an_unrelated_blocker_does_not_satisfy_the_cross_model_guard() -> None:
+    """Only the SPECIFIC blocker counts.
+
+    Accepting any blocked_reason would let a variant blocked for an unrelated cause — a failed
+    smoke, say — satisfy the guard, and the hazard would return silently the day that unrelated
+    reason cleared. The gemini-3.5-flash variants are exactly that shape: already blocked on
+    engine_exact_token_smoke_failed.
+    """
+    from shared.platform_capability_registry import (
+        SCORES_INHERITED_ACROSS_MODEL_BOUNDARY,
+        PlatformCapabilityRoute,
+    )
+
+    payload = _agy_route_payload()
+    for variant in payload["descriptor_variants"]:
+        if variant["variant_id"] == "agy@gemini-3.5-flash-medium":
+            variant["blocked_reasons"] = ["engine_exact_token_smoke_failed"]
+            assert SCORES_INHERITED_ACROSS_MODEL_BOUNDARY not in variant["blocked_reasons"]
+
+    with pytest.raises(ValidationError, match="silent cross-model downgrade"):
+        PlatformCapabilityRoute.model_validate(payload)
+
+
+def test_a_measured_score_delta_legitimately_crosses_the_model_boundary() -> None:
+    """The guard blocks silent inheritance, not cross-model variants as such.
+
+    A variant that states its OWN measured numbers is exactly what the estate wants; refusing
+    that would make the guard an obstacle to the correct fix rather than a push toward it.
+    """
+    from shared.platform_capability_registry import (
+        SCORES_INHERITED_ACROSS_MODEL_BOUNDARY,
+        PlatformCapabilityRoute,
+    )
+
+    payload = _agy_route_payload()
+    for variant in payload["descriptor_variants"]:
+        if variant["variant_id"] == "agy@gpt-oss-120b-medium":
+            variant["blocked_reasons"] = [
+                reason
+                for reason in variant["blocked_reasons"]
+                if reason != SCORES_INHERITED_ACROSS_MODEL_BOUNDARY
+            ]
+            variant["score_delta"] = {"governance_reasoning": 3}
+
+    route = PlatformCapabilityRoute.model_validate(payload)
+    assert route.route_id == "agy.review.direct"
