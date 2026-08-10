@@ -2072,6 +2072,43 @@ def _function_excerpt_range(source_lines: list[str], symbol: str) -> tuple[int, 
     return start, end
 
 
+def _callers_of(
+    source_lines: list[str], symbol: str, *, limit: int = 2
+) -> list[tuple[int, int, str]]:
+    """Enclosing functions that reference ``symbol``, as (start, end, name).
+
+    Deliberately same-file and textual. A reviewer asking whether a helper fails safely needs
+    the call site; resolving callers across modules would need an import graph this dispatcher
+    has no business building, and the same-file case is the one that recurs.
+    """
+    if not symbol:
+        return []
+    pattern = re.compile(rf"\b{re.escape(symbol)}\b")
+    definition = re.compile(r"^(\s*)(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)")
+
+    found: list[tuple[int, int, str]] = []
+    for index, raw in enumerate(source_lines, start=1):
+        if not pattern.search(raw):
+            continue
+        if definition.match(raw):
+            continue  # the definition itself, already excerpted
+        # Walk back to the enclosing def.
+        for back in range(index, 0, -1):
+            match = definition.match(source_lines[back - 1])
+            if not match:
+                continue
+            name = match.group(2)
+            if name == symbol:
+                break  # a self-reference inside the definition
+            span = _function_excerpt_range(source_lines, name)
+            if span and not any(span[0] == existing[0] for existing in found):
+                found.append((span[0], span[1], name))
+            break
+        if len(found) >= limit:
+            break
+    return found
+
+
 def build_prior_file_excerpts(
     prior_criticals: list[dict[str, Any]],
     *,
@@ -2194,6 +2231,39 @@ def build_prior_file_excerpts(
                     "lines": f"{symbol_start}-{symbol_end}",
                 }
             )
+            # A finding about a helper is almost always a question about its CALLERS: "does
+            # this fail safely?" is a property of the call site, not the definition. On
+            # 2026-08-10 a reviewer given _ledger_lock's body correctly confirmed the fixed
+            # docstring and then still could not resolve its critical, writing "I cannot
+            # confirm the caller of _ledger_lock in the rotation path raises on _LOCK_FAILED
+            # rather than proceeding to append" — while the sole caller, three hundred lines
+            # away in the same file, does exactly that. Showing the definition and withholding
+            # the call site guarantees an unresolvable finding.
+            for caller_start, caller_end, caller_name in _callers_of(source_lines, symbol):
+                if len(sections) >= limit:
+                    break
+                caller_key = (rel, caller_start)
+                if caller_key in seen:
+                    continue
+                seen.add(caller_key)
+                caller_body = "\n".join(
+                    f"{number:04d}| {source_lines[number - 1].replace('```', '<BACKTICK_FENCE>')}"
+                    for number in range(caller_start, caller_end + 1)
+                )
+                sections.append(
+                    f"## {shown}:{caller_start} ({caller_name} — CALLS {symbol}) "
+                    f"@ {head_sha[:9]}\n\n{caller_body}\n"
+                )
+                records.append(
+                    {
+                        "file": shown,
+                        "line": caller_start,
+                        "status": "shown",
+                        "symbol": caller_name,
+                        "calls": symbol,
+                        "lines": f"{caller_start}-{caller_end}",
+                    }
+                )
         if len(sections) >= limit:
             break
     if not sections:

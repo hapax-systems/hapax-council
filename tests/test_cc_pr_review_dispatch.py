@@ -4325,3 +4325,47 @@ def test_test_index_skips_test_files_and_bounds_itself(tmp_path: Path) -> None:
 
     assert rendered == ""
     assert records == []
+
+
+def test_prior_finding_excerpt_includes_the_caller_not_only_the_definition() -> None:
+    """A finding about a helper is a question about its CALL SITE.
+
+    On 2026-08-10 a reviewer was shown `_ledger_lock`'s body, correctly confirmed the corrected
+    docstring, and still could not resolve its own critical — writing "I cannot confirm the
+    caller of _ledger_lock in the rotation path raises on _LOCK_FAILED rather than proceeding to
+    append" — while the sole caller does exactly that. Showing a definition and withholding its
+    call site guarantees an unresolvable finding, and unresolvable findings block merges forever.
+    """
+    source = [
+        "def _ledger_lock(path):",
+        "    if broken:",
+        "        return _LOCK_FAILED",
+        "    return _LOCK_HELD",
+        "",
+        "",
+        "def write_receipt(decision):",
+        "    with _ledger_lock(path) as state:",
+        "        if state == _LOCK_FAILED:",
+        "            raise RuntimeError('refusing the write')",
+        "        append(decision)",
+        "",
+    ]
+
+    callers = dispatch._callers_of(source, "_ledger_lock")
+
+    assert callers, "the call site must be discoverable"
+    start, end, name = callers[0]
+    assert name == "write_receipt"
+    body = "\n".join(source[start - 1 : end])
+    assert "raise RuntimeError" in body, "the refusal must be visible in the excerpt"
+
+
+def test_caller_lookup_ignores_the_definition_itself() -> None:
+    """A symbol's own def line is not a call site; excerpting it twice wastes the budget."""
+    source = [
+        "def helper():",
+        "    return helper",
+        "",
+    ]
+
+    assert dispatch._callers_of(source, "helper") == []
