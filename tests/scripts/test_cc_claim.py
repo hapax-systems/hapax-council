@@ -266,7 +266,11 @@ def test_default_claim_expired_claim_hold_names_governed_release_path(
 
     assert result.returncode == 7
     assert "expired claim" in result.stderr
-    assert "Next action: run cc-close stale-task" in result.stderr
+    assert "Manual Stale-Lease Release runbook" in result.stderr
+    assert str(stale) in result.stderr
+    assert str(cache / "cc-claim-epoch-cx-test") in result.stderr
+    assert str(cache / "cc-claim-dispatch-cx-test.json") in result.stderr
+    assert "cc-close stale-task" not in result.stderr
 
 
 def test_default_claim_expired_empty_claim_hold_names_manual_recovery(
@@ -290,6 +294,104 @@ def test_default_claim_expired_empty_claim_hold_names_manual_recovery(
     assert "inspect '" in result.stderr
     assert "to recover the task id" in result.stderr
     assert "<task-id-from-" not in result.stderr
+    assert "cc-close" not in result.stderr
+
+
+def test_expired_session_claim_exact_release_allows_canonical_retry(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "new-task")
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    stale_session = "99999999-1111-2222-3333-444455556666"
+    stale_key = f"cx-test-{stale_session}"
+    stale = cache / f"cc-active-task-{stale_key}"
+    stale_epoch = cache / f"cc-claim-epoch-{stale_key}"
+    stale_dispatch = cache / f"cc-claim-dispatch-{stale_key}.json"
+    stale.write_text("stale-task\n", encoding="utf-8")
+    stale_epoch.write_text("1 stale-task\n", encoding="utf-8")
+    stale_dispatch.write_text('{"task_id":"stale-task"}\n', encoding="ascii")
+    for path in (stale, stale_epoch, stale_dispatch):
+        os.utime(path, (0, 0))
+
+    held = _claim(
+        home,
+        "new-task",
+        extra_env={"HAPAX_CLAIM_LEASE_TTL_SECS": "1"},
+    )
+
+    assert held.returncode == 7
+    assert str(stale) in held.stderr
+    assert "Manual Stale-Lease Release runbook" in held.stderr
+    assert "cc-close" not in held.stderr
+
+    release = subprocess.run(
+        [
+            "bash",
+            "-c",
+            textwrap.dedent(
+                r"""
+                set -euo pipefail
+                claim_file="$(realpath -e "$1")"
+                claim_base="$(basename "$claim_file")"
+                case "$claim_base" in
+                  cc-active-task-*) ;;
+                  *) echo "not a cc-active-task path" >&2; exit 2 ;;
+                esac
+                claim_key="${claim_base#cc-active-task-}"
+                task_id="$(head -n1 "$claim_file" | tr -d '[:space:]')"
+                test -n "$task_id"
+                archive_dir="$HOME/Documents/Personal/20-projects/hapax-cc-tasks/_lineage/$task_id/manual-stale-lease-release-test"
+                mkdir -p "$archive_dir"
+                cache_dir="$HOME/.cache/hapax"
+                for path in \
+                  "$claim_file" \
+                  "$cache_dir/cc-claim-epoch-$claim_key" \
+                  "$cache_dir/cc-claim-dispatch-$claim_key.json"; do
+                  if test -e "$path"; then
+                    cp -p -- "$path" "$archive_dir/"
+                    rm -f -- "$path"
+                  fi
+                done
+                printf 'archived stale lease sidecars to %s\n' "$archive_dir"
+                """
+            ),
+            "bash",
+            str(stale),
+        ],
+        env={**os.environ, "HOME": str(home)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert release.returncode == 0, release.stderr
+    assert "archived stale lease sidecars" in release.stdout
+    archive = (
+        home
+        / "Documents"
+        / "Personal"
+        / "20-projects"
+        / "hapax-cc-tasks"
+        / "_lineage"
+        / "stale-task"
+        / "manual-stale-lease-release-test"
+    )
+    assert sorted(path.name for path in archive.iterdir()) == [
+        stale.name,
+        stale_dispatch.name,
+        stale_epoch.name,
+    ]
+    assert not stale.exists()
+    assert not stale_epoch.exists()
+    assert not stale_dispatch.exists()
+
+    retried = _claim(home, "new-task")
+
+    assert retried.returncode == 0, retried.stderr
+    assert "admitted publication applied" in retried.stdout
+    assert "status: claimed" in note.read_text(encoding="utf-8")
 
 
 def test_default_claim_refuses_pid_shaped_session_id(tmp_path: Path) -> None:

@@ -148,9 +148,8 @@ def test_only_cc_claim_live_path_imports_gate0b_publication_machinery() -> None:
         allowed = relpath in allowed_files or relpath.startswith(allowed_prefixes)
         if allowed:
             continue
-        if relpath == "scripts/cc-claim":
-            continue
         if not relpath.endswith(".py"):
+            offenders.append(f"{relpath}:unexpected-non-python-live-path")
             continue
         tree = ast.parse(Path(relpath).read_text(encoding="utf-8"), filename=relpath)
         for node in ast.walk(tree):

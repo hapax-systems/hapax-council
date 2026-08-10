@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import multiprocessing as mp
 import os
+import queue
 import stat
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -1661,6 +1663,38 @@ def test_private_admitted_transaction_refuses_receipt_collision_without_live_wri
     assert not fixture.transactions.exists()
 
 
+def test_private_admitted_transaction_holds_existing_journal_without_live_writes(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    receipt_root = tmp_path / "receipts"
+    publication_id = admitted_claim_publication_id(fixture.intent, active.consumption)
+    (fixture.transactions / publication_id).mkdir(parents=True, mode=0o700)
+    fixture.transactions.chmod(0o700)
+
+    with pytest.raises(ClaimPublicationError) as raised:
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            receipt_root=receipt_root,
+            lock_root=fixture.locks,
+            now=active.checked_at,
+        )
+
+    assert raised.value.reason_code == "claim_publication_existing_history_not_terminal"
+    assert "run admitted recovery" in str(raised.value)
+    assert (
+        fixture.vault / "active" / f"{fixture.intent.task_id}.md"
+    ).read_bytes() == fixture.intent.note_before
+    assert not claim_publication_receipt_path(
+        fixture.cache,
+        fixture.intent.binding,
+        receipt_root=receipt_root,
+    ).exists()
+
+
 def test_claim_transaction_directory_refuses_collision_and_unsafe_root(
     tmp_path: Path,
 ) -> None:
@@ -1720,6 +1754,37 @@ def test_claim_publication_lock_refuses_hardlinked_lock_file(tmp_path: Path) -> 
             pass
 
     assert raised.value.reason_code == "claim_publication_lock_unsafe"
+
+
+def _claim_publication_lock_child(
+    intent: ClaimPublicationIntent,
+    lock_root: Path,
+    acquired: mp.Queue,
+) -> None:
+    with sdlc_claim._claim_publication_lock(intent, lock_root=lock_root):
+        acquired.put("acquired")
+
+
+def test_claim_publication_lock_serializes_contending_process(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    ctx = mp.get_context("fork")
+    acquired = ctx.Queue()
+    process = ctx.Process(
+        target=_claim_publication_lock_child,
+        args=(fixture.intent, fixture.locks, acquired),
+    )
+
+    with sdlc_claim._claim_publication_lock(fixture.intent, lock_root=fixture.locks):
+        process.start()
+        with pytest.raises(queue.Empty):
+            acquired.get(timeout=0.25)
+
+    assert acquired.get(timeout=5) == "acquired"
+    process.join(timeout=5)
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=5)
+    assert process.exitcode == 0
 
 
 def test_admitted_manifest_state_refuses_invalid_state(tmp_path: Path) -> None:
