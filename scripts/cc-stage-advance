@@ -173,6 +173,19 @@ def advance(task_id: str, new_stage: str, allow_backward: bool) -> int:
     no_go = _no_go_snapshot(front)
     from_num = _stage_num(from_stage)
     to_num = _stage_num(new_stage)
+    # An unparseable SOURCE used to disable the only ordering check there is: the conjunction
+    # below short-circuits on `from_num is not None`, so a stage this script cannot read was
+    # silently treated as "no ordering constraint" rather than as "cannot decide". The
+    # destination already fail-CLOSES (`_stage_num(new_stage) is None` refuses at entry); the
+    # source fail-OPENED. Measured 2026-08-10 over 2,626 live stage values, exactly 2 are
+    # unreadable here, and `S8L_BRIDGE_V3_4_SUPPORT_FREEZE_ACCEPTED_RUNTIME_HOLD` is one of
+    # them, live in an active task -- so this refusal is narrow and its subject is real.
+    if from_num is None and from_stage != "(none)":
+        return _refuse(
+            f"cannot read the current stage '{from_stage}', so the backward-transition guard "
+            f"cannot be applied. Advancing would skip the only ordering check. "
+            f"Next: repair the task's `stage` to S0..S11[_LABEL], then re-run."
+        )
     if from_num is not None and to_num is not None and to_num < from_num and not allow_backward:
         return _refuse(
             f"backward transition {from_stage} -> {new_stage} (use --allow-backward to override)"

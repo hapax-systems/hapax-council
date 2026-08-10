@@ -114,3 +114,49 @@ class TestStageAdvance:
         )
         r = _run(tmp_path, "nope", "S7_RELEASE")
         assert r.returncode == 3
+
+    def test_unreadable_source_stage_refuses_instead_of_skipping_the_guard(
+        self, tmp_path: Path
+    ) -> None:
+        """An unreadable CURRENT stage must refuse, not silently disable ordering.
+
+        The backward guard is a conjunction beginning `from_num is not None`, so a stage this
+        script cannot parse short-circuited it and the transition proceeded with no ordering
+        check at all. The destination already fail-CLOSES; the source fail-OPENED. That
+        asymmetry is the defect.
+
+        `S8L_BRIDGE_V3_4_...` is not invented for the test — it is live in an active cc-task,
+        and `_STAGE_RE` does not match it because `S8L` is not `S<digits>`.
+        """
+        _make_task(tmp_path, "t7", stage="S8L_BRIDGE_V3_4_SUPPORT_FREEZE_ACCEPTED_RUNTIME_HOLD")
+        r = _run(tmp_path, "t7", "S2_SCOPED")
+        assert r.returncode == 2, r.stderr
+        assert "cannot read the current stage" in r.stderr
+        assert "Next:" in r.stderr, "a refusal must name its own remedy"
+        assert "stage: S8L_BRIDGE" in _note(tmp_path, "t7").read_text(), "nothing was written"
+
+    def test_unreadable_source_is_refused_even_with_allow_backward(self, tmp_path: Path) -> None:
+        """--allow-backward waives ORDERING; it must not waive UNREADABILITY.
+
+        Collapsing the two would restore the fail-open behind a flag that reads as though it
+        only relaxes direction.
+        """
+        _make_task(tmp_path, "t8", stage="S8L_BRIDGE_V3_4_SUPPORT_FREEZE_ACCEPTED_RUNTIME_HOLD")
+        r = _run(tmp_path, "t8", "S2_SCOPED", "--allow-backward")
+        assert r.returncode == 2, r.stderr
+        assert "cannot read the current stage" in r.stderr
+
+    def test_labelled_stages_in_live_use_still_advance(self, tmp_path: Path) -> None:
+        """Guard against over-tightening, with measured numbers.
+
+        Of 2,626 live stage values (2026-08-10), 474 are refused by the canonical catalog but
+        472 of those are accepted by this script's `_STAGE_RE` and advance fine. Wiring the
+        catalog's `is_legal_stage_edge` here TODAY would refuse all 54 distinct label forms —
+        `S1_INTAKE`, `S5_REVIEW_GATE`, `S5_DESIGN` among them — which is precisely why that
+        wiring is not part of this change and needs a token/label reconciliation first.
+        """
+        for label in ("S1_INTAKE", "S5_REVIEW_GATE", "S5_DESIGN", "S4_BLOCKED_ON_DEPENDENCY"):
+            task = f"lbl{label.lower().replace('_', '')}"
+            _make_task(tmp_path, task, stage=label)
+            r = _run(tmp_path, task, "S9_CLOSEOUT")
+            assert r.returncode == 0, f"{label} should still advance: {r.stderr}"
