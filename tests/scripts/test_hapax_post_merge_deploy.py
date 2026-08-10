@@ -389,6 +389,20 @@ def _effective_safety_unit_show_script(system_dir: Path, user_dir: Path) -> str:
                 f'if [ "$*" = "{prefix} {unit} -p {prop} --value" ]; '
                 f"then printf '%s\\n' '{value}'; fi\n"
             )
+    judge_properties = {
+        "NeedDaemonReload": "no",
+        "FragmentPath": str(user_dir / "hapax-local-judge.service"),
+        "DropInPaths": "",
+        "ExecStart": (
+            "{ path=/usr/bin/docker ; argv[]=/usr/bin/docker run --rm "
+            "--name hapax-local-judge --memory 4G --memory-swap 6G local-judge ; }"
+        ),
+    }
+    for prop, value in judge_properties.items():
+        lines.append(
+            f'if [ "$*" = "--user show hapax-local-judge.service -p {prop} --value" ]; '
+            f"then printf '%s\\n' '{value}'; fi\n"
+        )
     failure_unit = "hapax-root-failure-intake@hapax-oom-score-enforce.service.service"
     failure_properties = {
         "FragmentPath": str(system_dir / "hapax-root-failure-intake@.service"),
@@ -2080,6 +2094,14 @@ def test_root_required_audit_refuses_unreviewed_host_interval_edges(
             "invalid host profile table row",
         ),
         (
+            "hapax-appendix\t59\t61\tpodium\t46G\t54G\t48G\t56G\t16384",
+            "hostname/profile mismatch",
+        ),
+        (
+            "hapax-podium\t123\t125\tappendix\t72G\t88G\t80G\t96G\t32768",
+            "hostname/profile mismatch",
+        ),
+        (
             "hapax-podium\t123\t125\tpodium\t72G\t88G\t80G\t96G\t32768\n"
             "hapax-podium\t124\t126\tpodium\t72G\t88G\t80G\t96G\t32768",
             "overlapping host profile interval",
@@ -2100,6 +2122,8 @@ def test_root_required_audit_refuses_unreviewed_host_interval_edges(
     ids=(
         "malformed-row",
         "invalid-profile",
+        "appendix-profile-swapped",
+        "podium-profile-swapped",
         "overlap",
         "unsafe-ceilings",
         "zero-zram",
@@ -2728,6 +2752,55 @@ def test_root_required_audit_rejects_effective_service_dropin(tmp_path: Path) ->
     assert result.returncode == 1
     assert "effective hapax-oom-policy-audit.service unit-source drift" in result.stderr
     assert "override.conf" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("property_name", "loaded_value", "expected_error"),
+    [
+        (
+            "DropInPaths",
+            "/home/hapax/.config/systemd/user/hapax-local-judge.service.d/override.conf",
+            "unit-source drift",
+        ),
+        (
+            "ExecStart",
+            (
+                "{ path=/usr/bin/docker ; argv[]=/usr/bin/docker run --rm "
+                "--name hapax-local-judge local-judge ; }"
+            ),
+            "ExecStart drift",
+        ),
+        ("NeedDaemonReload", "yes", "manager state is stale"),
+    ],
+)
+def test_root_required_audit_rejects_effective_local_judge_drift(
+    tmp_path: Path, property_name: str, loaded_value: str, expected_error: str
+) -> None:
+    env = _root_audit_env(tmp_path)
+    fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
+    baseline_systemctl = fake_systemctl.with_name("root-audit-systemctl-baseline")
+    fake_systemctl.rename(baseline_systemctl)
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [ "$*" = "--user show hapax-local-judge.service -p {property_name} --value" ]; then\n'
+        f"  printf '%s\\n' '{loaded_value}'\n"
+        "  exit 0\n"
+        "fi\n"
+        f'exec "{baseline_systemctl!s}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert f"root-required effective hapax-local-judge.service {expected_error}" in result.stderr
 
 
 def test_root_required_audit_rejects_effective_failure_intake_dropin(

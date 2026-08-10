@@ -84,6 +84,10 @@ SAFE_AUDIT_ENVIRONMENT = "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin"
 JUDGE_CONTAINER_ID = "a" * 64
 MCP_CONTAINER_ID = "b" * 64
 REPLACEMENT_CONTAINER_ID = "d" * 64
+LOCAL_JUDGE_EXEC_START = (
+    "/usr/bin/docker run --rm --name hapax-local-judge "
+    "--memory 4G --memory-swap 6G --gpus device=GPU-test local-judge"
+)
 
 
 def _systemctl_property_file(section: str, key: str, value: str) -> str:
@@ -270,6 +274,9 @@ def _systemctl_user_unit_cases(
     unit_pids: dict[str, int] | None = None,
     unit_cgroups: dict[str, str] | None = None,
     effective_overrides: dict[str, dict[str, str]] | None = None,
+    local_judge_dropins: str = "",
+    local_judge_exec_start: str = LOCAL_JUDGE_EXEC_START,
+    local_judge_need_reload: str = "no",
 ) -> str:
     unit_pids = unit_pids or {}
     effective_overrides = effective_overrides or {}
@@ -306,6 +313,18 @@ def _systemctl_user_unit_cases(
                 f"  *--user\\ show\\ {audit_unit}\\ -p\\ User\\ --value*) printf '\\n' ;;",
             ]
         )
+    cases.extend(
+        [
+            "  *--user\\ show\\ hapax-local-judge.service\\ -p\\ NeedDaemonReload\\ --value*) "
+            f"printf '%s\\n' '{local_judge_need_reload}' ;;",
+            "  *--user\\ show\\ hapax-local-judge.service\\ -p\\ FragmentPath\\ --value*) "
+            "printf '%s\\n' \"${HAPAX_OOM_SYSTEMD_USER_DIR:-/home/hapax/.config/systemd/user}/hapax-local-judge.service\" ;;",
+            "  *--user\\ show\\ hapax-local-judge.service\\ -p\\ DropInPaths\\ --value*) "
+            f"printf '%s\\n' '{local_judge_dropins}' ;;",
+            "  *--user\\ show\\ hapax-local-judge.service\\ -p\\ ExecStart\\ --value*) "
+            f"printf '%s\\n' '{{ path=/usr/bin/docker ; argv[]={local_judge_exec_start} ; }}' ;;",
+        ]
+    )
     for timer, target, on_boot, on_active in (
         (
             "hapax-oom-policy-audit.timer",
@@ -3553,6 +3572,9 @@ def _run_install_verify_live(
     no_unit_path_override: bool = False,
     systemd_analyze: str | None = None,
     host_profile: str = "appendix",
+    local_judge_dropins: str = "",
+    local_judge_exec_start: str = LOCAL_JUDGE_EXEC_START,
+    local_judge_need_reload: str = "no",
 ) -> subprocess.CompletedProcess[str]:
     """Drive the REAL installer through --install --verify-live against temp destinations.
 
@@ -3595,7 +3617,7 @@ def _run_install_verify_live(
         f"{_drift_cases(drift)}\n"
         f"{_load_state_cases(load_state)}\n"
         f"{_systemctl_system_memory_cases(RECOVERY_SYSTEM_UNIT_PIDS, host_profile=host_profile)}\n"
-        f"{_systemctl_user_unit_cases()}\n"
+        f"{_systemctl_user_unit_cases(local_judge_dropins=local_judge_dropins, local_judge_exec_start=local_judge_exec_start, local_judge_need_reload=local_judge_need_reload)}\n"
         f"{_systemctl_app_slice_cases(host_profile)}\n"
         "esac\n"
         "exit 0\n",
@@ -3669,6 +3691,40 @@ def _run_install_verify_live(
             ),
         },
     )
+
+
+def test_verify_live_rejects_effective_local_judge_execstart_without_limits(
+    tmp_path: Path,
+) -> None:
+    result = _run_install_verify_live(
+        tmp_path,
+        local_judge_exec_start="/usr/bin/docker run --rm --name hapax-local-judge local-judge",
+    )
+
+    assert result.returncode != 0
+    assert "effective hapax-local-judge.service ExecStart drift" in result.stderr
+    assert "durable launch" in result.stderr
+
+
+def test_verify_live_rejects_effective_local_judge_dropin(tmp_path: Path) -> None:
+    result = _run_install_verify_live(
+        tmp_path,
+        local_judge_dropins=(
+            "/home/hapax/.config/systemd/user/hapax-local-judge.service.d/override.conf"
+        ),
+    )
+
+    assert result.returncode != 0
+    assert "effective hapax-local-judge.service unit-source drift" in result.stderr
+    assert "override.conf" in result.stderr
+
+
+def test_verify_live_rejects_stale_local_judge_manager_state(tmp_path: Path) -> None:
+    result = _run_install_verify_live(tmp_path, local_judge_need_reload="yes")
+
+    assert result.returncode != 0
+    assert "effective hapax-local-judge.service manager state is stale" in result.stderr
+    assert "NeedDaemonReload=yes" in result.stderr
 
 
 def test_verify_live_skips_an_absent_host_optional_unit(tmp_path: Path) -> None:

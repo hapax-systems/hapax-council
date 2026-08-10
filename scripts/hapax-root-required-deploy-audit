@@ -61,6 +61,8 @@ VISUDO="${HAPAX_ROOT_AUDIT_VISUDO:-/usr/bin/visudo}"
 ROOT_ARTIFACT_TEST_UID="${HAPAX_ROOT_AUDIT_TEST_ROOT_UID:-$(/usr/bin/id -u)}"
 ROOT_ARTIFACT_TEST_GID="${HAPAX_ROOT_AUDIT_TEST_ROOT_GID:-$(/usr/bin/id -g)}"
 HOST_PROFILE=""
+LOCAL_JUDGE_DOCKER_MEMORY="4G"
+LOCAL_JUDGE_DOCKER_MEMORY_SWAP="6G"
 GOVERNED_MEMORY_KEYS=(MemoryHigh MemoryMax MemorySwapMax MemoryLow MemoryMin)
 
 oom_install_next_action() {
@@ -473,8 +475,22 @@ for line_number, line in enumerate(table.read_text(encoding="utf-8").splitlines(
     except ValueError:
         print(f"invalid host profile table row {line_number}", file=sys.stderr)
         raise SystemExit(1)
-    if not row_hostname or profile not in {"appendix", "podium"}:
+    if profile not in {"appendix", "podium"}:
         print(f"invalid host profile table row {line_number}", file=sys.stderr)
+        raise SystemExit(1)
+    expected_profile = {
+        "hapax-appendix": "appendix",
+        "hapax-podium": "podium",
+    }.get(row_hostname)
+    if expected_profile is None:
+        print(f"invalid host profile table row {line_number}", file=sys.stderr)
+        raise SystemExit(1)
+    if profile != expected_profile:
+        print(
+            f"hostname/profile mismatch at row {line_number}: {row_hostname} requires "
+            f"profile {expected_profile}, got {profile or 'empty'}",
+            file=sys.stderr,
+        )
         raise SystemExit(1)
     if min_gib <= 0 or max_gib < min_gib:
         print(f"invalid host profile interval at row {line_number}", file=sys.stderr)
@@ -1050,6 +1066,34 @@ audit_effective_service_unit() {
     fi
 }
 
+audit_effective_local_judge_unit() {
+    local unit="hapax-local-judge.service"
+    local expected_fragment="$SYSTEMD_USER_DIR/$unit"
+    local need_reload actual_fragment actual_dropins actual_exec
+    need_reload="$(loaded_unit_property user "$unit" NeedDaemonReload)" || need_reload="query-error"
+    actual_fragment="$(loaded_unit_property user "$unit" FragmentPath)" || actual_fragment=""
+    actual_dropins="$(loaded_unit_property user "$unit" DropInPaths)" || actual_dropins="query-error"
+    actual_exec="$(loaded_unit_property user "$unit" ExecStart)" || actual_exec=""
+    if [ "$need_reload" != "no" ]; then
+        echo "root-required effective $unit manager state is stale: NeedDaemonReload=${need_reload:-unavailable}" >&2
+        echo "  next action: reload the user manager and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    if [ "$actual_fragment" != "$expected_fragment" ] || [ -n "$actual_dropins" ]; then
+        echo "root-required effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins" >&2
+        echo "  next action: remove unauthorized overrides, reload the user manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    if [[ "$actual_exec" != *"argv[]=/usr/bin/docker run "* \
+        || "$actual_exec" != *" --name hapax-local-judge "* \
+        || "$actual_exec" != *" --memory $LOCAL_JUDGE_DOCKER_MEMORY "* \
+        || "$actual_exec" != *" --memory-swap $LOCAL_JUDGE_DOCKER_MEMORY_SWAP "* ]]; then
+        echo "root-required effective $unit ExecStart drift: durable launch does not contain the governed $LOCAL_JUDGE_DOCKER_MEMORY/$LOCAL_JUDGE_DOCKER_MEMORY_SWAP Docker limits" >&2
+        echo "  next action: remove unauthorized overrides, reload the user manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+}
+
 audit_effective_failure_intake_unit() {
     local unit="hapax-root-failure-intake@hapax-oom-score-enforce.service.service"
     local instance="hapax-oom-score-enforce.service"
@@ -1147,6 +1191,7 @@ audit_effective_safety_units() {
     audit_effective_timer_unit user hapax-root-required-deploy-audit.timer \
         systemd/units/hapax-root-required-deploy-audit.timer \
         "$SYSTEMD_USER_DIR/hapax-root-required-deploy-audit.timer" || failed=1
+    audit_effective_local_judge_unit || failed=1
     return "$failed"
 }
 
