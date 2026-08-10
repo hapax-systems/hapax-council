@@ -66,6 +66,11 @@ P0_USER_OOM_DROPINS = {
 P0_OOM_AUDIT_FILES = {
     "scripts/hapax-oom-policy-audit": "#!/usr/bin/env python3\n",
     "scripts/hapax-root-required-deploy-audit": "#!/usr/bin/env bash\n",
+    "systemd/units/hapax-local-judge.service": (
+        "[Unit]\nDescription=Local judge\n[Service]\nType=simple\n"
+        "ExecStart=/usr/bin/docker run --name hapax-local-judge "
+        "--memory 4G --memory-swap 6G local-judge\n"
+    ),
     "systemd/units/hapax-oom-policy-audit.service": (
         "[Unit]\nDescription=OOM audit\nOnFailure=notify-failure@%n.service\n"
         "[Service]\nType=oneshot\n"
@@ -1333,7 +1338,7 @@ def test_post_merge_squash_equivalence_rejects_git_mode_drift(tmp_path: Path) ->
     assert desired_receipt.read_text(encoding="utf-8").strip() == desired_sha
 
 
-def test_concurrent_same_sha_root_required_oom_deploy_stages_complete_deferral(
+def test_concurrent_oom_deferral_owns_local_judge_without_generic_activation(
     tmp_path: Path,
 ) -> None:
     installer_body = "#!/usr/bin/env bash\nsleep 0.2\nexit 77\n"
@@ -1440,6 +1445,7 @@ def test_concurrent_same_sha_root_required_oom_deploy_stages_complete_deferral(
     deferred = defer_dir / sha / "oom-containment"
     assert (deferred / "RUNBOOK.txt").is_file()
     assert (deferred / "scripts" / "install-p0-oom-containment").is_file()
+    assert (deferred / "systemd/units/hapax-local-judge.service").is_file()
     for rel in (
         line for line in OOM_PACKAGE_MANIFEST.splitlines() if line and not line.startswith("#")
     ):
@@ -1456,6 +1462,8 @@ def test_concurrent_same_sha_root_required_oom_deploy_stages_complete_deferral(
     assert "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT=" in runbook
     assert "HAPAX_ROOT_REQUIRED_GIT_REPO=" in runbook
     assert (home / ".config" / "systemd" / "user" / "hapax-demo.service").is_file()
+    assert not (home / ".config" / "systemd" / "user" / "hapax-local-judge.service").exists()
+    assert "hapax-local-judge.service" not in systemctl_calls.read_text(encoding="utf-8")
     assert "root-required oom-containment install deferred" in first_stdout + second_stdout
     desired = home / ".local/state/hapax/root-required/desired-receipts/oom-containment.sha"
     assert desired.read_text(encoding="utf-8").strip() == sha
@@ -2057,6 +2065,74 @@ def test_root_required_audit_refuses_unreviewed_host_interval_edges(
     )
 
     assert result.returncode == 1
+    assert "cannot select a bounded receipt-bound OOM host profile" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("table_rows", "parser_error"),
+    [
+        (
+            "hapax-podium\t123\t125\tpodium\t72G\t88G\t80G\t96G",
+            "invalid host profile table row",
+        ),
+        (
+            "hapax-podium\t123\t125\tother\t72G\t88G\t80G\t96G\t32768",
+            "invalid host profile table row",
+        ),
+        (
+            "hapax-podium\t123\t125\tpodium\t72G\t88G\t80G\t96G\t32768\n"
+            "hapax-podium\t124\t126\tpodium\t72G\t88G\t80G\t96G\t32768",
+            "overlapping host profile interval",
+        ),
+        (
+            "hapax-podium\t123\t125\tpodium\t88G\t72G\t80G\t96G\t32768",
+            "host profile ceilings are not below interval floor",
+        ),
+        (
+            "hapax-podium\t123\t125\tpodium\t72G\t88G\t80G\t96G\t0",
+            "host profile ceilings are not below interval floor",
+        ),
+        (
+            "hapax-podium\t123\t125\tpodium\t72G\t88G\t80G\t96G\t-1",
+            "host profile ceilings are not below interval floor",
+        ),
+    ],
+    ids=(
+        "malformed-row",
+        "invalid-profile",
+        "overlap",
+        "unsafe-ceilings",
+        "zero-zram",
+        "negative-zram",
+    ),
+)
+def test_root_required_audit_executes_profile_parser_error_branches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    table_rows: str,
+    parser_error: str,
+) -> None:
+    header = (
+        "# hostname\tmin_memtotal_gib\tmax_memtotal_gib\tprofile\tapp_high\t"
+        "app_max\tuid_high\tuid_max\tzram_mib\n"
+    )
+    monkeypatch.setitem(
+        ROOT_AUDIT_SOURCE_FILES,
+        "config/root-required/oom-host-profiles.tsv",
+        f"{header}{table_rows}\n",
+    )
+    env = _root_audit_env(tmp_path)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert parser_error in result.stderr
     assert "cannot select a bounded receipt-bound OOM host profile" in result.stderr
 
 

@@ -1273,6 +1273,7 @@ esac
     assert not (user_dir / "app.slice.d" / "zz-hapax-host-memory.conf").exists()
     assert not Path(os.environ["HAPAX_OOM_LEGACY_ZRAM_POLICY_DEST"]).exists()
     for unit in (
+        "hapax-local-judge.service",
         "hapax-oom-policy-audit.service",
         "hapax-oom-policy-audit.timer",
         "hapax-root-required-deploy-audit.service",
@@ -1319,6 +1320,8 @@ esac
     assert (
         "--user show hapax-root-required-deploy-audit.service -p Environment --value" in user_calls
     )
+    assert "--user restart hapax-local-judge.service" not in user_calls
+    assert "--user enable --now hapax-local-judge.service" not in user_calls
     for unit in stale_user_system_units:
         assert f"--user disable --now {unit}" in user_calls
     docker_calls = Path(os.environ["HAPAX_TEST_DOCKER_CALLS"]).read_text(encoding="utf-8")
