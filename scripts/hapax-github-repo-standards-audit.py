@@ -9,7 +9,7 @@ import json
 import re
 import subprocess
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 DEFAULT_OWNER = "hapax-systems"
@@ -48,6 +48,18 @@ WORKFLOW_USES_RE = re.compile(r"^\s*-\s*uses:\s*[\"']?(?P<value>[^\s\"']+)", re.
 WORKFLOW_CONTAINER_IMAGE_RE = re.compile(r"^\s*image:\s*[\"']?(?P<value>[^\s\"']+)", re.MULTILINE)
 FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 IMAGE_DIGEST_RE = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
+
+# A workflow that dies at startup files no check-run, so an `all-green` aggregate
+# never observes it and the outage is silent. `Security Extras` was 100%
+# startup_failure for 44 days that way, which also disabled actionlint — the only
+# gate on workflow-file edits. Three consecutive head-of-list startup failures is
+# past any plausible transient, so the audit calls the workflow dead.
+STARTUP_FAILURE_STREAK_LIMIT = 3
+STARTUP_FAILURE = "startup_failure"
+# Run-history sample size. Three pages covers several full CI cycles for a repo
+# that fires every workflow per push, which is what the streak check needs.
+RUN_SAMPLE_PAGES = 3
+RUN_SAMPLE_PAGE_SIZE = 100
 
 
 @dataclass(frozen=True)
@@ -295,6 +307,113 @@ def unpinned_container_images(workflow: str) -> list[str]:
     ]
 
 
+def unpinned_docker_uses(workflow: str) -> list[str]:
+    """`uses: docker://image:tag` refs, which ``sha_pinning_required`` rejects.
+
+    ``unpinned_action_uses`` skips every ``docker://`` ref, so a tag-referenced
+    Docker action passed this audit while GitHub refused to start the run. That
+    is the blindness that let `Security Extras` stay dead for 44 days.
+    """
+    unpinned: list[str] = []
+    for match in WORKFLOW_USES_RE.finditer(workflow):
+        value = match.group("value")
+        if not value.startswith("docker://"):
+            continue
+        if not IMAGE_DIGEST_RE.fullmatch(value):
+            unpinned.append(value)
+    return unpinned
+
+
+def startup_failure_streak(conclusions: Sequence[str]) -> int:
+    """Length of the leading run of ``startup_failure`` conclusions.
+
+    Runs arrive newest-first, so only a streak at the head means the workflow is
+    dead *now* — a workflow that failed at startup last month and has since
+    recovered must not be reported.
+    """
+    streak = 0
+    for conclusion in conclusions:
+        if conclusion != STARTUP_FAILURE:
+            break
+        streak += 1
+    return streak
+
+
+def active_workflows(repo: str) -> list[dict[str, object]]:
+    data = gh_json("api", f"repos/{repo}/actions/workflows?per_page=100")
+    if not isinstance(data, dict) or not isinstance(data.get("workflows"), list):
+        raise RuntimeError(
+            f"could not list workflows for {repo}. "
+            "Next: check `gh auth status`, confirm the token can read Actions on "
+            f"{repo}, check `gh api rate_limit`, then re-run the audit."
+        )
+    return [
+        item
+        for item in data["workflows"]
+        if isinstance(item, dict) and item.get("state") == "active"
+    ]
+
+
+def recent_run_conclusions(repo: str) -> dict[int, list[str]]:
+    """Map workflow id -> recent completed run conclusions, newest first.
+
+    Deliberately one paged sweep of the repo-wide runs endpoint rather than a
+    query per workflow: this repo has 38 active workflows, and an audit that
+    burned 38 API calls per repo would itself become a rate-limit hazard. The
+    cost is that a workflow which runs too rarely to appear in the sample is not
+    judged — the same "not enough runs to earn the verdict" case handled below.
+    """
+    conclusions: dict[int, list[str]] = {}
+    for page in range(1, RUN_SAMPLE_PAGES + 1):
+        data = gh_json(
+            "api",
+            f"repos/{repo}/actions/runs?status=completed&per_page={RUN_SAMPLE_PAGE_SIZE}"
+            f"&page={page}",
+        )
+        if not isinstance(data, dict) or not isinstance(data.get("workflow_runs"), list):
+            raise RuntimeError(
+                f"could not list runs for {repo} (page {page}). "
+                "Next: check `gh auth status`, confirm the token can read Actions on "
+                f"{repo}, check `gh api rate_limit`, then re-run the audit."
+            )
+        runs = data["workflow_runs"]
+        for run in runs:
+            if not isinstance(run, dict):
+                continue
+            workflow_id = run.get("workflow_id")
+            if not isinstance(workflow_id, int):
+                continue
+            bucket = conclusions.setdefault(workflow_id, [])
+            if len(bucket) < STARTUP_FAILURE_STREAK_LIMIT:
+                bucket.append(str(run.get("conclusion") or ""))
+        if len(runs) < RUN_SAMPLE_PAGE_SIZE:
+            break
+    return conclusions
+
+
+def audit_workflow_health(repo: str) -> list[Finding]:
+    """Flag active workflows whose recent runs are an unbroken startup_failure streak."""
+    findings: list[Finding] = []
+    by_workflow = recent_run_conclusions(repo)
+    for workflow in active_workflows(repo):
+        workflow_id = workflow.get("id")
+        conclusions = by_workflow.get(workflow_id, []) if isinstance(workflow_id, int) else []
+        # A workflow with fewer runs than the limit has not yet earned the verdict.
+        if len(conclusions) < STARTUP_FAILURE_STREAK_LIMIT:
+            continue
+        streak = startup_failure_streak(conclusions)
+        if streak >= STARTUP_FAILURE_STREAK_LIMIT:
+            path = workflow.get("path") or workflow.get("name")
+            findings.append(
+                Finding(
+                    repo,
+                    f"{path} is active but dead: {streak} consecutive startup_failure runs "
+                    "(files no check-run, so all-green cannot see it)",
+                )
+            )
+    return findings
+
+
 def audit_repo(repo: str) -> list[Finding]:
     owner = repo.split("/", 1)[0]
     findings: list[Finding] = []
@@ -337,6 +456,13 @@ def audit_repo(repo: str) -> list[Finding]:
                 findings.append(Finding(repo, f"{path} has unpinned action ref {value}"))
             for value in unpinned_container_images(workflow):
                 findings.append(Finding(repo, f"{path} has unpinned container image {value}"))
+            for value in unpinned_docker_uses(workflow):
+                findings.append(Finding(repo, f"{path} has unpinned docker action ref {value}"))
+    except RuntimeError as exc:
+        findings.append(Finding(repo, str(exc)))
+
+    try:
+        findings.extend(audit_workflow_health(repo))
     except RuntimeError as exc:
         findings.append(Finding(repo, str(exc)))
 

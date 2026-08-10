@@ -18,6 +18,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from shared.jsonl_tail import read_tail_lines
+
 EFFECT_READ_ONLY = "read_only_evidence"
 EFFECT_LOCAL = "local_mutation"
 EFFECT_EXTERNAL = "external_mutation"
@@ -52,6 +54,18 @@ DEFAULT_RECEIPT_DIR = Path.home() / ".cache" / "hapax" / "platform-capability-re
 RECEIPT_DIR_ENV = "HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR"
 ROUTE_DECISION_LEDGER_ENV = "HAPAX_ROUTE_DECISION_LEDGER"
 ROUTE_DECISION_MAX_AGE_SECONDS = 24 * 60 * 60
+# This lookup sits in front of every side-effecting MCP call, so it reads a
+# bounded tail of the append-only ledger instead of the whole file. Only rows
+# newer than ROUTE_DECISION_MAX_AGE_SECONDS can satisfy the gate anyway, and the
+# window is orders of magnitude larger than a day of real dispatch volume.
+#
+# Consequence worth stating: a malformed row older than the window is no longer
+# detected. Previously one corrupt byte anywhere in a multi-gigabyte ledger
+# refused every MCP mutation for every task, with no in-band way to clear it.
+# Corruption inside the window — the only part that can still authorize
+# anything — still fails closed exactly as before.
+ROUTE_DECISION_TAIL_LINES = 20_000
+ROUTE_DECISION_TAIL_MAX_BYTES = 8 * 1024 * 1024
 
 _SERVICE_ALIASES = {
     "codex_apps": "codex_apps",
@@ -329,7 +343,11 @@ def _latest_route_decision(
     latest: dict[str, Any] | None = None
     latest_at = datetime.fromtimestamp(0, UTC)
     try:
-        lines = ledger_path.read_text(encoding="utf-8").splitlines()
+        lines = read_tail_lines(
+            ledger_path,
+            max_lines=ROUTE_DECISION_TAIL_LINES,
+            max_bytes=ROUTE_DECISION_TAIL_MAX_BYTES,
+        )
     except OSError:
         return None
     for line_number, line in enumerate(lines, start=1):

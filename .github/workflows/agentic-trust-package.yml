@@ -45,7 +45,8 @@ jobs:
         run: uv run pytest -q
       - name: Build reproducible wheel and source distribution twice
         run: |
-          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
           uv build --offline --sdist --wheel --out-dir dist-a
           uv build --offline --sdist --wheel --out-dir dist-b
           cmp dist-a/hapax_agentic_trust-0.1.0-py3-none-any.whl \
