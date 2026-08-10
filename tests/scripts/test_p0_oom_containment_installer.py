@@ -93,6 +93,8 @@ def _copy_oom_package(dest_root: Path) -> None:
 @pytest.fixture(autouse=True)
 def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HAPAX_OOM_ENFORCE_TEST_MODE", "1")
+    monkeypatch.setenv("HAPAX_OOM_POLICY_MEMTOTAL_KIB", "131007744")
+    monkeypatch.setenv("HAPAX_OOM_POLICY_HOSTNAME", "hapax-podium")
     monkeypatch.setenv("HAPAX_OOM_TARGET_USER", "hapax")
     monkeypatch.setenv("HAPAX_OOM_TARGET_UID", "1000")
     monkeypatch.setenv("HAPAX_OOM_TARGET_GID", "1000")
@@ -106,6 +108,14 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv(
         "HAPAX_OOM_POLICY_AUDIT_DEST", str(tmp_path / "sbin" / "hapax-oom-policy-audit")
     )
+    monkeypatch.setenv(
+        "HAPAX_OOM_ENFORCER_DEST", str(tmp_path / "sbin" / "hapax-oom-score-enforce")
+    )
+    monkeypatch.setenv(
+        "HAPAX_ROOT_FAILURE_INTAKE_DEST",
+        str(tmp_path / "sbin" / "hapax-root-failure-intake"),
+    )
+    monkeypatch.setenv("HAPAX_OOM_EARLYOOM_DEST", str(tmp_path / "earlyoom"))
     monkeypatch.setenv(
         "HAPAX_ROOT_REQUIRED_AUDIT_DEST",
         str(tmp_path / "sbin" / "hapax-root-required-deploy-audit"),
@@ -125,6 +135,54 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     fake_visudo.chmod(0o755)
     monkeypatch.setenv("HAPAX_OOM_VISUDO", str(fake_visudo))
     monkeypatch.setenv("HAPAX_OOM_SYSTEMD_USER_DIR", str(tmp_path / "systemd-user-default"))
+    monkeypatch.setenv("HAPAX_OOM_SYSTEMD_SYSTEM_DIR", str(tmp_path / "systemd-system-default"))
+    monkeypatch.setenv(
+        "HAPAX_OOM_ZRAM_POLICY_DEST",
+        str(tmp_path / "zram-generator.conf"),
+    )
+    monkeypatch.setenv(
+        "HAPAX_OOM_LEGACY_ZRAM_POLICY_DEST",
+        str(tmp_path / "zram-generator.conf.d" / "90-hapax-host-policy.conf"),
+    )
+    zram_dropins = tmp_path / "zram-generator.conf.d"
+    zram_dropins.mkdir()
+    monkeypatch.setenv("HAPAX_OOM_ZRAM_DROPIN_DIRS", str(zram_dropins))
+    monkeypatch.setenv(
+        "HAPAX_OOM_PROFILE_TABLE_DEST", str(tmp_path / "share" / "oom-host-profiles.tsv")
+    )
+    zram_disksize = tmp_path / "sys" / "block" / "zram0" / "disksize"
+    zram_disksize.parent.mkdir(parents=True)
+    zram_disksize.write_text(f"{32 * 1024**3}\n", encoding="utf-8")
+    monkeypatch.setenv("HAPAX_OOM_ZRAM_DISKSIZE_PATH", str(zram_disksize))
+    docker_calls = tmp_path / "docker-calls"
+    fake_docker = tmp_path / "docker"
+    fake_docker.write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> {docker_calls}
+case "$1" in
+  ps)
+    printf '%s\n' hapax-local-judge hapax-github-mcp-hapax-123 unrelated-container
+    ;;
+  update)
+    exit 0
+    ;;
+  inspect)
+    name="${{@: -1}}"
+    case "$name" in
+      hapax-local-judge) printf '/%s|%s|%s\n' "$name" {4 * 1024**3} {6 * 1024**3} ;;
+      hapax-github-mcp-hapax-123) printf '/%s|%s|%s\n' "$name" {512 * 1024**2} {768 * 1024**2} ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  *) exit 1 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    monkeypatch.setenv("HAPAX_OOM_DOCKER", str(fake_docker))
+    monkeypatch.setenv("HAPAX_TEST_DOCKER_CALLS", str(docker_calls))
     monkeypatch.setenv("HAPAX_ROOT_REQUIRED_GIT_REPO", str(REPO_ROOT))
 
 
@@ -240,11 +298,13 @@ def _systemctl_user_unit_cases(
     return "\n".join(cases)
 
 
-def _systemctl_app_slice_cases() -> str:
+def _systemctl_app_slice_cases(host_profile: str = "podium") -> str:
+    app_high = 46 * 1024**3 if host_profile == "appendix" else 72 * 1024**3
+    app_max = 54 * 1024**3 if host_profile == "appendix" else 88 * 1024**3
     return "\n".join(
         [
-            '  *"--user show app.slice -p MemoryHigh --value"*) printf "77309411328\\n" ;;',
-            '  *"--user show app.slice -p MemoryMax --value"*) printf "94489280512\\n" ;;',
+            f'  *"--user show app.slice -p MemoryHigh --value"*) printf "{app_high}\\n" ;;',
+            f'  *"--user show app.slice -p MemoryMax --value"*) printf "{app_max}\\n" ;;',
             '  *"--user show app.slice -p MemorySwapMax --value"*) printf "8589934592\\n" ;;',
             '  *"--user show app.slice -p MemoryLow --value"*) printf "17179869184\\n" ;;',
             '  *"--user show app.slice -p MemoryMin --value"*) printf "8589934592\\n" ;;',
@@ -273,7 +333,10 @@ def _systemctl_system_memory_cases(
     recovery_unit_pids: dict[str, int] | None = None,
     *,
     user_manager_score: int = 100,
+    host_profile: str = "podium",
 ) -> str:
+    uid_high = 48 * 1024**3 if host_profile == "appendix" else 80 * 1024**3
+    uid_max = 56 * 1024**3 if host_profile == "appendix" else 96 * 1024**3
     cases = [
         '  *"show hapax-oom-score-enforce.service -p TimeoutStartUSec --value"*) printf "25s\\n" ;;',
         '  *"show hapax-oom-score-enforce.service -p FragmentPath --value"*) printf "%s\\n" "${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}/hapax-oom-score-enforce.service" ;;',
@@ -302,13 +365,13 @@ def _systemctl_system_memory_cases(
         '  *"show user.slice -p MemorySwapMax --value"*) printf "infinity\\n" ;;',
         '  *"show user.slice -p MemoryLow --value"*) printf "21474836480\\n" ;;',
         '  *"show user.slice -p MemoryMin --value"*) printf "10737418240\\n" ;;',
-        '  *"show user-1000.slice -p MemoryHigh --value"*) printf "85899345920\\n" ;;',
-        '  *"show user-1000.slice -p MemoryMax --value"*) printf "103079215104\\n" ;;',
+        f'  *"show user-1000.slice -p MemoryHigh --value"*) printf "{uid_high}\\n" ;;',
+        f'  *"show user-1000.slice -p MemoryMax --value"*) printf "{uid_max}\\n" ;;',
         '  *"show user-1000.slice -p MemorySwapMax --value"*) printf "8589934592\\n" ;;',
         '  *"show user-1000.slice -p MemoryLow --value"*) printf "21474836480\\n" ;;',
         '  *"show user-1000.slice -p MemoryMin --value"*) printf "10737418240\\n" ;;',
-        '  *"show user@1000.service -p MemoryHigh --value"*) printf "85899345920\\n" ;;',
-        '  *"show user@1000.service -p MemoryMax --value"*) printf "103079215104\\n" ;;',
+        f'  *"show user@1000.service -p MemoryHigh --value"*) printf "{uid_high}\\n" ;;',
+        f'  *"show user@1000.service -p MemoryMax --value"*) printf "{uid_max}\\n" ;;',
         '  *"show user@1000.service -p MemorySwapMax --value"*) printf "8589934592\\n" ;;',
         '  *"show user@1000.service -p MemoryLow --value"*) printf "21474836480\\n" ;;',
         '  *"show user@1000.service -p MemoryMin --value"*) printf "10737418240\\n" ;;',
@@ -344,6 +407,21 @@ def test_p0_oom_containment_source_check_passes() -> None:
     assert "systemd-timesyn" in earlyoom
     assert "hapax-imaginati" in earlyoom
     assert "studio-composit" not in earlyoom_args
+
+
+def test_p0_oom_containment_source_check_passes_for_appendix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HAPAX_OOM_POLICY_HOSTNAME", "hapax-appendix")
+    monkeypatch.setenv("HAPAX_OOM_POLICY_MEMTOTAL_KIB", "63310228")
+    result = subprocess.run(
+        [str(INSTALLER), "--check"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=os.environ.copy(),
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_oom_enforcer_service_bounds_each_timer_activation() -> None:
@@ -389,6 +467,32 @@ def test_source_check_rejects_production_sudoers_identity_override(
     assert result.returncode == 1
     assert "fixed to hapax/UID 1000" in result.stderr
     assert "next action:" in result.stderr
+
+
+def test_production_destinations_reject_host_policy_test_overrides(tmp_path: Path) -> None:
+    calls = tmp_path / "systemctl-calls"
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {calls}\nexit 0\n", encoding="utf-8"
+    )
+    fake_systemctl.chmod(0o755)
+    env = {
+        **os.environ,
+        "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": "/etc/systemd/system",
+        "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+        "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": REPO_HEAD,
+        "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
+    }
+    result = subprocess.run(
+        [str(INSTALLER), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode == 1
+    assert "refusing test-mode host-policy overrides" in result.stderr
+    assert not calls.exists()
 
 
 def test_whole_script_root_mode_refuses_user_owned_lock_symlink(tmp_path: Path) -> None:
@@ -487,8 +591,20 @@ def test_installer_rejects_forged_inherited_lock_descriptor_before_mutation(
     assert not live.exists()
 
 
+@pytest.mark.parametrize(
+    ("docker_mode", "host_profile", "override_mode"),
+    [
+        ("success", "podium", "none"),
+        ("success", "appendix", "none"),
+        ("success", "podium", "legacy"),
+        ("success", "podium", "unowned-later"),
+        ("disappear", "podium", "none"),
+        ("update-failure", "podium", "none"),
+        ("post-update-mismatch", "podium", "none"),
+    ],
+)
 def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
-    tmp_path: Path,
+    tmp_path: Path, docker_mode: str, host_profile: str, override_mode: str
 ) -> None:
     system_dir = tmp_path / "systemd-system"
     target_home = tmp_path / "target-home"
@@ -511,6 +627,21 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     stale_min = user_control_dir / "app.slice.d" / "50-MemoryMin.conf"
     stale_low.write_text("[Slice]\nMemoryLow=64G\n", encoding="utf-8")
     stale_min.write_text("[Slice]\nMemoryMin=32G\n", encoding="utf-8")
+    if override_mode == "legacy":
+        for path in (
+            system_dir / "user-1000.slice.d" / "zz-hapax-host-memory.conf",
+            system_dir / "user@1000.service.d" / "zz-hapax-host-memory.conf",
+            user_dir / "app.slice.d" / "zz-hapax-host-memory.conf",
+        ):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("[Slice]\nMemoryMax=96G\n", encoding="utf-8")
+        legacy_zram = Path(os.environ["HAPAX_OOM_LEGACY_ZRAM_POLICY_DEST"])
+        legacy_zram.parent.mkdir(parents=True, exist_ok=True)
+        legacy_zram.write_text("[zram0]\nzram-size = 32768\n", encoding="utf-8")
+    elif override_mode == "unowned-later":
+        later = system_dir / "user-1000.slice.d" / "zz-unowned-memory.conf"
+        later.parent.mkdir(parents=True, exist_ok=True)
+        later.write_text("[Slice]\nMemoryMax=96G\n", encoding="utf-8")
     legacy_audio_overrides = {
         "pipewire.service.d/override.conf": "[Service]\nOOMScoreAdjust=-900\nLimitNOFILE=8192\n",
         "pipewire-pulse.service.d/override.conf": "[Service]\nOOMScoreAdjust=-900\n",
@@ -548,9 +679,9 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         f'if [[ "$*" == "--user enable --now hapax-root-required-deploy-audit.timer" ]]; then test -x {tmp_path / "sbin" / "hapax-root-required-deploy-audit"!s} && test -f {user_dir / "hapax-root-required-deploy-audit.timer"!s} || exit 43; fi\n'
         'case "$*" in\n'
         '  *"show user@1000.service -p MainPID --value"*) printf "900\\n" ;;\n'
-        f"{_systemctl_system_memory_cases(RECOVERY_SYSTEM_UNIT_PIDS)}\n"
+        f"{_systemctl_system_memory_cases(RECOVERY_SYSTEM_UNIT_PIDS, host_profile=host_profile)}\n"
         f"{_systemctl_user_unit_cases()}\n"
-        f"{_systemctl_app_slice_cases()}\n"
+        f"{_systemctl_app_slice_cases(host_profile)}\n"
         "esac\n"
         "exit 0\n",
         encoding="utf-8",
@@ -567,6 +698,47 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         encoding="utf-8",
     )
     fake_runuser.chmod(0o755)
+
+    zram_size = 16 * 1024**3 if host_profile == "appendix" else 32 * 1024**3
+    Path(os.environ["HAPAX_OOM_ZRAM_DISKSIZE_PATH"]).write_text(
+        f"{zram_size}\n", encoding="utf-8"
+    )
+
+    if docker_mode != "success":
+        fake_docker = Path(os.environ["HAPAX_OOM_DOCKER"])
+        docker_calls = Path(os.environ["HAPAX_TEST_DOCKER_CALLS"])
+        mcp_memory = 0 if docker_mode == "post-update-mismatch" else 512 * 1024**2
+        update_action = (
+            'if [ "${@: -1}" = "hapax-github-mcp-hapax-123" ]; then exit 1; fi\n'
+            if docker_mode in {"disappear", "update-failure"}
+            else "exit 0\n"
+        )
+        mcp_inspect = (
+            "exit 1"
+            if docker_mode == "disappear"
+            else f"printf '/%s|%s|%s\\n' \"$name\" {mcp_memory} {768 * 1024**2}"
+        )
+        fake_docker.write_text(
+            f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> {docker_calls}
+case "$1" in
+  ps) printf '%s\n' hapax-local-judge hapax-github-mcp-hapax-123 ;;
+  update) {update_action} ;;
+  inspect)
+    name="${{@: -1}}"
+    case "$name" in
+      hapax-local-judge) printf '/%s|%s|%s\n' "$name" {4 * 1024**3} {6 * 1024**3} ;;
+      hapax-github-mcp-hapax-123) {mcp_inspect} ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  *) exit 1 ;;
+esac
+""",
+            encoding="utf-8",
+        )
+        fake_docker.chmod(0o755)
 
     result = subprocess.run(
         [str(INSTALLER), "--install", "--verify-live"],
@@ -593,8 +765,25 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
             "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": REPO_HEAD,
             "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
             "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source),
+            "HAPAX_OOM_POLICY_HOSTNAME": (
+                "hapax-appendix" if host_profile == "appendix" else "hapax-podium"
+            ),
+            "HAPAX_OOM_POLICY_MEMTOTAL_KIB": (
+                "63310228" if host_profile == "appendix" else "131007744"
+            ),
         },
     )
+
+    if docker_mode in {"update-failure", "post-update-mismatch"} or override_mode == "unowned-later":
+        assert result.returncode == 1
+        assert not (
+            tmp_path / "root-state" / "installed-receipts" / "oom-containment.sha"
+        ).exists()
+        if override_mode == "unowned-later":
+            assert "unowned later OOM memory drop-in" in result.stderr
+        else:
+            assert "Docker" in result.stderr
+        return
 
     assert result.returncode == 0, result.stderr
     assert sibling_dir.exists()
@@ -609,10 +798,13 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         encoding="utf-8"
     )
     assert "OOMScoreAdjust=100" in user_manager_dropin
-    assert "MemoryMax=96G" in user_manager_dropin
+    assert f"MemoryMax={'56G' if host_profile == 'appendix' else '96G'}" in user_manager_dropin
     app_dropin = user_dir / "app.slice.d" / "oom-containment.conf"
     assert app_dropin.is_file()
     assert not app_dropin.is_symlink()
+    assert f"MemoryMax={'54G' if host_profile == 'appendix' else '88G'}" in app_dropin.read_text(
+        encoding="utf-8"
+    )
     assert "MemorySwapMax=8G" in app_dropin.read_text(encoding="utf-8")
     assert "MemoryLow=16G" in app_dropin.read_text(encoding="utf-8")
     session_dropin = user_dir / "session.slice.d" / "oom-containment.conf"
@@ -621,6 +813,9 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert "MemoryLow=2G" in session_dropin.read_text(encoding="utf-8")
     assert "MemoryMin=1G" in session_dropin.read_text(encoding="utf-8")
     assert (system_dir / "user-1000.slice.d" / "oom-containment.conf").is_file()
+    assert f"MemoryMax={'56G' if host_profile == 'appendix' else '96G'}" in (
+        system_dir / "user-1000.slice.d" / "oom-containment.conf"
+    ).read_text(encoding="utf-8")
     assert "MemoryMin=10G" in (system_dir / "user.slice.d" / "oom-containment.conf").read_text(
         encoding="utf-8"
     )
@@ -644,6 +839,18 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert root_failure_dest.is_file()
     assert (tmp_path / "sbin" / "hapax-oom-policy-audit").is_file()
     assert (tmp_path / "sbin" / "hapax-root-required-deploy-audit").is_file()
+    assert Path(os.environ["HAPAX_OOM_PROFILE_TABLE_DEST"]).read_bytes() == (
+        REPO_ROOT / "config/root-required/oom-host-profiles.tsv"
+    ).read_bytes()
+    assert Path(os.environ["HAPAX_OOM_ZRAM_POLICY_DEST"]).read_bytes() == (
+        REPO_ROOT
+        / f"config/root-required/oom-host-policy/{host_profile}/zram-generator.conf"
+    ).read_bytes()
+    assert not (
+        system_dir / "user-1000.slice.d" / "zz-hapax-host-memory.conf"
+    ).exists()
+    assert not (user_dir / "app.slice.d" / "zz-hapax-host-memory.conf").exists()
+    assert not Path(os.environ["HAPAX_OOM_LEGACY_ZRAM_POLICY_DEST"]).exists()
     for unit in (
         "hapax-oom-policy-audit.service",
         "hapax-oom-policy-audit.timer",
@@ -691,6 +898,18 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     )
     for unit in stale_user_system_units:
         assert f"--user disable --now {unit}" in user_calls
+    docker_calls = Path(os.environ["HAPAX_TEST_DOCKER_CALLS"]).read_text(encoding="utf-8")
+    assert "update --memory 4G --memory-swap 6G hapax-local-judge" in docker_calls
+    assert (
+        "update --memory 512M --memory-swap 768M hapax-github-mcp-hapax-123"
+        in docker_calls
+    )
+    assert "update --memory" in docker_calls
+    assert "unrelated-container" not in "\n".join(
+        line for line in docker_calls.splitlines() if line.startswith("update ")
+    )
+    if docker_mode == "disappear":
+        assert "disappeared during limit convergence" in result.stdout
 
 
 def test_unversioned_oom_install_source_fails_before_live_mutation(tmp_path: Path) -> None:

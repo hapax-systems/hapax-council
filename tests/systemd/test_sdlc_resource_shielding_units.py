@@ -412,3 +412,9 @@ def test_p0_oom_containment_has_dedicated_installer() -> None:
     assert "verify_system_unit_runtime_memory user-1000.slice" in body
     assert "verify_app_slice_runtime" in body
     assert "verify_session_slice_runtime" in body
+
+
+def test_local_judge_container_has_a_finite_memory_cap() -> None:
+    text = (UNITS_DIR / "hapax-local-judge.service").read_text()
+    assert "--memory 4g --memory-swap 6g" in text
+    assert "--oom-kill-disable" not in text

@@ -19,6 +19,7 @@ Environment=JUDGE_GPU_UUID=GPU-347222d9-00af-5a94-a365-c57c09dfddcd
 Environment=JUDGE_MODEL=/models/CompassVerifier-7B.Q5_K_M.gguf
 ExecStartPre=-/usr/bin/docker rm -f hapax-local-judge
 ExecStart=/usr/bin/docker run --rm --name hapax-local-judge \
+    --memory 4g --memory-swap 6g \
     --gpus device=${JUDGE_GPU_UUID} \
     -v %h/models/compassverifier-7b:/models:ro \
     -p 5001:5001 \

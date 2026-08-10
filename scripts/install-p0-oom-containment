@@ -35,6 +35,12 @@ OOM_SUDOERS_OWNER_GID="${HAPAX_OOM_SUDOERS_OWNER_GID:-0}"
 ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapax-root-failure-intake}"
 OOM_POLICY_AUDIT_DEST="${HAPAX_OOM_POLICY_AUDIT_DEST:-/usr/local/sbin/hapax-oom-policy-audit}"
 ROOT_REQUIRED_AUDIT_DEST="${HAPAX_ROOT_REQUIRED_AUDIT_DEST:-/usr/local/sbin/hapax-root-required-deploy-audit}"
+OOM_PROFILE_TABLE_DEST="${HAPAX_OOM_PROFILE_TABLE_DEST:-/usr/local/share/hapax/root-required/oom-host-profiles.tsv}"
+ZRAM_POLICY_DEST="${HAPAX_OOM_ZRAM_POLICY_DEST:-/etc/systemd/zram-generator.conf}"
+LEGACY_ZRAM_POLICY_DEST="${HAPAX_OOM_LEGACY_ZRAM_POLICY_DEST:-/etc/systemd/zram-generator.conf.d/90-hapax-host-policy.conf}"
+ZRAM_DROPIN_DIRS="${HAPAX_OOM_ZRAM_DROPIN_DIRS:-/etc/systemd/zram-generator.conf.d:/run/systemd/zram-generator.conf.d:/usr/local/lib/systemd/zram-generator.conf.d:/usr/lib/systemd/zram-generator.conf.d}"
+ZRAM_DISKSIZE_PATH="${HAPAX_OOM_ZRAM_DISKSIZE_PATH:-/sys/block/zram0/disksize}"
+DOCKER="${HAPAX_OOM_DOCKER:-docker}"
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
 SYSTEMD_ANALYZE="${HAPAX_OOM_SYSTEMD_ANALYZE:-systemd-analyze}"
 SUDO="${HAPAX_OOM_INSTALL_SUDO-sudo}"
@@ -73,12 +79,16 @@ INSTALL=0
 CHECK=0
 VERIFY_LIVE=0
 APPLY_RUNTIME=1
+MCP_DOCKER_MEMORY="512M"
+MCP_DOCKER_MEMORY_SWAP="768M"
+LOCAL_JUDGE_DOCKER_MEMORY="4G"
+LOCAL_JUDGE_DOCKER_MEMORY_SWAP="6G"
 
 usage() {
     cat <<'USAGE'
 usage: scripts/install-p0-oom-containment [--source DIR] [--check] [--install] [--verify-live] [--no-runtime]
 
-Installs the P0 podium OOM containment package:
+Installs the P0 host-profiled OOM containment package:
   systemd/system/user@1000.service.d/oom.conf       -> /etc/systemd/system/user@1000.service.d/oom.conf
   systemd/system/system.slice.d/oom-containment.conf -> /etc/systemd/system/system.slice.d/oom-containment.conf
   systemd/system/*.service.d/oom-protect.conf       -> /etc/systemd/system/*.service.d/oom-protect.conf
@@ -91,6 +101,8 @@ Installs the P0 podium OOM containment package:
   scripts/hapax-root-failure-intake                  -> /usr/local/sbin/hapax-root-failure-intake
   scripts/hapax-oom-policy-audit                     -> /usr/local/sbin/hapax-oom-policy-audit
   scripts/hapax-root-required-deploy-audit            -> /usr/local/sbin/hapax-root-required-deploy-audit
+  config/root-required/oom-host-profiles.tsv          -> /usr/local/share/hapax/root-required/
+  selected host zram policy                           -> /etc/systemd/zram-generator.conf
   systemd/units/hapax-{oom-policy,root-required-deploy}-audit.{service,timer}
                                                      -> ~/.config/systemd/user/
   systemd/units/*.service.d/oom-protect.conf        -> ~/.config/systemd/user/*.service.d/oom-protect.conf
@@ -587,8 +599,18 @@ root_failure_intake_source="scripts/hapax-root-failure-intake"
 oom_policy_audit_source="scripts/hapax-oom-policy-audit"
 root_required_audit_source="scripts/hapax-root-required-deploy-audit"
 package_manifest_source="config/root-required/oom-containment.files"
+host_profile_table_source="config/root-required/oom-host-profiles.tsv"
+host_profile_sources=(
+    config/root-required/oom-host-policy/appendix/app.slice.conf
+    config/root-required/oom-host-policy/appendix/user-1000.slice.conf
+    config/root-required/oom-host-policy/appendix/user@1000.service.conf
+    config/root-required/oom-host-policy/appendix/zram-generator.conf
+    config/root-required/oom-host-policy/podium/zram-generator.conf
+)
 package_files=(
     "$package_manifest_source"
+    "$host_profile_table_source"
+    "${host_profile_sources[@]}"
     scripts/install-p0-oom-containment
     "$oom_sudoers_source"
     "${system_dropins[@]}"
@@ -655,8 +677,19 @@ host_optional_user_units=(
     hapax-imagination.service
 )
 
+HOST_POLICY_LOADED=0
+HOST_HOSTNAME=""
+HOST_PROFILE=""
+HOST_PHYSICAL_BYTES=""
+HOST_APP_MEMORY_HIGH=""
+HOST_APP_MEMORY_MAX=""
+HOST_UID_MEMORY_HIGH=""
+HOST_UID_MEMORY_MAX=""
+HOST_ZRAM_SIZE_MIB=""
+
 is_host_optional_user_unit() {
     local candidate="$1" optional
+    [ "$HOST_PROFILE" = "appendix" ] || return 1
     for optional in "${host_optional_user_units[@]}"; do
         [ "$candidate" = "$optional" ] && return 0
     done
@@ -765,6 +798,64 @@ src_path() {
     printf '%s/%s\n' "$SOURCE" "$1"
 }
 
+load_host_policy() {
+    local output key value path production_destination=0
+    [ "$HOST_POLICY_LOADED" -eq 0 ] || return 0
+    for path in \
+        "$SYSTEMD_SYSTEM_DIR" "$SYSTEMD_USER_DIR" "$EARLYOOM_DEST" \
+        "$OOM_ENFORCER_DEST" "$OOM_TRIGGER_DEST" "$OOM_SUDOERS_DEST" \
+        "$OOM_SUDOERS_REFERENCE_DEST" "$ROOT_FAILURE_INTAKE_DEST" \
+        "$OOM_POLICY_AUDIT_DEST" "$ROOT_REQUIRED_AUDIT_DEST" \
+        "$OOM_PROFILE_TABLE_DEST" "$ZRAM_POLICY_DEST"; do
+        case "$path" in
+            /etc/*|/usr/local/*|/home/hapax/*) production_destination=1 ;;
+        esac
+    done
+    if [ "$INSTALL" -eq 1 ] && [ "${HAPAX_OOM_ENFORCE_TEST_MODE:-0}" = "1" ] \
+        && [ "$production_destination" -eq 1 ]; then
+        echo "refusing test-mode host-policy overrides for production OOM destinations; next action: remove HAPAX_OOM_ENFORCE_TEST_MODE, HAPAX_OOM_POLICY_MEMTOTAL_KIB, and HAPAX_OOM_POLICY_HOSTNAME" >&2
+        return 1
+    fi
+    if ! output="$(
+        HAPAX_OOM_AUDIT_PROC_ROOT="$PROC_ROOT" \
+        HAPAX_OOM_AUDIT_TEST_MODE="${HAPAX_OOM_ENFORCE_TEST_MODE:-0}" \
+        HAPAX_OOM_AUDIT_MEMTOTAL_KIB="${HAPAX_OOM_POLICY_MEMTOTAL_KIB:-}" \
+        HAPAX_OOM_AUDIT_HOSTNAME="${HAPAX_OOM_POLICY_HOSTNAME:-}" \
+        /usr/bin/python3 "$(src_path "$oom_policy_audit_source")" --host-policy-lines
+    )"; then
+        echo "unable to derive the governed OOM host policy from physical RAM; next action: run scripts/hapax-oom-policy-audit --host-policy-lines and add a reviewed host sizing-table entry if this is a new memory class" >&2
+        return 1
+    fi
+    while IFS='=' read -r key value; do
+        case "$key" in
+            HOSTNAME) HOST_HOSTNAME="$value" ;;
+            PROFILE) HOST_PROFILE="$value" ;;
+            PHYSICAL_BYTES) HOST_PHYSICAL_BYTES="$value" ;;
+            APP_MEMORY_HIGH) HOST_APP_MEMORY_HIGH="$value" ;;
+            APP_MEMORY_MAX) HOST_APP_MEMORY_MAX="$value" ;;
+            UID_MEMORY_HIGH) HOST_UID_MEMORY_HIGH="$value" ;;
+            UID_MEMORY_MAX) HOST_UID_MEMORY_MAX="$value" ;;
+            ZRAM_SIZE_MIB) HOST_ZRAM_SIZE_MIB="$value" ;;
+            *)
+                echo "unexpected OOM host policy field: $key; next action: restore the matched installer/audit package" >&2
+                return 1
+                ;;
+        esac
+    done <<< "$output"
+    [[ "$HOST_HOSTNAME" =~ ^hapax-(appendix|podium)$ ]] \
+        && [[ "$HOST_PROFILE" =~ ^(appendix|podium)$ ]] \
+        && [[ "$HOST_PHYSICAL_BYTES" =~ ^[0-9]+$ ]] \
+        && [[ "$HOST_APP_MEMORY_HIGH" =~ ^[0-9]+G$ ]] \
+        && [[ "$HOST_APP_MEMORY_MAX" =~ ^[0-9]+G$ ]] \
+        && [[ "$HOST_UID_MEMORY_HIGH" =~ ^[0-9]+G$ ]] \
+        && [[ "$HOST_UID_MEMORY_MAX" =~ ^[0-9]+G$ ]] \
+        && [[ "$HOST_ZRAM_SIZE_MIB" =~ ^[0-9]+$ ]] || {
+        echo "incomplete or invalid OOM host policy output; next action: restore scripts/hapax-oom-policy-audit from the same package commit" >&2
+        return 1
+    }
+    HOST_POLICY_LOADED=1
+}
+
 publish_installed_source_file() {
     local source="$1" dest="$2" dest_dir temp
     dest_dir="$(dirname "$dest")"
@@ -810,14 +901,7 @@ validate_package_manifest() {
 }
 
 app_slice_value() {
-    local key="$1" file value
-    file="$(src_path "$user_dropin")"
-    value="$(awk -F= -v key="$key" '$1 == key {print $2; exit}' "$file" 2>/dev/null || true)"
-    if [ -z "$value" ]; then
-        echo "app.slice drop-in missing $key; next action: restore $user_dropin from the P0 PR" >&2
-        return 1
-    fi
-    printf '%s\n' "$value"
+    selected_source_unit_value "$user_dropin" "$1"
 }
 
 source_unit_value() {
@@ -829,6 +913,127 @@ source_unit_value() {
         return 1
     fi
     printf '%s\n' "$value"
+}
+
+selected_source_rel() {
+    local rel="$1"
+    if [ "$HOST_PROFILE" = "appendix" ]; then
+        case "$rel" in
+            systemd/units/app.slice.d/oom-containment.conf)
+                printf '%s\n' config/root-required/oom-host-policy/appendix/app.slice.conf
+                return 0
+                ;;
+            systemd/system/user-1000.slice.d/oom-containment.conf)
+                printf '%s\n' config/root-required/oom-host-policy/appendix/user-1000.slice.conf
+                return 0
+                ;;
+            systemd/system/user@1000.service.d/oom.conf)
+                printf '%s\n' config/root-required/oom-host-policy/appendix/user@1000.service.conf
+                return 0
+                ;;
+        esac
+    fi
+    printf '%s\n' "$rel"
+}
+
+selected_zram_source_rel() {
+    printf 'config/root-required/oom-host-policy/%s/zram-generator.conf\n' "$HOST_PROFILE"
+}
+
+selected_source_unit_value() {
+    local rel="$1" key="$2"
+    source_unit_value "$(selected_source_rel "$rel")" "$key"
+}
+
+system_memory_value() {
+    selected_source_unit_value "$1" "$2"
+}
+
+validate_selected_host_sources() {
+    local actual zram_source
+    [ "$(app_slice_value MemoryHigh)" = "$HOST_APP_MEMORY_HIGH" ] \
+        && [ "$(app_slice_value MemoryMax)" = "$HOST_APP_MEMORY_MAX" ] \
+        && [ "$(system_memory_value systemd/system/user-1000.slice.d/oom-containment.conf MemoryHigh)" = "$HOST_UID_MEMORY_HIGH" ] \
+        && [ "$(system_memory_value systemd/system/user-1000.slice.d/oom-containment.conf MemoryMax)" = "$HOST_UID_MEMORY_MAX" ] \
+        && [ "$(system_memory_value systemd/system/user@1000.service.d/oom.conf MemoryHigh)" = "$HOST_UID_MEMORY_HIGH" ] \
+        && [ "$(system_memory_value systemd/system/user@1000.service.d/oom.conf MemoryMax)" = "$HOST_UID_MEMORY_MAX" ] || {
+        echo "selected $HOST_PROFILE systemd sources disagree with the receipt-bound host profile table; next action: reconcile the exact profile sources and table in one commit" >&2
+        return 1
+    }
+    zram_source="$(src_path "$(selected_zram_source_rel)")"
+    actual="$(awk -F= '$1 ~ /^[[:space:]]*zram-size[[:space:]]*$/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' "$zram_source")"
+    if [ "$actual" != "$HOST_ZRAM_SIZE_MIB" ] || ! grep -Eq '^compression-algorithm[[:space:]]*=[[:space:]]*zstd$' "$zram_source"; then
+        echo "selected $HOST_PROFILE zram source disagrees with the receipt-bound host profile table; next action: reconcile the exact profile source and table in one commit" >&2
+        return 1
+    fi
+}
+
+check_later_memory_dropins() {
+    local allow_legacy="$1" spec dir canonical path base rc
+    for spec in \
+        "$SYSTEMD_SYSTEM_DIR/user-1000.slice.d|oom-containment.conf" \
+        "$SYSTEMD_SYSTEM_DIR/user@1000.service.d|oom.conf" \
+        "$SYSTEMD_USER_DIR/app.slice.d|oom-containment.conf" \
+        "$SYSTEMD_USER_CONTROL_DIR/app.slice.d|oom-containment.conf"; do
+        dir="${spec%%|*}"
+        canonical="${spec#*|}"
+        [ -d "$dir" ] || continue
+        for path in "$dir"/*.conf; do
+            [ -e "$path" ] || [ -L "$path" ] || continue
+            base="$(basename "$path")"
+            [[ "$base" > "$canonical" ]] || continue
+            if [ "$allow_legacy" -eq 1 ] && [ "$base" = "zz-hapax-host-memory.conf" ]; then
+                continue
+            fi
+            if [ -L "$path" ]; then
+                echo "unowned later OOM memory drop-in is symlinked: $path; next action: remove the override or govern it in the canonical host profile" >&2
+                return 1
+            fi
+            if grep -Eq '^[[:space:]]*(MemoryHigh|MemoryMax)=' "$path"; then
+                echo "unowned later OOM memory drop-in overrides the canonical profile: $path; next action: remove the governed-key assignment or fold it into the receipt-bound host profile" >&2
+                return 1
+            else
+                rc=$?
+                if [ "$rc" -gt 1 ]; then
+                    echo "unable to inspect later OOM memory drop-in: $path; next action: restore readable trusted drop-ins and rerun the installer" >&2
+                    return 1
+                fi
+            fi
+        done
+    done
+}
+
+check_zram_dropin_overrides() {
+    local allow_legacy="$1" dir path rc
+    while IFS= read -r dir; do
+        [ -d "$dir" ] || continue
+        for path in "$dir"/*.conf; do
+            [ -e "$path" ] || [ -L "$path" ] || continue
+            if [ "$allow_legacy" -eq 1 ] && [ "$path" = "$LEGACY_ZRAM_POLICY_DEST" ]; then
+                continue
+            fi
+            if [ -L "$path" ]; then
+                echo "unowned zram-generator drop-in is symlinked: $path; next action: remove the override or govern it in the canonical host profile" >&2
+                return 1
+            fi
+            if grep -Eq '^[[:space:]]*(zram-size|compression-algorithm)[[:space:]]*=' "$path"; then
+                echo "unowned zram-generator drop-in overrides the canonical profile: $path; next action: remove the governed-key assignment or fold it into the receipt-bound host profile" >&2
+                return 1
+            else
+                rc=$?
+                if [ "$rc" -gt 1 ]; then
+                    echo "unable to inspect zram-generator drop-in: $path; next action: restore readable trusted drop-ins and rerun the installer" >&2
+                    return 1
+                fi
+            fi
+        done
+    done < <(printf '%s\n' "${ZRAM_DROPIN_DIRS//:/$'\n'}")
+}
+
+validate_no_unauthorized_host_policy_overrides() {
+    local allow_legacy="$1"
+    check_later_memory_dropins "$allow_legacy"
+    check_zram_dropin_overrides "$allow_legacy"
 }
 
 source_unit_optional_value() {
@@ -990,6 +1195,95 @@ memory_to_bytes() {
     esac
 }
 
+docker_policy_for_container() {
+    local name="$1"
+    case "$name" in
+        hapax-local-judge)
+            printf '%s|%s\n' "$LOCAL_JUDGE_DOCKER_MEMORY" "$LOCAL_JUDGE_DOCKER_MEMORY_SWAP"
+            ;;
+        hapax-github-mcp-?*)
+            printf '%s|%s\n' "$MCP_DOCKER_MEMORY" "$MCP_DOCKER_MEMORY_SWAP"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+docker_target_names() {
+    local output name
+    output="$("$DOCKER" ps -a --format '{{.Names}}')" || return 1
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        docker_policy_for_container "$name" >/dev/null || continue
+        printf '%s\n' "$name"
+    done <<< "$output"
+}
+
+verify_docker_container_limit() {
+    local name="$1" memory="$2" memory_swap="$3" output inspected_name actual_memory actual_swap expected_memory expected_swap
+    if ! output="$("$DOCKER" inspect --format '{{.Name}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}' "$name" 2>/dev/null)"; then
+        return 2
+    fi
+    IFS='|' read -r inspected_name actual_memory actual_swap <<< "$output"
+    inspected_name="${inspected_name#/}"
+    expected_memory="$(memory_to_bytes "$memory")" || return 1
+    expected_swap="$(memory_to_bytes "$memory_swap")" || return 1
+    if [ "$inspected_name" != "$name" ] \
+        || [ "$actual_memory" != "$expected_memory" ] \
+        || [ "$actual_swap" != "$expected_swap" ]; then
+        echo "Docker memory-limit drift for $name: name=${inspected_name:-unavailable} Memory=${actual_memory:-unavailable} MemorySwap=${actual_swap:-unavailable} expected=$expected_memory/$expected_swap; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+}
+
+reconcile_docker_memory_limits() {
+    local names name policy memory memory_swap
+    if ! names="$(docker_target_names)"; then
+        echo "unable to enumerate Docker containers for OOM containment; next action: restore Docker access and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        policy="$(docker_policy_for_container "$name")"
+        IFS='|' read -r memory memory_swap <<< "$policy"
+        if ! "$DOCKER" update --memory "$memory" --memory-swap "$memory_swap" "$name" >/dev/null 2>&1; then
+            if ! "$DOCKER" inspect "$name" >/dev/null 2>&1; then
+                echo "Docker target $name disappeared during limit convergence; no container remains to cap"
+                continue
+            fi
+            echo "unable to apply Docker memory limits to $name; next action: inspect 'docker update' diagnostics and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            return 1
+        fi
+        if ! verify_docker_container_limit "$name" "$memory" "$memory_swap"; then
+            if ! "$DOCKER" inspect "$name" >/dev/null 2>&1; then
+                echo "Docker target $name disappeared during post-update verification; no container remains to cap"
+                continue
+            fi
+            return 1
+        fi
+    done <<< "$names"
+}
+
+verify_docker_memory_limits() {
+    local names name policy memory memory_swap
+    if ! names="$(docker_target_names)"; then
+        echo "unable to enumerate Docker containers for OOM containment; next action: restore Docker access and rerun scripts/install-p0-oom-containment --verify-live" >&2
+        return 1
+    fi
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        policy="$(docker_policy_for_container "$name")"
+        IFS='|' read -r memory memory_swap <<< "$policy"
+        if ! verify_docker_container_limit "$name" "$memory" "$memory_swap"; then
+            if ! "$DOCKER" inspect "$name" >/dev/null 2>&1; then
+                continue
+            fi
+            return 1
+        fi
+    done <<< "$names"
+}
+
 system_dest() {
     local rel="$1"
     case "$rel" in
@@ -1057,11 +1351,11 @@ check_source() {
         echo "sshd OOM drop-in must continue after a session OOM; next action: restore systemd/system/sshd.service.d/oom-protect.conf from the P0 PR" >&2
         return 1
     }
-    app_slice_value MemoryHigh >/dev/null
-    app_slice_value MemoryMax >/dev/null
-    app_slice_value MemorySwapMax >/dev/null
-    app_slice_value MemoryLow >/dev/null
-    app_slice_value MemoryMin >/dev/null
+    source_unit_value "$user_dropin" MemoryHigh >/dev/null
+    source_unit_value "$user_dropin" MemoryMax >/dev/null
+    source_unit_value "$user_dropin" MemorySwapMax >/dev/null
+    source_unit_value "$user_dropin" MemoryLow >/dev/null
+    source_unit_value "$user_dropin" MemoryMin >/dev/null
     source_unit_value "$session_slice_dropin" MemoryHigh >/dev/null
     source_unit_value "$session_slice_dropin" MemoryMax >/dev/null
     source_unit_value "$session_slice_dropin" MemorySwapMax >/dev/null
@@ -1328,14 +1622,16 @@ scrub_legacy_user_oom_overrides() {
 }
 
 install_live() {
-    local rel dest timer control_dropin_dir user_pid mem_high mem_max mem_swap
+    local rel source_rel dest timer control_dropin_dir user_pid mem_high mem_max mem_swap
     check_source
     preflight_root
+    validate_no_unauthorized_host_policy_overrides 1
     for rel in "${system_dropins[@]}"; do
+        source_rel="$(selected_source_rel "$rel")"
         dest="$(system_dest "$rel")"
         run_root install -d -m 0755 "$(dirname "$dest")"
-        run_root install -m 0644 "$(src_path "$rel")" "$dest"
-        echo "  '$rel' -> '$dest'"
+        run_root install -m 0644 "$(src_path "$source_rel")" "$dest"
+        echo "  '$source_rel' -> '$dest'"
     done
     for rel in "${system_units[@]}"; do
         dest="$(system_dest "$rel")"
@@ -1379,19 +1675,34 @@ install_live() {
     run_root install -d -m 0755 "$(dirname "$ROOT_REQUIRED_AUDIT_DEST")"
     run_root install -m 0755 "$(src_path "$root_required_audit_source")" "$ROOT_REQUIRED_AUDIT_DEST"
     echo "  '$root_required_audit_source' -> '$ROOT_REQUIRED_AUDIT_DEST'"
+    run_root install -d -m 0755 "$(dirname "$OOM_PROFILE_TABLE_DEST")"
+    run_root install -m 0644 "$(src_path "$host_profile_table_source")" "$OOM_PROFILE_TABLE_DEST"
+    echo "  '$host_profile_table_source' -> '$OOM_PROFILE_TABLE_DEST'"
+    source_rel="$(selected_zram_source_rel)"
+    run_root install -d -m 0755 "$(dirname "$ZRAM_POLICY_DEST")"
+    run_root install -m 0644 "$(src_path "$source_rel")" "$ZRAM_POLICY_DEST"
+    echo "  '$source_rel' -> '$ZRAM_POLICY_DEST'"
     run_root install -d -m 0755 "$(dirname "$EARLYOOM_DEST")"
     run_root install -m 0644 "$(src_path "$earlyoom_source")" "$EARLYOOM_DEST"
     echo "  '$earlyoom_source' -> '$EARLYOOM_DEST'"
 
     for rel in "${user_slice_dropins[@]}"; do
+        source_rel="$(selected_source_rel "$rel")"
         dest="$SYSTEMD_USER_DIR/${rel#systemd/units/}"
         install -d -m 0755 "$(dirname "$dest")"
         if [ -L "$dest" ]; then
             rm -f "$dest"
         fi
-        install -m 0644 "$(src_path "$rel")" "$dest"
-        echo "  '$rel' -> '$dest' (copy)"
+        install -m 0644 "$(src_path "$source_rel")" "$dest"
+        echo "  '$source_rel' -> '$dest' (copy)"
     done
+
+    run_root rm -f \
+        "$SYSTEMD_SYSTEM_DIR/user-1000.slice.d/zz-hapax-host-memory.conf" \
+        "$SYSTEMD_SYSTEM_DIR/user@1000.service.d/zz-hapax-host-memory.conf"
+    rm -f "$SYSTEMD_USER_DIR/app.slice.d/zz-hapax-host-memory.conf"
+    run_root rm -f "$LEGACY_ZRAM_POLICY_DEST"
+    validate_no_unauthorized_host_policy_overrides 0
 
     for rel in "${user_protection_dropins[@]}"; do
         dest="$SYSTEMD_USER_DIR/${rel#systemd/units/}"
@@ -1469,17 +1780,18 @@ install_live() {
             write_oom_score_or_warn "$user_pid" 100 "user@1000.service"
         fi
         apply_user_process_oom_floor
+        reconcile_docker_memory_limits
     fi
 }
 
 apply_system_runtime_memory() {
     local unit="$1" rel="$2"
     run_root "$SYSTEMCTL" set-property --runtime "$unit" \
-        "MemoryHigh=$(source_unit_value "$rel" MemoryHigh)" \
-        "MemoryMax=$(source_unit_value "$rel" MemoryMax)" \
-        "MemorySwapMax=$(source_unit_value "$rel" MemorySwapMax)" \
-        "MemoryLow=$(source_unit_value "$rel" MemoryLow)" \
-        "MemoryMin=$(source_unit_value "$rel" MemoryMin)" || {
+        "MemoryHigh=$(system_memory_value "$rel" MemoryHigh)" \
+        "MemoryMax=$(system_memory_value "$rel" MemoryMax)" \
+        "MemorySwapMax=$(system_memory_value "$rel" MemorySwapMax)" \
+        "MemoryLow=$(system_memory_value "$rel" MemoryLow)" \
+        "MemoryMin=$(system_memory_value "$rel" MemoryMin)" || {
         echo "unable to apply runtime memory policy to $unit; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     }
@@ -1570,11 +1882,42 @@ verify_root_artifact_trust() {
     fi
 }
 
+verify_selected_host_policy_files() {
+    local source_rel actual_zram expected_zram legacy
+    verify_root_pair "$(src_path "$host_profile_table_source")" "$OOM_PROFILE_TABLE_DEST"
+    verify_root_artifact_trust "$OOM_PROFILE_TABLE_DEST" 644
+    source_rel="$(selected_zram_source_rel)"
+    verify_root_pair "$(src_path "$source_rel")" "$ZRAM_POLICY_DEST"
+    verify_root_artifact_trust "$ZRAM_POLICY_DEST" 644
+    for legacy in \
+        "$SYSTEMD_SYSTEM_DIR/user-1000.slice.d/zz-hapax-host-memory.conf" \
+        "$SYSTEMD_SYSTEM_DIR/user@1000.service.d/zz-hapax-host-memory.conf" \
+        "$LEGACY_ZRAM_POLICY_DEST"; do
+        if run_root test -e "$legacy" || run_root test -L "$legacy"; then
+            echo "legacy OOM host-policy override remains authoritative: $legacy; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            return 1
+        fi
+    done
+    legacy="$SYSTEMD_USER_DIR/app.slice.d/zz-hapax-host-memory.conf"
+    if [ -e "$legacy" ] || [ -L "$legacy" ]; then
+        echo "legacy OOM host-policy override remains authoritative: $legacy; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    expected_zram=$((HOST_ZRAM_SIZE_MIB * 1024 * 1024))
+    actual_zram="$(cat "$ZRAM_DISKSIZE_PATH" 2>/dev/null || true)"
+    if [ "$actual_zram" != "$expected_zram" ]; then
+        echo "live zram size drift: actual=${actual_zram:-unavailable} expected=$expected_zram for $HOST_PROFILE; next action: apply the installed zram policy through a separately authorized reboot or safe zram recreation, then rerun --verify-live" >&2
+        return 1
+    fi
+    validate_no_unauthorized_host_policy_overrides 0
+}
+
 verify_live() {
-    local rel dest timer
+    local rel source_rel dest timer
     for rel in "${system_dropins[@]}"; do
+        source_rel="$(selected_source_rel "$rel")"
         dest="$(system_dest "$rel")"
-        verify_pair "$(src_path "$rel")" "$dest"
+        verify_pair "$(src_path "$source_rel")" "$dest"
         verify_root_artifact_trust "$dest" 644
     done
     for rel in "${system_units[@]}"; do
@@ -1614,6 +1957,7 @@ verify_live() {
     verify_root_artifact_trust "$OOM_POLICY_AUDIT_DEST" 755
     verify_pair "$(src_path "$root_required_audit_source")" "$ROOT_REQUIRED_AUDIT_DEST"
     verify_root_artifact_trust "$ROOT_REQUIRED_AUDIT_DEST" 755
+    verify_selected_host_policy_files
     verify_pair "$(src_path "$earlyoom_source")" "$EARLYOOM_DEST"
     verify_root_artifact_trust "$EARLYOOM_DEST" 644
     run_root "$SYSTEMCTL" is-enabled --quiet earlyoom.service || {
@@ -1625,12 +1969,13 @@ verify_live() {
         return 1
     }
     for rel in "${user_slice_dropins[@]}"; do
+        source_rel="$(selected_source_rel "$rel")"
         dest="$SYSTEMD_USER_DIR/${rel#systemd/units/}"
         if [ -L "$dest" ]; then
             echo "live P0 slice drop-in is a symlink: $dest; next action: run scripts/install-p0-oom-containment --install --verify-live to replace it with a copy" >&2
             return 1
         fi
-        verify_pair "$(src_path "$rel")" "$dest"
+        verify_pair "$(src_path "$source_rel")" "$dest"
     done
     for rel in "${user_protection_dropins[@]}"; do
         verify_pair "$(src_path "$rel")" "$SYSTEMD_USER_DIR/${rel#systemd/units/}"
@@ -1667,6 +2012,7 @@ verify_live() {
     refresh_protected_user_unit_snapshot
     verify_protected_user_unit_oom_scores
     verify_user_process_oom_floor
+    verify_docker_memory_limits
 }
 
 verify_user_audit_loaded_timeouts() {
@@ -1716,7 +2062,7 @@ verify_enforcer_loaded_timeout() {
 verify_system_unit_runtime_memory() {
     local unit="$1" rel="$2" key expected_raw expected_bytes actual failed=0
     for key in MemoryHigh MemoryMax MemorySwapMax MemoryLow MemoryMin; do
-        expected_raw="$(source_unit_value "$rel" "$key")"
+        expected_raw="$(system_memory_value "$rel" "$key")"
         expected_bytes="$(memory_to_bytes "$expected_raw")" || {
             echo "cannot parse $unit $key=$expected_raw from $rel; next action: fix the source drop-in and rerun scripts/install-p0-oom-containment --check" >&2
             return 1
@@ -1955,20 +2301,28 @@ verify_user_process_oom_floor() {
     [ "$failed" -eq 0 ]
 }
 
-[ "$CHECK" -eq 0 ] || check_source
-[ "$INSTALL" -eq 0 ] || refuse_whole_script_root
-[ "$INSTALL" -eq 0 ] || reexec_with_safe_root_required_lock
-[ "$INSTALL" -eq 0 ] || acquire_root_required_lock
-[ "$INSTALL" -eq 0 ] || validate_root_required_package_order
-if [ "$INSTALL" -eq 1 ] && [ "$SKIP_SUPERSEDED_INSTALL" -eq 1 ]; then
-    drain_root_required_deferral
-    echo "p0 oom containment superseded deferral drained without live mutation"
-    exit 0
+if [ "$INSTALL" -eq 1 ]; then
+    refuse_whole_script_root
+    reexec_with_safe_root_required_lock
+    acquire_root_required_lock
+    validate_root_required_package_order
+    if [ "$SKIP_SUPERSEDED_INSTALL" -eq 1 ]; then
+        drain_root_required_deferral
+        echo "p0 oom containment superseded deferral drained without live mutation"
+        exit 0
+    fi
+    validate_package_source_matches_commit
+    validate_no_unhandled_package_removals
+    validate_root_required_deferral
+    check_source
+    load_host_policy
+    validate_selected_host_sources
+    install_live
+elif [ "$CHECK" -eq 1 ] || [ "$VERIFY_LIVE" -eq 1 ]; then
+    check_source
+    load_host_policy
+    validate_selected_host_sources
 fi
-[ "$INSTALL" -eq 0 ] || validate_package_source_matches_commit
-[ "$INSTALL" -eq 0 ] || validate_no_unhandled_package_removals
-[ "$INSTALL" -eq 0 ] || validate_root_required_deferral
-[ "$INSTALL" -eq 0 ] || install_live
 [ "$VERIFY_LIVE" -eq 0 ] || verify_live
 [ "$INSTALL" -eq 0 ] || record_installed_source
 [ "$INSTALL" -eq 0 ] || record_root_required_package_receipt
