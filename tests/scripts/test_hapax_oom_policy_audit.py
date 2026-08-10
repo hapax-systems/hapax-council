@@ -55,11 +55,25 @@ def _host_policy_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     )
     unit_paths = tmp_path / "user-unit-path"
     unit_paths.mkdir()
+    system_dir = tmp_path / "systemd-system"
+    user_dir = tmp_path / "systemd-user"
+    for path in (
+        system_dir / "system.slice.d/oom-containment.conf",
+        system_dir / "user.slice.d/oom-containment.conf",
+        system_dir / "user-1000.slice.d/oom-containment.conf",
+        system_dir / "user@1000.service.d/oom.conf",
+        user_dir / "app.slice.d/oom-containment.conf",
+        user_dir / "session.slice.d/oom-containment.conf",
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("[Slice]\nMemoryHigh=infinity\n", encoding="utf-8")
     monkeypatch.setenv("HAPAX_OOM_AUDIT_TEST_MODE", "1")
     monkeypatch.setenv("HAPAX_OOM_AUDIT_MEMTOTAL_KIB", "131007744")
     monkeypatch.setenv("HAPAX_OOM_AUDIT_HOSTNAME", "hapax-podium")
     monkeypatch.setenv("HAPAX_OOM_AUDIT_SYS_ROOT", str(sys_root))
     monkeypatch.setenv("HAPAX_OOM_AUDIT_USER_UNIT_PATHS", str(unit_paths))
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_SYSTEMD_SYSTEM_DIR", str(system_dir))
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_SYSTEMD_USER_DIR", str(user_dir))
     monkeypatch.setenv("HAPAX_OOM_AUDIT_DOCKER", str(_fake_docker(tmp_path)))
 
 
@@ -198,6 +212,7 @@ def _fake_systemctl(
     wrong_recovery_unit_score: bool = False,
     inactive_recovery_unit: str | None = None,
     host_profile: str = "podium",
+    memory_dropin_state: str = "clean",
 ) -> Path:
     path = tmp_path / "systemctl"
     app_high = 49392123904 if host_profile == "appendix" else 77309411328
@@ -252,20 +267,40 @@ def _fake_systemctl(
         f"MemoryLow={'0' if session_slice_unprotected else '2147483648'}\n"
         f"MemoryMin={'0' if session_slice_unprotected else '1073741824'}\n"
     )
+    system_dir = Path(os.environ["HAPAX_OOM_AUDIT_SYSTEMD_SYSTEM_DIR"])
+    user_dir = Path(os.environ["HAPAX_OOM_AUDIT_SYSTEMD_USER_DIR"])
+    app_dropin_paths = str(user_dir / "app.slice.d/oom-containment.conf")
+    if memory_dropin_state == "unowned":
+        extra = tmp_path / "manager-only-root" / "app.slice.d" / "50-MemoryHigh.conf"
+        extra.parent.mkdir(parents=True)
+        extra.write_text("[Slice]\nMemoryHigh=77309411328\n", encoding="utf-8")
+        app_dropin_paths += f" {extra}"
+    elif memory_dropin_state == "missing-canonical":
+        app_dropin_paths = ""
+    elif memory_dropin_state == "unreadable":
+        app_dropin_paths += f" {tmp_path / 'manager-only-root/missing.conf'}"
+    app_show = (
+        "exit 72"
+        if memory_dropin_state == "query-failure"
+        else (
+            f"printf '{app_values}ControlGroup=/user.slice/user-1000.slice/"
+            f"user@1000.service/app.slice\\nDropInPaths={app_dropin_paths}\\n'"
+        )
+    )
     path.write_text(
         f"""#!/usr/bin/env bash
 set -euo pipefail
 case "$*" in
-  *"show system.slice"*) printf '{system_slice_values}' ;;
-  *"show user.slice"*) printf '{user_slice_values}ControlGroup=/user.slice\n' ;;
-  *"show user-1000.slice"*) printf '{uid_memory_values}ControlGroup=/user.slice/user-1000.slice\n' ;;
+  *"show system.slice"*) printf '{system_slice_values}DropInPaths={system_dir / "system.slice.d/oom-containment.conf"}\n' ;;
+  *"show user.slice"*) printf '{user_slice_values}ControlGroup=/user.slice\nDropInPaths={system_dir / "user.slice.d/oom-containment.conf"}\n' ;;
+  *"show user-1000.slice"*) printf '{uid_memory_values}ControlGroup=/user.slice/user-1000.slice\nDropInPaths={system_dir / "user-1000.slice.d/oom-containment.conf"}\n' ;;
   *"show user@1000.service --no-pager -p MemoryHigh"*) printf '{uid_memory_values}' ;;
   *"show user@1000.service --no-pager -p MemoryLow"*) printf '{uid_memory_values}ControlGroup=/user.slice/user-1000.slice/user@1000.service\n' ;;
-  *"show user@1000.service"*) printf 'OOMScoreAdjust={user_oom}\\nOOMPolicy={user_oom_policy}\\nDropInPaths=/etc/systemd/system/user@1000.service.d/oom.conf\\nMainPID=900\\n' ;;
+  *"show user@1000.service"*) printf 'OOMScoreAdjust={user_oom}\\nOOMPolicy={user_oom_policy}\\nDropInPaths={system_dir / "user@1000.service.d/oom.conf"}\\nMainPID=900\\n' ;;
   *"show sshd.service"*) printf 'OOMScoreAdjust={sshd_score}\\nOOMPolicy={sshd_policy}\\nMainPID=920\\n' ;;
 {_recovery_system_unit_cases(wrong_score=wrong_recovery_unit_score, inactive_unit=inactive_recovery_unit)}
-  *"show app.slice"*) printf '{app_values}ControlGroup=/user.slice/user-1000.slice/user@1000.service/app.slice\n' ;;
-  *"show session.slice"*) printf '{session_slice_values}ControlGroup=/user.slice/user-1000.slice/user@1000.service/session.slice\n' ;;
+  *"show app.slice"*) {app_show} ;;
+  *"show session.slice"*) printf '{session_slice_values}ControlGroup=/user.slice/user-1000.slice/user@1000.service/session.slice\nDropInPaths={user_dir / "session.slice.d/oom-containment.conf"}\n' ;;
 {_protected_user_unit_cases(wrong_unit_score=wrong_unit_score, wrong_unit_memory=wrong_unit_memory, wrong_unit_slice=wrong_unit_slice, wrong_audio_no_new_privileges=wrong_audio_no_new_privileges, unit_pids=protected_unit_pids, unit_cgroups=protected_unit_cgroups, unit_load_states=protected_unit_load_states)}
   *"list-units --type=scope"*) printf 'tmux-spawn-a.scope loaded active running tmux child pane\\n' ;;
   *"show tmux-spawn-a.scope"*) printf '{tmux_values}' ;;
@@ -379,6 +414,7 @@ def _run(
     zram_size_bytes: int | None = None,
     zram_priority: int = 100,
     zram_compression: str = "lzo-rle lzo lz4 lz4hc [zstd] deflate",
+    memory_dropin_state: str = "clean",
 ) -> subprocess.CompletedProcess[str]:
     if proc_root is None:
         proc_root = tmp_path / "proc"
@@ -493,6 +529,7 @@ def _run(
                 wrong_recovery_unit_score=wrong_recovery_unit_score,
                 inactive_recovery_unit=inactive_recovery_unit,
                 host_profile=host_profile,
+                memory_dropin_state=memory_dropin_state,
             )
         ),
         "HAPAX_OOM_AUDIT_PROC_ROOT": str(proc_root),
@@ -549,6 +586,40 @@ def test_audit_passes_when_user_manager_is_killable_and_app_slice_bounded(tmp_pa
     assert statuses["user_unit_pipewire.service_Slice"] == "pass"
     assert statuses["user_unit_pipewire.service_NoNewPrivileges"] == "pass"
     assert statuses["user_unit_studio-compositor.service_Slice"] == "pass"
+    assert statuses["app.slice_memory_dropin_ownership"] == "pass"
+
+
+def test_audit_rejects_value_correct_unowned_manager_dropin_outside_known_roots(
+    tmp_path: Path,
+) -> None:
+    result = _run(tmp_path, memory_dropin_state="unowned")
+
+    assert result.returncode == 1
+    checks = {check["name"]: check for check in json.loads(result.stdout)["checks"]}
+    check = checks["app.slice_memory_dropin_ownership"]
+    assert check["status"] == "gap"
+    assert "manager-only-root" in check["actual"]
+    assert "authoritative DropInPaths" in check["detail"]
+
+
+@pytest.mark.parametrize(
+    ("state", "status", "detail"),
+    [
+        ("missing-canonical", "gap", "exactly one receipt-owned"),
+        ("unreadable", "error", "cannot inspect authoritative DropInPath"),
+        ("query-failure", "error", "cannot query authoritative DropInPaths"),
+    ],
+)
+def test_audit_fails_closed_when_dropin_ownership_is_unprovable(
+    tmp_path: Path, state: str, status: str, detail: str
+) -> None:
+    result = _run(tmp_path, memory_dropin_state=state)
+
+    assert result.returncode == 1
+    checks = {check["name"]: check for check in json.loads(result.stdout)["checks"]}
+    check = checks["app.slice_memory_dropin_ownership"]
+    assert check["status"] == status
+    assert detail in check["detail"]
 
 
 def test_host_policy_lines_derive_both_known_profiles(tmp_path: Path) -> None:

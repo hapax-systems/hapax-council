@@ -349,6 +349,8 @@ def _systemctl_app_slice_cases(host_profile: str = "podium") -> str:
     app_max = 54 * 1024**3 if host_profile == "appendix" else 88 * 1024**3
     return "\n".join(
         [
+            '  *"--user show app.slice -p DropInPaths --value"*) printf "%s%s\\n" "${HAPAX_OOM_SYSTEMD_USER_DIR:-/home/hapax/.config/systemd/user}/app.slice.d/oom-containment.conf" "${HAPAX_TEST_APP_DROPIN_PATHS_EXTRA:+ $HAPAX_TEST_APP_DROPIN_PATHS_EXTRA}" ;;',
+            '  *"--user show session.slice -p DropInPaths --value"*) printf "%s\\n" "${HAPAX_OOM_SYSTEMD_USER_DIR:-/home/hapax/.config/systemd/user}/session.slice.d/oom-containment.conf" ;;',
             f'  *"--user show app.slice -p MemoryHigh --value"*) printf "{app_high}\\n" ;;',
             f'  *"--user show app.slice -p MemoryMax --value"*) printf "{app_max}\\n" ;;',
             '  *"--user show app.slice -p MemorySwapMax --value"*) printf "8589934592\\n" ;;',
@@ -401,6 +403,10 @@ def _systemctl_system_memory_cases(
         '  *"show hapax-oom-score-enforce.timer -p DropInPaths --value"*) printf "\\n" ;;',
         '  *"show hapax-oom-score-enforce.timer -p Unit --value"*) printf "hapax-oom-score-enforce.service\\n" ;;',
         '  *"show hapax-oom-score-enforce.timer -p TimersMonotonic --value"*) printf "%s\\n" "OnBootUSec=30s OnUnitActiveUSec=30s" ;;',
+        '  *"show system.slice -p DropInPaths --value"*) printf "%s\\n" "${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}/system.slice.d/oom-containment.conf" ;;',
+        '  *"show user.slice -p DropInPaths --value"*) printf "%s\\n" "${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}/user.slice.d/oom-containment.conf" ;;',
+        '  *"show user-1000.slice -p DropInPaths --value"*) printf "%s\\n" "${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}/user-1000.slice.d/oom-containment.conf" ;;',
+        '  *"show user@1000.service -p DropInPaths --value"*) printf "%s\\n" "${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}/user@1000.service.d/oom.conf" ;;',
         '  *"show system.slice -p MemoryHigh --value"*) printf "infinity\\n" ;;',
         '  *"show system.slice -p MemoryMax --value"*) printf "infinity\\n" ;;',
         '  *"show system.slice -p MemorySwapMax --value"*) printf "infinity\\n" ;;',
@@ -649,11 +655,13 @@ def test_installer_rejects_forged_inherited_lock_descriptor_before_mutation(
         ("success", "podium", "unowned-later"),
         ("success", "podium", "unowned-earlier-control"),
         ("success", "podium", "unowned-transient"),
+        ("success", "podium", "manager-only"),
         ("success", "podium", "zram-main"),
         ("disappear", "podium", "none"),
         ("update-failure", "podium", "none"),
         ("inspect-failure-present", "podium", "none"),
         ("post-update-mismatch", "podium", "none"),
+        ("second-reload-failure", "podium", "none"),
     ],
 )
 def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
@@ -701,6 +709,17 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     stale_manager_control.write_text(
         _systemctl_property_file("Service", "MemoryHigh", "51539607552"), encoding="utf-8"
     )
+    stale_system_runtime = system_runtime_control_dir / "system.slice.d" / "50-MemoryLow.conf"
+    stale_system_runtime.parent.mkdir(parents=True)
+    stale_system_runtime.write_text(
+        _systemctl_property_file("Slice", "MemoryLow", "25769803776"), encoding="utf-8"
+    )
+    stale_user_runtime = user_runtime_control_dir / "session.slice.d" / "50-MemoryMin.conf"
+    stale_user_runtime.parent.mkdir(parents=True)
+    stale_user_runtime.write_text(
+        _systemctl_property_file("Slice", "MemoryMin", "1073741824"), encoding="utf-8"
+    )
+    manager_only_dropin = ""
     if override_mode == "legacy":
         for path in (
             system_dir / "user-1000.slice.d" / "zz-hapax-host-memory.conf",
@@ -724,6 +743,11 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         transient = system_transient_dir / "user@.service.d" / "10-unowned-memory.conf"
         transient.parent.mkdir(parents=True, exist_ok=True)
         transient.write_text("[Service]\nMemoryLow=20G\n", encoding="utf-8")
+    elif override_mode == "manager-only":
+        manager_only = tmp_path / "manager-only-root" / "app.slice.d" / "50-MemoryHigh.conf"
+        manager_only.parent.mkdir(parents=True)
+        manager_only.write_text("[Slice]\nMemoryHigh=77309411328\n", encoding="utf-8")
+        manager_only_dropin = str(manager_only)
     elif override_mode == "zram-main":
         zram_main = Path(os.environ["HAPAX_OOM_ZRAM_HIGH_PRIORITY_CONFIGS"])
         zram_main.parent.mkdir(parents=True, exist_ok=True)
@@ -758,9 +782,31 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     systemctl_calls.write_text("", encoding="utf-8")
     systemctl_calls.chmod(0o666)
     fake_systemctl = tmp_path / "systemctl"
+    reload_count = tmp_path / "system-reload-count"
+    reload_failure_guard = ""
+    if docker_mode == "second-reload-failure":
+        reload_failure_guard = (
+            f'if [ "$*" = "daemon-reload" ]; then count=0; [ ! -f {reload_count} ] || '
+            f'count="$(cat {reload_count})"; count=$((count + 1)); printf "%s\\n" "$count" > {reload_count}; '
+            '[ "$count" -lt 2 ] || exit 71; fi\n'
+        )
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
         f"printf '%s\\n' \"$*\" >> {systemctl_calls!s}\n"
+        f"{reload_failure_guard}"
+        "if [[ \"$*\" == *\"set-property --runtime \"* ]]; then\n"
+        "  args=(\"$@\")\n"
+        "  if [ \"${args[0]}\" = \"--user\" ]; then\n"
+        "    base=\"$HAPAX_OOM_SYSTEMD_USER_RUNTIME_CONTROL_DIR\"; unit=\"${args[3]}\"; first=4\n"
+        "  else\n"
+        "    base=\"$HAPAX_OOM_SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR\"; unit=\"${args[2]}\"; first=3\n"
+        "  fi\n"
+        "  mkdir -p \"$base/$unit.d\"\n"
+        "  for ((i=first; i<${#args[@]}; i++)); do\n"
+        "    key=\"${args[i]%%=*}\"; value=\"${args[i]#*=}\"\n"
+        "    printf '%s\\n%s\\n%s=%s\\n' '# This is a drop-in unit file extension, created via \"systemctl set-property\"' '[Slice]' \"$key\" \"$value\" > \"$base/$unit.d/50-$key.conf\"\n"
+        "  done\n"
+        "fi\n"
         f'if [[ "$*" == "--user enable --now hapax-oom-policy-audit.timer" ]]; then test -x {tmp_path / "sbin" / "hapax-oom-policy-audit"!s} && test -f {user_dir / "hapax-oom-policy-audit.timer"!s} || exit 42; fi\n'
         f'if [[ "$*" == "--user enable --now hapax-root-required-deploy-audit.timer" ]]; then test -x {tmp_path / "sbin" / "hapax-root-required-deploy-audit"!s} && test -f {user_dir / "hapax-root-required-deploy-audit.timer"!s} || exit 43; fi\n'
         'case "$*" in\n'
@@ -890,6 +936,7 @@ esac
             "HAPAX_OOM_POLICY_MEMTOTAL_KIB": (
                 "63310228" if host_profile == "appendix" else "131007744"
             ),
+            "HAPAX_TEST_APP_DROPIN_PATHS_EXTRA": manager_only_dropin,
         },
     )
 
@@ -897,9 +944,15 @@ esac
         "unowned-later",
         "unowned-earlier-control",
         "unowned-transient",
+        "manager-only",
         "zram-main",
     }
-    if docker_mode in {"update-failure", "inspect-failure-present", "post-update-mismatch"} or override_failure:
+    if docker_mode in {
+        "update-failure",
+        "inspect-failure-present",
+        "post-update-mismatch",
+        "second-reload-failure",
+    } or override_failure:
         assert result.returncode == 1
         assert not (
             tmp_path / "root-state" / "installed-receipts" / "oom-containment.sha"
@@ -908,6 +961,8 @@ esac
             assert "higher-priority zram-generator" in result.stderr
         elif override_failure:
             assert "unowned OOM memory assignment" in result.stderr
+        elif docker_mode == "second-reload-failure":
+            assert "after scrubbing transient OOM controls" in result.stderr
         else:
             assert "Docker" in result.stderr
         return
@@ -948,6 +1003,8 @@ esac
     assert not stale_min.exists()
     assert not stale_system_control.exists()
     assert not stale_manager_control.exists()
+    assert not stale_system_runtime.exists()
+    assert not stale_user_runtime.exists()
     assert "MemoryMin=10G" in (system_dir / "user.slice.d" / "oom-containment.conf").read_text(
         encoding="utf-8"
     )
