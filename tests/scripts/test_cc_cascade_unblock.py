@@ -445,3 +445,100 @@ def test_blocked_candidates_survives_concurrent_close(tmp_path: Path, monkeypatc
     monkeypatch.undo()
     assert "status: offered" in survivor.read_text(encoding="utf-8")
     assert not vanishing.exists()
+
+
+def test_condition_blocked_tasks_are_reported_and_never_released(tmp_path: Path) -> None:
+    """The load-bearing invariant: reporting a condition-blocked task must not free it.
+
+    A task with ``depends_on: []`` has no dependency to satisfy, so the release path's
+    ``unmet`` list is vacuously empty. Any change that lets such a task reach that path
+    flips it to ``offered`` on no evidence at all -- measured 2026-08-10, that would
+    have released 239 live tasks. This pins the split: report both classes, release
+    neither.
+    """
+    module = _load_module()
+    vault = _make_vault(tmp_path, module)
+
+    witnessed = _write_task(
+        vault,
+        "active",
+        "witnessed-condition-block",
+        status="blocked",
+        blocked_reason="waiting_for_upstream_merge",
+        blocked_witness="gh-pr-4545-state-is-merged",
+    )
+    unwitnessed = _write_task(
+        vault,
+        "active",
+        "unwitnessed-condition-block",
+        status="blocked",
+        blocked_reason="waiting_for_something_nobody_can_check",
+    )
+    # A dependency-blocked task belongs to cascade_unblock's bucket, not this one.
+    dependency_blocked = _write_task(
+        vault,
+        "active",
+        "dependency-block",
+        status="blocked",
+        depends_on=["some-open-dep"],
+    )
+
+    assert module.report_condition_blocked() == (1, 1)
+
+    # Nothing moved. This is the whole point of the function.
+    for path in (witnessed, unwitnessed, dependency_blocked):
+        text = path.read_text(encoding="utf-8")
+        assert "status: blocked" in text
+        assert "status: offered" not in text
+
+
+def test_cascade_unblock_never_releases_a_task_with_no_dependencies(tmp_path: Path) -> None:
+    """``depends_on: []`` must never satisfy the release path VACUOUSLY.
+
+    ``_blocked_candidates`` drops these at ``if not deps``. That guard reads like a
+    performance skip and is in fact the only thing standing between a condition-blocked
+    task and ``status: offered``: downstream, ``unmet = [d for d in deps if ...]`` is
+    empty when ``deps`` is empty, so an admitted no-dependency task is released on the
+    strength of an empty list.
+
+    This test exists because the guard was removed experimentally on 2026-08-10 and the
+    whole suite stayed green while 239 live tasks became releasable. A pin that does not
+    fail when the thing is broken is documentation, not verification.
+    """
+    module = _load_module()
+    vault = _make_vault(tmp_path, module)
+
+    condition_blocked = _write_task(
+        vault,
+        "active",
+        "condition-blocked-no-deps",
+        status="blocked",
+        blocked_reason="waiting_for_evidence_no_tool_can_check",
+    )
+
+    # Full sweep, no trigger: the widest possible invitation to release something.
+    assert module.cascade_unblock(None) == 0
+    text = condition_blocked.read_text(encoding="utf-8")
+    assert "status: blocked" in text
+    assert "status: offered" not in text
+
+
+def test_condition_blocked_report_excludes_dependency_blocked_tasks(tmp_path: Path) -> None:
+    """Dependency-blocked tasks are cascade_unblock's business, not the report's.
+
+    Counting them here would double-report them and inflate the unwitnessed class,
+    which is the number that decides whether the queue looks stuck.
+    """
+    module = _load_module()
+    vault = _make_vault(tmp_path, module)
+
+    for i in range(3):
+        _write_task(
+            vault,
+            "active",
+            f"dep-blocked-{i}",
+            status="blocked",
+            depends_on=[f"open-dep-{i}"],
+        )
+
+    assert module.report_condition_blocked() == (0, 0)

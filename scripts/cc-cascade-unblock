@@ -228,6 +228,10 @@ def _blocked_candidates(trigger_task_id: str | None) -> list[tuple[Path, str, li
 
         deps = _parse_depends(text)
         if not deps:
+            # LOAD-BEARING, not a performance skip. Downstream, `unmet` is computed by
+            # filtering `deps`, so an empty `deps` makes it vacuously empty and the task
+            # is released having satisfied nothing. Condition-blocked tasks are surfaced
+            # by report_condition_blocked(), which reports and never releases.
             continue
         if trigger_aliases and not trigger_aliases.intersection(deps):
             continue
@@ -331,6 +335,58 @@ def cascade_withdraw() -> int:
     return withdrawn
 
 
+def report_condition_blocked() -> tuple[int, int]:
+    """Report tasks blocked on a CONDITION rather than a dependency.
+
+    These carry ``depends_on: []``, so ``_blocked_candidates`` drops them at the
+    ``if not deps`` guard and the dependency machinery below never sees them. That
+    silence is the defect: 70% of the blocked queue leaves no trace here.
+
+    This function REPORTS ONLY, and the reason is worth stating because the obvious
+    fix is wrong. Deleting the ``if not deps`` guard would let a condition-blocked
+    task reach the release path with ``unmet == []`` -- vacuously, since it has no
+    deps -- and be flipped to ``offered``. Measured 2026-08-10, that would have
+    released 238 tasks on the strength of an empty list. A failure path may narrow;
+    it may not widen.
+
+    So the split is between a hold that can be named and a hold nothing can evaluate:
+
+    - WITNESSED: ``blocked_witness`` present, i.e. the stable blocked-with-evidence
+      state. A legitimate hold; reported, never released here.
+    - UNWITNESSED: no witness at all. No tool in the estate can decide these, because
+      there is no predicate to decide. The remedy is to write the witness, not to
+      unblock on faith.
+    """
+    if not ACTIVE.is_dir():
+        return (0, 0)
+
+    witnessed: list[str] = []
+    unwitnessed: list[str] = []
+    for f in sorted(ACTIVE.glob("*.md")):
+        text = _safe_read_text(f)
+        if text is None:
+            continue
+        status_m = re.search(r"^status:\s*(\S+)", text, re.M)
+        if not status_m or status_m.group(1) != "blocked":
+            continue
+        if _parse_depends(text):
+            continue  # dependency-blocked: cascade_unblock already handles these
+        if is_active_blocked_with_evidence(frontmatter_from_text(text)):
+            witnessed.append(f.stem)
+        else:
+            unwitnessed.append(f.stem)
+
+    if witnessed:
+        print(f"cc-cascade-unblock: {len(witnessed)} condition-blocked task(s) held with evidence")
+    if unwitnessed:
+        print(
+            f"cc-cascade-unblock: {len(unwitnessed)} condition-blocked task(s) have NO "
+            "blocked_witness — nothing can evaluate them, so they cannot leave 'blocked'. "
+            "Next: add a machine-checkable blocked_witness to each, then re-run --reconcile."
+        )
+    return (len(witnessed), len(unwitnessed))
+
+
 if __name__ == "__main__":
     trigger = None
     reconcile = False
@@ -346,4 +402,6 @@ if __name__ == "__main__":
         w = cascade_withdraw()
         if w:
             print(f"cc-cascade-unblock: withdrew {w} task(s)")
+        # Only on a full sweep: a per-close trigger has no reason to audit the queue.
+        report_condition_blocked()
     sys.exit(0)
