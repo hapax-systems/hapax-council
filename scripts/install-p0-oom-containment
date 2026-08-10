@@ -25,6 +25,11 @@ if [ -z "$TARGET_USER" ] || [ -z "$TARGET_HOME" ] || [ -z "$TARGET_GID" ]; then
 fi
 SYSTEMD_USER_DIR="${HAPAX_OOM_SYSTEMD_USER_DIR:-$TARGET_HOME/.config/systemd/user}"
 SYSTEMD_USER_CONTROL_DIR="${HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR:-$TARGET_HOME/.config/systemd/user.control}"
+SYSTEMD_SYSTEM_CONTROL_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_CONTROL_DIR:-/etc/systemd/system.control}"
+SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR:-/run/systemd/system.control}"
+SYSTEMD_SYSTEM_TRANSIENT_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_TRANSIENT_DIR:-/run/systemd/transient}"
+SYSTEMD_USER_RUNTIME_CONTROL_DIR="${HAPAX_OOM_SYSTEMD_USER_RUNTIME_CONTROL_DIR:-/run/user/$TARGET_UID/systemd/user.control}"
+SYSTEMD_USER_TRANSIENT_DIR="${HAPAX_OOM_SYSTEMD_USER_TRANSIENT_DIR:-/run/user/$TARGET_UID/systemd/transient}"
 EARLYOOM_DEST="${HAPAX_OOM_EARLYOOM_DEST:-/etc/default/earlyoom}"
 OOM_ENFORCER_DEST="${HAPAX_OOM_ENFORCER_DEST:-/usr/local/sbin/hapax-oom-score-enforce}"
 OOM_TRIGGER_DEST="${HAPAX_OOM_TRIGGER_DEST:-/usr/local/bin/hapax-oom-score-trigger}"
@@ -39,6 +44,7 @@ OOM_PROFILE_TABLE_DEST="${HAPAX_OOM_PROFILE_TABLE_DEST:-/usr/local/share/hapax/r
 ZRAM_POLICY_DEST="${HAPAX_OOM_ZRAM_POLICY_DEST:-/etc/systemd/zram-generator.conf}"
 LEGACY_ZRAM_POLICY_DEST="${HAPAX_OOM_LEGACY_ZRAM_POLICY_DEST:-/etc/systemd/zram-generator.conf.d/90-hapax-host-policy.conf}"
 ZRAM_DROPIN_DIRS="${HAPAX_OOM_ZRAM_DROPIN_DIRS:-/etc/systemd/zram-generator.conf.d:/run/systemd/zram-generator.conf.d:/usr/local/lib/systemd/zram-generator.conf.d:/usr/lib/systemd/zram-generator.conf.d}"
+ZRAM_HIGH_PRIORITY_CONFIGS="${HAPAX_OOM_ZRAM_HIGH_PRIORITY_CONFIGS:-/run/systemd/zram-generator.conf}"
 ZRAM_DISKSIZE_PATH="${HAPAX_OOM_ZRAM_DISKSIZE_PATH:-/sys/block/zram0/disksize}"
 DOCKER="${HAPAX_OOM_DOCKER:-docker}"
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
@@ -83,6 +89,7 @@ MCP_DOCKER_MEMORY="512M"
 MCP_DOCKER_MEMORY_SWAP="768M"
 LOCAL_JUDGE_DOCKER_MEMORY="4G"
 LOCAL_JUDGE_DOCKER_MEMORY_SWAP="6G"
+GOVERNED_MEMORY_KEYS=(MemoryHigh MemoryMax MemorySwapMax MemoryLow MemoryMin)
 
 usage() {
     cat <<'USAGE'
@@ -715,6 +722,46 @@ user_systemd_analyze() {
     fi
 }
 
+governed_system_unit_search_paths() {
+    local discovered override="${HAPAX_OOM_GOVERNED_SYSTEM_UNIT_PATHS:-}"
+    if [ -n "$override" ]; then
+        if [ "${HAPAX_OOM_ENFORCE_TEST_MODE:-0}" != "1" ]; then
+            echo "governed system unit-path override is test-only; next action: remove HAPAX_OOM_GOVERNED_SYSTEM_UNIT_PATHS and rerun against systemd's authoritative search path" >&2
+            return 1
+        fi
+        discovered="${override//:/$'\n'}"
+    elif ! discovered="$("$SYSTEMD_ANALYZE" unit-paths 2>/dev/null)"; then
+        echo "unable to obtain the authoritative system unit search path; next action: restore '$SYSTEMD_ANALYZE unit-paths' and rerun the OOM installer" >&2
+        return 1
+    fi
+    printf '%s\n' "$discovered" \
+        "$SYSTEMD_SYSTEM_CONTROL_DIR" \
+        "$SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR" \
+        "$SYSTEMD_SYSTEM_TRANSIENT_DIR" \
+        "$SYSTEMD_SYSTEM_DIR" \
+        | awk 'NF && !seen[$0]++'
+}
+
+governed_user_unit_search_paths() {
+    local discovered override="${HAPAX_OOM_GOVERNED_USER_UNIT_PATHS:-}"
+    if [ -n "$override" ]; then
+        if [ "${HAPAX_OOM_ENFORCE_TEST_MODE:-0}" != "1" ]; then
+            echo "governed user unit-path override is test-only; next action: remove HAPAX_OOM_GOVERNED_USER_UNIT_PATHS and rerun against systemd's authoritative search path" >&2
+            return 1
+        fi
+        discovered="${override//:/$'\n'}"
+    elif ! discovered="$(user_systemd_analyze unit-paths 2>/dev/null)"; then
+        echo "unable to obtain the authoritative target-user unit search path; next action: restore '$SYSTEMD_ANALYZE --user unit-paths' for UID $TARGET_UID and rerun the OOM installer" >&2
+        return 1
+    fi
+    printf '%s\n' "$discovered" \
+        "$SYSTEMD_USER_CONTROL_DIR" \
+        "$SYSTEMD_USER_RUNTIME_CONTROL_DIR" \
+        "$SYSTEMD_USER_TRANSIENT_DIR" \
+        "$SYSTEMD_USER_DIR" \
+        | awk 'NF && !seen[$0]++'
+}
+
 # Where the user manager looks for unit files. Asked of systemd rather than hardcoded: the real
 # path includes generator, transient and .control directories that a static list silently omits,
 # and omitting one turns "installed here" into "absent here" -- the exact misread this whole
@@ -722,6 +769,10 @@ user_systemd_analyze() {
 # manager; it is a floor, not the answer.
 user_unit_search_paths() {
     if [ -n "${HAPAX_OOM_USER_UNIT_PATHS:-}" ]; then
+        if [ "${HAPAX_OOM_ENFORCE_TEST_MODE:-0}" != "1" ]; then
+            echo "HAPAX_OOM_USER_UNIT_PATHS is test-only and cannot prove production unit absence" >&2
+            return 2
+        fi
         printf '%s\n' "${HAPAX_OOM_USER_UNIT_PATHS//:/$'\n'}"
         return 0
     fi
@@ -762,7 +813,10 @@ user_unit_search_paths() {
 # So a degraded enumeration may still PROVE presence (finding a file is positive evidence), but it
 # may never be used to prove ABSENCE.
 user_unit_search_paths_are_authoritative() {
-    [ -n "${HAPAX_OOM_USER_UNIT_PATHS:-}" ] && return 0
+    if [ -n "${HAPAX_OOM_USER_UNIT_PATHS:-}" ]; then
+        [ "${HAPAX_OOM_ENFORCE_TEST_MODE:-0}" = "1" ]
+        return
+    fi
     user_systemd_analyze unit-paths >/dev/null 2>&1
 }
 
@@ -811,8 +865,7 @@ load_host_policy() {
             /etc/*|/usr/local/*|/home/hapax/*) production_destination=1 ;;
         esac
     done
-    if [ "$INSTALL" -eq 1 ] && [ "${HAPAX_OOM_ENFORCE_TEST_MODE:-0}" = "1" ] \
-        && [ "$production_destination" -eq 1 ]; then
+    if [ "${HAPAX_OOM_ENFORCE_TEST_MODE:-0}" = "1" ] && [ "$production_destination" -eq 1 ]; then
         echo "refusing test-mode host-policy overrides for production OOM destinations; next action: remove HAPAX_OOM_ENFORCE_TEST_MODE, HAPAX_OOM_POLICY_MEMTOTAL_KIB, and HAPAX_OOM_POLICY_HOSTNAME" >&2
         return 1
     fi
@@ -968,43 +1021,181 @@ validate_selected_host_sources() {
     fi
 }
 
-check_later_memory_dropins() {
-    local allow_legacy="$1" spec dir canonical path base rc
-    for spec in \
-        "$SYSTEMD_SYSTEM_DIR/user-1000.slice.d|oom-containment.conf" \
-        "$SYSTEMD_SYSTEM_DIR/user@1000.service.d|oom.conf" \
-        "$SYSTEMD_USER_DIR/app.slice.d|oom-containment.conf" \
-        "$SYSTEMD_USER_CONTROL_DIR/app.slice.d|oom-containment.conf"; do
-        dir="${spec%%|*}"
-        canonical="${spec#*|}"
-        [ -d "$dir" ] || continue
-        for path in "$dir"/*.conf; do
-            [ -e "$path" ] || [ -L "$path" ] || continue
-            base="$(basename "$path")"
-            [[ "$base" > "$canonical" ]] || continue
-            if [ "$allow_legacy" -eq 1 ] && [ "$base" = "zz-hapax-host-memory.conf" ]; then
-                continue
-            fi
-            if [ -L "$path" ]; then
-                echo "unowned later OOM memory drop-in is symlinked: $path; next action: remove the override or govern it in the canonical host profile" >&2
-                return 1
-            fi
-            if grep -Eq '^[[:space:]]*(MemoryHigh|MemoryMax)=' "$path"; then
-                echo "unowned later OOM memory drop-in overrides the canonical profile: $path; next action: remove the governed-key assignment or fold it into the receipt-bound host profile" >&2
-                return 1
-            else
-                rc=$?
-                if [ "$rc" -gt 1 ]; then
-                    echo "unable to inspect later OOM memory drop-in: $path; next action: restore readable trusted drop-ins and rerun the installer" >&2
+governed_dropin_suffixes() {
+    case "$1" in
+        user-1000.slice)
+            printf '%s\n' user-1000.slice.d user-.slice.d slice.d
+            ;;
+        user@1000.service)
+            printf '%s\n' user@1000.service.d user@.service.d service.d
+            ;;
+        app.slice)
+            printf '%s\n' app.slice.d slice.d
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+systemctl_generated_property_value() {
+    local path="$1" key="$2"
+    [ -f "$path" ] && [ ! -L "$path" ] || return 1
+    grep -Fq 'created via "systemctl set-property"' "$path" || return 1
+    awk -v key="$key" '
+        /^[[:space:]]*(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)[[:space:]]*=/ {
+            name = $0
+            sub(/^[[:space:]]*/, "", name)
+            sub(/[[:space:]]*=.*/, "", name)
+            value = $0
+            sub(/^[^=]*=[[:space:]]*/, "", value)
+            sub(/[[:space:]]*$/, "", value)
+            governed += 1
+            if (name == key) {
+                matched += 1
+                result = value
+            }
+        }
+        END {
+            if (governed == 1 && matched == 1) print result
+            else exit 1
+        }
+    ' "$path"
+}
+
+control_property_kind() {
+    local scope="$1" unit="$2" key="$3" path="$4" persistent runtime
+    case "$scope|$unit" in
+        system\|user-1000.slice|system\|user@1000.service)
+            persistent="$SYSTEMD_SYSTEM_CONTROL_DIR/$unit.d/50-$key.conf"
+            runtime="$SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR/$unit.d/50-$key.conf"
+            ;;
+        user\|app.slice)
+            persistent="$SYSTEMD_USER_CONTROL_DIR/$unit.d/50-$key.conf"
+            runtime="$SYSTEMD_USER_RUNTIME_CONTROL_DIR/$unit.d/50-$key.conf"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+    if [ "$path" = "$persistent" ]; then
+        printf 'persistent\n'
+    elif [ "$path" = "$runtime" ]; then
+        printf 'runtime\n'
+    else
+        return 1
+    fi
+}
+
+runtime_property_matches_source() {
+    local rel="$1" key="$2" path="$3" actual expected_raw expected
+    actual="$(systemctl_generated_property_value "$path" "$key")" || return 1
+    expected_raw="$(selected_source_unit_value "$rel" "$key")" || return 1
+    expected="$(memory_to_bytes "$expected_raw")" || return 1
+    [ "$actual" = "$expected" ]
+}
+
+is_known_legacy_memory_override() {
+    local scope="$1" unit="$2" path="$3"
+    case "$scope|$unit|$path" in
+        "system|user-1000.slice|$SYSTEMD_SYSTEM_DIR/user-1000.slice.d/zz-hapax-host-memory.conf"|\
+        "system|user@1000.service|$SYSTEMD_SYSTEM_DIR/user@1000.service.d/zz-hapax-host-memory.conf"|\
+        "user|app.slice|$SYSTEMD_USER_DIR/app.slice.d/zz-hapax-host-memory.conf")
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+check_governed_unit_dropins() {
+    local allow_repair="$1" scope="$2" unit="$3" rel="$4" canonical="$5"
+    local root suffix path rc key kind found_kind roots_output
+    if [ "$scope" = "system" ]; then
+        roots_output="$(governed_system_unit_search_paths)" || return 1
+    else
+        roots_output="$(governed_user_unit_search_paths)" || return 1
+    fi
+    while IFS= read -r root; do
+        [ -n "$root" ] || continue
+        while IFS= read -r suffix; do
+            [ -d "$root/$suffix" ] || continue
+            for path in "$root/$suffix"/*.conf; do
+                [ -e "$path" ] || [ -L "$path" ] || continue
+                if [ "$path" = "$canonical" ]; then
+                    if [ -L "$path" ]; then
+                        echo "canonical OOM memory drop-in is symlinked: $path; next action: reinstall the receipt-bound regular file" >&2
+                        return 1
+                    fi
+                    continue
+                fi
+                if [ -L "$path" ]; then
+                    echo "unowned OOM memory drop-in is symlinked in the $unit search path: $path; next action: remove the override or govern a regular receipt-bound file" >&2
                     return 1
                 fi
-            fi
-        done
-    done
+                if [ "$allow_repair" -eq 1 ] \
+                    && is_known_legacy_memory_override "$scope" "$unit" "$path"; then
+                    continue
+                fi
+                if grep -Eq '^[[:space:]]*(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)[[:space:]]*=' "$path"; then
+                    :
+                else
+                    rc=$?
+                    if [ "$rc" -gt 1 ]; then
+                        echo "unable to inspect OOM memory drop-in: $path; next action: restore readable trusted drop-ins and rerun the installer" >&2
+                        return 1
+                    fi
+                    continue
+                fi
+                found_kind=""
+                for key in "${GOVERNED_MEMORY_KEYS[@]}"; do
+                    grep -Eq "^[[:space:]]*$key[[:space:]]*=" "$path" || continue
+                    kind="$(control_property_kind "$scope" "$unit" "$key" "$path" 2>/dev/null || true)"
+                    if [ -n "$kind" ] && systemctl_generated_property_value "$path" "$key" >/dev/null; then
+                        if [ "$allow_repair" -eq 1 ]; then
+                            found_kind="$kind"
+                            break
+                        fi
+                        if [ "$kind" = "runtime" ] && runtime_property_matches_source "$rel" "$key" "$path"; then
+                            found_kind="$kind"
+                            break
+                        fi
+                    fi
+                    echo "unowned OOM memory assignment for $unit at $path; next action: remove the governed-key assignment or fold it into the receipt-bound host profile" >&2
+                    return 1
+                done
+                [ -n "$found_kind" ] || {
+                    echo "unable to classify governed OOM memory assignment for $unit at $path; next action: remove the override and rerun the installer" >&2
+                    return 1
+                }
+            done
+        done < <(governed_dropin_suffixes "$unit")
+    done <<< "$roots_output"
+}
+
+check_governed_memory_dropins() {
+    local allow_repair="$1"
+    check_governed_unit_dropins "$allow_repair" system user-1000.slice \
+        systemd/system/user-1000.slice.d/oom-containment.conf \
+        "$SYSTEMD_SYSTEM_DIR/user-1000.slice.d/oom-containment.conf" || return 1
+    check_governed_unit_dropins "$allow_repair" system user@1000.service \
+        systemd/system/user@1000.service.d/oom.conf \
+        "$SYSTEMD_SYSTEM_DIR/user@1000.service.d/oom.conf" || return 1
+    check_governed_unit_dropins "$allow_repair" user app.slice \
+        systemd/units/app.slice.d/oom-containment.conf \
+        "$SYSTEMD_USER_DIR/app.slice.d/oom-containment.conf" || return 1
 }
 
 check_zram_dropin_overrides() {
     local allow_legacy="$1" dir path rc
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        if [ -e "$path" ] || [ -L "$path" ]; then
+            echo "higher-priority zram-generator main configuration shadows the canonical profile: $path; next action: remove the runtime override or govern it instead of /etc/systemd/zram-generator.conf" >&2
+            return 1
+        fi
+    done < <(printf '%s\n' "${ZRAM_HIGH_PRIORITY_CONFIGS//:/$'\n'}")
     while IFS= read -r dir; do
         [ -d "$dir" ] || continue
         for path in "$dir"/*.conf; do
@@ -1032,8 +1223,41 @@ check_zram_dropin_overrides() {
 
 validate_no_unauthorized_host_policy_overrides() {
     local allow_legacy="$1"
-    check_later_memory_dropins "$allow_legacy"
-    check_zram_dropin_overrides "$allow_legacy"
+    check_governed_memory_dropins "$allow_legacy" || return 1
+    check_zram_dropin_overrides "$allow_legacy" || return 1
+}
+
+scrub_persistent_set_property_files() {
+    local spec scope unit dir key path value
+    for spec in \
+        "system|user-1000.slice|$SYSTEMD_SYSTEM_CONTROL_DIR/user-1000.slice.d" \
+        "system|user@1000.service|$SYSTEMD_SYSTEM_CONTROL_DIR/user@1000.service.d" \
+        "user|app.slice|$SYSTEMD_USER_CONTROL_DIR/app.slice.d"; do
+        scope="${spec%%|*}"
+        spec="${spec#*|}"
+        unit="${spec%%|*}"
+        dir="${spec#*|}"
+        [ -d "$dir" ] || continue
+        for key in "${GOVERNED_MEMORY_KEYS[@]}"; do
+            path="$dir/50-$key.conf"
+            [ -e "$path" ] || [ -L "$path" ] || continue
+            value="$(systemctl_generated_property_value "$path" "$key")" || {
+                echo "refusing non-systemctl persistent control file at governed path: $path; next action: inspect and remove or govern it explicitly before reinstalling" >&2
+                return 1
+            }
+            if [ "$scope" = "system" ]; then
+                run_root rm -f -- "$path"
+            else
+                rm -f -- "$path"
+            fi
+            echo "removed stale persistent set-property override for $unit $key=$value"
+        done
+        if [ "$scope" = "system" ]; then
+            run_root rmdir "$dir" 2>/dev/null || true
+        else
+            rmdir "$dir" 2>/dev/null || true
+        fi
+    done
 }
 
 source_unit_optional_value() {
@@ -1210,78 +1434,130 @@ docker_policy_for_container() {
     esac
 }
 
-docker_target_names() {
-    local output name
-    output="$("$DOCKER" ps -a --format '{{.Names}}')" || return 1
-    while IFS= read -r name; do
-        [ -n "$name" ] || continue
+docker_target_records() {
+    local output record id name
+    output="$("$DOCKER" ps -a --no-trunc --format '{{.ID}}|{{.Names}}')" || return 1
+    while IFS= read -r record; do
+        [ -n "$record" ] || continue
+        IFS='|' read -r id name <<< "$record"
+        if ! [[ "$id" =~ ^[0-9a-f]{12,64}$ ]] || [ -z "$name" ]; then
+            echo "unparseable Docker identity record: $record" >&2
+            return 1
+        fi
         docker_policy_for_container "$name" >/dev/null || continue
-        printf '%s\n' "$name"
+        printf '%s|%s\n' "$id" "$name"
     done <<< "$output"
 }
 
 verify_docker_container_limit() {
-    local name="$1" memory="$2" memory_swap="$3" output inspected_name actual_memory actual_swap expected_memory expected_swap
-    if ! output="$("$DOCKER" inspect --format '{{.Name}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}' "$name" 2>/dev/null)"; then
+    local id="$1" name="$2" memory="$3" memory_swap="$4"
+    local output inspected_id inspected_name actual_memory actual_swap expected_memory expected_swap
+    if ! output="$("$DOCKER" inspect --format '{{.Id}}|{{.Name}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}' "$id" 2>/dev/null)"; then
         return 2
     fi
-    IFS='|' read -r inspected_name actual_memory actual_swap <<< "$output"
+    IFS='|' read -r inspected_id inspected_name actual_memory actual_swap <<< "$output"
     inspected_name="${inspected_name#/}"
     expected_memory="$(memory_to_bytes "$memory")" || return 1
     expected_swap="$(memory_to_bytes "$memory_swap")" || return 1
-    if [ "$inspected_name" != "$name" ] \
+    if [ "$inspected_id" != "$id" ] \
+        || [ "$inspected_name" != "$name" ] \
         || [ "$actual_memory" != "$expected_memory" ] \
         || [ "$actual_swap" != "$expected_swap" ]; then
-        echo "Docker memory-limit drift for $name: name=${inspected_name:-unavailable} Memory=${actual_memory:-unavailable} MemorySwap=${actual_swap:-unavailable} expected=$expected_memory/$expected_swap; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "Docker memory-limit drift for $name: id=${inspected_id:-unavailable} name=${inspected_name:-unavailable} Memory=${actual_memory:-unavailable} MemorySwap=${actual_swap:-unavailable} expected_id=$id expected_limits=$expected_memory/$expected_swap; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     fi
+}
+
+docker_target_id_absent() {
+    local expected_id="$1" records record id
+    records="$(docker_target_records)" || return 2
+    while IFS= read -r record; do
+        [ -n "$record" ] || continue
+        id="${record%%|*}"
+        [ "$id" != "$expected_id" ] || return 1
+    done <<< "$records"
+    return 0
 }
 
 reconcile_docker_memory_limits() {
-    local names name policy memory memory_swap
-    if ! names="$(docker_target_names)"; then
+    local records record id name policy memory memory_swap verify_rc absence_rc
+    if ! records="$(docker_target_records)"; then
         echo "unable to enumerate Docker containers for OOM containment; next action: restore Docker access and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     fi
-    while IFS= read -r name; do
-        [ -n "$name" ] || continue
+    while IFS= read -r record; do
+        [ -n "$record" ] || continue
+        id="${record%%|*}"
+        name="${record#*|}"
         policy="$(docker_policy_for_container "$name")"
         IFS='|' read -r memory memory_swap <<< "$policy"
-        if ! "$DOCKER" update --memory "$memory" --memory-swap "$memory_swap" "$name" >/dev/null 2>&1; then
-            if ! "$DOCKER" inspect "$name" >/dev/null 2>&1; then
-                echo "Docker target $name disappeared during limit convergence; no container remains to cap"
+        if ! "$DOCKER" update --memory "$memory" --memory-swap "$memory_swap" "$id" >/dev/null 2>&1; then
+            if docker_target_id_absent "$id"; then
+                echo "Docker target $name id=$id disappeared during limit convergence; no matching container remains to cap"
                 continue
+            else
+                absence_rc=$?
             fi
-            echo "unable to apply Docker memory limits to $name; next action: inspect 'docker update' diagnostics and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            if [ "$absence_rc" -eq 2 ]; then
+                echo "unable to confirm Docker target $name id=$id after update failure because re-enumeration failed; next action: restore Docker access and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            else
+                echo "unable to apply Docker memory limits to $name id=$id; next action: inspect 'docker update' diagnostics and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            fi
             return 1
         fi
-        if ! verify_docker_container_limit "$name" "$memory" "$memory_swap"; then
-            if ! "$DOCKER" inspect "$name" >/dev/null 2>&1; then
-                echo "Docker target $name disappeared during post-update verification; no container remains to cap"
-                continue
+        if verify_docker_container_limit "$id" "$name" "$memory" "$memory_swap"; then
+            continue
+        else
+            verify_rc=$?
+            if [ "$verify_rc" -eq 2 ]; then
+                if docker_target_id_absent "$id"; then
+                    echo "Docker target $name id=$id disappeared during post-update verification; no matching container remains to cap"
+                    continue
+                else
+                    absence_rc=$?
+                fi
+                if [ "$absence_rc" -eq 2 ]; then
+                    echo "unable to confirm Docker target $name id=$id after inspect failure because re-enumeration failed; next action: restore Docker access and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+                else
+                    echo "Docker inspect failed for still-enumerated target $name id=$id; next action: restore Docker access and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+                fi
             fi
             return 1
         fi
-    done <<< "$names"
+    done <<< "$records"
 }
 
 verify_docker_memory_limits() {
-    local names name policy memory memory_swap
-    if ! names="$(docker_target_names)"; then
+    local records record id name policy memory memory_swap verify_rc absence_rc
+    if ! records="$(docker_target_records)"; then
         echo "unable to enumerate Docker containers for OOM containment; next action: restore Docker access and rerun scripts/install-p0-oom-containment --verify-live" >&2
         return 1
     fi
-    while IFS= read -r name; do
-        [ -n "$name" ] || continue
+    while IFS= read -r record; do
+        [ -n "$record" ] || continue
+        id="${record%%|*}"
+        name="${record#*|}"
         policy="$(docker_policy_for_container "$name")"
         IFS='|' read -r memory memory_swap <<< "$policy"
-        if ! verify_docker_container_limit "$name" "$memory" "$memory_swap"; then
-            if ! "$DOCKER" inspect "$name" >/dev/null 2>&1; then
-                continue
+        if verify_docker_container_limit "$id" "$name" "$memory" "$memory_swap"; then
+            continue
+        else
+            verify_rc=$?
+            if [ "$verify_rc" -eq 2 ]; then
+                if docker_target_id_absent "$id"; then
+                    continue
+                else
+                    absence_rc=$?
+                fi
+                if [ "$absence_rc" -eq 2 ]; then
+                    echo "unable to confirm Docker target $name id=$id after inspect failure because re-enumeration failed; next action: restore Docker access and rerun scripts/install-p0-oom-containment --verify-live" >&2
+                else
+                    echo "Docker inspect failed for still-enumerated target $name id=$id; next action: restore Docker access and rerun scripts/install-p0-oom-containment --verify-live" >&2
+                fi
             fi
             return 1
         fi
-    done <<< "$names"
+    done <<< "$records"
 }
 
 system_dest() {
@@ -1622,7 +1898,7 @@ scrub_legacy_user_oom_overrides() {
 }
 
 install_live() {
-    local rel source_rel dest timer control_dropin_dir user_pid mem_high mem_max mem_swap
+    local rel source_rel dest timer user_pid mem_high mem_max mem_swap
     check_source
     preflight_root
     validate_no_unauthorized_host_policy_overrides 1
@@ -1721,16 +1997,7 @@ install_live() {
         echo "  '$rel' -> '$dest' (copy)"
     done
 
-    control_dropin_dir="$SYSTEMD_USER_CONTROL_DIR/app.slice.d"
-    if [ -d "$control_dropin_dir" ]; then
-        rm -f \
-            "$control_dropin_dir/50-MemoryHigh.conf" \
-            "$control_dropin_dir/50-MemoryMax.conf" \
-            "$control_dropin_dir/50-MemorySwapMax.conf" \
-            "$control_dropin_dir/50-MemoryLow.conf" \
-            "$control_dropin_dir/50-MemoryMin.conf"
-        rmdir "$control_dropin_dir" 2>/dev/null || true
-    fi
+    scrub_persistent_set_property_files
 
     run_root "$SYSTEMCTL" daemon-reload
     run_root "$SYSTEMCTL" enable --now hapax-oom-score-enforce.timer >/dev/null 2>&1 || {

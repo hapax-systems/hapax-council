@@ -36,8 +36,9 @@ NEXT_OOM_INSTALL = "next action: scripts/install-p0-oom-containment --install --
 PROC_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_PROC_ROOT", "/proc"))
 CGROUP_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_CGROUP_ROOT", "/sys/fs/cgroup"))
 SYS_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_SYS_ROOT", "/sys"))
+SCRIPT_PATH = Path(__file__).resolve()
 SOURCE_PROFILE_TABLE = (
-    Path(__file__).resolve().parents[1]
+    SCRIPT_PATH.parents[1]
     / "config"
     / "root-required"
     / "oom-host-profiles.tsv"
@@ -45,6 +46,7 @@ SOURCE_PROFILE_TABLE = (
 INSTALLED_PROFILE_TABLE = Path(
     "/usr/local/share/hapax/root-required/oom-host-profiles.tsv"
 )
+INSTALLED_AUDIT_PATH = Path("/usr/local/sbin/hapax-oom-policy-audit")
 ROOT_REQUIRED_STATE_ROOT = Path(
     os.environ.get(
         "HAPAX_ROOT_REQUIRED_STATE_ROOT",
@@ -126,14 +128,22 @@ class HostPolicyError(RuntimeError):
     pass
 
 
+def _require_test_override(name: str) -> None:
+    if os.environ.get("HAPAX_OOM_AUDIT_TEST_MODE") != "1":
+        raise HostPolicyError(
+            f"{name} is test-only; next action: remove the override and use canonical host state"
+        )
+    if SCRIPT_PATH == INSTALLED_AUDIT_PATH or SCRIPT_PATH.parent.name != "scripts":
+        raise HostPolicyError(
+            f"{name} is refused by an installed audit; next action: remove all test selectors "
+            "and rerun /usr/local/sbin/hapax-oom-policy-audit"
+        )
+
+
 def _memtotal_kib() -> int:
     override = os.environ.get("HAPAX_OOM_AUDIT_MEMTOTAL_KIB", "").strip()
     if override:
-        if os.environ.get("HAPAX_OOM_AUDIT_TEST_MODE") != "1":
-            raise HostPolicyError(
-                "HAPAX_OOM_AUDIT_MEMTOTAL_KIB is test-only; next action: remove the override "
-                "and derive policy from /proc/meminfo"
-            )
+        _require_test_override("HAPAX_OOM_AUDIT_MEMTOTAL_KIB")
         try:
             value = int(override)
         except ValueError as exc:
@@ -161,11 +171,7 @@ def _memtotal_kib() -> int:
 def _hostname() -> str:
     override = os.environ.get("HAPAX_OOM_AUDIT_HOSTNAME", "").strip()
     if override:
-        if os.environ.get("HAPAX_OOM_AUDIT_TEST_MODE") != "1":
-            raise HostPolicyError(
-                "HAPAX_OOM_AUDIT_HOSTNAME is test-only; next action: remove the override "
-                "and derive policy from the canonical kernel hostname"
-            )
+        _require_test_override("HAPAX_OOM_AUDIT_HOSTNAME")
         return override.split(".", 1)[0]
     return socket.gethostname().split(".", 1)[0]
 
@@ -173,13 +179,11 @@ def _hostname() -> str:
 def _profile_table_path() -> Path:
     override = os.environ.get("HAPAX_OOM_AUDIT_PROFILE_TABLE", "").strip()
     if override:
-        if os.environ.get("HAPAX_OOM_AUDIT_TEST_MODE") != "1":
-            raise HostPolicyError(
-                "HAPAX_OOM_AUDIT_PROFILE_TABLE is test-only; next action: remove the override "
-                "and use the receipt-bound profile table"
-            )
+        _require_test_override("HAPAX_OOM_AUDIT_PROFILE_TABLE")
         return Path(override)
-    return SOURCE_PROFILE_TABLE if SOURCE_PROFILE_TABLE.is_file() else INSTALLED_PROFILE_TABLE
+    if SCRIPT_PATH.parent.name == "scripts" and SOURCE_PROFILE_TABLE.is_file():
+        return SOURCE_PROFILE_TABLE
+    return INSTALLED_PROFILE_TABLE
 
 
 def _memory_bytes(value: str, *, field: str) -> int:
@@ -304,9 +308,6 @@ def _validate_lock_fd(fd: int) -> None:
             f"unsafe package lock {ROOT_REQUIRED_LOCK_FILE}; expected the caller-owned, "
             "single-link, non-group-writable regular path inode"
         )
-    os.fchmod(fd, 0o600)
-
-
 @contextmanager
 def shared_root_required_lock() -> Iterator[None]:
     inherited = os.environ.get("HAPAX_ROOT_REQUIRED_LOCK_FD", "")
@@ -322,16 +323,15 @@ def shared_root_required_lock() -> Iterator[None]:
         if lock_mode not in {"shared", "exclusive"}:
             raise AuditLockError(f"invalid inherited package lock mode: {lock_mode}")
     else:
-        ROOT_REQUIRED_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
         try:
             fd = os.open(
                 ROOT_REQUIRED_LOCK_FILE,
-                os.O_CLOEXEC | os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR,
-                0o600,
+                os.O_CLOEXEC | os.O_NOFOLLOW | os.O_RDONLY,
             )
         except OSError as exc:
             raise AuditLockError(
-                f"cannot open safe package lock {ROOT_REQUIRED_LOCK_FILE}: {exc}"
+                f"cannot open existing safe package lock {ROOT_REQUIRED_LOCK_FILE}: {exc}; "
+                "run the governed OOM installer to create package state"
             ) from exc
         lock_mode = "shared"
     try:
@@ -854,21 +854,43 @@ def _docker_check_name(container: str, field: str) -> str:
     return f"docker_{safe}_{field}"
 
 
-def audit_docker_limits() -> list[Check]:
-    listed = _run([_docker(), "ps", "-a", "--format", "{{.Names}}"])
+def _docker_target_records() -> tuple[list[tuple[str, str, tuple[int, int]]], str | None]:
+    listed = _run([_docker(), "ps", "-a", "--no-trunc", "--format", "{{.ID}}\t{{.Names}}"])
     if listed.returncode != 0:
         detail = (listed.stderr or listed.stdout).strip() or f"rc={listed.returncode}"
+        return [], f"cannot enumerate Docker containers: {detail}"
+    targets: list[tuple[str, str, tuple[int, int]]] = []
+    for line in listed.stdout.splitlines():
+        if not line.strip():
+            continue
+        fields = line.split("\t")
+        if len(fields) != 2 or re.fullmatch(r"[0-9a-f]{12,64}", fields[0]) is None:
+            return [], f"unparseable Docker identity record: {line}"
+        container_id, name = fields
+        if policy := _docker_policy(name):
+            targets.append((container_id, name, policy))
+    return targets, None
+
+
+def _docker_target_id_absent(container_id: str) -> tuple[bool, str | None]:
+    targets, error = _docker_target_records()
+    if error is not None:
+        return False, error
+    return all(current_id != container_id for current_id, _, _ in targets), None
+
+
+def audit_docker_limits() -> list[Check]:
+    targets, enumeration_error = _docker_target_records()
+    if enumeration_error is not None:
         return [
             Check(
                 "docker_container_limits",
                 "error",
                 "all present target containers capped",
                 "N/A",
-                f"cannot enumerate Docker containers: {detail}; {NEXT_OOM_INSTALL}",
+                f"{enumeration_error}; {NEXT_OOM_INSTALL}",
             )
         ]
-    names = [name.strip() for name in listed.stdout.splitlines() if name.strip()]
-    targets = [(name, policy) for name in names if (policy := _docker_policy(name))]
     if not targets:
         return [
             Check(
@@ -880,18 +902,31 @@ def audit_docker_limits() -> list[Check]:
         ]
 
     checks: list[Check] = []
-    for name, (expected_memory, expected_swap) in targets:
+    for container_id, name, (expected_memory, expected_swap) in targets:
         inspected = _run(
             [
                 _docker(),
                 "inspect",
                 "--format",
-                "{{.Name}}\t{{.HostConfig.Memory}}\t{{.HostConfig.MemorySwap}}",
-                name,
+                "{{.Id}}\t{{.Name}}\t{{.HostConfig.Memory}}\t{{.HostConfig.MemorySwap}}",
+                container_id,
             ]
         )
         if inspected.returncode != 0:
             detail = (inspected.stderr or inspected.stdout).strip() or f"rc={inspected.returncode}"
+            disappeared, reenumeration_error = _docker_target_id_absent(container_id)
+            if disappeared:
+                checks.append(
+                    Check(
+                        _docker_check_name(name, "inspect"),
+                        "pass",
+                        "inspectable or disappeared",
+                        f"id={container_id} disappeared",
+                    )
+                )
+                continue
+            if reenumeration_error is not None:
+                detail = f"{detail}; disappearance proof failed: {reenumeration_error}"
             checks.append(
                 Check(
                     _docker_check_name(name, "inspect"),
@@ -903,20 +938,21 @@ def audit_docker_limits() -> list[Check]:
             )
             continue
         fields = inspected.stdout.strip().split("\t")
-        if len(fields) != 3:
+        if len(fields) != 4:
             checks.append(
                 Check(
                     _docker_check_name(name, "inspect"),
                     "error",
-                    "name, memory, memory-swap",
+                    "id, name, memory, memory-swap",
                     inspected.stdout.strip() or "empty",
                     f"unparseable Docker inspect result; {NEXT_OOM_INSTALL}",
                 )
             )
             continue
-        inspected_name = fields[0].removeprefix("/")
+        inspected_id = fields[0]
+        inspected_name = fields[1].removeprefix("/")
         try:
-            actual_memory, actual_swap = int(fields[1]), int(fields[2])
+            actual_memory, actual_swap = int(fields[2]), int(fields[3])
         except ValueError:
             checks.append(
                 Check(
@@ -928,13 +964,13 @@ def audit_docker_limits() -> list[Check]:
                 )
             )
             continue
-        if inspected_name != name:
+        if inspected_id != container_id or inspected_name != name:
             checks.append(
                 Check(
                     _docker_check_name(name, "inspect"),
                     "error",
-                    name,
-                    inspected_name,
+                    f"{container_id} {name}",
+                    f"{inspected_id} {inspected_name}",
                     f"Docker inspect identity mismatch; {NEXT_OOM_INSTALL}",
                 )
             )
