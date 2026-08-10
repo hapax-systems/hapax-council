@@ -42,6 +42,7 @@ PROTECTED_USER_UNIT_MEMORY = {
 }
 JUDGE_CONTAINER_ID = "a" * 64
 MCP_CONTAINER_ID = "b" * 64
+REPLACEMENT_CONTAINER_ID = "d" * 64
 
 
 @pytest.fixture(autouse=True)
@@ -357,9 +358,16 @@ def _fake_docker(tmp_path: Path, *, state: str = "bounded") -> Path:
         elif state == "wrong-swap":
             mcp_swap = -1
         disappearance_state = tmp_path / "docker-disappearance-observed"
-        if state == "disappear":
+        if state in {"disappear", "replace"}:
+            if state == "replace":
+                second_enumeration = (
+                    f"printf '%s\\t%s\\n' {REPLACEMENT_CONTAINER_ID} "
+                    "hapax-github-mcp-hapax-123; exit 0"
+                )
+            else:
+                second_enumeration = "exit 0"
             ps_body = (
-                f"if [ -e {disappearance_state!s} ]; then exit 0; fi\n"
+                f"if [ -e {disappearance_state!s} ]; then {second_enumeration}; fi\n"
                 f"touch {disappearance_state!s}\n"
                 f"printf '%s\\t%s\\n' {MCP_CONTAINER_ID} hapax-github-mcp-hapax-123\n"
             )
@@ -768,6 +776,8 @@ def test_host_policy_refuses_an_unreviewed_physical_memory_floor(
     )
     assert result.returncode == 1
     assert "unlisted floor" in result.stdout
+    assert "source-tree host profile table" in result.stdout
+    assert str(REPO_ROOT / "config/root-required/oom-host-profiles.tsv") in result.stdout
 
 
 def test_host_policy_refuses_cross_host_memory_profile() -> None:
@@ -785,6 +795,7 @@ def test_host_policy_refuses_cross_host_memory_profile() -> None:
     )
     assert result.returncode == 1
     assert "host/profile memory mismatch" in result.stdout
+    assert "source-tree host profile table" in result.stdout
 
 
 def test_appendix_skips_only_its_explicitly_optional_absent_units(tmp_path: Path) -> None:
@@ -914,6 +925,18 @@ def test_audit_refuses_inspect_error_while_same_docker_id_remains(tmp_path: Path
     )
     assert check["status"] == "error"
     assert "Docker inspect failed" in check["detail"]
+
+
+def test_audit_refuses_same_name_docker_replacement_after_original_id_disappears(
+    tmp_path: Path,
+) -> None:
+    result = _run(tmp_path, docker_state="replace")
+    assert result.returncode == 1
+    check = next(
+        check for check in json.loads(result.stdout)["checks"] if check["name"].endswith("_inspect")
+    )
+    assert check["status"] == "error"
+    assert "same-name target remains" in check["detail"]
 
 
 @pytest.mark.parametrize(

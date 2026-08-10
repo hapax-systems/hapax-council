@@ -2172,6 +2172,7 @@ def test_root_required_audit_rejects_later_host_memory_override(
     )
     assert result.returncode == 1
     assert "unowned OOM memory assignment" in result.stderr
+    assert "next action:" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -2217,6 +2218,7 @@ def test_root_required_audit_rejects_governed_memory_assignment_anywhere_in_sear
 
     assert result.returncode == 1
     assert "unowned OOM memory assignment" in result.stderr
+    assert "next action:" in result.stderr
 
 
 def test_root_required_audit_rejects_persistent_set_property_file(tmp_path: Path) -> None:
@@ -2241,6 +2243,7 @@ def test_root_required_audit_rejects_persistent_set_property_file(tmp_path: Path
 
     assert result.returncode == 1
     assert "unowned OOM memory assignment" in result.stderr
+    assert "next action:" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -2270,6 +2273,7 @@ def test_root_required_audit_rejects_governed_key_in_full_unit_fragment(
     assert "unowned OOM memory assignment" in result.stderr
     assert "full fragment" in result.stderr
     assert str(fragment) in result.stderr
+    assert "next action:" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -2305,6 +2309,7 @@ def test_root_required_audit_rejects_stale_loaded_memory_manager_state(
     assert result.returncode == 1
     assert "authoritative manager state is stale" in result.stderr
     assert "NeedDaemonReload=yes" in result.stderr
+    assert "next action:" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -2358,6 +2363,7 @@ def test_root_required_audit_rejects_manager_reported_memory_fragment_outside_kn
     assert "authoritative FragmentPath" in result.stderr
     assert "unowned OOM memory assignment" in result.stderr
     assert str(fragment) in result.stderr
+    assert "next action:" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -2423,6 +2429,7 @@ def test_root_required_audit_rejects_manager_reported_memory_dropin_outside_know
     assert result.returncode == 1
     assert "authoritative DropInPaths" in result.stderr
     assert str(unowned) in result.stderr
+    assert "next action:" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -2461,6 +2468,7 @@ def test_root_required_audit_rejects_loaded_memory_unit_without_canonical_source
 
     assert result.returncode == 1
     assert "does not contain exactly one receipt-owned source" in result.stderr
+    assert "next action:" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -2495,6 +2503,7 @@ def test_root_required_audit_fails_closed_when_loaded_memory_paths_cannot_be_que
 
     assert result.returncode == 1
     assert "unable to query authoritative DropInPaths" in result.stderr
+    assert "next action:" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -2529,6 +2538,7 @@ def test_root_required_audit_fails_closed_when_reload_state_cannot_be_queried(
 
     assert result.returncode == 1
     assert "unable to query authoritative NeedDaemonReload" in result.stderr
+    assert "next action:" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -2563,6 +2573,7 @@ def test_root_required_audit_fails_closed_when_loaded_memory_fragment_cannot_be_
 
     assert result.returncode == 1
     assert "unable to query authoritative FragmentPath" in result.stderr
+    assert "next action:" in result.stderr
 
 
 def test_root_required_audit_rejects_symlinked_loaded_memory_fragment(
@@ -2596,6 +2607,7 @@ def test_root_required_audit_rejects_symlinked_loaded_memory_fragment(
     assert result.returncode == 1
     assert "authoritative FragmentPath" in result.stderr
     assert "unsafe OOM memory source" in result.stderr
+    assert "next action:" in result.stderr
 
 
 def test_root_required_audit_rejects_symlinked_memory_dropin(tmp_path: Path) -> None:
@@ -2616,6 +2628,7 @@ def test_root_required_audit_rejects_symlinked_memory_dropin(tmp_path: Path) -> 
 
     assert result.returncode == 1
     assert "is symlinked" in result.stderr
+    assert "next action:" in result.stderr
 
 
 def test_root_required_audit_rejects_higher_priority_zram_main_config(tmp_path: Path) -> None:
@@ -2634,6 +2647,7 @@ def test_root_required_audit_rejects_higher_priority_zram_main_config(tmp_path: 
 
     assert result.returncode == 1
     assert "higher-priority zram-generator" in result.stderr
+    assert "next action:" in result.stderr
 
 
 def test_root_required_audit_refuses_test_selectors_for_production_destinations(
