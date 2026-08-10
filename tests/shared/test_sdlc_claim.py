@@ -1661,6 +1661,118 @@ def test_private_admitted_transaction_refuses_receipt_collision_without_live_wri
     assert not fixture.transactions.exists()
 
 
+def test_claim_transaction_directory_refuses_collision_and_unsafe_root(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "transactions"
+    publication_id = f"claim-pub-{'a' * 64}"
+    (root / publication_id).mkdir(parents=True, mode=0o700)
+    root.chmod(0o700)
+
+    with pytest.raises(ClaimPublicationError) as collision:
+        sdlc_claim._create_claim_transaction_directory(root, publication_id)
+    assert collision.value.reason_code == "claim_publication_transaction_collision"
+
+    unsafe_root = tmp_path / "transactions-file"
+    unsafe_root.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(ClaimPublicationError) as unsafe:
+        sdlc_claim._create_claim_transaction_directory(unsafe_root, publication_id)
+    assert unsafe.value.reason_code == "claim_publication_private_directory_unsafe"
+
+
+def test_claim_private_payload_covers_temp_exhaustion_and_readback_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "private"
+    root.mkdir(mode=0o700)
+    target = root / "manifest.json"
+    scratch = root / ".manifest.json.fixed.claim-tmp"
+    scratch.write_bytes(b"collision\n")
+    scratch.chmod(0o600)
+    monkeypatch.setattr(sdlc_claim.secrets, "token_hex", lambda _size: "fixed")
+
+    with pytest.raises(ClaimPublicationError) as exhausted:
+        sdlc_claim._claim_private_payload(target, b"payload\n", overwrite=True)
+    assert exhausted.value.reason_code == "claim_publication_private_file_temp_exhausted"
+
+    monkeypatch.setattr(
+        sdlc_claim,
+        "_strict_file",
+        lambda _path, *, reason_code: (b"wrong\n", 0o600),
+    )
+    with pytest.raises(ClaimPublicationError) as mismatch:
+        sdlc_claim._claim_private_payload(root / "readback.json", b"payload\n", overwrite=False)
+    assert mismatch.value.reason_code == "claim_publication_private_file_readback_mismatch"
+
+
+def test_claim_publication_lock_refuses_hardlinked_lock_file(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    fixture.locks.mkdir(mode=0o700)
+    digest = sdlc_claim._sha256(f"{fixture.intent.task_id}\0{fixture.intent.role}".encode())
+    lock_path = fixture.locks / f"{digest}.lock"
+    lock_path.write_bytes(b"")
+    lock_path.chmod(0o600)
+    os.link(lock_path, fixture.locks / "extra-hardlink.lock")
+
+    with pytest.raises(ClaimPublicationError) as raised:
+        with sdlc_claim._claim_publication_lock(fixture.intent, lock_root=fixture.locks):
+            pass
+
+    assert raised.value.reason_code == "claim_publication_lock_unsafe"
+
+
+def test_admitted_manifest_state_refuses_invalid_state(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    projections = sdlc_claim._admitted_projections(fixture.intent, active.consumption)
+    publication_id = admitted_claim_publication_id(fixture.intent, active.consumption)
+
+    with pytest.raises(ClaimPublicationError) as raised:
+        sdlc_claim._admitted_manifest_bytes(
+            fixture.intent,
+            active.consumption,
+            projections,
+            publication_id,
+            state="not-a-state",
+        )
+
+    assert raised.value.reason_code == "claim_publication_state_invalid"
+
+
+def test_private_admitted_transaction_marks_recovery_after_untyped_exception(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    receipt_root = tmp_path / "receipts"
+
+    def failure_hook(phase: str, index: int | None) -> None:
+        if phase == "after_projection" and index == 0:
+            raise RuntimeError("simulated projection crash")
+
+    with pytest.raises(RuntimeError, match="simulated projection crash"):
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            receipt_root=receipt_root,
+            lock_root=fixture.locks,
+            now=active.checked_at,
+            failure_hook=failure_hook,
+        )
+
+    publication_id = admitted_claim_publication_id(fixture.intent, active.consumption)
+    manifest_path = fixture.transactions / publication_id / "manifest.json"
+    _loaded_intent, _loaded_projections, _loaded_id, state, _loaded_consumption = (
+        sdlc_claim._load_admitted_manifest(manifest_path)
+    )
+    assert state == "recovery_required"
+    assert json.loads(manifest_path.read_text(encoding="ascii"))["reason_code"] == (
+        "claim_publication_projection_failed"
+    )
+
+
 def test_recovery_is_gate0a_hold_and_never_reconciles_history(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     _materialize_v1_history(fixture, state="created")

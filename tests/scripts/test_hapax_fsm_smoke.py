@@ -26,6 +26,7 @@ def test_hapax_fsm_smoke_is_tracked_isolated_and_executable(tmp_path: Path) -> N
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+    assert "[default] claim-publication install\n" in result.stdout
     assert "admitted publication applied" in result.stdout
     assert "HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1" in result.stdout
     assert "[default] ok\n" in result.stdout

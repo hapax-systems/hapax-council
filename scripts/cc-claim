@@ -38,7 +38,7 @@ force=false
 canon_enforced="1"
 if [[ "${HAPAX_GATE0B_CLAIM_PUBLICATION_OFF:-}" == "1" ]]; then
   canon_enforced="0"
-  echo "cc-claim: WARNING — HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1; using legacy claim writer; slice-2 must revisit before admitted close is mandatory" >&2
+  echo "cc-claim: WARNING — HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1; using legacy claim writer. Next action: use only for an operator-authorized emergency fallback, verify the legacy claim/close result, then unset the killswitch and repair the admitted Gate-0B claim-publication path before normal work resumes." >&2
 fi
 task_id=""
 dispatch_message_id="${HAPAX_CLAIM_DISPATCH_MESSAGE_ID:-}"
@@ -63,12 +63,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 if [[ -z "$task_id" ]]; then
-  echo "usage: cc-claim [--force] <task_id> [--dispatch-message-id ID ...]" >&2
+  echo "usage: cc-claim [--force] [--dispatch-message-id ID ...] <task_id>" >&2
   exit 1
 fi
 PROJECT_PYTHON="$SCRIPT_DIR/../.venv/bin/python"
 if [[ "$canon_enforced" == "1" && ! -x "$PROJECT_PYTHON" ]]; then
-  echo "cc-claim: project_runtime_unprovisioned: expected pinned interpreter at $PROJECT_PYTHON" >&2
+  echo "cc-claim: project_runtime_unprovisioned: expected pinned interpreter at $PROJECT_PYTHON; Next action: run 'uv sync' in this worktree, then rerun cc-claim." >&2
   exit 3
 fi
 python_runner="$PROJECT_PYTHON"
@@ -76,7 +76,7 @@ if [[ "$canon_enforced" == "0" && ! -x "$python_runner" ]]; then
   python_runner="$(command -v python3 || true)"
 fi
 if [[ ! -x "$python_runner" ]]; then
-  echo "cc-claim: python3 missing; cannot rewrite frontmatter" >&2
+  echo "cc-claim: python3 missing; cannot rewrite frontmatter. Next action: install python3 or rerun from a provisioned repo virtualenv." >&2
   exit 3
 fi
 dispatch_values=(
@@ -94,15 +94,15 @@ for value in "${dispatch_values[@]}"; do
   [[ -n "$value" ]] && dispatch_present=$((dispatch_present + 1)) || dispatch_missing=$((dispatch_missing + 1))
 done
 if [[ "$dispatch_present" -gt 0 && "$dispatch_missing" -gt 0 ]]; then
-  echo "cc-claim: dispatch binding flags are all-or-none" >&2
+  echo "cc-claim: dispatch binding flags are all-or-none. Next action: rerun with all seven HAPAX_CLAIM_DISPATCH_* variables or all seven --dispatch-* flags from the dispatcher receipt, or omit all of them only in explicit legacy fallback mode." >&2
   exit 1
 fi
 if [[ "$canon_enforced" == "1" && "$dispatch_present" -eq 0 ]]; then
-  echo "cc-claim: canon echo enforcement requires the exact dispatch binding flags" >&2
+  echo "cc-claim: canon echo enforcement requires the exact dispatch binding flags. Next action: rerun through the governed dispatcher or pass all seven --dispatch-* flags from the dispatch receipt." >&2
   exit 2
 fi
 if [[ "$canon_enforced" == "1" && "$force" == "true" ]]; then
-  echo "cc-claim: --force is retired under canon echo enforcement; release the prior claim through a governed transition" >&2
+  echo "cc-claim: --force is retired under canon echo enforcement; release the prior claim through a governed transition. Next action: run cc-close on the current task if terminal, or ask the operator to perform a governed release of the stale claim before retrying." >&2
   exit 2
 fi
 # Resolve identity from the SAME source of truth as the gate (agent-role.sh):
@@ -115,7 +115,7 @@ else
   role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
 fi
 if [[ -z "$role" ]]; then
-  echo "cc-claim: cannot determine identity; set HAPAX_AGENT_ROLE/CODEX_ROLE/CLAUDE_ROLE or a session id (HAPAX_SESSION_ID)" >&2
+  echo "cc-claim: cannot determine identity; set HAPAX_AGENT_ROLE/CODEX_ROLE/CLAUDE_ROLE or a session id (HAPAX_SESSION_ID). Next action: launch through scripts/hapax-codex or export a governed lane identity, then rerun cc-claim." >&2
   exit 1
 fi
 session_id=""
@@ -135,14 +135,14 @@ from shared.session_identity import is_claim_keyable_session_id
 sys.exit(0 if is_claim_keyable_session_id(sys.argv[1]) else 1)
 ' "$session_id" "$SCRIPT_DIR/.." 2>/dev/null; then
   if [[ "$canon_enforced" == "1" ]]; then
-    echo "cc-claim: canon echo enforcement requires a claim-keyable non-PID session id" >&2
+    echo "cc-claim: canon echo enforcement requires a claim-keyable non-PID session id. Next action: relaunch the lane with a UUID-like HAPAX_SESSION_ID; pid-shaped session ids cannot own canonical claims." >&2
     exit 2
   fi
   echo "cc-claim: session id '$session_id' is not claim-keyable (pid-shaped or malformed) — using legacy role-keyed claim only" >&2
   session_id=""
 fi
 if [[ "$canon_enforced" == "1" && -z "$session_id" ]]; then
-  echo "cc-claim: canon echo enforcement requires a claim-keyable session id" >&2
+  echo "cc-claim: canon echo enforcement requires a claim-keyable session id. Next action: relaunch through the governed session launcher so HAPAX_SESSION_ID is set, then rerun cc-claim." >&2
   exit 2
 fi
 if [[ -n "$session_id" ]]; then
@@ -166,10 +166,11 @@ legacy_claim_file="$HOME/.cache/hapax/cc-active-task-$role"
 shopt -s nullglob
 for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
   [[ -f "$cf" ]] || continue
+  existing_task="$(head -n1 "$cf" | tr -d '[:space:]' || true)"
   cf_mtime="$(stat -c %Y "$cf" 2>/dev/null || echo "$now_epoch")"
   if (( now_epoch - cf_mtime > lease_ttl )); then
     if [[ "$canon_enforced" == "1" ]]; then
-      echo "cc-claim: HOLD — expired claim '$cf' requires governed release before canonical claim publication" >&2
+      echo "cc-claim: HOLD — expired claim '$cf' requires governed release before canonical claim publication. Next action: run cc-close ${existing_task:-<task-id-from-$cf>} if that task is terminal, or ask the operator to release/archive this exact claim file before retrying." >&2
       shopt -u nullglob
       exit 7
     fi
@@ -180,7 +181,6 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
     [[ "$cf" != "$legacy_claim_file" ]] && rm -f "$cf" 2>/dev/null || true
     continue
   fi
-  existing_task="$(head -n1 "$cf" | tr -d '[:space:]')"
   [[ -n "$existing_task" && "$existing_task" != "$task_id" ]] || continue
   existing_note=""
   for c in "$vault_root_check/active/$existing_task-"*.md "$vault_root_check/active/$existing_task.md"; do
@@ -278,7 +278,6 @@ if canon_enforced:
     from shared.gate0b_claim_publication_effect import publish_gate0b_claim  # noqa: E402
     from shared.gate0b_claim_publication_install import (  # noqa: E402
         default_claim_publication_roots,
-        install_claim_publication_composition,
         load_claim_publication_composition,
     )
     from shared.sdlc_claim import (  # noqa: E402
@@ -308,7 +307,9 @@ if canon_enforced:
     if held:
         print(
             "cc-claim: HOLD — claim publication inspection requires reconciliation: "
-            + ",".join(f"{item.publication_id}:{item.reason_code}" for item in held),
+            + ",".join(f"{item.publication_id}:{item.reason_code}" for item in held)
+            + ". Next action: run admitted claim-publication recovery or restore the listed "
+            "journal/receipt files, then rerun cc-claim.",
             file=sys.stderr,
         )
         sys.exit(8)
@@ -335,7 +336,11 @@ if canon_enforced:
                 lock_root=lock_root,
             )
         except ClaimPublicationError as exc:
-            print(f"cc-claim: HOLD — {exc}", file=sys.stderr)
+            print(
+                f"cc-claim: HOLD — {exc}. Next action: follow the repair action above, "
+                "then rerun cc-claim.",
+                file=sys.stderr,
+            )
             sys.exit(8)
         binding = applied.intent.binding
         expected_dispatch = {
@@ -353,15 +358,24 @@ if canon_enforced:
         observed_dispatch = {key: getattr(binding, key) for key in expected_dispatch}
         if observed_dispatch != expected_dispatch:
             print(
-                "cc-claim: HOLD — existing applied claim belongs to a different dispatch vector",
+                "cc-claim: HOLD — existing applied claim belongs to a different dispatch "
+                "vector. Next action: rerun with the original dispatch binding for this "
+                "applied claim, or close/release the current claim before a new dispatch "
+                "claims the task.",
                 file=sys.stderr,
             )
             sys.exit(8)
-        if applied.admission_consumption is None:
+        if (
+            applied.admission_consumption is None
+            or applied.admission_consumption.to_record().get("schema")
+            != "hapax.claim-admission-consumption.v2"
+        ):
             print(
                 "cc-claim: HOLD — execution_admission_prerequisites_unavailable: "
-                "the existing claim is a legacy publication without an admitted "
-                "ClaimAdmissionConsumption",
+                "the existing claim is not backed by an active five-proof "
+                "ClaimAdmissionConsumption. Next action: recover/re-publish this claim "
+                "through the Gate-0B admitted path, or close/release the existing claim "
+                "before retrying.",
                 file=sys.stderr,
             )
             sys.exit(8)
@@ -895,32 +909,22 @@ try:
         binding=binding,
     )
 except (ClaimPublicationError, TaskStoreError) as exc:
-    print(f"cc-claim: HOLD — {exc}", file=sys.stderr)
+    print(
+        f"cc-claim: HOLD — {exc}. Next action: follow the repair action above, "
+        "then rerun cc-claim.",
+        file=sys.stderr,
+    )
     sys.exit(8)
 
-
-def _load_or_install_claim_publication_root():
-    try:
-        return load_claim_publication_composition(Path(gate0b_roots.invocation_store_root))
-    except ExecutionAdmissionError as exc:
-        if exc.reason_code not in {
-            "gate0b_install_receipt_missing",
-            "gate0b_install_manifest_missing",
-        }:
-            raise
-        return install_claim_publication_composition(
-            roots=gate0b_roots,
-            installed_at=now,
-            install_task_ref="cc-task-gate0b-slice1b-cc-claim-reland-20260809",
-        )
-
-
 try:
-    install = _load_or_install_claim_publication_root()
+    install = load_claim_publication_composition(Path(gate0b_roots.invocation_store_root))
     receipt = publish_gate0b_claim(intent, root=install.root, now=now)
 except (ClaimPublicationError, ExecutionAdmissionError, TaskStoreError, ValueError) as exc:
     print(
-        f"cc-claim: HOLD — {exc}; prepared_intent={intent.intent_ref}",
+        f"cc-claim: HOLD — {exc}; Next action: provision or repair the Gate-0B "
+        "claim-publication composition receipt for this HOME through the governed "
+        "install step, then rerun cc-claim; do not use HAPAX_GATE0B_CLAIM_PUBLICATION_OFF "
+        f"unless the operator authorizes emergency fallback; prepared_intent={intent.intent_ref}",
         file=sys.stderr,
     )
     sys.exit(8)
