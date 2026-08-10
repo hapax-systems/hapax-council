@@ -354,6 +354,10 @@ def _systemctl_app_slice_cases(host_profile: str = "podium") -> str:
     app_max = 54 * 1024**3 if host_profile == "appendix" else 88 * 1024**3
     return "\n".join(
         [
+            '  *"--user show app.slice -p NeedDaemonReload --value"*) printf "%s\\n" "${HAPAX_TEST_APP_NEED_DAEMON_RELOAD:-no}" ;;',
+            '  *"--user show session.slice -p NeedDaemonReload --value"*) printf "no\\n" ;;',
+            '  *"--user show app.slice -p FragmentPath --value"*) printf "%s\\n" "${HAPAX_TEST_APP_FRAGMENT_PATH:-}" ;;',
+            '  *"--user show session.slice -p FragmentPath --value"*) printf "%s\\n" "${HAPAX_TEST_SESSION_FRAGMENT_PATH:-}" ;;',
             '  *"--user show app.slice -p DropInPaths --value"*) printf "%s%s\\n" "${HAPAX_OOM_SYSTEMD_USER_DIR:-/home/hapax/.config/systemd/user}/app.slice.d/oom-containment.conf" "${HAPAX_TEST_APP_DROPIN_PATHS_EXTRA:+ $HAPAX_TEST_APP_DROPIN_PATHS_EXTRA}" ;;',
             '  *"--user show session.slice -p DropInPaths --value"*) printf "%s\\n" "${HAPAX_OOM_SYSTEMD_USER_DIR:-/home/hapax/.config/systemd/user}/session.slice.d/oom-containment.conf" ;;',
             f'  *"--user show app.slice -p MemoryHigh --value"*) printf "{app_high}\\n" ;;',
@@ -373,6 +377,18 @@ def _systemctl_app_slice_cases(host_profile: str = "podium") -> str:
 def _systemctl_memory_dropin_if_cases() -> str:
     return "\n".join(
         [
+            'if [[ "$*" == *"show system.slice -p NeedDaemonReload --value"* ]]; then printf "no\\n"; fi',
+            'if [[ "$*" == *"show user.slice -p NeedDaemonReload --value"* ]]; then printf "no\\n"; fi',
+            'if [[ "$*" == *"show user-1000.slice -p NeedDaemonReload --value"* ]]; then printf "no\\n"; fi',
+            'if [[ "$*" == *"show user@1000.service -p NeedDaemonReload --value"* ]]; then printf "no\\n"; fi',
+            'if [[ "$*" == *"--user show app.slice -p NeedDaemonReload --value"* ]]; then printf "no\\n"; fi',
+            'if [[ "$*" == *"--user show session.slice -p NeedDaemonReload --value"* ]]; then printf "no\\n"; fi',
+            'if [[ "$*" == *"show system.slice -p FragmentPath --value"* ]]; then printf "\\n"; fi',
+            'if [[ "$*" == *"show user.slice -p FragmentPath --value"* ]]; then printf "\\n"; fi',
+            'if [[ "$*" == *"show user-1000.slice -p FragmentPath --value"* ]]; then printf "\\n"; fi',
+            'if [[ "$*" == *"show user@1000.service -p FragmentPath --value"* ]]; then printf "\\n"; fi',
+            'if [[ "$*" == *"--user show app.slice -p FragmentPath --value"* ]]; then printf "\\n"; fi',
+            'if [[ "$*" == *"--user show session.slice -p FragmentPath --value"* ]]; then printf "\\n"; fi',
             'if [[ "$*" == *"show system.slice -p DropInPaths --value"* ]]; then printf "%s\\n" "${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}/system.slice.d/oom-containment.conf"; fi',
             'if [[ "$*" == *"show user.slice -p DropInPaths --value"* ]]; then printf "%s\\n" "${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}/user.slice.d/oom-containment.conf"; fi',
             'if [[ "$*" == *"show user-1000.slice -p DropInPaths --value"* ]]; then printf "%s\\n" "${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}/user-1000.slice.d/oom-containment.conf"; fi',
@@ -421,6 +437,14 @@ def _systemctl_system_memory_cases(
         '  *"show hapax-oom-score-enforce.timer -p DropInPaths --value"*) printf "\\n" ;;',
         '  *"show hapax-oom-score-enforce.timer -p Unit --value"*) printf "hapax-oom-score-enforce.service\\n" ;;',
         '  *"show hapax-oom-score-enforce.timer -p TimersMonotonic --value"*) printf "%s\\n" "OnBootUSec=30s OnUnitActiveUSec=30s" ;;',
+        '  *"show system.slice -p NeedDaemonReload --value"*) printf "no\\n" ;;',
+        '  *"show user.slice -p NeedDaemonReload --value"*) printf "no\\n" ;;',
+        '  *"show user-1000.slice -p NeedDaemonReload --value"*) printf "%s\\n" "${HAPAX_TEST_USER_1000_NEED_DAEMON_RELOAD:-no}" ;;',
+        '  *"show user@1000.service -p NeedDaemonReload --value"*) printf "no\\n" ;;',
+        '  *"show system.slice -p FragmentPath --value"*) printf "%s\\n" "${HAPAX_TEST_SYSTEM_SLICE_FRAGMENT_PATH:-}" ;;',
+        '  *"show user.slice -p FragmentPath --value"*) printf "%s\\n" "${HAPAX_TEST_USER_SLICE_FRAGMENT_PATH:-}" ;;',
+        '  *"show user-1000.slice -p FragmentPath --value"*) printf "%s\\n" "${HAPAX_TEST_USER_1000_SLICE_FRAGMENT_PATH:-}" ;;',
+        '  *"show user@1000.service -p FragmentPath --value"*) printf "%s\\n" "${HAPAX_TEST_USER_MANAGER_FRAGMENT_PATH:-}" ;;',
         '  *"show system.slice -p DropInPaths --value"*) printf "%s\\n" "${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}/system.slice.d/oom-containment.conf" ;;',
         '  *"show user.slice -p DropInPaths --value"*) printf "%s\\n" "${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}/user.slice.d/oom-containment.conf" ;;',
         '  *"show user-1000.slice -p DropInPaths --value"*) printf "%s\\n" "${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}/user-1000.slice.d/oom-containment.conf" ;;',
@@ -674,6 +698,25 @@ def test_installer_rejects_forged_inherited_lock_descriptor_before_mutation(
         ("success", "podium", "unowned-earlier-control"),
         ("success", "podium", "unowned-transient"),
         ("success", "podium", "manager-only"),
+        ("success", "podium", "fragment-root"),
+        ("success", "podium", "fragment-root-symlink"),
+        ("success", "podium", "fragment-instance"),
+        ("success", "podium", "fragment-template"),
+        ("success", "podium", "fragment-only-system-MemoryHigh"),
+        ("success", "podium", "fragment-only-system-MemoryMax"),
+        ("success", "podium", "fragment-only-system-MemorySwapMax"),
+        ("success", "podium", "fragment-only-system-MemoryLow"),
+        ("success", "podium", "fragment-only-system-MemoryMin"),
+        ("success", "podium", "fragment-only-user-MemoryHigh"),
+        ("success", "podium", "fragment-only-user-MemoryMax"),
+        ("success", "podium", "fragment-only-user-MemorySwapMax"),
+        ("success", "podium", "fragment-only-user-MemoryLow"),
+        ("success", "podium", "fragment-only-user-MemoryMin"),
+        ("success", "podium", "fragment-query-failure"),
+        ("success", "podium", "fragment-symlink"),
+        ("success", "podium", "need-daemon-reload-system"),
+        ("success", "podium", "need-daemon-reload-user"),
+        ("success", "podium", "need-daemon-reload-query-failure"),
         ("success", "podium", "zram-main"),
         ("disappear", "podium", "none"),
         ("update-failure", "podium", "none"),
@@ -695,6 +738,19 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     system_control_dir = tmp_path / "systemd-system-control"
     system_runtime_control_dir = tmp_path / "systemd-system-runtime-control"
     system_transient_dir = tmp_path / "systemd-system-transient"
+    system_vendor_dir = tmp_path / "usr" / "lib" / "systemd" / "system"
+    user_vendor_dir = tmp_path / "usr" / "lib" / "systemd" / "user"
+    system_vendor_dir.mkdir(parents=True)
+    user_vendor_dir.mkdir(parents=True)
+    for fragment in (system_vendor_dir / "user.slice", system_vendor_dir / "user@.service"):
+        fragment.write_text("[Unit]\nDescription=Vendor unit\n", encoding="utf-8")
+    for fragment in (user_vendor_dir / "app.slice", user_vendor_dir / "session.slice"):
+        fragment.write_text("[Unit]\nDescription=Vendor unit\n", encoding="utf-8")
+    user_1000_fragment_path = ""
+    app_fragment_path = str(user_vendor_dir / "app.slice")
+    fragment_query_failure = ""
+    user_1000_need_daemon_reload = "no"
+    app_need_daemon_reload = "no"
     stale_user_system_units = (
         "hapax-root-failure-intake@.service",
         "hapax-oom-score-enforce.service",
@@ -766,6 +822,52 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         manager_only.parent.mkdir(parents=True)
         manager_only.write_text("[Slice]\nMemoryHigh=77309411328\n", encoding="utf-8")
         manager_only_dropin = str(manager_only)
+    elif override_mode == "fragment-root":
+        fragment = system_dir / "user-1000.slice"
+        fragment.parent.mkdir(parents=True, exist_ok=True)
+        fragment.write_text("[Slice]\nMemoryHigh=72G\n", encoding="utf-8")
+    elif override_mode == "fragment-root-symlink":
+        target = tmp_path / "mutable-root-memory-fragment"
+        target.write_text("[Slice]\n", encoding="utf-8")
+        fragment = system_dir / "user-1000.slice"
+        fragment.parent.mkdir(parents=True, exist_ok=True)
+        fragment.symlink_to(target)
+    elif override_mode in {"fragment-instance", "fragment-template"}:
+        fragment = (
+            system_dir / "user@1000.service"
+            if override_mode == "fragment-instance"
+            else system_vendor_dir / "user@.service"
+        )
+        fragment.parent.mkdir(parents=True, exist_ok=True)
+        fragment.write_text("[Service]\nMemoryHigh=72G\n", encoding="utf-8")
+    elif override_mode.startswith("fragment-only-"):
+        scope, key = override_mode.removeprefix("fragment-only-").split("-", maxsplit=1)
+        fragment = tmp_path / "manager-only-root" / f"{scope}-{key}.slice"
+        fragment.parent.mkdir(parents=True)
+        fragment.write_text(f"[Slice]\n{key}=1G\n", encoding="utf-8")
+        if scope == "system":
+            user_1000_fragment_path = str(fragment)
+        else:
+            app_fragment_path = str(fragment)
+    elif override_mode == "fragment-query-failure":
+        fragment_query_failure = (
+            'if [ "$*" = "show user-1000.slice -p FragmentPath --value" ]; then exit 71; fi\n'
+        )
+    elif override_mode == "fragment-symlink":
+        target = tmp_path / "mutable-memory-fragment"
+        target.write_text("[Slice]\n", encoding="utf-8")
+        fragment = tmp_path / "manager-only-root" / "user-1000.slice"
+        fragment.parent.mkdir(parents=True)
+        fragment.symlink_to(target)
+        user_1000_fragment_path = str(fragment)
+    elif override_mode == "need-daemon-reload-system":
+        user_1000_need_daemon_reload = "yes"
+    elif override_mode == "need-daemon-reload-user":
+        app_need_daemon_reload = "yes"
+    elif override_mode == "need-daemon-reload-query-failure":
+        fragment_query_failure = (
+            'if [ "$*" = "show user-1000.slice -p NeedDaemonReload --value" ]; then exit 71; fi\n'
+        )
     elif override_mode == "zram-main":
         zram_main = Path(os.environ["HAPAX_OOM_ZRAM_HIGH_PRIORITY_CONFIGS"])
         zram_main.parent.mkdir(parents=True, exist_ok=True)
@@ -812,6 +914,7 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         "#!/usr/bin/env bash\n"
         f"printf '%s\\n' \"$*\" >> {systemctl_calls!s}\n"
         f"{reload_failure_guard}"
+        f"{fragment_query_failure}"
         'if [[ "$*" == *"set-property --runtime "* ]]; then\n'
         '  args=("$@")\n'
         '  if [ "${args[0]}" = "--user" ]; then\n'
@@ -919,6 +1022,7 @@ esac
                     system_runtime_control_dir,
                     system_transient_dir,
                     system_dir,
+                    system_vendor_dir,
                 )
             ),
             "HAPAX_OOM_GOVERNED_USER_UNIT_PATHS": ":".join(
@@ -928,6 +1032,7 @@ esac
                     user_runtime_control_dir,
                     user_transient_dir,
                     user_dir,
+                    user_vendor_dir,
                 )
             ),
             "HAPAX_OOM_TARGET_UID": "1000",
@@ -951,6 +1056,13 @@ esac
                 "63310228" if host_profile == "appendix" else "131007744"
             ),
             "HAPAX_TEST_APP_DROPIN_PATHS_EXTRA": manager_only_dropin,
+            "HAPAX_TEST_USER_SLICE_FRAGMENT_PATH": str(system_vendor_dir / "user.slice"),
+            "HAPAX_TEST_USER_1000_SLICE_FRAGMENT_PATH": user_1000_fragment_path,
+            "HAPAX_TEST_USER_1000_NEED_DAEMON_RELOAD": user_1000_need_daemon_reload,
+            "HAPAX_TEST_USER_MANAGER_FRAGMENT_PATH": str(system_vendor_dir / "user@.service"),
+            "HAPAX_TEST_APP_FRAGMENT_PATH": app_fragment_path,
+            "HAPAX_TEST_APP_NEED_DAEMON_RELOAD": app_need_daemon_reload,
+            "HAPAX_TEST_SESSION_FRAGMENT_PATH": str(user_vendor_dir / "session.slice"),
         },
     )
 
@@ -959,8 +1071,17 @@ esac
         "unowned-earlier-control",
         "unowned-transient",
         "manager-only",
+        "fragment-root",
+        "fragment-root-symlink",
+        "fragment-instance",
+        "fragment-template",
+        "fragment-query-failure",
+        "fragment-symlink",
+        "need-daemon-reload-system",
+        "need-daemon-reload-user",
+        "need-daemon-reload-query-failure",
         "zram-main",
-    }
+    } or override_mode.startswith("fragment-only-")
     if (
         docker_mode
         in {
@@ -975,6 +1096,17 @@ esac
         assert not (tmp_path / "root-state" / "installed-receipts" / "oom-containment.sha").exists()
         if override_mode == "zram-main":
             assert "higher-priority zram-generator" in result.stderr
+        elif override_mode == "fragment-query-failure":
+            assert "unable to query authoritative FragmentPath" in result.stderr
+        elif override_mode == "need-daemon-reload-query-failure":
+            assert "unable to query authoritative NeedDaemonReload" in result.stderr
+        elif override_mode.startswith("need-daemon-reload-"):
+            assert "authoritative manager state is stale" in result.stderr
+            assert "NeedDaemonReload=yes" in result.stderr
+        elif override_mode == "fragment-symlink":
+            assert "authoritative FragmentPath reports an unsafe OOM memory source" in result.stderr
+        elif override_mode == "fragment-root-symlink":
+            assert "OOM memory fragment is symlinked" in result.stderr
         elif override_failure:
             assert "unowned OOM memory assignment" in result.stderr
         elif docker_mode == "second-reload-failure":
