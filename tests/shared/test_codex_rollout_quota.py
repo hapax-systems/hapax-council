@@ -22,11 +22,11 @@ from pathlib import Path
 import pytest
 
 from shared.codex_rollout_quota import (
-    latest_model_observation,
     DEFAULT_MAX_OBSERVATION_AGE_SECONDS,
     EXHAUSTED_USED_PERCENT,
     ROLLOUT_TAIL_BYTES,
     RolloutQuotaUnavailable,
+    latest_model_observation,
     latest_rollout_observation,
 )
 
