@@ -14,6 +14,7 @@ from shared.execution_admission import (
     DEFAULT_EXECUTION_COMPOSITION_ROOT,
     ContentAddress,
     ExecutionAdmissionError,
+    module_file_address,
 )
 from shared.gate0b_claim_publication_effect import (
     ClaimPublicationEffectInvocation,
@@ -23,6 +24,7 @@ from shared.gate0b_claim_publication_effect import (
 from shared.gate0b_claim_publication_install import (
     GATE0B_SLICE1_RATIFIED_INFLECTION_REF,
     ClaimPublicationCompositionRoots,
+    claim_publication_executor_descriptor,
     claim_publication_install_receipt_bytes,
     install_claim_publication_composition,
     load_claim_publication_composition,
@@ -186,6 +188,10 @@ def test_install_receipt_activates_only_claim_publication_root(tmp_path: Path) -
 
     receipt = require_claim_publication_install_receipt(install.root)
     assert receipt.operator_inflection_ref == GATE0B_SLICE1_RATIFIED_INFLECTION_REF
+    descriptor = claim_publication_executor_descriptor(receipt)
+    root_refs = {address.ref for address in descriptor.active_generation_roots}
+    assert module_file_address(Path("shared/sdlc_claim.py").resolve()).ref in root_refs
+    assert module_file_address(Path("shared/coord_projection.py").resolve()).ref in root_refs
     install.root.require_effect_activation()
     loaded = load_claim_publication_composition(Path(fixture.roots.invocation_store_root))
     assert loaded.receipt == receipt
@@ -521,19 +527,17 @@ def test_effect_invocation_identity_mismatch_has_repair_action(tmp_path: Path) -
         replace(invocation, invocation_hash="0" * 64)
 
 
-def test_recovery_path_remains_fail_closed_with_next_action(tmp_path: Path) -> None:
+def test_recovery_path_noops_without_journals(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
 
-    with pytest.raises(ClaimPublicationError) as raised:
-        recover_claim_publications(
-            cache_dir=fixture.cache,
-            transaction_root=Path(fixture.roots.claim_transaction_root),
-            receipt_root=Path(fixture.roots.claim_receipt_root),
-            lock_root=Path(fixture.roots.claim_lock_root),
-            task_id=fixture.intent.task_id,
-        )
+    result = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=Path(fixture.roots.claim_transaction_root),
+        receipt_root=Path(fixture.roots.claim_receipt_root),
+        lock_root=Path(fixture.roots.claim_lock_root),
+        task_id=fixture.intent.task_id,
+    )
 
-    assert raised.value.reason_code == "claim_publication_recovery_activation_unvalidated"
-    assert "Next action: dispatch recovery" in str(raised.value)
+    assert result == ()
     assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")) == before

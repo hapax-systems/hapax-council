@@ -350,8 +350,15 @@ def test_expired_session_claim_exact_release_allows_canonical_retry(
                   "$cache_dir/cc-claim-epoch-$claim_key" \
                   "$cache_dir/cc-claim-dispatch-$claim_key.json"; do
                   if test -e "$path"; then
-                    cp -p -- "$path" "$archive_dir/"
+                    archived="$archive_dir/$(basename "$path")"
+                    tmp_archived="$archive_dir/.copying-$(basename "$path")"
+                    cp -p -- "$path" "$tmp_archived"
+                    cmp -s -- "$path" "$tmp_archived"
+                    mv -f -- "$tmp_archived" "$archived"
+                    cmp -s -- "$path" "$archived"
                     rm -f -- "$path"
+                    test ! -e "$path"
+                    test -e "$archived"
                   fi
                 done
                 printf 'archived stale lease sidecars to %s\n' "$archive_dir"

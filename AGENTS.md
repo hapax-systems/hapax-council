@@ -17,7 +17,7 @@ Core invariants:
 - Existing Claude hook scripts are also the Codex guardrails through `hooks/scripts/codex-hook-adapter.sh`.
 - Current Claude Code config-conformance state, hook activation checks, pre-commit bootstrap, CODEOWNERS advisory ownership, and constitution-package follow-up are documented in `docs/runbooks/claude-code-config-conformance.md`.
 - **Task gate is MANDATORY for all Codex sessions.** The `cc-task-gate.sh` hook runs on every file-mutating tool call. You MUST `cc-claim <task_id>` before writing code. Bulk-claiming multiple tasks is blocked — close the current task before claiming another.
-- **One task at a time.** `cc-claim` refuses to claim a new task while the current claim is active (non-terminal). Use `cc-close` first, or `cc-claim --force` with justification.
+- **One task at a time.** `cc-claim` refuses to claim a new task while the current claim is active (non-terminal). Use `cc-close` first, or follow the governed stale-lease release procedure for a stale claim. The admitted default path rejects `cc-claim --force`; use the explicit emergency fallback only with operator authorization.
 - **Worktree limit: 20 visible session worktrees.** Creating worktrees beyond this is blocked. Codex lanes share this cap with Claude Code sessions.
 - A `codex-claim-audit.timer` runs every 4 hours and auto-releases phantom claims (claimed > 6h with no PR). Do not disable this timer.
 
