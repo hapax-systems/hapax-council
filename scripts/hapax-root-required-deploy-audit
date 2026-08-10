@@ -469,38 +469,6 @@ selected_zram_source_rel() {
     printf 'config/root-required/oom-host-policy/%s/zram-generator.conf\n' "$HOST_PROFILE"
 }
 
-memory_to_bytes() {
-    local value="$1" number suffix
-    case "$value" in
-        infinity|max)
-            printf 'infinity\n'
-            ;;
-        *K|*M|*G|*T)
-            number="${value%?}"
-            suffix="${value#"$number"}"
-            [[ "$number" =~ ^[0-9]+$ ]] || return 1
-            case "$suffix" in
-                K) printf '%s\n' "$((number * 1024))" ;;
-                M) printf '%s\n' "$((number * 1024 * 1024))" ;;
-                G) printf '%s\n' "$((number * 1024 * 1024 * 1024))" ;;
-                T) printf '%s\n' "$((number * 1024 * 1024 * 1024 * 1024))" ;;
-            esac
-            ;;
-        *)
-            [[ "$value" =~ ^[0-9]+$ ]] || return 1
-            printf '%s\n' "$value"
-            ;;
-    esac
-}
-
-installed_oom_unit_value() {
-    local rel="$1" key="$2" source value
-    source="$(source_for_rel "$(selected_oom_source_rel "$rel")")"
-    value="$(awk -v key="$key" '$0 ~ "^" key "=" {sub(/^[^=]*=/, ""); print; exit}' "$source" 2>/dev/null || true)"
-    [ -n "$value" ] || return 1
-    printf '%s\n' "$value"
-}
-
 governed_system_unit_search_paths() {
     local discovered override="${HAPAX_ROOT_AUDIT_SYSTEM_UNIT_PATHS:-}"
     if [ -n "$override" ]; then
@@ -549,69 +517,18 @@ governed_dropin_suffixes() {
         user@1000.service)
             printf '%s\n' user@1000.service.d user@.service.d service.d
             ;;
-        app.slice)
-            printf '%s\n' app.slice.d slice.d
+        system.slice|user.slice|app.slice|session.slice)
+            printf '%s\n' "$1.d" slice.d
             ;;
         *)
             return 1
             ;;
     esac
-}
-
-systemctl_generated_property_value() {
-    local path="$1" key="$2"
-    [ -f "$path" ] && [ ! -L "$path" ] || return 1
-    grep -Fq 'created via "systemctl set-property"' "$path" || return 1
-    awk -v key="$key" '
-        /^[[:space:]]*(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)[[:space:]]*=/ {
-            name = $0
-            sub(/^[[:space:]]*/, "", name)
-            sub(/[[:space:]]*=.*/, "", name)
-            value = $0
-            sub(/^[^=]*=[[:space:]]*/, "", value)
-            sub(/[[:space:]]*$/, "", value)
-            governed += 1
-            if (name == key) {
-                matched += 1
-                result = value
-            }
-        }
-        END {
-            if (governed == 1 && matched == 1) print result
-            else exit 1
-        }
-    ' "$path"
-}
-
-runtime_control_property_path() {
-    local scope="$1" unit="$2" key="$3"
-    case "$scope|$unit" in
-        system\|user-1000.slice|system\|user@1000.service)
-            printf '%s/%s.d/50-%s.conf\n' "$SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR" "$unit" "$key"
-            ;;
-        user\|app.slice)
-            printf '%s/%s.d/50-%s.conf\n' "$SYSTEMD_USER_RUNTIME_CONTROL_DIR" "$unit" "$key"
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
-runtime_property_matches_source() {
-    local rel="$1" key="$2" path="$3" scope="$4" unit="$5"
-    local actual expected_raw expected expected_path
-    expected_path="$(runtime_control_property_path "$scope" "$unit" "$key")" || return 1
-    [ "$path" = "$expected_path" ] || return 1
-    actual="$(systemctl_generated_property_value "$path" "$key")" || return 1
-    expected_raw="$(installed_oom_unit_value "$rel" "$key")" || return 1
-    expected="$(memory_to_bytes "$expected_raw")" || return 1
-    [ "$actual" = "$expected" ]
 }
 
 audit_governed_unit_dropins() {
-    local scope="$1" unit="$2" rel="$3" canonical="$4"
-    local root suffix path rc key accepted roots_output
+    local scope="$1" unit="$2" canonical="$3"
+    local root suffix path rc roots_output
     if [ "$scope" = "system" ]; then
         roots_output="$(governed_system_unit_search_paths)" || return 1
     else
@@ -644,20 +561,8 @@ audit_governed_unit_dropins() {
                     fi
                     continue
                 fi
-                accepted=0
-                for key in "${GOVERNED_MEMORY_KEYS[@]}"; do
-                    grep -Eq "^[[:space:]]*$key[[:space:]]*=" "$path" || continue
-                    if runtime_property_matches_source "$rel" "$key" "$path" "$scope" "$unit"; then
-                        accepted=1
-                        break
-                    fi
-                    echo "root-required install drift: unowned OOM memory assignment for $unit at $path" >&2
-                    return 1
-                done
-                if [ "$accepted" -ne 1 ]; then
-                    echo "root-required install drift: unable to classify governed OOM memory assignment for $unit at $path" >&2
-                    return 1
-                fi
+                echo "root-required install drift: unowned OOM memory assignment for $unit at $path" >&2
+                return 1
             done
         done < <(governed_dropin_suffixes "$unit")
     done <<< "$roots_output"
@@ -889,6 +794,54 @@ loaded_unit_property() {
     else
         "$SYSTEMCTL" show "$unit" -p "$property" --value 2>/dev/null
     fi
+}
+
+audit_loaded_governed_unit_dropins() {
+    local manager="$1" unit="$2" canonical="$3" paths path rc canonical_found=0
+    if ! paths="$(loaded_unit_property "$manager" "$unit" DropInPaths)"; then
+        echo "root-required install drift: unable to query authoritative DropInPaths for $unit" >&2
+        return 1
+    fi
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        if [ "$path" = "$canonical" ]; then
+            if [ ! -f "$path" ] || [ -L "$path" ]; then
+                echo "root-required install drift: authoritative DropInPaths reports an unsafe canonical OOM memory source for $unit: $path" >&2
+                return 1
+            fi
+            canonical_found=$((canonical_found + 1))
+            continue
+        fi
+        if grep -Eq '^[[:space:]]*(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)[[:space:]]*=' "$path"; then
+            echo "root-required install drift: authoritative DropInPaths reports an unowned OOM memory assignment for $unit at $path" >&2
+            return 1
+        else
+            rc=$?
+            if [ "$rc" -gt 1 ]; then
+                echo "root-required install drift: unable to inspect authoritative DropInPath for $unit: $path" >&2
+                return 1
+            fi
+        fi
+    done < <(printf '%s\n' "$paths" | tr ' ' '\n')
+    if [ "$canonical_found" -ne 1 ]; then
+        echo "root-required install drift: authoritative DropInPaths for $unit does not contain exactly one receipt-owned source: expected=$canonical actual=${paths:-none}" >&2
+        return 1
+    fi
+}
+
+audit_loaded_memory_dropin_ownership() {
+    audit_loaded_governed_unit_dropins system system.slice \
+        "$SYSTEMD_SYSTEM_DIR/system.slice.d/oom-containment.conf" || return 1
+    audit_loaded_governed_unit_dropins system user.slice \
+        "$SYSTEMD_SYSTEM_DIR/user.slice.d/oom-containment.conf" || return 1
+    audit_loaded_governed_unit_dropins system user-1000.slice \
+        "$SYSTEMD_SYSTEM_DIR/user-1000.slice.d/oom-containment.conf" || return 1
+    audit_loaded_governed_unit_dropins system user@1000.service \
+        "$SYSTEMD_SYSTEM_DIR/user@1000.service.d/oom.conf" || return 1
+    audit_loaded_governed_unit_dropins user app.slice \
+        "$SYSTEMD_USER_DIR/app.slice.d/oom-containment.conf" || return 1
+    audit_loaded_governed_unit_dropins user session.slice \
+        "$SYSTEMD_USER_DIR/session.slice.d/oom-containment.conf" || return 1
 }
 
 audit_effective_service_unit() {
@@ -1159,15 +1112,19 @@ audit_apcupsd_loaded_policy() {
 
 audit_no_unowned_host_policy_overrides() {
     local dir path rc
+    audit_governed_unit_dropins system system.slice \
+        "$SYSTEMD_SYSTEM_DIR/system.slice.d/oom-containment.conf" || return 1
+    audit_governed_unit_dropins system user.slice \
+        "$SYSTEMD_SYSTEM_DIR/user.slice.d/oom-containment.conf" || return 1
     audit_governed_unit_dropins system user-1000.slice \
-        systemd/system/user-1000.slice.d/oom-containment.conf \
         "$SYSTEMD_SYSTEM_DIR/user-1000.slice.d/oom-containment.conf" || return 1
     audit_governed_unit_dropins system user@1000.service \
-        systemd/system/user@1000.service.d/oom.conf \
         "$SYSTEMD_SYSTEM_DIR/user@1000.service.d/oom.conf" || return 1
     audit_governed_unit_dropins user app.slice \
-        systemd/units/app.slice.d/oom-containment.conf \
         "$SYSTEMD_USER_DIR/app.slice.d/oom-containment.conf" || return 1
+    audit_governed_unit_dropins user session.slice \
+        "$SYSTEMD_USER_DIR/session.slice.d/oom-containment.conf" || return 1
+    audit_loaded_memory_dropin_ownership || return 1
     while IFS= read -r path; do
         [ -n "$path" ] || continue
         if [ -e "$path" ] || [ -L "$path" ]; then

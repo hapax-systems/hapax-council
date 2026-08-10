@@ -484,6 +484,12 @@ def _root_audit_env(
     fake_systemctl = tmp_path / "root-audit-systemctl"
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
+        f'if [ "$*" = "show system.slice -p DropInPaths --value" ]; then printf "%s\\n" "{system_dir / "system.slice.d/oom-containment.conf"}"; fi\n'
+        f'if [ "$*" = "show user.slice -p DropInPaths --value" ]; then printf "%s\\n" "{system_dir / "user.slice.d/oom-containment.conf"}"; fi\n'
+        f'if [ "$*" = "show user-1000.slice -p DropInPaths --value" ]; then printf "%s\\n" "{system_dir / "user-1000.slice.d/oom-containment.conf"}"; fi\n'
+        f'if [ "$*" = "show user@1000.service -p DropInPaths --value" ]; then printf "%s\\n" "{system_dir / "user@1000.service.d/oom.conf"}"; fi\n'
+        f'if [ "$*" = "--user show app.slice -p DropInPaths --value" ]; then printf "%s\\n" "{user_dir / "app.slice.d/oom-containment.conf"}"; fi\n'
+        f'if [ "$*" = "--user show session.slice -p DropInPaths --value" ]; then printf "%s\\n" "{user_dir / "session.slice.d/oom-containment.conf"}"; fi\n'
         'if [ "$*" = "show hapax-oom-score-enforce.service -p TimeoutStartUSec --value" ]; then printf "25s\\n"; fi\n'
         'if [ "$*" = "--user show hapax-oom-policy-audit.service -p TimeoutStartUSec --value" ]; then printf "2min\\n"; fi\n'
         'if [ "$*" = "--user show hapax-root-required-deploy-audit.service -p TimeoutStartUSec --value" ]; then printf "2min\\n"; fi\n'
@@ -594,30 +600,6 @@ def _root_audit_env(
         for rel, dest in selected_destinations.items():
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(ROOT_AUDIT_SOURCE_FILES[rel], encoding="utf-8")
-    app_values = {
-        "MemoryHigh": (46 if host_profile == "appendix" else 72) * 1024**3,
-        "MemoryMax": (54 if host_profile == "appendix" else 88) * 1024**3,
-        "MemorySwapMax": 8 * 1024**3,
-        "MemoryLow": 16 * 1024**3,
-        "MemoryMin": 8 * 1024**3,
-    }
-    uid_values = {
-        "MemoryHigh": (48 if host_profile == "appendix" else 80) * 1024**3,
-        "MemoryMax": (56 if host_profile == "appendix" else 96) * 1024**3,
-        "MemorySwapMax": 8 * 1024**3,
-        "MemoryLow": 20 * 1024**3,
-        "MemoryMin": 10 * 1024**3,
-    }
-    for directory, section, values in (
-        (system_runtime_control_dir / "user-1000.slice.d", "Slice", uid_values),
-        (system_runtime_control_dir / "user@1000.service.d", "Service", uid_values),
-        (user_runtime_control_dir / "app.slice.d", "Slice", app_values),
-    ):
-        directory.mkdir(parents=True, exist_ok=True)
-        for key, value in values.items():
-            (directory / f"50-{key}.conf").write_text(
-                _systemctl_property_body(section, key, value), encoding="utf-8"
-            )
     sudoers_reference_dest.parent.mkdir(parents=True, exist_ok=True)
     sudoers_reference_dest.write_text(
         ROOT_AUDIT_SOURCE_FILES["config/root-required/hapax-oom-score-enforce.sudoers"],
@@ -2111,6 +2093,143 @@ def test_root_required_audit_rejects_persistent_set_property_file(tmp_path: Path
 
     assert result.returncode == 1
     assert "unowned OOM memory assignment" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("manager_prefix", "unit", "canonical_env", "canonical_relative"),
+    [
+        (
+            "show",
+            "system.slice",
+            "HAPAX_OOM_SYSTEMD_SYSTEM_DIR",
+            "system.slice.d/oom-containment.conf",
+        ),
+        (
+            "--user show",
+            "app.slice",
+            "HAPAX_OOM_SYSTEMD_USER_DIR",
+            "app.slice.d/oom-containment.conf",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("MemoryHigh", "77309411328"),
+        ("MemoryMax", "94489280512"),
+        ("MemorySwapMax", "0"),
+        ("MemoryLow", "21474836480"),
+        ("MemoryMin", "10737418240"),
+    ],
+)
+def test_root_required_audit_rejects_manager_reported_memory_dropin_outside_known_roots(
+    tmp_path: Path,
+    manager_prefix: str,
+    unit: str,
+    canonical_env: str,
+    canonical_relative: str,
+    key: str,
+    value: str,
+) -> None:
+    env = _root_audit_env(tmp_path)
+    canonical = Path(env[canonical_env]) / canonical_relative
+    unowned = tmp_path / "manager-only-root" / f"{unit}.d" / f"50-{key}.conf"
+    unowned.parent.mkdir(parents=True)
+    unowned.write_text(f"[Slice]\n{key}={value}\n", encoding="utf-8")
+    fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
+    baseline = fake_systemctl.with_name("root-audit-systemctl-baseline")
+    fake_systemctl.rename(baseline)
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [ "$*" = "{manager_prefix} {unit} -p DropInPaths --value" ]; then printf "%s %s\\n" "{canonical}" "{unowned}"; exit 0; fi\n'
+        f'exec "{baseline}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "authoritative DropInPaths" in result.stderr
+    assert str(unowned) in result.stderr
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "show system.slice -p DropInPaths --value",
+        "show user.slice -p DropInPaths --value",
+        "show user-1000.slice -p DropInPaths --value",
+        "show user@1000.service -p DropInPaths --value",
+        "--user show app.slice -p DropInPaths --value",
+        "--user show session.slice -p DropInPaths --value",
+    ],
+)
+def test_root_required_audit_rejects_loaded_memory_unit_without_canonical_source(
+    tmp_path: Path, command: str
+) -> None:
+    env = _root_audit_env(tmp_path)
+    fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
+    baseline = fake_systemctl.with_name("root-audit-systemctl-baseline")
+    fake_systemctl.rename(baseline)
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [ "$*" = "{command}" ]; then printf "\\n"; exit 0; fi\n'
+        f'exec "{baseline}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "does not contain exactly one receipt-owned source" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "show system.slice -p DropInPaths --value",
+        "--user show app.slice -p DropInPaths --value",
+    ],
+)
+def test_root_required_audit_fails_closed_when_loaded_memory_paths_cannot_be_queried(
+    tmp_path: Path, command: str
+) -> None:
+    env = _root_audit_env(tmp_path)
+    fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
+    baseline = fake_systemctl.with_name("root-audit-systemctl-baseline")
+    fake_systemctl.rename(baseline)
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [ "$*" = "{command}" ]; then exit 71; fi\n'
+        f'exec "{baseline}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "unable to query authoritative DropInPaths" in result.stderr
 
 
 def test_root_required_audit_rejects_symlinked_memory_dropin(tmp_path: Path) -> None:
