@@ -24,7 +24,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 run_smoke() (
   local smoke_mode="$1"
-  local sb task active claim_hash claim_log old_home old_home_was_set
+  local sb task active claim_log old_home old_home_was_set
   old_home="${HOME-}"
   old_home_was_set=0
   [[ -v HOME ]] && old_home_was_set=1
@@ -49,14 +49,13 @@ run_smoke() (
   export HAPAX_COORD_DIR="$sb/.cache/hapax/coord"
   export HAPAX_CC_HYGIENE_OFF=1
   export HAPAX_RAPID_CLOSE_OFF=1
-  claim_hash="$(printf '%s' "$task:$smoke_mode" | sha256sum | awk '{print $1}')"
-  export HAPAX_CLAIM_DISPATCH_MESSAGE_ID="dispatch-${task}"
-  export HAPAX_CLAIM_DISPATCH_BINDING_HASH="$claim_hash"
-  export HAPAX_CLAIM_DISPATCH_PLATFORM="codex"
-  export HAPAX_CLAIM_DISPATCH_MODE="headless"
-  export HAPAX_CLAIM_DISPATCH_PROFILE="ultra"
-  export HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE="CASE-TEST-001"
-  export HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY="coord-${task}"
+  unset HAPAX_CLAIM_DISPATCH_MESSAGE_ID
+  unset HAPAX_CLAIM_DISPATCH_BINDING_HASH
+  unset HAPAX_CLAIM_DISPATCH_PLATFORM
+  unset HAPAX_CLAIM_DISPATCH_MODE
+  unset HAPAX_CLAIM_DISPATCH_PROFILE
+  unset HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE
+  unset HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY
 
   if [[ "$smoke_mode" == "killswitch" ]]; then
     export HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1
@@ -117,29 +116,7 @@ EOF
       exit 1
     fi
   }
-  provision_gate0b_claim_publication_root() {
-    timeout 30 uv run --no-sync python - <<'PY'
-from datetime import UTC, datetime
-from pathlib import Path
-
-from shared.gate0b_claim_publication_install import (
-    default_claim_publication_roots,
-    install_claim_publication_composition,
-)
-
-install_claim_publication_composition(
-    roots=default_claim_publication_roots(home=Path.home()),
-    installed_at=datetime(2026, 8, 9, 17, 0, tzinfo=UTC),
-    install_task_ref="cc-task-gate0b-slice1b-cc-claim-reland-20260809",
-)
-PY
-  }
-
   cd "$repo"
-  if [[ "$smoke_mode" == "default" ]]; then
-    step "claim-publication install"
-    provision_gate0b_claim_publication_root
-  fi
   step "claim"
   claim_log="$sb/claim-${smoke_mode}.log"
   if ! timeout 30 uv run --no-sync bash scripts/cc-claim "$task" >"$claim_log" 2>&1; then
@@ -148,6 +125,8 @@ PY
   fi
   cat "$claim_log"
   if [[ "$smoke_mode" == "default" ]]; then
+    require_grep "manual claim binding issued" "$claim_log"
+    require_grep "Gate-0B claim-publication root installed for first use" "$claim_log"
     require_grep "admitted publication applied" "$claim_log"
     reject_grep "HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1" "$claim_log"
     require_find_match \
