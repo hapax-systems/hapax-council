@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+"""Call the Hapax-governed Tavily capability from anything that can run a process.
+
+Tavily already had the hard part: shared/tavily_client.py plus config/tavily.yaml carry a
+credit budget, named lanes, a usage ledger, and TTL reservations. But its ONLY presentation
+was scripts/hapax-tavily-mcp, an MCP stdio server -- so a governed, budgeted, receipted
+capability was reachable only by processes that speak MCP and had been configured with that
+server, which in practice meant codex alone.
+
+Nothing about Tavily requires that. It is an HTTP API with a key. Per the standing rule that
+no capability should be locked behind a native harness unless necessary, and that anything
+externalizable into an independently callable route should be, this is that route: the same
+governed core, presented as a process contract instead of a protocol contract.
+
+The MCP surface stays. It becomes ONE presentation rather than the home -- enforcement lives
+in the core, so both presentations inherit it.
+
+Usage:
+  hapax-tavily-search --check
+  hapax-tavily-search 'query text'
+  hapax-tavily-search --lane research_reports --max-results 8 --include-answer 'query'
+  echo 'query text' | hapax-tavily-search
+
+Exit codes:
+  0  results on stdout as JSON
+  2  configuration/credential problem (fail-closed; the message names the next action)
+  3  policy refusal or budget exhausted -- the governed core declined the call
+  4  upstream request failure
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.tavily_client import (  # noqa: E402
+    TavilyBudgetExceeded,
+    TavilyClient,
+    TavilyConfigError,
+    TavilyPolicyViolation,
+    TavilyRequestError,
+    TavilySearchRequest,
+    load_tavily_api_key,
+)
+
+EXIT_CONFIG = 2
+EXIT_REFUSED = 3
+EXIT_UPSTREAM = 4
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="hapax-tavily-search",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("query", nargs="*", help="query text; read from stdin when omitted")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="report credential and config availability without spending credit",
+    )
+    parser.add_argument(
+        "--lane",
+        default="interactive_coding",
+        help="governed spend lane from config/tavily.yaml (default: interactive_coding)",
+    )
+    parser.add_argument("--max-results", type=int, default=5)
+    parser.add_argument("--search-depth", default="basic", choices=["basic", "advanced"])
+    parser.add_argument("--topic", default="general", choices=["general", "news", "finance"])
+    parser.add_argument("--include-answer", action="store_true")
+    parser.add_argument("--include-domains", nargs="*", default=None)
+    parser.add_argument("--exclude-domains", nargs="*", default=None)
+    parser.add_argument(
+        "--p0",
+        action="store_true",
+        help="draw against the p0 daily allowance rather than the nominal one",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="emit the full response object rather than trimmed result rows",
+    )
+    return parser
+
+
+def _check() -> int:
+    """Report whether this host can actually make the call, without making one.
+
+    Separate from a search because the capability-receipt producers need an observation that
+    costs no credit -- and because 'is the key here' is exactly the question that distinguishes
+    a capability that is absent from one that is merely somewhere else.
+    """
+    # load_tavily_api_key() returns "" when nothing is found -- it does NOT raise, and
+    # TavilyClient accepts the empty string, deferring the error to request time. A check that
+    # only caught exceptions therefore reported "secret=available" on a host with no credential
+    # at all. Test the VALUE.
+    try:
+        api_key = load_tavily_api_key()
+    except Exception as exc:  # noqa: BLE001 - the message is the product here
+        api_key, load_error = "", exc
+    else:
+        load_error = None
+
+    if not api_key:
+        detail = f" ({load_error})" if load_error else ""
+        print(
+            f"hapax-tavily-search: no credential on this host{detail}. "
+            "The entitlement is not absent from the estate -- it is held where it legitimately "
+            "lives. Next: run this route on the host holding pass:tavily/api-key, or reach it "
+            "through a sanctioned remote seat. Do NOT copy the key.",
+            file=sys.stderr,
+        )
+        return EXIT_CONFIG
+    try:
+        client = TavilyClient(api_key=api_key)
+    except TavilyConfigError as exc:
+        print(f"hapax-tavily-search: config error: {exc}", file=sys.stderr)
+        return EXIT_CONFIG
+    lanes = client.config.get("lanes") or {}
+    print(
+        "hapax-tavily-search: ok secret=available "
+        f"base_url={client.config.get('base_url')} "
+        f"lanes={','.join(sorted(lanes))} "
+        f"ledger={client.ledger_path}"
+    )
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+
+    if args.check:
+        return _check()
+
+    query = " ".join(args.query).strip() or sys.stdin.read().strip()
+    if not query:
+        print("hapax-tavily-search: no query given on argv or stdin", file=sys.stderr)
+        return EXIT_CONFIG
+
+    try:
+        client = TavilyClient()
+    except (TavilyConfigError, Exception) as exc:  # noqa: BLE001
+        print(
+            f"hapax-tavily-search: cannot construct client: {exc}. "
+            "Next: run --check to see whether the credential is present on this host.",
+            file=sys.stderr,
+        )
+        return EXIT_CONFIG
+
+    request = TavilySearchRequest(
+        query=query,
+        lane=args.lane,
+        max_results=args.max_results,
+        search_depth=args.search_depth,
+        topic=args.topic,
+        include_answer=args.include_answer,
+        include_domains=args.include_domains,
+        exclude_domains=args.exclude_domains,
+        p0=args.p0,
+    )
+
+    try:
+        response = client.search(request)
+    except TavilyPolicyViolation as exc:
+        print(f"hapax-tavily-search: refused by policy: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
+    except TavilyBudgetExceeded as exc:
+        print(
+            f"hapax-tavily-search: budget exhausted for lane {args.lane!r}: {exc}. "
+            "Next: check the lane allowances in config/tavily.yaml and the usage ledger.",
+            file=sys.stderr,
+        )
+        return EXIT_REFUSED
+    except TavilyRequestError as exc:
+        print(f"hapax-tavily-search: upstream request failed: {exc}", file=sys.stderr)
+        return EXIT_UPSTREAM
+
+    if args.json:
+        print(json.dumps(response.model_dump(mode="json"), indent=2, default=str))
+        return 0
+
+    rows = [
+        {
+            "title": getattr(r, "title", None),
+            "url": getattr(r, "url", None),
+            "content": getattr(r, "content", None),
+        }
+        for r in (response.results or [])
+    ]
+    out: dict[str, object] = {"query": query, "lane": args.lane, "results": rows}
+    answer = getattr(response, "answer", None)
+    if answer:
+        out["answer"] = answer
+    print(json.dumps(out, indent=2, default=str))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
