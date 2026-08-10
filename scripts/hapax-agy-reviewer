@@ -10,7 +10,13 @@ import sys
 import tempfile
 from pathlib import Path
 
-DEFAULT_MODEL = "gemini-3.1-pro-preview"
+# agy's CLI catalog moved: gemini-3.1-pro-preview is no longer a known id there, so the seat failed
+# with "invalid model selection" long after the capability itself was healthy. gemini-3.1-pro-low is
+# the same engine/effort the original probe measured ("exact-output success with Gemini 3.1 Pro
+# (Low)") and is what the live harness accepts; bare gemini-3.1-pro demands an explicit --effort.
+# NOTE the id is harness-scoped, not global: api.headless.provider_gateway still reaches the same
+# engine as gemini-3.1-pro-preview through a provider namespace, and keeps that id.
+DEFAULT_MODEL = "gemini-3.1-pro-low"
 DEFAULT_PRINT_TIMEOUT = "20m0s"
 DEFAULT_AGY_BIN = "/usr/bin/agy"
 PINNED_REVIEW_MODEL = DEFAULT_MODEL

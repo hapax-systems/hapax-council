@@ -89,7 +89,7 @@ class TestTeamRegistry:
                 {
                     "lane_id": "antigrav",
                     "platform": "Gemini-CLI",
-                    "model_id": "gemini-3.1-pro-preview",
+                    "model_id": "gemini-3.1-pro-low",
                     "context_window": 1_000_000,
                     "tools_available": ["Bash"],
                     "last_probe_utc": time.time(),

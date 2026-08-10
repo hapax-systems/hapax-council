@@ -224,6 +224,11 @@ class ModelId(StrEnum):
     QWEN3_5_9B = "qwen3.5-9b"
     MISTRAL_MEDIUM_3_5 = "mistral-medium-3.5"
     GEMINI_3_1_PRO_PREVIEW = "gemini-3.1-pro-preview"
+    # agy's CLI catalog and a provider/Vertex catalog are different namespaces for the same engine.
+    # agy accepts gemini-3.1-pro-low (bare gemini-3.1-pro demands an explicit --effort) and no longer
+    # knows gemini-3.1-pro-preview, which remains valid for api.headless.provider_gateway. Both must
+    # be listed: a model id is a harness-scoped name, not a global one.
+    GEMINI_3_1_PRO_LOW = "gemini-3.1-pro-low"
     GEMINI_3_5_FLASH = "gemini-3.5-flash"
     Z_AI_GLM_5 = "z_ai-glm-5"
     Z_AI_GLM_5_2 = "z_ai-glm-5.2"

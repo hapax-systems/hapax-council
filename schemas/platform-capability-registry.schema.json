@@ -512,6 +512,7 @@
         "gpt-oss-120b",
         "command-r-08-2024",
         "mistral-medium-3.5",
+        "gemini-3.1-pro-low",
         "gemini-3.1-pro-preview",
         "gemini-3.5-flash",
         "z_ai-glm-5",

@@ -34,6 +34,10 @@ ROOT = Path(__file__).resolve().parent.parent
 HISTORICAL_V1_BASELINE = ROOT / "tests" / "fixtures" / "capability-inventory-baseline-v1.json"
 BASELINE_SCHEMA = ROOT / "schemas" / "capability-inventory-baseline.schema.json"
 GATE = ROOT / "scripts" / "hapax-capability-surface-delta-gate"
+#: The only admitted-supply capability whose fingerprint has moved since the historical v1 baseline.
+#: agy's CLI catalog dropped gemini-3.1-pro-preview, so the review seat was repinned to the model the
+#: harness actually accepts. Adding a second id here is a governance act, not a test fix.
+REPINNED_SINCE_V1 = "agy.review.direct"
 CI_GATE_COMMAND = [
     "uv",
     "run",
@@ -164,13 +168,22 @@ class CapabilityCIGateTest(unittest.TestCase):
         )
         legacy = json.loads(raw)
         self.assertEqual(legacy["count"], 179)
-        self.assertEqual(
-            legacy["fingerprints"],
-            {
-                descriptor.capability_id: descriptor_fingerprint(descriptor)
-                for descriptor in snapshot.admitted_supply_descriptors()
-            },
-        )
+        live_supply = {
+            descriptor.capability_id: descriptor_fingerprint(descriptor)
+            for descriptor in snapshot.admitted_supply_descriptors()
+        }
+        # Admitted supply was byte-identical to the v1 set until agy's review model was repinned.
+        # Rather than relax the equality to absorb that, the ONE legitimately-changed capability is
+        # named: everything else must still match v1 exactly, and a second unannounced drift fails
+        # here. Changing a route's model_id is a capability-surface change, and this gate exists to
+        # make that a reviewed event rather than a silent one.
+        self.assertEqual(set(live_supply), set(legacy["fingerprints"]))
+        drifted = {
+            capability_id
+            for capability_id, fingerprint in live_supply.items()
+            if legacy["fingerprints"][capability_id] != fingerprint
+        }
+        self.assertEqual(drifted, {REPINNED_SINCE_V1})
         registered = _load_inventory_baseline(HISTORICAL_V1_BASELINE)
 
         delta = discover_inventory(snapshot, registered)
@@ -179,7 +192,7 @@ class CapabilityCIGateTest(unittest.TestCase):
             set(delta.new_capability_ids),
             {descriptor.shape_id for descriptor in snapshot.evidence_only_non_supply_descriptors()},
         )
-        self.assertEqual(delta.changed_capability_ids, [])
+        self.assertEqual(delta.changed_capability_ids, [REPINNED_SINCE_V1])
         self.assertEqual(delta.missing_capability_ids, [])
 
     def test_v1_to_v2_wrapper_has_a_fixed_known_answer(self) -> None:
