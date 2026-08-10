@@ -24,7 +24,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 run_smoke() (
   local smoke_mode="$1"
-  local sb task active
+  local sb task active claim_hash claim_log
   sb="$(mktemp -d /tmp/hapax-fsm-smoke-XXXXXX)"
   trap 'rm -rf "$sb"' EXIT
   task="cc-task-fsm-smoke-probe-${smoke_mode}"
@@ -38,6 +38,14 @@ run_smoke() (
   export HAPAX_COORD_DIR="$sb/.cache/hapax/coord"
   export HAPAX_CC_HYGIENE_OFF=1
   export HAPAX_RAPID_CLOSE_OFF=1
+  claim_hash="$(printf '%s' "$task:$smoke_mode" | sha256sum | awk '{print $1}')"
+  export HAPAX_CLAIM_DISPATCH_MESSAGE_ID="dispatch-${task}"
+  export HAPAX_CLAIM_DISPATCH_BINDING_HASH="$claim_hash"
+  export HAPAX_CLAIM_DISPATCH_PLATFORM="codex"
+  export HAPAX_CLAIM_DISPATCH_MODE="headless"
+  export HAPAX_CLAIM_DISPATCH_PROFILE="ultra"
+  export HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE="CASE-TEST-001"
+  export HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY="coord-${task}"
 
   if [[ "$smoke_mode" == "killswitch" ]]; then
     export HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1
@@ -86,10 +94,43 @@ EOF
       exit 1
     fi
   }
+  reject_grep() {
+    if grep -q "$1" "$2"; then
+      printf '[%s] unexpected %s in %s\n' "$smoke_mode" "$1" "$2" >&2
+      exit 1
+    fi
+  }
+  require_find_match() {
+    if ! find "$1" "${@:2}" -print -quit 2>/dev/null | grep -q .; then
+      printf '[%s] missing expected match under: %s\n' "$smoke_mode" "$1" >&2
+      exit 1
+    fi
+  }
 
   cd "$repo"
   step "claim"
-  timeout 30 uv run --no-sync bash scripts/cc-claim "$task"
+  claim_log="$sb/claim-${smoke_mode}.log"
+  if ! timeout 30 uv run --no-sync bash scripts/cc-claim "$task" >"$claim_log" 2>&1; then
+    cat "$claim_log"
+    exit 1
+  fi
+  cat "$claim_log"
+  if [[ "$smoke_mode" == "default" ]]; then
+    require_grep "admitted publication applied" "$claim_log"
+    reject_grep "HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1" "$claim_log"
+    require_find_match \
+      "$sb/.local/share/hapax/claim-publications/gate0b-claim-publish-v1" \
+      -mindepth 2 -maxdepth 2 -name manifest.json
+    require_find_match \
+      "$sb/.cache/hapax/claim-publication-receipts" \
+      -type f -name '*.json'
+    require_find_match \
+      "$sb/.local/share/hapax/claim-publications/execution-admission/claim-publication" \
+      -type f -name '*.json'
+  else
+    require_grep "HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1" "$claim_log"
+    reject_grep "admitted publication applied" "$claim_log"
+  fi
   require_file "$sb/.cache/hapax/cc-active-task-alpha"
   require_grep "$task" "$sb/.cache/hapax/cc-active-task-alpha"
   require_grep "status: claimed" "$active/$task.md"
