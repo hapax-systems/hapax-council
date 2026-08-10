@@ -275,6 +275,24 @@ def _tree_snapshot(root: Path) -> tuple[tuple[str, str, int | None, str | None],
     return tuple(rows)
 
 
+def _file_identity_snapshot(
+    paths: tuple[Path, ...],
+) -> tuple[tuple[Path, bytes, int, int, int], ...]:
+    rows: list[tuple[Path, bytes, int, int, int]] = []
+    for path in paths:
+        metadata = path.stat(follow_symlinks=False)
+        rows.append(
+            (
+                path,
+                path.read_bytes(),
+                stat.S_IMODE(metadata.st_mode),
+                metadata.st_ino,
+                metadata.st_mtime_ns,
+            )
+        )
+    return tuple(rows)
+
+
 def _write_model(path: Path, model: object) -> Path:
     payload = model.model_dump(mode="json", by_alias=True)  # type: ignore[attr-defined]
     path.write_bytes(_canonical(payload) + b"\n")
@@ -1455,6 +1473,192 @@ def test_publish_admitted_claim_is_gate0a_hold_without_mutation(tmp_path: Path) 
     assert raised.value.reason_code == "claim_publication_effect_activation_unvalidated"
     assert not called
     assert _tree_snapshot(tmp_path) == before
+
+
+def test_private_admitted_transaction_applies_live_projections_only(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    receipt_root = tmp_path / "receipts"
+    proof_before = _file_identity_snapshot(active.proof_paths)
+
+    receipt = sdlc_claim._apply_admitted_claim_publication_transaction(
+        fixture.intent,
+        active.consumption,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt_root,
+        lock_root=fixture.locks,
+        now=active.checked_at,
+    )
+
+    projections = sdlc_claim._admitted_projections(fixture.intent, active.consumption)
+    publication_id = admitted_claim_publication_id(fixture.intent, active.consumption)
+    manifest_path = fixture.transactions / publication_id / "manifest.json"
+    receipt_path = claim_publication_receipt_path(
+        fixture.cache,
+        fixture.intent.binding,
+        receipt_root=receipt_root,
+    )
+    loaded_intent, loaded_projections, loaded_id, state, loaded_consumption = (
+        sdlc_claim._load_admitted_manifest(manifest_path)
+    )
+    receipt_record = load_admitted_claim_publication_receipt(receipt_path)
+
+    assert receipt.schema == ADMITTED_CLAIM_PUBLICATION_RECEIPT_SCHEMA
+    assert receipt.receipt_path == receipt_path
+    assert receipt_record["schema"] == ADMITTED_CLAIM_PUBLICATION_RECEIPT_SCHEMA
+    assert loaded_intent == fixture.intent
+    assert loaded_consumption == active.consumption
+    assert loaded_projections == projections
+    assert loaded_id == publication_id
+    assert state == "applied"
+    assert len(loaded_projections) == 12
+    assert stat.S_IMODE(manifest_path.stat(follow_symlinks=False).st_mode) == 0o600
+    assert stat.S_IMODE(receipt_path.stat(follow_symlinks=False).st_mode) == 0o600
+    for projection in projections[:7]:
+        assert projection.path.read_bytes() == projection.after
+        assert projection.after_mode is not None
+        assert stat.S_IMODE(projection.path.stat(follow_symlinks=False).st_mode) == (
+            projection.after_mode
+        )
+    assert _file_identity_snapshot(active.proof_paths) == proof_before
+
+    required = require_applied_admitted_claim_publication(
+        fixture.intent,
+        active.consumption,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt_root,
+        lock_root=fixture.locks,
+    )
+    again = sdlc_claim._apply_admitted_claim_publication_transaction(
+        fixture.intent,
+        active.consumption,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt_root,
+        lock_root=fixture.locks,
+        now=active.checked_at,
+    )
+    inspections = inspect_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt_root,
+        task_id=fixture.intent.task_id,
+        expected_publication_id=publication_id,
+        expected_disposition="terminal_applied",
+    )
+
+    assert required.receipt_hash == receipt.receipt_hash
+    assert again.receipt_hash == receipt.receipt_hash
+    assert inspections[0].disposition == "terminal_applied"
+    assert inspections[0].reason_code is None
+
+
+def test_private_admitted_transaction_refuses_proof_drift_before_live_writes(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    active.proof_paths[0].write_bytes(b"{}\n")
+
+    with pytest.raises(ClaimPublicationError) as raised:
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            receipt_root=tmp_path / "receipts",
+            lock_root=fixture.locks,
+            now=active.checked_at,
+        )
+
+    assert raised.value.reason_code == "claim_publication_preimage_changed"
+    assert (
+        fixture.vault / "active" / f"{fixture.intent.task_id}.md"
+    ).read_bytes() == fixture.intent.note_before
+    assert not fixture.transactions.exists()
+
+
+def test_private_admitted_transaction_marks_recovery_after_projection_failure(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    receipt_root = tmp_path / "receipts"
+
+    def failure_hook(phase: str, index: int | None) -> None:
+        if phase == "after_projection" and index == 0:
+            raise ClaimPublicationError(
+                "claim_publication_projection_simulated",
+                "run admitted recovery in the test harness",
+                fixture.intent.task_id,
+            )
+
+    with pytest.raises(ClaimPublicationError) as raised:
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            receipt_root=receipt_root,
+            lock_root=fixture.locks,
+            now=active.checked_at,
+            failure_hook=failure_hook,
+        )
+
+    publication_id = admitted_claim_publication_id(fixture.intent, active.consumption)
+    manifest_path = fixture.transactions / publication_id / "manifest.json"
+    _loaded_intent, _loaded_projections, _loaded_id, state, _loaded_consumption = (
+        sdlc_claim._load_admitted_manifest(manifest_path)
+    )
+    inspections = inspect_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt_root,
+        task_id=fixture.intent.task_id,
+        expected_publication_id=publication_id,
+    )
+
+    assert raised.value.reason_code == "claim_publication_projection_simulated"
+    assert state == "recovery_required"
+    assert json.loads(manifest_path.read_text(encoding="ascii"))["reason_code"] == (
+        "claim_publication_projection_simulated"
+    )
+    assert not claim_publication_receipt_path(
+        fixture.cache,
+        fixture.intent.binding,
+        receipt_root=receipt_root,
+    ).exists()
+    assert inspections[0].disposition == "hold"
+    assert inspections[0].reason_code == "admitted_claim_publication_reconciliation_required"
+
+
+def test_private_admitted_transaction_refuses_receipt_collision_without_live_writes(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    receipt_root = tmp_path / "receipts"
+    receipt_path = claim_publication_receipt_path(
+        fixture.cache,
+        fixture.intent.binding,
+        receipt_root=receipt_root,
+    )
+    _write_history_file(receipt_path, b"{}\n")
+
+    with pytest.raises(ClaimPublicationError) as raised:
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            receipt_root=receipt_root,
+            lock_root=fixture.locks,
+            now=active.checked_at,
+        )
+
+    assert raised.value.reason_code == "claim_publication_existing_history_not_terminal"
+    assert (
+        fixture.vault / "active" / f"{fixture.intent.task_id}.md"
+    ).read_bytes() == fixture.intent.note_before
+    assert not fixture.transactions.exists()
 
 
 def test_recovery_is_gate0a_hold_and_never_reconciles_history(tmp_path: Path) -> None:
