@@ -21,6 +21,17 @@ OOM_PACKAGE_MANIFEST = (REPO_ROOT / "config/root-required/oom-containment.files"
 APCUPSD_PACKAGE_MANIFEST = (
     REPO_ROOT / "config/root-required/apcupsd-power-alerts.files"
 ).read_text(encoding="utf-8")
+OOM_HOST_PROFILE_FILES = {
+    relative: (REPO_ROOT / relative).read_text(encoding="utf-8")
+    for relative in (
+        "config/root-required/oom-host-profiles.tsv",
+        "config/root-required/oom-host-policy/appendix/app.slice.conf",
+        "config/root-required/oom-host-policy/appendix/user-1000.slice.conf",
+        "config/root-required/oom-host-policy/appendix/user@1000.service.conf",
+        "config/root-required/oom-host-policy/appendix/zram-generator.conf",
+        "config/root-required/oom-host-policy/podium/zram-generator.conf",
+    )
+}
 RECOVERY_BUNDLE_SOURCE_FILES = {
     "scripts/hapax-p0-incident-intake": "#!/usr/bin/env bash\necho intake\n",
     "scripts/hapax-coord-deploy": "#!/usr/bin/env bash\necho coord deploy\n",
@@ -70,6 +81,7 @@ P0_OOM_AUDIT_FILES = {
 }
 ROOT_AUDIT_SOURCE_FILES = {
     "config/root-required/oom-containment.files": OOM_PACKAGE_MANIFEST,
+    **OOM_HOST_PROFILE_FILES,
     "config/root-required/apcupsd-power-alerts.files": APCUPSD_PACKAGE_MANIFEST,
     "scripts/install-p0-oom-containment": "#!/usr/bin/env bash\n",
     "config/root-required/hapax-oom-score-enforce.sudoers": (
@@ -443,7 +455,12 @@ def _root_audit_env(
     root_failure_dest = tmp_path / "sbin" / "hapax-root-failure-intake"
     oom_audit_dest = tmp_path / "sbin" / "hapax-oom-policy-audit"
     root_audit_dest = tmp_path / "sbin" / "hapax-root-required-deploy-audit"
+    profile_table_dest = tmp_path / "share" / "oom-host-profiles.tsv"
+    zram_policy_dest = tmp_path / "etc" / "systemd" / "zram-generator.conf"
+    zram_dropin_dir = tmp_path / "etc" / "systemd" / "zram-generator.conf.d"
+    zram_dropin_dir.mkdir(parents=True)
     user_dir = tmp_path / "home" / ".config" / "systemd" / "user"
+    user_control_dir = tmp_path / "home" / ".config" / "systemd" / "user.control"
     earlyoom_dest = tmp_path / "etc" / "default" / "earlyoom"
     fake_systemctl = tmp_path / "root-audit-systemctl"
     fake_systemctl.write_text(
@@ -488,6 +505,8 @@ def _root_audit_env(
         "scripts/hapax-root-failure-intake": root_failure_dest,
         "scripts/hapax-oom-policy-audit": oom_audit_dest,
         "scripts/hapax-root-required-deploy-audit": root_audit_dest,
+        "config/root-required/oom-host-profiles.tsv": profile_table_dest,
+        "config/root-required/oom-host-policy/podium/zram-generator.conf": zram_policy_dest,
         "config/earlyoom/default": earlyoom_dest,
         "systemd/logrotate.d/hapax-ups-power-events": logrotate_dest,
         "config/upower/90-hapax-apcupsd-owner.conf": upower_dest,
@@ -579,9 +598,19 @@ def _root_audit_env(
         "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
         "HAPAX_OOM_POLICY_AUDIT_DEST": str(oom_audit_dest),
         "HAPAX_ROOT_REQUIRED_AUDIT_DEST": str(root_audit_dest),
+        "HAPAX_OOM_PROFILE_TABLE_DEST": str(profile_table_dest),
+        "HAPAX_OOM_ZRAM_POLICY_DEST": str(zram_policy_dest),
+        "HAPAX_OOM_LEGACY_ZRAM_POLICY_DEST": str(
+            zram_dropin_dir / "90-hapax-host-policy.conf"
+        ),
+        "HAPAX_OOM_ZRAM_DROPIN_DIRS": str(zram_dropin_dir),
+        "HAPAX_ROOT_AUDIT_TEST_MODE": "1",
+        "HAPAX_ROOT_AUDIT_HOSTNAME": "hapax-podium",
+        "HAPAX_ROOT_AUDIT_MEMTOTAL_KIB": "131007744",
         "HAPAX_OOM_EARLYOOM_DEST": str(earlyoom_dest),
         "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(system_dir),
         "HAPAX_OOM_SYSTEMD_USER_DIR": str(user_dir),
+        "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR": str(user_control_dir),
         "HAPAX_APCUPSD_DEST": str(apcupsd_dir),
         "HAPAX_UPS_AUDIT_LOG": str(apcupsd_audit_log),
         "HAPAX_UPS_AUDIT_LOG_OWNER_UID": str(os.getuid()),
@@ -917,6 +946,7 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
         "config/root-required/oom-containment.files": (
             OOM_PACKAGE_MANIFEST + f"{future_manifest_path}\n"
         ),
+        **OOM_HOST_PROFILE_FILES,
         future_manifest_path: 'FUTURE_EARLYOOM_POLICY="enabled"\n',
         "scripts/install-p0-oom-containment": installer_body,
         "config/root-required/hapax-oom-score-enforce.sudoers": (
@@ -1221,6 +1251,7 @@ def test_concurrent_same_sha_root_required_oom_deploy_stages_complete_deferral(
     installer_body = "#!/usr/bin/env bash\nsleep 0.2\nexit 77\n"
     files = {
         "config/root-required/oom-containment.files": OOM_PACKAGE_MANIFEST,
+        **OOM_HOST_PROFILE_FILES,
         "scripts/install-p0-oom-containment": installer_body,
         "config/root-required/hapax-oom-score-enforce.sudoers": (
             "hapax ALL=(root) NOPASSWD: /usr/local/sbin/hapax-oom-score-enforce --apply-unit pipewire.service\n"
@@ -1415,6 +1446,30 @@ def test_root_required_audit_detects_oom_enforcer_drift(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert "root-required install drift" in result.stderr
     assert "install-p0-oom-containment --install --verify-live" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "drift_rel",
+    [
+        "config/root-required/oom-host-profiles.tsv",
+        "config/root-required/oom-host-policy/podium/zram-generator.conf",
+        "systemd/system/user-1000.slice.d/oom-containment.conf",
+        "systemd/system/user@1000.service.d/oom.conf",
+        "systemd/units/app.slice.d/oom-containment.conf",
+    ],
+)
+def test_root_required_audit_detects_host_profile_install_drift(
+    tmp_path: Path, drift_rel: str
+) -> None:
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_root_audit_env(tmp_path, drift_rel=drift_rel),
+    )
+    assert result.returncode == 1
+    assert "root-required install drift" in result.stderr
 
 
 def test_root_required_audit_rejects_untrusted_root_artifact_owner(tmp_path: Path) -> None:
@@ -1859,6 +1914,47 @@ def test_root_required_audit_passes_when_oom_enforcer_matches(tmp_path: Path) ->
 
     assert result.returncode == 0, result.stderr
     assert "root-required post-merge deploy deferrals: none" in result.stdout
+
+
+def test_root_required_audit_binds_host_profile_table_to_receipt(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    table = (
+        Path(env["HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"])
+        / "config/root-required/oom-host-profiles.tsv"
+    )
+    table.write_text(table.read_text(encoding="utf-8") + "# tampered\n", encoding="utf-8")
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode == 1
+    assert "installed source is not bound" in result.stderr
+
+
+@pytest.mark.parametrize("legacy", [True, False])
+def test_root_required_audit_rejects_later_host_memory_override(
+    tmp_path: Path, legacy: bool
+) -> None:
+    env = _root_audit_env(tmp_path)
+    dropin = (
+        Path(env["HAPAX_OOM_SYSTEMD_SYSTEM_DIR"])
+        / "user-1000.slice.d"
+        / ("zz-hapax-host-memory.conf" if legacy else "zz-unowned-memory.conf")
+    )
+    dropin.parent.mkdir(parents=True, exist_ok=True)
+    dropin.write_text("[Slice]\nMemoryMax=96G\n", encoding="utf-8")
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode == 1
+    assert "host-policy override" in result.stderr or "overrides the canonical" in result.stderr
 
 
 def test_root_required_audit_ignores_hostile_path(tmp_path: Path) -> None:

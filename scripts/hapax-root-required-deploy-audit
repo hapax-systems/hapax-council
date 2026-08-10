@@ -27,9 +27,14 @@ fi
 ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapax-root-failure-intake}"
 OOM_POLICY_AUDIT_DEST="${HAPAX_OOM_POLICY_AUDIT_DEST:-/usr/local/sbin/hapax-oom-policy-audit}"
 ROOT_REQUIRED_AUDIT_DEST="${HAPAX_ROOT_REQUIRED_AUDIT_DEST:-/usr/local/sbin/hapax-root-required-deploy-audit}"
+OOM_PROFILE_TABLE_DEST="${HAPAX_OOM_PROFILE_TABLE_DEST:-/usr/local/share/hapax/root-required/oom-host-profiles.tsv}"
+ZRAM_POLICY_DEST="${HAPAX_OOM_ZRAM_POLICY_DEST:-/etc/systemd/zram-generator.conf}"
+LEGACY_ZRAM_POLICY_DEST="${HAPAX_OOM_LEGACY_ZRAM_POLICY_DEST:-/etc/systemd/zram-generator.conf.d/90-hapax-host-policy.conf}"
+ZRAM_DROPIN_DIRS="${HAPAX_OOM_ZRAM_DROPIN_DIRS:-/etc/systemd/zram-generator.conf.d:/run/systemd/zram-generator.conf.d:/usr/local/lib/systemd/zram-generator.conf.d:/usr/lib/systemd/zram-generator.conf.d}"
 EARLYOOM_DEST="${HAPAX_OOM_EARLYOOM_DEST:-/etc/default/earlyoom}"
 SYSTEMD_SYSTEM_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
 SYSTEMD_USER_DIR="${HAPAX_OOM_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
+SYSTEMD_USER_CONTROL_DIR="${HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR:-$HOME/.config/systemd/user.control}"
 APCUPSD_DEST="${HAPAX_APCUPSD_DEST:-/etc/apcupsd}"
 APCUPSD_AUDIT_LOG="${HAPAX_UPS_AUDIT_LOG:-/var/log/hapax/ups-power-events.jsonl}"
 APCUPSD_CANONICAL_AUDIT_LOG="/var/log/hapax/ups-power-events.jsonl"
@@ -47,6 +52,7 @@ SUDO="${HAPAX_ROOT_AUDIT_SUDO:-/usr/bin/sudo}"
 VISUDO="${HAPAX_ROOT_AUDIT_VISUDO:-/usr/bin/visudo}"
 ROOT_ARTIFACT_TEST_UID="${HAPAX_ROOT_AUDIT_TEST_ROOT_UID:-$(/usr/bin/id -u)}"
 ROOT_ARTIFACT_TEST_GID="${HAPAX_ROOT_AUDIT_TEST_ROOT_GID:-$(/usr/bin/id -g)}"
+HOST_PROFILE=""
 
 acquire_inherited_root_required_lock() {
     local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
@@ -300,6 +306,12 @@ PY
 
 oom_package_files=(
     config/root-required/oom-containment.files
+    config/root-required/oom-host-profiles.tsv
+    config/root-required/oom-host-policy/appendix/app.slice.conf
+    config/root-required/oom-host-policy/appendix/user-1000.slice.conf
+    config/root-required/oom-host-policy/appendix/user@1000.service.conf
+    config/root-required/oom-host-policy/appendix/zram-generator.conf
+    config/root-required/oom-host-policy/podium/zram-generator.conf
     scripts/install-p0-oom-containment
     config/root-required/hapax-oom-score-enforce.sudoers
     scripts/hapax-oom-score-enforce
@@ -360,6 +372,92 @@ pending_runbooks() {
 source_for_rel() {
     local rel="$1"
     printf '%s/%s\n' "$INSTALLED_SOURCE_ROOT" "$rel"
+}
+
+load_host_profile() {
+    local output
+    if ! output="$(/usr/bin/python3 - "$INSTALLED_SOURCE_ROOT/config/root-required/oom-host-profiles.tsv" <<'PY'
+from __future__ import annotations
+
+import os
+import socket
+import sys
+from pathlib import Path
+
+table = Path(sys.argv[1])
+test_mode = os.environ.get("HAPAX_ROOT_AUDIT_TEST_MODE") == "1"
+hostname_override = os.environ.get("HAPAX_ROOT_AUDIT_HOSTNAME", "").strip()
+memtotal_override = os.environ.get("HAPAX_ROOT_AUDIT_MEMTOTAL_KIB", "").strip()
+if (hostname_override or memtotal_override) and not test_mode:
+    print("root-required host profile overrides are test-only", file=sys.stderr)
+    raise SystemExit(1)
+hostname = (hostname_override or socket.gethostname()).split(".", 1)[0]
+if memtotal_override:
+    try:
+        memtotal_kib = int(memtotal_override)
+    except ValueError:
+        print("invalid test MemTotal override", file=sys.stderr)
+        raise SystemExit(1)
+else:
+    memtotal_kib = 0
+    for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+        fields = line.split()
+        if fields[:1] == ["MemTotal:"]:
+            memtotal_kib = int(fields[1])
+            break
+if memtotal_kib <= 0:
+    print("unable to determine MemTotal", file=sys.stderr)
+    raise SystemExit(1)
+floor_gib = memtotal_kib * 1024 // 1024**3
+matches: list[str] = []
+for line_number, line in enumerate(table.read_text(encoding="utf-8").splitlines(), start=1):
+    if not line or line.startswith("#"):
+        continue
+    fields = line.split("\t")
+    if len(fields) != 8:
+        print(f"invalid host profile table row {line_number}", file=sys.stderr)
+        raise SystemExit(1)
+    if fields[0] == hostname and fields[1] == str(floor_gib):
+        matches.append(fields[2])
+if len(matches) != 1 or matches[0] not in {"appendix", "podium"}:
+    print(
+        f"no unique governed host profile for hostname={hostname} floor_memtotal_gib={floor_gib}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+print(matches[0])
+PY
+    )"; then
+        echo "root-required install drift: cannot select an exact receipt-bound OOM host profile" >&2
+        echo "  next action: repair host identity/inventory or the governed profile table, then rerun the OOM installer" >&2
+        return 1
+    fi
+    HOST_PROFILE="$output"
+}
+
+selected_oom_source_rel() {
+    local rel="$1"
+    if [ "$HOST_PROFILE" = "appendix" ]; then
+        case "$rel" in
+            systemd/units/app.slice.d/oom-containment.conf)
+                printf '%s\n' config/root-required/oom-host-policy/appendix/app.slice.conf
+                return 0
+                ;;
+            systemd/system/user-1000.slice.d/oom-containment.conf)
+                printf '%s\n' config/root-required/oom-host-policy/appendix/user-1000.slice.conf
+                return 0
+                ;;
+            systemd/system/user@1000.service.d/oom.conf)
+                printf '%s\n' config/root-required/oom-host-policy/appendix/user@1000.service.conf
+                return 0
+                ;;
+        esac
+    fi
+    printf '%s\n' "$rel"
+}
+
+selected_zram_source_rel() {
+    printf 'config/root-required/oom-host-policy/%s/zram-generator.conf\n' "$HOST_PROFILE"
 }
 
 audit_package_receipt() {
@@ -856,6 +954,68 @@ audit_apcupsd_loaded_policy() {
     [ "$failed" -eq 0 ]
 }
 
+audit_no_unowned_host_policy_overrides() {
+    local spec dir canonical path base rc
+    for spec in \
+        "$SYSTEMD_SYSTEM_DIR/user-1000.slice.d|oom-containment.conf" \
+        "$SYSTEMD_SYSTEM_DIR/user@1000.service.d|oom.conf" \
+        "$SYSTEMD_USER_DIR/app.slice.d|oom-containment.conf" \
+        "$SYSTEMD_USER_CONTROL_DIR/app.slice.d|oom-containment.conf"; do
+        dir="${spec%%|*}"
+        canonical="${spec#*|}"
+        [ -d "$dir" ] || continue
+        for path in "$dir"/*.conf; do
+            [ -e "$path" ] || [ -L "$path" ] || continue
+            base="$(basename "$path")"
+            [[ "$base" > "$canonical" ]] || continue
+            if [ -L "$path" ]; then
+                echo "root-required install drift: unowned later OOM drop-in is symlinked: $path" >&2
+                return 1
+            fi
+            if grep -Eq '^[[:space:]]*(MemoryHigh|MemoryMax)=' "$path"; then
+                echo "root-required install drift: unowned later OOM drop-in overrides the canonical host profile: $path" >&2
+                return 1
+            else
+                rc=$?
+                if [ "$rc" -gt 1 ]; then
+                    echo "root-required install drift: unable to inspect later OOM drop-in: $path" >&2
+                    return 1
+                fi
+            fi
+        done
+    done
+    while IFS= read -r dir; do
+        [ -d "$dir" ] || continue
+        for path in "$dir"/*.conf; do
+            [ -e "$path" ] || [ -L "$path" ] || continue
+            if [ -L "$path" ]; then
+                echo "root-required install drift: unowned zram-generator drop-in is symlinked: $path" >&2
+                return 1
+            fi
+            if grep -Eq '^[[:space:]]*(zram-size|compression-algorithm)[[:space:]]*=' "$path"; then
+                echo "root-required install drift: unowned zram-generator drop-in overrides the canonical host profile: $path" >&2
+                return 1
+            else
+                rc=$?
+                if [ "$rc" -gt 1 ]; then
+                    echo "root-required install drift: unable to inspect zram-generator drop-in: $path" >&2
+                    return 1
+                fi
+            fi
+        done
+    done < <(printf '%s\n' "${ZRAM_DROPIN_DIRS//:/$'\n'}")
+    for path in \
+        "$SYSTEMD_SYSTEM_DIR/user-1000.slice.d/zz-hapax-host-memory.conf" \
+        "$SYSTEMD_SYSTEM_DIR/user@1000.service.d/zz-hapax-host-memory.conf" \
+        "$SYSTEMD_USER_DIR/app.slice.d/zz-hapax-host-memory.conf" \
+        "$LEGACY_ZRAM_POLICY_DEST"; do
+        if [ -e "$path" ] || [ -L "$path" ]; then
+            echo "root-required install drift: legacy OOM host-policy override remains: $path" >&2
+            return 1
+        fi
+    done
+}
+
 audit_root_installs() {
     local -a manifest=(
         "scripts/hapax-oom-score-enforce|$OOM_ENFORCER_DEST"
@@ -864,11 +1024,13 @@ audit_root_installs() {
         "scripts/hapax-root-failure-intake|$ROOT_FAILURE_INTAKE_DEST"
         "scripts/hapax-oom-policy-audit|$OOM_POLICY_AUDIT_DEST"
         "scripts/hapax-root-required-deploy-audit|$ROOT_REQUIRED_AUDIT_DEST"
+        "config/root-required/oom-host-profiles.tsv|$OOM_PROFILE_TABLE_DEST"
+        "$(selected_zram_source_rel)|$ZRAM_POLICY_DEST"
         "config/earlyoom/default|$EARLYOOM_DEST"
         "systemd/system/system.slice.d/oom-containment.conf|$SYSTEMD_SYSTEM_DIR/system.slice.d/oom-containment.conf"
         "systemd/system/user.slice.d/oom-containment.conf|$SYSTEMD_SYSTEM_DIR/user.slice.d/oom-containment.conf"
-        "systemd/system/user-1000.slice.d/oom-containment.conf|$SYSTEMD_SYSTEM_DIR/user-1000.slice.d/oom-containment.conf"
-        "systemd/system/user@1000.service.d/oom.conf|$SYSTEMD_SYSTEM_DIR/user@1000.service.d/oom.conf"
+        "$(selected_oom_source_rel systemd/system/user-1000.slice.d/oom-containment.conf)|$SYSTEMD_SYSTEM_DIR/user-1000.slice.d/oom-containment.conf"
+        "$(selected_oom_source_rel systemd/system/user@1000.service.d/oom.conf)|$SYSTEMD_SYSTEM_DIR/user@1000.service.d/oom.conf"
         "systemd/system/apcupsd.service.d/oom-protect.conf|$SYSTEMD_SYSTEM_DIR/apcupsd.service.d/oom-protect.conf"
         "systemd/system/systemd-logind.service.d/oom-protect.conf|$SYSTEMD_SYSTEM_DIR/systemd-logind.service.d/oom-protect.conf"
         "systemd/system/systemd-resolved.service.d/oom-protect.conf|$SYSTEMD_SYSTEM_DIR/systemd-resolved.service.d/oom-protect.conf"
@@ -883,7 +1045,7 @@ audit_root_installs() {
         "systemd/units/hapax-oom-policy-audit.timer|$SYSTEMD_USER_DIR/hapax-oom-policy-audit.timer"
         "systemd/units/hapax-root-required-deploy-audit.service|$SYSTEMD_USER_DIR/hapax-root-required-deploy-audit.service"
         "systemd/units/hapax-root-required-deploy-audit.timer|$SYSTEMD_USER_DIR/hapax-root-required-deploy-audit.timer"
-        "systemd/units/app.slice.d/oom-containment.conf|$SYSTEMD_USER_DIR/app.slice.d/oom-containment.conf"
+        "$(selected_oom_source_rel systemd/units/app.slice.d/oom-containment.conf)|$SYSTEMD_USER_DIR/app.slice.d/oom-containment.conf"
         "systemd/units/session.slice.d/oom-containment.conf|$SYSTEMD_USER_DIR/session.slice.d/oom-containment.conf"
         "systemd/units/pipewire.service.d/oom-protect.conf|$SYSTEMD_USER_DIR/pipewire.service.d/oom-protect.conf"
         "systemd/units/pipewire-pulse.service.d/oom-protect.conf|$SYSTEMD_USER_DIR/pipewire-pulse.service.d/oom-protect.conf"
@@ -933,6 +1095,7 @@ audit_root_installs() {
         failed=1
     fi
     audit_systemd_state || failed=1
+    audit_no_unowned_host_policy_overrides || failed=1
     audit_apcupsd_loaded_policy || failed=1
     audit_apcupsd_audit_log || failed=1
     [ "$failed" -eq 0 ]
@@ -944,7 +1107,11 @@ if [ "${#runbooks[@]}" -eq 0 ]; then
     audit_desired_receipt "apcupsd-power-alerts" || rc=1
     audit_package_receipt "oom-containment" "${oom_package_files[@]}" || rc=1
     audit_package_receipt "apcupsd-power-alerts" "${apcupsd_package_files[@]}" || rc=1
-    audit_root_installs || rc=1
+    if load_host_profile; then
+        audit_root_installs || rc=1
+    else
+        rc=1
+    fi
     if [ "$rc" -ne 0 ]; then
         exit "$rc"
     fi

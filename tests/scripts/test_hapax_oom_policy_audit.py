@@ -42,6 +42,25 @@ PROTECTED_USER_UNIT_MEMORY = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _host_policy_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sys_root = tmp_path / "sys"
+    zram = sys_root / "block" / "zram0"
+    zram.mkdir(parents=True)
+    (zram / "disksize").write_text(f"{32 * 1024**3}\n", encoding="utf-8")
+    (zram / "comp_algorithm").write_text(
+        "lzo-rle lzo lz4 lz4hc [zstd] deflate\n", encoding="utf-8"
+    )
+    unit_paths = tmp_path / "user-unit-path"
+    unit_paths.mkdir()
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_TEST_MODE", "1")
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_MEMTOTAL_KIB", "131007744")
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_HOSTNAME", "hapax-podium")
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_SYS_ROOT", str(sys_root))
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_USER_UNIT_PATHS", str(unit_paths))
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_DOCKER", str(_fake_docker(tmp_path)))
+
+
 def test_audit_resets_hostile_path_before_command_resolution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -62,12 +81,21 @@ def _protected_user_unit_cases(
     wrong_audio_no_new_privileges: bool = False,
     unit_pids: dict[str, int] | None = None,
     unit_cgroups: dict[str, str] | None = None,
+    unit_load_states: dict[str, str] | None = None,
 ) -> str:
     unit_pids = unit_pids or {}
     unit_cgroups = unit_cgroups or {}
+    unit_load_states = unit_load_states or {}
     cases = []
     for unit in PROTECTED_USER_UNIT_SCORES:
-        actual = 0 if wrong_unit_score and unit == "studio-compositor.service" else 100
+        load_state = unit_load_states.get(unit, "loaded")
+        actual = (
+            200
+            if load_state == "not-found"
+            else 0
+            if wrong_unit_score and unit == "studio-compositor.service"
+            else 100
+        )
         pid = unit_pids.get(unit, 0)
         cgroup = unit_cgroups.get(unit, "")
         memory_low, memory_min = PROTECTED_USER_UNIT_MEMORY[unit]
@@ -86,8 +114,9 @@ def _protected_user_unit_cases(
             else "no"
         )
         cases.append(
-            f'  *"--user show {unit} --no-pager -p OOMScoreAdjust -p MainPID"*) '
-            f"printf 'OOMScoreAdjust={actual}\\nMainPID={pid}\\nControlGroup={cgroup}\\n"
+            f'  *"--user show {unit} --no-pager -p LoadState -p OOMScoreAdjust -p MainPID"*) '
+            f"printf 'LoadState={load_state}\\nOOMScoreAdjust={actual}\\nMainPID={pid}\\n"
+            f"ControlGroup={cgroup}\\n"
             f"MemoryLow={memory_low}\\nMemoryMin={memory_min}\\nSlice={slice_name}\\n"
             f"NoNewPrivileges={no_new_privileges}\\n' ;;"
         )
@@ -123,15 +152,21 @@ def _fake_systemctl(
     user_floor_overcommitted: bool = False,
     protected_unit_pids: dict[str, int] | None = None,
     protected_unit_cgroups: dict[str, str] | None = None,
+    protected_unit_load_states: dict[str, str] | None = None,
     sshd_score: int = 0,
     sshd_policy: str = "continue",
     wrong_recovery_unit_score: bool = False,
     inactive_recovery_unit: str | None = None,
+    host_profile: str = "podium",
 ) -> Path:
     path = tmp_path / "systemctl"
+    app_high = 49392123904 if host_profile == "appendix" else 77309411328
+    app_max = 57982058496 if host_profile == "appendix" else 94489280512
+    uid_high = 51539607552 if host_profile == "appendix" else 85899345920
+    uid_max = 60129542144 if host_profile == "appendix" else 103079215104
     app_values = (
-        "MemoryHigh=77309411328\n"
-        "MemoryMax=94489280512\n"
+        f"MemoryHigh={app_high}\n"
+        f"MemoryMax={app_max}\n"
         "MemorySwapMax=8589934592\n"
         "MemoryLow=17179869184\n"
         "MemoryMin=8589934592\n"
@@ -145,8 +180,8 @@ def _fake_systemctl(
         )
     )
     uid_memory_values = (
-        "MemoryHigh=85899345920\n"
-        "MemoryMax=103079215104\n"
+        f"MemoryHigh={uid_high}\n"
+        f"MemoryMax={uid_max}\n"
         "MemorySwapMax=8589934592\n"
         f"MemoryLow={'17179869184' if user_floor_overcommitted else '21474836480'}\n"
         f"MemoryMin={'8589934592' if user_floor_overcommitted else '10737418240'}\n"
@@ -191,7 +226,7 @@ case "$*" in
 {_recovery_system_unit_cases(wrong_score=wrong_recovery_unit_score, inactive_unit=inactive_recovery_unit)}
   *"show app.slice"*) printf '{app_values}ControlGroup=/user.slice/user-1000.slice/user@1000.service/app.slice\n' ;;
   *"show session.slice"*) printf '{session_slice_values}ControlGroup=/user.slice/user-1000.slice/user@1000.service/session.slice\n' ;;
-{_protected_user_unit_cases(wrong_unit_score=wrong_unit_score, wrong_unit_memory=wrong_unit_memory, wrong_unit_slice=wrong_unit_slice, wrong_audio_no_new_privileges=wrong_audio_no_new_privileges, unit_pids=protected_unit_pids, unit_cgroups=protected_unit_cgroups)}
+{_protected_user_unit_cases(wrong_unit_score=wrong_unit_score, wrong_unit_memory=wrong_unit_memory, wrong_unit_slice=wrong_unit_slice, wrong_audio_no_new_privileges=wrong_audio_no_new_privileges, unit_pids=protected_unit_pids, unit_cgroups=protected_unit_cgroups, unit_load_states=protected_unit_load_states)}
   *"list-units --type=scope"*) printf 'tmux-spawn-a.scope loaded active running tmux child pane\\n' ;;
   *"show tmux-spawn-a.scope"*) printf '{tmux_values}' ;;
   *) echo "unexpected args: $*" >&2; exit 9 ;;
@@ -199,6 +234,39 @@ esac
 """,
         encoding="utf-8",
     )
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    return path
+
+
+def _fake_docker(tmp_path: Path, *, state: str = "bounded") -> Path:
+    path = tmp_path / "docker"
+    if state == "query-failure":
+        body = "echo 'docker unavailable' >&2\nexit 1\n"
+    else:
+        judge_memory = 4 * 1024**3
+        judge_swap = 6 * 1024**3
+        mcp_memory = 512 * 1024**2
+        mcp_swap = 768 * 1024**2
+        if state == "unlimited":
+            judge_memory = judge_swap = mcp_memory = mcp_swap = 0
+        elif state == "wrong-swap":
+            mcp_swap = -1
+        body = f"""case "$1" in
+  ps)
+    printf '%s\\n' hapax-local-judge hapax-github-mcp-hapax-123 unrelated-container
+    ;;
+  inspect)
+    name="${{@: -1}}"
+    case "$name" in
+      hapax-local-judge) printf '/%s\\t%s\\t%s\\n' "$name" {judge_memory} {judge_swap} ;;
+      hapax-github-mcp-hapax-123) printf '/%s\\t%s\\t%s\\n' "$name" {mcp_memory} {mcp_swap} ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  *) exit 9 ;;
+esac
+"""
+    path.write_text(f"#!/usr/bin/env bash\nset -euo pipefail\n{body}", encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
     return path
 
@@ -234,6 +302,7 @@ def _run(
     user_floor_overcommitted: bool = False,
     protected_unit_pids: dict[str, int] | None = None,
     protected_unit_cgroups: dict[str, str] | None = None,
+    protected_unit_load_states: dict[str, str] | None = None,
     sshd_score: int = 0,
     sshd_policy: str = "continue",
     wrong_recovery_unit_score: bool = False,
@@ -246,6 +315,8 @@ def _run(
     extra_user_sibling_floor: bool = False,
     extra_app_sibling_floor: bool = False,
     extra_session_sibling_floor: bool = False,
+    host_profile: str = "podium",
+    docker_state: str = "bounded",
 ) -> subprocess.CompletedProcess[str]:
     if proc_root is None:
         proc_root = tmp_path / "proc"
@@ -254,6 +325,10 @@ def _run(
         _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=100)
     if not (proc_root / "920").exists():
         _write_proc(proc_root, 920, name="sshd", uid=0, oom_score=0)
+    (proc_root / "swaps").write_text(
+        "Filename Type Size Used Priority\n/dev/zram0 partition 33554428 0 100\n",
+        encoding="utf-8",
+    )
     for unit, pid in RECOVERY_SYSTEM_UNIT_PIDS.items():
         if not (proc_root / str(pid)).exists():
             live_score = (
@@ -345,16 +420,29 @@ def _run(
                 user_floor_overcommitted=user_floor_overcommitted,
                 protected_unit_pids=protected_unit_pids,
                 protected_unit_cgroups=protected_unit_cgroups,
+                protected_unit_load_states=protected_unit_load_states,
                 sshd_score=sshd_score,
                 sshd_policy=sshd_policy,
                 wrong_recovery_unit_score=wrong_recovery_unit_score,
                 inactive_recovery_unit=inactive_recovery_unit,
+                host_profile=host_profile,
             )
         ),
         "HAPAX_OOM_AUDIT_PROC_ROOT": str(proc_root),
         "HAPAX_OOM_AUDIT_CGROUP_ROOT": str(cgroup_root),
         "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(tmp_path / "root-state" / ".lock"),
+        "HAPAX_OOM_AUDIT_DOCKER": str(_fake_docker(tmp_path, state=docker_state)),
+        "HAPAX_OOM_AUDIT_MEMTOTAL_KIB": (
+            "63310228" if host_profile == "appendix" else "131007744"
+        ),
+        "HAPAX_OOM_AUDIT_HOSTNAME": (
+            "hapax-appendix" if host_profile == "appendix" else "hapax-podium"
+        ),
     }
+    zram_size = 16 * 1024**3 if host_profile == "appendix" else 32 * 1024**3
+    Path(os.environ["HAPAX_OOM_AUDIT_SYS_ROOT"]).joinpath(
+        "block", "zram0", "disksize"
+    ).write_text(f"{zram_size}\n", encoding="utf-8")
     return subprocess.run(
         [str(SCRIPT), "--json", "--uid", "1000"],
         text=True,
@@ -382,9 +470,206 @@ def test_audit_passes_when_user_manager_is_killable_and_app_slice_bounded(tmp_pa
     assert statuses["user_manager_child_floor_MemoryMin"] == "pass"
     assert statuses["app_slice_child_floor_MemoryLow"] == "pass"
     assert statuses["session_slice_child_floor_MemoryMin"] == "pass"
+    assert statuses["zram0_active_swap"] == "pass"
+    assert statuses["zram0_compression"] == "pass"
+    assert statuses["docker_hapax_local_judge_Memory"] == "pass"
+    assert statuses["docker_hapax_github_mcp_hapax_123_MemorySwap"] == "pass"
     assert statuses["user_unit_pipewire.service_Slice"] == "pass"
     assert statuses["user_unit_pipewire.service_NoNewPrivileges"] == "pass"
     assert statuses["user_unit_studio-compositor.service_Slice"] == "pass"
+
+
+def test_host_policy_lines_derive_both_known_profiles(tmp_path: Path) -> None:
+    env = {
+        **os.environ,
+        "HAPAX_OOM_AUDIT_TEST_MODE": "1",
+        "HAPAX_OOM_AUDIT_MEMTOTAL_KIB": "63310228",
+        "HAPAX_OOM_AUDIT_HOSTNAME": "hapax-appendix",
+    }
+    appendix = subprocess.run(
+        [str(SCRIPT), "--host-policy-lines"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+    assert appendix.returncode == 0, appendix.stderr
+    assert "HOSTNAME=hapax-appendix" in appendix.stdout
+    assert "PROFILE=appendix" in appendix.stdout
+    assert "APP_MEMORY_HIGH=46G" in appendix.stdout
+    assert "APP_MEMORY_MAX=54G" in appendix.stdout
+    assert "UID_MEMORY_HIGH=48G" in appendix.stdout
+    assert "UID_MEMORY_MAX=56G" in appendix.stdout
+    assert "ZRAM_SIZE_MIB=16384" in appendix.stdout
+
+    env["HAPAX_OOM_AUDIT_MEMTOTAL_KIB"] = "131007744"
+    env["HAPAX_OOM_AUDIT_HOSTNAME"] = "hapax-podium"
+    podium = subprocess.run(
+        [str(SCRIPT), "--host-policy-lines"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+    assert podium.returncode == 0, podium.stderr
+    assert "HOSTNAME=hapax-podium" in podium.stdout
+    assert "PROFILE=podium" in podium.stdout
+    assert "APP_MEMORY_HIGH=72G" in podium.stdout
+    assert "APP_MEMORY_MAX=88G" in podium.stdout
+    assert "UID_MEMORY_HIGH=80G" in podium.stdout
+    assert "UID_MEMORY_MAX=96G" in podium.stdout
+    assert "ZRAM_SIZE_MIB=32768" in podium.stdout
+
+
+@pytest.mark.parametrize(
+    ("hostname", "floor_gib"),
+    [
+        ("hapax-appendix", 59),
+        ("hapax-appendix", 61),
+        ("hapax-podium", 123),
+        ("hapax-podium", 125),
+    ],
+)
+def test_host_policy_refuses_an_unreviewed_physical_memory_floor(
+    hostname: str, floor_gib: int
+) -> None:
+    result = subprocess.run(
+        [str(SCRIPT), "--host-policy-lines"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_AUDIT_TEST_MODE": "1",
+            "HAPAX_OOM_AUDIT_MEMTOTAL_KIB": str(floor_gib * 1024**2),
+            "HAPAX_OOM_AUDIT_HOSTNAME": hostname,
+        },
+    )
+    assert result.returncode == 1
+    assert "unlisted floor" in result.stdout
+
+
+def test_host_policy_refuses_cross_host_memory_profile() -> None:
+    result = subprocess.run(
+        [str(SCRIPT), "--host-policy-lines"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_AUDIT_TEST_MODE": "1",
+            "HAPAX_OOM_AUDIT_MEMTOTAL_KIB": "63310228",
+            "HAPAX_OOM_AUDIT_HOSTNAME": "hapax-podium",
+        },
+    )
+    assert result.returncode == 1
+    assert "host/profile memory mismatch" in result.stdout
+
+
+def test_appendix_skips_only_its_explicitly_optional_absent_units(tmp_path: Path) -> None:
+    absent = {
+        "hapax-daimonion.service": "not-found",
+        "studio-compositor.service": "not-found",
+        "hapax-imagination.service": "not-found",
+    }
+    result = _run(
+        tmp_path,
+        host_profile="appendix",
+        protected_unit_load_states=absent,
+    )
+    assert result.returncode == 0, result.stderr
+    checks = {check["name"]: check for check in json.loads(result.stdout)["checks"]}
+    for unit in absent:
+        load_check = checks[f"user_unit_{unit}_LoadState"]
+        assert load_check["status"] == "pass"
+        assert load_check["target"] == "host-optional-absent"
+        assert f"user_unit_{unit}_OOMScoreAdjust" not in checks
+
+
+def test_podium_treats_the_same_absent_protected_unit_as_drift(tmp_path: Path) -> None:
+    result = _run(
+        tmp_path,
+        protected_unit_load_states={"hapax-daimonion.service": "not-found"},
+    )
+    assert result.returncode == 1
+    checks = {check["name"]: check for check in json.loads(result.stdout)["checks"]}
+    load_check = checks["user_unit_hapax-daimonion.service_LoadState"]
+    assert load_check["status"] == "gap"
+    assert load_check["target"] == "loaded"
+    assert "user_unit_hapax-daimonion.service_OOMScoreAdjust" not in checks
+
+
+@pytest.mark.parametrize("link_kind", ["regular", "dangling-symlink"])
+def test_appendix_optional_absence_fails_when_a_unit_file_exists(
+    tmp_path: Path, link_kind: str
+) -> None:
+    unit_dir = Path(os.environ["HAPAX_OOM_AUDIT_USER_UNIT_PATHS"])
+    unit_file = unit_dir / "studio-compositor.service"
+    if link_kind == "regular":
+        unit_file.write_text("[Service]\nExecStart=/bin/true\n", encoding="utf-8")
+    else:
+        unit_file.symlink_to(unit_dir / "missing-target.service")
+    result = _run(
+        tmp_path,
+        host_profile="appendix",
+        protected_unit_load_states={
+            "hapax-daimonion.service": "not-found",
+            "studio-compositor.service": "not-found",
+            "hapax-imagination.service": "not-found",
+        },
+    )
+    assert result.returncode == 1
+    checks = {check["name"]: check for check in json.loads(result.stdout)["checks"]}
+    check = checks["user_unit_studio-compositor.service_LoadState"]
+    assert check["status"] == "gap"
+    assert check["actual"] == str(unit_file)
+
+
+def test_appendix_optional_absence_fails_without_authoritative_search_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    analyzer = tmp_path / "systemd-analyze"
+    analyzer.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    analyzer.chmod(0o755)
+    monkeypatch.delenv("HAPAX_OOM_AUDIT_USER_UNIT_PATHS")
+    monkeypatch.setenv("HAPAX_SYSTEMD_ANALYZE", str(analyzer))
+    result = _run(
+        tmp_path,
+        host_profile="appendix",
+        protected_unit_load_states={
+            "hapax-daimonion.service": "not-found",
+            "studio-compositor.service": "not-found",
+            "hapax-imagination.service": "not-found",
+        },
+    )
+    assert result.returncode == 1
+    checks = {check["name"]: check for check in json.loads(result.stdout)["checks"]}
+    assert checks["user_unit_studio-compositor.service_LoadState"]["status"] == "error"
+    assert "cannot prove absence" in checks["user_unit_studio-compositor.service_LoadState"]["detail"]
+
+
+@pytest.mark.parametrize("docker_state", ["unlimited", "wrong-swap"])
+def test_audit_fails_for_unbounded_or_wrong_docker_limits(
+    tmp_path: Path, docker_state: str
+) -> None:
+    result = _run(tmp_path, docker_state=docker_state)
+    assert result.returncode == 1
+    checks = {check["name"]: check for check in json.loads(result.stdout)["checks"]}
+    assert any(
+        check["status"] == "gap" and name.startswith("docker_")
+        for name, check in checks.items()
+    )
+
+
+def test_audit_fails_when_docker_cannot_be_queried(tmp_path: Path) -> None:
+    result = _run(tmp_path, docker_state="query-failure")
+    assert result.returncode == 1
+    check = next(
+        check
+        for check in json.loads(result.stdout)["checks"]
+        if check["name"] == "docker_container_limits"
+    )
+    assert check["status"] == "error"
 
 
 def test_audit_waits_for_exclusive_package_install_lock(tmp_path: Path) -> None:

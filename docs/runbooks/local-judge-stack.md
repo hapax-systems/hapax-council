@@ -51,6 +51,7 @@ Manual one-liner (equivalent, for ad-hoc runs):
 
 ```sh
 docker run -d --name hapax-local-judge --restart unless-stopped \
+  --memory 4g --memory-swap 6g \
   --gpus device=<5060Ti-UUID> \
   -v ~/models/compassverifier-7b:/models:ro -p 5001:5001 \
   ghcr.io/ggml-org/llama.cpp:server-cuda \
@@ -112,6 +113,10 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
 
 - **No-co-residency guarantee:** the container is pinned to the 5060 Ti UUID; the
   3090 grounding instance (TabbyAPI `:5000`) is independent. Confirm with `nvidia-smi`.
+- **Host-memory ceiling:** both systemd and manual launches use `--memory 4g
+  --memory-swap 6g` (4 GiB RAM plus 2 GiB swap). Before runtime closure after a
+  limit change, run an eight-slot judge canary and require stable health/restart
+  count with no `oom` or `oom_kill` increment in the container cgroup.
 - **Throughput:** 8 continuous-batch slots × 8192 ctx; ~137 tok/s decode, ~800 tok/s
   prompt. 127/2817 (4.5%) VerifierBench items exceed an 8192-token slot and are
   reported as context-skips by the harness — the longest/pathological inputs; raise
