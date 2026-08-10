@@ -250,6 +250,11 @@ class TaskNote:
     lane_affinity: str | None = None
     epic_serialize: str | None = None
     frontmatter: dict[str, Any] = field(default_factory=dict)
+    #: Repository the `pr` number belongs to. A bare number is not a link: 1,946 of the 2,063 notes
+    #: carrying a `pr:` declare no repo, so PR 28 in one repository matched PR 28 in another and
+    #: emitted that task's blockers against an unrelated change. Read by _matching_tasks as the
+    #: default repo when absent — never as "matches everything".
+    pr_repo: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1087,6 +1092,7 @@ def _task_note_from_frontmatter(path: Path, folder: str, fm: dict[str, Any]) -> 
         folder=folder,
         status=(_scalar(fm.get("status")) or "").lower(),
         pr=_int_or_none(fm.get("pr")),
+        pr_repo=_scalar(fm.get("pr_repo")),
         branch=_scalar(fm.get("branch")),
         authority_case=_scalar(fm.get("authority_case") or fm.get("case_id")),
         parent_spec=_scalar(fm.get("parent_spec")),
@@ -1130,6 +1136,7 @@ def _task_note_with_frontmatter(task: TaskNote, frontmatter: dict[str, Any]) -> 
         folder=task.folder,
         status=(_scalar(frontmatter.get("status")) or "").lower(),
         pr=_int_or_none(frontmatter.get("pr")),
+        pr_repo=_scalar(frontmatter.get("pr_repo")),
         branch=_scalar(frontmatter.get("branch")),
         authority_case=_scalar(frontmatter.get("authority_case") or frontmatter.get("case_id")),
         parent_spec=_scalar(frontmatter.get("parent_spec")),
@@ -1145,8 +1152,26 @@ def _task_note_with_frontmatter(task: TaskNote, frontmatter: dict[str, Any]) -> 
     )
 
 
-def _matching_tasks(pr: PullRequest, tasks: list[TaskNote]) -> list[TaskNote]:
-    by_pr = [task for task in tasks if task.pr == pr.number]
+def _matching_tasks(
+    pr: PullRequest, tasks: list[TaskNote], *, repo: str = DEFAULT_REPO
+) -> list[TaskNote]:
+    """Tasks that claim this PR, in THIS repository.
+
+    Matching on the bare number alone is wrong across repositories: a closed note carrying `pr: 28`
+    for a different repo's PR 28 emitted its blockers against reins PR 28 and made a quorum-accepted
+    change unmergeable. A note that declares `pr_repo` matches only that repo.
+
+    An UNDECLARED `pr_repo` resolves to the default repo — not to "everything" and not to "nothing".
+    Both alternatives are wrong, in opposite directions: wildcard is what caused the collision,
+    while unmatched would silently detach ~1,946 council notes from their own PRs and stop their
+    blockers applying — a WIDENING of what may merge, which is the one direction a gate must never
+    move by accident.
+    """
+
+    def claimed_repo(task: TaskNote) -> str:
+        return task.pr_repo or DEFAULT_REPO
+
+    by_pr = [task for task in tasks if task.pr == pr.number and claimed_repo(task) == repo]
     if by_pr:
         return by_pr
     return [task for task in tasks if task.branch == pr.head_ref]
@@ -1419,6 +1444,7 @@ def classify_pr(
     active_ci_repair_task_ids: tuple[str, ...] = (),
     storm_admission_active: bool = False,
     storm_reasons: tuple[str, ...] = (),
+    repo: str = DEFAULT_REPO,
 ) -> Decision:
     reasons: list[str] = []
     if pr.is_draft:
@@ -1454,7 +1480,7 @@ def classify_pr(
     if failed_release_checks:
         reasons.append("failed_checks:" + ",".join(failed_release_checks))
 
-    matches = _matching_tasks(pr, tasks)
+    matches = _matching_tasks(pr, tasks, repo=repo)
     matched_tasks = tuple(matches)
     task: TaskNote | None = matches[0] if len(matches) == 1 else None
     if not matches:
@@ -2529,6 +2555,7 @@ def run_reconciler(
             include_pending_auto=include_pending_auto,
             required_checks=required_checks,
             active_ci_repair_task_ids=active_ci_repair_task_ids,
+            repo=repo,
         )
         for pr in prs
     ]
@@ -2590,6 +2617,7 @@ def run_reconciler(
                 active_ci_repair_task_ids=active_ci_repair_task_ids,
                 storm_admission_active=True,
                 storm_reasons=storm_mode.reasons,
+                repo=repo,
             )
             for pr in prs
         ]

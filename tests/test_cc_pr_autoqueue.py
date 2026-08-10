@@ -133,6 +133,43 @@ def _write_governance_review_dossier(vault: Path, task_id: str, pr: int) -> Path
     return _write_review_dossier(vault, task_id, head_sha=f"sha-{pr}", pr=pr)
 
 
+def test_bare_pr_number_does_not_bind_a_foreign_repos_pr(tmp_path: Path) -> None:
+    """A note with `pr: N` and no pr_repo must not gate PR N in a DIFFERENT repository.
+
+    Measured 2026-08-09: a closed council-era note (reform-clog-a-theme-purity-20260601, `pr: 28`,
+    no pr_repo, from a CLOG/SBCL surface) matched reins PR 28 and emitted its blockers against an
+    unrelated, quorum-accepted change. 1,946 of 2,063 notes carrying a `pr:` declare no repo, so
+    every low-numbered PR in any repo sat in that collision zone.
+    """
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="foreign-legacy-task", pr=28, pr_repo=None)
+    tasks = autoqueue.load_task_notes(vault)
+    pr = autoqueue._parse_pr(_pr(28))
+    assert pr is not None
+
+    # Undeclared resolves to the default repo, so it does NOT reach a PR in another repository.
+    assert autoqueue._matching_tasks(pr, tasks, repo="hapax-systems/reins") == []
+
+    # ...and STILL binds its own repo. This half is the widening guard: treating undeclared as
+    # unmatched would detach ~1,946 council notes from their own PRs and stop their blockers
+    # applying, which loosens what may merge. Deleting either assertion must fail this test.
+    matched = autoqueue._matching_tasks(pr, tasks, repo=autoqueue.DEFAULT_REPO)
+    assert [task.task_id for task in matched] == ["foreign-legacy-task"]
+
+
+def test_declared_pr_repo_binds_only_that_repo(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="reins-task", pr=28, pr_repo="hapax-systems/reins")
+    tasks = autoqueue.load_task_notes(vault)
+    pr = autoqueue._parse_pr(_pr(28))
+    assert pr is not None
+
+    assert [
+        t.task_id for t in autoqueue._matching_tasks(pr, tasks, repo="hapax-systems/reins")
+    ] == ["reins-task"]
+    assert autoqueue._matching_tasks(pr, tasks, repo=autoqueue.DEFAULT_REPO) == []
+
+
 class TestReviewTeamGate:
     """Spec §5: a quorum-accept review dossier is an admission requirement."""
 
@@ -140,7 +177,9 @@ class TestReviewTeamGate:
         pr = autoqueue._parse_pr(pr_payload)
         assert pr is not None
         tasks = autoqueue.load_task_notes(vault)
-        return autoqueue.classify_pr(pr, tasks=tasks, queued_prs=set())
+        # Same repo the fixtures declare in pr_repo: association is repo-aware, so a classify that
+        # defaulted to the council repo would not match notes written for the repo under test.
+        return autoqueue.classify_pr(pr, tasks=tasks, queued_prs=set(), repo="owner/repo")
 
     def test_green_pr_without_dossier_is_blocked(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -274,6 +313,10 @@ def _write_task(
     folder: str = "active",
     status: str = "ready",
     pr: int | None = None,
+    #: Repo the `pr` number belongs to. Defaults to the repo these fixtures reconcile against, so
+    #: a note written here claims a PR in the repo under test rather than in whatever repo the
+    #: reconciler happens to be pointed at. Pass None to exercise an undeclared (legacy) note.
+    pr_repo: str | None = "owner/repo",
     branch: str | None = None,
     authority_case: str | None = "CASE-TEST",
     parent_spec: str | None = "docs/spec.md",
@@ -290,6 +333,7 @@ def _write_task(
 ) -> Path:
     path = vault / folder / f"{task_id}.md"
     pr_line = f"pr: {pr}" if pr is not None else "pr: null"
+    pr_repo_line = f"pr_repo: {pr_repo}" if pr_repo is not None else "pr_repo: null"
     branch_line = f"branch: {branch}" if branch is not None else "branch: null"
     authority_line = (
         f"authority_case: {authority_case}"
@@ -334,6 +378,7 @@ assigned_to: {assigned_to}
 priority: {priority}
 kind: {kind}
 {pr_line}
+{pr_repo_line}
 {branch_line}
 {authority_line}
 {parent_line}
