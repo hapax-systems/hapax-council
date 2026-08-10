@@ -1277,6 +1277,7 @@ def _rotate_locked(path: Path, *, max_bytes: int) -> bool:
 
     staged = path.with_name(path.name + ".rotating")
     archive = path.with_name(path.name + ".1")
+    archive_staged = path.with_name(path.name + ".1.staging")
     try:
         carried = read_tail_lines(
             path,
@@ -1286,28 +1287,29 @@ def _rotate_locked(path: Path, *, max_bytes: int) -> bool:
         staged.write_text(
             "".join(f"{line}\n" for line in carried if line.strip()), encoding="utf-8"
         )
-        # Link into a staging name and rename over the archive, rather than
-        # unlinking the archive first. Unlinking first destroys the retained
-        # audit generation the moment os.link fails — cross-device, link-count,
-        # or permissions — and the failure path then reports only that the
-        # ledger is uncapped, understating a loss that already happened.
-        # os.replace is atomic, so the previous .1 survives until its
-        # replacement genuinely exists.
-        archive_staged = path.with_name(path.name + ".1.staging")
+        # Link into a staging name rather than unlinking the archive first. Unlinking first
+        # destroys the retained audit generation the moment os.link fails — cross-device,
+        # link-count, or permissions — and the failure path then reports only that the ledger
+        # is uncapped, understating a loss that already happened.
         archive_staged.unlink(missing_ok=True)
         os.link(path, archive_staged)
-        os.replace(archive_staged, archive)
-        # Link before replace so the ledger path is never absent: a concurrent
-        # reader must always find a file.
+        # Commit the ROTATION before promoting the archive, and never the other way round.
+        # os.replace is atomic, so a concurrent reader always finds a file at `path`.
+        #
+        # Promoting the archive first and then failing here would leave `.1` as a hardlink of
+        # the LIVE ledger: every later append would grow both, `.1` would stop representing a
+        # rotated generation, disk use would double per row until the next successful rotation,
+        # and the previous generation would already be gone — none of which the "intact but
+        # UNCAPPED" warning says. This order cannot reach that state.
         staged.replace(path)
     except OSError as exc:
-        # The cleanup must not raise on top of the failure it is cleaning up:
-        # an exception here escapes into write_route_decision_receipt and turns a
-        # contained housekeeping failure into a lost receipt.
+        # The cleanup must not raise on top of the failure it is cleaning up: an exception here
+        # escapes into write_route_decision_receipt and turns a contained housekeeping failure
+        # into a lost receipt.
         with suppress(OSError):
             staged.unlink(missing_ok=True)
         with suppress(OSError):
-            path.with_name(path.name + ".1.staging").unlink(missing_ok=True)
+            archive_staged.unlink(missing_ok=True)
         logger.warning(
             "route-decision ledger rotation of %s failed (%s); the ledger is intact but "
             "UNCAPPED and will keep growing. Next: check free space and permissions on %s.",
@@ -1316,6 +1318,26 @@ def _rotate_locked(path: Path, *, max_bytes: int) -> bool:
             path.parent,
         )
         return False
+
+    # The ledger is capped from here on, so this is no longer a rotation failure. Promoting the
+    # retained generation is a separate and weaker obligation: if it fails, the rotation still
+    # happened and the previous `.1` is untouched. Rotation has three outcomes, not two, and
+    # collapsing this one into the branch above would report a successful rotation as a failure.
+    try:
+        os.replace(archive_staged, archive)
+    except OSError as exc:
+        with suppress(OSError):
+            archive_staged.unlink(missing_ok=True)
+        logger.warning(
+            "route-decision ledger %s was rotated, but the retained generation could not be "
+            "promoted to %s (%s); the previous %s is unchanged and the live ledger is capped. "
+            "Next: check free space and permissions on %s.",
+            path,
+            archive,
+            exc,
+            archive,
+            path.parent,
+        )
     return True
 
 

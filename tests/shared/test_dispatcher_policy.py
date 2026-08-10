@@ -2586,6 +2586,49 @@ def test_rotation_failure_leaves_the_ledger_intact_and_says_so(
     assert "Next:" in caplog.text, "the warning must carry an operator next action"
 
 
+def test_a_failed_archive_promotion_never_aliases_the_live_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`.1` must never end up as a hardlink of the ledger that is still being appended to.
+
+    Promoting the archive BEFORE committing the rotation used to allow exactly that: the
+    staging hardlink was renamed onto `.1`, and if the ledger replace then failed, `.1` and
+    the live ledger shared one inode. Every later append grew both, `.1` stopped representing
+    a rotated generation, disk use doubled per row, and the previous generation was already
+    destroyed — while the warning said only "intact but UNCAPPED".
+
+    Committing the rotation first makes that state unreachable, which is what this pins.
+    """
+    ledger = tmp_path / "route-decisions.jsonl"
+    ledger.write_text("".join(f'{{"n": {i}}}\n' for i in range(300)), encoding="utf-8")
+
+    real_replace = os.replace
+
+    def fail_archive_promotion(src: object, dst: object) -> None:
+        if str(dst).endswith(".1"):
+            raise OSError(errno.EIO, "archive promotion failed")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(dispatcher_policy.os, "replace", fail_archive_promotion)
+
+    with caplog.at_level(logging.WARNING, logger="shared.dispatcher_policy"):
+        rotated = dispatcher_policy._rotate_locked(ledger, max_bytes=1)
+
+    # The rotation itself succeeded, so it must not be reported as a rotation failure.
+    assert rotated is True
+    assert "UNCAPPED" not in caplog.text, "a capped ledger must not be called UNCAPPED"
+    assert "Next:" in caplog.text, "the warning must carry an operator next action"
+
+    archive = tmp_path / "route-decisions.jsonl.1"
+    if archive.exists():
+        assert archive.stat().st_ino != ledger.stat().st_ino, (
+            "the archive must never share an inode with the live ledger"
+        )
+    assert not (tmp_path / "route-decisions.jsonl.1.staging").exists(), (
+        "the staging hardlink must not be left behind holding the old inode"
+    )
+
+
 def test_a_lock_file_left_by_a_dead_process_does_not_wedge_rotation(
     tmp_path: Path,
 ) -> None:
@@ -2817,7 +2860,15 @@ def test_a_short_write_still_produces_a_complete_row(
 def test_a_filesystem_without_flock_still_writes_the_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """ENOLCK means NO process can lock, so none can rotate — the append is safe.
+    """EOPNOTSUPP means flock is NOT IMPLEMENTED here, so nobody can rotate — the append is safe.
+
+    ENOLCK is deliberately NOT in this class and must not be added to it. It is
+    lock-record exhaustion, which means other writers CAN still hold locks and
+    rotate; `test_lock_failures_that_are_not_capability_facts_refuse_the_write`
+    requires it to refuse. Reading this docstring as being about ENOLCK is the
+    exact reasoning error the excluded-errno comment in `shared/dispatcher_policy.py`
+    warns against, and acting on it would license an unserialised append while
+    another writer rotates the inode out from under it.
 
     Refusing this case as well would be its own defect: on a locking-less
     filesystem every MCP mutation becomes impossible, including the ones that
