@@ -587,7 +587,18 @@ def build_receipt(
         quota = surface_evidence(
             status=EvidenceStatus.OBSERVED,
             source="local_receipt_probe",
-            observed_at=observed_at,
+            # The ROLLOUT's timestamp, not the receipt's. latest_rollout_observation accepts a
+            # snapshot up to DEFAULT_MAX_OBSERVATION_AGE_SECONDS (3600s) old, so stamping it with
+            # the receipt-generation time under stale_after=15m restamped a 59-minute-old
+            # observation as freshly observed and cleared account_live_quota_receipt_absent for a
+            # further 15 minutes — roughly 74 minutes of real staleness rendered as <=15.
+            #
+            # Using the observation's own time makes the arithmetic honest: an old snapshot is
+            # already stale on arrival and clears nothing. Caught by codex-1 on PR #4545. Same
+            # false-freshness class as a conformance checker that skips its checks and still
+            # prints "conformant" — the defect is always a timestamp that describes the OBSERVER
+            # rather than the OBSERVATION.
+            observed_at=rollout_quota.observed_at,
             stale_after="15m",
             evidence_refs=[
                 # Terminal token shape the availability guarantor attests on for a non-claude
