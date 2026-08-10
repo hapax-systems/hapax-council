@@ -355,6 +355,7 @@ oom_package_files=(
     systemd/units/hapax-root-failure-intake@.service
     systemd/units/hapax-oom-score-enforce.service
     systemd/units/hapax-oom-score-enforce.timer
+    systemd/units/hapax-local-judge.service
     systemd/units/hapax-oom-policy-audit.service
     systemd/units/hapax-oom-policy-audit.timer
     systemd/units/hapax-root-required-deploy-audit.service
@@ -1365,6 +1366,7 @@ audit_root_installs() {
         "systemd/units/hapax-root-failure-intake@.service|$SYSTEMD_SYSTEM_DIR/hapax-root-failure-intake@.service"
         "systemd/units/hapax-oom-score-enforce.service|$SYSTEMD_SYSTEM_DIR/hapax-oom-score-enforce.service"
         "systemd/units/hapax-oom-score-enforce.timer|$SYSTEMD_SYSTEM_DIR/hapax-oom-score-enforce.timer"
+        "systemd/units/hapax-local-judge.service|$SYSTEMD_USER_DIR/hapax-local-judge.service"
         "systemd/units/hapax-oom-policy-audit.service|$SYSTEMD_USER_DIR/hapax-oom-policy-audit.service"
         "systemd/units/hapax-oom-policy-audit.timer|$SYSTEMD_USER_DIR/hapax-oom-policy-audit.timer"
         "systemd/units/hapax-root-required-deploy-audit.service|$SYSTEMD_USER_DIR/hapax-root-required-deploy-audit.service"
