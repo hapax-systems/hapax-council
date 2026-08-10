@@ -3839,18 +3839,14 @@ printf '%s\\n' "$@" > {launcher_args}
     assert receipt["dimensional_selected_route_id"] == "claude.headless.full"
     reasons = set(receipt["route_policy_reason_codes"])
     assert "availability_recomposition_required" in reasons
-    # The launch itself is the load-bearing assertion above and is unchanged: recomposition still
-    # works, and it still lands on claude.headless.full for a Claude lane.
+    # Unchanged from main, deliberately, and worth stating why because I got this wrong once.
     #
-    # `account_live_quota_evidence_absent` was a CODEX-route reason. It appeared only because the
-    # Codex candidate was scored on the way to being discarded — and this lane could never have
-    # run it. Since 2026-08-10 recomposition filters candidates by lane compatibility before
-    # admission, so ineligible routes are not scored and do not contribute reasons. The reason set
-    # now describes routes that were genuinely in contention.
-    assert "account_live_quota_evidence_absent" not in reasons, (
-        "a Codex-route reason must not appear for a Claude lane; seeing it again means "
-        "recomposition is scoring routes the lane cannot run"
-    )
+    # The lane-compatibility filter added here narrows the recomposition CANDIDATE set. It does
+    # not touch the PRIMARY route — and in this fixture the primary IS codex, which is what
+    # `availability_recomposed_from:codex.headless.full` in the reason set records. So the codex
+    # route is still scored, still contributes `account_live_quota_evidence_absent`, and this
+    # assertion still holds exactly as main wrote it.
+    assert "account_live_quota_evidence_absent" in reasons
     assert any(reason.startswith("availability_recomposed_to:claude") for reason in reasons)
     assert receipt.get("route_policy_compatibility_mode") in {None, "none"}
 
