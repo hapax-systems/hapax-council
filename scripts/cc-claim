@@ -174,10 +174,14 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
   cf_mtime="$(stat -c %Y "$cf" 2>/dev/null || echo "$now_epoch")"
   if (( now_epoch - cf_mtime > lease_ttl )); then
     if [[ "$canon_enforced" == "1" ]]; then
+      claim_base="$(basename "$cf")"
+      claim_key="${claim_base#cc-active-task-}"
+      epoch_file="$HOME/.cache/hapax/cc-claim-epoch-$claim_key"
+      dispatch_file="$HOME/.cache/hapax/cc-claim-dispatch-$claim_key.json"
       if [[ -n "$existing_task" ]]; then
-        echo "cc-claim: HOLD — expired claim '$cf' requires governed release before canonical claim publication. Next action: run cc-close $existing_task if that task is terminal, or ask the operator to release/archive this exact claim file before retrying." >&2
+        echo "cc-claim: HOLD — expired claim '$cf' requires exact stale-lease release before canonical claim publication. Next action: with operator approval, run the Manual Stale-Lease Release runbook using claim_file='$cf' and task_id='$existing_task'; archive/remove only '$cf', '$epoch_file', and '$dispatch_file', then rerun cc-claim." >&2
       else
-        echo "cc-claim: HOLD — expired claim '$cf' requires governed release before canonical claim publication. Next action: inspect '$cf' to recover the task id, then run cc-close for that task if terminal; otherwise ask the operator to release/archive this exact claim file before retrying." >&2
+        echo "cc-claim: HOLD — expired claim '$cf' requires exact stale-lease release before canonical claim publication. Next action: inspect '$cf' to recover the task id, then with operator approval run the Manual Stale-Lease Release runbook for claim_file='$cf'; archive/remove only '$cf', '$epoch_file', and '$dispatch_file', then rerun cc-claim." >&2
       fi
       shopt -u nullglob
       exit 7
