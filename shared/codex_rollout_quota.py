@@ -18,6 +18,28 @@ Two hazards are handled here, not by callers:
   ``payload.rate_limits`` are lifted out; nothing else is read, returned, or logged.
 * **Size.** Rollouts reach gigabytes (one was 1.19GB in the 2026-08-09 OOM). Files are never read
   whole — reading is a bounded seek to the tail.
+
+The same files also record WHICH MODEL and WHICH REASONING EFFORT a session actually ran under, and
+``latest_model_observation`` lifts those. That is here for a routing reason, not a quota one.
+
+On 2026-08-10 a lane was found to have run its entire life on a non-frontier model. It was not a bad
+judgement call: ``scripts/hapax-codex`` carried ``model="gpt-5.5"`` and
+``model_reasoning_effort="xhigh"`` as literals inside its argument array, with no flag and no
+environment override, so every codex lane got them and no decision was ever taken. The operator's
+standing rule — that a non-frontier choice needs a stated reason — was not merely unenforced but
+UNREPRESENTABLE, because there was no decision point to attach a reason to.
+
+Recording the model OBSERVED per session, rather than trusting what a launcher declares, does two
+things. It satisfies the subject law that a measurement's subject is the tuple including M, so
+results taken inside a session are attributable to one. And it accumulates the routing history the
+spinal calculi will need: nothing today records which model ran which task-class at what outcome, so
+a routing calculus going live would have nothing to calibrate against.
+
+The read shape differs from the quota one, and the difference is measured rather than assumed. The
+model is declared near the START of a rollout, but the opening lines are enormous: in a 13.2MB
+sample ``"model"`` appeared nowhere in the first 64KB and nowhere in the last 512KB, yet its first
+occurrence was line 5, ending at byte 76,335. So this is a bounded read of the first few LINES —
+neither the first N bytes nor the tail.
 """
 
 from __future__ import annotations
@@ -95,6 +117,162 @@ def _rate_limits_from_line(line: str) -> tuple[datetime, dict] | None:
     if observed_at is None:
         return None
     return observed_at, limits
+
+
+#: Lines to read from the head when observing the model. The model is declared early but the
+#: opening lines are huge — measured 2026-08-10: line 5 of a 13.2MB rollout ended at byte 76,335,
+#: and "model" appeared in neither the first 64KB nor the last 512KB. Read LINES, cap the bytes.
+ROLLOUT_HEAD_LINES = 12
+ROLLOUT_HEAD_MAX_BYTES = 2 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class ModelObservation:
+    """What a session ACTUALLY ran under. Identifiers only — no prompt or output content."""
+
+    observed_at: datetime
+    model: str
+    reasoning_effort: str | None
+
+
+def _head_lines(
+    path: Path,
+    *,
+    max_lines: int = ROLLOUT_HEAD_LINES,
+    max_bytes: int = ROLLOUT_HEAD_MAX_BYTES,
+) -> list[str]:
+    """First ``max_lines`` lines, abandoning the read at ``max_bytes``.
+
+    Both bounds are load-bearing. A rollout's opening lines carry the full system prompt, so a
+    line count alone does not bound the read; a byte cap alone does not reach the model, which
+    sits past 64KB. Whichever trips first wins, and a truncated final line is discarded rather
+    than parsed.
+    """
+    out: list[str] = []
+    consumed = 0
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                consumed += len(line)
+                if consumed > max_bytes:
+                    break
+                out.append(line)
+                if len(out) >= max_lines:
+                    break
+    except OSError:
+        return []
+    return out
+
+
+def latest_model_observation(
+    sessions_dir: Path | None = None,
+    *,
+    now: datetime,
+    max_age_seconds: int = DEFAULT_MAX_OBSERVATION_AGE_SECONDS,
+) -> ModelObservation:
+    """The model and reasoning effort the newest usable codex session actually ran under.
+
+    Observed, never declared: a launcher's configured value is what it INTENDED, and the estate has
+    now been bitten once by trusting an intention that nobody ever chose. Raises
+    ``RolloutQuotaUnavailable`` with an actionable message when no fresh observation exists, so a
+    caller can never mistake silence for a frontier model.
+    """
+    sessions_dir = sessions_dir or DEFAULT_SESSIONS_DIR
+    if not sessions_dir.is_dir():
+        raise RolloutQuotaUnavailable(
+            f"no codex sessions directory at {sessions_dir}; run a codex session, or point "
+            "HAPAX_CODEX_SESSIONS_DIR at one"
+        )
+    rollouts = sorted(
+        sessions_dir.rglob(ROLLOUT_GLOB),
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )[:ROLLOUT_SCAN_LIMIT]
+    if not rollouts:
+        raise RolloutQuotaUnavailable(f"no codex rollouts under {sessions_dir}")
+
+    for path in rollouts:
+        observed_at = _parse_utc_from_rollout_name(path.name)
+        model: str | None = None
+        effort: str | None = None
+        for line in _head_lines(path):
+            # Substring-match on the bare words, NOT on '"effort"'. The field is usually
+            # "reasoning_effort", where the character before `effort` is an underscore, so a
+            # quoted probe silently skipped every line carrying it — the prefilter discarded the
+            # exact line it existed to find.
+            if "model" not in line and "effort" not in line:
+                continue
+            try:
+                record = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            model = model or _first_str(record, "model")
+            effort = (
+                effort or _first_str(record, "reasoning_effort") or _first_str(record, "effort")
+            )
+            if observed_at is None:
+                observed_at = _parse_utc(str(record.get("timestamp") or ""))
+            # Do NOT stop at the model. Measured 2026-08-10: the model is declared on line 5 and
+            # the reasoning effort on line 6, so breaking as soon as a model appeared returned
+            # effort=None on every real rollout. Read the whole bounded window unless both are in
+            # hand — effort is half the routing decision and dropping it silently would leave the
+            # observation looking complete while missing the axis the operator actually raised.
+            if model and effort:
+                break
+        if not model:
+            continue
+        if observed_at is None:
+            try:
+                observed_at = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+            except OSError:
+                continue
+        age = (now - observed_at).total_seconds()
+        if age < 0 or age > max_age_seconds:
+            continue
+        return ModelObservation(observed_at=observed_at, model=model, reasoning_effort=effort)
+
+    raise RolloutQuotaUnavailable(
+        f"no codex session under {sessions_dir} recorded a model within {max_age_seconds}s; "
+        "run a codex session so the CLI writes a fresh rollout"
+    )
+
+
+def _first_str(record: object, key: str) -> str | None:
+    """Depth-first search for the first string value under ``key``.
+
+    The model appears at varying depths across rollout record shapes, and pinning one path would
+    make this brittle against a CLI upgrade — which is the failure mode this function exists to
+    detect.
+    """
+    if isinstance(record, dict):
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        for nested in record.values():
+            found = _first_str(nested, key)
+            if found:
+                return found
+    elif isinstance(record, list):
+        for item in record:
+            found = _first_str(item, key)
+            if found:
+                return found
+    return None
+
+
+def _parse_utc_from_rollout_name(name: str) -> datetime | None:
+    """Rollout filenames lead with an ISO-ish timestamp; cheaper than parsing a huge first line."""
+    stem = name.removeprefix("rollout-")
+    candidate = stem[:19].replace("_", "-")
+    parts = candidate.split("T")
+    if len(parts) != 2:
+        return None
+    try:
+        return datetime.fromisoformat(f"{parts[0]}T{parts[1].replace('-', ':')}").replace(
+            tzinfo=UTC
+        )
+    except ValueError:
+        return None
 
 
 def _tail_lines(path: Path, *, tail_bytes: int = ROLLOUT_TAIL_BYTES) -> list[str]:

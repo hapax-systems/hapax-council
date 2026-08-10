@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from shared.codex_rollout_quota import (
+    latest_model_observation,
     DEFAULT_MAX_OBSERVATION_AGE_SECONDS,
     EXHAUSTED_USED_PERCENT,
     ROLLOUT_TAIL_BYTES,
@@ -127,6 +128,81 @@ def test_the_observation_carries_no_rollout_content(tmp_path: Path) -> None:
     assert set(vars(obs)) <= {"observed_at", "used_percent", "window_minutes"} or not hasattr(
         obs, "__dict__"
     )
+
+
+def _model_rollout(dir_: Path, *, model: str, effort: str | None, big_head: bool = True) -> Path:
+    """A rollout shaped like the real thing: huge opening lines, model then effort a line apart."""
+    path = dir_ / "rollout-2026-08-10T11-29-08-testsession.jsonl"
+    rows = []
+    if big_head:
+        # Real rollouts carry the system prompt in the opening lines; "model" sat past 64KB.
+        for _ in range(4):
+            rows.append(json.dumps({"payload": {"content": "x" * 20000}}))
+    rows.append(json.dumps({"payload": {"model": model}}))
+    if effort is not None:
+        rows.append(json.dumps({"payload": {"reasoning_effort": effort}}))
+    path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    return path
+
+
+def test_effort_is_read_even_though_the_model_appears_first(tmp_path: Path) -> None:
+    """Both axes, or the observation looks complete while missing half the routing decision.
+
+    Measured on real rollouts 2026-08-10: the model is declared on line 5 and the reasoning effort
+    on line 6. A reader that stops as soon as it has a model returns effort=None on every real
+    file — which is exactly what the first version of this function did, and effort is the axis the
+    operator actually raised (xhigh vs ultra).
+    """
+    _model_rollout(tmp_path, model="gpt-5.5", effort="xhigh")
+
+    obs = latest_model_observation(tmp_path, now=NOW, max_age_seconds=86400 * 30)
+
+    assert obs.model == "gpt-5.5"
+    assert obs.reasoning_effort == "xhigh", "stopping at the model drops half the routing subject"
+
+
+def test_model_is_found_past_the_first_64kb(tmp_path: Path) -> None:
+    """A byte-capped head read would miss it; this is a LINE-bounded read for that reason."""
+    _model_rollout(tmp_path, model="gpt-5.6", effort="ultra", big_head=True)
+
+    obs = latest_model_observation(tmp_path, now=NOW, max_age_seconds=86400 * 30)
+
+    assert obs.model == "gpt-5.6"
+    assert obs.reasoning_effort == "ultra"
+
+
+def test_a_session_with_no_recorded_model_refuses_rather_than_guessing(tmp_path: Path) -> None:
+    """Silence must never read as a frontier model.
+
+    A caller that treats "no observation" as "fine" reproduces the original defect, where nobody
+    chose the model and everybody assumed it was the good one.
+    """
+    path = tmp_path / "rollout-2026-08-10T11-29-08-nomodel.jsonl"
+    path.write_text(json.dumps({"payload": {"content": "no model here"}}) + "\n", encoding="utf-8")
+
+    with pytest.raises(RolloutQuotaUnavailable, match="model"):
+        latest_model_observation(tmp_path, now=NOW, max_age_seconds=86400 * 30)
+
+
+def test_the_model_observation_carries_no_session_content(tmp_path: Path) -> None:
+    """Identifiers only — same containment rule as the quota path."""
+    secret = "SENSITIVE-PROMPT-should-never-propagate"
+    path = tmp_path / "rollout-2026-08-10T11-29-08-secret.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                json.dumps({"payload": {"content": secret}}),
+                json.dumps({"payload": {"model": "gpt-5.5", "reasoning_effort": "xhigh"}}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    obs = latest_model_observation(tmp_path, now=NOW, max_age_seconds=86400 * 30)
+
+    assert secret not in repr(obs)
+    assert set(vars(obs)) == {"observed_at", "model", "reasoning_effort"}
 
 
 def test_the_reader_is_bounded_and_does_not_slurp_the_file(tmp_path: Path) -> None:
