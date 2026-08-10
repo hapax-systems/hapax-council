@@ -6634,3 +6634,103 @@ def test_canon_assessor_reports_armed_for_authorized_egress_task() -> None:
     from shared.sdlc_lifecycle import assess_release_auto_arm as canon_assess
 
     assert canon_assess(_egress_armed_frontmatter()).armed is True
+
+
+class _FakeProc:
+    def __init__(self, returncode: int, stdout: str = "") -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+def _checks_runner(responses: dict[str, _FakeProc]) -> Any:
+    """A gh runner answering by api-path suffix; anything unlisted fails."""
+
+    def run(cmd: list[str], **_kwargs: Any) -> _FakeProc:
+        path = cmd[-1]
+        for suffix, proc in responses.items():
+            if path.endswith(suffix):
+                return proc
+        return _FakeProc(1)
+
+    return run
+
+
+_RULESET_ALL_GREEN = json.dumps(
+    [
+        {
+            "type": "required_status_checks",
+            "parameters": {"required_status_checks": [{"context": "all-green"}]},
+        }
+    ]
+)
+
+
+def test_required_checks_are_derived_per_repo_not_hardcoded(tmp_path: Path) -> None:
+    """A repo gets ITS OWN required checks, not another repo's.
+
+    The constant named lint/test/typecheck/web-build/vscode-build. Measured 2026-08-10, GitHub
+    required `all-green` on reins and `all-green` + `governance-gate` on hapax-council, and
+    required those five nowhere. Because `vscode-build` cannot exist in reins, every reins PR
+    reported missing_required_checks and none could be admitted through the governed path.
+    """
+    autoqueue._REQUIRED_CHECKS_CACHE.clear()
+    runner = _checks_runner(
+        {"rules/branches/main": _FakeProc(0, _RULESET_ALL_GREEN), "main/protection": _FakeProc(1)}
+    )
+
+    got = autoqueue.required_checks_for_repo("owner/reins-like", repo_root=tmp_path, runner=runner)
+
+    assert got == ("all-green",)
+    assert "vscode-build" not in (got or ())
+
+
+def test_unreadable_protection_is_unknown_not_empty(tmp_path: Path) -> None:
+    """The invariant that stops this from widening admission.
+
+    None means UNKNOWN. Returning () would mean "no checks required" and would admit a PR with
+    nothing green on an API hiccup. Failure paths narrow; they do not widen.
+    """
+    autoqueue._REQUIRED_CHECKS_CACHE.clear()
+
+    got = autoqueue.required_checks_for_repo(
+        "owner/unreachable", repo_root=tmp_path, runner=_checks_runner({})
+    )
+
+    assert got is None, "unreadable protection must be UNKNOWN, never an empty requirement set"
+
+
+def test_readable_but_unprotected_repo_is_empty_not_unknown(tmp_path: Path) -> None:
+    """A repo that genuinely requires nothing yields (), which must stay distinct from None."""
+    autoqueue._REQUIRED_CHECKS_CACHE.clear()
+    runner = _checks_runner(
+        {
+            "rules/branches/main": _FakeProc(0, "[]"),
+            "main/protection": _FakeProc(
+                0, json.dumps({"required_status_checks": {"contexts": []}})
+            ),
+        }
+    )
+
+    got = autoqueue.required_checks_for_repo("owner/open", repo_root=tmp_path, runner=runner)
+
+    assert got == ()
+    assert got is not None
+
+
+def test_required_checks_union_ruleset_and_classic_protection(tmp_path: Path) -> None:
+    """Both surfaces can carry requirements; reading either alone under-constrains the gate."""
+    autoqueue._REQUIRED_CHECKS_CACHE.clear()
+    runner = _checks_runner(
+        {
+            "rules/branches/main": _FakeProc(0, _RULESET_ALL_GREEN),
+            "main/protection": _FakeProc(
+                0, json.dumps({"required_status_checks": {"contexts": ["governance-gate"]}})
+            ),
+        }
+    )
+
+    got = autoqueue.required_checks_for_repo(
+        "owner/council-like", repo_root=tmp_path, runner=runner
+    )
+
+    assert got == ("all-green", "governance-gate")

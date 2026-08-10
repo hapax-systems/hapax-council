@@ -119,7 +119,89 @@ HOLD_LABEL_RE = re.compile(
     r"(?:^|[-_\s])(hold|do[-_\s]?not[-_\s]?merge|manual[-_\s]?merge|blocked|wip)(?:$|[-_\s])",
     re.IGNORECASE,
 )
+# A hand-authored required-check list is a STIPULATION standing in for a witnessed fact, and this
+# one matched no repository's actual protection. Measured 2026-08-10: GitHub requires `all-green`
+# on reins and `all-green` + `governance-gate` on hapax-council. It requires `lint`, `test`,
+# `typecheck`, `web-build` and `vscode-build` nowhere.
+#
+# The cost was not cosmetic. `vscode-build` cannot exist in reins, so EVERY reins PR reported
+# missing_required_checks and no reins PR could ever be admitted through the governed path.
+# reins#28 sat at 3/3 quorum-accept with its repo's only required check green, blocked solely by
+# this constant, while a lane waited on a release stamp that would not have helped.
+#
+# Same defect class as the pr_repo association bug fixed earlier in this file: logic that is blind
+# to which REPOSITORY it is judging. Derive it from the repo instead of declaring it.
 DEFAULT_REQUIRED_CHECKS = ("lint", "test", "typecheck", "web-build", "vscode-build")
+
+# Cache per (repo) so a scan of N PRs costs one API round-trip per repo, not N.
+_REQUIRED_CHECKS_CACHE: dict[str, tuple[str, ...] | None] = {}
+
+
+def _gh_api_json(path: str, *, repo_root: Path, runner: Any) -> Any:
+    """GET a gh api path and parse JSON, or None when unreadable."""
+    proc = runner(
+        ["gh", "api", path],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    if getattr(proc, "returncode", 1) != 0:
+        return None
+    try:
+        return json.loads(proc.stdout or "null")
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def required_checks_for_repo(
+    repo: str,
+    *,
+    repo_root: Path,
+    runner: Any,
+) -> tuple[str, ...] | None:
+    """The checks GitHub actually requires on ``repo``'s default branch.
+
+    Returns the union of the ruleset and classic-protection required contexts, or None when
+    NEITHER can be read. None means UNKNOWN, and callers must fail closed: an unreadable
+    protection surface must never resolve to "no checks required", because that would WIDEN
+    what may merge. Failure paths narrow.
+
+    A repo whose protection is readable and requires nothing legitimately yields (), which is
+    different from None and must stay different.
+    """
+    if repo in _REQUIRED_CHECKS_CACHE:
+        return _REQUIRED_CHECKS_CACHE[repo]
+
+    contexts: set[str] = set()
+    readable = False
+
+    ruleset = _gh_api_json(f"repos/{repo}/rules/branches/main", repo_root=repo_root, runner=runner)
+    if isinstance(ruleset, list):
+        readable = True
+        for rule in ruleset:
+            if not isinstance(rule, dict) or rule.get("type") != "required_status_checks":
+                continue
+            params = rule.get("parameters") or {}
+            for entry in params.get("required_status_checks") or []:
+                if isinstance(entry, dict) and entry.get("context"):
+                    contexts.add(str(entry["context"]))
+
+    protection = _gh_api_json(
+        f"repos/{repo}/branches/main/protection", repo_root=repo_root, runner=runner
+    )
+    if isinstance(protection, dict):
+        readable = True
+        required = protection.get("required_status_checks") or {}
+        for context in required.get("contexts") or []:
+            contexts.add(str(context))
+
+    result = tuple(sorted(contexts)) if readable else None
+    _REQUIRED_CHECKS_CACHE[repo] = result
+    return result
+
+
 AUTOQUEUE_ADMISSION_CONTEXT = "hapax/autoqueue-admission"
 AUTOQUEUE_IGNORED_CHECK_CONTEXTS = {
     AUTOQUEUE_ADMISSION_CONTEXT,
@@ -2980,6 +3062,32 @@ def main(argv: list[str] | None = None) -> int:
         stream=sys.stderr,
     )
 
+    # Resolve required checks in provenance order: explicit flag (stipulated by the caller) >
+    # the repo's own protection (witnessed) > the legacy constant (stipulated, and wrong for
+    # every repo measured). Deriving is what makes this correct for a repo the caller has never
+    # heard of, which is the case the constant got wrong.
+    if args.no_required_checks:
+        resolved_required_checks: tuple[str, ...] = ()
+    elif args.required_checks:
+        resolved_required_checks = tuple(args.required_checks)
+    else:
+        derived = required_checks_for_repo(
+            args.repo, repo_root=args.repo_root, runner=subprocess.run
+        )
+        if derived is None:
+            # UNKNOWN, not "none required". Falling back to the legacy constant keeps the gate
+            # closed; falling back to () would widen admission on an API hiccup.
+            logger.warning(
+                "cc-pr-autoqueue: could not read required checks for %s; falling back to the "
+                "legacy constant %s. Next: check `gh api repos/%s/rules/branches/main`.",
+                args.repo,
+                ",".join(DEFAULT_REQUIRED_CHECKS),
+                args.repo,
+            )
+            resolved_required_checks = DEFAULT_REQUIRED_CHECKS
+        else:
+            resolved_required_checks = derived
+
     report = run_reconciler(
         repo=args.repo,
         repo_root=args.repo_root,
@@ -2987,9 +3095,7 @@ def main(argv: list[str] | None = None) -> int:
         apply=args.apply,
         require_route_metadata=not args.allow_legacy_task_metadata,
         include_pending_auto=not args.no_pending_auto,
-        required_checks=()
-        if args.no_required_checks
-        else tuple(args.required_checks or DEFAULT_REQUIRED_CHECKS),
+        required_checks=resolved_required_checks,
         limit=args.limit,
         lineage_ledger_path=args.lineage_ledger_path,
         storm_mode_enabled=not args.disable_storm_mode,
