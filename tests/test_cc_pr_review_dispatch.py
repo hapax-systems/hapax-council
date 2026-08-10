@@ -4245,3 +4245,83 @@ payg_fallback: false
         reviews = dispatch.dispatch_reviews(constitution, ["prompt"], registry, runner)
 
         assert reviews[0]["verdict"] == "provider-outage"
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=str(repo), check=True, capture_output=True, text=True)
+
+
+def _repo_with_a_preexisting_test(tmp_path: Path) -> Path:
+    """A repo where the test EXISTS but is not in any diff — the blind spot's exact shape."""
+    repo = tmp_path / "repo"
+    (repo / "shared").mkdir(parents=True)
+    (repo / "tests").mkdir(parents=True)
+    (repo / "shared" / "widget_policy.py").write_text("def rotate():\n    return 1\n")
+    (repo / "tests" / "test_widget_policy.py").write_text(
+        "from shared.widget_policy import rotate\n\n\n"
+        "def test_rotation_and_append_are_mutually_exclusive() -> None:\n"
+        "    assert rotate() == 1\n"
+    )
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "t@example.invalid")
+    _git(repo, "config", "user.name", "t")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "seed")
+    return repo
+
+
+def test_test_index_surfaces_coverage_that_no_diff_would_show(tmp_path: Path) -> None:
+    """The fix for the recurring phantom "untested" critical.
+
+    Reviewers see a diff plus allowlisted current-source excerpts, and no test file is on that
+    allowlist. A test written in an earlier commit therefore appears nowhere, so a reviewer
+    asked "is this tested?" can only answer no. On 2026-08-10 PR #4535 drew a critical and two
+    majors on exactly this, naming tests that existed in the unchanged part of the file the
+    diff touched.
+    """
+    repo = _repo_with_a_preexisting_test(tmp_path)
+
+    rendered, records = dispatch.build_test_index(
+        ["shared/widget_policy.py"], repo_root=repo, head_sha="HEAD"
+    )
+
+    assert "test_rotation_and_append_are_mutually_exclusive" in rendered
+    assert "tests/test_widget_policy.py" in rendered
+    assert records and records[0]["status"] == "indexed"
+    assert records[0]["count"] >= 1
+
+
+def test_test_index_reports_an_uncovered_module_as_uncovered(tmp_path: Path) -> None:
+    """Absence must be stated, not inferred from silence.
+
+    "No test references this module" is the signal a reviewer legitimately wants; an empty
+    section would read as an index failure and license the same phantom finding again.
+    """
+    repo = _repo_with_a_preexisting_test(tmp_path)
+    (repo / "shared" / "orphan_module.py").write_text("def untested():\n    return 2\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "orphan")
+
+    rendered, records = dispatch.build_test_index(
+        ["shared/orphan_module.py"], repo_root=repo, head_sha="HEAD"
+    )
+
+    assert "no test file at this head references" in rendered
+    assert records[0]["status"] == "no_referencing_tests"
+    assert records[0]["count"] == 0
+
+
+def test_test_index_skips_test_files_and_bounds_itself(tmp_path: Path) -> None:
+    """Indexing a changed TEST file would list it against itself, and the budget must hold.
+
+    A 17-file PR that spends more context on the index than on its own diff has traded one
+    blindness for another.
+    """
+    repo = _repo_with_a_preexisting_test(tmp_path)
+
+    rendered, records = dispatch.build_test_index(
+        ["tests/test_widget_policy.py"], repo_root=repo, head_sha="HEAD"
+    )
+
+    assert rendered == ""
+    assert records == []

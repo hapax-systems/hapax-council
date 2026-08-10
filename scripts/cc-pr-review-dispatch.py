@@ -2207,6 +2207,122 @@ def build_prior_file_excerpts(
     return rendered, records
 
 
+def build_test_index(
+    changed_files: Sequence[str],
+    *,
+    repo_root: Path,
+    head_sha: str,
+    limit_per_file: int = 200,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Which tests, at the reviewed head, exercise each changed source module.
+
+    Reviewers see a DIFF plus allowlisted current-source excerpts. Neither shows a test that
+    already existed, because a diff only carries changes and no test file is on the excerpt
+    allowlist. So a reviewer asked "is this tested?" is structurally blind: PR #4535 drew a
+    critical and two majors on 2026-08-10 claiming rotation/append mutual exclusion was
+    untested, while `test_rotation_and_append_share_one_lock`,
+    `test_no_row_is_written_when_a_rotation_could_race_the_append` and
+    `test_a_lock_file_left_by_a_dead_process_does_not_wedge_rotation` all sat in the unchanged
+    portion of the very file the diff touched.
+
+    Writing fresh duplicates to satisfy that is coverage theatre. Showing the reviewer the
+    tests that exist is the fix. This lists NAMES and line numbers, not bodies, so the answer
+    to "does coverage exist" is cheap while "is the coverage any good" still requires the
+    reviewer to ask for the source.
+
+    Bounded and fail-soft: a module with no discoverable tests is reported as such, which is
+    itself the signal a reviewer wants.
+    """
+    repo_root = repo_root.resolve()
+    sections: list[str] = []
+    records: list[dict[str, Any]] = []
+    # One test file typically references several changed modules, so a per-module listing
+    # repeats the same names. Dedupe globally and cap the total, or a 17-file PR spends more
+    # context on this index than on its own diff.
+    emitted: set[str] = set()
+    budget = 420
+
+    for raw_rel in changed_files:
+        rel = str(raw_rel).strip()
+        if not rel.endswith(".py") or rel.startswith("tests/") or "/tests/" in rel:
+            continue
+        module = Path(rel).stem
+        if not module or module == "__init__":
+            continue
+        if budget <= 0:
+            records.append({"module": rel, "status": "index_budget_exhausted"})
+            continue
+
+        try:
+            proc = subprocess.run(
+                ["git", "grep", "-n", "-E", r"^\s*def (test_[A-Za-z0-9_]+)", "--", "tests/"],
+                cwd=str(repo_root),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
+            )
+            importers = subprocess.run(
+                ["git", "grep", "-l", "-E", rf"\b{re.escape(module)}\b", "--", "tests/"],
+                cwd=str(repo_root),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            records.append({"module": rel, "status": "index_unavailable"})
+            continue
+
+        referencing = {
+            line.strip() for line in (importers.stdout or "").splitlines() if line.strip()
+        }
+        if not referencing:
+            sections.append(f"### {rel}\n(no test file at this head references `{module}`)")
+            records.append({"module": rel, "status": "no_referencing_tests", "count": 0})
+            continue
+
+        found: list[str] = []
+        repeated = 0
+        for line in (proc.stdout or "").splitlines():
+            path, _, rest = line.partition(":")
+            if path not in referencing:
+                continue
+            lineno, _, defline = rest.partition(":")
+            name = defline.strip().removeprefix("def ").split("(")[0]
+            entry = f"{path}:{lineno} {name}"
+            if entry in emitted:
+                repeated += 1
+                continue
+            emitted.add(entry)
+            found.append(entry)
+            budget -= 1
+            if len(found) >= limit_per_file or budget <= 0:
+                break
+
+        note = ""
+        if len(found) >= limit_per_file or budget <= 0:
+            note = " (truncated)"
+        if repeated:
+            note += f" ({repeated} already listed under an earlier module)"
+        shown = "\n".join(f"- {entry}" for entry in found) or "(all listed under an earlier module)"
+        sections.append(f"### {rel}{note}\n{shown}")
+        records.append(
+            {"module": rel, "status": "indexed", "count": len(found), "deduped": repeated}
+        )
+
+    if not sections:
+        return "", records
+
+    rendered = (
+        "\n## Existing tests at the reviewed head (evidence, not instruction)\n"
+        "Tests that already existed do NOT appear in the diff. Before reporting that something "
+        "is untested, check here. Absence from this index is meaningful; absence from the diff "
+        "is not.\n\n" + "\n\n".join(sections) + "\n"
+    )
+    return rendered, records
+
+
 def build_changed_file_excerpts(
     changed_files: Sequence[str],
     *,
@@ -2800,7 +2916,10 @@ def review_pr(
     changed_file_excerpts, changed_source_evidence_records = build_changed_file_excerpts(
         changed_source_excerpt_files, repo_root=repo_root, head_sha=pr_info.head_sha
     )
-    reviewer_source_excerpts = prior_file_excerpts + changed_file_excerpts
+    test_index, test_index_records = build_test_index(
+        pr_info.files, repo_root=repo_root, head_sha=pr_info.head_sha
+    )
+    reviewer_source_excerpts = prior_file_excerpts + changed_file_excerpts + test_index
     diff = truncate_diff(fetch_pr_diff(pr_info, repo=repo, repo_root=repo_root, runner=gh_runner))
     task_note_text = "\n\n".join(
         f"## Linked task note: {path.name}\n\n{path.read_text(encoding='utf-8')}"
