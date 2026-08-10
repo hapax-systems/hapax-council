@@ -463,8 +463,24 @@ fi
 # ── Trio Relay Protocol onboarding ──
 RELAY_DIR="$HOME/.cache/hapax/relay"
 RELAY_ACTIVE=false
-if [ -f "$RELAY_DIR/PROTOCOL.md" ]; then
+# Liveness is "the relay is being used", evidenced by roles publishing into it.
+#
+# This previously required $RELAY_DIR/PROTOCOL.md to exist, and NOTHING IN THE REPOSITORY WRITES
+# THAT FILE — it survives only as a reference in April 2026 design docs. The inner test then
+# required alpha.yaml AND beta.yaml, names the convention abandoned in favour of <role>-status.yaml;
+# alpha.yaml lingers only because it was written 2026-07-13 and never removed, and beta.yaml has not
+# existed for longer than that.
+#
+# So the gate was false on every current session and silently darkened the ENTIRE relay section
+# below — session identity, the P0 broadcast inbox, and the inflection channel — not one feature.
+# Measured at the time of this change: PROTOCOL.md absent, 44 <role>-status.yaml present. The
+# evidence of use was abundant; the sentinel it tested for had never been produced.
+if [ -d "$RELAY_DIR" ]; then
   if [ "${CONCURRENT_COUNT:-0}" -gt 0 ] 2>/dev/null; then
+    RELAY_ACTIVE=true
+  elif ls "$RELAY_DIR"/*-status.yaml >/dev/null 2>&1; then
+    RELAY_ACTIVE=true
+  elif [ -f "$RELAY_DIR/PROTOCOL.md" ]; then
     RELAY_ACTIVE=true
   elif [ -f "$RELAY_DIR/alpha.yaml" ] && [ -f "$RELAY_DIR/beta.yaml" ]; then
     RELAY_ACTIVE=true
@@ -635,14 +651,42 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
     fi
   fi
 
-  # Show new inflections
+  # Show new inflections.
+  #
+  # Selection is per-role SEEN, not `-newer "$RELAY_DIR/${ROLE}.yaml"`. That key named a file the
+  # naming convention stopped producing — roles now write <role>-status.yaml — so `find -newer`
+  # referenced a missing path and returned nothing for every current role. The channel was dead at
+  # two points at once: nothing had ever written into inflections/, and this selector could not have
+  # delivered anything if something had. The P0 broadcast inbox above already solves the identical
+  # problem with a seen-file; this is that mechanism, not a new one.
   if [ -d "$RELAY_DIR/inflections" ]; then
-    NEW_INFLECTIONS=$(find "$RELAY_DIR/inflections" -name "*.md" -newer "$RELAY_DIR/${ROLE}.yaml" 2>/dev/null)
+    INFLECTION_SEEN_DIR="$RELAY_DIR/.seen"
+    mkdir -p "$INFLECTION_SEEN_DIR" 2>/dev/null || true
+    INFLECTION_SEEN_FILE="$INFLECTION_SEEN_DIR/${ROLE:-roleless}-inflections.seen"
+    NEW_INFLECTIONS=""
+    while IFS= read -r inf; do
+      [ -n "$inf" ] || continue
+      grep -qxF "$(basename "$inf")" "$INFLECTION_SEEN_FILE" 2>/dev/null && continue
+      NEW_INFLECTIONS="${NEW_INFLECTIONS}${inf}
+"
+    done <<< "$(find "$RELAY_DIR/inflections" -maxdepth 1 -name '*.md' 2>/dev/null | sort)"
     if [ -n "$NEW_INFLECTIONS" ]; then
-      echo "NEW INFLECTIONS (since your last update):"
-      for inf in $NEW_INFLECTIONS; do
-        head -1 "$inf" | sed 's/^# /  /'
+      echo "NEW INFLECTIONS (unseen by this role):"
+      printf '%s' "$NEW_INFLECTIONS" | while IFS= read -r inf; do
+        [ -n "$inf" ] || continue
+        INF_SEVERITY="$(grep -m1 '^\*\*Severity:\*\*' "$inf" 2>/dev/null | sed 's/^\*\*Severity:\*\*[[:space:]]*//')"
+        INF_TITLE="$(head -1 "$inf" 2>/dev/null | sed 's/^# *//')"
+        if [ -n "$INF_SEVERITY" ]; then
+          echo "  [$INF_SEVERITY] $INF_TITLE ($inf)"
+        else
+          echo "  $INF_TITLE ($inf)"
+        fi
       done
+      # Marked seen only AFTER display, so a crash mid-render redelivers rather than silently drops.
+      printf '%s' "$NEW_INFLECTIONS" | while IFS= read -r inf; do
+        [ -n "$inf" ] || continue
+        basename "$inf"
+      done >> "$INFLECTION_SEEN_FILE" 2>/dev/null || true
     fi
   fi
 
