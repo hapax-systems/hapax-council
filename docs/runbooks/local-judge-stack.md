@@ -118,7 +118,8 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
   limit change, run this eight-worker canary and require identical container
   health/restart/OOM state plus unchanged `oom` and `oom_kill` counters:
 
-  ```sh
+  ```bash
+  set -euo pipefail
   container=hapax-local-judge
   pid="$(docker inspect --format '{{.State.Pid}}' "$container")"
   test "$pid" -gt 1

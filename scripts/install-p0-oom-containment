@@ -1572,7 +1572,7 @@ docker_policy_for_container() {
     esac
 }
 
-docker_target_records() {
+docker_container_records() {
     local output record id name
     output="$("$DOCKER" ps -a --no-trunc --format '{{.ID}}|{{.Names}}')" || return 1
     while IFS= read -r record; do
@@ -1582,9 +1582,19 @@ docker_target_records() {
             echo "unparseable Docker identity record: $record" >&2
             return 1
         fi
-        docker_policy_for_container "$name" >/dev/null || continue
         printf '%s|%s\n' "$id" "$name"
     done <<< "$output"
+}
+
+docker_target_records() {
+    local records record name
+    records="$(docker_container_records)" || return 1
+    while IFS= read -r record; do
+        [ -n "$record" ] || continue
+        name="${record#*|}"
+        docker_policy_for_container "$name" >/dev/null || continue
+        printf '%s\n' "$record"
+    done <<< "$records"
 }
 
 verify_docker_container_limit() {
@@ -1609,7 +1619,7 @@ verify_docker_container_limit() {
 
 docker_target_absent() {
     local expected_id="$1" expected_name="$2" records record id name
-    records="$(docker_target_records)" || return 2
+    records="$(docker_container_records)" || return 2
     while IFS= read -r record; do
         [ -n "$record" ] || continue
         id="${record%%|*}"

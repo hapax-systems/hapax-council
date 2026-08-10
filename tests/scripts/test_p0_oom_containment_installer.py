@@ -720,6 +720,7 @@ def test_installer_rejects_forged_inherited_lock_descriptor_before_mutation(
         ("success", "podium", "need-daemon-reload-query-failure"),
         ("success", "podium", "zram-main"),
         ("disappear", "podium", "none"),
+        ("rename", "podium", "none"),
         ("replace", "podium", "none"),
         ("update-failure", "podium", "none"),
         ("inspect-failure-present", "podium", "none"),
@@ -1004,6 +1005,12 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
                 'echo "simulated same-name replacement during update" >&2; exit 1; fi\n'
                 "exit 0\n"
             )
+        elif docker_mode == "rename":
+            update_action = (
+                f'if [ "${{@: -1}}" = "{MCP_CONTAINER_ID}" ]; then touch {gone!s}; '
+                'echo "simulated same-ID rename during update" >&2; exit 1; fi\n'
+                "exit 0\n"
+            )
         elif docker_mode == "update-failure":
             update_action = (
                 f'if [ "${{@: -1}}" = "{MCP_CONTAINER_ID}" ]; then '
@@ -1016,12 +1023,21 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
             if docker_mode == "inspect-failure-present"
             else f"printf '%s|/%s|%s|%s\\n' \"$id\" hapax-github-mcp-hapax-123 {mcp_memory} {768 * 1024**2}"
         )
-        mcp_record = (
-            f"if [ -e {gone!s} ]; then printf '%s\\n' '{REPLACEMENT_CONTAINER_ID}|hapax-github-mcp-hapax-123'; "
-            f"else printf '%s\\n' '{MCP_CONTAINER_ID}|hapax-github-mcp-hapax-123'; fi"
-            if docker_mode == "replace"
-            else f"[ -e {gone!s} ] || printf '%s\\n' '{MCP_CONTAINER_ID}|hapax-github-mcp-hapax-123'"
-        )
+        if docker_mode == "replace":
+            mcp_record = (
+                f"if [ -e {gone!s} ]; then printf '%s\\n' "
+                f"'{REPLACEMENT_CONTAINER_ID}|hapax-github-mcp-hapax-123'; "
+                f"else printf '%s\\n' '{MCP_CONTAINER_ID}|hapax-github-mcp-hapax-123'; fi"
+            )
+        elif docker_mode == "rename":
+            mcp_record = (
+                f"if [ -e {gone!s} ]; then printf '%s\\n' '{MCP_CONTAINER_ID}|renamed-away'; "
+                f"else printf '%s\\n' '{MCP_CONTAINER_ID}|hapax-github-mcp-hapax-123'; fi"
+            )
+        else:
+            mcp_record = (
+                f"[ -e {gone!s} ] || printf '%s\\n' '{MCP_CONTAINER_ID}|hapax-github-mcp-hapax-123'"
+            )
         fake_docker.write_text(
             f"""#!/usr/bin/env bash
 set -euo pipefail
@@ -1134,6 +1150,7 @@ esac
         docker_mode
         in {
             "update-failure",
+            "rename",
             "replace",
             "inspect-failure-present",
             "post-update-mismatch",
@@ -1164,6 +1181,9 @@ esac
         elif docker_mode == "replace":
             assert "same-name target remains" in result.stderr
             assert "simulated same-name replacement during update" in result.stderr
+        elif docker_mode == "rename":
+            assert "original identity" in result.stderr
+            assert "simulated same-ID rename during update" in result.stderr
         elif docker_mode == "update-failure":
             assert "simulated Docker update denial" in result.stderr
         elif docker_mode == "inspect-failure-present":

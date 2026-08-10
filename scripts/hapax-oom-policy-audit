@@ -217,25 +217,89 @@ def derive_host_policy(
     except OSError as exc:
         raise HostPolicyError(f"cannot read selected {table_context}: {exc}") from exc
 
-    matched: tuple[str, str, str, str, str, str] | None = None
+    matched: tuple[str, int, int, int, int, int] | None = None
     known_host = False
+    host_ranges: dict[str, list[tuple[int, int]]] = {}
     for line_number, line in enumerate(rows, start=1):
         if not line or line.startswith("#"):
             continue
         fields = line.split("\t")
-        if len(fields) != 8:
+        if len(fields) != 9:
             raise HostPolicyError(
-                f"invalid host profile table row {table_path}:{line_number}: expected 8 fields"
+                f"invalid host profile table row {table_path}:{line_number}: expected 9 fields"
             )
-        row_hostname, floor_gib, profile, app_high, app_max, uid_high, uid_max, zram_mib = fields
+        (
+            row_hostname,
+            min_gib_text,
+            max_gib_text,
+            profile,
+            app_high,
+            app_max,
+            uid_high,
+            uid_max,
+            zram_mib,
+        ) = fields
+        try:
+            min_gib = int(min_gib_text)
+            max_gib = int(max_gib_text)
+        except ValueError as exc:
+            raise HostPolicyError(
+                f"invalid MemTotal GiB interval in {table_context} at line {line_number}: "
+                f"{min_gib_text}..{max_gib_text}"
+            ) from exc
+        if min_gib <= 0 or max_gib < min_gib:
+            raise HostPolicyError(
+                f"invalid MemTotal GiB interval in {table_context} at line {line_number}: "
+                f"{min_gib}..{max_gib}"
+            )
+        if not row_hostname:
+            raise HostPolicyError(f"empty hostname in {table_context} at line {line_number}")
+        if profile not in {"appendix", "podium"}:
+            raise HostPolicyError(
+                f"invalid profile name in {table_context} at line {line_number}: {profile}"
+            )
+        row_context = f"{table_context} line {line_number}"
+        app_high_bytes = _memory_bytes(app_high, field="app_memory_high", table_context=row_context)
+        app_max_bytes = _memory_bytes(app_max, field="app_memory_max", table_context=row_context)
+        uid_high_bytes = _memory_bytes(uid_high, field="uid_memory_high", table_context=row_context)
+        uid_max_bytes = _memory_bytes(uid_max, field="uid_memory_max", table_context=row_context)
+        try:
+            zram_size = int(zram_mib) * 1024**2
+        except ValueError as exc:
+            raise HostPolicyError(f"invalid zram_mib value in {row_context}: {zram_mib}") from exc
+        reviewed_floor_bytes = min_gib * BYTES_1G
+        if not (
+            0 < app_high_bytes < app_max_bytes < reviewed_floor_bytes
+            and 0 < uid_high_bytes < uid_max_bytes < reviewed_floor_bytes
+            and app_max_bytes < uid_max_bytes
+            and zram_size > 0
+        ):
+            raise HostPolicyError(
+                f"derived {profile} memory ceilings from {row_context} are not safely ordered "
+                f"below the reviewed {min_gib} GiB interval floor"
+            )
+        ranges = host_ranges.setdefault(row_hostname, [])
+        if any(min_gib <= prior_max and prior_min <= max_gib for prior_min, prior_max in ranges):
+            raise HostPolicyError(
+                f"overlapping MemTotal GiB intervals in {table_context} for {row_hostname}: "
+                f"{min_gib}..{max_gib}"
+            )
+        ranges.append((min_gib, max_gib))
         if row_hostname == canonical_hostname:
             known_host = True
-        if row_hostname == canonical_hostname and floor_gib == str(physical_gib):
+        if row_hostname == canonical_hostname and min_gib <= physical_gib <= max_gib:
             if matched is not None:
                 raise HostPolicyError(
-                    f"duplicate entry in {table_context} for {canonical_hostname}/{physical_gib}"
+                    f"duplicate entry in {table_context} for {canonical_hostname}/{physical_gib} GiB"
                 )
-            matched = (profile, app_high, app_max, uid_high, uid_max, zram_mib)
+            matched = (
+                profile,
+                app_high_bytes,
+                app_max_bytes,
+                uid_high_bytes,
+                uid_max_bytes,
+                zram_size,
+            )
     if matched is None and not known_host:
         raise HostPolicyError(
             f"unsupported host identity in selected {table_context}: "
@@ -244,47 +308,25 @@ def derive_host_policy(
         )
     if matched is None:
         raise HostPolicyError(
-            f"host/profile memory mismatch: {canonical_hostname} has unlisted floor "
+            f"host/profile memory mismatch: {canonical_hostname} has unlisted MemTotal floor "
             f"{physical_gib} GiB in selected {table_context}; next action: repair the hardware "
-            "inventory or add a "
-            "separately reviewed exact sizing-table entry"
+            "inventory or add a separately reviewed non-overlapping sizing interval"
         )
-    profile, app_high, app_max, uid_high, uid_max, zram_mib = matched
-    if profile not in {"appendix", "podium"}:
-        raise HostPolicyError(f"invalid profile name in {table_context}: {profile}")
-    try:
-        zram_size = int(zram_mib) * 1024**2
-    except ValueError as exc:
-        raise HostPolicyError(f"invalid zram_mib value in {table_context}: {zram_mib}") from exc
-    if zram_size <= 0:
-        raise HostPolicyError(f"invalid zram_mib value in {table_context}: {zram_mib}")
+    profile, app_high, app_max, uid_high, uid_max, zram_size = matched
 
     policy = HostMemoryPolicy(
         hostname=canonical_hostname,
         profile=profile,
         physical_bytes=physical_bytes,
-        app_memory_high=_memory_bytes(
-            app_high, field="app_memory_high", table_context=table_context
-        ),
-        app_memory_max=_memory_bytes(app_max, field="app_memory_max", table_context=table_context),
-        uid_memory_high=_memory_bytes(
-            uid_high, field="uid_memory_high", table_context=table_context
-        ),
-        uid_memory_max=_memory_bytes(uid_max, field="uid_memory_max", table_context=table_context),
+        app_memory_high=app_high,
+        app_memory_max=app_max,
+        uid_memory_high=uid_high,
+        uid_memory_max=uid_max,
         zram_size=zram_size,
         optional_user_units=(
             APPENDIX_OPTIONAL_USER_UNITS if profile == "appendix" else frozenset()
         ),
     )
-    if not (
-        0 < policy.app_memory_high < policy.app_memory_max < policy.physical_bytes
-        and 0 < policy.uid_memory_high < policy.uid_memory_max < policy.physical_bytes
-        and policy.app_memory_max < policy.uid_memory_max
-    ):
-        raise HostPolicyError(
-            f"derived {profile} memory ceilings from {table_context} are not safely ordered "
-            "below physical RAM"
-        )
     return policy
 
 
@@ -1020,31 +1062,39 @@ def _docker_check_name(container: str, field: str) -> str:
     return f"docker_{safe}_{field}"
 
 
-def _docker_target_records() -> tuple[list[tuple[str, str, tuple[int, int]]], str | None]:
+def _docker_container_records() -> tuple[list[tuple[str, str]], str | None]:
     listed = _run([_docker(), "ps", "-a", "--no-trunc", "--format", "{{.ID}}\t{{.Names}}"])
     if listed.returncode != 0:
         detail = (listed.stderr or listed.stdout).strip() or f"rc={listed.returncode}"
         return [], f"cannot enumerate Docker containers: {detail}"
-    targets: list[tuple[str, str, tuple[int, int]]] = []
+    records: list[tuple[str, str]] = []
     for line in listed.stdout.splitlines():
         if not line.strip():
             continue
         fields = line.split("\t")
-        if len(fields) != 2 or re.fullmatch(r"[0-9a-f]{12,64}", fields[0]) is None:
+        if len(fields) != 2 or re.fullmatch(r"[0-9a-f]{12,64}", fields[0]) is None or not fields[1]:
             return [], f"unparseable Docker identity record: {line}"
-        container_id, name = fields
+        records.append((fields[0], fields[1]))
+    return records, None
+
+
+def _docker_target_records() -> tuple[list[tuple[str, str, tuple[int, int]]], str | None]:
+    records, error = _docker_container_records()
+    if error is not None:
+        return [], error
+    targets: list[tuple[str, str, tuple[int, int]]] = []
+    for container_id, name in records:
         if policy := _docker_policy(name):
             targets.append((container_id, name, policy))
     return targets, None
 
 
 def _docker_target_absent(container_id: str, name: str) -> tuple[bool, str | None]:
-    targets, error = _docker_target_records()
+    records, error = _docker_container_records()
     if error is not None:
         return False, error
     return all(
-        current_id != container_id and current_name != name
-        for current_id, current_name, _ in targets
+        current_id != container_id and current_name != name for current_id, current_name in records
     ), None
 
 
