@@ -1631,6 +1631,37 @@ def test_private_admitted_transaction_marks_recovery_after_projection_failure(
     ).exists()
     assert inspections[0].disposition == "hold"
     assert inspections[0].reason_code == "admitted_claim_publication_reconciliation_required"
+    results = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt_root,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+    )
+    (
+        recovered_intent,
+        recovered_projections,
+        recovered_id,
+        recovered_state,
+        recovered_consumption,
+    ) = sdlc_claim._load_admitted_manifest(manifest_path)
+    recovered_receipt = require_applied_admitted_claim_publication(
+        fixture.intent,
+        active.consumption,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt_root,
+        lock_root=fixture.locks,
+    )
+
+    assert results == (sdlc_claim.ClaimPublicationRecoveryResult(publication_id, "applied"),)
+    assert recovered_intent == fixture.intent
+    assert recovered_consumption == active.consumption
+    assert recovered_projections == sdlc_claim._admitted_projections(
+        fixture.intent, active.consumption
+    )
+    assert recovered_id == publication_id
+    assert recovered_state == "applied"
+    assert recovered_receipt.recovered is False
 
 
 def test_private_admitted_transaction_refuses_receipt_collision_without_live_writes(
@@ -1714,6 +1745,40 @@ def test_claim_transaction_directory_refuses_collision_and_unsafe_root(
     assert unsafe.value.reason_code == "claim_publication_private_directory_unsafe"
 
 
+def test_claim_transaction_directory_reports_mkdir_and_stat_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "transactions"
+    root.mkdir(mode=0o700)
+    publication_id = f"claim-pub-{'b' * 64}"
+    target = root / publication_id
+    original_mkdir = sdlc_claim.os.mkdir
+
+    def fail_target_mkdir(path: str | bytes | os.PathLike[str], mode: int = 0o777) -> None:
+        if Path(path) == target:
+            raise OSError("simulated full transaction filesystem")
+        original_mkdir(path, mode)
+
+    monkeypatch.setattr(sdlc_claim.os, "mkdir", fail_target_mkdir)
+    with pytest.raises(ClaimPublicationError) as unavailable:
+        sdlc_claim._create_claim_transaction_directory(root, publication_id)
+    assert unavailable.value.reason_code == "claim_publication_transaction_directory_unavailable"
+
+    monkeypatch.setattr(sdlc_claim.os, "mkdir", original_mkdir)
+    original_stat = Path.stat
+
+    def fail_target_stat(self: Path, *args: object, **kwargs: object) -> os.stat_result:
+        if self == target:
+            raise OSError("simulated post-create stat failure")
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fail_target_stat)
+    with pytest.raises(ClaimPublicationError) as unsafe:
+        sdlc_claim._create_claim_transaction_directory(root, publication_id)
+    assert unsafe.value.reason_code == "claim_publication_transaction_directory_unsafe"
+
+
 def test_claim_private_payload_covers_temp_exhaustion_and_readback_mismatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1740,10 +1805,51 @@ def test_claim_private_payload_covers_temp_exhaustion_and_readback_mismatch(
     assert mismatch.value.reason_code == "claim_publication_private_file_readback_mismatch"
 
 
+def test_claim_private_payload_covers_replace_and_open_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "private"
+    root.mkdir(mode=0o700)
+    target = root / "manifest.json"
+    target.write_bytes(b"old\n")
+    target.chmod(0o600)
+    original_replace = sdlc_claim.os.replace
+
+    def fail_target_replace(src: Path, dst: Path) -> None:
+        if Path(dst) == target:
+            raise OSError("simulated manifest replace failure")
+        original_replace(src, dst)
+
+    monkeypatch.setattr(sdlc_claim.os, "replace", fail_target_replace)
+    with pytest.raises(ClaimPublicationError) as install_failed:
+        sdlc_claim._claim_private_payload(target, b"new\n", overwrite=True)
+    assert install_failed.value.reason_code == "claim_publication_private_file_install_failed"
+
+    monkeypatch.setattr(sdlc_claim.os, "replace", original_replace)
+    original_open = sdlc_claim.os.open
+
+    def fail_target_open(
+        path: str | bytes | os.PathLike[str],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if Path(path) == root / "blocked.json":
+            raise OSError("simulated private file open failure")
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(sdlc_claim.os, "open", fail_target_open)
+    with pytest.raises(ClaimPublicationError) as unsafe:
+        sdlc_claim._claim_private_payload(root / "blocked.json", b"payload\n", overwrite=False)
+    assert unsafe.value.reason_code == "claim_publication_private_file_unsafe"
+
+
 def test_claim_publication_lock_refuses_hardlinked_lock_file(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     fixture.locks.mkdir(mode=0o700)
-    digest = sdlc_claim._sha256(f"{fixture.intent.task_id}\0{fixture.intent.role}".encode())
+    digest = sdlc_claim._claim_publication_role_lock_digest(fixture.intent.role)
     lock_path = fixture.locks / f"{digest}.lock"
     lock_path.write_bytes(b"")
     lock_path.chmod(0o600)
@@ -1754,6 +1860,33 @@ def test_claim_publication_lock_refuses_hardlinked_lock_file(tmp_path: Path) -> 
             pass
 
     assert raised.value.reason_code == "claim_publication_lock_unsafe"
+
+
+def test_claim_publication_lock_reports_open_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path)
+    fixture.locks.mkdir(mode=0o700)
+    original_open = sdlc_claim.os.open
+
+    def fail_lock_open(
+        path: str | bytes | os.PathLike[str],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if Path(path).name.endswith(".lock"):
+            raise OSError("simulated lock open failure")
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(sdlc_claim.os, "open", fail_lock_open)
+    with pytest.raises(ClaimPublicationError) as raised:
+        with sdlc_claim._claim_publication_lock(fixture.intent, lock_root=fixture.locks):
+            pass
+
+    assert raised.value.reason_code == "claim_publication_lock_unavailable"
 
 
 def _claim_publication_lock_child(
@@ -1775,6 +1908,33 @@ def test_claim_publication_lock_serializes_contending_process(tmp_path: Path) ->
     )
 
     with sdlc_claim._claim_publication_lock(fixture.intent, lock_root=fixture.locks):
+        process.start()
+        with pytest.raises(queue.Empty):
+            acquired.get(timeout=0.25)
+
+    assert acquired.get(timeout=5) == "acquired"
+    process.join(timeout=5)
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=5)
+    assert process.exitcode == 0
+
+
+def test_claim_publication_lock_serializes_different_tasks_for_same_role(
+    tmp_path: Path,
+) -> None:
+    first = _fixture(tmp_path / "one", task_id="task-alpha")
+    second = _fixture(tmp_path / "two", task_id="task-beta")
+    assert first.intent.role == second.intent.role
+    assert first.intent.task_id != second.intent.task_id
+    ctx = mp.get_context("fork")
+    acquired = ctx.Queue()
+    process = ctx.Process(
+        target=_claim_publication_lock_child,
+        args=(second.intent, first.locks, acquired),
+    )
+
+    with sdlc_claim._claim_publication_lock(first.intent, lock_root=first.locks):
         process.start()
         with pytest.raises(queue.Empty):
             acquired.get(timeout=0.25)
@@ -1838,19 +1998,81 @@ def test_private_admitted_transaction_marks_recovery_after_untyped_exception(
     )
 
 
-def test_recovery_is_gate0a_hold_and_never_reconciles_history(tmp_path: Path) -> None:
+def test_admitted_recovery_completes_postimage_without_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     fixture = _fixture(tmp_path)
-    _materialize_v1_history(fixture, state="created")
-    before = _tree_snapshot(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    receipt_root = tmp_path / "receipts"
+    original_persist_receipt = sdlc_claim._persist_admitted_receipt
 
-    with pytest.raises(ClaimPublicationError) as raised:
-        recover_claim_publications(
-            cache_dir=fixture.cache,
-            transaction_root=fixture.transactions,
-            lock_root=fixture.locks,
+    def fail_receipt_once(*args: object, **kwargs: object) -> None:
+        raise ClaimPublicationError(
+            "claim_publication_receipt_simulated",
+            "retry admitted recovery after the receipt sink is writable",
+            fixture.intent.task_id,
         )
 
-    assert raised.value.reason_code == "claim_publication_recovery_activation_unvalidated"
+    monkeypatch.setattr(sdlc_claim, "_persist_admitted_receipt", fail_receipt_once)
+    with pytest.raises(ClaimPublicationError) as raised:
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            receipt_root=receipt_root,
+            lock_root=fixture.locks,
+            now=active.checked_at,
+        )
+
+    publication_id = admitted_claim_publication_id(fixture.intent, active.consumption)
+    manifest_path = fixture.transactions / publication_id / "manifest.json"
+    _intent, _projections, _loaded_id, state, _consumption = sdlc_claim._load_admitted_manifest(
+        manifest_path
+    )
+    assert raised.value.reason_code == "claim_publication_receipt_simulated"
+    assert state == "recovery_required"
+    monkeypatch.setattr(sdlc_claim, "_persist_admitted_receipt", original_persist_receipt)
+
+    results = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt_root,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+    )
+    _intent, _projections, _loaded_id, state, _consumption = sdlc_claim._load_admitted_manifest(
+        manifest_path
+    )
+    receipt_path = claim_publication_receipt_path(
+        fixture.cache,
+        fixture.intent.binding,
+        receipt_root=receipt_root,
+    )
+
+    assert results == (sdlc_claim.ClaimPublicationRecoveryResult(publication_id, "applied"),)
+    assert state == "applied"
+    assert load_admitted_claim_publication_receipt(receipt_path)["publication_id"] == publication_id
+
+
+def test_recovery_holds_legacy_history_without_mutation(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    publication_id = _materialize_v1_history(fixture, state="created")
+    before = _tree_snapshot(tmp_path)
+
+    results = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+    )
+
+    assert results == (
+        sdlc_claim.ClaimPublicationRecoveryResult(
+            publication_id,
+            "hold",
+            "legacy_claim_publication_recovery_forbidden",
+        ),
+    )
     assert _tree_snapshot(tmp_path) == before
 
 

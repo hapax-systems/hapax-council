@@ -331,10 +331,12 @@ def _generation_roots(activation_generation: ContentAddress) -> tuple[ContentAdd
     shared = Path(__file__).resolve().parent
     roots = (
         activation_generation,
+        module_file_address(shared / "coord_projection.py"),
         module_file_address(shared / "execution_admission.py"),
         module_file_address(Path(__file__)),
         module_file_address(shared / "gate0b_claim_publication_lease.py"),
         module_file_address(shared / "gate0b_claim_publication_effect.py"),
+        module_file_address(shared / "sdlc_claim.py"),
     )
     return tuple(
         sorted({(item.ref, item.sha256): item for item in roots}.values(), key=lambda x: x.ref)

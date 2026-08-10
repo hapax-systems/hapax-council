@@ -16,6 +16,7 @@ import os
 import re
 import secrets
 import stat
+import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -83,6 +84,11 @@ _STATES = frozenset(
         "recovery_required",
     }
 )
+_RECOVERABLE_ADMITTED_STATES = frozenset(
+    {"created", "projecting", "postimage_complete", "recovery_required"}
+)
+_CLAIM_PUBLICATION_LOCK_TIMEOUT_SECONDS = 30.0
+_CLAIM_PUBLICATION_LOCK_RETRY_SECONDS = 0.05
 
 
 class ClaimPublicationError(RuntimeError):
@@ -2143,8 +2149,8 @@ def _create_claim_transaction_directory(root: Path, publication_id: str) -> Path
         ) from exc
     except OSError as exc:
         raise ClaimPublicationError(
-            "claim_publication_transaction_directory_unsafe",
-            "create one private mode-0700 journal directory for the admitted publication",
+            "claim_publication_transaction_directory_unavailable",
+            "restore writable storage for the claim-publication transaction root and retry",
             str(directory),
         ) from exc
     try:
@@ -2167,6 +2173,10 @@ def _create_claim_transaction_directory(root: Path, publication_id: str) -> Path
         )
     _fsync_directory(root)
     return directory
+
+
+def _claim_publication_role_lock_digest(role: str) -> str:
+    return _sha256(f"claim-publication-role\0{role}".encode())
 
 
 def _claim_private_payload(path: Path, payload: bytes, *, overwrite: bool) -> None:
@@ -2328,7 +2338,7 @@ def _claim_publication_lock(
 ) -> Iterator[None]:
     root = _lock_root(lock_root)
     _ensure_claim_private_directory(root)
-    digest = _sha256(f"{intent.task_id}\0{intent.role}".encode())
+    digest = _claim_publication_role_lock_digest(intent.role)
     path = root / f"{digest}.lock"
     try:
         fd = os.open(
@@ -2342,6 +2352,7 @@ def _claim_publication_lock(
             "restore one euid-owned mode-0600 lock file before retrying publication",
             str(path),
         ) from exc
+    locked = False
     try:
         os.fchmod(fd, 0o600)
         metadata = os.fstat(fd)
@@ -2356,12 +2367,27 @@ def _claim_publication_lock(
                 "replace the lock with one euid-owned single-link mode-0600 regular file",
                 str(path),
             )
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        deadline = time.monotonic() + _CLAIM_PUBLICATION_LOCK_TIMEOUT_SECONDS
+        while not locked:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
+            except BlockingIOError as exc:
+                if time.monotonic() >= deadline:
+                    raise ClaimPublicationError(
+                        "claim_publication_lock_unavailable",
+                        "release the stale role claim-publication lock or retry after the active publisher exits",
+                        str(path),
+                    ) from exc
+                time.sleep(_CLAIM_PUBLICATION_LOCK_RETRY_SECONDS)
         yield
     finally:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        finally:
+        if locked:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+        else:
             os.close(fd)
 
 
@@ -4564,14 +4590,146 @@ def _recover_one(
     lock_root: Path,
     receipt_root: Path | None,
 ) -> ClaimPublicationRecoveryResult:
-    """Gate-0A HOLD: recovery is an effect and requires activated dispatch."""
+    """Complete one interrupted admitted publication without spending a new claim."""
 
-    del lock_root, receipt_root
-    raise ClaimPublicationError(
-        "claim_publication_recovery_activation_unvalidated",
-        "Next action: dispatch recovery through a Gate-0B activated universal executor",
-        str(manifest_path),
+    manifest_path = _normalized(manifest_path)
+    intent, projections, publication_id, state, consumption = _load_any_manifest(manifest_path)
+    if manifest_path.parent.name != publication_id:
+        raise ClaimPublicationError(
+            "claim_publication_manifest_path_mismatch",
+            "move the manifest back under its exact claim-pub directory before recovery",
+            f"{manifest_path.parent.name}!={publication_id}",
+        )
+    receipt_directory = _receipt_root(intent.cache_dir, receipt_root)
+    receipt_path = claim_publication_receipt_path(
+        intent.cache_dir,
+        intent.binding,
+        receipt_root=receipt_directory,
     )
+    if consumption is None:
+        raise ClaimPublicationError(
+            "legacy_claim_publication_recovery_forbidden",
+            "republish the claim through one current admitted claim-publication executor",
+            publication_id,
+        )
+    if not isinstance(consumption, ClaimAdmissionConsumption):
+        raise ClaimPublicationError(
+            "historical_claim_publication_recovery_forbidden",
+            "preserve historical non-authorizing bytes and republish through the current executor",
+            publication_id,
+        )
+
+    with _claim_publication_lock(intent, lock_root=lock_root):
+        intent, projections, publication_id, state, consumption = _load_any_manifest(manifest_path)
+        if manifest_path.parent.name != publication_id:
+            raise ClaimPublicationError(
+                "claim_publication_manifest_path_mismatch",
+                "move the manifest back under its exact claim-pub directory before recovery",
+                f"{manifest_path.parent.name}!={publication_id}",
+            )
+        if consumption is None:
+            raise ClaimPublicationError(
+                "legacy_claim_publication_recovery_forbidden",
+                "republish the claim through one current admitted claim-publication executor",
+                publication_id,
+            )
+        if not isinstance(consumption, ClaimAdmissionConsumption):
+            raise ClaimPublicationError(
+                "historical_claim_publication_recovery_forbidden",
+                "preserve historical non-authorizing bytes and republish through the current executor",
+                publication_id,
+            )
+        if state == "applied":
+            require_applied_admitted_claim_publication(
+                intent,
+                consumption,
+                transaction_root=manifest_path.parent.parent,
+                receipt_root=receipt_directory,
+                _already_locked=True,
+            )
+            return ClaimPublicationRecoveryResult(publication_id, "applied", None)
+        if state == "aborted":
+            if receipt_path.exists() or receipt_path.is_symlink():
+                raise ClaimPublicationError(
+                    "claim_publication_aborted_receipt_contradiction",
+                    "preserve both artifacts and inspect the aborted receipt contradiction",
+                    publication_id,
+                )
+            return ClaimPublicationRecoveryResult(publication_id, "aborted", None)
+        if state not in _RECOVERABLE_ADMITTED_STATES:
+            raise ClaimPublicationError(
+                "claim_publication_recovery_state_unactionable",
+                "inspect the journal state and recover only created/projecting/postimage/recovery journals",
+                f"{publication_id}:{state}",
+            )
+
+        live_projections = projections[:7]
+        scratches = tuple(
+            _scratch_for(projection, publication_id, index)
+            for index, projection in enumerate(live_projections)
+        )
+        try:
+            _assert_preimages(projections[7:])
+            consumption.require_source_proofs(intent)
+            for projection, scratch in zip(live_projections, scratches, strict=True):
+                current_content, current_mode = _file_state(projection.path)
+                if current_content == projection.after and current_mode == projection.after_mode:
+                    continue
+                if current_content == projection.before and current_mode == projection.before_mode:
+                    _apply_projections((projection,), (scratch,), None)
+                    continue
+                raise ClaimPublicationError(
+                    "claim_publication_recovery_projection_conflict",
+                    "preserve every live projection and inspect the conflicting path before retrying recovery",
+                    str(projection.path),
+                )
+            _finalize_applied_scratches(live_projections, scratches)
+            _require_exact_task_postimage(intent)
+            _assert_preimages(projections[7:])
+            consumption.require_source_proofs(intent)
+        except LifecycleTransitionError as exc:
+            raise _translate_lifecycle_error(
+                "claim_publication_recovery_projection_failed",
+                "preserve the admitted journal and retry recovery after the projection path stabilizes",
+                exc,
+            ) from exc
+
+        _persist_admitted_manifest_state(
+            manifest_path,
+            intent,
+            consumption,
+            projections,
+            publication_id,
+            state="postimage_complete",
+        )
+        _ensure_claim_private_directory(receipt_directory)
+        if receipt_path.exists() or receipt_path.is_symlink():
+            _as_admitted_receipt(
+                manifest_path,
+                receipt_path,
+                intent,
+                consumption,
+                projections,
+                publication_id,
+                recovered=True,
+            )
+        else:
+            _persist_admitted_receipt(
+                receipt_path,
+                intent,
+                consumption,
+                projections,
+                publication_id,
+            )
+        _persist_admitted_manifest_state(
+            manifest_path,
+            intent,
+            consumption,
+            projections,
+            publication_id,
+            state="applied",
+        )
+        return ClaimPublicationRecoveryResult(publication_id, "applied", None)
 
 
 def _content_address_for_file(path: Path, content: bytes) -> ContentAddress:
@@ -5339,14 +5497,37 @@ def recover_claim_publications(
     lock_root: Path | None = None,
     task_id: str | None = None,
 ) -> tuple[ClaimPublicationRecoveryResult, ...]:
-    """Gate-0A HOLD: recovery effects require activated universal dispatch."""
+    """Recover interrupted admitted claim-publication journals under role locks."""
 
-    del cache_dir, transaction_root, receipt_root, lock_root
-    raise ClaimPublicationError(
-        "claim_publication_recovery_activation_unvalidated",
-        "Next action: dispatch recovery through a Gate-0B activated universal executor",
-        task_id,
-    )
+    trusted_cache = _normalized(cache_dir or (Path.home() / ".cache" / "hapax"))
+    root = _manifest_root(transaction_root, trusted_cache)
+    if not root.exists() and not root.is_symlink():
+        return ()
+    _ensure_claim_private_directory(root)
+    trusted_locks = _lock_root(lock_root)
+    trusted_receipts = _receipt_root(trusted_cache, receipt_root)
+    results: list[ClaimPublicationRecoveryResult] = []
+    for entry in sorted(root.iterdir(), key=lambda path: path.name):
+        if _CLAIM_PUBLICATION_DIRECTORY_RE.fullmatch(entry.name) is None:
+            continue
+        manifest_path = entry / "manifest.json"
+        try:
+            if task_id is not None:
+                intent, _projections, _publication_id, _state, _consumption = _load_any_manifest(
+                    manifest_path
+                )
+                if intent.task_id != task_id:
+                    continue
+            results.append(
+                _recover_one(
+                    manifest_path,
+                    lock_root=trusted_locks,
+                    receipt_root=trusted_receipts,
+                )
+            )
+        except ClaimPublicationError as exc:
+            results.append(ClaimPublicationRecoveryResult(entry.name, "hold", exc.reason_code))
+    return tuple(results)
 
 
 __all__ = [

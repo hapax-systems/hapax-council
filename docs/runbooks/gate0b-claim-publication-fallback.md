@@ -61,8 +61,9 @@ Check both legacy role-keyed and governed session-keyed cache files:
 shopt -s nullglob
 matches=()
 for claim_file in "$HOME"/.cache/hapax/cc-active-task-<lane>*; do
-  test "$(head -n1 "$claim_file")" = "<task-id>" && printf '%s\n' "$claim_file"
-  test "$(head -n1 "$claim_file")" = "<task-id>" && matches+=("$claim_file")
+  observed_task="$(head -n1 "$claim_file")"
+  test "$observed_task" = "<task-id>" && printf '%s\n' "$claim_file"
+  test "$observed_task" = "<task-id>" && matches+=("$claim_file")
 done
 test "${#matches[@]}" -gt 0
 rg -n "^status: claimed|^assigned_to: <lane>|HAPAX_GATE0B_CLAIM_PUBLICATION_OFF" \
@@ -86,6 +87,7 @@ manual procedure only with operator approval when a stale claim HOLD names an
 exact `cc-active-task-*` path:
 
 ```bash
+set -euo pipefail
 claim_file='<absolute-cc-active-task-path>'
 claim_file="$(realpath -e "$claim_file")"
 claim_base="$(basename "$claim_file")"
@@ -104,8 +106,15 @@ for path in \
   "$cache_dir/cc-claim-epoch-$claim_key" \
   "$cache_dir/cc-claim-dispatch-$claim_key.json"; do
   if test -e "$path"; then
-    cp -p -- "$path" "$archive_dir/"
+    archived="$archive_dir/$(basename "$path")"
+    tmp_archived="$archive_dir/.copying-$(basename "$path")"
+    cp -p -- "$path" "$tmp_archived"
+    cmp -s -- "$path" "$tmp_archived"
+    mv -f -- "$tmp_archived" "$archived"
+    cmp -s -- "$path" "$archived"
     rm -f -- "$path"
+    test ! -e "$path"
+    test -e "$archived"
   fi
 done
 printf 'archived stale lease sidecars to %s\n' "$archive_dir"
