@@ -672,14 +672,19 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
     done <<< "$(find "$RELAY_DIR/inflections" -maxdepth 1 -name '*.md' 2>/dev/null | sort)"
     if [ -n "$NEW_INFLECTIONS" ]; then
       echo "NEW INFLECTIONS (unseen by this role):"
+      # Severity-ordered, not filename-ordered. Sorting by name buried a P0 beneath three P1s on
+      # the first real delivery — a notification surface that hides its most severe item is worse
+      # than none, because it reads as if nothing urgent is present.
       printf '%s' "$NEW_INFLECTIONS" | while IFS= read -r inf; do
         [ -n "$inf" ] || continue
         INF_SEVERITY="$(grep -m1 '^\*\*Severity:\*\*' "$inf" 2>/dev/null | sed 's/^\*\*Severity:\*\*[[:space:]]*//')"
         INF_TITLE="$(head -1 "$inf" 2>/dev/null | sed 's/^# *//')"
-        if [ -n "$INF_SEVERITY" ]; then
-          echo "  [$INF_SEVERITY] $INF_TITLE ($inf)"
+        printf '%s\t%s\t%s\n' "${INF_SEVERITY:-P9}" "$INF_TITLE" "$inf"
+      done | sort -t"$(printf '\t')" -k1,1 -k2,2 | while IFS="$(printf '\t')" read -r sev title path; do
+        if [ "$sev" = "P9" ]; then
+          echo "  $title ($path)"
         else
-          echo "  $INF_TITLE ($inf)"
+          echo "  [$sev] $title ($path)"
         fi
       done
       # Marked seen only AFTER display, so a crash mid-render redelivers rather than silently drops.
