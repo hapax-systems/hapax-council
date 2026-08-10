@@ -15,6 +15,22 @@ SOURCE_PATHS = ("agents", "logos", "shared", "scripts")
 DEFAULT_WHITELIST = Path("scripts/vulture_whitelist.py")
 CALLABLE_KINDS = {"function", "method", "class", "property"}
 
+# Handed a DIRECTORY, vulture collects *.py and nothing else. The estate keeps 146 Python
+# entrypoints in scripts/ with no extension (cc-claim, cc-dispatch, cc-stage-advance, ...), so they
+# were invisible to this gate in both directions: a shared/ helper called only from one of them
+# reads as unused, and dead code inside them is never detected at all.
+#
+# The documented remedy for the first case is a vulture_whitelist.py entry — which suppresses that
+# symbol NAME everywhere, permanently, to work around the scanner not having read the file that
+# calls it. That trades a false positive for a durable blind spot, 146 files over. Feed vulture the
+# files instead.
+#
+# Named explicitly, vulture parses an extensionless file normally. Directory arguments still
+# contribute only *.py, so there is no double-reporting. Widening the scan also cannot break
+# existing PRs: findings are filtered to lines the diff touched, so pre-existing dead code in these
+# scripts stays dormant until someone edits it.
+SHEBANG_SCAN_BYTES = 128
+
 FINDING_RE = re.compile(
     r"^(?P<path>.+?):(?P<line>\d+): unused (?P<kind>function|method|class|property) "
     r"'(?P<name>[^']+)' \((?P<confidence>\d+)% confidence\)$"
@@ -118,12 +134,39 @@ def git_diff_lines(args: argparse.Namespace) -> dict[Path, set[int]]:
     return parse_changed_lines(result.stdout)
 
 
+def has_python_shebang(path: Path) -> bool:
+    """True when an extensionless file declares a Python interpreter on line 1."""
+    try:
+        with path.open("rb") as handle:
+            first = handle.readline(SHEBANG_SCAN_BYTES)
+    except OSError:
+        return False
+    return first.startswith(b"#!") and b"python" in first
+
+
+def extensionless_python_files(paths: Iterable[str]) -> list[str]:
+    """Python entrypoints under `paths` that vulture's directory walk would not collect."""
+    found: list[str] = []
+    for raw in paths:
+        root = Path(raw)
+        if not root.is_dir():
+            continue
+        for candidate in sorted(root.rglob("*")):
+            if candidate.suffix or not candidate.is_file():
+                continue
+            if has_python_shebang(candidate):
+                found.append(str(candidate))
+    return found
+
+
 def run_vulture(paths: Iterable[str], whitelist: Path, min_confidence: int) -> list[Finding]:
+    paths = list(paths)
     command = [
         sys.executable,
         "-m",
         "vulture",
         *paths,
+        *extensionless_python_files(paths),
         str(whitelist),
         "--min-confidence",
         str(min_confidence),
