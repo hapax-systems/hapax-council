@@ -430,7 +430,7 @@ memtotal_override = os.environ.get("HAPAX_ROOT_AUDIT_MEMTOTAL_KIB", "").strip()
 if (hostname_override or memtotal_override) and not test_mode:
     print("root-required host profile overrides are test-only", file=sys.stderr)
     raise SystemExit(1)
-hostname = (hostname_override or socket.gethostname()).split(".", 1)[0]
+hostname = hostname_override or socket.gethostname()
 if memtotal_override:
     try:
         memtotal_kib = int(memtotal_override)

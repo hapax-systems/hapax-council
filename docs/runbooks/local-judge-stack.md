@@ -32,28 +32,48 @@ Model (already present): `~/models/compassverifier-7b/CompassVerifier-7B.Q5_K_M.
 (5.4 GB; GGUF Q5_K_M). Pull from `opencompass/CompassVerifier-7B` and quantize, or
 fetch a community GGUF, if absent.
 
+Every command in this section mutates the appendix runtime and requires separate
+runtime authority. A source-only task must stop after preparing the staged package.
+
 ```sh
 # one-time: confirm the 5060 Ti UUID and update the unit's JUDGE_GPU_UUID if it differs
 nvidia-smi --query-gpu=index,name,uuid --format=csv
 
 docker pull ghcr.io/ggml-org/llama.cpp:server-cuda
-# hand serving to systemd (replaces any manual --restart container):
-docker rm -f hapax-local-judge 2>/dev/null
-cp systemd/units/hapax-local-judge.service ~/.config/systemd/user/
-systemctl --user daemon-reload
+
+# A post-merge deploy stages the exact receipt-owned OOM package. Run this only
+# after runtime authority is granted; never copy or symlink the judge unit.
+state="$HOME/.local/state/hapax/root-required"
+sha="$(tr -d '[:space:]' < "$state/desired-receipts/oom-containment.sha")"
+stage="$HOME/.cache/hapax/post-merge-root-required/$sha/oom-containment"
+test -f "$stage/RUNBOOK.txt"
+sudo -v
+HAPAX_ROOT_REQUIRED_PACKAGE_SHA="$sha" \
+HAPAX_ROOT_REQUIRED_DRAIN_DIR="$stage" \
+HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="$state/current-source" \
+HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="$state/installed-receipts" \
+HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="$state/desired-receipts" \
+HAPAX_ROOT_REQUIRED_GIT_REPO="$HOME/.cache/hapax/source-activation/worktree" \
+  "$stage/scripts/install-p0-oom-containment" \
+  --source "$stage" --install --verify-live
+
+# The package deliberately does not enable or restart the judge. Activation is
+# a separate, runtime-authorized step after the exact package verifies.
 systemctl --user enable --now hapax-local-judge
 # verify model loaded on GPU1 and 3090 VRAM unchanged:
 curl -s http://localhost:5001/v1/models | grep compassverifier
 nvidia-smi --query-gpu=index,name,memory.used --format=csv,noheader
 ```
 
-Manual one-liner (equivalent, for ad-hoc runs):
+The name `hapax-local-judge` is reserved for the systemd unit. It refuses to
+delete an unknown same-name container. For an ad-hoc diagnostic run, keep the
+managed unit stopped and use a distinct ephemeral name and port:
 
 ```sh
-docker run -d --name hapax-local-judge --restart unless-stopped \
+docker run --rm --name hapax-local-judge-adhoc \
   --memory 4G --memory-swap 6G \
   --gpus device=<5060Ti-UUID> \
-  -v ~/models/compassverifier-7b:/models:ro -p 5001:5001 \
+  -v ~/models/compassverifier-7b:/models:ro -p 15001:5001 \
   ghcr.io/ggml-org/llama.cpp:server-cuda \
   -m /models/CompassVerifier-7B.Q5_K_M.gguf -a compassverifier-7b \
   -c 65536 -np 8 -cb -ngl 99 --host 0.0.0.0 --port 5001
@@ -124,6 +144,8 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
 
   ```bash
   set -euo pipefail
+  repo="${HAPAX_COUNCIL_REPO:-$HOME/.cache/hapax/source-activation/worktree}"
+  test -d "$repo/scripts/cost-offload"
   unit=hapax-local-judge.service
   test "$(systemctl --user show "$unit" -p NeedDaemonReload --value)" = no
   test "$(systemctl --user show "$unit" -p FragmentPath --value)" = \
@@ -144,7 +166,7 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
   before_oom="$(awk '$1 == "oom" || $1 == "oom_kill" {print}' "$events")"
   results="${TMPDIR:-/tmp}/local-judge-eight-slot.jsonl"
   (
-    cd scripts/cost-offload || exit
+    cd "$repo/scripts/cost-offload"
     uv run --with pandas --with pyarrow --with requests \
       python run_verifierbench.py --endpoint http://localhost:5001 \
       --n 24 --workers 8 --out "$results"

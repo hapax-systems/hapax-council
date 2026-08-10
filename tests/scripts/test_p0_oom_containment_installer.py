@@ -744,6 +744,8 @@ def test_installer_rejects_forged_inherited_lock_descriptor_before_mutation(
         ("replace", "podium", "none"),
         ("update-failure", "podium", "none"),
         ("inspect-failure-present", "podium", "none"),
+        ("enumeration-failure", "podium", "none"),
+        ("reenumeration-failure", "podium", "none"),
         ("post-update-mismatch", "podium", "none"),
         ("second-reload-failure", "podium", "none"),
         ("second-user-reload-failure", "podium", "none"),
@@ -1036,6 +1038,12 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
                 f'if [ "${{@: -1}}" = "{MCP_CONTAINER_ID}" ]; then '
                 'echo "simulated Docker update denial" >&2; exit 1; fi\nexit 0\n'
             )
+        elif docker_mode == "reenumeration-failure":
+            update_action = (
+                f'if [ "${{@: -1}}" = "{MCP_CONTAINER_ID}" ]; then touch {gone!s}; '
+                'echo "simulated Docker update denial before re-enumeration" >&2; exit 1; fi\n'
+                "exit 0\n"
+            )
         else:
             update_action = "exit 0\n"
         mcp_inspect = (
@@ -1060,15 +1068,23 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
             mcp_record = (
                 f"[ -e {gone!s} ] || printf '%s\\n' '{MCP_CONTAINER_ID}|hapax-github-mcp-hapax-123'"
             )
+        if docker_mode == "enumeration-failure":
+            ps_action = 'echo "simulated Docker enumeration denial" >&2; exit 1'
+        elif docker_mode == "reenumeration-failure":
+            ps_action = (
+                f'if [ -e {gone!s} ]; then echo "simulated Docker re-enumeration denial" >&2; '
+                "exit 1; fi\n"
+                f"printf '%s\\n' '{JUDGE_CONTAINER_ID}|hapax-local-judge'\n"
+                f"{mcp_record}"
+            )
+        else:
+            ps_action = f"printf '%s\\n' '{JUDGE_CONTAINER_ID}|hapax-local-judge'\n{mcp_record}"
         fake_docker.write_text(
             f"""#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> {docker_calls}
 case "$1" in
-  ps)
-    printf '%s\n' '{JUDGE_CONTAINER_ID}|hapax-local-judge'
-    {mcp_record}
-    ;;
+  ps) {ps_action} ;;
   update) {update_action} ;;
   inspect)
     id="${{@: -1}}"
@@ -1175,6 +1191,8 @@ esac
             "rename",
             "replace",
             "inspect-failure-present",
+            "enumeration-failure",
+            "reenumeration-failure",
             "malformed-record",
             "post-update-mismatch",
             "second-reload-failure",
@@ -1213,6 +1231,12 @@ esac
             assert "simulated Docker update denial" in result.stderr
         elif docker_mode == "inspect-failure-present":
             assert "simulated Docker inspect denial" in result.stderr
+        elif docker_mode == "enumeration-failure":
+            assert "simulated Docker enumeration denial" in result.stderr
+            assert "unable to enumerate Docker containers" in result.stderr
+        elif docker_mode == "reenumeration-failure":
+            assert "simulated Docker re-enumeration denial" in result.stderr
+            assert "re-enumeration failed" in result.stderr
         else:
             assert "Docker" in result.stderr
         return

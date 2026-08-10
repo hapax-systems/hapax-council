@@ -180,6 +180,7 @@ parked_unit() {
 
 dedicated_p0_oom_unit() {
     case "$1" in
+        hapax-local-judge.service|\
         hapax-oom-policy-audit.service|\
         hapax-oom-policy-audit.timer|\
         hapax-root-required-deploy-audit.service|\
