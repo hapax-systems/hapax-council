@@ -132,6 +132,14 @@ def _unit_cgroup(unit: str) -> str:
     return f"/user.slice/user-1000.slice/user@1000.service/app.slice/{unit}"
 
 
+def _write_unit_cgroup_tree(cgroup_root: Path, unit_pids: dict[str, int]) -> None:
+    """Build the fs cgroup tree the post-storm enforcer resolves from."""
+    for unit, pid in unit_pids.items():
+        d = cgroup_root / _unit_cgroup(unit).lstrip("/")
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "cgroup.procs").write_text(f"{pid}\n", encoding="utf-8")
+
+
 def _enforcer_system_manager_cases(pid: int = 900) -> str:
     return "\n".join(
         [
@@ -291,7 +299,7 @@ def _systemctl_system_memory_cases(
         '  *"show hapax-oom-score-enforce.timer -p FragmentPath --value"*) printf "%s\\n" "${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}/hapax-oom-score-enforce.timer" ;;',
         '  *"show hapax-oom-score-enforce.timer -p DropInPaths --value"*) printf "\\n" ;;',
         '  *"show hapax-oom-score-enforce.timer -p Unit --value"*) printf "hapax-oom-score-enforce.service\\n" ;;',
-        '  *"show hapax-oom-score-enforce.timer -p TimersMonotonic --value"*) printf "%s\\n" "OnBootUSec=30s OnUnitActiveUSec=30s" ;;',
+        '  *"show hapax-oom-score-enforce.timer -p TimersMonotonic --value"*) printf "%s\\n" "OnBootUSec=1min OnUnitActiveUSec=2min" ;;',
         '  *"show system.slice -p MemoryHigh --value"*) printf "infinity\\n" ;;',
         '  *"show system.slice -p MemoryMax --value"*) printf "infinity\\n" ;;',
         '  *"show system.slice -p MemorySwapMax --value"*) printf "infinity\\n" ;;',
@@ -1773,17 +1781,7 @@ def test_root_oom_score_enforcer_writes_live_user_manager_and_service_scores(
     )
     fake_systemctl.chmod(0o755)
 
-    fake_user_systemctl = tmp_path / "systemctl-user"
-    user_cases = _enforcer_user_unit_cases(unit_pids)
-    fake_user_systemctl.write_text(
-        "#!/usr/bin/env bash\n"
-        'case "$*" in\n'
-        f"{user_cases}\n"
-        '  *) echo "unexpected user args: $*" >&2; exit 9 ;;\n'
-        "esac\n",
-        encoding="utf-8",
-    )
-    fake_user_systemctl.chmod(0o755)
+    _write_unit_cgroup_tree(tmp_path / "cgroup", unit_pids)
 
     result = subprocess.run(
         [str(OOM_ENFORCER), "--apply"],
@@ -1794,7 +1792,6 @@ def test_root_oom_score_enforcer_writes_live_user_manager_and_service_scores(
             **os.environ,
             "HAPAX_OOM_PROC_ROOT": str(proc_root),
             "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
-            "HAPAX_OOM_USER_SYSTEMCTL": str(fake_user_systemctl),
             "HAPAX_OOM_TARGET_UID": "1000",
         },
     )
@@ -2183,17 +2180,7 @@ def test_root_oom_score_enforcer_is_quiet_when_scores_already_match(
         encoding="utf-8",
     )
     fake_systemctl.chmod(0o755)
-    fake_user_systemctl = tmp_path / "systemctl-user"
-    user_cases = _enforcer_user_unit_cases(unit_pids)
-    fake_user_systemctl.write_text(
-        "#!/usr/bin/env bash\n"
-        'case "$*" in\n'
-        f"{user_cases}\n"
-        '  *) echo "unexpected user args: $*" >&2; exit 9 ;;\n'
-        "esac\n",
-        encoding="utf-8",
-    )
-    fake_user_systemctl.chmod(0o755)
+    _write_unit_cgroup_tree(tmp_path / "cgroup", unit_pids)
 
     result = subprocess.run(
         [str(OOM_ENFORCER), "--apply"],
@@ -2204,7 +2191,6 @@ def test_root_oom_score_enforcer_is_quiet_when_scores_already_match(
             **os.environ,
             "HAPAX_OOM_PROC_ROOT": str(proc_root),
             "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
-            "HAPAX_OOM_USER_SYSTEMCTL": str(fake_user_systemctl),
             "HAPAX_OOM_TARGET_UID": "1000",
         },
     )
@@ -2325,17 +2311,16 @@ def test_root_oom_score_enforcer_rejects_substring_only_unit_match(tmp_path: Pat
         encoding="utf-8",
     )
     fake_systemctl.chmod(0o755)
-    fake_user_systemctl = tmp_path / "systemctl-user"
-    fake_user_systemctl.write_text(
-        "#!/usr/bin/env bash\n"
-        'case "$*" in\n'
-        f"{_enforcer_user_unit_cases({'pipewire.service': 910})}\n"
-        '  *" -p MainPID --value"*) printf "0\\n" ;;\n'
-        '  *" -p ControlGroup --value"*) printf "\\n" ;;\n'
-        "esac\n",
-        encoding="utf-8",
+
+    # A nested impostor path must never be resolved: only the two canonical
+    # placements are consulted (app.slice/<unit>, <manager>/<unit>), so the
+    # attacker's subtree directory below is simply never found.
+    impostor = (
+        tmp_path
+        / "cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/attacker.scope/pipewire.service"
     )
-    fake_user_systemctl.chmod(0o755)
+    impostor.mkdir(parents=True)
+    (impostor / "cgroup.procs").write_text("910\n", encoding="utf-8")
 
     result = subprocess.run(
         [str(OOM_ENFORCER), "--apply"],
@@ -2346,13 +2331,11 @@ def test_root_oom_score_enforcer_rejects_substring_only_unit_match(tmp_path: Pat
             **os.environ,
             "HAPAX_OOM_PROC_ROOT": str(proc_root),
             "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
-            "HAPAX_OOM_USER_SYSTEMCTL": str(fake_user_systemctl),
             "HAPAX_OOM_TARGET_UID": "1000",
         },
     )
 
-    assert result.returncode == 1
-    assert "outside expected subtree" in result.stderr
+    assert result.returncode == 0, result.stderr
     assert (proc_root / "910" / "oom_score_adj").read_text(encoding="utf-8").strip() == "100"
 
 
@@ -2396,13 +2379,7 @@ def test_root_oom_score_enforcer_continues_after_per_unit_write_failure(
     )
     fake_systemctl.chmod(0o755)
 
-    fake_user_systemctl = tmp_path / "systemctl-user"
-    user_cases = _enforcer_user_unit_cases(unit_pids)
-    fake_user_systemctl.write_text(
-        f'#!/usr/bin/env bash\ncase "$*" in\n{user_cases}\n  *) printf "0\\n" ;;\nesac\n',
-        encoding="utf-8",
-    )
-    fake_user_systemctl.chmod(0o755)
+    _write_unit_cgroup_tree(tmp_path / "cgroup", unit_pids)
 
     result = subprocess.run(
         [str(OOM_ENFORCER), "--apply"],
@@ -2413,7 +2390,6 @@ def test_root_oom_score_enforcer_continues_after_per_unit_write_failure(
             **os.environ,
             "HAPAX_OOM_PROC_ROOT": str(proc_root),
             "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
-            "HAPAX_OOM_USER_SYSTEMCTL": str(fake_user_systemctl),
             "HAPAX_OOM_TARGET_UID": "1000",
         },
     )
@@ -2424,7 +2400,10 @@ def test_root_oom_score_enforcer_continues_after_per_unit_write_failure(
     assert (proc_root / "912" / "oom_score_adj").read_text(encoding="utf-8").strip() == "-900"
 
 
-def test_root_oom_score_enforcer_fails_when_user_manager_queries_fail(tmp_path: Path) -> None:
+def test_root_oom_score_enforcer_skips_units_with_unresolvable_cgroups(tmp_path: Path) -> None:
+    """Post-storm architecture: there is no user-side query to fail. A unit whose
+    cgroup is absent from the manager subtree is skipped quietly (host topology,
+    not drift), the manager score still lands, and the run succeeds."""
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
     _write_proc(
@@ -2435,15 +2414,22 @@ def test_root_oom_score_enforcer_fails_when_user_manager_queries_fail(tmp_path: 
         oom_score=100,
         cgroup="/user.slice/user-1000.slice/user@1000.service",
     )
+    _write_proc(
+        proc_root,
+        910,
+        name="pipewire",
+        uid=1000,
+        oom_score=100,
+        cgroup="/user.slice/user-1000.slice/user@1000.service/app.slice/pipewire.service",
+    )
+    # the manager subtree exists but holds no unit dirs — topology, not layout failure
+    (tmp_path / "cgroup/user.slice/user-1000.slice/user@1000.service").mkdir(parents=True)
     fake_systemctl = tmp_path / "systemctl"
     fake_systemctl.write_text(
         f'#!/usr/bin/env bash\ncase "$*" in\n{_enforcer_system_manager_cases()}\nesac\nexit 0\n',
         encoding="utf-8",
     )
     fake_systemctl.chmod(0o755)
-    failing_user_systemctl = tmp_path / "systemctl-user"
-    failing_user_systemctl.write_text("#!/usr/bin/env bash\nexit 9\n", encoding="utf-8")
-    failing_user_systemctl.chmod(0o755)
 
     result = subprocess.run(
         [str(OOM_ENFORCER), "--apply"],
@@ -2454,14 +2440,13 @@ def test_root_oom_score_enforcer_fails_when_user_manager_queries_fail(tmp_path: 
             **os.environ,
             "HAPAX_OOM_PROC_ROOT": str(proc_root),
             "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
-            "HAPAX_OOM_USER_SYSTEMCTL": str(failing_user_systemctl),
             "HAPAX_OOM_TARGET_UID": "1000",
         },
     )
 
-    assert result.returncode == 1
-    assert "unable to query user unit pipewire.service ControlGroup" in result.stderr
-    assert "next action:" in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "not present on this host; skipping" in result.stdout
+    assert (proc_root / "910" / "oom_score_adj").read_text(encoding="utf-8").strip() == "100"
 
 
 def test_installer_preserves_python_child_inside_protected_user_unit_cgroup(
