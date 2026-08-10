@@ -40,6 +40,8 @@ def _systemctl_property_body(section: str, key: str, value: int) -> str:
         "# or an equivalent operation. Do not edit.\n"
         f"[{section}]\n{key}={value}\n"
     )
+
+
 RECOVERY_BUNDLE_SOURCE_FILES = {
     "scripts/hapax-p0-incident-intake": "#!/usr/bin/env bash\necho intake\n",
     "scripts/hapax-coord-deploy": "#!/usr/bin/env bash\necho coord deploy\n",
@@ -640,9 +642,7 @@ def _root_audit_env(
         "HAPAX_ROOT_REQUIRED_AUDIT_DEST": str(root_audit_dest),
         "HAPAX_OOM_PROFILE_TABLE_DEST": str(profile_table_dest),
         "HAPAX_OOM_ZRAM_POLICY_DEST": str(zram_policy_dest),
-        "HAPAX_OOM_LEGACY_ZRAM_POLICY_DEST": str(
-            zram_dropin_dir / "90-hapax-host-policy.conf"
-        ),
+        "HAPAX_OOM_LEGACY_ZRAM_POLICY_DEST": str(zram_dropin_dir / "90-hapax-host-policy.conf"),
         "HAPAX_OOM_ZRAM_DROPIN_DIRS": str(zram_dropin_dir),
         "HAPAX_OOM_ZRAM_HIGH_PRIORITY_CONFIGS": str(zram_high_priority),
         "HAPAX_ROOT_AUDIT_TEST_MODE": "1",
