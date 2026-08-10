@@ -365,6 +365,19 @@ def _systemctl_app_slice_cases(host_profile: str = "podium") -> str:
     )
 
 
+def _systemctl_memory_dropin_if_cases() -> str:
+    return "\n".join(
+        [
+            'if [[ "$*" == *"show system.slice -p DropInPaths --value"* ]]; then printf "%s\\n" "${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}/system.slice.d/oom-containment.conf"; fi',
+            'if [[ "$*" == *"show user.slice -p DropInPaths --value"* ]]; then printf "%s\\n" "${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}/user.slice.d/oom-containment.conf"; fi',
+            'if [[ "$*" == *"show user-1000.slice -p DropInPaths --value"* ]]; then printf "%s\\n" "${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}/user-1000.slice.d/oom-containment.conf"; fi',
+            'if [[ "$*" == *"show user@1000.service -p DropInPaths --value"* ]]; then printf "%s\\n" "${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}/user@1000.service.d/oom.conf"; fi',
+            'if [[ "$*" == *"--user show app.slice -p DropInPaths --value"* ]]; then printf "%s\\n" "${HAPAX_OOM_SYSTEMD_USER_DIR:-/home/hapax/.config/systemd/user}/app.slice.d/oom-containment.conf"; fi',
+            'if [[ "$*" == *"--user show session.slice -p DropInPaths --value"* ]]; then printf "%s\\n" "${HAPAX_OOM_SYSTEMD_USER_DIR:-/home/hapax/.config/systemd/user}/session.slice.d/oom-containment.conf"; fi',
+        ]
+    )
+
+
 def _systemctl_recovery_unit_cases(unit_pids: dict[str, int] | None = None) -> str:
     unit_pids = unit_pids or {}
     cases = []
@@ -1327,6 +1340,7 @@ def test_oom_install_rejects_stale_loaded_enforcer_timeout_before_receipts(
         f'if [[ "$*" == *"show hapax-oom-policy-audit.service -p Environment --value"* ]]; then printf "{SAFE_AUDIT_ENVIRONMENT}\\n"; fi\n'
         f'if [[ "$*" == *"show hapax-root-required-deploy-audit.service -p Environment --value"* ]]; then printf "{SAFE_AUDIT_ENVIRONMENT}\\n"; fi\n'
         'if [[ "$*" == *"show hapax-oom-score-enforce.service -p TimeoutStartUSec --value"* ]]; then printf "infinity\\n"; fi\n'
+        f"{_systemctl_memory_dropin_if_cases()}\n"
         "exit 0\n",
         encoding="utf-8",
     )
@@ -1532,6 +1546,7 @@ def test_oom_install_rejects_mutable_loaded_audit_path_before_receipts(tmp_path:
         'if [[ "$*" == *"show hapax-oom-policy-audit.service -p Environment --value"* ]]; then printf "PATH=/tmp/shadow\\n"; fi\n'
         f'if [[ "$*" == *"show hapax-root-required-deploy-audit.service -p Environment --value"* ]]; then printf "{SAFE_AUDIT_ENVIRONMENT}\\n"; fi\n'
         'if [[ "$*" == *"show hapax-oom-score-enforce.service -p TimeoutStartUSec --value"* ]]; then printf "25s\\n"; fi\n'
+        f"{_systemctl_memory_dropin_if_cases()}\n"
         "exit 0\n",
         encoding="utf-8",
     )
