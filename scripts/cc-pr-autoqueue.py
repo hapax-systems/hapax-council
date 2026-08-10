@@ -197,6 +197,16 @@ def required_checks_for_repo(
         for context in required.get("contexts") or []:
             contexts.add(str(context))
 
+    # Subtract the contexts autoqueue deliberately does not observe. `governance-gate` is the
+    # sharp case: it CONSUMES autoqueue's own admission status, so requiring autoqueue to see it
+    # green before admitting is a deadlock — autoqueue waits for governance-gate, which waits for
+    # autoqueue. Branch protection legitimately requires it of the MERGE; it cannot be a
+    # precondition of the admission that gates it.
+    #
+    # Deriving from protection without this subtraction reintroduces exactly the bug the
+    # derivation fixed, one layer over: a required check that can never be observed.
+    contexts -= AUTOQUEUE_IGNORED_CHECK_CONTEXTS
+
     result = tuple(sorted(contexts)) if readable else None
     _REQUIRED_CHECKS_CACHE[repo] = result
     return result

@@ -6717,14 +6717,25 @@ def test_readable_but_unprotected_repo_is_empty_not_unknown(tmp_path: Path) -> N
     assert got is not None
 
 
-def test_required_checks_union_ruleset_and_classic_protection(tmp_path: Path) -> None:
-    """Both surfaces can carry requirements; reading either alone under-constrains the gate."""
+def test_derived_required_checks_exclude_autoqueues_own_consumers(tmp_path: Path) -> None:
+    """Deriving from protection must not reintroduce a deadlock.
+
+    `governance-gate` CONSUMES autoqueue's admission status. Branch protection legitimately
+    requires it of the merge, but requiring autoqueue to observe it green before admitting is
+    circular: autoqueue waits for governance-gate, which waits for autoqueue. Measured
+    2026-08-10 — the first cut of the derivation pulled it straight out of classic protection
+    and blocked #4535 and #4545 on `missing_required_checks:governance-gate` while the gate had
+    in fact run and succeeded.
+    """
     autoqueue._REQUIRED_CHECKS_CACHE.clear()
     runner = _checks_runner(
         {
             "rules/branches/main": _FakeProc(0, _RULESET_ALL_GREEN),
             "main/protection": _FakeProc(
-                0, json.dumps({"required_status_checks": {"contexts": ["governance-gate"]}})
+                0,
+                json.dumps(
+                    {"required_status_checks": {"contexts": ["governance-gate", "all-green"]}}
+                ),
             ),
         }
     )
@@ -6733,4 +6744,28 @@ def test_required_checks_union_ruleset_and_classic_protection(tmp_path: Path) ->
         "owner/council-like", repo_root=tmp_path, runner=runner
     )
 
-    assert got == ("all-green", "governance-gate")
+    assert got == ("all-green",)
+    assert "governance-gate" not in (got or ()), (
+        "requiring autoqueue's own downstream consumer deadlocks admission"
+    )
+
+
+def test_required_checks_union_ruleset_and_classic_protection(tmp_path: Path) -> None:
+    """Both surfaces can carry requirements; reading either alone under-constrains the gate."""
+    autoqueue._REQUIRED_CHECKS_CACHE.clear()
+    runner = _checks_runner(
+        {
+            "rules/branches/main": _FakeProc(0, _RULESET_ALL_GREEN),
+            "main/protection": _FakeProc(
+                0, json.dumps({"required_status_checks": {"contexts": ["python-api-test"]}})
+            ),
+        }
+    )
+
+    got = autoqueue.required_checks_for_repo(
+        "owner/council-like", repo_root=tmp_path, runner=runner
+    )
+
+    # Uses a context autoqueue does not ignore, so this asserts the UNION and not the
+    # ignored-context subtraction that the neighbouring test covers.
+    assert got == ("all-green", "python-api-test")
