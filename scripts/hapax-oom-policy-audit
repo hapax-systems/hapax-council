@@ -175,8 +175,8 @@ def _hostname() -> str:
     override = os.environ.get("HAPAX_OOM_AUDIT_HOSTNAME", "").strip()
     if override:
         _require_test_override("HAPAX_OOM_AUDIT_HOSTNAME")
-        return override.split(".", 1)[0]
-    return socket.gethostname().split(".", 1)[0]
+        return override
+    return socket.gethostname()
 
 
 def _profile_table_path() -> Path:

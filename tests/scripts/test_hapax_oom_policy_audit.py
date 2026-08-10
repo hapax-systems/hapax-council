@@ -605,8 +605,11 @@ def _run(
     )
 
 
-def test_audit_passes_when_user_manager_is_killable_and_app_slice_bounded(tmp_path: Path) -> None:
-    result = _run(tmp_path)
+@pytest.mark.parametrize("host_profile", ["podium", "appendix"])
+def test_audit_passes_when_user_manager_is_killable_and_app_slice_bounded(
+    tmp_path: Path, host_profile: str
+) -> None:
+    result = _run(tmp_path, host_profile=host_profile)
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     statuses = {check["name"]: check["status"] for check in payload["checks"]}
@@ -946,6 +949,25 @@ def test_host_policy_refuses_cross_host_memory_profile() -> None:
     assert result.returncode == 1
     assert "host/profile memory mismatch" in result.stdout
     assert "source-tree host profile table" in result.stdout
+
+
+def test_host_policy_refuses_a_hostname_suffix() -> None:
+    result = subprocess.run(
+        [str(SCRIPT), "--host-policy-lines"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_AUDIT_TEST_MODE": "1",
+            "HAPAX_OOM_AUDIT_MEMTOTAL_KIB": "63310228",
+            "HAPAX_OOM_AUDIT_HOSTNAME": "hapax-appendix.staging",
+        },
+    )
+
+    assert result.returncode == 1
+    assert "unsupported host identity" in result.stdout
+    assert "hapax-appendix.staging" in result.stdout
 
 
 def test_appendix_skips_only_its_explicitly_optional_absent_units(tmp_path: Path) -> None:

@@ -2082,6 +2082,23 @@ def test_root_required_audit_refuses_unreviewed_host_interval_edges(
     assert "cannot select a bounded receipt-bound OOM host profile" in result.stderr
 
 
+def test_root_required_audit_refuses_a_hostname_suffix(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    env["HAPAX_ROOT_AUDIT_HOSTNAME"] = "hapax-podium.staging"
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "hostname=hapax-podium.staging" in result.stderr
+    assert "cannot select a bounded receipt-bound OOM host profile" in result.stderr
+
+
 @pytest.mark.parametrize(
     ("table_rows", "parser_error"),
     [

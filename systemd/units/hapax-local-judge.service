@@ -15,7 +15,9 @@ Type=simple
 # the UUID on the target host with: nvidia-smi --query-gpu=index,name,uuid --format=csv
 Environment=JUDGE_GPU_UUID=GPU-347222d9-00af-5a94-a365-c57c09dfddcd
 Environment=JUDGE_MODEL=/models/CompassVerifier-7B.Q5_K_M.gguf
-ExecStartPre=-/usr/bin/docker rm -f hapax-local-judge
+# The governed name is reserved for this unit. Docker must fail the start if an
+# unknown same-name container exists; automatic cleanup would destroy work the
+# user manager did not launch.
 ExecStart=/usr/bin/docker run --rm --name hapax-local-judge \
     --memory 4G --memory-swap 6G \
     --gpus device=${JUDGE_GPU_UUID} \
