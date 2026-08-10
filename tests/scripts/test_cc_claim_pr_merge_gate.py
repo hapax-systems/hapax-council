@@ -8,6 +8,12 @@ import os
 import pathlib
 import subprocess
 import textwrap
+from datetime import UTC, datetime
+
+from shared.gate0b_claim_publication_install import (
+    default_claim_publication_roots,
+    install_claim_publication_composition,
+)
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "cc-claim"
@@ -203,6 +209,14 @@ def _fake_gh(bin_dir: pathlib.Path, body: str) -> pathlib.Path:
     return gh
 
 
+def _install_gate0b_claim_publication_root(home: pathlib.Path) -> None:
+    install_claim_publication_composition(
+        roots=default_claim_publication_roots(home=home),
+        installed_at=datetime(2026, 8, 9, 17, 0, tzinfo=UTC),
+        install_task_ref="cc-task-gate0b-slice1b-cc-claim-reland-20260809-test",
+    )
+
+
 def _claim_with_fake_gh(
     home: pathlib.Path,
     task_id: str,
@@ -225,6 +239,7 @@ def _claim_with_fake_gh(
     env["HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY"] = f"coord-{task_id}"
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["GH_ARGS_LOG"] = str(log_path)
+    _install_gate0b_claim_publication_root(home)
     return subprocess.run(
         ["bash", str(SCRIPT), task_id],
         env=env,

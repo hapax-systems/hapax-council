@@ -2,7 +2,13 @@ import os
 import re
 import subprocess
 import textwrap
+from datetime import UTC, datetime
 from pathlib import Path
+
+from shared.gate0b_claim_publication_install import (
+    default_claim_publication_roots,
+    install_claim_publication_composition,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "cc-claim"
@@ -136,12 +142,21 @@ def _dispatch_env(
     }
 
 
+def _install_gate0b_claim_publication_root(home: Path) -> None:
+    install_claim_publication_composition(
+        roots=default_claim_publication_roots(home=home),
+        installed_at=datetime(2026, 8, 9, 17, 0, tzinfo=UTC),
+        install_task_ref="cc-task-gate0b-slice1b-cc-claim-reland-20260809-test",
+    )
+
+
 def _claim(
     home: Path,
     task_id: str,
     *,
     legacy: bool = False,
     dispatch: bool = True,
+    install_gate0b: bool | None = None,
     session_id: str | None = _SESSION_ID,
     extra_env: dict[str, str] | None = None,
     extra_args: list[str] | None = None,
@@ -158,6 +173,10 @@ def _claim(
         env["HAPAX_GATE0B_CLAIM_PUBLICATION_OFF"] = "1"
     elif dispatch:
         env.update(_dispatch_env(task_id))
+    if install_gate0b is None:
+        install_gate0b = not legacy and dispatch
+    if install_gate0b:
+        _install_gate0b_claim_publication_root(home)
     if extra_env:
         env.update(extra_env)
     argv = ["bash", str(SCRIPT)]
@@ -181,6 +200,7 @@ def test_default_claim_requires_dispatch_binding_flags(tmp_path: Path) -> None:
 
     assert result.returncode == 2
     assert "canon echo enforcement requires the exact dispatch binding flags" in result.stderr
+    assert "Next action: rerun through the governed dispatcher" in result.stderr
     assert "status: offered" in note.read_text(encoding="utf-8")
     assert not (home / ".cache" / "hapax").exists()
 
@@ -198,6 +218,7 @@ def test_partial_dispatch_binding_flags_fail_without_writes(tmp_path: Path) -> N
 
     assert result.returncode == 1
     assert "dispatch binding flags are all-or-none" in result.stderr
+    assert "Next action: rerun with all seven" in result.stderr
     assert "status: offered" in note.read_text(encoding="utf-8")
     assert not (home / ".cache" / "hapax").exists()
 
@@ -210,7 +231,30 @@ def test_default_claim_refuses_retired_force_flag(tmp_path: Path) -> None:
 
     assert result.returncode == 2
     assert "--force is retired under canon echo enforcement" in result.stderr
+    assert "Next action: run cc-close" in result.stderr
     assert "status: offered" in note.read_text(encoding="utf-8")
+
+
+def test_default_claim_expired_claim_hold_names_governed_release_path(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    _write_task(home, "active", "new-task")
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    stale = cache / "cc-active-task-cx-test"
+    stale.write_text("stale-task\n", encoding="utf-8")
+    os.utime(stale, (0, 0))
+
+    result = _claim(
+        home,
+        "new-task",
+        extra_env={"HAPAX_CLAIM_LEASE_TTL_SECS": "1"},
+    )
+
+    assert result.returncode == 7
+    assert "expired claim" in result.stderr
+    assert "Next action: run cc-close stale-task" in result.stderr
 
 
 def test_default_claim_refuses_pid_shaped_session_id(tmp_path: Path) -> None:
@@ -221,6 +265,7 @@ def test_default_claim_refuses_pid_shaped_session_id(tmp_path: Path) -> None:
 
     assert result.returncode == 2
     assert "requires a claim-keyable non-PID session id" in result.stderr
+    assert "Next action: relaunch the lane" in result.stderr
     assert "status: offered" in note.read_text(encoding="utf-8")
 
 
@@ -233,6 +278,7 @@ def test_explicit_killswitch_uses_legacy_writer_with_warning(tmp_path: Path) -> 
     assert result.returncode == 0, result.stderr
     assert "HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1" in result.stderr
     assert "using legacy claim writer" in result.stderr
+    assert "operator-authorized emergency fallback" in result.stderr
     assert "admitted publication applied" not in result.stdout
     assert "status: claimed" in note.read_text(encoding="utf-8")
     assert (home / ".cache" / "hapax" / "cc-active-task-cx-test").read_text(
@@ -280,6 +326,123 @@ def test_default_claim_publishes_admitted_receipt_and_dispatch_sidecars(
     assert len(manifests) == 1
     assert len(receipts) == 1
     assert len(proof_files) >= 5
+
+
+def test_default_claim_requires_preinstalled_gate0b_composition(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "missing-install")
+
+    result = _claim(home, "missing-install", install_gate0b=False)
+
+    assert result.returncode == 8
+    assert "gate0b_install_receipt_missing" in result.stderr
+    assert "Next action: provision or repair the Gate-0B" in result.stderr
+    assert "status: offered" in note.read_text(encoding="utf-8")
+
+
+def test_default_claim_is_idempotent_for_existing_applied_publication(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "idempotent-applied")
+
+    first = _claim(home, "idempotent-applied")
+    second = _claim(home, "idempotent-applied")
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    assert "applied publication already owns task" in second.stdout
+    assert "status: claimed" in note.read_text(encoding="utf-8")
+
+
+def test_default_claim_holds_existing_publication_for_different_dispatch(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    _write_task(home, "active", "different-dispatch")
+    first = _claim(home, "different-dispatch")
+
+    second = _claim(
+        home,
+        "different-dispatch",
+        extra_env={"HAPAX_CLAIM_DISPATCH_BINDING_HASH": "b" * 64},
+    )
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 8
+    assert "different dispatch vector" in second.stderr
+    assert "Next action: rerun with the original dispatch binding" in second.stderr
+
+
+def test_default_claim_holds_legacy_existing_cache_before_rewrite(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    _write_task(home, "active", "legacy-before-canon")
+    legacy = _claim(
+        home,
+        "legacy-before-canon",
+        legacy=True,
+        dispatch=False,
+        session_id=None,
+    )
+
+    result = _claim(home, "legacy-before-canon")
+
+    assert legacy.returncode == 0, legacy.stderr
+    assert result.returncode == 8
+    assert "claim_dispatch_binding_missing" in result.stderr
+    assert "Next action: follow the repair action above" in result.stderr
+
+
+def test_default_claim_holds_unresolved_existing_cache_before_rewrite(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    task_id = "unresolved-existing-cache"
+    note = _write_task(home, "active", task_id)
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (cache / "cc-active-task-cx-test").write_text(f"{task_id}\n", encoding="utf-8")
+    (cache / f"cc-active-task-cx-test-{_SESSION_ID}").write_text(
+        f"{task_id}\n",
+        encoding="utf-8",
+    )
+
+    result = _claim(home, task_id)
+
+    assert result.returncode == 8
+    assert "cc-claim: HOLD" in result.stderr
+    assert "Next action: follow the repair action above" in result.stderr
+    assert "status: offered" in note.read_text(encoding="utf-8")
+
+
+def test_default_claim_holds_corrupt_publication_inspection_before_rewrite(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    task_id = "corrupt-publication"
+    note = _write_task(home, "active", task_id)
+    transaction = (
+        home
+        / ".local"
+        / "share"
+        / "hapax"
+        / "claim-publications"
+        / "gate0b-claim-publish-v1"
+        / f"claim-pub-{'a' * 64}"
+    )
+    transaction.mkdir(parents=True)
+    transaction.chmod(0o700)
+    (transaction / "manifest.json").write_text("{}\n", encoding="ascii")
+    (transaction / "manifest.json").chmod(0o600)
+
+    result = _claim(home, task_id)
+
+    assert result.returncode == 8
+    assert "claim publication inspection requires reconciliation" in result.stderr
+    assert "Next action: run admitted claim-publication recovery" in result.stderr
+    assert "status: offered" in note.read_text(encoding="utf-8")
 
 
 def test_body_bullets_are_not_claim_dependencies(tmp_path: Path) -> None:

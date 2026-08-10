@@ -24,9 +24,20 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 run_smoke() (
   local smoke_mode="$1"
-  local sb task active claim_hash claim_log
+  local sb task active claim_hash claim_log old_home old_home_was_set
+  old_home="${HOME-}"
+  old_home_was_set=0
+  [[ -v HOME ]] && old_home_was_set=1
   sb="$(mktemp -d /tmp/hapax-fsm-smoke-XXXXXX)"
-  trap 'rm -rf "$sb"' EXIT
+  cleanup() {
+    if [[ "$old_home_was_set" == "1" ]]; then
+      export HOME="$old_home"
+    else
+      unset HOME
+    fi
+    rm -rf "$sb"
+  }
+  trap cleanup EXIT
   task="cc-task-fsm-smoke-probe-${smoke_mode}"
   active="$sb/Documents/Personal/20-projects/hapax-cc-tasks/active"
   mkdir -p "$active" "$sb/.cache/hapax"
@@ -106,8 +117,29 @@ EOF
       exit 1
     fi
   }
+  provision_gate0b_claim_publication_root() {
+    timeout 30 uv run --no-sync python - <<'PY'
+from datetime import UTC, datetime
+from pathlib import Path
+
+from shared.gate0b_claim_publication_install import (
+    default_claim_publication_roots,
+    install_claim_publication_composition,
+)
+
+install_claim_publication_composition(
+    roots=default_claim_publication_roots(home=Path.home()),
+    installed_at=datetime(2026, 8, 9, 17, 0, tzinfo=UTC),
+    install_task_ref="cc-task-gate0b-slice1b-cc-claim-reland-20260809",
+)
+PY
+  }
 
   cd "$repo"
+  if [[ "$smoke_mode" == "default" ]]; then
+    step "claim-publication install"
+    provision_gate0b_claim_publication_root
+  fi
   step "claim"
   claim_log="$sb/claim-${smoke_mode}.log"
   if ! timeout 30 uv run --no-sync bash scripts/cc-claim "$task" >"$claim_log" 2>&1; then
