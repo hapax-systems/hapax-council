@@ -40,6 +40,8 @@ PROTECTED_USER_UNIT_MEMORY = {
     "studio-compositor.service": (6442450944, 3221225472),
     "hapax-imagination.service": (6442450944, 3221225472),
 }
+JUDGE_CONTAINER_ID = "a" * 64
+MCP_CONTAINER_ID = "b" * 64
 
 
 @pytest.fixture(autouse=True)
@@ -71,6 +73,44 @@ def test_audit_resets_hostile_path_before_command_resolution(
 
     assert os.environ["PATH"] == "/usr/local/sbin:/usr/local/bin:/usr/bin:/bin"
     assert namespace["_systemctl"]() == "/usr/bin/systemctl"
+
+
+def test_installed_audit_refuses_test_host_selectors(tmp_path: Path) -> None:
+    installed = tmp_path / "usr" / "local" / "sbin" / "hapax-oom-policy-audit"
+    installed.parent.mkdir(parents=True)
+    installed.write_bytes(SCRIPT.read_bytes())
+    installed.chmod(0o755)
+
+    result = subprocess.run(
+        [str(installed), "--host-policy-lines"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_AUDIT_TEST_MODE": "1",
+            "HAPAX_OOM_AUDIT_HOSTNAME": "hapax-podium",
+            "HAPAX_OOM_AUDIT_MEMTOTAL_KIB": "131007744",
+        },
+    )
+
+    assert result.returncode == 1
+    assert "refused by an installed audit" in result.stdout
+
+
+def test_installed_audit_ignores_adjacent_unowned_profile_table(tmp_path: Path) -> None:
+    installed = tmp_path / "usr" / "local" / "sbin" / "hapax-oom-policy-audit"
+    installed.parent.mkdir(parents=True)
+    installed.write_bytes(SCRIPT.read_bytes())
+    shadow = tmp_path / "usr" / "local" / "config" / "root-required"
+    shadow.mkdir(parents=True)
+    (shadow / "oom-host-profiles.tsv").write_text("malicious\n", encoding="utf-8")
+
+    namespace = runpy.run_path(str(installed))
+
+    assert namespace["_profile_table_path"]() == Path(
+        "/usr/local/share/hapax/root-required/oom-host-profiles.tsv"
+    )
 
 
 def _protected_user_unit_cases(
@@ -251,17 +291,36 @@ def _fake_docker(tmp_path: Path, *, state: str = "bounded") -> Path:
             judge_memory = judge_swap = mcp_memory = mcp_swap = 0
         elif state == "wrong-swap":
             mcp_swap = -1
+        disappearance_state = tmp_path / "docker-disappearance-observed"
+        if state == "disappear":
+            ps_body = (
+                f"if [ -e {disappearance_state!s} ]; then exit 0; fi\n"
+                f"touch {disappearance_state!s}\n"
+                f"printf '%s\\t%s\\n' {MCP_CONTAINER_ID} hapax-github-mcp-hapax-123\n"
+            )
+            inspect_body = "exit 1"
+        else:
+            ps_body = (
+                f"printf '%s\\t%s\\n' {JUDGE_CONTAINER_ID} hapax-local-judge\n"
+                f"printf '%s\\t%s\\n' {MCP_CONTAINER_ID} hapax-github-mcp-hapax-123\n"
+                f"printf '%s\\t%s\\n' {'c' * 64} unrelated-container\n"
+            )
+            inspect_body = (
+                f"case \"$id\" in\n"
+                f"  {JUDGE_CONTAINER_ID}) printf '%s\\t/%s\\t%s\\t%s\\n' \"$id\" hapax-local-judge {judge_memory} {judge_swap} ;;\n"
+                f"  {MCP_CONTAINER_ID}) printf '%s\\t/%s\\t%s\\t%s\\n' \"$id\" hapax-github-mcp-hapax-123 {mcp_memory} {mcp_swap} ;;\n"
+                "  *) exit 1 ;;\n"
+                "esac"
+                if state != "inspect-failure-present"
+                else "exit 1"
+            )
         body = f"""case "$1" in
   ps)
-    printf '%s\\n' hapax-local-judge hapax-github-mcp-hapax-123 unrelated-container
+    {ps_body}
     ;;
   inspect)
-    name="${{@: -1}}"
-    case "$name" in
-      hapax-local-judge) printf '/%s\\t%s\\t%s\\n' "$name" {judge_memory} {judge_swap} ;;
-      hapax-github-mcp-hapax-123) printf '/%s\\t%s\\t%s\\n' "$name" {mcp_memory} {mcp_swap} ;;
-      *) exit 1 ;;
-    esac
+    id="${{@: -1}}"
+    {inspect_body}
     ;;
   *) exit 9 ;;
 esac
@@ -317,6 +376,9 @@ def _run(
     extra_session_sibling_floor: bool = False,
     host_profile: str = "podium",
     docker_state: str = "bounded",
+    zram_size_bytes: int | None = None,
+    zram_priority: int = 100,
+    zram_compression: str = "lzo-rle lzo lz4 lz4hc [zstd] deflate",
 ) -> subprocess.CompletedProcess[str]:
     if proc_root is None:
         proc_root = tmp_path / "proc"
@@ -326,7 +388,7 @@ def _run(
     if not (proc_root / "920").exists():
         _write_proc(proc_root, 920, name="sshd", uid=0, oom_score=0)
     (proc_root / "swaps").write_text(
-        "Filename Type Size Used Priority\n/dev/zram0 partition 33554428 0 100\n",
+        f"Filename Type Size Used Priority\n/dev/zram0 partition 33554428 0 {zram_priority}\n",
         encoding="utf-8",
     )
     for unit, pid in RECOVERY_SYSTEM_UNIT_PIDS.items():
@@ -400,6 +462,11 @@ def _run(
             child_dir.mkdir(parents=True, exist_ok=True)
             (child_dir / "memory.low").write_text(f"{memory_low}\n", encoding="utf-8")
             (child_dir / "memory.min").write_text(f"{memory_min}\n", encoding="utf-8")
+    lock = tmp_path / "root-state" / ".lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    if not lock.exists():
+        lock.write_text("", encoding="utf-8")
+        lock.chmod(0o600)
     env = {
         **os.environ,
         "HAPAX_SYSTEMCTL": str(
@@ -430,7 +497,7 @@ def _run(
         ),
         "HAPAX_OOM_AUDIT_PROC_ROOT": str(proc_root),
         "HAPAX_OOM_AUDIT_CGROUP_ROOT": str(cgroup_root),
-        "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(tmp_path / "root-state" / ".lock"),
+        "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(lock),
         "HAPAX_OOM_AUDIT_DOCKER": str(_fake_docker(tmp_path, state=docker_state)),
         "HAPAX_OOM_AUDIT_MEMTOTAL_KIB": (
             "63310228" if host_profile == "appendix" else "131007744"
@@ -439,10 +506,15 @@ def _run(
             "hapax-appendix" if host_profile == "appendix" else "hapax-podium"
         ),
     }
-    zram_size = 16 * 1024**3 if host_profile == "appendix" else 32 * 1024**3
+    zram_size = zram_size_bytes
+    if zram_size is None:
+        zram_size = 16 * 1024**3 if host_profile == "appendix" else 32 * 1024**3
     Path(os.environ["HAPAX_OOM_AUDIT_SYS_ROOT"]).joinpath(
         "block", "zram0", "disksize"
     ).write_text(f"{zram_size}\n", encoding="utf-8")
+    Path(os.environ["HAPAX_OOM_AUDIT_SYS_ROOT"]).joinpath(
+        "block", "zram0", "comp_algorithm"
+    ).write_text(f"{zram_compression}\n", encoding="utf-8")
     return subprocess.run(
         [str(SCRIPT), "--json", "--uid", "1000"],
         text=True,
@@ -670,6 +742,62 @@ def test_audit_fails_when_docker_cannot_be_queried(tmp_path: Path) -> None:
         if check["name"] == "docker_container_limits"
     )
     assert check["status"] == "error"
+
+
+def test_audit_accepts_ephemeral_docker_disappearance_only_after_id_reenumeration(
+    tmp_path: Path,
+) -> None:
+    result = _run(tmp_path, docker_state="disappear")
+    assert result.returncode == 0, result.stderr
+    check = next(
+        check
+        for check in json.loads(result.stdout)["checks"]
+        if check["name"].endswith("_inspect")
+    )
+    assert check["status"] == "pass"
+    assert MCP_CONTAINER_ID in check["actual"]
+
+
+def test_audit_refuses_inspect_error_while_same_docker_id_remains(tmp_path: Path) -> None:
+    result = _run(tmp_path, docker_state="inspect-failure-present")
+    assert result.returncode == 1
+    check = next(
+        check
+        for check in json.loads(result.stdout)["checks"]
+        if check["name"].endswith("_inspect")
+    )
+    assert check["status"] == "error"
+    assert "Docker inspect failed" in check["detail"]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "check_name"),
+    [
+        ({"zram_size_bytes": 8 * 1024**3}, "zram0_disksize"),
+        ({"zram_priority": 5}, "zram0_active_swap"),
+        ({"zram_compression": "[lzo] lz4 zstd"}, "zram0_compression"),
+    ],
+)
+def test_audit_rejects_zram_runtime_drift(
+    tmp_path: Path, kwargs: dict[str, object], check_name: str
+) -> None:
+    result = _run(tmp_path, **kwargs)
+    assert result.returncode == 1
+    checks = {check["name"]: check for check in json.loads(result.stdout)["checks"]}
+    assert checks[check_name]["status"] == "gap"
+
+
+def test_audit_uses_existing_lock_without_mutating_it(tmp_path: Path) -> None:
+    lock = tmp_path / "root-state" / ".lock"
+    result = _run(tmp_path)
+    before = lock.stat()
+
+    result = _run(tmp_path)
+
+    after = lock.stat()
+    assert result.returncode == 0, result.stderr
+    assert after.st_mode == before.st_mode
+    assert after.st_mtime_ns == before.st_mtime_ns
 
 
 def test_audit_waits_for_exclusive_package_install_lock(tmp_path: Path) -> None:

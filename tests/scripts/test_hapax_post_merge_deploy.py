@@ -32,6 +32,14 @@ OOM_HOST_PROFILE_FILES = {
         "config/root-required/oom-host-policy/podium/zram-generator.conf",
     )
 }
+
+
+def _systemctl_property_body(section: str, key: str, value: int) -> str:
+    return (
+        '# This is a drop-in unit file extension, created via "systemctl set-property"\n'
+        "# or an equivalent operation. Do not edit.\n"
+        f"[{section}]\n{key}={value}\n"
+    )
 RECOVERY_BUNDLE_SOURCE_FILES = {
     "scripts/hapax-p0-incident-intake": "#!/usr/bin/env bash\necho intake\n",
     "scripts/hapax-coord-deploy": "#!/usr/bin/env bash\necho coord deploy\n",
@@ -102,9 +110,13 @@ ROOT_AUDIT_SOURCE_FILES = {
         "MemoryLow=16G\nMemoryMin=8G\n"
     ),
     "systemd/system/user-1000.slice.d/oom-containment.conf": (
-        "[Slice]\nMemoryHigh=80G\nMemoryMax=96G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
+        "[Slice]\nMemoryHigh=80G\nMemoryMax=96G\nMemorySwapMax=8G\nMemoryLow=20G\nMemoryMin=10G\n"
     ),
-    "systemd/system/user@1000.service.d/oom.conf": "[Service]\nOOMScoreAdjust=100\n",
+    "systemd/system/user@1000.service.d/oom.conf": (
+        "[Service]\nOOMScoreAdjust=100\nOOMPolicy=continue\n"
+        "MemoryHigh=80G\nMemoryMax=96G\nMemorySwapMax=8G\n"
+        "MemoryLow=20G\nMemoryMin=10G\n"
+    ),
     "systemd/system/apcupsd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-900\n",
     "systemd/system/systemd-logind.service.d/oom-protect.conf": (
         "[Service]\nOOMScoreAdjust=-800\n"
@@ -436,6 +448,7 @@ def _root_audit_env(
     *,
     drift_rel: str | None = None,
     missing_source_rel: str | None = None,
+    host_profile: str = "podium",
 ) -> dict[str, str]:
     source_root = tmp_path / "source"
     installed_source = tmp_path / "installed-source"
@@ -461,6 +474,12 @@ def _root_audit_env(
     zram_dropin_dir.mkdir(parents=True)
     user_dir = tmp_path / "home" / ".config" / "systemd" / "user"
     user_control_dir = tmp_path / "home" / ".config" / "systemd" / "user.control"
+    user_runtime_control_dir = tmp_path / "run" / "user" / "1000" / "systemd" / "user.control"
+    user_transient_dir = tmp_path / "run" / "user" / "1000" / "systemd" / "transient"
+    system_control_dir = tmp_path / "etc" / "systemd" / "system.control"
+    system_runtime_control_dir = tmp_path / "run" / "systemd" / "system.control"
+    system_transient_dir = tmp_path / "run" / "systemd" / "transient"
+    zram_high_priority = tmp_path / "run" / "systemd" / "zram-generator.conf"
     earlyoom_dest = tmp_path / "etc" / "default" / "earlyoom"
     fake_systemctl = tmp_path / "root-audit-systemctl"
     fake_systemctl.write_text(
@@ -506,7 +525,7 @@ def _root_audit_env(
         "scripts/hapax-oom-policy-audit": oom_audit_dest,
         "scripts/hapax-root-required-deploy-audit": root_audit_dest,
         "config/root-required/oom-host-profiles.tsv": profile_table_dest,
-        "config/root-required/oom-host-policy/podium/zram-generator.conf": zram_policy_dest,
+        f"config/root-required/oom-host-policy/{host_profile}/zram-generator.conf": zram_policy_dest,
         "config/earlyoom/default": earlyoom_dest,
         "systemd/logrotate.d/hapax-ups-power-events": logrotate_dest,
         "config/upower/90-hapax-apcupsd-owner.conf": upower_dest,
@@ -560,6 +579,45 @@ def _root_audit_env(
                 dest.chmod(0o755)
             elif rel == "config/root-required/hapax-oom-score-enforce.sudoers":
                 dest.chmod(0o440)
+    if host_profile == "appendix":
+        selected_destinations = {
+            "config/root-required/oom-host-policy/appendix/app.slice.conf": (
+                user_dir / "app.slice.d" / "oom-containment.conf"
+            ),
+            "config/root-required/oom-host-policy/appendix/user-1000.slice.conf": (
+                system_dir / "user-1000.slice.d" / "oom-containment.conf"
+            ),
+            "config/root-required/oom-host-policy/appendix/user@1000.service.conf": (
+                system_dir / "user@1000.service.d" / "oom.conf"
+            ),
+        }
+        for rel, dest in selected_destinations.items():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(ROOT_AUDIT_SOURCE_FILES[rel], encoding="utf-8")
+    app_values = {
+        "MemoryHigh": (46 if host_profile == "appendix" else 72) * 1024**3,
+        "MemoryMax": (54 if host_profile == "appendix" else 88) * 1024**3,
+        "MemorySwapMax": 8 * 1024**3,
+        "MemoryLow": 16 * 1024**3,
+        "MemoryMin": 8 * 1024**3,
+    }
+    uid_values = {
+        "MemoryHigh": (48 if host_profile == "appendix" else 80) * 1024**3,
+        "MemoryMax": (56 if host_profile == "appendix" else 96) * 1024**3,
+        "MemorySwapMax": 8 * 1024**3,
+        "MemoryLow": 20 * 1024**3,
+        "MemoryMin": 10 * 1024**3,
+    }
+    for directory, section, values in (
+        (system_runtime_control_dir / "user-1000.slice.d", "Slice", uid_values),
+        (system_runtime_control_dir / "user@1000.service.d", "Service", uid_values),
+        (user_runtime_control_dir / "app.slice.d", "Slice", app_values),
+    ):
+        directory.mkdir(parents=True, exist_ok=True)
+        for key, value in values.items():
+            (directory / f"50-{key}.conf").write_text(
+                _systemctl_property_body(section, key, value), encoding="utf-8"
+            )
     sudoers_reference_dest.parent.mkdir(parents=True, exist_ok=True)
     sudoers_reference_dest.write_text(
         ROOT_AUDIT_SOURCE_FILES["config/root-required/hapax-oom-score-enforce.sudoers"],
@@ -604,13 +662,39 @@ def _root_audit_env(
             zram_dropin_dir / "90-hapax-host-policy.conf"
         ),
         "HAPAX_OOM_ZRAM_DROPIN_DIRS": str(zram_dropin_dir),
+        "HAPAX_OOM_ZRAM_HIGH_PRIORITY_CONFIGS": str(zram_high_priority),
         "HAPAX_ROOT_AUDIT_TEST_MODE": "1",
-        "HAPAX_ROOT_AUDIT_HOSTNAME": "hapax-podium",
-        "HAPAX_ROOT_AUDIT_MEMTOTAL_KIB": "131007744",
+        "HAPAX_ROOT_AUDIT_HOSTNAME": f"hapax-{host_profile}",
+        "HAPAX_ROOT_AUDIT_MEMTOTAL_KIB": (
+            "63310228" if host_profile == "appendix" else "131007744"
+        ),
         "HAPAX_OOM_EARLYOOM_DEST": str(earlyoom_dest),
         "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(system_dir),
         "HAPAX_OOM_SYSTEMD_USER_DIR": str(user_dir),
         "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR": str(user_control_dir),
+        "HAPAX_OOM_SYSTEMD_USER_RUNTIME_CONTROL_DIR": str(user_runtime_control_dir),
+        "HAPAX_OOM_SYSTEMD_USER_TRANSIENT_DIR": str(user_transient_dir),
+        "HAPAX_OOM_SYSTEMD_SYSTEM_CONTROL_DIR": str(system_control_dir),
+        "HAPAX_OOM_SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR": str(system_runtime_control_dir),
+        "HAPAX_OOM_SYSTEMD_SYSTEM_TRANSIENT_DIR": str(system_transient_dir),
+        "HAPAX_ROOT_AUDIT_SYSTEM_UNIT_PATHS": ":".join(
+            str(path)
+            for path in (
+                system_control_dir,
+                system_runtime_control_dir,
+                system_transient_dir,
+                system_dir,
+            )
+        ),
+        "HAPAX_ROOT_AUDIT_USER_UNIT_PATHS": ":".join(
+            str(path)
+            for path in (
+                user_control_dir,
+                user_runtime_control_dir,
+                user_transient_dir,
+                user_dir,
+            )
+        ),
         "HAPAX_APCUPSD_DEST": str(apcupsd_dir),
         "HAPAX_UPS_AUDIT_LOG": str(apcupsd_audit_log),
         "HAPAX_UPS_AUDIT_LOG_OWNER_UID": str(os.getuid()),
@@ -1903,13 +1987,16 @@ def test_root_required_audit_detects_stale_loaded_apcupsd_thresholds(tmp_path: P
     assert "expected 20" in result.stderr
 
 
-def test_root_required_audit_passes_when_oom_enforcer_matches(tmp_path: Path) -> None:
+@pytest.mark.parametrize("host_profile", ["podium", "appendix"])
+def test_root_required_audit_passes_when_oom_enforcer_matches(
+    tmp_path: Path, host_profile: str
+) -> None:
     result = subprocess.run(
         [str(ROOT_REQUIRED_AUDIT)],
         text=True,
         capture_output=True,
         check=False,
-        env=_root_audit_env(tmp_path),
+        env=_root_audit_env(tmp_path, host_profile=host_profile),
     )
 
     assert result.returncode == 0, result.stderr
@@ -1954,7 +2041,132 @@ def test_root_required_audit_rejects_later_host_memory_override(
         env=env,
     )
     assert result.returncode == 1
-    assert "host-policy override" in result.stderr or "overrides the canonical" in result.stderr
+    assert "unowned OOM memory assignment" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("root_key", "relative", "body"),
+    [
+        (
+            "HAPAX_OOM_SYSTEMD_SYSTEM_CONTROL_DIR",
+            "user-1000.slice.d/40-earlier.conf",
+            "[Slice]\nMemoryHigh=72G\n",
+        ),
+        (
+            "HAPAX_OOM_SYSTEMD_SYSTEM_TRANSIENT_DIR",
+            "user@.service.d/override.conf",
+            "[Service]\nMemoryLow=20G\n",
+        ),
+        (
+            "HAPAX_OOM_SYSTEMD_SYSTEM_DIR",
+            "slice.d/inherited.conf",
+            "[Slice]\nMemorySwapMax=99G\n",
+        ),
+        (
+            "HAPAX_OOM_SYSTEMD_USER_TRANSIENT_DIR",
+            "app.slice.d/transient.conf",
+            "[Slice]\nMemoryMin=99G\n",
+        ),
+    ],
+)
+def test_root_required_audit_rejects_governed_memory_assignment_anywhere_in_search_path(
+    tmp_path: Path, root_key: str, relative: str, body: str
+) -> None:
+    env = _root_audit_env(tmp_path)
+    dropin = Path(env[root_key]) / relative
+    dropin.parent.mkdir(parents=True, exist_ok=True)
+    dropin.write_text(body, encoding="utf-8")
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "unowned OOM memory assignment" in result.stderr
+
+
+def test_root_required_audit_rejects_persistent_set_property_file(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    dropin = (
+        Path(env["HAPAX_OOM_SYSTEMD_SYSTEM_CONTROL_DIR"])
+        / "user-1000.slice.d"
+        / "50-MemoryHigh.conf"
+    )
+    dropin.parent.mkdir(parents=True, exist_ok=True)
+    dropin.write_text(
+        _systemctl_property_body("Slice", "MemoryHigh", 80 * 1024**3), encoding="utf-8"
+    )
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "unowned OOM memory assignment" in result.stderr
+
+
+def test_root_required_audit_rejects_symlinked_memory_dropin(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    target = tmp_path / "mutable-memory.conf"
+    target.write_text("[Slice]\nMemoryMax=96G\n", encoding="utf-8")
+    dropin = Path(env["HAPAX_OOM_SYSTEMD_SYSTEM_DIR"]) / "user-.slice.d" / "linked.conf"
+    dropin.parent.mkdir(parents=True, exist_ok=True)
+    dropin.symlink_to(target)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "is symlinked" in result.stderr
+
+
+def test_root_required_audit_rejects_higher_priority_zram_main_config(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    override = Path(env["HAPAX_OOM_ZRAM_HIGH_PRIORITY_CONFIGS"])
+    override.parent.mkdir(parents=True, exist_ok=True)
+    override.write_text("[zram0]\nzram-size = 1G\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "higher-priority zram-generator" in result.stderr
+
+
+def test_root_required_audit_refuses_test_selectors_for_production_destinations(
+    tmp_path: Path,
+) -> None:
+    env = _root_audit_env(tmp_path)
+    env["HAPAX_OOM_SYSTEMD_SYSTEM_DIR"] = "/etc/systemd/system"
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "refuses test selectors for production destinations" in result.stderr
 
 
 def test_root_required_audit_ignores_hostile_path(tmp_path: Path) -> None:

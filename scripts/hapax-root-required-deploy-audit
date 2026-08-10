@@ -31,10 +31,17 @@ OOM_PROFILE_TABLE_DEST="${HAPAX_OOM_PROFILE_TABLE_DEST:-/usr/local/share/hapax/r
 ZRAM_POLICY_DEST="${HAPAX_OOM_ZRAM_POLICY_DEST:-/etc/systemd/zram-generator.conf}"
 LEGACY_ZRAM_POLICY_DEST="${HAPAX_OOM_LEGACY_ZRAM_POLICY_DEST:-/etc/systemd/zram-generator.conf.d/90-hapax-host-policy.conf}"
 ZRAM_DROPIN_DIRS="${HAPAX_OOM_ZRAM_DROPIN_DIRS:-/etc/systemd/zram-generator.conf.d:/run/systemd/zram-generator.conf.d:/usr/local/lib/systemd/zram-generator.conf.d:/usr/lib/systemd/zram-generator.conf.d}"
+ZRAM_HIGH_PRIORITY_CONFIGS="${HAPAX_OOM_ZRAM_HIGH_PRIORITY_CONFIGS:-/run/systemd/zram-generator.conf}"
 EARLYOOM_DEST="${HAPAX_OOM_EARLYOOM_DEST:-/etc/default/earlyoom}"
 SYSTEMD_SYSTEM_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
 SYSTEMD_USER_DIR="${HAPAX_OOM_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
 SYSTEMD_USER_CONTROL_DIR="${HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR:-$HOME/.config/systemd/user.control}"
+TARGET_UID="${HAPAX_OOM_TARGET_UID:-1000}"
+SYSTEMD_SYSTEM_CONTROL_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_CONTROL_DIR:-/etc/systemd/system.control}"
+SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR:-/run/systemd/system.control}"
+SYSTEMD_SYSTEM_TRANSIENT_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_TRANSIENT_DIR:-/run/systemd/transient}"
+SYSTEMD_USER_RUNTIME_CONTROL_DIR="${HAPAX_OOM_SYSTEMD_USER_RUNTIME_CONTROL_DIR:-/run/user/$TARGET_UID/systemd/user.control}"
+SYSTEMD_USER_TRANSIENT_DIR="${HAPAX_OOM_SYSTEMD_USER_TRANSIENT_DIR:-/run/user/$TARGET_UID/systemd/transient}"
 APCUPSD_DEST="${HAPAX_APCUPSD_DEST:-/etc/apcupsd}"
 APCUPSD_AUDIT_LOG="${HAPAX_UPS_AUDIT_LOG:-/var/log/hapax/ups-power-events.jsonl}"
 APCUPSD_CANONICAL_AUDIT_LOG="/var/log/hapax/ups-power-events.jsonl"
@@ -44,6 +51,7 @@ APCUPSD_AUDIT_LOG_OWNER_GID="${HAPAX_UPS_AUDIT_LOG_OWNER_GID:-}"
 APCUPSD_LOGROTATE_DEST="${HAPAX_APCUPSD_LOGROTATE_DEST:-/etc/logrotate.d/hapax-ups-power-events}"
 UPOWER_CONF_DEST="${HAPAX_UPOWER_CONF_DEST:-/etc/UPower/UPower.conf.d/90-hapax-apcupsd-owner.conf}"
 SYSTEMCTL="${HAPAX_ROOT_AUDIT_SYSTEMCTL:-/usr/bin/systemctl}"
+SYSTEMD_ANALYZE="${HAPAX_ROOT_AUDIT_SYSTEMD_ANALYZE:-/usr/bin/systemd-analyze}"
 BUSCTL="${HAPAX_ROOT_AUDIT_BUSCTL:-/usr/bin/busctl}"
 APCACCESS="${HAPAX_ROOT_AUDIT_APCACCESS:-/usr/bin/apcaccess}"
 CMP="${HAPAX_ROOT_AUDIT_CMP:-/usr/bin/cmp}"
@@ -53,6 +61,7 @@ VISUDO="${HAPAX_ROOT_AUDIT_VISUDO:-/usr/bin/visudo}"
 ROOT_ARTIFACT_TEST_UID="${HAPAX_ROOT_AUDIT_TEST_ROOT_UID:-$(/usr/bin/id -u)}"
 ROOT_ARTIFACT_TEST_GID="${HAPAX_ROOT_AUDIT_TEST_ROOT_GID:-$(/usr/bin/id -g)}"
 HOST_PROFILE=""
+GOVERNED_MEMORY_KEYS=(MemoryHigh MemoryMax MemorySwapMax MemoryLow MemoryMin)
 
 acquire_inherited_root_required_lock() {
     local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
@@ -458,6 +467,200 @@ selected_oom_source_rel() {
 
 selected_zram_source_rel() {
     printf 'config/root-required/oom-host-policy/%s/zram-generator.conf\n' "$HOST_PROFILE"
+}
+
+memory_to_bytes() {
+    local value="$1" number suffix
+    case "$value" in
+        infinity|max)
+            printf 'infinity\n'
+            ;;
+        *K|*M|*G|*T)
+            number="${value%?}"
+            suffix="${value#"$number"}"
+            [[ "$number" =~ ^[0-9]+$ ]] || return 1
+            case "$suffix" in
+                K) printf '%s\n' "$((number * 1024))" ;;
+                M) printf '%s\n' "$((number * 1024 * 1024))" ;;
+                G) printf '%s\n' "$((number * 1024 * 1024 * 1024))" ;;
+                T) printf '%s\n' "$((number * 1024 * 1024 * 1024 * 1024))" ;;
+            esac
+            ;;
+        *)
+            [[ "$value" =~ ^[0-9]+$ ]] || return 1
+            printf '%s\n' "$value"
+            ;;
+    esac
+}
+
+installed_oom_unit_value() {
+    local rel="$1" key="$2" source value
+    source="$(source_for_rel "$(selected_oom_source_rel "$rel")")"
+    value="$(awk -v key="$key" '$0 ~ "^" key "=" {sub(/^[^=]*=/, ""); print; exit}' "$source" 2>/dev/null || true)"
+    [ -n "$value" ] || return 1
+    printf '%s\n' "$value"
+}
+
+governed_system_unit_search_paths() {
+    local discovered override="${HAPAX_ROOT_AUDIT_SYSTEM_UNIT_PATHS:-}"
+    if [ -n "$override" ]; then
+        if [ "${HAPAX_ROOT_AUDIT_TEST_MODE:-0}" != "1" ]; then
+            echo "root-required install drift: governed system unit-path override is test-only" >&2
+            return 1
+        fi
+        discovered="${override//:/$'\n'}"
+    elif ! discovered="$("$SYSTEMD_ANALYZE" unit-paths 2>/dev/null)"; then
+        echo "root-required install drift: unable to obtain the authoritative system unit search path" >&2
+        return 1
+    fi
+    printf '%s\n' "$discovered" \
+        "$SYSTEMD_SYSTEM_CONTROL_DIR" \
+        "$SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR" \
+        "$SYSTEMD_SYSTEM_TRANSIENT_DIR" \
+        "$SYSTEMD_SYSTEM_DIR" \
+        | awk 'NF && !seen[$0]++'
+}
+
+governed_user_unit_search_paths() {
+    local discovered override="${HAPAX_ROOT_AUDIT_USER_UNIT_PATHS:-}"
+    if [ -n "$override" ]; then
+        if [ "${HAPAX_ROOT_AUDIT_TEST_MODE:-0}" != "1" ]; then
+            echo "root-required install drift: governed user unit-path override is test-only" >&2
+            return 1
+        fi
+        discovered="${override//:/$'\n'}"
+    elif ! discovered="$("$SYSTEMD_ANALYZE" --user unit-paths 2>/dev/null)"; then
+        echo "root-required install drift: unable to obtain the authoritative target-user unit search path" >&2
+        return 1
+    fi
+    printf '%s\n' "$discovered" \
+        "$SYSTEMD_USER_CONTROL_DIR" \
+        "$SYSTEMD_USER_RUNTIME_CONTROL_DIR" \
+        "$SYSTEMD_USER_TRANSIENT_DIR" \
+        "$SYSTEMD_USER_DIR" \
+        | awk 'NF && !seen[$0]++'
+}
+
+governed_dropin_suffixes() {
+    case "$1" in
+        user-1000.slice)
+            printf '%s\n' user-1000.slice.d user-.slice.d slice.d
+            ;;
+        user@1000.service)
+            printf '%s\n' user@1000.service.d user@.service.d service.d
+            ;;
+        app.slice)
+            printf '%s\n' app.slice.d slice.d
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+systemctl_generated_property_value() {
+    local path="$1" key="$2"
+    [ -f "$path" ] && [ ! -L "$path" ] || return 1
+    grep -Fq 'created via "systemctl set-property"' "$path" || return 1
+    awk -v key="$key" '
+        /^[[:space:]]*(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)[[:space:]]*=/ {
+            name = $0
+            sub(/^[[:space:]]*/, "", name)
+            sub(/[[:space:]]*=.*/, "", name)
+            value = $0
+            sub(/^[^=]*=[[:space:]]*/, "", value)
+            sub(/[[:space:]]*$/, "", value)
+            governed += 1
+            if (name == key) {
+                matched += 1
+                result = value
+            }
+        }
+        END {
+            if (governed == 1 && matched == 1) print result
+            else exit 1
+        }
+    ' "$path"
+}
+
+runtime_control_property_path() {
+    local scope="$1" unit="$2" key="$3"
+    case "$scope|$unit" in
+        system\|user-1000.slice|system\|user@1000.service)
+            printf '%s/%s.d/50-%s.conf\n' "$SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR" "$unit" "$key"
+            ;;
+        user\|app.slice)
+            printf '%s/%s.d/50-%s.conf\n' "$SYSTEMD_USER_RUNTIME_CONTROL_DIR" "$unit" "$key"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+runtime_property_matches_source() {
+    local rel="$1" key="$2" path="$3" scope="$4" unit="$5"
+    local actual expected_raw expected expected_path
+    expected_path="$(runtime_control_property_path "$scope" "$unit" "$key")" || return 1
+    [ "$path" = "$expected_path" ] || return 1
+    actual="$(systemctl_generated_property_value "$path" "$key")" || return 1
+    expected_raw="$(installed_oom_unit_value "$rel" "$key")" || return 1
+    expected="$(memory_to_bytes "$expected_raw")" || return 1
+    [ "$actual" = "$expected" ]
+}
+
+audit_governed_unit_dropins() {
+    local scope="$1" unit="$2" rel="$3" canonical="$4"
+    local root suffix path rc key accepted roots_output
+    if [ "$scope" = "system" ]; then
+        roots_output="$(governed_system_unit_search_paths)" || return 1
+    else
+        roots_output="$(governed_user_unit_search_paths)" || return 1
+    fi
+    while IFS= read -r root; do
+        [ -n "$root" ] || continue
+        while IFS= read -r suffix; do
+            [ -d "$root/$suffix" ] || continue
+            for path in "$root/$suffix"/*.conf; do
+                [ -e "$path" ] || [ -L "$path" ] || continue
+                if [ "$path" = "$canonical" ]; then
+                    if [ -L "$path" ]; then
+                        echo "root-required install drift: canonical OOM memory drop-in is symlinked: $path" >&2
+                        return 1
+                    fi
+                    continue
+                fi
+                if [ -L "$path" ]; then
+                    echo "root-required install drift: unowned OOM memory drop-in is symlinked in the $unit search path: $path" >&2
+                    return 1
+                fi
+                if grep -Eq '^[[:space:]]*(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)[[:space:]]*=' "$path"; then
+                    :
+                else
+                    rc=$?
+                    if [ "$rc" -gt 1 ]; then
+                        echo "root-required install drift: unable to inspect OOM memory drop-in: $path" >&2
+                        return 1
+                    fi
+                    continue
+                fi
+                accepted=0
+                for key in "${GOVERNED_MEMORY_KEYS[@]}"; do
+                    grep -Eq "^[[:space:]]*$key[[:space:]]*=" "$path" || continue
+                    if runtime_property_matches_source "$rel" "$key" "$path" "$scope" "$unit"; then
+                        accepted=1
+                        break
+                    fi
+                    echo "root-required install drift: unowned OOM memory assignment for $unit at $path" >&2
+                    return 1
+                done
+                if [ "$accepted" -ne 1 ]; then
+                    echo "root-required install drift: unable to classify governed OOM memory assignment for $unit at $path" >&2
+                    return 1
+                fi
+            done
+        done < <(governed_dropin_suffixes "$unit")
+    done <<< "$roots_output"
 }
 
 audit_package_receipt() {
@@ -955,35 +1158,23 @@ audit_apcupsd_loaded_policy() {
 }
 
 audit_no_unowned_host_policy_overrides() {
-    local spec dir canonical path base rc
-    for spec in \
-        "$SYSTEMD_SYSTEM_DIR/user-1000.slice.d|oom-containment.conf" \
-        "$SYSTEMD_SYSTEM_DIR/user@1000.service.d|oom.conf" \
-        "$SYSTEMD_USER_DIR/app.slice.d|oom-containment.conf" \
-        "$SYSTEMD_USER_CONTROL_DIR/app.slice.d|oom-containment.conf"; do
-        dir="${spec%%|*}"
-        canonical="${spec#*|}"
-        [ -d "$dir" ] || continue
-        for path in "$dir"/*.conf; do
-            [ -e "$path" ] || [ -L "$path" ] || continue
-            base="$(basename "$path")"
-            [[ "$base" > "$canonical" ]] || continue
-            if [ -L "$path" ]; then
-                echo "root-required install drift: unowned later OOM drop-in is symlinked: $path" >&2
-                return 1
-            fi
-            if grep -Eq '^[[:space:]]*(MemoryHigh|MemoryMax)=' "$path"; then
-                echo "root-required install drift: unowned later OOM drop-in overrides the canonical host profile: $path" >&2
-                return 1
-            else
-                rc=$?
-                if [ "$rc" -gt 1 ]; then
-                    echo "root-required install drift: unable to inspect later OOM drop-in: $path" >&2
-                    return 1
-                fi
-            fi
-        done
-    done
+    local dir path rc
+    audit_governed_unit_dropins system user-1000.slice \
+        systemd/system/user-1000.slice.d/oom-containment.conf \
+        "$SYSTEMD_SYSTEM_DIR/user-1000.slice.d/oom-containment.conf" || return 1
+    audit_governed_unit_dropins system user@1000.service \
+        systemd/system/user@1000.service.d/oom.conf \
+        "$SYSTEMD_SYSTEM_DIR/user@1000.service.d/oom.conf" || return 1
+    audit_governed_unit_dropins user app.slice \
+        systemd/units/app.slice.d/oom-containment.conf \
+        "$SYSTEMD_USER_DIR/app.slice.d/oom-containment.conf" || return 1
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        if [ -e "$path" ] || [ -L "$path" ]; then
+            echo "root-required install drift: higher-priority zram-generator main configuration shadows the canonical profile: $path" >&2
+            return 1
+        fi
+    done < <(printf '%s\n' "${ZRAM_HIGH_PRIORITY_CONFIGS//:/$'\n'}")
     while IFS= read -r dir; do
         [ -d "$dir" ] || continue
         for path in "$dir"/*.conf; do
@@ -1101,6 +1292,26 @@ audit_root_installs() {
     [ "$failed" -eq 0 ]
 }
 
+refuse_production_test_overrides() {
+    local path
+    [ "${HAPAX_ROOT_AUDIT_TEST_MODE:-0}" = "1" ] || return 0
+    for path in \
+        "$INSTALLED_SOURCE_ROOT" \
+        "$SYSTEMD_SYSTEM_DIR" \
+        "$SYSTEMD_USER_DIR" \
+        "$OOM_PROFILE_TABLE_DEST" \
+        "$ROOT_REQUIRED_AUDIT_DEST"; do
+        case "$path" in
+            /etc/*|/usr/local/*|/home/hapax/*)
+                echo "root-required audit refuses test selectors for production destinations: $path" >&2
+                echo "  next action: remove HAPAX_ROOT_AUDIT_TEST_MODE, HAPAX_ROOT_AUDIT_HOSTNAME, HAPAX_ROOT_AUDIT_MEMTOTAL_KIB, and unit-path overrides" >&2
+                return 1
+                ;;
+        esac
+    done
+}
+
+refuse_production_test_overrides || exit 1
 mapfile -t runbooks < <(pending_runbooks)
 if [ "${#runbooks[@]}" -eq 0 ]; then
     audit_desired_receipt "oom-containment" || rc=1
