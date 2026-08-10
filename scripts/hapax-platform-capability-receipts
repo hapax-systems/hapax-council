@@ -24,6 +24,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from shared.codex_rollout_quota import (  # noqa: E402
     RolloutQuotaUnavailable,
+    latest_model_observation,
     latest_rollout_observation,
 )
 from shared.platform_capability_receipts import (  # noqa: E402
@@ -578,11 +579,26 @@ def build_receipt(
     # CASE-CAPACITY-ROUTING-001 R2 stopped being true upstream and nothing was watching. Falls back
     # to unobservable when no fresh snapshot exists, so a quiet codex still fails closed.
     rollout_quota = None
+    rollout_model = None
     if platform == "codex":
         try:
             rollout_quota = latest_rollout_observation(now=observed_at)
         except RolloutQuotaUnavailable:
             rollout_quota = None
+        # The MODEL the session actually ran under, recorded on the capability receipt.
+        #
+        # A receipt saying "codex was exercised" without saying WITH WHAT is not attributable: the
+        # subject of a measurement is the tuple including M, never the platform alone. It is also
+        # how a lane ran its whole life on a non-frontier model unnoticed — nothing anywhere
+        # recorded which model any session used, so there was no history to notice against.
+        #
+        # Separate try/except from the quota read on purpose: an unreadable model must not suppress
+        # a good quota observation, and an unreadable quota must not suppress a good model one.
+        # Sharing one block would make either failure look like both.
+        try:
+            rollout_model = latest_model_observation(now=observed_at)
+        except RolloutQuotaUnavailable:
+            rollout_model = None
     if rollout_quota is not None:
         quota = surface_evidence(
             status=EvidenceStatus.OBSERVED,
@@ -622,6 +638,18 @@ def build_receipt(
     provider_refs = provider_doc_refs(routes)
     if not provider_refs:
         provider_refs = [f"platform-capability-registry:{platform}:provider-docs:absent"]
+    # Attribute the receipt to the model that actually served the session. Absence is stated
+    # rather than omitted: a receipt silent about M reads as "not applicable", and the whole
+    # failure being corrected here is a model nobody recorded and therefore nobody questioned.
+    if platform == "codex":
+        if rollout_model is not None:
+            provider_refs = [
+                *provider_refs,
+                f"local:{platform}:observed-model:{rollout_model.model}",
+                f"local:{platform}:observed-effort:{rollout_model.reasoning_effort or 'unrecorded'}",
+            ]
+        else:
+            provider_refs = [*provider_refs, f"local:{platform}:observed-model:unobservable"]
     receipt = PlatformCapabilityReceipt(
         receipt_id=receipt_id,
         platform=platform,

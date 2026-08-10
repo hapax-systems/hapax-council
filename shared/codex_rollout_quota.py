@@ -125,6 +125,19 @@ def _rate_limits_from_line(line: str) -> tuple[datetime, dict] | None:
 ROLLOUT_HEAD_LINES = 12
 ROLLOUT_HEAD_MAX_BYTES = 2 * 1024 * 1024
 
+#: Model observation gets its OWN staleness bound, and a far longer one than quota.
+#:
+#: Quota is perishable — a reading an hour old may be wrong about headroom right now, so the
+#: 3600s bound is correct there. Which model served a session is not perishable: a session from
+#: yesterday ran on the model it ran on, permanently. Reusing the quota bound made the production
+#: receipt report `observed-model:unobservable` whenever no codex session had run in the last hour,
+#: which is most of the time, and would have made the routing history it exists to accumulate
+#: mostly empty.
+#:
+#: Still bounded rather than unlimited: the receipt attributes a capability "as recently
+#: exercised", and a month-old session says little about what a lane launched today would get.
+DEFAULT_MAX_MODEL_OBSERVATION_AGE_SECONDS = 7 * 24 * 3600
+
 
 @dataclass(frozen=True)
 class ModelObservation:
@@ -168,7 +181,7 @@ def latest_model_observation(
     sessions_dir: Path | None = None,
     *,
     now: datetime,
-    max_age_seconds: int = DEFAULT_MAX_OBSERVATION_AGE_SECONDS,
+    max_age_seconds: int = DEFAULT_MAX_MODEL_OBSERVATION_AGE_SECONDS,
 ) -> ModelObservation:
     """The model and reasoning effort the newest usable codex session actually ran under.
 
