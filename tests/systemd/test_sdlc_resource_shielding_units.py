@@ -428,5 +428,8 @@ def test_local_judge_runtime_canary_fails_fast() -> None:
     canary = text[start:end]
     assert canary.index("set -euo pipefail") < canary.index("container=hapax-local-judge")
     assert "run_verifierbench.py" in canary
+    assert "length == 24" in canary
+    assert ".error == null" in canary
+    assert '.pred == "A" or .pred == "B" or .pred == "C"' in canary
     assert 'test "$before_state" = "$after_state"' in canary
     assert 'test "$before_oom" = "$after_oom"' in canary

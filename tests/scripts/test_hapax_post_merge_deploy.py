@@ -2007,6 +2007,59 @@ def test_root_required_audit_passes_when_oom_enforcer_matches(
     assert "root-required post-merge deploy deferrals: none" in result.stdout
 
 
+@pytest.mark.parametrize(
+    ("host_profile", "floor_gib"),
+    [
+        ("appendix", 59),
+        ("appendix", 61),
+        ("podium", 123),
+        ("podium", 125),
+    ],
+)
+def test_root_required_audit_accepts_reviewed_host_interval_edges(
+    tmp_path: Path, host_profile: str, floor_gib: int
+) -> None:
+    env = _root_audit_env(tmp_path, host_profile=host_profile)
+    env["HAPAX_ROOT_AUDIT_MEMTOTAL_KIB"] = str(floor_gib * 1024**2)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    ("host_profile", "floor_gib"),
+    [
+        ("appendix", 58),
+        ("appendix", 62),
+        ("podium", 122),
+        ("podium", 126),
+    ],
+)
+def test_root_required_audit_refuses_unreviewed_host_interval_edges(
+    tmp_path: Path, host_profile: str, floor_gib: int
+) -> None:
+    env = _root_audit_env(tmp_path, host_profile=host_profile)
+    env["HAPAX_ROOT_AUDIT_MEMTOTAL_KIB"] = str(floor_gib * 1024**2)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "cannot select a bounded receipt-bound OOM host profile" in result.stderr
+
+
 def test_root_required_audit_binds_host_profile_table_to_receipt(tmp_path: Path) -> None:
     env = _root_audit_env(tmp_path)
     table = (

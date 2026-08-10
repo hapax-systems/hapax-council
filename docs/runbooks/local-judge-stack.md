@@ -128,12 +128,15 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
   test -r "$events"
   before_state="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}|{{.RestartCount}}|{{.State.OOMKilled}}' "$container")"
   before_oom="$(awk '$1 == "oom" || $1 == "oom_kill" {print}' "$events")"
+  results="${TMPDIR:-/tmp}/local-judge-eight-slot.jsonl"
   (
     cd scripts/cost-offload || exit
     uv run --with pandas --with pyarrow --with requests \
       python run_verifierbench.py --endpoint http://localhost:5001 \
-      --n 24 --workers 8 --out "${TMPDIR:-/tmp}/local-judge-eight-slot.jsonl"
+      --n 24 --workers 8 --out "$results"
   )
+  jq -e -s 'length == 24 and all(.[]; .error == null and (.pred == "A" or .pred == "B" or .pred == "C"))' \
+    "$results" >/dev/null
   after_state="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}|{{.RestartCount}}|{{.State.OOMKilled}}' "$container")"
   after_oom="$(awk '$1 == "oom" || $1 == "oom_kill" {print}' "$events")"
   test "$before_state" = "$after_state"

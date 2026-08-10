@@ -720,6 +720,7 @@ def test_installer_rejects_forged_inherited_lock_descriptor_before_mutation(
         ("success", "podium", "need-daemon-reload-query-failure"),
         ("success", "podium", "zram-main"),
         ("disappear", "podium", "none"),
+        ("malformed-record", "podium", "none"),
         ("rename", "podium", "none"),
         ("replace", "podium", "none"),
         ("update-failure", "podium", "none"),
@@ -1034,6 +1035,8 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
                 f"if [ -e {gone!s} ]; then printf '%s\\n' '{MCP_CONTAINER_ID}|renamed-away'; "
                 f"else printf '%s\\n' '{MCP_CONTAINER_ID}|hapax-github-mcp-hapax-123'; fi"
             )
+        elif docker_mode == "malformed-record":
+            mcp_record = f"printf '%s\\n' '{MCP_CONTAINER_ID}|hapax-github-mcp-hapax-123|junk'"
         else:
             mcp_record = (
                 f"[ -e {gone!s} ] || printf '%s\\n' '{MCP_CONTAINER_ID}|hapax-github-mcp-hapax-123'"
@@ -1153,6 +1156,7 @@ esac
             "rename",
             "replace",
             "inspect-failure-present",
+            "malformed-record",
             "post-update-mismatch",
             "second-reload-failure",
             "second-user-reload-failure",
@@ -1184,6 +1188,8 @@ esac
         elif docker_mode == "rename":
             assert "original identity" in result.stderr
             assert "simulated same-ID rename during update" in result.stderr
+        elif docker_mode == "malformed-record":
+            assert "unparseable Docker identity record" in result.stderr
         elif docker_mode == "update-failure":
             assert "simulated Docker update denial" in result.stderr
         elif docker_mode == "inspect-failure-present":

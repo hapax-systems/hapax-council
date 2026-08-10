@@ -401,9 +401,24 @@ load_host_profile() {
 from __future__ import annotations
 
 import os
+import re
 import socket
 import sys
 from pathlib import Path
+
+BYTES_1G = 1024**3
+
+
+def memory_bytes(value: str, *, field: str, line_number: int) -> int:
+    match = re.fullmatch(r"([1-9][0-9]*)([GM])", value)
+    if match is None:
+        print(
+            f"invalid {field} value in host profile table row {line_number}: {value}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    number, suffix = match.groups()
+    return int(number) * (BYTES_1G if suffix == "G" else 1024**2)
 
 table = Path(sys.argv[1])
 test_mode = os.environ.get("HAPAX_ROOT_AUDIT_TEST_MODE") == "1"
@@ -431,15 +446,61 @@ if memtotal_kib <= 0:
     raise SystemExit(1)
 floor_gib = memtotal_kib * 1024 // 1024**3
 matches: list[str] = []
+host_ranges: dict[str, list[tuple[int, int]]] = {}
 for line_number, line in enumerate(table.read_text(encoding="utf-8").splitlines(), start=1):
     if not line or line.startswith("#"):
         continue
     fields = line.split("\t")
-    if len(fields) != 8:
+    if len(fields) != 9:
         print(f"invalid host profile table row {line_number}", file=sys.stderr)
         raise SystemExit(1)
-    if fields[0] == hostname and fields[1] == str(floor_gib):
-        matches.append(fields[2])
+    (
+        row_hostname,
+        min_gib_text,
+        max_gib_text,
+        profile,
+        app_high,
+        app_max,
+        uid_high,
+        uid_max,
+        zram_mib,
+    ) = fields
+    try:
+        min_gib = int(min_gib_text)
+        max_gib = int(max_gib_text)
+        zram_size = int(zram_mib) * 1024**2
+    except ValueError:
+        print(f"invalid host profile table row {line_number}", file=sys.stderr)
+        raise SystemExit(1)
+    if not row_hostname or profile not in {"appendix", "podium"}:
+        print(f"invalid host profile table row {line_number}", file=sys.stderr)
+        raise SystemExit(1)
+    if min_gib <= 0 or max_gib < min_gib:
+        print(f"invalid host profile interval at row {line_number}", file=sys.stderr)
+        raise SystemExit(1)
+    ranges = host_ranges.setdefault(row_hostname, [])
+    if any(min_gib <= prior_max and prior_min <= max_gib for prior_min, prior_max in ranges):
+        print(f"overlapping host profile interval at row {line_number}", file=sys.stderr)
+        raise SystemExit(1)
+    ranges.append((min_gib, max_gib))
+    app_high_bytes = memory_bytes(app_high, field="app_high", line_number=line_number)
+    app_max_bytes = memory_bytes(app_max, field="app_max", line_number=line_number)
+    uid_high_bytes = memory_bytes(uid_high, field="uid_high", line_number=line_number)
+    uid_max_bytes = memory_bytes(uid_max, field="uid_max", line_number=line_number)
+    reviewed_floor_bytes = min_gib * BYTES_1G
+    if not (
+        0 < app_high_bytes < app_max_bytes < reviewed_floor_bytes
+        and 0 < uid_high_bytes < uid_max_bytes < reviewed_floor_bytes
+        and app_max_bytes < uid_max_bytes
+        and zram_size > 0
+    ):
+        print(
+            f"host profile ceilings are not below interval floor at row {line_number}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    if row_hostname == hostname and min_gib <= floor_gib <= max_gib:
+        matches.append(profile)
 if len(matches) != 1 or matches[0] not in {"appendix", "podium"}:
     print(
         f"no unique governed host profile for hostname={hostname} floor_memtotal_gib={floor_gib}",
@@ -449,7 +510,7 @@ if len(matches) != 1 or matches[0] not in {"appendix", "podium"}:
 print(matches[0])
 PY
     )"; then
-        echo "root-required install drift: cannot select an exact receipt-bound OOM host profile" >&2
+        echo "root-required install drift: cannot select a bounded receipt-bound OOM host profile" >&2
         echo "  next action: repair host identity/inventory or the governed profile table, then rerun the OOM installer" >&2
         return 1
     fi
