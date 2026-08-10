@@ -50,9 +50,7 @@ def _host_policy_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     zram = sys_root / "block" / "zram0"
     zram.mkdir(parents=True)
     (zram / "disksize").write_text(f"{32 * 1024**3}\n", encoding="utf-8")
-    (zram / "comp_algorithm").write_text(
-        "lzo-rle lzo lz4 lz4hc [zstd] deflate\n", encoding="utf-8"
-    )
+    (zram / "comp_algorithm").write_text("lzo-rle lzo lz4 lz4hc [zstd] deflate\n", encoding="utf-8")
     unit_paths = tmp_path / "user-unit-path"
     unit_paths.mkdir()
     system_dir = tmp_path / "systemd-system"
@@ -341,7 +339,7 @@ def _fake_docker(tmp_path: Path, *, state: str = "bounded") -> Path:
                 f"printf '%s\\t%s\\n' {'c' * 64} unrelated-container\n"
             )
             inspect_body = (
-                f"case \"$id\" in\n"
+                f'case "$id" in\n'
                 f"  {JUDGE_CONTAINER_ID}) printf '%s\\t/%s\\t%s\\t%s\\n' \"$id\" hapax-local-judge {judge_memory} {judge_swap} ;;\n"
                 f"  {MCP_CONTAINER_ID}) printf '%s\\t/%s\\t%s\\t%s\\n' \"$id\" hapax-github-mcp-hapax-123 {mcp_memory} {mcp_swap} ;;\n"
                 "  *) exit 1 ;;\n"
@@ -536,9 +534,7 @@ def _run(
         "HAPAX_OOM_AUDIT_CGROUP_ROOT": str(cgroup_root),
         "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(lock),
         "HAPAX_OOM_AUDIT_DOCKER": str(_fake_docker(tmp_path, state=docker_state)),
-        "HAPAX_OOM_AUDIT_MEMTOTAL_KIB": (
-            "63310228" if host_profile == "appendix" else "131007744"
-        ),
+        "HAPAX_OOM_AUDIT_MEMTOTAL_KIB": ("63310228" if host_profile == "appendix" else "131007744"),
         "HAPAX_OOM_AUDIT_HOSTNAME": (
             "hapax-appendix" if host_profile == "appendix" else "hapax-podium"
         ),
@@ -546,9 +542,9 @@ def _run(
     zram_size = zram_size_bytes
     if zram_size is None:
         zram_size = 16 * 1024**3 if host_profile == "appendix" else 32 * 1024**3
-    Path(os.environ["HAPAX_OOM_AUDIT_SYS_ROOT"]).joinpath(
-        "block", "zram0", "disksize"
-    ).write_text(f"{zram_size}\n", encoding="utf-8")
+    Path(os.environ["HAPAX_OOM_AUDIT_SYS_ROOT"]).joinpath("block", "zram0", "disksize").write_text(
+        f"{zram_size}\n", encoding="utf-8"
+    )
     Path(os.environ["HAPAX_OOM_AUDIT_SYS_ROOT"]).joinpath(
         "block", "zram0", "comp_algorithm"
     ).write_text(f"{zram_compression}\n", encoding="utf-8")
@@ -788,7 +784,9 @@ def test_appendix_optional_absence_fails_without_authoritative_search_paths(
     assert result.returncode == 1
     checks = {check["name"]: check for check in json.loads(result.stdout)["checks"]}
     assert checks["user_unit_studio-compositor.service_LoadState"]["status"] == "error"
-    assert "cannot prove absence" in checks["user_unit_studio-compositor.service_LoadState"]["detail"]
+    assert (
+        "cannot prove absence" in checks["user_unit_studio-compositor.service_LoadState"]["detail"]
+    )
 
 
 @pytest.mark.parametrize("docker_state", ["unlimited", "wrong-swap"])
@@ -799,8 +797,7 @@ def test_audit_fails_for_unbounded_or_wrong_docker_limits(
     assert result.returncode == 1
     checks = {check["name"]: check for check in json.loads(result.stdout)["checks"]}
     assert any(
-        check["status"] == "gap" and name.startswith("docker_")
-        for name, check in checks.items()
+        check["status"] == "gap" and name.startswith("docker_") for name, check in checks.items()
     )
 
 
@@ -821,9 +818,7 @@ def test_audit_accepts_ephemeral_docker_disappearance_only_after_id_reenumeratio
     result = _run(tmp_path, docker_state="disappear")
     assert result.returncode == 0, result.stderr
     check = next(
-        check
-        for check in json.loads(result.stdout)["checks"]
-        if check["name"].endswith("_inspect")
+        check for check in json.loads(result.stdout)["checks"] if check["name"].endswith("_inspect")
     )
     assert check["status"] == "pass"
     assert MCP_CONTAINER_ID in check["actual"]
@@ -833,9 +828,7 @@ def test_audit_refuses_inspect_error_while_same_docker_id_remains(tmp_path: Path
     result = _run(tmp_path, docker_state="inspect-failure-present")
     assert result.returncode == 1
     check = next(
-        check
-        for check in json.loads(result.stdout)["checks"]
-        if check["name"].endswith("_inspect")
+        check for check in json.loads(result.stdout)["checks"] if check["name"].endswith("_inspect")
     )
     assert check["status"] == "error"
     assert "Docker inspect failed" in check["detail"]
