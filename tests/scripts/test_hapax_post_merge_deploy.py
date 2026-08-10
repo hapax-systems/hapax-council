@@ -481,11 +481,31 @@ def _root_audit_env(
     system_control_dir = tmp_path / "etc" / "systemd" / "system.control"
     system_runtime_control_dir = tmp_path / "run" / "systemd" / "system.control"
     system_transient_dir = tmp_path / "run" / "systemd" / "transient"
+    system_vendor_dir = tmp_path / "usr" / "lib" / "systemd" / "system"
+    user_vendor_dir = tmp_path / "usr" / "lib" / "systemd" / "user"
+    system_vendor_dir.mkdir(parents=True)
+    user_vendor_dir.mkdir(parents=True)
+    for fragment in (system_vendor_dir / "user.slice", system_vendor_dir / "user@.service"):
+        fragment.write_text("[Unit]\nDescription=Vendor unit\n", encoding="utf-8")
+    for fragment in (user_vendor_dir / "app.slice", user_vendor_dir / "session.slice"):
+        fragment.write_text("[Unit]\nDescription=Vendor unit\n", encoding="utf-8")
     zram_high_priority = tmp_path / "run" / "systemd" / "zram-generator.conf"
     earlyoom_dest = tmp_path / "etc" / "default" / "earlyoom"
     fake_systemctl = tmp_path / "root-audit-systemctl"
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
+        'if [ "$*" = "show system.slice -p NeedDaemonReload --value" ]; then printf "no\\n"; fi\n'
+        'if [ "$*" = "show user.slice -p NeedDaemonReload --value" ]; then printf "no\\n"; fi\n'
+        'if [ "$*" = "show user-1000.slice -p NeedDaemonReload --value" ]; then printf "no\\n"; fi\n'
+        'if [ "$*" = "show user@1000.service -p NeedDaemonReload --value" ]; then printf "no\\n"; fi\n'
+        'if [ "$*" = "--user show app.slice -p NeedDaemonReload --value" ]; then printf "no\\n"; fi\n'
+        'if [ "$*" = "--user show session.slice -p NeedDaemonReload --value" ]; then printf "no\\n"; fi\n'
+        'if [ "$*" = "show system.slice -p FragmentPath --value" ]; then printf "\\n"; fi\n'
+        f'if [ "$*" = "show user.slice -p FragmentPath --value" ]; then printf "%s\\n" "{system_vendor_dir / "user.slice"}"; fi\n'
+        'if [ "$*" = "show user-1000.slice -p FragmentPath --value" ]; then printf "\\n"; fi\n'
+        f'if [ "$*" = "show user@1000.service -p FragmentPath --value" ]; then printf "%s\\n" "{system_vendor_dir / "user@.service"}"; fi\n'
+        f'if [ "$*" = "--user show app.slice -p FragmentPath --value" ]; then printf "%s\\n" "{user_vendor_dir / "app.slice"}"; fi\n'
+        f'if [ "$*" = "--user show session.slice -p FragmentPath --value" ]; then printf "%s\\n" "{user_vendor_dir / "session.slice"}"; fi\n'
         f'if [ "$*" = "show system.slice -p DropInPaths --value" ]; then printf "%s\\n" "{system_dir / "system.slice.d/oom-containment.conf"}"; fi\n'
         f'if [ "$*" = "show user.slice -p DropInPaths --value" ]; then printf "%s\\n" "{system_dir / "user.slice.d/oom-containment.conf"}"; fi\n'
         f'if [ "$*" = "show user-1000.slice -p DropInPaths --value" ]; then printf "%s\\n" "{system_dir / "user-1000.slice.d/oom-containment.conf"}"; fi\n'
@@ -666,6 +686,7 @@ def _root_audit_env(
                 system_runtime_control_dir,
                 system_transient_dir,
                 system_dir,
+                system_vendor_dir,
             )
         ),
         "HAPAX_ROOT_AUDIT_USER_UNIT_PATHS": ":".join(
@@ -675,6 +696,7 @@ def _root_audit_env(
                 user_runtime_control_dir,
                 user_transient_dir,
                 user_dir,
+                user_vendor_dir,
             )
         ),
         "HAPAX_APCUPSD_DEST": str(apcupsd_dir),
@@ -2096,6 +2118,123 @@ def test_root_required_audit_rejects_persistent_set_property_file(tmp_path: Path
 
 
 @pytest.mark.parametrize(
+    ("fragment_name", "section"),
+    [
+        ("user-1000.slice", "Slice"),
+        ("user@1000.service", "Service"),
+        ("user@.service", "Service"),
+    ],
+)
+def test_root_required_audit_rejects_governed_key_in_full_unit_fragment(
+    tmp_path: Path, fragment_name: str, section: str
+) -> None:
+    env = _root_audit_env(tmp_path)
+    fragment = Path(env["HAPAX_OOM_SYSTEMD_SYSTEM_DIR"]) / fragment_name
+    fragment.write_text(f"[{section}]\nMemoryHigh=72G\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "unowned OOM memory assignment" in result.stderr
+    assert "full fragment" in result.stderr
+    assert str(fragment) in result.stderr
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "show user-1000.slice -p NeedDaemonReload --value",
+        "--user show app.slice -p NeedDaemonReload --value",
+    ],
+)
+def test_root_required_audit_rejects_stale_loaded_memory_manager_state(
+    tmp_path: Path, command: str
+) -> None:
+    env = _root_audit_env(tmp_path)
+    fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
+    baseline = fake_systemctl.with_name("root-audit-systemctl-baseline")
+    fake_systemctl.rename(baseline)
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [ "$*" = "{command}" ]; then printf "yes\\n"; exit 0; fi\n'
+        f'exec "{baseline}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "authoritative manager state is stale" in result.stderr
+    assert "NeedDaemonReload=yes" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("manager_prefix", "unit"),
+    [
+        ("show", "user-1000.slice"),
+        ("--user show", "app.slice"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("MemoryHigh", "77309411328"),
+        ("MemoryMax", "94489280512"),
+        ("MemorySwapMax", "0"),
+        ("MemoryLow", "21474836480"),
+        ("MemoryMin", "10737418240"),
+    ],
+)
+def test_root_required_audit_rejects_manager_reported_memory_fragment_outside_known_roots(
+    tmp_path: Path,
+    manager_prefix: str,
+    unit: str,
+    key: str,
+    value: str,
+) -> None:
+    env = _root_audit_env(tmp_path)
+    fragment = tmp_path / "manager-only-root" / f"{unit}-{key}"
+    fragment.parent.mkdir(parents=True)
+    fragment.write_text(f"[Slice]\n{key}={value}\n", encoding="utf-8")
+    fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
+    baseline = fake_systemctl.with_name("root-audit-systemctl-baseline")
+    fake_systemctl.rename(baseline)
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [ "$*" = "{manager_prefix} {unit} -p FragmentPath --value" ]; then printf "%s\\n" "{fragment}"; exit 0; fi\n'
+        f'exec "{baseline}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "authoritative FragmentPath" in result.stderr
+    assert "unowned OOM memory assignment" in result.stderr
+    assert str(fragment) in result.stderr
+
+
+@pytest.mark.parametrize(
     ("manager_prefix", "unit", "canonical_env", "canonical_relative"),
     [
         (
@@ -2230,6 +2369,107 @@ def test_root_required_audit_fails_closed_when_loaded_memory_paths_cannot_be_que
 
     assert result.returncode == 1
     assert "unable to query authoritative DropInPaths" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "show user-1000.slice -p NeedDaemonReload --value",
+        "--user show app.slice -p NeedDaemonReload --value",
+    ],
+)
+def test_root_required_audit_fails_closed_when_reload_state_cannot_be_queried(
+    tmp_path: Path, command: str
+) -> None:
+    env = _root_audit_env(tmp_path)
+    fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
+    baseline = fake_systemctl.with_name("root-audit-systemctl-baseline")
+    fake_systemctl.rename(baseline)
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [ "$*" = "{command}" ]; then exit 71; fi\n'
+        f'exec "{baseline}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "unable to query authoritative NeedDaemonReload" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "show user-1000.slice -p FragmentPath --value",
+        "--user show app.slice -p FragmentPath --value",
+    ],
+)
+def test_root_required_audit_fails_closed_when_loaded_memory_fragment_cannot_be_queried(
+    tmp_path: Path, command: str
+) -> None:
+    env = _root_audit_env(tmp_path)
+    fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
+    baseline = fake_systemctl.with_name("root-audit-systemctl-baseline")
+    fake_systemctl.rename(baseline)
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [ "$*" = "{command}" ]; then exit 71; fi\n'
+        f'exec "{baseline}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "unable to query authoritative FragmentPath" in result.stderr
+
+
+def test_root_required_audit_rejects_symlinked_loaded_memory_fragment(
+    tmp_path: Path,
+) -> None:
+    env = _root_audit_env(tmp_path)
+    target = tmp_path / "mutable-memory-unit"
+    target.write_text("[Slice]\n", encoding="utf-8")
+    fragment = tmp_path / "manager-only-root" / "user-1000.slice"
+    fragment.parent.mkdir(parents=True)
+    fragment.symlink_to(target)
+    fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
+    baseline = fake_systemctl.with_name("root-audit-systemctl-baseline")
+    fake_systemctl.rename(baseline)
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [ "$*" = "show user-1000.slice -p FragmentPath --value" ]; then printf "%s\\n" "{fragment}"; exit 0; fi\n'
+        f'exec "{baseline}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "authoritative FragmentPath" in result.stderr
+    assert "unsafe OOM memory source" in result.stderr
 
 
 def test_root_required_audit_rejects_symlinked_memory_dropin(tmp_path: Path) -> None:

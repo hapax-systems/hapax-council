@@ -526,16 +526,60 @@ governed_dropin_suffixes() {
     esac
 }
 
+governed_fragment_names() {
+    case "$1" in
+        user@1000.service)
+            printf '%s\n' user@1000.service user@.service
+            ;;
+        system.slice|user.slice|user-1000.slice|app.slice|session.slice)
+            printf '%s\n' "$1"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 audit_governed_unit_dropins() {
     local scope="$1" unit="$2" canonical="$3"
-    local root suffix path rc roots_output
+    local root fragment suffix path rc roots_output fragments_output suffixes_output
     if [ "$scope" = "system" ]; then
         roots_output="$(governed_system_unit_search_paths)" || return 1
     else
         roots_output="$(governed_user_unit_search_paths)" || return 1
     fi
+    fragments_output="$(governed_fragment_names "$unit")" || {
+        echo "root-required install drift: missing governed full-fragment mapping for $unit" >&2
+        return 1
+    }
+    suffixes_output="$(governed_dropin_suffixes "$unit")" || {
+        echo "root-required install drift: missing governed drop-in mapping for $unit" >&2
+        return 1
+    }
     while IFS= read -r root; do
         [ -n "$root" ] || continue
+        while IFS= read -r fragment; do
+            path="$root/$fragment"
+            [ -e "$path" ] || [ -L "$path" ] || continue
+            if [ -L "$path" ]; then
+                echo "root-required install drift: unowned OOM memory fragment is symlinked in the $unit search path: $path" >&2
+                return 1
+            fi
+            if [ ! -f "$path" ]; then
+                echo "root-required install drift: unsafe non-regular OOM memory fragment in the $unit search path: $path" >&2
+                return 1
+            fi
+            if grep -Eq '^[[:space:]]*(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)[[:space:]]*=' "$path"; then
+                echo "root-required install drift: unowned OOM memory assignment for $unit in full fragment $path" >&2
+                return 1
+            else
+                rc=$?
+                if [ "$rc" -gt 1 ]; then
+                    echo "root-required install drift: unable to inspect OOM memory fragment: $path" >&2
+                    return 1
+                fi
+            fi
+        done <<< "$fragments_output"
         while IFS= read -r suffix; do
             [ -d "$root/$suffix" ] || continue
             for path in "$root/$suffix"/*.conf; do
@@ -564,7 +608,7 @@ audit_governed_unit_dropins() {
                 echo "root-required install drift: unowned OOM memory assignment for $unit at $path" >&2
                 return 1
             done
-        done < <(governed_dropin_suffixes "$unit")
+        done <<< "$suffixes_output"
     done <<< "$roots_output"
 }
 
@@ -797,7 +841,35 @@ loaded_unit_property() {
 }
 
 audit_loaded_governed_unit_dropins() {
-    local manager="$1" unit="$2" canonical="$3" paths path rc canonical_found=0
+    local manager="$1" unit="$2" canonical="$3" need_reload fragment paths path rc canonical_found=0
+    if ! need_reload="$(loaded_unit_property "$manager" "$unit" NeedDaemonReload)"; then
+        echo "root-required install drift: unable to query authoritative NeedDaemonReload for $unit" >&2
+        return 1
+    fi
+    if [ "$need_reload" != "no" ]; then
+        echo "root-required install drift: authoritative manager state is stale for $unit: NeedDaemonReload=${need_reload:-missing}" >&2
+        return 1
+    fi
+    if ! fragment="$(loaded_unit_property "$manager" "$unit" FragmentPath)"; then
+        echo "root-required install drift: unable to query authoritative FragmentPath for $unit" >&2
+        return 1
+    fi
+    if [ -n "$fragment" ]; then
+        if [ ! -f "$fragment" ] || [ -L "$fragment" ]; then
+            echo "root-required install drift: authoritative FragmentPath reports an unsafe OOM memory source for $unit: $fragment" >&2
+            return 1
+        fi
+        if grep -Eq '^[[:space:]]*(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)[[:space:]]*=' "$fragment"; then
+            echo "root-required install drift: authoritative FragmentPath reports an unowned OOM memory assignment for $unit at $fragment" >&2
+            return 1
+        else
+            rc=$?
+            if [ "$rc" -gt 1 ]; then
+                echo "root-required install drift: unable to inspect authoritative FragmentPath for $unit: $fragment" >&2
+                return 1
+            fi
+        fi
+    fi
     if ! paths="$(loaded_unit_property "$manager" "$unit" DropInPaths)"; then
         echo "root-required install drift: unable to query authoritative DropInPaths for $unit" >&2
         return 1
@@ -827,6 +899,7 @@ audit_loaded_governed_unit_dropins() {
         echo "root-required install drift: authoritative DropInPaths for $unit does not contain exactly one receipt-owned source: expected=$canonical actual=${paths:-none}" >&2
         return 1
     fi
+    return 0
 }
 
 audit_loaded_memory_dropin_ownership() {

@@ -211,6 +211,9 @@ def _fake_systemctl(
     inactive_recovery_unit: str | None = None,
     host_profile: str = "podium",
     memory_dropin_state: str = "clean",
+    memory_fragment_scope: str = "",
+    memory_fragment_key: str = "MemoryHigh",
+    memory_need_reload_scope: str = "",
 ) -> Path:
     path = tmp_path / "systemctl"
     app_high = 49392123904 if host_profile == "appendix" else 77309411328
@@ -267,6 +270,33 @@ def _fake_systemctl(
     )
     system_dir = Path(os.environ["HAPAX_OOM_AUDIT_SYSTEMD_SYSTEM_DIR"])
     user_dir = Path(os.environ["HAPAX_OOM_AUDIT_SYSTEMD_USER_DIR"])
+    vendor_system_dir = tmp_path / "vendor-systemd-system"
+    vendor_user_dir = tmp_path / "vendor-systemd-user"
+    vendor_fragments = (
+        vendor_system_dir / "user.slice",
+        vendor_system_dir / "user@.service",
+        vendor_user_dir / "app.slice",
+        vendor_user_dir / "session.slice",
+    )
+    for fragment in vendor_fragments:
+        fragment.parent.mkdir(parents=True, exist_ok=True)
+        fragment.write_text("[Unit]\nDescription=vendor aggregate\n", encoding="utf-8")
+    uid_fragment = ""
+    app_fragment = str(vendor_user_dir / "app.slice")
+    uid_need_reload = "yes" if memory_need_reload_scope == "system" else "no"
+    app_need_reload = "yes" if memory_need_reload_scope == "user" else "no"
+    if memory_need_reload_scope not in {"", "system", "user"}:
+        raise ValueError(f"unknown memory reload scope: {memory_need_reload_scope}")
+    if memory_fragment_scope:
+        fragment = tmp_path / "manager-only-root" / f"{memory_fragment_scope}.slice"
+        fragment.parent.mkdir(parents=True, exist_ok=True)
+        fragment.write_text(f"[Slice]\n{memory_fragment_key}=77309411328\n", encoding="utf-8")
+        if memory_fragment_scope == "system":
+            uid_fragment = str(fragment)
+        elif memory_fragment_scope == "user":
+            app_fragment = str(fragment)
+        else:
+            raise ValueError(f"unknown memory fragment scope: {memory_fragment_scope}")
     app_dropin_paths = str(user_dir / "app.slice.d/oom-containment.conf")
     if memory_dropin_state == "unowned":
         extra = tmp_path / "manager-only-root" / "app.slice.d" / "50-MemoryHigh.conf"
@@ -282,23 +312,25 @@ def _fake_systemctl(
         if memory_dropin_state == "query-failure"
         else (
             f"printf '{app_values}ControlGroup=/user.slice/user-1000.slice/"
-            f"user@1000.service/app.slice\\nDropInPaths={app_dropin_paths}\\n'"
+            f"user@1000.service/app.slice\\nNeedDaemonReload={app_need_reload}\\n"
+            f"FragmentPath={app_fragment}\\n"
+            f"DropInPaths={app_dropin_paths}\\n'"
         )
     )
     path.write_text(
         f"""#!/usr/bin/env bash
 set -euo pipefail
 case "$*" in
-  *"show system.slice"*) printf '{system_slice_values}DropInPaths={system_dir / "system.slice.d/oom-containment.conf"}\n' ;;
-  *"show user.slice"*) printf '{user_slice_values}ControlGroup=/user.slice\nDropInPaths={system_dir / "user.slice.d/oom-containment.conf"}\n' ;;
-  *"show user-1000.slice"*) printf '{uid_memory_values}ControlGroup=/user.slice/user-1000.slice\nDropInPaths={system_dir / "user-1000.slice.d/oom-containment.conf"}\n' ;;
+  *"show system.slice"*) printf '{system_slice_values}NeedDaemonReload=no\nFragmentPath=\nDropInPaths={system_dir / "system.slice.d/oom-containment.conf"}\n' ;;
+  *"show user.slice"*) printf '{user_slice_values}ControlGroup=/user.slice\nNeedDaemonReload=no\nFragmentPath={vendor_system_dir / "user.slice"}\nDropInPaths={system_dir / "user.slice.d/oom-containment.conf"}\n' ;;
+  *"show user-1000.slice"*) printf '{uid_memory_values}ControlGroup=/user.slice/user-1000.slice\nNeedDaemonReload={uid_need_reload}\nFragmentPath={uid_fragment}\nDropInPaths={system_dir / "user-1000.slice.d/oom-containment.conf"}\n' ;;
   *"show user@1000.service --no-pager -p MemoryHigh"*) printf '{uid_memory_values}' ;;
   *"show user@1000.service --no-pager -p MemoryLow"*) printf '{uid_memory_values}ControlGroup=/user.slice/user-1000.slice/user@1000.service\n' ;;
-  *"show user@1000.service"*) printf 'OOMScoreAdjust={user_oom}\\nOOMPolicy={user_oom_policy}\\nDropInPaths={system_dir / "user@1000.service.d/oom.conf"}\\nMainPID=900\\n' ;;
+  *"show user@1000.service"*) printf 'OOMScoreAdjust={user_oom}\\nOOMPolicy={user_oom_policy}\\nNeedDaemonReload=no\\nFragmentPath={vendor_system_dir / "user@.service"}\\nDropInPaths={system_dir / "user@1000.service.d/oom.conf"}\\nMainPID=900\\n' ;;
   *"show sshd.service"*) printf 'OOMScoreAdjust={sshd_score}\\nOOMPolicy={sshd_policy}\\nMainPID=920\\n' ;;
 {_recovery_system_unit_cases(wrong_score=wrong_recovery_unit_score, inactive_unit=inactive_recovery_unit)}
   *"show app.slice"*) {app_show} ;;
-  *"show session.slice"*) printf '{session_slice_values}ControlGroup=/user.slice/user-1000.slice/user@1000.service/session.slice\nDropInPaths={user_dir / "session.slice.d/oom-containment.conf"}\n' ;;
+  *"show session.slice"*) printf '{session_slice_values}ControlGroup=/user.slice/user-1000.slice/user@1000.service/session.slice\nNeedDaemonReload=no\nFragmentPath={vendor_user_dir / "session.slice"}\nDropInPaths={user_dir / "session.slice.d/oom-containment.conf"}\n' ;;
 {_protected_user_unit_cases(wrong_unit_score=wrong_unit_score, wrong_unit_memory=wrong_unit_memory, wrong_unit_slice=wrong_unit_slice, wrong_audio_no_new_privileges=wrong_audio_no_new_privileges, unit_pids=protected_unit_pids, unit_cgroups=protected_unit_cgroups, unit_load_states=protected_unit_load_states)}
   *"list-units --type=scope"*) printf 'tmux-spawn-a.scope loaded active running tmux child pane\\n' ;;
   *"show tmux-spawn-a.scope"*) printf '{tmux_values}' ;;
@@ -413,6 +445,9 @@ def _run(
     zram_priority: int = 100,
     zram_compression: str = "lzo-rle lzo lz4 lz4hc [zstd] deflate",
     memory_dropin_state: str = "clean",
+    memory_fragment_scope: str = "",
+    memory_fragment_key: str = "MemoryHigh",
+    memory_need_reload_scope: str = "",
 ) -> subprocess.CompletedProcess[str]:
     if proc_root is None:
         proc_root = tmp_path / "proc"
@@ -528,6 +563,9 @@ def _run(
                 inactive_recovery_unit=inactive_recovery_unit,
                 host_profile=host_profile,
                 memory_dropin_state=memory_dropin_state,
+                memory_fragment_scope=memory_fragment_scope,
+                memory_fragment_key=memory_fragment_key,
+                memory_need_reload_scope=memory_need_reload_scope,
             )
         ),
         "HAPAX_OOM_AUDIT_PROC_ROOT": str(proc_root),
@@ -598,12 +636,56 @@ def test_audit_rejects_value_correct_unowned_manager_dropin_outside_known_roots(
     assert "authoritative DropInPaths" in check["detail"]
 
 
+@pytest.mark.parametrize("scope", ["system", "user"])
+@pytest.mark.parametrize(
+    "key", ["MemoryHigh", "MemoryMax", "MemorySwapMax", "MemoryLow", "MemoryMin"]
+)
+def test_audit_rejects_manager_reported_fragment_governed_assignment(
+    tmp_path: Path, scope: str, key: str
+) -> None:
+    result = _run(
+        tmp_path,
+        memory_fragment_scope=scope,
+        memory_fragment_key=key,
+    )
+
+    assert result.returncode == 1
+    checks = {check["name"]: check for check in json.loads(result.stdout)["checks"]}
+    check_name = (
+        "user_1000.slice_memory_dropin_ownership"
+        if scope == "system"
+        else "app.slice_memory_dropin_ownership"
+    )
+    check = checks[check_name]
+    assert check["status"] == "gap"
+    assert "manager-only-root" in check["actual"]
+    assert "authoritative FragmentPath" in check["detail"]
+
+
+@pytest.mark.parametrize("scope", ["system", "user"])
+def test_audit_rejects_stale_loaded_memory_manager_state(tmp_path: Path, scope: str) -> None:
+    result = _run(tmp_path, memory_need_reload_scope=scope)
+
+    assert result.returncode == 1
+    checks = {check["name"]: check for check in json.loads(result.stdout)["checks"]}
+    check_name = (
+        "user_1000.slice_memory_dropin_ownership"
+        if scope == "system"
+        else "app.slice_memory_dropin_ownership"
+    )
+    check = checks[check_name]
+    assert check["status"] == "gap"
+    assert check["target"] == "NeedDaemonReload=no"
+    assert check["actual"] == "yes"
+    assert "manager state is stale" in check["detail"]
+
+
 @pytest.mark.parametrize(
     ("state", "status", "detail"),
     [
         ("missing-canonical", "gap", "exactly one receipt-owned"),
         ("unreadable", "error", "cannot inspect authoritative DropInPath"),
-        ("query-failure", "error", "cannot query authoritative DropInPaths"),
+        ("query-failure", "error", "cannot query authoritative"),
     ],
 )
 def test_audit_fails_closed_when_dropin_ownership_is_unprovable(

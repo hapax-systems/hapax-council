@@ -37,15 +37,8 @@ PROC_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_PROC_ROOT", "/proc"))
 CGROUP_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_CGROUP_ROOT", "/sys/fs/cgroup"))
 SYS_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_SYS_ROOT", "/sys"))
 SCRIPT_PATH = Path(__file__).resolve()
-SOURCE_PROFILE_TABLE = (
-    SCRIPT_PATH.parents[1]
-    / "config"
-    / "root-required"
-    / "oom-host-profiles.tsv"
-)
-INSTALLED_PROFILE_TABLE = Path(
-    "/usr/local/share/hapax/root-required/oom-host-profiles.tsv"
-)
+SOURCE_PROFILE_TABLE = SCRIPT_PATH.parents[1] / "config" / "root-required" / "oom-host-profiles.tsv"
+INSTALLED_PROFILE_TABLE = Path("/usr/local/share/hapax/root-required/oom-host-profiles.tsv")
 INSTALLED_AUDIT_PATH = Path("/usr/local/sbin/hapax-oom-policy-audit")
 ROOT_REQUIRED_STATE_ROOT = Path(
     os.environ.get(
@@ -159,7 +152,9 @@ def _memtotal_kib() -> int:
     try:
         lines = (PROC_ROOT / "meminfo").read_text(encoding="utf-8").splitlines()
     except OSError as exc:
-        raise HostPolicyError(f"cannot read physical memory from {PROC_ROOT / 'meminfo'}: {exc}") from exc
+        raise HostPolicyError(
+            f"cannot read physical memory from {PROC_ROOT / 'meminfo'}: {exc}"
+        ) from exc
     for line in lines:
         fields = line.split()
         if len(fields) >= 2 and fields[0] == "MemTotal:":
@@ -209,7 +204,9 @@ def derive_host_policy(
     try:
         rows = table_path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
-        raise HostPolicyError(f"cannot read receipt-bound host profile table {table_path}: {exc}") from exc
+        raise HostPolicyError(
+            f"cannot read receipt-bound host profile table {table_path}: {exc}"
+        ) from exc
 
     matched: tuple[str, str, str, str, str, str] | None = None
     known_host = False
@@ -221,9 +218,7 @@ def derive_host_policy(
             raise HostPolicyError(
                 f"invalid host profile table row {table_path}:{line_number}: expected 8 fields"
             )
-        row_hostname, floor_gib, profile, app_high, app_max, uid_high, uid_max, zram_mib = (
-            fields
-        )
+        row_hostname, floor_gib, profile, app_high, app_max, uid_high, uid_max, zram_mib = fields
         if row_hostname == canonical_hostname:
             known_host = True
         if row_hostname == canonical_hostname and floor_gib == str(physical_gib):
@@ -312,6 +307,8 @@ def _validate_lock_fd(fd: int) -> None:
             f"unsafe package lock {ROOT_REQUIRED_LOCK_FILE}; expected the caller-owned, "
             "single-link, non-group-writable regular path inode"
         )
+
+
 @contextmanager
 def shared_root_required_lock() -> Iterator[None]:
     inherited = os.environ.get("HAPAX_ROOT_REQUIRED_LOCK_FD", "")
@@ -412,10 +409,8 @@ def _int_value(value: str | None) -> int | None:
         return None
 
 
-def _audit_loaded_governed_unit_dropins(
-    unit: str, canonical: Path, *, user: bool = False
-) -> Check:
-    values = _show(unit, ["DropInPaths"], user=user)
+def _audit_loaded_governed_unit_dropins(unit: str, canonical: Path, *, user: bool = False) -> Check:
+    values = _show(unit, ["NeedDaemonReload", "FragmentPath", "DropInPaths"], user=user)
     check_name = f"{unit.replace('-', '_').replace('@', '_at_')}_memory_dropin_ownership"
     if "_error" in values:
         return Check(
@@ -423,8 +418,50 @@ def _audit_loaded_governed_unit_dropins(
             "error",
             str(canonical),
             "N/A",
-            f"cannot query authoritative DropInPaths: {values['_error']}; {NEXT_OOM_INSTALL}",
+            f"cannot query authoritative NeedDaemonReload/FragmentPath/DropInPaths: "
+            f"{values['_error']}; "
+            f"{NEXT_OOM_INSTALL}",
         )
+    need_reload = values.get("NeedDaemonReload", "").strip()
+    if need_reload != "no":
+        return Check(
+            check_name,
+            "gap",
+            "NeedDaemonReload=no",
+            need_reload or "missing",
+            f"authoritative manager state is stale or unprovable; {NEXT_OOM_INSTALL}",
+        )
+    fragment_raw = values.get("FragmentPath", "").strip()
+    if fragment_raw:
+        fragment = Path(fragment_raw)
+        if not fragment.is_file() or fragment.is_symlink():
+            return Check(
+                check_name,
+                "gap",
+                "empty or readable regular governed-key-free FragmentPath",
+                fragment_raw,
+                f"authoritative FragmentPath is missing, non-regular, or symlinked; "
+                f"{NEXT_OOM_INSTALL}",
+            )
+        try:
+            fragment_body = fragment.read_text(encoding="utf-8")
+        except OSError as exc:
+            return Check(
+                check_name,
+                "error",
+                "empty or readable regular governed-key-free FragmentPath",
+                fragment_raw,
+                f"cannot inspect authoritative FragmentPath: {exc}; {NEXT_OOM_INSTALL}",
+            )
+        if GOVERNED_MEMORY_ASSIGNMENT.search(fragment_body):
+            return Check(
+                check_name,
+                "gap",
+                "no governed memory assignment in FragmentPath",
+                fragment_raw,
+                f"authoritative FragmentPath reports an unowned memory assignment; "
+                f"{NEXT_OOM_INSTALL}",
+            )
     paths = [Path(item) for item in values.get("DropInPaths", "").split() if item]
     canonical_count = paths.count(canonical)
     if canonical_count != 1:
@@ -469,7 +506,8 @@ def _audit_loaded_governed_unit_dropins(
         check_name,
         "pass",
         str(canonical),
-        " ".join(map(str, paths)),
+        f"need_daemon_reload={need_reload} fragment={fragment_raw or 'none'} "
+        f"dropins={' '.join(map(str, paths))}",
     )
 
 
@@ -893,7 +931,11 @@ def audit_zram(policy: HostMemoryPolicy) -> list[Check]:
         actual = int(size_path.read_text(encoding="utf-8").strip())
     except (OSError, ValueError) as exc:
         size_check = Check(
-            "zram0_disksize", "error", str(policy.zram_size), "N/A", f"cannot read {size_path}: {exc}; {NEXT_OOM_INSTALL}"
+            "zram0_disksize",
+            "error",
+            str(policy.zram_size),
+            "N/A",
+            f"cannot read {size_path}: {exc}; {NEXT_OOM_INSTALL}",
         )
     else:
         status = "pass" if actual == policy.zram_size else "gap"
@@ -1302,9 +1344,7 @@ def audit_protected_user_units(policy: HostMemoryPolicy) -> list[Check]:
         load_state = values.get("LoadState", "")
         if load_state == "not-found" and unit in policy.optional_user_units:
             if unit_paths is None:
-                unit_paths, unit_paths_authoritative, unit_paths_detail = (
-                    _user_unit_search_paths()
-                )
+                unit_paths, unit_paths_authoritative, unit_paths_detail = _user_unit_search_paths()
             unit_file = _user_unit_file(unit_paths, unit)
             if unit_file is not None:
                 checks.append(
