@@ -1180,9 +1180,18 @@ def _ledger_lock(path: Path) -> Iterator[str]:
     try:
         lock_fd = os.open(lock_path_for(path), os.O_WRONLY | os.O_CREAT, 0o600)
     except OSError as exc:
+        # Says REFUSED, because that is what the caller does with _LOCK_FAILED. This message
+        # previously read "appending unserialised", which described the opposite of the
+        # behaviour: the sole caller raises on _LOCK_FAILED and no append happens. A reviewer
+        # reading only this branch reasonably concluded the code permitted an unserialised
+        # append concurrent with rotation. The control flow was right and the log was lying.
+        #
+        # Note this is NOT _LOCK_UNSUPPORTED: failing to OPEN the sidecar says nothing about
+        # whether flock works here, so another process may well be holding it and rotating.
+        # Unopenable must therefore refuse, exactly like contention-loss.
         logger.warning(
-            "route-decision ledger lock unavailable at %s (%s); appending unserialised. "
-            "Next: check the directory exists and is writable.",
+            "route-decision ledger lock unavailable at %s (%s); REFUSING the write — the "
+            "receipt is not written. Next: check the directory exists and is writable.",
             lock_path_for(path),
             exc,
         )

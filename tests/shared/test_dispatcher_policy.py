@@ -2586,6 +2586,44 @@ def test_rotation_failure_leaves_the_ledger_intact_and_says_so(
     assert "Next:" in caplog.text, "the warning must carry an operator next action"
 
 
+def test_an_unopenable_lock_sidecar_refuses_the_write_and_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Failing to OPEN the sidecar must refuse, and the warning must not claim otherwise.
+
+    This branch used to log "appending unserialised" while the sole caller raised on
+    _LOCK_FAILED. The behaviour was correct and the message described its opposite, which is
+    how a reviewer reading only this branch concluded the code permitted an unserialised
+    append concurrent with rotation.
+
+    Unopenable is deliberately NOT _LOCK_UNSUPPORTED: failing to open the sidecar says nothing
+    about whether flock works here, so another writer may be holding it and rotating.
+    """
+    ledger = tmp_path / "route-decisions.jsonl"
+    ledger.write_text('{"n": 0}\n', encoding="utf-8")
+    before = ledger.read_text(encoding="utf-8")
+
+    real_open = os.open
+
+    def refuse_sidecar(path: object, *args: object, **kwargs: object) -> int:
+        if str(path).endswith(".lock"):
+            raise OSError(errno.EACCES, "permission denied")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(dispatcher_policy.os, "open", refuse_sidecar)
+
+    decision = evaluate_dispatch_policy(_request(), now=NOW)
+    with caplog.at_level(logging.WARNING, logger="shared.dispatcher_policy"):
+        with pytest.raises(RuntimeError, match="could not be|cannot be written"):
+            write_route_decision_receipt(decision, ledger_dir=tmp_path)
+
+    assert ledger.read_text(encoding="utf-8") == before, "no row may be appended"
+    assert "appending unserialised" not in caplog.text, (
+        "the warning must not describe an append that cannot happen"
+    )
+    assert "REFUS" in caplog.text.upper(), "the warning must name the actual outcome"
+
+
 def test_a_failed_archive_promotion_never_aliases_the_live_ledger(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
