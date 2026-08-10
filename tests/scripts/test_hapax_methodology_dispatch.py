@@ -2351,7 +2351,21 @@ printf '%s\\n' "$@" > {launcher_args}
     )
 
 
-def test_claude_lane_recomposed_to_codex_fails_before_mq_consumption(tmp_path: Path) -> None:
+def test_claude_lane_never_recomposed_to_codex_and_mq_survives(tmp_path: Path) -> None:
+    """A Claude lane must never be OFFERED a Codex route, and the MQ message must survive.
+
+    RENAMED AND RE-POINTED 2026-08-10. The original name and stderr assertion pinned the
+    *symptom* of a defect: recomposition selected `codex.headless.full` for a Claude lane, and
+    `platform_lane_compatibility_reason` refused the selection afterwards. Measured in production,
+    that path produced 2,590 refusals in 24 hours and 6 successful dispatches in 7 days.
+
+    Recomposition now filters candidates by lane compatibility before admission, so with
+    `claude.headless.full` degraded and Codex ineligible for lane `eta` there is no eligible
+    candidate and admission holds. Same exit code, earlier and more honest reason.
+
+    The load-bearing assertion is unchanged and is why this test exists: **the MQ message is not
+    consumed.** That invariant is verified below and did not move.
+    """
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
     registry = _availability_degraded_registry(tmp_path, "claude.headless.full")
@@ -2428,7 +2442,13 @@ printf '%s\\n' "$@" > {launcher_args}
     )
 
     assert result.returncode == 10
-    assert "selected route codex.headless.full requires a Codex cx-* lane" in result.stderr
+    # No Codex candidate is offered to a Claude lane at all, so admission finds nothing eligible
+    # rather than selecting an impossible route and rejecting it downstream.
+    assert "no_eligible_dimensional_candidates" in result.stderr
+    assert "codex.headless.full requires a Codex cx-* lane" not in result.stderr, (
+        "the Codex route must be filtered out BEFORE selection; seeing this refusal again means "
+        "recomposition stopped consulting lane compatibility"
+    )
     assert not launcher_args.exists()
     with sqlite3.connect(tmp_path / "relay" / "messages.db") as conn:
         message_id = conn.execute("SELECT message_id FROM messages").fetchone()[0]
@@ -2443,13 +2463,21 @@ printf '%s\\n' "$@" > {launcher_args}
     )
     assert receipt["ok"] is False
     assert receipt["launched"] is False
-    assert receipt["platform"] == "codex"
+    # The receipt records the platform actually attempted. Previously that was `codex`, because
+    # recomposition had selected a Codex route this lane could never run; now no Codex candidate
+    # is offered, so the attempt stays on the lane's own platform and is refused for lack of an
+    # eligible route.
+    assert receipt["platform"] == "claude"
     assert receipt["mode"] == "headless"
     assert receipt["profile"] == "full"
-    assert receipt["dimensional_selected_route_id"] == "codex.headless.full"
-    assert "availability_recomposed_from:claude.headless.full" in set(
-        receipt["route_policy_reason_codes"]
+    assert receipt["dimensional_selected_route_id"] != "codex.headless.full", (
+        "a Claude lane must never have a Codex route recorded as its dimensional selection"
     )
+    # No recomposition is RECORDED because none occurred: the only cross-platform candidate was
+    # ineligible for this lane and was never scored. The reason set therefore describes real
+    # candidates only, which is the point -- a recomposition breadcrumb pointing at a route the
+    # lane could not have run was diagnostic noise dressed as evidence.
+    assert set(receipt["route_policy_reason_codes"]) == {"no_eligible_dimensional_candidates"}
     assert "durable_mq_dispatch_bound" not in receipt
 
 
@@ -3811,7 +3839,19 @@ printf '%s\\n' "$@" > {launcher_args}
     assert receipt["dimensional_selected_route_id"] == "claude.headless.full"
     reasons = set(receipt["route_policy_reason_codes"])
     assert "availability_recomposition_required" in reasons
-    assert "account_live_quota_evidence_absent" in reasons
+    # The launch itself is the load-bearing assertion above and is unchanged: recomposition still
+    # works, and it still lands on claude.headless.full for a Claude lane.
+    #
+    # `account_live_quota_evidence_absent` was a CODEX-route reason. It appeared only because the
+    # Codex candidate was scored on the way to being discarded — and this lane could never have
+    # run it. Since 2026-08-10 recomposition filters candidates by lane compatibility before
+    # admission, so ineligible routes are not scored and do not contribute reasons. The reason set
+    # now describes routes that were genuinely in contention.
+    assert "account_live_quota_evidence_absent" not in reasons, (
+        "a Codex-route reason must not appear for a Claude lane; seeing it again means "
+        "recomposition is scoring routes the lane cannot run"
+    )
+    assert any(reason.startswith("availability_recomposed_to:claude") for reason in reasons)
     assert receipt.get("route_policy_compatibility_mode") in {None, "none"}
 
 
