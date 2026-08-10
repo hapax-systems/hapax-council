@@ -1590,7 +1590,8 @@ docker_target_records() {
 verify_docker_container_limit() {
     local id="$1" name="$2" memory="$3" memory_swap="$4"
     local output inspected_id inspected_name actual_memory actual_swap expected_memory expected_swap
-    if ! output="$("$DOCKER" inspect --format '{{.Id}}|{{.Name}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}' "$id" 2>/dev/null)"; then
+    if ! output="$("$DOCKER" inspect --format '{{.Id}}|{{.Name}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}' "$id" 2>&1)"; then
+        echo "Docker inspect failed for $name id=$id: ${output:-no diagnostics returned}" >&2
         return 2
     fi
     IFS='|' read -r inspected_id inspected_name actual_memory actual_swap <<< "$output"
@@ -1606,19 +1607,22 @@ verify_docker_container_limit() {
     fi
 }
 
-docker_target_id_absent() {
-    local expected_id="$1" records record id
+docker_target_absent() {
+    local expected_id="$1" expected_name="$2" records record id name
     records="$(docker_target_records)" || return 2
     while IFS= read -r record; do
         [ -n "$record" ] || continue
         id="${record%%|*}"
-        [ "$id" != "$expected_id" ] || return 1
+        name="${record#*|}"
+        if [ "$id" = "$expected_id" ] || [ "$name" = "$expected_name" ]; then
+            return 1
+        fi
     done <<< "$records"
     return 0
 }
 
 reconcile_docker_memory_limits() {
-    local records record id name policy memory memory_swap verify_rc absence_rc
+    local records record id name policy memory memory_swap update_output verify_rc absence_rc
     if ! records="$(docker_target_records)"; then
         echo "unable to enumerate Docker containers for OOM containment; next action: restore Docker access and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
@@ -1629,27 +1633,28 @@ reconcile_docker_memory_limits() {
         name="${record#*|}"
         policy="$(docker_policy_for_container "$name")"
         IFS='|' read -r memory memory_swap <<< "$policy"
-        if ! "$DOCKER" update --memory "$memory" --memory-swap "$memory_swap" "$id" >/dev/null 2>&1; then
-            if docker_target_id_absent "$id"; then
-                echo "Docker target $name id=$id disappeared during limit convergence; no matching container remains to cap"
+        if ! update_output="$("$DOCKER" update --memory "$memory" --memory-swap "$memory_swap" "$id" 2>&1)"; then
+            if docker_target_absent "$id" "$name"; then
+                echo "Docker target $name id=$id disappeared during limit convergence; neither its identity nor owned name remains to cap"
                 continue
             else
                 absence_rc=$?
             fi
             if [ "$absence_rc" -eq 2 ]; then
-                echo "unable to confirm Docker target $name id=$id after update failure because re-enumeration failed; next action: restore Docker access and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+                echo "unable to confirm Docker target $name id=$id after update failure because re-enumeration failed; docker update diagnostics: ${update_output:-none}; next action: restore Docker access and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
             else
-                echo "unable to apply Docker memory limits to $name id=$id; next action: inspect 'docker update' diagnostics and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+                echo "unable to apply Docker memory limits to $name id=$id while the original identity or same-name target remains; docker update diagnostics: ${update_output:-none}; next action: resolve the reported Docker failure and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
             fi
             return 1
         fi
         if verify_docker_container_limit "$id" "$name" "$memory" "$memory_swap"; then
+            echo "converged Docker memory limits for $name id=$id: Memory=$memory MemorySwap=$memory_swap"
             continue
         else
             verify_rc=$?
             if [ "$verify_rc" -eq 2 ]; then
-                if docker_target_id_absent "$id"; then
-                    echo "Docker target $name id=$id disappeared during post-update verification; no matching container remains to cap"
+                if docker_target_absent "$id" "$name"; then
+                    echo "Docker target $name id=$id disappeared during post-update verification; neither its identity nor owned name remains to cap"
                     continue
                 else
                     absence_rc=$?
@@ -1657,7 +1662,7 @@ reconcile_docker_memory_limits() {
                 if [ "$absence_rc" -eq 2 ]; then
                     echo "unable to confirm Docker target $name id=$id after inspect failure because re-enumeration failed; next action: restore Docker access and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
                 else
-                    echo "Docker inspect failed for still-enumerated target $name id=$id; next action: restore Docker access and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+                    echo "Docker inspect failed while the original identity or same-name target remains for $name id=$id; next action: restore Docker access and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
                 fi
             fi
             return 1
@@ -1678,11 +1683,12 @@ verify_docker_memory_limits() {
         policy="$(docker_policy_for_container "$name")"
         IFS='|' read -r memory memory_swap <<< "$policy"
         if verify_docker_container_limit "$id" "$name" "$memory" "$memory_swap"; then
+            echo "verified Docker memory limits for $name id=$id: Memory=$memory MemorySwap=$memory_swap"
             continue
         else
             verify_rc=$?
             if [ "$verify_rc" -eq 2 ]; then
-                if docker_target_id_absent "$id"; then
+                if docker_target_absent "$id" "$name"; then
                     continue
                 else
                     absence_rc=$?
@@ -1690,7 +1696,7 @@ verify_docker_memory_limits() {
                 if [ "$absence_rc" -eq 2 ]; then
                     echo "unable to confirm Docker target $name id=$id after inspect failure because re-enumeration failed; next action: restore Docker access and rerun scripts/install-p0-oom-containment --verify-live" >&2
                 else
-                    echo "Docker inspect failed for still-enumerated target $name id=$id; next action: restore Docker access and rerun scripts/install-p0-oom-containment --verify-live" >&2
+                    echo "Docker inspect failed while the original identity or same-name target remains for $name id=$id; next action: restore Docker access and rerun scripts/install-p0-oom-containment --verify-live" >&2
                 fi
             fi
             return 1

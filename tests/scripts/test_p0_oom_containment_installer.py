@@ -83,6 +83,7 @@ RECOVERY_SYSTEM_UNIT_PIDS = {
 SAFE_AUDIT_ENVIRONMENT = "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin"
 JUDGE_CONTAINER_ID = "a" * 64
 MCP_CONTAINER_ID = "b" * 64
+REPLACEMENT_CONTAINER_ID = "d" * 64
 
 
 def _systemctl_property_file(section: str, key: str, value: str) -> str:
@@ -719,10 +720,12 @@ def test_installer_rejects_forged_inherited_lock_descriptor_before_mutation(
         ("success", "podium", "need-daemon-reload-query-failure"),
         ("success", "podium", "zram-main"),
         ("disappear", "podium", "none"),
+        ("replace", "podium", "none"),
         ("update-failure", "podium", "none"),
         ("inspect-failure-present", "podium", "none"),
         ("post-update-mismatch", "podium", "none"),
         ("second-reload-failure", "podium", "none"),
+        ("second-user-reload-failure", "podium", "none"),
     ],
 )
 def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
@@ -903,24 +906,53 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     systemctl_calls.chmod(0o666)
     fake_systemctl = tmp_path / "systemctl"
     reload_count = tmp_path / "system-reload-count"
-    reload_failure_guard = ""
-    if docker_mode == "second-reload-failure":
-        reload_failure_guard = (
-            f'if [ "$*" = "daemon-reload" ]; then count=0; [ ! -f {reload_count} ] || '
-            f'count="$(cat {reload_count})"; count=$((count + 1)); printf "%s\\n" "$count" > {reload_count}; '
-            '[ "$count" -lt 2 ] || exit 71; fi\n'
+    user_reload_count = tmp_path / "user-reload-count"
+    system_reload_dirty = tmp_path / "system-manager-dirty"
+    user_reload_dirty = tmp_path / "user-manager-dirty"
+    system_reload_dirty.write_text("persistent files changed\n", encoding="utf-8")
+    user_reload_dirty.write_text("persistent files changed\n", encoding="utf-8")
+    reload_guard = (
+        'if [ "$*" = "daemon-reload" ]; then\n'
+        f'  count=0; [ ! -f "{reload_count}" ] || count="$(cat "{reload_count}")"\n'
+        f'  count=$((count + 1)); printf "%s\\n" "$count" > "{reload_count}"\n'
+        + ('  [ "$count" -lt 2 ] || exit 71\n' if docker_mode == "second-reload-failure" else "")
+        + f'  if ! find "$HAPAX_OOM_SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR" -type f -name "*.conf" -print -quit 2>/dev/null | grep -q .; then rm -f "{system_reload_dirty}"; fi\n'
+        "fi\n"
+        'if [ "$*" = "--user daemon-reload" ]; then\n'
+        f'  count=0; [ ! -f "{user_reload_count}" ] || count="$(cat "{user_reload_count}")"\n'
+        f'  count=$((count + 1)); printf "%s\\n" "$count" > "{user_reload_count}"\n'
+        + (
+            '  [ "$count" -lt 2 ] || exit 71\n'
+            if docker_mode == "second-user-reload-failure"
+            else ""
+        )
+        + f'  if ! find "$HAPAX_OOM_SYSTEMD_USER_RUNTIME_CONTROL_DIR" -type f -name "*.conf" -print -quit 2>/dev/null | grep -q .; then rm -f "{user_reload_dirty}"; fi\n'
+        "fi\n"
+    )
+    reload_freshness_guard = ""
+    if not override_mode.startswith("need-daemon-reload-"):
+        reload_freshness_guard = (
+            'if [[ "$*" == *"NeedDaemonReload --value"* ]]; then\n'
+            f'  marker="{system_reload_dirty}"\n'
+            f'  [[ "$*" == --user* ]] && marker="{user_reload_dirty}"\n'
+            '  if [ -e "$marker" ]; then printf "yes\\n"; else printf "no\\n"; fi\n'
+            "  exit 0\n"
+            "fi\n"
         )
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
         f"printf '%s\\n' \"$*\" >> {systemctl_calls!s}\n"
-        f"{reload_failure_guard}"
+        f"{reload_guard}"
         f"{fragment_query_failure}"
+        f"{reload_freshness_guard}"
         'if [[ "$*" == *"set-property --runtime "* ]]; then\n'
         '  args=("$@")\n'
         '  if [ "${args[0]}" = "--user" ]; then\n'
         '    base="$HAPAX_OOM_SYSTEMD_USER_RUNTIME_CONTROL_DIR"; unit="${args[3]}"; first=4\n'
+        f'    touch "{user_reload_dirty}"\n'
         "  else\n"
         '    base="$HAPAX_OOM_SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR"; unit="${args[2]}"; first=3\n'
+        f'    touch "{system_reload_dirty}"\n'
         "  fi\n"
         '  mkdir -p "$base/$unit.d"\n'
         "  for ((i=first; i<${#args[@]}; i++)); do\n"
@@ -962,17 +994,33 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         gone = tmp_path / "mcp-gone"
         if docker_mode == "disappear":
             update_action = (
-                f'if [ "${{@: -1}}" = "{MCP_CONTAINER_ID}" ]; then touch {gone!s}; exit 1; fi\n'
+                f'if [ "${{@: -1}}" = "{MCP_CONTAINER_ID}" ]; then touch {gone!s}; '
+                'echo "simulated container disappearance" >&2; exit 1; fi\n'
+                "exit 0\n"
+            )
+        elif docker_mode == "replace":
+            update_action = (
+                f'if [ "${{@: -1}}" = "{MCP_CONTAINER_ID}" ]; then touch {gone!s}; '
+                'echo "simulated same-name replacement during update" >&2; exit 1; fi\n'
                 "exit 0\n"
             )
         elif docker_mode == "update-failure":
-            update_action = f'if [ "${{@: -1}}" = "{MCP_CONTAINER_ID}" ]; then exit 1; fi\nexit 0\n'
+            update_action = (
+                f'if [ "${{@: -1}}" = "{MCP_CONTAINER_ID}" ]; then '
+                'echo "simulated Docker update denial" >&2; exit 1; fi\nexit 0\n'
+            )
         else:
             update_action = "exit 0\n"
         mcp_inspect = (
-            "exit 1"
+            'echo "simulated Docker inspect denial" >&2; exit 1'
             if docker_mode == "inspect-failure-present"
             else f"printf '%s|/%s|%s|%s\\n' \"$id\" hapax-github-mcp-hapax-123 {mcp_memory} {768 * 1024**2}"
+        )
+        mcp_record = (
+            f"if [ -e {gone!s} ]; then printf '%s\\n' '{REPLACEMENT_CONTAINER_ID}|hapax-github-mcp-hapax-123'; "
+            f"else printf '%s\\n' '{MCP_CONTAINER_ID}|hapax-github-mcp-hapax-123'; fi"
+            if docker_mode == "replace"
+            else f"[ -e {gone!s} ] || printf '%s\\n' '{MCP_CONTAINER_ID}|hapax-github-mcp-hapax-123'"
         )
         fake_docker.write_text(
             f"""#!/usr/bin/env bash
@@ -981,7 +1029,7 @@ printf '%s\n' "$*" >> {docker_calls}
 case "$1" in
   ps)
     printf '%s\n' '{JUDGE_CONTAINER_ID}|hapax-local-judge'
-    [ -e {gone!s} ] || printf '%s\n' '{MCP_CONTAINER_ID}|hapax-github-mcp-hapax-123'
+    {mcp_record}
     ;;
   update) {update_action} ;;
   inspect)
@@ -1086,9 +1134,11 @@ esac
         docker_mode
         in {
             "update-failure",
+            "replace",
             "inspect-failure-present",
             "post-update-mismatch",
             "second-reload-failure",
+            "second-user-reload-failure",
         }
         or override_failure
     ):
@@ -1109,8 +1159,15 @@ esac
             assert "OOM memory fragment is symlinked" in result.stderr
         elif override_failure:
             assert "unowned OOM memory assignment" in result.stderr
-        elif docker_mode == "second-reload-failure":
+        elif docker_mode in {"second-reload-failure", "second-user-reload-failure"}:
             assert "after scrubbing transient OOM controls" in result.stderr
+        elif docker_mode == "replace":
+            assert "same-name target remains" in result.stderr
+            assert "simulated same-name replacement during update" in result.stderr
+        elif docker_mode == "update-failure":
+            assert "simulated Docker update denial" in result.stderr
+        elif docker_mode == "inspect-failure-present":
+            assert "simulated Docker inspect denial" in result.stderr
         else:
             assert "Docker" in result.stderr
         return
@@ -1211,6 +1268,8 @@ esac
     assert not (root_home / ".config" / "systemd").exists()
     calls = systemctl_calls.read_text(encoding="utf-8")
     assert "daemon-reload" in calls
+    assert reload_count.read_text(encoding="utf-8").strip() == "2"
+    assert user_reload_count.read_text(encoding="utf-8").strip() == "2"
     assert "enable --now earlyoom.service" in calls
     assert "restart earlyoom.service" in calls
     assert "set-property --runtime user.slice" in calls
@@ -1245,6 +1304,8 @@ esac
     )
     if docker_mode == "disappear":
         assert "disappeared during limit convergence" in result.stdout
+    else:
+        assert "converged Docker memory limits for hapax-local-judge" in result.stdout
 
 
 def test_unversioned_oom_install_source_fails_before_live_mutation(tmp_path: Path) -> None:

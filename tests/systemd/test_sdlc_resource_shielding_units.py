@@ -416,5 +416,5 @@ def test_p0_oom_containment_has_dedicated_installer() -> None:
 
 def test_local_judge_container_has_a_finite_memory_cap() -> None:
     text = (UNITS_DIR / "hapax-local-judge.service").read_text()
-    assert "--memory 4g --memory-swap 6g" in text
+    assert "--memory 4G --memory-swap 6G" in text
     assert "--oom-kill-disable" not in text

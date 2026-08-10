@@ -185,10 +185,20 @@ def _profile_table_path() -> Path:
     return INSTALLED_PROFILE_TABLE
 
 
-def _memory_bytes(value: str, *, field: str) -> int:
+def _profile_table_context(table_path: Path) -> str:
+    if os.environ.get("HAPAX_OOM_AUDIT_PROFILE_TABLE", "").strip():
+        mode = "test-override"
+    elif table_path == SOURCE_PROFILE_TABLE:
+        mode = "source-tree"
+    else:
+        mode = "installed receipt-bound"
+    return f"{mode} host profile table {table_path}"
+
+
+def _memory_bytes(value: str, *, field: str, table_context: str) -> int:
     match = re.fullmatch(r"([1-9][0-9]*)([GM])", value)
     if not match:
-        raise HostPolicyError(f"invalid {field} value in host profile table: {value}")
+        raise HostPolicyError(f"invalid {field} value in {table_context}: {value}")
     number, suffix = match.groups()
     scale = BYTES_1G if suffix == "G" else 1024**2
     return int(number) * scale
@@ -201,12 +211,11 @@ def derive_host_policy(
     physical_gib = physical_bytes // BYTES_1G
     canonical_hostname = hostname if hostname is not None else _hostname()
     table_path = _profile_table_path()
+    table_context = _profile_table_context(table_path)
     try:
         rows = table_path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
-        raise HostPolicyError(
-            f"cannot read receipt-bound host profile table {table_path}: {exc}"
-        ) from exc
+        raise HostPolicyError(f"cannot read selected {table_context}: {exc}") from exc
 
     matched: tuple[str, str, str, str, str, str] | None = None
     known_host = False
@@ -224,38 +233,44 @@ def derive_host_policy(
         if row_hostname == canonical_hostname and floor_gib == str(physical_gib):
             if matched is not None:
                 raise HostPolicyError(
-                    f"duplicate host profile table entry for {canonical_hostname}/{physical_gib}"
+                    f"duplicate entry in {table_context} for {canonical_hostname}/{physical_gib}"
                 )
             matched = (profile, app_high, app_max, uid_high, uid_max, zram_mib)
     if matched is None and not known_host:
         raise HostPolicyError(
-            f"unsupported host identity: {canonical_hostname or 'empty'}; next action: add a "
+            f"unsupported host identity in selected {table_context}: "
+            f"{canonical_hostname or 'empty'}; next action: add a "
             "governed hostname and memory-band entry before installing or auditing OOM policy"
         )
     if matched is None:
         raise HostPolicyError(
             f"host/profile memory mismatch: {canonical_hostname} has unlisted floor "
-            f"{physical_gib} GiB; next action: repair the hardware inventory or add a "
+            f"{physical_gib} GiB in selected {table_context}; next action: repair the hardware "
+            "inventory or add a "
             "separately reviewed exact sizing-table entry"
         )
     profile, app_high, app_max, uid_high, uid_max, zram_mib = matched
     if profile not in {"appendix", "podium"}:
-        raise HostPolicyError(f"invalid profile name in host profile table: {profile}")
+        raise HostPolicyError(f"invalid profile name in {table_context}: {profile}")
     try:
         zram_size = int(zram_mib) * 1024**2
     except ValueError as exc:
-        raise HostPolicyError(f"invalid zram_mib value in host profile table: {zram_mib}") from exc
+        raise HostPolicyError(f"invalid zram_mib value in {table_context}: {zram_mib}") from exc
     if zram_size <= 0:
-        raise HostPolicyError(f"invalid zram_mib value in host profile table: {zram_mib}")
+        raise HostPolicyError(f"invalid zram_mib value in {table_context}: {zram_mib}")
 
     policy = HostMemoryPolicy(
         hostname=canonical_hostname,
         profile=profile,
         physical_bytes=physical_bytes,
-        app_memory_high=_memory_bytes(app_high, field="app_memory_high"),
-        app_memory_max=_memory_bytes(app_max, field="app_memory_max"),
-        uid_memory_high=_memory_bytes(uid_high, field="uid_memory_high"),
-        uid_memory_max=_memory_bytes(uid_max, field="uid_memory_max"),
+        app_memory_high=_memory_bytes(
+            app_high, field="app_memory_high", table_context=table_context
+        ),
+        app_memory_max=_memory_bytes(app_max, field="app_memory_max", table_context=table_context),
+        uid_memory_high=_memory_bytes(
+            uid_high, field="uid_memory_high", table_context=table_context
+        ),
+        uid_memory_max=_memory_bytes(uid_max, field="uid_memory_max", table_context=table_context),
         zram_size=zram_size,
         optional_user_units=(
             APPENDIX_OPTIONAL_USER_UNITS if profile == "appendix" else frozenset()
@@ -267,7 +282,8 @@ def derive_host_policy(
         and policy.app_memory_max < policy.uid_memory_max
     ):
         raise HostPolicyError(
-            f"derived {profile} memory ceilings are not safely ordered below physical RAM"
+            f"derived {profile} memory ceilings from {table_context} are not safely ordered "
+            "below physical RAM"
         )
     return policy
 
@@ -1022,11 +1038,14 @@ def _docker_target_records() -> tuple[list[tuple[str, str, tuple[int, int]]], st
     return targets, None
 
 
-def _docker_target_id_absent(container_id: str) -> tuple[bool, str | None]:
+def _docker_target_absent(container_id: str, name: str) -> tuple[bool, str | None]:
     targets, error = _docker_target_records()
     if error is not None:
         return False, error
-    return all(current_id != container_id for current_id, _, _ in targets), None
+    return all(
+        current_id != container_id and current_name != name
+        for current_id, current_name, _ in targets
+    ), None
 
 
 def audit_docker_limits() -> list[Check]:
@@ -1064,24 +1083,26 @@ def audit_docker_limits() -> list[Check]:
         )
         if inspected.returncode != 0:
             detail = (inspected.stderr or inspected.stdout).strip() or f"rc={inspected.returncode}"
-            disappeared, reenumeration_error = _docker_target_id_absent(container_id)
+            disappeared, reenumeration_error = _docker_target_absent(container_id, name)
             if disappeared:
                 checks.append(
                     Check(
                         _docker_check_name(name, "inspect"),
                         "pass",
-                        "inspectable or disappeared",
-                        f"id={container_id} disappeared",
+                        "inspectable or absent by both identity and owned name",
+                        f"id={container_id} and name={name} absent",
                     )
                 )
                 continue
             if reenumeration_error is not None:
-                detail = f"{detail}; disappearance proof failed: {reenumeration_error}"
+                detail = f"{detail}; identity/name absence proof failed: {reenumeration_error}"
+            else:
+                detail = f"{detail}; original identity or same-name target remains"
             checks.append(
                 Check(
                     _docker_check_name(name, "inspect"),
                     "error",
-                    "inspectable or disappeared",
+                    "inspectable or absent by both identity and owned name",
                     "N/A",
                     f"Docker inspect failed: {detail}; {NEXT_OOM_INSTALL}",
                 )

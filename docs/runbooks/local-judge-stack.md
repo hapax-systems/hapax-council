@@ -51,7 +51,7 @@ Manual one-liner (equivalent, for ad-hoc runs):
 
 ```sh
 docker run -d --name hapax-local-judge --restart unless-stopped \
-  --memory 4g --memory-swap 6g \
+  --memory 4G --memory-swap 6G \
   --gpus device=<5060Ti-UUID> \
   -v ~/models/compassverifier-7b:/models:ro -p 5001:5001 \
   ghcr.io/ggml-org/llama.cpp:server-cuda \
@@ -113,10 +113,31 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
 
 - **No-co-residency guarantee:** the container is pinned to the 5060 Ti UUID; the
   3090 grounding instance (TabbyAPI `:5000`) is independent. Confirm with `nvidia-smi`.
-- **Host-memory ceiling:** both systemd and manual launches use `--memory 4g
-  --memory-swap 6g` (4 GiB RAM plus 2 GiB swap). Before runtime closure after a
-  limit change, run an eight-slot judge canary and require stable health/restart
-  count with no `oom` or `oom_kill` increment in the container cgroup.
+- **Host-memory ceiling:** both systemd and manual launches use `--memory 4G
+  --memory-swap 6G` (4 GiB RAM plus 2 GiB swap). Before runtime closure after a
+  limit change, run this eight-worker canary and require identical container
+  health/restart/OOM state plus unchanged `oom` and `oom_kill` counters:
+
+  ```sh
+  container=hapax-local-judge
+  pid="$(docker inspect --format '{{.State.Pid}}' "$container")"
+  test "$pid" -gt 1
+  cgroup="$(awk -F: '$1 == "0" {print $3; exit}' "/proc/$pid/cgroup")"
+  events="/sys/fs/cgroup${cgroup}/memory.events"
+  test -r "$events"
+  before_state="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}|{{.RestartCount}}|{{.State.OOMKilled}}' "$container")"
+  before_oom="$(awk '$1 == "oom" || $1 == "oom_kill" {print}' "$events")"
+  (
+    cd scripts/cost-offload || exit
+    uv run --with pandas --with pyarrow --with requests \
+      python run_verifierbench.py --endpoint http://localhost:5001 \
+      --n 24 --workers 8 --out "${TMPDIR:-/tmp}/local-judge-eight-slot.jsonl"
+  )
+  after_state="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}|{{.RestartCount}}|{{.State.OOMKilled}}' "$container")"
+  after_oom="$(awk '$1 == "oom" || $1 == "oom_kill" {print}' "$events")"
+  test "$before_state" = "$after_state"
+  test "$before_oom" = "$after_oom"
+  ```
 - **Throughput:** 8 continuous-batch slots × 8192 ctx; ~137 tok/s decode, ~800 tok/s
   prompt. 127/2817 (4.5%) VerifierBench items exceed an 8192-token slot and are
   reported as context-skips by the harness — the longest/pathological inputs; raise

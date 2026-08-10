@@ -63,6 +63,18 @@ ROOT_ARTIFACT_TEST_GID="${HAPAX_ROOT_AUDIT_TEST_ROOT_GID:-$(/usr/bin/id -g)}"
 HOST_PROFILE=""
 GOVERNED_MEMORY_KEYS=(MemoryHigh MemoryMax MemorySwapMax MemoryLow MemoryMin)
 
+oom_install_next_action() {
+    echo "  next action: run scripts/install-p0-oom-containment --install --verify-live from the receipt-bound source" >&2
+}
+
+oom_unit_path_next_action() {
+    echo "  next action: restore $SYSTEMD_ANALYZE unit-path discovery, then rerun /usr/local/sbin/hapax-root-required-deploy-audit" >&2
+}
+
+oom_manager_query_next_action() {
+    echo "  next action: restore $SYSTEMCTL access to the named manager property, then rerun /usr/local/sbin/hapax-root-required-deploy-audit" >&2
+}
+
 acquire_inherited_root_required_lock() {
     local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
     local lock_mode="${HAPAX_ROOT_REQUIRED_LOCK_MODE:-shared}"
@@ -474,11 +486,13 @@ governed_system_unit_search_paths() {
     if [ -n "$override" ]; then
         if [ "${HAPAX_ROOT_AUDIT_TEST_MODE:-0}" != "1" ]; then
             echo "root-required install drift: governed system unit-path override is test-only" >&2
+            echo "  next action: unset HAPAX_ROOT_AUDIT_SYSTEM_UNIT_PATHS outside test mode and rerun the installed audit" >&2
             return 1
         fi
         discovered="${override//:/$'\n'}"
     elif ! discovered="$("$SYSTEMD_ANALYZE" unit-paths 2>/dev/null)"; then
         echo "root-required install drift: unable to obtain the authoritative system unit search path" >&2
+        oom_unit_path_next_action
         return 1
     fi
     printf '%s\n' "$discovered" \
@@ -494,11 +508,13 @@ governed_user_unit_search_paths() {
     if [ -n "$override" ]; then
         if [ "${HAPAX_ROOT_AUDIT_TEST_MODE:-0}" != "1" ]; then
             echo "root-required install drift: governed user unit-path override is test-only" >&2
+            echo "  next action: unset HAPAX_ROOT_AUDIT_USER_UNIT_PATHS outside test mode and rerun the installed audit" >&2
             return 1
         fi
         discovered="${override//:/$'\n'}"
     elif ! discovered="$("$SYSTEMD_ANALYZE" --user unit-paths 2>/dev/null)"; then
         echo "root-required install drift: unable to obtain the authoritative target-user unit search path" >&2
+        oom_unit_path_next_action
         return 1
     fi
     printf '%s\n' "$discovered" \
@@ -550,10 +566,12 @@ audit_governed_unit_dropins() {
     fi
     fragments_output="$(governed_fragment_names "$unit")" || {
         echo "root-required install drift: missing governed full-fragment mapping for $unit" >&2
+        oom_install_next_action
         return 1
     }
     suffixes_output="$(governed_dropin_suffixes "$unit")" || {
         echo "root-required install drift: missing governed drop-in mapping for $unit" >&2
+        oom_install_next_action
         return 1
     }
     while IFS= read -r root; do
@@ -563,19 +581,23 @@ audit_governed_unit_dropins() {
             [ -e "$path" ] || [ -L "$path" ] || continue
             if [ -L "$path" ]; then
                 echo "root-required install drift: unowned OOM memory fragment is symlinked in the $unit search path: $path" >&2
+                oom_install_next_action
                 return 1
             fi
             if [ ! -f "$path" ]; then
                 echo "root-required install drift: unsafe non-regular OOM memory fragment in the $unit search path: $path" >&2
+                oom_install_next_action
                 return 1
             fi
             if grep -Eq '^[[:space:]]*(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)[[:space:]]*=' "$path"; then
                 echo "root-required install drift: unowned OOM memory assignment for $unit in full fragment $path" >&2
+                oom_install_next_action
                 return 1
             else
                 rc=$?
                 if [ "$rc" -gt 1 ]; then
                     echo "root-required install drift: unable to inspect OOM memory fragment: $path" >&2
+                    oom_install_next_action
                     return 1
                 fi
             fi
@@ -587,12 +609,14 @@ audit_governed_unit_dropins() {
                 if [ "$path" = "$canonical" ]; then
                     if [ -L "$path" ]; then
                         echo "root-required install drift: canonical OOM memory drop-in is symlinked: $path" >&2
+                        oom_install_next_action
                         return 1
                     fi
                     continue
                 fi
                 if [ -L "$path" ]; then
                     echo "root-required install drift: unowned OOM memory drop-in is symlinked in the $unit search path: $path" >&2
+                    oom_install_next_action
                     return 1
                 fi
                 if grep -Eq '^[[:space:]]*(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)[[:space:]]*=' "$path"; then
@@ -601,11 +625,13 @@ audit_governed_unit_dropins() {
                     rc=$?
                     if [ "$rc" -gt 1 ]; then
                         echo "root-required install drift: unable to inspect OOM memory drop-in: $path" >&2
+                        oom_install_next_action
                         return 1
                     fi
                     continue
                 fi
                 echo "root-required install drift: unowned OOM memory assignment for $unit at $path" >&2
+                oom_install_next_action
                 return 1
             done
         done <<< "$suffixes_output"
@@ -844,34 +870,41 @@ audit_loaded_governed_unit_dropins() {
     local manager="$1" unit="$2" canonical="$3" need_reload fragment paths path rc canonical_found=0
     if ! need_reload="$(loaded_unit_property "$manager" "$unit" NeedDaemonReload)"; then
         echo "root-required install drift: unable to query authoritative NeedDaemonReload for $unit" >&2
+        oom_manager_query_next_action
         return 1
     fi
     if [ "$need_reload" != "no" ]; then
         echo "root-required install drift: authoritative manager state is stale for $unit: NeedDaemonReload=${need_reload:-missing}" >&2
+        oom_install_next_action
         return 1
     fi
     if ! fragment="$(loaded_unit_property "$manager" "$unit" FragmentPath)"; then
         echo "root-required install drift: unable to query authoritative FragmentPath for $unit" >&2
+        oom_manager_query_next_action
         return 1
     fi
     if [ -n "$fragment" ]; then
         if [ ! -f "$fragment" ] || [ -L "$fragment" ]; then
             echo "root-required install drift: authoritative FragmentPath reports an unsafe OOM memory source for $unit: $fragment" >&2
+            oom_install_next_action
             return 1
         fi
         if grep -Eq '^[[:space:]]*(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)[[:space:]]*=' "$fragment"; then
             echo "root-required install drift: authoritative FragmentPath reports an unowned OOM memory assignment for $unit at $fragment" >&2
+            oom_install_next_action
             return 1
         else
             rc=$?
             if [ "$rc" -gt 1 ]; then
                 echo "root-required install drift: unable to inspect authoritative FragmentPath for $unit: $fragment" >&2
+                oom_install_next_action
                 return 1
             fi
         fi
     fi
     if ! paths="$(loaded_unit_property "$manager" "$unit" DropInPaths)"; then
         echo "root-required install drift: unable to query authoritative DropInPaths for $unit" >&2
+        oom_manager_query_next_action
         return 1
     fi
     while IFS= read -r path; do
@@ -879,6 +912,7 @@ audit_loaded_governed_unit_dropins() {
         if [ "$path" = "$canonical" ]; then
             if [ ! -f "$path" ] || [ -L "$path" ]; then
                 echo "root-required install drift: authoritative DropInPaths reports an unsafe canonical OOM memory source for $unit: $path" >&2
+                oom_install_next_action
                 return 1
             fi
             canonical_found=$((canonical_found + 1))
@@ -886,17 +920,20 @@ audit_loaded_governed_unit_dropins() {
         fi
         if grep -Eq '^[[:space:]]*(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)[[:space:]]*=' "$path"; then
             echo "root-required install drift: authoritative DropInPaths reports an unowned OOM memory assignment for $unit at $path" >&2
+            oom_install_next_action
             return 1
         else
             rc=$?
             if [ "$rc" -gt 1 ]; then
                 echo "root-required install drift: unable to inspect authoritative DropInPath for $unit: $path" >&2
+                oom_install_next_action
                 return 1
             fi
         fi
     done < <(printf '%s\n' "$paths" | tr ' ' '\n')
     if [ "$canonical_found" -ne 1 ]; then
         echo "root-required install drift: authoritative DropInPaths for $unit does not contain exactly one receipt-owned source: expected=$canonical actual=${paths:-none}" >&2
+        oom_install_next_action
         return 1
     fi
     return 0
@@ -1202,6 +1239,7 @@ audit_no_unowned_host_policy_overrides() {
         [ -n "$path" ] || continue
         if [ -e "$path" ] || [ -L "$path" ]; then
             echo "root-required install drift: higher-priority zram-generator main configuration shadows the canonical profile: $path" >&2
+            oom_install_next_action
             return 1
         fi
     done < <(printf '%s\n' "${ZRAM_HIGH_PRIORITY_CONFIGS//:/$'\n'}")
@@ -1211,15 +1249,18 @@ audit_no_unowned_host_policy_overrides() {
             [ -e "$path" ] || [ -L "$path" ] || continue
             if [ -L "$path" ]; then
                 echo "root-required install drift: unowned zram-generator drop-in is symlinked: $path" >&2
+                oom_install_next_action
                 return 1
             fi
             if grep -Eq '^[[:space:]]*(zram-size|compression-algorithm)[[:space:]]*=' "$path"; then
                 echo "root-required install drift: unowned zram-generator drop-in overrides the canonical host profile: $path" >&2
+                oom_install_next_action
                 return 1
             else
                 rc=$?
                 if [ "$rc" -gt 1 ]; then
                     echo "root-required install drift: unable to inspect zram-generator drop-in: $path" >&2
+                    oom_install_next_action
                     return 1
                 fi
             fi
@@ -1232,6 +1273,7 @@ audit_no_unowned_host_policy_overrides() {
         "$LEGACY_ZRAM_POLICY_DEST"; do
         if [ -e "$path" ] || [ -L "$path" ]; then
             echo "root-required install drift: legacy OOM host-policy override remains: $path" >&2
+            oom_install_next_action
             return 1
         fi
     done
