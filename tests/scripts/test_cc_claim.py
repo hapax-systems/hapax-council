@@ -6,6 +6,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "cc-claim"
+_SESSION_ID = "0f9f9f9f-1111-2222-3333-444455556666"
+_BINDING_HASH = "a" * 64
 
 
 def _task_root(home: Path) -> Path:
@@ -45,6 +47,7 @@ def _write_task(
         f'title: "{task_id}"',
         f"status: {status}",
         f"assigned_to: {assigned_to}",
+        "claimable: true",
         f"kind: {kind}",
     ]
     if blocked_reason is not None:
@@ -106,23 +109,177 @@ _AMBIENT_IDENTITY_ENV = (
     "CLAUDE_ROLE",
     "CLAUDE_CODE_SESSION_ID",
     "HAPAX_SESSION_ID",
+    "HAPAX_GATE0B_CLAIM_PUBLICATION_OFF",
+    "HAPAX_CLAIM_DISPATCH_MESSAGE_ID",
+    "HAPAX_CLAIM_DISPATCH_BINDING_HASH",
+    "HAPAX_CLAIM_DISPATCH_PLATFORM",
+    "HAPAX_CLAIM_DISPATCH_MODE",
+    "HAPAX_CLAIM_DISPATCH_PROFILE",
+    "HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE",
+    "HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY",
 )
 
 
-def _claim(home: Path, task_id: str) -> subprocess.CompletedProcess[str]:
+def _dispatch_env(
+    task_id: str,
+    *,
+    authority_case: str = "CASE-TEST-001",
+) -> dict[str, str]:
+    return {
+        "HAPAX_CLAIM_DISPATCH_MESSAGE_ID": f"dispatch-{task_id}",
+        "HAPAX_CLAIM_DISPATCH_BINDING_HASH": _BINDING_HASH,
+        "HAPAX_CLAIM_DISPATCH_PLATFORM": "codex",
+        "HAPAX_CLAIM_DISPATCH_MODE": "headless",
+        "HAPAX_CLAIM_DISPATCH_PROFILE": "ultra",
+        "HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE": authority_case,
+        "HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY": f"coord-{task_id}",
+    }
+
+
+def _claim(
+    home: Path,
+    task_id: str,
+    *,
+    legacy: bool = False,
+    dispatch: bool = True,
+    session_id: str | None = _SESSION_ID,
+    extra_env: dict[str, str] | None = None,
+    extra_args: list[str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     for leaked in _AMBIENT_IDENTITY_ENV:
         env.pop(leaked, None)
     env["HOME"] = str(home)
     env["HAPAX_AGENT_ROLE"] = "cx-test"
     env["HAPAX_AGENT_NAME"] = "cx-test"
+    if session_id is not None:
+        env["HAPAX_SESSION_ID"] = session_id
+    if legacy:
+        env["HAPAX_GATE0B_CLAIM_PUBLICATION_OFF"] = "1"
+    elif dispatch:
+        env.update(_dispatch_env(task_id))
+    if extra_env:
+        env.update(extra_env)
+    argv = ["bash", str(SCRIPT)]
+    if extra_args:
+        argv.extend(extra_args)
+    argv.append(task_id)
     return subprocess.run(
-        ["bash", str(SCRIPT), task_id],
+        argv,
         env=env,
         text=True,
         capture_output=True,
         check=False,
     )
+
+
+def test_default_claim_requires_dispatch_binding_flags(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "needs-dispatch")
+
+    result = _claim(home, "needs-dispatch", dispatch=False)
+
+    assert result.returncode == 2
+    assert "canon echo enforcement requires the exact dispatch binding flags" in result.stderr
+    assert "status: offered" in note.read_text(encoding="utf-8")
+    assert not (home / ".cache" / "hapax").exists()
+
+
+def test_partial_dispatch_binding_flags_fail_without_writes(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "partial-dispatch")
+
+    result = _claim(
+        home,
+        "partial-dispatch",
+        dispatch=False,
+        extra_env={"HAPAX_CLAIM_DISPATCH_MESSAGE_ID": "only-one-field"},
+    )
+
+    assert result.returncode == 1
+    assert "dispatch binding flags are all-or-none" in result.stderr
+    assert "status: offered" in note.read_text(encoding="utf-8")
+    assert not (home / ".cache" / "hapax").exists()
+
+
+def test_default_claim_refuses_retired_force_flag(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "force-retired")
+
+    result = _claim(home, "force-retired", extra_args=["--force"])
+
+    assert result.returncode == 2
+    assert "--force is retired under canon echo enforcement" in result.stderr
+    assert "status: offered" in note.read_text(encoding="utf-8")
+
+
+def test_default_claim_refuses_pid_shaped_session_id(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "pid-session")
+
+    result = _claim(home, "pid-session", session_id="cx-test-12345")
+
+    assert result.returncode == 2
+    assert "requires a claim-keyable non-PID session id" in result.stderr
+    assert "status: offered" in note.read_text(encoding="utf-8")
+
+
+def test_explicit_killswitch_uses_legacy_writer_with_warning(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "legacy-explicit")
+
+    result = _claim(home, "legacy-explicit", legacy=True, dispatch=False, session_id=None)
+
+    assert result.returncode == 0, result.stderr
+    assert "HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1" in result.stderr
+    assert "using legacy claim writer" in result.stderr
+    assert "admitted publication applied" not in result.stdout
+    assert "status: claimed" in note.read_text(encoding="utf-8")
+    assert (home / ".cache" / "hapax" / "cc-active-task-cx-test").read_text(
+        encoding="utf-8"
+    ) == "legacy-explicit\n"
+    assert not (home / ".local" / "share" / "hapax" / "claim-publications").exists()
+
+
+def test_default_claim_publishes_admitted_receipt_and_dispatch_sidecars(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "admitted-default")
+
+    result = _claim(home, "admitted-default")
+
+    assert result.returncode == 0, result.stderr
+    assert "admitted publication applied" in result.stdout
+    assert "HAPAX_GATE0B_CLAIM_PUBLICATION_OFF" not in result.stderr
+    assert "status: claimed" in note.read_text(encoding="utf-8")
+    cache = home / ".cache" / "hapax"
+    assert (cache / "cc-active-task-cx-test").read_text(encoding="utf-8") == ("admitted-default\n")
+    assert (cache / f"cc-active-task-cx-test-{_SESSION_ID}").read_text(
+        encoding="utf-8"
+    ) == "admitted-default\n"
+    assert (cache / "cc-claim-dispatch-cx-test.json").is_file()
+    assert (cache / f"cc-claim-dispatch-cx-test-{_SESSION_ID}.json").is_file()
+    manifests = list(
+        (
+            home / ".local" / "share" / "hapax" / "claim-publications" / "gate0b-claim-publish-v1"
+        ).glob("claim-pub-*/manifest.json")
+    )
+    receipts = list((cache / "claim-publication-receipts").glob("*.json"))
+    proof_files = list(
+        (
+            home
+            / ".local"
+            / "share"
+            / "hapax"
+            / "claim-publications"
+            / "execution-admission"
+            / "claim-publication"
+        ).glob("*/*/*.json")
+    )
+    assert len(manifests) == 1
+    assert len(receipts) == 1
+    assert len(proof_files) >= 5
 
 
 def test_body_bullets_are_not_claim_dependencies(tmp_path: Path) -> None:
@@ -358,9 +515,10 @@ def test_explicit_read_only_intake_without_parent_spec_allows_claim(
         tags=["intake", "read-only"],
     )
 
-    result = _claim(home, "intake-only")
+    result = _claim(home, "intake-only", legacy=True, dispatch=False, session_id=None)
 
     assert result.returncode == 0, result.stderr
+    assert "HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1" in result.stderr
     assert "status: claimed" in note.read_text(encoding="utf-8")
 
 
@@ -607,6 +765,7 @@ def test_depends_on_as_terminal_frontmatter_key(tmp_path: Path) -> None:
             title: "terminal-key"
             status: offered
             assigned_to: unassigned
+            claimable: true
             kind: build
             authority_case: CASE-TEST-001
             parent_spec: /tmp/isap-test.md
@@ -665,6 +824,7 @@ def test_claim_inserts_missing_claim_keys(tmp_path: Path) -> None:
             title: "{task_id}"
             status: offered
             assigned_to: unassigned
+            claimable: true
             kind: build
             authority_case: CASE-TEST-001
             parent_spec: /tmp/isap-test.md
@@ -713,6 +873,7 @@ def test_claim_stamp_ignores_body_decoy_lines(tmp_path: Path) -> None:
             title: "{task_id}"
             status: offered
             assigned_to: unassigned
+            claimable: true
             kind: build
             authority_case: CASE-TEST-001
             parent_spec: /tmp/isap-test.md
@@ -772,24 +933,7 @@ def test_claim_writes_session_keyed_epoch_sidecar(tmp_path: Path) -> None:
     home = tmp_path / "home"
     _write_task(home, "active", "cc-sidecar-session")
     sid = "0f9f9f9f-1111-2222-3333-444455556666"
-    env = os.environ.copy()
-    # Same identity-precedence clearing as _claim: HAPAX_AGENT_NAME outranks
-    # HAPAX_AGENT_ROLE, so without this the ambient lane's name wins and the
-    # sidecar lands under that role instead of cx-test.
-    for leaked in _AMBIENT_IDENTITY_ENV:
-        env.pop(leaked, None)
-    env["HOME"] = str(home)
-    env["HAPAX_AGENT_ROLE"] = "cx-test"
-    env["HAPAX_AGENT_NAME"] = "cx-test"
-    env["HAPAX_SESSION_ID"] = sid
-
-    result = subprocess.run(
-        ["bash", str(SCRIPT), "cc-sidecar-session"],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    result = _claim(home, "cc-sidecar-session", session_id=sid)
 
     assert result.returncode == 0, result.stderr
     cache_dir = home / ".cache" / "hapax"
@@ -819,6 +963,7 @@ def test_claim_refuses_duplicate_claim_keys(tmp_path: Path) -> None:
             title: "{task_id}"
             status: offered
             assigned_to: unassigned
+            claimable: true
             kind: build
             authority_case: CASE-TEST-001
             parent_spec: /tmp/isap-test.md

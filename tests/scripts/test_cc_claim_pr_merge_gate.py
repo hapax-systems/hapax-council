@@ -12,6 +12,26 @@ import textwrap
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "cc-claim"
 CLOSE_CHECK = REPO_ROOT / "scripts" / "cc-close-pr-merge-check.py"
+_SESSION_ID = "12345678-1234-4321-8765-123456789abc"
+_BINDING_HASH = "c" * 64
+_IDENTITY_ENV = (
+    "HAPAX_AGENT_NAME",
+    "CODEX_THREAD_NAME",
+    "CODEX_SESSION_NAME",
+    "CODEX_SESSION",
+    "CODEX_ROLE",
+    "CLAUDE_ROLE",
+    "HAPAX_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ID",
+    "HAPAX_GATE0B_CLAIM_PUBLICATION_OFF",
+    "HAPAX_CLAIM_DISPATCH_MESSAGE_ID",
+    "HAPAX_CLAIM_DISPATCH_BINDING_HASH",
+    "HAPAX_CLAIM_DISPATCH_PLATFORM",
+    "HAPAX_CLAIM_DISPATCH_MODE",
+    "HAPAX_CLAIM_DISPATCH_PROFILE",
+    "HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE",
+    "HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY",
+)
 
 
 def _extract_python(script_path: pathlib.Path) -> str:
@@ -141,6 +161,7 @@ def _write_task(
         f'title: "{task_id}"',
         f"status: {status}",
         "assigned_to: unassigned",
+        "claimable: true",
         "kind: build",
         "authority_case: CASE-TEST-001",
         "parent_spec: /tmp/isap-test.md",
@@ -189,8 +210,19 @@ def _claim_with_fake_gh(
     log_path: pathlib.Path,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
+    for var in _IDENTITY_ENV:
+        env.pop(var, None)
     env["HOME"] = str(home)
     env["HAPAX_AGENT_ROLE"] = "cx-test"
+    env["HAPAX_AGENT_NAME"] = "cx-test"
+    env["HAPAX_SESSION_ID"] = _SESSION_ID
+    env["HAPAX_CLAIM_DISPATCH_MESSAGE_ID"] = f"dispatch-{task_id}"
+    env["HAPAX_CLAIM_DISPATCH_BINDING_HASH"] = _BINDING_HASH
+    env["HAPAX_CLAIM_DISPATCH_PLATFORM"] = "codex"
+    env["HAPAX_CLAIM_DISPATCH_MODE"] = "headless"
+    env["HAPAX_CLAIM_DISPATCH_PROFILE"] = "ultra"
+    env["HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE"] = "CASE-TEST-001"
+    env["HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY"] = f"coord-{task_id}"
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["GH_ARGS_LOG"] = str(log_path)
     return subprocess.run(

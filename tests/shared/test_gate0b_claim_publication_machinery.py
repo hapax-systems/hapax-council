@@ -122,9 +122,10 @@ def _install(tmp_path: Path, fixture: Gate0BFixture):
     )
 
 
-def test_no_live_path_imports_gate0b_publication_machinery() -> None:
+def test_only_cc_claim_live_path_imports_gate0b_publication_machinery() -> None:
     allowed_prefixes = ("tests/",)
     allowed_files = {
+        "scripts/cc-claim",
         "shared/execution_admission.py",
         "shared/gate0b_claim_publication_effect.py",
         "shared/gate0b_claim_publication_install.py",
@@ -136,7 +137,7 @@ def test_no_live_path_imports_gate0b_publication_machinery() -> None:
         "shared.gate0b_claim_publication_lease",
     }
     result = subprocess.run(
-        ["git", "ls-files", "*.py"],
+        ["git", "ls-files", "*.py", "scripts/cc-claim"],
         cwd=Path.cwd(),
         check=True,
         capture_output=True,
@@ -146,6 +147,10 @@ def test_no_live_path_imports_gate0b_publication_machinery() -> None:
     for relpath in result.stdout.splitlines():
         allowed = relpath in allowed_files or relpath.startswith(allowed_prefixes)
         if allowed:
+            continue
+        if relpath == "scripts/cc-claim":
+            continue
+        if not relpath.endswith(".py"):
             continue
         tree = ast.parse(Path(relpath).read_text(encoding="utf-8"), filename=relpath)
         for node in ast.walk(tree):
@@ -169,6 +174,11 @@ def test_no_live_path_imports_gate0b_publication_machinery() -> None:
                     offenders.append(f"{relpath}:{node.lineno}:mint_execution_lease")
 
     assert offenders == []
+
+    cc_claim = Path("scripts/cc-claim").read_text(encoding="utf-8")
+    assert "from shared.gate0b_claim_publication_effect import publish_gate0b_claim" in cc_claim
+    assert "from shared.gate0b_claim_publication_install import (" in cc_claim
+    assert "from shared.gate0b_claim_publication_lease" not in cc_claim
 
 
 def test_install_receipt_activates_only_claim_publication_root(tmp_path: Path) -> None:
@@ -394,25 +404,42 @@ def test_lease_rejects_mismatched_dispatch_binding(tmp_path: Path) -> None:
         )
 
 
-def test_effect_carrier_validates_but_remains_dormant_without_mutation(tmp_path: Path) -> None:
+def test_effect_carrier_applies_admitted_publication_once_installed(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     install = _install(tmp_path, fixture)
 
-    with pytest.raises(
-        ClaimPublicationError,
-        match="claim_publication_effect_activation_unvalidated",
-    ):
-        publish_gate0b_claim(
-            fixture.intent,
-            root=install.root,
-            now=datetime(2026, 8, 9, 17, 1, tzinfo=UTC),
-        )
+    receipt = publish_gate0b_claim(
+        fixture.intent,
+        root=install.root,
+        now=datetime(2026, 8, 9, 17, 1, tzinfo=UTC),
+    )
 
-    assert not Path(fixture.roots.claim_transaction_root).exists()
-    assert not Path(fixture.roots.claim_receipt_root).exists()
+    assert receipt.admission_consumption is not None
+    assert receipt.execution_admission is not None
+    assert receipt.execution_lease is not None
+    manifest = Path(receipt.manifest_path)
+    receipt_path = Path(receipt.receipt_path)
+    manifest_record = json.loads(manifest.read_text(encoding="ascii"))
+    assert manifest_record["state"] == "applied"
+    assert receipt_path.is_file()
+    assert stat.S_IMODE(receipt_path.stat(follow_symlinks=False).st_mode) == 0o600
     assert (
         fixture.vault / "active" / f"{fixture.intent.task_id}.md"
-    ).read_bytes() == fixture.intent.note_before
+    ).read_bytes() == fixture.intent.note_after
+    for key in (
+        fixture.intent.role,
+        f"{fixture.intent.role}-{fixture.intent.session_id}",
+    ):
+        assert (fixture.cache / f"cc-active-task-{key}").read_text(encoding="utf-8") == (
+            f"{fixture.intent.task_id}\n"
+        )
+        assert (fixture.cache / f"cc-claim-epoch-{key}").read_text(encoding="utf-8") == (
+            f"{fixture.intent.claim_epoch} {fixture.intent.task_id}\n"
+        )
+        binding = json.loads(
+            (fixture.cache / f"cc-claim-dispatch-{key}.json").read_text(encoding="ascii")
+        )
+        assert binding["receipt_hash"] == fixture.intent.binding.receipt_hash
 
 
 def test_effect_carrier_rejects_wrong_installed_root_without_mutation(tmp_path: Path) -> None:
