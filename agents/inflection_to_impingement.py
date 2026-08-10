@@ -20,9 +20,12 @@ phase-shipped, scope-resolution). Mapped onto ``ImpingementType``:
 
 * ``PATTERN_MATCH`` — the inflection filename suffix functions as an
   interrupt token (``mode-switch``, ``phase-shipped``, etc.).
-* ``strength=0.6`` — peer-relay broadcasts deserve mid-range salience;
-  enough to register on the affordance pipeline but not crowd out
-  sensory impingements.
+* ``strength`` — from the inflection's own ``**Severity:**`` header
+  (P0/P1/P2 → 0.95/0.75/0.5), falling back to 0.6 when none is
+  declared. It was 0.6 for everything until 2026-08-10, so an
+  active-data-loss P0 and a de-escalated note reached the affordance
+  pipeline at identical salience. Severity is a declared,
+  author-independent field; this is deliberately not author weighting.
 
 ## Run modes
 
@@ -44,6 +47,7 @@ import argparse
 import hashlib
 import json
 import logging
+import re
 import sys
 import time
 import uuid
@@ -57,6 +61,25 @@ DEFAULT_IMPINGEMENT_PATH: Path = Path("/dev/shm/hapax-dmn/impingements.jsonl")
 
 _DEFAULT_STRENGTH: float = 0.6
 _FILENAME_GLOB: str = "*.md"
+
+#: Declared severity -> impingement strength. Every inflection used to enter the affordance
+#: pipeline at _DEFAULT_STRENGTH, so a P0 reading "ACTIVE DATA LOSS, still running at time of
+#: writing" and a P1 the operator himself de-escalated as "just a note" arrived at IDENTICAL
+#: salience. Measured 2026-08-10: 16 P0 and 4 P1 in the directory, all stamped 0.6.
+#:
+#: This is SEVERITY — a declared, author-independent field. It is deliberately not author
+#: weighting: no measured reliability exists for any author on this surface, and inventing one
+#: would be the unmeasured weight the doctrine forbids. The parse is ported from
+#: hooks/scripts/session-context.sh, which already reads this header correctly and is pinned by
+#: tests/hooks/test_session_context_p0_broadcast.py. Port it; do not redesign it.
+_SEVERITY_STRENGTH: dict[str, float] = {"P0": 0.95, "P1": 0.75, "P2": 0.5}
+
+#: The header form every live inflection already uses: `**Severity:** P0`.
+_SEVERITY_RE = re.compile(r"^\*\*Severity:\*\*\s*(P[0-2])\b", re.M)
+
+#: Far enough to reach the header block (severity sits on line 3 of every live file), not so far
+#: that ranking a long inflection means loading it.
+_HEADER_SCAN_CHARS: int = 4096
 
 
 def _stable_id(filename: str) -> str:
@@ -98,6 +121,35 @@ def _read_first_nonempty(path: Path, max_chars: int = 240) -> str:
     return Path(path).stem
 
 
+def read_severity(path: Path) -> str | None:
+    """The inflection's declared severity, or None when it declares none.
+
+    None is returned rather than a default so the caller can distinguish "declared P2" from
+    "declared nothing" — the second is a defect in the inflection, not a low-severity signal.
+    """
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            head = fh.read(_HEADER_SCAN_CHARS)
+    except OSError as exc:
+        log.warning("inflection severity read failed for %s: %s", path, exc)
+        return None
+    match = _SEVERITY_RE.search(head)
+    return match.group(1) if match else None
+
+
+def strength_for(path: Path) -> float:
+    """Impingement strength from declared severity, falling back to the historical constant.
+
+    The fallback is the OLD behaviour for undeclared files, not a floor for declared ones: an
+    inflection that forgets its header is no less urgent than it was yesterday, and silently
+    demoting it would make the bridge punish the author instead of reporting the gap.
+    """
+    severity = read_severity(path)
+    if severity is None:
+        return _DEFAULT_STRENGTH
+    return _SEVERITY_STRENGTH.get(severity, _DEFAULT_STRENGTH)
+
+
 def load_seen(cursor_path: Path) -> set[str]:
     if not cursor_path.exists():
         return set()
@@ -124,12 +176,18 @@ def build_impingement_record(path: Path, *, now: float | None = None) -> dict:
         "timestamp": now if now is not None else time.time(),
         "source": "relay.inflection",
         "type": "pattern_match",
-        "strength": _DEFAULT_STRENGTH,
+        "strength": strength_for(path),
         "interrupt_token": _interrupt_token(filename),
         "trace_id": uuid.uuid4().hex,
         "content": {
             "narrative": _read_first_nonempty(path),
             "filename": filename,
+            # Recorded, never ranked on. `source` stays the constant "relay.inflection":
+            # shared/affordance_pipeline.py hashes it into feed_habituation (:1070) and dedupes
+            # on source + content_hash (:1333), so varying it per author would partition the
+            # habituation key for EVERY producer on the bus and re-fire every seen impingement
+            # as novel. A measurable regression bought for nothing.
+            "severity": read_severity(path),
         },
     }
 
@@ -157,7 +215,14 @@ def tick(
     seen = set() if backfill else load_seen(cursor_path)
     emitted: list[str] = []
 
-    for path in sorted(inflections_dir.glob(_FILENAME_GLOB)):
+    # Severity first, then filename for a stable tie-break. Emission used to be pure
+    # lexicographic filename order, so a P1 note went out ahead of fourteen P0s purely because
+    # `b` sorts before `c`. Filename is a provenance-adjacent proxy — the exact kind of ranking
+    # signal this bus is not supposed to use — and it was the only one in play.
+    for path in sorted(
+        inflections_dir.glob(_FILENAME_GLOB),
+        key=lambda p: (-strength_for(p), p.name),
+    ):
         if path.name in seen:
             continue
         record = build_impingement_record(path)

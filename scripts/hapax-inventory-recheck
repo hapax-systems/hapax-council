@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+"""Recompute what the operational-system inventory can still witness about itself.
+
+WHY THIS EXISTS, and why it is allowed to be a new mechanism in an estate that already has
+too many. The inventory records, per system, an ``absence_witness``: the thing that would
+notice if that system stopped existing. Cross-tabbing it against status on 2026-08-10, over
+52 rows all graded MEASURED:
+
+    status class      no witness   has one
+    unbuilt                    8         0
+    dead                       6         0
+    regressed                  8         1
+    never_produced             1         0
+    substrate_present…         1         0
+    dormant_by_pin             2         4
+    live                       1         9
+    live_partial               0         9
+    dark / frozen_by_design    0         2
+
+26 of the 27 rows with no absence witness are not live. 22 of the 25 with one are live or
+live_partial. Every ``dead`` and every ``unbuilt`` row lacks one -- fourteen for fourteen.
+
+That is the estate's own law, measured on the estate's own data: *a declaration decays
+totally unless recomputed by a reader that cannot rewrite it.* The inventory states it about
+itself, in sys.host_discovery -- "by construction, an unbuilt discovery system cannot witness
+its own absence, which is why four hosts and 530 GiB arrived silently."
+
+WHAT IT DOES NOT DO. It does not run the 52 ``recheck_command`` strings. Those are arbitrary
+shell, some cross-host, some multi-minute, and executing them on a timer would make this a
+53rd system needing its own witness. It checks the properties that make a row CAPABLE of
+being rechecked, which is the part that rots silently:
+
+  - the row declares an absence witness at all;
+  - its recheck_command is present and non-trivial;
+  - its evidence is not older than the staleness horizon;
+  - the file it claims to be about still exists, where the row names a local path.
+
+WHAT MAKES IT NOT A DEAD INSTRUMENT. Three properties, and it should be deleted if it loses
+any of them: (1) it derives from live state and holds no copy of what it checks; (2) it is
+strictly read-only, so it cannot repair a row into looking healthy; (3) it exits non-zero
+with the offending rows named, so a scheduler's failure path is its liveness signal and a
+silent pass cannot be mistaken for coverage.
+
+Exit codes:
+    0  every row is recheckable and fresh
+    1  rows are unwitnessed or stale (the finding; details on stdout)
+    2  the inventory itself could not be read or is malformed
+"""
+
+from __future__ import annotations
+
+import argparse
+import glob
+import json
+import os
+import re
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+OK = 0
+FINDING = 1
+ERROR = 2
+
+DEFAULT_INVENTORY = (
+    Path.home()
+    / "Documents/Personal/30-areas/hapax"
+    / "operational-system-formal-inventory-2026-08-10.json"
+)
+
+#: Beyond this, a row's evidence describes a state nobody has observed recently. Chosen to be
+#: longer than a planning cycle and shorter than the interval over which the estate has
+#: historically discovered that something died -- four hosts and 530 GiB arrived unnoticed,
+#: which is the failure this bound is calibrated against.
+DEFAULT_MAX_EVIDENCE_AGE_DAYS = 14
+
+#: Prose that means "there is no witness". The field is free text, so this is a matcher, not
+#: a schema -- and it must err toward calling a row unwitnessed, because an inventory that
+#: OVERSTATES its own coverage is the failure mode that matters.
+#:
+#: The first version anchored to end-of-string and matched only a bare "none." That undercounted
+#: by 18 of 27 on the live file, because most rows say "none" and then explain WHY -- e.g.
+#: "none - by construction, an unbuilt discovery system cannot witness its own absence". Those
+#: rows have no witness; they are just honest about it. Matching the leading token followed by a
+#: boundary catches the explanation form without swallowing a real witness that merely begins
+#: with the letters.
+_NO_WITNESS_RE = re.compile(
+    r"^\s*(none|n/?a|nothing|unknown|tbd)\b\s*[-–—.;:,]?|^\s*[-.]?\s*$", re.I
+)
+
+#: A recheck command must actually do something. A bare `true`, `echo`, or comment is a
+#: placeholder that will pass forever.
+_TRIVIAL_RECHECK_RE = re.compile(r"^\s*(true|:|echo\b.*|#.*)?\s*$", re.I)
+
+#: Local paths a row names as its implementation. Anything else (repo:, http:, docker:) is
+#: not checkable from here and is skipped rather than guessed at.
+_LOCAL_PATH_RE = re.compile(r"^(~|/)[^\s,;]+$")
+
+
+def _has_no_witness(value: object) -> bool:
+    if value is None:
+        return True
+    return bool(_NO_WITNESS_RE.match(str(value)))
+
+
+def _local_ref_exists(text: str) -> bool:
+    """Does this local path resolve? Globs count as resolving if anything matches.
+
+    Several rows name their artifacts with a wildcard (``~/.cache/hapax/host-storage/hapax-*.json``)
+    or a trailing-slash directory. Treating those as literal filenames reported them VANISHED when
+    the directory was populated, which is a false alarm in the direction that trains people to
+    ignore the check.
+    """
+    expanded = os.path.expanduser(text.rstrip("/")) or "/"
+    if any(ch in expanded for ch in "*?["):
+        return bool(glob.glob(expanded))
+    return Path(expanded).exists()
+
+
+def _recheck_is_trivial(value: object) -> bool:
+    if value is None:
+        return True
+    return bool(_TRIVIAL_RECHECK_RE.match(str(value)))
+
+
+def _parse_iso(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _missing_local_refs(row: dict) -> list[str]:
+    """Local implementation paths the row names that are not there any more.
+
+    This is the one check that can catch a system disappearing rather than merely being
+    unwatched, so it is worth the stat() calls.
+    """
+    missing = []
+    for ref in row.get("implementation_refs") or []:
+        text = str(ref)
+        if not _LOCAL_PATH_RE.match(text):
+            continue  # repo:/url:/container: refs are not resolvable from here
+        if not _local_ref_exists(text):
+            missing.append(text)
+    return missing
+
+
+def check(inventory: dict, *, now: datetime, max_age_days: int) -> dict:
+    rows = inventory.get("systems")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("inventory has no 'systems' list")
+
+    generated = _parse_iso(inventory.get("generated_at"))
+    age_days = (now - generated).days if generated else None
+
+    unwitnessed, trivial_recheck, vanished = [], [], []
+    for row in rows:
+        sid = str(row.get("system_id") or "<unnamed>")
+        if _has_no_witness(row.get("absence_witness")):
+            unwitnessed.append((sid, str(row.get("fact_status_class") or "?")))
+        if _recheck_is_trivial(row.get("recheck_command")):
+            trivial_recheck.append(sid)
+        gone = _missing_local_refs(row)
+        if gone:
+            vanished.append((sid, gone))
+
+    return {
+        "total": len(rows),
+        "generated_at": inventory.get("generated_at"),
+        "age_days": age_days,
+        "stale": age_days is not None and age_days > max_age_days,
+        "max_age_days": max_age_days,
+        "unwitnessed": unwitnessed,
+        "trivial_recheck": trivial_recheck,
+        "vanished": vanished,
+    }
+
+
+def report(result: dict) -> int:
+    total = result["total"]
+    unwitnessed = result["unwitnessed"]
+    print(f"hapax-inventory-recheck: {total} systems, generated {result['generated_at']}")
+
+    if result["stale"]:
+        print(
+            f"  STALE: the inventory is {result['age_days']}d old "
+            f"(horizon {result['max_age_days']}d). Every row below describes a state nobody "
+            f"has observed since. Next: re-run the inventory pass, then re-run this check."
+        )
+
+    if result["vanished"]:
+        print(f"  VANISHED: {len(result['vanished'])} row(s) name a local path that is gone —")
+        for sid, refs in result["vanished"]:
+            print(f"    {sid}: {', '.join(refs)}")
+
+    if result["trivial_recheck"]:
+        print(
+            f"  NO RECHECK: {len(result['trivial_recheck'])} row(s) carry no usable "
+            f"recheck_command, so nothing can re-derive their state —"
+        )
+        for sid in result["trivial_recheck"]:
+            print(f"    {sid}")
+
+    if unwitnessed:
+        by_status: dict[str, int] = {}
+        for _, status in unwitnessed:
+            by_status[status] = by_status.get(status, 0) + 1
+        breakdown = ", ".join(f"{k}={v}" for k, v in sorted(by_status.items()))
+        print(
+            f"  UNWITNESSED: {len(unwitnessed)}/{total} row(s) have no absence witness "
+            f"({breakdown}). Nothing would notice if these stopped existing."
+        )
+        print(
+            "    Next: give each a witness — a timer whose failure is alarmed, a fail-closed "
+            "consumer, or a CI assertion — or record explicitly that it is unwitnessed BY "
+            "DESIGN, which is a different and honest claim."
+        )
+        for sid, status in unwitnessed:
+            print(f"    [{status}] {sid}")
+
+    if unwitnessed or result["trivial_recheck"] or result["vanished"] or result["stale"]:
+        return FINDING
+    print("  every row is witnessed, recheckable, and fresh")
+    return OK
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--inventory", type=Path, default=DEFAULT_INVENTORY)
+    parser.add_argument("--max-age-days", type=int, default=DEFAULT_MAX_EVIDENCE_AGE_DAYS)
+    parser.add_argument("--json", action="store_true", help="emit the result as JSON")
+    args = parser.parse_args(argv)
+
+    try:
+        inventory = json.loads(args.inventory.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        print(
+            f"hapax-inventory-recheck: inventory not found at {args.inventory}. "
+            f"Next: pass --inventory, or run the inventory pass that produces it.",
+            file=sys.stderr,
+        )
+        return ERROR
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"hapax-inventory-recheck: cannot read {args.inventory}: {exc}", file=sys.stderr)
+        return ERROR
+
+    try:
+        result = check(inventory, now=datetime.now(UTC), max_age_days=args.max_age_days)
+    except ValueError as exc:
+        print(f"hapax-inventory-recheck: {args.inventory} is malformed: {exc}", file=sys.stderr)
+        return ERROR
+
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+        return FINDING if (result["unwitnessed"] or result["stale"]) else OK
+    return report(result)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
