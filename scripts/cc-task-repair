@@ -50,6 +50,17 @@ SCALAR_SCAFFOLD: dict[str, str] = {
     "pr": "null",
     "claimed_at": "null",
     "completed_at": "null",
+    # A blocked task with no witness cannot leave `blocked`: cc-cascade-unblock reaches only
+    # dependency-blocked tasks, and `is_active_blocked_with_evidence` needs a witness to hold
+    # or release anything. Measured 2026-08-10: 239 active tasks are in exactly that state,
+    # 70% of the blocked queue. Absent the ability to backfill it, the field could only ever be
+    # written by hand, which is why almost none of them have one.
+    #
+    # Backfilling `null` is deliberate and is NOT a no-go boolean in disguise. It creates the
+    # slot and changes nothing about the task's standing: a null witness still fails
+    # is_active_blocked_with_evidence, so the task stays blocked. What changes is that the
+    # absence becomes visible as an unfilled field rather than as silence.
+    "blocked_witness": "null",
 }
 LIST_SCAFFOLD: tuple[str, ...] = ("mutation_scope_refs", "depends_on", "blocks")
 NOGO_BOOLEANS: tuple[str, ...] = (
