@@ -1,0 +1,18 @@
+[Unit]
+Description=K0 kernel manifest conformance + drift-pin check (R0.4 instrument, scheduled)
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/systemd/README.md
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+# the full form ONLY: without --repo-root the C6 artifact checks cannot evaluate
+# and the run is INDETERMINATE by design (no false green). The checker,
+# manifest, and council root resolve from the governed activation worktree;
+# reins-dev resolves from a read-only mirror of reins origin/main (refreshed
+# by the wrapper) — never a mutable dev/vault checkout.
+ExecStart=/home/hapax/.cache/hapax/source-activation/worktree/scripts/hapax-k0-manifest-check-run
+Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+StandardOutput=journal
+StandardError=journal
+Nice=10

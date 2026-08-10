@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# hapax-k0-manifest-check-run — wrapper for the scheduled K0 drift-pin check.
+#
+# reins has no source-activation worktree; its kernel membership must be
+# checked against the GOVERNED remote state, not a mutable local checkout.
+# This wrapper refreshes a read-only mirror of reins origin/main and points
+# the checker's reins-dev repo-root at it. council is checked from the
+# source-activation worktree (the governed deployed tree) directly.
+set -euo pipefail
+
+ACTIVATION="$HOME/.cache/hapax/source-activation/worktree"
+MIRROR="$HOME/.cache/hapax/k0-reins-mirror"
+
+if [ ! -d "$MIRROR/.git" ]; then
+    git clone --quiet https://github.com/hapax-systems/reins.git "$MIRROR"
+fi
+git -C "$MIRROR" fetch --quiet origin main
+git -C "$MIRROR" checkout --quiet --detach origin/main
+
+exec /usr/bin/python3 "$ACTIVATION/scripts/k0_manifest_check.py" \
+    --manifest "$ACTIVATION/config/k0-manifest.yaml" \
+    --repo-root "hapax-council=$ACTIVATION" \
+    --repo-root "reins-dev=$MIRROR"

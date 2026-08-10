@@ -1,0 +1,242 @@
+# K0 kernel manifest — machine-checkable form of K0-FIXED-POINT-SPEC.md (R0.4).
+#
+# manifest_digest is a sha256 over a canonical serialisation of this document with the
+# manifest_digest field itself excluded. It is the value written into the genesis receipt as
+# `kernel-manifest:sha256:<digest>` by genesis_self_attest(), which binds the kernel's identity
+# into the first link of the chain.
+#
+# Kernel law is DECLARED, not derived. A change here must change the pin, so it cannot happen as
+# a side effect of a refactor. Regenerate with:  k0_manifest_check.py --update-digest
+
+manifest_schema: 1
+kernel_version: "0.1.0-draft"
+spec_ref: K0-FIXED-POINT-SPEC.md
+manifest_digest: "a1e510f4aeff336a1a0dfb5e7be674bc5ad897436a6152c6b432f3d7cd83c0b6"
+
+# --- Tier P-1: pre-kernel install-time facts ---------------------------------------------
+# Not mechanisms and never K0 members: conditions that must hold before K0 can arm, which K0
+# cannot establish about itself. Re-attested, never demoted.
+pre_kernel_facts:
+  - id: P-1.1
+    fact: kit signature verified before first run
+    rationale: >-
+      A kernel cannot authenticate the artifact that contains it; verification is performed on the
+      kit, before execution. Trust-of-distribution precedes trust-from-birth.
+    reattested_at: null
+  - id: P-1.2
+    fact: durable root declared
+    rationale: >-
+      The genesis receipt must land on durable media on its FIRST write; the chain cannot attest
+      the durability of its own substrate.
+    reattested_at: HOST_RECONCILE
+
+# --- Lever classes (R0.8 boot column) ----------------------------------------------------
+lever_classes:
+  normative-constraint: mandatory
+  state-context:        mandatory
+  loop-control:         mandatory
+  verification-gating:  mandatory
+  affordance-grant:     mandatory
+  elicitation:          weak-form
+  resource-envelope:    degenerate-but-typed
+
+# --- Tier K0: kernel members -------------------------------------------------------------
+# Every member carries the OUTPUT of the circularity test (spec §2.2), applied after
+# decomposition (§2.3). installable_by_governed_act MUST be false for every member: a single
+# non-circular installation path disqualifies a candidate however important it is.
+members:
+  - id: K0.1
+    name: fail-closed default
+    lever_class: normative-constraint
+    circularity: >-
+      Installing it requires deciding an install under uncertainty, which already needs a default.
+      Every act that could install it presupposes it.
+    installable_by_governed_act: false
+    demote: canary
+    artifacts: []
+
+  - id: K0.2
+    name: refusal-as-data
+    lever_class: normative-constraint
+    circularity: >-
+      An act that could install refusal must itself be able to refuse, and to record that refusal
+      as evidence rather than as silence.
+    installable_by_governed_act: false
+    demote: canary
+    artifacts: []
+
+  - id: K0.3
+    name: append-only hash-chained receipt primitive
+    lever_class: state-context
+    circularity: >-
+      An install of the receipt primitive would have to be receipted; otherwise the chain has no
+      genesis link and the estate cannot witness its own origin.
+    installable_by_governed_act: false
+    demote: canary
+    artifacts:
+      - path: api/bootstrap_receipt.py
+        repo: reins-dev
+        sha256: 40cbc8c330acfb89e06ab10fb8edad464d8ab5307cbf77c22ca8a6068cafde84
+        note: >-
+          As merged in PR 20 (Slice 1). A hardening patch is staged but unapplied; applying it
+          changes this digest and therefore the manifest pin, which is the intended behaviour.
+
+  - id: K0.4
+    name: the ratification act
+    lever_class: elicitation
+    circularity: >-
+      You cannot ratify the ratification act. Named as explicitly circular by the design.
+    installable_by_governed_act: false
+    demote: canary
+    artifacts: []
+
+  - id: K0.5
+    name: sovereign-only mutation (registry-guard class)
+    lever_class: normative-constraint
+    circularity: >-
+      The act granting "only the sovereign may mutate" would itself be a mutation, requiring the
+      guard to already discriminate sovereign from non-sovereign.
+    installable_by_governed_act: false
+    demote: canary
+    artifacts:
+      - path: hooks/scripts/registry-guard.sh
+        repo: hapax-council
+        sha256: 20aac139f95422631d741e53e53172eb9298f72b3542f16b6ad073e5850fad6e
+        note: estate-tuned; extraction must generalise before it ships (R0.3).
+
+  - id: K0.6
+    name: signed EscapeGrant verify
+    lever_class: verification-gating
+    circularity: >-
+      Installing the escape path may itself be blocked by a hold; without escape-verify already
+      live, that hold is a dead end and no act can proceed.
+    installable_by_governed_act: false
+    demote: canary
+    operator_ratification_required: true
+    verify_only: true
+    trust_roots:
+      before_identity_mint: kit signing key (P-1.1)
+      after_identity_mint: ratifier key (K0.8)
+    escape_limit_criterion: irreversibility
+    escape_limits:
+      - "K0.1 fail-closed: escapable per INSTANCE, never as a regime change to fail-open"
+      - "K0.3 receipts: incoherent to escape, not prohibited — every escape is itself receipted"
+      - "K0.7 PII scan: escapable for LOCAL acts (never-freeze); NOT escapable for TRANSMITTING
+         acts, because a leak is not retractable"
+    scope_rule: >-
+      OPEN FOR RATIFICATION. Governed-estate practice mints scope="*" (sdlc_invariants.py:468) under
+      the never-freeze doctrine. At genesis the receipt chain is the only witness, which argues for
+      generous-but-bounded scope instead. Operator decision, not a default.
+    artifacts:
+      - path: shared/sdlc_invariants.py
+        repo: hapax-council
+        sha256: 7743cc26982f8951446c14ad2e4ba158583c2affe686619891d5bbfc585a710e
+        note: >-
+          mint/verify present; kernel needs verify only (pure signature + expiry + scope).
+          Re-pinned 2026-08-10 after 158e746bf "land Gate 0 canon and admission contracts" (#4483);
+          operator-accepted on the evidence that the change is merged governed work.
+
+  - id: K0.7
+    name: PII/consent scanner — discipline only
+    lever_class: verification-gating
+    circularity: >-
+      Any install act may carry operator data; the scan must be live before the first act that
+      could leak, because a leak is not retractable.
+    installable_by_governed_act: false
+    demote: canary
+    decomposition:
+      law: fail-closed scanning discipline (blocks on missing deps)
+      data: pattern contents — EXCLUDED from K0, ship empty, ratified per estate (R0.10)
+    artifacts:
+      - path: hooks/scripts/pii-guard.sh
+        repo: hapax-council
+        sha256: 8649bb4f097153d5135ce071831f684bdd5bb43d07919f611c83af9d4f82f833
+        note: patterns are tuned to THIS operator; the split is the extraction work.
+
+  - id: K0.8
+    name: estate/operator identity seed + ratifier signing key
+    lever_class: state-context
+    circularity: >-
+      Receipts bind to a sovereign; the act minting the key must itself be attributable, which
+      requires the identity it is minting.
+    installable_by_governed_act: false
+    demote: canary
+    artifacts: []
+
+  - id: K0.9
+    name: FSM phase-legality law (as data)
+    lever_class: loop-control
+    circularity: >-
+      The law determines which acts are legal, including the act that would install it.
+    installable_by_governed_act: false
+    demote: canary
+    declared_as_data: true
+    artifacts:
+      - path: api/bootstrap_receipt.py
+        repo: reins-dev
+        sha256: 40cbc8c330acfb89e06ab10fb8edad464d8ab5307cbf77c22ca8a6068cafde84
+        note: >-
+          As merged, PHASE_LADDER = tuple(BootstrapPhase) derives the law from enum source order —
+          a declared-as-data violation found and fixed by the staged hardening patch.
+
+  - id: K0.10
+    name: single-instance lock
+    lever_class: loop-control
+    circularity: >-
+      Two concurrent first-inits fork the chain before any governed act can observe the conflict;
+      the lock must precede the first write.
+    installable_by_governed_act: false
+    demote: canary
+    artifacts:
+      - path: api/bootstrap_receipt.py
+        repo: reins-dev
+        sha256: 40cbc8c330acfb89e06ab10fb8edad464d8ab5307cbf77c22ca8a6068cafde84
+        note: >-
+          BootstrapLock exists but the merged write path does not consult it; measured 60/60
+          chain forks under 4 concurrent writers. Closed by the staged hardening patch.
+
+  - id: K0.11
+    name: bounded-affordance law (extent is a stipulation)
+    lever_class: affordance-grant
+    circularity: >-
+      Every install act writes, and no governed act can confer the authority to perform the write
+      that installs that authority. What survives the test is the EXISTENCE and BOUNDEDNESS of a
+      declared grant — not its extent.
+    law: no act may write outside a declared, bounded affordance grant
+    stipulated_extent:
+      default: local filesystem + local-git-only
+      ratified_by: "R2.13 (forge choice), R1.2 (storage row in host-invariants registry)"
+    installable_by_governed_act: false
+    demote: canary
+    artifacts: []
+    note: >-
+      The egress PROHIBITION was removed from this member: "no egress until ratified consent
+      exists" is K0.1 (fail-closed) applied to the egress predicate, not an independent law, and
+      under the minimality rule a derivable consequence is not a separate member. An unqualified
+      no-egress ceiling would also be wrong as law — the ceremony requires a frontier model call at
+      MEASURED_PROBE, and the ceiling lifts on ratified consent plus an AIR allowlist (R2.4).
+
+# --- Excluded candidates ------------------------------------------------------------------
+# Recorded deliberately: the near-misses are what keep the kernel from drifting outward.
+excluded:
+  - candidate: PII pattern contents
+    tier: K1+
+    reason: data(m) — estate-specific; admitting it exports this operator's PII shape as law.
+  - candidate: cc-task-gate / pr-release-gate
+    tier: K1+
+    reason: installable by a governed act; they gate work, and work postdates the ceremony.
+  - candidate: gate-manifest.yaml wiring
+    tier: K1+
+    reason: a projection of which gates are wired where; installable once K0.1/K0.6 are live.
+  - candidate: capability registry + 12 shapes
+    tier: K1+
+    reason: the ceremony mints capabilities through it; it is output, not precondition.
+  - candidate: resource envelope
+    tier: K1+
+    reason: boots degenerate-but-typed (R0.8); no act's well-definedness fails without it.
+  - candidate: kit signature verification
+    tier: P-1
+    reason: a kernel cannot authenticate the artifact containing it.
+  - candidate: durable-root declaration
+    tier: P-1
+    reason: the chain cannot attest the durability of its own substrate.

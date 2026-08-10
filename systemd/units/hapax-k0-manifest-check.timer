@@ -1,0 +1,13 @@
+# reform-improve-deploy-activation: hapax-post-merge-deploy `enable --now`s
+# units carrying this marker; the marker rides the .timer (the enable target).
+[Unit]
+Description=K0 kernel manifest conformance + drift-pin check schedule
+
+[Timer]
+OnCalendar=*-*-* 04:17:00
+RandomizedDelaySec=30min
+Persistent=true
+Unit=hapax-k0-manifest-check.service
+
+[Install]
+WantedBy=timers.target
