@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import subprocess
@@ -192,17 +193,28 @@ def _claim(
     )
 
 
-def test_default_claim_requires_dispatch_binding_flags(tmp_path: Path) -> None:
+def test_default_claim_without_dispatch_issues_manual_binding(tmp_path: Path) -> None:
     home = tmp_path / "home"
     note = _write_task(home, "active", "needs-dispatch")
 
     result = _claim(home, "needs-dispatch", dispatch=False)
 
-    assert result.returncode == 2
-    assert "canon echo enforcement requires the exact dispatch binding flags" in result.stderr
-    assert "Next action: rerun through the governed dispatcher" in result.stderr
-    assert "status: offered" in note.read_text(encoding="utf-8")
-    assert not (home / ".cache" / "hapax").exists()
+    assert result.returncode == 0, result.stderr
+    assert "manual claim binding issued" in result.stderr
+    assert "provenance=manual" in result.stderr
+    assert "Gate-0B claim-publication root installed for first use" in result.stderr
+    assert "admitted publication applied" in result.stdout
+    assert "status: claimed" in note.read_text(encoding="utf-8")
+    binding = json.loads(
+        (home / ".cache" / "hapax" / "cc-claim-dispatch-cx-test.json").read_text(encoding="ascii")
+    )
+    assert binding["platform"] == "codex"
+    assert binding["mode"] == "headless"
+    assert binding["profile"] == "ultra"
+    assert binding["authority_case"] == "CASE-TEST-001"
+    assert binding["dispatch_message_id"].startswith("manual-cc-claim:")
+    assert binding["coord_dispatch_idempotency_key"].startswith("manual-cc-claim:")
+    assert re.fullmatch(r"[0-9a-f]{64}", binding["binding_hash"])
 
 
 def test_partial_dispatch_binding_flags_fail_without_writes(tmp_path: Path) -> None:
@@ -255,6 +267,29 @@ def test_default_claim_expired_claim_hold_names_governed_release_path(
     assert result.returncode == 7
     assert "expired claim" in result.stderr
     assert "Next action: run cc-close stale-task" in result.stderr
+
+
+def test_default_claim_expired_empty_claim_hold_names_manual_recovery(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    _write_task(home, "active", "new-task")
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    stale = cache / "cc-active-task-cx-test"
+    stale.write_text("\n", encoding="utf-8")
+    os.utime(stale, (0, 0))
+
+    result = _claim(
+        home,
+        "new-task",
+        extra_env={"HAPAX_CLAIM_LEASE_TTL_SECS": "1"},
+    )
+
+    assert result.returncode == 7
+    assert "inspect '" in result.stderr
+    assert "to recover the task id" in result.stderr
+    assert "<task-id-from-" not in result.stderr
 
 
 def test_default_claim_refuses_pid_shaped_session_id(tmp_path: Path) -> None:
@@ -328,15 +363,39 @@ def test_default_claim_publishes_admitted_receipt_and_dispatch_sidecars(
     assert len(proof_files) >= 5
 
 
-def test_default_claim_requires_preinstalled_gate0b_composition(tmp_path: Path) -> None:
+def test_default_claim_first_use_installs_gate0b_composition(tmp_path: Path) -> None:
     home = tmp_path / "home"
     note = _write_task(home, "active", "missing-install")
 
     result = _claim(home, "missing-install", install_gate0b=False)
 
+    assert result.returncode == 0, result.stderr
+    assert "Gate-0B claim-publication root installed for first use" in result.stderr
+    assert "will not overwrite non-matching install artifacts" in result.stderr
+    assert "admitted publication applied" in result.stdout
+    assert "status: claimed" in note.read_text(encoding="utf-8")
+    root = home / ".local" / "share" / "hapax" / "execution-invocations" / "gate0b-claim-publish-v1"
+    assert (root / "activation-receipt.json").is_file()
+    assert (root / "composition-manifest.json").is_file()
+
+
+def test_default_claim_holds_corrupt_install_receipt_without_overwrite(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "corrupt-install")
+    roots = default_claim_publication_roots(home=home)
+    receipt = Path(roots.invocation_store_root) / "activation-receipt.json"
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text("{}\n", encoding="ascii")
+    receipt.chmod(0o600)
+
+    result = _claim(home, "corrupt-install", install_gate0b=False)
+
     assert result.returncode == 8
-    assert "gate0b_install_receipt_missing" in result.stderr
+    assert "gate0b_install_receipt_malformed" in result.stderr
     assert "Next action: provision or repair the Gate-0B" in result.stderr
+    assert receipt.read_text(encoding="ascii") == "{}\n"
     assert "status: offered" in note.read_text(encoding="utf-8")
 
 

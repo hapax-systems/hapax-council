@@ -210,6 +210,21 @@ def test_install_receipt_rejects_noncanonical_receipt_bytes(tmp_path: Path) -> N
         require_claim_publication_install_receipt(install.root)
 
 
+def test_install_receipt_rejects_malformed_receipt_with_next_action(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    install = _install(tmp_path, fixture)
+    receipt_path = Path(fixture.roots.invocation_store_root) / "activation-receipt.json"
+    receipt_path.write_text("{}\n", encoding="ascii")
+
+    with pytest.raises(ExecutionAdmissionError) as excinfo:
+        require_claim_publication_install_receipt(install.root)
+
+    assert excinfo.value.reason_code == "gate0b_install_receipt_malformed"
+    assert "restore a canonical Gate-0B install receipt" in excinfo.value.repair_action
+
+
 def test_install_rejects_existing_receipt_collision(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     receipt_path = Path(fixture.roots.invocation_store_root) / "activation-receipt.json"
