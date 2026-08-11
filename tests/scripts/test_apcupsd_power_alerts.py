@@ -59,6 +59,17 @@ def test_apcupsd_package_manifest_has_exact_owned_surface() -> None:
     assert APCUPSD_PACKAGE_FILES == EXPECTED_APCUPSD_PACKAGE_FILES
 
 
+def test_installer_recovery_guidance_requires_governed_runtime_reconciliation() -> None:
+    source = INSTALLER.read_text(encoding="utf-8")
+
+    assert "scripts/install-apcupsd-power-alerts --install --verify-live" not in source
+    assert "rerun --install --verify-live" not in source
+    assert "readonly APC_REPAIR_ACTION=" in source
+    assert "runtime-authorized hapax-post-merge-deploy APC package reconciliation" in source
+    assert source.count("$APC_REPAIR_ACTION") > 1
+    assert source.count("{repair_action}") == 4
+
+
 @pytest.fixture(autouse=True)
 def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HAPAX_ROOT_REQUIRED_ALLOW_UNAUTHENTICATED_TEST_INSTALL", "1")
