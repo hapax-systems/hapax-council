@@ -324,6 +324,16 @@ def _profile_table_context(table_path: Path) -> str:
     return f"{mode} host profile table {table_path}"
 
 
+def _policy_authority_label(table_path: Path) -> str:
+    if _sealed_package_profile_table() == table_path:
+        return "internal-sealed-package-source"
+    if os.environ.get("HAPAX_OOM_AUDIT_PROFILE_TABLE", "").strip():
+        return "non-authoritative-test-override"
+    if table_path == SOURCE_PROFILE_TABLE:
+        return "non-authoritative-source-tree"
+    return "authoritative-installed-receipt-bound"
+
+
 def _memory_bytes(value: str, *, field: str, table_context: str) -> int:
     match = re.fullmatch(r"([1-9][0-9]*)([GM])", value)
     if not match:
@@ -1915,6 +1925,7 @@ def main(argv: list[str] | None = None) -> int:
         help="emit the derived host policy as KEY=VALUE lines and exit",
     )
     args = parser.parse_args(argv)
+    policy_authority = "unresolved"
 
     try:
         if _sealed_package_profile_table() is not None and not args.host_policy_lines:
@@ -1923,6 +1934,7 @@ def main(argv: list[str] | None = None) -> int:
                 "next action: run the installed recurring audit without sealed package selectors"
             )
         _reject_installed_test_selectors()
+        policy_authority = _policy_authority_label(_profile_table_path())
         policy = derive_host_policy()
     except HostPolicyError as exc:
         checks = [
@@ -1983,9 +1995,18 @@ def main(argv: list[str] | None = None) -> int:
                 )
             ]
     if args.json:
-        print(json.dumps({"checks": [asdict(check) for check in checks]}, indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                {
+                    "checks": [asdict(check) for check in checks],
+                    "policy_authority": policy_authority,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
     else:
-        print(format_human(checks))
+        print(f"POLICY_AUTHORITY {policy_authority}\n{format_human(checks)}")
     return 1 if any(check.status in {"gap", "error"} for check in checks) else 0
 
 
