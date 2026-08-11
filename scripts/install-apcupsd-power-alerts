@@ -51,6 +51,7 @@ ROOT_REQUIRED_GIT_REPO="${HAPAX_ROOT_REQUIRED_GIT_REPO:-$TARGET_HOME/.cache/hapa
 ROOT_REQUIRED_PACKAGE_SHA="${HAPAX_ROOT_REQUIRED_PACKAGE_SHA:-}"
 ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_STATE_ROOT/.lock}"
 ROOT_REQUIRED_SEALED_SOURCE_FDS="${HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS:-}"
+ROOT_REQUIRED_FINALIZE_GATE="${HAPAX_ROOT_REQUIRED_FINALIZE_GATE:-}"
 ROOT_REQUIRED_RECEIPT="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/apcupsd-power-alerts.sha"
 ROOT_REQUIRED_DESIRED_RECEIPT="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/apcupsd-power-alerts.sha"
 SKIP_SUPERSEDED_INSTALL=0
@@ -63,8 +64,10 @@ VERIFY_LIVE=0
 APCUPSD_LIVE_POLICY_DETAIL=""
 UPOWER_LIVE_POLICY_DETAIL=""
 package_manifest_source="config/root-required/apcupsd-power-alerts.files"
+effect_descriptor_source="config/root-required/apcupsd-power-alerts.effects"
 package_files=(
     "$package_manifest_source"
+    "$effect_descriptor_source"
     scripts/install-apcupsd-power-alerts
     config/apcupsd/apcupsd.conf
     config/apcupsd/hapax-power-event.py
@@ -80,14 +83,14 @@ load_authenticated_sealed_sources() {
     local raw="$ROOT_REQUIRED_SEALED_SOURCE_FDS" index
     local -a source_fds=()
     if [ "$AUTHENTICATED_SEALED_SOURCE" -eq 0 ]; then
-        if [ -n "$raw" ]; then
-            echo "refusing sealed-source descriptors without the authenticated helper protocol flag; next action: remove HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS and rerun normally, or regenerate the live command with hapax-post-merge-deploy" >&2
+        if [ -n "$raw" ] || [ -n "$ROOT_REQUIRED_FINALIZE_GATE" ]; then
+            echo "refusing sealed-source or finalize-gate descriptors without the authenticated helper protocol flag; next action: remove helper-owned descriptor variables and rerun normally, or regenerate the live command with hapax-post-merge-deploy" >&2
             return 1
         fi
         return 0
     fi
-    if [ "$INSTALL" -ne 1 ] || [ -z "$raw" ]; then
-        echo "authenticated sealed-source mode requires --install and helper-owned descriptors; next action: regenerate the live command with hapax-post-merge-deploy" >&2
+    if [ "$INSTALL" -ne 1 ] || [ -z "$raw" ] || [ -z "$ROOT_REQUIRED_FINALIZE_GATE" ]; then
+        echo "authenticated sealed-source mode requires --install plus helper-owned source and finalize-gate descriptors; next action: regenerate the live command with hapax-post-merge-deploy" >&2
         return 1
     fi
     IFS=: read -r -a source_fds <<< "$raw"
@@ -95,7 +98,7 @@ load_authenticated_sealed_sources() {
         echo "authenticated apcupsd source descriptor count mismatch: actual=${#source_fds[@]} expected=${#package_files[@]}; next action: discard the altered invocation and regenerate it with hapax-post-merge-deploy" >&2
         return 1
     fi
-    if ! /usr/bin/python3 -I - "${source_fds[@]}" <<'PY'
+    if ! /usr/bin/python3 -I - "$ROOT_REQUIRED_FINALIZE_GATE" "${source_fds[@]}" <<'PY'
 from __future__ import annotations
 
 import fcntl
@@ -105,8 +108,9 @@ import stat
 import sys
 
 required = fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
+gate, *source_paths = sys.argv[1:]
 holder_pids: set[str] = set()
-for path in sys.argv[1:]:
+for path in (gate, *source_paths):
     match = re.fullmatch(r"/proc/([1-9][0-9]*)/fd/([0-9]+)", path)
     if match is None:
         raise SystemExit(1)
@@ -126,6 +130,13 @@ for path in sys.argv[1:]:
         or not stat.S_ISREG(inode.st_mode)
         or inode.st_uid != os.geteuid()
         or seals & required != required
+        or (
+            path == gate
+            and (
+                not target.startswith("/memfd:hapax-root-finalize-gate")
+                or not inode.st_mode & 0o111
+            )
+        )
     ):
         raise SystemExit(1)
 if len(holder_pids) != 1:
@@ -138,6 +149,20 @@ PY
     for index in "${!package_files[@]}"; do
         ROOT_REQUIRED_SEALED_SOURCES["${package_files[$index]}"]="${source_fds[$index]}"
     done
+}
+
+run_authenticated_finalize_gate() {
+    [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ] || return 0
+    local finalize_mode="${1:-full}"
+    /usr/bin/env -i \
+        HOME="$TARGET_HOME" \
+        PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin \
+        LANG=C.UTF-8 \
+        LC_ALL=C.UTF-8 \
+        /usr/bin/bash --noprofile --norc -p "$ROOT_REQUIRED_FINALIZE_GATE" "$finalize_mode" || {
+        echo "authenticated apcupsd finalization gate rejected; installed receipts and deferral state remain unadvanced" >&2
+        return 1
+    }
 }
 
 src_path() {
@@ -1100,6 +1125,7 @@ load_authenticated_sealed_sources
 [ "$INSTALL" -eq 0 ] || acquire_root_required_lock
 [ "$INSTALL" -eq 0 ] || validate_root_required_package_order
 if [ "$INSTALL" -eq 1 ] && [ "$SKIP_SUPERSEDED_INSTALL" -eq 1 ]; then
+    run_authenticated_finalize_gate authority-only
     drain_root_required_deferral
     echo "apcupsd superseded deferral drained without live mutation"
     exit 0
@@ -1109,6 +1135,7 @@ fi
 [ "$INSTALL" -eq 0 ] || validate_root_required_deferral
 [ "$INSTALL" -eq 0 ] || install_live
 [ "$VERIFY_LIVE" -eq 0 ] || verify_live
+[ "$INSTALL" -eq 0 ] || run_authenticated_finalize_gate
 [ "$INSTALL" -eq 0 ] || record_installed_source
 [ "$INSTALL" -eq 0 ] || record_root_required_package_receipt
 [ "$INSTALL" -eq 0 ] || drain_root_required_deferral

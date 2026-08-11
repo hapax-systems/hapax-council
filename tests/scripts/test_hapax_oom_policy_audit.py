@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import fcntl
 import json
 import os
@@ -226,7 +227,32 @@ def test_arbitrary_scripts_directory_with_fake_git_marker_is_installed_mode(
 
     assert result.returncode == 1
     assert "refused by an installed audit" in result.stdout
-    assert "source checkout verification failed" in result.stderr
+
+
+def test_source_checkout_probe_failure_is_a_structured_fail_closed_result(tmp_path: Path) -> None:
+    copied = tmp_path / "arbitrary" / "scripts" / "hapax-oom-policy-audit"
+    copied.parent.mkdir(parents=True)
+    copied.write_bytes(SCRIPT.read_bytes())
+    copied.chmod(0o755)
+    (tmp_path / "arbitrary" / ".git").write_text("not a Git checkout\n", encoding="utf-8")
+    env = {key: item for key, item in os.environ.items() if key not in INSTALLED_TEST_SELECTORS}
+
+    result = subprocess.run(
+        [str(copied), "--json"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    payload = json.loads(result.stdout)
+    check = next(item for item in payload["checks"] if item["name"] == "source_checkout_authority")
+    assert result.returncode == 1
+    assert check["status"] == "fail"
+    assert check["actual"] == "unverified source checkout; installed-mode diagnostics only"
+    assert "next action:" in check["detail"]
+    assert "WARNING hapax-oom-policy-audit source checkout verification failed" in result.stderr
+    assert "continuing installed-mode diagnostics with a fail-closed result" in result.stderr
     assert "fatal:" in result.stderr
 
 
@@ -1309,6 +1335,25 @@ def test_host_policy_bounds_zram_against_swap_and_physical_floor(
     assert result.returncode == 1
     assert "8 GiB slice swap ceiling" in result.stdout
     assert "half the physical floor as recovery headroom" in result.stdout
+
+
+def test_shipped_host_profile_rows_satisfy_the_declared_zram_invariant() -> None:
+    table = REPO_ROOT / "config" / "root-required" / "oom-host-profiles.tsv"
+    table_text = table.read_text(encoding="utf-8")
+    rows = [
+        row
+        for row in csv.reader(table_text.splitlines(), delimiter="\t")
+        if row and not row[0].lstrip().startswith("#")
+    ]
+
+    assert "-k shipped_host_profile_rows_satisfy_the_declared_zram_invariant" in table_text
+    assert {row[0] for row in rows} == {"hapax-appendix", "hapax-podium"}
+    for row in rows:
+        assert len(row) == 9
+        min_memtotal_gib = int(row[1])
+        zram_mib = int(row[8])
+        assert zram_mib >= 8192
+        assert zram_mib * 2 <= min_memtotal_gib * 1024
 
 
 def test_host_policy_validates_unselected_rows_against_their_interval_minimum(

@@ -123,6 +123,7 @@ GOVERNED_MEMORY_ASSIGNMENT = re.compile(
     r"^[ \t]*(?:MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)[ \t]*=",
     re.MULTILINE,
 )
+SOURCE_CHECKOUT_WARNINGS: list[str] = []
 
 
 @dataclass
@@ -156,11 +157,31 @@ class HostPolicyError(RuntimeError):
 
 
 def _source_checkout_warning(detail: str) -> None:
+    action = (
+        "next action: restore the repository Git metadata and rerun the source audit, "
+        "or invoke the canonical installed audit with its receipt-owned profile table"
+    )
+    message = f"{detail}; {action}"
+    if message not in SOURCE_CHECKOUT_WARNINGS:
+        SOURCE_CHECKOUT_WARNINGS.append(message)
     print(
         f"WARNING hapax-oom-policy-audit source checkout verification failed: {detail}; "
-        "falling back to installed-mode authority checks",
+        f"continuing installed-mode diagnostics with a fail-closed result; {action}",
         file=sys.stderr,
     )
+
+
+def _source_checkout_authority_checks() -> list[Check]:
+    return [
+        Check(
+            "source_checkout_authority",
+            "fail",
+            "verified source checkout or canonical installed snapshot",
+            "unverified source checkout; installed-mode diagnostics only",
+            detail,
+        )
+        for detail in SOURCE_CHECKOUT_WARNINGS
+    ]
 
 
 @functools.cache
@@ -2030,6 +2051,7 @@ def main(argv: list[str] | None = None) -> int:
                     f"{exc}; {NEXT_OOM_INSTALL}",
                 )
             ]
+    checks = [*_source_checkout_authority_checks(), *checks]
     if args.json:
         print(
             json.dumps(

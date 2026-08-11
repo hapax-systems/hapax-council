@@ -25,16 +25,12 @@ LOGROTATE_CONFIG = REPO_ROOT / "systemd" / "logrotate.d" / "hapax-ups-power-even
 REPO_HEAD = subprocess.run(
     ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, check=True, text=True, capture_output=True
 ).stdout.strip()
-APCUPSD_PACKAGE_FILES = (
-    "config/root-required/apcupsd-power-alerts.files",
-    "scripts/install-apcupsd-power-alerts",
-    "config/apcupsd/apcupsd.conf",
-    "config/apcupsd/hapax-power-event.py",
-    "config/apcupsd/onbattery",
-    "config/apcupsd/offbattery",
-    "config/apcupsd/doshutdown",
-    "config/upower/90-hapax-apcupsd-owner.conf",
-    "systemd/logrotate.d/hapax-ups-power-events",
+APCUPSD_PACKAGE_FILES = tuple(
+    line
+    for line in (REPO_ROOT / "config/root-required/apcupsd-power-alerts.files")
+    .read_text(encoding="utf-8")
+    .splitlines()
+    if line and not line.startswith("#")
 )
 
 
@@ -1082,12 +1078,21 @@ def test_installer_install_implies_verify_live_against_temp_destinations(tmp_pat
     assert records[1]["delivery"]["ok"] is False
 
 
-def test_authenticated_deferred_helper_runs_real_apcupsd_installer_through_sudo(
+@pytest.mark.parametrize(
+    "omit_nested_sudo",
+    (False, True),
+    ids=("validated-fake-sudo", "omitted-forced-direct"),
+)
+def test_authenticated_deferred_helper_runs_real_apcupsd_installer_with_safe_nested_sudo(
     tmp_path: Path,
+    omit_nested_sudo: bool,
 ) -> None:
     activation = tmp_path / "activation-release"
     activation.mkdir()
     _copy_apcupsd_package(activation)
+    authority = activation / "scripts/hapax-post-merge-deploy"
+    authority.write_text("#!/usr/bin/bash\nexit 0\n", encoding="utf-8")
+    authority.chmod(0o755)
     subprocess.run(["git", "init", "-q"], cwd=activation, check=True)
     subprocess.run(["git", "config", "user.email", "tests@hapax.local"], cwd=activation, check=True)
     subprocess.run(["git", "config", "user.name", "Hapax Tests"], cwd=activation, check=True)
@@ -1139,7 +1144,10 @@ def test_authenticated_deferred_helper_runs_real_apcupsd_installer_through_sudo(
     systemctl.chmod(0o755)
     target_home = tmp_path / "target-home"
     target_home.mkdir()
+    runtime_task = tmp_path / "runtime-authority-task.md"
+    runtime_task.write_text("test runtime authority input\n", encoding="utf-8")
 
+    nested_sudo_env = {} if omit_nested_sudo else {"HAPAX_APCUPSD_INSTALL_SUDO": str(root_sudo)}
     result = subprocess.run(
         [
             str(REPO_ROOT / "scripts/hapax-root-required-deferred-install"),
@@ -1149,6 +1157,8 @@ def test_authenticated_deferred_helper_runs_real_apcupsd_installer_through_sudo(
             package_sha,
             "--activation-release",
             str(activation),
+            "--runtime-authority-task",
+            str(runtime_task),
         ],
         text=True,
         capture_output=True,
@@ -1156,6 +1166,7 @@ def test_authenticated_deferred_helper_runs_real_apcupsd_installer_through_sudo(
         env={
             **os.environ,
             "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_MODE": "1",
+            "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_HOSTNAME": "hapax-podium",
             "HAPAX_ROOT_REQUIRED_STATE_ROOT": str(state_root),
             "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_root),
             "HAPAX_ROOT_REQUIRED_GIT_REPO": str(activation_alias),
@@ -1166,7 +1177,7 @@ def test_authenticated_deferred_helper_runs_real_apcupsd_installer_through_sudo(
             "HAPAX_APCUPSD_LOGROTATE_DEST": str(tmp_path / "logrotate/hapax-ups"),
             "HAPAX_UPOWER_CONF_DEST": str(tmp_path / "upower/90-hapax.conf"),
             "HAPAX_APCUPSD_SYSTEMCTL": str(systemctl),
-            "HAPAX_APCUPSD_INSTALL_SUDO": str(root_sudo),
+            **nested_sudo_env,
             "HAPAX_APCUPSD_TARGET_UID": str(os.getuid()),
             "HAPAX_APCUPSD_TARGET_GID": str(os.getgid()),
             "HAPAX_APCUPSD_TARGET_HOME": str(target_home),
@@ -1175,9 +1186,12 @@ def test_authenticated_deferred_helper_runs_real_apcupsd_installer_through_sudo(
 
     assert result.returncode == 0, result.stderr
     assert "completed authenticated package=apcupsd-power-alerts" in result.stdout
-    calls = root_sudo_calls.read_text(encoding="utf-8")
-    assert "install -m" in calls
-    assert "/proc/" in calls and "/fd/" in calls
+    if omit_nested_sudo:
+        assert not root_sudo_calls.exists()
+    else:
+        calls = root_sudo_calls.read_text(encoding="utf-8")
+        assert "install -m" in calls
+        assert "/proc/" in calls and "/fd/" in calls
     assert (state_root / "installed-receipts/apcupsd-power-alerts.sha").read_text().strip() == (
         package_sha
     )

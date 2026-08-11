@@ -117,8 +117,9 @@ COVERAGE_FROM_STDIN=0
 VERIFY_AUTO_ENABLE=0
 CHECK_SYMLINK_DRIFT=0
 VERIFY_RUNTIME_AUTHORITY=0
+RUNTIME_AUTHORITY_EXPECTED_SHA=""
 RUNTIME_AUTHORITY_TASK=""
-RUNTIME_AUTHORITY_SCOPE=""
+RUNTIME_AUTHORITY_SCOPES=()
 VERIFY_LOCAL_JUDGE_CAP_RECEIPT=0
 LOCAL_JUDGE_CAP_SHA=""
 LOCAL_JUDGE_CAP_PHASE=""
@@ -146,17 +147,26 @@ if [ "${1:-}" = "--since" ]; then
     SINCE="${2:?commit SHA required after --since}"
     shift 2
 fi
-if [ "${1:-}" = "--verify-runtime-authority" ]; then
-    if [ "$#" -ne 3 ]; then
-        echo "usage: hapax-post-merge-deploy --verify-runtime-authority <active-cc-task.md> <mutation-scope-ref>" >&2
+if [ "${1:-}" = "--verify-runtime-authority-for-release" ]; then
+    if [ "$#" -lt 4 ] || ! [[ "$2" =~ ^[0-9a-f]{40}$ ]]; then
+        echo "usage: hapax-post-merge-deploy --verify-runtime-authority-for-release <40-hex-sha> <active-cc-task.md> <mutation-scope-ref> [mutation-scope-ref ...]" >&2
+        exit 2
+    fi
+    VERIFY_RUNTIME_AUTHORITY=1
+    RUNTIME_AUTHORITY_EXPECTED_SHA="$2"
+    RUNTIME_AUTHORITY_TASK="$3"
+    RUNTIME_AUTHORITY_SCOPES=("${@:4}")
+elif [ "${1:-}" = "--verify-runtime-authority" ]; then
+    if [ "$#" -lt 3 ]; then
+        echo "usage: hapax-post-merge-deploy --verify-runtime-authority <active-cc-task.md> <mutation-scope-ref> [mutation-scope-ref ...]" >&2
         exit 2
     fi
     VERIFY_RUNTIME_AUTHORITY=1
     RUNTIME_AUTHORITY_TASK="$2"
-    RUNTIME_AUTHORITY_SCOPE="$3"
+    RUNTIME_AUTHORITY_SCOPES=("${@:3}")
 elif [ "${1:-}" = "--verify-local-judge-cap-receipt" ]; then
     if [ "$#" -ne 3 ]; then
-        echo "usage: hapax-post-merge-deploy --verify-local-judge-cap-receipt <sha> <candidate|installed>" >&2
+        echo "usage: hapax-post-merge-deploy --verify-local-judge-cap-receipt <sha> <candidate|applied|installed>" >&2
         exit 2
     fi
     VERIFY_LOCAL_JUDGE_CAP_RECEIPT=1
@@ -260,7 +270,13 @@ root_required_git() {
 }
 
 verify_runtime_authority() {
-    local task="$1" scope="$2" account_home active_root activation_alias release_root repo owner_uid git_head
+    local expected_sha="$1" task="$2" account_home active_root activation_alias release_root repo owner_uid git_head
+    shift 2
+    local -a scopes=("$@")
+    if [ "${#scopes[@]}" -eq 0 ]; then
+        echo "hapax-post-merge-deploy: runtime authority scope set is empty; next action: pass every exact mutation-scope ref owned by the operation" >&2
+        return 2
+    fi
     if ! account_home="$(/usr/bin/python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')" \
         || [[ "$account_home" != /* ]]; then
         echo "hapax-post-merge-deploy: cannot derive the account home for runtime authority; next action: repair the local passwd entry and retry" >&2
@@ -277,6 +293,11 @@ verify_runtime_authority() {
         || [ "${repo%/*}" != "$release_root" ] \
         || ! [[ "${repo##*/}" =~ ^[0-9a-f]{40}$ ]]; then
         echo "hapax-post-merge-deploy: canonical source activation is not a releases/<40-hex> worktree; next action: reconcile source activation and retry" >&2
+        return 2
+    fi
+    if [ -n "$expected_sha" ] && { ! [[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]] \
+        || [ "$repo" != "$release_root/$expected_sha" ]; }; then
+        echo "hapax-post-merge-deploy: runtime authority release mismatch: actual=$repo expected=$release_root/$expected_sha; next action: reconcile source activation to the exact package SHA and retry" >&2
         return 2
     fi
     owner_uid="$(/usr/bin/stat -c %u -- "$repo" 2>/dev/null || true)"
@@ -299,7 +320,11 @@ verify_runtime_authority() {
         echo "hapax-post-merge-deploy: source-activation release HEAD does not match its release directory; next action: reconcile source activation and retry" >&2
         return 2
     fi
-    /usr/bin/python3 -I - "$repo" "$git_head" "$task" "$scope" "$active_root" <<'RUNTIME_AUTHORITY_PY'
+    if [ -n "$expected_sha" ] && [ "$git_head" != "$expected_sha" ]; then
+        echo "hapax-post-merge-deploy: runtime authority release HEAD is not the exact package SHA $expected_sha; next action: reconcile source activation and retry" >&2
+        return 2
+    fi
+    /usr/bin/python3 -I - "$repo" "$git_head" "$task" "$active_root" "${scopes[@]}" <<'RUNTIME_AUTHORITY_PY'
 from __future__ import annotations
 
 import hashlib
@@ -378,13 +403,17 @@ def refuse(reason: str) -> None:
     raise SystemExit(2)
 
 
-if len(sys.argv) != 6:
+if len(sys.argv) < 6:
     refuse("validator argument contract is incomplete")
 repo = Path(sys.argv[1])
 git_head = sys.argv[2]
 task = Path(sys.argv[3])
-scope = sys.argv[4]
-active_root = Path(sys.argv[5])
+active_root = Path(sys.argv[4])
+scopes = sys.argv[5:]
+if not scopes or len(scopes) != len(set(scopes)):
+    refuse("mutation scope set is empty or contains duplicates")
+if any(re.fullmatch(r"runtime:[A-Za-z0-9_./@*:+-]+", scope) is None for scope in scopes):
+    refuse("mutation scope set contains a non-runtime semantic ref")
 if not repo.is_absolute() or re.fullmatch(r"[0-9a-f]{40}", git_head) is None:
     refuse("canonical route-schema source selector is malformed")
 if not task.is_absolute() or task != active_root / task.name:
@@ -565,9 +594,13 @@ if assessment.metadata.authority_level.value != "authoritative":
 scope_refs = frontmatter.get("mutation_scope_refs")
 if not isinstance(scope_refs, list) or not all(isinstance(item, str) for item in scope_refs):
     refuse("mutation_scope_refs is absent or malformed")
-if scope not in scope_refs:
-    refuse(f"mutation scope is not authorized: {scope}")
-print(f"runtime authority accepted: task_id={task_id} status={status} scope={scope}")
+missing_scopes = [scope for scope in scopes if scope not in scope_refs]
+if missing_scopes:
+    refuse(f"mutation scope is not authorized: {missing_scopes[0]}")
+print(
+    f"runtime authority accepted: task_id={task_id} status={status} "
+    f"scopes={len(scopes)}"
+)
 RUNTIME_AUTHORITY_PY
 }
 
@@ -575,11 +608,15 @@ verify_local_judge_cap_receipt() {
     local sha="$1" phase="$2" account_home repo_alias release_root repo state desired installed
     local cap_root cap_receipt cap_size source_unit_text gpu_uuid image image_id host receipt_mode git_head
     local installed_unit installed_unit_real expected_unit_oid actual_unit_oid
-    local judge_model model_sha256 model_size_bytes model_host_dir model_host
+    local judge_model model_sha256 model_size_bytes model_host_dir model_host model_host_declared
     local model_identity current_model_identity
     local workload_oid memory_peak swap_peak completed_at now
-    if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || [[ "$phase" != candidate && "$phase" != installed ]]; then
-        echo "hapax-post-merge-deploy: invalid local-judge cap receipt selector; next action: pass a 40-hex SHA and candidate or installed" >&2
+    local DOCKER_HOST=unix:///var/run/docker.sock
+    export DOCKER_HOST
+    unset DOCKER_CONTEXT DOCKER_CONFIG DOCKER_TLS_VERIFY DOCKER_CERT_PATH
+    if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]] \
+        || [[ "$phase" != candidate && "$phase" != applied && "$phase" != installed ]]; then
+        echo "hapax-post-merge-deploy: invalid local-judge cap receipt selector; next action: pass a 40-hex SHA and candidate, applied, or installed" >&2
         return 2
     fi
     if ! account_home="$(/usr/bin/python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')" \
@@ -640,6 +677,8 @@ verify_local_judge_cap_receipt() {
             echo "hapax-post-merge-deploy: installed OOM receipt is writable by another identity; next action: repair receipt permissions and repeat authenticated verification" >&2
             return 2
         fi
+    fi
+    if [ "$phase" != candidate ]; then
         installed_unit="$account_home/.config/systemd/user/hapax-local-judge.service"
         if ! installed_unit_real="$(/usr/bin/realpath -e -- "$installed_unit")" \
             || [ "$installed_unit_real" != "$installed_unit" ] \
@@ -683,13 +722,13 @@ verify_local_judge_cap_receipt() {
         echo "hapax-post-merge-deploy: candidate judge unit blob is unavailable; next action: repair the candidate and rerun the canary" >&2
         return 2
     fi
-    for key in JUDGE_GPU_UUID JUDGE_MODEL JUDGE_MODEL_SHA256 JUDGE_MODEL_SIZE_BYTES JUDGE_MODEL_HOST_DIR JUDGE_IMAGE; do
+    for key in JUDGE_GPU_UUID JUDGE_MODEL JUDGE_MODEL_SHA256 JUDGE_MODEL_SIZE_BYTES JUDGE_MODEL_HOST_DIR JUDGE_MODEL_HOST JUDGE_IMAGE; do
         if [ "$(printf '%s\n' "$source_unit_text" | /usr/bin/grep -c "^Environment=$key=")" != 1 ]; then
             echo "hapax-post-merge-deploy: candidate judge unit has no unique $key; next action: repair the candidate and rerun the canary" >&2
             return 2
         fi
     done
-    if [ "$phase" = installed ]; then
+    if [ "$phase" != candidate ]; then
         if ! expected_unit_oid="$(
             /usr/bin/env -i \
                 HOME=/nonexistent \
@@ -762,11 +801,13 @@ INSTALLED_UNIT_OID_PY
     model_sha256="$(printf '%s\n' "$source_unit_text" | /usr/bin/sed -n 's/^Environment=JUDGE_MODEL_SHA256=//p')"
     model_size_bytes="$(printf '%s\n' "$source_unit_text" | /usr/bin/sed -n 's/^Environment=JUDGE_MODEL_SIZE_BYTES=//p')"
     model_host_dir="$(printf '%s\n' "$source_unit_text" | /usr/bin/sed -n 's/^Environment=JUDGE_MODEL_HOST_DIR=//p')"
+    model_host_declared="$(printf '%s\n' "$source_unit_text" | /usr/bin/sed -n 's/^Environment=JUDGE_MODEL_HOST=//p')"
     image="$(printf '%s\n' "$source_unit_text" | /usr/bin/sed -n 's/^Environment=JUDGE_IMAGE=//p')"
     if ! [[ "$judge_model" =~ ^/models/[A-Za-z0-9._-]+\.gguf$ ]] \
         || ! [[ "$model_sha256" =~ ^[0-9a-f]{64}$ ]] \
         || ! [[ "$model_size_bytes" =~ ^[0-9]{1,20}$ ]] \
         || [ "$model_host_dir" != "/store-fast/hapax-models/sha256/$model_sha256" ] \
+        || [ "$model_host_declared" != "$model_host_dir/${judge_model##*/}" ] \
         || ! [[ "$image" =~ ^ghcr\.io/ggml-org/llama\.cpp@sha256:[0-9a-f]{64}$ ]]; then
         echo "hapax-post-merge-deploy: candidate judge image or model identity is malformed; next action: repair the candidate and rerun the canary" >&2
         return 2
@@ -1098,7 +1139,7 @@ if [ "$MEASURE_PROTECTED_LOCAL_JUDGE_MODEL" -eq 1 ]; then
     exit $?
 fi
 if [ "$VERIFY_RUNTIME_AUTHORITY" -eq 1 ]; then
-    verify_runtime_authority "$RUNTIME_AUTHORITY_TASK" "$RUNTIME_AUTHORITY_SCOPE"
+    verify_runtime_authority "$RUNTIME_AUTHORITY_EXPECTED_SHA" "$RUNTIME_AUTHORITY_TASK" "${RUNTIME_AUTHORITY_SCOPES[@]}"
     exit $?
 fi
 if [ "$VERIFY_LOCAL_JUDGE_CAP_RECEIPT" -eq 1 ]; then
@@ -2472,7 +2513,7 @@ PY
 
 defer_root_required_installer() {
     local label="$1" stage="$2" dest temp receipt helper_rel evidence completion
-    local account_home activation_alias authenticated_script command reconcile_rc
+    local account_home activation_alias authenticated_script command reconcile_rc runtime_task
     local -a command_cmd
     mkdir -p "$ROOT_DEFER_DIR"
     dest="$ROOT_DEFER_DIR/$SHA/$label"
@@ -2508,6 +2549,17 @@ EOF
     mv "$temp" "$dest"
     echo "root-required $label install deferred to $dest"
 
+    runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:-}"
+    if [ -z "$runtime_task" ]; then
+        echo "root-required $label authenticated command withheld because HAPAX_RUNTIME_AUTHORITY_TASK is unset"
+        echo "next action: set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical active runtime-authorized cc-task note, then rerun hapax-post-merge-deploy for $SHA; the sealed helper will validate every exact-SHA effect scope before and after sudo" >&2
+        return 0
+    fi
+    if [[ "$runtime_task" != /* ]] || [ ! -f "$runtime_task" ] || [ -L "$runtime_task" ]; then
+        echo "hapax-post-merge-deploy: runtime authority task is not an absolute non-symlink regular file: $runtime_task; next action: set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical active task note and rerun" >&2
+        return 2
+    fi
+
     if ! account_home="$(/usr/bin/python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')" \
         || [[ "$account_home" != /* ]]; then
         echo "hapax-post-merge-deploy: cannot derive the account home for canonical root-package authentication; next action: repair the local passwd entry and rerun source activation" >&2
@@ -2523,6 +2575,7 @@ label="$4"
 evidence="$5"
 completion="$6"
 account_home="$7"
+runtime_task="$8"
 if ! activation_release="$(/usr/bin/realpath -e -- "$activation_alias")"; then
     echo "hapax-root-required authentication: canonical activation worktree is unavailable: $activation_alias; next action: reconcile source activation, then rerun hapax-post-merge-deploy for $sha" >&2
     exit 2
@@ -2547,7 +2600,7 @@ fi
         LANG=C.UTF-8 LC_ALL=C.UTF-8 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
         GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 PYTHONNOUSERSITE=1 PYTHONSAFEPATH=1 \
         /usr/bin/python3 -I - --package "$label" --expected-sha "$sha" \
-        --activation-release "$activation_release" \
+        --activation-release "$activation_release" --runtime-authority-task "$runtime_task" \
     | /usr/bin/tee "$evidence"
 /usr/bin/grep -Fqx "$completion" "$evidence"
 BASH
@@ -2555,7 +2608,7 @@ BASH
         /usr/bin/env -i HOME="$account_home" PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
         /usr/bin/bash --noprofile --norc -c "$authenticated_script"
         hapax-root-required-auth "$activation_alias" "$SHA" "$helper_rel" "$label"
-        "$evidence" "$completion" "$account_home"
+        "$evidence" "$completion" "$account_home" "$runtime_task"
     )
     printf -v command '%q ' "${command_cmd[@]}"
     echo "next action: run: ${command% }"

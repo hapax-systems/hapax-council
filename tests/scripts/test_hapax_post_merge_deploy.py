@@ -20,6 +20,11 @@ from shared.sdlc_lifecycle import TASK_MUTABLE_STATUSES as CANONICAL_TASK_MUTABL
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-post-merge-deploy"
 ROOT_REQUIRED_AUDIT = REPO_ROOT / "scripts" / "hapax-root-required-deploy-audit"
+DEFAULT_RUNTIME_AUTHORITY_SCOPE = (
+    "runtime:account-file:write:/home/hapax/.config/systemd/user/hapax-local-judge.service"
+)
+SECONDARY_RUNTIME_AUTHORITY_SCOPE = "runtime:docker:update-memory:hapax-local-judge"
+MISSING_RUNTIME_AUTHORITY_SCOPE = "runtime:root-file:write:/etc/default/earlyoom"
 
 
 def _runtime_authority_validator_source() -> str:
@@ -35,7 +40,7 @@ def _runtime_authority_task_text(**replacements: str) -> str:
         "runtime_mutation_authorized": "true",
         "authority_case": "CASE-SYSTEM-INTEGRITY-20260611",
         "parent_spec": "30-areas/hapax/runtime-cap-spec.md",
-        "scope": "systemd/units/hapax-local-judge.service",
+        "scope": DEFAULT_RUNTIME_AUTHORITY_SCOPE,
         "route_schema": "1",
         "quality_floor": "frontier_required",
         "authority_level": "authoritative",
@@ -66,7 +71,7 @@ def _runtime_authority_task_text(**replacements: str) -> str:
 def _run_runtime_authority_validator(
     task: Path,
     active_root: Path,
-    scope: str = "systemd/units/hapax-local-judge.service",
+    scope: str | tuple[str, ...] = DEFAULT_RUNTIME_AUTHORITY_SCOPE,
     cwd: Path | None = None,
     repo: Path = REPO_ROOT,
 ) -> subprocess.CompletedProcess[str]:
@@ -76,6 +81,7 @@ def _run_runtime_authority_validator(
         capture_output=True,
         check=True,
     ).stdout.strip()
+    scopes = (scope,) if isinstance(scope, str) else scope
     return subprocess.run(
         [
             "/usr/bin/python3",
@@ -84,8 +90,8 @@ def _run_runtime_authority_validator(
             str(repo),
             git_head,
             str(task),
-            scope,
             str(active_root),
+            *scopes,
         ],
         input=_runtime_authority_validator_source(),
         text=True,
@@ -101,6 +107,23 @@ OOM_PACKAGE_MANIFEST = (REPO_ROOT / "config/root-required/oom-containment.files"
 APCUPSD_PACKAGE_MANIFEST = (
     REPO_ROOT / "config/root-required/apcupsd-power-alerts.files"
 ).read_text(encoding="utf-8")
+OOM_EFFECT_DESCRIPTOR = (REPO_ROOT / "config/root-required/oom-containment.effects").read_text(
+    encoding="utf-8"
+)
+APCUPSD_EFFECT_DESCRIPTOR = (
+    REPO_ROOT / "config/root-required/apcupsd-power-alerts.effects"
+).read_text(encoding="utf-8")
+
+
+@pytest.fixture(autouse=True)
+def _runtime_authority_task_for_emitted_commands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task = tmp_path / "runtime-authority-task.md"
+    task.write_text("test runtime authority input\n", encoding="utf-8")
+    monkeypatch.setenv("HAPAX_RUNTIME_AUTHORITY_TASK", str(task))
+
+
 OOM_HOST_PROFILE_FILES = {
     relative: (REPO_ROOT / relative).read_text(encoding="utf-8")
     for relative in (
@@ -144,6 +167,8 @@ P0_USER_OOM_DROPINS = {
     }.items()
 }
 P0_OOM_AUDIT_FILES = {
+    "config/root-required/oom-containment.effects": OOM_EFFECT_DESCRIPTOR,
+    "scripts/hapax-local-judge-container-id": "#!/usr/bin/python3\n",
     "scripts/hapax-oom-policy-audit": "#!/usr/bin/env python3\n",
     "scripts/hapax-root-required-deploy-audit": "#!/usr/bin/env bash\n",
     "systemd/units/hapax-local-judge.service": (
@@ -178,6 +203,7 @@ ROOT_AUDIT_SOURCE_FILES = {
     "config/root-required/oom-containment.files": OOM_PACKAGE_MANIFEST,
     **OOM_HOST_PROFILE_FILES,
     "config/root-required/apcupsd-power-alerts.files": APCUPSD_PACKAGE_MANIFEST,
+    "config/root-required/apcupsd-power-alerts.effects": APCUPSD_EFFECT_DESCRIPTOR,
     "scripts/install-p0-oom-containment": "#!/usr/bin/env bash\n",
     "scripts/hapax-root-required-deferred-install": "#!/usr/bin/python3\n",
     "config/root-required/hapax-oom-score-enforce.sudoers": (
@@ -570,6 +596,9 @@ def _root_audit_env(
     root_failure_dest = tmp_path / "sbin" / "hapax-root-failure-intake"
     oom_audit_dest = tmp_path / "sbin" / "hapax-oom-policy-audit"
     root_audit_dest = tmp_path / "sbin" / "hapax-root-required-deploy-audit"
+    local_judge_container_id_dest = (
+        tmp_path / "home" / ".local" / "bin" / "hapax-local-judge-container-id"
+    )
     profile_table_dest = tmp_path / "share" / "oom-host-profiles.tsv"
     zram_policy_dest = tmp_path / "etc" / "systemd" / "zram-generator.conf"
     zram_dropin_dir = tmp_path / "etc" / "systemd" / "zram-generator.conf.d"
@@ -652,6 +681,7 @@ def _root_audit_env(
         "scripts/hapax-root-failure-intake": root_failure_dest,
         "scripts/hapax-oom-policy-audit": oom_audit_dest,
         "scripts/hapax-root-required-deploy-audit": root_audit_dest,
+        "scripts/hapax-local-judge-container-id": local_judge_container_id_dest,
         "config/root-required/oom-host-profiles.tsv": profile_table_dest,
         f"config/root-required/oom-host-policy/{host_profile}/zram-generator.conf": zram_policy_dest,
         "config/earlyoom/default": earlyoom_dest,
@@ -683,6 +713,7 @@ def _root_audit_env(
         "scripts/hapax-root-failure-intake",
         "scripts/hapax-oom-policy-audit",
         "scripts/hapax-root-required-deploy-audit",
+        "scripts/hapax-local-judge-container-id",
         "config/apcupsd/hapax-power-event.py",
         "config/apcupsd/onbattery",
         "config/apcupsd/offbattery",
@@ -761,6 +792,7 @@ def _root_audit_env(
         "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
         "HAPAX_OOM_POLICY_AUDIT_DEST": str(oom_audit_dest),
         "HAPAX_ROOT_REQUIRED_AUDIT_DEST": str(root_audit_dest),
+        "HAPAX_LOCAL_JUDGE_CONTAINER_ID_DEST": str(local_judge_container_id_dest),
         "HAPAX_OOM_PROFILE_TABLE_DEST": str(profile_table_dest),
         "HAPAX_OOM_ZRAM_POLICY_DEST": str(zram_policy_dest),
         "HAPAX_OOM_LEGACY_ZRAM_POLICY_DEST": str(zram_dropin_dir / "90-hapax-host-policy.conf"),
@@ -1063,7 +1095,64 @@ def test_runtime_authority_validator_accepts_structured_active_scoped_task(
 
     assert result.returncode == 0, result.stderr
     assert "runtime authority accepted: task_id=runtime-cap" in result.stdout
-    assert "scope=systemd/units/hapax-local-judge.service" in result.stdout
+    assert "scopes=1" in result.stdout
+
+
+def test_runtime_authority_validator_rejects_source_path_scope_as_non_runtime(
+    tmp_path: Path,
+) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    source_scope = "systemd/units/hapax-local-judge.service"
+    task.write_text(
+        _runtime_authority_task_text(scope=source_scope),
+        encoding="utf-8",
+    )
+
+    result = _run_runtime_authority_validator(
+        task,
+        active_root,
+        scope=source_scope,
+    )
+
+    assert result.returncode == 2
+    assert "mutation scope set contains a non-runtime semantic ref" in result.stderr
+
+
+def test_runtime_authority_validator_requires_every_requested_scope(tmp_path: Path) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    task.write_text(
+        _runtime_authority_task_text(scope=DEFAULT_RUNTIME_AUTHORITY_SCOPE).replace(
+            f"  - {DEFAULT_RUNTIME_AUTHORITY_SCOPE}\n",
+            f"  - {DEFAULT_RUNTIME_AUTHORITY_SCOPE}\n  - {SECONDARY_RUNTIME_AUTHORITY_SCOPE}\n",
+        ),
+        encoding="utf-8",
+    )
+
+    accepted = _run_runtime_authority_validator(
+        task,
+        active_root,
+        scope=(
+            DEFAULT_RUNTIME_AUTHORITY_SCOPE,
+            SECONDARY_RUNTIME_AUTHORITY_SCOPE,
+        ),
+    )
+    rejected = _run_runtime_authority_validator(
+        task,
+        active_root,
+        scope=(
+            DEFAULT_RUNTIME_AUTHORITY_SCOPE,
+            MISSING_RUNTIME_AUTHORITY_SCOPE,
+        ),
+    )
+
+    assert accepted.returncode == 0, accepted.stderr
+    assert "scopes=2" in accepted.stdout
+    assert rejected.returncode == 2
+    assert f"mutation scope is not authorized: {MISSING_RUNTIME_AUTHORITY_SCOPE}" in rejected.stderr
 
 
 def test_runtime_authority_validator_has_no_release_tree_import_surface() -> None:
@@ -1213,7 +1302,14 @@ def test_runtime_authority_validator_rejects_duplicate_authority_fields(tmp_path
         ({"quality_floor": "null"}, "route metadata is not canonically explicit"),
         ({"authority_level": "support_non_authoritative"}, "authority_level is not authoritative"),
         ({"mutation_surface": "source"}, "mutation_surface is not runtime"),
-        ({"scope": "systemd/units/unrelated.service"}, "mutation scope is not authorized"),
+        (
+            {
+                "scope": (
+                    "runtime:account-file:write:/home/hapax/.config/systemd/user/unrelated.service"
+                )
+            },
+            "mutation scope is not authorized",
+        ),
     ],
 )
 def test_runtime_authority_validator_rejects_invalid_frontmatter_authority(
@@ -1263,7 +1359,10 @@ def test_local_judge_cap_receipt_verifier_is_sha_host_and_evidence_bound() -> No
         '\n}\n\nif [ "$VERIFY_RUNTIME_AUTHORITY"', 1
     )[0]
 
-    assert "--verify-local-judge-cap-receipt <sha> <candidate|installed>" in source
+    assert "--verify-local-judge-cap-receipt <sha> <candidate|applied|installed>" in source
+    assert '[[ "$phase" != candidate && "$phase" != applied && "$phase" != installed ]]' in source
+    assert 'if [ "$phase" = installed ]; then' in verifier
+    assert 'if [ "$phase" != candidate ]; then' in verifier
     assert 'repo_alias="$account_home/.cache/hapax/source-activation/worktree"' in source
     assert 'desired="$state/desired-receipts/oom-containment.sha"' in source
     assert 'installed="$state/installed-receipts/oom-containment.sha"' in source
@@ -2081,6 +2180,7 @@ def test_concurrent_oom_deferral_ignores_replace_refs_and_owns_local_judge(
             str(success_evidence),
             completion,
             str(home),
+            os.environ["HAPAX_RUNTIME_AUTHORITY_TASK"],
         ],
         text=True,
         capture_output=True,
@@ -3484,6 +3584,91 @@ def test_root_required_audit_refuses_relative_test_destinations(tmp_path: Path) 
     assert "next action:" in result.stderr
 
 
+@pytest.mark.parametrize("through_symlink", (False, True), ids=("direct", "symlink"))
+def test_root_required_audit_refuses_real_sudo_before_caller_payload(
+    tmp_path: Path,
+    through_symlink: bool,
+) -> None:
+    env = _root_audit_env(tmp_path)
+    payload_marker = tmp_path / "caller-payload-ran"
+    payload = tmp_path / "caller-payload"
+    payload.write_text(
+        f"#!/bin/sh\ntouch {payload_marker!s}\nexit 0\n",
+        encoding="utf-8",
+    )
+    payload.chmod(0o755)
+    selected_sudo = Path("/usr/bin/sudo")
+    if through_symlink:
+        selected_sudo = tmp_path / "selected-sudo"
+        selected_sudo.symlink_to("/usr/bin/sudo")
+    env.update(
+        {
+            "HAPAX_ROOT_AUDIT_SUDO": str(selected_sudo),
+            "HAPAX_ROOT_AUDIT_CMP": str(payload),
+            "HAPAX_ROOT_AUDIT_VISUDO": str(payload),
+        }
+    )
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "refuses real sudo in isolated test mode" in result.stderr
+    assert "next action:" in result.stderr
+    assert not payload_marker.exists()
+
+
+@pytest.mark.parametrize(
+    "unsafe_kind",
+    ("hard-linked", "setuid", "group-writable", "non-executable"),
+)
+def test_root_required_audit_refuses_unsafe_fake_sudo_before_caller_payload(
+    tmp_path: Path,
+    unsafe_kind: str,
+) -> None:
+    env = _root_audit_env(tmp_path)
+    fake_sudo = Path(env["HAPAX_ROOT_AUDIT_SUDO"])
+    payload_marker = tmp_path / "unsafe-fake-payload-ran"
+    payload = tmp_path / "unsafe-fake-payload"
+    payload.write_text(
+        f"#!/bin/sh\ntouch {payload_marker!s}\nexit 0\n",
+        encoding="utf-8",
+    )
+    payload.chmod(0o755)
+    if unsafe_kind == "hard-linked":
+        (tmp_path / "fake-sudo-peer").hardlink_to(fake_sudo)
+    elif unsafe_kind == "setuid":
+        fake_sudo.chmod(0o4755)
+    elif unsafe_kind == "group-writable":
+        fake_sudo.chmod(0o775)
+    else:
+        fake_sudo.chmod(0o644)
+    env.update(
+        {
+            "HAPAX_ROOT_AUDIT_CMP": str(payload),
+            "HAPAX_ROOT_AUDIT_VISUDO": str(payload),
+        }
+    )
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "refuses unsafe fake sudo in isolated test mode" in result.stderr
+    assert "next action:" in result.stderr
+    assert not payload_marker.exists()
+
+
 def test_root_required_audit_ignores_hostile_path(tmp_path: Path) -> None:
     env = _root_audit_env(tmp_path)
     hostile_bin = tmp_path / "hostile-bin"
@@ -3550,6 +3735,36 @@ def test_root_required_audit_rejects_ambient_home_before_mutation(tmp_path: Path
     assert not (tmp_path / ".cache/hapax/post-merge-root-required").exists()
 
 
+def test_installed_root_required_audit_cannot_enter_fixture_mode(
+    tmp_path: Path,
+) -> None:
+    installed = tmp_path / "usr/local/sbin/hapax-root-required-deploy-audit"
+    installed.parent.mkdir(parents=True)
+    installed.write_bytes(ROOT_REQUIRED_AUDIT.read_bytes())
+    installed.chmod(0o755)
+    redirected = tmp_path / "redirected-state"
+    env = {
+        **os.environ,
+        "HAPAX_ROOT_AUDIT_TEST_MODE": "1",
+        "HAPAX_ROOT_REQUIRED_STATE_ROOT": str(redirected),
+        "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(tmp_path / "redirected-defer"),
+    }
+
+    result = subprocess.run(
+        [str(installed)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "refuses test mode outside its physical repository script path" in result.stderr
+    assert "next action:" in result.stderr
+    assert not redirected.exists()
+    assert not (tmp_path / "redirected-defer").exists()
+
+
 @pytest.mark.parametrize(
     "selector",
     (
@@ -3570,6 +3785,7 @@ def test_root_required_audit_rejects_ambient_home_before_mutation(tmp_path: Path
         "HAPAX_ROOT_FAILURE_INTAKE_DEST",
         "HAPAX_OOM_POLICY_AUDIT_DEST",
         "HAPAX_ROOT_REQUIRED_AUDIT_DEST",
+        "HAPAX_LOCAL_JUDGE_CONTAINER_ID_DEST",
         "HAPAX_OOM_PROFILE_TABLE_DEST",
         "HAPAX_OOM_ZRAM_POLICY_DEST",
         "HAPAX_OOM_LEGACY_ZRAM_POLICY_DEST",
@@ -4187,6 +4403,7 @@ def test_apcupsd_power_alert_deploy_always_creates_authenticated_deferral(
         "config/root-required/apcupsd-power-alerts.files": (
             APCUPSD_PACKAGE_MANIFEST + f"{future_manifest_path}\n"
         ),
+        "config/root-required/apcupsd-power-alerts.effects": APCUPSD_EFFECT_DESCRIPTOR,
         future_manifest_path: "future hook\n",
         "scripts/install-apcupsd-power-alerts": installer_body,
         "config/apcupsd/apcupsd.conf": (

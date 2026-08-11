@@ -3,35 +3,186 @@
 
 set -euo pipefail
 
-LOG_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/mcp-logs"
+CALLER_HOME="${HOME:-}"
+if ! ACCOUNT_HOME="$(/usr/bin/env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+  /usr/bin/python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')" \
+  || ! ACCOUNT_NAME="$(/usr/bin/env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+    /usr/bin/python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_name)')" \
+  || [[ "$ACCOUNT_HOME" != /* || -z "$ACCOUNT_NAME" ]] \
+  || ! ACCOUNT_HOME="$(/usr/bin/realpath -e -- "$ACCOUNT_HOME")"; then
+  echo "hapax-github-mcp: cannot derive the canonical account identity; next action: repair the passwd entry and retry" >&2
+  exit 2
+fi
+if ! CALLER_HOME="$(/usr/bin/realpath -e -- "$CALLER_HOME")" \
+  || [ "$CALLER_HOME" != "$ACCOUNT_HOME" ]; then
+  echo "hapax-github-mcp: HOME does not match the passwd-backed account home; next action: remove the hostile HOME override and launch from the canonical account environment" >&2
+  exit 2
+fi
+HOME="$ACCOUNT_HOME"
+USER="$ACCOUNT_NAME"
+LOGNAME="$ACCOUNT_NAME"
+PATH=/usr/local/bin:/usr/bin:/bin
+DOCKER_HOST=unix:///var/run/docker.sock
+export HOME USER LOGNAME PATH DOCKER_HOST
+unset CDPATH ENV BASH_ENV DOCKER_CONTEXT GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR
+unset GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+unset GIT_SHALLOW_FILE GIT_REPLACE_REF_BASE
+
+LOG_DIR="$ACCOUNT_HOME/.cache/hapax/mcp-logs"
 LOG_FILE="$LOG_DIR/github-mcp.log"
+LOGGER=/usr/bin/logger
+
+bounded_diagnostic_reason() {
+  local reason="$1"
+  reason="${reason//$'\n'/ }"
+  reason="${reason//$'\r'/ }"
+  reason="${reason//$'\t'/ }"
+  /usr/bin/printf '%.240s' "$reason"
+}
+
+record_diagnostic() {
+  local message="$1" file_error="" file_reason="" logger_error="" logger_reason=""
+  if file_error="$({
+    /usr/bin/mkdir -p -- "$LOG_DIR" \
+      && /usr/bin/printf '%s %s\n' "$(/usr/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" "$message" >>"$LOG_FILE"
+  } 2>&1)"; then
+    echo "$message (diagnostic recorded in $LOG_FILE)" >&2
+  else
+    file_reason="$(bounded_diagnostic_reason "$file_error")"
+    if [ -x "$LOGGER" ] \
+      && logger_error="$("$LOGGER" --tag hapax-github-mcp -- "$message" 2>&1)"; then
+      echo "$message (file diagnostic failed for $LOG_FILE: ${file_reason:-unknown error}; recorded in the system journal)" >&2
+    else
+      logger_reason="$(bounded_diagnostic_reason "$logger_error")"
+      echo "$message (diagnostic logging failed for $LOG_FILE: ${file_reason:-unknown error}; system journal fallback failed: ${logger_reason:-unknown error})" >&2
+    fi
+  fi
+}
 
 canonical_refusal() {
-  local message="$1" account_home="" account_home_resolved="" home_resolved=""
-  if mkdir -p "$LOG_DIR" 2>/dev/null \
-    && printf '%s %s\n' "$(/usr/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" "$message" >>"$LOG_FILE" 2>/dev/null; then
-    echo "$message (diagnostic recorded in $LOG_FILE)" >&2
-  elif account_home="$(/usr/bin/getent passwd "$(/usr/bin/id -u)" | /usr/bin/cut -d: -f6)" \
-    && [ -n "$account_home" ] \
-    && home_resolved="$(/usr/bin/realpath -m -- "$HOME")" \
-    && account_home_resolved="$(/usr/bin/realpath -m -- "$account_home")" \
-    && [ "$home_resolved" = "$account_home_resolved" ] \
-    && [ -x /usr/bin/logger ] \
-    && /usr/bin/logger --tag hapax-github-mcp -- "$message" 2>/dev/null; then
-    echo "$message (file diagnostic failed for $LOG_FILE; recorded in the system journal)" >&2
-  else
-    echo "$message (diagnostic logging failed for $LOG_FILE; system journal fallback unavailable)" >&2
-  fi
+  record_diagnostic "$1"
   exit 2
 }
 
-CANONICAL_ALIAS="$HOME/.cache/hapax/source-activation/worktree/scripts/hapax-github-mcp"
-if ! CANONICAL_WRAPPER="$(/usr/bin/realpath -e -- "$CANONICAL_ALIAS")"; then
-  canonical_refusal "hapax-github-mcp: canonical source-activation wrapper is unavailable: $CANONICAL_ALIAS; next action: reconcile source activation and retry the MCP request"
+run_test_refusal_probe() {
+  local invoked resolved source_root git_root owner mode test_logger test_log_dir
+  [ "$#" -eq 1 ] && [ "$1" = --test-canonical-refusal ] \
+    && [ "${HAPAX_GITHUB_MCP_TEST_MODE:-0}" = 1 ] || return 1
+  [ "$(/usr/bin/id -u)" != 0 ] \
+    && [ "${BASH_SOURCE[0]}" = "$0" ] \
+    && [ ! -L "$0" ] || {
+      echo "hapax-github-mcp: refusal probe requires direct non-root source execution; next action: invoke the tracked repository wrapper as the account user" >&2
+      exit 2
+    }
+  invoked="$(/usr/bin/realpath -e -- "$0")" || {
+    echo "hapax-github-mcp: refusal probe cannot resolve its invoked path; next action: invoke the tracked physical repository wrapper" >&2
+    exit 2
+  }
+  source_root="$(/usr/bin/dirname -- "$(/usr/bin/dirname -- "$invoked")")"
+  if [ "$invoked" != "$source_root/scripts/hapax-github-mcp" ] \
+    || { [ ! -d "$source_root/.git" ] && [ ! -f "$source_root/.git" ]; } \
+    || ! git_root="$(/usr/bin/env -i HOME=/nonexistent PATH=/usr/bin:/bin \
+      GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 \
+      GIT_OPTIONAL_LOCKS=0 /usr/bin/git -C "$source_root" rev-parse --show-toplevel)" \
+    || ! resolved="$(/usr/bin/realpath -e -- "$git_root")" \
+    || [ "$resolved" != "$source_root" ] \
+    || ! /usr/bin/env -i HOME=/nonexistent PATH=/usr/bin:/bin \
+      GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 \
+      GIT_OPTIONAL_LOCKS=0 /usr/bin/git -C "$source_root" ls-files --error-unmatch -- \
+        scripts/hapax-github-mcp >/dev/null; then
+    echo "hapax-github-mcp: refusal probe requires the tracked physical repository wrapper; next action: invoke scripts/hapax-github-mcp from its physical Git worktree" >&2
+    exit 2
+  fi
+  for resolved in "$source_root" "$source_root/scripts" "$invoked"; do
+    owner="$(/usr/bin/stat -c %u -- "$resolved" 2>/dev/null || true)"
+    mode="$(/usr/bin/stat -c %a -- "$resolved" 2>/dev/null || true)"
+    if [ "$owner" != "$(/usr/bin/id -u)" ] || ! [[ "$mode" =~ ^[0-7]+$ ]] \
+      || (( (8#$mode & 022) != 0 )); then
+      echo "hapax-github-mcp: refusal probe source path is not caller-owned and non-writable; next action: restore account ownership and remove group/world write bits" >&2
+      exit 2
+    fi
+  done
+  test_logger="${HAPAX_GITHUB_MCP_TEST_LOGGER:-}"
+  test_log_dir="${HAPAX_GITHUB_MCP_TEST_LOG_DIR:-}"
+  if [[ "$test_logger" != /* || "$test_log_dir" != /* ]] \
+    || [ ! -f "$test_logger" ] || [ -L "$test_logger" ] || [ ! -x "$test_logger" ]; then
+    echo "hapax-github-mcp: refusal probe requires absolute test logger and log paths; next action: pass regular executable logger and isolated absolute log paths" >&2
+    exit 2
+  fi
+  LOGGER="$test_logger"
+  LOG_DIR="$test_log_dir"
+  LOG_FILE="$LOG_DIR/github-mcp.log"
+  canonical_refusal "canonical probe; next action: repair source activation"
+}
+
+if [ "${1:-}" = --test-canonical-refusal ]; then
+  run_test_refusal_probe "$@"
+  canonical_refusal "hapax-github-mcp: refusal probe selectors were rejected; next action: run only the tracked source wrapper in explicit test mode"
+elif [ -n "${HAPAX_GITHUB_MCP_TEST_MODE+x}" ] \
+  || [ -n "${HAPAX_GITHUB_MCP_TEST_LOGGER+x}" ] \
+  || [ -n "${HAPAX_GITHUB_MCP_TEST_LOG_DIR+x}" ]; then
+  canonical_refusal "hapax-github-mcp: test selectors are refused during normal launch; next action: remove all HAPAX_GITHUB_MCP_TEST_* variables"
 fi
-if [ ! -f "$CANONICAL_WRAPPER" ] || [ ! -x "$CANONICAL_WRAPPER" ]; then
-  canonical_refusal "hapax-github-mcp: canonical source-activation wrapper is not an executable regular file: $CANONICAL_WRAPPER; next action: restore the release-pinned executable through source activation and retry"
-fi
+
+canonical_git() {
+  /usr/bin/env -i \
+    HOME=/nonexistent \
+    PATH=/usr/bin:/bin \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_CONFIG_NOSYSTEM=1 \
+    GIT_NO_REPLACE_OBJECTS=1 \
+    GIT_OPTIONAL_LOCKS=0 \
+    /usr/bin/git -C "$CANONICAL_RELEASE" "$@"
+}
+
+resolve_canonical_wrapper() {
+  local canonical_path canonical_owner canonical_mode
+  ACTIVATION_ROOT="$ACCOUNT_HOME/.cache/hapax/source-activation"
+  RELEASE_ROOT="$ACTIVATION_ROOT/releases"
+  CANONICAL_ALIAS="$ACTIVATION_ROOT/worktree"
+  if [ -L "$RELEASE_ROOT" ] \
+    || ! RELEASE_ROOT_RESOLVED="$(/usr/bin/realpath -e -- "$RELEASE_ROOT")" \
+    || [ "$RELEASE_ROOT_RESOLVED" != "$RELEASE_ROOT" ]; then
+    canonical_refusal "hapax-github-mcp: canonical release root is unavailable or indirect: $RELEASE_ROOT; next action: reconcile source activation and restore the physical releases directory"
+  fi
+  if ! CANONICAL_RELEASE="$(/usr/bin/realpath -e -- "$CANONICAL_ALIAS")"; then
+    canonical_refusal "hapax-github-mcp: canonical source-activation wrapper is unavailable: $CANONICAL_ALIAS; next action: reconcile source activation and retry the MCP request"
+  fi
+  CANONICAL_SHA="${CANONICAL_RELEASE##*/}"
+  if [ "${CANONICAL_RELEASE%/*}" != "$RELEASE_ROOT" ] \
+    || ! [[ "$CANONICAL_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+    canonical_refusal "hapax-github-mcp: canonical source activation is not a releases/<40-hex> worktree: $CANONICAL_RELEASE; next action: reconcile source activation to a release-addressed worktree"
+  fi
+  CANONICAL_WRAPPER="$CANONICAL_RELEASE/scripts/hapax-github-mcp"
+  if [ ! -f "$CANONICAL_WRAPPER" ] || [ -L "$CANONICAL_WRAPPER" ] || [ ! -x "$CANONICAL_WRAPPER" ]; then
+    canonical_refusal "hapax-github-mcp: canonical source-activation wrapper is not an executable regular file: $CANONICAL_WRAPPER; next action: restore the release-pinned executable through source activation and retry"
+  fi
+  for canonical_path in "$RELEASE_ROOT" "$CANONICAL_RELEASE" "$CANONICAL_RELEASE/scripts" "$CANONICAL_WRAPPER"; do
+    canonical_owner="$(/usr/bin/stat -c %u -- "$canonical_path" 2>/dev/null || true)"
+    canonical_mode="$(/usr/bin/stat -c %a -- "$canonical_path" 2>/dev/null || true)"
+    if [ "$canonical_owner" != "$EUID" ] || ! [[ "$canonical_mode" =~ ^[0-7]+$ ]] \
+      || (( (8#$canonical_mode & 022) != 0 )); then
+      canonical_refusal "hapax-github-mcp: canonical release path is not account-owned and non-writable: $canonical_path; next action: repair source-activation ownership and mode before retrying"
+    fi
+  done
+  if ! CANONICAL_GIT_ROOT="$(canonical_git rev-parse --show-toplevel 2>/dev/null)" \
+    || ! CANONICAL_GIT_ROOT="$(/usr/bin/realpath -e -- "$CANONICAL_GIT_ROOT")" \
+    || [ "$CANONICAL_GIT_ROOT" != "$CANONICAL_RELEASE" ] \
+    || ! CANONICAL_HEAD="$(canonical_git rev-parse --verify 'HEAD^{commit}' 2>/dev/null)" \
+    || [ "$CANONICAL_HEAD" != "$CANONICAL_SHA" ] \
+    || ! CANONICAL_WRAPPER_OID="$(canonical_git rev-parse --verify "$CANONICAL_SHA:scripts/hapax-github-mcp" 2>/dev/null)" \
+    || ! [[ "$CANONICAL_WRAPPER_OID" =~ ^[0-9a-f]{40}$ ]]; then
+    canonical_refusal "hapax-github-mcp: canonical release Git identity does not match its release path: $CANONICAL_RELEASE; next action: discard the malformed release and reconcile source activation"
+  fi
+  if ! canonical_git cat-file blob "$CANONICAL_WRAPPER_OID" 2>/dev/null \
+    | /usr/bin/cmp -s - "$CANONICAL_WRAPPER"; then
+    canonical_refusal "hapax-github-mcp: canonical wrapper does not match its release Git object: $CANONICAL_RELEASE; next action: discard the modified release and reconcile source activation"
+  fi
+}
+
+resolve_canonical_wrapper
 if ! CURRENT_WRAPPER="$(/usr/bin/realpath -e -- "$0")"; then
   canonical_refusal "hapax-github-mcp: invoked wrapper path cannot be resolved: $0; next action: invoke the canonical source-activation wrapper directly and repair the broken launcher"
 fi
@@ -41,8 +192,8 @@ fi
 
 pass_first_line() {
   local name="$1"
-  command -v pass >/dev/null 2>&1 || return 1
-  pass show "$name" 2>/dev/null | sed -n '1p'
+  [ -x /usr/bin/pass ] || return 1
+  /usr/bin/pass show "$name" 2>/dev/null | /usr/bin/sed -n '1p'
 }
 
 load_first_available_pass_secret() {
@@ -65,9 +216,9 @@ load_bearer_from_claude_mcp() {
   local server="$2"
   [ -n "${!env_name:-}" ] && return 0
   [ -r "$HOME/.claude.json" ] || return 1
-  command -v jq >/dev/null 2>&1 || return 1
+  [ -x /usr/bin/jq ] || return 1
   local header token
-  header="$(jq -r --arg server "$server" '.mcpServers[$server].headers.Authorization // empty' "$HOME/.claude.json" 2>/dev/null || true)"
+  header="$(/usr/bin/jq -r --arg server "$server" '.mcpServers[$server].headers.Authorization // empty' "$HOME/.claude.json" 2>/dev/null || true)"
   case "$header" in
     "Bearer "*)
       token="${header#Bearer }"
@@ -86,9 +237,9 @@ load_bearer_from_claude_mcp() {
 load_github_token_from_gh() {
   local env_name="$1"
   [ -n "${!env_name:-}" ] && return 0
-  command -v gh >/dev/null 2>&1 || return 1
+  [ -x /usr/bin/gh ] || return 1
   local value
-  value="$(gh auth token 2>/dev/null || true)"
+  value="$(/usr/bin/gh auth token 2>/dev/null || true)"
   if [ -n "$value" ]; then
     export "$env_name=$value"
     return 0
@@ -116,7 +267,8 @@ if [ -z "${GITHUB_PERSONAL_ACCESS_TOKEN:-}" ]; then
   exit 2
 fi
 
-mkdir -p "$LOG_DIR"
+/usr/bin/mkdir -p -- "$LOG_DIR" || canonical_refusal \
+  "hapax-github-mcp: cannot create the canonical MCP log directory: $LOG_DIR; next action: repair account ownership and mode under $ACCOUNT_HOME/.cache/hapax"
 CONTAINER_NAME="hapax-github-mcp-$USER-$$"
 TOOLS="${HAPAX_GITHUB_MCP_TOOLS:-search_pull_requests,pull_request_read,merge_pull_request,add_issue_comment,create_pull_request}"
 FILTER_ARGS=()
@@ -128,12 +280,65 @@ else
   FILTER_ARGS=("--toolsets=pull_requests,issues")
 fi
 
-cleanup() {
-  docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-}
-trap cleanup EXIT INT TERM HUP
+CID_DIR=""
+CID_FILE=""
+if ! CID_DIR="$(/usr/bin/mktemp -d -p "$LOG_DIR" github-mcp.XXXXXXXXXX)"; then
+  canonical_refusal "hapax-github-mcp: cannot create immutable-ID scratch under $LOG_DIR; next action: repair account ownership and available space, then retry"
+fi
+CID_FILE="$CID_DIR/container.cid"
 
-docker run -i --rm \
+cleanup() {
+  local rc=$? cid="" matches="" remove_error="" recheck="" query_error=""
+  local cleanup_failed=0
+  trap - EXIT INT TERM HUP
+  if [ -e "$CID_FILE" ] || [ -L "$CID_FILE" ]; then
+    if [ ! -f "$CID_FILE" ] || [ -L "$CID_FILE" ] \
+      || [ "$(/usr/bin/stat -c %u -- "$CID_FILE" 2>/dev/null || true)" != "$EUID" ] \
+      || [ "$(/usr/bin/stat -c %h -- "$CID_FILE" 2>/dev/null || true)" != 1 ] \
+      || [ "$(/usr/bin/stat -c %s -- "$CID_FILE" 2>/dev/null || true)" != 64 ] \
+      || ! cid="$(/usr/bin/cat -- "$CID_FILE")" \
+      || ! [[ "$cid" =~ ^[0-9a-f]{64}$ ]]; then
+      cleanup_failed=1
+      record_diagnostic "hapax-github-mcp: cleanup refused unsafe immutable-ID scratch: $CID_FILE; next action: inspect the retained scratch and Docker inventory, then remove only a proven full container ID"
+    elif ! matches="$(/usr/bin/docker ps -aq --no-trunc --filter "id=$cid" 2>&1)"; then
+      cleanup_failed=1
+      query_error="$(bounded_diagnostic_reason "$matches")"
+      record_diagnostic "hapax-github-mcp: cannot prove cleanup state for immutable container ID $cid: ${query_error:-unknown Docker error}; next action: restore the pinned local Docker socket, inspect that exact ID, and remove it only after identity confirmation; retained scratch: $CID_FILE"
+    elif [ -n "$matches" ] && [ "$matches" != "$cid" ]; then
+      cleanup_failed=1
+      record_diagnostic "hapax-github-mcp: Docker returned an unexpected identity while cleaning $cid; next action: inspect the retained scratch and full Docker inventory without removing by name; retained scratch: $CID_FILE"
+    elif [ "$matches" = "$cid" ] \
+      && ! remove_error="$(/usr/bin/docker rm -f "$cid" 2>&1)"; then
+      if ! recheck="$(/usr/bin/docker ps -aq --no-trunc --filter "id=$cid" 2>&1)"; then
+        cleanup_failed=1
+        query_error="$(bounded_diagnostic_reason "$recheck")"
+        remove_error="$(bounded_diagnostic_reason "$remove_error")"
+        record_diagnostic "hapax-github-mcp: immutable-ID cleanup failed for $cid (${remove_error:-unknown Docker error}) and absence recheck failed (${query_error:-unknown Docker error}); next action: restore Docker, inspect that exact ID, and remove it without using the container name; retained scratch: $CID_FILE"
+      elif [ -n "$recheck" ]; then
+        cleanup_failed=1
+        remove_error="$(bounded_diagnostic_reason "$remove_error")"
+        record_diagnostic "hapax-github-mcp: immutable-ID cleanup failed and container $cid remains: ${remove_error:-unknown Docker error}; next action: inspect and remove that exact ID without using the container name; retained scratch: $CID_FILE"
+      fi
+    fi
+  fi
+  if [ "$cleanup_failed" -eq 0 ]; then
+    if ! /usr/bin/rm -f -- "$CID_FILE" || ! /usr/bin/rmdir -- "$CID_DIR"; then
+      cleanup_failed=1
+      record_diagnostic "hapax-github-mcp: container absence is proven but immutable-ID scratch cleanup failed: $CID_DIR; next action: inspect and remove only this account-owned scratch directory"
+    fi
+  fi
+  if [ "$cleanup_failed" -ne 0 ] && [ "$rc" -eq 0 ]; then
+    rc=2
+  fi
+  exit "$rc"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+/usr/bin/docker run -i --rm \
+  --cidfile "$CID_FILE" \
   --name "$CONTAINER_NAME" \
   --memory 512M \
   --memory-swap 768M \
