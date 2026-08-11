@@ -22,6 +22,7 @@ class DockerRig:
     log: Path
     exists: Path
     replacement: Path
+    inspect_failure: Path
     name: Path
     image_missing: Path
     daemon_ready_after: Path
@@ -56,6 +57,7 @@ def _rig(tmp_path: Path, *, running: bool = True) -> DockerRig:
     log = tmp_path / "docker.jsonl"
     exists = tmp_path / "container-exists"
     replacement = tmp_path / "same-name-replacement-exists"
+    inspect_failure = tmp_path / "inspect-failure"
     name = tmp_path / "container-name"
     image_missing = tmp_path / "image-missing"
     daemon_ready_after = tmp_path / "daemon-ready-after"
@@ -70,6 +72,7 @@ def _rig(tmp_path: Path, *, running: bool = True) -> DockerRig:
         f"log = pathlib.Path({str(log)!r})\n"
         f"exists = pathlib.Path({str(exists)!r})\n"
         f"replacement = pathlib.Path({str(replacement)!r})\n"
+        f"inspect_failure = pathlib.Path({str(inspect_failure)!r})\n"
         f"name = pathlib.Path({str(name)!r})\n"
         f"image_missing = pathlib.Path({str(image_missing)!r})\n"
         f"daemon_ready_after = pathlib.Path({str(daemon_ready_after)!r})\n"
@@ -95,7 +98,10 @@ def _rig(tmp_path: Path, *, running: bool = True) -> DockerRig:
         "    print(json.dumps([image]))\n"
         "elif args and args[0] == 'inspect':\n"
         "    target = args[-1]\n"
-        "    if target == container_id and exists.exists():\n"
+        "    if target == container_id and inspect_failure.exists():\n"
+        "        print('inspect transport unavailable', file=sys.stderr)\n"
+        "        raise SystemExit(42)\n"
+        "    elif target == container_id and exists.exists():\n"
         "        print(f'{container_id}|/{name.read_text().strip()}')\n"
         "    elif target == 'hapax-local-judge' and replacement.exists():\n"
         "        print(f'{replacement_id}|/{name.read_text().strip()}')\n"
@@ -121,6 +127,7 @@ def _rig(tmp_path: Path, *, running: bool = True) -> DockerRig:
         log=log,
         exists=exists,
         replacement=replacement,
+        inspect_failure=inspect_failure,
         name=name,
         image_missing=image_missing,
         daemon_ready_after=daemon_ready_after,
@@ -318,8 +325,21 @@ def test_managed_id_refuses_same_name_replacement_for_absent_bound_id(
     assert result.returncode == 1
     assert "unit-owned local-judge container is absent" in result.stderr
     assert "do not accept a same-name replacement" in result.stderr
-    assert [call["args"][-1] for call in rig.calls()] == [CONTAINER_ID]
+    assert [call["args"][-1] for call in rig.calls()] == [CONTAINER_ID, f"id={CONTAINER_ID}"]
     assert all("hapax-local-judge" not in call["args"] for call in rig.calls())
+
+
+def test_managed_id_preserves_inspect_failure_when_bound_id_remains(tmp_path: Path) -> None:
+    rig = _rig(tmp_path)
+    rig.inspect_failure.touch()
+
+    result = rig.run("managed-id")
+
+    assert result.returncode == 1
+    assert "Docker inspect failed while unit-owned ID" in result.stderr
+    assert "inspect transport unavailable" in result.stderr
+    assert "restore inspection on the pinned local daemon" in result.stderr
+    assert [call["args"][0] for call in rig.calls()] == ["inspect", "ps"]
 
 
 def test_stop_refuses_renamed_id_without_targeting_reused_name(tmp_path: Path) -> None:

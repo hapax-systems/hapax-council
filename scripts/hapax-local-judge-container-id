@@ -551,10 +551,15 @@ def _read_cidfile(path: Path) -> Cidfile | None:
     return Cidfile(path, text, before.st_dev, before.st_ino)
 
 
-def _inspect_identity(docker: Path, container_id: str) -> tuple[str, str] | None:
+def _inspect_identity_result(
+    docker: Path, container_id: str
+) -> tuple[tuple[str, str] | None, str | None]:
     result = _run_docker(docker, "inspect", "--format", "{{.Id}}|{{.Name}}", container_id)
     if result.returncode != 0:
-        return None
+        reason = (result.stderr or result.stdout).strip() or (
+            f"docker inspect exited {result.returncode}"
+        )
+        return None, reason
     output = result.stdout.strip()
     if "\n" in output or output.count("|") != 1:
         raise _refuse(
@@ -568,7 +573,12 @@ def _inspect_identity(docker: Path, container_id: str) -> tuple[str, str] | None
             f"cidfile identity mismatch: id={inspected_id or 'empty'} name={name or 'empty'}",
             f"inspect {container_id}; do not stop it unless both the ID and reserved name {EXPECTED_NAME} are reconciled",
         )
-    return inspected_id, name
+    return (inspected_id, name), None
+
+
+def _inspect_identity(docker: Path, container_id: str) -> tuple[str, str] | None:
+    identity, _reason = _inspect_identity_result(docker, container_id)
+    return identity
 
 
 def _id_absent(docker: Path, container_id: str) -> bool:
@@ -637,10 +647,17 @@ def managed_id(cidfile_path: Path, docker: Path, *, test_mode: bool) -> None:
             "unit-owned local-judge cidfile is absent",
             "restore the active systemd unit and its Docker-written cidfile before runtime acceptance",
         )
-    if _inspect_identity(docker, cidfile.container_id) is None:
+    identity, failure_reason = _inspect_identity_result(docker, cidfile.container_id)
+    if identity is None and _id_absent(docker, cidfile.container_id):
         raise _refuse(
             f"unit-owned local-judge container is absent: {cidfile.container_id}",
             "restore the systemd-owned immutable ID; do not accept a same-name replacement",
+        )
+    if identity is None:
+        raise _refuse(
+            f"Docker inspect failed while unit-owned ID {cidfile.container_id} remains: "
+            f"{failure_reason or 'unknown diagnostic'}",
+            "restore inspection on the pinned local daemon before runtime acceptance",
         )
     print(cidfile.container_id)
 
