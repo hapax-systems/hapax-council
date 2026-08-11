@@ -1,0 +1,451 @@
+#!/usr/bin/python3
+"""Install one exact deferred root-required package through a trusted Git object."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import pwd
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+
+SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/bin:/bin"
+GIT = "/usr/bin/git"
+BASH = "/usr/bin/bash"
+DEFAULT_SUDO = "/usr/bin/sudo"
+SHA_RE = re.compile(rb"[0-9a-f]{40}\n\Z")
+SHA_TEXT_RE = re.compile(r"[0-9a-f]{40}\Z")
+TEST_MODE_ENV = "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_MODE"
+AFTER_SUDO_HOOK_ENV = "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_AFTER_SUDO_HOOK"
+
+
+class DeferredInstallError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class Package:
+    label: str
+    manifest: str
+    installer: str
+
+
+@dataclass(frozen=True)
+class InstallPaths:
+    home: Path
+    state_root: Path
+    defer_root: Path
+    repo_alias: Path
+    sudo: Path
+    test_mode: bool
+
+
+OOM_PACKAGE = Package(
+    label="oom-containment",
+    manifest="config/root-required/oom-containment.files",
+    installer="scripts/install-p0-oom-containment",
+)
+APCUPSD_PACKAGE = Package(
+    label="apcupsd-power-alerts",
+    manifest="config/root-required/apcupsd-power-alerts.files",
+    installer="scripts/install-apcupsd-power-alerts",
+)
+PACKAGES = {package.label: package for package in (OOM_PACKAGE, APCUPSD_PACKAGE)}
+
+
+def _error(message: str) -> DeferredInstallError:
+    return DeferredInstallError(
+        f"{message}; next action: discard the altered deferral and rerun "
+        "hapax-post-merge-deploy from the governed activation release"
+    )
+
+
+def _production_defaults() -> InstallPaths:
+    account = pwd.getpwuid(os.getuid())
+    home = Path(account.pw_dir)
+    return InstallPaths(
+        home=home,
+        state_root=home / ".local/state/hapax/root-required",
+        defer_root=home / ".cache/hapax/post-merge-root-required",
+        repo_alias=home / ".cache/hapax/source-activation/worktree",
+        sudo=Path(DEFAULT_SUDO),
+        test_mode=False,
+    )
+
+
+def _absolute_env_path(name: str) -> Path:
+    value = os.environ.get(name, "")
+    path = Path(value)
+    if not value or not path.is_absolute():
+        raise _error(f"{name} must be an explicit absolute test path")
+    return path
+
+
+def _install_paths() -> InstallPaths:
+    defaults = _production_defaults()
+    test_mode = os.environ.get(TEST_MODE_ENV) == "1"
+    override_names = {
+        "HAPAX_ROOT_REQUIRED_STATE_ROOT",
+        "HAPAX_POST_MERGE_ROOT_DEFER_DIR",
+        "HAPAX_ROOT_REQUIRED_GIT_REPO",
+        "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_SUDO",
+        AFTER_SUDO_HOOK_ENV,
+    }
+    present = sorted(name for name in override_names if name in os.environ)
+    if not test_mode:
+        if TEST_MODE_ENV in os.environ or present:
+            raise _error(
+                "deferred-install test selectors are refused outside isolated test mode: "
+                + ", ".join([*present, *([TEST_MODE_ENV] if TEST_MODE_ENV in os.environ else [])])
+            )
+        return defaults
+
+    paths = InstallPaths(
+        home=defaults.home,
+        state_root=_absolute_env_path("HAPAX_ROOT_REQUIRED_STATE_ROOT"),
+        defer_root=_absolute_env_path("HAPAX_POST_MERGE_ROOT_DEFER_DIR"),
+        repo_alias=_absolute_env_path("HAPAX_ROOT_REQUIRED_GIT_REPO"),
+        sudo=_absolute_env_path("HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_SUDO"),
+        test_mode=True,
+    )
+    for test_path, production_path in (
+        (paths.state_root, defaults.state_root),
+        (paths.defer_root, defaults.defer_root),
+        (paths.repo_alias, defaults.repo_alias),
+    ):
+        test_resolved = test_path.resolve(strict=False)
+        production_resolved = production_path.resolve(strict=False)
+        if (
+            test_resolved == production_resolved
+            or test_resolved.is_relative_to(production_resolved)
+            or production_resolved.is_relative_to(test_resolved)
+        ):
+            raise _error("isolated test mode cannot target a production deferred-install path")
+    return paths
+
+
+def _lstat_regular(path: Path, *, label: str, executable: bool | None = None) -> os.stat_result:
+    try:
+        inode = path.lstat()
+    except OSError as exc:
+        raise _error(f"{label} is unavailable at {path}: {exc}") from exc
+    if not stat.S_ISREG(inode.st_mode) or inode.st_nlink != 1:
+        raise _error(f"{label} must be a single-link non-symlink regular file: {path}")
+    if executable is not None and bool(inode.st_mode & 0o111) != executable:
+        expected = "executable" if executable else "non-executable"
+        raise _error(f"{label} must be {expected}: {path}")
+    return inode
+
+
+def _lstat_directory(path: Path, *, label: str) -> None:
+    try:
+        inode = path.lstat()
+    except OSError as exc:
+        raise _error(f"{label} is unavailable at {path}: {exc}") from exc
+    if not stat.S_ISDIR(inode.st_mode):
+        raise _error(f"{label} must be a non-symlink directory: {path}")
+
+
+def _validate_owned_directory(path: Path, *, label: str) -> None:
+    _lstat_directory(path, label=label)
+    inode = path.stat()
+    if inode.st_uid != os.getuid() or inode.st_mode & 0o022:
+        raise _error(f"{label} must be caller-owned and not group/other-writable: {path}")
+
+
+def _read_regular_bytes(path: Path, *, label: str, executable: bool | None = None) -> bytes:
+    expected = _lstat_regular(path, label=label, executable=executable)
+    flags = os.O_RDONLY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+        try:
+            actual = os.fstat(fd)
+            if (
+                (actual.st_dev, actual.st_ino) != (expected.st_dev, expected.st_ino)
+                or not stat.S_ISREG(actual.st_mode)
+                or actual.st_nlink != 1
+            ):
+                raise _error(f"{label} changed while it was opened: {path}")
+            with os.fdopen(fd, "rb", closefd=False) as handle:
+                data = handle.read()
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        raise _error(f"cannot read {label} at {path}: {exc}") from exc
+    return data
+
+
+def _read_exact_sha(path: Path, *, label: str) -> str:
+    data = _read_regular_bytes(path, label=label, executable=False)
+    if SHA_RE.fullmatch(data) is None:
+        raise _error(f"{label} must contain exactly 40 lowercase hex characters and one newline")
+    return data[:-1].decode("ascii")
+
+
+def _safe_subprocess_env(home: Path) -> dict[str, str]:
+    return {
+        "HOME": str(home),
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "PATH": SAFE_PATH,
+    }
+
+
+def _git(repo: Path, *args: str, check: bool = True) -> bytes:
+    result = subprocess.run(
+        [GIT, "-C", str(repo), *args],
+        capture_output=True,
+        check=False,
+        env=_safe_subprocess_env(_production_defaults().home),
+    )
+    if check and result.returncode != 0:
+        raise _error(f"Git object lookup failed for {' '.join(args[:2])}")
+    return result.stdout
+
+
+def _physical_repo(alias: Path) -> Path:
+    try:
+        repo = alias.resolve(strict=True)
+    except OSError as exc:
+        raise _error(f"activation release alias is unavailable: {alias}: {exc}") from exc
+    _lstat_directory(repo, label="physical activation release")
+    top = Path(_git(repo, "rev-parse", "--show-toplevel").decode().strip()).resolve(strict=True)
+    if top != repo:
+        raise _error(f"activation release does not resolve to its Git top level: {repo}")
+    return repo
+
+
+def _validate_commit(repo: Path, sha: str) -> None:
+    if SHA_TEXT_RE.fullmatch(sha) is None:
+        raise _error("expected package SHA is malformed")
+    resolved = _git(repo, "rev-parse", "--verify", f"{sha}^{{commit}}").decode().strip()
+    if resolved != sha:
+        raise _error(f"receipt commit did not resolve exactly: expected={sha} actual={resolved}")
+
+
+def _manifest_files(repo: Path, sha: str, package: Package) -> tuple[PurePosixPath, ...]:
+    raw = _git(repo, "show", f"{sha}:{package.manifest}")
+    try:
+        lines = raw.decode("utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise _error("root-required package manifest is not UTF-8") from exc
+    files: list[PurePosixPath] = []
+    seen: set[str] = set()
+    for line in lines:
+        if not line or line.startswith("#"):
+            continue
+        if line != line.strip() or any(character.isspace() for character in line):
+            raise _error(f"unsafe whitespace in root-required manifest entry: {line!r}")
+        rel = PurePosixPath(line)
+        if rel.is_absolute() or ".." in rel.parts or str(rel) in {"", "."}:
+            raise _error(f"unsafe root-required manifest entry: {line!r}")
+        if line in seen:
+            raise _error(f"duplicate root-required manifest entry: {line}")
+        seen.add(line)
+        files.append(rel)
+    required = {package.manifest, package.installer}
+    if not required.issubset(seen):
+        raise _error("root-required manifest omits its manifest or installer")
+    return tuple(files)
+
+
+def _git_mode(repo: Path, sha: str, rel: PurePosixPath) -> str:
+    output = _git(repo, "ls-tree", sha, "--", str(rel)).decode().splitlines()
+    if len(output) != 1:
+        raise _error(f"package Git tree has no unique entry for {rel}")
+    mode = output[0].split(maxsplit=1)[0]
+    if mode not in {"100644", "100755"}:
+        raise _error(f"unsupported package Git mode {mode} for {rel}")
+    return mode
+
+
+def _validate_parent_directories(stage: Path, rel: PurePosixPath) -> None:
+    current = stage
+    for part in rel.parts[:-1]:
+        current /= part
+        _validate_owned_directory(current, label=f"package parent for {rel}")
+
+
+def _validate_stage(paths: InstallPaths, repo: Path, sha: str, package: Package) -> Path:
+    _validate_owned_directory(paths.defer_root, label="root-required defer root")
+    defer_real = paths.defer_root.resolve(strict=True)
+    if defer_real != paths.defer_root:
+        raise _error(f"root-required defer root must not be a symlink: {paths.defer_root}")
+    sha_dir = defer_real / sha
+    stage = sha_dir / package.label
+    _validate_owned_directory(sha_dir, label="receipt SHA directory")
+    _validate_owned_directory(stage, label="deferred package directory")
+    if stage.resolve(strict=True) != stage:
+        raise _error(f"deferred package path must not traverse a symlink: {stage}")
+    marker = stage / ".hapax-root-required-package-sha"
+    if _read_exact_sha(marker, label="staged package SHA marker") != sha:
+        raise _error("staged package SHA marker does not match the desired receipt")
+    for rel in _manifest_files(repo, sha, package):
+        _validate_parent_directories(stage, rel)
+        candidate = stage.joinpath(*rel.parts)
+        mode = _git_mode(repo, sha, rel)
+        candidate_bytes = _read_regular_bytes(
+            candidate,
+            label=f"staged package file {rel}",
+            executable=mode == "100755",
+        )
+        if candidate_bytes != _git(repo, "show", f"{sha}:{rel}"):
+            raise _error(f"staged package bytes do not match {sha}:{rel}")
+    return stage
+
+
+def _validate_sudo(path: Path, *, test_mode: bool) -> None:
+    if not test_mode and path != Path(DEFAULT_SUDO):
+        raise _error(f"production sudo command must be {DEFAULT_SUDO}")
+    _lstat_regular(path, label="sudo command", executable=True)
+
+
+def _run_after_sudo_hook(paths: InstallPaths) -> None:
+    raw = os.environ.get(AFTER_SUDO_HOOK_ENV, "")
+    if not raw:
+        return
+    if not paths.test_mode:
+        raise _error(f"{AFTER_SUDO_HOOK_ENV} is test-only")
+    hook = Path(raw)
+    if not hook.is_absolute():
+        raise _error(f"{AFTER_SUDO_HOOK_ENV} must be absolute")
+    _lstat_regular(hook, label="after-sudo test hook", executable=True)
+    result = subprocess.run([str(hook)], check=False, env=_safe_subprocess_env(paths.home))
+    if result.returncode != 0:
+        raise _error(f"after-sudo test hook failed with rc={result.returncode}")
+
+
+def _child_env(paths: InstallPaths, repo: Path, sha: str, stage: Path) -> dict[str, str]:
+    account = pwd.getpwuid(os.getuid())
+    env = _safe_subprocess_env(paths.home)
+    env.update(
+        {
+            "LOGNAME": account.pw_name,
+            "USER": account.pw_name,
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(paths.defer_root),
+            "HAPAX_ROOT_REQUIRED_STATE_ROOT": str(paths.state_root),
+            "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(paths.state_root / "current-source"),
+            "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT": str(
+                paths.state_root / "installed-receipts"
+            ),
+            "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT": str(paths.state_root / "desired-receipts"),
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(repo),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": sha,
+            "HAPAX_ROOT_REQUIRED_DRAIN_DIR": str(stage),
+        }
+    )
+    runtime = Path(f"/run/user/{os.getuid()}")
+    if runtime.is_dir():
+        env["XDG_RUNTIME_DIR"] = str(runtime)
+    return env
+
+
+def _execute_installer(
+    paths: InstallPaths, repo: Path, sha: str, stage: Path, package: Package
+) -> int:
+    installer_rel = PurePosixPath(package.installer)
+    if _git_mode(repo, sha, installer_rel) != "100755":
+        raise _error("root-required installer Git mode is not executable")
+    installer_bytes = _git(repo, "show", f"{sha}:{package.installer}")
+    paths.state_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    execution_root = paths.state_root / ".deferred-install-exec"
+    execution_root.mkdir(mode=0o700, exist_ok=True)
+    _lstat_directory(execution_root, label="private deferred-install execution root")
+    if execution_root.stat().st_uid != os.getuid() or execution_root.stat().st_mode & 0o077:
+        raise _error(
+            f"private deferred-install execution root has unsafe ownership/mode: {execution_root}"
+        )
+    temp_dir = Path(tempfile.mkdtemp(prefix=f".{package.label}.", dir=execution_root))
+    os.chmod(temp_dir, 0o700)
+    installer = temp_dir / "installer"
+    fd = -1
+    try:
+        write_fd = os.open(installer, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o500)
+        try:
+            with os.fdopen(write_fd, "wb", closefd=True) as handle:
+                handle.write(installer_bytes)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except BaseException:
+            installer.unlink(missing_ok=True)
+            raise
+        _lstat_regular(installer, label="materialized trusted installer", executable=True)
+        fd = os.open(installer, os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0))
+        result = subprocess.run(
+            [BASH, f"/proc/self/fd/{fd}", "--source", str(stage), "--install", "--verify-live"],
+            check=False,
+            env=_child_env(paths, repo, sha, stage),
+            pass_fds=(fd,),
+        )
+        return result.returncode
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def install(package: Package, *, expected_sha: str, activation_release: Path) -> int:
+    paths = _install_paths()
+    _validate_sudo(paths.sudo, test_mode=paths.test_mode)
+    _validate_owned_directory(paths.state_root, label="root-required state root")
+    desired_receipts = paths.state_root / "desired-receipts"
+    _validate_owned_directory(desired_receipts, label="desired-receipt directory")
+    receipt = desired_receipts / f"{package.label}.sha"
+    sha = _read_exact_sha(receipt, label="desired package receipt")
+    if sha != expected_sha:
+        raise _error(f"desired package receipt changed: expected={expected_sha} actual={sha}")
+    repo = _physical_repo(paths.repo_alias)
+    try:
+        expected_repo = activation_release.resolve(strict=True)
+    except OSError as exc:
+        raise _error(
+            f"authenticated activation release is unavailable: {activation_release}"
+        ) from exc
+    if not activation_release.is_absolute() or repo != expected_repo:
+        raise _error(
+            f"activation release changed after helper authentication: expected={expected_repo} actual={repo}"
+        )
+    _validate_commit(repo, sha)
+    _validate_stage(paths, repo, sha, package)
+    sudo_result = subprocess.run(
+        [str(paths.sudo), "-v"], check=False, env=_safe_subprocess_env(paths.home)
+    )
+    if sudo_result.returncode != 0:
+        raise _error(f"sudo credential warmup failed with rc={sudo_result.returncode}")
+    _run_after_sudo_hook(paths)
+    if _read_exact_sha(receipt, label="desired package receipt after sudo") != sha:
+        raise _error("desired package receipt changed during sudo warmup")
+    _validate_commit(repo, sha)
+    stage = _validate_stage(paths, repo, sha, package)
+    return _execute_installer(paths, repo, sha, stage, package)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--package", choices=sorted(PACKAGES), required=True)
+    parser.add_argument("--expected-sha", required=True)
+    parser.add_argument("--activation-release", type=Path, required=True)
+    args = parser.parse_args(argv)
+    if SHA_TEXT_RE.fullmatch(args.expected_sha) is None:
+        parser.error("--expected-sha must be exactly 40 lowercase hex characters")
+    try:
+        return install(
+            PACKAGES[args.package],
+            expected_sha=args.expected_sha,
+            activation_release=args.activation_release,
+        )
+    except DeferredInstallError as exc:
+        print(f"hapax-root-required-deferred-install: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -425,12 +425,23 @@ def test_local_judge_container_has_a_finite_memory_cap() -> None:
     assert "ExecStartPre=-/usr/bin/docker rm" not in text
 
 
-def test_local_judge_runbook_uses_the_receipt_owned_installer() -> None:
+def test_local_judge_runbook_authenticates_fixed_deferred_installer_helper() -> None:
     text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
     assert "desired-receipts/oom-containment.sha" in text
-    assert "post-merge-root-required/$sha/oom-containment" in text
-    assert '"$stage/scripts/install-p0-oom-containment"' in text
-    assert 'HAPAX_ROOT_REQUIRED_PACKAGE_SHA="$sha"' in text
+    assert 'test "$(/usr/bin/wc -c < "$receipt")" = 41' in text
+    assert 'IFS= read -r sha < "$receipt"' in text
+    assert 'helper="$repo/$helper_rel"' in text
+    assert '"$stage/scripts/install-p0-oom-containment"' not in text
+    assert '[[ "$sha" =~ ^[0-9a-f]{40}$ ]]' in text
+    assert '/usr/bin/realpath -e -- "$repo_alias"' in text
+    assert '/usr/bin/git -C "$repo" hash-object -- "/proc/self/fd/$helper_fd"' in text
+    assert 'test ! -L "$helper"' in text
+    assert "/usr/bin/env -i" in text
+    assert "--package oom-containment" in text
+    assert '--expected-sha "$sha" --activation-release "$repo"' in text
+    authenticate = text.index('/usr/bin/git -C "$repo" hash-object -- "/proc/self/fd/$helper_fd"')
+    execute = text.index('/usr/bin/python3 "/proc/self/fd/$helper_fd"', authenticate)
+    assert authenticate < execute
     assert "cp systemd/units/hapax-local-judge.service" not in text
 
 

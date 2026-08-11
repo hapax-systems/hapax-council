@@ -7,6 +7,7 @@ config/root-required/oom-host-policy/appendix/user@1000.service.conf
 config/root-required/oom-host-policy/appendix/zram-generator.conf
 config/root-required/oom-host-policy/podium/zram-generator.conf
 scripts/install-p0-oom-containment
+scripts/hapax-root-required-deferred-install
 config/root-required/hapax-oom-score-enforce.sudoers
 systemd/system/system.slice.d/oom-containment.conf
 systemd/system/user.slice.d/oom-containment.conf
