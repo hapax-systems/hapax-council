@@ -55,7 +55,6 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("HAPAX_APCUPSD_TARGET_HOME", str(tmp_path / "target-home"))
     monkeypatch.setenv("HAPAX_APCUPSD_DEST", str(tmp_path / "apcupsd-default"))
     monkeypatch.setenv("HAPAX_APCUPSD_AUDIT_DIR", str(tmp_path / "audit-default"))
-    monkeypatch.setenv("HAPAX_UPS_AUDIT_LOG", str(tmp_path / "audit-default/events.jsonl"))
     monkeypatch.setenv(
         "HAPAX_APCUPSD_LOGROTATE_DEST", str(tmp_path / "logrotate-default/hapax-ups")
     )
@@ -967,6 +966,11 @@ def test_installer_fails_closed_when_canonical_audit_group_is_missing(
         env={
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_APCUPSD_DEST": "/etc/apcupsd",
+            "HAPAX_APCUPSD_AUDIT_DIR": "/var/log/hapax",
+            "HAPAX_UPS_AUDIT_LOG": "/var/log/hapax/ups-power-events.jsonl",
+            "HAPAX_APCUPSD_LOGROTATE_DEST": "/etc/logrotate.d/hapax-ups-power-events",
+            "HAPAX_UPOWER_CONF_DEST": ("/etc/UPower/UPower.conf.d/90-hapax-apcupsd-owner.conf"),
             "HAPAX_APCUPSD_TARGET_HOME": str(tmp_path),
             "HAPAX_APCUPSD_TARGET_GID": str(os.getgid()),
             "HAPAX_APCUPSD_INSTALL_SUDO": "",

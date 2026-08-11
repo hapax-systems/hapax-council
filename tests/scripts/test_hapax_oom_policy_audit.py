@@ -2010,7 +2010,8 @@ def test_audit_fails_when_protected_user_unit_loses_oom_score(tmp_path: Path) ->
         if item["name"] == "user_unit_studio-compositor.service_OOMScoreAdjust"
     )
     assert check["status"] == "gap"
-    assert "install-p0-oom-containment" in check["detail"]
+    assert "hapax-post-merge-deploy" in check["detail"]
+    assert "HAPAX_RUNTIME_AUTHORITY_TASK" in check["detail"]
 
 
 def test_audit_fails_when_protected_user_unit_loses_memory_reservation(
