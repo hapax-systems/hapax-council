@@ -6,6 +6,8 @@ framework, subprocess entrypoint, import string, or other dynamic path that
 vulture cannot see. Do not use this as a baseline for ordinary dead code.
 """
 
+import datetime as _dt
+
 from agents.content_programmer.grounding_runner import ProgrammeSequenceGroundingRunner
 from agents.payment_processors.x402.models import Accept, SettlementResponse
 from agents.studio_compositor.final_frame_classifier import (
@@ -5070,4 +5072,34 @@ from shared.capability_onboarding_discover import (  # noqa: E402
 _ = (
     delta_to_classify_kwargs,
     discover_from_deltas,
+)
+
+# Claude subscription-liveness observer. Reached only through a function-local import
+# inside scripts/hapax-claude-subscription-quota-admission (_observe_from_transcript),
+# so vulture cannot see the call site: the importer is a hyphenated script, not a module,
+# and the import is in a function body rather than at module scope.
+from shared.claude_transcript_quota import (  # noqa: E402
+    TranscriptObservation,
+    TranscriptQuotaUnavailable,
+    latest_transcript_observation,
+)
+
+_ = (
+    TranscriptObservation,
+    TranscriptQuotaUnavailable,
+    latest_transcript_observation,
+)
+
+# Its two fields are read as attributes at that same invisible call site
+# (observation.observed_at / observation.witness), so name them explicitly. A frozen
+# dataclass field without a default has no class-level attribute to reference, hence the
+# throwaway instance.
+_transcript_observation = TranscriptObservation(
+    observed_at=_dt.datetime(2026, 1, 1, tzinfo=_dt.UTC),
+    witness="whitelist-only",
+)
+
+_ = (
+    _transcript_observation.observed_at,
+    _transcript_observation.witness,
 )

@@ -82,9 +82,6 @@ class TranscriptObservation:
     #: Stable, non-identifying witness label. Contains no prompt, output, or path.
     witness: str
 
-    def age_seconds(self, *, now: datetime) -> float:
-        return (now - self.observed_at).total_seconds()
-
 
 def _parse_utc(value: object) -> datetime | None:
     if not isinstance(value, str) or not value:

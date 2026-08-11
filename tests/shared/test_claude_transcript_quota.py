@@ -50,7 +50,8 @@ def test_fresh_completed_turn_is_observed_and_stamped_with_the_turns_own_time(
     obs = latest_transcript_observation(root=tmp_path, now=NOW, max_age_seconds=900)
 
     assert obs.observed_at == stamp
-    assert obs.age_seconds(now=NOW) == pytest.approx(120.0)
+    # The stamp is the turn's, not `now` -- 120 s in the past, which is the whole contract.
+    assert (NOW - obs.observed_at).total_seconds() == pytest.approx(120.0)
 
 
 def test_newest_turn_wins_across_files(tmp_path: Path) -> None:
