@@ -107,6 +107,8 @@ def _copy_oom_package(dest_root: Path) -> None:
 
 @pytest.fixture(autouse=True)
 def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_ALLOW_UNAUTHENTICATED_TEST_INSTALL", "1")
+    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_UNAUTHENTICATED_TEST_ROOT", str(tmp_path))
     monkeypatch.setenv("HAPAX_OOM_ENFORCE_TEST_MODE", "1")
     monkeypatch.setenv("HAPAX_OOM_POLICY_MEMTOTAL_KIB", "131007744")
     monkeypatch.setenv("HAPAX_OOM_POLICY_HOSTNAME", "hapax-podium")
@@ -115,6 +117,12 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("HAPAX_OOM_TARGET_GID", "1000")
     monkeypatch.setenv("HAPAX_OOM_TARGET_HOME", str(tmp_path / "target-home"))
     monkeypatch.setenv("HAPAX_OOM_EFFECTIVE_UID", "1000")
+    proc_root = tmp_path / "proc-default"
+    cgroup_root = tmp_path / "cgroup-default"
+    proc_root.mkdir()
+    cgroup_root.mkdir()
+    monkeypatch.setenv("HAPAX_OOM_PROC_ROOT", str(proc_root))
+    monkeypatch.setenv("HAPAX_OOM_CGROUP_ROOT", str(cgroup_root))
     monkeypatch.setenv("HAPAX_POST_MERGE_ROOT_DEFER_DIR", str(tmp_path / "root-required"))
     monkeypatch.setenv("HAPAX_ROOT_REQUIRED_STATE_ROOT", str(tmp_path / "root-state"))
     monkeypatch.setenv(
@@ -203,15 +211,32 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv(
         "HAPAX_OOM_PROFILE_TABLE_DEST", str(tmp_path / "share" / "oom-host-profiles.tsv")
     )
+    default_systemctl = tmp_path / "systemctl-default"
+    default_systemctl.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    default_systemctl.chmod(0o755)
+    monkeypatch.setenv("HAPAX_OOM_SYSTEMCTL", str(default_systemctl))
     zram_disksize = tmp_path / "sys" / "block" / "zram0" / "disksize"
     zram_disksize.parent.mkdir(parents=True)
     zram_disksize.write_text(f"{32 * 1024**3}\n", encoding="utf-8")
     monkeypatch.setenv("HAPAX_OOM_ZRAM_DISKSIZE_PATH", str(zram_disksize))
     docker_calls = tmp_path / "docker-calls"
+    docker_boundary_calls = tmp_path / "docker-boundary-calls"
     fake_docker = tmp_path / "docker"
     fake_docker.write_text(
         f"""#!/usr/bin/env bash
 set -euo pipefail
+printf 'host=%s context=%s config=%s cert=%s tls_verify=%s tls=%s api=%s args=%s\n' \
+  "${{DOCKER_HOST-unset}}" "${{DOCKER_CONTEXT-unset}}" "${{DOCKER_CONFIG-unset}}" \
+  "${{DOCKER_CERT_PATH-unset}}" "${{DOCKER_TLS_VERIFY-unset}}" "${{DOCKER_TLS-unset}}" \
+  "${{DOCKER_API_VERSION-unset}}" "$*" >> {docker_boundary_calls}
+if [ "${{1:-}}" = --config ]; then
+  [ "${{2:-}}" = /nonexistent/hapax-local-docker-config ] || exit 97
+  shift 2
+fi
+if [ "${{1:-}}" = --host ]; then
+  [ "${{2:-}}" = unix:///var/run/docker.sock ] || exit 98
+  shift 2
+fi
 printf '%s\n' "$*" >> {docker_calls}
 case "$1" in
   ps)
@@ -239,6 +264,7 @@ esac
     fake_docker.chmod(0o755)
     monkeypatch.setenv("HAPAX_OOM_DOCKER", str(fake_docker))
     monkeypatch.setenv("HAPAX_TEST_DOCKER_CALLS", str(docker_calls))
+    monkeypatch.setenv("HAPAX_TEST_DOCKER_BOUNDARY_CALLS", str(docker_boundary_calls))
     monkeypatch.setenv("HAPAX_ROOT_REQUIRED_GIT_REPO", str(REPO_ROOT))
 
 
@@ -610,8 +636,30 @@ def test_production_destinations_reject_host_policy_test_overrides(
         env=env,
     )
     assert result.returncode == 1
-    assert "refusing test-mode host-policy overrides" in result.stderr
+    if mode == "--install":
+        assert "refusing unauthenticated production OOM install" in result.stderr
+    else:
+        assert "refusing test-mode host-policy overrides" in result.stderr
     assert not calls.exists()
+
+
+def test_install_refuses_missing_authenticated_helper_outside_isolated_test(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HAPAX_ROOT_REQUIRED_ALLOW_UNAUTHENTICATED_TEST_INSTALL")
+    monkeypatch.delenv("HAPAX_ROOT_REQUIRED_UNAUTHENTICATED_TEST_ROOT")
+
+    result = subprocess.run(
+        [str(INSTALLER), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=os.environ.copy(),
+    )
+
+    assert result.returncode == 1
+    assert "refusing unauthenticated OOM install outside an isolated test" in result.stderr
+    assert "hapax-post-merge-deploy" in result.stderr
 
 
 def test_production_docker_command_override_is_test_only(
@@ -1184,6 +1232,14 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         fake_docker.write_text(
             f"""#!/usr/bin/env bash
 set -euo pipefail
+if [ "${{1:-}}" = --config ]; then
+  [ "${{2:-}}" = /nonexistent/hapax-local-docker-config ] || exit 97
+  shift 2
+fi
+if [ "${{1:-}}" = --host ]; then
+  [ "${{2:-}}" = unix:///var/run/docker.sock ] || exit 98
+  shift 2
+fi
 printf '%s\n' "$*" >> {docker_calls}
 case "$1" in
   ps) {ps_action} ;;
@@ -3719,6 +3775,7 @@ def _run_install_verify_live(
     local_judge_need_reload: str = "no",
     through_deferred_helper: bool = False,
     omit_nested_sudo: bool = False,
+    package_repo: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Drive the REAL installer through --install --verify-live against temp destinations.
 
@@ -3803,6 +3860,14 @@ def _run_install_verify_live(
                 "[Unit]\nDescription=placed by test\n", encoding="utf-8"
             )
 
+    package_repo = package_repo or REPO_ROOT
+    package_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=package_repo,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
     env = {
         **os.environ,
         "HOME": str(root_home),
@@ -3822,8 +3887,8 @@ def _run_install_verify_live(
         "HAPAX_OOM_INSTALL_SUDO": "",
         "HAPAX_OOM_PROC_ROOT": str(proc_root),
         "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(root_defer),
-        "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": REPO_HEAD,
-        "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
+        "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": package_sha,
+        "HAPAX_ROOT_REQUIRED_GIT_REPO": str(package_repo),
         "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source),
         "HAPAX_OOM_POLICY_HOSTNAME": (
             "hapax-appendix" if host_profile == "appendix" else "hapax-podium"
@@ -3953,6 +4018,45 @@ def test_authenticated_deferred_helper_neutralizes_omitted_nested_sudo(
     assert result.returncode == 0, result.stderr
     assert "completed authenticated package=oom-containment" in result.stdout
     assert not (tmp_path / "root-sudo-calls").exists()
+
+
+def test_install_pins_local_docker_daemon_against_hostile_selectors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DOCKER_HOST", "tcp://attacker.invalid:2376")
+    monkeypatch.setenv("DOCKER_CONTEXT", "remote-production")
+    monkeypatch.setenv("DOCKER_CONFIG", str(tmp_path / "hostile-docker-config"))
+    monkeypatch.setenv("DOCKER_CERT_PATH", str(tmp_path / "hostile-certs"))
+    monkeypatch.setenv("DOCKER_TLS_VERIFY", "1")
+    monkeypatch.setenv("DOCKER_TLS", "1")
+    monkeypatch.setenv("DOCKER_API_VERSION", "1.24")
+
+    package_repo = tmp_path / "current-package"
+    package_repo.mkdir()
+    _copy_oom_package(package_repo)
+    subprocess.run(["git", "init", "-q"], cwd=package_repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "tests@hapax.local"], cwd=package_repo, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Hapax Tests"], cwd=package_repo, check=True)
+    subprocess.run(["git", "add", "."], cwd=package_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "current OOM package"], cwd=package_repo, check=True)
+
+    result = _run_install_verify_live(tmp_path, package_repo=package_repo)
+
+    assert result.returncode == 0, result.stderr
+    calls = Path(os.environ["HAPAX_TEST_DOCKER_BOUNDARY_CALLS"]).read_text(encoding="utf-8")
+    assert calls
+    for call in calls.splitlines():
+        assert "host=unix:///var/run/docker.sock" in call
+        assert "context=unset" in call
+        assert "config=/nonexistent/hapax-local-docker-config" in call
+        assert "cert=unset" in call
+        assert "tls_verify=unset" in call
+        assert "tls=unset" in call
+        assert "api=unset" in call
+        assert "--config /nonexistent/hapax-local-docker-config" in call
+        assert "--host unix:///var/run/docker.sock" in call
 
 
 def test_verify_live_rejects_effective_local_judge_execstart_without_limits(

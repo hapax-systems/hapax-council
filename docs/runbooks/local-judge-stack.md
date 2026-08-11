@@ -33,6 +33,17 @@ Model source (already present):
 Q5_K_M). The authorized canary copies it once into a root-owned SHA-addressed
 directory on the existing `/store-fast` NVMe and serves only that protected copy.
 
+Before requesting runtime authority, perform this read-only source/live identity
+recheck. It hashes and measures the protected target without staging, starting,
+stopping, or replacing anything:
+
+```bash
+account_home="$(/usr/bin/getent passwd "$(/usr/bin/id -u)" | /usr/bin/cut -d: -f6)"
+"$account_home/.cache/hapax/source-activation/worktree/scripts/hapax-post-merge-deploy" \
+  --measure-protected-local-judge-model \
+  /store-fast/hapax-models/sha256/d6d6fba56c25d2d0f1b2cc8ee261b209b77729510b3d770d43ccb6e741dff0db/CompassVerifier-7B.Q5_K_M.gguf
+```
+
 Every command below mutates the appendix runtime and requires a task note whose
 frontmatter explicitly grants `runtime_mutation_authorized: true`. A source-only
 task stops here. The disposable canary uses the exact proposed `4G/6G` limits and

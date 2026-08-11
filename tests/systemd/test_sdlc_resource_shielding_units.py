@@ -464,13 +464,15 @@ def test_local_judge_container_has_a_finite_memory_cap() -> None:
 
 def test_local_judge_uses_fixed_restart_interval_as_docker_readiness_contract() -> None:
     text = (UNITS_DIR / "hapax-local-judge.service").read_text()
+    normalized = " ".join(line.removeprefix("# ") for line in text.splitlines())
 
-    assert "After=docker.service" not in text
+    assert "\nAfter=docker.service" not in text
     assert "Wants=docker.service" not in text
     assert "Requires=docker.service" not in text
     assert "Restart=always" in text
     assert "RestartSec=5" in text
-    assert "cannot order the system manager's docker.service" in text
+    assert "After=docker.service is deliberately omitted" in text
+    assert "cannot order the system manager's docker.service" in normalized
     assert "pinned socket" in text
     assert "cross-manager availability contract" in text
 
@@ -482,6 +484,17 @@ def test_local_judge_unit_names_the_protected_model_recheck() -> None:
     assert "/store-fast/hapax-models/sha256/" in text
     assert 'account_home="$(/usr/bin/getent passwd "$(/usr/bin/id -u)"' in text
     assert "/home/hapax/.cache/hapax/source-activation/worktree" not in text
+
+
+def test_local_judge_runbook_has_read_only_protected_model_recheck_before_mutation() -> None:
+    text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
+
+    read_only = "Before requesting runtime authority, perform this read-only source/live identity"
+    measure = "--measure-protected-local-judge-model"
+    mutation_boundary = "Every command below mutates the appendix runtime"
+    assert read_only in text
+    assert text.index(read_only) < text.index(measure) < text.index(mutation_boundary)
+    assert "without staging, starting, stopping, or replacing anything" in " ".join(text.split())
 
 
 def test_local_judge_runbook_requires_live_authenticated_command() -> None:

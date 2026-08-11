@@ -48,6 +48,8 @@ ZRAM_DROPIN_DIRS="${HAPAX_OOM_ZRAM_DROPIN_DIRS:-/etc/systemd/zram-generator.conf
 ZRAM_HIGH_PRIORITY_CONFIGS="${HAPAX_OOM_ZRAM_HIGH_PRIORITY_CONFIGS:-/run/systemd/zram-generator.conf}"
 ZRAM_DISKSIZE_PATH="${HAPAX_OOM_ZRAM_DISKSIZE_PATH:-/sys/block/zram0/disksize}"
 DOCKER="${HAPAX_OOM_DOCKER:-/usr/bin/docker}"
+LOCAL_DOCKER_HOST="unix:///var/run/docker.sock"
+LOCAL_DOCKER_CONFIG="/nonexistent/hapax-local-docker-config"
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
 SYSTEMD_ANALYZE="${HAPAX_OOM_SYSTEMD_ANALYZE:-systemd-analyze}"
 SUDO="${HAPAX_OOM_INSTALL_SUDO-sudo}"
@@ -122,7 +124,8 @@ containment does not depend on a mutable PR worktree. Runtime activation uses
 set-property without restarting either slice, then removes the generated
 control files and reloads the receipt-owned canonical policy. Run as the target
 account; the installer uses sudo only for root-owned destinations and refuses
-whole-script root execution.
+whole-script root execution. Production --install is accepted only through the
+authenticated sealed-source helper emitted by hapax-post-merge-deploy.
 USAGE
 }
 
@@ -979,6 +982,92 @@ production_destinations_selected() {
     return 1
 }
 
+path_is_within_test_root() {
+    local path="$1" root="$2" canonical
+    canonical="$(/usr/bin/realpath -m -- "$path")" || return 1
+    case "$canonical" in
+        "$root"|"$root"/*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+validate_isolated_test_executable() {
+    local label="$1" command="$2" root="$3" canonical
+    case "$command" in
+        /*) ;;
+        *)
+            echo "unauthenticated OOM test install requires an absolute fake $label command under $root; got $command" >&2
+            return 1
+            ;;
+    esac
+    canonical="$(/usr/bin/realpath -e -- "$command" 2>/dev/null)" || {
+        echo "unauthenticated OOM test install cannot resolve fake $label command $command under $root" >&2
+        return 1
+    }
+    if [ ! -f "$canonical" ] || [ -L "$command" ] || [ ! -x "$canonical" ] \
+        || ! path_is_within_test_root "$canonical" "$root"; then
+        echo "unauthenticated OOM test install requires a non-symlink executable fake $label command under $root; got $command" >&2
+        return 1
+    fi
+}
+
+require_authenticated_install_authority() {
+    local raw_root root root_mode path
+    local -a destinations dropin_dirs high_priority_configs
+    [ "$INSTALL" -eq 1 ] || return 0
+    [ "$AUTHENTICATED_SEALED_SOURCE" -eq 0 ] || return 0
+    if production_destinations_selected; then
+        echo "refusing unauthenticated production OOM install; next action: set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical runtime-authorized task and rerun hapax-post-merge-deploy so its sealed helper invokes this installer" >&2
+        return 1
+    fi
+    if [ "${HAPAX_ROOT_REQUIRED_ALLOW_UNAUTHENTICATED_TEST_INSTALL:-0}" != "1" ]; then
+        echo "refusing unauthenticated OOM install outside an isolated test; next action: use the authenticated hapax-post-merge-deploy helper for live installation" >&2
+        return 1
+    fi
+    raw_root="${HAPAX_ROOT_REQUIRED_UNAUTHENTICATED_TEST_ROOT:-}"
+    if [ -z "$raw_root" ] || [[ "$raw_root" != /* ]] || [ -L "$raw_root" ]; then
+        echo "unauthenticated OOM test install requires an absolute non-symlink HAPAX_ROOT_REQUIRED_UNAUTHENTICATED_TEST_ROOT" >&2
+        return 1
+    fi
+    root="$(/usr/bin/realpath -e -- "$raw_root" 2>/dev/null)" || {
+        echo "unauthenticated OOM test root is unavailable: $raw_root" >&2
+        return 1
+    }
+    root_mode="$(/usr/bin/stat -c %a -- "$root" 2>/dev/null || true)"
+    if [ "$root" = / ] || [ ! -d "$root" ] \
+        || [ "$(/usr/bin/stat -c %u -- "$root" 2>/dev/null || true)" != "$(/usr/bin/id -u)" ] \
+        || ! [[ "$root_mode" =~ ^[0-7]+$ ]] \
+        || (( (8#$root_mode & 8#022) != 0 )); then
+        echo "unauthenticated OOM test root must be caller-owned and not group/other-writable: $root" >&2
+        return 1
+    fi
+    destinations=(
+        "$SYSTEMD_SYSTEM_DIR" "$SYSTEMD_USER_DIR" "$SYSTEMD_USER_CONTROL_DIR"
+        "$SYSTEMD_SYSTEM_CONTROL_DIR" "$SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR"
+        "$SYSTEMD_SYSTEM_TRANSIENT_DIR" "$SYSTEMD_USER_RUNTIME_CONTROL_DIR"
+        "$SYSTEMD_USER_TRANSIENT_DIR" "$EARLYOOM_DEST" "$OOM_ENFORCER_DEST"
+        "$OOM_TRIGGER_DEST" "$OOM_SUDOERS_DEST" "$OOM_SUDOERS_REFERENCE_DEST"
+        "$ROOT_FAILURE_INTAKE_DEST" "$OOM_POLICY_AUDIT_DEST" "$ROOT_REQUIRED_AUDIT_DEST"
+        "$LOCAL_JUDGE_CONTAINER_ID_DEST" "$OOM_PROFILE_TABLE_DEST" "$ZRAM_POLICY_DEST"
+        "$LEGACY_ZRAM_POLICY_DEST" "$ZRAM_DISKSIZE_PATH" "$PROC_ROOT" "$CGROUP_ROOT"
+        "$ROOT_REQUIRED_STATE_ROOT" "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"
+        "$ROOT_REQUIRED_DEFER_ROOT" "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT"
+        "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" "$ROOT_REQUIRED_LOCK_FILE" "$TARGET_HOME"
+    )
+    IFS=: read -r -a dropin_dirs <<< "$ZRAM_DROPIN_DIRS"
+    IFS=: read -r -a high_priority_configs <<< "$ZRAM_HIGH_PRIORITY_CONFIGS"
+    destinations+=("${dropin_dirs[@]}" "${high_priority_configs[@]}")
+    for path in "${destinations[@]}"; do
+        [ -n "$path" ] || continue
+        if ! path_is_within_test_root "$path" "$root"; then
+            echo "unauthenticated OOM test install destination escapes $root: $path" >&2
+            return 1
+        fi
+    done
+    validate_isolated_test_executable Docker "$DOCKER" "$root"
+    validate_isolated_test_executable systemctl "$SYSTEMCTL" "$root"
+}
+
 validate_docker_command() {
     local override="${HAPAX_OOM_DOCKER:-}"
     if [ -z "$override" ]; then
@@ -1007,6 +1096,18 @@ validate_docker_command() {
         echo "test Docker command override must be a non-symlink executable regular file: $DOCKER" >&2
         return 1
     fi
+}
+
+local_docker() {
+    /usr/bin/env \
+        --unset=DOCKER_CONTEXT \
+        --unset=DOCKER_CERT_PATH \
+        --unset=DOCKER_TLS_VERIFY \
+        --unset=DOCKER_TLS \
+        --unset=DOCKER_API_VERSION \
+        DOCKER_HOST="$LOCAL_DOCKER_HOST" \
+        DOCKER_CONFIG="$LOCAL_DOCKER_CONFIG" \
+        "$DOCKER" --config "$LOCAL_DOCKER_CONFIG" --host "$LOCAL_DOCKER_HOST" "$@"
 }
 
 load_host_policy() {
@@ -1795,7 +1896,7 @@ docker_policy_for_container() {
 
 docker_container_records() {
     local output record id name remainder
-    output="$("$DOCKER" ps -a --no-trunc --format '{{.ID}}|{{.Names}}')" || return 1
+    output="$(local_docker ps -a --no-trunc --format '{{.ID}}|{{.Names}}')" || return 1
     while IFS= read -r record; do
         [ -n "$record" ] || continue
         remainder="${record#*|}"
@@ -1827,7 +1928,7 @@ verify_docker_container_limit() {
     local id="$1" name="$2" memory="$3" memory_swap="$4"
     local output separators inspected_id inspected_name actual_memory actual_swap oom_kill_disable
     local expected_memory expected_swap
-    if ! output="$("$DOCKER" inspect --format '{{.Id}}|{{.Name}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}|{{json .HostConfig.OomKillDisable}}' "$id" 2>&1)"; then
+    if ! output="$(local_docker inspect --format '{{.Id}}|{{.Name}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}|{{json .HostConfig.OomKillDisable}}' "$id" 2>&1)"; then
         echo "Docker inspect failed for $name id=$id: ${output:-no diagnostics returned}" >&2
         return 2
     fi
@@ -1882,7 +1983,7 @@ reconcile_docker_memory_limits() {
         name="${record#*|}"
         policy="$(docker_policy_for_container "$name")"
         IFS='|' read -r memory memory_swap <<< "$policy"
-        if ! update_output="$("$DOCKER" update --memory "$memory" --memory-swap "$memory_swap" "$id" 2>&1)"; then
+        if ! update_output="$(local_docker update --memory "$memory" --memory-swap "$memory_swap" "$id" 2>&1)"; then
             if docker_target_absent "$id" "$name"; then
                 absence_rc=0
             else
@@ -3024,6 +3125,7 @@ verify_user_process_oom_floor() {
 }
 
 load_authenticated_sealed_sources
+require_authenticated_install_authority
 validate_docker_command
 
 if [ "$INSTALL" -eq 1 ]; then
