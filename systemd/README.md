@@ -140,12 +140,15 @@ Recheck these four corrected hard limits with `systemctl --user show logos-api.s
   `config/root-required/oom-host-policy/{appendix,podium}/` directories. Both sets and the profile
   table are listed in the same ownership manifest, copied into the installed
   source snapshot, and byte-compared with the installed Git receipt commit.
+  Runtime zram/swap sizing still requires a read-only host receipt before any
+  change; zram saturation, global RAM pressure, and service-local cgroup OOMs
+  remain separate incident classes.
   Recheck the shipped table and selected package without runtime mutation with
   `scripts/install-p0-oom-containment --check --no-runtime`.
 - **Kernel reclaim tuning** (`/etc/sysctl.d/99-hapax-memory.conf`):
   - `vm.min_free_kbytes=524288` — 512MB allocation buffer (raised from default 66MB) to prevent cascade OOM under transient spikes
   - `vm.watermark_scale_factor=100` — kswapd reclaims at 1% pressure (default 10 is too late under zram+heavy-IO)
-  - `vm.swappiness=5` — tuned for 128GB RAM with audio/livestream workload (low swap preference)
+  - `vm.swappiness=5` — low swap preference for both admitted host memory classes and the audio/livestream workload
 - **`stimmung-sync.service` ceiling rationale**: the 2026-05-13 incident was
   service-local cgroup pressure, not global RAM exhaustion: `stimmung-sync` was
   killed under `CONSTRAINT_MEMCG` at the old 128M hard ceiling while the host

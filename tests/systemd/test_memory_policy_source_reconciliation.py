@@ -7,18 +7,20 @@ README = REPO_ROOT / "systemd" / "README.md"
 STIMMUNG_SYNC_UNIT = REPO_ROOT / "systemd" / "units" / "stimmung-sync.service"
 
 
-def test_readme_does_not_present_64gb_swap_policy_as_current_truth() -> None:
+def test_readme_presents_bounded_per_host_policy_as_current_truth() -> None:
     readme = README.read_text(encoding="utf-8")
 
     stale_current_truth = [
         "Total 63G swap on 62G RAM",
         "zram (31G zstd, priority=100) as tier-1",
         "vm.swappiness=150",
+        "**128GB host memory policy**",
+        "tuned for 128GB RAM",
     ]
     for phrase in stale_current_truth:
         assert phrase not in readme
 
-    assert "**128GB host memory policy**" in readme
+    assert "**Bounded per-host memory policy**" in readme
     assert "`vm.swappiness=5`" in readme
     assert "zram saturation, global RAM pressure" in readme
     assert "read-only host receipt" in readme
