@@ -98,11 +98,11 @@ def _systemctl_property_file(section: str, key: str, value: str) -> str:
     )
 
 
-def _copy_oom_package(dest_root: Path) -> None:
+def _copy_oom_package(dest_root: Path, *, source_root: Path = REPO_ROOT) -> None:
     for relative in OOM_PACKAGE_FILES:
         dest = dest_root / relative
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(REPO_ROOT / relative, dest)
+        shutil.copy2(source_root / relative, dest)
 
 
 @pytest.fixture(autouse=True)
@@ -3926,7 +3926,7 @@ def _run_install_verify_live(
         activation_alias = tmp_path / "activation-alias"
         activation_alias.symlink_to(activation, target_is_directory=True)
         stage = root_defer / package_sha / "oom-containment"
-        _copy_oom_package(stage)
+        _copy_oom_package(stage, source_root=activation)
         (stage / ".hapax-root-required-package-sha").write_text(
             f"{package_sha}\n", encoding="utf-8"
         )
