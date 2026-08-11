@@ -90,11 +90,14 @@ def test_github_mcp_launch_uses_fixed_credential_and_docker_commands() -> None:
     text = WRAPPER.read_text(encoding="utf-8")
 
     assert "PATH=/usr/local/bin:/usr/bin:/bin" in text
-    assert "DOCKER_HOST=unix:///var/run/docker.sock" in text
+    assert "unset DOCKER_CONTEXT DOCKER_HOST DOCKER_CONFIG DOCKER_CERT_PATH" in text
+    assert "unset DOCKER_TLS DOCKER_TLS_VERIFY DOCKER_API_VERSION" in text
     assert "/usr/bin/pass show" in text
     assert "/usr/bin/gh auth token" in text
     assert "/usr/bin/jq -r" in text
-    assert "/usr/bin/docker run -i --rm" in text
+    assert "local_docker run -i --rm" in text
+    assert "--host=unix:///var/run/docker.sock" in text
+    assert "--config=/nonexistent/hapax-local-docker-config" in text
     assert '--cidfile "$CID_FILE"' in text
     assert "--memory 512M" in text
     assert "--memory-swap 768M" in text
@@ -104,8 +107,8 @@ def test_github_mcp_launch_uses_fixed_credential_and_docker_commands() -> None:
     assert "search_pull_requests,pull_request_read,merge_pull_request" in text
     assert "add_issue_comment,create_pull_request" in text
     assert 'FILTER_ARGS=(--tools="$TOOLS")' in text
-    assert '/usr/bin/docker rm -f "$cid"' in text
-    assert '/usr/bin/docker rm -f "$CONTAINER_NAME"' not in text
+    assert 'local_docker rm -f "$cid"' in text
+    assert 'local_docker rm -f "$CONTAINER_NAME"' not in text
 
 
 def _run_launch_tail(
@@ -137,44 +140,41 @@ exit 1
     fake_jq.write_text("#!/usr/bin/bash\nexit 1\n", encoding="utf-8")
     fake_jq.chmod(0o755)
     fake_docker = bin_dir / "docker"
+    container_id = "a" * 64
     fake_docker.write_text(
-        """#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\\n' "$*" >> "$TEST_DOCKER_CALLS"
-case "$1" in
-  run)
-    printf '%s\\n' "$*" > "$TEST_DOCKER_ARGS"
-    cidfile=""
-    prior=""
-    for argument in "$@"; do
-      if [ "$prior" = --cidfile ]; then
-        cidfile="$argument"
-        break
-      fi
-      prior="$argument"
-    done
-    test -n "$cidfile"
-    printf '%s' "$TEST_CONTAINER_ID" > "$cidfile"
-    if [ -n "${GITHUB_PERSONAL_ACCESS_TOKEN:-}" ]; then
-      printf 'present\\n' > "$TEST_TOKEN_SEEN"
-    fi
-    ;;
-  ps)
-    if [ "$TEST_CLEANUP_MODE" = rm-failure ]; then
-      printf '%s\\n' "$TEST_CONTAINER_ID"
-    fi
-    ;;
-  rm)
-    if [ "$TEST_CLEANUP_MODE" = rm-failure ]; then
-      printf 'simulated Docker cleanup denial\\n' >&2
-      exit 73
-    fi
-    ;;
-  *)
-    exit 91
-    ;;
-esac
-""",
+        "#!/usr/bin/python3\n"
+        "import os, pathlib, sys\n"
+        f"args_path = pathlib.Path({str(docker_args)!r})\n"
+        f"calls_path = pathlib.Path({str(docker_calls)!r})\n"
+        f"token_path = pathlib.Path({str(token_seen)!r})\n"
+        f"container_id = {container_id!r}\n"
+        f"cleanup_mode = {cleanup_mode!r}\n"
+        "args = sys.argv[1:]\n"
+        "expected = ['--host=unix:///var/run/docker.sock', "
+        "'--config=/nonexistent/hapax-local-docker-config']\n"
+        "selectors = [key for key in os.environ if key.startswith('DOCKER_')]\n"
+        "if args[:2] != expected or selectors:\n"
+        "    print(f'unsafe Docker boundary: args={args[:2]} selectors={selectors}', file=sys.stderr)\n"
+        "    raise SystemExit(92)\n"
+        "args = args[2:]\n"
+        "with calls_path.open('a', encoding='utf-8') as handle:\n"
+        "    handle.write(' '.join(args) + '\\n')\n"
+        "command = args[0]\n"
+        "if command == 'run':\n"
+        "    args_path.write_text(' '.join(args) + '\\n', encoding='utf-8')\n"
+        "    cidfile = pathlib.Path(args[args.index('--cidfile') + 1])\n"
+        "    cidfile.write_text(container_id, encoding='ascii')\n"
+        "    if os.environ.get('GITHUB_PERSONAL_ACCESS_TOKEN'):\n"
+        "        token_path.write_text('present\\n', encoding='utf-8')\n"
+        "elif command == 'ps':\n"
+        "    if cleanup_mode == 'rm-failure':\n"
+        "        print(container_id)\n"
+        "elif command == 'rm':\n"
+        "    if cleanup_mode == 'rm-failure':\n"
+        "        print('simulated Docker cleanup denial', file=sys.stderr)\n"
+        "        raise SystemExit(73)\n"
+        "else:\n"
+        "    raise SystemExit(91)\n",
         encoding="utf-8",
     )
     fake_docker.chmod(0o755)
@@ -208,11 +208,13 @@ LOGGER=/usr/bin/logger
     env.pop("HAPAX_GITHUB_MCP_TOOLSETS", None)
     env.update(
         {
-            "TEST_CLEANUP_MODE": cleanup_mode,
-            "TEST_CONTAINER_ID": "a" * 64,
-            "TEST_DOCKER_ARGS": str(docker_args),
-            "TEST_DOCKER_CALLS": str(docker_calls),
-            "TEST_TOKEN_SEEN": str(token_seen),
+            "DOCKER_API_VERSION": "1.24",
+            "DOCKER_CERT_PATH": str(tmp_path / "hostile-certs"),
+            "DOCKER_CONFIG": str(tmp_path / "hostile-config"),
+            "DOCKER_CONTEXT": "hostile-remote-context",
+            "DOCKER_HOST": "tcp://hostile.invalid:2376",
+            "DOCKER_TLS": "1",
+            "DOCKER_TLS_VERIFY": "1",
         }
     )
 

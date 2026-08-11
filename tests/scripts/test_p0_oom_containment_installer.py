@@ -85,7 +85,11 @@ JUDGE_CONTAINER_ID = "a" * 64
 MCP_CONTAINER_ID = "b" * 64
 REPLACEMENT_CONTAINER_ID = "d" * 64
 LOCAL_JUDGE_EXEC_START = (
-    "/usr/bin/docker run --rm --name hapax-local-judge "
+    "/usr/bin/env -i HOME=/home/hapax LANG=C.UTF-8 LC_ALL=C.UTF-8 LOGNAME=hapax "
+    "PATH=/usr/bin:/bin USER=hapax /usr/bin/docker "
+    "--host=unix:///var/run/docker.sock "
+    "--config=/run/user/1000/hapax-local-judge/docker-config "
+    "run --rm --name hapax-local-judge "
     "--memory 4G --memory-swap 6G --gpus device=GPU-test local-judge"
 )
 
@@ -348,7 +352,7 @@ def _systemctl_user_unit_cases(
             "  *--user\\ show\\ hapax-local-judge.service\\ -p\\ DropInPaths\\ --value*) "
             f"printf '%s\\n' '{local_judge_dropins}' ;;",
             "  *--user\\ show\\ hapax-local-judge.service\\ -p\\ ExecStart\\ --value*) "
-            f"printf '%s\\n' '{{ path=/usr/bin/docker ; argv[]={local_judge_exec_start} ; }}' ;;",
+            f"printf '%s\\n' '{{ path={local_judge_exec_start.split()[0]} ; argv[]={local_judge_exec_start} ; }}' ;;",
         ]
     )
     for timer, target, on_boot, on_active in (
@@ -4070,6 +4074,19 @@ def test_verify_live_rejects_effective_local_judge_execstart_without_limits(
     assert result.returncode != 0
     assert "effective hapax-local-judge.service ExecStart drift" in result.stderr
     assert "durable launch" in result.stderr
+
+
+def test_verify_live_rejects_direct_docker_launch_even_with_correct_limits(tmp_path: Path) -> None:
+    result = _run_install_verify_live(
+        tmp_path,
+        local_judge_exec_start=(
+            "/usr/bin/docker run --rm --name hapax-local-judge "
+            "--memory 4G --memory-swap 6G local-judge"
+        ),
+    )
+
+    assert result.returncode != 0
+    assert "clean-environment local-Docker selector" in result.stderr
 
 
 def test_verify_live_rejects_effective_local_judge_dropin(tmp_path: Path) -> None:

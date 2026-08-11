@@ -199,6 +199,10 @@ def _source_checkout_authority_checks() -> list[Check]:
     ]
 
 
+def _audit_exit_code(checks: list[Check]) -> int:
+    return 1 if any(check.status != "pass" for check in checks) else 0
+
+
 @functools.cache
 def _source_checkout_root() -> Path | None:
     if SCRIPT_INVOKED_PATH != SCRIPT_PATH:
@@ -2099,7 +2103,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     else:
         print(f"POLICY_AUTHORITY {policy_authority}\n{format_human(checks)}")
-    return 1 if any(check.status in {"gap", "error"} for check in checks) else 0
+    return _audit_exit_code(checks)
 
 
 if __name__ == "__main__":

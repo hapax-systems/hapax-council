@@ -257,6 +257,16 @@ def test_source_checkout_probe_failure_is_a_structured_fail_closed_result(tmp_pa
     assert "fatal:" in result.stderr
 
 
+def test_audit_exit_predicate_is_nonzero_for_every_non_pass_status() -> None:
+    namespace = runpy.run_path(str(SCRIPT))
+    check_type = namespace["Check"]
+    exit_code = namespace["_audit_exit_code"]
+
+    assert exit_code([check_type("healthy", "pass", "target", "actual")]) == 0
+    for status in ("fail", "gap", "error", "unknown-future-status"):
+        assert exit_code([check_type("unhealthy", status, "target", "actual")]) == 1
+
+
 def _root_required_profile_parser_source() -> str:
     source = ROOT_REQUIRED_AUDIT.read_text(encoding="utf-8")
     section = source.split("load_host_profile() {", 1)[1]
@@ -1368,6 +1378,8 @@ def test_shipped_host_profile_rows_satisfy_the_declared_zram_invariant() -> None
 
     assert "-k shipped_host_profile_rows_satisfy_the_declared_zram_invariant" in table_text
     assert "exact zram contract: appendix=16384 MiB, podium=32768 MiB" in table_text
+    assert "admission-only safety invariant" in table_text
+    assert "the exact row value remains the deployed value" in table_text
     assert (
         "config/root-required/oom-host-policy/{appendix,podium}/"
         "{app.slice,user-1000.slice,user@1000.service}.conf"

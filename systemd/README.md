@@ -201,6 +201,14 @@ drain. Require the raw value to select exactly one row in the installed
 `oom-host-profiles.tsv`; a source-table invariant or a witness from the other
 host is not evidence of the target host's installed RAM class.
 
+Podium's first transition from the observed 8 GiB zram device to its exact
+32 GiB row value recreates `zram0`. Immediately before the authorized drain,
+require `zramctl` and `/proc/swaps` to show no swap-backed pressure. If zram has
+used pages, stop: reduce pressure and drain swap through a separately approved
+maintenance action before retrying. Rollback means another runtime-authorized
+reconciliation to the prior receipt; do not hand-edit the generator config or
+recreate the device outside that receipt-bound path.
+
 Only that separate runtime path may perform sysctl writes, zram-generator
 changes, daemon reloads, unit installation, or service restarts.
 
