@@ -1140,7 +1140,7 @@ def audit_docker_limits() -> list[Check]:
                 _docker(),
                 "inspect",
                 "--format",
-                "{{.Id}}\t{{.Name}}\t{{.HostConfig.Memory}}\t{{.HostConfig.MemorySwap}}",
+                "{{.Id}}\t{{.Name}}\t{{.HostConfig.Memory}}\t{{.HostConfig.MemorySwap}}\t{{json .HostConfig.OomKillDisable}}",
                 container_id,
             ]
         )
@@ -1172,12 +1172,12 @@ def audit_docker_limits() -> list[Check]:
             )
             continue
         fields = inspected.stdout.strip().split("\t")
-        if len(fields) != 4:
+        if len(fields) != 5:
             checks.append(
                 Check(
                     _docker_check_name(name, "inspect"),
                     "error",
-                    "id, name, memory, memory-swap",
+                    "id, name, memory, memory-swap, OOM-kill-disabled",
                     inspected.stdout.strip() or "empty",
                     f"unparseable Docker inspect result; {NEXT_OOM_INSTALL}",
                 )
@@ -1185,6 +1185,7 @@ def audit_docker_limits() -> list[Check]:
             continue
         inspected_id = fields[0]
         inspected_name = fields[1].removeprefix("/")
+        oom_kill_disable_raw = fields[4]
         try:
             actual_memory, actual_swap = int(fields[2]), int(fields[3])
         except ValueError:
@@ -1209,6 +1210,17 @@ def audit_docker_limits() -> list[Check]:
                 )
             )
             continue
+        if oom_kill_disable_raw not in {"null", "true", "false"}:
+            checks.append(
+                Check(
+                    _docker_check_name(name, "OomKillDisable"),
+                    "error",
+                    "false",
+                    fields[4] or "empty",
+                    f"unparseable Docker OOM-kill-disable state; {NEXT_OOM_INSTALL}",
+                )
+            )
+            continue
         for field, expected, actual in (
             ("Memory", expected_memory, actual_memory),
             ("MemorySwap", expected_swap, actual_swap),
@@ -1224,6 +1236,25 @@ def audit_docker_limits() -> list[Check]:
                     detail,
                 )
             )
+        # Docker serializes an omitted *bool as null. Both null and explicit
+        # false leave the kernel OOM killer enabled; only true disables it.
+        oom_kill_disable = "true" if oom_kill_disable_raw == "true" else "false"
+        oom_status = "pass" if oom_kill_disable == "false" else "gap"
+        oom_detail = (
+            ""
+            if oom_status == "pass"
+            else "Docker OOM killer is disabled; recreate the container from its governed "
+            f"launch source without --oom-kill-disable, then {NEXT_OOM_INSTALL}"
+        )
+        checks.append(
+            Check(
+                _docker_check_name(name, "OomKillDisable"),
+                oom_status,
+                "false",
+                oom_kill_disable,
+                oom_detail,
+            )
+        )
     return checks
 
 

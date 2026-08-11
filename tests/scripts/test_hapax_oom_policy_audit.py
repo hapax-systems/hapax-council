@@ -353,6 +353,12 @@ def _fake_docker(tmp_path: Path, *, state: str = "bounded") -> Path:
         judge_swap = 6 * 1024**3
         mcp_memory = 512 * 1024**2
         mcp_swap = 768 * 1024**2
+        if state == "oom-kill-disabled":
+            oom_kill_disable = "true"
+        elif state == "oom-kill-invalid":
+            oom_kill_disable = "FALSE"
+        else:
+            oom_kill_disable = "false"
         if state == "unlimited":
             judge_memory = judge_swap = mcp_memory = mcp_swap = 0
         elif state == "wrong-swap":
@@ -382,8 +388,8 @@ def _fake_docker(tmp_path: Path, *, state: str = "bounded") -> Path:
             )
             inspect_body = (
                 f'case "$id" in\n'
-                f"  {JUDGE_CONTAINER_ID}) printf '%s\\t/%s\\t%s\\t%s\\n' \"$id\" hapax-local-judge {judge_memory} {judge_swap} ;;\n"
-                f"  {MCP_CONTAINER_ID}) printf '%s\\t/%s\\t%s\\t%s\\n' \"$id\" hapax-github-mcp-hapax-123 {mcp_memory} {mcp_swap} ;;\n"
+                f"  {JUDGE_CONTAINER_ID}) printf '%s\\t/%s\\t%s\\t%s\\t%s\\n' \"$id\" hapax-local-judge {judge_memory} {judge_swap} null ;;\n"
+                f"  {MCP_CONTAINER_ID}) printf '%s\\t/%s\\t%s\\t%s\\t%s\\n' \"$id\" hapax-github-mcp-hapax-123 {mcp_memory} {mcp_swap} {oom_kill_disable} ;;\n"
                 "  *) exit 1 ;;\n"
                 "esac"
                 if state != "inspect-failure-present"
@@ -629,6 +635,7 @@ def test_audit_passes_when_user_manager_is_killable_and_app_slice_bounded(
     assert statuses["zram0_active_swap"] == "pass"
     assert statuses["zram0_compression"] == "pass"
     assert statuses["docker_hapax_local_judge_Memory"] == "pass"
+    assert statuses["docker_hapax_local_judge_OomKillDisable"] == "pass"
     assert statuses["docker_hapax_github_mcp_hapax_123_MemorySwap"] == "pass"
     assert statuses["user_unit_pipewire.service_Slice"] == "pass"
     assert statuses["user_unit_pipewire.service_NoNewPrivileges"] == "pass"
@@ -1054,16 +1061,28 @@ def test_appendix_optional_absence_fails_without_authoritative_search_paths(
     )
 
 
-@pytest.mark.parametrize("docker_state", ["unlimited", "wrong-swap"])
+@pytest.mark.parametrize(
+    "docker_state", ["unlimited", "wrong-swap", "oom-kill-disabled", "oom-kill-invalid"]
+)
 def test_audit_fails_for_unbounded_or_wrong_docker_limits(
     tmp_path: Path, docker_state: str
 ) -> None:
     result = _run(tmp_path, docker_state=docker_state)
     assert result.returncode == 1
     checks = {check["name"]: check for check in json.loads(result.stdout)["checks"]}
-    assert any(
-        check["status"] == "gap" and name.startswith("docker_") for name, check in checks.items()
-    )
+    check = checks["docker_hapax_github_mcp_hapax_123_OomKillDisable"]
+    if docker_state == "oom-kill-invalid":
+        assert check["status"] == "error"
+        assert check["actual"] == "FALSE"
+        assert "unparseable Docker OOM-kill-disable state" in check["detail"]
+    else:
+        assert any(
+            item["status"] == "gap" and name.startswith("docker_") for name, item in checks.items()
+        )
+    if docker_state == "oom-kill-disabled":
+        assert check["target"] == "false"
+        assert check["actual"] == "true"
+        assert "recreate the container" in check["detail"]
 
 
 def test_audit_fails_when_docker_cannot_be_queried(tmp_path: Path) -> None:

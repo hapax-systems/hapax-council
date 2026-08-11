@@ -453,6 +453,8 @@ def test_local_judge_runtime_canary_fails_fast() -> None:
     assert 'systemctl --user show "$unit" -p ExecStart --value' in canary
     assert '" --memory 4G "' in canary
     assert '" --memory-swap 6G "' in canary
+    assert "{{json .HostConfig.OomKillDisable}}" in canary
+    assert '== null || "$oom_kill_disable" == false' in canary
     assert "run_verifierbench.py" in canary
     assert "length == 24" in canary
     assert 'has("error")' in canary
