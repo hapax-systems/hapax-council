@@ -88,3 +88,15 @@ assets/quake/csqc/*.lno
 # is never inside the repo).
 evidence/authority-case-ledger.jsonl
 /var/lib/hapax/coord/
+
+# Coverage artifacts. `.coverage` is a binary SQLite DB rewritten by every local
+# `pytest --cov` run and read by nothing in this repo; `sdlc-implement.yml` runs
+# `git add -A` in two places, so a tracked copy means automation commits
+# divergent binaries onto unrelated branches. Guard:
+# tests/shared/test_no_tracked_coverage_artifacts.py
+.coverage
+.coverage.*
+coverage.xml
+coverage.json
+.coverage_html/
+htmlcov/

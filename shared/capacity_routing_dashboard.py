@@ -17,6 +17,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from shared.dispatcher_policy import quota_spend_ledger_live_path_from_env
+from shared.jsonl_tail import read_tail_lines
 from shared.platform_capability_registry import (
     PLATFORM_CAPABILITY_REGISTRY,
     PlatformCapabilityRegistryError,
@@ -37,6 +38,13 @@ from shared.quota_spend_ledger import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ROUTE_METADATA_STALE_AFTER_S = 900
+# The route-decision ledger is append-only and this reader wants only the newest
+# rows inside a max_age window, so it reads a bounded tail rather than the file.
+# Overscan covers rows the age filter will discard; the floor covers a small
+# `limit` against a bursty writer. Both are far above a day of real volume.
+ROUTE_DECISION_TAIL_OVERSCAN = 10
+ROUTE_DECISION_TAIL_MIN_LINES = 5_000
+ROUTE_DECISION_TAIL_MAX_BYTES = 8 * 1024 * 1024
 _ROUTE_METADATA_KEYS = ("explicit", "derived", "hold", "malformed")
 
 
@@ -209,7 +217,11 @@ def route_decision_items_from_jsonl(
     """Read recent route-decision receipt rows for observe-only dashboards."""
 
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = read_tail_lines(
+            path,
+            max_lines=max(limit * ROUTE_DECISION_TAIL_OVERSCAN, ROUTE_DECISION_TAIL_MIN_LINES),
+            max_bytes=ROUTE_DECISION_TAIL_MAX_BYTES,
+        )
     except OSError:
         return ()
 

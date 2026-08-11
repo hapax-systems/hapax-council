@@ -8,10 +8,15 @@ route decision receipts.
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import hashlib
 import json
+import logging
 import os
-from collections.abc import Iterable, Mapping, Sequence
+import time
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
@@ -31,6 +36,8 @@ from shared.capability_surface_delta import (
     CapabilitySurfaceDeltaError,
     load_capability_surface_delta_file,
 )
+from shared.jsonl_append import lock_path_for
+from shared.jsonl_tail import read_tail_lines
 from shared.platform_capability_receipts import (
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
@@ -73,8 +80,44 @@ from shared.route_metadata_schema import (
     stable_payload_hash,
 )
 
+logger = logging.getLogger(__name__)
+
 ROUTE_DECISION_SCHEMA_VERSION = 1
 ROUTE_DECISION_LEDGER = "route-decisions.jsonl"
+# Rotation bounds for the append-only route-decision ledger. It reached 2.5 GB
+# once because nothing capped it, and every reader paid for that. The carry
+# window is sized well above a day of dispatch volume so that rotation can never
+# strip the rows the connector gate needs (see rotate_route_decision_ledger).
+ROUTE_DECISION_LEDGER_MAX_BYTES = 64 * 1024 * 1024
+ROUTE_DECISION_LEDGER_CARRY_LINES = 2_000
+ROUTE_DECISION_LEDGER_CARRY_BYTES = 16 * 1024 * 1024
+# Lock acquisition is retried so that giving up means the failure is PERSISTENT,
+# which is what makes the unserialised-append fallback safe. See _ledger_lock.
+_LEDGER_LOCK_ATTEMPTS = 3
+_LEDGER_LOCK_RETRY_S = 0.05
+# Lock outcomes are THREE states, not two, because "we could not lock" and "this
+# filesystem has no locking" have opposite consequences. See _ledger_lock.
+_LOCK_HELD = "held"
+_LOCK_UNSUPPORTED = "unsupported"
+_LOCK_FAILED = "failed"
+# errnos that mean flock is NOT IMPLEMENTED here, so no process can hold this
+# lock and therefore none can rotate. Membership is a SAFETY CLAIM — it licenses
+# an unserialised append — so it admits only errnos meaning "this operation does
+# not exist on this target":
+#
+#   ENOSYS                 the syscall is not implemented
+#   EOPNOTSUPP / ENOTSUP   unsupported on this fd or filesystem
+#
+# Deliberately EXCLUDED, because they are failures rather than capability facts,
+# and reading them as "nobody can lock" would license an unserialised append
+# while other writers hold locks and rotate underneath it:
+#
+#   ENOLCK  the kernel ran out of lock records — resource EXHAUSTION, which
+#           usually means locks are in heavy USE, the opposite of absent
+#   EINVAL  a malformed call (bad operation flags) — a bug here, not a property
+#           of the filesystem
+#   EACCES / EAGAIN / EBADF / EIO  locking works and we simply did not get it
+_FLOCK_UNSUPPORTED_ERRNOS = frozenset({errno.ENOSYS, errno.EOPNOTSUPP, errno.ENOTSUP})
 DIMENSIONAL_ROUTE_RECEIPT_SCHEMA_VERSION = 1
 ROUTE_AUTHORITY_RECEIPT_SCHEMA_VERSION = 1
 ROUTE_AUTHORITY_RECEIPT_DIRNAME = "route-authority"
@@ -1098,6 +1141,239 @@ def evaluate_dispatch_policy(
     )
 
 
+@contextmanager
+def _ledger_lock(path: Path) -> Iterator[str]:
+    """Hold the ledger's ``<name>.lock`` sidecar exclusively; yield the outcome.
+
+    Yields one of three states, and the third is the point:
+
+    ``_LOCK_HELD``
+        Rotation and append may both proceed.
+    ``_LOCK_UNSUPPORTED``
+        ``flock`` is not implemented on this filesystem, so **no** process can
+        hold this lock and therefore no process can rotate. An append is safe
+        precisely because nothing can pull the inode out from under it.
+    ``_LOCK_FAILED``
+        Locking works here but we did not get it. Another process may hold it and
+        rotate, so an append could be discarded — the caller must refuse.
+
+    Collapsing the last two into one boolean is what made the previous two
+    revisions wrong in opposite directions. Treating them both as "safe to append
+    unlocked" lost receipts to a concurrent rotation; treating them both as
+    "refuse" turned an estate on a locking-less filesystem into one where every
+    MCP mutation is impossible, **including the repair**. The distinguishing fact
+    is whether anyone else can be rotating, and errno answers it.
+
+    This is deliberately the SAME lock ``append_jsonl`` takes, obtained through
+    ``lock_path_for`` rather than re-derived, because rotation and append must
+    exclude each other. Rotation replaces the ledger inode; an append that slips
+    between the tail read and the replace lands in the old inode, survives only
+    in the ``.1`` archive, and is invisible to ``_latest_route_decision``.
+
+    ``flock`` and not a lock file: the kernel drops it when the holder exits, so
+    a process killed mid-rotation cannot wedge rotation off forever. The previous
+    mtime-staleness reclamation was itself a loss vector — the mtime was fixed at
+    creation and never refreshed, so a live holder past the staleness window had
+    its lock stolen and two rotations interleaved.
+    """
+    lock_fd: int | None = None
+    try:
+        lock_fd = os.open(lock_path_for(path), os.O_WRONLY | os.O_CREAT, 0o600)
+    except OSError as exc:
+        # Says REFUSED, because that is what the caller does with _LOCK_FAILED. This message
+        # previously read "appending unserialised", which described the opposite of the
+        # behaviour: the sole caller raises on _LOCK_FAILED and no append happens. A reviewer
+        # reading only this branch reasonably concluded the code permitted an unserialised
+        # append concurrent with rotation. The control flow was right and the log was lying.
+        #
+        # Note this is NOT _LOCK_UNSUPPORTED: failing to OPEN the sidecar says nothing about
+        # whether flock works here, so another process may well be holding it and rotating.
+        # Unopenable must therefore refuse, exactly like contention-loss.
+        logger.warning(
+            "route-decision ledger lock unavailable at %s (%s); REFUSING the write — the "
+            "receipt is not written. Next: check the directory exists and is writable.",
+            lock_path_for(path),
+            exc,
+        )
+        yield _LOCK_FAILED
+        return
+    held = False
+    outcome = _LOCK_FAILED
+    try:
+        # RETRY so that giving up means the failure is persistent. A blocking
+        # LOCK_EX mostly either succeeds or raises EINTR, so this loop is thin by
+        # design — but EINTR is exactly the transient that must not be mistaken
+        # for a persistent condition, because the two lead to opposite decisions
+        # below.
+        last_exc: OSError | None = None
+        for attempt in range(_LEDGER_LOCK_ATTEMPTS):
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)  # blocking; rotation is bounded
+                held = True
+                outcome = _LOCK_HELD
+                break
+            except OSError as exc:
+                last_exc = exc
+                if exc.errno in _FLOCK_UNSUPPORTED_ERRNOS:
+                    break  # retrying an unimplemented syscall is pointless
+                if attempt + 1 < _LEDGER_LOCK_ATTEMPTS:
+                    time.sleep(_LEDGER_LOCK_RETRY_S)
+        if not held:
+            # Never propagate: the caller rotates before appending, so an
+            # exception escaping here aborts the receipt write as an unexplained
+            # crash. Classify instead, and let the caller decide.
+            unsupported = last_exc is not None and last_exc.errno in _FLOCK_UNSUPPORTED_ERRNOS
+            outcome = _LOCK_UNSUPPORTED if unsupported else _LOCK_FAILED
+            logger.warning(
+                "route-decision ledger lock at %s not held after %d attempt(s) (%s); "
+                "classified %s. Next: %s",
+                lock_path_for(path),
+                _LEDGER_LOCK_ATTEMPTS,
+                last_exc,
+                outcome,
+                "this filesystem does not implement flock, so no writer can rotate and "
+                "the receipt is appended unserialised — move the ledger to a local "
+                "filesystem to restore serialised rotation"
+                if unsupported
+                else "confirm the sidecar is writable and no writer is wedged holding it",
+            )
+        yield outcome
+    finally:
+        try:
+            if held:
+                with suppress(OSError):
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        finally:
+            with suppress(OSError):
+                os.close(lock_fd)
+
+
+def _rotate_locked(path: Path, *, max_bytes: int) -> bool:
+    """Cap the ledger, carrying the recent tail forward. Assumes the lock is HELD.
+
+    Returns True when a rotation happened. There is deliberately no public
+    lock-taking wrapper: the only caller is ``write_route_decision_receipt``,
+    which must hold one lock across rotate-and-append, and a second entry point
+    that took the lock itself would invite exactly the two-acquisition structure
+    that leaves a gap for another writer to rotate through.
+
+    The carry-forward is the entire point. ``_latest_route_decision`` refuses
+    every side-effecting MCP call when it cannot find a recent row for the task,
+    so a rotation that merely truncated would hard-block the system it exists to
+    protect — and the unblock path itself runs through MCP. Rotation therefore
+    always leaves the newest rows in place, and the previous file survives one
+    generation as ``.1`` for audit.
+
+    Failure leaves the ledger untouched — a write path must never lose a receipt
+    to housekeeping — but it is no longer silent. Degrading back to an uncapped
+    ledger is the exact regression this exists to stop, and it stayed invisible
+    for weeks the first time, so every non-noop failure path logs at WARNING with
+    a next action. The below-cap return is a normal no-op and stays quiet.
+    """
+    # Re-stat under the lock: a rotation we queued behind may already have done
+    # the work, and rotating again would discard the surviving generation.
+    try:
+        if path.stat().st_size <= max_bytes:
+            return False
+    except OSError as exc:
+        logger.warning(
+            "route-decision ledger %s could not be stat'd for rotation (%s); "
+            "size capping is OFF for this write. Next: check the path and permissions.",
+            path,
+            exc,
+        )
+        return False
+
+    staged = path.with_name(path.name + ".rotating")
+    archive = path.with_name(path.name + ".1")
+    archive_staged = path.with_name(path.name + ".1.staging")
+    try:
+        carried = read_tail_lines(
+            path,
+            max_lines=ROUTE_DECISION_LEDGER_CARRY_LINES,
+            max_bytes=ROUTE_DECISION_LEDGER_CARRY_BYTES,
+        )
+        staged.write_text(
+            "".join(f"{line}\n" for line in carried if line.strip()), encoding="utf-8"
+        )
+        # Link into a staging name rather than unlinking the archive first. Unlinking first
+        # destroys the retained audit generation the moment os.link fails — cross-device,
+        # link-count, or permissions — and the failure path then reports only that the ledger
+        # is uncapped, understating a loss that already happened.
+        archive_staged.unlink(missing_ok=True)
+        os.link(path, archive_staged)
+        # Commit the ROTATION before promoting the archive, and never the other way round.
+        # os.replace is atomic, so a concurrent reader always finds a file at `path`.
+        #
+        # Promoting the archive first and then failing here would leave `.1` as a hardlink of
+        # the LIVE ledger: every later append would grow both, `.1` would stop representing a
+        # rotated generation, disk use would double per row until the next successful rotation,
+        # and the previous generation would already be gone — none of which the "intact but
+        # UNCAPPED" warning says. This order cannot reach that state.
+        staged.replace(path)
+    except OSError as exc:
+        # The cleanup must not raise on top of the failure it is cleaning up: an exception here
+        # escapes into write_route_decision_receipt and turns a contained housekeeping failure
+        # into a lost receipt.
+        with suppress(OSError):
+            staged.unlink(missing_ok=True)
+        with suppress(OSError):
+            archive_staged.unlink(missing_ok=True)
+        logger.warning(
+            "route-decision ledger rotation of %s failed (%s); the ledger is intact but "
+            "UNCAPPED and will keep growing. Next: check free space and permissions on %s.",
+            path,
+            exc,
+            path.parent,
+        )
+        return False
+
+    # The ledger is capped from here on, so this is no longer a rotation failure. Promoting the
+    # retained generation is a separate and weaker obligation: if it fails, the rotation still
+    # happened and the previous `.1` is untouched. Rotation has three outcomes, not two, and
+    # collapsing this one into the branch above would report a successful rotation as a failure.
+    try:
+        os.replace(archive_staged, archive)
+    except OSError as exc:
+        with suppress(OSError):
+            archive_staged.unlink(missing_ok=True)
+        logger.warning(
+            "route-decision ledger %s was rotated, but the retained generation could not be "
+            "promoted to %s (%s); the previous %s is unchanged and the live ledger is capped. "
+            "Next: check free space and permissions on %s.",
+            path,
+            archive,
+            exc,
+            archive,
+            path.parent,
+        )
+    return True
+
+
+def _append_row(path: Path, blob: bytes) -> None:
+    """Append one complete row. The ledger lock MUST be held by the caller.
+
+    There is no unserialised variant, and previous attempts to provide one were
+    all unsound. Without mutual exclusion a rotation in another process can
+    replace the ledger inode at any point around the write, so the bytes land in
+    a file that survives only as the ``.1`` archive and the receipt is invisible
+    to ``_latest_route_decision``. Every mitigation short of the lock — checking
+    the inode after writing, re-appending on mismatch — narrows that window
+    without closing it, because any check-then-act leaves a gap after the check.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        # os.write may write fewer bytes than asked. Ignoring the count leaves a
+        # truncated JSONL row while reporting success, and the connector reader
+        # then meets malformed data and fails closed — the exact outcome this
+        # module exists to prevent. Loop to completion.
+        written = 0
+        while written < len(blob):
+            written += os.write(fd, blob[written:])
+    finally:
+        os.close(fd)
+
+
 def write_route_decision_receipt(
     decision: RouteDecision,
     *,
@@ -1109,8 +1385,46 @@ def write_route_decision_receipt(
     payload = decision.model_dump(mode="json")
     if decision.dimensional_receipt is not None:
         payload.update(decision.dimensional_receipt.model_dump(mode="json"))
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(payload, sort_keys=True) + "\n")
+    blob = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
+    # ONE lock across rotate-then-append, and NO append without it.
+    #
+    # Two acquisitions left a gap for another process to rotate between this
+    # one's rotate-release and its append-acquire, so both happen inside a single
+    # critical section.
+    #
+    # The unlocked append is permitted in exactly one case, and refused in the
+    # other, because the two are not the same hazard.
+    #
+    # Appending without the lock is unsafe only if someone else can be ROTATING,
+    # since rotation is what replaces the inode out from under the write. Every
+    # attempt to make a general unserialised fallback safe failed — arguing other
+    # processes must also be failing is unsound for transient errors, and
+    # verifying the inode afterwards is a check-then-act with a gap after the
+    # check. But when flock is not implemented on this filesystem at all, no
+    # process can hold the lock, so no process rotates, and the append is safe by
+    # construction rather than by argument.
+    #
+    # Refusing that case too would be its own defect: on a locking-less
+    # filesystem every MCP mutation becomes impossible, including the ones that
+    # would repair the estate. The operator's standing constraint is that there
+    # must always be a recovery path. So: unsupported → append and say so;
+    # genuinely failed → refuse and say why.
+    with _ledger_lock(path) as lock_state:
+        if lock_state == _LOCK_FAILED:
+            raise RuntimeError(
+                f"route-decision ledger lock at {lock_path_for(path)} could not be "
+                f"acquired after {_LEDGER_LOCK_ATTEMPTS} attempts, so this receipt "
+                "cannot be written safely — a concurrent rotation could discard an "
+                "unserialised append and the connector gate would then fail closed "
+                "with no trace. Locking IS supported here, so another writer is "
+                f"holding or wedging it. Next: check for a stuck writer on {path}, "
+                "and confirm the lock sidecar is writable."
+            )
+        if lock_state == _LOCK_HELD:
+            _rotate_locked(path, max_bytes=ROUTE_DECISION_LEDGER_MAX_BYTES)
+        # _LOCK_UNSUPPORTED falls through without rotating: rotation replaces the
+        # inode and must never happen unserialised, but the append is safe.
+        _append_row(path, blob)
     return path
 
 

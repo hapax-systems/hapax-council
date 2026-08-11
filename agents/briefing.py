@@ -224,7 +224,7 @@ GUIDELINES:
   briefly as "resolved" in the body if notable, but focus actions on current failures only.
 - Use specific numbers (calls, costs, uptime %, error counts)
 - If everything is nominal, say so briefly — don't pad
-- For commands, give the exact shell command (the operator uses fish shell, but POSIX-compatible commands are fine)
+- For commands, give the exact shell command (the operator uses bash — estate migrated off fish 2026-08-10)
 - Priority levels: high = needs attention today, medium = this week, low = when convenient
 - If a Scout Report section is present, surface any "adopt" or "evaluate" recommendations as action items
 - If a Content Digest section is present, briefly note notable new content and any suggested triage actions

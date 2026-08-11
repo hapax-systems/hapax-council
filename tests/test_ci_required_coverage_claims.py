@@ -45,8 +45,11 @@ def _workflow_shell_function(workflow_text: str, function_name: str) -> str:
 
 
 def _workflow_docs_filter_decision_block(workflow_text: str) -> str:
+    # The block ends at the grouped redirect that writes every output at once
+    # (SC2129); the individual `echo ... >> "$GITHUB_OUTPUT"` lines it replaced
+    # are what this pattern used to anchor on.
     match = re.search(
-        r'^ {10}docs_only=true\n.*?^ {10}echo "python_prod_dependency_witness=\$python_prod_dependency_witness" >> "\$GITHUB_OUTPUT"',
+        r'^ {10}docs_only=true\n.*?^ {10}\} >> "\$GITHUB_OUTPUT"',
         workflow_text,
         re.DOTALL | re.MULTILINE,
     )

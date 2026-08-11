@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import json
+import logging
+import os
+import threading
+import time
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
+from shared import dispatcher_policy
 from shared.dispatcher_policy import (
     LOCAL_DEV_PLATFORMS,
     CandidateStatus,
@@ -25,6 +34,8 @@ from shared.dispatcher_policy import (
     write_route_authority_receipt,
     write_route_decision_receipt,
 )
+from shared.jsonl_append import append_jsonl, lock_path_for
+from shared.mcp_connector_policy import _latest_route_decision
 from shared.platform_capability_registry import (
     PLATFORM_CAPABILITY_REGISTRY,
     CapacityPool,
@@ -2489,6 +2500,639 @@ def test_writes_route_decision_jsonl_receipt(tmp_path: Path) -> None:
     assert '"route_policy_green": true' in line
     assert '"clog_state": "policy_green"' in line
     assert decision.decision_id in line
+
+
+def test_rotation_is_a_noop_below_the_cap(tmp_path: Path) -> None:
+    ledger = tmp_path / "route-decisions.jsonl"
+    ledger.write_text("a\nb\nc\n", encoding="utf-8")
+
+    assert (
+        dispatcher_policy._rotate_locked(
+            ledger, max_bytes=dispatcher_policy.ROUTE_DECISION_LEDGER_MAX_BYTES
+        )
+        is False
+    )
+    assert ledger.read_text(encoding="utf-8") == "a\nb\nc\n"
+    assert not (tmp_path / "route-decisions.jsonl.1").exists()
+
+
+def test_rotation_carries_the_newest_rows_forward(tmp_path: Path) -> None:
+    """The trap this guards: a rotation that truncated would hard-block every MCP call.
+
+    ``_latest_route_decision`` refuses when it finds no recent row for the task,
+    so the rows at the tail must survive rotation.
+    """
+    ledger = tmp_path / "route-decisions.jsonl"
+    ledger.write_text(
+        "".join(f'{{"n": {i}, "pad": "{"x" * 200}"}}\n' for i in range(5_000)),
+        encoding="utf-8",
+    )
+    original_size = ledger.stat().st_size
+
+    assert dispatcher_policy._rotate_locked(ledger, max_bytes=1024) is True
+
+    kept = [json.loads(line)["n"] for line in ledger.read_text(encoding="utf-8").splitlines()]
+    assert kept, "rotation must never leave an empty ledger"
+    assert kept[-1] == 4_999, "the newest row must survive"
+    assert kept == list(range(kept[0], 5_000)), "carried rows must stay contiguous and ordered"
+    assert ledger.stat().st_size < original_size
+
+    archive = tmp_path / "route-decisions.jsonl.1"
+    assert archive.exists(), "one generation is retained for audit"
+    assert archive.stat().st_size == original_size
+
+
+def test_rotation_keeps_the_newest_row_findable_by_the_connector_gate(tmp_path: Path) -> None:
+    ledger = tmp_path / "route-decisions.jsonl"
+    now = datetime.now(UTC)
+    rows = [
+        {"task_id": "old-task", "lane": "beta", "created_at": now.isoformat(), "pad": "y" * 300}
+        for _ in range(4_000)
+    ]
+    rows.append({"task_id": "live-task", "lane": "beta", "created_at": now.isoformat()})
+    ledger.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+    assert dispatcher_policy._rotate_locked(ledger, max_bytes=1024) is True
+
+    found = _latest_route_decision(task_id="live-task", role="beta", ledger_path=ledger)
+    assert found is not None, "rotation stripped the row the connector gate needs"
+    assert found["task_id"] == "live-task"
+
+
+def test_rotation_failure_leaves_the_ledger_intact_and_says_so(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Degrading back to an uncapped ledger must never be silent.
+
+    The failure this module exists to stop stayed invisible for weeks and reached
+    2.5 GB. A rotation that quietly returns False restores exactly that condition,
+    so the operator has to be told, with a next action.
+    """
+    ledger = tmp_path / "route-decisions.jsonl"
+    payload = "".join(f'{{"n": {i}}}\n' for i in range(100))
+    ledger.write_text(payload, encoding="utf-8")
+    # Occupy the staging name with a directory so replace() cannot succeed.
+    (tmp_path / "route-decisions.jsonl.rotating").mkdir()
+
+    with caplog.at_level(logging.WARNING, logger="shared.dispatcher_policy"):
+        assert dispatcher_policy._rotate_locked(ledger, max_bytes=1) is False
+
+    assert ledger.read_text(encoding="utf-8") == payload
+    assert caplog.records, "a failed rotation must not be silent"
+    assert "UNCAPPED" in caplog.text
+    assert "Next:" in caplog.text, "the warning must carry an operator next action"
+
+
+def test_an_unopenable_lock_sidecar_refuses_the_write_and_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Failing to OPEN the sidecar must refuse, and the warning must not claim otherwise.
+
+    This branch used to log "appending unserialised" while the sole caller raised on
+    _LOCK_FAILED. The behaviour was correct and the message described its opposite, which is
+    how a reviewer reading only this branch concluded the code permitted an unserialised
+    append concurrent with rotation.
+
+    Unopenable is deliberately NOT _LOCK_UNSUPPORTED: failing to open the sidecar says nothing
+    about whether flock works here, so another writer may be holding it and rotating.
+    """
+    ledger = tmp_path / "route-decisions.jsonl"
+    ledger.write_text('{"n": 0}\n', encoding="utf-8")
+    before = ledger.read_text(encoding="utf-8")
+
+    real_open = os.open
+
+    def refuse_sidecar(path: object, *args: object, **kwargs: object) -> int:
+        if str(path).endswith(".lock"):
+            raise OSError(errno.EACCES, "permission denied")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(dispatcher_policy.os, "open", refuse_sidecar)
+
+    decision = evaluate_dispatch_policy(_request(), now=NOW)
+    with caplog.at_level(logging.WARNING, logger="shared.dispatcher_policy"):
+        with pytest.raises(RuntimeError, match="could not be|cannot be written"):
+            write_route_decision_receipt(decision, ledger_dir=tmp_path)
+
+    assert ledger.read_text(encoding="utf-8") == before, "no row may be appended"
+    assert "appending unserialised" not in caplog.text, (
+        "the warning must not describe an append that cannot happen"
+    )
+    assert "REFUS" in caplog.text.upper(), "the warning must name the actual outcome"
+
+
+def test_a_failed_archive_promotion_never_aliases_the_live_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`.1` must never end up as a hardlink of the ledger that is still being appended to.
+
+    Promoting the archive BEFORE committing the rotation used to allow exactly that: the
+    staging hardlink was renamed onto `.1`, and if the ledger replace then failed, `.1` and
+    the live ledger shared one inode. Every later append grew both, `.1` stopped representing
+    a rotated generation, disk use doubled per row, and the previous generation was already
+    destroyed — while the warning said only "intact but UNCAPPED".
+
+    Committing the rotation first makes that state unreachable, which is what this pins.
+    """
+    ledger = tmp_path / "route-decisions.jsonl"
+    ledger.write_text("".join(f'{{"n": {i}}}\n' for i in range(300)), encoding="utf-8")
+
+    real_replace = os.replace
+
+    def fail_archive_promotion(src: object, dst: object) -> None:
+        if str(dst).endswith(".1"):
+            raise OSError(errno.EIO, "archive promotion failed")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(dispatcher_policy.os, "replace", fail_archive_promotion)
+
+    with caplog.at_level(logging.WARNING, logger="shared.dispatcher_policy"):
+        rotated = dispatcher_policy._rotate_locked(ledger, max_bytes=1)
+
+    # The rotation itself succeeded, so it must not be reported as a rotation failure.
+    assert rotated is True
+    assert "UNCAPPED" not in caplog.text, "a capped ledger must not be called UNCAPPED"
+    assert "Next:" in caplog.text, "the warning must carry an operator next action"
+
+    archive = tmp_path / "route-decisions.jsonl.1"
+    if archive.exists():
+        assert archive.stat().st_ino != ledger.stat().st_ino, (
+            "the archive must never share an inode with the live ledger"
+        )
+    assert not (tmp_path / "route-decisions.jsonl.1.staging").exists(), (
+        "the staging hardlink must not be left behind holding the old inode"
+    )
+
+
+def test_a_lock_file_left_by_a_dead_process_does_not_wedge_rotation(
+    tmp_path: Path,
+) -> None:
+    """The kernel drops flock when the holder exits, so no reclamation is needed.
+
+    The previous mtime-staleness scheme was itself a loss vector: the lock mtime
+    was fixed at creation and never refreshed, so a live holder that ran past the
+    window had its lock stolen and two rotations interleaved.
+    """
+    ledger = tmp_path / "route-decisions.jsonl"
+    ledger.write_text("".join(f'{{"n": {i}}}\n' for i in range(100)), encoding="utf-8")
+    # A stale sidecar with an ancient mtime — the old code's "dead process" shape.
+    lock = tmp_path / "route-decisions.jsonl.lock"
+    lock.write_text("", encoding="utf-8")
+    ancient = time.time() - 86_400
+    os.utime(lock, (ancient, ancient))
+
+    assert dispatcher_policy._rotate_locked(ledger, max_bytes=1) is True
+    assert ledger.read_text(encoding="utf-8").strip(), "ledger must not be emptied"
+
+
+def test_an_unopenable_lock_refuses_the_write_instead_of_risking_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lock we cannot take is a receipt we cannot guarantee, so say so.
+
+    Three attempts to make an unserialised fallback safe were all unsound for the
+    same reason: without mutual exclusion a rotation elsewhere can replace the
+    inode around the write, and every mitigation short of the lock is a
+    check-then-act with a gap after the check. Raising is deliberate and loud;
+    the alternative is a receipt that vanishes and fails the connector gate
+    closed with no explanation.
+
+    Rotation is still skipped rather than exploding, and the ledger is untouched.
+    """
+    ledger = tmp_path / "route-decisions.jsonl"
+    payload = "".join(f'{{"n": {i}}}\n' for i in range(200))
+    ledger.write_text(payload, encoding="utf-8")
+
+    real_open = os.open
+
+    def refuse_lock(path, flags, *args):  # type: ignore[no-untyped-def]
+        if str(path).endswith(".jsonl.lock"):
+            raise PermissionError(13, "Permission denied")
+        return real_open(path, flags, *args)
+
+    monkeypatch.setattr(dispatcher_policy, "ROUTE_DECISION_LEDGER_MAX_BYTES", 1)
+    monkeypatch.setattr(dispatcher_policy.os, "open", refuse_lock)
+
+    decision = evaluate_dispatch_policy(_request(), now=NOW)
+    with pytest.raises(RuntimeError) as exc:
+        write_route_decision_receipt(decision, ledger_dir=tmp_path)
+
+    assert "cannot be written safely" in str(exc.value)
+    assert "Next:" in str(exc.value), "the refusal must name its own remedy"
+    assert ledger.read_text(encoding="utf-8") == payload, "the ledger must be untouched"
+    assert not (tmp_path / "route-decisions.jsonl.1").exists(), "no rotation may have happened"
+
+
+def test_the_receipt_write_appends_inside_one_lock_acquisition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rotate and append must share ONE lock acquisition, with the append inside it.
+
+    Two acquisitions left a gap where another writer could rotate between this
+    process's rotate-release and its append-acquire, and the unlocked-fallback
+    escape hatch that briefly existed reintroduced the original race outright —
+    an append landing mid-rotation goes to the inode about to be replaced.
+
+    This asserts the STRUCTURE, because the behavioural version does not
+    discriminate: a competing ``append_jsonl`` takes the same sidecar, so it
+    blocks on rotation's own lock and its row survives either way. Ordering the
+    observed events is what actually distinguishes one critical section from two.
+    """
+    monkeypatch.setattr(dispatcher_policy, "ROUTE_DECISION_LEDGER_MAX_BYTES", 1)
+    ledger = tmp_path / "route-decisions.jsonl"
+    ledger.write_text("".join(f'{{"n": {i}}}\n' for i in range(400)), encoding="utf-8")
+
+    events: list[str] = []
+    real_lock = dispatcher_policy._ledger_lock
+    real_write = os.write
+
+    @contextmanager
+    def recording_lock(path: Path):  # type: ignore[no-untyped-def]
+        events.append("lock-enter")
+        with real_lock(path) as held:
+            yield held
+        events.append("lock-exit")
+
+    def recording_write(fd: int, data: bytes) -> int:
+        if data == blob:
+            events.append("append")
+        return real_write(fd, data)
+
+    decision = evaluate_dispatch_policy(_request(), now=NOW)
+    payload = decision.model_dump(mode="json")
+    if decision.dimensional_receipt is not None:
+        payload.update(decision.dimensional_receipt.model_dump(mode="json"))
+    blob = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
+
+    monkeypatch.setattr(dispatcher_policy, "_ledger_lock", recording_lock)
+    monkeypatch.setattr(dispatcher_policy.os, "write", recording_write)
+    write_route_decision_receipt(decision, ledger_dir=tmp_path)
+
+    assert events == ["lock-enter", "append", "lock-exit"], (
+        f"the append must happen inside a single lock acquisition; saw {events}"
+    )
+    assert decision.decision_id in ledger.read_text(encoding="utf-8")
+
+
+def test_no_row_is_written_when_a_rotation_could_race_the_append(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The scenario no fallback could cover, now excluded by construction.
+
+    This process cannot lock while a rotation completes underneath what would
+    have been its append. Successive fallbacks tried to survive this: arguing
+    other processes must also be failing (unsound for transient errors), then
+    verifying the inode afterwards (a check-then-act that still lost the row on a
+    final attempt). Both families ultimately called it unresolved, and they were
+    right — the window cannot be closed without the lock.
+
+    So nothing is written at all, and the caller is told why.
+    """
+    ledger = tmp_path / "route-decisions.jsonl"
+    ledger.write_text("".join(f'{{"n": {i}}}\n' for i in range(200)), encoding="utf-8")
+
+    real_flock = fcntl.flock
+
+    def always_fail(fd: int, op: int) -> None:
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(dispatcher_policy.fcntl, "flock", always_fail)
+    monkeypatch.setattr(dispatcher_policy, "_LEDGER_LOCK_RETRY_S", 0)
+
+    real_open = os.open
+    rotated = {"done": False}
+
+    def rotate_under_the_append(path, flags, *args):  # type: ignore[no-untyped-def]
+        fd = real_open(path, flags, *args)
+        # After this process opens the ledger for append but before it writes,
+        # simulate another process completing a rotation: replace the inode.
+        if str(path).endswith("route-decisions.jsonl") and not rotated["done"]:
+            rotated["done"] = True
+            replacement = tmp_path / "route-decisions.jsonl.new"
+            replacement.write_text('{"carried": true}\n', encoding="utf-8")
+            os.replace(replacement, ledger)
+        return fd
+
+    monkeypatch.setattr(dispatcher_policy.os, "open", rotate_under_the_append)
+
+    decision = evaluate_dispatch_policy(_request(), now=NOW)
+    with caplog.at_level(logging.WARNING, logger="shared.dispatcher_policy"):
+        with pytest.raises(RuntimeError):
+            write_route_decision_receipt(decision, ledger_dir=tmp_path)
+
+    monkeypatch.setattr(dispatcher_policy.fcntl, "flock", real_flock)
+    assert decision.decision_id not in ledger.read_text(encoding="utf-8"), (
+        "no row may be written into a ledger this process cannot lock"
+    )
+    assert not rotated["done"], "the append must not even be attempted"
+
+
+def test_a_transient_flock_failure_is_retried_into_a_held_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transient failure must NOT degrade to an unserialised append.
+
+    Giving up is only safe when every other writer is failing too — true for a
+    filesystem without flock, false for a per-call EINTR. If a transient failure
+    here dropped straight to an unserialised append while another process locked
+    successfully, that process could rotate under our append and the receipt
+    would land in the inode being replaced.
+
+    The earlier test made EVERY flock call fail, which validated the assumption
+    instead of challenging it. This one fails once and then succeeds.
+    """
+    monkeypatch.setattr(dispatcher_policy, "ROUTE_DECISION_LEDGER_MAX_BYTES", 1)
+    ledger = tmp_path / "route-decisions.jsonl"
+    ledger.write_text("".join(f'{{"n": {i}}}\n' for i in range(300)), encoding="utf-8")
+
+    real_flock = fcntl.flock
+    calls = {"n": 0}
+
+    def flaky_flock(fd: int, op: int) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise InterruptedError(4, "Interrupted system call")
+        real_flock(fd, op)
+
+    monkeypatch.setattr(dispatcher_policy.fcntl, "flock", flaky_flock)
+
+    decision = evaluate_dispatch_policy(_request(), now=NOW)
+    write_route_decision_receipt(decision, ledger_dir=tmp_path)
+
+    assert calls["n"] >= 2, "a transient flock failure must be retried, not surrendered to"
+    assert (tmp_path / "route-decisions.jsonl.1").exists(), (
+        "the retry must yield a held lock, so rotation proceeds normally"
+    )
+    assert decision.decision_id in ledger.read_text(encoding="utf-8")
+
+
+def test_a_short_write_still_produces_a_complete_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """os.write may write fewer bytes than asked; ignoring the count truncates the row.
+
+    A truncated JSONL row is worse than a missing one: the connector reader meets
+    malformed data and fails closed, which is the outcome this module exists to
+    prevent.
+    """
+    ledger = tmp_path / "route-decisions.jsonl"
+    real_write = os.write
+
+    def short_write(fd: int, data: bytes) -> int:
+        return real_write(fd, data[:1])  # one byte at a time
+
+    monkeypatch.setattr(dispatcher_policy.os, "write", short_write)
+
+    decision = evaluate_dispatch_policy(_request(), now=NOW)
+    write_route_decision_receipt(decision, ledger_dir=tmp_path)
+
+    line = ledger.read_text(encoding="utf-8").splitlines()[-1]
+    parsed = json.loads(line)  # must not raise: a truncated row is unparseable
+    assert decision.decision_id in line, "the row must be complete despite short writes"
+    assert isinstance(parsed, dict) and parsed, "the row must round-trip as an object"
+
+
+def test_a_filesystem_without_flock_still_writes_the_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """EOPNOTSUPP means flock is NOT IMPLEMENTED here, so nobody can rotate — the append is safe.
+
+    ENOLCK is deliberately NOT in this class and must not be added to it. It is
+    lock-record exhaustion, which means other writers CAN still hold locks and
+    rotate; `test_lock_failures_that_are_not_capability_facts_refuse_the_write`
+    requires it to refuse. Reading this docstring as being about ENOLCK is the
+    exact reasoning error the excluded-errno comment in `shared/dispatcher_policy.py`
+    warns against, and acting on it would license an unserialised append while
+    another writer rotates the inode out from under it.
+
+    Refusing this case as well would be its own defect: on a locking-less
+    filesystem every MCP mutation becomes impossible, including the ones that
+    would repair the estate. The distinguishing fact is not "did we get the lock"
+    but "can anyone else be rotating", and errno answers it.
+
+    Rotation is still skipped, because rotation replaces the inode and must never
+    happen unserialised.
+    """
+
+    def unsupported_flock(fd: int, op: int) -> None:
+        raise OSError(errno.EOPNOTSUPP, "Operation not supported")
+
+    monkeypatch.setattr(dispatcher_policy, "ROUTE_DECISION_LEDGER_MAX_BYTES", 1)
+    monkeypatch.setattr(dispatcher_policy.fcntl, "flock", unsupported_flock)
+    ledger = tmp_path / "route-decisions.jsonl"
+    ledger.write_text("".join(f'{{"n": {i}}}\n' for i in range(300)), encoding="utf-8")
+
+    decision = evaluate_dispatch_policy(_request(), now=NOW)
+    with caplog.at_level(logging.WARNING, logger="shared.dispatcher_policy"):
+        path = write_route_decision_receipt(decision, ledger_dir=tmp_path)
+
+    assert decision.decision_id in path.read_text(encoding="utf-8"), (
+        "a locking-less filesystem must not make every MCP mutation impossible"
+    )
+    assert not (tmp_path / "route-decisions.jsonl.1").exists(), (
+        "rotation replaces the inode and must never run unserialised"
+    )
+    assert "unsupported" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("code", "name"),
+    [
+        (errno.ENOLCK, "ENOLCK"),
+        (errno.EINVAL, "EINVAL"),
+        (errno.EACCES, "EACCES"),
+        (errno.EIO, "EIO"),
+    ],
+)
+def test_lock_failures_that_are_not_capability_facts_refuse_the_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: int, name: str
+) -> None:
+    """Only "this operation does not exist here" licenses an unserialised append.
+
+    ENOLCK is the trap, and an earlier revision of this module got it wrong:
+    flock(2) returns it when the kernel runs out of lock RECORDS — resource
+    exhaustion, which usually means locks are in heavy use. Reading that as
+    "nobody can lock" would license an unlocked append at exactly the moment
+    other writers are locking and rotating. EINVAL is a malformed call, and
+    EACCES/EIO plainly mean locking works and we did not get it.
+
+    All of these must refuse rather than append.
+    """
+
+    def failing_flock(fd: int, op: int) -> None:
+        raise OSError(code, name)
+
+    monkeypatch.setattr(dispatcher_policy, "ROUTE_DECISION_LEDGER_MAX_BYTES", 1)
+    monkeypatch.setattr(dispatcher_policy, "_LEDGER_LOCK_RETRY_S", 0)
+    monkeypatch.setattr(dispatcher_policy.fcntl, "flock", failing_flock)
+    ledger = tmp_path / "route-decisions.jsonl"
+    original = "".join(f'{{"n": {i}}}\n' for i in range(120))
+    ledger.write_text(original, encoding="utf-8")
+
+    decision = evaluate_dispatch_policy(_request(), now=NOW)
+    with pytest.raises(RuntimeError):
+        write_route_decision_receipt(decision, ledger_dir=tmp_path)
+
+    assert ledger.read_text(encoding="utf-8") == original, (
+        f"{name} must not license an unserialised append"
+    )
+
+
+def test_a_persistent_flock_failure_warns_and_refuses_without_exploding_rotation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """flock itself can fail — EINTR, or a filesystem that does not implement it.
+
+    Two properties, and they are different. _ledger_lock must SWALLOW the OSError
+    and warn rather than let it escape rotation as an unexplained crash — that was
+    a review finding in its own right. And the caller must then refuse the write,
+    because an unserialised append can be discarded by a concurrent rotation.
+
+    The refusal names its remedy; the raw OSError did not.
+    """
+
+    def refuse_flock(fd: int, op: int) -> None:
+        raise OSError(9, "Bad file descriptor")
+
+    monkeypatch.setattr(dispatcher_policy, "ROUTE_DECISION_LEDGER_MAX_BYTES", 1)
+    monkeypatch.setattr(dispatcher_policy, "_LEDGER_LOCK_RETRY_S", 0)
+    monkeypatch.setattr(dispatcher_policy.fcntl, "flock", refuse_flock)
+    ledger = tmp_path / "route-decisions.jsonl"
+    original = "".join(f'{{"n": {i}}}\n' for i in range(300))
+    ledger.write_text(original, encoding="utf-8")
+
+    decision = evaluate_dispatch_policy(_request(), now=NOW)
+    with caplog.at_level(logging.WARNING, logger="shared.dispatcher_policy"):
+        with pytest.raises(RuntimeError) as exc:
+            write_route_decision_receipt(decision, ledger_dir=tmp_path)
+
+    assert "Bad file descriptor" not in str(exc.value), (
+        "the raw OSError must be swallowed and translated, not propagated"
+    )
+    assert "Next:" in str(exc.value)
+    assert "classified failed" in caplog.text, (
+        "the lock failure must still be logged, and classified as failed rather "
+        "than unsupported — EBADF means locking works here and we did not get it"
+    )
+    assert ledger.read_text(encoding="utf-8") == original, "the ledger must be untouched"
+    assert not (tmp_path / "route-decisions.jsonl.1").exists(), "rotation must be skipped"
+
+
+def test_a_failed_archive_link_preserves_the_previous_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The retained .1 must survive a rotation that fails while creating its replacement.
+
+    The archive used to be unlinked before os.link created the new one, so a
+    link failure destroyed the prior audit generation outright — and the warning
+    then reported only that the ledger was uncapped, understating a loss that
+    had already happened.
+    """
+    ledger = tmp_path / "route-decisions.jsonl"
+    ledger.write_text("".join(f'{{"n": {i}}}\n' for i in range(300)), encoding="utf-8")
+    archive = tmp_path / "route-decisions.jsonl.1"
+    archive.write_text('{"generation": "previous"}\n', encoding="utf-8")
+
+    def refuse_link(src: object, dst: object) -> None:
+        raise OSError(18, "Invalid cross-device link")
+
+    monkeypatch.setattr(dispatcher_policy.os, "link", refuse_link)
+
+    assert dispatcher_policy._rotate_locked(ledger, max_bytes=1) is False
+    assert archive.read_text(encoding="utf-8") == '{"generation": "previous"}\n', (
+        "a failed rotation must not destroy the retained archive"
+    )
+    assert not (tmp_path / "route-decisions.jsonl.1.staging").exists(), "staging must be cleaned up"
+
+
+def test_rotation_and_append_share_one_lock(tmp_path: Path) -> None:
+    """Rotation must take the SAME sidecar append_jsonl takes.
+
+    A separately-derived lock path looks like mutual exclusion and provides none.
+    """
+    ledger = tmp_path / "route-decisions.jsonl"
+    assert lock_path_for(ledger) == tmp_path / "route-decisions.jsonl.lock"
+
+
+def test_rotation_does_not_discard_a_concurrently_appended_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reported critical: an append landing mid-rotation was lost.
+
+    Rotation reads the tail, then links the ledger to ``.1`` and replaces the
+    path. An appender that slipped into that gap wrote to the old inode, so its
+    row survived only in the archive and was invisible to the connector gate —
+    which then failed closed on a receipt that had been written successfully.
+
+    The appender runs on a thread and blocks on the shared flock; a separate
+    ``open`` is a separate open-file-description, so the kernel denies it even
+    within one process. The barrier makes it deterministic: rotation does not
+    proceed past the tail read until the appender is committed to writing.
+    """
+    ledger = tmp_path / "route-decisions.jsonl"
+    ledger.write_text("".join(f'{{"n": {i}}}\n' for i in range(500)), encoding="utf-8")
+
+    appender_started = threading.Event()
+    appended = {"row": '{"receipt": "written-during-rotation"}'}
+
+    def _append() -> None:
+        appender_started.set()
+        append_jsonl(ledger, json.loads(appended["row"]), sort_keys=True)
+
+    thread = threading.Thread(target=_append, daemon=True)
+    real_tail = dispatcher_policy.read_tail_lines
+
+    def _tail_then_race(*args: object, **kwargs: object) -> list[str]:
+        carried = real_tail(*args, **kwargs)
+        thread.start()
+        appender_started.wait(timeout=5)
+        time.sleep(0.2)  # let the appender reach and block on the flock
+        return carried
+
+    # Drive the PRODUCTION path: _rotate_locked assumes the lock is already
+    # held, so calling it bare would leave the competing appender unexcluded and
+    # test nothing. write_route_decision_receipt is what takes the lock.
+    monkeypatch.setattr(dispatcher_policy, "ROUTE_DECISION_LEDGER_MAX_BYTES", 1)
+    decision = evaluate_dispatch_policy(_request(), now=NOW)
+    with mock.patch.object(dispatcher_policy, "read_tail_lines", _tail_then_race):
+        write_route_decision_receipt(decision, ledger_dir=tmp_path)
+    thread.join(timeout=5)
+    assert not thread.is_alive(), "the appender must not still be blocked"
+
+    active = ledger.read_text(encoding="utf-8")
+    assert "written-during-rotation" in active, (
+        "a receipt appended during rotation was lost from the active ledger"
+    )
+    assert decision.decision_id in active, "the receipt itself was lost"
+
+
+def test_write_receipt_rotates_an_over_cap_ledger_and_still_appends(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The only production call site of rotation, and it had no test.
+
+    Every rotation test called the function directly, so a regression that
+    rotated *after* the append — dropping the row just written — or removed the
+    call entirely would have passed the whole suite.
+    """
+    monkeypatch.setattr(dispatcher_policy, "ROUTE_DECISION_LEDGER_MAX_BYTES", 1)
+    ledger = tmp_path / "route-decisions.jsonl"
+    ledger.write_text("".join(f'{{"n": {i}}}\n' for i in range(500)), encoding="utf-8")
+
+    decision = evaluate_dispatch_policy(_request(), now=NOW)
+    path = write_route_decision_receipt(decision, ledger_dir=tmp_path)
+
+    assert path == ledger
+    assert (tmp_path / "route-decisions.jsonl.1").exists(), "rotation must have run"
+    assert decision.decision_id in ledger.read_text(encoding="utf-8"), (
+        "the receipt written after rotation must survive in the ledger the gate reads"
+    )
+    assert (
+        _latest_route_decision(task_id=decision.task_id, role=None, ledger_path=ledger) is not None
+    ), "the connector gate must still find the row it needs"
 
 
 def test_glmcp_launch_receipt_persists_quota_evidence(tmp_path: Path) -> None:

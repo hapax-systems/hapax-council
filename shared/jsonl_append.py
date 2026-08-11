@@ -45,13 +45,23 @@ Record = Mapping[str, Any]
 Serializer = Callable[[Record], str]
 
 
-def _lock_path(target: Path) -> Path:
+def lock_path_for(target: str | os.PathLike[str]) -> Path:
     """Sidecar lock path: ``<name>.lock`` beside the ledger.
 
     Keeping lock state off the data inode means truncation or rotation of the
     ledger never drops the lock; it MUST match the bash ``flock(1)`` sidecar.
+
+    Public because serialising an append against anything else that REPLACES the
+    ledger inode — rotation, compaction — requires locking *this exact path*. A
+    caller that derives the sidecar itself can drift from this one and take a
+    different lock, which looks like mutual exclusion while providing none.
     """
-    return target.with_name(target.name + _LOCK_SUFFIX)
+    path = Path(target)
+    return path.with_name(path.name + _LOCK_SUFFIX)
+
+
+def _lock_path(target: Path) -> Path:
+    return lock_path_for(target)
 
 
 def _make_serializer(
