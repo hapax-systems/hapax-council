@@ -1639,3 +1639,55 @@ def test_public_surface_gate_applies_github_material_envelope(tmp_path: Path) ->
     assert "Hapax.GitHubPublicClaimEvidenceGate" in result.stdout
     assert "research_status" in result.stdout
     assert "monetization" in result.stdout
+
+
+def _capture_base_ref_fetches(*, is_shallow: bool) -> list[list[str]]:
+    """Run the base-ref fetch against a faked git and return the argv of each fetch it issued."""
+    gate = _gate_module()
+    fetch_base_refs = gate["_git_fetch_base_refs_for_path_status"]
+    subprocess_module = gate["subprocess"]
+    original_run = subprocess_module.run
+    original_github_base_ref = os.environ.pop("GITHUB_BASE_REF", None)
+    fetches: list[list[str]] = []
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        if args == ["git", "rev-parse", "--is-shallow-repository"]:
+            return subprocess.CompletedProcess(
+                args, 0, stdout="true\n" if is_shallow else "false\n", stderr=""
+            )
+        if args[:2] == ["git", "fetch"]:
+            fetches.append(list(args))
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        raise AssertionError(f"unexpected command: {args!r}")
+
+    subprocess_module.run = fake_run
+    try:
+        fetch_base_refs()
+    finally:
+        subprocess_module.run = original_run
+        if original_github_base_ref is not None:
+            os.environ["GITHUB_BASE_REF"] = original_github_base_ref
+    return fetches
+
+
+def test_base_ref_fetch_never_grafts_a_complete_repository() -> None:
+    """`git fetch --depth=1` against a full clone grafts it, and every worktree sharing that
+    object store inherits the truncation. The deploy plane reads the same store, so its
+    `merge-base --is-ancestor` leg became unanswerable and it refused every root-package
+    transition for a month. Depth belongs only where the history is already absent."""
+    fetches = _capture_base_ref_fetches(is_shallow=False)
+
+    assert fetches, "expected the base ref fetch to run"
+    for argv in fetches:
+        assert "--depth=1" not in argv, f"grafted a complete repository: {argv!r}"
+
+
+def test_base_ref_fetch_stays_bounded_on_an_already_shallow_checkout() -> None:
+    """CI checkouts are shallow by design; fetching full history there would cost the gate a
+    complete clone on every run for no benefit."""
+    fetches = _capture_base_ref_fetches(is_shallow=True)
+
+    assert fetches, "expected the base ref fetch to run"
+    for argv in fetches:
+        assert "--depth=1" in argv, f"expected a bounded fetch on a shallow checkout: {argv!r}"
