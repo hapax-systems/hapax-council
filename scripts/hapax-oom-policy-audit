@@ -140,6 +140,14 @@ GOVERNED_MEMORY_ASSIGNMENT = re.compile(
     re.MULTILINE,
 )
 SOURCE_CHECKOUT_WARNINGS: list[str] = []
+HOST_POLICY_LINE_AUTHORITIES = frozenset(
+    {
+        "internal-sealed-package-source",
+        "non-authoritative-source-tree",
+        "non-authoritative-test-override",
+        "installed-path-requires-root-receipt-audit",
+    }
+)
 
 
 @dataclass
@@ -197,6 +205,23 @@ def _source_checkout_authority_checks() -> list[Check]:
         )
         for detail in SOURCE_CHECKOUT_WARNINGS
     ]
+
+
+def _host_policy_line_authority_checks(policy_authority: str) -> list[Check]:
+    checks = _source_checkout_authority_checks()
+    if policy_authority not in HOST_POLICY_LINE_AUTHORITIES:
+        checks.append(
+            Check(
+                "host_policy_line_authority",
+                "fail",
+                "recognized source, sealed package, or canonical installed audit",
+                policy_authority,
+                "unrecognized executables cannot supply governed host policy; next action: "
+                "invoke the exact source checkout, sealed post-merge package, or canonical "
+                "installed audit",
+            )
+        )
+    return checks
 
 
 def _audit_exit_code(checks: list[Check]) -> int:
@@ -2044,7 +2069,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         if args.host_policy_lines:
             print(_policy_lines(policy, policy_authority))
-            return 0
+            return _audit_exit_code(_host_policy_line_authority_checks(policy_authority))
         try:
             with shared_root_required_lock():
                 checks = [
