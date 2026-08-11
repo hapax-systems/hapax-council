@@ -1145,6 +1145,12 @@ while IFS= read -r f; do
         systemd/units/*.md)               ;; # docs
         systemd/units/*.d/README.md)      ;; # drop-in dir docs (e.g. collapse ledgers)
         systemd/overrides/*)              ;; # source/rationale docs; deployable copies live under systemd/units
+        systemd/units-pi6/*)              ;; # another host's units: deployed by hand to the Pi
+                                             # edge fleet per pi-edge/README.md, never by this
+                                             # script. Classified explicitly rather than left to
+                                             # the catch-all so the coverage gate stays a real
+                                             # signal instead of a known-failing arm people learn
+                                             # to ignore.
         systemd/*)                        SYSTEMD_UNCLASSIFIED+=("$f") ;;
     esac
 done <<< "$FILES"
