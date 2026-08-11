@@ -40,6 +40,23 @@ def _directive(text: str, key: str) -> str | None:
     return None
 
 
+def _continued_directive(text: str, key: str) -> str | None:
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        value = line.strip()
+        if value.startswith("#") or not value.startswith(f"{key}="):
+            continue
+        value = value.split("=", 1)[1]
+        parts: list[str] = []
+        while value.endswith("\\"):
+            parts.append(value[:-1].rstrip())
+            index += 1
+            value = lines[index].strip()
+        parts.append(value)
+        return " ".join(parts)
+    return None
+
+
 def _parse_cpu_set(spec: str) -> set[int]:
     out: set[int] = set()
     for token in spec.replace(",", " ").split():
@@ -461,6 +478,73 @@ def test_local_judge_container_has_a_finite_memory_cap() -> None:
     assert "--oom-kill-disable" not in text
     assert "ExecStartPre=-/usr/bin/docker rm" not in text
     assert "stop/restart never targets the name" in text
+
+
+def test_local_judge_launch_clears_hostile_docker_selectors(tmp_path: Path) -> None:
+    text = (UNITS_DIR / "hapax-local-judge.service").read_text()
+    command = _continued_directive(text, "ExecStart")
+    assert command is not None
+
+    unit_env: dict[str, str] = {}
+    for line in text.splitlines():
+        if line.startswith("Environment="):
+            key, value = line.removeprefix("Environment=").split("=", 1)
+            unit_env[key] = value
+    for key, value in unit_env.items():
+        command = command.replace(f"${{{key}}}", value)
+
+    account = pwd.getpwuid(os.getuid())
+    runtime_root = tmp_path / "run"
+    command = (
+        command.replace("%t", str(runtime_root))
+        .replace("%h", account.pw_dir)
+        .replace("%u", account.pw_name)
+    )
+    argv = shlex.split(command)
+    assert argv[0] == "/usr/bin/env"
+    assert argv[1] == "-i"
+    docker_index = argv.index("/usr/bin/docker")
+
+    launch_log = tmp_path / "docker-launch.json"
+    fake_docker = tmp_path / "docker"
+    fake_docker.write_text(
+        "#!/usr/bin/python3\n"
+        "import json, os, pathlib, sys\n"
+        f"pathlib.Path({str(launch_log)!r}).write_text(\n"
+        "    json.dumps({'argv': sys.argv[1:], 'env': dict(os.environ)}),\n"
+        "    encoding='utf-8',\n"
+        ")\n",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    argv[docker_index] = str(fake_docker)
+    hostile_selectors = {
+        "DOCKER_CERT_PATH": str(tmp_path / "hostile-certs"),
+        "DOCKER_CONFIG": str(tmp_path / "hostile-config"),
+        "DOCKER_CONTEXT": "hostile-remote-context",
+        "DOCKER_HOST": "tcp://hostile.invalid:2376",
+        "DOCKER_TLS_VERIFY": "1",
+        "HOME": str(tmp_path / "hostile-home"),
+    }
+
+    result = subprocess.run(
+        argv,
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, **hostile_selectors},
+    )
+
+    assert result.returncode == 0, result.stderr
+    launch = json.loads(launch_log.read_text(encoding="utf-8"))
+    assert launch["argv"][:3] == [
+        "--host=unix:///var/run/docker.sock",
+        f"--config={runtime_root}/hapax-local-judge/docker-config",
+        "run",
+    ]
+    assert not {key for key in launch["env"] if key.startswith("DOCKER_")}
+    assert launch["env"]["HOME"] == account.pw_dir
+    assert launch["env"]["PATH"] == "/usr/bin:/bin"
 
 
 def test_local_judge_uses_bounded_daemon_wait_before_container_preflight() -> None:

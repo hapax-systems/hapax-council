@@ -25,6 +25,20 @@ LOGROTATE_CONFIG = REPO_ROOT / "systemd" / "logrotate.d" / "hapax-ups-power-even
 REPO_HEAD = subprocess.run(
     ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, check=True, text=True, capture_output=True
 ).stdout.strip()
+EXPECTED_APCUPSD_PACKAGE_FILES = (
+    "config/root-required/apcupsd-power-alerts.files",
+    "config/root-required/apcupsd-power-alerts.effects",
+    "scripts/install-apcupsd-power-alerts",
+    "scripts/hapax-root-required-deferred-install",
+    "scripts/hapax-post-merge-deploy",
+    "config/apcupsd/apcupsd.conf",
+    "config/apcupsd/hapax-power-event.py",
+    "config/apcupsd/onbattery",
+    "config/apcupsd/offbattery",
+    "config/apcupsd/doshutdown",
+    "config/upower/90-hapax-apcupsd-owner.conf",
+    "systemd/logrotate.d/hapax-ups-power-events",
+)
 APCUPSD_PACKAGE_FILES = tuple(
     line
     for line in (REPO_ROOT / "config/root-required/apcupsd-power-alerts.files")
@@ -39,6 +53,10 @@ def _copy_apcupsd_package(dest_root: Path, *, source_root: Path = REPO_ROOT) -> 
         dest = dest_root / relative
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_root / relative, dest)
+
+
+def test_apcupsd_package_manifest_has_exact_owned_surface() -> None:
+    assert APCUPSD_PACKAGE_FILES == EXPECTED_APCUPSD_PACKAGE_FILES
 
 
 @pytest.fixture(autouse=True)
