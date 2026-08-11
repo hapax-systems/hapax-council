@@ -5,8 +5,9 @@
 # podium LiteLLM gateway as the `local-judge` route -> http://192.168.68.50:5001/v1.
 # Deploy + validation: docs/runbooks/local-judge-stack.md.
 Description=Hapax Local Judge — CompassVerifier-7B answer-verification (cost-offload Tier-1)
-# Estate convention retained for parity; a user manager cannot enforce ordering
-# against the system manager's docker.service, so restart remains the readiness path.
+# Retained only so declared unit metadata matches the estate's Docker-backed user
+# units. `systemctl --user show %n -p After` rechecks the token, but it creates no
+# cross-manager Docker job; RestartSec remains the actual socket-readiness path.
 After=docker.service
 
 [Service]
@@ -21,6 +22,8 @@ Environment=JUDGE_MODEL=/models/CompassVerifier-7B.Q5_K_M.gguf
 # user manager did not launch. On collision, follow local-judge-stack.md: stop
 # this unit, inspect the audit-reported immutable ID, and `docker rm <ID>` only
 # after confirming that exact non-running container owns /hapax-local-judge.
+# The resulting Restart=always name-conflict loop is intentional and loud: the
+# recurring OOM audit reports the immutable conflicting ID until it is reconciled.
 # The 4G/6G cap remains a candidate until the separately authorized load canary passes.
 ExecStart=/usr/bin/docker run --rm --name hapax-local-judge \
     --memory 4G --memory-swap 6G \

@@ -108,7 +108,30 @@ def test_github_mcp_fails_before_credentials_when_canonical_release_is_missing(
     assert result.returncode == 2
     assert "canonical source-activation wrapper is unavailable" in result.stderr
     assert "next action: reconcile source activation" in result.stderr
+    assert "diagnostic recorded in" in result.stderr
     assert "canonical source-activation wrapper is unavailable" in (
         tmp_path / ".cache/hapax/mcp-logs/github-mcp.log"
     ).read_text(encoding="utf-8")
     assert "no GitHub token found" not in result.stderr
+
+
+def test_github_mcp_reports_canonical_refusal_log_failure(tmp_path: Path) -> None:
+    cache_root = tmp_path / "not-a-directory"
+    cache_root.write_text("occupied\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(WRAPPER)],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "HOME": str(tmp_path),
+            "XDG_CACHE_HOME": str(cache_root),
+        },
+        timeout=5,
+    )
+
+    assert result.returncode == 2
+    assert "canonical source-activation wrapper is unavailable" in result.stderr
+    assert "diagnostic logging failed for" in result.stderr
+    assert "diagnostic recorded in" not in result.stderr

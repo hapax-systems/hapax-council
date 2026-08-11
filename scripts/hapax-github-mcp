@@ -8,21 +8,24 @@ LOG_FILE="$LOG_DIR/github-mcp.log"
 
 canonical_refusal() {
   local message="$1"
-  mkdir -p "$LOG_DIR" 2>/dev/null || true
-  printf '%s %s\n' "$(/usr/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" "$message" >>"$LOG_FILE" 2>/dev/null || true
-  echo "$message" >&2
+  if mkdir -p "$LOG_DIR" 2>/dev/null \
+    && printf '%s %s\n' "$(/usr/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" "$message" >>"$LOG_FILE" 2>/dev/null; then
+    echo "$message (diagnostic recorded in $LOG_FILE)" >&2
+  else
+    echo "$message (diagnostic logging failed for $LOG_FILE)" >&2
+  fi
   exit 2
 }
 
 CANONICAL_ALIAS="$HOME/.cache/hapax/source-activation/worktree/scripts/hapax-github-mcp"
 if ! CANONICAL_WRAPPER="$(/usr/bin/realpath -e -- "$CANONICAL_ALIAS")"; then
-  canonical_refusal "hapax-github-mcp: canonical source-activation wrapper is unavailable: $CANONICAL_ALIAS; next action: reconcile source activation and retry the MCP request (diagnostic recorded in $LOG_FILE)"
+  canonical_refusal "hapax-github-mcp: canonical source-activation wrapper is unavailable: $CANONICAL_ALIAS; next action: reconcile source activation and retry the MCP request"
 fi
 if [ ! -f "$CANONICAL_WRAPPER" ] || [ ! -x "$CANONICAL_WRAPPER" ]; then
-  canonical_refusal "hapax-github-mcp: canonical source-activation wrapper is not an executable regular file: $CANONICAL_WRAPPER; next action: restore the release-pinned executable through source activation and retry (diagnostic recorded in $LOG_FILE)"
+  canonical_refusal "hapax-github-mcp: canonical source-activation wrapper is not an executable regular file: $CANONICAL_WRAPPER; next action: restore the release-pinned executable through source activation and retry"
 fi
 if ! CURRENT_WRAPPER="$(/usr/bin/realpath -e -- "$0")"; then
-  canonical_refusal "hapax-github-mcp: invoked wrapper path cannot be resolved: $0; next action: invoke the canonical source-activation wrapper directly and repair the broken launcher (diagnostic recorded in $LOG_FILE)"
+  canonical_refusal "hapax-github-mcp: invoked wrapper path cannot be resolved: $0; next action: invoke the canonical source-activation wrapper directly and repair the broken launcher"
 fi
 if [ "$CURRENT_WRAPPER" != "$CANONICAL_WRAPPER" ]; then
   exec "$CANONICAL_WRAPPER" "$@"

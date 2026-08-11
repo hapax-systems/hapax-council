@@ -1374,6 +1374,10 @@ def test_concurrent_oom_deferral_ignores_replace_refs_and_owns_local_judge(
             "#!/usr/bin/python3\n"
             "import json, sys\n"
             "print('deferred-helper-argv=' + json.dumps(sys.argv))\n"
+            "package = sys.argv[sys.argv.index('--package') + 1]\n"
+            "sha = sys.argv[sys.argv.index('--expected-sha') + 1]\n"
+            "print(f'hapax-root-required-deferred-install: completed authenticated "
+            "package={package} sha={sha}')\n"
         ),
         "config/root-required/hapax-oom-score-enforce.sudoers": (
             "hapax ALL=(root) NOPASSWD: /usr/local/sbin/hapax-oom-score-enforce --apply-unit pipewire.service\n"
@@ -1534,6 +1538,44 @@ def test_concurrent_oom_deferral_ignores_replace_refs_and_owns_local_judge(
     assert "/usr/bin/python3 -I -c" not in command
     assert ".cache/hapax/source-activation/worktree" in command
     assert str(repo) not in command
+
+    deploy_source = SCRIPT.read_text(encoding="utf-8")
+    heredoc_start = "read -r -d '' authenticated_script <<'BASH' || true\n"
+    assert deploy_source.count(heredoc_start) == 1
+    authenticated_script = deploy_source.split(heredoc_start, 1)[1].split("\nBASH\n", 1)[0]
+    success_evidence = tmp_path / "successful-authentication.log"
+    completion = (
+        "hapax-root-required-deferred-install: completed authenticated "
+        f"package=oom-containment sha={sha}"
+    )
+    successful = subprocess.run(
+        [
+            "/usr/bin/env",
+            "-i",
+            f"HOME={home}",
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin",
+            "/usr/bin/bash",
+            "--noprofile",
+            "--norc",
+            "-c",
+            authenticated_script,
+            "hapax-root-required-auth",
+            str(repo),
+            sha,
+            "scripts/hapax-root-required-deferred-install",
+            "oom-containment",
+            str(success_evidence),
+            completion,
+            str(home),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert successful.returncode == 0, successful.stderr
+    assert completion in successful.stdout
+    assert completion in success_evidence.read_text(encoding="utf-8").splitlines()
+
     compromised = tmp_path / "compromised-runbook-ran"
     runbook_path.write_text(f"#!/usr/bin/bash\ntouch {compromised}\n", encoding="utf-8")
     runbook_path.chmod(0o700)
@@ -2865,6 +2907,95 @@ def test_root_required_audit_ignores_hostile_path(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert not marker.exists()
+
+
+def test_root_required_audit_refuses_production_git_repo_override(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    env.pop("HAPAX_ROOT_AUDIT_TEST_MODE")
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "refuses an explicit production Git repository selector" in result.stderr
+    assert "remove HAPAX_ROOT_REQUIRED_GIT_REPO" in result.stderr
+
+
+def test_root_required_audit_ignores_ambient_git_selectors_and_replace_refs(
+    tmp_path: Path,
+) -> None:
+    env = _root_audit_env(tmp_path)
+    repo = Path(env["HAPAX_ROOT_REQUIRED_GIT_REPO"])
+    receipt = Path(env["HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT"]) / "oom-containment.sha"
+    package_sha = receipt.read_text(encoding="utf-8").strip()
+    rel = "scripts/hapax-oom-score-enforce"
+    original = _git(repo, "show", f"{package_sha}:{rel}")
+    source = repo / rel
+    source.write_text(f"{original}\n# replacement object\n", encoding="utf-8")
+    _git(repo, "add", rel)
+    _git(repo, "commit", "-m", "replacement object")
+    replacement_sha = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "replace", package_sha, replacement_sha)
+    assert "replacement object" in _git(repo, "show", f"{package_sha}:{rel}")
+
+    env.update(
+        {
+            "GIT_DIR": str(tmp_path / "hostile-git-dir"),
+            "GIT_WORK_TREE": str(tmp_path / "hostile-git-work-tree"),
+            "GIT_OBJECT_DIRECTORY": str(tmp_path / "hostile-git-objects"),
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(tmp_path / "hostile-alternates"),
+        }
+    )
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "root-required post-merge deploy deferrals: none" in result.stdout
+
+
+@pytest.mark.parametrize("marker_kind", ("symlink", "fifo"))
+def test_root_required_audit_rejects_unsafe_pending_marker(
+    tmp_path: Path,
+    marker_kind: str,
+) -> None:
+    env = _root_audit_env(tmp_path)
+    marker = (
+        Path(env["HAPAX_POST_MERGE_ROOT_DEFER_DIR"])
+        / ("a" * 40)
+        / "oom-containment"
+        / "RUNBOOK.txt"
+    )
+    marker.parent.mkdir(parents=True)
+    if marker_kind == "symlink":
+        target = tmp_path / "runbook-target"
+        target.write_text("pending\n", encoding="utf-8")
+        marker.symlink_to(target)
+    else:
+        os.mkfifo(marker)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 1
+    assert "unsafe root-required pending marker" in result.stderr
+    assert str(marker) in result.stderr
+    assert "root-required post-merge deploy deferrals: none" not in result.stdout
 
 
 def test_root_required_audit_rejects_effective_service_dropin(tmp_path: Path) -> None:

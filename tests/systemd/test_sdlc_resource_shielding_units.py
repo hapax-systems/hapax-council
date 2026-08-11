@@ -435,6 +435,9 @@ def test_local_judge_keeps_docker_ordering_convention_and_bounded_retry() -> Non
     assert "Requires=docker.service" not in text
     assert "Restart=always" in text
     assert "RestartSec=5" in text
+    assert "creates no" in text
+    assert "cross-manager Docker job" in text
+    assert "name-conflict loop is intentional and loud" in text
 
 
 def test_local_judge_runbook_requires_live_authenticated_command() -> None:
@@ -456,6 +459,72 @@ def test_local_judge_runbook_requires_live_authenticated_command() -> None:
     assert '"$stage/AUTHENTICATED-INSTALL.log"' in text
     assert "/usr/bin/git" not in text[: text.index("## LiteLLM route")]
     assert "cp systemd/units/hapax-local-judge.service" not in text
+    install_marker = '~/.local/bin/hapax-post-merge-deploy "$sha"'
+    install_fence_start = text.rfind("```bash", 0, text.index(install_marker))
+    install_fence_end = text.index("```", text.index(install_marker))
+    install_fence = text[install_fence_start:install_fence_end]
+    assert "systemctl --user enable" not in install_fence
+    assert "systemctl --user restart" not in install_fence
+
+
+def test_local_judge_predeploy_canary_gates_exact_cap_installation() -> None:
+    text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
+    canary_marker = 'canary_name="hapax-local-judge-cap-canary-$$"'
+    canary_start = text.rfind("```bash", 0, text.index(canary_marker))
+    canary_end = text.index("```", text.index(canary_marker))
+    canary = text[canary_start:canary_end]
+
+    assert "runtime_mutation_authorized: true" in canary
+    assert canary.index("runtime_mutation_authorized: true") < canary.index("docker pull")
+    assert "--memory 4G --memory-swap 6G" in canary
+    assert 'test "$memory" = 4294967296' in canary
+    assert 'test "$memory_swap" = 6442450944' in canary
+    assert "run_verifierbench.py" in canary
+    assert "--n 24 --workers 8" in canary
+    assert 'test "$before_state" = "$after_state"' in canary
+    assert 'test "$before_oom" = "$after_oom"' in canary
+    assert 'test "$memory_peak" -le 3221225472' in canary
+    assert 'test "$swap_peak" -le 1073741824' in canary
+    assert 'docker stop "$canary_id"' in canary
+    assert text.index(canary_marker) < text.index('~/.local/bin/hapax-post-merge-deploy "$sha"')
+
+
+def test_local_judge_activation_is_separately_authority_gated() -> None:
+    text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
+    marker = "systemctl --user restart hapax-local-judge.service"
+    start = text.rfind("```bash", 0, text.index(marker))
+    end = text.index("```", text.index(marker))
+    activation = text[start:end]
+
+    assert "runtime_mutation_authorized: true" in activation
+    assert activation.index("runtime_mutation_authorized: true") < activation.index(marker)
+    assert '[[ "$exec_start" == *" --memory 4G "* ]]' in activation
+    assert '[[ "$exec_start" == *" --memory-swap 6G "* ]]' in activation
+    assert "/usr/local/sbin/hapax-oom-policy-audit" in activation
+
+
+def test_local_judge_runtime_fences_are_valid_bash() -> None:
+    text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
+    markers = (
+        'canary_name="hapax-local-judge-cap-canary-$$"',
+        '~/.local/bin/hapax-post-merge-deploy "$sha"',
+        '"$stage/AUTHENTICATED-INSTALL.log"',
+        "systemctl --user restart hapax-local-judge.service",
+        "container=hapax-local-judge",
+    )
+
+    for marker in markers:
+        marker_index = text.index(marker)
+        start = text.rfind("```bash\n", 0, marker_index) + len("```bash\n")
+        end = text.index("```", marker_index)
+        result = subprocess.run(
+            ["bash", "-n"],
+            input=text[start:end],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, f"{marker}: {result.stderr}"
 
 
 def _local_judge_runtime_canary() -> str:
@@ -469,7 +538,10 @@ def _local_judge_runtime_canary() -> str:
 def test_local_judge_runtime_canary_fails_fast() -> None:
     canary = _local_judge_runtime_canary()
     assert canary.index("set -euo pipefail") < canary.index("container=hapax-local-judge")
-    assert 'repo="${HAPAX_COUNCIL_REPO:-$HOME/.cache/hapax/source-activation/worktree}"' in canary
+    assert 'repo_alias="$HOME/.cache/hapax/source-activation/worktree"' in canary
+    assert 'repo="$(/usr/bin/realpath -e -- "$repo_alias")"' in canary
+    assert 'release_root="$HOME/.cache/hapax/source-activation/releases"' in canary
+    assert '[[ "${repo##*/}" =~ ^[0-9a-f]{40}$ ]]' in canary
     assert 'cd "$repo/scripts/cost-offload"' in canary
     assert 'systemctl --user show "$unit" -p NeedDaemonReload --value' in canary
     assert 'systemctl --user show "$unit" -p FragmentPath --value' in canary
@@ -487,6 +559,9 @@ def test_local_judge_runtime_canary_fails_fast() -> None:
     assert '.pred == "A" or .pred == "B" or .pred == "C"' in canary
     assert 'test "$before_state" = "$after_state"' in canary
     assert 'test "$before_oom" = "$after_oom"' in canary
+    assert 'results="/store-fast/tmp/' in canary
+    assert 'test "$memory_peak" -le 3221225472' in canary
+    assert 'test "$swap_peak" -le 1073741824' in canary
 
 
 def test_local_judge_runtime_canary_executes_jsonl_acceptance_predicate() -> None:

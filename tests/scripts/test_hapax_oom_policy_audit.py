@@ -860,6 +860,7 @@ def test_audit_passes_when_user_manager_is_killable_and_app_slice_bounded(
     result = _run(tmp_path, host_profile=host_profile)
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
+    assert payload["policy_authority"] == "non-authoritative-source-tree"
     statuses = {check["name"]: check["status"] for check in payload["checks"]}
     assert statuses["root_required_package_lock"] == "pass"
     assert statuses["user_manager_oom_score_adjust"] == "pass"
@@ -1349,6 +1350,9 @@ def test_audit_fails_for_unbounded_or_wrong_docker_limits(
         assert any(
             item["status"] == "gap" and name.startswith("docker_") for name, item in checks.items()
         )
+    if docker_state == "unlimited":
+        assert checks["docker_hapax_local_judge_Memory"]["status"] == "gap"
+        assert checks["docker_hapax_local_judge_MemorySwap"]["status"] == "gap"
     if docker_state == "oom-kill-disabled":
         assert check["target"] == "false"
         assert check["actual"] == "true"
