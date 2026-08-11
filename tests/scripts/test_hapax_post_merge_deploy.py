@@ -2673,7 +2673,8 @@ def test_root_required_audit_detects_nonexecutable_hook(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "executable mode drift" in result.stderr
-    assert "install-apcupsd-power-alerts" in result.stderr
+    assert "runtime-authorized hapax-post-merge-deploy APC reconciliation" in result.stderr
+    assert "HAPAX_RUNTIME_AUTHORITY_TASK" in result.stderr
 
 
 def test_root_required_audit_detects_disabled_enforcer_timer(tmp_path: Path) -> None:
