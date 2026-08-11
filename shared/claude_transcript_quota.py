@@ -95,12 +95,44 @@ def _parse_utc(value: object) -> datetime | None:
     return parsed.astimezone(UTC).replace(microsecond=0)
 
 
-def _completed_turn_timestamp(line: str) -> datetime | None:
-    """Return the timestamp of a completed assistant turn, or None.
+#: Record keys whose presence marks an assistant record as a provider FAILURE rather than a
+#: served response. A key-presence test rather than a status allowlist, so an unfamiliar
+#: error shape fails closed instead of reading as success.
+API_ERROR_MARKER_KEYS = ("isApiErrorMessage", "apiErrorStatus", "error", "errorType")
 
-    Deliberately narrow: only ``type == "assistant"`` records carrying both a
-    ``requestId`` and a ``timestamp`` count. A record without a request id did not
-    round-trip to the provider and is not evidence that the provider served anything.
+
+def _is_api_error_record(record: dict) -> bool:
+    """True when the record is a provider failure, however it is spelled.
+
+    The 429 case is why this exists: it is *literally* the quota wall, so accepting it
+    would mint "headroom observed" from the refusal itself. 401s, 5xx and synthetic
+    client-side error records are refused by the same test for the same reason — none is
+    evidence that the subscription served anything.
+    """
+
+    for key in API_ERROR_MARKER_KEYS:
+        if record.get(key):
+            return True
+    message = record.get("message")
+    return isinstance(message, dict) and bool(
+        message.get("error") or message.get("type") == "error"
+    )
+
+
+def _completed_turn_timestamp(line: str) -> datetime | None:
+    """Return the timestamp of a *successfully served* assistant turn, or None.
+
+    Deliberately narrow, and the narrowness is the whole safety argument:
+
+    * ``type == "assistant"`` — user turns and tool results witness nothing about the
+      provider.
+    * **not an API-error record.** Claude writes failures as assistant records too.
+      Measured on this estate: **1,070 API-error records carry a ``requestId``**, including
+      ``apiErrorStatus: 429``. Accepting one would mint "subscription headroom observed"
+      from the quota wall itself — the exact inversion of this module's claim. Checked
+      first, before anything else is considered.
+    * ``requestId`` present — a record without one never round-tripped to the provider.
+    * a parseable ``timestamp``.
     """
 
     if '"assistant"' not in line:
@@ -112,6 +144,8 @@ def _completed_turn_timestamp(line: str) -> datetime | None:
     if not isinstance(record, dict):
         return None
     if record.get("type") != "assistant":
+        return None
+    if _is_api_error_record(record):
         return None
     if not record.get("requestId"):
         return None

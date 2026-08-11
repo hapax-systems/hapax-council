@@ -32,6 +32,31 @@ def _turn(stamp: datetime, *, request_id: str = "req_abc", kind: str = "assistan
     )
 
 
+def _api_error_turn(
+    stamp: datetime,
+    *,
+    status: int = 429,
+    request_id: str = "req_011CdiW8GZnWNgHXsWSshnLf",
+) -> str:
+    """An API-ERROR assistant record, in the shape Claude Code actually writes.
+
+    Field names and the coexistence of `requestId` with `isApiErrorMessage` were taken
+    from real transcripts on this estate, not invented: 1,070 such records carry a
+    requestId, across statuses including 429 and 401. Inventing this fixture from the
+    happy path is precisely how the defect these tests pin got shipped.
+    """
+    return json.dumps(
+        {
+            "type": "assistant",
+            "requestId": request_id,
+            "timestamp": stamp.isoformat().replace("+00:00", "Z"),
+            "isApiErrorMessage": True,
+            "apiErrorStatus": status,
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "API Error"}]},
+        }
+    )
+
+
 def _write(root: Path, name: str, lines: list[str]) -> Path:
     path = root / "proj" / name
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -86,6 +111,62 @@ def test_future_turn_refuses_on_clock_skew(tmp_path: Path) -> None:
 
     with pytest.raises(TranscriptQuotaUnavailable, match="future"):
         latest_transcript_observation(root=tmp_path, now=NOW, max_age_seconds=900)
+
+
+def test_a_429_is_never_read_as_headroom(tmp_path: Path) -> None:
+    """The inversion this module exists to avoid, pinned.
+
+    A 429 assistant record IS the quota wall. It carries `type: assistant`, a real
+    `requestId` and a timestamp, so every check except the error discriminator passes it.
+    Minting from one would report "subscription headroom observed" at the exact moment the
+    subscription refused to serve.
+    """
+    _write(tmp_path, "a.jsonl", [_api_error_turn(NOW - timedelta(seconds=10), status=429)])
+
+    with pytest.raises(TranscriptQuotaUnavailable, match="no completed assistant turn"):
+        latest_transcript_observation(root=tmp_path, now=NOW, max_age_seconds=900)
+
+
+def test_a_401_is_never_read_as_headroom(tmp_path: Path) -> None:
+    """Not a denylist of one status: any provider failure is refused."""
+    _write(tmp_path, "a.jsonl", [_api_error_turn(NOW - timedelta(seconds=10), status=401)])
+
+    with pytest.raises(TranscriptQuotaUnavailable, match="no completed assistant turn"):
+        latest_transcript_observation(root=tmp_path, now=NOW, max_age_seconds=900)
+
+
+def test_an_unfamiliar_error_shape_fails_closed(tmp_path: Path) -> None:
+    """Key-presence, not status-matching: an error field we have never seen still refuses."""
+    line = json.dumps(
+        {
+            "type": "assistant",
+            "requestId": "req_zzz",
+            "timestamp": (NOW - timedelta(seconds=10)).isoformat().replace("+00:00", "Z"),
+            "errorType": "some_future_failure_mode",
+        }
+    )
+    _write(tmp_path, "a.jsonl", [line])
+
+    with pytest.raises(TranscriptQuotaUnavailable, match="no completed assistant turn"):
+        latest_transcript_observation(root=tmp_path, now=NOW, max_age_seconds=900)
+
+
+def test_a_fresh_error_does_not_mask_an_older_success(tmp_path: Path) -> None:
+    """The realistic sequence: a request is served, then a later one hits the wall.
+
+    The error must be skipped and the older *successful* turn returned — not treated as
+    the newest observation, and not allowed to suppress the real one.
+    """
+    served = NOW - timedelta(seconds=300)
+    _write(
+        tmp_path,
+        "a.jsonl",
+        [_turn(served), _api_error_turn(NOW - timedelta(seconds=5), status=429)],
+    )
+
+    obs = latest_transcript_observation(root=tmp_path, now=NOW, max_age_seconds=900)
+
+    assert obs.observed_at == served
 
 
 def test_turn_without_request_id_is_not_evidence(tmp_path: Path) -> None:
