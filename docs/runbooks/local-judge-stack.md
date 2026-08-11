@@ -35,7 +35,7 @@ fetch a community GGUF, if absent.
 Every command in this section mutates the appendix runtime and requires separate
 runtime authority. A source-only task must stop after preparing the staged package.
 
-```sh
+```bash
 # one-time: confirm the 5060 Ti UUID and update the unit's JUDGE_GPU_UUID if it differs
 nvidia-smi --query-gpu=index,name,uuid --format=csv
 
@@ -43,19 +43,36 @@ docker pull ghcr.io/ggml-org/llama.cpp:server-cuda
 
 # A post-merge deploy stages the exact receipt-owned OOM package. Run this only
 # after runtime authority is granted; never copy or symlink the judge unit.
+set -euo pipefail
+PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+export PATH
 state="$HOME/.local/state/hapax/root-required"
-sha="$(tr -d '[:space:]' < "$state/desired-receipts/oom-containment.sha")"
-stage="$HOME/.cache/hapax/post-merge-root-required/$sha/oom-containment"
-test -f "$stage/RUNBOOK.txt"
-sudo -v
-HAPAX_ROOT_REQUIRED_PACKAGE_SHA="$sha" \
-HAPAX_ROOT_REQUIRED_DRAIN_DIR="$stage" \
-HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="$state/current-source" \
-HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="$state/installed-receipts" \
-HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="$state/desired-receipts" \
-HAPAX_ROOT_REQUIRED_GIT_REPO="$HOME/.cache/hapax/source-activation/worktree" \
-  "$stage/scripts/install-p0-oom-containment" \
-  --source "$stage" --install --verify-live
+receipt="$state/desired-receipts/oom-containment.sha"
+test -f "$receipt"
+test ! -L "$receipt"
+test "$(/usr/bin/stat -c %h -- "$receipt")" = 1
+test "$(/usr/bin/wc -c < "$receipt")" = 41
+IFS= read -r sha < "$receipt"
+[[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+repo_alias="$HOME/.cache/hapax/source-activation/worktree"
+repo="$(/usr/bin/realpath -e -- "$repo_alias")"
+helper_rel=scripts/hapax-root-required-deferred-install
+helper="$repo/$helper_rel"
+activation_sha="$(/usr/bin/git -C "$repo" rev-parse --verify 'HEAD^{commit}')"
+[[ "$activation_sha" =~ ^[0-9a-f]{40}$ ]]
+test "$(/usr/bin/git -C "$repo" ls-tree "$activation_sha" -- "$helper_rel" | /usr/bin/cut -d' ' -f1)" = 100755
+test -f "$helper"
+test ! -L "$helper"
+test -x "$helper"
+helper_blob="$(/usr/bin/git -C "$repo" rev-parse "$activation_sha:$helper_rel")"
+exec {helper_fd}<"$helper"
+test "$(/usr/bin/git -C "$repo" hash-object -- "/proc/self/fd/$helper_fd")" = "$helper_blob"
+# The authenticated helper validates the receipt/stage, warms sudo, revalidates,
+# and executes a Git-materialized installer under a sanitized environment.
+/usr/bin/env -i HOME="$HOME" PATH="$PATH" LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+  /usr/bin/python3 "/proc/self/fd/$helper_fd" --package oom-containment \
+  --expected-sha "$sha" --activation-release "$repo"
+exec {helper_fd}<&-
 
 # The package deliberately does not enable or restart the judge. Activation is
 # a separate, runtime-authorized step after the exact package verifies.

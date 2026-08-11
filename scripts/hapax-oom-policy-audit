@@ -40,6 +40,23 @@ SCRIPT_PATH = Path(__file__).resolve()
 SOURCE_PROFILE_TABLE = SCRIPT_PATH.parents[1] / "config" / "root-required" / "oom-host-profiles.tsv"
 INSTALLED_PROFILE_TABLE = Path("/usr/local/share/hapax/root-required/oom-host-profiles.tsv")
 INSTALLED_AUDIT_PATH = Path("/usr/local/sbin/hapax-oom-policy-audit")
+TEST_ONLY_SELECTORS = frozenset(
+    {
+        "HAPAX_OOM_AUDIT_TEST_MODE",
+        "HAPAX_OOM_AUDIT_PROC_ROOT",
+        "HAPAX_OOM_AUDIT_CGROUP_ROOT",
+        "HAPAX_OOM_AUDIT_SYS_ROOT",
+        "HAPAX_OOM_AUDIT_MEMTOTAL_KIB",
+        "HAPAX_OOM_AUDIT_HOSTNAME",
+        "HAPAX_OOM_AUDIT_PROFILE_TABLE",
+        "HAPAX_OOM_AUDIT_SYSTEMD_SYSTEM_DIR",
+        "HAPAX_OOM_AUDIT_SYSTEMD_USER_DIR",
+        "HAPAX_OOM_AUDIT_USER_UNIT_PATHS",
+        "HAPAX_OOM_AUDIT_DOCKER",
+        "HAPAX_SYSTEMCTL",
+        "HAPAX_SYSTEMD_ANALYZE",
+    }
+)
 ROOT_REQUIRED_STATE_ROOT = Path(
     os.environ.get(
         "HAPAX_ROOT_REQUIRED_STATE_ROOT",
@@ -129,12 +146,27 @@ class HostPolicyError(RuntimeError):
     pass
 
 
+def _is_installed_audit() -> bool:
+    return SCRIPT_PATH == INSTALLED_AUDIT_PATH or SCRIPT_PATH.parent.name != "scripts"
+
+
+def _reject_installed_test_selectors() -> None:
+    if not _is_installed_audit():
+        return
+    present = sorted(name for name in TEST_ONLY_SELECTORS if name in os.environ)
+    if present:
+        raise HostPolicyError(
+            f"{', '.join(present)} refused by an installed audit; next action: remove all "
+            "test selectors and rerun /usr/local/sbin/hapax-oom-policy-audit"
+        )
+
+
 def _require_test_override(name: str) -> None:
     if os.environ.get("HAPAX_OOM_AUDIT_TEST_MODE") != "1":
         raise HostPolicyError(
             f"{name} is test-only; next action: remove the override and use canonical host state"
         )
-    if SCRIPT_PATH == INSTALLED_AUDIT_PATH or SCRIPT_PATH.parent.name != "scripts":
+    if _is_installed_audit():
         raise HostPolicyError(
             f"{name} is refused by an installed audit; next action: remove all test selectors "
             "and rerun /usr/local/sbin/hapax-oom-policy-audit"
@@ -1769,6 +1801,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        _reject_installed_test_selectors()
         policy = derive_host_policy()
     except HostPolicyError as exc:
         checks = [

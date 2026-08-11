@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # Install P0 OOM containment policy from the source tree to live systemd/earlyoom paths.
 set -euo pipefail
 ORIGINAL_ARGS=("$@")
@@ -46,7 +46,7 @@ LEGACY_ZRAM_POLICY_DEST="${HAPAX_OOM_LEGACY_ZRAM_POLICY_DEST:-/etc/systemd/zram-
 ZRAM_DROPIN_DIRS="${HAPAX_OOM_ZRAM_DROPIN_DIRS:-/etc/systemd/zram-generator.conf.d:/run/systemd/zram-generator.conf.d:/usr/local/lib/systemd/zram-generator.conf.d:/usr/lib/systemd/zram-generator.conf.d}"
 ZRAM_HIGH_PRIORITY_CONFIGS="${HAPAX_OOM_ZRAM_HIGH_PRIORITY_CONFIGS:-/run/systemd/zram-generator.conf}"
 ZRAM_DISKSIZE_PATH="${HAPAX_OOM_ZRAM_DISKSIZE_PATH:-/sys/block/zram0/disksize}"
-DOCKER="${HAPAX_OOM_DOCKER:-docker}"
+DOCKER="${HAPAX_OOM_DOCKER:-/usr/bin/docker}"
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
 SYSTEMD_ANALYZE="${HAPAX_OOM_SYSTEMD_ANALYZE:-systemd-analyze}"
 SUDO="${HAPAX_OOM_INSTALL_SUDO-sudo}"
@@ -59,11 +59,7 @@ VISUDO="${HAPAX_OOM_VISUDO:-visudo}"
 EFFECTIVE_UID="${HAPAX_OOM_EFFECTIVE_UID:-$(id -u)}"
 ROOT_REQUIRED_STATE_ROOT="${HAPAX_ROOT_REQUIRED_STATE_ROOT:-$TARGET_HOME/.local/state/hapax/root-required}"
 ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$ROOT_REQUIRED_STATE_ROOT/current-source}"
-ROOT_REQUIRED_DEFER_ROOT="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-}"
-if [ -z "$ROOT_REQUIRED_DEFER_ROOT" ] && [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ]; then
-    ROOT_REQUIRED_DEFER_ROOT="$(dirname "$(dirname "$HAPAX_ROOT_REQUIRED_DRAIN_DIR")")"
-fi
-ROOT_REQUIRED_DEFER_ROOT="${ROOT_REQUIRED_DEFER_ROOT:-$TARGET_HOME/.cache/hapax/post-merge-root-required}"
+ROOT_REQUIRED_DEFER_ROOT="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$TARGET_HOME/.cache/hapax/post-merge-root-required}"
 ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/installed-receipts}"
 ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/desired-receipts}"
 ROOT_REQUIRED_GIT_REPO="${HAPAX_ROOT_REQUIRED_GIT_REPO:-$TARGET_HOME/.cache/hapax/source-activation/worktree}"
@@ -622,6 +618,7 @@ package_files=(
     "$host_profile_table_source"
     "${host_profile_sources[@]}"
     scripts/install-p0-oom-containment
+    scripts/hapax-root-required-deferred-install
     "$oom_sudoers_source"
     "${system_dropins[@]}"
     "${system_units[@]}"
@@ -855,9 +852,8 @@ src_path() {
     printf '%s/%s\n' "$SOURCE" "$1"
 }
 
-load_host_policy() {
-    local output key value path production_destination=0
-    [ "$HOST_POLICY_LOADED" -eq 0 ] || return 0
+production_destinations_selected() {
+    local path
     for path in \
         "$SYSTEMD_SYSTEM_DIR" "$SYSTEMD_USER_DIR" "$EARLYOOM_DEST" \
         "$OOM_ENFORCER_DEST" "$OOM_TRIGGER_DEST" "$OOM_SUDOERS_DEST" \
@@ -865,10 +861,46 @@ load_host_policy() {
         "$OOM_POLICY_AUDIT_DEST" "$ROOT_REQUIRED_AUDIT_DEST" \
         "$OOM_PROFILE_TABLE_DEST" "$ZRAM_POLICY_DEST"; do
         case "$path" in
-            /etc/*|/usr/local/*|/home/hapax/*) production_destination=1 ;;
+            /etc/*|/usr/local/*|/home/hapax/*) return 0 ;;
         esac
     done
-    if [ "${HAPAX_OOM_ENFORCE_TEST_MODE:-0}" = "1" ] && [ "$production_destination" -eq 1 ]; then
+    return 1
+}
+
+validate_docker_command() {
+    local override="${HAPAX_OOM_DOCKER:-}"
+    if [ -z "$override" ]; then
+        [ "$DOCKER" = "/usr/bin/docker" ] || {
+            echo "internal Docker command drift: expected /usr/bin/docker, got $DOCKER; next action: restore the governed installer" >&2
+            return 1
+        }
+        return 0
+    fi
+    if [ "${HAPAX_OOM_ENFORCE_TEST_MODE:-0}" != "1" ]; then
+        echo "HAPAX_OOM_DOCKER is test-only; production reconciliation is pinned to /usr/bin/docker" >&2
+        return 1
+    fi
+    if production_destinations_selected; then
+        echo "refusing test-mode Docker command override for production OOM destinations; next action: remove HAPAX_OOM_DOCKER and HAPAX_OOM_ENFORCE_TEST_MODE" >&2
+        return 1
+    fi
+    case "$DOCKER" in
+        /*) ;;
+        *)
+            echo "test Docker command override must be an absolute path: $DOCKER" >&2
+            return 1
+            ;;
+    esac
+    if [ ! -f "$DOCKER" ] || [ -L "$DOCKER" ] || [ ! -x "$DOCKER" ]; then
+        echo "test Docker command override must be a non-symlink executable regular file: $DOCKER" >&2
+        return 1
+    fi
+}
+
+load_host_policy() {
+    local output key value
+    [ "$HOST_POLICY_LOADED" -eq 0 ] || return 0
+    if [ "${HAPAX_OOM_ENFORCE_TEST_MODE:-0}" = "1" ] && production_destinations_selected; then
         echo "refusing test-mode host-policy overrides for production OOM destinations; next action: remove HAPAX_OOM_ENFORCE_TEST_MODE, HAPAX_OOM_POLICY_MEMTOTAL_KIB, and HAPAX_OOM_POLICY_HOSTNAME" >&2
         return 1
     fi
@@ -2814,6 +2846,8 @@ verify_user_process_oom_floor() {
     done
     [ "$failed" -eq 0 ]
 }
+
+validate_docker_command
 
 if [ "$INSTALL" -eq 1 ]; then
     refuse_whole_script_root

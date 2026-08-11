@@ -43,6 +43,21 @@ PROTECTED_USER_UNIT_MEMORY = {
 JUDGE_CONTAINER_ID = "a" * 64
 MCP_CONTAINER_ID = "b" * 64
 REPLACEMENT_CONTAINER_ID = "d" * 64
+INSTALLED_TEST_SELECTORS = {
+    "HAPAX_OOM_AUDIT_TEST_MODE",
+    "HAPAX_OOM_AUDIT_PROC_ROOT",
+    "HAPAX_OOM_AUDIT_CGROUP_ROOT",
+    "HAPAX_OOM_AUDIT_SYS_ROOT",
+    "HAPAX_OOM_AUDIT_MEMTOTAL_KIB",
+    "HAPAX_OOM_AUDIT_HOSTNAME",
+    "HAPAX_OOM_AUDIT_PROFILE_TABLE",
+    "HAPAX_OOM_AUDIT_SYSTEMD_SYSTEM_DIR",
+    "HAPAX_OOM_AUDIT_SYSTEMD_USER_DIR",
+    "HAPAX_OOM_AUDIT_USER_UNIT_PATHS",
+    "HAPAX_OOM_AUDIT_DOCKER",
+    "HAPAX_SYSTEMCTL",
+    "HAPAX_SYSTEMD_ANALYZE",
+}
 
 
 @pytest.fixture(autouse=True)
@@ -88,23 +103,40 @@ def test_audit_resets_hostile_path_before_command_resolution(
     assert namespace["_systemctl"]() == "/usr/bin/systemctl"
 
 
-def test_installed_audit_refuses_test_host_selectors(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("selector", "value"),
+    [
+        ("HAPAX_OOM_AUDIT_TEST_MODE", "1"),
+        ("HAPAX_OOM_AUDIT_PROC_ROOT", "/tmp/proc"),
+        ("HAPAX_OOM_AUDIT_CGROUP_ROOT", "/tmp/cgroup"),
+        ("HAPAX_OOM_AUDIT_SYS_ROOT", "/tmp/sys"),
+        ("HAPAX_OOM_AUDIT_MEMTOTAL_KIB", "131007744"),
+        ("HAPAX_OOM_AUDIT_HOSTNAME", "hapax-podium"),
+        ("HAPAX_OOM_AUDIT_PROFILE_TABLE", "/tmp/profiles.tsv"),
+        ("HAPAX_OOM_AUDIT_SYSTEMD_SYSTEM_DIR", "/tmp/systemd-system"),
+        ("HAPAX_OOM_AUDIT_SYSTEMD_USER_DIR", "/tmp/systemd-user"),
+        ("HAPAX_OOM_AUDIT_USER_UNIT_PATHS", "/tmp/unit-paths"),
+        ("HAPAX_OOM_AUDIT_DOCKER", "/bin/true"),
+        ("HAPAX_SYSTEMCTL", "/bin/true"),
+        ("HAPAX_SYSTEMD_ANALYZE", "/bin/true"),
+    ],
+)
+def test_installed_audit_refuses_every_test_selector(
+    tmp_path: Path, selector: str, value: str
+) -> None:
     installed = tmp_path / "usr" / "local" / "sbin" / "hapax-oom-policy-audit"
     installed.parent.mkdir(parents=True)
     installed.write_bytes(SCRIPT.read_bytes())
     installed.chmod(0o755)
+    env = {key: item for key, item in os.environ.items() if key not in INSTALLED_TEST_SELECTORS}
+    env[selector] = value
 
     result = subprocess.run(
         [str(installed), "--host-policy-lines"],
         text=True,
         capture_output=True,
         check=False,
-        env={
-            **os.environ,
-            "HAPAX_OOM_AUDIT_TEST_MODE": "1",
-            "HAPAX_OOM_AUDIT_HOSTNAME": "hapax-podium",
-            "HAPAX_OOM_AUDIT_MEMTOTAL_KIB": "131007744",
-        },
+        env=env,
     )
 
     assert result.returncode == 1

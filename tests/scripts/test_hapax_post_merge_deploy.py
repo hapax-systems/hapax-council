@@ -99,6 +99,7 @@ ROOT_AUDIT_SOURCE_FILES = {
     **OOM_HOST_PROFILE_FILES,
     "config/root-required/apcupsd-power-alerts.files": APCUPSD_PACKAGE_MANIFEST,
     "scripts/install-p0-oom-containment": "#!/usr/bin/env bash\n",
+    "scripts/hapax-root-required-deferred-install": "#!/usr/bin/python3\n",
     "config/root-required/hapax-oom-score-enforce.sudoers": (
         "hapax ALL=(root) NOPASSWD: /usr/local/sbin/hapax-oom-score-enforce --apply-unit pipewire.service\n"
     ),
@@ -1056,6 +1057,7 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
         **OOM_HOST_PROFILE_FILES,
         future_manifest_path: 'FUTURE_EARLYOOM_POLICY="enabled"\n',
         "scripts/install-p0-oom-containment": installer_body,
+        "scripts/hapax-root-required-deferred-install": "#!/usr/bin/python3\n",
         "config/root-required/hapax-oom-score-enforce.sudoers": (
             "hapax ALL=(root) NOPASSWD: /usr/local/sbin/hapax-oom-score-enforce --apply-unit pipewire.service\n"
         ),
@@ -1360,6 +1362,7 @@ def test_concurrent_oom_deferral_owns_local_judge_without_generic_activation(
         "config/root-required/oom-containment.files": OOM_PACKAGE_MANIFEST,
         **OOM_HOST_PROFILE_FILES,
         "scripts/install-p0-oom-containment": installer_body,
+        "scripts/hapax-root-required-deferred-install": "#!/usr/bin/python3\n",
         "config/root-required/hapax-oom-score-enforce.sudoers": (
             "hapax ALL=(root) NOPASSWD: /usr/local/sbin/hapax-oom-score-enforce --apply-unit pipewire.service\n"
         ),
@@ -1466,15 +1469,23 @@ def test_concurrent_oom_deferral_owns_local_judge_without_generic_activation(
         assert (deferred / rel).read_bytes() == (repo / rel).read_bytes()
     assert not list((defer_dir / sha).glob(".oom-containment.tmp.*"))
     runbook = (deferred / "RUNBOOK.txt").read_text(encoding="utf-8")
-    assert "sudo -v" in runbook
+    assert "sudo-warmup race" in runbook
     assert "root shell" not in runbook
     assert "HAPAX_OOM_INSTALL_SUDO=" not in runbook
-    assert "HAPAX_ROOT_REQUIRED_DRAIN_DIR=" in runbook
-    assert f"HAPAX_ROOT_REQUIRED_PACKAGE_SHA={sha}" in runbook
-    assert "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=" in runbook
-    assert "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT=" in runbook
-    assert "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT=" in runbook
-    assert "HAPAX_ROOT_REQUIRED_GIT_REPO=" in runbook
+    assert f"sha='{sha}'" in runbook
+    assert 'repo_alias="$HOME/.cache/hapax/source-activation/worktree"' in runbook
+    assert f"repo_alias='{repo}'" not in runbook
+    assert "helper_rel=scripts/hapax-root-required-deferred-install" in runbook
+    assert 'test ! -L "$helper"' in runbook
+    assert '/usr/bin/git -C "$repo" hash-object -- "/proc/self/fd/$helper_fd"' in runbook
+    assert "/usr/bin/env -i" in runbook
+    assert '--expected-sha "$sha" --activation-release "$repo"' in runbook
+    assert f'"{deferred}/scripts/install-p0-oom-containment" --source' not in runbook
+    authenticate = runbook.index(
+        '/usr/bin/git -C "$repo" hash-object -- "/proc/self/fd/$helper_fd"'
+    )
+    execute = runbook.index('/usr/bin/python3 "/proc/self/fd/$helper_fd"', authenticate)
+    assert authenticate < execute
     assert (home / ".config" / "systemd" / "user" / "hapax-demo.service").is_file()
     assert not (home / ".config" / "systemd" / "user" / "hapax-local-judge.service").exists()
     assert "hapax-local-judge.service" not in systemctl_calls.read_text(encoding="utf-8")
@@ -1494,7 +1505,7 @@ def test_concurrent_oom_deferral_owns_local_judge_without_generic_activation(
 
     assert audit_result.returncode == 1
     assert "root-required post-merge deploy deferrals pending" in audit_result.stderr
-    assert "--install --verify-live" in audit_result.stderr
+    assert "RUNBOOK.txt" in audit_result.stderr
     (deferred / "RUNBOOK.txt").unlink()
     assert desired.read_text(encoding="utf-8").strip() == sha
 

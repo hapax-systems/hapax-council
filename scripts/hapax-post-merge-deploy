@@ -1468,7 +1468,7 @@ stage_oom_containment_installer() {
 }
 
 defer_root_required_installer() {
-    local label="$1" stage="$2" installer="$3" dest temp receipt
+    local label="$1" stage="$2" dest temp receipt
     mkdir -p "$ROOT_DEFER_DIR"
     dest="$ROOT_DEFER_DIR/$SHA/$label"
     mkdir -p "$(dirname "$dest")"
@@ -1486,13 +1486,35 @@ Root-required post-merge deploy action deferred.
 Commit: $SHA
 Package: $label
 
-Run from this host after this root-authority preparation:
+Run this Bash block from the governed host. It authenticates the fixed deferred-install
+entrypoint from one physical activation release, pins that inode through a file
+descriptor, and passes the receipt SHA only as data. The entrypoint strictly validates
+the receipt, stage path, manifest bytes, and sudo-warmup race before materializing and
+executing the package installer from the exact Git object.
 
-  sudo -v
-
-Default sudo path after sudo -v:
-
-  HAPAX_ROOT_REQUIRED_PACKAGE_SHA=$SHA HAPAX_ROOT_REQUIRED_DRAIN_DIR=$dest HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT=$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT=$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_GIT_REPO=$REPO $dest/$installer --source $dest --install --verify-live
+  set -euo pipefail
+  PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+  export PATH
+  sha='$SHA'
+  label='$label'
+  repo_alias="\$HOME/.cache/hapax/source-activation/worktree"
+  repo="\$(/usr/bin/realpath -e -- "\$repo_alias")"
+  helper_rel=scripts/hapax-root-required-deferred-install
+  helper="\$repo/\$helper_rel"
+  [[ "\$sha" =~ ^[0-9a-f]{40}\$ ]]
+  activation_sha="\$(/usr/bin/git -C "\$repo" rev-parse --verify 'HEAD^{commit}')"
+  [[ "\$activation_sha" =~ ^[0-9a-f]{40}\$ ]]
+  test "\$(/usr/bin/git -C "\$repo" ls-tree "\$activation_sha" -- "\$helper_rel" | /usr/bin/cut -d' ' -f1)" = 100755
+  test -f "\$helper"
+  test ! -L "\$helper"
+  test -x "\$helper"
+  helper_blob="\$(/usr/bin/git -C "\$repo" rev-parse "\$activation_sha:\$helper_rel")"
+  exec {helper_fd}<"\$helper"
+  test "\$(/usr/bin/git -C "\$repo" hash-object -- "/proc/self/fd/\$helper_fd")" = "\$helper_blob"
+  /usr/bin/env -i HOME="\$HOME" PATH="\$PATH" LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+    /usr/bin/python3 "/proc/self/fd/\$helper_fd" --package "\$label" \
+    --expected-sha "\$sha" --activation-release "\$repo"
+  exec {helper_fd}<&-
 
 Post-merge deploy continued after this deferral so unrelated user-scope deploy
 groups for the same merge were not skipped.
@@ -1500,7 +1522,7 @@ EOF
     rm -rf "$dest" 2>/dev/null || true
     mv "$temp" "$dest"
     echo "root-required $label install deferred to $dest"
-    echo "next action: run HAPAX_ROOT_REQUIRED_PACKAGE_SHA=$SHA HAPAX_ROOT_REQUIRED_DRAIN_DIR=$dest HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT=$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT=$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_GIT_REPO=$REPO $dest/$installer --source $dest --install --verify-live with root authority"
+    echo "next action: inspect and run the authenticated canonical-installer block in $dest/RUNBOOK.txt with separately granted root authority"
 }
 
 root_required_stage_matches_commit() {
@@ -1600,7 +1622,7 @@ if [ "${#APCUPSD_POWER_ALERTS[@]}" -gt 0 ]; then
     apcupsd_installer_rc=$?
     set -e
     if [ "$apcupsd_installer_rc" -eq "$ROOT_REQUIRED_RC" ]; then
-        defer_root_required_installer "apcupsd-power-alerts" "$APCUPSD_STAGE" "$APCUPSD_INSTALLER_PATH"
+        defer_root_required_installer "apcupsd-power-alerts" "$APCUPSD_STAGE"
     elif [ "$apcupsd_installer_rc" -ne 0 ]; then
         rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
         exit "$apcupsd_installer_rc"
@@ -1637,7 +1659,7 @@ if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
     oom_installer_rc=$?
     set -e
     if [ "$oom_installer_rc" -eq "$ROOT_REQUIRED_RC" ]; then
-        defer_root_required_installer "oom-containment" "$OOM_STAGE" "$OOM_CONTAINMENT_INSTALLER_PATH"
+        defer_root_required_installer "oom-containment" "$OOM_STAGE"
     elif [ "$oom_installer_rc" -ne 0 ]; then
         rm -rf "$OOM_STAGE" 2>/dev/null || true
         exit "$oom_installer_rc"

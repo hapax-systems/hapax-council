@@ -560,6 +560,7 @@ def test_recurring_oom_audit_services_bound_each_timer_activation() -> None:
 def test_source_check_rejects_production_sudoers_identity_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("HAPAX_OOM_DOCKER")
     monkeypatch.setenv("HAPAX_OOM_SUDOERS_DEST", "/etc/sudoers.d/hapax-oom-score-enforce")
     monkeypatch.setenv("HAPAX_OOM_TARGET_USER", "hapax")
     monkeypatch.setenv("HAPAX_OOM_TARGET_UID", "999")
@@ -600,6 +601,7 @@ def test_production_destinations_reject_host_policy_test_overrides(
         "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": REPO_HEAD,
         "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
     }
+    env.pop("HAPAX_OOM_DOCKER", None)
     result = subprocess.run(
         [str(INSTALLER), mode],
         text=True,
@@ -610,6 +612,84 @@ def test_production_destinations_reject_host_policy_test_overrides(
     assert result.returncode == 1
     assert "refusing test-mode host-policy overrides" in result.stderr
     assert not calls.exists()
+
+
+def test_production_docker_command_override_is_test_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HAPAX_OOM_ENFORCE_TEST_MODE", "0")
+    monkeypatch.setenv("HAPAX_OOM_DOCKER", "/bin/true")
+
+    result = subprocess.run(
+        [str(INSTALLER), "--check"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=os.environ.copy(),
+    )
+
+    assert result.returncode == 1
+    assert "HAPAX_OOM_DOCKER is test-only" in result.stderr
+    assert "p0 oom containment install/check complete" not in result.stdout
+
+
+def test_test_docker_command_cannot_target_production_destinations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HAPAX_OOM_SYSTEMD_SYSTEM_DIR", "/etc/systemd/system")
+    monkeypatch.setenv("HAPAX_OOM_DOCKER", "/bin/true")
+
+    result = subprocess.run(
+        [str(INSTALLER), "--check"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=os.environ.copy(),
+    )
+
+    assert result.returncode == 1
+    assert "refusing test-mode Docker command override for production" in result.stderr
+    assert "p0 oom containment install/check complete" not in result.stdout
+
+
+def test_test_docker_command_requires_absolute_regular_executable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HAPAX_OOM_DOCKER", "true")
+
+    result = subprocess.run(
+        [str(INSTALLER), "--check"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=os.environ.copy(),
+    )
+
+    assert result.returncode == 1
+    assert "test Docker command override must be an absolute path" in result.stderr
+
+
+def test_drain_dir_cannot_define_its_own_defer_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    drain = tmp_path / "outside" / REPO_HEAD / "oom-containment"
+    drain.mkdir(parents=True)
+    (drain / "RUNBOOK.txt").write_text("untrusted\n", encoding="utf-8")
+    monkeypatch.delenv("HAPAX_POST_MERGE_ROOT_DEFER_DIR")
+    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_DRAIN_DIR", str(drain))
+    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_PACKAGE_SHA", REPO_HEAD)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(REPO_ROOT), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=os.environ.copy(),
+    )
+
+    assert result.returncode == 1
+    assert "refusing root-required drain dir outside defer root" in result.stderr
+    assert "outside" not in result.stdout
 
 
 def test_whole_script_root_mode_refuses_user_owned_lock_symlink(tmp_path: Path) -> None:
