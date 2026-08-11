@@ -939,7 +939,8 @@ def test_installer_dies_if_the_descriptor_holding_helper_dies(tmp_path: Path) ->
 def test_activation_alias_swap_cannot_change_pinned_release(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     replacement = tmp_path / "replacement-release"
-    shutil.copytree(fixture.repo, replacement)
+    replacement.mkdir()
+    (replacement / "not-a-git-release").write_text("alias swap target\n", encoding="utf-8")
     hook = _hook(
         tmp_path / "swap-alias",
         f"rm {fixture.repo_alias}\nln -s {replacement} {fixture.repo_alias}",
@@ -949,7 +950,8 @@ def test_activation_alias_swap_cannot_change_pinned_release(tmp_path: Path) -> N
     result = fixture.run()
 
     assert result.returncode == 0, result.stderr
-    assert fixture.installer_marker.exists()
+    assert fixture.installer_marker.read_text(encoding="utf-8").strip() == fixture.sha
+    assert fixture.payload_marker.read_text(encoding="utf-8") == "authenticated Git payload\n"
 
 
 def test_missing_explicit_test_defer_root_cannot_self_anchor_to_drain(

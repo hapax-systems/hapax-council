@@ -1672,7 +1672,7 @@ def test_audit_rejects_zram_runtime_drift(
 
 def test_audit_uses_existing_lock_without_mutating_it(tmp_path: Path) -> None:
     lock = tmp_path / "root-state" / ".lock"
-    result = _run(tmp_path)
+    _run(tmp_path)
     before = lock.stat()
 
     result = _run(tmp_path)
