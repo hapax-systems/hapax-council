@@ -532,9 +532,13 @@ oom_package_files=(
     config/root-required/oom-host-policy/appendix/user-1000.slice.conf
     config/root-required/oom-host-policy/appendix/user@1000.service.conf
     config/root-required/oom-host-policy/appendix/zram-generator.conf
+    config/root-required/oom-host-policy/podium/app.slice.conf
+    config/root-required/oom-host-policy/podium/user-1000.slice.conf
+    config/root-required/oom-host-policy/podium/user@1000.service.conf
     config/root-required/oom-host-policy/podium/zram-generator.conf
     scripts/install-p0-oom-containment
     scripts/hapax-root-required-deferred-install
+    scripts/hapax-post-merge-deploy
     scripts/hapax-local-judge-container-id
     config/root-required/hapax-oom-score-enforce.sudoers
     scripts/hapax-oom-score-enforce
@@ -575,6 +579,8 @@ apcupsd_package_files=(
     config/root-required/apcupsd-power-alerts.files
     config/root-required/apcupsd-power-alerts.effects
     scripts/install-apcupsd-power-alerts
+    scripts/hapax-root-required-deferred-install
+    scripts/hapax-post-merge-deploy
     config/apcupsd/apcupsd.conf
     config/apcupsd/hapax-power-event.py
     config/apcupsd/onbattery
@@ -955,23 +961,20 @@ PY
 
 selected_oom_source_rel() {
     local rel="$1"
-    if [ "$HOST_PROFILE" = "appendix" ]; then
-        case "$rel" in
-            systemd/units/app.slice.d/oom-containment.conf)
-                printf '%s\n' config/root-required/oom-host-policy/appendix/app.slice.conf
-                return 0
-                ;;
-            systemd/system/user-1000.slice.d/oom-containment.conf)
-                printf '%s\n' config/root-required/oom-host-policy/appendix/user-1000.slice.conf
-                return 0
-                ;;
-            systemd/system/user@1000.service.d/oom.conf)
-                printf '%s\n' config/root-required/oom-host-policy/appendix/user@1000.service.conf
-                return 0
-                ;;
-        esac
-    fi
-    printf '%s\n' "$rel"
+    case "$rel" in
+        systemd/units/app.slice.d/oom-containment.conf)
+            printf 'config/root-required/oom-host-policy/%s/app.slice.conf\n' "$HOST_PROFILE"
+            ;;
+        systemd/system/user-1000.slice.d/oom-containment.conf)
+            printf 'config/root-required/oom-host-policy/%s/user-1000.slice.conf\n' "$HOST_PROFILE"
+            ;;
+        systemd/system/user@1000.service.d/oom.conf)
+            printf 'config/root-required/oom-host-policy/%s/user@1000.service.conf\n' "$HOST_PROFILE"
+            ;;
+        *)
+            printf '%s\n' "$rel"
+            ;;
+    esac
 }
 
 selected_zram_source_rel() {

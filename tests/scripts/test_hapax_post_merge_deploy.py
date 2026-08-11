@@ -132,6 +132,9 @@ OOM_HOST_PROFILE_FILES = {
         "config/root-required/oom-host-policy/appendix/user-1000.slice.conf",
         "config/root-required/oom-host-policy/appendix/user@1000.service.conf",
         "config/root-required/oom-host-policy/appendix/zram-generator.conf",
+        "config/root-required/oom-host-policy/podium/app.slice.conf",
+        "config/root-required/oom-host-policy/podium/user-1000.slice.conf",
+        "config/root-required/oom-host-policy/podium/user@1000.service.conf",
         "config/root-required/oom-host-policy/podium/zram-generator.conf",
     )
 }
@@ -168,6 +171,7 @@ P0_USER_OOM_DROPINS = {
 }
 P0_OOM_AUDIT_FILES = {
     "config/root-required/oom-containment.effects": OOM_EFFECT_DESCRIPTOR,
+    "scripts/hapax-post-merge-deploy": "#!/usr/bin/env bash\nexit 0\n",
     "scripts/hapax-local-judge-container-id": "#!/usr/bin/python3\n",
     "scripts/hapax-oom-policy-audit": "#!/usr/bin/env python3\n",
     "scripts/hapax-root-required-deploy-audit": "#!/usr/bin/env bash\n",
@@ -4406,6 +4410,8 @@ def test_apcupsd_power_alert_deploy_always_creates_authenticated_deferral(
         "config/root-required/apcupsd-power-alerts.effects": APCUPSD_EFFECT_DESCRIPTOR,
         future_manifest_path: "future hook\n",
         "scripts/install-apcupsd-power-alerts": installer_body,
+        "scripts/hapax-root-required-deferred-install": "#!/usr/bin/python3\n",
+        "scripts/hapax-post-merge-deploy": "#!/usr/bin/env bash\nexit 0\n",
         "config/apcupsd/apcupsd.conf": (
             "## apcupsd.conf v1.1 ##\nUPSNAME podium\nBATTERYLEVEL 20\nMINUTES 5\nTIMEOUT 0\n"
         ),
