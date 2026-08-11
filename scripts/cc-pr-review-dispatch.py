@@ -3122,11 +3122,23 @@ def review_pr(
             )
         _apply_public_gate_authority_context(dossier, target_frontmatter)
         _sign_public_gate_authority_evidence(dossier)
-        target_dossier_path.write_text(yaml.safe_dump(dossier, sort_keys=False), encoding="utf-8")
+        rendered = yaml.safe_dump(dossier, sort_keys=False)
+        target_dossier_path.write_text(rendered, encoding="utf-8")
+        # Head-keyed copy so a re-review stops destroying its predecessor. The canonical path
+        # above stays authoritative and every existing reader is untouched; this only ADDS.
+        # Measured 2026-08-10: 417 tasks retained exactly one head_sha and ZERO retained two, so
+        # the corpus held no consecutive pair anywhere — and a consecutive pair is the cheapest
+        # label available for the veto precision that actually governs a 1-of-M gate.
+        history_path = review_team.review_dossier_history_path(
+            target_note_path, target_task_id, pr_info.head_sha
+        )
+        if history_path != target_dossier_path:
+            history_path.write_text(rendered, encoding="utf-8")
         LOG.info(
-            "dossier written: %s (verdict %s)",
+            "dossier written: %s (verdict %s, history %s)",
             target_dossier_path,
             dossier["review_team_verdict"],
+            history_path.name if history_path != target_dossier_path else "unkeyable",
         )
         comment_bodies.append(render_dossier_markdown(dossier))
         side_effects = replay_dossier_side_effects(

@@ -1763,9 +1763,43 @@ def synthesize_dossier(
 
 
 def review_dossier_path(note_path: Path, task_id: str) -> Path:
-    """Canonical dossier location: ``<task_id>.review-dossier.yaml`` beside the note."""
+    """Canonical dossier location: ``<task_id>.review-dossier.yaml`` beside the note.
+
+    Unchanged and still authoritative: every reader resolves the CURRENT dossier here, and the
+    gate compares its ``head_sha`` against the PR head. See ``review_dossier_history_path`` for
+    why this one being canonical is not sufficient.
+    """
 
     return note_path.parent / f"{task_id}{REVIEW_DOSSIER_SUFFIX}"
+
+
+def review_dossier_history_path(note_path: Path, task_id: str, head_sha: str) -> Path:
+    """Head-keyed dossier copy: ``<task_id>.<head_sha[:12]>.review-dossier.yaml``.
+
+    WHY THIS EXISTS. The canonical path is one file per task, so every re-review overwrites its
+    predecessor. Measured 2026-08-10 across 426 dossiers and 420 distinct task ids: **417 tasks
+    retain exactly one head_sha and ZERO tasks retain two.** The corpus therefore contains no
+    consecutive pair anywhere -- no instance of "round N blocked on X; round N+1, after fix Y,
+    accepted".
+
+    That absence is what makes review-team quality unmeasurable. Under a 1-of-M veto the property
+    that governs soundness is per-family VETO PRECISION, and precision needs a label: did the
+    thing a seat blocked on turn out to be real? A consecutive pair is the cheapest available
+    label, and the estate has been destroying every one of them at the moment it was created.
+
+    So this is not archival tidiness. It is the precondition for evaluating any review reform,
+    including whichever reform is eventually chosen -- which is why it is worth landing before
+    the reform rather than alongside it.
+
+    Deliberately ADDITIVE: the canonical path keeps being written, so every existing reader is
+    untouched. A head that cannot be keyed falls back to the canonical path rather than inventing
+    a filename, because a history entry keyed to a guess is worse than no history entry.
+    """
+
+    key = "".join(ch for ch in str(head_sha or "") if ch in "0123456789abcdefABCDEF")[:12].lower()
+    if len(key) < 7:
+        return review_dossier_path(note_path, task_id)
+    return note_path.parent / f"{task_id}.{key}{REVIEW_DOSSIER_SUFFIX}"
 
 
 def _dossier_validity_blockers(
