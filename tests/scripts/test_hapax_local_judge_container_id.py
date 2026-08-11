@@ -149,6 +149,29 @@ def test_wait_daemon_fails_with_bounded_actionable_timeout(tmp_path: Path) -> No
     assert "next action:" in result.stderr
 
 
+@pytest.mark.parametrize(
+    ("wait_seconds", "poll_seconds"),
+    (("0", "0.01"), ("301", "1"), ("1", "0"), ("1", "2")),
+)
+def test_wait_daemon_rejects_invalid_bounds_before_docker(
+    tmp_path: Path, wait_seconds: str, poll_seconds: str
+) -> None:
+    rig = _rig(tmp_path)
+
+    result = rig.run(
+        "wait-daemon",
+        "--wait-seconds",
+        wait_seconds,
+        "--poll-seconds",
+        poll_seconds,
+    )
+
+    assert result.returncode == 1
+    assert "Docker readiness wait bounds are invalid" in result.stderr
+    assert "next action:" in result.stderr
+    assert rig.calls() == []
+
+
 def _stage_model(tmp_path: Path) -> tuple[Path, Path, str]:
     payload = b"measured-model"
     model_sha = hashlib.sha256(payload).hexdigest()
