@@ -712,6 +712,7 @@ def _root_audit_env(
         "scripts/install-p0-oom-containment",
         "scripts/install-apcupsd-power-alerts",
         "scripts/hapax-root-required-deferred-install",
+        "scripts/hapax-post-merge-deploy",
         "scripts/hapax-oom-score-enforce",
         "scripts/hapax-oom-score-trigger",
         "scripts/hapax-root-failure-intake",
@@ -743,21 +744,20 @@ def _root_audit_env(
                 dest.chmod(0o755)
             elif rel == "config/root-required/hapax-oom-score-enforce.sudoers":
                 dest.chmod(0o440)
-    if host_profile == "appendix":
-        selected_destinations = {
-            "config/root-required/oom-host-policy/appendix/app.slice.conf": (
-                user_dir / "app.slice.d" / "oom-containment.conf"
-            ),
-            "config/root-required/oom-host-policy/appendix/user-1000.slice.conf": (
-                system_dir / "user-1000.slice.d" / "oom-containment.conf"
-            ),
-            "config/root-required/oom-host-policy/appendix/user@1000.service.conf": (
-                system_dir / "user@1000.service.d" / "oom.conf"
-            ),
-        }
-        for rel, dest in selected_destinations.items():
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(ROOT_AUDIT_SOURCE_FILES[rel], encoding="utf-8")
+    selected_destinations = {
+        f"config/root-required/oom-host-policy/{host_profile}/app.slice.conf": (
+            user_dir / "app.slice.d" / "oom-containment.conf"
+        ),
+        f"config/root-required/oom-host-policy/{host_profile}/user-1000.slice.conf": (
+            system_dir / "user-1000.slice.d" / "oom-containment.conf"
+        ),
+        f"config/root-required/oom-host-policy/{host_profile}/user@1000.service.conf": (
+            system_dir / "user@1000.service.d" / "oom.conf"
+        ),
+    }
+    for rel, dest in selected_destinations.items():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(ROOT_AUDIT_SOURCE_FILES[rel], encoding="utf-8")
     sudoers_reference_dest.parent.mkdir(parents=True, exist_ok=True)
     sudoers_reference_dest.write_text(
         ROOT_AUDIT_SOURCE_FILES["config/root-required/hapax-oom-score-enforce.sudoers"],
