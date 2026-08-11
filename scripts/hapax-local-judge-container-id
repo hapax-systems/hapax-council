@@ -146,6 +146,26 @@ def _safe_model_inode(path: Path, *, owner_uid: int, directory: bool) -> os.stat
     return inode
 
 
+def _safe_model_directory_chain(
+    model_root: Path, model_host: Path, *, owner_uid: int
+) -> tuple[tuple[int, int], ...]:
+    protected_base = model_root.parent.parent
+    if (
+        model_root != protected_base / "hapax-models" / "sha256"
+        or model_host.parent.parent != model_root
+        or ID_RE.fullmatch(model_host.parent.name) is None
+    ):
+        raise _refuse(
+            f"local-judge model path is outside the protected directory layout: {model_host}",
+            "restore the governed /store-fast/hapax-models/sha256 content address",
+        )
+    identities: list[tuple[int, int]] = []
+    for directory in (protected_base, model_root.parent, model_root, model_host.parent):
+        inode = _safe_model_inode(directory, owner_uid=owner_uid, directory=True)
+        identities.append((inode.st_dev, inode.st_ino))
+    return tuple(identities)
+
+
 def _production_state_root() -> Path:
     account = pwd.getpwuid(os.getuid())
     return Path(account.pw_dir) / ".local/state/hapax/root-required"
@@ -274,8 +294,7 @@ def _model_identity(
     model_size_bytes: int,
     owner_uid: int,
 ) -> ModelIdentity:
-    _safe_model_inode(model_root, owner_uid=owner_uid, directory=True)
-    _safe_model_inode(model_host.parent, owner_uid=owner_uid, directory=True)
+    directory_identities = _safe_model_directory_chain(model_root, model_host, owner_uid=owner_uid)
     before = _safe_model_inode(model_host, owner_uid=owner_uid, directory=False)
     flags = os.O_RDONLY | os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
@@ -293,8 +312,12 @@ def _model_identity(
             "rerun the authorized model-staging canary",
         ) from exc
     identity = (opened.st_dev, opened.st_ino)
+    final_directory_identities = _safe_model_directory_chain(
+        model_root, model_host, owner_uid=owner_uid
+    )
     if (
-        identity != (before.st_dev, before.st_ino)
+        final_directory_identities != directory_identities
+        or identity != (before.st_dev, before.st_ino)
         or identity != (after.st_dev, after.st_ino)
         or opened.st_size != model_size_bytes
         or before.st_size != model_size_bytes
