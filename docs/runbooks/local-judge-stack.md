@@ -46,13 +46,11 @@ unit state before package installation. It never removes a container by name.
 ```bash
 set -euo pipefail
 runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
-case "$runtime_task" in
-  "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/"*.md) ;;
-  *) echo "runtime authority must be a canonical cc-task note" >&2; exit 2 ;;
-esac
-test -f "$runtime_task"
-test ! -L "$runtime_task"
-grep -Fqx 'runtime_mutation_authorized: true' "$runtime_task"
+authority_check="$HOME/.local/bin/hapax-post-merge-deploy"
+test -f "$authority_check"
+test ! -L "$authority_check"
+"$authority_check" --verify-runtime-authority \
+  "$runtime_task" systemd/units/hapax-local-judge.service
 
 repo_alias="$HOME/.cache/hapax/source-activation/worktree"
 repo="$(/usr/bin/realpath -e -- "$repo_alias")"
@@ -60,6 +58,18 @@ release_root="$HOME/.cache/hapax/source-activation/releases"
 test "${repo%/*}" = "$release_root"
 [[ "${repo##*/}" =~ ^[0-9a-f]{40}$ ]]
 test "$(/usr/bin/stat -c %u -- "$repo")" = "$(/usr/bin/id -u)"
+candidate_sha="${repo##*/}"
+state="$HOME/.local/state/hapax/root-required"
+desired_receipt="$state/desired-receipts/oom-containment.sha"
+test -f "$desired_receipt"
+test ! -L "$desired_receipt"
+test "$(/usr/bin/stat -c %u -- "$desired_receipt")" = "$(/usr/bin/id -u)"
+test "$(/usr/bin/stat -c %h -- "$desired_receipt")" = 1
+receipt_mode="$(/usr/bin/stat -c %a -- "$desired_receipt")"
+(( (8#$receipt_mode & 022) == 0 ))
+test "$(/usr/bin/wc -c < "$desired_receipt")" = 41
+IFS= read -r desired_sha < "$desired_receipt"
+test "$desired_sha" = "$candidate_sha"
 source_unit="$repo/systemd/units/hapax-local-judge.service"
 test -f "$source_unit"
 test ! -L "$source_unit"
@@ -74,40 +84,130 @@ canary_name="hapax-local-judge-cap-canary-$$"
 canary_id=""
 endpoint=http://127.0.0.1:15001
 results="/store-fast/tmp/local-judge-cap-canary-$$.jsonl"
+canary_cidfile="/store-fast/tmp/local-judge-cap-canary-$$.cid"
+canary_receipt_root="$state/local-judge-cap-canary"
+canary_receipt="$canary_receipt_root/$candidate_sha.env"
 test -d /store-fast/tmp
 test ! -e "$results"
+test ! -e "$canary_cidfile"
 docker pull "$image"
+image_id="$(docker image inspect --format '{{.Id}}' "$image")"
+[[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+host="$(hostname)"
+test "$host" = hapax-appendix
 
-was_active="$(systemctl --user is-active "$unit" || true)"
+was_active="$(systemctl --user show "$unit" -p ActiveState --value)"
+case "$was_active" in
+  active|inactive|failed) ;;
+  *) echo "refusing transitional or unknown $unit state: $was_active" >&2; exit 1 ;;
+esac
+cleanup_done=0
+cleanup_status=0
 cleanup_canary() {
-  if [ -n "$canary_id" ]; then
-    docker stop "$canary_id" >/dev/null 2>&1 || true
+  if [ "$cleanup_done" -eq 1 ]; then
+    return "$cleanup_status"
   fi
-  rm -f "$results"
-  if [ "$was_active" = active ]; then
-    systemctl --user start "$unit" >/dev/null 2>&1 || true
+  cleanup_done=1
+  local id="" remaining="" removed=0 restored_state="" cidfile_safe=0
+  if [ -e "$canary_cidfile" ] || [ -L "$canary_cidfile" ]; then
+    if [ -f "$canary_cidfile" ] && [ ! -L "$canary_cidfile" ]; then
+      id="$(< "$canary_cidfile")"
+      if [[ "$id" =~ ^[0-9a-f]{64}$ ]]; then
+        cidfile_safe=1
+      fi
+    fi
+    if [ "$cidfile_safe" -eq 1 ]; then
+      if docker inspect "$id" >/dev/null 2>&1; then
+        if docker stop "$id" >/dev/null; then
+          for _ in $(seq 1 30); do
+            if ! docker inspect "$id" >/dev/null 2>&1; then
+              removed=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$removed" -ne 1 ]; then
+            echo "canary container did not terminate and remove: $id" >&2
+            cleanup_status=1
+          fi
+        else
+          echo "failed to stop canary container by immutable ID: $id" >&2
+          cleanup_status=1
+        fi
+      fi
+    else
+      echo "unsafe or invalid canary cidfile: $canary_cidfile" >&2
+      cleanup_status=1
+    fi
   fi
+  if ! remaining="$(docker ps -aq --filter "name=^/${canary_name}$")"; then
+    echo "cannot prove canary-name absence during cleanup: $canary_name" >&2
+    cleanup_status=1
+  elif [ -n "$remaining" ]; then
+    echo "canary container remains after cleanup: $remaining" >&2
+    cleanup_status=1
+  fi
+  if ! rm -f -- "$results"; then
+    echo "cannot remove owned canary result file: $results" >&2
+    cleanup_status=1
+  fi
+  if [ "$cleanup_status" -eq 0 ]; then
+    rm -f -- "$canary_cidfile"
+    if [ "$was_active" = active ]; then
+      if ! systemctl --user start "$unit"; then
+        echo "failed to restore $unit after proven canary termination" >&2
+        cleanup_status=1
+      else
+        restored_state="$(systemctl --user show "$unit" -p ActiveState --value)"
+        if [ "$restored_state" != active ]; then
+          echo "restored $unit did not reach active state: $restored_state" >&2
+          cleanup_status=1
+        fi
+      fi
+    fi
+  elif [ "$was_active" = active ]; then
+    echo "not restoring $unit because disposable-container absence is unproven" >&2
+    echo "next action: inspect $canary_cidfile and $canary_name, stop the immutable ID, then restore the unit" >&2
+  fi
+  return "$cleanup_status"
 }
-trap cleanup_canary EXIT
+on_exit() {
+  local rc=$?
+  trap - EXIT INT TERM
+  if ! cleanup_canary; then
+    rc=1
+  fi
+  exit "$rc"
+}
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 if [ "$was_active" = active ]; then
   systemctl --user stop "$unit"
+  test "$(systemctl --user show "$unit" -p ActiveState --value)" = inactive
 fi
+managed_ids="$(docker ps -aq --filter 'name=^/hapax-local-judge$')"
+test -z "$managed_ids"
 
-canary_id="$(docker run -d --rm --name "$canary_name" \
+docker run --cidfile "$canary_cidfile" -d --rm --name "$canary_name" \
   --memory 4G --memory-swap 6G \
   --gpus "device=$judge_gpu_uuid" \
   -v "$HOME/models/compassverifier-7b:/models:ro" \
   -p 127.0.0.1:15001:5001 \
   "$image" \
   -m /models/CompassVerifier-7B.Q5_K_M.gguf -a compassverifier-7b \
-  -c 65536 -np 8 -cb -ngl 99 --host 0.0.0.0 --port 5001)"
+  -c 65536 -np 8 -cb -ngl 99 --host 0.0.0.0 --port 5001 >/dev/null
+test -f "$canary_cidfile"
+test ! -L "$canary_cidfile"
+test "$(/usr/bin/wc -c < "$canary_cidfile")" = 64
+canary_id="$(< "$canary_cidfile")"
 [[ "$canary_id" =~ ^[0-9a-f]{64}$ ]]
 test "$(docker inspect --format '{{.Name}}' "$canary_id")" = "/$canary_name"
-read -r memory memory_swap oom_kill_disable < <(
-  docker inspect --format \
-    '{{.HostConfig.Memory}} {{.HostConfig.MemorySwap}} {{json .HostConfig.OomKillDisable}}' \
-    "$canary_id"
-)
+limit_fields="$(docker inspect --format \
+  '{{.HostConfig.Memory}} {{.HostConfig.MemorySwap}} {{json .HostConfig.OomKillDisable}}' \
+  "$canary_id")"
+read -r memory memory_swap oom_kill_disable extra <<< "$limit_fields"
+test -z "${extra:-}"
 test "$memory" = 4294967296
 test "$memory_swap" = 6442450944
 [[ "$oom_kill_disable" == null || "$oom_kill_disable" == false ]]
@@ -151,13 +251,33 @@ test "$before_oom" = "$after_oom"
 test "$memory_peak" -le 3221225472  # retain at least 1 GiB RAM headroom
 test "$swap_peak" -le 1073741824    # retain at least 1 GiB swap headroom
 
-docker stop "$canary_id" >/dev/null
-canary_id=""
-rm -f "$results"
-if [ "$was_active" = active ]; then
-  systemctl --user start "$unit"
-fi
-trap - EXIT
+test "$(/usr/bin/realpath -e -- "$repo_alias")" = "$repo"
+IFS= read -r desired_sha_after < "$desired_receipt"
+test "$desired_sha_after" = "$candidate_sha"
+cleanup_canary
+trap - EXIT INT TERM
+
+test ! -L "$canary_receipt_root"
+mkdir -p "$canary_receipt_root"
+chmod 0700 "$canary_receipt_root"
+receipt_tmp="$(mktemp "$canary_receipt_root/.${candidate_sha}.tmp.XXXXXX")"
+chmod 0600 "$receipt_tmp"
+completed_at_epoch="$(date +%s)"
+printf '%s\n' \
+  'schema=1' \
+  "candidate_sha=$candidate_sha" \
+  "host=$host" \
+  "gpu_uuid=$judge_gpu_uuid" \
+  "image_id=$image_id" \
+  'memory_bytes=4294967296' \
+  'memory_swap_bytes=6442450944' \
+  'requests=24' \
+  'workers=8' \
+  "memory_peak_bytes=$memory_peak" \
+  "swap_peak_bytes=$swap_peak" \
+  "completed_at_epoch=$completed_at_epoch" > "$receipt_tmp"
+mv -fT -- "$receipt_tmp" "$canary_receipt"
+echo "local-judge cap canary accepted: $canary_receipt"
 ```
 
 ### Authenticated package installation
@@ -167,13 +287,11 @@ trap - EXIT
 # execute RUNBOOK.txt, copy the judge unit, or reproduce the authentication flow.
 set -euo pipefail
 runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
-case "$runtime_task" in
-  "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/"*.md) ;;
-  *) echo "runtime authority must be a canonical cc-task note" >&2; exit 2 ;;
-esac
-test -f "$runtime_task"
-test ! -L "$runtime_task"
-grep -Fqx 'runtime_mutation_authorized: true' "$runtime_task"
+authority_check="$HOME/.local/bin/hapax-post-merge-deploy"
+test -f "$authority_check"
+test ! -L "$authority_check"
+"$authority_check" --verify-runtime-authority \
+  "$runtime_task" systemd/units/hapax-local-judge.service
 state="$HOME/.local/state/hapax/root-required"
 receipt="$state/desired-receipts/oom-containment.sha"
 test -f "$receipt"
@@ -182,6 +300,7 @@ test "$(/usr/bin/stat -c %h -- "$receipt")" = 1
 test "$(/usr/bin/wc -c < "$receipt")" = 41
 IFS= read -r sha < "$receipt"
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+"$authority_check" --verify-local-judge-cap-receipt "$sha" candidate
 stage="$HOME/.cache/hapax/post-merge-root-required/$sha/oom-containment"
 runbook="$stage/RUNBOOK.txt"
 test -f "$runbook"
@@ -200,13 +319,11 @@ receipt in a new shell:
 ```bash
 set -euo pipefail
 runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
-case "$runtime_task" in
-  "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/"*.md) ;;
-  *) echo "runtime authority must be a canonical cc-task note" >&2; exit 2 ;;
-esac
-test -f "$runtime_task"
-test ! -L "$runtime_task"
-grep -Fqx 'runtime_mutation_authorized: true' "$runtime_task"
+authority_check="$HOME/.local/bin/hapax-post-merge-deploy"
+test -f "$authority_check"
+test ! -L "$authority_check"
+"$authority_check" --verify-runtime-authority \
+  "$runtime_task" systemd/units/hapax-local-judge.service
 state="$HOME/.local/state/hapax/root-required"
 receipt="$state/desired-receipts/oom-containment.sha"
 test -f "$receipt"
@@ -214,6 +331,7 @@ test ! -L "$receipt"
 test "$(/usr/bin/wc -c < "$receipt")" = 41
 IFS= read -r sha < "$receipt"
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+"$authority_check" --verify-local-judge-cap-receipt "$sha" installed
 stage="$HOME/.cache/hapax/post-merge-root-required/$sha/oom-containment"
 /usr/bin/grep -Fqx \
   "hapax-root-required-deferred-install: completed authenticated package=oom-containment sha=$sha" \
@@ -230,13 +348,20 @@ limits and the recurring audit.
 ```bash
 set -euo pipefail
 runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
-case "$runtime_task" in
-  "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/"*.md) ;;
-  *) echo "runtime authority must be a canonical cc-task note" >&2; exit 2 ;;
-esac
-test -f "$runtime_task"
-test ! -L "$runtime_task"
-grep -Fqx 'runtime_mutation_authorized: true' "$runtime_task"
+authority_check="$HOME/.local/bin/hapax-post-merge-deploy"
+test -f "$authority_check"
+test ! -L "$authority_check"
+"$authority_check" --verify-runtime-authority \
+  "$runtime_task" systemd/units/hapax-local-judge.service
+state="$HOME/.local/state/hapax/root-required"
+receipt="$state/desired-receipts/oom-containment.sha"
+test -f "$receipt"
+test ! -L "$receipt"
+test "$(/usr/bin/stat -c %h -- "$receipt")" = 1
+test "$(/usr/bin/wc -c < "$receipt")" = 41
+IFS= read -r sha < "$receipt"
+[[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+"$authority_check" --verify-local-judge-cap-receipt "$sha" installed
 systemctl --user daemon-reload
 exec_start="$(systemctl --user show hapax-local-judge.service -p ExecStart --value)"
 [[ "$exec_start" == *" --memory 4G "* ]]
@@ -353,19 +478,19 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
   ```bash
   set -euo pipefail
   runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
-  case "$runtime_task" in
-    "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/"*.md) ;;
-    *) echo "runtime authority must be a canonical cc-task note" >&2; exit 2 ;;
-  esac
-  test -f "$runtime_task"
-  test ! -L "$runtime_task"
-  grep -Fqx 'runtime_mutation_authorized: true' "$runtime_task"
+  authority_check="$HOME/.local/bin/hapax-post-merge-deploy"
+  test -f "$authority_check"
+  test ! -L "$authority_check"
+  "$authority_check" --verify-runtime-authority \
+    "$runtime_task" systemd/units/hapax-local-judge.service
   repo_alias="$HOME/.cache/hapax/source-activation/worktree"
   repo="$(/usr/bin/realpath -e -- "$repo_alias")"
   release_root="$HOME/.cache/hapax/source-activation/releases"
   test "${repo%/*}" = "$release_root"
   [[ "${repo##*/}" =~ ^[0-9a-f]{40}$ ]]
   test "$(/usr/bin/stat -c %u -- "$repo")" = "$(/usr/bin/id -u)"
+  sha="${repo##*/}"
+  "$authority_check" --verify-local-judge-cap-receipt "$sha" installed
   test -d "$repo/scripts/cost-offload"
   unit=hapax-local-judge.service
   test "$(systemctl --user show "$unit" -p NeedDaemonReload --value)" = no
