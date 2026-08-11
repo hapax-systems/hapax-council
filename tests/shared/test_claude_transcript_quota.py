@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from shared.claude_transcript_quota import (
+    TRANSCRIPT_TAIL_BYTES,
     TranscriptQuotaUnavailable,
     latest_transcript_observation,
 )
@@ -111,6 +112,24 @@ def test_future_turn_refuses_on_clock_skew(tmp_path: Path) -> None:
 
     with pytest.raises(TranscriptQuotaUnavailable, match="future"):
         latest_transcript_observation(root=tmp_path, now=NOW, max_age_seconds=900)
+
+
+def test_a_turn_inside_skew_tolerance_is_accepted_but_never_credits_future_time(
+    tmp_path: Path,
+) -> None:
+    """The reconciliation of the tolerance with the contract.
+
+    A stamp 30 s ahead of the read is ordinary NTP behaviour on the host writing the
+    transcript, so it is not refused. But crediting it verbatim would hand the receipt 30 s
+    of window backed by nothing observed -- so `observed_at` is clamped to the read, and the
+    witness label follows it rather than the raw stamp.
+    """
+    _write(tmp_path, "a.jsonl", [_turn(NOW + timedelta(seconds=30))])
+
+    obs = latest_transcript_observation(root=tmp_path, now=NOW, max_age_seconds=900)
+
+    assert obs.observed_at == NOW
+    assert obs.witness == f"claude-subscription-headroom-observed-{NOW:%Y%m%dt%H%M%S}z".lower()
 
 
 def test_a_429_is_never_read_as_headroom(tmp_path: Path) -> None:
@@ -237,9 +256,9 @@ def test_witness_label_is_derived_from_the_timestamp_only(tmp_path: Path) -> Non
     assert obs.witness == "claude-subscription-headroom-observed-20260811t164725z"
 
 
-def test_large_transcript_is_read_by_bounded_tail(tmp_path: Path) -> None:
-    """Transcripts have reached 1.19 GB on this estate; a whole-file read is a hazard,
-    not a performance note. The newest turn must still be found from the tail."""
+def test_newest_turn_in_a_large_transcript_is_found_from_the_tail(tmp_path: Path) -> None:
+    """Transcripts have reached 1.19 GB on this estate; a whole-file read is a hazard, not a
+    performance note. Bounding the read must not cost us the newest turn."""
     stamp = NOW - timedelta(seconds=15)
     filler = [json.dumps({"type": "user", "pad": "x" * 512}) for _ in range(4000)]
     _write(tmp_path, "a.jsonl", [*filler, _turn(stamp)])
@@ -247,3 +266,28 @@ def test_large_transcript_is_read_by_bounded_tail(tmp_path: Path) -> None:
     obs = latest_transcript_observation(root=tmp_path, now=NOW, max_age_seconds=900)
 
     assert obs.observed_at == stamp
+
+
+def test_content_beyond_the_tail_bound_is_never_read(tmp_path: Path) -> None:
+    """The bound itself, pinned by a turn the observer must NOT see.
+
+    The test above passes under a whole-file read, so it pins nothing about boundedness.
+    Here the *newest* turn sits at the head of the file, behind more than
+    TRANSCRIPT_TAIL_BYTES of filler, and an older turn sits at the tail. A whole-file read
+    returns the head turn; a bounded tail read returns the older one. Asserting the OLDER
+    stamp is the only assertion that can distinguish them.
+    """
+    head_stamp = NOW - timedelta(seconds=10)
+    tail_stamp = NOW - timedelta(seconds=300)
+    pad = json.dumps({"type": "user", "pad": "x" * 1024})
+    filler_lines = (TRANSCRIPT_TAIL_BYTES // (len(pad) + 1)) + 64
+    filler = [pad] * filler_lines
+    path = _write(tmp_path, "a.jsonl", [_turn(head_stamp), *filler, _turn(tail_stamp)])
+
+    # The premise of the test: the head turn really is outside the window that gets read.
+    assert path.stat().st_size > TRANSCRIPT_TAIL_BYTES
+
+    obs = latest_transcript_observation(root=tmp_path, now=NOW, max_age_seconds=900)
+
+    assert obs.observed_at == tail_stamp
+    assert obs.observed_at != head_stamp

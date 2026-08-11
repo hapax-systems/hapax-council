@@ -493,3 +493,88 @@ def test_evidence_ref_still_required_without_from_transcript(  # noqa: ANN001
     assert rc == 2
     assert "--evidence-ref is required" in capsys.readouterr().err
     assert not any(tmp_path.glob("*.yaml"))
+
+
+def test_rejects_out_of_bounds_max_observation_age(tmp_path: Path, capsys) -> None:  # noqa: ANN001
+    """The knob that can hollow out the whole mode.
+
+    `--max-observation-age-seconds 999999` would mint from a turn observed yesterday --
+    returning the measured path to an attestation, quietly, with no other signal that
+    anything changed. It gets the same clamp as its `--stale-after-seconds` sibling.
+    """
+    for age in ("30", "999999"):
+        rc = _run(
+            [
+                "--receipt-dir",
+                str(tmp_path),
+                "--from-transcript",
+                "--max-observation-age-seconds",
+                age,
+            ]
+        )
+
+        assert rc == 2
+        assert "--max-observation-age-seconds must be between" in capsys.readouterr().err
+    assert not any(tmp_path.glob("*.yaml"))
+
+
+def test_max_observation_age_is_checked_before_the_transcript_is_read(  # noqa: ANN001
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """The clamp must reject the argument, not merely be ignored downstream.
+
+    Without ordering, an out-of-bounds value could still be handed to the observer -- the
+    refusal has to happen before any observation is attempted, or a wide window is doing
+    real work before anyone complains about it.
+    """
+    module = _load_module()
+    import shared.claude_transcript_quota as ctq
+
+    def _must_not_run(**_kw):  # noqa: ANN202
+        raise AssertionError("observer was called despite an out-of-bounds window")
+
+    monkeypatch.setattr(ctq, "latest_transcript_observation", _must_not_run)
+
+    rc = module.main(
+        [
+            "--receipt-dir",
+            str(tmp_path),
+            "--from-transcript",
+            "--max-observation-age-seconds",
+            "999999",
+        ]
+    )
+
+    assert rc == 2
+    assert "--max-observation-age-seconds must be between" in capsys.readouterr().err
+
+
+def test_the_recovery_hint_matches_the_mode_it_is_printed_in(  # noqa: ANN001
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """An error message that names an impossible next action is worse than none.
+
+    Under --from-transcript the tool DERIVES the evidence-ref and refuses a supplied one,
+    so the attested path's hint -- "pass a sanitized --evidence-ref" -- is advice the caller
+    cannot take. Each mode gets the hint that is actually actionable in it.
+    """
+    module = _load_module()
+    import shared.claude_transcript_quota as ctq
+
+    def _unavailable(**_kw):  # noqa: ANN202
+        raise ctq.TranscriptQuotaUnavailable("freshest completed turn is 5000s old")
+
+    monkeypatch.setattr(ctq, "latest_transcript_observation", _unavailable)
+
+    rc = module.main(["--receipt-dir", str(tmp_path), "--from-transcript"])
+    measured_err = capsys.readouterr().err
+
+    assert rc == 2
+    assert "do not supply --evidence-ref" in measured_err
+    assert "pass a sanitized --evidence-ref" not in measured_err
+
+    rc = _run(["--receipt-dir", str(tmp_path), "--evidence-ref", "not a safe ref"])
+    attested_err = capsys.readouterr().err
+
+    assert rc == 2
+    assert "pass a sanitized --evidence-ref" in attested_err

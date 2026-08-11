@@ -31,8 +31,11 @@ Fail-closed, three ways, each tested:
 * **stale** -- the freshest completed turn is older than the caller's window: refuse.
   This is the honest behaviour when the estate is idle, which is exactly when nothing is
   asking for the route.
-* **future** -- a turn stamped ahead of now is clock skew or a forged record: refuse
-  rather than mint a receipt that outlives its evidence.
+* **future** -- a turn stamped more than ``FUTURE_SKEW_TOLERANCE_SECONDS`` ahead of now is
+  clock skew or a forged record: refuse rather than mint a receipt that outlives its
+  evidence. Inside that tolerance the record is accepted, because an NTP step on the host
+  writing the transcript is ordinary, but ``observed_at`` is clamped to the moment of the
+  read -- a future stamp can never buy window it did not witness.
 
 Content safety: only a ``timestamp`` is ever lifted out. Prompts, model output, tool calls
 and file contents are never read into the return value, and reads are bounded tail seeks --
@@ -127,10 +130,20 @@ def _completed_turn_timestamp(line: str) -> datetime | None:
     * ``type == "assistant"`` — user turns and tool results witness nothing about the
       provider.
     * **not an API-error record.** Claude writes failures as assistant records too.
-      Measured on this estate: **1,070 API-error records carry a ``requestId``**, including
-      ``apiErrorStatus: 429``. Accepting one would mint "subscription headroom observed"
-      from the quota wall itself — the exact inversion of this module's claim. Checked
-      first, before anything else is considered.
+      Measured on this estate 2026-08-11 across all 92 transcripts: **1,070 API-error
+      records carry a ``requestId``**, including ``apiErrorStatus: 429``. Accepting one
+      would mint "subscription headroom observed" from the quota wall itself — the exact
+      inversion of this module's claim. Checked first, before anything else is considered.
+      Re-derive with::
+
+          cat ~/.claude/projects/*/*.jsonl \\
+            | jq -c 'select(.type=="assistant" and .requestId and
+                            (.isApiErrorMessage or .apiErrorStatus or .error))' | wc -l
+
+      Scan the whole population, not a sample: the same query over an arbitrary 60-file
+      subset returns 17, which reads as a curiosity rather than a hazard. The count drifts
+      as transcripts are written and pruned; what must not drift is that it exceeds zero,
+      which is the entire reason this branch exists.
     * ``requestId`` present — a record without one never round-tripped to the provider.
     * a parseable ``timestamp``.
     """
@@ -211,7 +224,16 @@ def latest_transcript_observation(
             f"freshest completed turn is {age:.0f}s old, beyond the {max_age_seconds}s window"
         )
 
+    # Within tolerance a future stamp is accepted but never *credited*: clamping to
+    # `checked_at` means sub-tolerance skew can shorten the receipt's window, never extend
+    # it past the moment we actually looked. Without this, a turn stamped 59 s ahead buys
+    # 59 s of window backed by nothing observed.
+    observed_at = min(newest, checked_at)
+
     return TranscriptObservation(
-        observed_at=newest,
-        witness=f"claude-subscription-headroom-observed-{newest.strftime('%Y%m%dt%H%M%S').lower()}z",
+        observed_at=observed_at,
+        witness=(
+            "claude-subscription-headroom-observed-"
+            f"{observed_at.strftime('%Y%m%dt%H%M%S').lower()}z"
+        ),
     )

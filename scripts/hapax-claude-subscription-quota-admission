@@ -67,6 +67,14 @@ MAX_STALE_AFTER_SECONDS = 3600
 #: a live observation. Matches the receipt's own default TTL -- an observation older than
 #: the window it would open is not evidence for that window.
 DEFAULT_MAX_OBSERVATION_AGE_SECONDS = 900
+#: Clamped for the same reason --stale-after-seconds is, and it matters more. This knob is
+#: the one that can silently convert the MEASURED path back into an attestation: a caller
+#: (or a future timer unit) passing 999999 would mint from a turn observed yesterday, whose
+#: whole premise is that the observation is fresh. The ceiling matches
+#: MAX_STALE_AFTER_SECONDS so an observation can never be older than the longest window it
+#: could open.
+MIN_OBSERVATION_AGE_SECONDS = 60
+MAX_OBSERVATION_AGE_SECONDS = MAX_STALE_AFTER_SECONDS
 
 # The bounded observation kinds this writer will attest. Each names an account-live subscription
 # observation that is NOT lane/tmux/session presence: a real Claude invocation completed without a
@@ -77,10 +85,22 @@ ALLOWED_OBSERVATIONS = (
     "operator_confirmed_subscription_headroom",
 )
 
+#: Attested path only. Under --from-transcript the tool DERIVES the evidence-ref and refuses
+#: a caller-supplied one, so telling the caller to pass one is advice that cannot be taken.
 VALIDATION_RECOVERY_HINT = (
     "next action: rerun with --help to confirm bounds, pass a sanitized --evidence-ref that names "
     "the account-live observation (never a lane/tmux name), pick an allowed --observation, then "
     "rerun after a genuine account-live subscription observation"
+)
+
+#: Measured path. Nothing here asks for an evidence-ref: the only way through is a real
+#: completed turn inside the window, which is the entire point of the mode.
+TRANSCRIPT_RECOVERY_HINT = (
+    "next action: this mode mints only from a completed Claude turn observed in the last "
+    f"{DEFAULT_MAX_OBSERVATION_AGE_SECONDS}s -- do not supply --evidence-ref (it is derived). "
+    "If the estate is idle, that refusal is correct: run a real Claude request and rerun. "
+    "Widen with --max-observation-age-seconds only within "
+    f"{MIN_OBSERVATION_AGE_SECONDS}-{MAX_OBSERVATION_AGE_SECONDS}s"
 )
 
 SAFE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
@@ -299,6 +319,16 @@ def main(argv: list[str] | None = None) -> int:
                     "--from-transcript measures liveness and can only support "
                     f"--observation {ALLOWED_OBSERVATIONS[0]}"
                 )
+            if (
+                not MIN_OBSERVATION_AGE_SECONDS
+                <= args.max_observation_age_seconds
+                <= MAX_OBSERVATION_AGE_SECONDS
+            ):
+                raise ValueError(
+                    "--max-observation-age-seconds must be between "
+                    f"{MIN_OBSERVATION_AGE_SECONDS} and {MAX_OBSERVATION_AGE_SECONDS}; a wider "
+                    "window turns the measured path back into an attestation"
+                )
             observed_at, args.evidence_ref = _observe_from_transcript(args)
         else:
             if not args.evidence_ref:
@@ -335,8 +365,9 @@ def main(argv: list[str] | None = None) -> int:
         ]
         _write_flat_yaml_atomic(path, fields)
     except ValueError as exc:
+        hint = TRANSCRIPT_RECOVERY_HINT if args.from_transcript else VALIDATION_RECOVERY_HINT
         print(
-            f"hapax-claude-subscription-quota-admission: {exc}; {VALIDATION_RECOVERY_HINT}",
+            f"hapax-claude-subscription-quota-admission: {exc}; {hint}",
             file=sys.stderr,
         )
         return 2
