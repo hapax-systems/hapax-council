@@ -266,27 +266,66 @@ verify_runtime_authority() {
         echo "hapax-post-merge-deploy: source-activation release HEAD does not match its release directory; next action: reconcile source activation and retry" >&2
         return 2
     fi
-    if ! /usr/bin/env -i \
-        HOME=/nonexistent \
-        PATH=/usr/bin:/bin \
-        LANG=C.UTF-8 \
-        LC_ALL=C.UTF-8 \
-        GIT_CONFIG_GLOBAL=/dev/null \
-        GIT_CONFIG_NOSYSTEM=1 \
-        GIT_NO_REPLACE_OBJECTS=1 \
-        GIT_OPTIONAL_LOCKS=0 \
-        /usr/bin/git -C "$repo" diff --quiet --no-ext-diff "$git_head" -- \
-            shared/frontmatter.py shared/sdlc_lifecycle.py; then
-        echo "hapax-post-merge-deploy: runtime authority parser sources drift from release $git_head; next action: reconcile source activation and retry" >&2
-        return 2
-    fi
-    /usr/bin/python3 -I - "$repo" "$task" "$scope" "$active_root" <<'RUNTIME_AUTHORITY_PY'
+    /usr/bin/python3 -I - "$task" "$scope" "$active_root" <<'RUNTIME_AUTHORITY_PY'
 from __future__ import annotations
 
 import os
+import re
 import stat
 import sys
 from pathlib import Path
+
+import yaml
+
+
+TASK_MUTABLE_STATUSES = {
+    "claimed",
+    "in_progress",
+    "pr_open",
+    "merge_queue",
+    "ci_green",
+    "ready",
+    "ready_for_review",
+    "review_ready",
+    "ready_for_merge",
+}
+
+
+class UniqueKeyLoader(yaml.SafeLoader):
+    """SafeLoader variant that refuses ambiguous duplicate authority fields."""
+
+
+def construct_unique_mapping(
+    loader: UniqueKeyLoader, node: yaml.MappingNode, deep: bool = False
+) -> dict[object, object]:
+    loader.flatten_mapping(node)
+    mapping: dict[object, object] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in mapping
+        except TypeError as exc:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "found an unhashable mapping key",
+                key_node.start_mark,
+            ) from exc
+        if duplicate:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key {key!r}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    construct_unique_mapping,
+)
 
 
 def refuse(reason: str) -> None:
@@ -298,12 +337,11 @@ def refuse(reason: str) -> None:
     raise SystemExit(2)
 
 
-if len(sys.argv) != 5:
+if len(sys.argv) != 4:
     refuse("validator argument contract is incomplete")
-repo = Path(sys.argv[1])
-task = Path(sys.argv[2])
-scope = sys.argv[3]
-active_root = Path(sys.argv[4])
+task = Path(sys.argv[1])
+scope = sys.argv[2]
+active_root = Path(sys.argv[3])
 if not task.is_absolute() or task != active_root / task.name:
     refuse("task is not a canonical active task path")
 try:
@@ -353,14 +391,18 @@ try:
 except UnicodeDecodeError as exc:
     refuse(f"canonical active task note is not UTF-8: {exc}")
 
-sys.path.insert(0, str(repo))
-from shared.frontmatter import parse_frontmatter_with_diagnostics  # noqa: E402
-from shared.sdlc_lifecycle import TASK_MUTABLE_STATUSES  # noqa: E402
-
-parsed = parse_frontmatter_with_diagnostics(text)
-if not parsed.ok or parsed.frontmatter is None:
-    refuse(f"task frontmatter is invalid ({parsed.error_kind or 'unknown'})")
-frontmatter = parsed.frontmatter
+if not text.startswith("---"):
+    refuse("task frontmatter is missing")
+frontmatter_end = text.find("\n---", 3)
+if frontmatter_end < 0:
+    refuse("task frontmatter closing marker is missing")
+yaml_text = text[3:frontmatter_end].strip()
+try:
+    frontmatter = yaml.load(yaml_text, Loader=UniqueKeyLoader) if yaml_text else {}
+except yaml.YAMLError as exc:
+    refuse(f"task frontmatter YAML is invalid: {exc}")
+if not isinstance(frontmatter, dict):
+    refuse("task frontmatter is not a mapping")
 task_id = frontmatter.get("task_id")
 if frontmatter.get("type") != "cc-task":
     refuse("task type is not cc-task")
@@ -374,10 +416,18 @@ if frontmatter.get("implementation_authorized") is not True:
 if frontmatter.get("runtime_mutation_authorized") is not True:
     refuse("runtime_mutation_authorized is not true")
 authority_case = frontmatter.get("authority_case")
-if not isinstance(authority_case, str) or not authority_case.startswith("CASE-"):
+if not isinstance(authority_case, str) or re.fullmatch(
+    r"CASE-[A-Za-z0-9][A-Za-z0-9._:-]*", authority_case
+) is None:
     refuse("authority_case is absent or malformed")
 parent_spec = frontmatter.get("parent_spec")
-if not isinstance(parent_spec, str) or not parent_spec.strip():
+if not isinstance(parent_spec, str) or parent_spec.strip().lower() in {
+    "",
+    "null",
+    "none",
+    "~",
+    "[]",
+}:
     refuse("parent_spec is absent")
 route_metadata = frontmatter.get("route_metadata")
 if not isinstance(route_metadata, dict) or route_metadata.get("route_metadata_schema") != 1:
@@ -394,6 +444,7 @@ RUNTIME_AUTHORITY_PY
 verify_local_judge_cap_receipt() {
     local sha="$1" phase="$2" account_home repo_alias release_root repo state desired installed
     local cap_root cap_receipt cap_size source_unit_text gpu_uuid image image_id host receipt_mode git_head
+    local installed_unit installed_unit_real expected_unit_oid actual_unit_oid
     local memory_peak swap_peak completed_at now
     if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || [[ "$phase" != candidate && "$phase" != installed ]]; then
         echo "hapax-post-merge-deploy: invalid local-judge cap receipt selector; next action: pass a 40-hex SHA and candidate or installed" >&2
@@ -457,6 +508,13 @@ verify_local_judge_cap_receipt() {
             echo "hapax-post-merge-deploy: installed OOM receipt is writable by another identity; next action: repair receipt permissions and repeat authenticated verification" >&2
             return 2
         fi
+        installed_unit="$account_home/.config/systemd/user/hapax-local-judge.service"
+        if ! installed_unit_real="$(/usr/bin/realpath -e -- "$installed_unit")" \
+            || [ "$installed_unit_real" != "$installed_unit" ] \
+            || [ ! -f "$installed_unit" ] || [ -L "$installed_unit" ]; then
+            echo "hapax-post-merge-deploy: installed local-judge unit is absent or redirects outside its canonical path; next action: repeat the authenticated install" >&2
+            return 2
+        fi
     fi
     cap_root="$state/local-judge-cap-canary"
     cap_receipt="$cap_root/$sha.env"
@@ -494,6 +552,74 @@ verify_local_judge_cap_receipt() {
         echo "hapax-post-merge-deploy: candidate judge unit has no unique GPU UUID; next action: repair the candidate and rerun the canary" >&2
         return 2
     fi
+    if [ "$phase" = installed ]; then
+        if ! expected_unit_oid="$(
+            /usr/bin/env -i \
+                HOME=/nonexistent \
+                PATH=/usr/bin:/bin \
+                LANG=C.UTF-8 \
+                LC_ALL=C.UTF-8 \
+                GIT_CONFIG_GLOBAL=/dev/null \
+                GIT_CONFIG_NOSYSTEM=1 \
+                GIT_NO_REPLACE_OBJECTS=1 \
+                GIT_OPTIONAL_LOCKS=0 \
+                /usr/bin/git -C "$repo" rev-parse --verify "$sha:systemd/units/hapax-local-judge.service"
+        )" || ! [[ "$expected_unit_oid" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "hapax-post-merge-deploy: candidate local-judge unit blob is unavailable at $sha; next action: repair the candidate package" >&2
+            return 2
+        fi
+        if ! actual_unit_oid="$(/usr/bin/python3 -I - "$installed_unit" <<'INSTALLED_UNIT_OID_PY'
+from __future__ import annotations
+
+import hashlib
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+try:
+    before = os.lstat(path)
+    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(fd)
+        chunks: list[bytes] = []
+        size = 0
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > 1024 * 1024:
+                raise OSError("installed unit exceeds 1 MiB")
+            chunks.append(chunk)
+    finally:
+        os.close(fd)
+    after = os.lstat(path)
+except OSError as exc:
+    print(f"cannot read installed unit safely: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+identity = (opened.st_dev, opened.st_ino)
+if (
+    not stat.S_ISREG(opened.st_mode)
+    or opened.st_uid != os.getuid()
+    or opened.st_nlink != 1
+    or opened.st_mode & 0o022
+    or identity != (before.st_dev, before.st_ino)
+    or identity != (after.st_dev, after.st_ino)
+):
+    print("installed unit is not a stable caller-owned regular file", file=sys.stderr)
+    raise SystemExit(2)
+data = b"".join(chunks)
+digest = hashlib.sha1()
+digest.update(f"blob {len(data)}\0".encode())
+digest.update(data)
+print(digest.hexdigest())
+INSTALLED_UNIT_OID_PY
+)" || [ "$actual_unit_oid" != "$expected_unit_oid" ]; then
+            echo "hapax-post-merge-deploy: installed local-judge unit does not match $sha; next action: repeat the authenticated install before activation" >&2
+            return 2
+        fi
+    fi
     gpu_uuid="$(printf '%s\n' "$source_unit_text" | /usr/bin/sed -n 's/^Environment=JUDGE_GPU_UUID=//p')"
     if ! /usr/bin/nvidia-smi --query-gpu=uuid --format=csv,noheader | /usr/bin/grep -Fqx "$gpu_uuid"; then
         echo "hapax-post-merge-deploy: canary GPU is not present: $gpu_uuid; next action: repair GPU inventory and rerun the canary" >&2
@@ -523,15 +649,29 @@ verify_local_judge_cap_receipt() {
     memory_peak="$(/usr/bin/sed -n 's/^memory_peak_bytes=//p' "$cap_receipt")"
     swap_peak="$(/usr/bin/sed -n 's/^swap_peak_bytes=//p' "$cap_receipt")"
     completed_at="$(/usr/bin/sed -n 's/^completed_at_epoch=//p' "$cap_receipt")"
-    if ! [[ "$memory_peak" =~ ^[0-9]+$ ]] || [ "$memory_peak" -gt 3221225472 ] \
-        || ! [[ "$swap_peak" =~ ^[0-9]+$ ]] || [ "$swap_peak" -gt 1073741824 ] \
-        || ! [[ "$completed_at" =~ ^[0-9]+$ ]]; then
-        echo "hapax-post-merge-deploy: cap receipt peak or time evidence is invalid; next action: rerun the required pre-deploy cap canary" >&2
-        return 2
-    fi
     now="$(/usr/bin/date +%s)"
-    if [ "$completed_at" -gt "$now" ] || [ "$((now - completed_at))" -gt 86400 ]; then
-        echo "hapax-post-merge-deploy: cap receipt is stale or future-dated; next action: rerun the required pre-deploy cap canary" >&2
+    if ! /usr/bin/python3 -I - "$memory_peak" "$swap_peak" "$completed_at" "$now" <<'CAP_RECEIPT_NUMERIC_PY'
+from __future__ import annotations
+
+import re
+import sys
+
+if len(sys.argv) != 5:
+    raise SystemExit(2)
+values = sys.argv[1:]
+if any(re.fullmatch(r"[0-9]{1,19}", value) is None for value in values):
+    raise SystemExit(2)
+memory_peak, swap_peak, completed_at, now = map(int, values)
+if (
+    memory_peak > 3_221_225_472
+    or swap_peak > 1_073_741_824
+    or completed_at > now
+    or now - completed_at > 86_400
+):
+    raise SystemExit(2)
+CAP_RECEIPT_NUMERIC_PY
+    then
+        echo "hapax-post-merge-deploy: cap receipt peak or time evidence is invalid, stale, or future-dated; next action: rerun the required pre-deploy cap canary" >&2
         return 2
     fi
     echo "local-judge cap receipt accepted: sha=$sha phase=$phase receipt=$cap_receipt"
