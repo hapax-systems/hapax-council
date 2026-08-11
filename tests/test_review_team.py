@@ -1073,6 +1073,99 @@ class TestVerdictBlockers:
         )
         assert "review_dossier_blocked_route_family_seated:gemini" in blockers
 
+    # --- route liveness is a question about the past, not about now -------------------
+    #
+    # The dossier's seats were chosen at constituted_at. Evaluating their routes with
+    # now=admission_time asks "is the route live now", which is not what the gate is for:
+    # whether the review that happened was real is a question about when it happened.
+    # There is a third state nothing handled -- live when seated, expired in flight --
+    # and it is the measured cause of the merge stall (2026-08-11: 27 evaluations on
+    # PR #4547, claude blocked iff no receipt was fresh at that instant, 7 of them
+    # missing by <= 5 minutes).
+    #
+    # The as-of evaluation is BOUNDED so it narrows rather than widens: past the bound
+    # no receipt that was fresh at constitution can still be fresh, so an as-of answer
+    # would be asserting something no longer evidenced, and we fall back to the strict
+    # admission-time reading.
+
+    @staticmethod
+    def _route_blocked_after(cutoff: datetime, family: str = "gemini"):
+        """Registry stand-in: `family` is live before `cutoff` and blocked from it on."""
+
+        def _fake(_registry, _families, _task_ids, *, now=None):
+            when = now if isinstance(now, datetime) else cutoff
+            if when >= cutoff:
+                return {family: ("route_specific_quota_receipt_absent",)}
+            return {}
+
+        return _fake
+
+    def test_route_live_when_seated_admits_within_the_bound(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Constituted while the route was live, evaluated 10 minutes later: admit."""
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._good_dossier(rt))
+        monkeypatch.setattr(
+            rt,
+            "task_scoped_paid_review_route_blocked_families",
+            self._route_blocked_after(datetime(2026, 6, 11, 20, 5, tzinfo=UTC)),
+        )
+
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            admission_time=datetime(2026, 6, 11, 20, 10, tzinfo=UTC),
+        )
+
+        assert "review_dossier_blocked_route_family_seated:gemini" not in blockers
+
+    def test_route_live_when_seated_still_refuses_past_the_bound(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The unsafe case the bound exists for: constituted in a brief live window,
+        admitted five hours later. No receipt fresh at constitution can still be fresh,
+        so the as-of answer is unevidenced and the strict reading must hold."""
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._good_dossier(rt))
+        monkeypatch.setattr(
+            rt,
+            "task_scoped_paid_review_route_blocked_families",
+            self._route_blocked_after(datetime(2026, 6, 11, 20, 5, tzinfo=UTC)),
+        )
+
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            admission_time=datetime(2026, 6, 12, 1, 0, tzinfo=UTC),
+        )
+
+        assert "review_dossier_blocked_route_family_seated:gemini" in blockers
+
+    def test_route_blocked_when_seated_is_never_rescued_by_the_asof_read(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A route already blocked at constitution stays blocked. The as-of read moves
+        the question earlier; it must never turn a refusal into an admission."""
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._good_dossier(rt))
+        monkeypatch.setattr(
+            rt,
+            "task_scoped_paid_review_route_blocked_families",
+            self._route_blocked_after(datetime(2026, 6, 11, 19, 0, tzinfo=UTC)),
+        )
+
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            admission_time=datetime(2026, 6, 11, 20, 10, tzinfo=UTC),
+        )
+
+        assert "review_dossier_blocked_route_family_seated:gemini" in blockers
+
     def test_task_scoped_paid_route_existing_spend_witness_passes(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

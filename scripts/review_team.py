@@ -1768,6 +1768,59 @@ def review_dossier_path(note_path: Path, task_id: str) -> Path:
     return note_path.parent / f"{task_id}{REVIEW_DOSSIER_SUFFIX}"
 
 
+#: Maximum lag between a dossier's constitution and its admission for which the
+#: as-of-constitution route read is still evidenced. Every quota-admission writer caps
+#: ``MAX_STALE_AFTER_SECONDS`` at 3600, so past this point no receipt that was fresh
+#: when the seats were chosen can still be fresh — an as-of answer would be asserting
+#: something no longer supported by any receipt, and the strict admission-time read
+#: must hold instead.
+ROUTE_LIVENESS_ASOF_MAX_LAG_S = 3600
+
+
+def _route_liveness_evaluation_time(
+    dossier: Mapping[str, Any],
+    *,
+    admission_time: datetime | str | None,
+) -> datetime | str | None:
+    """Return *when* to ask whether this dossier's seated routes were live.
+
+    The seats were chosen at ``constituted_at``. Whether the review that happened was
+    performed by a live route is a question about *then*, not about now — asking it with
+    ``now=admission_time`` is what produces the third state nothing else handles: live
+    when seated, expired in flight.
+
+    Bounded so this narrows rather than widens:
+
+    * every uncertain path returns ``admission_time`` — the existing, stricter reading;
+    * the result is never later than admission, so this can only move the question
+      *earlier*, never forgive a route that was already blocked when the seats were
+      chosen (see ``test_route_blocked_when_seated_is_never_rescued_by_the_asof_read``);
+    * a dossier claiming constitution *after* its own admission is forged or
+      clock-skewed and is not rewarded with the earlier read;
+    * past ``ROUTE_LIVENESS_ASOF_MAX_LAG_S`` the as-of answer is unevidenced.
+
+    Head identity is enforced separately by ``review_dossier_stale_head``, so a dossier
+    cannot carry an old constitution across a change of head.
+    """
+
+    raw_constituted = dossier.get("constituted_at")
+    if raw_constituted is None:
+        return admission_time
+    try:
+        constituted = _parse_iso_datetime(raw_constituted)
+    except (TypeError, ValueError):
+        return admission_time
+    try:
+        admitted = _coerce_datetime(admission_time, reference=constituted)
+    except (TypeError, ValueError):
+        return admission_time
+    if constituted > admitted:
+        return admission_time
+    if (admitted - constituted).total_seconds() > ROUTE_LIVENESS_ASOF_MAX_LAG_S:
+        return admission_time
+    return constituted
+
+
 def _dossier_validity_blockers(
     dossier: Mapping[str, Any],
     *,
@@ -1875,7 +1928,7 @@ def _dossier_validity_blockers(
                 registry,
                 review_route_blocked_families(registry),
                 (str(dossier.get("task_id") or ""),),
-                now=admission_time,
+                now=_route_liveness_evaluation_time(dossier, admission_time=admission_time),
             )
         )
     except PlatformCapabilityRegistryError as exc:
