@@ -1362,7 +1362,7 @@ def test_post_merge_squash_equivalence_rejects_git_mode_drift(tmp_path: Path) ->
     assert desired_receipt.read_text(encoding="utf-8").strip() == desired_sha
 
 
-def test_concurrent_oom_deferral_owns_local_judge_without_generic_activation(
+def test_concurrent_oom_deferral_ignores_replace_refs_and_owns_local_judge(
     tmp_path: Path,
 ) -> None:
     installer_body = "#!/usr/bin/env bash\nsleep 0.2\nexit 77\n"
@@ -1436,6 +1436,28 @@ def test_concurrent_oom_deferral_owns_local_judge_without_generic_activation(
         ),
     }
     repo, sha = _repo_with_linear_commit(tmp_path, files)
+    base_sha = _git(repo, "rev-parse", f"{sha}^1")
+    replacement = _git(
+        repo,
+        "commit-tree",
+        f"{base_sha}^{{tree}}",
+        "-p",
+        base_sha,
+        "-m",
+        "replacement hides root package",
+    )
+    _git(repo, "replace", sha, replacement)
+    assert _git(repo, "diff", "--name-only", f"{sha}^1", sha) == ""
+    authentic_diff = subprocess.run(
+        ["git", "diff", "--name-only", f"{sha}^1", sha],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=True,
+        env={**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"},
+    ).stdout.splitlines()
+    assert "config/root-required/oom-containment.files" in authentic_diff
+    assert "scripts/install-p0-oom-containment" in authentic_diff
     home = tmp_path / "home"
     bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
     trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"

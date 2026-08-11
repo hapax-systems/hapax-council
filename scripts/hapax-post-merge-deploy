@@ -101,6 +101,9 @@ set -euo pipefail
 # identity to come from each explicit -C/cd root.
 unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY
 unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_SHALLOW_FILE GIT_REPLACE_REF_BASE
+# Repository-local replacement refs may rewrite the commit graph and hide a
+# root-package change before classification. They are never deploy authority.
+export GIT_NO_REPLACE_OBJECTS=1
 ORIGINAL_ARGS=("$@")
 
 DRY_RUN=0
