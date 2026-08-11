@@ -1,0 +1,167 @@
+"""Fail-closed behaviour of the Claude transcript liveness observer.
+
+Every test here pins a refusal except the first. That ratio is the point: the observer
+exists so a cadence can mint honestly, which means it must decline far more often than it
+speaks.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
+
+from shared.claude_transcript_quota import (
+    TranscriptQuotaUnavailable,
+    latest_transcript_observation,
+)
+
+NOW = datetime(2026, 8, 11, 17, 0, 0, tzinfo=UTC)
+
+
+def _turn(stamp: datetime, *, request_id: str = "req_abc", kind: str = "assistant") -> str:
+    return json.dumps(
+        {
+            "type": kind,
+            "requestId": request_id,
+            "timestamp": stamp.isoformat().replace("+00:00", "Z"),
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "x"}]},
+        }
+    )
+
+
+def _write(root: Path, name: str, lines: list[str]) -> Path:
+    path = root / "proj" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def test_fresh_completed_turn_is_observed_and_stamped_with_the_turns_own_time(
+    tmp_path: Path,
+) -> None:
+    """observed_at is the turn's timestamp, never `now` -- a later stamp overstates
+    freshness and would hand the receipt a window its evidence does not support."""
+    stamp = NOW - timedelta(seconds=120)
+    _write(tmp_path, "a.jsonl", [_turn(stamp)])
+
+    obs = latest_transcript_observation(root=tmp_path, now=NOW, max_age_seconds=900)
+
+    assert obs.observed_at == stamp
+    assert obs.age_seconds(now=NOW) == pytest.approx(120.0)
+
+
+def test_newest_turn_wins_across_files(tmp_path: Path) -> None:
+    older = NOW - timedelta(seconds=600)
+    newer = NOW - timedelta(seconds=30)
+    _write(tmp_path, "a.jsonl", [_turn(older)])
+    _write(tmp_path, "b.jsonl", [_turn(newer)])
+
+    obs = latest_transcript_observation(root=tmp_path, now=NOW, max_age_seconds=900)
+
+    assert obs.observed_at == newer
+
+
+def test_absent_transcripts_refuse(tmp_path: Path) -> None:
+    with pytest.raises(TranscriptQuotaUnavailable, match="no Claude Code transcripts"):
+        latest_transcript_observation(root=tmp_path, now=NOW)
+
+
+def test_stale_turn_refuses(tmp_path: Path) -> None:
+    """The estate being idle is not evidence of headroom. This is the case that keeps a
+    timer honest: no recent turn, no receipt."""
+    _write(tmp_path, "a.jsonl", [_turn(NOW - timedelta(seconds=5000))])
+
+    with pytest.raises(TranscriptQuotaUnavailable, match="beyond the"):
+        latest_transcript_observation(root=tmp_path, now=NOW, max_age_seconds=900)
+
+
+def test_future_turn_refuses_on_clock_skew(tmp_path: Path) -> None:
+    """A record ahead of the clock is skew or forgery. Minting from it would produce a
+    receipt that outlives its own evidence."""
+    _write(tmp_path, "a.jsonl", [_turn(NOW + timedelta(seconds=3600))])
+
+    with pytest.raises(TranscriptQuotaUnavailable, match="future"):
+        latest_transcript_observation(root=tmp_path, now=NOW, max_age_seconds=900)
+
+
+def test_turn_without_request_id_is_not_evidence(tmp_path: Path) -> None:
+    """No requestId means the turn never round-tripped to the provider, so it witnesses
+    nothing about whether the provider served anything."""
+    line = json.dumps(
+        {
+            "type": "assistant",
+            "timestamp": (NOW - timedelta(seconds=10)).isoformat().replace("+00:00", "Z"),
+        }
+    )
+    _write(tmp_path, "a.jsonl", [line])
+
+    with pytest.raises(TranscriptQuotaUnavailable, match="no completed assistant turn"):
+        latest_transcript_observation(root=tmp_path, now=NOW, max_age_seconds=900)
+
+
+def test_non_assistant_records_are_ignored(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "a.jsonl",
+        [_turn(NOW - timedelta(seconds=10), kind="user")],
+    )
+
+    with pytest.raises(TranscriptQuotaUnavailable, match="no completed assistant turn"):
+        latest_transcript_observation(root=tmp_path, now=NOW, max_age_seconds=900)
+
+
+def test_malformed_lines_do_not_crash_the_scan(tmp_path: Path) -> None:
+    stamp = NOW - timedelta(seconds=45)
+    _write(tmp_path, "a.jsonl", ["{not json", "", "null", _turn(stamp)])
+
+    obs = latest_transcript_observation(root=tmp_path, now=NOW, max_age_seconds=900)
+
+    assert obs.observed_at == stamp
+
+
+def test_no_transcript_content_reaches_the_observation(tmp_path: Path) -> None:
+    """Transcripts hold operator prompts and model output. Only a timestamp may leave."""
+    secret = "SUPER-SECRET-PROMPT-TEXT-do-not-persist"
+    line = json.dumps(
+        {
+            "type": "assistant",
+            "requestId": "req_zzz",
+            "timestamp": (NOW - timedelta(seconds=20)).isoformat().replace("+00:00", "Z"),
+            "cwd": "/home/someone/private-project",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": secret}]},
+        }
+    )
+    _write(tmp_path, "a.jsonl", [line])
+
+    obs = latest_transcript_observation(root=tmp_path, now=NOW, max_age_seconds=900)
+
+    rendered = f"{obs!r} {obs.witness}"
+    assert secret not in rendered
+    assert "private-project" not in rendered
+    assert "req_zzz" not in rendered
+
+
+def test_witness_label_is_derived_from_the_timestamp_only(tmp_path: Path) -> None:
+    """The witness must match the admission writer's allowlist regex, which refuses
+    lane/tmux/session names outright."""
+    stamp = datetime(2026, 8, 11, 16, 47, 25, tzinfo=UTC)
+    _write(tmp_path, "a.jsonl", [_turn(stamp)])
+
+    obs = latest_transcript_observation(root=tmp_path, now=stamp + timedelta(seconds=5))
+
+    assert obs.witness == "claude-subscription-headroom-observed-20260811t164725z"
+
+
+def test_large_transcript_is_read_by_bounded_tail(tmp_path: Path) -> None:
+    """Transcripts have reached 1.19 GB on this estate; a whole-file read is a hazard,
+    not a performance note. The newest turn must still be found from the tail."""
+    stamp = NOW - timedelta(seconds=15)
+    filler = [json.dumps({"type": "user", "pad": "x" * 512}) for _ in range(4000)]
+    _write(tmp_path, "a.jsonl", [*filler, _turn(stamp)])
+
+    obs = latest_transcript_observation(root=tmp_path, now=NOW, max_age_seconds=900)
+
+    assert obs.observed_at == stamp

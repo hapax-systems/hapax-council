@@ -368,3 +368,128 @@ def test_write_oserror_returns_one(tmp_path: Path, monkeypatch, capsys) -> None:
     )
     assert rc == 1
     assert "failed to write receipt" in capsys.readouterr().err
+
+
+# --- --from-transcript: measurement instead of attestation -------------------------
+#
+# The default path takes whatever --evidence-ref the caller types; it validates the
+# *shape* of the claim, never that the observation happened. --from-transcript closes
+# that: the evidence ref and observed_at are both derived from a real completed Claude
+# turn, so a timer firing on a cadence asserts something that was actually checked.
+
+
+def _fake_observation(stamp: str, witness: str):  # noqa: ANN202
+    from datetime import UTC, datetime
+
+    class _Obs:
+        observed_at = datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone(UTC)
+
+    _Obs.witness = witness
+    return _Obs()
+
+
+def test_from_transcript_stamps_the_turns_time_not_now(  # noqa: ANN001
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """observed_at must be the turn's own timestamp. Stamping `now` would open a
+    freshness window wider than the evidence supports."""
+    module = _load_module()
+    import shared.claude_transcript_quota as ctq
+
+    monkeypatch.setattr(
+        ctq,
+        "latest_transcript_observation",
+        lambda **_kw: _fake_observation(
+            "2026-08-11T16:47:25Z",
+            "claude-subscription-headroom-observed-20260811t164725z",
+        ),
+    )
+
+    rc = module.main(
+        [
+            "--receipt-dir",
+            str(tmp_path),
+            "--from-transcript",
+            "--route-id",
+            "claude.review.opus",
+            "--stale-after-seconds",
+            "3600",
+            "--json",
+        ]
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["observed_at"] == "2026-08-11T16:47:25Z"
+    assert payload["fresh_until"] == "2026-08-11T17:47:25Z"
+    assert payload["observation"] == "subscription_quota_headroom_observed"
+    assert payload["lane_presence_used_as_quota_evidence"] is False
+
+
+def test_from_transcript_fails_closed_when_no_observation(  # noqa: ANN001
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """Idle estate, stale turn, clock skew -- all arrive here, and all must write
+    nothing. A timer that mints anyway is attesting a fact nobody checked."""
+    module = _load_module()
+    import shared.claude_transcript_quota as ctq
+
+    def _unavailable(**_kw):  # noqa: ANN202
+        raise ctq.TranscriptQuotaUnavailable("freshest completed turn is 5000s old")
+
+    monkeypatch.setattr(ctq, "latest_transcript_observation", _unavailable)
+
+    rc = module.main(["--receipt-dir", str(tmp_path), "--from-transcript"])
+
+    assert rc == 2
+    assert "no live transcript observation" in capsys.readouterr().err
+    assert not any(tmp_path.glob("*.yaml"))
+
+
+def test_from_transcript_refuses_a_hand_supplied_evidence_ref(  # noqa: ANN001
+    tmp_path: Path, capsys
+) -> None:
+    """Measured and attested are different claims; do not let one wear the other."""
+    rc = _run(
+        [
+            "--receipt-dir",
+            str(tmp_path),
+            "--from-transcript",
+            "--evidence-ref",
+            "claude-subscription-headroom-observed-20260708t1400z",
+        ]
+    )
+
+    assert rc == 2
+    assert "do not pass both" in capsys.readouterr().err
+    assert not any(tmp_path.glob("*.yaml"))
+
+
+def test_from_transcript_cannot_claim_the_operator_observation(  # noqa: ANN001
+    tmp_path: Path, capsys
+) -> None:
+    """A transcript witnesses liveness, never an operator's confirmation of headroom.
+    Only the operator can make that claim."""
+    rc = _run(
+        [
+            "--receipt-dir",
+            str(tmp_path),
+            "--from-transcript",
+            "--observation",
+            "operator_confirmed_subscription_headroom",
+        ]
+    )
+
+    assert rc == 2
+    assert "can only support" in capsys.readouterr().err
+    assert not any(tmp_path.glob("*.yaml"))
+
+
+def test_evidence_ref_still_required_without_from_transcript(  # noqa: ANN001
+    tmp_path: Path, capsys
+) -> None:
+    rc = _run(["--receipt-dir", str(tmp_path)])
+
+    assert rc == 2
+    assert "--evidence-ref is required" in capsys.readouterr().err
+    assert not any(tmp_path.glob("*.yaml"))

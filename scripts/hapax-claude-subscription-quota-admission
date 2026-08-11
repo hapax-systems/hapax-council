@@ -27,6 +27,10 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 DEFAULT_RECEIPT_DIR = Path(
     os.environ.get(
         "HAPAX_RELAY_RECEIPT_DIR",
@@ -45,6 +49,10 @@ SECRET_SOURCE = "claude:operator-session-subscription"
 DEFAULT_STALE_AFTER_SECONDS = 900
 MIN_STALE_AFTER_SECONDS = 60
 MAX_STALE_AFTER_SECONDS = 3600
+#: With --from-transcript: how old the freshest completed turn may be and still count as
+#: a live observation. Matches the receipt's own default TTL -- an observation older than
+#: the window it would open is not evidence for that window.
+DEFAULT_MAX_OBSERVATION_AGE_SECONDS = 900
 
 # The bounded observation kinds this writer will attest. Each names an account-live subscription
 # observation that is NOT lane/tmux/session presence: a real Claude invocation completed without a
@@ -202,11 +210,26 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--now")
     parser.add_argument(
         "--evidence-ref",
-        required=True,
         help=(
             "Sanitized ref naming the account-live observation (never a lane/tmux name), "
-            "for example claude-subscription-headroom-observed-20260708t1400z"
+            "for example claude-subscription-headroom-observed-20260708t1400z. "
+            "Required unless --from-transcript supplies it."
         ),
+    )
+    parser.add_argument(
+        "--from-transcript",
+        action="store_true",
+        help=(
+            "MEASURE instead of attest: read the freshest completed Claude turn from "
+            "Claude Code's own transcripts and derive --evidence-ref and observed_at "
+            "from it. Fails closed when absent, stale, or clock-skewed."
+        ),
+    )
+    parser.add_argument(
+        "--max-observation-age-seconds",
+        type=int,
+        default=DEFAULT_MAX_OBSERVATION_AGE_SECONDS,
+        help="With --from-transcript: refuse if the freshest turn is older than this.",
     )
     parser.add_argument(
         "--observation",
@@ -227,10 +250,46 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _observe_from_transcript(args: argparse.Namespace) -> tuple[datetime, str]:
+    """Derive (observed_at, evidence_ref) from a real completed Claude turn.
+
+    Stamps ``observed_at`` with the **turn's own** timestamp rather than ``now``: a later
+    stamp would hand the receipt a freshness window its evidence does not support. Any
+    failure raises and nothing is written -- the route stays held, which is the correct
+    outcome when the estate is idle.
+    """
+
+    from shared.claude_transcript_quota import (
+        TranscriptQuotaUnavailable,
+        latest_transcript_observation,
+    )
+
+    try:
+        observation = latest_transcript_observation(
+            now=_parse_utc(args.now) if args.now else None,
+            max_age_seconds=args.max_observation_age_seconds,
+        )
+    except TranscriptQuotaUnavailable as exc:
+        raise ValueError(f"no live transcript observation: {exc}") from exc
+    return observation.observed_at, observation.witness
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        observed_at = _now(args)
+        if args.from_transcript:
+            if args.evidence_ref:
+                raise ValueError("--evidence-ref is derived by --from-transcript; do not pass both")
+            if args.observation != ALLOWED_OBSERVATIONS[0]:
+                raise ValueError(
+                    "--from-transcript measures liveness and can only support "
+                    f"--observation {ALLOWED_OBSERVATIONS[0]}"
+                )
+            observed_at, args.evidence_ref = _observe_from_transcript(args)
+        else:
+            if not args.evidence_ref:
+                raise ValueError("--evidence-ref is required unless --from-transcript is given")
+            observed_at = _now(args)
         if not MIN_STALE_AFTER_SECONDS <= args.stale_after_seconds <= MAX_STALE_AFTER_SECONDS:
             raise ValueError(
                 f"--stale-after-seconds must be between {MIN_STALE_AFTER_SECONDS} and "
