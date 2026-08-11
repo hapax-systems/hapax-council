@@ -2180,7 +2180,7 @@ def test_root_required_audit_fails_when_canonical_audit_group_is_missing(
     fake_getent.write_text("#!/usr/bin/env bash\nexit 2\n", encoding="utf-8")
     fake_getent.chmod(0o755)
     env["HAPAX_ROOT_AUDIT_GETENT"] = str(fake_getent)
-    env["HAPAX_UPS_AUDIT_LOG"] = "/var/log/hapax/ups-power-events.jsonl"
+    env["HAPAX_ROOT_AUDIT_TEST_CANONICAL_UPS_LOG_IDENTITY"] = "1"
 
     result = subprocess.run(
         [str(ROOT_REQUIRED_AUDIT)],
@@ -3411,11 +3411,16 @@ def test_root_required_audit_rejects_higher_priority_zram_main_config(tmp_path: 
     assert "next action:" in result.stderr
 
 
+@pytest.mark.parametrize(
+    "production_path",
+    ("/etc/systemd/system", "/tmp/../etc/systemd/system"),
+    ids=("direct", "parent-traversal"),
+)
 def test_root_required_audit_refuses_test_selectors_for_production_destinations(
-    tmp_path: Path,
+    tmp_path: Path, production_path: str
 ) -> None:
     env = _root_audit_env(tmp_path)
-    env["HAPAX_OOM_SYSTEMD_SYSTEM_DIR"] = "/etc/systemd/system"
+    env["HAPAX_OOM_SYSTEMD_SYSTEM_DIR"] = production_path
 
     result = subprocess.run(
         [str(ROOT_REQUIRED_AUDIT)],
@@ -3427,6 +3432,56 @@ def test_root_required_audit_refuses_test_selectors_for_production_destinations(
 
     assert result.returncode == 1
     assert "refuses test selectors for production destinations" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("selector", "selected_path"),
+    (
+        ("HAPAX_OOM_ENFORCER_DEST", "/usr/local"),
+        ("HAPAX_OOM_SUDOERS_DEST", "/etc/sudoers.d/test"),
+        ("HAPAX_UPS_AUDIT_LOG", "/var/log/test.jsonl"),
+        ("HAPAX_UPOWER_CONF_DEST", "/etc/UPower/test.conf"),
+        ("HAPAX_OOM_SYSTEMD_SYSTEM_CONTROL_DIR", "/run/systemd/system.control"),
+        ("HAPAX_OOM_ZRAM_DROPIN_DIRS", "{tmp}/safe:/etc/zram-generator.conf.d"),
+        ("HAPAX_ROOT_AUDIT_USER_UNIT_PATHS", "{tmp}/safe:/run/user/1000/systemd"),
+    ),
+)
+def test_root_required_audit_refuses_mixed_test_and_production_paths(
+    tmp_path: Path,
+    selector: str,
+    selected_path: str,
+) -> None:
+    env = _root_audit_env(tmp_path)
+    env[selector] = selected_path.format(tmp=tmp_path)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "refuses test selectors for production destinations" in result.stderr
+    assert "next action:" in result.stderr
+
+
+def test_root_required_audit_refuses_relative_test_destinations(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    env["HAPAX_POST_MERGE_ROOT_DEFER_DIR"] = "relative/defer-root"
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "requires an absolute isolated-test destination" in result.stderr
+    assert "next action:" in result.stderr
 
 
 def test_root_required_audit_ignores_hostile_path(tmp_path: Path) -> None:
@@ -3456,8 +3511,12 @@ def test_root_required_audit_ignores_hostile_path(tmp_path: Path) -> None:
 
 
 def test_root_required_audit_refuses_production_git_repo_override(tmp_path: Path) -> None:
-    env = _root_audit_env(tmp_path)
-    env.pop("HAPAX_ROOT_AUDIT_TEST_MODE")
+    env = {
+        **os.environ,
+        "HAPAX_ROOT_REQUIRED_GIT_REPO": str(tmp_path / "selected-repo"),
+        "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(tmp_path / "defer-root"),
+    }
+    env.pop("HAPAX_ROOT_AUDIT_TEST_MODE", None)
 
     result = subprocess.run(
         [str(ROOT_REQUIRED_AUDIT)],
@@ -3468,8 +3527,147 @@ def test_root_required_audit_refuses_production_git_repo_override(tmp_path: Path
     )
 
     assert result.returncode == 1
-    assert "refuses an explicit production Git repository selector" in result.stderr
-    assert "remove HAPAX_ROOT_REQUIRED_GIT_REPO" in result.stderr
+    assert "refuses test selectors outside isolated test mode" in result.stderr
+    assert "HAPAX_ROOT_REQUIRED_GIT_REPO" in result.stderr
+    assert not (tmp_path / "defer-root").exists()
+
+
+def test_root_required_audit_rejects_ambient_home_before_mutation(tmp_path: Path) -> None:
+    env = {**os.environ, "HOME": str(tmp_path)}
+    env.pop("HAPAX_ROOT_AUDIT_TEST_MODE", None)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "refuses a non-canonical production HOME" in result.stderr
+    assert "next action:" in result.stderr
+    assert not (tmp_path / ".cache/hapax/post-merge-root-required").exists()
+
+
+@pytest.mark.parametrize(
+    "selector",
+    (
+        "HAPAX_ROOT_AUDIT_TEST_MODE",
+        "HAPAX_POST_MERGE_ROOT_DEFER_DIR",
+        "HAPAX_ROOT_REQUIRED_STATE_ROOT",
+        "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT",
+        "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT",
+        "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT",
+        "HAPAX_ROOT_REQUIRED_GIT_REPO",
+        "HAPAX_ROOT_REQUIRED_LOCK_FILE",
+        "HAPAX_OOM_ENFORCER_DEST",
+        "HAPAX_OOM_TRIGGER_DEST",
+        "HAPAX_OOM_SUDOERS_DEST",
+        "HAPAX_OOM_SUDOERS_REFERENCE_DEST",
+        "HAPAX_OOM_SUDOERS_OWNER_UID",
+        "HAPAX_OOM_SUDOERS_OWNER_GID",
+        "HAPAX_ROOT_FAILURE_INTAKE_DEST",
+        "HAPAX_OOM_POLICY_AUDIT_DEST",
+        "HAPAX_ROOT_REQUIRED_AUDIT_DEST",
+        "HAPAX_OOM_PROFILE_TABLE_DEST",
+        "HAPAX_OOM_ZRAM_POLICY_DEST",
+        "HAPAX_OOM_LEGACY_ZRAM_POLICY_DEST",
+        "HAPAX_OOM_ZRAM_DROPIN_DIRS",
+        "HAPAX_OOM_ZRAM_HIGH_PRIORITY_CONFIGS",
+        "HAPAX_OOM_EARLYOOM_DEST",
+        "HAPAX_OOM_SYSTEMD_SYSTEM_DIR",
+        "HAPAX_OOM_SYSTEMD_USER_DIR",
+        "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR",
+        "HAPAX_OOM_SYSTEMD_SYSTEM_CONTROL_DIR",
+        "HAPAX_OOM_SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR",
+        "HAPAX_OOM_SYSTEMD_SYSTEM_TRANSIENT_DIR",
+        "HAPAX_OOM_SYSTEMD_USER_RUNTIME_CONTROL_DIR",
+        "HAPAX_OOM_SYSTEMD_USER_TRANSIENT_DIR",
+        "HAPAX_OOM_TARGET_UID",
+        "HAPAX_APCUPSD_DEST",
+        "HAPAX_UPS_AUDIT_LOG",
+        "HAPAX_UPS_AUDIT_LOG_OWNER_UID",
+        "HAPAX_UPS_AUDIT_LOG_OWNER_GID",
+        "HAPAX_APCUPSD_LOGROTATE_DEST",
+        "HAPAX_UPOWER_CONF_DEST",
+        "HAPAX_ROOT_AUDIT_SYSTEMCTL",
+        "HAPAX_ROOT_AUDIT_SYSTEMD_ANALYZE",
+        "HAPAX_ROOT_AUDIT_BUSCTL",
+        "HAPAX_ROOT_AUDIT_APCACCESS",
+        "HAPAX_ROOT_AUDIT_CMP",
+        "HAPAX_ROOT_AUDIT_GETENT",
+        "HAPAX_ROOT_AUDIT_SUDO",
+        "HAPAX_ROOT_AUDIT_VISUDO",
+        "HAPAX_ROOT_AUDIT_TEST_ROOT_UID",
+        "HAPAX_ROOT_AUDIT_TEST_ROOT_GID",
+        "HAPAX_ROOT_AUDIT_HOSTNAME",
+        "HAPAX_ROOT_AUDIT_MEMTOTAL_KIB",
+        "HAPAX_ROOT_AUDIT_SYSTEM_UNIT_PATHS",
+        "HAPAX_ROOT_AUDIT_USER_UNIT_PATHS",
+        "HAPAX_ROOT_AUDIT_TEST_CANONICAL_UPS_LOG_IDENTITY",
+        "HAPAX_ROOT_REQUIRED_LOCK_HELD",
+    ),
+)
+def test_root_required_audit_rejects_every_production_selector_before_mutation(
+    tmp_path: Path,
+    selector: str,
+) -> None:
+    env = {
+        **os.environ,
+        "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(tmp_path / "defer-root"),
+    }
+    env.pop("HAPAX_ROOT_AUDIT_TEST_MODE", None)
+    env[selector] = str(tmp_path / "redirected")
+    selected_defer_root = Path(env["HAPAX_POST_MERGE_ROOT_DEFER_DIR"])
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "refuses test selectors outside isolated test mode" in result.stderr
+    assert selector in result.stderr
+    assert "next action:" in result.stderr
+    assert not selected_defer_root.exists()
+
+
+def test_root_required_audit_privileged_shell_ignores_imported_gate_functions(
+    tmp_path: Path,
+) -> None:
+    bash_env = tmp_path / "hostile-bash-env"
+    bash_env_marker = tmp_path / "bash-env-ran"
+    bash_env.write_text(f"touch {bash_env_marker}\n", encoding="utf-8")
+    defer_root = tmp_path / "defer-root"
+    env = {
+        **os.environ,
+        "BASH_ENV": str(bash_env),
+        "HAPAX_OOM_PROFILE_TABLE_DEST": str(tmp_path / "redirected"),
+        "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_root),
+        "BASH_FUNC_exit%%": "() { return 0; }",
+        "BASH_FUNC_exec%%": "() { return 0; }",
+        "BASH_FUNC_mkdir%%": "() { return 0; }",
+        "BASH_FUNC_test%%": "() { return 0; }",
+    }
+    env.pop("HAPAX_ROOT_AUDIT_TEST_MODE", None)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "refuses test selectors outside isolated test mode" in result.stderr
+    assert "HAPAX_OOM_PROFILE_TABLE_DEST" in result.stderr
+    assert not defer_root.exists()
+    assert not bash_env_marker.exists()
 
 
 def test_root_required_audit_ignores_ambient_git_selectors_and_replace_refs(

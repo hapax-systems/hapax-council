@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import os
+import pwd
 import shutil
 import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 WRAPPER = REPO_ROOT / "scripts" / "hapax-github-mcp"
+
+
+def _canonical_refusal_source(logger: Path) -> str:
+    source = WRAPPER.read_text(encoding="utf-8")
+    body = source.split("canonical_refusal() {", 1)[1].split("\n}\n\nCANONICAL_ALIAS", 1)[0]
+    return ("canonical_refusal() {" + body + "\n}").replace("/usr/bin/logger", str(logger))
 
 
 def test_github_mcp_script_is_valid_bash() -> None:
@@ -133,5 +140,48 @@ def test_github_mcp_reports_canonical_refusal_log_failure(tmp_path: Path) -> Non
 
     assert result.returncode == 2
     assert "canonical source-activation wrapper is unavailable" in result.stderr
-    assert "diagnostic logging failed for" in result.stderr
+    assert (
+        "file diagnostic failed for" in result.stderr
+        or "diagnostic logging failed for" in result.stderr
+    )
+    assert "system journal fallback unavailable" in result.stderr
     assert "diagnostic recorded in" not in result.stderr
+
+
+def test_github_mcp_uses_journal_fallback_for_equivalent_account_home(
+    tmp_path: Path,
+) -> None:
+    occupied = tmp_path / "occupied"
+    occupied.write_text("not a directory\n", encoding="utf-8")
+    logger_calls = tmp_path / "logger-calls"
+    fake_logger = tmp_path / "logger"
+    fake_logger.write_text(
+        '#!/usr/bin/bash\nprintf \'%s\n\' "$*" > "$TEST_LOGGER_CALLS"\n',
+        encoding="utf-8",
+    )
+    fake_logger.chmod(0o755)
+    script = (
+        'LOG_DIR="$TEST_LOG_DIR"\n'
+        'LOG_FILE="$LOG_DIR/github-mcp.log"\n'
+        f"{_canonical_refusal_source(fake_logger)}\n"
+        'canonical_refusal "canonical probe; next action: repair source activation"\n'
+    )
+    account_home = pwd.getpwuid(os.getuid()).pw_dir
+
+    result = subprocess.run(
+        ["/usr/bin/bash", "--noprofile", "--norc"],
+        input=script,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": f"{account_home}/",
+            "TEST_LOG_DIR": str(occupied / "mcp-logs"),
+            "TEST_LOGGER_CALLS": str(logger_calls),
+        },
+    )
+
+    assert result.returncode == 2
+    assert "recorded in the system journal" in result.stderr
+    assert "--tag hapax-github-mcp -- canonical probe" in logger_calls.read_text(encoding="utf-8")

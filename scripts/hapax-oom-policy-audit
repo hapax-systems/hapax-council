@@ -155,6 +155,14 @@ class HostPolicyError(RuntimeError):
     pass
 
 
+def _source_checkout_warning(detail: str) -> None:
+    print(
+        f"WARNING hapax-oom-policy-audit source checkout verification failed: {detail}; "
+        "falling back to installed-mode authority checks",
+        file=sys.stderr,
+    )
+
+
 @functools.cache
 def _source_checkout_root() -> Path | None:
     if SCRIPT_INVOKED_PATH != SCRIPT_PATH:
@@ -167,33 +175,51 @@ def _source_checkout_root() -> Path | None:
     marker = root / ".git"
     try:
         inode = marker.lstat()
-    except OSError:
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        _source_checkout_warning(f"cannot inspect {marker}: {exc}")
         return None
     if not (stat.S_ISDIR(inode.st_mode) or stat.S_ISREG(inode.st_mode)):
+        _source_checkout_warning(f"unsupported Git marker type at {marker}")
         return None
-    result = subprocess.run(
-        ["/usr/bin/git", "-C", str(root), "rev-parse", "--show-toplevel"],
-        text=True,
-        capture_output=True,
-        check=False,
-        env={
-            "GIT_CONFIG_GLOBAL": "/dev/null",
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_NO_REPLACE_OBJECTS": "1",
-            "GIT_OPTIONAL_LOCKS": "0",
-            "HOME": "/nonexistent",
-            "LANG": "C.UTF-8",
-            "LC_ALL": "C.UTF-8",
-            "PATH": "/usr/bin:/bin",
-        },
-    )
+    try:
+        result = subprocess.run(
+            ["/usr/bin/git", "-C", str(root), "rev-parse", "--show-toplevel"],
+            text=True,
+            capture_output=True,
+            check=False,
+            env={
+                "GIT_CONFIG_GLOBAL": "/dev/null",
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_NO_REPLACE_OBJECTS": "1",
+                "GIT_OPTIONAL_LOCKS": "0",
+                "HOME": "/nonexistent",
+                "LANG": "C.UTF-8",
+                "LC_ALL": "C.UTF-8",
+                "PATH": "/usr/bin:/bin",
+            },
+        )
+    except OSError as exc:
+        _source_checkout_warning(f"cannot execute isolated Git probe for {root}: {exc}")
+        return None
     if result.returncode != 0:
+        first_line = next(iter(result.stderr.strip().splitlines()), "no Git diagnostic")
+        excerpt = "".join(character if character.isprintable() else "?" for character in first_line)
+        _source_checkout_warning(
+            f"isolated Git probe for {root} exited with status {result.returncode}: "
+            f"{excerpt[:240]}"
+        )
         return None
     try:
         top = Path(result.stdout.strip()).resolve(strict=True)
-    except OSError:
+    except OSError as exc:
+        _source_checkout_warning(f"cannot resolve Git root reported for {root}: {exc}")
         return None
-    return root if top == root else None
+    if top != root:
+        _source_checkout_warning(f"Git reported {top}, expected {root}")
+        return None
+    return root
 
 
 def _sealed_memfd_holder(path: Path) -> str | None:

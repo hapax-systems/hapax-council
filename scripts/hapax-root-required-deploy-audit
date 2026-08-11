@@ -1,9 +1,20 @@
-#!/usr/bin/bash
+#!/usr/bin/bash -p
 # Fail when post-merge root-required deploy actions were deferred and not drained.
 set -euo pipefail
 ORIGINAL_ARGS=("$@")
 PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
 export PATH
+
+if [ "${HAPAX_ROOT_AUDIT_TEST_MODE:-0}" != "1" ]; then
+    if ! CANONICAL_ACCOUNT_HOME="$(/usr/bin/python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')" \
+        || [ -z "$CANONICAL_ACCOUNT_HOME" ] \
+        || [ -z "${HOME:-}" ] \
+        || [ "$(/usr/bin/realpath -m -- "$HOME")" != "$(/usr/bin/realpath -m -- "$CANONICAL_ACCOUNT_HOME")" ]; then
+        echo "root-required audit refuses a non-canonical production HOME: ${HOME:-unset}" >&2
+        echo "  next action: restore the account HOME from passwd and rerun /usr/local/sbin/hapax-root-required-deploy-audit" >&2
+        exit 1
+    fi
+fi
 
 ROOT_DEFER_DIR="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$HOME/.cache/hapax/post-merge-root-required}"
 # Deferrals are cleared only by the explicit HAPAX_ROOT_REQUIRED_DRAIN_DIR path
@@ -48,6 +59,7 @@ APCUPSD_CANONICAL_AUDIT_LOG="/var/log/hapax/ups-power-events.jsonl"
 APCUPSD_CANONICAL_AUDIT_GROUP="hapax"
 APCUPSD_AUDIT_LOG_OWNER_UID="${HAPAX_UPS_AUDIT_LOG_OWNER_UID:-}"
 APCUPSD_AUDIT_LOG_OWNER_GID="${HAPAX_UPS_AUDIT_LOG_OWNER_GID:-}"
+APCUPSD_CANONICAL_IDENTITY_TEST="${HAPAX_ROOT_AUDIT_TEST_CANONICAL_UPS_LOG_IDENTITY:-0}"
 APCUPSD_LOGROTATE_DEST="${HAPAX_APCUPSD_LOGROTATE_DEST:-/etc/logrotate.d/hapax-ups-power-events}"
 UPOWER_CONF_DEST="${HAPAX_UPOWER_CONF_DEST:-/etc/UPower/UPower.conf.d/90-hapax-apcupsd-owner.conf}"
 SYSTEMCTL="${HAPAX_ROOT_AUDIT_SYSTEMCTL:-/usr/bin/systemctl}"
@@ -245,7 +257,8 @@ PY
 
 resolve_apcupsd_audit_log_identity() {
     local group_entry required_gid
-    if [ "$APCUPSD_AUDIT_LOG" = "$APCUPSD_CANONICAL_AUDIT_LOG" ]; then
+    if [ "$APCUPSD_AUDIT_LOG" = "$APCUPSD_CANONICAL_AUDIT_LOG" ] \
+        || [ "$APCUPSD_CANONICAL_IDENTITY_TEST" = "1" ]; then
         if ! group_entry="$("$GETENT" group "$APCUPSD_CANONICAL_AUDIT_GROUP" 2>/dev/null)" \
             || [ -z "$group_entry" ]; then
             echo "root-required install drift: required UPS audit group missing: $APCUPSD_CANONICAL_AUDIT_GROUP" >&2
@@ -440,6 +453,152 @@ apcupsd_package_files=(
     systemd/logrotate.d/hapax-ups-power-events
 )
 
+refuse_production_test_overrides() {
+    local name path
+    local -a present=()
+    local -a selectors=(
+        HAPAX_ROOT_AUDIT_TEST_MODE
+        HAPAX_POST_MERGE_ROOT_DEFER_DIR
+        HAPAX_ROOT_REQUIRED_STATE_ROOT
+        HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT
+        HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT
+        HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT
+        HAPAX_ROOT_REQUIRED_GIT_REPO
+        HAPAX_ROOT_REQUIRED_LOCK_FILE
+        HAPAX_OOM_ENFORCER_DEST
+        HAPAX_OOM_TRIGGER_DEST
+        HAPAX_OOM_SUDOERS_DEST
+        HAPAX_OOM_SUDOERS_REFERENCE_DEST
+        HAPAX_OOM_SUDOERS_OWNER_UID
+        HAPAX_OOM_SUDOERS_OWNER_GID
+        HAPAX_ROOT_FAILURE_INTAKE_DEST
+        HAPAX_OOM_POLICY_AUDIT_DEST
+        HAPAX_ROOT_REQUIRED_AUDIT_DEST
+        HAPAX_OOM_PROFILE_TABLE_DEST
+        HAPAX_OOM_ZRAM_POLICY_DEST
+        HAPAX_OOM_LEGACY_ZRAM_POLICY_DEST
+        HAPAX_OOM_ZRAM_DROPIN_DIRS
+        HAPAX_OOM_ZRAM_HIGH_PRIORITY_CONFIGS
+        HAPAX_OOM_EARLYOOM_DEST
+        HAPAX_OOM_SYSTEMD_SYSTEM_DIR
+        HAPAX_OOM_SYSTEMD_USER_DIR
+        HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR
+        HAPAX_OOM_SYSTEMD_SYSTEM_CONTROL_DIR
+        HAPAX_OOM_SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR
+        HAPAX_OOM_SYSTEMD_SYSTEM_TRANSIENT_DIR
+        HAPAX_OOM_SYSTEMD_USER_RUNTIME_CONTROL_DIR
+        HAPAX_OOM_SYSTEMD_USER_TRANSIENT_DIR
+        HAPAX_OOM_TARGET_UID
+        HAPAX_APCUPSD_DEST
+        HAPAX_UPS_AUDIT_LOG
+        HAPAX_UPS_AUDIT_LOG_OWNER_UID
+        HAPAX_UPS_AUDIT_LOG_OWNER_GID
+        HAPAX_APCUPSD_LOGROTATE_DEST
+        HAPAX_UPOWER_CONF_DEST
+        HAPAX_ROOT_AUDIT_SYSTEMCTL
+        HAPAX_ROOT_AUDIT_SYSTEMD_ANALYZE
+        HAPAX_ROOT_AUDIT_BUSCTL
+        HAPAX_ROOT_AUDIT_APCACCESS
+        HAPAX_ROOT_AUDIT_CMP
+        HAPAX_ROOT_AUDIT_GETENT
+        HAPAX_ROOT_AUDIT_SUDO
+        HAPAX_ROOT_AUDIT_VISUDO
+        HAPAX_ROOT_AUDIT_TEST_ROOT_UID
+        HAPAX_ROOT_AUDIT_TEST_ROOT_GID
+        HAPAX_ROOT_AUDIT_HOSTNAME
+        HAPAX_ROOT_AUDIT_MEMTOTAL_KIB
+        HAPAX_ROOT_AUDIT_SYSTEM_UNIT_PATHS
+        HAPAX_ROOT_AUDIT_USER_UNIT_PATHS
+        HAPAX_ROOT_AUDIT_TEST_CANONICAL_UPS_LOG_IDENTITY
+        HAPAX_ROOT_REQUIRED_LOCK_HELD
+    )
+    if [ "${HAPAX_ROOT_AUDIT_TEST_MODE:-0}" != "1" ]; then
+        for name in "${selectors[@]}"; do
+            if [[ -v $name ]]; then
+                present+=("$name")
+            fi
+        done
+        if [ "${#present[@]}" -ne 0 ]; then
+            echo "root-required audit refuses test selectors outside isolated test mode: ${present[*]}" >&2
+            echo "  next action: remove the listed HAPAX_* selectors and rerun /usr/local/sbin/hapax-root-required-deploy-audit" >&2
+            return 1
+        fi
+        return 0
+    fi
+
+    local -a path_lists=(
+        "$ZRAM_DROPIN_DIRS"
+        "$ZRAM_HIGH_PRIORITY_CONFIGS"
+        "${HAPAX_ROOT_AUDIT_SYSTEM_UNIT_PATHS:-}"
+        "${HAPAX_ROOT_AUDIT_USER_UNIT_PATHS:-}"
+    )
+    local path_list
+    local -a listed_paths=()
+
+    validate_isolated_test_path() {
+        local candidate="$1" candidate_resolved
+        if [[ "$candidate" != /* ]]; then
+            echo "root-required audit requires an absolute isolated-test destination: $candidate" >&2
+            echo "  next action: use an absolute path under a test-owned temporary root and retry" >&2
+            return 1
+        fi
+        if ! candidate_resolved="$(/usr/bin/realpath -m -- "$candidate")"; then
+            echo "root-required audit cannot canonicalize isolated-test destination: $candidate" >&2
+            echo "  next action: use an absolute path under a test-owned temporary root and retry" >&2
+            return 1
+        fi
+        case "$candidate_resolved" in
+            /etc|/etc/*|/usr/local|/usr/local/*|/home/hapax|/home/hapax/*|/var|/var/*|/run|/run/*)
+                echo "root-required audit refuses test selectors for production destinations: $candidate_resolved" >&2
+                echo "  next action: move every isolated-test destination under a test-owned temporary root and retry" >&2
+                return 1
+                ;;
+        esac
+    }
+
+    for path in \
+        "$ROOT_DEFER_DIR" \
+        "$ROOT_REQUIRED_STATE_ROOT" \
+        "$INSTALLED_SOURCE_ROOT" \
+        "$INSTALLED_RECEIPT_ROOT" \
+        "$DESIRED_RECEIPT_ROOT" \
+        "$ROOT_REQUIRED_GIT_REPO" \
+        "$ROOT_REQUIRED_LOCK_FILE" \
+        "$OOM_ENFORCER_DEST" \
+        "$OOM_TRIGGER_DEST" \
+        "$OOM_SUDOERS_DEST" \
+        "$OOM_SUDOERS_REFERENCE_DEST" \
+        "$ROOT_FAILURE_INTAKE_DEST" \
+        "$OOM_POLICY_AUDIT_DEST" \
+        "$ROOT_REQUIRED_AUDIT_DEST" \
+        "$OOM_PROFILE_TABLE_DEST" \
+        "$ZRAM_POLICY_DEST" \
+        "$LEGACY_ZRAM_POLICY_DEST" \
+        "$EARLYOOM_DEST" \
+        "$SYSTEMD_SYSTEM_DIR" \
+        "$SYSTEMD_USER_DIR" \
+        "$SYSTEMD_USER_CONTROL_DIR" \
+        "$SYSTEMD_SYSTEM_CONTROL_DIR" \
+        "$SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR" \
+        "$SYSTEMD_SYSTEM_TRANSIENT_DIR" \
+        "$SYSTEMD_USER_RUNTIME_CONTROL_DIR" \
+        "$SYSTEMD_USER_TRANSIENT_DIR" \
+        "$APCUPSD_DEST" \
+        "$APCUPSD_AUDIT_LOG" \
+        "$APCUPSD_LOGROTATE_DEST" \
+        "$UPOWER_CONF_DEST"; do
+        validate_isolated_test_path "$path" || return 1
+    done
+    for path_list in "${path_lists[@]}"; do
+        [ -n "$path_list" ] || continue
+        IFS=: read -r -a listed_paths <<< "$path_list"
+        for path in "${listed_paths[@]}"; do
+            validate_isolated_test_path "$path" || return 1
+        done
+    done
+}
+
+refuse_production_test_overrides || exit 1
 mkdir -p "$ROOT_DEFER_DIR"
 reexec_with_safe_root_required_lock
 
@@ -494,7 +653,10 @@ source_for_rel() {
 }
 
 load_host_profile() {
-    local output
+    local output key value profile="" zram_mib="" profile_count=0 zram_count=0
+    # This parser is intentionally receipt-bound and independent of the installed
+    # audit executable, which this audit has not authenticated yet. The shared
+    # valid/invalid corpus in test_hapax_oom_policy_audit.py prevents semantic drift.
     if ! output="$(/usr/bin/python3 - "$INSTALLED_SOURCE_ROOT/config/root-required/oom-host-profiles.tsv" <<'PY'
 from __future__ import annotations
 
@@ -544,7 +706,7 @@ if memtotal_kib <= 0:
     print("unable to determine MemTotal", file=sys.stderr)
     raise SystemExit(1)
 floor_gib = memtotal_kib * 1024 // 1024**3
-matches: list[str] = []
+matches: list[tuple[str, int]] = []
 host_ranges: dict[str, list[tuple[int, int]]] = {}
 for line_number, line in enumerate(table.read_text(encoding="utf-8").splitlines(), start=1):
     if not line or line.startswith("#"):
@@ -615,21 +777,46 @@ for line_number, line in enumerate(table.read_text(encoding="utf-8").splitlines(
         )
         raise SystemExit(1)
     if row_hostname == hostname and min_gib <= floor_gib <= max_gib:
-        matches.append(profile)
-if len(matches) != 1 or matches[0] not in {"appendix", "podium"}:
+        matches.append((profile, zram_size // 1024**2))
+if len(matches) != 1 or matches[0][0] not in {"appendix", "podium"}:
     print(
         f"no unique governed host profile for hostname={hostname} floor_memtotal_gib={floor_gib}",
         file=sys.stderr,
     )
     raise SystemExit(1)
-print(matches[0])
+print(f"PROFILE={matches[0][0]}")
+print(f"ZRAM_SIZE_MIB={matches[0][1]}")
 PY
     )"; then
         echo "root-required install drift: cannot select a bounded receipt-bound OOM host profile" >&2
         echo "  next action: repair host identity/inventory or the governed profile table, then rerun the OOM installer" >&2
         return 1
     fi
-    HOST_PROFILE="$output"
+    while IFS='=' read -r key value; do
+        case "$key" in
+            PROFILE)
+                profile="$value"
+                profile_count=$((profile_count + 1))
+                ;;
+            ZRAM_SIZE_MIB)
+                zram_mib="$value"
+                zram_count=$((zram_count + 1))
+                ;;
+            *)
+                echo "root-required install drift: unexpected host-policy field: $key" >&2
+                return 1
+                ;;
+        esac
+    done <<< "$output"
+    if [ "$profile_count" -ne 1 ] \
+        || [ "$zram_count" -ne 1 ] \
+        || [[ ! "$profile" =~ ^(appendix|podium)$ ]] \
+        || [[ ! "$zram_mib" =~ ^[1-9][0-9]*$ ]]; then
+        echo "root-required install drift: malformed bounded host-policy output" >&2
+        echo "  next action: repair the receipt-bound profile parser and rerun the OOM installer" >&2
+        return 1
+    fi
+    HOST_PROFILE="$profile"
 }
 
 selected_oom_source_rel() {
@@ -1577,26 +1764,6 @@ audit_root_installs() {
     [ "$failed" -eq 0 ]
 }
 
-refuse_production_test_overrides() {
-    local path
-    [ "${HAPAX_ROOT_AUDIT_TEST_MODE:-0}" = "1" ] || return 0
-    for path in \
-        "$INSTALLED_SOURCE_ROOT" \
-        "$SYSTEMD_SYSTEM_DIR" \
-        "$SYSTEMD_USER_DIR" \
-        "$OOM_PROFILE_TABLE_DEST" \
-        "$ROOT_REQUIRED_AUDIT_DEST"; do
-        case "$path" in
-            /etc/*|/usr/local/*|/home/hapax/*)
-                echo "root-required audit refuses test selectors for production destinations: $path" >&2
-                echo "  next action: remove HAPAX_ROOT_AUDIT_TEST_MODE, HAPAX_ROOT_AUDIT_HOSTNAME, HAPAX_ROOT_AUDIT_MEMTOTAL_KIB, and unit-path overrides" >&2
-                return 1
-                ;;
-        esac
-    done
-}
-
-refuse_production_test_overrides || exit 1
 validate_root_required_git_repo || exit 1
 runbooks=()
 collect_pending_runbooks || exit 1

@@ -15,6 +15,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 UNITS_DIR = REPO_ROOT / "systemd" / "units"
 INSTALLER = REPO_ROOT / "systemd" / "scripts" / "install-units.sh"
@@ -295,7 +297,7 @@ def test_root_required_deploy_audit_timer_is_source_controlled() -> None:
     assert "TimeoutStartSec=2min" in service
     assert "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin" in service
     audit = (REPO_ROOT / "scripts" / "hapax-root-required-deploy-audit").read_text()
-    assert audit.startswith("#!/usr/bin/bash\n")
+    assert audit.startswith("#!/usr/bin/bash -p\n")
     assert "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin\nexport PATH\n" in audit
     assert "hapax-systems/hapax-council/blob/main/systemd/README.md" in service
     assert "hapax-systems/hapax-council/blob/main/systemd/README.md" in timer
@@ -442,16 +444,15 @@ def test_local_judge_container_has_a_finite_memory_cap() -> None:
     assert "docker rm <ID>" in text
 
 
-def test_local_judge_keeps_docker_ordering_convention_and_bounded_retry() -> None:
+def test_local_judge_uses_fixed_restart_interval_as_docker_readiness_contract() -> None:
     text = (UNITS_DIR / "hapax-local-judge.service").read_text()
 
-    assert "After=docker.service" in text
+    assert "After=docker.service" not in text
     assert "Wants=docker.service" not in text
     assert "Requires=docker.service" not in text
     assert "Restart=always" in text
     assert "RestartSec=5" in text
-    assert "creates no" in text
-    assert "cross-manager Docker job" in text
+    assert "cannot order the system manager's docker.service" in text
     assert "name-conflict loop is intentional and loud" in text
 
 
@@ -491,8 +492,11 @@ def test_local_judge_predeploy_canary_gates_exact_cap_installation() -> None:
 
     assert "--verify-runtime-authority" in canary
     assert "PATH=/usr/bin:/bin" in canary
-    assert "builtin unset -f docker nvidia-smi sudo systemctl" in canary
-    assert "builtin unset DOCKER_HOST DOCKER_CONTEXT" in canary
+    assert "/usr/bin/env -i" in canary
+    assert "/usr/bin/bash --noprofile --norc -p -s" in canary
+    assert "<<'HAPAX_LOCAL_JUDGE_CAP_CANARY'" in canary
+    assert "DOCKER_HOST=unix:///var/run/docker.sock" in canary
+    assert "builtin compgen -A function" not in canary
     assert canary.index("--verify-runtime-authority") < canary.index("docker pull")
     assert 'candidate_sha="${repo##*/}"' in canary
     assert 'test "$desired_sha" = "$candidate_sha"' in canary
@@ -500,7 +504,7 @@ def test_local_judge_predeploy_canary_gates_exact_cap_installation() -> None:
     assert '/usr/bin/git -C "$repo" "$@"' in canary
     assert 'workload_source="$(candidate_git cat-file blob "$workload_oid")"' in canary
     assert 'candidate_git hash-object --stdin)" = "$workload_oid"' in canary
-    assert '/usr/bin/bash -s -- "$@" <<<"$workload_source"' in canary
+    assert '/usr/bin/bash --noprofile --norc -p -s -- "$@" <<<"$workload_source"' in canary
     assert '--run-local-judge-cap-workload "$endpoint" "$results"' in canary
     assert "run_verifierbench.py" not in canary
     assert "verifierbench_test.parquet" not in canary
@@ -529,11 +533,20 @@ def test_local_judge_predeploy_canary_gates_exact_cap_installation() -> None:
     assert 'test "$memory_peak" -le 3221225472' in canary
     assert 'test "$swap_peak" -le 1073741824' in canary
     assert '--cidfile "$canary_cidfile"' in canary
+    assert 'docker ps -aq --no-trunc --filter "id=$1"' in canary
+    name_check = "observed_name=\"$(docker inspect --format '{{.Name}}'"
+    assert "canary ID/name mismatch; refusing container stop" in canary
+    assert canary.index(name_check) < canary.index('docker stop "$id"')
     assert 'docker stop "$id"' in canary
     assert 'managed_ids="$(docker ps -aq' in canary
     assert 'read -r memory memory_swap oom_kill_disable extra <<< "$limit_fields"' in canary
     assert 'systemctl --user show "$unit" -p ActiveState --value' in canary
+    assert "/usr/bin/ss -H -ltn 'sport = :15001'" in canary
+    preflight = "local-judge cap canary preflight passed"
+    assert canary.index(preflight) < canary.index("trap on_exit EXIT")
+    assert canary.index(preflight) < canary.index('systemctl --user stop "$unit"')
     assert "not restoring $unit because disposable-container absence is unproven" in canary
+    assert "next action: inspect $canary_name and the bound ID" in canary
     assert 'canary_receipt="$canary_receipt_root/$candidate_sha.env"' in canary
     assert '"candidate_sha=$candidate_sha"' in canary
     assert '"memory_peak_bytes=$memory_peak"' in canary
@@ -611,10 +624,136 @@ def test_local_judge_cap_receipt_is_required_before_install_and_activation() -> 
     assert text.rfind('--verify-local-judge-cap-receipt "$sha" installed', 0, managed) != -1
 
 
+def test_local_judge_canary_enters_clean_privileged_shell(tmp_path: Path) -> None:
+    text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
+    marker = 'canary_name="hapax-local-judge-cap-canary-$$"'
+    start = text.rfind("```bash\n", 0, text.index(marker)) + len("```bash\n")
+    end = text.index("```", text.index(marker))
+    fence = text[start:end]
+    delimiter = "<<'HAPAX_LOCAL_JUDGE_CAP_CANARY'\n"
+    launcher = fence.split(delimiter, 1)[0] + delimiter
+    bash_env_marker = tmp_path / "bash-env-ran"
+    bash_env = tmp_path / "hostile-bash-env"
+    bash_env.write_text(
+        f"/usr/bin/printf x >> {bash_env_marker}\n",
+        encoding="utf-8",
+    )
+    probe = (
+        launcher
+        + "if declare -F builtin >/dev/null; then exit 91; fi\n"
+        + "if declare -F docker >/dev/null; then exit 92; fi\n"
+        + 'test -z "${BASH_ENV+x}"\n'
+        + 'test -z "${DOCKER_CONTEXT+x}"\n'
+        + "printf 'clean-shell\\n'\n"
+        + "HAPAX_LOCAL_JUDGE_CAP_CANARY\n"
+    )
+    env = {
+        **os.environ,
+        "BASH_ENV": str(bash_env),
+        "BASH_FUNC_builtin%%": "() { return 0; }",
+        "BASH_FUNC_docker%%": "() { printf forged; }",
+        "DOCKER_CONTEXT": "hostile-context",
+        "HAPAX_RUNTIME_AUTHORITY_TASK": str(tmp_path / "runtime-task.md"),
+    }
+
+    result = subprocess.run(
+        ["/usr/bin/bash", "--noprofile", "--norc"],
+        input=probe,
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "clean-shell\n"
+    assert bash_env_marker.read_text(encoding="utf-8") == "x"
+
+
+def test_local_judge_candidate_workload_clears_bash_env_and_functions(
+    tmp_path: Path,
+) -> None:
+    text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
+    start = text.index("candidate_workload() {")
+    end = text.index("\n}\n", start) + len("\n}\n")
+    function_source = text[start:end]
+    workload_source = (
+        'if [ -n "${BASH_ENV+x}" ]; then exit 93; fi\n'
+        "if declare -F hostile >/dev/null; then exit 94; fi\n"
+        "printf 'candidate-clean:%s\\n' \"$1\"\n"
+    )
+    bash_env_marker = tmp_path / "bash-env-ran"
+    bash_env = tmp_path / "hostile-bash-env"
+    bash_env.write_text(
+        f"/usr/bin/printf x >> {bash_env_marker}\n",
+        encoding="utf-8",
+    )
+    script = f'workload_source="$TEST_WORKLOAD_SOURCE"\n{function_source}candidate_workload probe\n'
+
+    result = subprocess.run(
+        ["/usr/bin/bash", "--noprofile", "--norc"],
+        input=script,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "BASH_ENV": str(bash_env),
+            "BASH_FUNC_hostile%%": "() { printf forged; }",
+            "TEST_WORKLOAD_SOURCE": workload_source,
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "candidate-clean:probe\n"
+    assert bash_env_marker.read_text(encoding="utf-8") == "x"
+
+
+@pytest.mark.parametrize(
+    ("probe_output", "probe_rc", "expected_rc", "stderr_fragment"),
+    (
+        ("", 0, 0, ""),
+        ("LISTEN 0 128 127.0.0.1:15001 0.0.0.0:*\n", 0, 1, "occupied"),
+        ("", 7, 1, "cannot prove"),
+    ),
+    ids=("free", "occupied", "probe-error"),
+)
+def test_local_judge_port_preflight_fails_closed(
+    tmp_path: Path,
+    probe_output: str,
+    probe_rc: int,
+    expected_rc: int,
+    stderr_fragment: str,
+) -> None:
+    text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
+    start = text.index('if ! port_probe="')
+    end = text.index("printf 'local-judge cap canary preflight passed", start)
+    source = text[start:end].replace("/usr/bin/ss", '"$TEST_SS"')
+    fake_ss = tmp_path / "ss"
+    fake_ss.write_text(
+        f"#!/usr/bin/bash\nprintf '%s' {probe_output!r}\nexit {probe_rc}\n",
+        encoding="utf-8",
+    )
+    fake_ss.chmod(0o755)
+
+    result = subprocess.run(
+        ["/usr/bin/bash", "--noprofile", "--norc"],
+        input=source,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "TEST_SS": str(fake_ss)},
+    )
+
+    assert result.returncode == expected_rc, result.stderr
+    if stderr_fragment:
+        assert stderr_fragment in result.stderr
+
+
 def _local_judge_predeploy_cleanup_source() -> str:
     text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
     marker = text.index('canary_name="hapax-local-judge-cap-canary-$$"')
-    start = text.index("cleanup_done=0", marker)
+    start = text.index("canary_id_absent() {", marker)
     end = text.index("on_exit()", start)
     return text[start:end]
 
@@ -622,7 +761,7 @@ def _local_judge_predeploy_cleanup_source() -> str:
 def _local_judge_predeploy_exit_source() -> str:
     text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
     marker = text.index('canary_name="hapax-local-judge-cap-canary-$$"')
-    start = text.index("cleanup_done=0", marker)
+    start = text.index("canary_id_absent() {", marker)
     end_marker = "trap 'exit 143' TERM"
     end = text.index(end_marker, start) + len(end_marker)
     return text[start:end]
@@ -631,7 +770,14 @@ def _local_judge_predeploy_exit_source() -> str:
 def test_local_judge_cleanup_restores_unit_only_after_proven_absence(tmp_path: Path) -> None:
     container_id = "a" * 64
     cleanup_source = _local_judge_predeploy_cleanup_source()
-    for failure in ("none", "stop", "invalid-cidfile"):
+    for failure in (
+        "none",
+        "already-absent",
+        "stop",
+        "inspect",
+        "invalid-cidfile",
+        "foreign-cidfile",
+    ):
         case_dir = tmp_path / failure
         case_dir.mkdir()
         cidfile = case_dir / "canary.cid"
@@ -645,6 +791,7 @@ set -u
 canary_cidfile="$TEST_CIDFILE"
 results="$TEST_RESULTS"
 canary_name=cap-cleanup-test
+canary_id=""
 unit=hapax-local-judge.service
 was_active=active
 failure="$TEST_FAILURE"
@@ -652,6 +799,15 @@ stopped=0
 docker() {{
   case "$1" in
     inspect)
+      if [ "${{2:-}}" = --format ]; then
+        if [ "$failure" = inspect ] || [ "$failure" = already-absent ]; then return 1; fi
+        if [ "$failure" = foreign-cidfile ]; then
+          printf '/foreign-container\n'
+        else
+          printf '/%s\n' "$canary_name"
+        fi
+        return 0
+      fi
       if [ "$failure" = none ] && [ "$stopped" -eq 1 ]; then return 1; fi
       return 0
       ;;
@@ -662,7 +818,9 @@ docker() {{
       return 0
       ;;
     ps)
-      if [ "$failure" != none ]; then printf '%s\n' '{container_id}'; fi
+      if [ "$failure" != none ] && [ "$failure" != already-absent ]; then
+        printf '%s\n' '{container_id}'
+      fi
       return 0
       ;;
     *) return 2 ;;
@@ -704,7 +862,7 @@ printf 'cleanup_rc=%s\n' "$cleanup_rc"
         assert result.returncode == 0, result.stderr
         call_text = calls.read_text()
         assert not results.exists()
-        if failure == "none":
+        if failure in {"none", "already-absent"}:
             assert "cleanup_rc=0" in result.stdout
             assert "systemctl --user start hapax-local-judge.service" in call_text
             assert not cidfile.exists()
@@ -713,6 +871,98 @@ printf 'cleanup_rc=%s\n' "$cleanup_rc"
             assert "systemctl --user start" not in call_text
             assert cidfile.exists()
             assert "not restoring hapax-local-judge.service" in result.stderr
+            assert "next action:" in result.stderr
+            if failure == "foreign-cidfile":
+                assert "docker stop" not in call_text
+                assert "canary ID/name mismatch" in result.stderr
+            if failure == "inspect":
+                assert "docker stop" not in call_text
+                assert "cannot prove canary ID absence" in result.stderr
+
+
+def test_local_judge_cleanup_ignores_cidfile_substitution_after_id_binding(
+    tmp_path: Path,
+) -> None:
+    container_id = "a" * 64
+    foreign_id = "b" * 64
+    cleanup_source = _local_judge_predeploy_cleanup_source()
+    cidfile = tmp_path / "canary.cid"
+    cidfile.write_text(foreign_id)
+    results = tmp_path / "results.jsonl"
+    results.write_text("result\n")
+    calls = tmp_path / "calls"
+    calls.write_text("")
+    script = f"""
+set -u
+canary_cidfile="$TEST_CIDFILE"
+results="$TEST_RESULTS"
+canary_name=cap-cleanup-test
+canary_id="$TEST_CONTAINER_ID"
+unit=hapax-local-judge.service
+was_active=active
+stopped=0
+docker() {{
+  target="${{@: -1}}"
+  case "$1" in
+    inspect)
+      if [ "${{2:-}}" = --format ]; then
+        if [ "$target" = "$TEST_CONTAINER_ID" ]; then
+          printf '/%s\n' "$canary_name"
+        else
+          printf '/foreign-container\n'
+        fi
+        return 0
+      fi
+      if [ "$target" = "$TEST_CONTAINER_ID" ] && [ "$stopped" -eq 1 ]; then
+        return 1
+      fi
+      return 0
+      ;;
+    stop)
+      printf '%s\n' "docker stop $2" >> "$TEST_CALLS"
+      stopped=1
+      return 0
+      ;;
+    ps) return 0 ;;
+    *) return 2 ;;
+  esac
+}}
+systemctl() {{
+  if [ "${{1:-}}" = --user ] && [ "${{2:-}}" = start ]; then
+    printf '%s\n' "systemctl $*" >> "$TEST_CALLS"
+    return 0
+  fi
+  if [ "${{1:-}}" = --user ] && [ "${{2:-}}" = show ]; then
+    printf '%s\n' active
+    return 0
+  fi
+  return 2
+}}
+{cleanup_source}
+cleanup_canary
+"""
+    result = subprocess.run(
+        ["bash"],
+        input=script,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "TEST_CIDFILE": str(cidfile),
+            "TEST_RESULTS": str(results),
+            "TEST_CALLS": str(calls),
+            "TEST_CONTAINER_ID": container_id,
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    call_lines = calls.read_text().splitlines()
+    assert f"docker stop {container_id}" in call_lines
+    assert f"docker stop {foreign_id}" not in call_lines
+    assert "systemctl --user start hapax-local-judge.service" in call_lines
+    assert not cidfile.exists()
+    assert not results.exists()
 
 
 def test_local_judge_cleanup_retries_after_interrupt(tmp_path: Path) -> None:
@@ -728,6 +978,7 @@ set -eu
 canary_cidfile="$TEST_CIDFILE"
 results="$TEST_RESULTS"
 canary_name=cap-cleanup-test
+canary_id="$TEST_CONTAINER_ID"
 unit=hapax-local-judge.service
 was_active=active
 stopped=0
@@ -735,6 +986,10 @@ stop_attempts=0
 docker() {{
   case "$1" in
     inspect)
+      if [ "${{2:-}}" = --format ]; then
+        printf '/%s\n' "$canary_name"
+        return 0
+      fi
       if [ "$stopped" -eq 1 ]; then return 1; fi
       return 0
       ;;
@@ -776,6 +1031,7 @@ cleanup_canary
             "TEST_CIDFILE": str(cidfile),
             "TEST_RESULTS": str(results),
             "TEST_CALLS": str(calls),
+            "TEST_CONTAINER_ID": container_id,
         },
     )
 
@@ -800,6 +1056,7 @@ set -eu
 canary_cidfile="$TEST_CIDFILE"
 results="$TEST_RESULTS"
 canary_name=cap-cleanup-test
+canary_id="$TEST_CONTAINER_ID"
 unit=hapax-local-judge.service
 was_active=active
 stopped=0
@@ -807,6 +1064,10 @@ stop_attempts=0
 docker() {{
   case "$1" in
     inspect)
+      if [ "${{2:-}}" = --format ]; then
+        printf '/%s\n' "$canary_name"
+        return 0
+      fi
       if [ "$stopped" -eq 1 ]; then return 1; fi
       return 0
       ;;
@@ -856,6 +1117,7 @@ exit 0
             "TEST_CIDFILE": str(cidfile),
             "TEST_RESULTS": str(results),
             "TEST_CALLS": str(calls),
+            "TEST_CONTAINER_ID": container_id,
         },
     )
 

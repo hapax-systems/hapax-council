@@ -43,18 +43,34 @@ must pass before the authenticated package command is requested.
 This canary temporarily stops the managed judge if it is active, starts an
 immutable-ID-tracked disposable container on port 15001, and restores the prior
 unit state before package installation. It never removes a container by name.
-Its fixed 24-request, 8-worker workload is deliberately synthetic: the deploy
-gate favors deterministic candidate-bound evidence over representative traffic,
-while the separate VerifierBench workflow below remains the quality benchmark.
+Its fixed 8 workers match the unit's `-np 8` parallelism, and 24 requests exercise
+three complete concurrency waves. The workload is deliberately synthetic: the
+deploy gate favors deterministic candidate-bound evidence over representative
+traffic, while the separate VerifierBench workflow below remains the quality
+benchmark.
 
 ```bash
+account_uid="$(/usr/bin/id -u)"
+account_name="$(/usr/bin/id -un)"
+account_home="$(/usr/bin/getent passwd "$account_uid" | /usr/bin/cut -d: -f6)"
+runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
+/usr/bin/env -i \
+  HOME="$account_home" \
+  USER="$account_name" \
+  LOGNAME="$account_name" \
+  PATH=/usr/bin:/bin \
+  LANG=C.UTF-8 \
+  LC_ALL=C.UTF-8 \
+  XDG_RUNTIME_DIR="/run/user/$account_uid" \
+  DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$account_uid/bus" \
+  HAPAX_RUNTIME_AUTHORITY_TASK="$runtime_task" \
+  /usr/bin/bash --noprofile --norc -p -s <<'HAPAX_LOCAL_JUDGE_CAP_CANARY'
 set -euo pipefail
 PATH=/usr/bin:/bin
 export PATH
-builtin unalias -a 2>/dev/null || true
-builtin unset -f docker nvidia-smi sudo systemctl curl jq awk sed grep stat \
-  id wc hostname date mktemp mv rm chmod sleep seq realpath 2>/dev/null || true
-builtin unset DOCKER_HOST DOCKER_CONTEXT
+DOCKER_HOST=unix:///var/run/docker.sock
+export DOCKER_HOST
+test -S /var/run/docker.sock
 runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
 authority_check="$HOME/.local/bin/hapax-post-merge-deploy"
 test -f "$authority_check"
@@ -113,7 +129,12 @@ workload_oid="$(candidate_git rev-parse --verify "$candidate_sha:scripts/hapax-p
 workload_source="$(candidate_git cat-file blob "$workload_oid")"
 test "$(printf '%s\n' "$workload_source" | candidate_git hash-object --stdin)" = "$workload_oid"
 candidate_workload() {
-  /usr/bin/bash -s -- "$@" <<<"$workload_source"
+  /usr/bin/env -i \
+    HOME="$HOME" \
+    PATH=/usr/bin:/bin \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    /usr/bin/bash --noprofile --norc -p -s -- "$@" <<<"$workload_source"
 }
 model_source_path="$HOME/models/compassverifier-7b/${judge_model##*/}"
 model_host_path="$model_host_dir/${judge_model##*/}"
@@ -177,6 +198,24 @@ case "$was_active" in
   active|inactive|failed) ;;
   *) echo "refusing transitional or unknown $unit state: $was_active" >&2; exit 1 ;;
 esac
+if ! port_probe="$(/usr/bin/ss -H -ltn 'sport = :15001')"; then
+  echo "cannot prove canary port 15001 availability" >&2
+  echo "next action: restore /usr/bin/ss network inspection, then rerun preflight" >&2
+  exit 1
+elif [ -n "$port_probe" ]; then
+  echo "refusing occupied canary port 15001" >&2
+  echo "next action: identify and stop only the known listener on 127.0.0.1:15001, then rerun preflight" >&2
+  exit 1
+fi
+printf 'local-judge cap canary preflight passed: candidate=%s unit_state=%s model=%s\n' \
+  "$candidate_sha" "$was_active" "$model_identity"
+canary_id_absent() {
+  local matches=""
+  if ! matches="$(docker ps -aq --no-trunc --filter "id=$1")"; then
+    return 2
+  fi
+  [ -z "$matches" ]
+}
 cleanup_done=0
 cleanup_status=0
 cleanup_signal_rc=0
@@ -185,19 +224,36 @@ cleanup_canary() {
     return "$cleanup_status"
   fi
   cleanup_status=0
-  local id="" remaining="" removed=0 restored_state="" cidfile_safe=0
-  if [ -e "$canary_cidfile" ] || [ -L "$canary_cidfile" ]; then
+  local id="" observed_name="" remaining="" removed=0 restored_state=""
+  if [ -n "$canary_id" ]; then
+    if [[ "$canary_id" =~ ^[0-9a-f]{64}$ ]]; then
+      id="$canary_id"
+    else
+      echo "unsafe bound canary ID; refusing container stop" >&2
+      cleanup_status=1
+    fi
+  elif [ -e "$canary_cidfile" ] || [ -L "$canary_cidfile" ]; then
     if [ -f "$canary_cidfile" ] && [ ! -L "$canary_cidfile" ]; then
       id="$(< "$canary_cidfile")"
-      if [[ "$id" =~ ^[0-9a-f]{64}$ ]]; then
-        cidfile_safe=1
+      if ! [[ "$id" =~ ^[0-9a-f]{64}$ ]]; then
+        id=""
       fi
     fi
-    if [ "$cidfile_safe" -eq 1 ]; then
-      if docker inspect "$id" >/dev/null 2>&1; then
+    if [ -z "$id" ]; then
+      echo "unsafe or invalid canary cidfile: $canary_cidfile" >&2
+      cleanup_status=1
+    fi
+  fi
+  if [ -n "$id" ]; then
+    if observed_name="$(docker inspect --format '{{.Name}}' "$id" 2>/dev/null)"; then
+      if [ "$observed_name" != "/$canary_name" ]; then
+        echo "canary ID/name mismatch; refusing container stop: id=$id name=$observed_name" >&2
+        cleanup_status=1
+      else
+        canary_id="$id"
         if docker stop "$id" >/dev/null; then
           for _ in $(seq 1 30); do
-            if ! docker inspect "$id" >/dev/null 2>&1; then
+            if canary_id_absent "$id"; then
               removed=1
               break
             fi
@@ -212,8 +268,8 @@ cleanup_canary() {
           cleanup_status=1
         fi
       fi
-    else
-      echo "unsafe or invalid canary cidfile: $canary_cidfile" >&2
+    elif ! canary_id_absent "$id"; then
+      echo "cannot prove canary ID absence after inspect failure: $id" >&2
       cleanup_status=1
     fi
   fi
@@ -229,8 +285,10 @@ cleanup_canary() {
     cleanup_status=1
   fi
   if [ "$cleanup_status" -eq 0 ]; then
-    rm -f -- "$canary_cidfile"
-    if [ "$was_active" = active ]; then
+    if ! rm -f -- "$canary_cidfile"; then
+      echo "cannot remove owned canary cidfile: $canary_cidfile" >&2
+      cleanup_status=1
+    elif [ "$was_active" = active ]; then
       if ! systemctl --user start "$unit"; then
         echo "failed to restore $unit after proven canary termination" >&2
         cleanup_status=1
@@ -244,7 +302,9 @@ cleanup_canary() {
     fi
   elif [ "$was_active" = active ]; then
     echo "not restoring $unit because disposable-container absence is unproven" >&2
-    echo "next action: inspect $canary_cidfile and $canary_name, stop the immutable ID, then restore the unit" >&2
+  fi
+  if [ "$cleanup_status" -ne 0 ]; then
+    echo "next action: inspect $canary_name and the bound ID ${canary_id:-unavailable}; stop only that exact ID after confirming its name, remove owned canary files, then restore $unit if it was previously active" >&2
   fi
   if [ "$cleanup_status" -eq 0 ]; then
     cleanup_done=1
@@ -376,6 +436,7 @@ printf '%s\n' \
   "completed_at_epoch=$completed_at_epoch" > "$receipt_tmp"
 mv -fT -- "$receipt_tmp" "$canary_receipt"
 echo "local-judge cap canary accepted: $canary_receipt"
+HAPAX_LOCAL_JUDGE_CAP_CANARY
 ```
 
 ### Authenticated package installation
@@ -473,12 +534,11 @@ nvidia-smi --query-gpu=index,name,memory.used --format=csv,noheader
 ```
 
 The name `hapax-local-judge` is reserved for the systemd unit. It refuses to
-delete an unknown same-name container. `After=docker.service` is retained as an
-estate metadata parity token. The recheck is
-`systemctl --user show hapax-local-judge.service -p After`; it does not create a
-cross-manager Docker job. `Restart=always` with
-`RestartSec=5s` is the actual Docker-socket readiness path. A same-name collision
-therefore causes an intentional, audit-visible restart loop until reconciled.
+delete an unknown same-name container. A user manager cannot order the system
+manager's `docker.service`, so the unit deliberately declares no inert
+cross-manager dependency. `Restart=always` with `RestartSec=5s` is the explicit
+Docker-socket readiness path. A same-name collision therefore causes an
+intentional, audit-visible restart loop until reconciled.
 
 The recurring OOM audit requires a present judge container to be `running`. If
 it reports that a non-running container holds the name, stop the unit, inspect
