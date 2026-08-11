@@ -4,6 +4,7 @@ import csv
 import fcntl
 import json
 import os
+import re
 import runpy
 import stat
 import subprocess
@@ -61,6 +62,21 @@ INSTALLED_TEST_SELECTORS = {
     "HAPAX_SYSTEMCTL",
     "HAPAX_SYSTEMD_ANALYZE",
 }
+
+
+def test_every_audit_selector_is_in_the_installed_refusal_set() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    mentioned = set(re.findall(r"HAPAX_[A-Z0-9_]+", source))
+    audit_selectors = {
+        name
+        for name in mentioned
+        if name.startswith("HAPAX_OOM_AUDIT_")
+        or name in {"HAPAX_SYSTEMCTL", "HAPAX_SYSTEMD_ANALYZE"}
+    }
+    namespace = runpy.run_path(str(SCRIPT))
+
+    assert audit_selectors == INSTALLED_TEST_SELECTORS
+    assert audit_selectors == set(namespace["TEST_ONLY_SELECTORS"])
 
 
 @pytest.fixture(autouse=True)
@@ -255,6 +271,44 @@ def test_source_checkout_probe_failure_is_a_structured_fail_closed_result(tmp_pa
     assert "WARNING hapax-oom-policy-audit source checkout verification failed" in result.stderr
     assert "continuing installed-mode diagnostics with a fail-closed result" in result.stderr
     assert "fatal:" in result.stderr
+
+
+def test_host_policy_lines_propagate_authority_failure_without_test_selectors(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for selector in INSTALLED_TEST_SELECTORS:
+        monkeypatch.delenv(selector, raising=False)
+    assert not (INSTALLED_TEST_SELECTORS & os.environ.keys())
+
+    namespace = runpy.run_path(str(SCRIPT))
+    main = namespace["main"]
+    globals_ = main.__globals__
+    gib = namespace["BYTES_1G"]
+    policy = namespace["HostMemoryPolicy"](
+        hostname="hapax-podium",
+        profile="podium",
+        physical_bytes=124 * gib,
+        app_memory_high=72 * gib,
+        app_memory_max=88 * gib,
+        uid_memory_high=80 * gib,
+        uid_memory_max=96 * gib,
+        zram_size=32 * gib,
+        optional_user_units=frozenset(),
+    )
+    globals_["_profile_table_path"] = lambda: Path("/unrecognized/oom-host-profiles.tsv")
+    globals_["derive_host_policy"] = lambda: policy
+    globals_["SOURCE_CHECKOUT_WARNINGS"].clear()
+
+    globals_["_policy_authority_label"] = lambda _path: "non-authoritative-unrecognized-executable"
+    assert main(["--host-policy-lines"]) == 1
+    unrecognized = capsys.readouterr()
+    assert "POLICY_AUTHORITY=non-authoritative-unrecognized-executable" in unrecognized.out
+
+    globals_["_policy_authority_label"] = lambda _path: "non-authoritative-source-tree"
+    globals_["SOURCE_CHECKOUT_WARNINGS"].append("forced Git probe failure; next action: repair")
+    assert main(["--host-policy-lines"]) == 1
+    warned = capsys.readouterr()
+    assert "POLICY_AUTHORITY=non-authoritative-source-tree" in warned.out
 
 
 def test_audit_exit_predicate_is_nonzero_for_every_non_pass_status() -> None:
@@ -1379,6 +1433,7 @@ def test_shipped_host_profile_rows_satisfy_the_declared_zram_invariant() -> None
     assert "-k shipped_host_profile_rows_satisfy_the_declared_zram_invariant" in table_text
     assert "exact zram contract: appendix=16384 MiB, podium=32768 MiB" in table_text
     assert "admission-only safety invariant" in table_text
+    assert "8192 <= zram_mib and zram_mib * 2 <= min_memtotal_gib * 1024" in table_text
     assert "the exact row value remains the deployed value" in table_text
     assert (
         "config/root-required/oom-host-policy/{appendix,podium}/"
@@ -1391,6 +1446,13 @@ def test_shipped_host_profile_rows_satisfy_the_declared_zram_invariant() -> None
         zram_mib = int(row[8])
         assert zram_mib >= 8192
         assert zram_mib * 2 <= min_memtotal_gib * 1024
+
+    for parser_source in (
+        SCRIPT.read_text(encoding="utf-8"),
+        _root_required_profile_parser_source(),
+    ):
+        assert "zram_size >= BYTES_8G" in parser_source
+        assert "zram_size * 2 <= reviewed_floor_bytes" in parser_source
 
 
 def test_host_policy_validates_unselected_rows_against_their_interval_minimum(
