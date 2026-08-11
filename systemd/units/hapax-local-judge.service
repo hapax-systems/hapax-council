@@ -25,9 +25,10 @@ Environment=JUDGE_MODEL_HOST=/store-fast/hapax-models/sha256/d6d6fba56c25d2d0f1b
 # Canary and durable service use the same immutable image digest. Updating this
 # digest requires a fresh cap canary and candidate-SHA receipt.
 Environment=JUDGE_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:841b199aed2649a748875b043b32fed2e8c2d4d87e1d563556817fb7fa44b72b
-# A user unit cannot order the system manager's docker.service. The pinned socket
-# plus Restart=always is the cross-manager availability contract; static image and
-# model failures remain explicit preflight errors in the journal.
+# After=docker.service is deliberately omitted: a user unit cannot order the system
+# manager's docker.service. The pinned socket plus Restart=always/RestartSec=5 is
+# the cross-manager availability contract and retries Docker readiness; static
+# image and model failures remain explicit preflight errors in the journal.
 Environment=DOCKER_HOST=unix:///var/run/docker.sock
 RuntimeDirectory=hapax-local-judge
 RuntimeDirectoryMode=0700

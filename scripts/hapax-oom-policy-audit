@@ -33,7 +33,23 @@ BYTES_512M = 512 * 1024**2
 BYTES_768M = 768 * 1024**2
 BYTES_4G = 4 * 1024**3
 BYTES_6G = 6 * 1024**3
-NEXT_OOM_INSTALL = "next action: scripts/install-p0-oom-containment --install --verify-live"
+NEXT_OOM_INSTALL = (
+    "next action: dispatch a runtime-authorized root-package repair and rerun "
+    "hapax-post-merge-deploy with HAPAX_RUNTIME_AUTHORITY_TASK set"
+)
+LOCAL_DOCKER_HOST = "unix:///var/run/docker.sock"
+LOCAL_DOCKER_CONFIG = "/nonexistent/hapax-local-docker-config"
+DOCKER_SELECTOR_ENV = frozenset(
+    {
+        "DOCKER_HOST",
+        "DOCKER_CONTEXT",
+        "DOCKER_CONFIG",
+        "DOCKER_CERT_PATH",
+        "DOCKER_TLS_VERIFY",
+        "DOCKER_TLS",
+        "DOCKER_API_VERSION",
+    }
+)
 PROC_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_PROC_ROOT", "/proc"))
 CGROUP_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_CGROUP_ROOT", "/sys/fs/cgroup"))
 SYS_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_SYS_ROOT", "/sys"))
@@ -161,14 +177,13 @@ def _source_checkout_warning(detail: str) -> None:
         "next action: restore the repository Git metadata and rerun the source audit, "
         "or invoke the canonical installed audit with its receipt-owned profile table"
     )
-    message = f"{detail}; {action}"
+    message = (
+        f"source checkout verification failed: {detail}; continuing installed-mode diagnostics "
+        f"with a fail-closed result; {action}"
+    )
     if message not in SOURCE_CHECKOUT_WARNINGS:
         SOURCE_CHECKOUT_WARNINGS.append(message)
-    print(
-        f"WARNING hapax-oom-policy-audit source checkout verification failed: {detail}; "
-        f"continuing installed-mode diagnostics with a fail-closed result; {action}",
-        file=sys.stderr,
-    )
+    print(f"WARNING hapax-oom-policy-audit {message}", file=sys.stderr)
 
 
 def _source_checkout_authority_checks() -> list[Check]:
@@ -228,8 +243,7 @@ def _source_checkout_root() -> Path | None:
         first_line = next(iter(result.stderr.strip().splitlines()), "no Git diagnostic")
         excerpt = "".join(character if character.isprintable() else "?" for character in first_line)
         _source_checkout_warning(
-            f"isolated Git probe for {root} exited with status {result.returncode}: "
-            f"{excerpt[:240]}"
+            f"isolated Git probe for {root} exited with status {result.returncode}: {excerpt[:240]}"
         )
         return None
     try:
@@ -640,11 +654,32 @@ def _systemd_user_dir() -> Path:
     )
 
 
-def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
+def _run(args: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(args, capture_output=True, text=True, timeout=10, check=False)
+        return subprocess.run(
+            args, capture_output=True, text=True, timeout=10, check=False, env=env
+        )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return subprocess.CompletedProcess(args=args, returncode=127, stdout="", stderr=str(exc))
+
+
+def _run_local_docker(args: list[str]) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    for selector in DOCKER_SELECTOR_ENV:
+        env.pop(selector, None)
+    env["DOCKER_HOST"] = LOCAL_DOCKER_HOST
+    env["DOCKER_CONFIG"] = LOCAL_DOCKER_CONFIG
+    return _run(
+        [
+            _docker(),
+            "--config",
+            LOCAL_DOCKER_CONFIG,
+            "--host",
+            LOCAL_DOCKER_HOST,
+            *args,
+        ],
+        env=env,
+    )
 
 
 def _show(unit: str, properties: list[str], *, user: bool = False) -> dict[str, str]:
@@ -1271,7 +1306,7 @@ def _docker_check_name(container: str, field: str) -> str:
 
 
 def _docker_container_records() -> tuple[list[tuple[str, str]], str | None]:
-    listed = _run([_docker(), "ps", "-a", "--no-trunc", "--format", "{{.ID}}\t{{.Names}}"])
+    listed = _run_local_docker(["ps", "-a", "--no-trunc", "--format", "{{.ID}}\t{{.Names}}"])
     if listed.returncode != 0:
         detail = (listed.stderr or listed.stdout).strip() or f"rc={listed.returncode}"
         return [], f"cannot enumerate Docker containers: {detail}"
@@ -1330,9 +1365,8 @@ def audit_docker_limits() -> list[Check]:
 
     checks: list[Check] = []
     for container_id, name, (expected_memory, expected_swap) in targets:
-        inspected = _run(
+        inspected = _run_local_docker(
             [
-                _docker(),
                 "inspect",
                 "--format",
                 "{{.Id}}\t{{.Name}}\t{{.HostConfig.Memory}}\t{{.HostConfig.MemorySwap}}\t{{json .HostConfig.OomKillDisable}}\t{{.State.Status}}",

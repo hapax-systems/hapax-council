@@ -43,11 +43,27 @@ def _copy_apcupsd_package(dest_root: Path) -> None:
 
 @pytest.fixture(autouse=True)
 def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_ALLOW_UNAUTHENTICATED_TEST_INSTALL", "1")
+    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_UNAUTHENTICATED_TEST_ROOT", str(tmp_path))
     monkeypatch.setenv("HAPAX_POST_MERGE_ROOT_DEFER_DIR", str(tmp_path / "root-required"))
     monkeypatch.setenv("HAPAX_ROOT_REQUIRED_STATE_ROOT", str(tmp_path / "root-state"))
     monkeypatch.setenv(
         "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT", str(tmp_path / "installed-source")
     )
+    monkeypatch.setenv("HAPAX_APCUPSD_TARGET_UID", str(os.getuid()))
+    monkeypatch.setenv("HAPAX_APCUPSD_TARGET_GID", str(os.getgid()))
+    monkeypatch.setenv("HAPAX_APCUPSD_TARGET_HOME", str(tmp_path / "target-home"))
+    monkeypatch.setenv("HAPAX_APCUPSD_DEST", str(tmp_path / "apcupsd-default"))
+    monkeypatch.setenv("HAPAX_APCUPSD_AUDIT_DIR", str(tmp_path / "audit-default"))
+    monkeypatch.setenv("HAPAX_UPS_AUDIT_LOG", str(tmp_path / "audit-default/events.jsonl"))
+    monkeypatch.setenv(
+        "HAPAX_APCUPSD_LOGROTATE_DEST", str(tmp_path / "logrotate-default/hapax-ups")
+    )
+    monkeypatch.setenv("HAPAX_UPOWER_CONF_DEST", str(tmp_path / "upower-default/90-hapax.conf"))
+    fake_systemctl = tmp_path / "systemctl-default"
+    fake_systemctl.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    fake_systemctl.chmod(0o755)
+    monkeypatch.setenv("HAPAX_APCUPSD_SYSTEMCTL", str(fake_systemctl))
     fake_busctl = tmp_path / "busctl"
     fake_busctl.write_text("#!/bin/sh\nprintf '%s\\n' 's \"Ignore\"'\n", encoding="utf-8")
     fake_busctl.chmod(0o755)
@@ -913,6 +929,25 @@ def test_installer_source_check_exercises_config_hooks_and_helper() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "apcupsd power alert install/check complete" in result.stdout
+
+
+def test_installer_refuses_missing_authenticated_helper_outside_isolated_test(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HAPAX_ROOT_REQUIRED_ALLOW_UNAUTHENTICATED_TEST_INSTALL")
+    monkeypatch.delenv("HAPAX_ROOT_REQUIRED_UNAUTHENTICATED_TEST_ROOT")
+
+    result = subprocess.run(
+        [str(INSTALLER), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=os.environ.copy(),
+    )
+
+    assert result.returncode == 1
+    assert "refusing unauthenticated apcupsd install outside an isolated test" in result.stderr
+    assert "hapax-post-merge-deploy" in result.stderr
 
 
 def test_installer_fails_closed_when_canonical_audit_group_is_missing(

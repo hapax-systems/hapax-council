@@ -195,6 +195,8 @@ Installs:
 Power events are recorded at /var/log/hapax/ups-power-events.jsonl before/after
 ntfy delivery state is known. Run the installer as the target account; it uses
 sudo only for root-owned destinations and refuses whole-script root execution.
+Production --install is accepted only through the authenticated sealed-source
+helper emitted by hapax-post-merge-deploy.
 USAGE
 }
 
@@ -236,6 +238,97 @@ run_root() {
     else
         "$@"
     fi
+}
+
+production_destinations_selected() {
+    local path
+    for path in \
+        "$DEST" "$AUDIT_DIR" "$AUDIT_LOG" "$LOGROTATE_DEST" "$UPOWER_CONF_DEST" \
+        "$ROOT_REQUIRED_STATE_ROOT" "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" \
+        "$ROOT_REQUIRED_DEFER_ROOT" "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" \
+        "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" "$ROOT_REQUIRED_LOCK_FILE" "$TARGET_HOME"; do
+        case "$path" in
+            /etc/*|/var/*|/usr/local/*|/home/hapax/*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+path_is_within_test_root() {
+    local path="$1" root="$2" canonical
+    canonical="$(/usr/bin/realpath -m -- "$path")" || return 1
+    case "$canonical" in
+        "$root"|"$root"/*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+validate_isolated_test_executable() {
+    local label="$1" command="$2" root="$3" canonical
+    case "$command" in
+        /*) ;;
+        *)
+            echo "unauthenticated apcupsd test install requires an absolute fake $label command under $root; got $command" >&2
+            return 1
+            ;;
+    esac
+    canonical="$(/usr/bin/realpath -e -- "$command" 2>/dev/null)" || {
+        echo "unauthenticated apcupsd test install cannot resolve fake $label command $command under $root" >&2
+        return 1
+    }
+    if [ ! -f "$canonical" ] || [ -L "$command" ] || [ ! -x "$canonical" ] \
+        || ! path_is_within_test_root "$canonical" "$root"; then
+        echo "unauthenticated apcupsd test install requires a non-symlink executable fake $label command under $root; got $command" >&2
+        return 1
+    fi
+}
+
+require_authenticated_install_authority() {
+    local raw_root root root_mode path
+    local -a destinations
+    [ "$INSTALL" -eq 1 ] || return 0
+    [ "$AUTHENTICATED_SEALED_SOURCE" -eq 0 ] || return 0
+    if production_destinations_selected; then
+        echo "refusing unauthenticated production apcupsd install; next action: set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical runtime-authorized task and rerun hapax-post-merge-deploy so its sealed helper invokes this installer" >&2
+        return 1
+    fi
+    if [ "${HAPAX_ROOT_REQUIRED_ALLOW_UNAUTHENTICATED_TEST_INSTALL:-0}" != "1" ]; then
+        echo "refusing unauthenticated apcupsd install outside an isolated test; next action: use the authenticated hapax-post-merge-deploy helper for live installation" >&2
+        return 1
+    fi
+    raw_root="${HAPAX_ROOT_REQUIRED_UNAUTHENTICATED_TEST_ROOT:-}"
+    if [ -z "$raw_root" ] || [[ "$raw_root" != /* ]] || [ -L "$raw_root" ]; then
+        echo "unauthenticated apcupsd test install requires an absolute non-symlink HAPAX_ROOT_REQUIRED_UNAUTHENTICATED_TEST_ROOT" >&2
+        return 1
+    fi
+    root="$(/usr/bin/realpath -e -- "$raw_root" 2>/dev/null)" || {
+        echo "unauthenticated apcupsd test root is unavailable: $raw_root" >&2
+        return 1
+    }
+    root_mode="$(/usr/bin/stat -c %a -- "$root" 2>/dev/null || true)"
+    if [ "$root" = / ] || [ ! -d "$root" ] \
+        || [ "$(/usr/bin/stat -c %u -- "$root" 2>/dev/null || true)" != "$(/usr/bin/id -u)" ] \
+        || ! [[ "$root_mode" =~ ^[0-7]+$ ]] \
+        || (( (8#$root_mode & 8#022) != 0 )); then
+        echo "unauthenticated apcupsd test root must be caller-owned and not group/other-writable: $root" >&2
+        return 1
+    fi
+    destinations=(
+        "$DEST" "$AUDIT_DIR" "$AUDIT_LOG" "$LOGROTATE_DEST" "$UPOWER_CONF_DEST"
+        "$ROOT_REQUIRED_STATE_ROOT" "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"
+        "$ROOT_REQUIRED_DEFER_ROOT" "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT"
+        "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" "$ROOT_REQUIRED_LOCK_FILE" "$TARGET_HOME"
+    )
+    for path in "${destinations[@]}"; do
+        [ -n "$path" ] || continue
+        if ! path_is_within_test_root "$path" "$root"; then
+            echo "unauthenticated apcupsd test install destination escapes $root: $path" >&2
+            return 1
+        fi
+    done
+    validate_isolated_test_executable systemctl "$SYSTEMCTL" "$root"
+    validate_isolated_test_executable busctl "$BUSCTL" "$root"
+    validate_isolated_test_executable apcaccess "$APCACCESS" "$root"
 }
 
 preflight_root() {
@@ -1119,6 +1212,7 @@ verify_live() {
 }
 
 load_authenticated_sealed_sources
+require_authenticated_install_authority
 [ "$CHECK" -eq 0 ] || check_source
 [ "$INSTALL" -eq 0 ] || refuse_whole_script_root
 [ "$INSTALL" -eq 0 ] || reexec_with_safe_root_required_lock
