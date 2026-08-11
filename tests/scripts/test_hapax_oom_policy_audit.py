@@ -1456,6 +1456,7 @@ def test_shipped_host_profile_rows_satisfy_the_declared_zram_invariant() -> None
     ]
 
     assert "-k shipped_host_profile_rows_satisfy_the_declared_zram_invariant" in table_text
+    assert "-k host_profile_parsers_share_zram_admission_corpus" in table_text
     assert "-k profile_zram_rows_match_shipped_generator_policy" in table_text
     assert "exact zram contract: appendix=16384 MiB, podium=32768 MiB" in table_text
     assert "admission-only safety invariant" in table_text

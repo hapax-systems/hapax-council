@@ -999,7 +999,7 @@ def test_local_judge_runtime_fences_are_valid_bash() -> None:
         'release_verify "$sha"',
         '"$stage/AUTHENTICATED-INSTALL.log"',
         "activation_phase=restart",
-        "container=hapax-local-judge",
+        'container_id="$(release_lifecycle managed-id',
     )
 
     for marker in markers:
@@ -1034,7 +1034,7 @@ def test_local_judge_runtime_fences_use_structured_active_task_authority() -> No
             "runtime:systemd-user:restart:hapax-local-judge.service",
             "runtime:state:write-local-judge-activation-result",
         ),
-        "container=hapax-local-judge": (
+        'container_id="$(release_lifecycle managed-id': (
             "runtime:state:write-remove-managed-recheck:/store-fast/tmp",
             "runtime:workload:run-local-judge-managed-recheck:requests-24:workers-8",
         ),
@@ -1065,7 +1065,7 @@ def test_local_judge_cap_receipt_is_required_before_install_and_activation() -> 
     text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
     install = text.index('release_verify "$sha"')
     activation = text.index("activation_phase=daemon_reload")
-    managed = text.index("container=hapax-local-judge")
+    managed = text.index('container_id="$(release_lifecycle managed-id')
 
     assert text.rfind('--verify-local-judge-cap-receipt "$sha" candidate', 0, install) != -1
     assert text.rfind('--verify-local-judge-cap-receipt "$sha" installed', 0, activation) != -1
@@ -1596,7 +1596,7 @@ exit 0
 
 def _local_judge_runtime_canary() -> str:
     text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
-    marker = text.index("container=hapax-local-judge")
+    marker = text.index('container_id="$(release_lifecycle managed-id')
     start = text.rfind("```bash", 0, marker)
     end = text.index("```", marker)
     return text[start:end]
@@ -1604,7 +1604,8 @@ def _local_judge_runtime_canary() -> str:
 
 def test_local_judge_runtime_canary_fails_fast() -> None:
     canary = _local_judge_runtime_canary()
-    assert canary.index("set -euo pipefail") < canary.index("container=hapax-local-judge")
+    managed_id = 'container_id="$(release_lifecycle managed-id'
+    assert canary.index("set -euo pipefail") < canary.index(managed_id)
     assert 'account_home="$(/usr/bin/getent passwd' in canary
     assert "/usr/bin/env -i" in canary
     assert "HAPAX_LOCAL_JUDGE_MANAGED_RECHECK" in canary
@@ -1613,6 +1614,8 @@ def test_local_judge_runtime_canary_fails_fast() -> None:
     assert 'release_root="$HOME/.cache/hapax/source-activation/releases"' in canary
     assert '[[ "${repo##*/}" =~ ^[0-9a-f]{40}$ ]]' in canary
     assert 'release_git cat-file blob "$verifier_oid"' in canary
+    assert 'release_git cat-file blob "$lifecycle_oid"' in canary
+    assert canary.count('release_lifecycle managed-id --cidfile "$cidfile"') == 2
     assert "--verify-runtime-authority-for-release" in canary
     assert "--verify-local-judge-cap-receipt" in canary
     assert 'authority_check="$HOME/.local/bin/hapax-post-merge-deploy"' not in canary
@@ -1625,6 +1628,9 @@ def test_local_judge_runtime_canary_fails_fast() -> None:
     assert "/hapax-local-judge/docker-config run " in canary
     assert '" --memory 4G "' in canary
     assert '" --memory-swap 6G "' in canary
+    assert "container=hapax-local-judge" not in canary
+    assert '-p ActiveState --value)" = active' in canary
+    assert 'test "$after_container_id" = "$container_id"' in canary
     assert "{{json .HostConfig.OomKillDisable}}" in canary
     assert '== null || "$oom_kill_disable" == false' in canary
     assert "--run-local-judge-cap-workload http://127.0.0.1:5001" in canary

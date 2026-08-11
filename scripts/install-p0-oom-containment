@@ -1,4 +1,4 @@
-#!/usr/bin/bash
+#!/usr/bin/bash -p
 # Install P0 OOM containment policy from the source tree to live systemd/earlyoom paths.
 set -euo pipefail
 ORIGINAL_ARGS=("$@")

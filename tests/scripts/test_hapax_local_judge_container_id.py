@@ -12,6 +12,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-local-judge-container-id"
 CONTAINER_ID = "a" * 64
+REPLACEMENT_ID = "c" * 64
 IMAGE = "ghcr.io/ggml-org/llama.cpp@sha256:" + "b" * 64
 
 
@@ -20,6 +21,7 @@ class DockerRig:
     docker: Path
     log: Path
     exists: Path
+    replacement: Path
     name: Path
     image_missing: Path
     daemon_ready_after: Path
@@ -53,6 +55,7 @@ class DockerRig:
 def _rig(tmp_path: Path, *, running: bool = True) -> DockerRig:
     log = tmp_path / "docker.jsonl"
     exists = tmp_path / "container-exists"
+    replacement = tmp_path / "same-name-replacement-exists"
     name = tmp_path / "container-name"
     image_missing = tmp_path / "image-missing"
     daemon_ready_after = tmp_path / "daemon-ready-after"
@@ -66,11 +69,13 @@ def _rig(tmp_path: Path, *, running: bool = True) -> DockerRig:
         "import json, os, pathlib, sys\n"
         f"log = pathlib.Path({str(log)!r})\n"
         f"exists = pathlib.Path({str(exists)!r})\n"
+        f"replacement = pathlib.Path({str(replacement)!r})\n"
         f"name = pathlib.Path({str(name)!r})\n"
         f"image_missing = pathlib.Path({str(image_missing)!r})\n"
         f"daemon_ready_after = pathlib.Path({str(daemon_ready_after)!r})\n"
         f"daemon_attempts = pathlib.Path({str(daemon_attempts)!r})\n"
         f"container_id = {CONTAINER_ID!r}\n"
+        f"replacement_id = {REPLACEMENT_ID!r}\n"
         f"image = {IMAGE!r}\n"
         "args = sys.argv[1:]\n"
         "with log.open('a', encoding='utf-8') as handle:\n"
@@ -89,9 +94,13 @@ def _rig(tmp_path: Path, *, running: bool = True) -> DockerRig:
         "        raise SystemExit(1)\n"
         "    print(json.dumps([image]))\n"
         "elif args and args[0] == 'inspect':\n"
-        "    if not exists.exists():\n"
+        "    target = args[-1]\n"
+        "    if target == container_id and exists.exists():\n"
+        "        print(f'{container_id}|/{name.read_text().strip()}')\n"
+        "    elif target == 'hapax-local-judge' and replacement.exists():\n"
+        "        print(f'{replacement_id}|/{name.read_text().strip()}')\n"
+        "    else:\n"
         "        raise SystemExit(1)\n"
-        "    print(f'{container_id}|/{name.read_text().strip()}')\n"
         "elif args and args[0] == 'ps':\n"
         "    if exists.exists():\n"
         "        print(container_id)\n"
@@ -111,6 +120,7 @@ def _rig(tmp_path: Path, *, running: bool = True) -> DockerRig:
         docker=docker,
         log=log,
         exists=exists,
+        replacement=replacement,
         name=name,
         image_missing=image_missing,
         daemon_ready_after=daemon_ready_after,
@@ -284,6 +294,32 @@ def test_stop_targets_only_the_cidfile_bound_full_id(tmp_path: Path) -> None:
         ("stop", CONTAINER_ID)
     }
     assert ("stop", "hapax-local-judge") not in {tuple(call["args"]) for call in calls}
+
+
+def test_managed_id_returns_only_the_cidfile_bound_identity(tmp_path: Path) -> None:
+    rig = _rig(tmp_path)
+
+    result = rig.run("managed-id")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == CONTAINER_ID
+    assert [call["args"][-1] for call in rig.calls()] == [CONTAINER_ID]
+
+
+def test_managed_id_refuses_same_name_replacement_for_absent_bound_id(
+    tmp_path: Path,
+) -> None:
+    rig = _rig(tmp_path)
+    rig.exists.unlink()
+    rig.replacement.touch()
+
+    result = rig.run("managed-id")
+
+    assert result.returncode == 1
+    assert "unit-owned local-judge container is absent" in result.stderr
+    assert "do not accept a same-name replacement" in result.stderr
+    assert [call["args"][-1] for call in rig.calls()] == [CONTAINER_ID]
+    assert all("hapax-local-judge" not in call["args"] for call in rig.calls())
 
 
 def test_stop_refuses_renamed_id_without_targeting_reused_name(tmp_path: Path) -> None:
