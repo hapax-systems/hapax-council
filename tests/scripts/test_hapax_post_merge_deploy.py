@@ -757,7 +757,10 @@ def _root_audit_env(
     }
     for rel, dest in selected_destinations.items():
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(ROOT_AUDIT_SOURCE_FILES[rel], encoding="utf-8")
+        dest.write_text(
+            "stale\n" if rel == drift_rel else ROOT_AUDIT_SOURCE_FILES[rel],
+            encoding="utf-8",
+        )
     sudoers_reference_dest.parent.mkdir(parents=True, exist_ok=True)
     sudoers_reference_dest.write_text(
         ROOT_AUDIT_SOURCE_FILES["config/root-required/hapax-oom-score-enforce.sudoers"],
@@ -2321,9 +2324,9 @@ def test_root_required_audit_detects_oom_enforcer_drift(tmp_path: Path) -> None:
     [
         "config/root-required/oom-host-profiles.tsv",
         "config/root-required/oom-host-policy/podium/zram-generator.conf",
-        "systemd/system/user-1000.slice.d/oom-containment.conf",
-        "systemd/system/user@1000.service.d/oom.conf",
-        "systemd/units/app.slice.d/oom-containment.conf",
+        "config/root-required/oom-host-policy/podium/user-1000.slice.conf",
+        "config/root-required/oom-host-policy/podium/user@1000.service.conf",
+        "config/root-required/oom-host-policy/podium/app.slice.conf",
     ],
 )
 def test_root_required_audit_detects_host_profile_install_drift(
