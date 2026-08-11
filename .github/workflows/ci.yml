@@ -154,7 +154,7 @@ jobs:
               docs_only=false
             fi
             case "$path" in
-              .github/workflows/ci.yml|pyproject.toml|uv.lock|tests/test_ci_required_coverage_claims.py|tests/test_python_prod_dependency_constraints.py)
+              .github/workflows/ci.yml|pyproject.toml|uv.lock|config/root-required/runtime-authority-python.requirements|tests/test_ci_required_coverage_claims.py|tests/test_python_prod_dependency_constraints.py)
                 python_prod_dependency_witness=true
                 ;;
             esac
@@ -556,6 +556,20 @@ jobs:
             pyproject.toml
             uv.lock
           save-cache: false
+      - name: Install sealed runtime-authority Python closure
+        run: |
+          set -euo pipefail
+          sudo install -d -o root -g root -m 0755 \
+            /opt/hapax/runtime-authority-python/site-packages
+          sudo "$(command -v uv)" pip install \
+            --python /usr/bin/python3 \
+            --target /opt/hapax/runtime-authority-python/site-packages \
+            --require-hashes \
+            --only-binary=:all: \
+            --no-deps \
+            --link-mode=copy \
+            --no-config \
+            -r config/root-required/runtime-authority-python.requirements
       - name: Install system deps (cairo, gobject, gst, pango, hook transports)
         run: |
           sudo apt-get update
@@ -873,6 +887,38 @@ jobs:
           cache-dependency-glob: |
             pyproject.toml
             uv.lock
+      - name: Install sealed runtime-authority Python closure
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode != 'merge-group-shards'
+        run: |
+          set -euo pipefail
+          sudo install -d -o root -g root -m 0755 \
+            /opt/hapax/runtime-authority-python/site-packages
+          sudo "$(command -v uv)" pip install \
+            --python /usr/bin/python3 \
+            --target /opt/hapax/runtime-authority-python/site-packages \
+            --require-hashes \
+            --only-binary=:all: \
+            --no-deps \
+            --link-mode=copy \
+            --no-config \
+            -r config/root-required/runtime-authority-python.requirements
+      - name: Verify sealed runtime-authority system Python
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'pr-admission'
+        env:
+          LITELLM_BASE_URL: "http://0.0.0.0:1"
+          QDRANT_URL: "http://0.0.0.0:1"
+          OLLAMA_HOST: "http://0.0.0.0:1"
+          OTEL_SDK_DISABLED: "true"
+          LANGFUSE_HOST: "http://0.0.0.0:1"
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          uv run --no-project \
+            --with pytest==9.0.2 \
+            --with pydantic==2.13.4 \
+            --with pyyaml==6.0.3 \
+            pytest --confcutdir=tests \
+            tests/scripts/test_hapax_post_merge_deploy.py \
+            -q --tb=line -k 'runtime_authority'
       - name: Run PR Python admission slice
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'pr-admission'
         env:

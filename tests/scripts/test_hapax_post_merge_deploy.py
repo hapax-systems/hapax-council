@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -14,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+import yaml
 
 from shared.sdlc_lifecycle import TASK_MUTABLE_STATUSES as CANONICAL_TASK_MUTABLE_STATUSES
 
@@ -25,6 +27,13 @@ DEFAULT_RUNTIME_AUTHORITY_SCOPE = (
 )
 SECONDARY_RUNTIME_AUTHORITY_SCOPE = "runtime:docker:update-memory:hapax-local-judge"
 MISSING_RUNTIME_AUTHORITY_SCOPE = "runtime:root-file:write:/etc/default/earlyoom"
+RUNTIME_AUTHORITY_REQUIREMENTS = (
+    REPO_ROOT / "config/root-required/runtime-authority-python.requirements"
+)
+RUNTIME_DEPENDENCY_MANIFEST = (
+    REPO_ROOT / "config/coordination-canon/runtime-dependency-release-set.json"
+)
+CI_WORKFLOW = REPO_ROOT / ".github/workflows/ci.yml"
 
 
 def test_runtime_entrypoint_privileged_shell_ignores_hostile_bash_env(tmp_path: Path) -> None:
@@ -50,10 +59,17 @@ def test_runtime_entrypoint_privileged_shell_ignores_hostile_bash_env(tmp_path: 
     assert not startup_marker.exists()
 
 
-def _runtime_authority_validator_source() -> str:
+def _runtime_authority_validator_source(*, dependency_prelude: str = "") -> str:
     source = SCRIPT.read_text(encoding="utf-8")
     marker = "<<'RUNTIME_AUTHORITY_PY'\n"
-    return source.split(marker, 1)[1].split("\nRUNTIME_AUTHORITY_PY", 1)[0]
+    validator = source.split(marker, 1)[1].split("\nRUNTIME_AUTHORITY_PY", 1)[0]
+    if dependency_prelude:
+        validator = validator.replace(
+            "admit_runtime_authority_dependencies()\n",
+            f"{dependency_prelude}\n\nadmit_runtime_authority_dependencies()\n",
+            1,
+        )
+    return validator
 
 
 def _runtime_authority_task_text(**replacements: str) -> str:
@@ -97,6 +113,8 @@ def _run_runtime_authority_validator(
     scope: str | tuple[str, ...] = DEFAULT_RUNTIME_AUTHORITY_SCOPE,
     cwd: Path | None = None,
     repo: Path = REPO_ROOT,
+    *,
+    dependency_prelude: str = "",
 ) -> subprocess.CompletedProcess[str]:
     git_head = subprocess.run(
         ["/usr/bin/git", "-C", str(repo), "rev-parse", "HEAD"],
@@ -109,6 +127,7 @@ def _run_runtime_authority_validator(
         [
             "/usr/bin/python3",
             "-I",
+            "-S",
             "-",
             str(repo),
             git_head,
@@ -116,7 +135,7 @@ def _run_runtime_authority_validator(
             str(active_root),
             *scopes,
         ],
-        input=_runtime_authority_validator_source(),
+        input=_runtime_authority_validator_source(dependency_prelude=dependency_prelude),
         text=True,
         capture_output=True,
         check=False,
@@ -1190,6 +1209,7 @@ def test_runtime_authority_validator_requires_every_requested_scope(tmp_path: Pa
 
 def test_runtime_authority_validator_has_no_release_tree_import_surface() -> None:
     source = _runtime_authority_validator_source()
+    script = SCRIPT.read_text(encoding="utf-8")
 
     assert "sys.path.insert" not in source
     assert "from shared." not in source
@@ -1197,9 +1217,13 @@ def test_runtime_authority_validator_has_no_release_tree_import_surface() -> Non
     assert "TASK_MUTABLE_STATUSES" in source
     assert '"shared/route_metadata_schema.py"' in source
     assert 'assessment.status.value != "explicit"' in source
+    assert "/usr/bin/python3 -I -S -" in script
+    assert "site.addsitedir" not in source
+    assert "sys.path.append(str(root))" in source
+    assert "/opt/hapax/runtime-authority-python/site-packages" in source
 
 
-def test_runtime_authority_validator_pins_executable_schema_blobs() -> None:
+def test_runtime_authority_validator_pins_canonical_schema_compatibility_blobs() -> None:
     module = ast.parse(_runtime_authority_validator_source())
     assignment = next(
         node
@@ -1214,8 +1238,184 @@ def test_runtime_authority_validator_pins_executable_schema_blobs() -> None:
 
     assert pins == {
         path: hashlib.sha256((REPO_ROOT / path).read_bytes()).hexdigest()
-        for path in ("shared/agentic_trust_boundary.py", "shared/route_metadata_schema.py")
+        for path in (
+            "shared/agentic_trust_boundary.py",
+            "shared/route_metadata_schema.py",
+            "config/coordination-canon/runtime-dependency-release-set.json",
+        )
     }
+
+
+def test_runtime_authority_dependency_contract_matches_release_manifest() -> None:
+    module = ast.parse(_runtime_authority_validator_source())
+    assignments = {
+        target.id: ast.literal_eval(node.value)
+        for node in module.body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+        and target.id
+        in {
+            "RUNTIME_AUTHORITY_DEPENDENCIES",
+            "RUNTIME_AUTHORITY_DEPENDENCY_MANIFEST_HASH",
+        }
+    }
+    manifest = json.loads(RUNTIME_DEPENDENCY_MANIFEST.read_text(encoding="utf-8"))
+    dependencies = assignments["RUNTIME_AUTHORITY_DEPENDENCIES"]
+    manifest_by_name = {
+        re.sub(r"[-_.]+", "-", item["distribution"]).lower(): item
+        for item in manifest["dependencies"]
+    }
+
+    assert assignments["RUNTIME_AUTHORITY_DEPENDENCY_MANIFEST_HASH"] == manifest["manifest_hash"]
+    assert set(dependencies) == {
+        "annotated-types",
+        "pydantic",
+        "pydantic-core",
+        "pyyaml",
+        "typing-extensions",
+        "typing-inspection",
+    }
+    for name, (version, import_roots) in dependencies.items():
+        item = manifest_by_name[name]
+        assert version == item["version"]
+        assert import_roots == (
+            item["import_root"] + (".py" if name == "typing-extensions" else ""),
+        )
+
+
+def test_runtime_authority_requirements_are_hash_complete_manifest_projection() -> None:
+    manifest = json.loads(RUNTIME_DEPENDENCY_MANIFEST.read_text(encoding="utf-8"))
+    expected = {
+        re.sub(r"[-_.]+", "-", item["distribution"]).lower(): (
+            item["version"],
+            {wheel["sha256"] for wheel in item["wheels"]},
+        )
+        for item in manifest["dependencies"]
+        if item["distribution"] != "python-toon"
+    }
+    logical = RUNTIME_AUTHORITY_REQUIREMENTS.read_text(encoding="utf-8").replace("\\\n", " ")
+    observed: dict[str, tuple[str, set[str]]] = {}
+    for line in logical.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        requirement, *arguments = stripped.split()
+        name, version = requirement.split("==", 1)
+        hashes = {
+            argument.removeprefix("--hash=sha256:")
+            for argument in arguments
+            if argument.startswith("--hash=sha256:")
+        }
+        observed[re.sub(r"[-_.]+", "-", name).lower()] = (version, hashes)
+
+    assert observed == expected
+
+
+def test_ci_installs_and_exercises_sealed_runtime_authority_closure() -> None:
+    workflow = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))
+    jobs = workflow["jobs"]
+    full_shard_steps = jobs["test-full-shard"]["steps"]
+    aggregate_test_steps = jobs["test"]["steps"]
+
+    full_install = next(
+        step
+        for step in full_shard_steps
+        if step.get("name") == "Install sealed runtime-authority Python closure"
+    )
+    admission_install = next(
+        step
+        for step in aggregate_test_steps
+        if step.get("name") == "Install sealed runtime-authority Python closure"
+    )
+    admission_test = next(
+        step
+        for step in aggregate_test_steps
+        if step.get("name") == "Verify sealed runtime-authority system Python"
+    )
+
+    for install_step in (full_install, admission_install):
+        command = install_step["run"]
+        assert "/opt/hapax/runtime-authority-python/site-packages" in command
+        assert "--python /usr/bin/python3" in command
+        assert "--require-hashes" in command
+        assert "--only-binary=:all:" in command
+        assert "--no-deps" in command
+        assert "--link-mode=copy" in command
+        assert "config/root-required/runtime-authority-python.requirements" in command
+    assert "steps.test_mode.outputs.mode != 'merge-group-shards'" in admission_install["if"]
+    assert "steps.test_mode.outputs.mode == 'pr-admission'" in admission_test["if"]
+    assert "tests/scripts/test_hapax_post_merge_deploy.py" in admission_test["run"]
+    assert "runtime_authority" in admission_test["run"]
+    assert (
+        "config/root-required/runtime-authority-python.requirements"
+        in CI_WORKFLOW.read_text(encoding="utf-8").split("python_prod_dependency_witness=true", 1)[
+            0
+        ]
+    )
+
+
+def test_runtime_authority_validator_rejects_dependency_version_drift(tmp_path: Path) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    task.write_text(_runtime_authority_task_text(), encoding="utf-8")
+
+    result = _run_runtime_authority_validator(
+        task,
+        active_root,
+        dependency_prelude=(
+            'RUNTIME_AUTHORITY_DEPENDENCIES["pydantic"] = ("0.0.invalid", ("pydantic",))'
+        ),
+    )
+
+    assert result.returncode == 2
+    assert "runtime-authority dependency version mismatch" in result.stderr
+
+
+def test_runtime_authority_validator_rejects_dependency_manifest_identity_drift(
+    tmp_path: Path,
+) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    task.write_text(_runtime_authority_task_text(), encoding="utf-8")
+
+    result = _run_runtime_authority_validator(
+        task,
+        active_root,
+        dependency_prelude=('RUNTIME_AUTHORITY_DEPENDENCY_MANIFEST_HASH = "sha256:unsupported"'),
+    )
+
+    assert result.returncode == 2
+    assert "dependency manifest identity is unsupported" in result.stderr
+
+
+@pytest.mark.parametrize("unsafe_kind", ("non-root", "symlink"))
+def test_runtime_authority_validator_rejects_unsafe_dependency_root(
+    tmp_path: Path,
+    unsafe_kind: str,
+) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    task.write_text(_runtime_authority_task_text(), encoding="utf-8")
+    dependency_root = tmp_path / "runtime-dependencies"
+    if unsafe_kind == "symlink":
+        target = tmp_path / "dependency-target"
+        target.mkdir()
+        dependency_root.symlink_to(target, target_is_directory=True)
+    else:
+        dependency_root.mkdir()
+
+    result = _run_runtime_authority_validator(
+        task,
+        active_root,
+        dependency_prelude=(f"RUNTIME_AUTHORITY_DEDICATED_SITE = Path({str(dependency_root)!r})"),
+    )
+
+    assert result.returncode == 2
+    assert "dependency root" in result.stderr
 
 
 def test_runtime_authority_validator_rejects_unpinned_candidate_schema_code(
@@ -1227,6 +1427,7 @@ def test_runtime_authority_validator_rejects_unpinned_candidate_schema_code(
     for relative_path in (
         "shared/agentic_trust_boundary.py",
         "shared/route_metadata_schema.py",
+        "config/coordination-canon/runtime-dependency-release-set.json",
     ):
         target = repo / relative_path
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1238,7 +1439,7 @@ def test_runtime_authority_validator_rejects_unpinned_candidate_schema_code(
             )
         target.write_text(source, encoding="utf-8")
     subprocess.run(["/usr/bin/git", "init", "-q", str(repo)], check=True)
-    subprocess.run(["/usr/bin/git", "-C", str(repo), "add", "shared"], check=True)
+    subprocess.run(["/usr/bin/git", "-C", str(repo), "add", "shared", "config"], check=True)
     subprocess.run(
         [
             "/usr/bin/git",
@@ -1282,15 +1483,21 @@ def test_runtime_authority_validator_statuses_match_canonical_vocabulary() -> No
     assert set(ast.literal_eval(assignment.value)) == set(CANONICAL_TASK_MUTABLE_STATUSES)
 
 
-def test_runtime_authority_validator_ignores_cwd_yaml_shadow(tmp_path: Path) -> None:
+def test_runtime_authority_validator_ignores_cwd_dependency_shadows(tmp_path: Path) -> None:
     active_root = tmp_path / "hapax-cc-tasks" / "active"
     active_root.mkdir(parents=True)
     task = active_root / "runtime-cap.md"
     task.write_text(_runtime_authority_task_text(), encoding="utf-8")
     shadow = tmp_path / "shadow"
     shadow.mkdir()
-    marker = tmp_path / "yaml-shadow-ran"
+    marker = tmp_path / "dependency-shadow-ran"
     (shadow / "yaml.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n",
+        encoding="utf-8",
+    )
+    pydantic_shadow = shadow / "pydantic"
+    pydantic_shadow.mkdir()
+    (pydantic_shadow / "__init__.py").write_text(
         f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n",
         encoding="utf-8",
     )
@@ -1360,6 +1567,31 @@ def test_runtime_authority_validator_rejects_invalid_frontmatter_authority(
     assert result.returncode == 2
     assert expected in result.stderr
     assert "next action:" in result.stderr
+
+
+def test_runtime_authority_validator_accepts_canonical_enriched_route_metadata(
+    tmp_path: Path,
+) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    text = _runtime_authority_task_text().replace(
+        "  mutation_surface: runtime\n",
+        "  mutation_surface: runtime\n"
+        "  risk_flags:\n"
+        "    governance_sensitive: true\n"
+        "    privacy_or_secret_sensitive: false\n"
+        "    public_claim_sensitive: false\n"
+        "  context_shape:\n"
+        "    codebase_locality: module\n"
+        "    vault_context_required: true\n",
+    )
+    task.write_text(text, encoding="utf-8")
+
+    result = _run_runtime_authority_validator(task, active_root)
+
+    assert result.returncode == 0, result.stderr
+    assert "runtime authority accepted: task_id=runtime-cap" in result.stdout
 
 
 @pytest.mark.parametrize("path_kind", ("nested", "symlink"))
