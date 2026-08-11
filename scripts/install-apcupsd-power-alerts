@@ -53,6 +53,7 @@ ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_STATE_R
 ROOT_REQUIRED_SEALED_SOURCE_FDS="${HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS:-}"
 ROOT_REQUIRED_LEGACY_FINALIZE_GATE="${HAPAX_ROOT_REQUIRED_FINALIZE_GATE:-}"
 RUNTIME_AUTHORITY_TASK="${HAPAX_RUNTIME_AUTHORITY_TASK:-}"
+readonly APC_REPAIR_ACTION="the runtime-authorized hapax-post-merge-deploy APC package reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK"
 ROOT_REQUIRED_RECEIPT="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/apcupsd-power-alerts.sha"
 ROOT_REQUIRED_DESIRED_RECEIPT="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/apcupsd-power-alerts.sha"
 SKIP_SUPERSEDED_INSTALL=0
@@ -244,7 +245,7 @@ expect_header() {
     local first
     first="$(head -n1 "$file")"
     [ "$first" = "## apcupsd.conf v1.1 ##" ] || {
-        echo "bad apcupsd header in $file: $first; next action: restore config/apcupsd/apcupsd.conf and rerun scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        echo "bad apcupsd header in $file: $first; next action: restore config/apcupsd/apcupsd.conf and rerun $APC_REPAIR_ACTION" >&2
         return 1
     }
 }
@@ -429,7 +430,7 @@ verify_audit_log_parent() {
         parent_expected_mode=2775
     fi
     /usr/bin/python3 - "$AUDIT_LOG" "$AUDIT_LOG_OWNER_UID" "$AUDIT_LOG_OWNER_GID" \
-        "$parent_expected_mode" <<'PY'
+        "$parent_expected_mode" "$APC_REPAIR_ACTION" <<'PY'
 from __future__ import annotations
 
 import os
@@ -440,14 +441,14 @@ path = sys.argv[1]
 owner_uid = int(sys.argv[2])
 owner_gid = int(sys.argv[3])
 parent_expected_mode = int(sys.argv[4], 8) if sys.argv[4] else None
+repair_action = sys.argv[5]
 parent = os.path.dirname(path) or "."
 try:
     inode = os.lstat(parent)
 except OSError as exc:
     print(
         f"UPS audit log parent is missing or unreadable: {parent}: {exc}; next action: "
-        "repair the lexical parent and rerun scripts/install-apcupsd-power-alerts "
-        "--install --verify-live",
+        f"repair the lexical parent and rerun {repair_action}",
         file=sys.stderr,
     )
     raise SystemExit(1) from exc
@@ -467,8 +468,7 @@ if not stat.S_ISDIR(inode.st_mode) or (
             if parent_expected_mode is not None
             else "directory"
         )
-        + "; next action: repair the audit-log directory and rerun "
-        "scripts/install-apcupsd-power-alerts --install --verify-live",
+        + f"; next action: repair the audit-log directory and rerun {repair_action}",
         file=sys.stderr,
     )
     raise SystemExit(1)
@@ -525,7 +525,8 @@ PY
 verify_audit_log_target() {
     resolve_audit_log_identity
     verify_audit_log_parent
-    /usr/bin/python3 - "$AUDIT_LOG" "$AUDIT_LOG_OWNER_UID" "$AUDIT_LOG_OWNER_GID" <<'PY'
+    /usr/bin/python3 - "$AUDIT_LOG" "$AUDIT_LOG_OWNER_UID" "$AUDIT_LOG_OWNER_GID" \
+        "$APC_REPAIR_ACTION" <<'PY'
 from __future__ import annotations
 
 import os
@@ -535,12 +536,13 @@ import sys
 path = sys.argv[1]
 owner_uid = int(sys.argv[2])
 owner_gid = int(sys.argv[3])
+repair_action = sys.argv[4]
 try:
     inode = os.lstat(path)
 except OSError as exc:
     print(
         f"UPS audit log is missing or unreadable: {path}: {exc}; next action: rerun "
-        "scripts/install-apcupsd-power-alerts --install --verify-live",
+        f"{repair_action}",
         file=sys.stderr,
     )
     raise SystemExit(1) from exc
@@ -555,7 +557,7 @@ if (
         f"UPS audit log trust drift: {path} owner={inode.st_uid}:{inode.st_gid} "
         f"mode={stat.S_IMODE(inode.st_mode):03o} links={inode.st_nlink}; expected "
         f"{owner_uid}:{owner_gid}:640 with one regular link; next action: rerun "
-        "scripts/install-apcupsd-power-alerts --install --verify-live",
+        f"{repair_action}",
         file=sys.stderr,
     )
     raise SystemExit(1)
@@ -1184,12 +1186,12 @@ verify_root_artifact_trust() {
             ;;
     esac
     if [ ! -f "$path" ] || [ -L "$path" ]; then
-        echo "root-owned UPS artifact is missing, symlinked, or not a regular file: $path; next action: rerun scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        echo "root-owned UPS artifact is missing, symlinked, or not a regular file: $path; next action: rerun $APC_REPAIR_ACTION" >&2
         return 1
     fi
     actual="$(stat -c '%u:%g:%a' "$path" 2>/dev/null || true)"
     if [ "$actual" != "$expected_uid:$expected_gid:$expected_mode" ]; then
-        echo "root-owned UPS artifact trust drift: $path owner/mode=${actual:-unavailable} expected=$expected_uid:$expected_gid:$expected_mode; next action: rerun scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        echo "root-owned UPS artifact trust drift: $path owner/mode=${actual:-unavailable} expected=$expected_uid:$expected_gid:$expected_mode; next action: rerun $APC_REPAIR_ACTION" >&2
         return 1
     fi
     parent="$(dirname "$path")"
@@ -1199,7 +1201,7 @@ verify_root_artifact_trust() {
         || [ "$parent_actual" != "$expected_uid:$expected_gid" ] \
         || ! [[ "$parent_mode" =~ ^[0-7]+$ ]] \
         || (( (8#$parent_mode & 8#022) != 0 )); then
-        echo "root-owned UPS artifact parent trust drift: $parent owner/mode=${parent_actual:-unavailable}:${parent_mode:-unavailable}; next action: repair the root-owned directory and rerun scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        echo "root-owned UPS artifact parent trust drift: $parent owner/mode=${parent_actual:-unavailable}:${parent_mode:-unavailable}; next action: repair the root-owned directory and rerun $APC_REPAIR_ACTION" >&2
         return 1
     fi
 }
@@ -1215,52 +1217,52 @@ verify_live() {
     verify_root_artifact_trust "$LOGROTATE_DEST" 644
     expect_header "$DEST/apcupsd.conf"
     cmp -s "$(src_path config/apcupsd/apcupsd.conf)" "$DEST/apcupsd.conf" || {
-        echo "live config differs from source: $DEST; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        echo "live config differs from source: $DEST; next action: run $APC_REPAIR_ACTION" >&2
         return 1
     }
     [ -x "$DEST/hapax-power-event.py" ] || {
-        echo "live helper is not executable: $DEST/hapax-power-event.py; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        echo "live helper is not executable: $DEST/hapax-power-event.py; next action: run $APC_REPAIR_ACTION" >&2
         return 1
     }
     cmp -s "$(src_path config/apcupsd/hapax-power-event.py)" "$DEST/hapax-power-event.py" || {
-        echo "live helper differs from source: $DEST/hapax-power-event.py; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        echo "live helper differs from source: $DEST/hapax-power-event.py; next action: run $APC_REPAIR_ACTION" >&2
         return 1
     }
     [ -x "$DEST/onbattery" ] || {
-        echo "live onbattery hook is not executable; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        echo "live onbattery hook is not executable; next action: run $APC_REPAIR_ACTION" >&2
         return 1
     }
     cmp -s "$(src_path config/apcupsd/onbattery)" "$DEST/onbattery" || {
-        echo "live onbattery hook differs from source; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        echo "live onbattery hook differs from source; next action: run $APC_REPAIR_ACTION" >&2
         return 1
     }
     [ -x "$DEST/offbattery" ] || {
-        echo "live offbattery hook is not executable; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        echo "live offbattery hook is not executable; next action: run $APC_REPAIR_ACTION" >&2
         return 1
     }
     cmp -s "$(src_path config/apcupsd/offbattery)" "$DEST/offbattery" || {
-        echo "live offbattery hook differs from source; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        echo "live offbattery hook differs from source; next action: run $APC_REPAIR_ACTION" >&2
         return 1
     }
     [ -x "$DEST/doshutdown" ] || {
-        echo "live doshutdown hook is not executable; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        echo "live doshutdown hook is not executable; next action: run $APC_REPAIR_ACTION" >&2
         return 1
     }
     cmp -s "$(src_path config/apcupsd/doshutdown)" "$DEST/doshutdown" || {
-        echo "live doshutdown hook differs from source; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        echo "live doshutdown hook differs from source; next action: run $APC_REPAIR_ACTION" >&2
         return 1
     }
     cmp -s "$(src_path config/upower/90-hapax-apcupsd-owner.conf)" "$UPOWER_CONF_DEST" || {
-        echo "live UPower policy-owner config differs from source; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        echo "live UPower policy-owner config differs from source; next action: run $APC_REPAIR_ACTION" >&2
         return 1
     }
     verify_upower_live_policy
     cmp -s "$(src_path systemd/logrotate.d/hapax-ups-power-events)" "$LOGROTATE_DEST" || {
-        echo "live UPS logrotate config differs from source; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        echo "live UPS logrotate config differs from source; next action: run $APC_REPAIR_ACTION" >&2
         return 1
     }
     [ -d "$AUDIT_DIR" ] || {
-        echo "audit directory missing: $AUDIT_DIR; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        echo "audit directory missing: $AUDIT_DIR; next action: run $APC_REPAIR_ACTION" >&2
         return 1
     }
     verify_audit_log_target

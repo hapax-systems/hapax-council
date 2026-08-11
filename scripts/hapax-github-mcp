@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash -p
 # Launch the official local GitHub MCP server without storing tokens in config.
 
 set -euo pipefail

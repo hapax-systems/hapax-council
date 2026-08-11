@@ -12,6 +12,7 @@ WRAPPER = REPO_ROOT / "scripts" / "hapax-github-mcp"
 
 
 def test_github_mcp_script_is_valid_bash() -> None:
+    assert WRAPPER.read_text(encoding="utf-8").splitlines()[0] == "#!/usr/bin/bash -p"
     result = subprocess.run(
         ["bash", "-n", str(WRAPPER)],
         capture_output=True,
@@ -20,6 +21,66 @@ def test_github_mcp_script_is_valid_bash() -> None:
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_github_mcp_privileged_shell_ignores_hostile_bash_env(tmp_path: Path) -> None:
+    startup_marker = tmp_path / "bash-env-ran"
+    bash_env = tmp_path / "hostile-bash-env"
+    bash_env.write_text(': > "$STARTUP_MARKER"\n', encoding="utf-8")
+    account_home = pwd.getpwuid(os.getuid()).pw_dir
+
+    result = subprocess.run(
+        [str(WRAPPER), "--test-canonical-refusal"],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "HOME": account_home,
+            "BASH_ENV": str(bash_env),
+            "STARTUP_MARKER": str(startup_marker),
+            "HAPAX_GITHUB_MCP_TEST_MODE": "1",
+            "HAPAX_GITHUB_MCP_TEST_LOG_DIR": str(tmp_path / "mcp-logs"),
+            "HAPAX_GITHUB_MCP_TEST_LOGGER": "/usr/bin/true",
+        },
+        timeout=5,
+    )
+
+    assert result.returncode == 2
+    assert "canonical probe; next action: repair source activation" in result.stderr
+    assert not startup_marker.exists()
+
+
+def test_github_mcp_absolute_shebang_ignores_path_bash(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    startup_marker = tmp_path / "path-bash-ran"
+    fake_bash = fake_bin / "bash"
+    fake_bash.write_text(
+        '#!/usr/bin/bash\n: > "$STARTUP_MARKER"\nexec /usr/bin/bash "$@"\n',
+        encoding="utf-8",
+    )
+    fake_bash.chmod(0o755)
+    account_home = pwd.getpwuid(os.getuid()).pw_dir
+
+    result = subprocess.run(
+        [str(WRAPPER), "--test-canonical-refusal"],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "HOME": account_home,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "STARTUP_MARKER": str(startup_marker),
+            "HAPAX_GITHUB_MCP_TEST_MODE": "1",
+            "HAPAX_GITHUB_MCP_TEST_LOG_DIR": str(tmp_path / "mcp-logs"),
+            "HAPAX_GITHUB_MCP_TEST_LOGGER": "/usr/bin/true",
+        },
+        timeout=5,
+    )
+
+    assert result.returncode == 2
+    assert "canonical probe; next action: repair source activation" in result.stderr
+    assert not startup_marker.exists()
 
 
 def _canonical_resolver_source() -> str:

@@ -38,6 +38,8 @@ the canonical source-activation worktree, and before requesting runtime authorit
 perform this read-only source/live identity recheck. It hashes and measures the
 protected target without staging, starting, stopping, or replacing anything. An
 unrecognized option means source activation is stale, not that the model is invalid:
+A missing protected path means the model has not yet been staged; that is expected
+before an authorized canary and is not an integrity failure.
 
 ```bash
 account_home="$(/usr/bin/getent passwd "$(/usr/bin/id -u)" | /usr/bin/cut -d: -f6)"
