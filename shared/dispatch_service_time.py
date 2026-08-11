@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import statistics
 import time
@@ -67,7 +68,34 @@ AGE_NORM_S = 3453.0
 MAX_REAP_ATTEMPTS = 3
 
 DEFAULT_DECISIONS_PATH = Path.home() / ".cache/hapax/cc-task-gate-decisions.jsonl"
-DEFAULT_METHODOLOGY_PATH = Path.home() / ".cache/hapax/methodology-dispatch.jsonl"
+
+#: The methodology-dispatch ledger, as the PRODUCER actually writes it.
+#:
+#: This pointed at `~/.cache/hapax/methodology-dispatch.jsonl` — a path nothing in the estate
+#: writes; grepping scripts/, shared/ and agents/ returned only this constant. The real ledger is
+#: written by `hapax-methodology-dispatch` through its `orchestration_ledger_dir()`, and stood at
+#: 968,573,691 bytes on 2026-08-10 while this consumer read none of it.
+#:
+#: It went unnoticed because the distribution was NOT empty: the other source supplied 4,231
+#: samples, so every consumer got a plausible answer computed over the wrong population.
+#: Materially wrong is worse than empty — empty fails visibly.
+#:
+#: Measured over a 14-day window: global gap p99 1,918s -> 15,363s; epsilon n=21 -> 4,606 and tau
+#: 1,800s -> 7,200s; theta n=4 -> 1,012 and tau 1,800s -> 7,200s; beta unchanged. The two lineages
+#: with the sparsest history were the ones pinned to the tau FLOOR, so the lanes least visible to
+#: this ledger were the most exposed to reaping — `tau_for_lineage` feeds `should_reap`.
+#:
+#: HAPAX_ORCHESTRATION_LEDGER_DIR is honoured so this consumer follows the producer if it moves.
+DEFAULT_METHODOLOGY_PATH = (
+    Path(
+        os.environ.get(
+            "HAPAX_ORCHESTRATION_LEDGER_DIR",
+            str(Path.home() / ".cache" / "hapax" / "orchestration"),
+        )
+    )
+    / "methodology-dispatch.jsonl"
+)
+
 DEFAULT_CACHE_PATH = Path.home() / ".cache/hapax/dispatch-service-time.json"
 
 
