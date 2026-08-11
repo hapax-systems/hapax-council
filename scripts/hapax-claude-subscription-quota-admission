@@ -7,14 +7,28 @@ fresh account-live subscription quota. It is patterned after
 are consumed by ``scripts/hapax-quota-telemetry-writer`` before that route is treated as
 quota-fresh.
 
-Account-live subscription quota is NOT mechanically observable yet (Claude Code OTel usage/cost
-integration is incomplete — CASE-CAPACITY-ROUTING-001 R2, "use receipts and manual refresh until
-observable"). So this writer records an OPERATOR / governed-probe attestation of a bounded
-account-live observation (an evidence ref naming what was observed), NEVER a live Claude smoke
-(no runtime side effect, no provider spend) and NEVER lane/tmux/session presence. It persists no
-secret value and no prompt/response content, and the receipt is short-lived so it cannot stand as
-stale evidence. Fail-closed: an unsafe/invalid observation exits non-zero and writes nothing, so the
-route stays held.
+Two paths, and the difference between them is the whole point.
+
+**Measured (``--from-transcript``).** Subscription *liveness* IS mechanically observable: a completed
+assistant turn in Claude Code's own transcripts is exactly the default observation this writer
+names — a real Claude invocation that returned without hitting a quota wall. ``--from-transcript``
+reads it and derives both the evidence ref and ``observed_at`` from the turn itself, so nobody types
+a claim that was never checked. See ``shared/claude_transcript_quota``. Prefer this path.
+
+**Attested (explicit ``--evidence-ref``).** The original path, retained because liveness is not the
+only claim: ``operator_confirmed_subscription_headroom`` is an operator act and cannot be measured
+from disk. On this path the writer validates the *shape* of the reference and never that the
+observation happened — an evidence ref merely names what was allegedly seen.
+
+CASE-CAPACITY-ROUTING-001 R2 said "use receipts and manual refresh until observable". For liveness
+that exit condition is now met. **What remains unobservable is headroom MAGNITUDE**: Claude Code's
+``rateLimits`` transcript field is null in every record on this estate and no usage/limit file exists
+under ``~/.claude``, so the codex ``--from-rollout`` percentage read has no analogue here.
+
+Both paths: NEVER a live Claude smoke (no runtime side effect, no provider spend) and NEVER
+lane/tmux/session presence. No secret value and no prompt/response content is persisted, and the
+receipt is short-lived so it cannot stand as stale evidence. Fail-closed: an unsafe or invalid
+observation exits non-zero and writes nothing, so the route stays held.
 """
 
 from __future__ import annotations
