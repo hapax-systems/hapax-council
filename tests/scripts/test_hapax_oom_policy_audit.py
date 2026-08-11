@@ -273,6 +273,31 @@ def test_source_checkout_probe_failure_is_a_structured_fail_closed_result(tmp_pa
     assert "fatal:" in result.stderr
 
 
+def test_copied_full_audit_reports_unrecognized_authority_without_test_selectors(
+    tmp_path: Path,
+) -> None:
+    copied = tmp_path / "arbitrary" / "scripts" / "hapax-oom-policy-audit"
+    copied.parent.mkdir(parents=True)
+    copied.write_bytes(SCRIPT.read_bytes())
+    copied.chmod(0o755)
+    env = {key: item for key, item in os.environ.items() if key not in INSTALLED_TEST_SELECTORS}
+
+    result = subprocess.run(
+        [str(copied), "--json"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    payload = json.loads(result.stdout)
+    check = next(item for item in payload["checks"] if item["name"] == "policy_authority")
+    assert result.returncode == 1
+    assert check["status"] == "fail"
+    assert check["actual"] == "non-authoritative-unrecognized-executable"
+    assert "next action:" in check["detail"]
+
+
 def test_host_policy_lines_propagate_authority_failure_without_test_selectors(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1431,6 +1456,7 @@ def test_shipped_host_profile_rows_satisfy_the_declared_zram_invariant() -> None
     ]
 
     assert "-k shipped_host_profile_rows_satisfy_the_declared_zram_invariant" in table_text
+    assert "-k profile_zram_rows_match_shipped_generator_policy" in table_text
     assert "exact zram contract: appendix=16384 MiB, podium=32768 MiB" in table_text
     assert "admission-only safety invariant" in table_text
     assert "8192 <= zram_mib and zram_mib * 2 <= min_memtotal_gib * 1024" in table_text

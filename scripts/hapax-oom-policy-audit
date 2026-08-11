@@ -140,7 +140,7 @@ GOVERNED_MEMORY_ASSIGNMENT = re.compile(
     re.MULTILINE,
 )
 SOURCE_CHECKOUT_WARNINGS: list[str] = []
-HOST_POLICY_LINE_AUTHORITIES = frozenset(
+ACCEPTED_POLICY_AUTHORITIES = frozenset(
     {
         "internal-sealed-package-source",
         "non-authoritative-source-tree",
@@ -207,14 +207,14 @@ def _source_checkout_authority_checks() -> list[Check]:
     ]
 
 
-def _host_policy_line_authority_checks(policy_authority: str) -> list[Check]:
+def _policy_authority_checks(policy_authority: str) -> list[Check]:
     checks = _source_checkout_authority_checks()
-    if policy_authority not in HOST_POLICY_LINE_AUTHORITIES:
+    if policy_authority not in ACCEPTED_POLICY_AUTHORITIES:
         checks.append(
             Check(
-                "host_policy_line_authority",
+                "policy_authority",
                 "fail",
-                "recognized source, sealed package, or canonical installed audit",
+                "recognized source, sealed package, canonical installed audit, or governed test",
                 policy_authority,
                 "unrecognized executables cannot supply governed host policy; next action: "
                 "invoke the exact source checkout, sealed post-merge package, or canonical "
@@ -2069,7 +2069,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         if args.host_policy_lines:
             print(_policy_lines(policy, policy_authority))
-            return _audit_exit_code(_host_policy_line_authority_checks(policy_authority))
+            return _audit_exit_code(_policy_authority_checks(policy_authority))
         try:
             with shared_root_required_lock():
                 checks = [
@@ -2114,7 +2114,7 @@ def main(argv: list[str] | None = None) -> int:
                     f"{exc}; {NEXT_OOM_INSTALL}",
                 )
             ]
-    checks = [*_source_checkout_authority_checks(), *checks]
+    checks = [*_policy_authority_checks(policy_authority), *checks]
     if args.json:
         print(
             json.dumps(
