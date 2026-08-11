@@ -107,4 +107,8 @@ def test_github_mcp_fails_before_credentials_when_canonical_release_is_missing(
 
     assert result.returncode == 2
     assert "canonical source-activation wrapper is unavailable" in result.stderr
+    assert "next action: reconcile source activation" in result.stderr
+    assert "canonical source-activation wrapper is unavailable" in (
+        tmp_path / ".cache/hapax/mcp-logs/github-mcp.log"
+    ).read_text(encoding="utf-8")
     assert "no GitHub token found" not in result.stderr

@@ -18,7 +18,10 @@ Environment=JUDGE_GPU_UUID=GPU-347222d9-00af-5a94-a365-c57c09dfddcd
 Environment=JUDGE_MODEL=/models/CompassVerifier-7B.Q5_K_M.gguf
 # The governed name is reserved for this unit. Docker must fail the start if an
 # unknown same-name container exists; automatic cleanup would destroy work the
-# user manager did not launch.
+# user manager did not launch. On collision, follow local-judge-stack.md: stop
+# this unit, inspect the audit-reported immutable ID, and `docker rm <ID>` only
+# after confirming that exact non-running container owns /hapax-local-judge.
+# The 4G/6G cap remains a candidate until the separately authorized load canary passes.
 ExecStart=/usr/bin/docker run --rm --name hapax-local-judge \
     --memory 4G --memory-swap 6G \
     --gpus device=${JUDGE_GPU_UUID} \

@@ -376,7 +376,7 @@ validate_candidate_against_receipt() {
     }
     [ "$receipt_sha" != "$ROOT_REQUIRED_PACKAGE_SHA" ] || return 0
     if ! git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$receipt_sha^{commit}" 2>/dev/null; then
-        echo "cannot validate OOM package order for $receipt_kind=$receipt_sha candidate=$ROOT_REQUIRED_PACKAGE_SHA; next action: fetch both commits into $ROOT_REQUIRED_GIT_REPO and rerun the staged RUNBOOK" >&2
+        echo "cannot validate OOM package order for $receipt_kind=$receipt_sha candidate=$ROOT_REQUIRED_PACKAGE_SHA; next action: fetch both commits into $ROOT_REQUIRED_GIT_REPO, rerun hapax-post-merge-deploy, and use its live next-action command" >&2
         return 1
     fi
     if git -C "$ROOT_REQUIRED_GIT_REPO" merge-base --is-ancestor "$receipt_sha" "$ROOT_REQUIRED_PACKAGE_SHA"; then
@@ -403,7 +403,7 @@ validate_root_required_package_order() {
         if [ -z "$ROOT_REQUIRED_PACKAGE_SHA" ]; then
             ROOT_REQUIRED_PACKAGE_SHA="$staged_sha"
         elif [ "$ROOT_REQUIRED_PACKAGE_SHA" != "$staged_sha" ]; then
-            echo "root-required OOM package SHA mismatch: env=$ROOT_REQUIRED_PACKAGE_SHA staged=$staged_sha; next action: rerun the unmodified command from this package's RUNBOOK.txt" >&2
+            echo "root-required OOM package SHA mismatch: env=$ROOT_REQUIRED_PACKAGE_SHA staged=$staged_sha; next action: rerun hapax-post-merge-deploy for the desired SHA and use only its live next-action command" >&2
             return 1
         fi
     fi
@@ -411,15 +411,15 @@ validate_root_required_package_order() {
         ROOT_REQUIRED_PACKAGE_SHA="$(git -C "$SOURCE" rev-parse HEAD 2>/dev/null || true)"
     fi
     if [ -z "$ROOT_REQUIRED_PACKAGE_SHA" ]; then
-        echo "OOM install source has no package SHA; next action: run from a Git worktree or the exact staged RUNBOOK command" >&2
+        echo "OOM install source has no package SHA; next action: run from a clean Git worktree or rerun hapax-post-merge-deploy for the desired SHA" >&2
         return 1
     fi
     [[ "$ROOT_REQUIRED_PACKAGE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
-        echo "invalid root-required package SHA: $ROOT_REQUIRED_PACKAGE_SHA; next action: rerun the exact command from the staged RUNBOOK.txt" >&2
+        echo "invalid root-required package SHA: $ROOT_REQUIRED_PACKAGE_SHA; next action: rerun hapax-post-merge-deploy for the desired receipt SHA and use its live next-action command" >&2
         return 1
     }
     git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$ROOT_REQUIRED_PACKAGE_SHA^{commit}" 2>/dev/null || {
-        echo "root-required OOM package commit is unavailable: $ROOT_REQUIRED_PACKAGE_SHA; next action: fetch it into $ROOT_REQUIRED_GIT_REPO and rerun the staged RUNBOOK" >&2
+        echo "root-required OOM package commit is unavailable: $ROOT_REQUIRED_PACKAGE_SHA; next action: fetch it into $ROOT_REQUIRED_GIT_REPO, rerun hapax-post-merge-deploy, and use its live next-action command" >&2
         return 1
     }
     validate_candidate_against_receipt installed "$ROOT_REQUIRED_RECEIPT"
@@ -451,7 +451,7 @@ validate_package_source_matches_commit() {
         git_mode="$(git -C "$ROOT_REQUIRED_GIT_REPO" ls-tree "$ROOT_REQUIRED_PACKAGE_SHA" -- "$rel" | awk 'NR == 1 {print $1}')"
         expected_mode="$(expected_package_git_mode "$rel")"
         if [ "$git_mode" != "$expected_mode" ]; then
-            echo "OOM package Git mode violates the destination contract at $rel: actual=$git_mode expected=$expected_mode; next action: restore the tracked executable class and rerun from a clean Git worktree or exact staged RUNBOOK" >&2
+            echo "OOM package Git mode violates the destination contract at $rel: actual=$git_mode expected=$expected_mode; next action: restore the tracked executable class and rerun from a clean Git worktree or a fresh post-merge live command" >&2
             return 1
         fi
         if ! /usr/bin/python3 - "$source_path" "$git_mode" "$AUTHENTICATED_SEALED_SOURCE" <<'PY'
@@ -473,11 +473,11 @@ if git_mode not in {"100644", "100755"} or worktree_mode != git_mode:
     raise SystemExit(1)
 PY
         then
-            echo "OOM install source is not a regular file with the claimed Git mode at $rel; next action: discard the substituted or mode-drifted package and rerun from a clean Git worktree or exact staged RUNBOOK" >&2
+            echo "OOM install source is not a regular file with the claimed Git mode at $rel; next action: discard the substituted or mode-drifted package and rerun from a clean Git worktree or a fresh post-merge live command" >&2
             return 1
         fi
         if ! cmp -s <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$ROOT_REQUIRED_PACKAGE_SHA:$rel") "$source_path"; then
-            echo "OOM install source does not match claimed commit $ROOT_REQUIRED_PACKAGE_SHA at $rel; next action: discard the modified package and rerun from a clean Git worktree or exact staged RUNBOOK" >&2
+            echo "OOM install source does not match claimed commit $ROOT_REQUIRED_PACKAGE_SHA at $rel; next action: discard the modified package and rerun from a clean Git worktree or a fresh post-merge live command" >&2
             return 1
         fi
     done
@@ -532,15 +532,15 @@ validate_root_required_deferral_dir() {
             ;;
     esac
     expected_real="$(canonical_dir "$ROOT_REQUIRED_DEFER_ROOT/$ROOT_REQUIRED_PACKAGE_SHA/oom-containment")" || {
-        echo "expected OOM deferral package is missing: $ROOT_REQUIRED_DEFER_ROOT/$ROOT_REQUIRED_PACKAGE_SHA/oom-containment; next action: rerun the exact command from that package's RUNBOOK.txt" >&2
+        echo "expected OOM deferral package is missing: $ROOT_REQUIRED_DEFER_ROOT/$ROOT_REQUIRED_PACKAGE_SHA/oom-containment; next action: rerun hapax-post-merge-deploy for $ROOT_REQUIRED_PACKAGE_SHA and use its live next-action command" >&2
         return 1
     }
     source_real="$(canonical_dir "$SOURCE")" || {
-        echo "OOM install source is missing: $SOURCE; next action: rerun the exact staged RUNBOOK command" >&2
+        echo "OOM install source is missing: $SOURCE; next action: rerun hapax-post-merge-deploy for $ROOT_REQUIRED_PACKAGE_SHA and use its live next-action command" >&2
         return 1
     }
     if [ "$drain_real" != "$expected_real" ] || [ "$source_real" != "$expected_real" ]; then
-        echo "refusing mismatched OOM deferral drain: source=$source_real drain=$drain_real expected=$expected_real; next action: use the unmodified command from $expected_real/RUNBOOK.txt" >&2
+        echo "refusing mismatched OOM deferral drain: source=$source_real drain=$drain_real expected=$expected_real; next action: rerun hapax-post-merge-deploy for $ROOT_REQUIRED_PACKAGE_SHA and use only its live next-action command" >&2
         return 1
     fi
     ROOT_REQUIRED_DRAIN_REAL="$drain_real"
@@ -554,7 +554,7 @@ validate_root_required_deferral() {
 drain_root_required_deferral() {
     [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ] || return 0
     [ -n "${ROOT_REQUIRED_DRAIN_REAL:-}" ] || validate_root_required_deferral
-    mv "$ROOT_REQUIRED_DRAIN_REAL/RUNBOOK.txt" "$ROOT_REQUIRED_DRAIN_REAL/DRAINED.txt"
+    mv -fT -- "$ROOT_REQUIRED_DRAIN_REAL/RUNBOOK.txt" "$ROOT_REQUIRED_DRAIN_REAL/DRAINED.txt"
     echo "root-required deferral marked drained: $ROOT_REQUIRED_DRAIN_REAL"
 }
 
@@ -648,18 +648,18 @@ load_authenticated_sealed_sources() {
     local -a source_fds=()
     if [ "$AUTHENTICATED_SEALED_SOURCE" -eq 0 ]; then
         if [ -n "$raw" ]; then
-            echo "refusing sealed-source descriptors without the authenticated helper protocol flag; next action: remove HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS and rerun normally, or use the exact deferred RUNBOOK command" >&2
+            echo "refusing sealed-source descriptors without the authenticated helper protocol flag; next action: remove HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS and rerun normally, or regenerate the live command with hapax-post-merge-deploy" >&2
             return 1
         fi
         return 0
     fi
     if [ "$INSTALL" -ne 1 ] || [ -z "$raw" ]; then
-        echo "authenticated sealed-source mode requires --install and helper-owned descriptors; next action: rerun the exact deferred RUNBOOK command" >&2
+        echo "authenticated sealed-source mode requires --install and helper-owned descriptors; next action: regenerate the live command with hapax-post-merge-deploy" >&2
         return 1
     fi
     IFS=: read -r -a source_fds <<< "$raw"
     if [ "${#source_fds[@]}" -ne "${#package_files[@]}" ]; then
-        echo "authenticated OOM source descriptor count mismatch: actual=${#source_fds[@]} expected=${#package_files[@]}; next action: discard the altered invocation and rerun the exact deferred RUNBOOK command" >&2
+        echo "authenticated OOM source descriptor count mismatch: actual=${#source_fds[@]} expected=${#package_files[@]}; next action: discard the altered invocation and regenerate it with hapax-post-merge-deploy" >&2
         return 1
     fi
     if ! /usr/bin/python3 -I - "${source_fds[@]}" <<'PY'
@@ -699,7 +699,7 @@ if len(holder_pids) != 1:
     raise SystemExit(1)
 PY
     then
-        echo "authenticated OOM source descriptors are unavailable, unsealed, or not caller-owned memfds; next action: leave the deferral pending and rerun its exact RUNBOOK command" >&2
+        echo "authenticated OOM source descriptors are unavailable, unsealed, or not caller-owned memfds; next action: leave the deferral pending and regenerate its live command with hapax-post-merge-deploy" >&2
         return 1
     fi
     for index in "${!package_files[@]}"; do
@@ -927,7 +927,7 @@ src_path() {
     if [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ]; then
         sealed="${ROOT_REQUIRED_SEALED_SOURCES[$rel]-}"
         if [ -z "$sealed" ]; then
-            echo "authenticated OOM source map omits $rel; next action: leave the deferral pending and rerun its exact RUNBOOK command" >&2
+            echo "authenticated OOM source map omits $rel; next action: leave the deferral pending and regenerate its live command with hapax-post-merge-deploy" >&2
             return 1
         fi
         printf '%s\n' "$sealed"
@@ -1011,7 +1011,7 @@ load_host_policy() {
             fi
         fi
         if [ -z "$output" ]; then
-            echo "unable to derive the governed OOM host policy from sealed Git sources; next action: leave the deferral pending and rerun its exact RUNBOOK command" >&2
+            echo "unable to derive the governed OOM host policy from sealed Git sources; next action: leave the deferral pending and regenerate its live command with hapax-post-merge-deploy" >&2
             return 1
         fi
     elif ! output="$(

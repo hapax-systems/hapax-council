@@ -423,6 +423,8 @@ def test_local_judge_container_has_a_finite_memory_cap() -> None:
     assert "--memory 4G --memory-swap 6G" in text
     assert "--oom-kill-disable" not in text
     assert "ExecStartPre=-/usr/bin/docker rm" not in text
+    assert "4G/6G cap remains a candidate" in text
+    assert "docker rm <ID>" in text
 
 
 def test_local_judge_keeps_docker_ordering_convention_and_bounded_retry() -> None:
@@ -446,6 +448,8 @@ def test_local_judge_runbook_requires_live_authenticated_command() -> None:
     assert 'test ! -L "$runbook"' in text
     assert 'test ! -x "$runbook"' in text
     assert "DO NOT EXECUTE THIS FILE OR COPY A COMMAND FROM IT" in text
+    assert '"$runbook"' in text
+    assert 'head -n 5 "$runbook"' not in text
     assert '~/.local/bin/hapax-post-merge-deploy "$sha"' in text
     assert '/usr/bin/bash -p "$runbook"' not in text
     assert "completed authenticated package=oom-containment sha=$sha" in text

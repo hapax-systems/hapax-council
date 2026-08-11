@@ -96,6 +96,11 @@
 # Exits non-zero if any deploy step failed (or, in --report-coverage
 # mode, if any systemd/** path is unclassified).
 set -euo pipefail
+# Repository selectors are never a supported input to deployment. Keep normal
+# credential/config discovery for the initial fetch, but force repository
+# identity to come from each explicit -C/cd root.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY
+unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_SHALLOW_FILE GIT_REPLACE_REF_BASE
 ORIGINAL_ARGS=("$@")
 
 DRY_RUN=0
@@ -182,6 +187,19 @@ RECOVERY_BUNDLE_REQUIRED_FILES=(
     "${RECOVERY_BUNDLE_SOURCE_FILES[@]}"
     manifest.json
 )
+
+root_required_git() {
+    /usr/bin/env -i \
+        HOME=/nonexistent \
+        PATH=/usr/bin:/bin \
+        LANG=C.UTF-8 \
+        LC_ALL=C.UTF-8 \
+        GIT_CONFIG_GLOBAL=/dev/null \
+        GIT_CONFIG_NOSYSTEM=1 \
+        GIT_NO_REPLACE_OBJECTS=1 \
+        GIT_OPTIONAL_LOCKS=0 \
+        /usr/bin/git -C "$REPO" "$@"
+}
 
 acquire_inherited_root_required_lock() {
     local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
@@ -722,7 +740,7 @@ load_root_required_manifest_paths() {
         [ -f "$REPO/$manifest" ] || return 0
         content="$(cat "$REPO/$manifest")"
     else
-        content="$(git -C "$REPO" show "$revision:$manifest" 2>/dev/null || true)"
+        content="$(root_required_git show "$revision:$manifest" 2>/dev/null || true)"
     fi
     while IFS= read -r rel; do
         [ -n "$rel" ] || continue
@@ -1429,17 +1447,17 @@ fi
 stage_root_required_package() {
     local stage="$1" manifest="$2" label="$3"
     local rel dest git_mode
-    if ! git cat-file -e "$SHA:$manifest" 2>/dev/null; then
+    if ! root_required_git cat-file -e "$SHA:$manifest" 2>/dev/null; then
         echo "hapax-post-merge-deploy: missing $label manifest at $SHA:$manifest; next: restore the versioned ownership manifest and rerun hapax-post-merge-deploy for this merge" >&2
         return 2
     fi
     while IFS= read -r rel; do
         [ -n "$rel" ] || continue
-        if ! git cat-file -e "$SHA:$rel" 2>/dev/null; then
+        if ! root_required_git cat-file -e "$SHA:$rel" 2>/dev/null; then
             echo "hapax-post-merge-deploy: missing $label source at $SHA:$rel; next: restore every path declared by $manifest and rerun hapax-post-merge-deploy for this merge" >&2
             return 2
         fi
-        git_mode="$(git -C "$REPO" ls-tree "$SHA" -- "$rel" | awk 'NR == 1 {print $1}')"
+        git_mode="$(root_required_git ls-tree "$SHA" -- "$rel" | awk 'NR == 1 {print $1}')"
         case "$git_mode" in
             100644|100755) ;;
             *)
@@ -1449,13 +1467,13 @@ stage_root_required_package() {
         esac
         dest="$stage/$rel"
         mkdir -p "$(dirname "$dest")"
-        git show "$SHA:$rel" > "$dest"
+        root_required_git show "$SHA:$rel" > "$dest"
         if [ "$git_mode" = "100755" ]; then
             chmod 0755 "$dest"
         else
             chmod 0644 "$dest"
         fi
-    done < <(git -C "$REPO" show "$SHA:$manifest" | awk 'NF && $1 !~ /^#/ {print $1}')
+    done < <(root_required_git show "$SHA:$manifest" | awk 'NF && $1 !~ /^#/ {print $1}')
     printf '%s\n' "$SHA" > "$stage/.hapax-root-required-package-sha"
 }
 
@@ -1464,17 +1482,102 @@ stage_oom_containment_installer() {
         "$1" config/root-required/oom-containment.files "OOM containment"
 }
 
+reconcile_completed_root_required_deferral() {
+    local receipt="$1" dest="$2" label="$3"
+    /usr/bin/python3 -I - "$receipt" "$dest" "$SHA" "$label" <<'PY'
+from __future__ import annotations
+
+import os
+import stat
+import sys
+from pathlib import Path
+
+receipt = Path(sys.argv[1])
+dest = Path(sys.argv[2])
+sha = sys.argv[3]
+label = sys.argv[4]
+
+
+def refuse(message: str) -> None:
+    print(
+        f"hapax-post-merge-deploy: {message}; next action: repair only the unsafe "
+        "caller-owned deferral marker, then rerun hapax-post-merge-deploy for this SHA",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+
+try:
+    receipt_inode = receipt.lstat()
+except FileNotFoundError:
+    raise SystemExit(3)
+except OSError as exc:
+    refuse(f"cannot inspect installed {label} receipt {receipt}: {exc}")
+if (
+    not stat.S_ISREG(receipt_inode.st_mode)
+    or receipt_inode.st_uid != os.geteuid()
+    or receipt_inode.st_nlink != 1
+    or receipt_inode.st_mode & 0o022
+):
+    refuse(f"installed {label} receipt is not a safe caller-owned regular file: {receipt}")
+try:
+    receipt_value = receipt.read_bytes()
+except OSError as exc:
+    refuse(f"cannot read installed {label} receipt {receipt}: {exc}")
+if receipt_value != f"{sha}\n".encode():
+    raise SystemExit(3)
+
+runbook = dest / "RUNBOOK.txt"
+drained = dest / "DRAINED.txt"
+try:
+    runbook_inode = runbook.lstat()
+except FileNotFoundError:
+    print(f"root-required {label} already installed at {sha}; no pending marker remains")
+    raise SystemExit(0)
+except OSError as exc:
+    refuse(f"cannot inspect completed {label} deferral marker {runbook}: {exc}")
+if (
+    not stat.S_ISREG(runbook_inode.st_mode)
+    or runbook_inode.st_uid != os.geteuid()
+    or runbook_inode.st_nlink != 1
+    or stat.S_IMODE(runbook_inode.st_mode) != 0o600
+):
+    refuse(f"completed {label} deferral marker is not the expected mode-0600 regular file: {runbook}")
+
+try:
+    drained_inode = drained.lstat()
+except FileNotFoundError:
+    drained_inode = None
+except OSError as exc:
+    refuse(f"cannot inspect prior drained marker {drained}: {exc}")
+if drained_inode is not None and (
+    not stat.S_ISREG(drained_inode.st_mode)
+    or drained_inode.st_uid != os.geteuid()
+    or drained_inode.st_nlink != 1
+    or drained_inode.st_mode & 0o022
+):
+    refuse(f"prior drained marker is unsafe: {drained}")
+try:
+    os.replace(runbook, drained)
+except OSError as exc:
+    refuse(f"cannot reconcile completed {label} deferral marker {runbook}: {exc}")
+print(f"root-required {label} installed at {sha}; pending marker reconciled")
+PY
+}
+
 defer_root_required_installer() {
     local label="$1" stage="$2" dest temp receipt helper_rel evidence completion
-    local git_part python_part tee_part grep_part pipeline command
-    local -a git_cmd python_cmd tee_cmd grep_cmd command_cmd
+    local account_home activation_alias authenticated_script command reconcile_rc
+    local -a command_cmd
     mkdir -p "$ROOT_DEFER_DIR"
     dest="$ROOT_DEFER_DIR/$SHA/$label"
     mkdir -p "$(dirname "$dest")"
     receipt="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/$label.sha"
-    if [ -f "$receipt" ] && [ "$(tr -d '[:space:]' < "$receipt")" = "$SHA" ]; then
-        echo "root-required $label already installed at $SHA; deferral not recreated"
+    if reconcile_completed_root_required_deferral "$receipt" "$dest" "$label"; then
         return 0
+    else
+        reconcile_rc=$?
+        [ "$reconcile_rc" -eq 3 ] || return "$reconcile_rc"
     fi
     temp="$ROOT_DEFER_DIR/$SHA/.${label}.tmp.$$"
     rm -rf "$temp" 2>/dev/null || true
@@ -1500,28 +1603,54 @@ EOF
     mv "$temp" "$dest"
     echo "root-required $label install deferred to $dest"
 
-    git_cmd=(
-        /usr/bin/env -i HOME=/nonexistent PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8
-        GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1
-        GIT_OPTIONAL_LOCKS=0 /usr/bin/git -C "$REPO" show "$SHA:$helper_rel"
-    )
-    python_cmd=(
-        /usr/bin/env -i HOME="$HOME" PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
-        LANG=C.UTF-8 LC_ALL=C.UTF-8 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
-        GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 PYTHONNOUSERSITE=1 PYTHONSAFEPATH=1
-        /usr/bin/python3 -I - --package "$label" --expected-sha "$SHA"
-        --activation-release "$REPO"
-    )
-    tee_cmd=(/usr/bin/tee "$evidence")
-    grep_cmd=(/usr/bin/grep -Fqx "$completion" "$evidence")
-    printf -v git_part '%q ' "${git_cmd[@]}"
-    printf -v python_part '%q ' "${python_cmd[@]}"
-    printf -v tee_part '%q ' "${tee_cmd[@]}"
-    printf -v grep_part '%q ' "${grep_cmd[@]}"
-    pipeline="${git_part% } | ${python_part% } | ${tee_part% } && ${grep_part% }"
+    if ! account_home="$(/usr/bin/python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')" \
+        || [[ "$account_home" != /* ]]; then
+        echo "hapax-post-merge-deploy: cannot derive the account home for canonical root-package authentication; next action: repair the local passwd entry and rerun source activation" >&2
+        return 2
+    fi
+    activation_alias="$account_home/.cache/hapax/source-activation/worktree"
+    read -r -d '' authenticated_script <<'BASH' || true
+set -euo pipefail
+activation_alias="$1"
+sha="$2"
+helper_rel="$3"
+label="$4"
+evidence="$5"
+completion="$6"
+account_home="$7"
+if ! activation_release="$(/usr/bin/realpath -e -- "$activation_alias")"; then
+    echo "hapax-root-required authentication: canonical activation worktree is unavailable: $activation_alias; next action: reconcile source activation, then rerun hapax-post-merge-deploy for $sha" >&2
+    exit 2
+fi
+safe_git=(
+    /usr/bin/env -i HOME=/nonexistent PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1
+    GIT_OPTIONAL_LOCKS=0 /usr/bin/git -C "$activation_release"
+)
+if ! git_root="$("${safe_git[@]}" rev-parse --show-toplevel)" \
+    || ! git_root="$(/usr/bin/realpath -e -- "$git_root")" \
+    || [ "$git_root" != "$activation_release" ]; then
+    echo "hapax-root-required authentication: canonical activation target is not a Git worktree root: $activation_release; next action: reconcile source activation, then rerun hapax-post-merge-deploy for $sha" >&2
+    exit 2
+fi
+if ! "${safe_git[@]}" cat-file -e "$sha:$helper_rel"; then
+    echo "hapax-root-required authentication: helper blob is unavailable at $sha:$helper_rel in $activation_release; next action: fetch/reconcile the canonical activation repository, then rerun hapax-post-merge-deploy for $sha" >&2
+    exit 2
+fi
+"${safe_git[@]}" show "$sha:$helper_rel" \
+    | /usr/bin/env -i HOME="$account_home" PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin \
+        LANG=C.UTF-8 LC_ALL=C.UTF-8 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+        GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 PYTHONNOUSERSITE=1 PYTHONSAFEPATH=1 \
+        /usr/bin/python3 -I - --package "$label" --expected-sha "$sha" \
+        --activation-release "$activation_release" \
+    | /usr/bin/tee "$evidence"
+/usr/bin/grep -Fqx "$completion" "$evidence"
+BASH
     command_cmd=(
-        /usr/bin/env -i HOME="$HOME" PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
-        /usr/bin/bash --noprofile --norc -o pipefail -c "$pipeline"
+        /usr/bin/env -i HOME="$account_home" PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+        /usr/bin/bash --noprofile --norc -c "$authenticated_script"
+        hapax-root-required-auth "$activation_alias" "$SHA" "$helper_rel" "$label"
+        "$evidence" "$completion" "$account_home"
     )
     printf -v command '%q ' "${command_cmd[@]}"
     echo "next action: run: ${command% }"
@@ -1529,14 +1658,14 @@ EOF
 
 root_required_stage_matches_commit() {
     local stage="$1" commit="$2" manifest_rel="$3" file rel git_mode stage_mode
-    cmp -s "$stage/$manifest_rel" <(git -C "$REPO" show "$commit:$manifest_rel" 2>/dev/null) || return 1
+    cmp -s "$stage/$manifest_rel" <(root_required_git show "$commit:$manifest_rel" 2>/dev/null) || return 1
     while IFS= read -r rel; do
         file="$stage/$rel"
         [ -f "$file" ] || return 1
         [ ! -L "$file" ] || return 1
-        git -C "$REPO" cat-file -e "$commit:$rel" 2>/dev/null || return 1
-        cmp -s "$file" <(git -C "$REPO" show "$commit:$rel") || return 1
-        git_mode="$(git -C "$REPO" ls-tree "$commit" -- "$rel" | awk 'NR == 1 {print $1}')"
+        root_required_git cat-file -e "$commit:$rel" 2>/dev/null || return 1
+        cmp -s "$file" <(root_required_git show "$commit:$rel") || return 1
+        git_mode="$(root_required_git ls-tree "$commit" -- "$rel" | awk 'NR == 1 {print $1}')"
         stage_mode=100644
         [ -x "$file" ] && stage_mode=100755
         [ "$git_mode" = "$stage_mode" ] || return 1
@@ -1565,18 +1694,18 @@ record_root_required_desired_sha() {
     receipt="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha"
     if [ -f "$receipt" ]; then
         current="$(tr -d '[:space:]' < "$receipt")"
-        if ! [[ "$current" =~ ^[0-9a-f]{40}$ ]] || ! git -C "$REPO" cat-file -e "$current^{commit}" 2>/dev/null; then
+        if ! [[ "$current" =~ ^[0-9a-f]{40}$ ]] || ! root_required_git cat-file -e "$current^{commit}" 2>/dev/null; then
             echo "hapax-post-merge-deploy: invalid or unavailable desired $label receipt $current; next action: restore the latest governed receipt and rerun this deploy" >&2
             return 1
         fi
         if [ "$current" = "$SHA" ]; then
             return 0
         fi
-        if git -C "$REPO" merge-base --is-ancestor "$SHA" "$current"; then
+        if root_required_git merge-base --is-ancestor "$SHA" "$current"; then
             echo "root-required $label desired state $current supersedes stale deploy $SHA; desired receipt preserved"
             return 0
         fi
-        if ! git -C "$REPO" merge-base --is-ancestor "$current" "$SHA"; then
+        if ! root_required_git merge-base --is-ancestor "$current" "$SHA"; then
             if root_required_stage_matches_commit "$stage" "$current" "$manifest_rel"; then
                 echo "root-required $label desired state is ancestry-divergent but package-content equivalent; accepting squash/rebase transition to $SHA"
             else

@@ -1151,7 +1151,7 @@ def test_p0_oom_deploy_always_creates_authenticated_deferral_without_restart(
     assert (deferred / "RUNBOOK.txt").is_file()
     assert "next action: run:" in result.stdout
     assert stale_deferral.exists(), (
-        "only an explicit staged RUNBOOK invocation may drain a deferral"
+        "only the authenticated live command may drain a pending deferral"
     )
     assert not installed_source.exists(), (
         "post-merge must not republish installed source after the owning installer releases its lock"
@@ -1448,6 +1448,9 @@ def test_concurrent_oom_deferral_owns_local_judge_without_generic_activation(
         "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
         "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
         "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_dir),
+        "GIT_DIR": str(tmp_path / "hostile-git-dir"),
+        "GIT_WORK_TREE": str(tmp_path / "hostile-git-work-tree"),
+        "GIT_OBJECT_DIRECTORY": str(tmp_path / "hostile-git-objects"),
     }
 
     first_env = {**env, "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace-first.jsonl")}
@@ -1507,6 +1510,8 @@ def test_concurrent_oom_deferral_owns_local_judge_without_generic_activation(
     assert "--package" in command
     assert "--expected-sha" in command
     assert "/usr/bin/python3 -I -c" not in command
+    assert ".cache/hapax/source-activation/worktree" in command
+    assert str(repo) not in command
     compromised = tmp_path / "compromised-runbook-ran"
     runbook_path.write_text(f"#!/usr/bin/bash\ntouch {compromised}\n", encoding="utf-8")
     runbook_path.chmod(0o700)
@@ -1518,9 +1523,8 @@ def test_concurrent_oom_deferral_owns_local_judge_without_generic_activation(
     )
     assert authenticated.returncode != 0
     assert not compromised.exists()
-    assert "deferred-helper-argv=" in authenticated.stdout
-    assert f'"--expected-sha", "{sha}"' in authenticated.stdout
-    assert '"scripts/hapax-root-required-deferred-install"' not in authenticated.stdout
+    assert "deferred-helper-argv=" not in authenticated.stdout
+    assert "hapax-root-required authentication:" in authenticated.stderr
     assert (home / ".config" / "systemd" / "user" / "hapax-demo.service").is_file()
     assert not (home / ".config" / "systemd" / "user" / "hapax-local-judge.service").exists()
     assert "hapax-local-judge.service" not in systemctl_calls.read_text(encoding="utf-8")
@@ -1541,7 +1545,33 @@ def test_concurrent_oom_deferral_owns_local_judge_without_generic_activation(
     assert audit_result.returncode == 1
     assert "root-required post-merge deploy deferrals pending" in audit_result.stderr
     assert "RUNBOOK.txt" in audit_result.stderr
-    (deferred / "RUNBOOK.txt").unlink()
+    assert "RUNBOOK.txt is metadata, not code" in audit_result.stderr
+    installed = home / ".local/state/hapax/root-required/installed-receipts/oom-containment.sha"
+    installed.parent.mkdir(parents=True, exist_ok=True)
+    installed.write_text(f"{sha}\n", encoding="utf-8")
+    refused_reconcile = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**env, "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace-refused.jsonl")},
+    )
+    assert refused_reconcile.returncode == 1
+    assert "not the expected mode-0600 regular file" in refused_reconcile.stderr
+    assert runbook_path.exists()
+    runbook_path.write_text(runbook, encoding="utf-8")
+    runbook_path.chmod(0o600)
+    reconciled = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**env, "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace-reconcile.jsonl")},
+    )
+    assert reconciled.returncode == 0, reconciled.stderr
+    assert "pending marker reconciled" in reconciled.stdout
+    assert not runbook_path.exists()
+    assert (deferred / "DRAINED.txt").read_text(encoding="utf-8") == runbook
     assert desired.read_text(encoding="utf-8").strip() == sha
 
 
@@ -1892,7 +1922,7 @@ def test_root_required_audit_detects_desired_package_not_installed(tmp_path: Pat
     assert result.returncode == 1
     assert "desired package is not installed" in result.stderr
     assert f"desired={desired_sha}" in result.stderr
-    assert "even if the cached RUNBOOK was lost" in result.stderr
+    assert "even if cached metadata was lost" in result.stderr
 
 
 def test_root_required_audit_detects_nonexecutable_hook(tmp_path: Path) -> None:
@@ -2202,6 +2232,14 @@ def test_root_required_audit_refuses_a_hostname_suffix(tmp_path: Path) -> None:
             "hapax-podium\t123\t125\tpodium\t72G\t88G\t80G\t96G\t-1",
             "host profile ceilings are not below interval floor",
         ),
+        (
+            "hapax-podium\t123\t125\tpodium\t72G\t88G\t80G\t96G\t4096",
+            "zram safety bounds",
+        ),
+        (
+            "hapax-podium\t123\t125\tpodium\t72G\t88G\t80G\t96G\t65536",
+            "zram safety bounds",
+        ),
     ],
     ids=(
         "malformed-row",
@@ -2212,6 +2250,8 @@ def test_root_required_audit_refuses_a_hostname_suffix(tmp_path: Path) -> None:
         "unsafe-ceilings",
         "zero-zram",
         "negative-zram",
+        "zram-below-slice-swap-ceiling",
+        "zram-above-half-interval-floor",
     ),
 )
 def test_root_required_audit_executes_profile_parser_error_branches(
