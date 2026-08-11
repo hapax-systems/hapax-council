@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import fcntl
 import hashlib
 import json
@@ -11,6 +12,8 @@ import time
 from pathlib import Path
 
 import pytest
+
+from shared.sdlc_lifecycle import TASK_MUTABLE_STATUSES as CANONICAL_TASK_MUTABLE_STATUSES
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-post-merge-deploy"
@@ -55,13 +58,13 @@ def _run_runtime_authority_validator(
     task: Path,
     active_root: Path,
     scope: str = "systemd/units/hapax-local-judge.service",
+    cwd: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             "/usr/bin/python3",
             "-I",
             "-",
-            str(REPO_ROOT),
             str(task),
             scope,
             str(active_root),
@@ -70,6 +73,7 @@ def _run_runtime_authority_validator(
         text=True,
         capture_output=True,
         check=False,
+        cwd=cwd,
     )
 
 
@@ -1044,6 +1048,68 @@ def test_runtime_authority_validator_accepts_structured_active_scoped_task(
     assert "scope=systemd/units/hapax-local-judge.service" in result.stdout
 
 
+def test_runtime_authority_validator_has_no_release_tree_import_surface() -> None:
+    source = _runtime_authority_validator_source()
+
+    assert "sys.path.insert" not in source
+    assert "from shared." not in source
+    assert "import yaml" in source
+    assert "TASK_MUTABLE_STATUSES" in source
+
+
+def test_runtime_authority_validator_statuses_match_canonical_vocabulary() -> None:
+    module = ast.parse(_runtime_authority_validator_source())
+    assignment = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "TASK_MUTABLE_STATUSES"
+            for target in node.targets
+        )
+    )
+
+    assert set(ast.literal_eval(assignment.value)) == set(CANONICAL_TASK_MUTABLE_STATUSES)
+
+
+def test_runtime_authority_validator_ignores_cwd_yaml_shadow(tmp_path: Path) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    task.write_text(_runtime_authority_task_text(), encoding="utf-8")
+    shadow = tmp_path / "shadow"
+    shadow.mkdir()
+    marker = tmp_path / "yaml-shadow-ran"
+    (shadow / "yaml.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n",
+        encoding="utf-8",
+    )
+
+    result = _run_runtime_authority_validator(task, active_root, cwd=shadow)
+
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists()
+
+
+def test_runtime_authority_validator_rejects_duplicate_authority_fields(tmp_path: Path) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    task.write_text(
+        _runtime_authority_task_text().replace(
+            "runtime_mutation_authorized: true\n",
+            "runtime_mutation_authorized: true\nruntime_mutation_authorized: false\n",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_runtime_authority_validator(task, active_root)
+
+    assert result.returncode == 2
+    assert "duplicate key 'runtime_mutation_authorized'" in result.stderr
+
+
 @pytest.mark.parametrize(
     ("replacements", "expected"),
     [
@@ -1051,7 +1117,9 @@ def test_runtime_authority_validator_accepts_structured_active_scoped_task(
         ({"implementation_authorized": "false"}, "implementation_authorized is not true"),
         ({"runtime_mutation_authorized": "false"}, "runtime_mutation_authorized is not true"),
         ({"authority_case": "null"}, "authority_case is absent"),
+        ({"authority_case": "CASE-"}, "authority_case is absent"),
         ({"parent_spec": "null"}, "parent_spec is absent"),
+        ({"parent_spec": '"null"'}, "parent_spec is absent"),
         ({"scope": "systemd/units/unrelated.service"}, "mutation scope is not authorized"),
     ],
 )
@@ -1110,9 +1178,13 @@ def test_local_judge_cap_receipt_verifier_is_sha_host_and_evidence_bound() -> No
     assert '"$(/usr/bin/wc -l < "$cap_receipt")" != 12' in source
     assert "memory_peak_bytes=" in source
     assert "swap_peak_bytes=" in source
-    assert '"$memory_peak" -gt 3221225472' in source
-    assert '"$swap_peak" -gt 1073741824' in source
-    assert '"$((now - completed_at))" -gt 86400' in source
+    assert "<<'CAP_RECEIPT_NUMERIC_PY'" in source
+    assert '"$memory_peak" -gt 3221225472' not in source
+    assert '"$swap_peak" -gt 1073741824' not in source
+    assert '"$((now - completed_at))"' not in source
+    assert 'installed_unit="$account_home/.config/systemd/user/hapax-local-judge.service"' in source
+    assert "<<'INSTALLED_UNIT_OID_PY'" in source
+    assert '"$actual_unit_oid" != "$expected_unit_oid"' in source
     assert "/usr/bin/hostname" in source
     assert "/usr/bin/nvidia-smi --query-gpu=uuid" in source
     assert "/usr/bin/docker image inspect" in source
@@ -1121,6 +1193,83 @@ def test_local_judge_cap_receipt_verifier_is_sha_host_and_evidence_bound() -> No
     assert "if ! nvidia-smi " not in verifier
     assert 'image_id="$(docker ' not in verifier
     assert 'now="$(date ' not in verifier
+
+
+def _cap_receipt_numeric_validator_source() -> str:
+    source = SCRIPT.read_text(encoding="utf-8")
+    marker = "<<'CAP_RECEIPT_NUMERIC_PY'\n"
+    return source.split(marker, 1)[1].split("\nCAP_RECEIPT_NUMERIC_PY", 1)[0]
+
+
+def _installed_unit_oid_source() -> str:
+    source = SCRIPT.read_text(encoding="utf-8")
+    marker = "<<'INSTALLED_UNIT_OID_PY'\n"
+    return source.split(marker, 1)[1].split("\nINSTALLED_UNIT_OID_PY", 1)[0]
+
+
+@pytest.mark.parametrize("unsafe_kind", (None, "symlink", "hardlink", "writable"))
+def test_installed_unit_oid_reader_refuses_unsafe_files(
+    tmp_path: Path,
+    unsafe_kind: str | None,
+) -> None:
+    payload = b"[Service]\nMemoryMax=4G\n"
+    unit = tmp_path / "hapax-local-judge.service"
+    if unsafe_kind == "symlink":
+        peer = tmp_path / "peer"
+        peer.write_bytes(payload)
+        unit.symlink_to(peer)
+    elif unsafe_kind == "hardlink":
+        peer = tmp_path / "peer"
+        peer.write_bytes(payload)
+        os.link(peer, unit)
+    else:
+        unit.write_bytes(payload)
+        if unsafe_kind == "writable":
+            unit.chmod(0o666)
+
+    result = subprocess.run(
+        ["/usr/bin/python3", "-I", "-", str(unit)],
+        input=_installed_unit_oid_source(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    if unsafe_kind is None:
+        expected = hashlib.sha1(f"blob {len(payload)}\0".encode() + payload).hexdigest()
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == expected
+    else:
+        assert result.returncode == 2
+
+
+@pytest.mark.parametrize(
+    ("memory_peak", "swap_peak", "completed_at", "now", "expected_rc"),
+    [
+        ("3221225472", "1073741824", "2000000000", "2000000000", 0),
+        ("9223372036854775808", "0", "2000000000", "2000000000", 2),
+        ("0", "99999999999999999999", "2000000000", "2000000000", 2),
+        ("0", "0", "99999999999999999999", "2000000000", 2),
+        ("0", "0", "1999913599", "2000000000", 2),
+        ("0", "0", "2000000001", "2000000000", 2),
+    ],
+)
+def test_local_judge_cap_numeric_validator_is_width_and_freshness_safe(
+    memory_peak: str,
+    swap_peak: str,
+    completed_at: str,
+    now: str,
+    expected_rc: int,
+) -> None:
+    result = subprocess.run(
+        ["/usr/bin/python3", "-I", "-", memory_peak, swap_peak, completed_at, now],
+        input=_cap_receipt_numeric_validator_source(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == expected_rc, result.stderr
 
 
 def test_local_judge_cap_receipt_verifier_rejects_invalid_selector() -> None:

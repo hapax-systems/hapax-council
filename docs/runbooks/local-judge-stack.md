@@ -70,11 +70,20 @@ receipt_mode="$(/usr/bin/stat -c %a -- "$desired_receipt")"
 test "$(/usr/bin/wc -c < "$desired_receipt")" = 41
 IFS= read -r desired_sha < "$desired_receipt"
 test "$desired_sha" = "$candidate_sha"
-source_unit="$repo/systemd/units/hapax-local-judge.service"
-test -f "$source_unit"
-test ! -L "$source_unit"
-test "$(grep -c '^Environment=JUDGE_GPU_UUID=' "$source_unit")" -eq 1
-judge_gpu_uuid="$(sed -n 's/^Environment=JUDGE_GPU_UUID=//p' "$source_unit")"
+source_unit_text="$(
+  /usr/bin/env -i \
+    HOME=/nonexistent \
+    PATH=/usr/bin:/bin \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_CONFIG_NOSYSTEM=1 \
+    GIT_NO_REPLACE_OBJECTS=1 \
+    GIT_OPTIONAL_LOCKS=0 \
+    /usr/bin/git -C "$repo" show "$candidate_sha:systemd/units/hapax-local-judge.service"
+)"
+test "$(printf '%s\n' "$source_unit_text" | grep -c '^Environment=JUDGE_GPU_UUID=')" -eq 1
+judge_gpu_uuid="$(printf '%s\n' "$source_unit_text" | sed -n 's/^Environment=JUDGE_GPU_UUID=//p')"
 test -n "$judge_gpu_uuid"
 nvidia-smi --query-gpu=uuid --format=csv,noheader | grep -Fqx "$judge_gpu_uuid"
 
@@ -107,7 +116,7 @@ cleanup_canary() {
   if [ "$cleanup_done" -eq 1 ]; then
     return "$cleanup_status"
   fi
-  cleanup_done=1
+  cleanup_status=0
   local id="" remaining="" removed=0 restored_state="" cidfile_safe=0
   if [ -e "$canary_cidfile" ] || [ -L "$canary_cidfile" ]; then
     if [ -f "$canary_cidfile" ] && [ ! -L "$canary_cidfile" ]; then
@@ -169,6 +178,9 @@ cleanup_canary() {
     echo "not restoring $unit because disposable-container absence is unproven" >&2
     echo "next action: inspect $canary_cidfile and $canary_name, stop the immutable ID, then restore the unit" >&2
   fi
+  if [ "$cleanup_status" -eq 0 ]; then
+    cleanup_done=1
+  fi
   return "$cleanup_status"
 }
 on_exit() {
@@ -194,7 +206,7 @@ docker run --cidfile "$canary_cidfile" -d --rm --name "$canary_name" \
   --gpus "device=$judge_gpu_uuid" \
   -v "$HOME/models/compassverifier-7b:/models:ro" \
   -p 127.0.0.1:15001:5001 \
-  "$image" \
+  "$image_id" \
   -m /models/CompassVerifier-7B.Q5_K_M.gguf -a compassverifier-7b \
   -c 65536 -np 8 -cb -ngl 99 --host 0.0.0.0 --port 5001 >/dev/null
 test -f "$canary_cidfile"
