@@ -33,9 +33,11 @@ Model source (already present):
 Q5_K_M). The authorized canary copies it once into a root-owned SHA-addressed
 directory on the existing `/store-fast` NVMe and serves only that protected copy.
 
-Before requesting runtime authority, perform this read-only source/live identity
-recheck. It hashes and measures the protected target without staging, starting,
-stopping, or replacing anything:
+After the merged release containing this protected-model measurement helper is
+the canonical source-activation worktree, and before requesting runtime authority,
+perform this read-only source/live identity recheck. It hashes and measures the
+protected target without staging, starting, stopping, or replacing anything. An
+unrecognized option means source activation is stale, not that the model is invalid:
 
 ```bash
 account_home="$(/usr/bin/getent passwd "$(/usr/bin/id -u)" | /usr/bin/cut -d: -f6)"

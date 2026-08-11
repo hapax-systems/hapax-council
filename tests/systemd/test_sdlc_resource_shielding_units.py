@@ -575,6 +575,8 @@ def test_local_judge_unit_names_the_protected_model_recheck() -> None:
     text = (UNITS_DIR / "hapax-local-judge.service").read_text()
 
     assert 'scripts/hapax-post-merge-deploy" --measure-protected-local-judge-model' in text
+    assert "only once this release is the" in text
+    assert "canonical source-activation worktree" in text
     assert "/store-fast/hapax-models/sha256/" in text
     assert 'account_home="$(/usr/bin/getent passwd "$(/usr/bin/id -u)"' in text
     assert "/home/hapax/.cache/hapax/source-activation/worktree" not in text
@@ -590,13 +592,16 @@ def test_local_judge_runbook_has_read_only_protected_model_recheck_before_mutati
         for key, value in (line.removeprefix("Environment=").split("=", 1),)
     }
 
-    read_only = "Before requesting runtime authority, perform this read-only source/live identity"
+    read_only = "before requesting runtime authority, perform this read-only source/live identity"
     measure = "--measure-protected-local-judge-model"
     mutation_boundary = "Every command below mutates the appendix runtime"
     flattened = " ".join(text.replace("\\\n", "").split())
-    assert read_only in text
-    assert text.index(read_only) < text.index(measure) < text.index(mutation_boundary)
+    assert read_only in flattened
+    assert (
+        flattened.index(read_only) < flattened.index(measure) < flattened.index(mutation_boundary)
+    )
     assert "without staging, starting, stopping, or replacing anything" in flattened
+    assert "An unrecognized option means source activation is stale" in flattened
     assert f"{measure} {environment['JUDGE_MODEL_HOST']}" in flattened
     assert Path(environment["JUDGE_MODEL_HOST"]).parent == Path(environment["JUDGE_MODEL_HOST_DIR"])
     assert environment["JUDGE_MODEL_SHA256"] in environment["JUDGE_MODEL_HOST"]

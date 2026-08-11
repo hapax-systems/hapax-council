@@ -94,6 +94,16 @@ LOCAL_JUDGE_EXEC_START = (
 )
 
 
+def test_installer_recovery_guidance_uses_governed_post_merge_path() -> None:
+    source = INSTALLER.read_text(encoding="utf-8")
+
+    assert "scripts/install-p0-oom-containment --install --verify-live" not in source
+    assert "rerun --install --verify-live" not in source
+    assert "readonly OOM_REPAIR_ACTION=" in source
+    assert "runtime-authorized hapax-post-merge-deploy OOM reconciliation" in source
+    assert source.count("$OOM_REPAIR_ACTION") > 1
+
+
 def _systemctl_property_file(section: str, key: str, value: str) -> str:
     return (
         '# This is a drop-in unit file extension, created via "systemctl set-property"\n'

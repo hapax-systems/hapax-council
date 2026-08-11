@@ -52,7 +52,7 @@ record_diagnostic() {
   else
     file_reason="$(bounded_diagnostic_reason "$file_error")"
     if [ -x "$LOGGER" ] \
-      && logger_error="$("$LOGGER" --tag hapax-github-mcp -- "$message" 2>&1)"; then
+      && logger_error="$("$LOGGER" --priority user.warning --tag hapax-github-mcp -- "$message" 2>&1)"; then
       echo "$message (file diagnostic failed for $LOG_FILE: ${file_reason:-unknown error}; recorded in the system journal)" >&2
     else
       logger_reason="$(bounded_diagnostic_reason "$logger_error")"

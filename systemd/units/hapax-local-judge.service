@@ -15,7 +15,8 @@ Environment=JUDGE_GPU_UUID=GPU-347222d9-00af-5a94-a365-c57c09dfddcd
 Environment=JUDGE_MODEL=/models/CompassVerifier-7B.Q5_K_M.gguf
 # The canary stages and hashes this model under a root-owned, non-writable
 # content address. The durable service never mounts the mutable source copy.
-# Recheck the protected file after staging with the exact-release helper:
+# Recheck the protected file after staging only once this release is the
+# canonical source-activation worktree:
 # account_home="$(/usr/bin/getent passwd "$(/usr/bin/id -u)" | /usr/bin/cut -d: -f6)" && \
 # "$account_home/.cache/hapax/source-activation/worktree/scripts/hapax-post-merge-deploy" --measure-protected-local-judge-model /store-fast/hapax-models/sha256/d6d6fba56c25d2d0f1b2cc8ee261b209b77729510b3d770d43ccb6e741dff0db/CompassVerifier-7B.Q5_K_M.gguf
 Environment=JUDGE_MODEL_SHA256=d6d6fba56c25d2d0f1b2cc8ee261b209b77729510b3d770d43ccb6e741dff0db

@@ -403,7 +403,10 @@ def test_github_mcp_uses_journal_fallback_for_equivalent_account_home(
     assert result.returncode == 2
     assert "recorded in the system journal" in result.stderr
     assert "occupied" in result.stderr or "Not a directory" in result.stderr
-    assert "--tag hapax-github-mcp -- canonical probe" in logger_calls.read_text(encoding="utf-8")
+    assert (
+        "--priority user.warning --tag hapax-github-mcp -- canonical probe"
+        in logger_calls.read_text(encoding="utf-8")
+    )
 
 
 def test_github_mcp_refusal_probe_errors_all_carry_next_actions() -> None:
