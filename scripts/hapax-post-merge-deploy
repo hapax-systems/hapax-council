@@ -324,10 +324,21 @@ verify_runtime_authority() {
         echo "hapax-post-merge-deploy: runtime authority release HEAD is not the exact package SHA $expected_sha; next action: reconcile source activation and retry" >&2
         return 2
     fi
-    /usr/bin/python3 -I -S - "$repo" "$git_head" "$task" "$active_root" "${scopes[@]}" <<'RUNTIME_AUTHORITY_PY'
+    /usr/bin/env -i \
+        HOME=/nonexistent \
+        PATH=/usr/bin:/bin \
+        LANG=C.UTF-8 \
+        LC_ALL=C.UTF-8 \
+        PYDANTIC_DISABLE_PLUGINS=__all__ \
+        /usr/bin/python3 -I -S - \
+        "$repo" "$git_head" "$task" "$active_root" "${scopes[@]}" <<'RUNTIME_AUTHORITY_PY'
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
+import importlib.abc
+import importlib.machinery
 import importlib.metadata
 import json
 import os
@@ -364,14 +375,27 @@ RUNTIME_AUTHORITY_DEPENDENCIES = {
     "annotated-types": ("0.7.0", ("annotated_types",)),
     "pydantic": ("2.13.4", ("pydantic",)),
     "pydantic-core": ("2.46.4", ("pydantic_core",)),
-    "pyyaml": ("6.0.3", ("yaml",)),
+    "pyyaml": ("6.0.3", ("yaml", "_yaml")),
     "typing-extensions": ("4.15.0", ("typing_extensions.py",)),
     "typing-inspection": ("0.4.2", ("typing_inspection",)),
+}
+RUNTIME_AUTHORITY_MODULE_ROOTS = {
+    "annotated_types": "annotated_types",
+    "pydantic": "pydantic",
+    "pydantic_core": "pydantic_core",
+    "typing_extensions": "typing_extensions.py",
+    "typing_inspection": "typing_inspection",
+    "_yaml": "_yaml",
+    "yaml": "yaml",
 }
 RUNTIME_AUTHORITY_DEDICATED_SITE = Path(
     "/opt/hapax/runtime-authority-python/site-packages"
 )
+RUNTIME_AUTHORITY_STDLIB_ROOTS = tuple(
+    Path(value) for value in sys.path if value and Path(value).is_dir()
+)
 MAX_DEPENDENCY_TREE_ENTRIES = 20_000
+MAX_DEPENDENCY_FILE_BYTES = 64 * 1024 * 1024
 
 
 def refuse(reason: str) -> None:
@@ -440,13 +464,17 @@ def validate_trusted_tree(root: Path, label: str) -> None:
         pending.extend(Path(child.path) for child in children)
 
 
-def distributions_in(root: Path) -> dict[str, importlib.metadata.Distribution]:
+def distributions_in(
+    root: Path,
+) -> tuple[dict[str, importlib.metadata.Distribution], tuple[str, ...]]:
     selected: dict[str, importlib.metadata.Distribution] = {}
     duplicates: set[str] = set()
+    names: list[str] = []
     try:
         distributions = importlib.metadata.distributions(path=[str(root)])
         for distribution in distributions:
             name = canonical_distribution_name(distribution.metadata.get("Name", ""))
+            names.append(name)
             if name not in RUNTIME_AUTHORITY_DEPENDENCIES:
                 continue
             if name in selected:
@@ -456,30 +484,43 @@ def distributions_in(root: Path) -> dict[str, importlib.metadata.Distribution]:
         refuse(f"runtime-authority dependency metadata cannot be read: {type(exc).__name__}: {exc}")
     if duplicates:
         refuse(f"runtime-authority dependency root has duplicate distributions: {sorted(duplicates)}")
-    return selected
+    return selected, tuple(names)
 
 
-def select_dependency_root() -> tuple[Path, dict[str, importlib.metadata.Distribution]]:
+def select_dependency_root() -> tuple[
+    Path,
+    dict[str, importlib.metadata.Distribution],
+    bool,
+]:
     if RUNTIME_AUTHORITY_DEDICATED_SITE.exists() or RUNTIME_AUTHORITY_DEDICATED_SITE.is_symlink():
         validate_trusted_path(
             RUNTIME_AUTHORITY_DEDICATED_SITE,
             "dedicated runtime-authority dependency root",
             directory=True,
         )
-        selected = distributions_in(RUNTIME_AUTHORITY_DEDICATED_SITE)
-        if set(selected) != set(RUNTIME_AUTHORITY_DEPENDENCIES):
-            refuse("dedicated runtime-authority dependency root is incomplete")
-        return RUNTIME_AUTHORITY_DEDICATED_SITE, selected
+        validate_trusted_tree(
+            RUNTIME_AUTHORITY_DEDICATED_SITE,
+            "dedicated runtime-authority dependency root",
+        )
+        selected, names = distributions_in(RUNTIME_AUTHORITY_DEDICATED_SITE)
+        expected = set(RUNTIME_AUTHORITY_DEPENDENCIES)
+        if set(names) != expected or len(names) != len(expected):
+            refuse(
+                "dedicated runtime-authority dependency root is not the exact distribution closure"
+            )
+        return RUNTIME_AUTHORITY_DEDICATED_SITE, selected, True
 
-    complete: list[tuple[Path, dict[str, importlib.metadata.Distribution]]] = []
+    complete: list[
+        tuple[Path, dict[str, importlib.metadata.Distribution], bool]
+    ] = []
     for value in dict.fromkeys(site.getsitepackages()):
         root = Path(value)
         if not root.exists() and not root.is_symlink():
             continue
         validate_trusted_path(root, "system Python dependency root", directory=True)
-        selected = distributions_in(root)
+        selected, _names = distributions_in(root)
         if set(selected) == set(RUNTIME_AUTHORITY_DEPENDENCIES):
-            complete.append((root, selected))
+            complete.append((root, selected, False))
     if len(complete) != 1:
         refuse(
             "system Python must expose exactly one complete runtime-authority dependency root"
@@ -490,6 +531,7 @@ def select_dependency_root() -> tuple[Path, dict[str, importlib.metadata.Distrib
 def distribution_metadata_root(
     distribution: importlib.metadata.Distribution,
     name: str,
+    root: Path,
 ) -> Path:
     metadata_files = [
         item
@@ -499,14 +541,214 @@ def distribution_metadata_root(
     ]
     if len(metadata_files) != 1:
         refuse(f"runtime-authority dependency has no unique METADATA file: {name}")
-    metadata_root = Path(distribution.locate_file(metadata_files[0])).parent
-    if metadata_root.parent != Path(distribution.locate_file("")):
+    metadata_root = Path(os.path.abspath(distribution.locate_file(metadata_files[0]))).parent
+    if metadata_root.parent != root:
         refuse(f"runtime-authority dependency metadata root is not direct: {name}")
     return metadata_root
 
 
-def admit_runtime_authority_dependencies() -> None:
-    root, selected = select_dependency_root()
+def is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def verify_distribution_record(
+    distribution: importlib.metadata.Distribution,
+    name: str,
+    root: Path,
+    admitted_roots: tuple[Path, ...],
+    metadata_root: Path,
+) -> set[Path]:
+    files = distribution.files
+    if not files:
+        refuse(f"runtime-authority dependency has no RECORD inventory: {name}")
+    observed_paths: set[Path] = set()
+    for item in files:
+        path = Path(os.path.abspath(distribution.locate_file(item)))
+        if not is_within(path, root) or not any(
+            path == admitted or is_within(path, admitted) for admitted in admitted_roots
+        ):
+            refuse(f"runtime-authority dependency RECORD escapes admitted roots: {name}")
+        if path in observed_paths:
+            refuse(f"runtime-authority dependency RECORD has a duplicate path: {name}")
+        observed_paths.add(path)
+        validate_trusted_path(path, f"runtime-authority dependency RECORD file {name}", directory=False)
+        inode = trusted_inode(path, f"runtime-authority dependency RECORD file {name}")
+        if inode.st_size > MAX_DEPENDENCY_FILE_BYTES:
+            refuse(f"runtime-authority dependency RECORD file exceeds the size bound: {name}")
+        if item.hash is None:
+            if path != metadata_root / "RECORD" or item.size is not None:
+                refuse(f"runtime-authority dependency RECORD has an unhashed payload: {name}")
+            continue
+        if item.hash.mode != "sha256" or item.size != inode.st_size:
+            refuse(f"runtime-authority dependency RECORD metadata is unsupported: {name}")
+        try:
+            expected_digest = base64.urlsafe_b64decode(
+                item.hash.value + "=" * (-len(item.hash.value) % 4)
+            )
+        except (ValueError, binascii.Error) as exc:
+            refuse(f"runtime-authority dependency RECORD digest is malformed: {name}: {exc}")
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+            try:
+                opened = os.fstat(fd)
+                if (opened.st_dev, opened.st_ino) != (inode.st_dev, inode.st_ino):
+                    refuse(f"runtime-authority dependency RECORD file changed before read: {name}")
+                digest = hashlib.sha256()
+                total = 0
+                while True:
+                    chunk = os.read(fd, 65536)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > MAX_DEPENDENCY_FILE_BYTES:
+                        refuse(
+                            f"runtime-authority dependency RECORD file exceeds the read bound: {name}"
+                        )
+                    digest.update(chunk)
+            finally:
+                os.close(fd)
+            after = path.lstat()
+        except OSError as exc:
+            refuse(f"runtime-authority dependency RECORD file cannot be read: {name}: {exc}")
+        if (
+            total != inode.st_size
+            or (after.st_dev, after.st_ino) != (inode.st_dev, inode.st_ino)
+            or digest.digest() != expected_digest
+        ):
+            refuse(f"runtime-authority dependency RECORD digest mismatch: {name}")
+    tree_files: set[Path] = set()
+    for admitted_root in admitted_roots:
+        pending = [admitted_root]
+        while pending:
+            path = pending.pop()
+            inode = trusted_inode(path, f"runtime-authority dependency tree inventory {name}")
+            if stat.S_ISREG(inode.st_mode):
+                tree_files.add(path)
+                continue
+            try:
+                pending.extend(Path(child.path) for child in os.scandir(path))
+            except OSError as exc:
+                refuse(f"runtime-authority dependency tree cannot be inventoried: {name}: {exc}")
+    if tree_files != observed_paths:
+        refuse(f"runtime-authority dependency tree differs from RECORD: {name}")
+    return observed_paths
+
+
+def validate_exact_dependency_root(root: Path, declared_files: set[Path]) -> None:
+    expected_entries: set[Path] = set()
+    for declared_file in declared_files:
+        current = declared_file
+        while current != root:
+            expected_entries.add(current)
+            current = current.parent
+    actual_entries: set[Path] = set()
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        try:
+            children = [Path(child.path) for child in os.scandir(directory)]
+        except OSError as exc:
+            refuse(f"dedicated runtime-authority dependency root cannot be inventoried: {exc}")
+        for child in children:
+            inode = trusted_inode(child, "dedicated runtime-authority dependency root")
+            actual_entries.add(child)
+            if stat.S_ISDIR(inode.st_mode):
+                pending.append(child)
+    if actual_entries != expected_entries:
+        refuse("dedicated runtime-authority dependency root differs from the exact RECORD closure")
+
+
+def validate_import_resolution(root: Path) -> None:
+    for module_name, relative_path in RUNTIME_AUTHORITY_MODULE_ROOTS.items():
+        expected = root / relative_path
+        spec = importlib.machinery.PathFinder.find_spec(module_name, [str(root)])
+        if spec is None or not isinstance(spec.origin, str):
+            refuse(f"runtime-authority dependency import cannot resolve: {module_name}")
+        origin = Path(os.path.abspath(spec.origin))
+        expected_inode = trusted_inode(expected, f"runtime-authority import root {module_name}")
+        if stat.S_ISDIR(expected_inode.st_mode):
+            locations = tuple(
+                Path(os.path.abspath(value)) for value in (spec.submodule_search_locations or ())
+            )
+            if origin.parent != expected or locations != (expected,):
+                refuse(f"runtime-authority dependency import origin is ambiguous: {module_name}")
+        elif origin != expected or spec.submodule_search_locations is not None:
+            refuse(f"runtime-authority dependency import origin is ambiguous: {module_name}")
+        validate_trusted_path(
+            origin,
+            f"runtime-authority dependency import origin {module_name}",
+            directory=False,
+        )
+
+
+def trusted_stdlib_import(fullname: str) -> bool:
+    spec = importlib.machinery.PathFinder.find_spec(
+        fullname,
+        [str(root) for root in RUNTIME_AUTHORITY_STDLIB_ROOTS],
+    )
+    if spec is None or not isinstance(spec.origin, str):
+        return False
+    if spec.origin in {"built-in", "frozen"}:
+        return True
+    origin = Path(os.path.abspath(spec.origin))
+    for root in RUNTIME_AUTHORITY_STDLIB_ROOTS:
+        if origin == root or is_within(origin, root):
+            validate_trusted_path(root, "runtime-authority standard-library root", directory=True)
+            validate_trusted_path(
+                origin,
+                f"runtime-authority standard-library import {fullname}",
+                directory=False,
+            )
+            return True
+    return False
+
+
+class RuntimeAuthorityImportGuard(importlib.abc.MetaPathFinder):
+    def find_spec(
+        self,
+        fullname: str,
+        path: object = None,
+        target: object = None,
+    ) -> importlib.machinery.ModuleSpec | None:
+        del path, target
+        top_level = fullname.partition(".")[0]
+        if (
+            top_level not in RUNTIME_AUTHORITY_MODULE_ROOTS
+            and top_level not in sys.stdlib_module_names
+            and not (top_level == "shared" and "shared" in sys.modules)
+            and not trusted_stdlib_import(fullname)
+        ):
+            refuse(f"unlisted runtime-authority dependency import attempted: {top_level}")
+        return None
+
+
+def validate_loaded_dependency_origins(root: Path) -> None:
+    for module_name, module in tuple(sys.modules.items()):
+        top_level = module_name.partition(".")[0]
+        relative_path = RUNTIME_AUTHORITY_MODULE_ROOTS.get(top_level)
+        if relative_path is None:
+            continue
+        origin_value = getattr(module, "__file__", None)
+        if not isinstance(origin_value, str):
+            refuse(f"runtime-authority dependency module has no file origin: {module_name}")
+        origin = Path(os.path.abspath(origin_value))
+        admitted_root = root / relative_path
+        if origin != admitted_root and not is_within(origin, admitted_root):
+            refuse(f"runtime-authority dependency module escaped its import root: {module_name}")
+        validate_trusted_path(
+            origin,
+            f"runtime-authority loaded dependency module {module_name}",
+            directory=False,
+        )
+
+
+def admit_runtime_authority_dependencies() -> Path:
+    root, selected, dedicated = select_dependency_root()
+    dedicated_files: set[Path] = set()
     for name, (expected_version, import_roots) in RUNTIME_AUTHORITY_DEPENDENCIES.items():
         distribution = selected[name]
         if distribution.version != expected_version:
@@ -514,23 +756,37 @@ def admit_runtime_authority_dependencies() -> None:
                 f"runtime-authority dependency version mismatch: "
                 f"{name}={distribution.version!r} expected={expected_version!r}"
             )
-        metadata_root = distribution_metadata_root(distribution, name)
-        try:
-            metadata_root.relative_to(root)
-        except ValueError:
+        metadata_root = distribution_metadata_root(distribution, name, root)
+        if not is_within(metadata_root, root):
             refuse(f"runtime-authority dependency metadata escapes its root: {name}")
         validate_trusted_tree(metadata_root, f"runtime-authority dependency metadata {name}")
+        admitted_roots = [metadata_root]
         for relative_path in import_roots:
             import_root = root / relative_path
-            try:
-                import_root.relative_to(root)
-            except ValueError:
+            if not is_within(import_root, root):
                 refuse(f"runtime-authority dependency import root escapes its root: {name}")
             validate_trusted_tree(import_root, f"runtime-authority dependency import {name}")
+            admitted_roots.append(import_root)
+        if dedicated:
+            dedicated_files.update(
+                verify_distribution_record(
+                    distribution,
+                    name,
+                    root,
+                    tuple(admitted_roots),
+                    metadata_root,
+                )
+            )
+    if dedicated:
+        validate_exact_dependency_root(root, dedicated_files)
+    validate_import_resolution(root)
+    sys.meta_path.insert(0, RuntimeAuthorityImportGuard())
+    # Root ownership is the trust anchor; these path checks are not atomic against root itself.
     sys.path.append(str(root))
+    return root
 
 
-admit_runtime_authority_dependencies()
+runtime_authority_dependency_root = admit_runtime_authority_dependencies()
 
 try:
     import yaml
@@ -765,7 +1021,10 @@ def validate_dependency_manifest(blob: str) -> None:
             refuse(f"runtime-authority dependency manifest entry is incomplete: {name}")
         if name == "typing-extensions":
             import_root += ".py"
-        observed[name] = (version, (import_root,))
+        import_roots = (import_root,)
+        if name == "pyyaml":
+            import_roots += ("_yaml",)
+        observed[name] = (version, import_roots)
     if observed != RUNTIME_AUTHORITY_DEPENDENCIES:
         refuse("runtime-authority dependency manifest does not match the sealed closure")
 
@@ -787,6 +1046,7 @@ try:
         "shared/route_metadata_schema.py",
     )
     assessment = route_schema.assess_route_metadata(frontmatter)
+    validate_loaded_dependency_origins(runtime_authority_dependency_root)
 except Exception as exc:
     refuse(f"canonical route metadata assessment failed: {type(exc).__name__}: {exc}")
 if assessment.status.value != "explicit" or assessment.metadata is None:

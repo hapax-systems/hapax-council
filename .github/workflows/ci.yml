@@ -559,17 +559,31 @@ jobs:
       - name: Install sealed runtime-authority Python closure
         run: |
           set -euo pipefail
-          sudo install -d -o root -g root -m 0755 \
-            /opt/hapax/runtime-authority-python/site-packages
+          runtime_authority_parent=/opt/hapax/runtime-authority-python
+          runtime_authority_target="$runtime_authority_parent/site-packages"
+          sudo install -d -o root -g root -m 0755 "$runtime_authority_parent"
+          if sudo test -e "$runtime_authority_target"; then
+            echo "runtime-authority target must not pre-exist: $runtime_authority_target" >&2
+            exit 1
+          fi
+          runtime_authority_staging="$(
+            sudo mktemp -d "$runtime_authority_parent/.site-packages.XXXXXX"
+          )"
           sudo "$(command -v uv)" pip install \
             --python /usr/bin/python3 \
-            --target /opt/hapax/runtime-authority-python/site-packages \
+            --target "$runtime_authority_staging" \
             --require-hashes \
             --only-binary=:all: \
             --no-deps \
+            --exact \
             --link-mode=copy \
             --no-config \
             -r config/root-required/runtime-authority-python.requirements
+          if sudo test -e "$runtime_authority_staging/.lock"; then
+            sudo unlink "$runtime_authority_staging/.lock"
+          fi
+          sudo chmod 0755 "$runtime_authority_staging"
+          sudo mv -T "$runtime_authority_staging" "$runtime_authority_target"
       - name: Install system deps (cairo, gobject, gst, pango, hook transports)
         run: |
           sudo apt-get update
@@ -891,17 +905,31 @@ jobs:
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode != 'merge-group-shards'
         run: |
           set -euo pipefail
-          sudo install -d -o root -g root -m 0755 \
-            /opt/hapax/runtime-authority-python/site-packages
+          runtime_authority_parent=/opt/hapax/runtime-authority-python
+          runtime_authority_target="$runtime_authority_parent/site-packages"
+          sudo install -d -o root -g root -m 0755 "$runtime_authority_parent"
+          if sudo test -e "$runtime_authority_target"; then
+            echo "runtime-authority target must not pre-exist: $runtime_authority_target" >&2
+            exit 1
+          fi
+          runtime_authority_staging="$(
+            sudo mktemp -d "$runtime_authority_parent/.site-packages.XXXXXX"
+          )"
           sudo "$(command -v uv)" pip install \
             --python /usr/bin/python3 \
-            --target /opt/hapax/runtime-authority-python/site-packages \
+            --target "$runtime_authority_staging" \
             --require-hashes \
             --only-binary=:all: \
             --no-deps \
+            --exact \
             --link-mode=copy \
             --no-config \
             -r config/root-required/runtime-authority-python.requirements
+          if sudo test -e "$runtime_authority_staging/.lock"; then
+            sudo unlink "$runtime_authority_staging/.lock"
+          fi
+          sudo chmod 0755 "$runtime_authority_staging"
+          sudo mv -T "$runtime_authority_staging" "$runtime_authority_target"
       - name: Verify sealed runtime-authority system Python
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'pr-admission'
         env:

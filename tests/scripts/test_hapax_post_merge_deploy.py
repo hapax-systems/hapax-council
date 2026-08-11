@@ -5,9 +5,11 @@ from __future__ import annotations
 import ast
 import fcntl
 import hashlib
+import importlib.metadata
 import json
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -59,14 +61,26 @@ def test_runtime_entrypoint_privileged_shell_ignores_hostile_bash_env(tmp_path: 
     assert not startup_marker.exists()
 
 
-def _runtime_authority_validator_source(*, dependency_prelude: str = "") -> str:
+def _runtime_authority_validator_source(
+    *,
+    dependency_prelude: str = "",
+    post_dependency_prelude: str = "",
+) -> str:
     source = SCRIPT.read_text(encoding="utf-8")
     marker = "<<'RUNTIME_AUTHORITY_PY'\n"
     validator = source.split(marker, 1)[1].split("\nRUNTIME_AUTHORITY_PY", 1)[0]
     if dependency_prelude:
         validator = validator.replace(
-            "admit_runtime_authority_dependencies()\n",
-            f"{dependency_prelude}\n\nadmit_runtime_authority_dependencies()\n",
+            "runtime_authority_dependency_root = admit_runtime_authority_dependencies()\n",
+            f"{dependency_prelude}\n\n"
+            "runtime_authority_dependency_root = admit_runtime_authority_dependencies()\n",
+            1,
+        )
+    if post_dependency_prelude:
+        validator = validator.replace(
+            "runtime_authority_dependency_root = admit_runtime_authority_dependencies()\n\ntry:\n",
+            "runtime_authority_dependency_root = admit_runtime_authority_dependencies()\n\n"
+            f"{post_dependency_prelude}\n\ntry:\n",
             1,
         )
     return validator
@@ -115,6 +129,7 @@ def _run_runtime_authority_validator(
     repo: Path = REPO_ROOT,
     *,
     dependency_prelude: str = "",
+    post_dependency_prelude: str = "",
 ) -> subprocess.CompletedProcess[str]:
     git_head = subprocess.run(
         ["/usr/bin/git", "-C", str(repo), "rev-parse", "HEAD"],
@@ -135,11 +150,66 @@ def _run_runtime_authority_validator(
             str(active_root),
             *scopes,
         ],
-        input=_runtime_authority_validator_source(dependency_prelude=dependency_prelude),
+        input=_runtime_authority_validator_source(
+            dependency_prelude=dependency_prelude,
+            post_dependency_prelude=post_dependency_prelude,
+        ),
         text=True,
         capture_output=True,
         check=False,
         cwd=cwd,
+        env={
+            "HOME": "/nonexistent",
+            "PATH": "/usr/bin:/bin",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "PYDANTIC_DISABLE_PLUGINS": "__all__",
+        },
+    )
+
+
+def _copy_runtime_authority_dependency_closure(target: Path) -> None:
+    manifest = json.loads(RUNTIME_DEPENDENCY_MANIFEST.read_text(encoding="utf-8"))
+    expected = {
+        re.sub(r"[-_.]+", "-", item["distribution"]).lower(): item["version"]
+        for item in manifest["dependencies"]
+        if item["distribution"] != "python-toon"
+    }
+    selected: dict[str, importlib.metadata.Distribution] = {}
+    for distribution in importlib.metadata.distributions():
+        name = re.sub(
+            r"[-_.]+",
+            "-",
+            distribution.metadata.get("Name", ""),
+        ).lower()
+        if name in expected and distribution.version == expected[name]:
+            selected.setdefault(name, distribution)
+    assert set(selected) == set(expected)
+
+    target.mkdir()
+    for distribution in selected.values():
+        source_root = Path(distribution.locate_file("")).resolve()
+        assert distribution.files
+        for item in distribution.files:
+            source = Path(distribution.locate_file(item)).resolve()
+            relative = source.relative_to(source_root)
+            destination = target / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+
+
+def _test_dependency_root_prelude(dependency_root: Path) -> str:
+    return (
+        f"RUNTIME_AUTHORITY_DEDICATED_SITE = Path({str(dependency_root)!r})\n"
+        "def _fixture_trusted_inode(path, label):\n"
+        "    del label\n"
+        "    inode = path.lstat()\n"
+        "    if stat.S_ISLNK(inode.st_mode):\n"
+        '        refuse(f"fixture dependency path contains a symlink: {path}")\n'
+        "    if not stat.S_ISDIR(inode.st_mode) and not stat.S_ISREG(inode.st_mode):\n"
+        '        refuse(f"fixture dependency path has an unsupported type: {path}")\n'
+        "    return inode\n"
+        "trusted_inode = _fixture_trusted_inode"
     )
 
 
@@ -1218,8 +1288,12 @@ def test_runtime_authority_validator_has_no_release_tree_import_surface() -> Non
     assert '"shared/route_metadata_schema.py"' in source
     assert 'assessment.status.value != "explicit"' in source
     assert "/usr/bin/python3 -I -S -" in script
+    assert "/usr/bin/env -i" in script
+    assert "PYDANTIC_DISABLE_PLUGINS=__all__" in script
     assert "site.addsitedir" not in source
     assert "sys.path.append(str(root))" in source
+    assert "RuntimeAuthorityImportGuard" in source
+    assert "verify_distribution_record" in source
     assert "/opt/hapax/runtime-authority-python/site-packages" in source
 
 
@@ -1279,9 +1353,10 @@ def test_runtime_authority_dependency_contract_matches_release_manifest() -> Non
     for name, (version, import_roots) in dependencies.items():
         item = manifest_by_name[name]
         assert version == item["version"]
-        assert import_roots == (
-            item["import_root"] + (".py" if name == "typing-extensions" else ""),
-        )
+        expected_roots = (item["import_root"] + (".py" if name == "typing-extensions" else ""),)
+        if name == "pyyaml":
+            expected_roots += ("_yaml",)
+        assert import_roots == expected_roots
 
 
 def test_runtime_authority_requirements_are_hash_complete_manifest_projection() -> None:
@@ -1336,12 +1411,18 @@ def test_ci_installs_and_exercises_sealed_runtime_authority_closure() -> None:
 
     for install_step in (full_install, admission_install):
         command = install_step["run"]
-        assert "/opt/hapax/runtime-authority-python/site-packages" in command
+        assert "runtime_authority_parent=/opt/hapax/runtime-authority-python" in command
+        assert 'runtime_authority_target="$runtime_authority_parent/site-packages"' in command
         assert "--python /usr/bin/python3" in command
         assert "--require-hashes" in command
         assert "--only-binary=:all:" in command
         assert "--no-deps" in command
+        assert "--exact" in command
         assert "--link-mode=copy" in command
+        assert "mktemp -d" in command
+        assert "sudo mv -T" in command
+        assert 'unlink "$runtime_authority_staging/.lock"' in command
+        assert "must not pre-exist" in command
         assert "config/root-required/runtime-authority-python.requirements" in command
     assert "steps.test_mode.outputs.mode != 'merge-group-shards'" in admission_install["if"]
     assert "steps.test_mode.outputs.mode == 'pr-admission'" in admission_test["if"]
@@ -1389,6 +1470,121 @@ def test_runtime_authority_validator_rejects_dependency_manifest_identity_drift(
 
     assert result.returncode == 2
     assert "dependency manifest identity is unsupported" in result.stderr
+
+
+def test_runtime_authority_validator_rejects_extra_dedicated_distribution(
+    tmp_path: Path,
+) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    task.write_text(_runtime_authority_task_text(), encoding="utf-8")
+    dependency_root = tmp_path / "runtime-dependencies"
+    _copy_runtime_authority_dependency_closure(dependency_root)
+    extra_metadata = dependency_root / "unexpected_runtime_package-1.0.dist-info"
+    extra_metadata.mkdir()
+    (extra_metadata / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: unexpected-runtime-package\nVersion: 1.0\n",
+        encoding="utf-8",
+    )
+    (extra_metadata / "RECORD").write_text("", encoding="utf-8")
+
+    result = _run_runtime_authority_validator(
+        task,
+        active_root,
+        dependency_prelude=_test_dependency_root_prelude(dependency_root),
+    )
+
+    assert result.returncode == 2
+    assert "not the exact distribution closure" in result.stderr
+
+
+def test_runtime_authority_validator_rejects_record_payload_drift(tmp_path: Path) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    task.write_text(_runtime_authority_task_text(), encoding="utf-8")
+    dependency_root = tmp_path / "runtime-dependencies"
+    _copy_runtime_authority_dependency_closure(dependency_root)
+    altered = dependency_root / "pydantic" / "__init__.py"
+    payload = bytearray(altered.read_bytes())
+    payload[0] ^= 1
+    altered.write_bytes(payload)
+
+    result = _run_runtime_authority_validator(
+        task,
+        active_root,
+        dependency_prelude=_test_dependency_root_prelude(dependency_root),
+    )
+
+    assert result.returncode == 2
+    assert "dependency RECORD digest mismatch: pydantic" in result.stderr
+
+
+def test_runtime_authority_validator_rejects_unrecorded_package_payload(
+    tmp_path: Path,
+) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    task.write_text(_runtime_authority_task_text(), encoding="utf-8")
+    dependency_root = tmp_path / "runtime-dependencies"
+    _copy_runtime_authority_dependency_closure(dependency_root)
+    (dependency_root / "pydantic" / "unrecorded.py").write_text(
+        "raise RuntimeError('must not load')\n",
+        encoding="utf-8",
+    )
+
+    result = _run_runtime_authority_validator(
+        task,
+        active_root,
+        dependency_prelude=_test_dependency_root_prelude(dependency_root),
+    )
+
+    assert result.returncode == 2
+    assert "dependency tree differs from RECORD: pydantic" in result.stderr
+
+
+def test_runtime_authority_validator_rejects_bare_dedicated_root_payload(
+    tmp_path: Path,
+) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    task.write_text(_runtime_authority_task_text(), encoding="utf-8")
+    dependency_root = tmp_path / "runtime-dependencies"
+    _copy_runtime_authority_dependency_closure(dependency_root)
+    (dependency_root / "unlisted_root_module.py").write_text(
+        "raise RuntimeError('must not load')\n",
+        encoding="utf-8",
+    )
+
+    result = _run_runtime_authority_validator(
+        task,
+        active_root,
+        dependency_prelude=_test_dependency_root_prelude(dependency_root),
+    )
+
+    assert result.returncode == 2
+    assert "dependency root differs from the exact RECORD closure" in result.stderr
+
+
+def test_runtime_authority_validator_rejects_unlisted_dependency_import(
+    tmp_path: Path,
+) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    task.write_text(_runtime_authority_task_text(), encoding="utf-8")
+
+    result = _run_runtime_authority_validator(
+        task,
+        active_root,
+        post_dependency_prelude="import unexpected_runtime_authority_dependency",
+    )
+
+    assert result.returncode == 2
+    assert "unlisted runtime-authority dependency import attempted" in result.stderr
 
 
 @pytest.mark.parametrize("unsafe_kind", ("non-root", "symlink"))
