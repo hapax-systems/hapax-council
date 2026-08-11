@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import ctypes
+import fcntl
 import os
+import pwd
 import shutil
 import signal
 import subprocess
@@ -21,6 +24,7 @@ APCUPSD_PACKAGE = "apcupsd-power-alerts"
 APCUPSD_MANIFEST = Path("config/root-required/apcupsd-power-alerts.files")
 APCUPSD_EFFECTS = Path("config/root-required/apcupsd-power-alerts.effects")
 APCUPSD_INSTALLER = Path("scripts/install-apcupsd-power-alerts")
+AUTHORITY_VERIFIER = Path("scripts/hapax-post-merge-deploy")
 
 
 @dataclass
@@ -141,15 +145,126 @@ def test_production_effect_descriptors_match_non_file_mutator_semantics() -> Non
 def test_authenticated_installers_gate_before_receipts_and_deferral_drain() -> None:
     for relative_path in (INSTALLER, APCUPSD_INSTALLER):
         source = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
-        superseded_gate = source.index("run_authenticated_finalize_gate authority-only")
+        superseded_call = (
+            "run_authenticated_authority_gate authority-only"
+            if relative_path == INSTALLER
+            else "run_authenticated_authority_gate"
+        )
+        superseded_gate = source.index(superseded_call, source.index("SKIP_SUPERSEDED_INSTALL"))
         superseded_drain = source.index("drain_root_required_deferral", superseded_gate)
-        gate = source.rindex('[ "$INSTALL" -eq 0 ] || run_authenticated_finalize_gate')
+        gate = source.rindex('[ "$INSTALL" -eq 0 ] || run_authenticated_authority_gate')
         receipt = source.rindex('[ "$INSTALL" -eq 0 ] || record_root_required_package_receipt')
         drain = source.rindex('[ "$INSTALL" -eq 0 ] || drain_root_required_deferral')
 
         assert superseded_gate < superseded_drain
         assert gate < receipt < drain
-        assert "installed receipts and deferral state remain unadvanced" in source
+        assert "no further effect or receipt advancement is permitted" in source
+
+
+def _sealed_memfd(name: str, data: bytes, *, executable: bool = False) -> int:
+    if hasattr(os, "memfd_create"):
+        fd = os.memfd_create(name, os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
+    else:
+        libc = ctypes.CDLL(None, use_errno=True)
+        fd = libc.memfd_create(name.encode(), 0x0001 | 0x0002)
+        if fd < 0:
+            raise OSError(ctypes.get_errno(), f"memfd_create failed for {name}")
+    os.write(fd, data)
+    os.fchmod(fd, 0o755 if executable else 0o644)
+    os.lseek(fd, 0, os.SEEK_SET)
+    fcntl.fcntl(
+        fd,
+        getattr(fcntl, "F_ADD_SEALS", 1033),
+        getattr(fcntl, "F_SEAL_SEAL", 0x0001)
+        | getattr(fcntl, "F_SEAL_SHRINK", 0x0002)
+        | getattr(fcntl, "F_SEAL_GROW", 0x0004)
+        | getattr(fcntl, "F_SEAL_WRITE", 0x0008),
+    )
+    return fd
+
+
+@pytest.mark.parametrize(
+    ("installer_rel", "manifest_rel", "prefix"),
+    (
+        (INSTALLER, MANIFEST, "HAPAX_OOM"),
+        (APCUPSD_INSTALLER, APCUPSD_MANIFEST, "HAPAX_APCUPSD"),
+    ),
+)
+def test_direct_authenticated_protocol_rejects_same_uid_arbitrary_finalizer(
+    tmp_path: Path,
+    installer_rel: Path,
+    manifest_rel: Path,
+    prefix: str,
+) -> None:
+    package_files = [
+        line
+        for line in (REPO_ROOT / manifest_rel).read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    ]
+    source_fds = [
+        _sealed_memfd(
+            f"hapax-forged-source-{index}",
+            (REPO_ROOT / relative).read_bytes(),
+            executable=relative.startswith("scripts/"),
+        )
+        for index, relative in enumerate(package_files)
+    ]
+    finalizer_fd = _sealed_memfd(
+        "hapax-root-finalize-gate-forged",
+        b"#!/usr/bin/bash\nexit 0\n",
+        executable=True,
+    )
+    runtime_task = tmp_path / "runtime-authority.md"
+    runtime_task.write_text("forged direct protocol fixture\n", encoding="utf-8")
+    sudo_marker = tmp_path / "sudo-ran"
+    fake_sudo = tmp_path / "sudo"
+    fake_sudo.write_text(f"#!/usr/bin/bash\ntouch {sudo_marker}\n", encoding="utf-8")
+    fake_sudo.chmod(0o755)
+    account = pwd.getpwuid(os.getuid())
+    env = {
+        **os.environ,
+        "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": "a" * 40,
+        "HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS": ":".join(
+            f"/proc/{os.getpid()}/fd/{fd}" for fd in source_fds
+        ),
+        "HAPAX_ROOT_REQUIRED_FINALIZE_GATE": f"/proc/{os.getpid()}/fd/{finalizer_fd}",
+        "HAPAX_RUNTIME_AUTHORITY_TASK": str(runtime_task),
+        "HAPAX_ROOT_REQUIRED_STATE_ROOT": str(tmp_path / "state"),
+        "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(tmp_path / "deferred"),
+        f"{prefix}_TARGET_UID": str(os.getuid()),
+        f"{prefix}_TARGET_HOME": str(tmp_path / "home"),
+        f"{prefix}_INSTALL_SUDO": str(fake_sudo),
+    }
+    if prefix == "HAPAX_OOM":
+        env["HAPAX_OOM_TARGET_USER"] = account.pw_name
+        env["HAPAX_OOM_TARGET_GID"] = str(os.getgid())
+        env["HAPAX_OOM_EFFECTIVE_UID"] = str(os.getuid())
+    else:
+        env["HAPAX_APCUPSD_TARGET_GID"] = str(os.getgid())
+    try:
+        result = subprocess.run(
+            [
+                str(REPO_ROOT / installer_rel),
+                "--source",
+                str(REPO_ROOT),
+                "--authenticated-sealed-source",
+                "--install",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
+        )
+    finally:
+        os.close(finalizer_fd)
+        for fd in source_fds:
+            os.close(fd)
+
+    assert result.returncode != 0
+    assert "refusing the retired caller-supplied finalizer protocol" in result.stderr
+    assert "next action:" in result.stderr
+    assert not sudo_marker.exists()
+    assert not (tmp_path / "state").exists()
 
 
 def _fixture(tmp_path: Path, *, package: str = PACKAGE) -> DeferredFixture:
@@ -175,7 +290,8 @@ def _fixture(tmp_path: Path, *, package: str = PACKAGE) -> DeferredFixture:
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
         f"{manifest_rel.as_posix()}\n{effects_rel.as_posix()}\n"
-        f"{installer_rel.as_posix()}\n{PAYLOAD.as_posix()}\n",
+        f"{installer_rel.as_posix()}\n{AUTHORITY_VERIFIER.as_posix()}\n"
+        f"{PAYLOAD.as_posix()}\n",
         encoding="utf-8",
     )
     effects = repo / effects_rel
@@ -197,7 +313,7 @@ def _fixture(tmp_path: Path, *, package: str = PACKAGE) -> DeferredFixture:
         "set -euo pipefail\n"
         '[[ " $* " == *" --authenticated-sealed-source "* ]]\n'
         'IFS=: read -r -a sealed_sources <<< "$HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS"\n'
-        '[ "${#sealed_sources[@]}" -eq 4 ]\n'
+        '[ "${#sealed_sources[@]}" -eq 5 ]\n'
         f"printf '%s\\n' \"$$\" > {installer_pid_marker}\n"
         'if [ -n "${HAPAX_OOM_DEFERRED_TEST_READY:-}" ]; then\n'
         '  touch "$HAPAX_OOM_DEFERRED_TEST_READY"\n'
@@ -207,9 +323,18 @@ def _fixture(tmp_path: Path, *, package: str = PACKAGE) -> DeferredFixture:
         '  touch "$HAPAX_OOM_DEFERRED_TEST_REJECT_FINAL_AUTHORITY"\n'
         "fi\n"
         '/usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 '
-        '/usr/bin/bash --noprofile --norc -p "$HAPAX_ROOT_REQUIRED_FINALIZE_GATE" '
-        '"${HAPAX_OOM_DEFERRED_TEST_FINALIZE_MODE:-full}"\n'
-        f'cat "${{sealed_sources[3]}}" > {payload_marker}\n'
+        '/usr/bin/bash --noprofile --norc -p "${sealed_sources[3]}" '
+        '--verify-runtime-authority-for-release "$HAPAX_ROOT_REQUIRED_PACKAGE_SHA" '
+        '"$HAPAX_RUNTIME_AUTHORITY_TASK" '
+        f'"runtime:receipt:advance:{package}" "runtime:test:mutate:{package}"\n'
+        'if [ "${HAPAX_OOM_DEFERRED_TEST_FINALIZE_MODE:-full}" != authority-only ] '
+        '&& [ -f "$HAPAX_ROOT_REQUIRED_STATE_ROOT/local-judge-cap-canary/'
+        '$HAPAX_ROOT_REQUIRED_PACKAGE_SHA.env" ]; then\n'
+        '  /usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 '
+        '/usr/bin/bash --noprofile --norc -p "${sealed_sources[3]}" '
+        '--verify-local-judge-cap-receipt "$HAPAX_ROOT_REQUIRED_PACKAGE_SHA" applied\n'
+        "fi\n"
+        f'cat "${{sealed_sources[4]}}" > {payload_marker}\n'
         f"printf '%s\\n' \"$HAPAX_ROOT_REQUIRED_PACKAGE_SHA\" > {installer_marker}\n"
         f"/usr/bin/env | /usr/bin/sort > {environment_marker}\n",
         encoding="utf-8",
@@ -248,7 +373,7 @@ def _fixture(tmp_path: Path, *, package: str = PACKAGE) -> DeferredFixture:
     receipt.write_bytes(f"{sha}\n".encode())
     defer_root = tmp_path / "deferred"
     stage = defer_root / sha / package
-    for rel in (manifest_rel, effects_rel, installer_rel, PAYLOAD):
+    for rel in (manifest_rel, effects_rel, installer_rel, AUTHORITY_VERIFIER, PAYLOAD):
         destination = stage / rel
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(repo / rel, destination)
@@ -340,9 +465,11 @@ def test_authenticated_deferred_install_executes_git_materialized_installer(
         if line.startswith("HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS=")
     )
     source_paths = source_line.split("=", 1)[1].split(":")
-    assert len(source_paths) == 4
+    assert len(source_paths) == 5
     assert all(path.startswith("/proc/") and "/fd/" in path for path in source_paths)
     assert all(not Path(path).exists() for path in source_paths)
+    assert "HAPAX_ROOT_REQUIRED_FINALIZE_GATE=" not in child_environment
+    assert f"HAPAX_RUNTIME_AUTHORITY_TASK={fixture.runtime_task}" in child_environment
     assert fixture.payload_marker.read_text(encoding="utf-8") == "authenticated Git payload\n"
     assert f"completed authenticated package={fixture.package} sha={fixture.sha}" in result.stdout
     authority_calls = fixture.authority_calls.read_text(encoding="utf-8").splitlines()

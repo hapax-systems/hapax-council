@@ -454,6 +454,7 @@ def test_local_judge_container_has_a_finite_memory_cap() -> None:
     assert "--cidfile %t/hapax-local-judge/container.cid" in text
     assert "RuntimeDirectory=hapax-local-judge" in text
     assert "RuntimeDirectoryPreserve=yes" in text
+    assert "hapax-local-judge-container-id wait-daemon" in text
     assert "hapax-local-judge-container-id preflight" in text
     assert "hapax-local-judge-container-id stop" in text
     assert "ExecStop=/usr/bin/docker stop hapax-local-judge" not in text
@@ -462,19 +463,24 @@ def test_local_judge_container_has_a_finite_memory_cap() -> None:
     assert "stop/restart never targets the name" in text
 
 
-def test_local_judge_uses_fixed_restart_interval_as_docker_readiness_contract() -> None:
+def test_local_judge_uses_bounded_daemon_wait_before_container_preflight() -> None:
     text = (UNITS_DIR / "hapax-local-judge.service").read_text()
     normalized = " ".join(line.removeprefix("# ") for line in text.splitlines())
+    wait = text.index("hapax-local-judge-container-id wait-daemon")
+    prepare = text.index("hapax-local-judge-container-id prepare")
+    preflight = text.index("hapax-local-judge-container-id preflight")
 
     assert "\nAfter=docker.service" not in text
     assert "Wants=docker.service" not in text
     assert "Requires=docker.service" not in text
     assert "Restart=always" in text
     assert "RestartSec=5" in text
+    assert "TimeoutStartSec=90" in text
+    assert wait < prepare < preflight
     assert "After=docker.service is deliberately omitted" in text
     assert "cannot order the system manager's docker.service" in normalized
-    assert "pinned socket" in text
-    assert "cross-manager availability contract" in text
+    assert "bounded first preflight probes the pinned local daemon" in normalized
+    assert "persistent cross-manager unavailability" in normalized
 
 
 def test_local_judge_unit_names_the_protected_model_recheck() -> None:

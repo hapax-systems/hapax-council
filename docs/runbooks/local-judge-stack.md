@@ -844,10 +844,10 @@ unit-owned full ID to `%t/hapax-local-judge/container.cid`; stop and restart use
 only that ID and retain the cidfile whenever absence cannot be proven. The unit
 refuses to delete an unknown same-name container. A user manager cannot order the system
 manager's `docker.service`, so the unit deliberately declares no inert
-cross-manager dependency. `Restart=always` with `RestartSec=5s` is the explicit
-Docker-socket readiness path. During boot, the journal may therefore show one or
-more five-second preflight failures until the system Docker socket is ready. If
-they continue after `systemctl is-active docker.service` reports `active`, inspect
+cross-manager dependency. Its first `ExecStartPre` instead polls the pinned local
+Docker daemon for at most 60 seconds; `Restart=always` with `RestartSec=5s`
+retries persistent unavailability after that bounded start attempt. If readiness
+failures continue after `systemctl is-active docker.service` reports `active`, inspect
 `journalctl --user -u hapax-local-judge.service` for the socket, image, model, or
 same-name-container refusal before restarting anything. Its preflight also requires the exact digest image
 to be locally staged and the root-owned content-addressed model to match the

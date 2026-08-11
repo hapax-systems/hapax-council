@@ -22,6 +22,8 @@ class DockerRig:
     exists: Path
     name: Path
     image_missing: Path
+    daemon_ready_after: Path
+    daemon_attempts: Path
     cidfile: Path
     env: dict[str, str]
 
@@ -53,6 +55,8 @@ def _rig(tmp_path: Path, *, running: bool = True) -> DockerRig:
     exists = tmp_path / "container-exists"
     name = tmp_path / "container-name"
     image_missing = tmp_path / "image-missing"
+    daemon_ready_after = tmp_path / "daemon-ready-after"
+    daemon_attempts = tmp_path / "daemon-attempts"
     if running:
         exists.touch()
     name.write_text("hapax-local-judge\n", encoding="utf-8")
@@ -64,12 +68,22 @@ def _rig(tmp_path: Path, *, running: bool = True) -> DockerRig:
         f"exists = pathlib.Path({str(exists)!r})\n"
         f"name = pathlib.Path({str(name)!r})\n"
         f"image_missing = pathlib.Path({str(image_missing)!r})\n"
+        f"daemon_ready_after = pathlib.Path({str(daemon_ready_after)!r})\n"
+        f"daemon_attempts = pathlib.Path({str(daemon_attempts)!r})\n"
         f"container_id = {CONTAINER_ID!r}\n"
         f"image = {IMAGE!r}\n"
         "args = sys.argv[1:]\n"
         "with log.open('a', encoding='utf-8') as handle:\n"
         "    handle.write(json.dumps({'host': os.environ.get('DOCKER_HOST'), 'args': args}) + '\\n')\n"
-        "if args[:3] == ['image', 'inspect', '--format']:\n"
+        "if args[:2] == ['version', '--format']:\n"
+        "    attempt = int(daemon_attempts.read_text()) + 1 if daemon_attempts.exists() else 1\n"
+        "    daemon_attempts.write_text(str(attempt))\n"
+        "    ready_after = int(daemon_ready_after.read_text()) if daemon_ready_after.exists() else 999999\n"
+        "    if attempt < ready_after:\n"
+        "        print('daemon unavailable', file=sys.stderr)\n"
+        "        raise SystemExit(1)\n"
+        "    print('27.5.1')\n"
+        "elif args[:3] == ['image', 'inspect', '--format']:\n"
         "    if image_missing.exists():\n"
         "        print('image absent', file=sys.stderr)\n"
         "        raise SystemExit(1)\n"
@@ -99,6 +113,8 @@ def _rig(tmp_path: Path, *, running: bool = True) -> DockerRig:
         exists=exists,
         name=name,
         image_missing=image_missing,
+        daemon_ready_after=daemon_ready_after,
+        daemon_attempts=daemon_attempts,
         cidfile=cidfile,
         env={
             **os.environ,
@@ -107,6 +123,30 @@ def _rig(tmp_path: Path, *, running: bool = True) -> DockerRig:
             "DOCKER_CONTEXT": "hostile-context",
         },
     )
+
+
+def test_wait_daemon_retries_until_the_local_server_answers(tmp_path: Path) -> None:
+    rig = _rig(tmp_path)
+    rig.daemon_ready_after.write_text("3", encoding="ascii")
+
+    result = rig.run("wait-daemon", "--wait-seconds", "1", "--poll-seconds", "0.01")
+
+    assert result.returncode == 0, result.stderr
+    assert "local Docker daemon ready: server=27.5.1" in result.stdout
+    assert rig.daemon_attempts.read_text(encoding="ascii") == "3"
+    assert all(call["host"] == "unix:///var/run/docker.sock" for call in rig.calls())
+    assert all(call["args"][:2] == ["version", "--format"] for call in rig.calls())
+
+
+def test_wait_daemon_fails_with_bounded_actionable_timeout(tmp_path: Path) -> None:
+    rig = _rig(tmp_path)
+
+    result = rig.run("wait-daemon", "--wait-seconds", "0.05", "--poll-seconds", "0.01")
+
+    assert result.returncode == 1
+    assert "local Docker daemon was not ready within 0.05 seconds" in result.stderr
+    assert "daemon unavailable" in result.stderr
+    assert "next action:" in result.stderr
 
 
 def _stage_model(tmp_path: Path) -> tuple[Path, Path, str]:

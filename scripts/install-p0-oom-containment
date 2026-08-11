@@ -69,7 +69,8 @@ ROOT_REQUIRED_GIT_REPO="${HAPAX_ROOT_REQUIRED_GIT_REPO:-$TARGET_HOME/.cache/hapa
 ROOT_REQUIRED_PACKAGE_SHA="${HAPAX_ROOT_REQUIRED_PACKAGE_SHA:-}"
 ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_STATE_ROOT/.lock}"
 ROOT_REQUIRED_SEALED_SOURCE_FDS="${HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS:-}"
-ROOT_REQUIRED_FINALIZE_GATE="${HAPAX_ROOT_REQUIRED_FINALIZE_GATE:-}"
+ROOT_REQUIRED_LEGACY_FINALIZE_GATE="${HAPAX_ROOT_REQUIRED_FINALIZE_GATE:-}"
+RUNTIME_AUTHORITY_TASK="${HAPAX_RUNTIME_AUTHORITY_TASK:-}"
 ROOT_REQUIRED_RECEIPT="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/oom-containment.sha"
 ROOT_REQUIRED_DESIRED_RECEIPT="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/oom-containment.sha"
 SKIP_SUPERSEDED_INSTALL=0
@@ -214,6 +215,19 @@ canonical_dir() {
     local dir="$1"
     [ -d "$dir" ] || return 1
     (cd "$dir" && pwd -P)
+}
+
+git() {
+    /usr/bin/env -i \
+        HOME=/nonexistent \
+        PATH=/usr/bin:/bin \
+        LANG=C.UTF-8 \
+        LC_ALL=C.UTF-8 \
+        GIT_CONFIG_GLOBAL=/dev/null \
+        GIT_CONFIG_NOSYSTEM=1 \
+        GIT_NO_REPLACE_OBJECTS=1 \
+        GIT_OPTIONAL_LOCKS=0 \
+        /usr/bin/git "$@"
 }
 
 acquire_root_required_lock() {
@@ -618,6 +632,7 @@ oom_sudoers_source="config/root-required/hapax-oom-score-enforce.sudoers"
 root_failure_intake_source="scripts/hapax-root-failure-intake"
 oom_policy_audit_source="scripts/hapax-oom-policy-audit"
 root_required_audit_source="scripts/hapax-root-required-deploy-audit"
+authority_verifier_source="scripts/hapax-post-merge-deploy"
 package_manifest_source="config/root-required/oom-containment.files"
 effect_descriptor_source="config/root-required/oom-containment.effects"
 host_profile_table_source="config/root-required/oom-host-profiles.tsv"
@@ -626,6 +641,9 @@ host_profile_sources=(
     config/root-required/oom-host-policy/appendix/user-1000.slice.conf
     config/root-required/oom-host-policy/appendix/user@1000.service.conf
     config/root-required/oom-host-policy/appendix/zram-generator.conf
+    config/root-required/oom-host-policy/podium/app.slice.conf
+    config/root-required/oom-host-policy/podium/user-1000.slice.conf
+    config/root-required/oom-host-policy/podium/user@1000.service.conf
     config/root-required/oom-host-policy/podium/zram-generator.conf
 )
 package_files=(
@@ -635,6 +653,7 @@ package_files=(
     "${host_profile_sources[@]}"
     scripts/install-p0-oom-containment
     scripts/hapax-root-required-deferred-install
+    "$authority_verifier_source"
     scripts/hapax-local-judge-container-id
     "$oom_sudoers_source"
     "${system_dropins[@]}"
@@ -655,14 +674,19 @@ load_authenticated_sealed_sources() {
     local raw="$ROOT_REQUIRED_SEALED_SOURCE_FDS" index
     local -a source_fds=()
     if [ "$AUTHENTICATED_SEALED_SOURCE" -eq 0 ]; then
-        if [ -n "$raw" ] || [ -n "$ROOT_REQUIRED_FINALIZE_GATE" ]; then
-            echo "refusing sealed-source or finalize-gate descriptors without the authenticated helper protocol flag; next action: remove helper-owned descriptor variables and rerun normally, or regenerate the live command with hapax-post-merge-deploy" >&2
+        if [ -n "$raw" ] || [ -n "$ROOT_REQUIRED_LEGACY_FINALIZE_GATE" ]; then
+            echo "refusing sealed-source or retired finalizer descriptors without the authenticated helper protocol flag; next action: remove helper-owned descriptor variables and regenerate the live command with hapax-post-merge-deploy" >&2
             return 1
         fi
         return 0
     fi
-    if [ "$INSTALL" -ne 1 ] || [ -z "$raw" ] || [ -z "$ROOT_REQUIRED_FINALIZE_GATE" ]; then
-        echo "authenticated sealed-source mode requires --install plus helper-owned source and finalize-gate descriptors; next action: regenerate the live command with hapax-post-merge-deploy" >&2
+    if [ "$INSTALL" -ne 1 ] || [ -z "$raw" ] || [ -z "$RUNTIME_AUTHORITY_TASK" ] \
+        || ! [[ "$ROOT_REQUIRED_PACKAGE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+        echo "authenticated sealed-source mode requires --install, an exact 40-hex package SHA, helper-owned source descriptors, and HAPAX_RUNTIME_AUTHORITY_TASK; next action: regenerate the live command with hapax-post-merge-deploy" >&2
+        return 1
+    fi
+    if [ -n "$ROOT_REQUIRED_LEGACY_FINALIZE_GATE" ]; then
+        echo "refusing the retired caller-supplied finalizer protocol; next action: remove HAPAX_ROOT_REQUIRED_FINALIZE_GATE and regenerate the live command with hapax-post-merge-deploy" >&2
         return 1
     fi
     IFS=: read -r -a source_fds <<< "$raw"
@@ -670,7 +694,7 @@ load_authenticated_sealed_sources() {
         echo "authenticated OOM source descriptor count mismatch: actual=${#source_fds[@]} expected=${#package_files[@]}; next action: discard the altered invocation and regenerate it with hapax-post-merge-deploy" >&2
         return 1
     fi
-    if ! /usr/bin/python3 -I - "$ROOT_REQUIRED_FINALIZE_GATE" "${source_fds[@]}" <<'PY'
+    if ! /usr/bin/python3 -I - "${source_fds[@]}" <<'PY'
 from __future__ import annotations
 
 import fcntl
@@ -680,9 +704,9 @@ import stat
 import sys
 
 required = fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
-gate, *source_paths = sys.argv[1:]
+source_paths = sys.argv[1:]
 holder_pids: set[str] = set()
-for path in (gate, *source_paths):
+for path in source_paths:
     match = re.fullmatch(r"/proc/([1-9][0-9]*)/fd/([0-9]+)", path)
     if match is None:
         raise SystemExit(1)
@@ -702,13 +726,6 @@ for path in (gate, *source_paths):
         or not stat.S_ISREG(inode.st_mode)
         or inode.st_uid != os.geteuid()
         or seals & required != required
-        or (
-            path == gate
-            and (
-                not target.startswith("/memfd:hapax-root-finalize-gate")
-                or not inode.st_mode & 0o111
-            )
-        )
     ):
         raise SystemExit(1)
 if len(holder_pids) != 1:
@@ -723,18 +740,92 @@ PY
     done
 }
 
-run_authenticated_finalize_gate() {
+bind_authenticated_release_root() {
     [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ] || return 0
-    local finalize_mode="${1:-full}"
+    production_destinations_selected || return 0
+    local account_home activation_alias release_root release provided owner_uid git_root git_head
+    account_home="$(/usr/bin/python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')" || {
+        echo "authenticated OOM install cannot derive the caller account home; next action: repair the local passwd entry and regenerate the live command with hapax-post-merge-deploy" >&2
+        return 1
+    }
+    activation_alias="$account_home/.cache/hapax/source-activation/worktree"
+    release_root="$account_home/.cache/hapax/source-activation/releases"
+    release="$(/usr/bin/realpath -e -- "$activation_alias" 2>/dev/null)" || {
+        echo "authenticated OOM install cannot resolve the canonical source-activation release; next action: reconcile source activation and regenerate the live command with hapax-post-merge-deploy" >&2
+        return 1
+    }
+    provided="$(/usr/bin/realpath -e -- "$ROOT_REQUIRED_GIT_REPO" 2>/dev/null)" || {
+        echo "authenticated OOM install cannot resolve its claimed Git repository; next action: discard the altered invocation and regenerate it with hapax-post-merge-deploy" >&2
+        return 1
+    }
+    if [ "$release" != "$release_root/$ROOT_REQUIRED_PACKAGE_SHA" ] || [ "$provided" != "$release" ]; then
+        echo "authenticated OOM install is not bound to the canonical exact-SHA release: activation=$release claimed=$provided expected=$release_root/$ROOT_REQUIRED_PACKAGE_SHA; next action: reconcile source activation and regenerate the live command with hapax-post-merge-deploy" >&2
+        return 1
+    fi
+    owner_uid="$(/usr/bin/stat -c %u -- "$release" 2>/dev/null || true)"
+    git_root="$(git -C "$release" rev-parse --show-toplevel 2>/dev/null || true)"
+    git_root="$(/usr/bin/realpath -e -- "$git_root" 2>/dev/null || true)"
+    git_head="$(git -C "$release" rev-parse --verify HEAD 2>/dev/null || true)"
+    if [ "$owner_uid" != "$(/usr/bin/id -u)" ] || [ "$git_root" != "$release" ] \
+        || [ "$git_head" != "$ROOT_REQUIRED_PACKAGE_SHA" ]; then
+        echo "authenticated OOM install rejected an unowned or mismatched canonical release; next action: reconcile source-activation ownership and HEAD, then regenerate the live command with hapax-post-merge-deploy" >&2
+        return 1
+    fi
+    ROOT_REQUIRED_GIT_REPO="$release"
+}
+
+run_authenticated_authority_gate() {
+    [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ] || return 0
+    local cap_phase="${1:-candidate}" verifier
+    local -a scopes=()
+    case "$cap_phase" in
+        candidate|applied|authority-only) ;;
+        *)
+            echo "invalid authenticated authority phase: $cap_phase; next action: regenerate the live command with hapax-post-merge-deploy" >&2
+            return 1
+            ;;
+    esac
+    verifier="$(src_path "$authority_verifier_source")" || return 1
+    mapfile -t scopes < <(/usr/bin/awk '/^runtime:/ {print}' "$(src_path "$effect_descriptor_source")")
+    if [ "${#scopes[@]}" -eq 0 ] || [ "$(printf '%s\n' "${scopes[@]}" | /usr/bin/sort -u | /usr/bin/wc -l)" -ne "${#scopes[@]}" ]; then
+        echo "authenticated OOM effect scope set is empty or duplicated; next action: restore the exact effect descriptor and regenerate the live command with hapax-post-merge-deploy" >&2
+        return 1
+    fi
     /usr/bin/env -i \
         HOME="$TARGET_HOME" \
         PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin \
         LANG=C.UTF-8 \
         LC_ALL=C.UTF-8 \
-        /usr/bin/bash --noprofile --norc -p "$ROOT_REQUIRED_FINALIZE_GATE" "$finalize_mode" || {
-        echo "authenticated OOM finalization gate rejected; installed receipts and deferral state remain unadvanced" >&2
+        GIT_CONFIG_GLOBAL=/dev/null \
+        GIT_CONFIG_NOSYSTEM=1 \
+        GIT_NO_REPLACE_OBJECTS=1 \
+        GIT_OPTIONAL_LOCKS=0 \
+        PYTHONNOUSERSITE=1 \
+        PYTHONSAFEPATH=1 \
+        /usr/bin/bash --noprofile --norc -p "$verifier" \
+        --verify-runtime-authority-for-release \
+        "$ROOT_REQUIRED_PACKAGE_SHA" "$RUNTIME_AUTHORITY_TASK" "${scopes[@]}" || {
+        echo "authenticated OOM runtime-authority recheck rejected; no further effect or receipt advancement is permitted; next action: restore the canonical runtime-authorized task and regenerate the live command with hapax-post-merge-deploy" >&2
         return 1
     }
+    if [ "$cap_phase" != authority-only ] && [ "$HOST_PROFILE" = appendix ]; then
+        /usr/bin/env -i \
+            HOME="$TARGET_HOME" \
+            PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin \
+            LANG=C.UTF-8 \
+            LC_ALL=C.UTF-8 \
+            GIT_CONFIG_GLOBAL=/dev/null \
+            GIT_CONFIG_NOSYSTEM=1 \
+            GIT_NO_REPLACE_OBJECTS=1 \
+            GIT_OPTIONAL_LOCKS=0 \
+            PYTHONNOUSERSITE=1 \
+            PYTHONSAFEPATH=1 \
+            /usr/bin/bash --noprofile --norc -p "$verifier" \
+            --verify-local-judge-cap-receipt "$ROOT_REQUIRED_PACKAGE_SHA" "$cap_phase" || {
+            echo "authenticated OOM local-judge cap recheck rejected at phase $cap_phase; no further effect or receipt advancement is permitted; next action: rerun the governed cap canary and regenerate the live command with hapax-post-merge-deploy" >&2
+            return 1
+        }
+    fi
 }
 recovery_unit_scores=(
     apcupsd.service:-900
@@ -974,7 +1065,10 @@ production_destinations_selected() {
         "$OOM_ENFORCER_DEST" "$OOM_TRIGGER_DEST" "$OOM_SUDOERS_DEST" \
         "$OOM_SUDOERS_REFERENCE_DEST" "$ROOT_FAILURE_INTAKE_DEST" \
         "$OOM_POLICY_AUDIT_DEST" "$ROOT_REQUIRED_AUDIT_DEST" \
-        "$OOM_PROFILE_TABLE_DEST" "$ZRAM_POLICY_DEST"; do
+        "$OOM_PROFILE_TABLE_DEST" "$ZRAM_POLICY_DEST" \
+        "$ROOT_REQUIRED_STATE_ROOT" "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" \
+        "$ROOT_REQUIRED_DEFER_ROOT" "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" \
+        "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" "$ROOT_REQUIRED_LOCK_FILE" "$TARGET_HOME"; do
         case "$path" in
             /etc/*|/usr/local/*|/home/hapax/*) return 0 ;;
         esac
@@ -1267,23 +1361,20 @@ source_unit_value() {
 
 selected_source_rel() {
     local rel="$1"
-    if [ "$HOST_PROFILE" = "appendix" ]; then
-        case "$rel" in
-            systemd/units/app.slice.d/oom-containment.conf)
-                printf '%s\n' config/root-required/oom-host-policy/appendix/app.slice.conf
-                return 0
-                ;;
-            systemd/system/user-1000.slice.d/oom-containment.conf)
-                printf '%s\n' config/root-required/oom-host-policy/appendix/user-1000.slice.conf
-                return 0
-                ;;
-            systemd/system/user@1000.service.d/oom.conf)
-                printf '%s\n' config/root-required/oom-host-policy/appendix/user@1000.service.conf
-                return 0
-                ;;
-        esac
-    fi
-    printf '%s\n' "$rel"
+    case "$rel" in
+        systemd/units/app.slice.d/oom-containment.conf)
+            printf 'config/root-required/oom-host-policy/%s/app.slice.conf\n' "$HOST_PROFILE"
+            ;;
+        systemd/system/user-1000.slice.d/oom-containment.conf)
+            printf 'config/root-required/oom-host-policy/%s/user-1000.slice.conf\n' "$HOST_PROFILE"
+            ;;
+        systemd/system/user@1000.service.d/oom.conf)
+            printf 'config/root-required/oom-host-policy/%s/user@1000.service.conf\n' "$HOST_PROFILE"
+            ;;
+        *)
+            printf '%s\n' "$rel"
+            ;;
+    esac
 }
 
 selected_zram_source_rel() {
@@ -3126,6 +3217,13 @@ verify_user_process_oom_floor() {
 
 load_authenticated_sealed_sources
 require_authenticated_install_authority
+if [ "$INSTALL" -eq 1 ] && [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ]; then
+    bind_authenticated_release_root
+    validate_package_source_matches_commit
+    load_host_policy
+    validate_selected_host_sources
+    run_authenticated_authority_gate authority-only
+fi
 validate_docker_command
 
 if [ "$INSTALL" -eq 1 ]; then
@@ -3134,11 +3232,12 @@ if [ "$INSTALL" -eq 1 ]; then
     acquire_root_required_lock
     validate_root_required_package_order
     if [ "$SKIP_SUPERSEDED_INSTALL" -eq 1 ]; then
-        run_authenticated_finalize_gate authority-only
+        run_authenticated_authority_gate authority-only
         drain_root_required_deferral
         echo "p0 oom containment superseded deferral drained without live mutation"
         exit 0
     fi
+    run_authenticated_authority_gate candidate
     validate_package_source_matches_commit
     validate_no_unhandled_package_removals
     validate_root_required_deferral
@@ -3152,7 +3251,7 @@ elif [ "$CHECK" -eq 1 ] || [ "$VERIFY_LIVE" -eq 1 ]; then
     validate_selected_host_sources
 fi
 [ "$VERIFY_LIVE" -eq 0 ] || verify_live
-[ "$INSTALL" -eq 0 ] || run_authenticated_finalize_gate
+[ "$INSTALL" -eq 0 ] || run_authenticated_authority_gate applied
 [ "$INSTALL" -eq 0 ] || record_installed_source
 [ "$INSTALL" -eq 0 ] || record_root_required_package_receipt
 [ "$INSTALL" -eq 0 ] || drain_root_required_deferral
