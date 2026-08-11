@@ -17,6 +17,14 @@ Type=simple
 # the UUID on the target host with: nvidia-smi --query-gpu=index,name,uuid --format=csv
 Environment=JUDGE_GPU_UUID=GPU-347222d9-00af-5a94-a365-c57c09dfddcd
 Environment=JUDGE_MODEL=/models/CompassVerifier-7B.Q5_K_M.gguf
+# The canary stages and hashes this model under a root-owned, non-writable
+# content address. The durable service never mounts the mutable source copy.
+Environment=JUDGE_MODEL_SHA256=d6d6fba56c25d2d0f1b2cc8ee261b209b77729510b3d770d43ccb6e741dff0db
+Environment=JUDGE_MODEL_SIZE_BYTES=5444831808
+Environment=JUDGE_MODEL_HOST_DIR=/store-fast/hapax-models/sha256/d6d6fba56c25d2d0f1b2cc8ee261b209b77729510b3d770d43ccb6e741dff0db
+# Canary and durable service use the same immutable image digest. Updating this
+# digest requires a fresh cap canary and candidate-SHA receipt.
+Environment=JUDGE_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:841b199aed2649a748875b043b32fed2e8c2d4d87e1d563556817fb7fa44b72b
 # The governed name is reserved for this unit. Docker must fail the start if an
 # unknown same-name container exists; automatic cleanup would destroy work the
 # user manager did not launch. On collision, follow local-judge-stack.md: stop
@@ -28,9 +36,9 @@ Environment=JUDGE_MODEL=/models/CompassVerifier-7B.Q5_K_M.gguf
 ExecStart=/usr/bin/docker run --rm --name hapax-local-judge \
     --memory 4G --memory-swap 6G \
     --gpus device=${JUDGE_GPU_UUID} \
-    -v %h/models/compassverifier-7b:/models:ro \
+    -v ${JUDGE_MODEL_HOST_DIR}:/models:ro \
     -p 5001:5001 \
-    ghcr.io/ggml-org/llama.cpp:server-cuda \
+    ${JUDGE_IMAGE} \
     -m ${JUDGE_MODEL} -a compassverifier-7b \
     -c 65536 -np 8 -cb -ngl 99 --host 0.0.0.0 --port 5001
 ExecStop=/usr/bin/docker stop hapax-local-judge

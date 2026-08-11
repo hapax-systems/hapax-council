@@ -8,7 +8,9 @@ import hashlib
 import json
 import os
 import subprocess
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -34,6 +36,10 @@ def _runtime_authority_task_text(**replacements: str) -> str:
         "authority_case": "CASE-SYSTEM-INTEGRITY-20260611",
         "parent_spec": "30-areas/hapax/runtime-cap-spec.md",
         "scope": "systemd/units/hapax-local-judge.service",
+        "route_schema": "1",
+        "quality_floor": "frontier_required",
+        "authority_level": "authoritative",
+        "mutation_surface": "runtime",
     }
     values.update(replacements)
     return (
@@ -46,7 +52,10 @@ def _runtime_authority_task_text(**replacements: str) -> str:
         f"authority_case: {values['authority_case']}\n"
         f"parent_spec: {values['parent_spec']}\n"
         "route_metadata:\n"
-        "  route_metadata_schema: 1\n"
+        f"  route_metadata_schema: {values['route_schema']}\n"
+        f"  quality_floor: {values['quality_floor']}\n"
+        f"  authority_level: {values['authority_level']}\n"
+        f"  mutation_surface: {values['mutation_surface']}\n"
         "mutation_scope_refs:\n"
         f"  - {values['scope']}\n"
         "---\n"
@@ -59,12 +68,21 @@ def _run_runtime_authority_validator(
     active_root: Path,
     scope: str = "systemd/units/hapax-local-judge.service",
     cwd: Path | None = None,
+    repo: Path = REPO_ROOT,
 ) -> subprocess.CompletedProcess[str]:
+    git_head = subprocess.run(
+        ["/usr/bin/git", "-C", str(repo), "rev-parse", "HEAD"],
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
     return subprocess.run(
         [
             "/usr/bin/python3",
             "-I",
             "-",
+            str(repo),
+            git_head,
             str(task),
             scope,
             str(active_root),
@@ -1055,6 +1073,76 @@ def test_runtime_authority_validator_has_no_release_tree_import_surface() -> Non
     assert "from shared." not in source
     assert "import yaml" in source
     assert "TASK_MUTABLE_STATUSES" in source
+    assert '"shared/route_metadata_schema.py"' in source
+    assert 'assessment.status.value != "explicit"' in source
+
+
+def test_runtime_authority_validator_pins_executable_schema_blobs() -> None:
+    module = ast.parse(_runtime_authority_validator_source())
+    assignment = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "PINNED_ROUTE_MODULE_SHA256"
+            for target in node.targets
+        )
+    )
+    pins = ast.literal_eval(assignment.value)
+
+    assert pins == {
+        path: hashlib.sha256((REPO_ROOT / path).read_bytes()).hexdigest()
+        for path in ("shared/agentic_trust_boundary.py", "shared/route_metadata_schema.py")
+    }
+
+
+def test_runtime_authority_validator_rejects_unpinned_candidate_schema_code(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "candidate"
+    repo.mkdir()
+    marker = tmp_path / "candidate-schema-executed"
+    for relative_path in (
+        "shared/agentic_trust_boundary.py",
+        "shared/route_metadata_schema.py",
+    ):
+        target = repo / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+        if relative_path.endswith("route_metadata_schema.py"):
+            source += (
+                "\nfrom pathlib import Path as _EscapePath\n"
+                f"_EscapePath({str(marker)!r}).write_text('executed')\n"
+            )
+        target.write_text(source, encoding="utf-8")
+    subprocess.run(["/usr/bin/git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["/usr/bin/git", "-C", str(repo), "add", "shared"], check=True)
+    subprocess.run(
+        [
+            "/usr/bin/git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "candidate",
+        ],
+        check=True,
+    )
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    task.write_text(_runtime_authority_task_text(), encoding="utf-8")
+
+    result = _run_runtime_authority_validator(task, active_root, repo=repo)
+
+    assert result.returncode == 2
+    assert "unsupported by this installed validator" in result.stderr
+    assert not marker.exists()
 
 
 def test_runtime_authority_validator_statuses_match_canonical_vocabulary() -> None:
@@ -1120,6 +1208,11 @@ def test_runtime_authority_validator_rejects_duplicate_authority_fields(tmp_path
         ({"authority_case": "CASE-"}, "authority_case is absent"),
         ({"parent_spec": "null"}, "parent_spec is absent"),
         ({"parent_spec": '"null"'}, "parent_spec is absent"),
+        ({"route_schema": "true"}, "route_metadata_schema is not exact integer 1"),
+        ({"route_schema": "1.0"}, "route_metadata_schema is not exact integer 1"),
+        ({"quality_floor": "null"}, "route metadata is not canonically explicit"),
+        ({"authority_level": "support_non_authoritative"}, "authority_level is not authoritative"),
+        ({"mutation_surface": "source"}, "mutation_surface is not runtime"),
         ({"scope": "systemd/units/unrelated.service"}, "mutation scope is not authorized"),
     ],
 )
@@ -1175,7 +1268,7 @@ def test_local_judge_cap_receipt_verifier_is_sha_host_and_evidence_bound() -> No
     assert 'desired="$state/desired-receipts/oom-containment.sha"' in source
     assert 'installed="$state/installed-receipts/oom-containment.sha"' in source
     assert 'cap_receipt="$cap_root/$sha.env"' in source
-    assert '"$(/usr/bin/wc -l < "$cap_receipt")" != 12' in source
+    assert '"$(/usr/bin/wc -l < "$cap_receipt")" != 18' in source
     assert "memory_peak_bytes=" in source
     assert "swap_peak_bytes=" in source
     assert "<<'CAP_RECEIPT_NUMERIC_PY'" in source
@@ -1185,6 +1278,12 @@ def test_local_judge_cap_receipt_verifier_is_sha_host_and_evidence_bound() -> No
     assert 'installed_unit="$account_home/.config/systemd/user/hapax-local-judge.service"' in source
     assert "<<'INSTALLED_UNIT_OID_PY'" in source
     assert '"$actual_unit_oid" != "$expected_unit_oid"' in source
+    assert '"image_ref=$image"' in source
+    assert '"model_sha256=$model_sha256"' in source
+    assert '"model_size_bytes=$model_size_bytes"' in source
+    assert '"model_host_dir=$model_host_dir"' in source
+    assert '"workload_oid=$workload_oid"' in source
+    assert '"$model_identity" != "$current_model_identity"' in source
     assert "/usr/bin/hostname" in source
     assert "/usr/bin/nvidia-smi --query-gpu=uuid" in source
     assert "/usr/bin/docker image inspect" in source
@@ -1205,6 +1304,107 @@ def _installed_unit_oid_source() -> str:
     source = SCRIPT.read_text(encoding="utf-8")
     marker = "<<'INSTALLED_UNIT_OID_PY'\n"
     return source.split(marker, 1)[1].split("\nINSTALLED_UNIT_OID_PY", 1)[0]
+
+
+class _LocalJudgeHandler(BaseHTTPRequestHandler):
+    requests_seen = 0
+
+    def do_POST(self) -> None:  # noqa: N802
+        body_size = int(self.headers.get("Content-Length", "0"))
+        self.rfile.read(body_size)
+        type(self).requests_seen += 1
+        payload = json.dumps({"choices": [{"message": {"content": "A"}}]}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        return
+
+
+def test_local_judge_cap_workload_is_self_contained_and_complete(tmp_path: Path) -> None:
+    _LocalJudgeHandler.requests_seen = 0
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _LocalJudgeHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    results = tmp_path / "results.jsonl"
+    try:
+        result = subprocess.run(
+            [
+                str(SCRIPT),
+                "--run-local-judge-cap-workload",
+                f"http://127.0.0.1:{server.server_port}",
+                str(results),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert result.returncode == 0, result.stderr
+    rows = [json.loads(line) for line in results.read_text().splitlines()]
+    assert len(rows) == 24
+    assert all(row["error"] is None and row["pred"] == "A" for row in rows)
+    assert _LocalJudgeHandler.requests_seen == 24
+
+
+@pytest.mark.parametrize("unsafe_kind", (None, "symlink", "hardlink", "writable"))
+def test_local_judge_model_measurement_is_stable_and_safe(
+    tmp_path: Path,
+    unsafe_kind: str | None,
+) -> None:
+    payload = b"small model fixture\n"
+    model = tmp_path / "model.gguf"
+    if unsafe_kind == "symlink":
+        peer = tmp_path / "peer.gguf"
+        peer.write_bytes(payload)
+        model.symlink_to(peer)
+    elif unsafe_kind == "hardlink":
+        peer = tmp_path / "peer.gguf"
+        peer.write_bytes(payload)
+        os.link(peer, model)
+    else:
+        model.write_bytes(payload)
+        if unsafe_kind == "writable":
+            model.chmod(0o666)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--measure-local-judge-model", str(model)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    if unsafe_kind is None:
+        evidence = dict(line.split("=", 1) for line in result.stdout.splitlines())
+        assert result.returncode == 0, result.stderr
+        assert evidence["model_sha256"] == hashlib.sha256(payload).hexdigest()
+        assert evidence["model_size_bytes"] == str(len(payload))
+        assert len(evidence["model_identity"].split(":")) == 3
+    else:
+        assert result.returncode == 2
+
+
+def test_local_judge_protected_model_measurement_rejects_account_owned_file(
+    tmp_path: Path,
+) -> None:
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"small model fixture\n")
+
+    result = subprocess.run(
+        [str(SCRIPT), "--measure-protected-local-judge-model", str(model)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
 
 
 @pytest.mark.parametrize("unsafe_kind", (None, "symlink", "hardlink", "writable"))

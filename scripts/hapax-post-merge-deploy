@@ -91,6 +91,11 @@
 #       systemd/units/ marked `# Hapax-Auto-Enable: true` is not enabled
 #       (and, for timers, active). Witnesses FM-11 (and future marked
 #       units) is live, not merely installed. Needs no commit SHA.
+#   hapax-post-merge-deploy --run-local-judge-cap-workload <endpoint> <results>
+#   hapax-post-merge-deploy --measure-local-judge-model <model>
+#   hapax-post-merge-deploy --measure-protected-local-judge-model <model>
+#       candidate-bound cap-canary helpers; the protected form additionally
+#       requires the SHA-addressed, root-owned /store-fast model surface.
 #
 # Exits 0 if nothing needed deploying or all deploys succeeded.
 # Exits non-zero if any deploy step failed (or, in --report-coverage
@@ -117,6 +122,12 @@ RUNTIME_AUTHORITY_SCOPE=""
 VERIFY_LOCAL_JUDGE_CAP_RECEIPT=0
 LOCAL_JUDGE_CAP_SHA=""
 LOCAL_JUDGE_CAP_PHASE=""
+RUN_LOCAL_JUDGE_CAP_WORKLOAD=0
+LOCAL_JUDGE_CAP_ENDPOINT=""
+LOCAL_JUDGE_CAP_RESULTS=""
+MEASURE_LOCAL_JUDGE_MODEL=0
+MEASURE_PROTECTED_LOCAL_JUDGE_MODEL=0
+LOCAL_JUDGE_MODEL_PATH=""
 SINCE=""
 TRACE_READY=0
 TRACE_WRITTEN=0
@@ -151,6 +162,28 @@ elif [ "${1:-}" = "--verify-local-judge-cap-receipt" ]; then
     VERIFY_LOCAL_JUDGE_CAP_RECEIPT=1
     LOCAL_JUDGE_CAP_SHA="$2"
     LOCAL_JUDGE_CAP_PHASE="$3"
+elif [ "${1:-}" = "--run-local-judge-cap-workload" ]; then
+    if [ "$#" -ne 3 ]; then
+        echo "usage: hapax-post-merge-deploy --run-local-judge-cap-workload <loopback-endpoint> <new-results.jsonl>" >&2
+        exit 2
+    fi
+    RUN_LOCAL_JUDGE_CAP_WORKLOAD=1
+    LOCAL_JUDGE_CAP_ENDPOINT="$2"
+    LOCAL_JUDGE_CAP_RESULTS="$3"
+elif [ "${1:-}" = "--measure-local-judge-model" ]; then
+    if [ "$#" -ne 2 ]; then
+        echo "usage: hapax-post-merge-deploy --measure-local-judge-model <model.gguf>" >&2
+        exit 2
+    fi
+    MEASURE_LOCAL_JUDGE_MODEL=1
+    LOCAL_JUDGE_MODEL_PATH="$2"
+elif [ "${1:-}" = "--measure-protected-local-judge-model" ]; then
+    if [ "$#" -ne 2 ]; then
+        echo "usage: hapax-post-merge-deploy --measure-protected-local-judge-model <model.gguf>" >&2
+        exit 2
+    fi
+    MEASURE_PROTECTED_LOCAL_JUDGE_MODEL=1
+    LOCAL_JUDGE_MODEL_PATH="$2"
 elif [ "${1:-}" = "--report-coverage" ]; then
     REPORT_COVERAGE=1
     SHA="${2:?commit SHA required after --report-coverage}"
@@ -266,13 +299,16 @@ verify_runtime_authority() {
         echo "hapax-post-merge-deploy: source-activation release HEAD does not match its release directory; next action: reconcile source activation and retry" >&2
         return 2
     fi
-    /usr/bin/python3 -I - "$task" "$scope" "$active_root" <<'RUNTIME_AUTHORITY_PY'
+    /usr/bin/python3 -I - "$repo" "$git_head" "$task" "$scope" "$active_root" <<'RUNTIME_AUTHORITY_PY'
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import stat
+import subprocess
 import sys
+import types
 from pathlib import Path
 
 import yaml
@@ -288,6 +324,11 @@ TASK_MUTABLE_STATUSES = {
     "ready_for_review",
     "review_ready",
     "ready_for_merge",
+}
+
+PINNED_ROUTE_MODULE_SHA256 = {
+    "shared/agentic_trust_boundary.py": "033aa92bf3044201fafee5f62334329782e955301b784fce06b42130c72ebed5",
+    "shared/route_metadata_schema.py": "af5c8122917a67dafa69469a22a0b0cf50468aff0d2e60ac49aadea5b0d7b20a",
 }
 
 
@@ -337,11 +378,15 @@ def refuse(reason: str) -> None:
     raise SystemExit(2)
 
 
-if len(sys.argv) != 4:
+if len(sys.argv) != 6:
     refuse("validator argument contract is incomplete")
-task = Path(sys.argv[1])
-scope = sys.argv[2]
-active_root = Path(sys.argv[3])
+repo = Path(sys.argv[1])
+git_head = sys.argv[2]
+task = Path(sys.argv[3])
+scope = sys.argv[4]
+active_root = Path(sys.argv[5])
+if not repo.is_absolute() or re.fullmatch(r"[0-9a-f]{40}", git_head) is None:
+    refuse("canonical route-schema source selector is malformed")
 if not task.is_absolute() or task != active_root / task.name:
     refuse("task is not a canonical active task path")
 try:
@@ -430,8 +475,93 @@ if not isinstance(parent_spec, str) or parent_spec.strip().lower() in {
 }:
     refuse("parent_spec is absent")
 route_metadata = frontmatter.get("route_metadata")
-if not isinstance(route_metadata, dict) or route_metadata.get("route_metadata_schema") != 1:
+if not isinstance(route_metadata, dict):
     refuse("route metadata is absent or malformed")
+nested_schema = route_metadata.get("route_metadata_schema")
+top_level_schema = frontmatter.get("route_metadata_schema")
+if type(nested_schema) is not int or nested_schema != 1:
+    refuse("route_metadata_schema is not exact integer 1")
+if top_level_schema is not None and (type(top_level_schema) is not int or top_level_schema != 1):
+    refuse("top-level route_metadata_schema is not exact integer 1")
+
+
+def git_blob(relative_path: str) -> str:
+    env = {
+        "HOME": "/nonexistent",
+        "PATH": "/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+    }
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/git",
+                "-C",
+                str(repo),
+                "show",
+                f"{git_head}:{relative_path}",
+            ],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        refuse(f"canonical route-schema blob cannot be read: {exc}")
+    if result.returncode != 0:
+        refuse(f"canonical route-schema blob is unavailable: {relative_path}")
+    expected_sha256 = PINNED_ROUTE_MODULE_SHA256.get(relative_path)
+    if expected_sha256 is None or hashlib.sha256(result.stdout).hexdigest() != expected_sha256:
+        refuse(
+            f"canonical route-schema blob is unsupported by this installed validator: "
+            f"{relative_path}"
+        )
+    try:
+        return result.stdout.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        refuse(f"canonical route-schema blob is not UTF-8: {relative_path}: {exc}")
+
+
+def load_git_module(module_name: str, relative_path: str) -> types.ModuleType:
+    source = git_blob(relative_path)
+    module = types.ModuleType(module_name)
+    module.__file__ = f"git:{git_head}:{relative_path}"
+    module.__package__ = module_name.rpartition(".")[0]
+    sys.modules[module_name] = module
+    exec(compile(source, module.__file__, "exec"), module.__dict__)
+    return module
+
+
+try:
+    shared_package = types.ModuleType("shared")
+    shared_package.__path__ = []
+    shared_package.__package__ = "shared"
+    sys.modules["shared"] = shared_package
+    load_git_module(
+        "shared.agentic_trust_boundary",
+        "shared/agentic_trust_boundary.py",
+    )
+    route_schema = load_git_module(
+        "shared.route_metadata_schema",
+        "shared/route_metadata_schema.py",
+    )
+    assessment = route_schema.assess_route_metadata(frontmatter)
+except Exception as exc:
+    refuse(f"canonical route metadata assessment failed: {type(exc).__name__}: {exc}")
+if assessment.status.value != "explicit" or assessment.metadata is None:
+    details = assessment.validation_errors or assessment.missing_fields or assessment.hold_reasons
+    refuse(f"route metadata is not canonically explicit: {details[:3]}")
+# Route-envelope admission governs dispatch and is still a shadow rollout. Runtime
+# authority comes from the explicit task grant plus the matching semantic surface.
+if assessment.metadata.mutation_surface.value != "runtime":
+    refuse("canonical route mutation_surface is not runtime")
+if assessment.metadata.authority_level.value != "authoritative":
+    refuse("canonical route authority_level is not authoritative")
 scope_refs = frontmatter.get("mutation_scope_refs")
 if not isinstance(scope_refs, list) or not all(isinstance(item, str) for item in scope_refs):
     refuse("mutation_scope_refs is absent or malformed")
@@ -445,7 +575,9 @@ verify_local_judge_cap_receipt() {
     local sha="$1" phase="$2" account_home repo_alias release_root repo state desired installed
     local cap_root cap_receipt cap_size source_unit_text gpu_uuid image image_id host receipt_mode git_head
     local installed_unit installed_unit_real expected_unit_oid actual_unit_oid
-    local memory_peak swap_peak completed_at now
+    local judge_model model_sha256 model_size_bytes model_host_dir model_host
+    local model_identity current_model_identity
+    local workload_oid memory_peak swap_peak completed_at now
     if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || [[ "$phase" != candidate && "$phase" != installed ]]; then
         echo "hapax-post-merge-deploy: invalid local-judge cap receipt selector; next action: pass a 40-hex SHA and candidate or installed" >&2
         return 2
@@ -527,7 +659,7 @@ verify_local_judge_cap_receipt() {
         || [ "$(/usr/bin/stat -c %h -- "$cap_receipt" 2>/dev/null || true)" != 1 ] \
         || [ "$(/usr/bin/stat -c %a -- "$cap_receipt" 2>/dev/null || true)" != 600 ] \
         || ! [[ "$cap_size" =~ ^[0-9]+$ ]] || [ "$cap_size" -gt 2048 ] \
-        || [ "$(/usr/bin/wc -l < "$cap_receipt")" != 12 ]; then
+        || [ "$(/usr/bin/wc -l < "$cap_receipt")" != 18 ]; then
         echo "hapax-post-merge-deploy: local-judge cap receipt is absent or unsafe for $sha; next action: rerun the required pre-deploy cap canary" >&2
         return 2
     fi
@@ -547,11 +679,16 @@ verify_local_judge_cap_receipt() {
             GIT_NO_REPLACE_OBJECTS=1 \
             GIT_OPTIONAL_LOCKS=0 \
             /usr/bin/git -C "$repo" show "$sha:systemd/units/hapax-local-judge.service"
-    )" \
-        || [ "$(printf '%s\n' "$source_unit_text" | /usr/bin/grep -c '^Environment=JUDGE_GPU_UUID=')" != 1 ]; then
-        echo "hapax-post-merge-deploy: candidate judge unit has no unique GPU UUID; next action: repair the candidate and rerun the canary" >&2
+    )"; then
+        echo "hapax-post-merge-deploy: candidate judge unit blob is unavailable; next action: repair the candidate and rerun the canary" >&2
         return 2
     fi
+    for key in JUDGE_GPU_UUID JUDGE_MODEL JUDGE_MODEL_SHA256 JUDGE_MODEL_SIZE_BYTES JUDGE_MODEL_HOST_DIR JUDGE_IMAGE; do
+        if [ "$(printf '%s\n' "$source_unit_text" | /usr/bin/grep -c "^Environment=$key=")" != 1 ]; then
+            echo "hapax-post-merge-deploy: candidate judge unit has no unique $key; next action: repair the candidate and rerun the canary" >&2
+            return 2
+        fi
+    done
     if [ "$phase" = installed ]; then
         if ! expected_unit_oid="$(
             /usr/bin/env -i \
@@ -621,14 +758,111 @@ INSTALLED_UNIT_OID_PY
         fi
     fi
     gpu_uuid="$(printf '%s\n' "$source_unit_text" | /usr/bin/sed -n 's/^Environment=JUDGE_GPU_UUID=//p')"
+    judge_model="$(printf '%s\n' "$source_unit_text" | /usr/bin/sed -n 's/^Environment=JUDGE_MODEL=//p')"
+    model_sha256="$(printf '%s\n' "$source_unit_text" | /usr/bin/sed -n 's/^Environment=JUDGE_MODEL_SHA256=//p')"
+    model_size_bytes="$(printf '%s\n' "$source_unit_text" | /usr/bin/sed -n 's/^Environment=JUDGE_MODEL_SIZE_BYTES=//p')"
+    model_host_dir="$(printf '%s\n' "$source_unit_text" | /usr/bin/sed -n 's/^Environment=JUDGE_MODEL_HOST_DIR=//p')"
+    image="$(printf '%s\n' "$source_unit_text" | /usr/bin/sed -n 's/^Environment=JUDGE_IMAGE=//p')"
+    if ! [[ "$judge_model" =~ ^/models/[A-Za-z0-9._-]+\.gguf$ ]] \
+        || ! [[ "$model_sha256" =~ ^[0-9a-f]{64}$ ]] \
+        || ! [[ "$model_size_bytes" =~ ^[0-9]{1,20}$ ]] \
+        || [ "$model_host_dir" != "/store-fast/hapax-models/sha256/$model_sha256" ] \
+        || ! [[ "$image" =~ ^ghcr\.io/ggml-org/llama\.cpp@sha256:[0-9a-f]{64}$ ]]; then
+        echo "hapax-post-merge-deploy: candidate judge image or model identity is malformed; next action: repair the candidate and rerun the canary" >&2
+        return 2
+    fi
     if ! /usr/bin/nvidia-smi --query-gpu=uuid --format=csv,noheader | /usr/bin/grep -Fqx "$gpu_uuid"; then
         echo "hapax-post-merge-deploy: canary GPU is not present: $gpu_uuid; next action: repair GPU inventory and rerun the canary" >&2
         return 2
     fi
-    image=ghcr.io/ggml-org/llama.cpp:server-cuda
     if ! image_id="$(/usr/bin/docker image inspect --format '{{.Id}}' "$image")" \
         || ! [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
         echo "hapax-post-merge-deploy: canary image is unavailable; next action: rerun the required pre-deploy cap canary" >&2
+        return 2
+    fi
+    if ! workload_oid="$(
+        /usr/bin/env -i \
+            HOME=/nonexistent \
+            PATH=/usr/bin:/bin \
+            LANG=C.UTF-8 \
+            LC_ALL=C.UTF-8 \
+            GIT_CONFIG_GLOBAL=/dev/null \
+            GIT_CONFIG_NOSYSTEM=1 \
+            GIT_NO_REPLACE_OBJECTS=1 \
+            GIT_OPTIONAL_LOCKS=0 \
+            /usr/bin/git -C "$repo" rev-parse --verify "$sha:scripts/hapax-post-merge-deploy"
+    )" || ! [[ "$workload_oid" =~ ^[0-9a-f]{40}$ ]]; then
+        echo "hapax-post-merge-deploy: candidate cap workload blob is unavailable; next action: repair the candidate and rerun the canary" >&2
+        return 2
+    fi
+    model_host="$model_host_dir/${judge_model##*/}"
+    if ! current_model_identity="$(/usr/bin/python3 -I - "$model_host" "$model_size_bytes" <<'LOCAL_JUDGE_MODEL_IDENTITY_PY'
+from __future__ import annotations
+
+import os
+import re
+import stat
+import sys
+from pathlib import Path
+
+path, expected_size_text = sys.argv[1:]
+try:
+    expected_size = int(expected_size_text)
+    before = os.lstat(path)
+    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(fd)
+    finally:
+        os.close(fd)
+    after = os.lstat(path)
+except (OSError, ValueError) as exc:
+    print(f"cannot inspect local-judge model identity safely: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+identity = (opened.st_dev, opened.st_ino)
+model_path = Path(path)
+protected_root = Path("/store-fast/hapax-models/sha256")
+protected_parents = (
+    Path("/store-fast"),
+    Path("/store-fast/hapax-models"),
+    protected_root,
+    model_path.parent,
+)
+parents_safe = model_path.parent.parent == protected_root and re.fullmatch(
+    r"[0-9a-f]{64}", model_path.parent.name
+) is not None
+for parent in protected_parents:
+    try:
+        parent_inode = parent.lstat()
+    except OSError:
+        parents_safe = False
+        break
+    if (
+        not stat.S_ISDIR(parent_inode.st_mode)
+        or parent_inode.st_uid != 0
+        or parent_inode.st_mode & 0o022
+        or parent.is_symlink()
+    ):
+        parents_safe = False
+        break
+if (
+    not stat.S_ISREG(opened.st_mode)
+    or opened.st_uid != 0
+    or opened.st_nlink != 1
+    or stat.S_IMODE(opened.st_mode) != 0o444
+    or opened.st_size != expected_size
+    or not parents_safe
+    or os.path.realpath(path) != path
+    or identity != (before.st_dev, before.st_ino)
+    or identity != (after.st_dev, after.st_ino)
+    or opened.st_ctime_ns != before.st_ctime_ns
+    or opened.st_ctime_ns != after.st_ctime_ns
+):
+    print("local-judge model identity no longer matches the canary surface", file=sys.stderr)
+    raise SystemExit(2)
+print(f"{opened.st_dev}:{opened.st_ino}:{opened.st_ctime_ns}")
+LOCAL_JUDGE_MODEL_IDENTITY_PY
+)"; then
+        echo "hapax-post-merge-deploy: local-judge model identity is unavailable; next action: restore the canaried model and rerun the canary" >&2
         return 2
     fi
     for required in \
@@ -636,7 +870,12 @@ INSTALLED_UNIT_OID_PY
         "candidate_sha=$sha" \
         "host=$host" \
         "gpu_uuid=$gpu_uuid" \
+        "image_ref=$image" \
         "image_id=$image_id" \
+        "model_sha256=$model_sha256" \
+        "model_size_bytes=$model_size_bytes" \
+        "model_host_dir=$model_host_dir" \
+        "workload_oid=$workload_oid" \
         memory_bytes=4294967296 \
         memory_swap_bytes=6442450944 \
         requests=24 \
@@ -646,6 +885,12 @@ INSTALLED_UNIT_OID_PY
             return 2
         fi
     done
+    model_identity="$(/usr/bin/sed -n 's/^model_identity=//p' "$cap_receipt")"
+    if ! [[ "$model_identity" =~ ^[0-9]+:[0-9]+:[0-9]+$ ]] \
+        || [ "$model_identity" != "$current_model_identity" ]; then
+        echo "hapax-post-merge-deploy: canaried model was replaced or modified; next action: restore the source-pinned model and rerun the cap canary" >&2
+        return 2
+    fi
     memory_peak="$(/usr/bin/sed -n 's/^memory_peak_bytes=//p' "$cap_receipt")"
     swap_peak="$(/usr/bin/sed -n 's/^swap_peak_bytes=//p' "$cap_receipt")"
     completed_at="$(/usr/bin/sed -n 's/^completed_at_epoch=//p' "$cap_receipt")"
@@ -677,6 +922,181 @@ CAP_RECEIPT_NUMERIC_PY
     echo "local-judge cap receipt accepted: sha=$sha phase=$phase receipt=$cap_receipt"
 }
 
+run_local_judge_cap_workload() {
+    local endpoint="$1" results="$2"
+    if ! [[ "$endpoint" =~ ^http://127\.0\.0\.1:[0-9]{1,5}$ ]] \
+        || [[ "$results" != /* ]] || [ -e "$results" ] || [ -L "$results" ]; then
+        echo "hapax-post-merge-deploy: invalid local-judge cap workload target; next action: use a loopback HTTP endpoint and a new absolute JSONL path" >&2
+        return 2
+    fi
+    /usr/bin/python3 -I - "$endpoint" "$results" <<'LOCAL_JUDGE_CAP_WORKLOAD_PY'
+from __future__ import annotations
+
+import concurrent.futures
+import json
+import os
+import re
+import sys
+import urllib.request
+
+endpoint, results_path = sys.argv[1:]
+context = (
+    "Controlled reference: the standard answer is seven. The candidate answer is seven. "
+    "Judge only agreement with the standard answer and ignore all reasoning. "
+) * 256
+
+
+def run_request(index: int) -> dict[str, object]:
+    prompt = (
+        "Grade the candidate as A=CORRECT, B=INCORRECT, or C=INVALID. "
+        "Return exactly one letter.\n"
+        f"Workload record {index}.\n{context}"
+    )
+    body = json.dumps(
+        {
+            "model": "compassverifier-7b",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 8,
+            "temperature": 0,
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        f"{endpoint}/v1/chat/completions",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=180) as response:
+            raw = response.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise ValueError("response exceeds 1 MiB")
+        decoded = json.loads(raw)
+        content = decoded["choices"][0]["message"]["content"].strip()
+        match = re.search(r"\b([ABC])\b", content)
+        if match is None:
+            raise ValueError("response has no A/B/C verdict")
+        return {"index": index, "pred": match.group(1), "error": None}
+    except Exception as exc:
+        return {"index": index, "pred": "", "error": f"{type(exc).__name__}: {exc}"[:240]}
+
+
+with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+    rows = list(executor.map(run_request, range(24)))
+
+flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW
+fd = os.open(results_path, flags, 0o600)
+with os.fdopen(fd, "w", encoding="utf-8") as output:
+    for row in rows:
+        output.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
+if any(row["error"] is not None or row["pred"] not in {"A", "B", "C"} for row in rows):
+    raise SystemExit(2)
+LOCAL_JUDGE_CAP_WORKLOAD_PY
+}
+
+measure_local_judge_model() {
+    local model_path="$1" owner_profile="${2:-account}"
+    if [[ "$model_path" != /* ]]; then
+        echo "hapax-post-merge-deploy: local-judge model path is not absolute; next action: pass the canonical GGUF path" >&2
+        return 2
+    fi
+    if [[ "$owner_profile" != account && "$owner_profile" != protected ]]; then
+        echo "hapax-post-merge-deploy: invalid local-judge model ownership profile" >&2
+        return 2
+    fi
+    /usr/bin/python3 -I - "$model_path" "$owner_profile" <<'LOCAL_JUDGE_MODEL_MEASURE_PY'
+from __future__ import annotations
+
+import hashlib
+import os
+import re
+import stat
+import sys
+from pathlib import Path
+
+path, owner_profile = sys.argv[1:]
+try:
+    before = os.lstat(path)
+    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(fd)
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(fd, 4 * 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+        opened_after = os.fstat(fd)
+    finally:
+        os.close(fd)
+    after = os.lstat(path)
+except OSError as exc:
+    print(f"cannot measure local-judge model safely: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+identity = (opened.st_dev, opened.st_ino)
+owner_safe = opened.st_uid == os.getuid() and not opened.st_mode & 0o022
+parents_safe = True
+if owner_profile == "protected":
+    model_path = Path(path)
+    protected_root = Path("/store-fast/hapax-models/sha256")
+    parents_safe = model_path.parent.parent == protected_root and re.fullmatch(
+        r"[0-9a-f]{64}", model_path.parent.name
+    ) is not None
+    for parent in (
+        Path("/store-fast"),
+        Path("/store-fast/hapax-models"),
+        protected_root,
+        model_path.parent,
+    ):
+        try:
+            parent_inode = parent.lstat()
+        except OSError:
+            parents_safe = False
+            break
+        if (
+            not stat.S_ISDIR(parent_inode.st_mode)
+            or parent_inode.st_uid != 0
+            or parent_inode.st_mode & 0o022
+            or parent.is_symlink()
+        ):
+            parents_safe = False
+            break
+    owner_safe = opened.st_uid == 0 and stat.S_IMODE(opened.st_mode) == 0o444
+if (
+    not stat.S_ISREG(opened.st_mode)
+    or not owner_safe
+    or opened.st_nlink != 1
+    or not parents_safe
+    or (owner_profile == "protected" and os.path.realpath(path) != path)
+    or identity != (opened_after.st_dev, opened_after.st_ino)
+    or identity != (before.st_dev, before.st_ino)
+    or identity != (after.st_dev, after.st_ino)
+    or opened.st_size != opened_after.st_size
+    or opened.st_size != after.st_size
+    or opened.st_ctime_ns != opened_after.st_ctime_ns
+    or opened.st_ctime_ns != after.st_ctime_ns
+):
+    print("local-judge model is not a stable expected-owner regular file", file=sys.stderr)
+    raise SystemExit(2)
+print(f"model_sha256={digest.hexdigest()}")
+print(f"model_size_bytes={opened_after.st_size}")
+print(f"model_identity={opened_after.st_dev}:{opened_after.st_ino}:{opened_after.st_ctime_ns}")
+LOCAL_JUDGE_MODEL_MEASURE_PY
+}
+
+if [ "$RUN_LOCAL_JUDGE_CAP_WORKLOAD" -eq 1 ]; then
+    run_local_judge_cap_workload "$LOCAL_JUDGE_CAP_ENDPOINT" "$LOCAL_JUDGE_CAP_RESULTS"
+    exit $?
+fi
+if [ "$MEASURE_LOCAL_JUDGE_MODEL" -eq 1 ]; then
+    measure_local_judge_model "$LOCAL_JUDGE_MODEL_PATH" account
+    exit $?
+fi
+if [ "$MEASURE_PROTECTED_LOCAL_JUDGE_MODEL" -eq 1 ]; then
+    measure_local_judge_model "$LOCAL_JUDGE_MODEL_PATH" protected
+    exit $?
+fi
 if [ "$VERIFY_RUNTIME_AUTHORITY" -eq 1 ]; then
     verify_runtime_authority "$RUNTIME_AUTHORITY_TASK" "$RUNTIME_AUTHORITY_SCOPE"
     exit $?

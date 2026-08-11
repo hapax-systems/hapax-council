@@ -422,6 +422,20 @@ def test_p0_oom_containment_has_dedicated_installer() -> None:
 def test_local_judge_container_has_a_finite_memory_cap() -> None:
     text = (UNITS_DIR / "hapax-local-judge.service").read_text()
     assert "--memory 4G --memory-swap 6G" in text
+    assert "ghcr.io/ggml-org/llama.cpp:server-cuda" not in text
+    assert (
+        "Environment=JUDGE_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:"
+        "841b199aed2649a748875b043b32fed2e8c2d4d87e1d563556817fb7fa44b72b"
+    ) in text
+    assert "Environment=JUDGE_MODEL_SHA256=d6d6fba56c25" in text
+    assert "Environment=JUDGE_MODEL_SIZE_BYTES=5444831808" in text
+    assert (
+        "Environment=JUDGE_MODEL_HOST_DIR=/store-fast/hapax-models/sha256/"
+        "d6d6fba56c25d2d0f1b2cc8ee261b209b77729510b3d770d43ccb6e741dff0db"
+    ) in text
+    assert "-v ${JUDGE_MODEL_HOST_DIR}:/models:ro" in text
+    assert "%h/models/compassverifier-7b:/models:ro" not in text
+    assert "${JUDGE_IMAGE}" in text
     assert "--oom-kill-disable" not in text
     assert "ExecStartPre=-/usr/bin/docker rm" not in text
     assert "4G/6G cap remains a candidate" in text
@@ -476,15 +490,40 @@ def test_local_judge_predeploy_canary_gates_exact_cap_installation() -> None:
     canary = text[canary_start:canary_end]
 
     assert "--verify-runtime-authority" in canary
+    assert "PATH=/usr/bin:/bin" in canary
+    assert "builtin unset -f docker nvidia-smi sudo systemctl" in canary
+    assert "builtin unset DOCKER_HOST DOCKER_CONTEXT" in canary
     assert canary.index("--verify-runtime-authority") < canary.index("docker pull")
     assert 'candidate_sha="${repo##*/}"' in canary
     assert 'test "$desired_sha" = "$candidate_sha"' in canary
-    assert 'git -C "$repo" show "$candidate_sha:systemd/units/hapax-local-judge.service"' in canary
+    assert 'candidate_git show "$candidate_sha:systemd/units/hapax-local-judge.service"' in canary
+    assert '/usr/bin/git -C "$repo" "$@"' in canary
+    assert 'workload_source="$(candidate_git cat-file blob "$workload_oid")"' in canary
+    assert 'candidate_git hash-object --stdin)" = "$workload_oid"' in canary
+    assert '/usr/bin/bash -s -- "$@" <<<"$workload_source"' in canary
+    assert '--run-local-judge-cap-workload "$endpoint" "$results"' in canary
+    assert "run_verifierbench.py" not in canary
+    assert "verifierbench_test.parquet" not in canary
+    assert '"workload_oid=$workload_oid"' in canary
+    assert '"model_sha256=$model_sha256"' in canary
+    assert '"model_host_dir=$model_host_dir"' in canary
+    assert '"model_identity=$model_identity"' in canary
+    assert "--measure-protected-local-judge-model" in canary
+    assert "sudo /usr/bin/install -d -o root -g root -m 0755" in canary
+    assert 'sudo /usr/bin/dd of="$model_stage"' in canary
+    assert "iflag=fullblock,nofollow" in canary
+    assert "oflag=excl,nofollow" in canary
+    assert 'sudo /usr/bin/chmod 0444 "$model_stage"' in canary
+    assert (
+        'test "$model_host_dir" = "/store-fast/hapax-models/sha256/$expected_model_sha256"'
+        in canary
+    )
+    assert '-v "$model_host_dir:/models:ro"' in canary
     assert "--memory 4G --memory-swap 6G" in canary
     assert 'test "$memory" = 4294967296' in canary
     assert 'test "$memory_swap" = 6442450944' in canary
-    assert "run_verifierbench.py" in canary
-    assert "--n 24 --workers 8" in canary
+    assert "'requests=24'" in canary
+    assert "'workers=8'" in canary
     assert 'test "$before_state" = "$after_state"' in canary
     assert 'test "$before_oom" = "$after_oom"' in canary
     assert 'test "$memory_peak" -le 3221225472' in canary
@@ -685,7 +724,7 @@ def test_local_judge_cleanup_retries_after_interrupt(tmp_path: Path) -> None:
     calls = tmp_path / "calls"
     calls.write_text("")
     script = f"""
-set -u
+set -eu
 canary_cidfile="$TEST_CIDFILE"
 results="$TEST_RESULTS"
 canary_name=cap-cleanup-test
@@ -741,6 +780,86 @@ cleanup_canary
     )
 
     assert result.returncode == 130, result.stderr
+    call_lines = calls.read_text().splitlines()
+    assert call_lines.count(f"docker stop {container_id}") == 2
+    assert "systemctl --user start hapax-local-judge.service" in call_lines
+    assert not cidfile.exists()
+    assert not results.exists()
+
+
+def test_local_judge_exit_cleanup_absorbs_signal_and_retries(tmp_path: Path) -> None:
+    container_id = "b" * 64
+    cidfile = tmp_path / "canary.cid"
+    cidfile.write_text(container_id)
+    results = tmp_path / "results.jsonl"
+    results.write_text("result\n")
+    calls = tmp_path / "calls"
+    calls.write_text("")
+    script = f"""
+set -eu
+canary_cidfile="$TEST_CIDFILE"
+results="$TEST_RESULTS"
+canary_name=cap-cleanup-test
+unit=hapax-local-judge.service
+was_active=active
+stopped=0
+stop_attempts=0
+docker() {{
+  case "$1" in
+    inspect)
+      if [ "$stopped" -eq 1 ]; then return 1; fi
+      return 0
+      ;;
+    stop)
+      stop_attempts=$((stop_attempts + 1))
+      printf '%s\n' "docker stop $2" >> "$TEST_CALLS"
+      if [ "$stop_attempts" -eq 1 ]; then
+        kill -INT "$$"
+        return 130
+      fi
+      stopped=1
+      return 0
+      ;;
+    ps)
+      if [ "$stopped" -eq 0 ]; then printf '%s\n' '{container_id}'; fi
+      return 0
+      ;;
+    *) return 2 ;;
+  esac
+}}
+systemctl() {{
+  if [ "${{1:-}}" = --user ] && [ "${{2:-}}" = start ]; then
+    printf '%s\n' "systemctl $*" >> "$TEST_CALLS"
+    return 0
+  fi
+  if [ "${{1:-}}" = --user ] && [ "${{2:-}}" = show ]; then
+    printf '%s\n' active
+    return 0
+  fi
+  return 2
+}}
+sleep() {{
+  kill -TERM "$$"
+  return 143
+}}
+{_local_judge_predeploy_exit_source()}
+exit 0
+"""
+    result = subprocess.run(
+        ["bash"],
+        input=script,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "TEST_CIDFILE": str(cidfile),
+            "TEST_RESULTS": str(results),
+            "TEST_CALLS": str(calls),
+        },
+    )
+
+    assert result.returncode == 143, result.stderr
     call_lines = calls.read_text().splitlines()
     assert call_lines.count(f"docker stop {container_id}") == 2
     assert "systemctl --user start hapax-local-judge.service" in call_lines
