@@ -13,6 +13,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-oom-policy-audit"
+ROOT_REQUIRED_AUDIT = REPO_ROOT / "scripts" / "hapax-root-required-deploy-audit"
 RECOVERY_SYSTEM_UNIT_SCORES = {
     "apcupsd.service": -900,
     "systemd-logind.service": -800,
@@ -225,6 +226,116 @@ def test_arbitrary_scripts_directory_with_fake_git_marker_is_installed_mode(
 
     assert result.returncode == 1
     assert "refused by an installed audit" in result.stdout
+    assert "source checkout verification failed" in result.stderr
+    assert "fatal:" in result.stderr
+
+
+def _root_required_profile_parser_source() -> str:
+    source = ROOT_REQUIRED_AUDIT.read_text(encoding="utf-8")
+    section = source.split("load_host_profile() {", 1)[1]
+    return section.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+
+
+@pytest.mark.parametrize(
+    ("row", "hostname", "memtotal_kib", "accepted"),
+    (
+        (
+            "hapax-appendix\t59\t61\tappendix\t46G\t54G\t48G\t56G\t16384",
+            "hapax-appendix",
+            "63310228",
+            True,
+        ),
+        (
+            "hapax-appendix\t59\t61\tappendix\t46G\t54G\t48G\t56G\t4096",
+            "hapax-appendix",
+            "63310228",
+            False,
+        ),
+        (
+            "hapax-appendix\t59\t61\tappendix\t46G\t54G\t48G\t56G\t30720",
+            "hapax-appendix",
+            "63310228",
+            False,
+        ),
+        (
+            "hapax-podium\t123\t125\tpodium\t72G\t88G\t80G\t96G\t32768",
+            "hapax-podium",
+            "131007744",
+            True,
+        ),
+        (
+            "hapax-podium\t123\t125\tpodium\t72G\t88G\t80G\t96G\t65536",
+            "hapax-podium",
+            "131007744",
+            False,
+        ),
+        (
+            "hapax-podium\t123\t125\tpodium\t72G\t88G\t80G\t96G\ttrue",
+            "hapax-podium",
+            "131007744",
+            False,
+        ),
+    ),
+    ids=(
+        "appendix-valid",
+        "appendix-below-eight-gib",
+        "appendix-above-half-floor",
+        "podium-valid",
+        "podium-above-half-floor",
+        "non-integer-zram",
+    ),
+)
+def test_host_profile_parsers_share_zram_admission_corpus(
+    tmp_path: Path,
+    row: str,
+    hostname: str,
+    memtotal_kib: str,
+    accepted: bool,
+) -> None:
+    table = tmp_path / "oom-host-profiles.tsv"
+    table.write_text(f"{row}\n", encoding="utf-8")
+    source_env = {
+        **os.environ,
+        "HAPAX_OOM_AUDIT_TEST_MODE": "1",
+        "HAPAX_OOM_AUDIT_PROFILE_TABLE": str(table),
+        "HAPAX_OOM_AUDIT_HOSTNAME": hostname,
+        "HAPAX_OOM_AUDIT_MEMTOTAL_KIB": memtotal_kib,
+    }
+    root_env = {
+        **os.environ,
+        "HAPAX_ROOT_AUDIT_TEST_MODE": "1",
+        "HAPAX_ROOT_AUDIT_HOSTNAME": hostname,
+        "HAPAX_ROOT_AUDIT_MEMTOTAL_KIB": memtotal_kib,
+    }
+
+    source_result = subprocess.run(
+        [str(SCRIPT), "--host-policy-lines"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=source_env,
+    )
+    root_result = subprocess.run(
+        ["/usr/bin/python3", "-", str(table)],
+        input=_root_required_profile_parser_source(),
+        text=True,
+        capture_output=True,
+        check=False,
+        env=root_env,
+    )
+
+    assert (source_result.returncode == 0) is accepted, source_result.stdout
+    assert (root_result.returncode == 0) is accepted, root_result.stderr
+    assert (source_result.returncode == 0) == (root_result.returncode == 0)
+    if accepted:
+        source_policy = dict(
+            line.split("=", 1) for line in source_result.stdout.splitlines() if "=" in line
+        )
+        root_policy = dict(line.split("=", 1) for line in root_result.stdout.splitlines())
+        assert root_policy == {
+            "PROFILE": source_policy["PROFILE"],
+            "ZRAM_SIZE_MIB": source_policy["ZRAM_SIZE_MIB"],
+        }
 
 
 def test_unrecognized_executable_cannot_claim_installed_receipt_authority(
