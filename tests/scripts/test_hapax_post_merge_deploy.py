@@ -597,6 +597,7 @@ def _root_audit_env(
     executable_rels = {
         "scripts/install-p0-oom-containment",
         "scripts/install-apcupsd-power-alerts",
+        "scripts/hapax-root-required-deferred-install",
         "scripts/hapax-oom-score-enforce",
         "scripts/hapax-oom-score-trigger",
         "scripts/hapax-root-failure-intake",
@@ -1040,7 +1041,7 @@ def test_systemd_coverage_includes_dropins_presets_and_source_overrides() -> Non
     assert "ok: all systemd/** paths" in result.stdout
 
 
-def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
+def test_p0_oom_deploy_always_creates_authenticated_deferral_without_restart(
     tmp_path: Path,
 ) -> None:
     installer_calls = tmp_path / "oom-installer-calls.txt"
@@ -1145,7 +1146,10 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "--install --verify-live" in installer_calls.read_text(encoding="utf-8")
+    assert not installer_calls.exists(), "post-merge must not execute mutable staged package code"
+    deferred = defer_dir / sha / "oom-containment"
+    assert (deferred / "RUNBOOK.txt").is_file()
+    assert "next action: run:" in result.stdout
     assert stale_deferral.exists(), (
         "only an explicit staged RUNBOOK invocation may drain a deferral"
     )
@@ -1159,7 +1163,7 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
     assert record["deploy_groups"]["systemd_dropins"] == []
 
 
-def test_root_packages_install_apcupsd_before_oom_recovery_verification(tmp_path: Path) -> None:
+def test_root_packages_defer_apcupsd_before_oom_recovery_verification(tmp_path: Path) -> None:
     order = tmp_path / "install-order"
     apcupsd_ready = tmp_path / "apcupsd-ready"
     apcupsd_installer = (
@@ -1203,7 +1207,11 @@ def test_root_packages_install_apcupsd_before_oom_recovery_verification(tmp_path
     )
 
     assert result.returncode == 0, result.stderr
-    assert order.read_text(encoding="utf-8").splitlines() == ["apcupsd", "oom"]
+    assert not order.exists()
+    assert not apcupsd_ready.exists()
+    apcupsd_deferred = result.stdout.index("root-required apcupsd-power-alerts install deferred")
+    oom_deferred = result.stdout.index("root-required oom-containment install deferred")
+    assert apcupsd_deferred < oom_deferred
 
 
 def test_stale_post_merge_deploy_preserves_newer_desired_receipt(tmp_path: Path) -> None:
@@ -1362,7 +1370,11 @@ def test_concurrent_oom_deferral_owns_local_judge_without_generic_activation(
         "config/root-required/oom-containment.files": OOM_PACKAGE_MANIFEST,
         **OOM_HOST_PROFILE_FILES,
         "scripts/install-p0-oom-containment": installer_body,
-        "scripts/hapax-root-required-deferred-install": "#!/usr/bin/python3\n",
+        "scripts/hapax-root-required-deferred-install": (
+            "#!/usr/bin/python3\n"
+            "import json, sys\n"
+            "print('deferred-helper-argv=' + json.dumps(sys.argv))\n"
+        ),
         "config/root-required/hapax-oom-score-enforce.sudoers": (
             "hapax ALL=(root) NOPASSWD: /usr/local/sbin/hapax-oom-score-enforce --apply-unit pipewire.service\n"
         ),
@@ -1468,24 +1480,47 @@ def test_concurrent_oom_deferral_owns_local_judge_without_generic_activation(
     ):
         assert (deferred / rel).read_bytes() == (repo / rel).read_bytes()
     assert not list((defer_dir / sha).glob(".oom-containment.tmp.*"))
-    runbook = (deferred / "RUNBOOK.txt").read_text(encoding="utf-8")
-    assert "sudo-warmup race" in runbook
-    assert "root shell" not in runbook
+    runbook_path = deferred / "RUNBOOK.txt"
+    runbook = runbook_path.read_text(encoding="utf-8")
+    assert runbook_path.stat().st_mode & 0o777 == 0o600
+    assert not os.access(runbook_path, os.X_OK)
+    assert runbook.startswith("Root-required post-merge deploy action deferred.\n")
+    assert "DO NOT EXECUTE THIS FILE OR COPY A COMMAND FROM IT" in runbook
+    assert "sudo" not in runbook
     assert "HAPAX_OOM_INSTALL_SUDO=" not in runbook
-    assert f"sha='{sha}'" in runbook
-    assert 'repo_alias="$HOME/.cache/hapax/source-activation/worktree"' in runbook
-    assert f"repo_alias='{repo}'" not in runbook
-    assert "helper_rel=scripts/hapax-root-required-deferred-install" in runbook
-    assert 'test ! -L "$helper"' in runbook
-    assert '/usr/bin/git -C "$repo" hash-object -- "/proc/self/fd/$helper_fd"' in runbook
-    assert "/usr/bin/env -i" in runbook
-    assert '--expected-sha "$sha" --activation-release "$repo"' in runbook
+    assert f"Commit: {sha}" in runbook
+    assert "GIT_CONFIG" not in runbook
+    assert "/usr/bin/python3" not in runbook
     assert f'"{deferred}/scripts/install-p0-oom-containment" --source' not in runbook
-    authenticate = runbook.index(
-        '/usr/bin/git -C "$repo" hash-object -- "/proc/self/fd/$helper_fd"'
+    output = first_stdout + second_stdout
+    command_lines = [
+        line.removeprefix("next action: run: ")
+        for line in output.splitlines()
+        if line.startswith("next action: run: ")
+    ]
+    assert command_lines
+    command = command_lines[-1]
+    assert "GIT_CONFIG_GLOBAL=/dev/null" in command
+    assert "GIT_CONFIG_NOSYSTEM=1" in command
+    assert "GIT_NO_REPLACE_OBJECTS=1" in command
+    assert "/usr/bin/python3" in command
+    assert "--package" in command
+    assert "--expected-sha" in command
+    assert "/usr/bin/python3 -I -c" not in command
+    compromised = tmp_path / "compromised-runbook-ran"
+    runbook_path.write_text(f"#!/usr/bin/bash\ntouch {compromised}\n", encoding="utf-8")
+    runbook_path.chmod(0o700)
+    authenticated = subprocess.run(
+        ["/usr/bin/bash", "--noprofile", "--norc", "-c", command],
+        text=True,
+        capture_output=True,
+        check=False,
     )
-    execute = runbook.index('/usr/bin/python3 "/proc/self/fd/$helper_fd"', authenticate)
-    assert authenticate < execute
+    assert authenticated.returncode != 0
+    assert not compromised.exists()
+    assert "deferred-helper-argv=" in authenticated.stdout
+    assert f'"--expected-sha", "{sha}"' in authenticated.stdout
+    assert '"scripts/hapax-root-required-deferred-install"' not in authenticated.stdout
     assert (home / ".config" / "systemd" / "user" / "hapax-demo.service").is_file()
     assert not (home / ".config" / "systemd" / "user" / "hapax-local-judge.service").exists()
     assert "hapax-local-judge.service" not in systemctl_calls.read_text(encoding="utf-8")
@@ -1756,11 +1791,14 @@ def test_root_required_audit_rejects_nonexact_install_mode(tmp_path: Path) -> No
     assert "mode=600 expected=644" in result.stderr
 
 
+@pytest.mark.parametrize(
+    "rel",
+    ["scripts/hapax-oom-score-enforce", "scripts/hapax-root-required-deferred-install"],
+)
 def test_root_required_audit_rejects_snapshot_not_matching_installed_receipt(
-    tmp_path: Path,
+    tmp_path: Path, rel: str
 ) -> None:
     env = _root_audit_env(tmp_path)
-    rel = "scripts/hapax-oom-score-enforce"
     installed_path = Path(env["HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"]) / rel
     installed_path.write_text("stale installed snapshot\n", encoding="utf-8")
 
@@ -1775,6 +1813,24 @@ def test_root_required_audit_rejects_snapshot_not_matching_installed_receipt(
     assert result.returncode == 1
     assert "installed source is not bound" in result.stderr
     assert "oom-containment receipt" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("array_name", "manifest"),
+    [
+        ("oom_package_files", OOM_PACKAGE_MANIFEST),
+        ("apcupsd_package_files", APCUPSD_PACKAGE_MANIFEST),
+    ],
+)
+def test_root_required_audit_package_inventory_matches_manifest(
+    array_name: str, manifest: str
+) -> None:
+    source = ROOT_REQUIRED_AUDIT.read_text(encoding="utf-8")
+    body = source.split(f"{array_name}=(", 1)[1].split("\n)", 1)[0]
+    audited = {line.strip() for line in body.splitlines() if line.strip()}
+    declared = {line for line in manifest.splitlines() if line and not line.startswith("#")}
+
+    assert audited == declared
 
 
 def test_root_required_audit_fails_closed_when_snapshot_file_absent(
@@ -3140,7 +3196,9 @@ def test_post_merge_deploy_refuses_unsafe_shared_lock_before_mutation(
     assert not (home / ".local/bin/hapax-demo").exists()
 
 
-def test_apcupsd_power_alert_deploy_uses_dedicated_installer(tmp_path: Path) -> None:
+def test_apcupsd_power_alert_deploy_always_creates_authenticated_deferral(
+    tmp_path: Path,
+) -> None:
     installer_calls = tmp_path / "apcupsd-installer-calls.txt"
     installer_body = (
         "#!/usr/bin/env bash\n"
@@ -3189,7 +3247,10 @@ def test_apcupsd_power_alert_deploy_uses_dedicated_installer(tmp_path: Path) -> 
     )
 
     assert result.returncode == 0, result.stderr
-    assert "--install --verify-live" in installer_calls.read_text(encoding="utf-8")
+    assert not installer_calls.exists(), "post-merge must not execute mutable staged package code"
+    deferred = home / ".cache/hapax/post-merge-root-required" / sha / "apcupsd-power-alerts"
+    assert (deferred / "RUNBOOK.txt").is_file()
+    assert "next action: run:" in result.stdout
     record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
     assert set(record["deploy_groups"]["apcupsd_power_alerts"]) == set(files)
 

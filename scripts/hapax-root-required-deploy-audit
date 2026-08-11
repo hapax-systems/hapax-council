@@ -336,6 +336,7 @@ oom_package_files=(
     config/root-required/oom-host-policy/appendix/zram-generator.conf
     config/root-required/oom-host-policy/podium/zram-generator.conf
     scripts/install-p0-oom-containment
+    scripts/hapax-root-required-deferred-install
     config/root-required/hapax-oom-score-enforce.sudoers
     scripts/hapax-oom-score-enforce
     scripts/hapax-oom-score-trigger

@@ -5,8 +5,9 @@
 # podium LiteLLM gateway as the `local-judge` route -> http://192.168.68.50:5001/v1.
 # Deploy + validation: docs/runbooks/local-judge-stack.md.
 Description=Hapax Local Judge — CompassVerifier-7B answer-verification (cost-offload Tier-1)
-# User managers cannot order against the system manager's docker.service.
-# Restart=always retries at RestartSec=5s until the Docker socket is ready.
+# Estate convention retained for parity; a user manager cannot enforce ordering
+# against the system manager's docker.service, so restart remains the readiness path.
+After=docker.service
 
 [Service]
 Type=simple

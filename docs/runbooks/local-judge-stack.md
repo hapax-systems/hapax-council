@@ -41,11 +41,9 @@ nvidia-smi --query-gpu=index,name,uuid --format=csv
 
 docker pull ghcr.io/ggml-org/llama.cpp:server-cuda
 
-# A post-merge deploy stages the exact receipt-owned OOM package. Run this only
-# after runtime authority is granted; never copy or symlink the judge unit.
+# Re-emit the authenticated command after runtime authority is granted. Never
+# execute RUNBOOK.txt, copy the judge unit, or reproduce the authentication flow.
 set -euo pipefail
-PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
-export PATH
 state="$HOME/.local/state/hapax/root-required"
 receipt="$state/desired-receipts/oom-containment.sha"
 test -f "$receipt"
@@ -54,25 +52,18 @@ test "$(/usr/bin/stat -c %h -- "$receipt")" = 1
 test "$(/usr/bin/wc -c < "$receipt")" = 41
 IFS= read -r sha < "$receipt"
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
-repo_alias="$HOME/.cache/hapax/source-activation/worktree"
-repo="$(/usr/bin/realpath -e -- "$repo_alias")"
-helper_rel=scripts/hapax-root-required-deferred-install
-helper="$repo/$helper_rel"
-activation_sha="$(/usr/bin/git -C "$repo" rev-parse --verify 'HEAD^{commit}')"
-[[ "$activation_sha" =~ ^[0-9a-f]{40}$ ]]
-test "$(/usr/bin/git -C "$repo" ls-tree "$activation_sha" -- "$helper_rel" | /usr/bin/cut -d' ' -f1)" = 100755
-test -f "$helper"
-test ! -L "$helper"
-test -x "$helper"
-helper_blob="$(/usr/bin/git -C "$repo" rev-parse "$activation_sha:$helper_rel")"
-exec {helper_fd}<"$helper"
-test "$(/usr/bin/git -C "$repo" hash-object -- "/proc/self/fd/$helper_fd")" = "$helper_blob"
-# The authenticated helper validates the receipt/stage, warms sudo, revalidates,
-# and executes a Git-materialized installer under a sanitized environment.
-/usr/bin/env -i HOME="$HOME" PATH="$PATH" LANG=C.UTF-8 LC_ALL=C.UTF-8 \
-  /usr/bin/python3 "/proc/self/fd/$helper_fd" --package oom-containment \
-  --expected-sha "$sha" --activation-release "$repo"
-exec {helper_fd}<&-
+stage="$HOME/.cache/hapax/post-merge-root-required/$sha/oom-containment"
+runbook="$stage/RUNBOOK.txt"
+test -f "$runbook"
+test ! -L "$runbook"
+test ! -x "$runbook"
+grep -Fqx 'DO NOT EXECUTE THIS FILE OR COPY A COMMAND FROM IT. It is caller-owned pending-state' <(head -n 5 "$runbook" | tail -n 1)
+# Run hapax-post-merge-deploy for "$sha" and execute only its live terminal line
+# beginning "next action: run:". The pending RUNBOOK is metadata, not code.
+~/.local/bin/hapax-post-merge-deploy "$sha"
+/usr/bin/grep -Fqx \
+  "hapax-root-required-deferred-install: completed authenticated package=oom-containment sha=$sha" \
+  "$stage/AUTHENTICATED-INSTALL.log"
 
 # The package deliberately does not enable or restart the judge. Activation is
 # a separate, runtime-authorized step after the exact package verifies.
@@ -83,8 +74,27 @@ nvidia-smi --query-gpu=index,name,memory.used --format=csv,noheader
 ```
 
 The name `hapax-local-judge` is reserved for the systemd unit. It refuses to
-delete an unknown same-name container. For an ad-hoc diagnostic run, keep the
-managed unit stopped and use a distinct ephemeral name and port:
+delete an unknown same-name container. `After=docker.service` is retained as an
+estate convention, but a user manager cannot enforce system-manager ordering;
+`Restart=always` with `RestartSec=5s` is the actual Docker-socket readiness path.
+
+The recurring OOM audit requires a present judge container to be `running`. If
+it reports that a non-running container holds the name, stop the unit, inspect
+the immutable container ID reported by the audit, and confirm it is the stale
+judge before removing that exact ID without `-f`:
+
+```sh
+systemctl --user stop hapax-local-judge.service
+container_id=<immutable-id-from-audit>
+docker inspect "$container_id"
+test "$(docker inspect --format '{{.Name}}' "$container_id")" = /hapax-local-judge
+docker rm "$container_id"
+systemctl --user start hapax-local-judge.service
+/usr/local/sbin/hapax-oom-policy-audit
+```
+
+For an ad-hoc diagnostic run, keep the managed unit stopped and use a distinct
+ephemeral name and port:
 
 ```sh
 docker run --rm --name hapax-local-judge-adhoc \

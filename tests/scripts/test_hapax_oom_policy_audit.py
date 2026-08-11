@@ -51,6 +51,7 @@ INSTALLED_TEST_SELECTORS = {
     "HAPAX_OOM_AUDIT_MEMTOTAL_KIB",
     "HAPAX_OOM_AUDIT_HOSTNAME",
     "HAPAX_OOM_AUDIT_PROFILE_TABLE",
+    "HAPAX_OOM_AUDIT_SEALED_PACKAGE_SOURCE",
     "HAPAX_OOM_AUDIT_SYSTEMD_SYSTEM_DIR",
     "HAPAX_OOM_AUDIT_SYSTEMD_USER_DIR",
     "HAPAX_OOM_AUDIT_USER_UNIT_PATHS",
@@ -113,6 +114,7 @@ def test_audit_resets_hostile_path_before_command_resolution(
         ("HAPAX_OOM_AUDIT_MEMTOTAL_KIB", "131007744"),
         ("HAPAX_OOM_AUDIT_HOSTNAME", "hapax-podium"),
         ("HAPAX_OOM_AUDIT_PROFILE_TABLE", "/tmp/profiles.tsv"),
+        ("HAPAX_OOM_AUDIT_SEALED_PACKAGE_SOURCE", "1"),
         ("HAPAX_OOM_AUDIT_SYSTEMD_SYSTEM_DIR", "/tmp/systemd-system"),
         ("HAPAX_OOM_AUDIT_SYSTEMD_USER_DIR", "/tmp/systemd-user"),
         ("HAPAX_OOM_AUDIT_USER_UNIT_PATHS", "/tmp/unit-paths"),
@@ -141,6 +143,213 @@ def test_installed_audit_refuses_every_test_selector(
 
     assert result.returncode == 1
     assert "refused by an installed audit" in result.stdout
+
+
+def test_symlinked_installed_audit_cannot_look_like_source(tmp_path: Path) -> None:
+    installed = tmp_path / "usr" / "local" / "sbin" / "hapax-oom-policy-audit"
+    installed.parent.mkdir(parents=True)
+    installed.symlink_to(SCRIPT)
+    env = {key: item for key, item in os.environ.items() if key not in INSTALLED_TEST_SELECTORS}
+    env.update(
+        {
+            "HAPAX_OOM_AUDIT_TEST_MODE": "1",
+            "HAPAX_OOM_AUDIT_HOSTNAME": "hapax-podium",
+            "HAPAX_OOM_AUDIT_MEMTOTAL_KIB": "131007744",
+        }
+    )
+
+    result = subprocess.run(
+        [str(installed), "--host-policy-lines"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "refused by an installed audit" in result.stdout
+
+
+def test_arbitrary_scripts_directory_without_git_marker_is_installed_mode(
+    tmp_path: Path,
+) -> None:
+    copied = tmp_path / "arbitrary" / "scripts" / "hapax-oom-policy-audit"
+    copied.parent.mkdir(parents=True)
+    copied.write_bytes(SCRIPT.read_bytes())
+    copied.chmod(0o755)
+    env = {key: item for key, item in os.environ.items() if key not in INSTALLED_TEST_SELECTORS}
+    env.update(
+        {
+            "HAPAX_OOM_AUDIT_TEST_MODE": "1",
+            "HAPAX_OOM_AUDIT_HOSTNAME": "hapax-podium",
+            "HAPAX_OOM_AUDIT_MEMTOTAL_KIB": "131007744",
+        }
+    )
+
+    result = subprocess.run(
+        [str(copied), "--host-policy-lines"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "refused by an installed audit" in result.stdout
+
+
+def test_arbitrary_scripts_directory_with_fake_git_marker_is_installed_mode(
+    tmp_path: Path,
+) -> None:
+    copied = tmp_path / "arbitrary" / "scripts" / "hapax-oom-policy-audit"
+    copied.parent.mkdir(parents=True)
+    copied.write_bytes(SCRIPT.read_bytes())
+    copied.chmod(0o755)
+    (tmp_path / "arbitrary" / ".git").write_text("not a Git checkout\n", encoding="utf-8")
+    env = {key: item for key, item in os.environ.items() if key not in INSTALLED_TEST_SELECTORS}
+    env.update(
+        {
+            "HAPAX_OOM_AUDIT_TEST_MODE": "1",
+            "HAPAX_OOM_AUDIT_HOSTNAME": "hapax-podium",
+            "HAPAX_OOM_AUDIT_MEMTOTAL_KIB": "131007744",
+        }
+    )
+
+    result = subprocess.run(
+        [str(copied), "--host-policy-lines"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "refused by an installed audit" in result.stdout
+
+
+def test_linked_worktree_git_file_is_a_positive_source_checkout_marker(tmp_path: Path) -> None:
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=primary, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@hapax.local"], cwd=primary, check=True)
+    subprocess.run(["git", "config", "user.name", "Hapax Tests"], cwd=primary, check=True)
+    copied = primary / "scripts" / "hapax-oom-policy-audit"
+    copied.parent.mkdir(parents=True)
+    copied.write_bytes(SCRIPT.read_bytes())
+    copied.chmod(0o755)
+    profile = primary / "config/root-required/oom-host-profiles.tsv"
+    profile.parent.mkdir(parents=True)
+    profile.write_bytes((REPO_ROOT / "config/root-required/oom-host-profiles.tsv").read_bytes())
+    subprocess.run(["git", "add", "."], cwd=primary, check=True)
+    subprocess.run(["git", "commit", "-qm", "audit checkout"], cwd=primary, check=True)
+    checkout = tmp_path / "checkout"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", "audit-linked", str(checkout)],
+        cwd=primary,
+        check=True,
+    )
+    copied = checkout / "scripts" / "hapax-oom-policy-audit"
+    env = {key: item for key, item in os.environ.items() if key not in INSTALLED_TEST_SELECTORS}
+    env.update(
+        {
+            "HAPAX_OOM_AUDIT_TEST_MODE": "1",
+            "HAPAX_OOM_AUDIT_HOSTNAME": "hapax-podium",
+            "HAPAX_OOM_AUDIT_MEMTOTAL_KIB": "131007744",
+        }
+    )
+
+    result = subprocess.run(
+        [str(copied), "--host-policy-lines"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert "PROFILE=podium" in result.stdout
+
+
+def _run_sealed_audit_driver(body: str) -> subprocess.CompletedProcess[str]:
+    driver = (
+        r"""
+import fcntl
+import os
+import runpy
+import sys
+
+def sealed(name, data, mode):
+    fd = os.memfd_create(name, os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError("short memfd write")
+        view = view[written:]
+    os.fchmod(fd, mode)
+    os.lseek(fd, 0, os.SEEK_SET)
+    seals = fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
+    fcntl.fcntl(fd, fcntl.F_ADD_SEALS, seals)
+    return fd
+
+audit_fd = sealed("hapax-audit", open(sys.argv[1], "rb").read(), 0o755)
+profile_fd = sealed("hapax-profile", open(sys.argv[2], "rb").read(), 0o644)
+audit_path = f"/proc/{os.getpid()}/fd/{audit_fd}"
+profile_path = f"/proc/{os.getpid()}/fd/{profile_fd}"
+for name in tuple(os.environ):
+    if name.startswith("HAPAX_OOM_AUDIT_") or name in {"HAPAX_SYSTEMCTL", "HAPAX_SYSTEMD_ANALYZE"}:
+        os.environ.pop(name, None)
+os.environ["HAPAX_OOM_AUDIT_SEALED_PACKAGE_SOURCE"] = "1"
+os.environ["HAPAX_OOM_AUDIT_PROFILE_TABLE"] = profile_path
+namespace = runpy.run_path(audit_path, run_name="sealed_package_policy")
+"""
+        + body
+    )
+    return subprocess.run(
+        [
+            "/usr/bin/python3",
+            "-I",
+            "-c",
+            driver,
+            str(SCRIPT),
+            str(REPO_ROOT / "config/root-required/oom-host-profiles.tsv"),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=os.environ.copy(),
+    )
+
+
+def test_sealed_package_profile_derives_without_production_test_selectors() -> None:
+    result = _run_sealed_audit_driver(
+        r"""
+policy = namespace["derive_host_policy"](
+    memtotal_kib=60 * 1024**2, hostname="hapax-appendix"
+)
+print(f"profile={policy.profile}")
+print(f"zram={policy.zram_size}")
+print(f"path={namespace['_profile_table_path']()}")
+print(namespace["_profile_table_context"](namespace["_profile_table_path"]()))
+"""
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "profile=appendix" in result.stdout
+    assert f"zram={16 * 1024**3}" in result.stdout
+    assert "path=/proc/" in result.stdout and "/fd/" in result.stdout
+    assert "sealed package-source" in result.stdout
+
+
+def test_sealed_package_source_cannot_run_the_recurring_audit() -> None:
+    result = _run_sealed_audit_driver(
+        r"""
+raise SystemExit(namespace["main"](["--json"]))
+"""
+    )
+
+    assert result.returncode == 1
+    assert "limited to internal host-policy derivation" in result.stdout
 
 
 def test_installed_audit_ignores_adjacent_unowned_profile_table(tmp_path: Path) -> None:
@@ -391,6 +600,7 @@ def _fake_docker(tmp_path: Path, *, state: str = "bounded") -> Path:
             oom_kill_disable = "FALSE"
         else:
             oom_kill_disable = "false"
+        judge_state = "exited" if state == "judge-exited" else "running"
         if state == "unlimited":
             judge_memory = judge_swap = mcp_memory = mcp_swap = 0
         elif state == "wrong-swap":
@@ -420,8 +630,8 @@ def _fake_docker(tmp_path: Path, *, state: str = "bounded") -> Path:
             )
             inspect_body = (
                 f'case "$id" in\n'
-                f"  {JUDGE_CONTAINER_ID}) printf '%s\\t/%s\\t%s\\t%s\\t%s\\n' \"$id\" hapax-local-judge {judge_memory} {judge_swap} null ;;\n"
-                f"  {MCP_CONTAINER_ID}) printf '%s\\t/%s\\t%s\\t%s\\t%s\\n' \"$id\" hapax-github-mcp-hapax-123 {mcp_memory} {mcp_swap} {oom_kill_disable} ;;\n"
+                f"  {JUDGE_CONTAINER_ID}) printf '%s\\t/%s\\t%s\\t%s\\t%s\\t%s\\n' \"$id\" hapax-local-judge {judge_memory} {judge_swap} null {judge_state} ;;\n"
+                f"  {MCP_CONTAINER_ID}) printf '%s\\t/%s\\t%s\\t%s\\t%s\\t%s\\n' \"$id\" hapax-github-mcp-hapax-123 {mcp_memory} {mcp_swap} {oom_kill_disable} running ;;\n"
                 "  *) exit 1 ;;\n"
                 "esac"
                 if state != "inspect-failure-present"
@@ -946,6 +1156,34 @@ def test_host_policy_requires_ceiling_below_the_interval_minimum(tmp_path: Path)
     assert "below the reviewed 59 GiB interval floor" in result.stdout
 
 
+@pytest.mark.parametrize("zram_mib", [4096, 30720])
+def test_host_policy_bounds_zram_against_swap_and_physical_floor(
+    tmp_path: Path, zram_mib: int
+) -> None:
+    table = tmp_path / "oom-host-profiles.tsv"
+    table.write_text(
+        f"hapax-appendix\t59\t61\tappendix\t46G\t54G\t48G\t56G\t{zram_mib}\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [str(SCRIPT), "--host-policy-lines"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_AUDIT_TEST_MODE": "1",
+            "HAPAX_OOM_AUDIT_PROFILE_TABLE": str(table),
+            "HAPAX_OOM_AUDIT_MEMTOTAL_KIB": str(60 * 1024**2),
+            "HAPAX_OOM_AUDIT_HOSTNAME": "hapax-appendix",
+        },
+    )
+
+    assert result.returncode == 1
+    assert "8 GiB slice swap ceiling" in result.stdout
+    assert "half the physical floor as recovery headroom" in result.stdout
+
+
 def test_host_policy_validates_unselected_rows_against_their_interval_minimum(
     tmp_path: Path,
 ) -> None:
@@ -1126,6 +1364,19 @@ def test_audit_fails_when_docker_cannot_be_queried(tmp_path: Path) -> None:
         if check["name"] == "docker_container_limits"
     )
     assert check["status"] == "error"
+
+
+def test_audit_rejects_exited_same_name_local_judge_container(tmp_path: Path) -> None:
+    result = _run(tmp_path, docker_state="judge-exited")
+
+    assert result.returncode == 1
+    checks = {check["name"]: check for check in json.loads(result.stdout)["checks"]}
+    check = checks["docker_hapax_local_judge_State"]
+    assert check["status"] == "gap"
+    assert check["target"] == "running"
+    assert check["actual"] == "exited"
+    assert JUDGE_CONTAINER_ID in check["detail"]
+    assert "without -f" in check["detail"]
 
 
 def test_audit_accepts_ephemeral_docker_disappearance_only_after_id_reenumeration(

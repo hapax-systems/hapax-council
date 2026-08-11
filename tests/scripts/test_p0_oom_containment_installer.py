@@ -3712,6 +3712,7 @@ def _run_install_verify_live(
     local_judge_dropins: str = "",
     local_judge_exec_start: str = LOCAL_JUDGE_EXEC_START,
     local_judge_need_reload: str = "no",
+    through_deferred_helper: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Drive the REAL installer through --install --verify-live against temp destinations.
 
@@ -3739,7 +3740,10 @@ def _run_install_verify_live(
     enforcer_dest = tmp_path / "sbin" / "hapax-oom-score-enforce"
     root_failure_dest = tmp_path / "sbin" / "hapax-root-failure-intake"
     root_defer = tmp_path / "root-required"
-    installed_source = tmp_path / "current-source"
+    state_root = tmp_path / "root-state"
+    installed_source = (
+        state_root / "current-source" if through_deferred_helper else tmp_path / "current-source"
+    )
     (installed_source / "scripts").mkdir(parents=True)
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
@@ -3793,40 +3797,131 @@ def _run_install_verify_live(
                 "[Unit]\nDescription=placed by test\n", encoding="utf-8"
             )
 
+    env = {
+        **os.environ,
+        "HOME": str(root_home),
+        "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(system_dir),
+        "HAPAX_OOM_SYSTEMD_USER_DIR": str(user_dir),
+        "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR": str(user_control_dir),
+        "HAPAX_OOM_TARGET_UID": "1000",
+        "HAPAX_OOM_TARGET_HOME": str(target_home),
+        "HAPAX_OOM_EARLYOOM_DEST": str(earlyoom_dest),
+        "HAPAX_OOM_ENFORCER_DEST": str(enforcer_dest),
+        "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
+        "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+        **({} if no_unit_path_override else {"HAPAX_OOM_USER_UNIT_PATHS": str(unit_path_dir)}),
+        **({"HAPAX_OOM_SYSTEMD_ANALYZE": systemd_analyze} if systemd_analyze else {}),
+        "HAPAX_OOM_EFFECTIVE_UID": "0",
+        "HAPAX_OOM_RUNUSER": str(fake_runuser),
+        "HAPAX_OOM_INSTALL_SUDO": "",
+        "HAPAX_OOM_PROC_ROOT": str(proc_root),
+        "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(root_defer),
+        "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": REPO_HEAD,
+        "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
+        "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source),
+        "HAPAX_OOM_POLICY_HOSTNAME": (
+            "hapax-appendix" if host_profile == "appendix" else "hapax-podium"
+        ),
+        "HAPAX_OOM_POLICY_MEMTOTAL_KIB": (
+            "63310228" if host_profile == "appendix" else "131007744"
+        ),
+    }
+    command = [str(INSTALLER), "--install", "--verify-live"]
+    if through_deferred_helper:
+        activation = tmp_path / "activation-release"
+        activation.mkdir()
+        _copy_oom_package(activation)
+        subprocess.run(["git", "init", "-q"], cwd=activation, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "tests@hapax.local"], cwd=activation, check=True
+        )
+        subprocess.run(["git", "config", "user.name", "Hapax Tests"], cwd=activation, check=True)
+        subprocess.run(["git", "add", "."], cwd=activation, check=True)
+        subprocess.run(
+            ["git", "commit", "-qm", "authenticated OOM package"], cwd=activation, check=True
+        )
+        package_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=activation,
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout.strip()
+        activation_alias = tmp_path / "activation-alias"
+        activation_alias.symlink_to(activation, target_is_directory=True)
+        stage = root_defer / package_sha / "oom-containment"
+        _copy_oom_package(stage)
+        (stage / ".hapax-root-required-package-sha").write_text(
+            f"{package_sha}\n", encoding="utf-8"
+        )
+        (stage / "RUNBOOK.txt").write_text("authenticated test deferral\n", encoding="utf-8")
+        desired = state_root / "desired-receipts" / "oom-containment.sha"
+        desired.parent.mkdir(parents=True)
+        desired.write_text(f"{package_sha}\n", encoding="utf-8")
+        fake_sudo = tmp_path / "deferred-sudo"
+        fake_sudo.write_text("#!/usr/bin/bash\nexit 0\n", encoding="utf-8")
+        fake_sudo.chmod(0o755)
+        root_sudo_calls = tmp_path / "root-sudo-calls"
+        fake_root_sudo = tmp_path / "root-sudo"
+        fake_root_sudo.write_text(
+            "#!/usr/bin/bash\n"
+            "set -euo pipefail\n"
+            'if [ "$#" -eq 2 ] && [ "$1" = -n ] && [ "$2" = true ]; then exit 0; fi\n'
+            f"printf '%s\\n' \"$*\" >> {root_sudo_calls}\n"
+            'exec "$@"\n',
+            encoding="utf-8",
+        )
+        fake_root_sudo.chmod(0o755)
+        env.update(
+            {
+                "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_MODE": "1",
+                "HAPAX_ROOT_REQUIRED_STATE_ROOT": str(state_root),
+                "HAPAX_ROOT_REQUIRED_GIT_REPO": str(activation_alias),
+                "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_SUDO": str(fake_sudo),
+                "HAPAX_OOM_EFFECTIVE_UID": "1000",
+                "HAPAX_OOM_INSTALL_SUDO": str(fake_root_sudo),
+            }
+        )
+        command = [
+            str(REPO_ROOT / "scripts" / "hapax-root-required-deferred-install"),
+            "--package",
+            "oom-containment",
+            "--expected-sha",
+            package_sha,
+            "--activation-release",
+            str(activation),
+        ]
     return subprocess.run(
-        [str(INSTALLER), "--install", "--verify-live"],
+        command,
         text=True,
         capture_output=True,
         check=False,
-        env={
-            **os.environ,
-            "HOME": str(root_home),
-            "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(system_dir),
-            "HAPAX_OOM_SYSTEMD_USER_DIR": str(user_dir),
-            "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR": str(user_control_dir),
-            "HAPAX_OOM_TARGET_UID": "1000",
-            "HAPAX_OOM_TARGET_HOME": str(target_home),
-            "HAPAX_OOM_EARLYOOM_DEST": str(earlyoom_dest),
-            "HAPAX_OOM_ENFORCER_DEST": str(enforcer_dest),
-            "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
-            "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
-            **({} if no_unit_path_override else {"HAPAX_OOM_USER_UNIT_PATHS": str(unit_path_dir)}),
-            **({"HAPAX_OOM_SYSTEMD_ANALYZE": systemd_analyze} if systemd_analyze else {}),
-            "HAPAX_OOM_EFFECTIVE_UID": "0",
-            "HAPAX_OOM_RUNUSER": str(fake_runuser),
-            "HAPAX_OOM_INSTALL_SUDO": "",
-            "HAPAX_OOM_PROC_ROOT": str(proc_root),
-            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(root_defer),
-            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": REPO_HEAD,
-            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
-            "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source),
-            "HAPAX_OOM_POLICY_HOSTNAME": (
-                "hapax-appendix" if host_profile == "appendix" else "hapax-podium"
-            ),
-            "HAPAX_OOM_POLICY_MEMTOTAL_KIB": (
-                "63310228" if host_profile == "appendix" else "131007744"
-            ),
-        },
+        env=env,
+    )
+
+
+def test_authenticated_deferred_helper_runs_real_installer_through_lock_reexec(
+    tmp_path: Path,
+) -> None:
+    result = _run_install_verify_live(tmp_path, through_deferred_helper=True)
+
+    assert result.returncode == 0, result.stderr
+    assert "source=sealed-git-memfd" in result.stdout
+    assert "completed authenticated package=oom-containment" in result.stdout
+    state_root = tmp_path / "root-state"
+    receipt = state_root / "installed-receipts" / "oom-containment.sha"
+    package_sha = receipt.read_text(encoding="utf-8").strip()
+    assert len(package_sha) == 40
+    assert (state_root / ".lock").is_file()
+    root_sudo_calls = (tmp_path / "root-sudo-calls").read_text(encoding="utf-8")
+    assert "install -m" in root_sudo_calls
+    assert "/proc/" in root_sudo_calls and "/fd/" in root_sudo_calls
+    assert not (tmp_path / "root-required" / package_sha / "oom-containment/RUNBOOK.txt").exists()
+    assert (tmp_path / "root-required" / package_sha / "oom-containment/DRAINED.txt").is_file()
+    installed_helper = state_root / "current-source/scripts/hapax-root-required-deferred-install"
+    assert (
+        installed_helper.read_bytes()
+        == (REPO_ROOT / "scripts/hapax-root-required-deferred-install").read_bytes()
     )
 
 

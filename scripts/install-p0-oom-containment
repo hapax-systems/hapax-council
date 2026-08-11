@@ -65,9 +65,11 @@ ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT:-
 ROOT_REQUIRED_GIT_REPO="${HAPAX_ROOT_REQUIRED_GIT_REPO:-$TARGET_HOME/.cache/hapax/source-activation/worktree}"
 ROOT_REQUIRED_PACKAGE_SHA="${HAPAX_ROOT_REQUIRED_PACKAGE_SHA:-}"
 ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_STATE_ROOT/.lock}"
+ROOT_REQUIRED_SEALED_SOURCE_FDS="${HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS:-}"
 ROOT_REQUIRED_RECEIPT="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/oom-containment.sha"
 ROOT_REQUIRED_DESIRED_RECEIPT="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/oom-containment.sha"
 SKIP_SUPERSEDED_INSTALL=0
+AUTHENTICATED_SEALED_SOURCE=0
 PROC_ROOT="${HAPAX_OOM_PROC_ROOT:-/proc}"
 if [ -n "${HAPAX_OOM_CGROUP_ROOT:-}" ]; then
     CGROUP_ROOT="$HAPAX_OOM_CGROUP_ROOT"
@@ -142,6 +144,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --no-runtime)
             APPLY_RUNTIME=0
+            shift
+            ;;
+        --authenticated-sealed-source)
+            AUTHENTICATED_SEALED_SOURCE=1
             shift
             ;;
         -h|--help)
@@ -261,7 +267,6 @@ from __future__ import annotations
 import fcntl
 import os
 import stat
-import subprocess
 import sys
 
 lock_path, script, *args = sys.argv[1:]
@@ -299,13 +304,16 @@ try:
     env = os.environ.copy()
     env.pop("HAPAX_ROOT_REQUIRED_LOCK_HELD", None)
     env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
-    result = subprocess.run(
-        [os.path.abspath(script), *args],
-        env=env,
-        pass_fds=(fd,),
-        check=False,
+    executable = os.path.abspath(script)
+    os.set_inheritable(fd, True)
+    os.execve(executable, [executable, *args], env)
+except OSError as exc:
+    print(
+        f"OOM installer could not re-exec under the shared lock: {exc}; next action: "
+        "leave the deferral pending and rerun its exact authenticated command",
+        file=sys.stderr,
     )
-    raise SystemExit(result.returncode)
+    raise SystemExit(1) from exc
 finally:
     os.close(fd)
 PY
@@ -437,24 +445,25 @@ expected_package_git_mode() {
 }
 
 validate_package_source_matches_commit() {
-    local rel git_mode expected_mode
+    local rel git_mode expected_mode source_path
     for rel in "${package_files[@]}"; do
+        source_path="$(src_path "$rel")" || return 1
         git_mode="$(git -C "$ROOT_REQUIRED_GIT_REPO" ls-tree "$ROOT_REQUIRED_PACKAGE_SHA" -- "$rel" | awk 'NR == 1 {print $1}')"
         expected_mode="$(expected_package_git_mode "$rel")"
         if [ "$git_mode" != "$expected_mode" ]; then
             echo "OOM package Git mode violates the destination contract at $rel: actual=$git_mode expected=$expected_mode; next action: restore the tracked executable class and rerun from a clean Git worktree or exact staged RUNBOOK" >&2
             return 1
         fi
-        if ! /usr/bin/python3 - "$SOURCE/$rel" "$git_mode" <<'PY'
+        if ! /usr/bin/python3 - "$source_path" "$git_mode" "$AUTHENTICATED_SEALED_SOURCE" <<'PY'
 from __future__ import annotations
 
 import os
 import stat
 import sys
 
-path, git_mode = sys.argv[1:]
+path, git_mode, sealed = sys.argv[1:]
 try:
-    inode = os.lstat(path)
+    inode = os.stat(path) if sealed == "1" else os.lstat(path)
 except OSError:
     raise SystemExit(1)
 if not stat.S_ISREG(inode.st_mode):
@@ -467,7 +476,7 @@ PY
             echo "OOM install source is not a regular file with the claimed Git mode at $rel; next action: discard the substituted or mode-drifted package and rerun from a clean Git worktree or exact staged RUNBOOK" >&2
             return 1
         fi
-        if ! cmp -s <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$ROOT_REQUIRED_PACKAGE_SHA:$rel") "$SOURCE/$rel"; then
+        if ! cmp -s <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$ROOT_REQUIRED_PACKAGE_SHA:$rel") "$source_path"; then
             echo "OOM install source does not match claimed commit $ROOT_REQUIRED_PACKAGE_SHA at $rel; next action: discard the modified package and rerun from a clean Git worktree or exact staged RUNBOOK" >&2
             return 1
         fi
@@ -632,6 +641,71 @@ package_files=(
     "$oom_policy_audit_source"
     "$root_required_audit_source"
 )
+declare -A ROOT_REQUIRED_SEALED_SOURCES=()
+
+load_authenticated_sealed_sources() {
+    local raw="$ROOT_REQUIRED_SEALED_SOURCE_FDS" index
+    local -a source_fds=()
+    if [ "$AUTHENTICATED_SEALED_SOURCE" -eq 0 ]; then
+        if [ -n "$raw" ]; then
+            echo "refusing sealed-source descriptors without the authenticated helper protocol flag; next action: remove HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS and rerun normally, or use the exact deferred RUNBOOK command" >&2
+            return 1
+        fi
+        return 0
+    fi
+    if [ "$INSTALL" -ne 1 ] || [ -z "$raw" ]; then
+        echo "authenticated sealed-source mode requires --install and helper-owned descriptors; next action: rerun the exact deferred RUNBOOK command" >&2
+        return 1
+    fi
+    IFS=: read -r -a source_fds <<< "$raw"
+    if [ "${#source_fds[@]}" -ne "${#package_files[@]}" ]; then
+        echo "authenticated OOM source descriptor count mismatch: actual=${#source_fds[@]} expected=${#package_files[@]}; next action: discard the altered invocation and rerun the exact deferred RUNBOOK command" >&2
+        return 1
+    fi
+    if ! /usr/bin/python3 -I - "${source_fds[@]}" <<'PY'
+from __future__ import annotations
+
+import fcntl
+import os
+import re
+import stat
+import sys
+
+required = fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
+holder_pids: set[str] = set()
+for path in sys.argv[1:]:
+    match = re.fullmatch(r"/proc/([1-9][0-9]*)/fd/([0-9]+)", path)
+    if match is None:
+        raise SystemExit(1)
+    holder_pids.add(match.group(1))
+    try:
+        target = os.readlink(path)
+        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+        try:
+            inode = os.fstat(fd)
+            seals = fcntl.fcntl(fd, fcntl.F_GET_SEALS)
+        finally:
+            os.close(fd)
+    except OSError:
+        raise SystemExit(1)
+    if (
+        not target.startswith("/memfd:hapax-")
+        or not stat.S_ISREG(inode.st_mode)
+        or inode.st_uid != os.geteuid()
+        or seals & required != required
+    ):
+        raise SystemExit(1)
+if len(holder_pids) != 1:
+    raise SystemExit(1)
+PY
+    then
+        echo "authenticated OOM source descriptors are unavailable, unsealed, or not caller-owned memfds; next action: leave the deferral pending and rerun its exact RUNBOOK command" >&2
+        return 1
+    fi
+    for index in "${!package_files[@]}"; do
+        ROOT_REQUIRED_SEALED_SOURCES["${package_files[$index]}"]="${source_fds[$index]}"
+    done
+}
 recovery_unit_scores=(
     apcupsd.service:-900
     systemd-logind.service:-800
@@ -849,7 +923,17 @@ user_unit_file_present() {
 }
 
 src_path() {
-    printf '%s/%s\n' "$SOURCE" "$1"
+    local rel="$1" sealed
+    if [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ]; then
+        sealed="${ROOT_REQUIRED_SEALED_SOURCES[$rel]-}"
+        if [ -z "$sealed" ]; then
+            echo "authenticated OOM source map omits $rel; next action: leave the deferral pending and rerun its exact RUNBOOK command" >&2
+            return 1
+        fi
+        printf '%s\n' "$sealed"
+        return 0
+    fi
+    printf '%s/%s\n' "$SOURCE" "$rel"
 }
 
 production_destinations_selected() {
@@ -904,7 +988,33 @@ load_host_policy() {
         echo "refusing test-mode host-policy overrides for production OOM destinations; next action: remove HAPAX_OOM_ENFORCE_TEST_MODE, HAPAX_OOM_POLICY_MEMTOTAL_KIB, and HAPAX_OOM_POLICY_HOSTNAME" >&2
         return 1
     fi
-    if ! output="$(
+    if [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ]; then
+        if [ "${HAPAX_OOM_ENFORCE_TEST_MODE:-0}" = "1" ]; then
+            if ! output="$(
+                HAPAX_OOM_AUDIT_SEALED_PACKAGE_SOURCE=1 \
+                HAPAX_OOM_AUDIT_PROC_ROOT="$PROC_ROOT" \
+                HAPAX_OOM_AUDIT_TEST_MODE=1 \
+                HAPAX_OOM_AUDIT_MEMTOTAL_KIB="${HAPAX_OOM_POLICY_MEMTOTAL_KIB:-}" \
+                HAPAX_OOM_AUDIT_HOSTNAME="${HAPAX_OOM_POLICY_HOSTNAME:-}" \
+                HAPAX_OOM_AUDIT_PROFILE_TABLE="$(src_path "$host_profile_table_source")" \
+                /usr/bin/python3 -I "$(src_path "$oom_policy_audit_source")" --host-policy-lines
+            )"; then
+                output=""
+            fi
+        else
+            if ! output="$(
+                HAPAX_OOM_AUDIT_SEALED_PACKAGE_SOURCE=1 \
+                HAPAX_OOM_AUDIT_PROFILE_TABLE="$(src_path "$host_profile_table_source")" \
+                /usr/bin/python3 -I "$(src_path "$oom_policy_audit_source")" --host-policy-lines
+            )"; then
+                output=""
+            fi
+        fi
+        if [ -z "$output" ]; then
+            echo "unable to derive the governed OOM host policy from sealed Git sources; next action: leave the deferral pending and rerun its exact RUNBOOK command" >&2
+            return 1
+        fi
+    elif ! output="$(
         HAPAX_OOM_AUDIT_PROC_ROOT="$PROC_ROOT" \
         HAPAX_OOM_AUDIT_TEST_MODE="${HAPAX_OOM_ENFORCE_TEST_MODE:-0}" \
         HAPAX_OOM_AUDIT_MEMTOTAL_KIB="${HAPAX_OOM_POLICY_MEMTOTAL_KIB:-}" \
@@ -952,11 +1062,15 @@ publish_installed_source_file() {
         echo "unable to reserve installed-source snapshot for $dest; next action: verify durable state ownership and capacity, then rerun the OOM installer" >&2
         return 1
     fi
-    if ! cp -a -- "$source" "$temp"; then
+    if [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ]; then
+        cp --dereference --preserve=mode -- "$source" "$temp"
+    else
+        cp -a -- "$source" "$temp"
+    fi || {
         rm -f "$temp" 2>/dev/null || true
         echo "unable to materialize installed-source snapshot for $dest; next action: verify the package source and durable state capacity, then rerun the OOM installer" >&2
         return 1
-    fi
+    }
     if ! mv -fT -- "$temp" "$dest"; then
         rm -f "$temp" 2>/dev/null || true
         echo "unable to atomically publish installed-source snapshot $dest; next action: remove unsafe destination drift and rerun the OOM installer" >&2
@@ -2847,6 +2961,7 @@ verify_user_process_oom_floor() {
     [ "$failed" -eq 0 ]
 }
 
+load_authenticated_sealed_sources
 validate_docker_command
 
 if [ "$INSTALL" -eq 1 ]; then

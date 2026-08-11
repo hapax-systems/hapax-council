@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -57,6 +58,12 @@ fi
     )
     fake_docker.chmod(0o755)
 
+    canonical_wrapper = (
+        tmp_path / ".cache/hapax/source-activation/worktree/scripts/hapax-github-mcp"
+    )
+    canonical_wrapper.parent.mkdir(parents=True)
+    shutil.copy2(WRAPPER, canonical_wrapper)
+
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["HOME"] = str(tmp_path)
@@ -85,3 +92,19 @@ fi
     assert "test-token" not in args
     assert "test-token" not in result.stdout
     assert "test-token" not in result.stderr
+
+
+def test_github_mcp_fails_before_credentials_when_canonical_release_is_missing(
+    tmp_path: Path,
+) -> None:
+    result = subprocess.run(
+        [str(WRAPPER)],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": str(tmp_path)},
+        timeout=5,
+    )
+
+    assert result.returncode == 2
+    assert "canonical source-activation wrapper is unavailable" in result.stderr
+    assert "no GitHub token found" not in result.stderr

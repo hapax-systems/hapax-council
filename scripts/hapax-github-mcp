@@ -3,6 +3,23 @@
 
 set -euo pipefail
 
+CANONICAL_ALIAS="$HOME/.cache/hapax/source-activation/worktree/scripts/hapax-github-mcp"
+if ! CANONICAL_WRAPPER="$(/usr/bin/realpath -e -- "$CANONICAL_ALIAS")"; then
+  echo "hapax-github-mcp: canonical source-activation wrapper is unavailable: $CANONICAL_ALIAS" >&2
+  exit 2
+fi
+if [ ! -f "$CANONICAL_WRAPPER" ] || [ ! -x "$CANONICAL_WRAPPER" ]; then
+  echo "hapax-github-mcp: canonical source-activation wrapper is not an executable regular file: $CANONICAL_WRAPPER" >&2
+  exit 2
+fi
+if ! CURRENT_WRAPPER="$(/usr/bin/realpath -e -- "$0")"; then
+  echo "hapax-github-mcp: invoked wrapper path cannot be resolved: $0" >&2
+  exit 2
+fi
+if [ "$CURRENT_WRAPPER" != "$CANONICAL_WRAPPER" ]; then
+  exec "$CANONICAL_WRAPPER" "$@"
+fi
+
 pass_first_line() {
   local name="$1"
   command -v pass >/dev/null 2>&1 || return 1
