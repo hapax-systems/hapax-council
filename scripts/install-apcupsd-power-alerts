@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash -p
 # Install Hapax apcupsd config/hooks and verify power-event provenance paths.
 set -euo pipefail
 ORIGINAL_ARGS=("$@")
@@ -40,11 +40,7 @@ if [ -z "$TARGET_HOME" ] || [ -z "$TARGET_GID" ]; then
 fi
 ROOT_REQUIRED_STATE_ROOT="${HAPAX_ROOT_REQUIRED_STATE_ROOT:-$TARGET_HOME/.local/state/hapax/root-required}"
 ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$ROOT_REQUIRED_STATE_ROOT/current-source}"
-ROOT_REQUIRED_DEFER_ROOT="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-}"
-if [ -z "$ROOT_REQUIRED_DEFER_ROOT" ] && [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ]; then
-    ROOT_REQUIRED_DEFER_ROOT="$(dirname "$(dirname "$HAPAX_ROOT_REQUIRED_DRAIN_DIR")")"
-fi
-ROOT_REQUIRED_DEFER_ROOT="${ROOT_REQUIRED_DEFER_ROOT:-$TARGET_HOME/.cache/hapax/post-merge-root-required}"
+ROOT_REQUIRED_DEFER_ROOT="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$TARGET_HOME/.cache/hapax/post-merge-root-required}"
 ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/installed-receipts}"
 ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/desired-receipts}"
 ROOT_REQUIRED_GIT_REPO="${HAPAX_ROOT_REQUIRED_GIT_REPO:-$TARGET_HOME/.cache/hapax/source-activation/worktree}"

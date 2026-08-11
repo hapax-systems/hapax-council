@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash -p
 # hapax-post-merge-deploy — delta's post-merge deploy helper
 #
 # Given a commit SHA (typically a merge commit on origin/main), inspect

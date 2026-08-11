@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-"""Prepare or stop the durable local-judge container by its bound Docker ID."""
+"""Prepare, identify, or stop the durable local-judge container by its bound Docker ID."""
 
 from __future__ import annotations
 
@@ -630,6 +630,21 @@ def prepare(cidfile_path: Path, docker: Path, *, test_mode: bool) -> None:
     print(f"removed stale local-judge cidfile for absent ID {cidfile.container_id}")
 
 
+def managed_id(cidfile_path: Path, docker: Path, *, test_mode: bool) -> None:
+    cidfile = _read_cidfile(_canonical_cidfile(cidfile_path, test_mode=test_mode))
+    if cidfile is None:
+        raise _refuse(
+            "unit-owned local-judge cidfile is absent",
+            "restore the active systemd unit and its Docker-written cidfile before runtime acceptance",
+        )
+    if _inspect_identity(docker, cidfile.container_id) is None:
+        raise _refuse(
+            f"unit-owned local-judge container is absent: {cidfile.container_id}",
+            "restore the systemd-owned immutable ID; do not accept a same-name replacement",
+        )
+    print(cidfile.container_id)
+
+
 def stop(cidfile_path: Path, docker: Path, *, test_mode: bool) -> None:
     cidfile = _read_cidfile(_canonical_cidfile(cidfile_path, test_mode=test_mode))
     if cidfile is None:
@@ -658,7 +673,9 @@ def stop(cidfile_path: Path, docker: Path, *, test_mode: bool) -> None:
 def main(argv: list[str] | None = None) -> int:
     production_state_root = _production_state_root()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("wait-daemon", "preflight", "prepare", "stop"))
+    parser.add_argument(
+        "action", choices=("wait-daemon", "preflight", "prepare", "managed-id", "stop")
+    )
     parser.add_argument("--cidfile", type=Path, required=True)
     parser.add_argument("--docker", type=Path, default=DEFAULT_DOCKER, help=argparse.SUPPRESS)
     parser.add_argument("--image")
@@ -735,6 +752,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.action == "prepare":
             prepare(args.cidfile, args.docker, test_mode=test_mode)
+        elif args.action == "managed-id":
+            managed_id(args.cidfile, args.docker, test_mode=test_mode)
         else:
             stop(args.cidfile, args.docker, test_mode=test_mode)
     except LifecycleError as exc:

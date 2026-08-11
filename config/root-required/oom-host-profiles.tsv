@@ -3,6 +3,7 @@
 # admission-only safety invariant: 8192 <= zram_mib and zram_mib * 2 <= min_memtotal_gib * 1024; the exact row value remains the deployed value, and both independent parsers reject a violating row before selection; recheck: scripts/install-p0-oom-containment --check --no-runtime
 # systemd source map: config/root-required/oom-host-policy/{appendix,podium}/{app.slice,user-1000.slice,user@1000.service}.conf
 # row-independent recheck: uv run pytest -q tests/scripts/test_hapax_oom_policy_audit.py -k shipped_host_profile_rows_satisfy_the_declared_zram_invariant
+# adversarial zram-bound recheck: uv run pytest -q tests/scripts/test_hapax_oom_policy_audit.py -k host_profile_parsers_share_zram_admission_corpus
 # exact zram/source recheck: uv run pytest -q tests/systemd/test_memory_policy_source_reconciliation.py -k profile_zram_rows_match_shipped_generator_policy
 hapax-appendix	59	61	appendix	46G	54G	48G	56G	16384
 hapax-podium	123	125	podium	72G	88G	80G	96G	32768

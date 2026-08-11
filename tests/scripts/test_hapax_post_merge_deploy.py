@@ -27,6 +27,29 @@ SECONDARY_RUNTIME_AUTHORITY_SCOPE = "runtime:docker:update-memory:hapax-local-ju
 MISSING_RUNTIME_AUTHORITY_SCOPE = "runtime:root-file:write:/etc/default/earlyoom"
 
 
+def test_runtime_entrypoint_privileged_shell_ignores_hostile_bash_env(tmp_path: Path) -> None:
+    startup_marker = tmp_path / "bash-env-ran"
+    bash_env = tmp_path / "hostile-bash-env"
+    bash_env.write_text(': > "$STARTUP_MARKER"\n', encoding="utf-8")
+
+    result = subprocess.run(
+        [str(SCRIPT), "--verify-runtime-authority-for-release"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "BASH_ENV": str(bash_env),
+            "STARTUP_MARKER": str(startup_marker),
+        },
+    )
+
+    assert SCRIPT.read_text(encoding="utf-8").splitlines()[0] == "#!/usr/bin/bash -p"
+    assert result.returncode == 2
+    assert "usage: hapax-post-merge-deploy --verify-runtime-authority-for-release" in result.stderr
+    assert not startup_marker.exists()
+
+
 def _runtime_authority_validator_source() -> str:
     source = SCRIPT.read_text(encoding="utf-8")
     marker = "<<'RUNTIME_AUTHORITY_PY'\n"

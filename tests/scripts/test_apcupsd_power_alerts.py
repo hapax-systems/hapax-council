@@ -70,6 +70,29 @@ def test_installer_recovery_guidance_requires_governed_runtime_reconciliation() 
     assert source.count("{repair_action}") == 4
 
 
+def test_installer_privileged_shell_ignores_hostile_bash_env(tmp_path: Path) -> None:
+    startup_marker = tmp_path / "bash-env-ran"
+    bash_env = tmp_path / "hostile-bash-env"
+    bash_env.write_text(': > "$STARTUP_MARKER"\n', encoding="utf-8")
+
+    result = subprocess.run(
+        [str(INSTALLER), "--help"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "BASH_ENV": str(bash_env),
+            "STARTUP_MARKER": str(startup_marker),
+        },
+    )
+
+    assert INSTALLER.read_text(encoding="utf-8").splitlines()[0] == "#!/usr/bin/bash -p"
+    assert result.returncode == 0, result.stderr
+    assert "usage: scripts/install-apcupsd-power-alerts" in result.stdout
+    assert not startup_marker.exists()
+
+
 @pytest.fixture(autouse=True)
 def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HAPAX_ROOT_REQUIRED_ALLOW_UNAUTHENTICATED_TEST_INSTALL", "1")
@@ -1784,6 +1807,34 @@ def test_mismatched_apcupsd_deferral_is_rejected_before_live_mutation(tmp_path: 
 
     assert result.returncode == 1
     assert "refusing mismatched apcupsd deferral drain" in result.stderr
+    assert not live.exists()
+
+
+def test_apcupsd_drain_dir_cannot_define_its_own_defer_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    drain = tmp_path / "outside" / REPO_HEAD / "apcupsd-power-alerts"
+    drain.mkdir(parents=True)
+    (drain / "RUNBOOK.txt").write_text("untrusted\n", encoding="utf-8")
+    live = tmp_path / "live-apcupsd"
+    monkeypatch.delenv("HAPAX_POST_MERGE_ROOT_DEFER_DIR")
+    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_DRAIN_DIR", str(drain))
+    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_PACKAGE_SHA", REPO_HEAD)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(REPO_ROOT), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_DEST": str(live),
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+        },
+    )
+
+    assert result.returncode == 1
+    assert "refusing root-required drain dir outside defer root" in result.stderr
     assert not live.exists()
 
 

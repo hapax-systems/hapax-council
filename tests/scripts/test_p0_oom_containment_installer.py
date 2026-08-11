@@ -104,6 +104,29 @@ def test_installer_recovery_guidance_uses_governed_post_merge_path() -> None:
     assert source.count("$OOM_REPAIR_ACTION") > 1
 
 
+def test_installer_privileged_shell_ignores_hostile_bash_env(tmp_path: Path) -> None:
+    startup_marker = tmp_path / "bash-env-ran"
+    bash_env = tmp_path / "hostile-bash-env"
+    bash_env.write_text(': > "$STARTUP_MARKER"\n', encoding="utf-8")
+
+    result = subprocess.run(
+        [str(INSTALLER), "--help"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "BASH_ENV": str(bash_env),
+            "STARTUP_MARKER": str(startup_marker),
+        },
+    )
+
+    assert INSTALLER.read_text(encoding="utf-8").splitlines()[0] == "#!/usr/bin/bash -p"
+    assert result.returncode == 0, result.stderr
+    assert "usage: scripts/install-p0-oom-containment" in result.stdout
+    assert not startup_marker.exists()
+
+
 def _systemctl_property_file(section: str, key: str, value: str) -> str:
     return (
         '# This is a drop-in unit file extension, created via "systemctl set-property"\n'
