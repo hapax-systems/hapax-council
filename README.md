@@ -22,12 +22,15 @@ Source-visible strict research/runtime artifact; not open source, not a framewor
 
 Rendered summary: PolyForm Strict 1.0.0 (source-available, non-distribution, non-modification). See `LICENSE`, `NOTICE.md`, `CITATION.cff`, and `.zenodo.json` for the authority surfaces.
 
-`SPDX-License-Identifier: PolyForm-Strict-1.0.0` — copyright © 2026 Hapax Research LLC.
+`SPDX-License-Identifier: PolyForm-Strict-1.0.0`
 
 > GitHub's licence classifier does not recognise PolyForm, so the repository badge reads
 > "NOASSERTION" regardless of the `LICENSE` file. That is a limitation of the classifier, not an
 > absence of terms: the licence is stated here, in `LICENSE`, and in `NOTICE.md`. The SPDX identifier
 > above is the machine-readable form for any tool that does not depend on GitHub's detection.
+>
+> This line states the licence, not the holder. `LICENSE` is the authority on who holds the
+> copyright; changing that is an ownership determination and does not belong in a legibility change.
 
 ## Public boundary
 
