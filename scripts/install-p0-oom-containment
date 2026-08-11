@@ -92,6 +92,8 @@ MCP_DOCKER_MEMORY="512M"
 MCP_DOCKER_MEMORY_SWAP="768M"
 LOCAL_JUDGE_DOCKER_MEMORY="4G"
 LOCAL_JUDGE_DOCKER_MEMORY_SWAP="6G"
+LOCAL_JUDGE_DOCKER_HOST_ARG="--host=unix:///var/run/docker.sock"
+LOCAL_JUDGE_DOCKER_CONFIG_SUFFIX="/hapax-local-judge/docker-config"
 GOVERNED_MEMORY_KEYS=(MemoryHigh MemoryMax MemorySwapMax MemoryLow MemoryMin)
 
 usage() {
@@ -1847,11 +1849,13 @@ verify_effective_local_judge_unit() {
         echo "effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins; next action: remove unauthorized overrides, reload the user manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     fi
-    if [[ "$actual_exec" != *"argv[]=/usr/bin/docker run "* \
+    if [[ "$actual_exec" != *"argv[]=/usr/bin/env -i "* \
+        || "$actual_exec" != *" /usr/bin/docker $LOCAL_JUDGE_DOCKER_HOST_ARG --config="* \
+        || "$actual_exec" != *"$LOCAL_JUDGE_DOCKER_CONFIG_SUFFIX run "* \
         || "$actual_exec" != *" --name hapax-local-judge "* \
         || "$actual_exec" != *" --memory $LOCAL_JUDGE_DOCKER_MEMORY "* \
         || "$actual_exec" != *" --memory-swap $LOCAL_JUDGE_DOCKER_MEMORY_SWAP "* ]]; then
-        echo "effective $unit ExecStart drift: durable launch does not contain the governed $LOCAL_JUDGE_DOCKER_MEMORY/$LOCAL_JUDGE_DOCKER_MEMORY_SWAP Docker limits; next action: remove unauthorized overrides, reload the user manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "effective $unit ExecStart drift: durable launch does not contain the governed clean-environment local-Docker selector and $LOCAL_JUDGE_DOCKER_MEMORY/$LOCAL_JUDGE_DOCKER_MEMORY_SWAP limits; next action: remove unauthorized overrides, reload the user manager, and rerun the runtime-authorized hapax-post-merge-deploy reconciliation" >&2
         return 1
     fi
 }

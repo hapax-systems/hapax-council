@@ -805,6 +805,9 @@ service_mutation_started=true
 activation_phase=effective_unit
 write_activation_result in_progress "$activation_phase" "$service_mutation_started"
 exec_start="$("$systemctl_bin" --user show hapax-local-judge.service -p ExecStart --value)"
+[[ "$exec_start" == *"argv[]=/usr/bin/env -i "* ]]
+[[ "$exec_start" == *" /usr/bin/docker --host=unix:///var/run/docker.sock --config="* ]]
+[[ "$exec_start" == *"/hapax-local-judge/docker-config run "* ]]
 [[ "$exec_start" == *" --memory 4G "* ]]
 [[ "$exec_start" == *" --memory-swap 6G "* ]]
 activation_phase=enable
@@ -1022,7 +1025,9 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
     "$HOME/.config/systemd/user/$unit"
   test -z "$(/usr/bin/systemctl --user show "$unit" -p DropInPaths --value)"
   exec_start="$(/usr/bin/systemctl --user show "$unit" -p ExecStart --value)"
-  [[ "$exec_start" == *"argv[]=/usr/bin/docker run "* ]]
+  [[ "$exec_start" == *"argv[]=/usr/bin/env -i "* ]]
+  [[ "$exec_start" == *" /usr/bin/docker --host=unix:///var/run/docker.sock --config="* ]]
+  [[ "$exec_start" == *"/hapax-local-judge/docker-config run "* ]]
   [[ "$exec_start" == *" --name hapax-local-judge "* ]]
   [[ "$exec_start" == *" --memory 4G "* ]]
   [[ "$exec_start" == *" --memory-swap 6G "* ]]

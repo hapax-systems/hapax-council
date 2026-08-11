@@ -630,7 +630,10 @@ def _effective_safety_unit_show_script(system_dir: Path, user_dir: Path) -> str:
         "FragmentPath": str(user_dir / "hapax-local-judge.service"),
         "DropInPaths": "",
         "ExecStart": (
-            "{ path=/usr/bin/docker ; argv[]=/usr/bin/docker run --rm "
+            "{ path=/usr/bin/env ; argv[]=/usr/bin/env -i HOME=/home/hapax "
+            "LANG=C.UTF-8 LC_ALL=C.UTF-8 LOGNAME=hapax PATH=/usr/bin:/bin USER=hapax "
+            "/usr/bin/docker --host=unix:///var/run/docker.sock "
+            "--config=/run/user/1000/hapax-local-judge/docker-config run --rm "
             "--name hapax-local-judge --memory 4G --memory-swap 6G local-judge ; }"
         ),
     }
@@ -2441,7 +2444,8 @@ def test_root_required_audit_detects_oom_enforcer_drift(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "root-required install drift" in result.stderr
-    assert "install-p0-oom-containment --install --verify-live" in result.stderr
+    assert "runtime-authorized hapax-post-merge-deploy OOM reconciliation" in result.stderr
+    assert "HAPAX_RUNTIME_AUTHORITY_TASK" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -2570,7 +2574,8 @@ def test_root_required_audit_detects_stale_user_copy_of_system_unit(tmp_path: Pa
 
     assert result.returncode == 1
     assert "stale user-scope copy of system unit remains" in result.stderr
-    assert "install-p0-oom-containment --install --verify-live" in result.stderr
+    assert "runtime-authorized hapax-post-merge-deploy OOM reconciliation" in result.stderr
+    assert "HAPAX_RUNTIME_AUTHORITY_TASK" in result.stderr
 
 
 def test_root_required_audit_reads_sudoers_only_through_narrow_sudo(tmp_path: Path) -> None:
@@ -2610,7 +2615,18 @@ def test_root_required_audit_rejects_byte_identical_symlinked_install(tmp_path: 
 
     assert result.returncode == 1
     assert "install missing or not a regular stable copy" in result.stderr
-    assert "install-p0-oom-containment --install --verify-live" in result.stderr
+    assert "runtime-authorized hapax-post-merge-deploy OOM reconciliation" in result.stderr
+    assert "HAPAX_RUNTIME_AUTHORITY_TASK" in result.stderr
+
+
+def test_root_required_audit_never_advertises_unauthenticated_install_repair() -> None:
+    source = ROOT_REQUIRED_AUDIT.read_text(encoding="utf-8")
+
+    assert "install-p0-oom-containment --install --verify-live" not in source
+    assert "install-apcupsd-power-alerts --install --verify-live" not in source
+    assert "runtime-authorized hapax-post-merge-deploy OOM reconciliation" in source
+    assert "runtime-authorized hapax-post-merge-deploy APC reconciliation" in source
+    assert "HAPAX_RUNTIME_AUTHORITY_TASK" in source
 
 
 def test_root_required_audit_rejects_nonexact_install_mode(tmp_path: Path) -> None:
@@ -4175,7 +4191,7 @@ def test_root_required_audit_rejects_effective_service_dropin(tmp_path: Path) ->
             "ExecStart",
             (
                 "{ path=/usr/bin/docker ; argv[]=/usr/bin/docker run --rm "
-                "--name hapax-local-judge local-judge ; }"
+                "--name hapax-local-judge --memory 4G --memory-swap 6G local-judge ; }"
             ),
             "ExecStart drift",
         ),
