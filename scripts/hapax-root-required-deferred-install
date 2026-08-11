@@ -10,7 +10,6 @@ import hashlib
 import os
 import pwd
 import re
-import shlex
 import signal
 import socket
 import stat
@@ -30,7 +29,6 @@ TEST_MODE_ENV = "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_MODE"
 TEST_HOSTNAME_ENV = "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_HOSTNAME"
 AFTER_SUDO_HOOK_ENV = "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_AFTER_SUDO_HOOK"
 SEALED_SOURCE_FDS_ENV = "HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS"
-FINALIZE_GATE_ENV = "HAPAX_ROOT_REQUIRED_FINALIZE_GATE"
 AUTHORITY_VERIFIER_REL = PurePosixPath("scripts/hapax-post-merge-deploy")
 REQUIRED_MEMFD_SEALS = (
     fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
@@ -213,7 +211,6 @@ def _install_paths() -> InstallPaths:
         "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_SUDO",
         TEST_HOSTNAME_ENV,
         AFTER_SUDO_HOOK_ENV,
-        FINALIZE_GATE_ENV,
     }
     present = sorted(name for name in override_names if name in os.environ)
     if not test_mode:
@@ -505,9 +502,16 @@ def _manifest_files(repo: Path, sha: str, package: Package) -> tuple[PurePosixPa
             raise _error(f"duplicate root-required manifest entry: {line}")
         seen.add(line)
         files.append(rel)
-    required = {package.manifest, package.effect_descriptor, package.installer}
+    required = {
+        package.manifest,
+        package.effect_descriptor,
+        package.installer,
+        str(AUTHORITY_VERIFIER_REL),
+    }
     if not required.issubset(seen):
-        raise _error("root-required manifest omits its manifest, effect descriptor, or installer")
+        raise _error(
+            "root-required manifest omits its manifest, effect descriptor, installer, or exact authority verifier"
+        )
     return tuple(files)
 
 
@@ -715,90 +719,6 @@ def _sealed_git_sources(
     return tuple(sources)
 
 
-def _sealed_finalize_gate(
-    paths: InstallPaths,
-    repo: Path,
-    sha: str,
-    package: Package,
-    runtime_authority_task: Path,
-) -> tuple[int, int]:
-    if _git_mode(repo, sha, AUTHORITY_VERIFIER_REL) != "100755":
-        raise _error("exact finalize authority verifier Git mode is not executable")
-    authority_fd = _write_sealed_memfd(
-        name="hapax-root-finalize-authority",
-        data=_git(repo, "show", f"{sha}:{AUTHORITY_VERIFIER_REL}"),
-        mode=0o755,
-    )
-    authority_path = f"/proc/{os.getpid()}/fd/{authority_fd}"
-    policy = _runtime_effect_policy(repo, sha, package)
-    command_prefix = [
-        "/usr/bin/env",
-        "-i",
-        f"HOME={paths.home}",
-        "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin",
-        "LANG=C.UTF-8",
-        "LC_ALL=C.UTF-8",
-        "GIT_CONFIG_GLOBAL=/dev/null",
-        "GIT_CONFIG_NOSYSTEM=1",
-        "GIT_NO_REPLACE_OBJECTS=1",
-        "GIT_OPTIONAL_LOCKS=0",
-        "PYTHONNOUSERSITE=1",
-        "PYTHONSAFEPATH=1",
-        BASH,
-        "--noprofile",
-        "--norc",
-        "-p",
-        authority_path,
-    ]
-    commands = [
-        [
-            *command_prefix,
-            "--verify-runtime-authority-for-release",
-            sha,
-            str(runtime_authority_task),
-            *policy.scopes,
-        ]
-    ]
-    if policy.cap_host == _runtime_hostname(paths):
-        commands.append(
-            [
-                *command_prefix,
-                "--verify-local-judge-cap-receipt",
-                sha,
-                "applied",
-            ]
-        )
-    gate_lines = [
-        "#!/usr/bin/bash",
-        "set -euo pipefail",
-        'finalize_mode="${1:-full}"',
-        'case "$finalize_mode" in',
-        "  full|authority-only) ;;",
-        "  *) echo 'invalid authenticated finalization mode' >&2; exit 2 ;;",
-        "esac",
-        shlex.join(commands[0]),
-    ]
-    if len(commands) == 2:
-        gate_lines.extend(
-            (
-                'if [ "$finalize_mode" = full ]; then',
-                f"  {shlex.join(commands[1])}",
-                "fi",
-            )
-        )
-    gate_source = "\n".join(gate_lines) + "\n"
-    try:
-        gate_fd = _write_sealed_memfd(
-            name="hapax-root-finalize-gate",
-            data=gate_source.encode("utf-8"),
-            mode=0o755,
-        )
-    except BaseException:
-        os.close(authority_fd)
-        raise
-    return authority_fd, gate_fd
-
-
 def _execute_installer(
     paths: InstallPaths,
     repo: Path,
@@ -812,22 +732,14 @@ def _execute_installer(
         raise _error("root-required installer Git mode is not executable")
     env = _child_env(paths, repo, sha, stage)
     sources = _sealed_git_sources(repo, sha, package)
-    try:
-        finalize_fds = _sealed_finalize_gate(paths, repo, sha, package, runtime_authority_task)
-    except BaseException:
-        for _, fd in sources:
-            os.close(fd)
-        raise
     source_paths = {rel: f"/proc/{os.getpid()}/fd/{fd}" for rel, fd in sources}
     installer = source_paths.get(installer_rel)
     if installer is None:
         for _, fd in sources:
             os.close(fd)
-        for fd in finalize_fds:
-            os.close(fd)
         raise _error("sealed Git source set omits the package installer")
     env[SEALED_SOURCE_FDS_ENV] = ":".join(source_paths[rel] for rel, _ in sources)
-    env[FINALIZE_GATE_ENV] = f"/proc/{os.getpid()}/fd/{finalize_fds[1]}"
+    env["HAPAX_RUNTIME_AUTHORITY_TASK"] = str(runtime_authority_task)
     print(
         "hapax-root-required-deferred-install: authenticated "
         f"package={package.label} sha={sha} source=sealed-git-memfd",
@@ -860,11 +772,6 @@ def _execute_installer(
                 os.close(fd)
             except OSError as exc:
                 close_errors.append(f"{rel}: {exc}")
-        for label, fd in zip(("finalize authority", "finalize gate"), finalize_fds, strict=True):
-            try:
-                os.close(fd)
-            except OSError as exc:
-                close_errors.append(f"{label}: {exc}")
     if close_errors:
         raise _error("cannot close sealed Git source descriptors: " + "; ".join(close_errors))
     if execution_error is not None:

@@ -1,7 +1,7 @@
 # hostname	min_memtotal_gib	max_memtotal_gib	profile	app_high	app_max	uid_high	uid_max	zram_mib
 # exact zram contract: appendix=16384 MiB, podium=32768 MiB; the row value is authoritative and drift in either direction fails live verification
-# safety invariant: zram_mib >= 8192 and zram_mib * 2 <= min_memtotal_gib * 1024; recheck: scripts/install-p0-oom-containment --check --no-runtime
-# systemd source map: appendix=config/root-required/oom-host-policy/appendix/{app.slice,user-1000.slice,user@1000.service}.conf; podium=systemd/units/app.slice.d/oom-containment.conf + systemd/system/{user-1000.slice.d/oom-containment.conf,user@1000.service.d/oom.conf}
+# load-time safety invariant: 8192 <= zram_mib and zram_mib * 2 <= min_memtotal_gib * 1024; both independent parsers reject a violating row before selection; recheck: scripts/install-p0-oom-containment --check --no-runtime
+# systemd source map: config/root-required/oom-host-policy/{appendix,podium}/{app.slice,user-1000.slice,user@1000.service}.conf
 # row-independent recheck: uv run pytest -q tests/scripts/test_hapax_oom_policy_audit.py -k shipped_host_profile_rows_satisfy_the_declared_zram_invariant
 hapax-appendix	59	61	appendix	46G	54G	48G	56G	16384
 hapax-podium	123	125	podium	72G	88G	80G	96G	32768

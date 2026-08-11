@@ -24,6 +24,8 @@ IMAGE_RE = re.compile(r"[a-z0-9./_-]+@sha256:[0-9a-f]{64}")
 DEFAULT_MODEL_ROOT = Path("/store-fast/hapax-models/sha256")
 TEST_MODE_ENV = "HAPAX_LOCAL_JUDGE_CONTAINER_ID_TEST_MODE"
 CAP_RECEIPT_MAX_BYTES = 2048
+DEFAULT_DAEMON_WAIT_SECONDS = 60.0
+DEFAULT_DAEMON_POLL_SECONDS = 1.0
 
 
 class LifecycleError(RuntimeError):
@@ -66,7 +68,9 @@ def _docker_env() -> dict[str, str]:
     }
 
 
-def _run_docker(docker: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _run_docker(
+    docker: Path, *args: str, timeout_seconds: float = 20.0
+) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
             [str(docker), *args],
@@ -74,12 +78,48 @@ def _run_docker(docker: Path, *args: str) -> subprocess.CompletedProcess[str]:
             text=True,
             check=False,
             env=_docker_env(),
-            timeout=20,
+            timeout=timeout_seconds,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return subprocess.CompletedProcess(
             [str(docker), *args], 127, "", f"docker invocation failed: {exc}"
         )
+
+
+def wait_daemon(docker: Path, *, wait_seconds: float, poll_seconds: float) -> None:
+    if not 0 < wait_seconds <= 300 or not 0 < poll_seconds <= wait_seconds:
+        raise _refuse(
+            "Docker readiness wait bounds are invalid",
+            "restore the governed 60-second wait and one-second polling interval",
+        )
+    deadline = time.monotonic() + wait_seconds
+    last_diagnostic = "Docker daemon did not answer"
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        result = _run_docker(
+            docker,
+            "version",
+            "--format",
+            "{{.Server.Version}}",
+            timeout_seconds=min(5.0, max(0.1, remaining)),
+        )
+        version = result.stdout.strip()
+        if result.returncode == 0 and version and "\n" not in version:
+            print(f"local Docker daemon ready: server={version}")
+            return
+        last_diagnostic = (result.stderr or result.stdout).strip() or (
+            f"docker version exited {result.returncode}"
+        )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(poll_seconds, remaining))
+    raise _refuse(
+        f"local Docker daemon was not ready within {wait_seconds:g} seconds: {last_diagnostic}",
+        "restore docker.service and /var/run/docker.sock; systemd will retry this user unit after RestartSec",
+    )
 
 
 def _safe_model_inode(path: Path, *, owner_uid: int, directory: bool) -> os.stat_result:
@@ -618,7 +658,7 @@ def stop(cidfile_path: Path, docker: Path, *, test_mode: bool) -> None:
 def main(argv: list[str] | None = None) -> int:
     production_state_root = _production_state_root()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("preflight", "prepare", "stop"))
+    parser.add_argument("action", choices=("wait-daemon", "preflight", "prepare", "stop"))
     parser.add_argument("--cidfile", type=Path, required=True)
     parser.add_argument("--docker", type=Path, default=DEFAULT_DOCKER, help=argparse.SUPPRESS)
     parser.add_argument("--image")
@@ -631,18 +671,38 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--state-root", type=Path, default=production_state_root, help=argparse.SUPPRESS
     )
+    parser.add_argument(
+        "--wait-seconds",
+        type=float,
+        default=DEFAULT_DAEMON_WAIT_SECONDS,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--poll-seconds",
+        type=float,
+        default=DEFAULT_DAEMON_POLL_SECONDS,
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args(argv)
     test_mode = os.environ.get(TEST_MODE_ENV) == "1"
     if (
         args.docker != DEFAULT_DOCKER
         or args.model_root != DEFAULT_MODEL_ROOT
         or args.state_root != production_state_root
+        or args.wait_seconds != DEFAULT_DAEMON_WAIT_SECONDS
+        or args.poll_seconds != DEFAULT_DAEMON_POLL_SECONDS
     ) and not test_mode:
         parser.error(
-            "--docker, --model-root, and --state-root overrides are test-only; next action: use the pinned production paths"
+            "--docker, --model-root, --state-root, and readiness timing overrides are test-only; next action: use the pinned production paths"
         )
     try:
-        if args.action == "preflight":
+        if args.action == "wait-daemon":
+            wait_daemon(
+                args.docker,
+                wait_seconds=args.wait_seconds,
+                poll_seconds=args.poll_seconds,
+            )
+        elif args.action == "preflight":
             if (
                 args.image is None
                 or args.model_host is None

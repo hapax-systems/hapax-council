@@ -1368,8 +1368,10 @@ def test_shipped_host_profile_rows_satisfy_the_declared_zram_invariant() -> None
 
     assert "-k shipped_host_profile_rows_satisfy_the_declared_zram_invariant" in table_text
     assert "exact zram contract: appendix=16384 MiB, podium=32768 MiB" in table_text
-    assert "appendix=config/root-required/oom-host-policy/appendix/" in table_text
-    assert "podium=systemd/units/app.slice.d/oom-containment.conf" in table_text
+    assert (
+        "config/root-required/oom-host-policy/{appendix,podium}/"
+        "{app.slice,user-1000.slice,user@1000.service}.conf"
+    ) in table_text
     assert {row[0] for row in rows} == {"hapax-appendix", "hapax-podium"}
     for row in rows:
         assert len(row) == 9
