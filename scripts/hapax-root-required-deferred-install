@@ -6,10 +6,13 @@ from __future__ import annotations
 import argparse
 import ctypes
 import fcntl
+import hashlib
 import os
 import pwd
 import re
+import shlex
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -22,9 +25,13 @@ BASH = "/usr/bin/bash"
 DEFAULT_SUDO = "/usr/bin/sudo"
 SHA_RE = re.compile(rb"[0-9a-f]{40}\n\Z")
 SHA_TEXT_RE = re.compile(r"[0-9a-f]{40}\Z")
+EFFECT_SCOPE_RE = re.compile(r"runtime:[A-Za-z0-9_./@*:+-]+\Z")
 TEST_MODE_ENV = "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_MODE"
+TEST_HOSTNAME_ENV = "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_HOSTNAME"
 AFTER_SUDO_HOOK_ENV = "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_AFTER_SUDO_HOOK"
 SEALED_SOURCE_FDS_ENV = "HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS"
+FINALIZE_GATE_ENV = "HAPAX_ROOT_REQUIRED_FINALIZE_GATE"
+AUTHORITY_VERIFIER_REL = PurePosixPath("scripts/hapax-post-merge-deploy")
 REQUIRED_MEMFD_SEALS = (
     fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
 )
@@ -50,7 +57,9 @@ class ActionableArgumentParser(argparse.ArgumentParser):
 class Package:
     label: str
     manifest: str
+    effect_descriptor: str
     installer: str
+    cap_host: str | None
 
 
 @dataclass(frozen=True)
@@ -63,15 +72,31 @@ class InstallPaths:
     test_mode: bool
 
 
+@dataclass(frozen=True)
+class RuntimeGateSnapshot:
+    task_sha256: str
+    cap_receipt_sha256: str | None
+
+
+@dataclass(frozen=True)
+class RuntimeEffectPolicy:
+    cap_host: str | None
+    scopes: tuple[str, ...]
+
+
 OOM_PACKAGE = Package(
     label="oom-containment",
     manifest="config/root-required/oom-containment.files",
+    effect_descriptor="config/root-required/oom-containment.effects",
     installer="scripts/install-p0-oom-containment",
+    cap_host="hapax-appendix",
 )
 APCUPSD_PACKAGE = Package(
     label="apcupsd-power-alerts",
     manifest="config/root-required/apcupsd-power-alerts.files",
+    effect_descriptor="config/root-required/apcupsd-power-alerts.effects",
     installer="scripts/install-apcupsd-power-alerts",
+    cap_host=None,
 )
 PACKAGES = {package.label: package for package in (OOM_PACKAGE, APCUPSD_PACKAGE)}
 
@@ -81,6 +106,80 @@ def _error(message: str) -> DeferredInstallError:
         f"{message}; next action: discard the altered deferral and rerun "
         "hapax-post-merge-deploy from the governed activation release"
     )
+
+
+def _authorize_isolated_test_mode() -> bool:
+    raw = os.environ.get(TEST_MODE_ENV)
+    if raw is None:
+        return False
+    if raw != "1":
+        raise _error(f"{TEST_MODE_ENV} must be exactly 1 when present")
+    if os.geteuid() == 0:
+        raise _error("deferred-install test mode refuses a root caller")
+    invoked = Path(sys.argv[0])
+    if not invoked.is_absolute():
+        raise _error("deferred-install test mode requires an absolute repository script path")
+    try:
+        invoked_inode = invoked.lstat()
+        invoked_real = invoked.resolve(strict=True)
+    except OSError as exc:
+        raise _error(f"cannot resolve deferred-install test source: {exc}") from exc
+    source_root = invoked_real.parent.parent
+    if (
+        invoked != invoked_real
+        or not stat.S_ISREG(invoked_inode.st_mode)
+        or invoked_inode.st_nlink != 1
+        or invoked_real != source_root / "scripts/hapax-root-required-deferred-install"
+        or not (source_root / ".git").exists()
+    ):
+        raise _error("deferred-install test mode requires the real repository script")
+    for path in (source_root, source_root / "scripts", invoked_real):
+        try:
+            inode = path.lstat()
+        except OSError as exc:
+            raise _error(f"cannot inspect deferred-install test source {path}: {exc}") from exc
+        if path.is_symlink() or inode.st_uid != os.getuid() or inode.st_mode & 0o022:
+            raise _error(
+                "deferred-install test source must be caller-owned and not group/other-writable"
+            )
+    git_env = {
+        "HOME": "/nonexistent",
+        "PATH": "/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+    }
+    root_result = subprocess.run(
+        [GIT, "-C", str(source_root), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        check=False,
+        env=git_env,
+        text=True,
+    )
+    tracked_result = subprocess.run(
+        [
+            GIT,
+            "-C",
+            str(source_root),
+            "ls-files",
+            "--error-unmatch",
+            "--",
+            "scripts/hapax-root-required-deferred-install",
+        ],
+        capture_output=True,
+        check=False,
+        env=git_env,
+    )
+    if (
+        root_result.returncode != 0
+        or Path(root_result.stdout.strip()).resolve(strict=True) != source_root
+        or tracked_result.returncode != 0
+    ):
+        raise _error("deferred-install test source is not its tracked Git worktree root")
+    return True
 
 
 def _production_defaults() -> InstallPaths:
@@ -106,13 +205,15 @@ def _absolute_env_path(name: str) -> Path:
 
 def _install_paths() -> InstallPaths:
     defaults = _production_defaults()
-    test_mode = os.environ.get(TEST_MODE_ENV) == "1"
+    test_mode = _authorize_isolated_test_mode()
     override_names = {
         "HAPAX_ROOT_REQUIRED_STATE_ROOT",
         "HAPAX_POST_MERGE_ROOT_DEFER_DIR",
         "HAPAX_ROOT_REQUIRED_GIT_REPO",
         "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_SUDO",
+        TEST_HOSTNAME_ENV,
         AFTER_SUDO_HOOK_ENV,
+        FINALIZE_GATE_ENV,
     }
     present = sorted(name for name in override_names if name in os.environ)
     if not test_mode:
@@ -207,6 +308,136 @@ def _read_exact_sha(path: Path, *, label: str) -> str:
     return data[:-1].decode("ascii")
 
 
+def _bounded_diagnostic(stdout: bytes, stderr: bytes) -> str:
+    raw = stderr or stdout
+    first_line = next(iter(raw.decode("utf-8", errors="replace").strip().splitlines()), "none")
+    return "".join(character if character.isprintable() else "?" for character in first_line)[:320]
+
+
+def _runtime_task_digest(task: Path) -> str:
+    if not task.is_absolute():
+        raise _error("runtime authority task path must be absolute")
+    inode = _lstat_regular(task, label="runtime authority task", executable=False)
+    if inode.st_uid != os.getuid() or inode.st_mode & 0o022 or inode.st_size > 2 * 1024 * 1024:
+        raise _error(
+            "runtime authority task must be caller-owned, non-group-writable, and at most 2 MiB"
+        )
+    return hashlib.sha256(
+        _read_regular_bytes(task, label="runtime authority task", executable=False)
+    ).hexdigest()
+
+
+def _cap_receipt_digest(paths: InstallPaths, sha: str) -> str:
+    receipt = paths.state_root / "local-judge-cap-canary" / f"{sha}.env"
+    inode = _lstat_regular(receipt, label="local-judge cap receipt", executable=False)
+    if (
+        inode.st_uid != os.getuid()
+        or inode.st_nlink != 1
+        or stat.S_IMODE(inode.st_mode) != 0o600
+        or inode.st_size > 2048
+    ):
+        raise _error(
+            "local-judge cap receipt must be caller-owned mode-0600, single-link, and at most 2048 bytes"
+        )
+    return hashlib.sha256(
+        _read_regular_bytes(receipt, label="local-judge cap receipt", executable=False)
+    ).hexdigest()
+
+
+def _runtime_hostname(paths: InstallPaths) -> str:
+    if paths.test_mode and TEST_HOSTNAME_ENV in os.environ:
+        hostname = os.environ[TEST_HOSTNAME_ENV]
+    else:
+        hostname = socket.gethostname()
+    if hostname not in {"hapax-appendix", "hapax-podium"}:
+        raise _error(f"runtime root-package host is unsupported: {hostname or 'empty'}")
+    return hostname
+
+
+def _run_exact_authority_verifier(
+    paths: InstallPaths, repo: Path, sha: str, arguments: list[str]
+) -> None:
+    if _git_mode(repo, sha, AUTHORITY_VERIFIER_REL) != "100755":
+        raise _error("exact runtime-authority verifier Git mode is not executable")
+    fd = _write_sealed_memfd(
+        name="hapax-runtime-authority-verifier",
+        data=_git(repo, "show", f"{sha}:{AUTHORITY_VERIFIER_REL}"),
+        mode=0o755,
+    )
+    verifier = f"/proc/{os.getpid()}/fd/{fd}"
+    try:
+        result = subprocess.run(
+            [BASH, verifier, *arguments],
+            capture_output=True,
+            check=False,
+            env=_safe_subprocess_env(paths.home),
+            preexec_fn=_parent_death_preexec(os.getpid()),
+        )
+    except OSError as exc:
+        raise _error(f"cannot execute exact runtime-authority verifier: {exc}") from exc
+    finally:
+        os.close(fd)
+    if result.returncode != 0:
+        raise _error(
+            f"exact runtime gate {' '.join(arguments[:1])} rejected with rc={result.returncode}: "
+            f"{_bounded_diagnostic(result.stdout, result.stderr)}"
+        )
+    if result.stdout:
+        sys.stdout.buffer.write(result.stdout)
+        sys.stdout.buffer.flush()
+
+
+def _validate_runtime_gates(
+    paths: InstallPaths,
+    repo: Path,
+    sha: str,
+    package: Package,
+    runtime_task: Path,
+    *,
+    expected: RuntimeGateSnapshot | None = None,
+    cap_phase: str = "candidate",
+) -> RuntimeGateSnapshot:
+    policy = _runtime_effect_policy(repo, sha, package)
+    scopes = list(policy.scopes)
+    task_digest = _runtime_task_digest(runtime_task)
+    _run_exact_authority_verifier(
+        paths,
+        repo,
+        sha,
+        [
+            "--verify-runtime-authority-for-release",
+            sha,
+            str(runtime_task),
+            *scopes,
+        ],
+    )
+    cap_digest: str | None = None
+    hostname = _runtime_hostname(paths)
+    if policy.cap_host == hostname:
+        cap_digest = _cap_receipt_digest(paths, sha)
+        _run_exact_authority_verifier(
+            paths,
+            repo,
+            sha,
+            ["--verify-local-judge-cap-receipt", sha, cap_phase],
+        )
+    snapshot = RuntimeGateSnapshot(
+        task_sha256=_runtime_task_digest(runtime_task),
+        cap_receipt_sha256=(_cap_receipt_digest(paths, sha) if cap_digest is not None else None),
+    )
+    if task_digest != snapshot.task_sha256 or cap_digest != snapshot.cap_receipt_sha256:
+        raise _error("runtime authority task or cap receipt changed during gate verification")
+    if expected is not None and snapshot != expected:
+        raise _error("runtime authority task or cap receipt changed during sudo warmup")
+    print(
+        "hapax-root-required-deferred-install: runtime gates accepted "
+        f"package={package.label} sha={sha} scopes={len(scopes)} host={hostname} "
+        f"cap_phase={cap_phase}",
+        flush=True,
+    )
+    return snapshot
+
+
 def _safe_subprocess_env(home: Path) -> dict[str, str]:
     return {
         "GIT_CONFIG_GLOBAL": "/dev/null",
@@ -274,10 +505,39 @@ def _manifest_files(repo: Path, sha: str, package: Package) -> tuple[PurePosixPa
             raise _error(f"duplicate root-required manifest entry: {line}")
         seen.add(line)
         files.append(rel)
-    required = {package.manifest, package.installer}
+    required = {package.manifest, package.effect_descriptor, package.installer}
     if not required.issubset(seen):
-        raise _error("root-required manifest omits its manifest or installer")
+        raise _error("root-required manifest omits its manifest, effect descriptor, or installer")
     return tuple(files)
+
+
+def _runtime_effect_policy(repo: Path, sha: str, package: Package) -> RuntimeEffectPolicy:
+    try:
+        lines = (
+            _git(repo, "show", f"{sha}:{package.effect_descriptor}").decode("utf-8").splitlines()
+        )
+    except UnicodeDecodeError as exc:
+        raise _error("root-required effect descriptor is not UTF-8") from exc
+    if len(lines) < 3 or lines[0] != "# schema=hapax.root-package-effects.v1":
+        raise _error("root-required effect descriptor has an unsupported schema")
+    cap_value = lines[1].removeprefix("# cap-host=")
+    if lines[1] != f"# cap-host={cap_value}" or cap_value not in {
+        "none",
+        "hapax-appendix",
+    }:
+        raise _error("root-required effect descriptor has an unsupported cap host")
+    cap_host = None if cap_value == "none" else cap_value
+    if cap_host != package.cap_host:
+        raise _error("root-required effect descriptor changed the package cap contract")
+    scopes = tuple(line for line in lines[2:] if line and not line.startswith("#"))
+    if not scopes or len(scopes) != len(set(scopes)) or list(scopes) != sorted(scopes):
+        raise _error("root-required effect scopes must be nonempty, unique, and sorted")
+    if any(line != line.strip() or EFFECT_SCOPE_RE.fullmatch(line) is None for line in scopes):
+        raise _error("root-required effect descriptor contains an unsafe scope")
+    expected_receipt = f"runtime:receipt:advance:{package.label}"
+    if expected_receipt not in scopes:
+        raise _error("root-required effect descriptor omits receipt advancement")
+    return RuntimeEffectPolicy(cap_host=cap_host, scopes=scopes)
 
 
 def _git_mode(repo: Path, sha: str, rel: PurePosixPath) -> str:
@@ -328,7 +588,25 @@ def _validate_stage(paths: InstallPaths, repo: Path, sha: str, package: Package)
 def _validate_sudo(path: Path, *, test_mode: bool) -> None:
     if not test_mode and path != Path(DEFAULT_SUDO):
         raise _error(f"production sudo command must be {DEFAULT_SUDO}")
-    _lstat_regular(path, label="sudo command", executable=True)
+    inode = _lstat_regular(path, label="sudo command", executable=True)
+    if test_mode:
+        try:
+            resolved = path.resolve(strict=True)
+        except OSError as exc:
+            raise _error(f"cannot resolve isolated test sudo command: {exc}") from exc
+        if resolved == Path(DEFAULT_SUDO) or inode.st_uid != os.getuid() or inode.st_mode & 0o6022:
+            raise _error(
+                "isolated test sudo must be a caller-owned, non-setid, non-writable fake and never /usr/bin/sudo"
+            )
+
+
+def _validate_test_installer_sudo(name: str, value: str) -> None:
+    if not value:
+        return
+    path = Path(value)
+    if not path.is_absolute():
+        raise _error(f"isolated {name} must be an absolute fake sudo path")
+    _validate_sudo(path, test_mode=True)
 
 
 def _run_after_sudo_hook(paths: InstallPaths) -> None:
@@ -371,6 +649,10 @@ def _child_env(paths: InstallPaths, repo: Path, sha: str, stage: Path) -> dict[s
     if paths.test_mode:
         test_prefixes = ("HAPAX_APCUPSD_", "HAPAX_OOM_", "HAPAX_UPS_", "HAPAX_UPOWER_")
         test_names = {"HAPAX_ROOT_FAILURE_INTAKE_DEST", "HAPAX_ROOT_REQUIRED_AUDIT_DEST"}
+        for name in ("HAPAX_APCUPSD_INSTALL_SUDO", "HAPAX_OOM_INSTALL_SUDO"):
+            value = os.environ.get(name, "")
+            _validate_test_installer_sudo(name, value)
+            env[name] = value
         env.update(
             (name, value)
             for name, value in os.environ.items()
@@ -433,21 +715,119 @@ def _sealed_git_sources(
     return tuple(sources)
 
 
+def _sealed_finalize_gate(
+    paths: InstallPaths,
+    repo: Path,
+    sha: str,
+    package: Package,
+    runtime_authority_task: Path,
+) -> tuple[int, int]:
+    if _git_mode(repo, sha, AUTHORITY_VERIFIER_REL) != "100755":
+        raise _error("exact finalize authority verifier Git mode is not executable")
+    authority_fd = _write_sealed_memfd(
+        name="hapax-root-finalize-authority",
+        data=_git(repo, "show", f"{sha}:{AUTHORITY_VERIFIER_REL}"),
+        mode=0o755,
+    )
+    authority_path = f"/proc/{os.getpid()}/fd/{authority_fd}"
+    policy = _runtime_effect_policy(repo, sha, package)
+    command_prefix = [
+        "/usr/bin/env",
+        "-i",
+        f"HOME={paths.home}",
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin",
+        "LANG=C.UTF-8",
+        "LC_ALL=C.UTF-8",
+        "GIT_CONFIG_GLOBAL=/dev/null",
+        "GIT_CONFIG_NOSYSTEM=1",
+        "GIT_NO_REPLACE_OBJECTS=1",
+        "GIT_OPTIONAL_LOCKS=0",
+        "PYTHONNOUSERSITE=1",
+        "PYTHONSAFEPATH=1",
+        BASH,
+        "--noprofile",
+        "--norc",
+        "-p",
+        authority_path,
+    ]
+    commands = [
+        [
+            *command_prefix,
+            "--verify-runtime-authority-for-release",
+            sha,
+            str(runtime_authority_task),
+            *policy.scopes,
+        ]
+    ]
+    if policy.cap_host == _runtime_hostname(paths):
+        commands.append(
+            [
+                *command_prefix,
+                "--verify-local-judge-cap-receipt",
+                sha,
+                "applied",
+            ]
+        )
+    gate_lines = [
+        "#!/usr/bin/bash",
+        "set -euo pipefail",
+        'finalize_mode="${1:-full}"',
+        'case "$finalize_mode" in',
+        "  full|authority-only) ;;",
+        "  *) echo 'invalid authenticated finalization mode' >&2; exit 2 ;;",
+        "esac",
+        shlex.join(commands[0]),
+    ]
+    if len(commands) == 2:
+        gate_lines.extend(
+            (
+                'if [ "$finalize_mode" = full ]; then',
+                f"  {shlex.join(commands[1])}",
+                "fi",
+            )
+        )
+    gate_source = "\n".join(gate_lines) + "\n"
+    try:
+        gate_fd = _write_sealed_memfd(
+            name="hapax-root-finalize-gate",
+            data=gate_source.encode("utf-8"),
+            mode=0o755,
+        )
+    except BaseException:
+        os.close(authority_fd)
+        raise
+    return authority_fd, gate_fd
+
+
 def _execute_installer(
-    paths: InstallPaths, repo: Path, sha: str, stage: Path, package: Package
+    paths: InstallPaths,
+    repo: Path,
+    sha: str,
+    stage: Path,
+    package: Package,
+    runtime_authority_task: Path,
 ) -> int:
     installer_rel = PurePosixPath(package.installer)
     if _git_mode(repo, sha, installer_rel) != "100755":
         raise _error("root-required installer Git mode is not executable")
+    env = _child_env(paths, repo, sha, stage)
     sources = _sealed_git_sources(repo, sha, package)
+    try:
+        finalize_fds = _sealed_finalize_gate(paths, repo, sha, package, runtime_authority_task)
+    except BaseException:
+        for _, fd in sources:
+            os.close(fd)
+        raise
     source_paths = {rel: f"/proc/{os.getpid()}/fd/{fd}" for rel, fd in sources}
     installer = source_paths.get(installer_rel)
     if installer is None:
         for _, fd in sources:
             os.close(fd)
+        for fd in finalize_fds:
+            os.close(fd)
         raise _error("sealed Git source set omits the package installer")
-    env = _child_env(paths, repo, sha, stage)
     env[SEALED_SOURCE_FDS_ENV] = ":".join(source_paths[rel] for rel, _ in sources)
+    env[FINALIZE_GATE_ENV] = f"/proc/{os.getpid()}/fd/{finalize_fds[1]}"
     print(
         "hapax-root-required-deferred-install: authenticated "
         f"package={package.label} sha={sha} source=sealed-git-memfd",
@@ -480,22 +860,27 @@ def _execute_installer(
                 os.close(fd)
             except OSError as exc:
                 close_errors.append(f"{rel}: {exc}")
+        for label, fd in zip(("finalize authority", "finalize gate"), finalize_fds, strict=True):
+            try:
+                os.close(fd)
+            except OSError as exc:
+                close_errors.append(f"{label}: {exc}")
     if close_errors:
         raise _error("cannot close sealed Git source descriptors: " + "; ".join(close_errors))
     if execution_error is not None:
         raise _error(f"cannot execute the sealed package installer: {execution_error}")
     if result is None:
         raise _error("package installer did not start")
-    if result.returncode == 0:
-        print(
-            "hapax-root-required-deferred-install: completed authenticated "
-            f"package={package.label} sha={sha}",
-            flush=True,
-        )
     return result.returncode
 
 
-def install(package: Package, *, expected_sha: str, activation_release: Path) -> int:
+def install(
+    package: Package,
+    *,
+    expected_sha: str,
+    activation_release: Path,
+    runtime_authority_task: Path,
+) -> int:
     paths = _install_paths()
     _validate_sudo(paths.sudo, test_mode=paths.test_mode)
     _validate_owned_directory(paths.state_root, label="root-required state root")
@@ -518,6 +903,7 @@ def install(package: Package, *, expected_sha: str, activation_release: Path) ->
         )
     _validate_commit(repo, sha)
     _validate_stage(paths, repo, sha, package)
+    runtime_gates = _validate_runtime_gates(paths, repo, sha, package, runtime_authority_task)
     sudo_result = subprocess.run(
         [str(paths.sudo), "-v"], check=False, env=_safe_subprocess_env(paths.home)
     )
@@ -528,7 +914,23 @@ def install(package: Package, *, expected_sha: str, activation_release: Path) ->
         raise _error("desired package receipt changed during sudo warmup")
     _validate_commit(repo, sha)
     stage = _validate_stage(paths, repo, sha, package)
-    return _execute_installer(paths, repo, sha, stage, package)
+    _validate_runtime_gates(
+        paths,
+        repo,
+        sha,
+        package,
+        runtime_authority_task,
+        expected=runtime_gates,
+    )
+    result = _execute_installer(paths, repo, sha, stage, package, runtime_authority_task)
+    if result != 0:
+        return result
+    print(
+        "hapax-root-required-deferred-install: completed authenticated "
+        f"package={package.label} sha={sha}",
+        flush=True,
+    )
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -538,6 +940,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--package", choices=sorted(PACKAGES), required=True)
     parser.add_argument("--expected-sha", required=True)
     parser.add_argument("--activation-release", type=Path, required=True)
+    parser.add_argument("--runtime-authority-task", type=Path, required=True)
     args = parser.parse_args(argv)
     if SHA_TEXT_RE.fullmatch(args.expected_sha) is None:
         parser.error("--expected-sha must be exactly 40 lowercase hex characters")
@@ -546,6 +949,7 @@ def main(argv: list[str] | None = None) -> int:
             PACKAGES[args.package],
             expected_sha=args.expected_sha,
             activation_release=args.activation_release,
+            runtime_authority_task=args.runtime_authority_task,
         )
     except DeferredInstallError as exc:
         print(f"hapax-root-required-deferred-install: {exc}", file=sys.stderr)
