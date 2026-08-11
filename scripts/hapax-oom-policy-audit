@@ -39,6 +39,7 @@ CGROUP_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_CGROUP_ROOT", "/sys/fs/cgroup
 SYS_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_SYS_ROOT", "/sys"))
 SCRIPT_INVOKED_PATH = Path(os.path.abspath(__file__))
 SCRIPT_PATH = SCRIPT_INVOKED_PATH.resolve()
+INSTALLED_AUDIT_PATH = Path("/usr/local/sbin/hapax-oom-policy-audit")
 SOURCE_ROOT = SCRIPT_PATH.parents[1] if len(SCRIPT_PATH.parents) > 1 else None
 SOURCE_PROFILE_TABLE = (
     SOURCE_ROOT / "config" / "root-required" / "oom-host-profiles.tsv"
@@ -319,9 +320,15 @@ def _profile_table_context(table_path: Path) -> str:
         mode = "test-override"
     elif table_path == SOURCE_PROFILE_TABLE:
         mode = "source-tree"
+    elif _is_canonical_installed_path():
+        mode = "installed snapshot"
     else:
-        mode = "installed receipt-bound"
+        mode = "unrecognized-executable installed-table"
     return f"{mode} host profile table {table_path}"
+
+
+def _is_canonical_installed_path() -> bool:
+    return SCRIPT_INVOKED_PATH == INSTALLED_AUDIT_PATH and SCRIPT_PATH == INSTALLED_AUDIT_PATH
 
 
 def _policy_authority_label(table_path: Path) -> str:
@@ -331,7 +338,9 @@ def _policy_authority_label(table_path: Path) -> str:
         return "non-authoritative-test-override"
     if table_path == SOURCE_PROFILE_TABLE:
         return "non-authoritative-source-tree"
-    return "authoritative-installed-receipt-bound"
+    if _is_canonical_installed_path():
+        return "installed-path-requires-root-receipt-audit"
+    return "non-authoritative-unrecognized-executable"
 
 
 def _memory_bytes(value: str, *, field: str, table_context: str) -> int:
@@ -481,11 +490,12 @@ def derive_host_policy(
     return policy
 
 
-def _policy_lines(policy: HostMemoryPolicy) -> str:
+def _policy_lines(policy: HostMemoryPolicy, policy_authority: str) -> str:
     def gib(value: int) -> str:
         return f"{value // BYTES_1G}G"
 
     values = {
+        "POLICY_AUTHORITY": policy_authority,
         "HOSTNAME": policy.hostname,
         "PROFILE": policy.profile,
         "PHYSICAL_BYTES": str(policy.physical_bytes),
@@ -1948,7 +1958,7 @@ def main(argv: list[str] | None = None) -> int:
         ]
     else:
         if args.host_policy_lines:
-            print(_policy_lines(policy))
+            print(_policy_lines(policy, policy_authority))
             return 0
         try:
             with shared_root_required_lock():

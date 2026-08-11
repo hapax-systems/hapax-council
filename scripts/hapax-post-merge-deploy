@@ -111,6 +111,12 @@ REPORT_COVERAGE=0
 COVERAGE_FROM_STDIN=0
 VERIFY_AUTO_ENABLE=0
 CHECK_SYMLINK_DRIFT=0
+VERIFY_RUNTIME_AUTHORITY=0
+RUNTIME_AUTHORITY_TASK=""
+RUNTIME_AUTHORITY_SCOPE=""
+VERIFY_LOCAL_JUDGE_CAP_RECEIPT=0
+LOCAL_JUDGE_CAP_SHA=""
+LOCAL_JUDGE_CAP_PHASE=""
 SINCE=""
 TRACE_READY=0
 TRACE_WRITTEN=0
@@ -129,7 +135,23 @@ if [ "${1:-}" = "--since" ]; then
     SINCE="${2:?commit SHA required after --since}"
     shift 2
 fi
-if [ "${1:-}" = "--report-coverage" ]; then
+if [ "${1:-}" = "--verify-runtime-authority" ]; then
+    if [ "$#" -ne 3 ]; then
+        echo "usage: hapax-post-merge-deploy --verify-runtime-authority <active-cc-task.md> <mutation-scope-ref>" >&2
+        exit 2
+    fi
+    VERIFY_RUNTIME_AUTHORITY=1
+    RUNTIME_AUTHORITY_TASK="$2"
+    RUNTIME_AUTHORITY_SCOPE="$3"
+elif [ "${1:-}" = "--verify-local-judge-cap-receipt" ]; then
+    if [ "$#" -ne 3 ]; then
+        echo "usage: hapax-post-merge-deploy --verify-local-judge-cap-receipt <sha> <candidate|installed>" >&2
+        exit 2
+    fi
+    VERIFY_LOCAL_JUDGE_CAP_RECEIPT=1
+    LOCAL_JUDGE_CAP_SHA="$2"
+    LOCAL_JUDGE_CAP_PHASE="$3"
+elif [ "${1:-}" = "--report-coverage" ]; then
     REPORT_COVERAGE=1
     SHA="${2:?commit SHA required after --report-coverage}"
 elif [ "${1:-}" = "--report-coverage-stdin" ]; then
@@ -203,6 +225,326 @@ root_required_git() {
         GIT_OPTIONAL_LOCKS=0 \
         /usr/bin/git -C "$REPO" "$@"
 }
+
+verify_runtime_authority() {
+    local task="$1" scope="$2" account_home active_root activation_alias release_root repo owner_uid git_head
+    if ! account_home="$(/usr/bin/python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')" \
+        || [[ "$account_home" != /* ]]; then
+        echo "hapax-post-merge-deploy: cannot derive the account home for runtime authority; next action: repair the local passwd entry and retry" >&2
+        return 2
+    fi
+    active_root="$account_home/Documents/Personal/20-projects/hapax-cc-tasks/active"
+    if [ -L "$active_root" ] || [ ! -d "$active_root" ]; then
+        echo "hapax-post-merge-deploy: canonical active-task root is unavailable: $active_root; next action: restore the real active cc-task directory and retry" >&2
+        return 2
+    fi
+    activation_alias="$account_home/.cache/hapax/source-activation/worktree"
+    release_root="$account_home/.cache/hapax/source-activation/releases"
+    if ! repo="$(/usr/bin/realpath -e -- "$activation_alias")" \
+        || [ "${repo%/*}" != "$release_root" ] \
+        || ! [[ "${repo##*/}" =~ ^[0-9a-f]{40}$ ]]; then
+        echo "hapax-post-merge-deploy: canonical source activation is not a releases/<40-hex> worktree; next action: reconcile source activation and retry" >&2
+        return 2
+    fi
+    owner_uid="$(/usr/bin/stat -c %u -- "$repo" 2>/dev/null || true)"
+    if [ "$owner_uid" != "$(/usr/bin/id -u)" ]; then
+        echo "hapax-post-merge-deploy: source-activation release is not account-owned: $repo; next action: restore canonical release ownership and retry" >&2
+        return 2
+    fi
+    if ! git_head="$(
+        /usr/bin/env -i \
+            HOME=/nonexistent \
+            PATH=/usr/bin:/bin \
+            LANG=C.UTF-8 \
+            LC_ALL=C.UTF-8 \
+            GIT_CONFIG_GLOBAL=/dev/null \
+            GIT_CONFIG_NOSYSTEM=1 \
+            GIT_NO_REPLACE_OBJECTS=1 \
+            GIT_OPTIONAL_LOCKS=0 \
+            /usr/bin/git -C "$repo" rev-parse --verify HEAD
+    )" || [ "$git_head" != "${repo##*/}" ]; then
+        echo "hapax-post-merge-deploy: source-activation release HEAD does not match its release directory; next action: reconcile source activation and retry" >&2
+        return 2
+    fi
+    if ! /usr/bin/env -i \
+        HOME=/nonexistent \
+        PATH=/usr/bin:/bin \
+        LANG=C.UTF-8 \
+        LC_ALL=C.UTF-8 \
+        GIT_CONFIG_GLOBAL=/dev/null \
+        GIT_CONFIG_NOSYSTEM=1 \
+        GIT_NO_REPLACE_OBJECTS=1 \
+        GIT_OPTIONAL_LOCKS=0 \
+        /usr/bin/git -C "$repo" diff --quiet --no-ext-diff "$git_head" -- \
+            shared/frontmatter.py shared/sdlc_lifecycle.py; then
+        echo "hapax-post-merge-deploy: runtime authority parser sources drift from release $git_head; next action: reconcile source activation and retry" >&2
+        return 2
+    fi
+    /usr/bin/python3 -I - "$repo" "$task" "$scope" "$active_root" <<'RUNTIME_AUTHORITY_PY'
+from __future__ import annotations
+
+import os
+import stat
+import sys
+from pathlib import Path
+
+
+def refuse(reason: str) -> None:
+    print(
+        f"runtime authority refused: {reason}; next action: use the owning active cc-task "
+        "with explicit implementation, runtime, case, parent-spec, route, and mutation-scope authority",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
+
+if len(sys.argv) != 5:
+    refuse("validator argument contract is incomplete")
+repo = Path(sys.argv[1])
+task = Path(sys.argv[2])
+scope = sys.argv[3]
+active_root = Path(sys.argv[4])
+if not task.is_absolute() or task != active_root / task.name:
+    refuse("task is not a canonical active task path")
+try:
+    active_inode = active_root.lstat()
+except OSError as exc:
+    refuse(f"canonical active task path is unavailable: {exc}")
+if not stat.S_ISDIR(active_inode.st_mode) or active_root.is_symlink():
+    refuse("canonical active task path root is not a real directory")
+try:
+    task_inode = task.lstat()
+except OSError as exc:
+    refuse(f"canonical active task path is unavailable: {exc}")
+if (
+    not stat.S_ISREG(task_inode.st_mode)
+    or task.is_symlink()
+    or task_inode.st_uid != os.getuid()
+    or task_inode.st_nlink != 1
+    or task_inode.st_mode & 0o022
+    or task_inode.st_size > 2 * 1024 * 1024
+):
+    refuse("canonical active task path is not a caller-owned, single-link, non-writable regular note")
+try:
+    fd = os.open(task, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        opened_inode = os.fstat(fd)
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            if sum(map(len, chunks)) > 2 * 1024 * 1024:
+                refuse("canonical active task note exceeds the bounded parser size")
+    finally:
+        os.close(fd)
+    after_inode = task.lstat()
+except OSError as exc:
+    refuse(f"canonical active task note cannot be read safely: {exc}")
+identity = (opened_inode.st_dev, opened_inode.st_ino)
+if identity != (task_inode.st_dev, task_inode.st_ino) or identity != (
+    after_inode.st_dev,
+    after_inode.st_ino,
+):
+    refuse("canonical active task note changed while it was being read")
+try:
+    text = b"".join(chunks).decode("utf-8")
+except UnicodeDecodeError as exc:
+    refuse(f"canonical active task note is not UTF-8: {exc}")
+
+sys.path.insert(0, str(repo))
+from shared.frontmatter import parse_frontmatter_with_diagnostics  # noqa: E402
+from shared.sdlc_lifecycle import TASK_MUTABLE_STATUSES  # noqa: E402
+
+parsed = parse_frontmatter_with_diagnostics(text)
+if not parsed.ok or parsed.frontmatter is None:
+    refuse(f"task frontmatter is invalid ({parsed.error_kind or 'unknown'})")
+frontmatter = parsed.frontmatter
+task_id = frontmatter.get("task_id")
+if frontmatter.get("type") != "cc-task":
+    refuse("task type is not cc-task")
+if not isinstance(task_id, str) or not task_id or task.name != f"{task_id}.md":
+    refuse("task_id does not match the canonical task filename")
+status = frontmatter.get("status")
+if status not in TASK_MUTABLE_STATUSES:
+    refuse(f"task status is not mutable: {status!r}")
+if frontmatter.get("implementation_authorized") is not True:
+    refuse("implementation_authorized is not true")
+if frontmatter.get("runtime_mutation_authorized") is not True:
+    refuse("runtime_mutation_authorized is not true")
+authority_case = frontmatter.get("authority_case")
+if not isinstance(authority_case, str) or not authority_case.startswith("CASE-"):
+    refuse("authority_case is absent or malformed")
+parent_spec = frontmatter.get("parent_spec")
+if not isinstance(parent_spec, str) or not parent_spec.strip():
+    refuse("parent_spec is absent")
+route_metadata = frontmatter.get("route_metadata")
+if not isinstance(route_metadata, dict) or route_metadata.get("route_metadata_schema") != 1:
+    refuse("route metadata is absent or malformed")
+scope_refs = frontmatter.get("mutation_scope_refs")
+if not isinstance(scope_refs, list) or not all(isinstance(item, str) for item in scope_refs):
+    refuse("mutation_scope_refs is absent or malformed")
+if scope not in scope_refs:
+    refuse(f"mutation scope is not authorized: {scope}")
+print(f"runtime authority accepted: task_id={task_id} status={status} scope={scope}")
+RUNTIME_AUTHORITY_PY
+}
+
+verify_local_judge_cap_receipt() {
+    local sha="$1" phase="$2" account_home repo_alias release_root repo state desired installed
+    local cap_root cap_receipt cap_size source_unit_text gpu_uuid image image_id host receipt_mode git_head
+    local memory_peak swap_peak completed_at now
+    if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || [[ "$phase" != candidate && "$phase" != installed ]]; then
+        echo "hapax-post-merge-deploy: invalid local-judge cap receipt selector; next action: pass a 40-hex SHA and candidate or installed" >&2
+        return 2
+    fi
+    if ! account_home="$(/usr/bin/python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')" \
+        || [[ "$account_home" != /* ]]; then
+        echo "hapax-post-merge-deploy: cannot derive account home for cap receipt verification; next action: repair the passwd entry and retry" >&2
+        return 2
+    fi
+    repo_alias="$account_home/.cache/hapax/source-activation/worktree"
+    release_root="$account_home/.cache/hapax/source-activation/releases"
+    if ! repo="$(/usr/bin/realpath -e -- "$repo_alias")" \
+        || [ "$repo" != "$release_root/$sha" ] \
+        || [ "$(/usr/bin/stat -c %u -- "$repo" 2>/dev/null || true)" != "$(/usr/bin/id -u)" ]; then
+        echo "hapax-post-merge-deploy: cap receipt SHA is not the canonical account-owned source activation: $sha; next action: reconcile source activation and rerun the canary" >&2
+        return 2
+    fi
+    if ! git_head="$(
+        /usr/bin/env -i \
+            HOME=/nonexistent \
+            PATH=/usr/bin:/bin \
+            LANG=C.UTF-8 \
+            LC_ALL=C.UTF-8 \
+            GIT_CONFIG_GLOBAL=/dev/null \
+            GIT_CONFIG_NOSYSTEM=1 \
+            GIT_NO_REPLACE_OBJECTS=1 \
+            GIT_OPTIONAL_LOCKS=0 \
+            /usr/bin/git -C "$repo" rev-parse --verify HEAD
+    )" || [ "$git_head" != "$sha" ]; then
+        echo "hapax-post-merge-deploy: cap receipt release HEAD does not match $sha; next action: reconcile source activation and rerun the canary" >&2
+        return 2
+    fi
+    state="$account_home/.local/state/hapax/root-required"
+    desired="$state/desired-receipts/oom-containment.sha"
+    installed="$state/installed-receipts/oom-containment.sha"
+    if [ ! -f "$desired" ] || [ -L "$desired" ] \
+        || [ "$(/usr/bin/stat -c %u -- "$desired" 2>/dev/null || true)" != "$(/usr/bin/id -u)" ] \
+        || [ "$(/usr/bin/stat -c %h -- "$desired" 2>/dev/null || true)" != 1 ] \
+        || [ "$(/usr/bin/wc -c < "$desired")" != 41 ] \
+        || ! /usr/bin/grep -Fqx "$sha" "$desired"; then
+        echo "hapax-post-merge-deploy: desired OOM receipt is not safely bound to cap SHA $sha; next action: reconcile the desired package and rerun the canary" >&2
+        return 2
+    fi
+    receipt_mode="$(/usr/bin/stat -c %a -- "$desired")"
+    if (( (8#$receipt_mode & 022) != 0 )); then
+        echo "hapax-post-merge-deploy: desired OOM receipt is writable by another identity; next action: repair receipt permissions and rerun the canary" >&2
+        return 2
+    fi
+    if [ "$phase" = installed ]; then
+        if [ ! -f "$installed" ] || [ -L "$installed" ] \
+            || [ "$(/usr/bin/stat -c %u -- "$installed" 2>/dev/null || true)" != "$(/usr/bin/id -u)" ] \
+            || [ "$(/usr/bin/stat -c %h -- "$installed" 2>/dev/null || true)" != 1 ] \
+            || [ "$(/usr/bin/wc -c < "$installed")" != 41 ] \
+            || ! /usr/bin/grep -Fqx "$sha" "$installed"; then
+            echo "hapax-post-merge-deploy: installed OOM receipt is not safely bound to cap SHA $sha; next action: complete the authenticated install before activation" >&2
+            return 2
+        fi
+        receipt_mode="$(/usr/bin/stat -c %a -- "$installed")"
+        if (( (8#$receipt_mode & 022) != 0 )); then
+            echo "hapax-post-merge-deploy: installed OOM receipt is writable by another identity; next action: repair receipt permissions and repeat authenticated verification" >&2
+            return 2
+        fi
+    fi
+    cap_root="$state/local-judge-cap-canary"
+    cap_receipt="$cap_root/$sha.env"
+    cap_size="$(/usr/bin/stat -c %s -- "$cap_receipt" 2>/dev/null || true)"
+    if [ -L "$cap_root" ] || [ ! -d "$cap_root" ] \
+        || [ "$(/usr/bin/stat -c %u -- "$cap_root" 2>/dev/null || true)" != "$(/usr/bin/id -u)" ] \
+        || [ "$(/usr/bin/stat -c %a -- "$cap_root" 2>/dev/null || true)" != 700 ] \
+        || [ ! -f "$cap_receipt" ] || [ -L "$cap_receipt" ] \
+        || [ "$(/usr/bin/stat -c %u -- "$cap_receipt" 2>/dev/null || true)" != "$(/usr/bin/id -u)" ] \
+        || [ "$(/usr/bin/stat -c %h -- "$cap_receipt" 2>/dev/null || true)" != 1 ] \
+        || [ "$(/usr/bin/stat -c %a -- "$cap_receipt" 2>/dev/null || true)" != 600 ] \
+        || ! [[ "$cap_size" =~ ^[0-9]+$ ]] || [ "$cap_size" -gt 2048 ] \
+        || [ "$(/usr/bin/wc -l < "$cap_receipt")" != 12 ]; then
+        echo "hapax-post-merge-deploy: local-judge cap receipt is absent or unsafe for $sha; next action: rerun the required pre-deploy cap canary" >&2
+        return 2
+    fi
+    host="$(/usr/bin/hostname)"
+    if [ "$host" != hapax-appendix ]; then
+        echo "hapax-post-merge-deploy: local-judge cap receipt is appendix-only, actual host=$host; next action: run this workflow on hapax-appendix" >&2
+        return 2
+    fi
+    if ! source_unit_text="$(
+        /usr/bin/env -i \
+            HOME=/nonexistent \
+            PATH=/usr/bin:/bin \
+            LANG=C.UTF-8 \
+            LC_ALL=C.UTF-8 \
+            GIT_CONFIG_GLOBAL=/dev/null \
+            GIT_CONFIG_NOSYSTEM=1 \
+            GIT_NO_REPLACE_OBJECTS=1 \
+            GIT_OPTIONAL_LOCKS=0 \
+            /usr/bin/git -C "$repo" show "$sha:systemd/units/hapax-local-judge.service"
+    )" \
+        || [ "$(printf '%s\n' "$source_unit_text" | /usr/bin/grep -c '^Environment=JUDGE_GPU_UUID=')" != 1 ]; then
+        echo "hapax-post-merge-deploy: candidate judge unit has no unique GPU UUID; next action: repair the candidate and rerun the canary" >&2
+        return 2
+    fi
+    gpu_uuid="$(printf '%s\n' "$source_unit_text" | /usr/bin/sed -n 's/^Environment=JUDGE_GPU_UUID=//p')"
+    if ! /usr/bin/nvidia-smi --query-gpu=uuid --format=csv,noheader | /usr/bin/grep -Fqx "$gpu_uuid"; then
+        echo "hapax-post-merge-deploy: canary GPU is not present: $gpu_uuid; next action: repair GPU inventory and rerun the canary" >&2
+        return 2
+    fi
+    image=ghcr.io/ggml-org/llama.cpp:server-cuda
+    if ! image_id="$(/usr/bin/docker image inspect --format '{{.Id}}' "$image")" \
+        || ! [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+        echo "hapax-post-merge-deploy: canary image is unavailable; next action: rerun the required pre-deploy cap canary" >&2
+        return 2
+    fi
+    for required in \
+        schema=1 \
+        "candidate_sha=$sha" \
+        "host=$host" \
+        "gpu_uuid=$gpu_uuid" \
+        "image_id=$image_id" \
+        memory_bytes=4294967296 \
+        memory_swap_bytes=6442450944 \
+        requests=24 \
+        workers=8; do
+        if ! /usr/bin/grep -Fqx "$required" "$cap_receipt"; then
+            echo "hapax-post-merge-deploy: cap receipt field mismatch for $sha: $required; next action: rerun the required pre-deploy cap canary" >&2
+            return 2
+        fi
+    done
+    memory_peak="$(/usr/bin/sed -n 's/^memory_peak_bytes=//p' "$cap_receipt")"
+    swap_peak="$(/usr/bin/sed -n 's/^swap_peak_bytes=//p' "$cap_receipt")"
+    completed_at="$(/usr/bin/sed -n 's/^completed_at_epoch=//p' "$cap_receipt")"
+    if ! [[ "$memory_peak" =~ ^[0-9]+$ ]] || [ "$memory_peak" -gt 3221225472 ] \
+        || ! [[ "$swap_peak" =~ ^[0-9]+$ ]] || [ "$swap_peak" -gt 1073741824 ] \
+        || ! [[ "$completed_at" =~ ^[0-9]+$ ]]; then
+        echo "hapax-post-merge-deploy: cap receipt peak or time evidence is invalid; next action: rerun the required pre-deploy cap canary" >&2
+        return 2
+    fi
+    now="$(/usr/bin/date +%s)"
+    if [ "$completed_at" -gt "$now" ] || [ "$((now - completed_at))" -gt 86400 ]; then
+        echo "hapax-post-merge-deploy: cap receipt is stale or future-dated; next action: rerun the required pre-deploy cap canary" >&2
+        return 2
+    fi
+    echo "local-judge cap receipt accepted: sha=$sha phase=$phase receipt=$cap_receipt"
+}
+
+if [ "$VERIFY_RUNTIME_AUTHORITY" -eq 1 ]; then
+    verify_runtime_authority "$RUNTIME_AUTHORITY_TASK" "$RUNTIME_AUTHORITY_SCOPE"
+    exit $?
+fi
+if [ "$VERIFY_LOCAL_JUDGE_CAP_RECEIPT" -eq 1 ]; then
+    verify_local_judge_cap_receipt "$LOCAL_JUDGE_CAP_SHA" "$LOCAL_JUDGE_CAP_PHASE"
+    exit $?
+fi
 
 acquire_inherited_root_required_lock() {
     local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"

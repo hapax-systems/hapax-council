@@ -15,6 +15,64 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-post-merge-deploy"
 ROOT_REQUIRED_AUDIT = REPO_ROOT / "scripts" / "hapax-root-required-deploy-audit"
+
+
+def _runtime_authority_validator_source() -> str:
+    source = SCRIPT.read_text(encoding="utf-8")
+    marker = "<<'RUNTIME_AUTHORITY_PY'\n"
+    return source.split(marker, 1)[1].split("\nRUNTIME_AUTHORITY_PY", 1)[0]
+
+
+def _runtime_authority_task_text(**replacements: str) -> str:
+    values = {
+        "status": "in_progress",
+        "implementation_authorized": "true",
+        "runtime_mutation_authorized": "true",
+        "authority_case": "CASE-SYSTEM-INTEGRITY-20260611",
+        "parent_spec": "30-areas/hapax/runtime-cap-spec.md",
+        "scope": "systemd/units/hapax-local-judge.service",
+    }
+    values.update(replacements)
+    return (
+        "---\n"
+        "type: cc-task\n"
+        "task_id: runtime-cap\n"
+        f"status: {values['status']}\n"
+        f"implementation_authorized: {values['implementation_authorized']}\n"
+        f"runtime_mutation_authorized: {values['runtime_mutation_authorized']}\n"
+        f"authority_case: {values['authority_case']}\n"
+        f"parent_spec: {values['parent_spec']}\n"
+        "route_metadata:\n"
+        "  route_metadata_schema: 1\n"
+        "mutation_scope_refs:\n"
+        f"  - {values['scope']}\n"
+        "---\n"
+        "runtime_mutation_authorized: true\n"
+    )
+
+
+def _run_runtime_authority_validator(
+    task: Path,
+    active_root: Path,
+    scope: str = "systemd/units/hapax-local-judge.service",
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "/usr/bin/python3",
+            "-I",
+            "-",
+            str(REPO_ROOT),
+            str(task),
+            scope,
+            str(active_root),
+        ],
+        input=_runtime_authority_validator_source(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
 OOM_PACKAGE_MANIFEST = (REPO_ROOT / "config/root-required/oom-containment.files").read_text(
     encoding="utf-8"
 )
@@ -971,6 +1029,113 @@ def _fake_systemctl_with_compositor_state(
     return bin_dir, calls
 
 
+def test_runtime_authority_validator_accepts_structured_active_scoped_task(
+    tmp_path: Path,
+) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    task.write_text(_runtime_authority_task_text(), encoding="utf-8")
+
+    result = _run_runtime_authority_validator(task, active_root)
+
+    assert result.returncode == 0, result.stderr
+    assert "runtime authority accepted: task_id=runtime-cap" in result.stdout
+    assert "scope=systemd/units/hapax-local-judge.service" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("replacements", "expected"),
+    [
+        ({"status": "closed"}, "status is not mutable"),
+        ({"implementation_authorized": "false"}, "implementation_authorized is not true"),
+        ({"runtime_mutation_authorized": "false"}, "runtime_mutation_authorized is not true"),
+        ({"authority_case": "null"}, "authority_case is absent"),
+        ({"parent_spec": "null"}, "parent_spec is absent"),
+        ({"scope": "systemd/units/unrelated.service"}, "mutation scope is not authorized"),
+    ],
+)
+def test_runtime_authority_validator_rejects_invalid_frontmatter_authority(
+    tmp_path: Path,
+    replacements: dict[str, str],
+    expected: str,
+) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    task.write_text(_runtime_authority_task_text(**replacements), encoding="utf-8")
+
+    result = _run_runtime_authority_validator(task, active_root)
+
+    assert result.returncode == 2
+    assert expected in result.stderr
+    assert "next action:" in result.stderr
+
+
+@pytest.mark.parametrize("path_kind", ("nested", "symlink"))
+def test_runtime_authority_validator_rejects_noncanonical_task_paths(
+    tmp_path: Path,
+    path_kind: str,
+) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    canonical = active_root / "runtime-cap.md"
+    canonical.write_text(_runtime_authority_task_text(), encoding="utf-8")
+    if path_kind == "nested":
+        nested = active_root / "nested"
+        nested.mkdir()
+        task = nested / "runtime-cap.md"
+        task.write_text(_runtime_authority_task_text(), encoding="utf-8")
+    else:
+        task = active_root / "runtime-cap-link.md"
+        task.symlink_to(canonical)
+
+    result = _run_runtime_authority_validator(task, active_root)
+
+    assert result.returncode == 2
+    assert "canonical active task path" in result.stderr
+
+
+def test_local_judge_cap_receipt_verifier_is_sha_host_and_evidence_bound() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    verifier = source.split("verify_local_judge_cap_receipt() {", 1)[1].split(
+        '\n}\n\nif [ "$VERIFY_RUNTIME_AUTHORITY"', 1
+    )[0]
+
+    assert "--verify-local-judge-cap-receipt <sha> <candidate|installed>" in source
+    assert 'repo_alias="$account_home/.cache/hapax/source-activation/worktree"' in source
+    assert 'desired="$state/desired-receipts/oom-containment.sha"' in source
+    assert 'installed="$state/installed-receipts/oom-containment.sha"' in source
+    assert 'cap_receipt="$cap_root/$sha.env"' in source
+    assert '"$(/usr/bin/wc -l < "$cap_receipt")" != 12' in source
+    assert "memory_peak_bytes=" in source
+    assert "swap_peak_bytes=" in source
+    assert '"$memory_peak" -gt 3221225472' in source
+    assert '"$swap_peak" -gt 1073741824' in source
+    assert '"$((now - completed_at))" -gt 86400' in source
+    assert "/usr/bin/hostname" in source
+    assert "/usr/bin/nvidia-smi --query-gpu=uuid" in source
+    assert "/usr/bin/docker image inspect" in source
+    assert "/usr/bin/date +%s" in source
+    assert 'host="$(hostname)"' not in verifier
+    assert "if ! nvidia-smi " not in verifier
+    assert 'image_id="$(docker ' not in verifier
+    assert 'now="$(date ' not in verifier
+
+
+def test_local_judge_cap_receipt_verifier_rejects_invalid_selector() -> None:
+    result = subprocess.run(
+        [str(SCRIPT), "--verify-local-judge-cap-receipt", "not-a-sha", "candidate"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "invalid local-judge cap receipt selector" in result.stderr
+    assert "next action:" in result.stderr
+
+
 def test_dry_run_writes_bounded_post_merge_trace(tmp_path: Path) -> None:
     repo, sha = _repo_with_merge_commit(tmp_path)
     trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
@@ -1907,6 +2072,38 @@ def test_root_required_audit_rejects_snapshot_not_matching_installed_receipt(
     assert result.returncode == 1
     assert "installed source is not bound" in result.stderr
     assert "oom-containment receipt" in result.stderr
+
+
+def test_root_required_audit_rejects_missing_receipt_blob_even_for_empty_snapshot(
+    tmp_path: Path,
+) -> None:
+    env = _root_audit_env(tmp_path)
+    repo = Path(env["HAPAX_ROOT_REQUIRED_GIT_REPO"])
+    rel = "scripts/hapax-oom-score-enforce"
+    _git(repo, "rm", rel)
+    _git(repo, "commit", "-m", "remove required package blob")
+    receipt_sha = _git(repo, "rev-parse", "HEAD")
+    for root_var in (
+        "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT",
+        "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT",
+    ):
+        (Path(env[root_var]) / "oom-containment.sha").write_text(
+            f"{receipt_sha}\n", encoding="utf-8"
+        )
+    installed = Path(env["HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"]) / rel
+    installed.write_text("", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "receipt does not contain required blob" in result.stderr
+    assert f"sha={receipt_sha} rel={rel}" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -2995,6 +3192,46 @@ def test_root_required_audit_rejects_unsafe_pending_marker(
     assert result.returncode == 1
     assert "unsafe root-required pending marker" in result.stderr
     assert str(marker) in result.stderr
+    assert "root-required post-merge deploy deferrals: none" not in result.stdout
+
+
+@pytest.mark.parametrize("link_level", ("sha", "package"))
+def test_root_required_audit_rejects_symlinked_pending_directories(
+    tmp_path: Path,
+    link_level: str,
+) -> None:
+    env = _root_audit_env(tmp_path)
+    defer_root = Path(env["HAPAX_POST_MERGE_ROOT_DEFER_DIR"])
+    sha_dir = defer_root / ("b" * 40)
+    outside = tmp_path / f"outside-{link_level}"
+    if link_level == "sha":
+        marker = outside / "oom-containment" / "RUNBOOK.txt"
+        marker.parent.mkdir(parents=True)
+        marker.write_text("pending\n", encoding="utf-8")
+        defer_root.mkdir(parents=True, exist_ok=True)
+        sha_dir.symlink_to(outside, target_is_directory=True)
+        unsafe_path = sha_dir
+    else:
+        sha_dir.mkdir(parents=True)
+        marker = outside / "RUNBOOK.txt"
+        outside.mkdir()
+        marker.write_text("pending\n", encoding="utf-8")
+        package_dir = sha_dir / "oom-containment"
+        package_dir.symlink_to(outside, target_is_directory=True)
+        unsafe_path = package_dir
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 1
+    assert "unsafe root-required pending directory" in result.stderr
+    assert str(unsafe_path) in result.stderr
     assert "root-required post-merge deploy deferrals: none" not in result.stdout
 
 

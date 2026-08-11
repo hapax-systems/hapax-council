@@ -227,6 +227,19 @@ def test_arbitrary_scripts_directory_with_fake_git_marker_is_installed_mode(
     assert "refused by an installed audit" in result.stdout
 
 
+def test_unrecognized_executable_cannot_claim_installed_receipt_authority(
+    tmp_path: Path,
+) -> None:
+    namespace = runpy.run_path(str(SCRIPT))
+    copied = tmp_path / "opt" / "hapax-oom-policy-audit"
+    namespace["SCRIPT_INVOKED_PATH"] = copied
+    namespace["SCRIPT_PATH"] = copied
+
+    label = namespace["_policy_authority_label"](namespace["INSTALLED_PROFILE_TABLE"])
+
+    assert label == "non-authoritative-unrecognized-executable"
+
+
 def test_linked_worktree_git_file_is_a_positive_source_checkout_marker(tmp_path: Path) -> None:
     primary = tmp_path / "primary"
     primary.mkdir()
@@ -985,6 +998,7 @@ def test_host_policy_lines_derive_both_known_profiles(tmp_path: Path) -> None:
     assert "UID_MEMORY_HIGH=48G" in appendix.stdout
     assert "UID_MEMORY_MAX=56G" in appendix.stdout
     assert "ZRAM_SIZE_MIB=16384" in appendix.stdout
+    assert "POLICY_AUTHORITY=non-authoritative-source-tree" in appendix.stdout
 
     env["HAPAX_OOM_AUDIT_MEMTOTAL_KIB"] = "131007744"
     env["HAPAX_OOM_AUDIT_HOSTNAME"] = "hapax-podium"
@@ -1003,6 +1017,7 @@ def test_host_policy_lines_derive_both_known_profiles(tmp_path: Path) -> None:
     assert "UID_MEMORY_HIGH=80G" in podium.stdout
     assert "UID_MEMORY_MAX=96G" in podium.stdout
     assert "ZRAM_SIZE_MIB=32768" in podium.stdout
+    assert "POLICY_AUTHORITY=non-authoritative-source-tree" in podium.stdout
 
 
 @pytest.mark.parametrize(

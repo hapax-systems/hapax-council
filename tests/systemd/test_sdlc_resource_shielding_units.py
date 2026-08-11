@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -474,8 +475,10 @@ def test_local_judge_predeploy_canary_gates_exact_cap_installation() -> None:
     canary_end = text.index("```", text.index(canary_marker))
     canary = text[canary_start:canary_end]
 
-    assert "runtime_mutation_authorized: true" in canary
-    assert canary.index("runtime_mutation_authorized: true") < canary.index("docker pull")
+    assert "--verify-runtime-authority" in canary
+    assert canary.index("--verify-runtime-authority") < canary.index("docker pull")
+    assert 'candidate_sha="${repo##*/}"' in canary
+    assert 'test "$desired_sha" = "$candidate_sha"' in canary
     assert "--memory 4G --memory-swap 6G" in canary
     assert 'test "$memory" = 4294967296' in canary
     assert 'test "$memory_swap" = 6442450944' in canary
@@ -485,7 +488,15 @@ def test_local_judge_predeploy_canary_gates_exact_cap_installation() -> None:
     assert 'test "$before_oom" = "$after_oom"' in canary
     assert 'test "$memory_peak" -le 3221225472' in canary
     assert 'test "$swap_peak" -le 1073741824' in canary
-    assert 'docker stop "$canary_id"' in canary
+    assert '--cidfile "$canary_cidfile"' in canary
+    assert 'docker stop "$id"' in canary
+    assert 'managed_ids="$(docker ps -aq' in canary
+    assert 'read -r memory memory_swap oom_kill_disable extra <<< "$limit_fields"' in canary
+    assert 'systemctl --user show "$unit" -p ActiveState --value' in canary
+    assert "not restoring $unit because disposable-container absence is unproven" in canary
+    assert 'canary_receipt="$canary_receipt_root/$candidate_sha.env"' in canary
+    assert '"candidate_sha=$candidate_sha"' in canary
+    assert '"memory_peak_bytes=$memory_peak"' in canary
     assert text.index(canary_marker) < text.index('~/.local/bin/hapax-post-merge-deploy "$sha"')
 
 
@@ -496,8 +507,9 @@ def test_local_judge_activation_is_separately_authority_gated() -> None:
     end = text.index("```", text.index(marker))
     activation = text[start:end]
 
-    assert "runtime_mutation_authorized: true" in activation
-    assert activation.index("runtime_mutation_authorized: true") < activation.index(marker)
+    assert "--verify-runtime-authority" in activation
+    assert "--verify-local-judge-cap-receipt" in activation
+    assert activation.index("--verify-local-judge-cap-receipt") < activation.index(marker)
     assert '[[ "$exec_start" == *" --memory 4G "* ]]' in activation
     assert '[[ "$exec_start" == *" --memory-swap 6G "* ]]' in activation
     assert "/usr/local/sbin/hapax-oom-policy-audit" in activation
@@ -525,6 +537,132 @@ def test_local_judge_runtime_fences_are_valid_bash() -> None:
             check=False,
         )
         assert result.returncode == 0, f"{marker}: {result.stderr}"
+
+
+def test_local_judge_runtime_fences_use_structured_active_task_authority() -> None:
+    text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
+    markers = (
+        'canary_name="hapax-local-judge-cap-canary-$$"',
+        '~/.local/bin/hapax-post-merge-deploy "$sha"',
+        '"$stage/AUTHENTICATED-INSTALL.log"',
+        "systemctl --user restart hapax-local-judge.service",
+        "container=hapax-local-judge",
+    )
+
+    for marker in markers:
+        marker_index = text.index(marker)
+        start = text.rfind("```bash\n", 0, marker_index)
+        end = text.index("```", marker_index)
+        fence = text[start:end]
+        assert "--verify-runtime-authority" in fence
+        assert "systemd/units/hapax-local-judge.service" in fence
+        assert "grep -Fqx 'runtime_mutation_authorized: true'" not in fence
+
+
+def test_local_judge_cap_receipt_is_required_before_install_and_activation() -> None:
+    text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
+    install = text.index('~/.local/bin/hapax-post-merge-deploy "$sha"')
+    activation = text.index("systemctl --user daemon-reload")
+    managed = text.index("container=hapax-local-judge")
+
+    assert text.rfind('--verify-local-judge-cap-receipt "$sha" candidate', 0, install) != -1
+    assert text.rfind('--verify-local-judge-cap-receipt "$sha" installed', 0, activation) != -1
+    assert text.rfind('--verify-local-judge-cap-receipt "$sha" installed', 0, managed) != -1
+
+
+def _local_judge_predeploy_cleanup_source() -> str:
+    text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
+    marker = text.index('canary_name="hapax-local-judge-cap-canary-$$"')
+    start = text.index("cleanup_done=0", marker)
+    end = text.index("on_exit()", start)
+    return text[start:end]
+
+
+def test_local_judge_cleanup_restores_unit_only_after_proven_absence(tmp_path: Path) -> None:
+    container_id = "a" * 64
+    cleanup_source = _local_judge_predeploy_cleanup_source()
+    for failure in ("none", "stop", "invalid-cidfile"):
+        case_dir = tmp_path / failure
+        case_dir.mkdir()
+        cidfile = case_dir / "canary.cid"
+        cidfile.write_text(container_id if failure != "invalid-cidfile" else "not-an-id")
+        results = case_dir / "results.jsonl"
+        results.write_text("result\n")
+        calls = case_dir / "calls"
+        calls.write_text("")
+        script = f"""
+set -u
+canary_cidfile="$TEST_CIDFILE"
+results="$TEST_RESULTS"
+canary_name=cap-cleanup-test
+unit=hapax-local-judge.service
+was_active=active
+failure="$TEST_FAILURE"
+stopped=0
+docker() {{
+  case "$1" in
+    inspect)
+      if [ "$failure" = none ] && [ "$stopped" -eq 1 ]; then return 1; fi
+      return 0
+      ;;
+    stop)
+      printf '%s\n' "docker stop $2" >> "$TEST_CALLS"
+      if [ "$failure" = stop ]; then return 1; fi
+      stopped=1
+      return 0
+      ;;
+    ps)
+      if [ "$failure" != none ]; then printf '%s\n' '{container_id}'; fi
+      return 0
+      ;;
+    *) return 2 ;;
+  esac
+}}
+systemctl() {{
+  if [ "${{1:-}}" = --user ] && [ "${{2:-}}" = start ]; then
+    printf '%s\n' "systemctl $*" >> "$TEST_CALLS"
+    return 0
+  fi
+  if [ "${{1:-}}" = --user ] && [ "${{2:-}}" = show ]; then
+    printf '%s\n' active
+    return 0
+  fi
+  return 2
+}}
+{cleanup_source}
+set +e
+cleanup_canary
+cleanup_rc=$?
+set -e
+printf 'cleanup_rc=%s\n' "$cleanup_rc"
+"""
+        result = subprocess.run(
+            ["bash"],
+            input=script,
+            text=True,
+            capture_output=True,
+            check=False,
+            env={
+                **os.environ,
+                "TEST_CIDFILE": str(cidfile),
+                "TEST_RESULTS": str(results),
+                "TEST_CALLS": str(calls),
+                "TEST_FAILURE": failure,
+            },
+        )
+
+        assert result.returncode == 0, result.stderr
+        call_text = calls.read_text()
+        assert not results.exists()
+        if failure == "none":
+            assert "cleanup_rc=0" in result.stdout
+            assert "systemctl --user start hapax-local-judge.service" in call_text
+            assert not cidfile.exists()
+        else:
+            assert "cleanup_rc=1" in result.stdout
+            assert "systemctl --user start" not in call_text
+            assert cidfile.exists()
+            assert "not restoring hapax-local-judge.service" in result.stderr
 
 
 def _local_judge_runtime_canary() -> str:
