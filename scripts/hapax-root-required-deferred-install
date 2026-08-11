@@ -1,17 +1,18 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -I
 """Install one exact deferred root-required package through a trusted Git object."""
 
 from __future__ import annotations
 
 import argparse
+import ctypes
+import fcntl
 import os
 import pwd
 import re
-import shutil
+import signal
 import stat
 import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -23,10 +24,26 @@ SHA_RE = re.compile(rb"[0-9a-f]{40}\n\Z")
 SHA_TEXT_RE = re.compile(r"[0-9a-f]{40}\Z")
 TEST_MODE_ENV = "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_MODE"
 AFTER_SUDO_HOOK_ENV = "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_AFTER_SUDO_HOOK"
+SEALED_SOURCE_FDS_ENV = "HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS"
+REQUIRED_MEMFD_SEALS = (
+    fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
+)
+LIBC = ctypes.CDLL(None, use_errno=True)
+PR_SET_PDEATHSIG = 1
 
 
 class DeferredInstallError(RuntimeError):
     pass
+
+
+class ActionableArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        self.print_usage(sys.stderr)
+        self.exit(
+            2,
+            f"{self.prog}: error: {message}; next action: rerun {self.prog} --help "
+            "and use one governed package label, receipt SHA, and activation release\n",
+        )
 
 
 @dataclass(frozen=True)
@@ -192,10 +209,16 @@ def _read_exact_sha(path: Path, *, label: str) -> str:
 
 def _safe_subprocess_env(home: Path) -> dict[str, str]:
     return {
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
         "HOME": str(home),
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "PATH": SAFE_PATH,
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONSAFEPATH": "1",
     }
 
 
@@ -345,7 +368,69 @@ def _child_env(paths: InstallPaths, repo: Path, sha: str, stage: Path) -> dict[s
     runtime = Path(f"/run/user/{os.getuid()}")
     if runtime.is_dir():
         env["XDG_RUNTIME_DIR"] = str(runtime)
+    if paths.test_mode:
+        test_prefixes = ("HAPAX_APCUPSD_", "HAPAX_OOM_", "HAPAX_UPS_", "HAPAX_UPOWER_")
+        test_names = {"HAPAX_ROOT_FAILURE_INTAKE_DEST", "HAPAX_ROOT_REQUIRED_AUDIT_DEST"}
+        env.update(
+            (name, value)
+            for name, value in os.environ.items()
+            if name.startswith(test_prefixes) or name in test_names
+        )
     return env
+
+
+def _write_sealed_memfd(*, name: str, data: bytes, mode: int) -> int:
+    try:
+        fd = os.memfd_create(name, os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
+    except (AttributeError, OSError) as exc:
+        raise _error(f"cannot create sealed Git source descriptor for {name}: {exc}") from exc
+    try:
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise OSError("short write to memfd")
+            view = view[written:]
+        os.fchmod(fd, mode)
+        os.lseek(fd, 0, os.SEEK_SET)
+        fcntl.fcntl(fd, fcntl.F_ADD_SEALS, REQUIRED_MEMFD_SEALS)
+        actual_seals = fcntl.fcntl(fd, fcntl.F_GET_SEALS)
+        if actual_seals & REQUIRED_MEMFD_SEALS != REQUIRED_MEMFD_SEALS:
+            raise OSError(f"incomplete memfd seals: {actual_seals:#x}")
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _parent_death_preexec(parent_pid: int):
+    def arm() -> None:
+        if LIBC.prctl(PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0) != 0:
+            os._exit(126)
+        if os.getppid() != parent_pid:
+            os._exit(126)
+
+    return arm
+
+
+def _sealed_git_sources(
+    repo: Path, sha: str, package: Package
+) -> tuple[tuple[PurePosixPath, int], ...]:
+    sources: list[tuple[PurePosixPath, int]] = []
+    try:
+        for index, rel in enumerate(_manifest_files(repo, sha, package)):
+            mode = _git_mode(repo, sha, rel)
+            fd = _write_sealed_memfd(
+                name=f"hapax-{package.label}-{index}",
+                data=_git(repo, "show", f"{sha}:{rel}"),
+                mode=0o755 if mode == "100755" else 0o644,
+            )
+            sources.append((rel, fd))
+    except BaseException:
+        for _, fd in sources:
+            os.close(fd)
+        raise
+    return tuple(sources)
 
 
 def _execute_installer(
@@ -354,42 +439,60 @@ def _execute_installer(
     installer_rel = PurePosixPath(package.installer)
     if _git_mode(repo, sha, installer_rel) != "100755":
         raise _error("root-required installer Git mode is not executable")
-    installer_bytes = _git(repo, "show", f"{sha}:{package.installer}")
-    paths.state_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    execution_root = paths.state_root / ".deferred-install-exec"
-    execution_root.mkdir(mode=0o700, exist_ok=True)
-    _lstat_directory(execution_root, label="private deferred-install execution root")
-    if execution_root.stat().st_uid != os.getuid() or execution_root.stat().st_mode & 0o077:
-        raise _error(
-            f"private deferred-install execution root has unsafe ownership/mode: {execution_root}"
-        )
-    temp_dir = Path(tempfile.mkdtemp(prefix=f".{package.label}.", dir=execution_root))
-    os.chmod(temp_dir, 0o700)
-    installer = temp_dir / "installer"
-    fd = -1
-    try:
-        write_fd = os.open(installer, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o500)
-        try:
-            with os.fdopen(write_fd, "wb", closefd=True) as handle:
-                handle.write(installer_bytes)
-                handle.flush()
-                os.fsync(handle.fileno())
-        except BaseException:
-            installer.unlink(missing_ok=True)
-            raise
-        _lstat_regular(installer, label="materialized trusted installer", executable=True)
-        fd = os.open(installer, os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0))
-        result = subprocess.run(
-            [BASH, f"/proc/self/fd/{fd}", "--source", str(stage), "--install", "--verify-live"],
-            check=False,
-            env=_child_env(paths, repo, sha, stage),
-            pass_fds=(fd,),
-        )
-        return result.returncode
-    finally:
-        if fd >= 0:
+    sources = _sealed_git_sources(repo, sha, package)
+    source_paths = {rel: f"/proc/{os.getpid()}/fd/{fd}" for rel, fd in sources}
+    installer = source_paths.get(installer_rel)
+    if installer is None:
+        for _, fd in sources:
             os.close(fd)
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise _error("sealed Git source set omits the package installer")
+    env = _child_env(paths, repo, sha, stage)
+    env[SEALED_SOURCE_FDS_ENV] = ":".join(source_paths[rel] for rel, _ in sources)
+    print(
+        "hapax-root-required-deferred-install: authenticated "
+        f"package={package.label} sha={sha} source=sealed-git-memfd",
+        flush=True,
+    )
+    result: subprocess.CompletedProcess[bytes] | None = None
+    execution_error: OSError | None = None
+    close_errors: list[str] = []
+    try:
+        try:
+            result = subprocess.run(
+                [
+                    BASH,
+                    installer,
+                    "--source",
+                    str(stage),
+                    "--authenticated-sealed-source",
+                    "--install",
+                    "--verify-live",
+                ],
+                check=False,
+                env=env,
+                preexec_fn=_parent_death_preexec(os.getpid()),
+            )
+        except OSError as exc:
+            execution_error = exc
+    finally:
+        for rel, fd in sources:
+            try:
+                os.close(fd)
+            except OSError as exc:
+                close_errors.append(f"{rel}: {exc}")
+    if close_errors:
+        raise _error("cannot close sealed Git source descriptors: " + "; ".join(close_errors))
+    if execution_error is not None:
+        raise _error(f"cannot execute the sealed package installer: {execution_error}")
+    if result is None:
+        raise _error("package installer did not start")
+    if result.returncode == 0:
+        print(
+            "hapax-root-required-deferred-install: completed authenticated "
+            f"package={package.label} sha={sha}",
+            flush=True,
+        )
+    return result.returncode
 
 
 def install(package: Package, *, expected_sha: str, activation_release: Path) -> int:
@@ -429,7 +532,9 @@ def install(package: Package, *, expected_sha: str, activation_release: Path) ->
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = ActionableArgumentParser(
+        prog="hapax-root-required-deferred-install", description=__doc__
+    )
     parser.add_argument("--package", choices=sorted(PACKAGES), required=True)
     parser.add_argument("--expected-sha", required=True)
     parser.add_argument("--activation-release", type=Path, required=True)

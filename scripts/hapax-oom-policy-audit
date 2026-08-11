@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import functools
 import json
 import os
 import re
@@ -36,10 +37,16 @@ NEXT_OOM_INSTALL = "next action: scripts/install-p0-oom-containment --install --
 PROC_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_PROC_ROOT", "/proc"))
 CGROUP_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_CGROUP_ROOT", "/sys/fs/cgroup"))
 SYS_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_SYS_ROOT", "/sys"))
-SCRIPT_PATH = Path(__file__).resolve()
-SOURCE_PROFILE_TABLE = SCRIPT_PATH.parents[1] / "config" / "root-required" / "oom-host-profiles.tsv"
+SCRIPT_INVOKED_PATH = Path(os.path.abspath(__file__))
+SCRIPT_PATH = SCRIPT_INVOKED_PATH.resolve()
+SOURCE_ROOT = SCRIPT_PATH.parents[1] if len(SCRIPT_PATH.parents) > 1 else None
+SOURCE_PROFILE_TABLE = (
+    SOURCE_ROOT / "config" / "root-required" / "oom-host-profiles.tsv"
+    if SOURCE_ROOT is not None
+    else Path("/nonexistent/hapax-oom-host-profiles.tsv")
+)
 INSTALLED_PROFILE_TABLE = Path("/usr/local/share/hapax/root-required/oom-host-profiles.tsv")
-INSTALLED_AUDIT_PATH = Path("/usr/local/sbin/hapax-oom-policy-audit")
+SEALED_SOURCE_ENV = "HAPAX_OOM_AUDIT_SEALED_PACKAGE_SOURCE"
 TEST_ONLY_SELECTORS = frozenset(
     {
         "HAPAX_OOM_AUDIT_TEST_MODE",
@@ -49,6 +56,7 @@ TEST_ONLY_SELECTORS = frozenset(
         "HAPAX_OOM_AUDIT_MEMTOTAL_KIB",
         "HAPAX_OOM_AUDIT_HOSTNAME",
         "HAPAX_OOM_AUDIT_PROFILE_TABLE",
+        SEALED_SOURCE_ENV,
         "HAPAX_OOM_AUDIT_SYSTEMD_SYSTEM_DIR",
         "HAPAX_OOM_AUDIT_SYSTEMD_USER_DIR",
         "HAPAX_OOM_AUDIT_USER_UNIT_PATHS",
@@ -146,8 +154,88 @@ class HostPolicyError(RuntimeError):
     pass
 
 
+@functools.cache
+def _source_checkout_root() -> Path | None:
+    if SCRIPT_INVOKED_PATH != SCRIPT_PATH:
+        return None
+    if SOURCE_ROOT is None:
+        return None
+    root = SOURCE_ROOT
+    if root / "scripts" / "hapax-oom-policy-audit" != SCRIPT_PATH:
+        return None
+    marker = root / ".git"
+    try:
+        inode = marker.lstat()
+    except OSError:
+        return None
+    if not (stat.S_ISDIR(inode.st_mode) or stat.S_ISREG(inode.st_mode)):
+        return None
+    result = subprocess.run(
+        ["/usr/bin/git", "-C", str(root), "rev-parse", "--show-toplevel"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "HOME": "/nonexistent",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "PATH": "/usr/bin:/bin",
+        },
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        top = Path(result.stdout.strip()).resolve(strict=True)
+    except OSError:
+        return None
+    return root if top == root else None
+
+
+def _sealed_memfd_holder(path: Path) -> str | None:
+    match = re.fullmatch(r"/proc/([1-9][0-9]*)/fd/([0-9]+)", str(path))
+    if match is None:
+        return None
+    required = fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
+    try:
+        target = os.readlink(path)
+        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+        try:
+            inode = os.fstat(fd)
+            seals = fcntl.fcntl(fd, fcntl.F_GET_SEALS)
+        finally:
+            os.close(fd)
+    except OSError:
+        return None
+    if (
+        not target.startswith("/memfd:hapax-")
+        or not stat.S_ISREG(inode.st_mode)
+        or inode.st_uid != os.geteuid()
+        or seals & required != required
+    ):
+        return None
+    return match.group(1)
+
+
+def _sealed_package_profile_table() -> Path | None:
+    if os.environ.get(SEALED_SOURCE_ENV) != "1":
+        return None
+    raw_profile = os.environ.get("HAPAX_OOM_AUDIT_PROFILE_TABLE", "")
+    if not raw_profile:
+        return None
+    profile = Path(raw_profile)
+    script_holder = _sealed_memfd_holder(SCRIPT_INVOKED_PATH)
+    profile_holder = _sealed_memfd_holder(profile)
+    if script_holder is None or script_holder != profile_holder:
+        return None
+    return profile
+
+
 def _is_installed_audit() -> bool:
-    return SCRIPT_PATH == INSTALLED_AUDIT_PATH or SCRIPT_PATH.parent.name != "scripts"
+    return _source_checkout_root() is None and _sealed_package_profile_table() is None
 
 
 def _reject_installed_test_selectors() -> None:
@@ -213,16 +301,21 @@ def _hostname() -> str:
 
 def _profile_table_path() -> Path:
     override = os.environ.get("HAPAX_OOM_AUDIT_PROFILE_TABLE", "").strip()
+    sealed = _sealed_package_profile_table()
+    if sealed is not None:
+        return sealed
     if override:
         _require_test_override("HAPAX_OOM_AUDIT_PROFILE_TABLE")
         return Path(override)
-    if SCRIPT_PATH.parent.name == "scripts" and SOURCE_PROFILE_TABLE.is_file():
+    if _source_checkout_root() is not None and SOURCE_PROFILE_TABLE.is_file():
         return SOURCE_PROFILE_TABLE
     return INSTALLED_PROFILE_TABLE
 
 
 def _profile_table_context(table_path: Path) -> str:
-    if os.environ.get("HAPAX_OOM_AUDIT_PROFILE_TABLE", "").strip():
+    if _sealed_package_profile_table() == table_path:
+        mode = "sealed package-source"
+    elif os.environ.get("HAPAX_OOM_AUDIT_PROFILE_TABLE", "").strip():
         mode = "test-override"
     elif table_path == SOURCE_PROFILE_TABLE:
         mode = "source-tree"
@@ -317,11 +410,14 @@ def derive_host_policy(
             0 < app_high_bytes < app_max_bytes < reviewed_floor_bytes
             and 0 < uid_high_bytes < uid_max_bytes < reviewed_floor_bytes
             and app_max_bytes < uid_max_bytes
-            and zram_size > 0
+            and zram_size >= BYTES_8G
+            and zram_size * 2 <= reviewed_floor_bytes
         ):
             raise HostPolicyError(
                 f"derived {profile} memory ceilings from {row_context} are not safely ordered "
-                f"below the reviewed {min_gib} GiB interval floor"
+                f"below the reviewed {min_gib} GiB interval floor, or zram does not cover "
+                "the 8 GiB slice swap ceiling while retaining at least half the physical "
+                "floor as recovery headroom"
             )
         ranges = host_ranges.setdefault(row_hostname, [])
         if any(min_gib <= prior_max and prior_min <= max_gib for prior_min, prior_max in ranges):
@@ -1172,7 +1268,7 @@ def audit_docker_limits() -> list[Check]:
                 _docker(),
                 "inspect",
                 "--format",
-                "{{.Id}}\t{{.Name}}\t{{.HostConfig.Memory}}\t{{.HostConfig.MemorySwap}}\t{{json .HostConfig.OomKillDisable}}",
+                "{{.Id}}\t{{.Name}}\t{{.HostConfig.Memory}}\t{{.HostConfig.MemorySwap}}\t{{json .HostConfig.OomKillDisable}}\t{{.State.Status}}",
                 container_id,
             ]
         )
@@ -1204,12 +1300,12 @@ def audit_docker_limits() -> list[Check]:
             )
             continue
         fields = inspected.stdout.strip().split("\t")
-        if len(fields) != 5:
+        if len(fields) != 6:
             checks.append(
                 Check(
                     _docker_check_name(name, "inspect"),
                     "error",
-                    "id, name, memory, memory-swap, OOM-kill-disabled",
+                    "id, name, memory, memory-swap, OOM-kill-disabled, state",
                     inspected.stdout.strip() or "empty",
                     f"unparseable Docker inspect result; {NEXT_OOM_INSTALL}",
                 )
@@ -1218,6 +1314,7 @@ def audit_docker_limits() -> list[Check]:
         inspected_id = fields[0]
         inspected_name = fields[1].removeprefix("/")
         oom_kill_disable_raw = fields[4]
+        container_state = fields[5]
         try:
             actual_memory, actual_swap = int(fields[2]), int(fields[3])
         except ValueError:
@@ -1242,6 +1339,25 @@ def audit_docker_limits() -> list[Check]:
                 )
             )
             continue
+        if name == "hapax-local-judge":
+            state_status = "pass" if container_state == "running" else "gap"
+            state_detail = (
+                ""
+                if state_status == "pass"
+                else "local-judge name is held by a non-running container; stop the user unit, "
+                f"inspect immutable container id {container_id}, remove that exact ID without -f "
+                "only after confirming it is stale, restart hapax-local-judge.service, and rerun "
+                "the OOM audit"
+            )
+            checks.append(
+                Check(
+                    _docker_check_name(name, "State"),
+                    state_status,
+                    "running",
+                    container_state or "empty",
+                    state_detail,
+                )
+            )
         if oom_kill_disable_raw not in {"null", "true", "false"}:
             checks.append(
                 Check(
@@ -1801,6 +1917,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        if _sealed_package_profile_table() is not None and not args.host_policy_lines:
+            raise HostPolicyError(
+                f"{SEALED_SOURCE_ENV} is limited to internal host-policy derivation; "
+                "next action: run the installed recurring audit without sealed package selectors"
+            )
         _reject_installed_test_selectors()
         policy = derive_host_policy()
     except HostPolicyError as exc:
