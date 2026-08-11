@@ -1,7 +1,7 @@
 """Tests for the per-principal face enrollment registry.
 
 Pin the six non-negotiable invariants from the parent spec
-(``docs/research/2026-05-01-arcface-jason-matcher-reconcile.md``):
+(``docs/research/2026-05-01-arcface-principal-a1-matcher-reconcile.md``):
 
 1. No biometric embedding without active consent contract.
 2. Embeddings stay local. Never egressed; not returned by enumeration.
@@ -69,18 +69,18 @@ class TestConsentRequired:
     def test_enroll_refuses_without_contract(self, tmp_path: Path) -> None:
         consent = _StubConsent()
         with pytest.raises(FaceEnrollmentError, match="no active"):
-            enroll_principal("jason", _embedding(1), consent=consent, root=tmp_path)
+            enroll_principal("principal-a1", _embedding(1), consent=consent, root=tmp_path)
 
     def test_enroll_refuses_with_unrelated_scope(self, tmp_path: Path) -> None:
         consent = _StubConsent()
-        consent.grant("jason", scope="something_else")
+        consent.grant("principal-a1", scope="something_else")
         with pytest.raises(FaceEnrollmentError, match="no active"):
-            enroll_principal("jason", _embedding(1), consent=consent, root=tmp_path)
+            enroll_principal("principal-a1", _embedding(1), consent=consent, root=tmp_path)
 
     def test_enroll_succeeds_with_face_enrollment_scope(self, tmp_path: Path) -> None:
         consent = _StubConsent()
-        consent.grant("jason")
-        path = enroll_principal("jason", _embedding(1), consent=consent, root=tmp_path)
+        consent.grant("principal-a1")
+        path = enroll_principal("principal-a1", _embedding(1), consent=consent, root=tmp_path)
         assert path.exists()
         assert path.parent == tmp_path
 
@@ -91,14 +91,14 @@ class TestConsentRequired:
 class TestPrivacyFloor:
     def test_list_enrollments_returns_ids_only(self, tmp_path: Path) -> None:
         consent = _StubConsent()
-        consent.grant("jason")
+        consent.grant("principal-a1")
         consent.grant("guest")
-        enroll_principal("jason", _embedding(1), consent=consent, root=tmp_path)
+        enroll_principal("principal-a1", _embedding(1), consent=consent, root=tmp_path)
         enroll_principal("guest", _embedding(2), consent=consent, root=tmp_path)
 
         result = list_enrollments(root=tmp_path)
 
-        assert result == ["guest", "jason"]
+        assert result == ["guest", "principal-a1"]
         # Result is plain strings; no embedding content.
         for entry in result:
             assert isinstance(entry, str)
@@ -117,8 +117,8 @@ class TestPrivacyFloor:
         """A match call leaves no biometric metadata in logs (invariant 4)."""
 
         consent = _StubConsent()
-        consent.grant("jason")
-        enroll_principal("jason", _embedding(1), consent=consent, root=tmp_path)
+        consent.grant("principal-a1")
+        enroll_principal("principal-a1", _embedding(1), consent=consent, root=tmp_path)
 
         caplog.set_level(logging.DEBUG, logger="shared.face_enrollment_registry")
         match_principal(_embedding(1), root=tmp_path)
@@ -137,8 +137,8 @@ class TestPrivacyFloor:
 class TestFailClosed:
     def test_match_returns_none_when_embedding_is_none(self, tmp_path: Path) -> None:
         consent = _StubConsent()
-        consent.grant("jason")
-        enroll_principal("jason", _embedding(1), consent=consent, root=tmp_path)
+        consent.grant("principal-a1")
+        enroll_principal("principal-a1", _embedding(1), consent=consent, root=tmp_path)
         assert match_principal(None, root=tmp_path) is None
 
     def test_match_returns_none_when_no_enrollments(self, tmp_path: Path) -> None:
@@ -148,31 +148,31 @@ class TestFailClosed:
         """Random embeddings score near zero — well below the 0.40 floor."""
 
         consent = _StubConsent()
-        consent.grant("jason")
-        enroll_principal("jason", _embedding(1), consent=consent, root=tmp_path)
+        consent.grant("principal-a1")
+        enroll_principal("principal-a1", _embedding(1), consent=consent, root=tmp_path)
         # Different seed → different (orthogonal-ish) vector → low cosine.
         assert match_principal(_embedding(99), root=tmp_path) is None
 
     def test_match_returns_none_for_wrong_shape(self, tmp_path: Path) -> None:
         consent = _StubConsent()
-        consent.grant("jason")
-        enroll_principal("jason", _embedding(1), consent=consent, root=tmp_path)
+        consent.grant("principal-a1")
+        enroll_principal("principal-a1", _embedding(1), consent=consent, root=tmp_path)
         wrong_shape = np.random.default_rng(0).standard_normal(64).astype(np.float32)
         assert match_principal(wrong_shape, root=tmp_path) is None
 
     def test_enroll_refuses_wrong_dim(self, tmp_path: Path) -> None:
         consent = _StubConsent()
-        consent.grant("jason")
+        consent.grant("principal-a1")
         bad = np.zeros(64, dtype=np.float32)
         with pytest.raises(FaceEnrollmentError, match="shape"):
-            enroll_principal("jason", bad, consent=consent, root=tmp_path)
+            enroll_principal("principal-a1", bad, consent=consent, root=tmp_path)
 
     def test_enroll_refuses_wrong_dtype(self, tmp_path: Path) -> None:
         consent = _StubConsent()
-        consent.grant("jason")
+        consent.grant("principal-a1")
         bad = np.zeros(EMBEDDING_DIM, dtype=np.int8)
         with pytest.raises(FaceEnrollmentError, match="dtype"):
-            enroll_principal("jason", bad, consent=consent, root=tmp_path)
+            enroll_principal("principal-a1", bad, consent=consent, root=tmp_path)
 
     def test_load_returns_none_when_file_missing(self, tmp_path: Path) -> None:
         assert load_enrollment("nobody", root=tmp_path) is None
@@ -186,14 +186,14 @@ class TestMatchPositive:
         """An embedding that matches itself returns its principal id."""
 
         consent = _StubConsent()
-        consent.grant("jason")
+        consent.grant("principal-a1")
         emb = _embedding(7)
-        enroll_principal("jason", emb, consent=consent, root=tmp_path)
-        assert match_principal(emb, root=tmp_path) == "jason"
+        enroll_principal("principal-a1", emb, consent=consent, root=tmp_path)
+        assert match_principal(emb, root=tmp_path) == "principal-a1"
 
     def test_match_picks_highest_when_multiple_above_threshold(self, tmp_path: Path) -> None:
         consent = _StubConsent()
-        consent.grant("jason")
+        consent.grant("principal-a1")
         consent.grant("guest")
         primary = _embedding(11)
         # Make ``guest``'s enrolled embedding be a noisy version of primary
@@ -202,18 +202,18 @@ class TestMatchPositive:
         guest_emb = primary + 0.5 * rng.standard_normal(EMBEDDING_DIM).astype(np.float32)
         guest_emb = guest_emb / max(1e-6, float(np.linalg.norm(guest_emb)))
 
-        enroll_principal("jason", primary, consent=consent, root=tmp_path)
+        enroll_principal("principal-a1", primary, consent=consent, root=tmp_path)
         enroll_principal("guest", guest_emb, consent=consent, root=tmp_path)
 
         winner = match_principal(primary, root=tmp_path)
-        assert winner == "jason"
+        assert winner == "principal-a1"
 
     def test_candidates_filter_restricts_pool(self, tmp_path: Path) -> None:
         consent = _StubConsent()
-        consent.grant("jason")
+        consent.grant("principal-a1")
         consent.grant("guest")
         emb = _embedding(13)
-        enroll_principal("jason", emb, consent=consent, root=tmp_path)
+        enroll_principal("principal-a1", emb, consent=consent, root=tmp_path)
         enroll_principal("guest", emb, consent=consent, root=tmp_path)
 
         result = match_principal(emb, root=tmp_path, candidates=["guest"])
@@ -223,9 +223,9 @@ class TestMatchPositive:
         """Raising the threshold above self-similarity returns None."""
 
         consent = _StubConsent()
-        consent.grant("jason")
+        consent.grant("principal-a1")
         emb = _embedding(19)
-        enroll_principal("jason", emb, consent=consent, root=tmp_path)
+        enroll_principal("principal-a1", emb, consent=consent, root=tmp_path)
         # Self-match cosine is ~1.0; threshold 1.5 is unreachable.
         assert match_principal(emb, root=tmp_path, threshold=1.5) is None
 
@@ -236,13 +236,13 @@ class TestMatchPositive:
 class TestRevocation:
     def test_revoke_removes_disk_state(self, tmp_path: Path) -> None:
         consent = _StubConsent()
-        consent.grant("jason")
-        path = enroll_principal("jason", _embedding(1), consent=consent, root=tmp_path)
+        consent.grant("principal-a1")
+        path = enroll_principal("principal-a1", _embedding(1), consent=consent, root=tmp_path)
         assert path.exists()
 
-        assert revoke_enrollment("jason", root=tmp_path) is True
+        assert revoke_enrollment("principal-a1", root=tmp_path) is True
         assert not path.exists()
-        assert load_enrollment("jason", root=tmp_path) is None
+        assert load_enrollment("principal-a1", root=tmp_path) is None
 
     def test_revoke_returns_false_when_no_enrollment(self, tmp_path: Path) -> None:
         assert revoke_enrollment("nobody", root=tmp_path) is False
@@ -251,16 +251,16 @@ class TestRevocation:
         """Operator must always be able to revoke regardless of disk state."""
 
         nonexistent = tmp_path / "no-such-dir"
-        assert revoke_enrollment("jason", root=nonexistent) is False
+        assert revoke_enrollment("principal-a1", root=nonexistent) is False
 
     def test_post_revoke_match_returns_none(self, tmp_path: Path) -> None:
         consent = _StubConsent()
-        consent.grant("jason")
+        consent.grant("principal-a1")
         emb = _embedding(23)
-        enroll_principal("jason", emb, consent=consent, root=tmp_path)
-        assert match_principal(emb, root=tmp_path) == "jason"
+        enroll_principal("principal-a1", emb, consent=consent, root=tmp_path)
+        assert match_principal(emb, root=tmp_path) == "principal-a1"
 
-        revoke_enrollment("jason", root=tmp_path)
+        revoke_enrollment("principal-a1", root=tmp_path)
         assert match_principal(emb, root=tmp_path) is None
 
 

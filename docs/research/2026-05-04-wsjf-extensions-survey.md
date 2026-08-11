@@ -26,7 +26,7 @@ The Fibonacci spacing reflects **estimation-bias correction** borrowed from stor
 
 **a. Additive CoD violates orthogonality.** Black Swan Farming's *SAFe & Cost of Delay: a suggested improvement*[^bsf-improve] argues SAFe's additive decomposition allows pathological scoring: a feature with **zero value but high time criticality** receives nonzero CoD. Their proposed fix is multiplicative: `CoD = (Value + RR/OE) × TimeCriticality`. Time criticality should *amplify* value, not substitute for it.
 
-**b. Loss of economic decision utility.** Jason Yip's *Problems I have with SAFe-style WSJF*[^yip] makes the strongest critique: SAFe's relative-Fibonacci pseudo-numbers cannot serve as a decision rule for trade-offs. Reinertsen-canonical CoD is a $/time number that supports *real* trade-offs (capacity investments, queue-length decisions, batch-size tradeoffs). SAFe's score is rank-only — usable for sorting but not for cost-benefit reasoning. Yip recommends collapsing to "estimate Cost of Delay alone, on a relative scale," eliminating the redundant value/risk/criticality split.
+**b. Loss of economic decision utility.** principal-a1 Yip's *Problems I have with SAFe-style WSJF*[^yip] makes the strongest critique: SAFe's relative-Fibonacci pseudo-numbers cannot serve as a decision rule for trade-offs. Reinertsen-canonical CoD is a $/time number that supports *real* trade-offs (capacity investments, queue-length decisions, batch-size tradeoffs). SAFe's score is rank-only — usable for sorting but not for cost-benefit reasoning. Yip recommends collapsing to "estimate Cost of Delay alone, on a relative scale," eliminating the redundant value/risk/criticality split.
 
 **c. Multi-stakeholder instability.** Several practitioner critiques (Black Swan, LogRocket, careerfoundry) note that relative Fibonacci scores beyond ~20 items lose memory and consistency. Different stakeholders score the same item at radically different points. The result is "horse-trading" and escalation rather than economic reasoning[^bsf-wsjf][^logrocket].
 
@@ -132,7 +132,7 @@ The Hapax braid components (E=engagement, M=monetary, R=research, T=tree-effect,
 [^bsf-improve]: <https://blackswanfarming.com/safes-cost-of-delay-a-suggested-improvement/>
 [^scaledagile-wsjf]: <https://framework.scaledagile.com/wsjf>
 [^sixsigma-wsjf]: <https://www.6sigma.us/work-measurement/weighted-shortest-job-first-wsjf/>
-[^yip]: Jason Yip, *Problems I have with SAFe-style WSJF* — <https://jchyip.medium.com/problems-i-have-with-safe-style-wsjf-772df2beaf02>
+[^yip]: principal-a1 Yip, *Problems I have with SAFe-style WSJF* — <https://jchyip.medium.com/problems-i-have-with-safe-style-wsjf-772df2beaf02>
 [^logrocket]: <https://blog.logrocket.com/product-management/wsjf-explained-agile-teams/>
 [^agile-hive]: <https://agile-hive.com/blog/implementing-wsjf-prioritization-in-jira/>
 [^centercode]: <https://www.centercode.com/blog/rice-vs-wsjf-prioritization-framework>

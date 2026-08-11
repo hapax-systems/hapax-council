@@ -2,13 +2,13 @@
 
 **cc-task:** `insightface-arcface-enrollment-proof-reconcile` (P2, WSJF 5.5)
 **Author:** epsilon
-**Predecessor task:** `closed/ef7b-162-insightface-arcface-enrollment-upgrade-for-jason-p.md`
+**Predecessor task:** `closed/ef7b-162-insightface-arcface-enrollment-upgrade-for-principal-a1-p.md`
 (marked `completed` by Antigravity 2026-04-26T20:20:12Z)
 
 ## Premise
 
 The closed task `ef7b-162` titled "InsightFace ArcFace enrollment
-upgrade for Jason (per-person face-matcher gate)" claims completion,
+upgrade for principal-a1 (per-person face-matcher gate)" claims completion,
 but the pipeline-ingress audit flagged that the high-risk
 consent-gated ArcFace upgrade was skipped or left for a later runner.
 The reconcile task asks whether the ArcFace enrollment upgrade code,
@@ -46,20 +46,20 @@ saved, and used by downstream cross-camera ReID.
 ## What did NOT ship (per-person matcher gate)
 
 The closed task's load-bearing scope — the **per-person face-matcher
-gate for Jason** — was not implemented:
+gate for principal-a1** — was not implemented:
 
-- No code references `jason_kleeberger`, `jason`, or
+- No code references `principal-a1`, `principal-a1`, or
   `per_person_face_matcher` in `agents/`, `shared/`, or `logos/`.
 - No enrollment artifact at `~/hapax-state/face-enrollments/
-  jason_kleeberger.npz` (the path the consent contract names).
-- The consent contract `axioms/contracts/contract-jason-enroll-2026-04-19.yaml`
+  principal-a1.npz` (the path the consent contract names).
+- The consent contract `axioms/contracts/contract-principal-a1-enroll-2026-04-19.yaml`
   exists and authorizes the single-frame capture, but no code path
-  loads a Jason embedding or gates a `consent_to_enroll` action on
+  loads a principal-a1 embedding or gates a `consent_to_enroll` action on
   it.
 - `face_detector.py` carries only one operator embedding slot
   (`_operator_embedding`, `_operator_embedding_loaded`); no
   data structure for a multi-person enrollment registry that would
-  let "is this Jason in frame?" return a boolean answer.
+  let "is this principal-a1 in frame?" return a boolean answer.
 
 The architectural surface for per-person consent (matching a
 detected face against a registry of consenting persons before
@@ -87,9 +87,9 @@ implementation:
 
 1. **No biometric embedding may be created or persisted without an
    active consent contract.** The contract
-   `contract-jason-enroll-2026-04-19.yaml` is the authorizing
+   `contract-principal-a1-enroll-2026-04-19.yaml` is the authorizing
    instrument; if it expires or is revoked, the per-person
-   enrollment for Jason must be deletable on a single command.
+   enrollment for principal-a1 must be deletable on a single command.
 2. **Embeddings stay local.** No egress to LiteLLM, no upload to
    any cloud surface, no inclusion in publish-bus artifacts. The
    on-disk path is `~/hapax-state/face-enrollments/<principal>.npz`
@@ -101,7 +101,7 @@ implementation:
    require multiple frames of biometric data.
 4. **Match results are non-persistent.** The consent gate's
    downstream effect (e.g., "activate guest-specific scope") may
-   persist; the per-tick "is this Jason?" boolean must not be
+   persist; the per-tick "is this principal-a1?" boolean must not be
    logged with biometric metadata.
 5. **Failure-closed.** If the matcher cannot decide (low-confidence
    match, no face detected, model unavailable), the gate must
@@ -121,7 +121,7 @@ constitutive, not regulative).
 
 - [x] Verify whether ArcFace enrollment upgrade code, tests, and
   consent-safe operator enrollment proof actually shipped → yes,
-  operator-side; no, per-person Jason gate.
+  operator-side; no, per-person principal-a1 gate.
 - [x] If shipped, add concrete evidence to the closed task → noted
   here; vault closed task pointer updated separately.
 - [x] If not shipped, split the real implementation task with
@@ -140,5 +140,5 @@ constitutive, not regulative).
 - Stability report: `agents/hapax_daimonion/enrollment.py:99`
   (`write_stability_report`).
 - Tests: `tests/hapax_daimonion/test_enrollment_validation.py`.
-- Consent contract: `axioms/contracts/contract-jason-enroll-2026-04-19.yaml`.
-- Closed predecessor: `closed/ef7b-162-insightface-arcface-enrollment-upgrade-for-jason-p.md`.
+- Consent contract: `axioms/contracts/contract-principal-a1-enroll-2026-04-19.yaml`.
+- Closed predecessor: `closed/ef7b-162-insightface-arcface-enrollment-upgrade-for-principal-a1-p.md`.

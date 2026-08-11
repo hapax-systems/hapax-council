@@ -250,11 +250,11 @@ def test_percentile_helper_matches_definition() -> None:
 def test_g2_latches_deterministic_cell_per_source_id() -> None:
     """Spec §6.3 — same source_id → same cell every time."""
     source = _fresh_source(enabled=True)
-    source.fire_grounding_event("insightface.jason", now_s=0.0)
+    source.fire_grounding_event("insightface.principal-a1", now_s=0.0)
     first_cell = source._active_latches[0].sub_triangle_idx
 
     source2 = _fresh_source(enabled=True)
-    source2.fire_grounding_event("insightface.jason", now_s=42.0)
+    source2.fire_grounding_event("insightface.principal-a1", now_s=42.0)
     second_cell = source2._active_latches[0].sub_triangle_idx
 
     assert first_cell == second_cell, (

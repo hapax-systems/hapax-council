@@ -1,9 +1,9 @@
-"""Render narration audio for Alexis demo v3.
+"""Render narration audio for principal-a2 demo v3.
 
 Revision focus: strip forbidden terms, remove rhetorical hooks,
 stay on concepts not infrastructure, let UI show the tech.
 
-Usage: uv run python scripts/render_alexis_demo_v3.py
+Usage: uv run python scripts/render_principal_a2_demo_v3.py
 """
 
 from __future__ import annotations
@@ -459,7 +459,7 @@ SCENES: list[tuple[str, str]] = [
 ]
 # fmt: on
 
-DEMO_NAME = "alexis-v3-demo"
+DEMO_NAME = "principal-a2-v3-demo"
 
 
 def _slugify(text: str) -> str:
@@ -479,7 +479,7 @@ async def main() -> None:
 
     total_words = sum(len(text.split()) for _, text in SCENES)
     print(
-        f"Alexis demo v3: {len(SCENES)} scenes, ~{total_words} words (~{total_words / 140:.0f} min at 140 WPM)"
+        f"principal-a2 demo v3: {len(SCENES)} scenes, ~{total_words} words (~{total_words / 140:.0f} min at 140 WPM)"
     )
 
     # Check forbidden terms

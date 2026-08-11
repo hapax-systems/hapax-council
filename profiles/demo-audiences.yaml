@@ -1,7 +1,7 @@
 audiences:
-  alexis:
+  principal-a2:
     archetype: family
-    name: Alexis
+    name: principal-a2
     context: |
       Wife of 11 years, known each other for 15. She knows the operator has been
       building a system for executive function support and that it turned into a

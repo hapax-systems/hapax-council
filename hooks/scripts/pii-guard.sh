@@ -69,6 +69,60 @@ if echo "$new_content" | grep -qiP 'Ryan\s+Kleeberger'; then
   blocked+=("Operator full name detected")
 fi
 
+# Household given names.
+#
+# This guard protected exactly one name -- the operator's -- for five months while the
+# given names of two children, with their ages, sat on the default branch of a PUBLIC
+# repository. The guard ran green the whole time because it had no pattern for anyone but
+# him. Two checks close that, and they close different holes:
+#
+#   1. A private name list, read from OUTSIDE the repository. It cannot live in the file:
+#      a public guard that hardcodes the names it protects is itself the disclosure.
+#   2. A structural age-disclosure pattern that needs no list at all, so a name nobody
+#      thought to register is still caught when it appears next to an age.
+#
+# An absent list is a configuration state, not a violation: warn loudly and keep the
+# structural checks rather than wedging every fresh clone. The warning names its remedy.
+#
+# The list file also carries `!phrase` lines: third-party contexts where a listed name is
+# somebody else entirely (an author, a band, a cited paper). Those phrases are stripped
+# before the name check, because a guard that blocks a legitimate citation gets switched
+# off, and a switched-off guard is how this went unnoticed for five months.
+#
+# Both the names and the exemptions live in that file rather than here, so this script --
+# which is public -- carries no information about who it protects.
+pii_names_file="${HAPAX_PII_NAMES_FILE:-$HOME/.config/hapax/pii-names.txt}"
+if [ -r "$pii_names_file" ]; then
+  name_scan="$new_content"
+  while IFS= read -r pii_line; do
+    case "$pii_line" in
+      '!'*) exempt="${pii_line#!}"
+            name_scan="$(printf '%s' "$name_scan" | sed -E "s/${exempt}//Ig")" ;;
+    esac
+  done < "$pii_names_file"
+  while IFS= read -r pii_name; do
+    case "$pii_name" in ''|'#'*|'!'*) continue ;; esac
+    if printf '%s' "$name_scan" | grep -qiP "\\b${pii_name}\\b"; then
+      blocked+=("Registered household name detected (see \$HAPAX_PII_NAMES_FILE)")
+      break
+    fi
+  done < "$pii_names_file"
+else
+  echo "pii-guard: no household name list at $pii_names_file --" \
+       "name checks are limited to structural patterns." \
+       "Create it (one name per line, outside any repo) to enable them." >&2
+fi
+
+# Age disclosure: a capitalised given name followed by a parenthesised 1-2 digit number.
+# Four files shipped publicly in exactly that form, naming two children and their ages.
+# Name plus age is directly identifying, and this pattern catches it without anyone having
+# to register the name first -- which matters, because the registered-name list is the
+# thing that was missing. (No example is given here on purpose: a guard in a public repo
+# must not quote the disclosure it exists to prevent.)
+if echo "$new_content" | grep -qP '\b[A-Z][a-z]{2,}\s+\((?:[1-9]|[1-9][0-9])\)'; then
+  blocked+=("Possible age disclosure (Name (NN)) -- use an opaque principal id")
+fi
+
 # Location data
 if echo "$new_content" | grep -qP 'Minneapolis[- ]St\.?\s*Paul'; then
   blocked+=("Location data (Minneapolis-St. Paul)")
