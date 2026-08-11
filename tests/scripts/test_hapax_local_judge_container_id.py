@@ -192,7 +192,7 @@ def test_wait_daemon_rejects_invalid_bounds_before_docker(
 def _stage_model(tmp_path: Path) -> tuple[Path, Path, str]:
     payload = b"measured-model"
     model_sha = hashlib.sha256(payload).hexdigest()
-    model_root = tmp_path / "models" / "sha256"
+    model_root = tmp_path / "store-fast" / "hapax-models" / "sha256"
     model = model_root / model_sha / "judge.gguf"
     model.parent.mkdir(parents=True)
     model.write_bytes(payload)
@@ -405,6 +405,54 @@ def test_preflight_requires_staged_digest_image_and_content_addressed_model(
         IMAGE,
     ]
     assert rig.calls()[-1]["host"] == "unix:///var/run/docker.sock"
+
+
+@pytest.mark.parametrize("ancestor", ("store-fast", "hapax-models"))
+def test_preflight_refuses_writable_protected_model_ancestor(tmp_path: Path, ancestor: str) -> None:
+    rig = _rig(tmp_path, running=False)
+    model_root, model, model_sha = _stage_model(tmp_path)
+    state_root, _ = _stage_cap_attestation(tmp_path, model, model_sha)
+    path = model_root.parent.parent if ancestor == "store-fast" else model_root.parent
+    path.chmod(0o777)
+
+    result = _run_preflight(
+        rig,
+        model_root=model_root,
+        model=model,
+        model_sha=model_sha,
+        state_root=state_root,
+    )
+
+    assert result.returncode == 1
+    assert f"not a trusted owner-{os.getuid()} directory: {path}" in result.stderr
+    assert "next action:" in result.stderr
+    assert rig.calls() == []
+
+
+@pytest.mark.parametrize("ancestor", ("store-fast", "hapax-models"))
+def test_preflight_refuses_symlinked_protected_model_ancestor(
+    tmp_path: Path, ancestor: str
+) -> None:
+    rig = _rig(tmp_path, running=False)
+    model_root, model, model_sha = _stage_model(tmp_path)
+    state_root, _ = _stage_cap_attestation(tmp_path, model, model_sha)
+    path = model_root.parent.parent if ancestor == "store-fast" else model_root.parent
+    target = path.with_name(f"{path.name}-real")
+    path.rename(target)
+    path.symlink_to(target, target_is_directory=True)
+
+    result = _run_preflight(
+        rig,
+        model_root=model_root,
+        model=model,
+        model_sha=model_sha,
+        state_root=state_root,
+    )
+
+    assert result.returncode == 1
+    assert "outside its exact content address" in result.stderr
+    assert "next action:" in result.stderr
+    assert rig.calls() == []
 
 
 def test_preflight_refuses_missing_pinned_image(tmp_path: Path) -> None:
