@@ -246,11 +246,46 @@ def test_the_payload_asks_about_every_catalogue_entry_explicitly():
     assert "present=0" in payload
 
 
-def test_catalogue_names_cannot_carry_shell_metacharacters():
+def test_the_shipped_catalogue_passes_the_injection_guard():
     # The catalogue is interpolated into a remote command, so this is the injection boundary.
     assert all(_SAFE_CLI_NAME.match(spec.cli) for spec in CLI_CATALOGUE)
-    assert not _SAFE_CLI_NAME.match("gh; rm -rf /")
-    assert not _SAFE_CLI_NAME.match("$(id)")
+    assert _probe_payload(CLI_CATALOGUE)
+
+
+def poisoned_spec(name: str) -> CliShapeSpec:
+    return CliShapeSpec(
+        cli=name,
+        shape_class=CapabilityShapeClass.LOCAL_COMPUTE,
+        carrier_family="attacker",
+        summary="hostile catalogue entry",
+        harness_shape="n/a",
+        resource_semantics=("local-cpu",),
+    )
+
+
+@pytest.mark.parametrize("hostile", ["gh; rm -rf /", "$(id)", "`id`", "a b", "-rf"])
+def test_a_caller_supplied_catalogue_is_guarded_not_just_the_shipped_one(hostile):
+    # Asserting the regex rejects the string proves nothing about the production path: the payload
+    # builder is the only place a name reaches a shell, so it is the only place that can refuse.
+    with pytest.raises(ValueError, match="unsafe CLI name"):
+        _probe_payload((poisoned_spec(hostile),))
+
+
+def test_a_hostile_catalogue_cannot_reach_a_shell_through_the_public_entry_points():
+    calls: list[object] = []
+
+    def _record(argv, **kwargs):
+        calls.append(argv)
+        return FakeCompleted(stdout="")
+
+    with pytest.raises(ValueError, match="unsafe CLI name"):
+        observe(
+            hosts=[linux("podium")],
+            catalogue=(poisoned_spec("$(id)"),),
+            runner=_record,
+            now=NOW,
+        )
+    assert calls == [], "no command may be built from an unvalidated catalogue"
 
 
 def test_a_remote_probe_wraps_the_payload_in_bash_because_a_login_shell_may_be_fish():
@@ -278,6 +313,54 @@ def test_probe_parses_present_and_absent_verdicts():
     assert probe.reachable is True
     assert probe.present == {"claude": "/usr/bin/claude"}
     assert probe.absent == ["ollama"]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "cli=claude present=1 path=",  # claims present, names nothing
+        "cli=claude present= path=/usr/bin/claude",  # empty verdict
+        "cli=claude present=yes path=/usr/bin/claude",  # unrecognised verdict
+        "cli=claude path=/usr/bin/claude",  # no verdict at all
+        "cli=claude",  # truncated
+    ],
+)
+def test_a_malformed_verdict_is_not_a_measurement_of_absence(line):
+    # Only an explicit present=0 establishes absence. Everything else is an unintelligible
+    # answer, and an unintelligible answer must not be laundered into a finding.
+    probe = probe_host_clis(
+        linux("podium"),
+        catalogue=SMALL_CATALOGUE[:1],
+        runner=runner_for(stdout=line + "\n"),
+        now=NOW,
+    )
+
+    assert probe.absent == []
+    assert probe.present == {}
+
+
+def test_only_an_explicit_zero_establishes_absence():
+    probe = probe_host_clis(
+        linux("podium"),
+        catalogue=SMALL_CATALOGUE[:1],
+        runner=runner_for(stdout="cli=claude present=0 path=\n"),
+        now=NOW,
+    )
+
+    assert probe.absent == ["claude"]
+    row = descriptors_for_probe(probe, catalogue=SMALL_CATALOGUE[:1], observed_at=NOW)[0]
+    assert observation_outcome(row) == "absent"
+
+
+def test_a_malformed_verdict_surfaces_as_not_observable_not_absent():
+    stdout = "cli=claude present=1 path=/usr/bin/claude\ncli=ollama present=maybe path=\n"
+
+    probe = probe_host_clis(
+        linux("podium"), catalogue=SMALL_CATALOGUE, runner=runner_for(stdout=stdout), now=NOW
+    )
+    rows = descriptors_for_probe(probe, catalogue=SMALL_CATALOGUE, observed_at=NOW)
+
+    assert [observation_outcome(r) for r in rows] == ["observed", "not_observable"]
 
 
 def test_probe_keeps_a_path_containing_spaces():
@@ -334,7 +417,31 @@ def test_garbage_output_does_not_become_a_reachable_host():
     )
 
     assert probe.reachable is False
-    assert probe.unreachable_reason == "probe returned no recognisable cli lines"
+    assert "no recognisable cli lines" in probe.unreachable_reason
+
+
+@pytest.mark.parametrize(
+    "runner",
+    [
+        runner_for(stdout="motd: welcome\n"),
+        runner_for(stderr="No route to host", returncode=255),
+    ],
+)
+def test_every_unreachable_reason_names_a_next_action(runner):
+    # executive_function: an error a caller reads directly has to say what to do about it.
+    probe = probe_host_clis(linux("podium"), catalogue=SMALL_CATALOGUE, runner=runner, now=NOW)
+
+    assert probe.reachable is False
+    assert "next action" in probe.unreachable_reason
+
+
+def test_a_timeout_reason_names_a_next_action():
+    def _boom(argv, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=argv, timeout=12)
+
+    probe = probe_host_clis(linux("podium"), catalogue=SMALL_CATALOGUE, runner=_boom, now=NOW)
+
+    assert "next action" in probe.unreachable_reason
 
 
 # --- the estate-wide sweep ---------------------------------------------------------------------
@@ -401,3 +508,42 @@ def test_render_marks_an_unobserved_cell_as_unknown_and_never_as_absent():
     assert "no" in podium_line
     assert "no" not in eta_line
     assert eta_line.count("?") == len(SMALL_CATALOGUE)
+
+
+def test_render_reads_the_descriptor_stream_and_does_not_re_derive_it():
+    stdout = "cli=claude present=1 path=/usr/bin/claude\ncli=ollama present=0 path=\n"
+    observation = observe(
+        hosts=[linux("podium")],
+        catalogue=SMALL_CATALOGUE,
+        runner=runner_for(stdout=stdout),
+        now=NOW,
+    )
+
+    # Rewrite the stream so it disagrees with the probes. A renderer that re-derives from
+    # observation.probes would still print "yes" and quietly contradict its own descriptors.
+    observation.descriptors = descriptors_for_probe(
+        HostCliProbe(host="podium", reachable=False, unreachable_reason="rewritten"),
+        catalogue=SMALL_CATALOGUE,
+        observed_at=NOW,
+    )
+
+    line = next(
+        row
+        for row in render(observation, catalogue=SMALL_CATALOGUE).splitlines()
+        if row.startswith("podium")
+    )
+    assert "yes" not in line
+    assert line.count("?") == len(SMALL_CATALOGUE)
+
+
+def test_render_refuses_a_catalogue_the_observation_was_not_collected_under():
+    stdout = "cli=claude present=1 path=/usr/bin/claude\ncli=ollama present=0 path=\n"
+    observation = observe(
+        hosts=[linux("podium")],
+        catalogue=SMALL_CATALOGUE,
+        runner=runner_for(stdout=stdout),
+        now=NOW,
+    )
+
+    with pytest.raises(ValueError, match="next action"):
+        render(observation, catalogue=SMALL_CATALOGUE[:1])

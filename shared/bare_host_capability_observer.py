@@ -193,14 +193,6 @@ CLI_CATALOGUE: tuple[CliShapeSpec, ...] = (
     ),
 )
 
-for _spec in CLI_CATALOGUE:
-    if not _SAFE_CLI_NAME.match(_spec.cli):
-        raise ValueError(
-            f"unsafe CLI name in catalogue: {_spec.cli!r}; "
-            "next action: restrict the entry to letters, digits, dot, dash and underscore"
-        )
-del _spec
-
 
 @dataclass
 class HostCliProbe:
@@ -232,7 +224,20 @@ def _probe_payload(catalogue: tuple[CliShapeSpec, ...]) -> str:
     Every entry is echoed on its own line with an explicit ``present=`` verdict. A payload that
     only echoed what it found could not distinguish "not installed" from "the probe stopped early",
     which is the same conflation this module exists to prevent, one layer down.
+
+    Names are validated *here* rather than where ``CLI_CATALOGUE`` is defined, because every probe
+    path funnels through this function and callers may supply their own catalogue. Checking the
+    module constant at import would have left the caller-supplied path unguarded while looking
+    guarded -- and a second check at the definition site would be a second thing to disagree with
+    this one.
     """
+    for spec in catalogue:
+        if not _SAFE_CLI_NAME.match(spec.cli):
+            raise ValueError(
+                f"unsafe CLI name in catalogue: {spec.cli!r}; this name is interpolated into a "
+                "remote shell command. Next action: restrict the entry to letters, digits, dot, "
+                "dash and underscore."
+            )
     names = " ".join(spec.cli for spec in catalogue)
     return (
         f"for c in {names}; do\n"
@@ -258,6 +263,9 @@ def _probe_argv(payload: str, target: str) -> list[str]:
         "-o",
         "BatchMode=yes",
         "-o",
+        # Half the overall budget, matching the transport in estate_host_inventory: connecting and
+        # running must both fit, and a host that cannot even connect in half the window is a
+        # finding worth returning early rather than waiting out.
         f"ConnectTimeout={SSH_TIMEOUT_SECONDS // 2}",
         "-o",
         "StrictHostKeyChecking=accept-new",
@@ -267,6 +275,14 @@ def _probe_argv(payload: str, target: str) -> list[str]:
 
 
 def _parse_probe(text: str, catalogue: tuple[CliShapeSpec, ...], probe: HostCliProbe) -> None:
+    """Read verdicts, and read *only* verdicts.
+
+    Absence is established by exactly one thing: an explicit ``present=0``. A missing or
+    unrecognised ``present`` field, or a ``present=1`` with no path, is a malformed answer, and a
+    malformed answer is not a measurement -- it leaves the entry unanswered, which surfaces as
+    ``not_observable``. Folding those into "absent" would manufacture the very measurement this
+    module refuses to invent.
+    """
     known = {spec.cli for spec in catalogue}
     answered: dict[str, str | None] = {}
     for line in text.splitlines():
@@ -274,18 +290,23 @@ def _parse_probe(text: str, catalogue: tuple[CliShapeSpec, ...], probe: HostCliP
         cli = fields.get("cli", "")
         if cli not in known:
             continue
-        answered[cli] = fields.get("path", "").strip() if fields.get("present") == "1" else None
+        verdict = fields.get("present")
+        path = (fields.get("path") or "").strip()
+        if verdict == "1" and path:
+            answered[cli] = path
+        elif verdict == "0":
+            answered[cli] = None
 
     for spec in catalogue:
         if spec.cli not in answered:
-            # The host answered, but not about this entry. Silently treating it as absent would
-            # manufacture a measurement that was never made.
+            # The host answered, but not intelligibly about this entry. Silently treating it as
+            # absent would manufacture a measurement that was never made.
             continue
         path = answered[spec.cli]
-        if path:
-            probe.present[spec.cli] = path
-        else:
+        if path is None:
             probe.absent.append(spec.cli)
+        else:
+            probe.present[spec.cli] = path
 
 
 def probe_host_clis(
@@ -316,18 +337,25 @@ def probe_host_clis(
             check=False,
         )
     except (subprocess.SubprocessError, OSError) as exc:
-        probe.unreachable_reason = f"{type(exc).__name__}: {exc}"
+        probe.unreachable_reason = (
+            f"{type(exc).__name__}: {exc}; next action: check `tailscale status` and "
+            f"`ssh {name} true`"
+        )
         return probe
 
     if result.returncode != 0 and not result.stdout.strip():
         detail = (result.stderr or "").strip().splitlines()
-        probe.unreachable_reason = detail[-1][:160] if detail else f"exit {result.returncode}"
+        failure = detail[-1][:160] if detail else f"exit {result.returncode}"
+        probe.unreachable_reason = f"{failure}; next action: `ssh {name} true` to reproduce"
         return probe
 
     _parse_probe(result.stdout, catalogue, probe)
     probe.reachable = bool(probe.present or probe.absent)
     if not probe.reachable:
-        probe.unreachable_reason = "probe returned no recognisable cli lines"
+        probe.unreachable_reason = (
+            "probe returned no recognisable cli lines (a login banner or a non-POSIX login shell "
+            f"will do this); next action: run `ssh {name} bash -c 'command -v uv'` by hand"
+        )
     return probe
 
 
@@ -528,18 +556,27 @@ def render(
 ) -> str:
     """Human table. An unobserved cell renders as ``?`` and never as ``no``.
 
-    Cells are read through :func:`observation_outcome` rather than off the probe, so the table
-    cannot drift from the descriptors: if the split ever moves, it moves in one place.
+    Reads ``observation.descriptors`` -- the stream itself, not a fresh re-derivation from the
+    probes. Re-deriving would let a loaded or transformed observation render a table that
+    contradicts its own descriptors while the docstring promised it could not.
     """
     names = [spec.cli for spec in catalogue]
-    grid: dict[tuple[str, str], str] = {}
-    for probe in observation.probes:
-        for spec, descriptor in zip(
-            catalogue, descriptors_for_probe(probe, catalogue=catalogue), strict=True
-        ):
-            grid[(probe.host, spec.cli)] = _OUTCOME_MARK[observation_outcome(descriptor)]
-
     hosts = [p.host for p in observation.probes]
+    stride = len(catalogue)
+    if len(observation.descriptors) != len(hosts) * stride:
+        raise ValueError(
+            "observation carries "
+            f"{len(observation.descriptors)} descriptors for {len(hosts)} hosts x {stride} "
+            "catalogue entries; next action: render with the catalogue the observation was "
+            "collected under"
+        )
+
+    grid: dict[tuple[str, str], str] = {}
+    for host_index, host in enumerate(hosts):
+        block = observation.descriptors[host_index * stride : (host_index + 1) * stride]
+        for spec, descriptor in zip(catalogue, block, strict=True):
+            grid[(host, spec.cli)] = _OUTCOME_MARK[observation_outcome(descriptor)]
+
     width = max((len(h) for h in hosts), default=4) + 1
     lines = [
         f"bare-host capability shapes — {observation.probed_at}",
