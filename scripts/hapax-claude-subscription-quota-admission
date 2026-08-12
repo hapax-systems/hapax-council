@@ -351,6 +351,26 @@ def main(argv: list[str] | None = None) -> int:
             ("route_id", route_id),
             ("capacity_pool", CAPACITY_POOL),
             ("auth_surface", AUTH_SURFACE),
+            # AUTH SURFACE IS ASSERTED BY THE CALLER; ONLY FRESHNESS IS MEASURED.
+            #
+            # A Claude Code transcript record carries `requestId`, `timestamp`, `cwd`,
+            # `entrypoint`, `version` and `message.{model,usage,...}` — and nothing naming the auth
+            # surface or billing mode. Enumerated on this estate 2026-08-12; re-derive with:
+            #
+            #   jq -r 'select(.type=="assistant")|keys[]'          ~/.claude/projects/*/*.jsonl
+            #   jq -r 'select(.type=="assistant")|.message|keys[]' ~/.claude/projects/*/*.jsonl
+            #
+            # A turn served through an API key is therefore indistinguishable, in the transcript,
+            # from one served on the subscription. `auth_surface` and `billing_mode` are CALLER
+            # ASSERTIONS carried on the receipt; the timestamp is the only measured part.
+            #
+            # Recording the split is the difference between a receipt that is wrong and one that
+            # is narrow — a downstream reader can see which half to trust. The route this unblocks
+            # is subscription-bounded, so the assertion is load-bearing, and making it observable
+            # needs a probe of the live auth surface: a different act from reading a transcript,
+            # and not in this task.
+            ("auth_surface_provenance", "caller_asserted"),
+            ("freshness_provenance", "measured:completed-turn-timestamp"),
             ("observation", observation),
             ("observed_at", _iso(observed_at)),
             ("stale_after_seconds", args.stale_after_seconds),

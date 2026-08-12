@@ -165,6 +165,34 @@ def _completed_turn_timestamp(line: str) -> datetime | None:
     return _parse_utc(record.get("timestamp"))
 
 
+def _api_error_timestamp(line: str) -> datetime | None:
+    """The timestamp of a provider FAILURE record, or None — the mirror of the above.
+
+    ``_is_api_error_record`` was used only to FILTER errors out of the success scan. Filtering
+    makes a wall invisible; it does not make it harmless. A 429 at 14:00 followed by nothing was
+    skipped, so a completed turn at 13:00 became the observation and the receipt read
+    "subscription headroom observed" — minted from a moment strictly before the wall it ignored.
+
+    A completed turn is evidence the account was live *at that instant*. A later failure
+    supersedes it, because the question a receipt answers is whether the subscription is serving
+    NOW, not whether it ever did.
+    """
+
+    if '"assistant"' not in line:
+        return None
+    try:
+        record = json.loads(line)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(record, dict):
+        return None
+    if record.get("type") != "assistant":
+        return None
+    if not _is_api_error_record(record):
+        return None
+    return _parse_utc(record.get("timestamp"))
+
+
 def _tail_lines(path: Path, *, tail_bytes: int = TRANSCRIPT_TAIL_BYTES) -> list[str]:
     try:
         size = path.stat().st_size
@@ -205,14 +233,35 @@ def latest_transcript_observation(
     files.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0.0, reverse=True)
 
     newest: datetime | None = None
+    newest_wall: datetime | None = None
     for path in files[:scan_limit]:
         for line in _tail_lines(path):
             stamp = _completed_turn_timestamp(line)
             if stamp is not None and (newest is None or stamp > newest):
                 newest = stamp
+                continue
+            wall = _api_error_timestamp(line)
+            if wall is not None and (newest_wall is None or wall > newest_wall):
+                newest_wall = wall
 
     if newest is None:
         raise TranscriptQuotaUnavailable("no completed assistant turn in the scanned transcripts")
+
+    # A WALL AFTER YOUR LAST SUCCESS MEANS YOU ARE WALLED NOW.
+    #
+    # Errors were already excluded from counting as successes, which is necessary and was not
+    # sufficient: filtering makes a wall invisible, not harmless. Skipping a 429 at 14:00 left a
+    # completed turn at 13:00 as the freshest observation, and the receipt then attested headroom
+    # from a moment strictly before the refusal it had just stepped over.
+    #
+    # Ordering is the whole predicate. A wall BEFORE the last success is history — the account
+    # recovered, and the success proves it. A wall AFTER it is the current state.
+    if newest_wall is not None and newest_wall > newest:
+        raise TranscriptQuotaUnavailable(
+            f"the newest provider record is a failure at {newest_wall.isoformat()}, after the "
+            f"last completed turn at {newest.isoformat()}; that is a quota wall, not headroom. "
+            "Next: complete a turn on this subscription, then re-observe"
+        )
 
     age = (checked_at - newest).total_seconds()
     if age < -FUTURE_SKEW_TOLERANCE_SECONDS:

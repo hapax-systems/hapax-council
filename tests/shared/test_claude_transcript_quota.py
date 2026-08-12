@@ -170,11 +170,21 @@ def test_an_unfamiliar_error_shape_fails_closed(tmp_path: Path) -> None:
         latest_transcript_observation(root=tmp_path, now=NOW, max_age_seconds=900)
 
 
-def test_a_fresh_error_does_not_mask_an_older_success(tmp_path: Path) -> None:
-    """The realistic sequence: a request is served, then a later one hits the wall.
+def test_a_wall_after_the_last_success_refuses(tmp_path: Path) -> None:
+    """This test asserted the opposite, and the opposite was wrong.
 
-    The error must be skipped and the older *successful* turn returned — not treated as
-    the newest observation, and not allowed to suppress the real one.
+    It read "the error must be skipped and the older *successful* turn returned" — the behaviour
+    codex-1 filed as a critical on PR #4555, correctly. Excluding errors from counting as
+    successes is necessary and not sufficient: filtering makes a wall invisible, not harmless. A
+    429 at 14:00 skipped, with a completed turn at 13:00 returned, mints "subscription headroom
+    observed" from a moment strictly before the refusal it stepped over.
+
+    This module's own docstring names that inversion — accepting a 429 "would mint headroom from
+    the quota wall itself". Substituting an earlier success is the softer form of the same error:
+    the wall still produces a positive receipt.
+
+    A receipt answers whether the subscription is serving NOW. A completed turn is evidence the
+    account was live at that instant; a later failure supersedes it.
     """
     served = NOW - timedelta(seconds=300)
     _write(
@@ -182,6 +192,20 @@ def test_a_fresh_error_does_not_mask_an_older_success(tmp_path: Path) -> None:
         "a.jsonl",
         [_turn(served), _api_error_turn(NOW - timedelta(seconds=5), status=429)],
     )
+
+    with pytest.raises(TranscriptQuotaUnavailable, match="quota wall"):
+        latest_transcript_observation(root=tmp_path, now=NOW, max_age_seconds=900)
+
+
+def test_a_wall_before_the_last_success_is_history(tmp_path: Path) -> None:
+    """Ordering is the whole predicate, so the other order must still succeed.
+
+    A wall the account recovered from is history, and the later completed turn is the proof. If
+    this refused too, the fix would be a blanket refusal wearing a predicate's clothes.
+    """
+    walled = NOW - timedelta(seconds=300)
+    served = NOW - timedelta(seconds=5)
+    _write(tmp_path, "a.jsonl", [_api_error_turn(walled, status=429), _turn(served)])
 
     obs = latest_transcript_observation(root=tmp_path, now=NOW, max_age_seconds=900)
 
