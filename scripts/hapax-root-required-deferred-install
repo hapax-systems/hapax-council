@@ -1304,9 +1304,10 @@ def _execute_production_broker(
     request: BrokerRequest,
 ) -> int:
     _validate_production_broker()
-    # The helper's task and verifier checks are advisory narrowing only. The root-owned
-    # broker receives no child-produced permission token and must independently derive
-    # authority, package bytes, destinations, and the complete effect transaction.
+    # The helper's task and verifier checks are advisory narrowing only. Package and SHA
+    # are bounded requests, not selectors or permission tokens: the root-owned broker
+    # must independently derive and compare both, then derive authority, package bytes,
+    # destinations, and the complete effect transaction under its own root-owned lock.
     command = [
         str(paths.sudo),
         "-n",
