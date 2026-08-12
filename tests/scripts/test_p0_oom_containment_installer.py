@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
 import shutil
 import stat
 import subprocess
@@ -2633,10 +2632,8 @@ def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_use
     )
 
 
-@pytest.mark.parametrize("replace_scoped_pid", (False, True))
 def test_installer_uses_identity_bound_enforcer_for_privileged_oom_score_write(
     tmp_path: Path,
-    replace_scoped_pid: bool,
 ) -> None:
     system_dir = tmp_path / "systemd-system"
     user_dir = tmp_path / "systemd-user"
@@ -2678,30 +2675,6 @@ def test_installer_uses_identity_bound_enforcer_for_privileged_oom_score_write(
         encoding="utf-8",
     )
     fake_systemctl.chmod(0o755)
-    sudo_calls = tmp_path / "sudo-calls"
-    swap_marker = tmp_path / "scoped-pid-swapped"
-    replacement_stat = "910 (replacement) " + " ".join(["S", *(["0"] * 18), "9999999"])
-    swap_script = ""
-    if replace_scoped_pid:
-        swap_script = (
-            'if [ "${2:-}" = "--write-scoped" ] && [ "${3:-}" = "910" ] '
-            f"&& [ ! -e {shlex.quote(str(swap_marker))} ]; then\n"
-            f"  : > {shlex.quote(str(swap_marker))}\n"
-            f"  printf '%s\\n' {shlex.quote(replacement_stat)} > "
-            f"{shlex.quote(str(proc_root / '910' / 'stat'))}\n"
-            "fi\n"
-        )
-    fake_sudo = tmp_path / "sudo"
-    fake_sudo.write_text(
-        "#!/usr/bin/env bash\n"
-        f"printf '%s\\n' \"$*\" >> {sudo_calls!s}\n"
-        'if [ "${1:-}" = "-n" ]; then shift; fi\n'
-        f"{swap_script}"
-        'exec "$@"\n',
-        encoding="utf-8",
-    )
-    fake_sudo.chmod(0o755)
-
     result = subprocess.run(
         [str(INSTALLER), "--install"],
         text=True,
@@ -2716,34 +2689,17 @@ def test_installer_uses_identity_bound_enforcer_for_privileged_oom_score_write(
             "HAPAX_OOM_ENFORCER_DEST": str(enforcer_dest),
             "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
             "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
-            "HAPAX_OOM_INSTALL_SUDO": str(fake_sudo),
+            "HAPAX_OOM_INSTALL_SUDO": "",
             "HAPAX_OOM_PROC_ROOT": str(proc_root),
             "HAPAX_OOM_TARGET_UID": "1000",
             "HAPAX_OOM_FORCE_DIRECT_WRITE_FAIL": "1",
         },
     )
 
-    if replace_scoped_pid:
-        assert result.returncode == 1
-        assert "refusing stale oom_score_adj identity" in result.stderr
-        assert "skipped stale oom_score_adj identity for pipewire.service pid=910" in result.stderr
-        assert "stale=1" in result.stdout
-        assert swap_marker.is_file()
-    else:
-        assert result.returncode == 0, result.stderr
-    assert any(
-        line.startswith("cmp -s ")
-        and os.environ["HAPAX_OOM_SUDOERS_REFERENCE_DEST"] in line
-        and os.environ["HAPAX_OOM_SUDOERS_DEST"] in line
-        for line in sudo_calls.read_text(encoding="utf-8").splitlines()
-    )
+    assert result.returncode == 0, result.stderr
     assert (proc_root / "900" / "oom_score_adj").read_text(encoding="utf-8").strip() == "100"
-    assert (proc_root / "910" / "oom_score_adj").read_text(encoding="utf-8").strip() == (
-        "100" if replace_scoped_pid else "-900"
-    )
-    sudo_lines = sudo_calls.read_text(encoding="utf-8").splitlines()
-    assert any("--write-scoped 910 -900" in line for line in sudo_lines)
-    assert all(not line.startswith("tee ") for line in sudo_lines)
+    assert (proc_root / "910" / "oom_score_adj").read_text(encoding="utf-8").strip() == ("-900")
+    assert enforcer_dest.read_bytes() == OOM_ENFORCER.read_bytes()
 
 
 def test_root_oom_score_enforcer_writes_live_user_manager_and_service_scores(
@@ -4314,9 +4270,6 @@ def _run_install_verify_live(
             cap_receipt.parent.mkdir()
             cap_receipt.write_text("schema=1\n", encoding="utf-8")
             cap_receipt.chmod(0o600)
-        fake_sudo = tmp_path / "deferred-sudo"
-        fake_sudo.write_text("#!/usr/bin/bash\nexit 0\n", encoding="utf-8")
-        fake_sudo.chmod(0o755)
         root_sudo_calls = tmp_path / "root-sudo-calls"
         fake_root_sudo = tmp_path / "root-sudo"
         fake_root_sudo.write_text(
@@ -4342,7 +4295,6 @@ def _run_install_verify_live(
                 ),
                 "HAPAX_ROOT_REQUIRED_STATE_ROOT": str(state_root),
                 "HAPAX_ROOT_REQUIRED_GIT_REPO": str(activation_alias),
-                "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_SUDO": str(fake_sudo),
                 "HAPAX_OOM_EFFECTIVE_UID": "1000",
                 "HAPAX_OOM_SYSTEMD_ANALYZE": str(fake_systemd_analyze),
                 **({} if omit_nested_sudo else {"HAPAX_OOM_INSTALL_SUDO": str(fake_root_sudo)}),
@@ -4393,15 +4345,13 @@ def test_authenticated_deferred_helper_runs_real_installer_through_lock_reexec(
 
     assert result.returncode == 0, result.stderr
     assert "source=sealed-git-memfd" in result.stdout
-    assert "completed authenticated package=oom-containment" in result.stdout
+    assert "completed isolated-test package=oom-containment" in result.stdout
     state_root = tmp_path / "root-state"
     receipt = state_root / "installed-receipts" / "oom-containment.sha"
     package_sha = receipt.read_text(encoding="utf-8").strip()
     assert len(package_sha) == 40
     assert (state_root / ".lock").is_file()
-    root_sudo_calls = (tmp_path / "root-sudo-calls").read_text(encoding="utf-8")
-    assert "install -m" in root_sudo_calls
-    assert "/proc/" in root_sudo_calls and "/fd/" in root_sudo_calls
+    assert not (tmp_path / "root-sudo-calls").exists()
     assert not (tmp_path / "root-required" / package_sha / "oom-containment/RUNBOOK.txt").exists()
     assert (tmp_path / "root-required" / package_sha / "oom-containment/DRAINED.txt").is_file()
     installed_helper = state_root / "current-source/scripts/hapax-root-required-deferred-install"
@@ -4421,7 +4371,7 @@ def test_authenticated_deferred_helper_neutralizes_omitted_nested_sudo(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "completed authenticated package=oom-containment" in result.stdout
+    assert "completed isolated-test package=oom-containment" in result.stdout
     assert not (tmp_path / "root-sudo-calls").exists()
 
 

@@ -104,16 +104,6 @@ def test_installer_root_python_ignores_hostile_working_directory(tmp_path: Path)
         "    Path(os.environ['HAPAX_TEST_ROOT_IMPORT_MARKER']).write_text('ran\\n')\n",
         encoding="utf-8",
     )
-    fake_sudo = tmp_path / "sudo"
-    fake_sudo.write_text(
-        "#!/usr/bin/env bash\n"
-        'if [ "${1:-}" = "-n" ]; then shift; fi\n'
-        'if [ "${1:-}" = "true" ]; then exec "$@"; fi\n'
-        "export HAPAX_TEST_FAKE_ROOT=1\n"
-        'exec "$@"\n',
-        encoding="utf-8",
-    )
-    fake_sudo.chmod(0o755)
     fake_systemctl = tmp_path / "systemctl"
     fake_systemctl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     fake_systemctl.chmod(0o755)
@@ -126,8 +116,9 @@ def test_installer_root_python_ignores_hostile_working_directory(tmp_path: Path)
         check=False,
         env={
             **os.environ,
-            "HAPAX_APCUPSD_INSTALL_SUDO": str(fake_sudo),
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
             "HAPAX_APCUPSD_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_TEST_FAKE_ROOT": "1",
             "HAPAX_TEST_ROOT_IMPORT_MARKER": str(marker),
         },
     )
@@ -1220,9 +1211,9 @@ def test_installer_install_implies_verify_live_against_temp_destinations(tmp_pat
 @pytest.mark.parametrize(
     "omit_nested_sudo",
     (False, True),
-    ids=("validated-fake-sudo", "omitted-forced-direct"),
+    ids=("caller-selector-neutralized", "selector-omitted"),
 )
-def test_authenticated_deferred_helper_runs_real_apcupsd_installer_with_safe_nested_sudo_and_umask(
+def test_authenticated_deferred_helper_runs_real_apcupsd_installer_without_nested_sudo(
     tmp_path: Path,
     omit_nested_sudo: bool,
 ) -> None:
@@ -1260,9 +1251,6 @@ def test_authenticated_deferred_helper_runs_real_apcupsd_installer_with_safe_nes
     desired.parent.mkdir(parents=True)
     desired.write_text(f"{package_sha}\n", encoding="utf-8")
 
-    warmup_sudo = tmp_path / "warmup-sudo"
-    warmup_sudo.write_text("#!/usr/bin/bash\nexit 0\n", encoding="utf-8")
-    warmup_sudo.chmod(0o755)
     root_sudo_calls = tmp_path / "root-sudo-calls"
     root_sudo = tmp_path / "root-sudo"
     root_sudo.write_text(
@@ -1316,7 +1304,6 @@ def test_authenticated_deferred_helper_runs_real_apcupsd_installer_with_safe_nes
             "HAPAX_ROOT_REQUIRED_STATE_ROOT": str(state_root),
             "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_root),
             "HAPAX_ROOT_REQUIRED_GIT_REPO": str(activation_alias),
-            "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_SUDO": str(warmup_sudo),
             "HAPAX_APCUPSD_DEST": str(tmp_path / "apcupsd"),
             "HAPAX_APCUPSD_AUDIT_DIR": str(tmp_path / "hapax-log"),
             "HAPAX_APCUPSD_AUDIT_GROUP": "",
@@ -1331,13 +1318,8 @@ def test_authenticated_deferred_helper_runs_real_apcupsd_installer_with_safe_nes
     )
 
     assert result.returncode == 0, result.stderr
-    assert "completed authenticated package=apcupsd-power-alerts" in result.stdout
-    if omit_nested_sudo:
-        assert not root_sudo_calls.exists()
-    else:
-        calls = root_sudo_calls.read_text(encoding="utf-8")
-        assert "install -m" in calls
-        assert "/proc/" in calls and "/fd/" in calls
+    assert "completed isolated-test package=apcupsd-power-alerts" in result.stdout
+    assert not root_sudo_calls.exists()
     receipts = (
         state_root / "installed-receipts/apcupsd-power-alerts.sha",
         state_root / "desired-receipts/apcupsd-power-alerts.sha",

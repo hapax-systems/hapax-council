@@ -60,8 +60,8 @@ Protected model staging is the first separately measured phase of that mandatory
 canary, not an activation side effect. The block below runs
 `--measure-protected-local-judge-model` against the root-owned content address
 before starting the disposable container and writes the candidate cap receipt
-only after both staging and the workload pass. The root-owned package broker and
-the separate activation fence each verify that exact-SHA receipt before their
+only after both staging and the workload pass. A future root-owned package broker
+and the separate activation fence must each verify that exact-SHA receipt before their
 first mutation, so a skipped or incomplete staging canary is rejected before the
 durable unit can be started.
 
@@ -69,11 +69,24 @@ The active task must authorize every semantic effect listed in the candidate
 `config/root-required/oom-containment.effects`, plus the canary, activation, and
 managed-recheck effects used below. The exact-SHA helper validates that task only
 as advisory narrowing. It cannot grant production effects and never executes the
-interpreted installer in production. The independently installed root-owned
+interpreted installer in production. A future independently installed root-owned
 package broker must derive authority, package bytes, destinations, and the fixed
 effect transaction again at the privileged boundary.
 Source-file paths, caller-owned task rows, cap receipts, sealed descriptors, and
 helper results are evidence, not bearer authority.
+
+The future broker interface also carries a helper-generated 256-bit correlation
+ID. It is not authority. Plain root ownership is namespace-relative and cannot
+authenticate host root to a same-UID caller that can create user and mount
+namespaces. This revision therefore hard-disables production broker execution
+before sudo, state locking, or broker validation. A successor may enable it only
+after a separately reviewed protocol signs or MACs request ID, package, SHA, and
+completion generation with a host-root-held key and verifies that attestation
+against a source-pinned trust anchor. File-level per-request and current mode-`0444`
+receipts remain useful shape requirements, not authority. Caller-owned installed
+receipts never drain pending work before the broker runs. The broker, attestation
+key lifecycle, exact `NOSETENV` sudo rule, retention, and blanket-`NOPASSWD: ALL`
+retirement are separate runtime-authorized work; none is implemented here.
 
 ### Required pre-deploy cap canary
 
@@ -641,21 +654,22 @@ HAPAX_LOCAL_JUDGE_CAP_CANARY
 
 ### Broker-gated package installation
 
-This source task does not install the broker. Before attempting the live command,
-require `/usr/local/sbin/hapax-root-required-package-apply` to be a single-link,
-root-owned executable beneath root-owned non-writable ancestors. If it is absent,
-stop and dispatch a separately runtime-authorized broker-bootstrap task. The
+This source revision deliberately cannot perform package installation. Do not
+attempt the live command merely because
+`/usr/local/sbin/hapax-root-required-package-apply` exists or appears root-owned:
+those properties are forgeable in nested namespaces. Stop and dispatch separately
+authorized broker/cryptographic-attestation design and implementation work. The
 desired receipt and `RUNBOOK.txt` must remain pending; do not restore the retired
-Bash production path for continuity. The broker treats package and expected SHA
-as requests to compare against its own derivation, holds a root-owned transaction
-lock across revalidation, effects, readback, receipt publication, and drain, and
-does not rely on the caller-owned lock released before invocation. Caller-owned
-`RUNBOOK.txt`/`DRAINED.txt` markers are bookkeeping for ordinary flow, never
-load-bearing evidence of broker completion; canonical Git-bound snapshots and
-root-owned artifacts provide the substantive readback evidence.
+Bash production path for continuity. A future broker must treat package and SHA
+as requests to compare against its own derivation, hold a root-owned transaction
+lock across revalidation, effects, readback, publication, and drain, and return
+source-verifiable host-root attestation. Caller-owned `RUNBOOK.txt`/`DRAINED.txt`,
+logs, snapshots, and receipts are workflow bookkeeping, never durable completion
+proof.
 
 ```bash
-# Re-emit the broker-gated command after runtime authority is granted. Never
+# Reference fence only: this exact source revision must fail closed before sudo.
+# Runtime authority or an apparently root-owned broker does not enable it. Never
 # execute RUNBOOK.txt, copy the judge unit, or reproduce the authentication flow.
 # The emitted helper may narrow or refuse. Only the root-owned broker can apply,
 # and it independently validates the exact release and effect transaction.
@@ -740,15 +754,16 @@ test -f "$runbook"
 test ! -L "$runbook"
 test ! -x "$runbook"
 grep -Fqx 'DO NOT EXECUTE THIS FILE OR COPY A COMMAND FROM IT. It is caller-owned pending-state' "$runbook"
-# Run hapax-post-merge-deploy for "$sha" and execute only its live terminal line
-# beginning "next action: run:". The pending RUNBOOK is metadata, not code.
+# Run hapax-post-merge-deploy for "$sha" only to restage pending metadata. This
+# revision's emitted helper command must refuse before sudo. Never execute RUNBOOK.
 release_verify "$sha"
 HAPAX_LOCAL_JUDGE_AUTHENTICATED_INSTALL
 ```
 
-Execute only the live terminal `next action: run:` line emitted by that command.
-After it returns successfully, verify the broker-authenticated completion and installed
-receipt in a new shell:
+Do not execute the emitted `next action: run:` line expecting deployment in this
+revision; the helper must refuse with the cryptographic-attestation next action.
+There is intentionally no successful installed-verification recipe. The rejection
+block below shows that caller-owned logs and receipts cannot close this predicate:
 
 ```bash
 set -euo pipefail
@@ -811,11 +826,8 @@ IFS= read -r sha < "$receipt"
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
 test "$sha" = "$release_sha"
 release_verify --verify-local-judge-cap-receipt "$sha" installed
-stage="$HOME/.cache/hapax/post-merge-root-required/$sha/oom-containment"
-/usr/bin/grep -Fqx \
-  "hapax-root-required-deferred-install: completed authenticated package=oom-containment sha=$sha" \
-  "$stage/AUTHENTICATED-INSTALL.log"
-/usr/bin/grep -Fqx "$sha" "$state/installed-receipts/oom-containment.sha"
+echo "installed verification unavailable: require an exact request ID and matching cryptographically attested per-request and current host-root records" >&2
+exit 1
 HAPAX_LOCAL_JUDGE_INSTALLED_VERIFY
 ```
 

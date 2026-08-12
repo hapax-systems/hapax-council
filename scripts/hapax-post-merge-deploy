@@ -3945,138 +3945,6 @@ stage_oom_containment_installer() {
         "$1" config/root-required/oom-containment.files "OOM containment"
 }
 
-reconcile_completed_root_required_deferral() {
-    local receipt="$1" dest="$2" label="$3"
-    /usr/bin/python3 -I - "$receipt" "$dest" "$SHA" "$label" <<'PY'
-from __future__ import annotations
-
-import os
-import stat
-import sys
-from pathlib import Path
-
-receipt = Path(sys.argv[1])
-dest = Path(sys.argv[2])
-sha = sys.argv[3]
-label = sys.argv[4]
-
-
-def refuse(message: str) -> None:
-    print(
-        f"hapax-post-merge-deploy: {message}; next action: repair only the unsafe "
-        "caller-owned deferral marker, then rerun hapax-post-merge-deploy for this SHA",
-        file=sys.stderr,
-    )
-    raise SystemExit(1)
-
-
-def snapshot(inode: os.stat_result) -> tuple[int, ...]:
-    return (
-        inode.st_dev,
-        inode.st_ino,
-        inode.st_uid,
-        inode.st_gid,
-        inode.st_nlink,
-        stat.S_IMODE(inode.st_mode),
-        inode.st_size,
-        inode.st_mtime_ns,
-        inode.st_ctime_ns,
-    )
-
-
-parent_fd = -1
-receipt_fd = -1
-try:
-    parent_fd = os.open(
-        receipt.parent,
-        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
-    )
-    parent_inode = os.fstat(parent_fd)
-    if parent_inode.st_uid != os.geteuid() or parent_inode.st_mode & 0o022:
-        refuse(f"installed {label} receipt parent is not caller-owned and non-group-writable")
-    receipt_inode = os.stat(receipt.name, dir_fd=parent_fd, follow_symlinks=False)
-except FileNotFoundError:
-    raise SystemExit(3)
-except OSError as exc:
-    refuse(f"cannot inspect installed {label} receipt {receipt}: {exc}")
-if (
-    not stat.S_ISREG(receipt_inode.st_mode)
-    or receipt_inode.st_uid != os.geteuid()
-    or receipt_inode.st_nlink != 1
-    or stat.S_IMODE(receipt_inode.st_mode) != 0o600
-    or receipt_inode.st_size != 41
-):
-    refuse(f"installed {label} receipt is not an exact mode-0600 caller-owned SHA file: {receipt}")
-try:
-    receipt_fd = os.open(
-        receipt.name,
-        os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
-        dir_fd=parent_fd,
-    )
-    opened = os.fstat(receipt_fd)
-    if snapshot(opened) != snapshot(receipt_inode):
-        refuse(f"installed {label} receipt changed while opening: {receipt}")
-    chunks: list[bytes] = []
-    remaining = 42
-    while remaining:
-        chunk = os.read(receipt_fd, remaining)
-        if not chunk:
-            break
-        chunks.append(chunk)
-        remaining -= len(chunk)
-    receipt_value = b"".join(chunks)
-    after = os.fstat(receipt_fd)
-    published = os.stat(receipt.name, dir_fd=parent_fd, follow_symlinks=False)
-except OSError as exc:
-    refuse(f"cannot read installed {label} receipt {receipt}: {exc}")
-finally:
-    if receipt_fd >= 0:
-        os.close(receipt_fd)
-    if parent_fd >= 0:
-        os.close(parent_fd)
-if snapshot(after) != snapshot(opened) or snapshot(published) != snapshot(after):
-    refuse(f"installed {label} receipt changed while reading: {receipt}")
-if receipt_value != f"{sha}\n".encode():
-    raise SystemExit(3)
-
-runbook = dest / "RUNBOOK.txt"
-drained = dest / "DRAINED.txt"
-try:
-    runbook_inode = runbook.lstat()
-except FileNotFoundError:
-    print(f"root-required {label} already installed at {sha}; no pending marker remains")
-    raise SystemExit(0)
-except OSError as exc:
-    refuse(f"cannot inspect completed {label} deferral marker {runbook}: {exc}")
-if (
-    not stat.S_ISREG(runbook_inode.st_mode)
-    or runbook_inode.st_uid != os.geteuid()
-    or runbook_inode.st_nlink != 1
-    or stat.S_IMODE(runbook_inode.st_mode) != 0o600
-):
-    refuse(f"completed {label} deferral marker is not the expected mode-0600 regular file: {runbook}")
-
-try:
-    drained_inode = drained.lstat()
-except FileNotFoundError:
-    drained_inode = None
-except OSError as exc:
-    refuse(f"cannot inspect prior drained marker {drained}: {exc}")
-if drained_inode is not None and (
-    not stat.S_ISREG(drained_inode.st_mode)
-    or drained_inode.st_uid != os.geteuid()
-    or drained_inode.st_nlink != 1
-    or drained_inode.st_mode & 0o022
-):
-    refuse(f"prior drained marker is unsafe: {drained}")
-try:
-    os.replace(runbook, drained)
-except OSError as exc:
-    refuse(f"cannot reconcile completed {label} deferral marker {runbook}: {exc}")
-print(f"root-required {label} installed at {sha}; pending marker reconciled")
-PY
-}
-
 reconcile_superseded_root_required_deferral() {
     local dest="$1" label="$2" superseding_sha="$3"
     /usr/bin/python3 -I - "$dest" "$SHA" "$label" "$superseding_sha" <<'PY'
@@ -4200,8 +4068,8 @@ PY
 }
 
 defer_root_required_installer() {
-    local label="$1" stage="$2" dest temp receipt helper_rel evidence completion installed_sha
-    local account_home activation_alias authenticated_script command reconcile_rc runtime_task
+    local label="$1" stage="$2" dest temp receipt helper_rel evidence completion_pattern installed_sha
+    local account_home activation_alias authenticated_script command runtime_task
     local -a command_cmd
     mkdir -p "$ROOT_DEFER_DIR"
     dest="$ROOT_DEFER_DIR/$SHA/$label"
@@ -4213,18 +4081,12 @@ defer_root_required_installer() {
         write_root_required_sha_receipt \
             "$receipt" "$installed_sha" preserve-canonical || return 1
     fi
-    if reconcile_completed_root_required_deferral "$receipt" "$dest" "$label"; then
-        return 0
-    else
-        reconcile_rc=$?
-        [ "$reconcile_rc" -eq 3 ] || return "$reconcile_rc"
-    fi
     temp="$ROOT_DEFER_DIR/$SHA/.${label}.tmp.$$"
     rm -rf "$temp" 2>/dev/null || true
     cp -a "$stage" "$temp"
     helper_rel=scripts/hapax-root-required-deferred-install
     evidence="$dest/AUTHENTICATED-INSTALL.log"
-    completion="hapax-root-required-deferred-install: completed authenticated package=$label sha=$SHA"
+    completion_pattern="^hapax-root-required-deferred-install: completed broker-attested package=$label sha=$SHA request_id=[0-9a-f]{64}$"
     cat > "$temp/RUNBOOK.txt" <<EOF
 Root-required post-merge deploy action deferred.
 Commit: $SHA
@@ -4234,10 +4096,12 @@ DO NOT EXECUTE THIS FILE OR COPY A COMMAND FROM IT. It is caller-owned pending-s
 metadata, not an authentication bootstrap. Re-run hapax-post-merge-deploy for this
 commit and use only the exact "next action: run:" command emitted to that live
 terminal. That command streams the receipt-bound advisory helper directly from Git
-under env -i. Production effects require the independently installed root-owned
-package broker and this completion receipt:
+under env -i. This source revision then refuses production because namespace-relative
+ownership cannot authenticate host root. A future enabled protocol requires a
+source-pinned cryptographic broker attestation. Caller-owned log output is diagnostic,
+not durable authority; the future exact output shape includes its request ID:
 
-$completion
+hapax-root-required-deferred-install: completed broker-attested package=$label sha=$SHA request_id=<64-lowercase-hex>
 EOF
     chmod 0600 "$temp/RUNBOOK.txt"
     rm -rf "$dest" 2>/dev/null || true
@@ -4268,7 +4132,7 @@ sha="$2"
 helper_rel="$3"
 label="$4"
 evidence="$5"
-completion="$6"
+completion_pattern="$6"
 account_home="$7"
 runtime_task="$8"
 if ! activation_release="$(/usr/bin/realpath -e -- "$activation_alias")"; then
@@ -4297,13 +4161,13 @@ fi
         /usr/bin/python3 -I - --package "$label" --expected-sha "$sha" \
         --activation-release "$activation_release" --runtime-authority-task "$runtime_task" \
     | /usr/bin/tee "$evidence"
-/usr/bin/grep -Fqx "$completion" "$evidence"
+/usr/bin/grep -Eq "$completion_pattern" "$evidence"
 BASH
     command_cmd=(
         /usr/bin/env -i HOME="$account_home" PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
         /usr/bin/bash --noprofile --norc -c "$authenticated_script"
         hapax-root-required-auth "$activation_alias" "$SHA" "$helper_rel" "$label"
-        "$evidence" "$completion" "$account_home" "$runtime_task"
+        "$evidence" "$completion_pattern" "$account_home" "$runtime_task"
     )
     printf -v command '%q ' "${command_cmd[@]}"
     echo "next action: run: ${command% }"

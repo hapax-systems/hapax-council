@@ -3643,8 +3643,9 @@ def test_concurrent_oom_deferral_ignores_replace_refs_and_owns_local_judge(
             "print('deferred-helper-argv=' + json.dumps(sys.argv))\n"
             "package = sys.argv[sys.argv.index('--package') + 1]\n"
             "sha = sys.argv[sys.argv.index('--expected-sha') + 1]\n"
-            "print(f'hapax-root-required-deferred-install: completed authenticated "
-            "package={package} sha={sha}')\n"
+            "request_id = 'c' * 64\n"
+            "print(f'hapax-root-required-deferred-install: completed broker-attested "
+            "package={package} sha={sha} request_id={request_id}')\n"
         ),
         "config/root-required/hapax-oom-score-enforce.sudoers": (
             "hapax ALL=(root) NOPASSWD: /usr/local/sbin/hapax-oom-score-enforce --apply-unit pipewire.service\n"
@@ -3811,9 +3812,14 @@ def test_concurrent_oom_deferral_ignores_replace_refs_and_owns_local_judge(
     assert deploy_source.count(heredoc_start) == 1
     authenticated_script = deploy_source.split(heredoc_start, 1)[1].split("\nBASH\n", 1)[0]
     success_evidence = tmp_path / "successful-authentication.log"
+    request_id = "c" * 64
     completion = (
-        "hapax-root-required-deferred-install: completed authenticated "
-        f"package=oom-containment sha={sha}"
+        "hapax-root-required-deferred-install: completed broker-attested "
+        f"package=oom-containment sha={sha} request_id={request_id}"
+    )
+    completion_pattern = (
+        "^hapax-root-required-deferred-install: completed broker-attested "
+        f"package=oom-containment sha={sha} request_id=[0-9a-f]{{64}}$"
     )
     successful = subprocess.run(
         [
@@ -3832,7 +3838,7 @@ def test_concurrent_oom_deferral_ignores_replace_refs_and_owns_local_judge(
             "scripts/hapax-root-required-deferred-install",
             "oom-containment",
             str(success_evidence),
-            completion,
+            completion_pattern,
             str(home),
             os.environ["HAPAX_RUNTIME_AUTHORITY_TASK"],
         ],
@@ -3881,30 +3887,36 @@ def test_concurrent_oom_deferral_ignores_replace_refs_and_owns_local_judge(
     installed = home / ".local/state/hapax/root-required/installed-receipts/oom-containment.sha"
     installed.parent.mkdir(parents=True, exist_ok=True)
     installed.write_text(f"{sha}\n", encoding="utf-8")
-    refused_reconcile = subprocess.run(
+    forged_receipt_retry = subprocess.run(
         [str(SCRIPT), sha],
         text=True,
         capture_output=True,
         check=False,
         env={**env, "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace-refused.jsonl")},
     )
-    assert refused_reconcile.returncode == 1
-    assert "not the expected mode-0600 regular file" in refused_reconcile.stderr
+    assert forged_receipt_retry.returncode == 0, forged_receipt_retry.stderr
+    assert "completed broker-attested" not in forged_receipt_retry.stdout
+    assert "pending marker reconciled" not in forged_receipt_retry.stdout
+    assert "root-required oom-containment install deferred" in forged_receipt_retry.stdout
+    assert not compromised.exists()
     assert runbook_path.exists()
+    assert stat.S_IMODE(runbook_path.stat().st_mode) == 0o600
+    assert not (deferred / "DRAINED.txt").exists()
     assert stat.S_IMODE(installed.stat().st_mode) == 0o600
     runbook_path.write_text(runbook, encoding="utf-8")
     runbook_path.chmod(0o600)
-    reconciled = subprocess.run(
+    repeated = subprocess.run(
         [str(SCRIPT), sha],
         text=True,
         capture_output=True,
         check=False,
         env={**env, "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace-reconcile.jsonl")},
     )
-    assert reconciled.returncode == 0, reconciled.stderr
-    assert "pending marker reconciled" in reconciled.stdout
-    assert not runbook_path.exists()
-    assert (deferred / "DRAINED.txt").read_text(encoding="utf-8") == runbook
+    assert repeated.returncode == 0, repeated.stderr
+    assert "completed broker-attested" not in repeated.stdout
+    assert "pending marker reconciled" not in repeated.stdout
+    assert runbook_path.exists()
+    assert not (deferred / "DRAINED.txt").exists()
     assert desired.read_text(encoding="utf-8").strip() == sha
 
 
@@ -4410,7 +4422,9 @@ def test_root_required_audit_detects_disabled_enforcer_timer(tmp_path: Path) -> 
 
     assert result.returncode == 1
     assert "hapax-oom-score-enforce.timer is not enabled" in result.stderr
-    assert "enable --now" in result.stderr
+    assert "runtime-authorized hapax-post-merge-deploy OOM reconciliation" in result.stderr
+    assert "HAPAX_RUNTIME_AUTHORITY_TASK" in result.stderr
+    assert "sudo systemctl" not in result.stderr
 
 
 def test_root_required_audit_detects_stale_loaded_enforcer_timeout(tmp_path: Path) -> None:
@@ -4434,7 +4448,9 @@ def test_root_required_audit_detects_stale_loaded_enforcer_timeout(tmp_path: Pat
 
     assert result.returncode == 1
     assert "loaded TimeoutStartUSec=infinity, expected 25s" in result.stderr
-    assert "systemctl daemon-reload" in result.stderr
+    assert "runtime-authorized hapax-post-merge-deploy OOM reconciliation" in result.stderr
+    assert "broker transaction owns daemon reload" in result.stderr
+    assert "sudo systemctl" not in result.stderr
 
 
 def test_root_required_audit_detects_stale_loaded_user_audit_timeout(tmp_path: Path) -> None:
@@ -4487,7 +4503,9 @@ def test_root_required_audit_detects_inactive_earlyoom(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "earlyoom.service is not active" in result.stderr
-    assert "enable --now earlyoom.service" in result.stderr
+    assert "runtime-authorized hapax-post-merge-deploy OOM reconciliation" in result.stderr
+    assert "HAPAX_RUNTIME_AUTHORITY_TASK" in result.stderr
+    assert "sudo systemctl" not in result.stderr
 
 
 def test_root_required_audit_detects_disabled_apcupsd(tmp_path: Path) -> None:
@@ -4511,7 +4529,9 @@ def test_root_required_audit_detects_disabled_apcupsd(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "apcupsd.service is not enabled" in result.stderr
-    assert "enable --now apcupsd.service" in result.stderr
+    assert "runtime-authorized hapax-post-merge-deploy APC reconciliation" in result.stderr
+    assert "HAPAX_RUNTIME_AUTHORITY_TASK" in result.stderr
+    assert "sudo systemctl" not in result.stderr
 
 
 def test_root_required_audit_detects_stale_loaded_upower_action(tmp_path: Path) -> None:

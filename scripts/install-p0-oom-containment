@@ -67,9 +67,18 @@ for _argument in "$@"; do
         --install) _install_requested=1 ;;
     esac
 done
+if [ "${HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE:-0}" = "1" ] \
+    && { [ "$UID" -eq 0 ] || [ "$EUID" -eq 0 ] || [ "$UID" -ne "$EUID" ]; }; then
+    echo "isolated OOM installer test mode refuses root or set-ID execution before setup; next action: rerun the scratch-only test as one unprivileged UID, or use a future cryptographically attested root-owned broker for production" >&2
+    exit 1
+fi
+if [ -n "${HAPAX_OOM_INSTALL_SUDO:-}" ]; then
+    echo "HAPAX_OOM_INSTALL_SUDO is retired; no interpreted installer may delegate through sudo; next action: remove the selector and dispatch separately authorized broker/attestation work because this source revision keeps production disabled" >&2
+    exit 1
+fi
 if [ "$_install_requested" -eq 1 ] \
     && [ "${HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE:-0}" != "1" ]; then
-    echo "production OOM installation is available only through the independently installed root-owned package broker; no Bash installer effect or receipt advancement is permitted; next action: dispatch a separately runtime-authorized root-package broker bootstrap, install /usr/local/sbin/hapax-root-required-package-apply root:root and non-writable, then rerun hapax-post-merge-deploy" >&2
+    echo "production OOM installation is disabled until a separately reviewed root-owned broker and source-pinned cryptographic completion attestation are implemented; no Bash installer effect or receipt advancement is permitted; next action: dispatch that separately runtime-authorized broker/attestation work and do not restore this interpreted path" >&2
     exit 1
 fi
 if [ "$_authenticated_requested" -eq 1 ] \
@@ -154,7 +163,7 @@ unset _environment_display _environment_duplicate _environment_entry _environmen
 unset _environment_name _observed_environment_name _required_environment_name
 unset _install_requested _source_value_follows
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && /usr/bin/pwd -P)"
 SOURCE="$ROOT"
 SYSTEMD_SYSTEM_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
 TARGET_UID="${HAPAX_OOM_TARGET_UID:-1000}"
@@ -203,7 +212,6 @@ LOCAL_DOCKER_HOST="unix:///var/run/docker.sock"
 LOCAL_DOCKER_CONFIG="/nonexistent/hapax-local-docker-config"
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-/usr/bin/systemctl}"
 SYSTEMD_ANALYZE="${HAPAX_OOM_SYSTEMD_ANALYZE:-/usr/bin/systemd-analyze}"
-SUDO="${HAPAX_OOM_INSTALL_SUDO-/usr/bin/sudo}"
 ACTUAL_UID="$(/usr/bin/id -u)"
 if [ "$ACTUAL_UID" != "0" ] && [ "${HAPAX_OOM_INSTALL_TEST_ACTUAL_UID:-}" = "0" ]; then
     ACTUAL_UID=0
@@ -234,7 +242,7 @@ PROC_ROOT="${HAPAX_OOM_PROC_ROOT:-/proc}"
 if [ -n "${HAPAX_OOM_CGROUP_ROOT:-}" ]; then
     CGROUP_ROOT="$HAPAX_OOM_CGROUP_ROOT"
 elif [ "$PROC_ROOT" != "/proc" ]; then
-    CGROUP_ROOT="$(dirname "$PROC_ROOT")/cgroup"
+    CGROUP_ROOT="$(/usr/bin/dirname "$PROC_ROOT")/cgroup"
 else
     CGROUP_ROOT="/sys/fs/cgroup"
 fi
@@ -334,11 +342,7 @@ if [ "$CHECK" -eq 0 ] && [ "$INSTALL" -eq 0 ] && [ "$VERIFY_LIVE" -eq 0 ]; then
 fi
 
 run_root() {
-    if [ -n "$SUDO" ]; then
-        "$SUDO" "$@"
-    else
-        "$@"
-    fi
+    "$@"
 }
 
 user_systemctl() {
@@ -353,17 +357,12 @@ user_systemctl() {
 }
 
 preflight_root() {
-    if [ -n "$SUDO" ] && [ "$INSTALL" -eq 1 ]; then
-        "$SUDO" -n true 2>/dev/null || {
-            echo "sudo non-interactive access is required for OOM containment install; next action: run sudo -v or grant the target account the governed install/systemctl/enforcer commands, then rerun as that account" >&2
-            return "$ROOT_REQUIRED_RC"
-        }
-    fi
+    return 0
 }
 
 refuse_whole_script_root() {
     if [ "$INSTALL" -eq 1 ] && [ "$ACTUAL_UID" = "0" ]; then
-        echo "whole-script root execution is refused because durable package state and its shared lock are owned by UID $TARGET_UID; next action: run this installer as UID $TARGET_UID after sudo -v so only run_root commands cross the privilege boundary" >&2
+        echo "whole-script root execution is refused because durable package state and its shared lock are owned by UID $TARGET_UID; next action: rerun only an isolated test as UID $TARGET_UID without privilege selectors, or dispatch separately authorized broker/attestation work because this source revision keeps production disabled" >&2
         return 2
     fi
 }
@@ -1892,7 +1891,7 @@ PY
         || [ "${PWD:-}" != "$canonical_release" ] || [ "${SHLVL:-}" != "1" ] \
         || [ "$DOCKER" != "/usr/bin/docker" ] || [ "$SYSTEMCTL" != "/usr/bin/systemctl" ] \
         || [ "$SYSTEMD_ANALYZE" != "/usr/bin/systemd-analyze" ] \
-        || [ "$SUDO" != "/usr/bin/sudo" ] || [ "$RUNUSER" != "/usr/bin/runuser" ] \
+        || [ "$RUNUSER" != "/usr/bin/runuser" ] \
         || [ "$VISUDO" != "/usr/bin/visudo" ] \
         || [ "$ROOT_REQUIRED_DEFER_ROOT" != "$canonical_defer" ] \
         || [ "$ROOT_REQUIRED_GIT_REPO" != "$canonical_release" ] \
@@ -1952,9 +1951,6 @@ validate_authenticated_test_contract() {
     validate_isolated_test_executable systemd-analyze "$SYSTEMD_ANALYZE" "$AUTHENTICATED_TEST_ROOT" || return 1
     validate_isolated_test_executable runuser "$RUNUSER" "$AUTHENTICATED_TEST_ROOT" || return 1
     validate_isolated_test_executable visudo "$VISUDO" "$AUTHENTICATED_TEST_ROOT" || return 1
-    if [ -n "$SUDO" ]; then
-        validate_isolated_test_executable sudo "$SUDO" "$AUTHENTICATED_TEST_ROOT" || return 1
-    fi
 }
 
 validate_authenticated_install_contract() {
@@ -3036,7 +3032,7 @@ reconcile_docker_memory_limits() {
 verify_docker_memory_limits() {
     local records record id name policy memory memory_swap verify_rc absence_rc
     if ! records="$(docker_target_records)"; then
-        echo "unable to enumerate Docker containers for OOM containment; next action: restore Docker access and rerun scripts/install-p0-oom-containment --verify-live" >&2
+        echo "unable to enumerate Docker containers for OOM containment; next action: restore Docker access, set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical runtime-authorized task, and rerun hapax-post-merge-deploy" >&2
         return 1
     fi
     while IFS= read -r record; do
@@ -3061,10 +3057,10 @@ verify_docker_memory_limits() {
                     case "$absence_rc" in
                         0) continue ;;
                         1)
-                            echo "Docker inspect failed while the original identity or same-name target remains for $name id=$id; next action: restore Docker access and rerun scripts/install-p0-oom-containment --verify-live" >&2
+                            echo "Docker inspect failed while the original identity or same-name target remains for $name id=$id; next action: restore Docker access, set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical runtime-authorized task, and rerun hapax-post-merge-deploy" >&2
                             ;;
                         2)
-                            echo "unable to confirm Docker target $name id=$id after inspect failure because re-enumeration failed; next action: restore Docker access and rerun scripts/install-p0-oom-containment --verify-live" >&2
+                            echo "unable to confirm Docker target $name id=$id after inspect failure because re-enumeration failed; next action: restore Docker access, set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical runtime-authorized task, and rerun hapax-post-merge-deploy" >&2
                             ;;
                         *)
                             echo "unexpected Docker absence-check status $absence_rc for $name id=$id after inspect failure; next action: restore the matched OOM installer and rerun --verify-live" >&2
@@ -3641,15 +3637,15 @@ install_live() {
 
     run_root "$SYSTEMCTL" daemon-reload
     run_root "$SYSTEMCTL" enable --now hapax-oom-score-enforce.timer >/dev/null 2>&1 || {
-        echo "unable to enable hapax-oom-score-enforce.timer; next action: run sudo systemctl enable --now hapax-oom-score-enforce.timer" >&2
+        echo "unable to enable hapax-oom-score-enforce.timer; next action: rerun $OOM_REPAIR_ACTION" >&2
         return 1
     }
     run_root "$SYSTEMCTL" enable --now earlyoom.service >/dev/null 2>&1 || {
-        echo "unable to enable earlyoom.service; next action: run sudo systemctl enable --now earlyoom.service" >&2
+        echo "unable to enable earlyoom.service; next action: rerun $OOM_REPAIR_ACTION" >&2
         return 1
     }
     run_root "$SYSTEMCTL" restart earlyoom.service || {
-        echo "unable to restart earlyoom.service with the installed policy; next action: run sudo systemctl restart earlyoom.service and inspect journalctl -u earlyoom.service" >&2
+        echo "unable to restart earlyoom.service with the installed policy; next action: inspect journalctl -u earlyoom.service and rerun $OOM_REPAIR_ACTION" >&2
         return 1
     }
     user_systemctl daemon-reload
@@ -3891,11 +3887,11 @@ verify_live() {
     verify_pair "$(src_path "$earlyoom_source")" "$EARLYOOM_DEST"
     verify_root_artifact_trust "$EARLYOOM_DEST" 644
     run_root "$SYSTEMCTL" is-enabled --quiet earlyoom.service || {
-        echo "earlyoom.service is not enabled; next action: run sudo systemctl enable --now earlyoom.service" >&2
+        echo "earlyoom.service is not enabled; next action: rerun $OOM_REPAIR_ACTION" >&2
         return 1
     }
     run_root "$SYSTEMCTL" is-active --quiet earlyoom.service || {
-        echo "earlyoom.service is not active; next action: run sudo systemctl enable --now earlyoom.service and inspect journalctl -u earlyoom.service" >&2
+        echo "earlyoom.service is not active; next action: inspect journalctl -u earlyoom.service and rerun $OOM_REPAIR_ACTION" >&2
         return 1
     }
     for rel in "${user_slice_dropins[@]}"; do
@@ -3984,7 +3980,7 @@ verify_enforcer_loaded_timeout() {
         return 1
     fi
     if [ "$actual" != "$expected" ]; then
-        echo "live hapax-oom-score-enforce.service TimeoutStartUSec drift: actual=${actual:-unavailable} expected=$expected; next action: run sudo systemctl daemon-reload and $OOM_REPAIR_ACTION" >&2
+        echo "live hapax-oom-score-enforce.service TimeoutStartUSec drift: actual=${actual:-unavailable} expected=$expected; next action: rerun $OOM_REPAIR_ACTION; the broker transaction owns daemon reload" >&2
         return 1
     fi
 }

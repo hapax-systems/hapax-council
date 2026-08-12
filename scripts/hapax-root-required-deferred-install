@@ -11,6 +11,7 @@ import hashlib
 import os
 import pwd
 import re
+import secrets
 import signal
 import socket
 import stat
@@ -24,21 +25,31 @@ GIT = "/usr/bin/git"
 BASH = "/usr/bin/bash"
 DEFAULT_SUDO = "/usr/bin/sudo"
 PRODUCTION_BROKER = Path("/usr/local/sbin/hapax-root-required-package-apply")
+BROKER_COMPLETION_ROOT = Path("/var/lib/hapax/root-required/package-completions")
+PRODUCTION_BROKER_PROTOCOL_ENABLED = False
 BROKER_BOOTSTRAP_ACTION = (
-    "dispatch a separately runtime-authorized root-package broker bootstrap, install the "
-    "reviewed broker root:root and non-writable at "
-    f"{PRODUCTION_BROKER}, then rerun hapax-post-merge-deploy"
+    "dispatch separately authorized broker and attestation design work; production remains "
+    "disabled until a reviewed broker is installed root:root at "
+    f"{PRODUCTION_BROKER}, its receipts carry cryptographic host attestation verified by a "
+    "source-pinned trust anchor, the exact NOSETENV sudo rule is installed, and a reviewed "
+    "source successor enables this protocol"
 )
 SHA_RE = re.compile(rb"[0-9a-f]{40}\n\Z")
 SHA_TEXT_RE = re.compile(r"[0-9a-f]{40}\Z")
+REQUEST_ID_RE = re.compile(r"[0-9a-f]{64}\Z")
 EFFECT_SCOPE_RE = re.compile(r"runtime:[A-Za-z0-9_./@*:+-]+\Z")
 TEST_MODE_ENV = "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_MODE"
 TEST_HOSTNAME_ENV = "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_HOSTNAME"
 TEST_ROOT_ENV = "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_ROOT"
-AFTER_SUDO_HOOK_ENV = "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_AFTER_SUDO_HOOK"
 SEALED_SOURCE_FDS_ENV = "HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS"
 INSTALLER_TEST_MODE_ENV = "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE"
 INSTALLER_TEST_ROOT_ENV = "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_ROOT"
+RETIRED_PRIVILEGE_SELECTOR_NAMES = frozenset(
+    {
+        "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_AFTER_SUDO_HOOK",
+        "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_SUDO",
+    }
+)
 AUTHORITY_VERIFIER_REL = PurePosixPath("scripts/hapax-post-merge-deploy")
 SHELL_GENERATED_INSTALLER_ENV_NAMES = frozenset({"PWD", "SHLVL"})
 PRODUCTION_INSTALLER_REQUIRED_ENV_NAMES = frozenset(
@@ -146,6 +157,7 @@ class LockedState:
 class BrokerRequest:
     package: Package
     sha: str
+    request_id: str
 
 
 OOM_PACKAGE = Package(
@@ -165,12 +177,28 @@ APCUPSD_PACKAGE = Package(
 PACKAGES = {package.label: package for package in (OOM_PACKAGE, APCUPSD_PACKAGE)}
 
 
+def _require_production_broker_protocol() -> None:
+    if not PRODUCTION_BROKER_PROTOCOL_ENABLED:
+        raise _error(
+            "production root-package application is disabled in this source revision because "
+            "namespace-relative ownership cannot authenticate host-root completion; "
+            + BROKER_BOOTSTRAP_ACTION
+        )
+
+
 def _host_root_uid() -> int:
-    for line in Path("/proc/self/uid_map").read_text(encoding="ascii").splitlines():
-        inside, outside, length = (int(field) for field in line.split())
-        if outside <= 0 < outside + length:
-            return inside - outside
-    return 65534
+    try:
+        lines = Path("/proc/self/uid_map").read_text(encoding="ascii").splitlines()
+        for line in lines:
+            inside, outside, length = (int(field) for field in line.split())
+            if outside <= 0 < outside + length:
+                return inside - outside
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise _error(f"cannot inspect the user-namespace host-root mapping: {exc}") from exc
+    raise _error(
+        "host UID 0 is not mapped in this user namespace; root-package authority cannot be "
+        "attested here; next action: rerun from the initial host user namespace"
+    )
 
 
 @contextlib.contextmanager
@@ -415,15 +443,18 @@ def _validate_test_path(path: Path, root: Path, *, label: str) -> None:
 
 def _install_paths() -> InstallPaths:
     defaults = _production_defaults()
+    retired = sorted(name for name in RETIRED_PRIVILEGE_SELECTOR_NAMES if os.environ.get(name))
+    if retired:
+        raise _error(
+            "retired deferred-install privilege selectors are refused: " + ", ".join(retired)
+        )
     test_mode = _authorize_isolated_test_mode()
     override_names = {
         "HAPAX_ROOT_REQUIRED_STATE_ROOT",
         "HAPAX_POST_MERGE_ROOT_DEFER_DIR",
         "HAPAX_ROOT_REQUIRED_GIT_REPO",
-        "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_SUDO",
         TEST_ROOT_ENV,
         TEST_HOSTNAME_ENV,
-        AFTER_SUDO_HOOK_ENV,
     }
     present = sorted(name for name in override_names if name in os.environ)
     if not test_mode:
@@ -440,7 +471,9 @@ def _install_paths() -> InstallPaths:
         state_root=_absolute_env_path("HAPAX_ROOT_REQUIRED_STATE_ROOT"),
         defer_root=_absolute_env_path("HAPAX_POST_MERGE_ROOT_DEFER_DIR"),
         repo_alias=_absolute_env_path("HAPAX_ROOT_REQUIRED_GIT_REPO"),
-        sudo=_absolute_env_path("HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_SUDO"),
+        # Isolated tests never cross a privilege boundary. The production
+        # value is inert structured state in this branch and is never run.
+        sudo=defaults.sudo,
         test_mode=True,
         test_root=test_root,
     )
@@ -448,7 +481,6 @@ def _install_paths() -> InstallPaths:
         (paths.state_root, "state root"),
         (paths.defer_root, "defer root"),
         (paths.repo_alias, "activation alias"),
-        (paths.sudo, "sudo command"),
     ):
         _validate_test_path(test_path, test_root, label=label)
     for test_path, production_path in (
@@ -985,33 +1017,34 @@ def _validate_sudo(path: Path, *, test_mode: bool) -> None:
             raise _error(
                 "isolated test sudo must be a caller-owned, non-setid, non-writable fake and never /usr/bin/sudo"
             )
-
-
-def _validate_test_installer_sudo(name: str, value: str) -> None:
-    if not value:
         return
-    path = Path(value)
-    if not path.is_absolute():
-        raise _error(f"isolated {name} must be an absolute fake sudo path")
-    _validate_sudo(path, test_mode=True)
-
-
-def _run_after_sudo_hook(paths: InstallPaths) -> None:
-    raw = os.environ.get(AFTER_SUDO_HOOK_ENV, "")
-    if not raw:
-        return
-    if not paths.test_mode:
-        raise _error(f"{AFTER_SUDO_HOOK_ENV} is test-only")
-    hook = Path(raw)
-    if not hook.is_absolute():
-        raise _error(f"{AFTER_SUDO_HOOK_ENV} must be absolute")
-    if paths.test_root is None:
-        raise _error("isolated after-sudo hook has no authenticated test root")
-    _validate_test_path(hook, paths.test_root, label="after-sudo hook")
-    _lstat_regular(hook, label="after-sudo test hook", executable=True)
-    result = subprocess.run([str(hook)], check=False, env=_safe_subprocess_env(paths.home))
-    if result.returncode != 0:
-        raise _error(f"after-sudo test hook failed with rc={result.returncode}")
+    uid = _host_root_uid()
+    parent_fd = -1
+    try:
+        parent_fd = _open_trusted_directory(
+            path.parent,
+            trust_anchor=Path("/"),
+            trusted_uid=uid,
+            label="production sudo command",
+        )
+        inode = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError as exc:
+        raise _error(f"cannot inspect trusted production sudo command {path}: {exc}") from exc
+    finally:
+        if parent_fd >= 0:
+            os.close(parent_fd)
+    if (
+        not stat.S_ISREG(inode.st_mode)
+        or inode.st_uid != uid
+        or inode.st_nlink != 1
+        or inode.st_mode & 0o022
+        or not inode.st_mode & stat.S_ISUID
+        or not inode.st_mode & 0o100
+    ):
+        raise _error(
+            "production sudo command must be a single-link, setuid-root, root-owned, "
+            f"non-writable executable: {path}"
+        )
 
 
 def _child_env(
@@ -1051,15 +1084,15 @@ def _child_env(
         env[INSTALLER_TEST_ROOT_ENV] = str(paths.test_root)
         test_prefixes = ("HAPAX_APCUPSD_", "HAPAX_OOM_", "HAPAX_UPS_", "HAPAX_UPOWER_")
         test_names = {"HAPAX_ROOT_FAILURE_INTAKE_DEST", "HAPAX_ROOT_REQUIRED_AUDIT_DEST"}
-        for name in ("HAPAX_APCUPSD_INSTALL_SUDO", "HAPAX_OOM_INSTALL_SUDO"):
-            value = os.environ.get(name, "")
-            _validate_test_installer_sudo(name, value)
-            env[name] = value
         env.update(
             (name, value)
             for name, value in os.environ.items()
             if name.startswith(test_prefixes) or name in test_names
         )
+        # Apply these after forwarding the bounded test vocabulary: a caller-owned
+        # fake mutator must never be wrapped in sudo by this interpreted transaction.
+        env["HAPAX_APCUPSD_INSTALL_SUDO"] = ""
+        env["HAPAX_OOM_INSTALL_SUDO"] = ""
     return env
 
 
@@ -1211,21 +1244,16 @@ def _execute_installer(
 def _validate_production_broker(path: Path = PRODUCTION_BROKER) -> None:
     if path != PRODUCTION_BROKER:
         raise _error(f"production root-package broker must be {PRODUCTION_BROKER}")
+    parent_fd = -1
     try:
-        current = Path("/")
-        for part in path.parts[1:-1]:
-            current /= part
-            inode = os.lstat(current)
-            if (
-                not stat.S_ISDIR(inode.st_mode)
-                or inode.st_uid != _host_root_uid()
-                or inode.st_mode & 0o022
-            ):
-                raise _error(
-                    f"root-package broker ancestor is not root-owned and non-writable: {current}; "
-                    + BROKER_BOOTSTRAP_ACTION
-                )
-        inode = os.lstat(path)
+        uid = _host_root_uid()
+        parent_fd = _open_trusted_directory(
+            path.parent,
+            trust_anchor=Path("/"),
+            trusted_uid=uid,
+            label="root-package broker",
+        )
+        inode = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
     except FileNotFoundError as exc:
         raise _error(
             f"root-owned package broker is not installed at {path}; " + BROKER_BOOTSTRAP_ACTION
@@ -1234,9 +1262,12 @@ def _validate_production_broker(path: Path = PRODUCTION_BROKER) -> None:
         raise _error(
             f"cannot inspect root-owned package broker {path}: {exc}; " + BROKER_BOOTSTRAP_ACTION
         ) from exc
+    finally:
+        if parent_fd >= 0:
+            os.close(parent_fd)
     if (
         not stat.S_ISREG(inode.st_mode)
-        or inode.st_uid != _host_root_uid()
+        or inode.st_uid != uid
         or inode.st_nlink != 1
         or inode.st_mode & 0o6022
         or not inode.st_mode & 0o100
@@ -1247,7 +1278,177 @@ def _validate_production_broker(path: Path = PRODUCTION_BROKER) -> None:
         )
 
 
-def _verify_broker_completion(paths: InstallPaths, package: Package, sha: str) -> None:
+def _inode_snapshot(inode: os.stat_result) -> tuple[int, ...]:
+    return (
+        inode.st_dev,
+        inode.st_ino,
+        inode.st_uid,
+        inode.st_gid,
+        inode.st_nlink,
+        stat.S_IMODE(inode.st_mode),
+        inode.st_size,
+        inode.st_mtime_ns,
+        inode.st_ctime_ns,
+    )
+
+
+def _open_trusted_directory(
+    path: Path,
+    *,
+    trust_anchor: Path,
+    trusted_uid: int,
+    label: str = "trusted path",
+) -> int:
+    lexical_path = Path(os.path.abspath(os.path.normpath(path)))
+    lexical_anchor = Path(os.path.abspath(os.path.normpath(trust_anchor)))
+    try:
+        relative = lexical_path.relative_to(lexical_anchor)
+    except ValueError as exc:
+        raise _error(f"{label} escapes its trust anchor: {lexical_path}") from exc
+
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW
+    current_fd = -1
+    current_path = lexical_anchor
+    try:
+        current_fd = os.open(lexical_anchor, flags)
+        for component in (".", *relative.parts):
+            if component != ".":
+                next_fd = os.open(component, flags, dir_fd=current_fd)
+                os.close(current_fd)
+                current_fd = next_fd
+                current_path /= component
+            inode = os.fstat(current_fd)
+            if (
+                not stat.S_ISDIR(inode.st_mode)
+                or inode.st_uid != trusted_uid
+                or inode.st_mode & 0o022
+            ):
+                raise _error(
+                    f"{label} ancestor is not a trusted, non-writable directory: {current_path}"
+                )
+        return current_fd
+    except Exception:
+        if current_fd >= 0:
+            os.close(current_fd)
+        raise
+
+
+def _verify_root_broker_receipt(
+    request: BrokerRequest,
+    *,
+    completion_root: Path = BROKER_COMPLETION_ROOT,
+    trust_anchor: Path = Path("/"),
+    trusted_uid: int | None = None,
+) -> None:
+    # This specifies file-level shape only. It is not host-root authority across
+    # user/mount namespaces, so the production protocol remains disabled until
+    # a source-pinned cryptographic attestation layer is implemented and reviewed.
+    if REQUEST_ID_RE.fullmatch(request.request_id) is None:
+        raise _error("root-package broker request ID is not exactly 64 lowercase hex characters")
+    if request.package.label not in PACKAGES:
+        raise _error(f"root-package broker request has unknown package: {request.package.label}")
+    if SHA_TEXT_RE.fullmatch(request.sha) is None:
+        raise _error("root-package broker request SHA is not exactly 40 lowercase hex characters")
+
+    uid = _host_root_uid() if trusted_uid is None else trusted_uid
+    parent = completion_root / request.package.label
+    expected = (
+        "schema=1\n"
+        f"request_id={request.request_id}\n"
+        f"package={request.package.label}\n"
+        f"sha={request.sha}\n"
+    ).encode("ascii")
+    parent_fd = -1
+    receipt = parent / f"{request.request_id}.receipt"
+    try:
+        parent_fd = _open_trusted_directory(
+            parent,
+            trust_anchor=trust_anchor,
+            trusted_uid=uid,
+            label="root-package completion",
+        )
+        for name in (f"{request.request_id}.receipt", "current.receipt"):
+            receipt = parent / name
+            receipt_fd = -1
+            try:
+                inode = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                if (
+                    not stat.S_ISREG(inode.st_mode)
+                    or inode.st_uid != uid
+                    or inode.st_nlink != 1
+                    or stat.S_IMODE(inode.st_mode) != 0o444
+                    or inode.st_size != len(expected)
+                ):
+                    raise _error(
+                        "root-package broker completion receipt is not an exact mode-0444, "
+                        f"single-link trusted file: {receipt}"
+                    )
+                receipt_fd = os.open(
+                    name,
+                    os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    dir_fd=parent_fd,
+                )
+                opened = os.fstat(receipt_fd)
+                if _inode_snapshot(opened) != _inode_snapshot(inode):
+                    raise _error(
+                        f"root-package broker completion receipt changed while opening: {receipt}"
+                    )
+                chunks: list[bytes] = []
+                remaining = len(expected) + 1
+                while remaining:
+                    chunk = os.read(receipt_fd, remaining)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                content = b"".join(chunks)
+                after = os.fstat(receipt_fd)
+                published = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                if _inode_snapshot(after) != _inode_snapshot(opened) or _inode_snapshot(
+                    published
+                ) != _inode_snapshot(after):
+                    raise _error(
+                        f"root-package broker completion receipt changed while reading: {receipt}"
+                    )
+                if content != expected:
+                    raise _error(
+                        "root-package broker completion receipt does not match this exact request; "
+                        "leave the deferral pending, inspect the broker journal, and rerun"
+                    )
+            finally:
+                if receipt_fd >= 0:
+                    os.close(receipt_fd)
+    except FileNotFoundError as exc:
+        raise _error(
+            f"root-package broker returned success without root-owned completion evidence at {receipt}; "
+            "leave the deferral pending, inspect the broker journal, and rerun"
+        ) from exc
+    except OSError as exc:
+        raise _error(
+            f"cannot verify root-package broker completion evidence at {receipt}: {exc}; "
+            "leave the deferral pending, inspect the broker journal, and rerun"
+        ) from exc
+    finally:
+        if parent_fd >= 0:
+            os.close(parent_fd)
+
+
+def _verify_broker_completion(
+    paths: InstallPaths,
+    request: BrokerRequest,
+    *,
+    completion_root: Path = BROKER_COMPLETION_ROOT,
+    trust_anchor: Path = Path("/"),
+    trusted_uid: int | None = None,
+) -> None:
+    _verify_root_broker_receipt(
+        request,
+        completion_root=completion_root,
+        trust_anchor=trust_anchor,
+        trusted_uid=trusted_uid,
+    )
+    package = request.package
+    sha = request.sha
     for kind in ("desired", "installed"):
         receipt = paths.state_root / f"{kind}-receipts" / f"{package.label}.sha"
         if _read_safe_receipt_sha(receipt, label=f"broker-{kind} package receipt") != sha:
@@ -1297,12 +1498,22 @@ def _verify_broker_completion(paths: InstallPaths, package: Package, sha: str) -
         raise _error(
             "root-package broker returned success without a caller-owned mode-0600 drain marker"
         )
+    # Recheck the root-owned current generation after every caller-owned
+    # bookkeeping check. A successor published during this interval must make
+    # this request fail at the final verification point.
+    _verify_root_broker_receipt(
+        request,
+        completion_root=completion_root,
+        trust_anchor=trust_anchor,
+        trusted_uid=trusted_uid,
+    )
 
 
 def _execute_production_broker(
     paths: InstallPaths,
     request: BrokerRequest,
 ) -> int:
+    _require_production_broker_protocol()
     _validate_production_broker()
     # The helper's task and verifier checks are advisory narrowing only. Package and SHA
     # are bounded requests, not selectors or permission tokens: the root-owned broker
@@ -1316,6 +1527,8 @@ def _execute_production_broker(
         request.package.label,
         "--expected-sha",
         request.sha,
+        "--request-id",
+        request.request_id,
     ]
     result = subprocess.run(command, check=False, env=_safe_subprocess_env(paths.home))
     if result.returncode != 0:
@@ -1325,10 +1538,10 @@ def _execute_production_broker(
             "inspect the broker diagnostic and rerun the governed post-merge action"
         )
     with _locked_state(paths) as (locked_paths, _state_lock):
-        _verify_broker_completion(locked_paths, request.package, request.sha)
+        _verify_broker_completion(locked_paths, request)
     print(
-        "hapax-root-required-deferred-install: completed authenticated "
-        f"package={request.package.label} sha={request.sha}",
+        "hapax-root-required-deferred-install: completed broker-attested "
+        f"package={request.package.label} sha={request.sha} request_id={request.request_id}",
         flush=True,
     )
     return 0
@@ -1371,17 +1584,17 @@ def _install_locked(
         runtime_authority_task,
     )
     if not paths.test_mode:
-        # Production effects live below the interpreted installer boundary. Nothing
-        # from the Bash child can authorize, parameterize, or time this transaction.
-        return BrokerRequest(package=package, sha=sha)
-    sudo_result = subprocess.run(
-        [str(paths.sudo), "-v"], check=False, env=_safe_subprocess_env(paths.home)
-    )
-    if sudo_result.returncode != 0:
-        raise _error(f"sudo credential warmup failed with rc={sudo_result.returncode}")
-    _run_after_sudo_hook(paths)
-    if _read_safe_receipt_sha(receipt, label="desired package receipt after sudo") != sha:
-        raise _error("desired package receipt changed during sudo warmup")
+        # The interpreted verifier may refuse or delay whether a request is made. It
+        # cannot authorize effects or furnish broker permission. Package, SHA, and
+        # request ID are bounded correlation fields the broker independently checks.
+        return BrokerRequest(package=package, sha=sha, request_id=secrets.token_hex(32))
+    if (
+        _read_safe_receipt_sha(
+            receipt, label="desired package receipt before isolated test execution"
+        )
+        != sha
+    ):
+        raise _error("desired package receipt changed before isolated test execution")
     _validate_commit(repo, sha)
     stage = _validate_stage(paths, repo, sha, package)
     validated_runtime_gates = _validate_runtime_gates(
@@ -1406,7 +1619,7 @@ def _install_locked(
     if result != 0:
         return result
     print(
-        "hapax-root-required-deferred-install: completed authenticated "
+        "hapax-root-required-deferred-install: completed isolated-test "
         f"package={package.label} sha={sha}",
         flush=True,
     )
@@ -1421,6 +1634,8 @@ def install(
     runtime_authority_task: Path,
 ) -> int:
     paths = _install_paths()
+    if not paths.test_mode:
+        _require_production_broker_protocol()
     if paths.test_mode:
         if paths.test_root is None:
             raise _error("isolated deferred-install mode has no authenticated test root")
@@ -1434,7 +1649,8 @@ def install(
             paths.test_root,
             label="runtime authority task",
         )
-    _validate_sudo(paths.sudo, test_mode=paths.test_mode)
+    if not paths.test_mode:
+        _validate_sudo(paths.sudo, test_mode=False)
     _validate_owned_directory(paths.state_root, label="root-required state root")
     with _locked_state(paths) as (locked_paths, state_lock):
         outcome = _install_locked(

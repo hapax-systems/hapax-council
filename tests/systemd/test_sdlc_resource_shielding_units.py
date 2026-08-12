@@ -630,8 +630,10 @@ def test_local_judge_runbook_requires_live_authenticated_command() -> None:
     assert 'release_verify "$sha"' in text
     assert '~/.local/bin/hapax-post-merge-deploy "$sha"' not in text
     assert '/usr/bin/bash -p "$runbook"' not in text
-    assert "completed authenticated package=oom-containment sha=$sha" in text
-    assert '"$stage/AUTHENTICATED-INSTALL.log"' in text
+    assert "host-root-held key" in text
+    assert "source-pinned trust anchor" in text
+    assert "installed verification unavailable" in text
+    assert '"$stage/AUTHENTICATED-INSTALL.log"' not in text
     assert "cp systemd/units/hapax-local-judge.service" not in text
     install_marker = 'release_verify "$sha"'
     install_fence_start = text.rfind("```bash", 0, text.index(install_marker))
@@ -1151,7 +1153,7 @@ def test_local_judge_runtime_fences_are_valid_bash() -> None:
     markers = (
         'canary_name="hapax-local-judge-cap-canary-$$"',
         'release_verify "$sha"',
-        '"$stage/AUTHENTICATED-INSTALL.log"',
+        "installed verification unavailable",
         "activation_phase=restart",
         'container_id="$(release_lifecycle managed-id',
     )
@@ -1206,7 +1208,7 @@ def test_local_judge_runtime_fences_use_structured_active_task_authority() -> No
 
     for marker in (
         'release_verify "$sha"',
-        '"$stage/AUTHENTICATED-INSTALL.log"',
+        "installed verification unavailable",
     ):
         marker_index = text.index(marker)
         start = text.rfind("```bash\n", 0, marker_index)

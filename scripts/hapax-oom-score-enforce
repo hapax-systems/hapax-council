@@ -356,7 +356,7 @@ apply_unit_score() {
         if changed="$(write_oom_score_for_cgroup "$pid" "$score" "$unit" "$cgroup")"; then
             [ -z "$changed" ] || echo "user-unit $unit pid=$pid oom_score_adj=$score"
         else
-            echo "warn: failed to set oom_score_adj for $unit pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "warn: failed to set oom_score_adj for $unit pid=$pid; next action: run scripts/hapax-oom-policy-audit --json, set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical runtime-authorized task, and rerun hapax-post-merge-deploy" >&2
             failed=1
         fi
     done
@@ -377,7 +377,7 @@ apply_unit_main_score() {
     if changed="$(write_oom_score_for_cgroup "$pid" "$score" "$unit" "$cgroup")"; then
         [ -z "$changed" ] || echo "user-unit $unit pid=$pid oom_score_adj=$score"
     else
-        echo "warn: failed to set startup oom_score_adj for $unit pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "warn: failed to set startup oom_score_adj for $unit pid=$pid; next action: run scripts/hapax-oom-policy-audit --json, set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical runtime-authorized task, and rerun hapax-post-merge-deploy" >&2
         failed=1
     fi
 }
@@ -492,7 +492,7 @@ elif [ -n "$user_pid" ]; then
     elif changed="$(write_oom_score_for_cgroup "$user_pid" 100 "$user_manager_unit" "$user_cgroup")"; then
         [ -z "$changed" ] || echo "system user@$TARGET_UID.service pid=$user_pid oom_score_adj=100"
     else
-        echo "warn: failed to set oom_score_adj for user@$TARGET_UID.service pid=$user_pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "warn: failed to set oom_score_adj for user@$TARGET_UID.service pid=$user_pid; next action: run scripts/hapax-oom-policy-audit --json, set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical runtime-authorized task, and rerun hapax-post-merge-deploy" >&2
         failed=1
     fi
 else
