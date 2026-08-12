@@ -58,7 +58,9 @@ script version before mutating source.
 Check both legacy role-keyed and governed session-keyed cache files:
 
 ```bash
+set -euo pipefail
 shopt -s nullglob
+task_note="$HOME/Documents/Personal/20-projects/hapax-cc-tasks/active/<task-id>.md"
 matches=()
 for claim_file in "$HOME"/.cache/hapax/cc-active-task-<lane>*; do
   observed_task="$(head -n1 "$claim_file")"
@@ -66,15 +68,18 @@ for claim_file in "$HOME"/.cache/hapax/cc-active-task-<lane>*; do
   test "$observed_task" = "<task-id>" && matches+=("$claim_file")
 done
 test "${#matches[@]}" -gt 0
-rg -n "^status: claimed|^assigned_to: <lane>|HAPAX_GATE0B_CLAIM_PUBLICATION_OFF" \
-  ~/Documents/Personal/20-projects/hapax-cc-tasks/active/<task-id>*.md
+test -f "$task_note"
+rg -q "^status: claimed$" "$task_note"
+rg -q "^assigned_to: <lane>$" "$task_note"
+rg -q "HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1|operator-authorized emergency fallback|using legacy claim writer" \
+  "$task_note" "$HOME/.cache/hapax/relay"/*.yaml
 ```
 
 Expected result: at least one exact `cc-active-task-<lane>*` path is printed,
 the task note contains `status: claimed` and `assigned_to: <lane>`, and the
-operator log records why the non-admitted fallback was used. If no path prints
-or the `rg` command does not show both frontmatter lines, the fallback did not
-produce a complete legacy claim.
+operator log or relay records why the non-admitted fallback was used. If any
+command exits nonzero, the fallback did not produce a complete legacy claim or
+the operator reason is missing.
 
 Record why the fallback was used in the task session log or relay status. The
 verification proves only a legacy claim write; it is not admitted-publication

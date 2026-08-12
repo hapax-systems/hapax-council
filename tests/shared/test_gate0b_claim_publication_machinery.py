@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import stat
 import subprocess
 from dataclasses import dataclass, replace
@@ -10,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+import shared.gate0b_claim_publication_install as install_machinery
 from shared.execution_admission import (
     DEFAULT_EXECUTION_COMPOSITION_ROOT,
     ContentAddress,
@@ -238,6 +240,45 @@ def test_install_rejects_existing_receipt_collision(tmp_path: Path) -> None:
 
     with pytest.raises(ExecutionAdmissionError, match="gate0b_install_file_collision"):
         _install(tmp_path, fixture)
+
+
+def test_install_private_writer_refuses_racing_collision_without_overwrite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "root" / "activation-receipt.json"
+    racing_payload = b'{"schema":"other-generation"}\n'
+    original_link = install_machinery.os.link
+
+    def racing_link(
+        src: str | bytes | os.PathLike[str],
+        dst: str | bytes | os.PathLike[str],
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> None:
+        if Path(dst) == target:
+            target.write_bytes(racing_payload)
+            target.chmod(0o600)
+            raise FileExistsError("simulated concurrent first-use install")
+        original_link(
+            src,
+            dst,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
+
+    monkeypatch.setattr(install_machinery.os, "link", racing_link)
+
+    with pytest.raises(ExecutionAdmissionError) as excinfo:
+        install_machinery._write_private_file(target, b'{"schema":"this-generation"}\n')
+
+    assert excinfo.value.reason_code == "gate0b_install_file_collision"
+    assert "rerun first-use install" in excinfo.value.repair_action
+    assert target.read_bytes() == racing_payload
+    assert list(target.parent.glob(".activation-receipt.json.tmp-*")) == []
 
 
 def test_invocation_store_private_writer_is_idempotent_and_rejects_collision(
