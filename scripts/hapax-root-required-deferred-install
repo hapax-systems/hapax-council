@@ -149,11 +149,8 @@ def _require_isolated_test_process() -> None:
 
         uid_map = read_id_map("uid")
         gid_map = read_id_map("gid")
-        mount_points: set[str] = set()
-        for line in Path("/proc/self/mountinfo").read_text(encoding="ascii").splitlines():
-            fields = line.split()
-            if len(fields) >= 5:
-                mount_points.add(fields[4])
+        self_mountinfo = Path("/proc/self/mountinfo").read_bytes()
+        init_mountinfo = Path("/proc/1/mountinfo").read_bytes()
     except (KeyError, OSError, UnicodeError, ValueError) as exc:
         raise _error(f"cannot authenticate isolated test process identity: {exc}") from exc
 
@@ -171,7 +168,7 @@ def _require_isolated_test_process() -> None:
         or cap_eff != 0
         or uid_map != initial_map
         or gid_map != initial_map
-        or str(Path(sys.argv[0])) in mount_points
+        or self_mountinfo != init_mountinfo
     ):
         raise _error(
             "deferred-install test mode refuses root, set-ID, capability-bearing, or "
@@ -421,13 +418,15 @@ def _validate_test_path(path: Path, root: Path, *, label: str) -> None:
 
 
 def _install_paths() -> InstallPaths:
-    defaults = _production_defaults()
     retired = sorted(name for name in RETIRED_PRIVILEGE_SELECTOR_NAMES if os.environ.get(name))
     if retired:
         raise _error(
             "retired deferred-install privilege selectors are refused: " + ", ".join(retired)
         )
     test_mode = _authorize_isolated_test_mode()
+    if not test_mode:
+        _refuse_production()
+    defaults = _production_defaults()
     override_names = {
         "HAPAX_ROOT_REQUIRED_STATE_ROOT",
         "HAPAX_POST_MERGE_ROOT_DEFER_DIR",

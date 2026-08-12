@@ -271,7 +271,9 @@ def test_every_installer_environment_name_has_one_authenticated_boundary_classif
     assert "done < /proc/self/status" in source[:root_derivation]
     assert "done < /proc/self/uid_map" in source[:root_derivation]
     assert "done < /proc/self/gid_map" in source[:root_derivation]
-    assert "done < /proc/self/mountinfo" in source[:root_derivation]
+    assert "mapfile -t _self_mountinfo < /proc/self/mountinfo" in source[:root_derivation]
+    assert "mapfile -t _init_mountinfo < /proc/1/mountinfo" in source[:root_derivation]
+    assert '"$_mountinfo_equal" -ne 1' in source[:root_derivation]
     assert "compgen -A variable" not in source[:root_derivation]
     assert 'unset "$_environment_name"' not in source
     assert (
@@ -669,8 +671,10 @@ def test_legacy_sudo_refusal_precedes_external_lookup_and_no_sudo_dispatch_remai
     assert '[[ "$_status_cap_eff" =~ ^0+$ ]]' in source
     assert "done < /proc/self/uid_map" in source
     assert "done < /proc/self/gid_map" in source
-    assert "done < /proc/self/mountinfo" in source
-    assert '"$_mount_point" = "$0"' in source
+    assert "mapfile -t _self_mountinfo < /proc/self/mountinfo" in source
+    assert "mapfile -t _init_mountinfo < /proc/1/mountinfo" in source
+    assert '"$_mountinfo_equal" -ne 1' in source
+    assert '"$_mount_point" = "$0"' not in source
     assert '$(/usr/bin/dirname "${BASH_SOURCE[0]}")' in source
     assert '"$SUDO" "$@"' not in source
     assert "INSTALL_SUDO-/usr/bin/sudo" not in source
@@ -860,13 +864,12 @@ def test_isolated_test_mode_rejects_noninitial_or_privileged_identity_before_loo
         (APCUPSD_INSTALLER, "HAPAX_APCUPSD_INSTALL_SUDO"),
     ),
 )
-def test_bind_mounted_installer_alias_in_user_mount_namespace_cannot_enter_test_mode(
+def test_bind_mounted_installer_ancestor_in_user_mount_namespace_cannot_enter_test_mode(
     tmp_path: Path, installer_rel: Path, selector: str
 ) -> None:
     command, marker, workspace = _isolated_installer_environment(tmp_path, installer_rel, selector)
-    alias = workspace / "installer-bind-alias"
-    alias.touch(mode=0o755)
-    alias.chmod(0o755)
+    alias_root = workspace.with_name(f"{workspace.name}-bind-alias")
+    alias_root.mkdir(mode=0o755)
     launcher = (
         'set -e; /usr/bin/mount --bind "$1" "$2"; shift 2; '
         'exec /usr/bin/setpriv --reuid 1000 --regid 1000 --clear-groups -- "$@"'
@@ -895,10 +898,10 @@ def test_bind_mounted_installer_alias_in_user_mount_namespace_cannot_enter_test_
         "-c",
         launcher,
         "bind-alias-test",
-        command[-2],
-        str(alias),
+        str(workspace),
+        str(alias_root),
     ]
-    command[-2] = str(alias)
+    command[-2] = str(alias_root / "installer")
     try:
         result = subprocess.run([*prefix, *command], text=True, capture_output=True, check=False)
         if "unshare failed" in result.stderr and "not permitted" in result.stderr.lower():
@@ -909,6 +912,7 @@ def test_bind_mounted_installer_alias_in_user_mount_namespace_cannot_enter_test_
         assert not marker.exists()
     finally:
         shutil.rmtree(workspace)
+        shutil.rmtree(alias_root)
 
 
 @pytest.mark.parametrize(
@@ -936,13 +940,13 @@ def test_bind_mounted_installer_alias_in_user_mount_namespace_cannot_enter_test_
         ),
         (
             INSTALLER,
-            "mount-alias",
-            '        || [ "$_script_is_mountpoint" -ne 0 ]; then\n',
+            "mount-namespace",
+            '        || [ "$_mountinfo_equal" -ne 1 ]; then\n',
         ),
         (
             APCUPSD_INSTALLER,
-            "mount-alias",
-            '        || [ "$_script_is_mountpoint" -ne 0 ]; then\n',
+            "mount-namespace",
+            '        || [ "$_mountinfo_equal" -ne 1 ]; then\n',
         ),
     ),
 )
@@ -975,17 +979,21 @@ def test_isolated_identity_predicates_are_independently_mutation_verified(
             status_text,
         )
     status.write_text(status_text, encoding="ascii")
-    mountinfo = workspace / "mountinfo"
+    self_mountinfo = workspace / "self-mountinfo"
+    init_mountinfo = workspace / "init-mountinfo"
     script = workspace / "installer"
-    mountinfo.write_text(
-        f"1 0 0:1 / {script} rw - tmpfs tmpfs rw\n"
-        if fault == "mount-alias"
-        else Path("/proc/self/mountinfo").read_text(encoding="ascii"),
+    host_mountinfo = Path("/proc/self/mountinfo").read_text(encoding="ascii")
+    self_mountinfo.write_text(
+        host_mountinfo + "1 0 0:1 / /ancestor-alias rw - tmpfs tmpfs rw\n"
+        if fault == "mount-namespace"
+        else host_mountinfo,
         encoding="ascii",
     )
+    init_mountinfo.write_text(host_mountinfo, encoding="ascii")
     source = (REPO_ROOT / installer_rel).read_text(encoding="utf-8")
     source = source.replace("/proc/self/status", str(status), 1)
-    source = source.replace("/proc/self/mountinfo", str(mountinfo), 1)
+    source = source.replace("/proc/self/mountinfo", str(self_mountinfo), 1)
+    source = source.replace("/proc/1/mountinfo", str(init_mountinfo), 1)
     source = source.replace("/usr/bin/dirname", str(dirname), 1)
     assert guard_line in source
     environment = {
@@ -1010,7 +1018,7 @@ def test_isolated_identity_predicates_are_independently_mutation_verified(
         assert not marker.exists()
 
         replacement = (
-            "        || false; then\n" if fault == "mount-alias" else "        || false \\\n"
+            "        || false; then\n" if fault == "mount-namespace" else "        || false \\\n"
         )
         mutant = source.replace(guard_line, replacement, 1)
         assert mutant != source
@@ -1851,7 +1859,7 @@ def test_receipt_readers_bind_parent_inode_metadata_and_bounded_bytes() -> None:
         assert "snapshot(after) != snapshot(published)" in source
 
 
-def _load_deferred_module():
+def _load_deferred_module(script: Path = SCRIPT):
     name = f"hapax_root_required_deferred_install_test_{time.monotonic_ns()}"
     seal_defaults = {
         "F_SEAL_SEAL": 0x0001,
@@ -1864,13 +1872,62 @@ def _load_deferred_module():
     for attribute, value in seal_defaults.items():
         if not hasattr(fcntl, attribute):
             setattr(fcntl, attribute, value)
-    loader = importlib.machinery.SourceFileLoader(name, str(SCRIPT))
+    loader = importlib.machinery.SourceFileLoader(name, str(script))
     spec = importlib.util.spec_from_loader(name, loader)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     loader.exec_module(module)
     return module
+
+
+def test_install_path_admission_precedes_passwd_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_deferred_module()
+    defaults_called = False
+
+    class AdmissionStopped(RuntimeError):
+        pass
+
+    def stop_at_admission() -> bool:
+        raise AdmissionStopped
+
+    def forbidden_defaults():
+        nonlocal defaults_called
+        defaults_called = True
+        raise AssertionError("passwd-backed production defaults ran before admission")
+
+    monkeypatch.setattr(module, "_authorize_isolated_test_mode", stop_at_admission)
+    monkeypatch.setattr(module, "_production_defaults", forbidden_defaults)
+
+    with pytest.raises(AdmissionStopped):
+        module._install_paths()
+    assert not defaults_called
+
+
+def test_deferred_helper_mount_namespace_predicate_is_mutation_verified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    guard = "        or self_mountinfo != init_mountinfo\n"
+    assert guard in source
+    mutant_path = tmp_path / "deferred-install-mutant.py"
+    mutant_path.write_text(source.replace(guard, "", 1), encoding="utf-8")
+    original = _load_deferred_module()
+    mutant = _load_deferred_module(mutant_path)
+    real_read_bytes = Path.read_bytes
+
+    def divergent_mountinfo(path: Path) -> bytes:
+        if str(path) == "/proc/self/mountinfo":
+            return b"self namespace\n"
+        if str(path) == "/proc/1/mountinfo":
+            return b"initial namespace\n"
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", divergent_mountinfo)
+
+    with pytest.raises(original.DeferredInstallError, match="non-initial user/mount namespace"):
+        original._require_isolated_test_process()
+    mutant._require_isolated_test_process()
 
 
 def _production_refusal_environment(tmp_path: Path) -> dict[str, str]:
