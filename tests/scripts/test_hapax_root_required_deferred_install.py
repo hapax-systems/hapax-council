@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import ctypes
 import fcntl
+import importlib.machinery
+import importlib.util
 import os
 import pwd
 import shutil
 import signal
+import stat
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -152,12 +156,19 @@ def test_authenticated_installers_gate_before_receipts_and_deferral_drain() -> N
         )
         superseded_gate = source.index(superseded_call, source.index("SKIP_SUPERSEDED_INSTALL"))
         superseded_drain = source.index("drain_root_required_deferral", superseded_gate)
-        gate = source.rindex('[ "$INSTALL" -eq 0 ] || run_authenticated_authority_gate')
-        receipt = source.rindex('[ "$INSTALL" -eq 0 ] || record_root_required_package_receipt')
-        drain = source.rindex('[ "$INSTALL" -eq 0 ] || drain_root_required_deferral')
+        final_block = source[source.rindex('if [ "$INSTALL" -ne 0 ]; then') :]
+        final_gate_call = (
+            "run_authenticated_authority_gate applied"
+            if relative_path == INSTALLER
+            else "run_authenticated_authority_gate"
+        )
+        gate = final_block.index(final_gate_call)
+        snapshot = final_block.index("record_installed_source", gate)
+        receipt = final_block.index("record_root_required_package_receipt", snapshot)
+        drain = final_block.index("drain_root_required_deferral", receipt)
 
         assert superseded_gate < superseded_drain
-        assert gate < receipt < drain
+        assert gate < snapshot < receipt < drain
         assert "no further effect or receipt advancement is permitted" in source
 
 
@@ -756,6 +767,192 @@ def test_malformed_receipt_refuses_before_sudo_or_execution(tmp_path: Path, cont
     assert "exactly 40 lowercase hex characters and one newline" in result.stderr
     assert not fixture.sudo_calls.exists()
     assert not fixture.installer_marker.exists()
+
+
+def test_oversized_sparse_receipt_is_bounded_and_refused_before_sudo(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    with fixture.receipt.open("wb") as handle:
+        handle.write(f"{fixture.sha}\n".encode())
+        handle.truncate(64 * 1024 * 1024)
+
+    result = fixture.run()
+
+    assert result.returncode == 1
+    assert "exactly 40 lowercase hex characters and one newline" in result.stderr
+    assert not fixture.sudo_calls.exists()
+    assert not fixture.installer_marker.exists()
+
+
+def test_receipt_readers_bind_parent_inode_metadata_and_bounded_bytes() -> None:
+    deferred = SCRIPT.read_text(encoding="utf-8")
+    assert "max_bytes=41" in deferred
+    assert "remaining = 42" in deferred
+    assert "remaining = accepted_size + 1" in deferred
+    assert "snapshot(after) != snapshot(opened)" in deferred
+    assert "snapshot(published) != snapshot(after)" in deferred
+    assert "os.open(path.name, flags, dir_fd=parent_fd)" in deferred
+    assert "max_bytes=2 * 1024 * 1024" in deferred
+    assert "max_bytes=2048" in deferred
+
+    for relative in (
+        "scripts/hapax-post-merge-deploy",
+        "scripts/hapax-root-required-deploy-audit",
+        "scripts/install-apcupsd-power-alerts",
+        "scripts/install-p0-oom-containment",
+    ):
+        source = (REPO_ROOT / relative).read_text(encoding="utf-8")
+        assert "remaining = 42" in source
+        assert "snapshot(after) != snapshot(opened)" in source
+        assert "snapshot(published) != snapshot(after)" in source
+        assert "os.stat(base, dir_fd=parent_fd, follow_symlinks=False)" in source
+        assert "dir_fd=parent_fd" in source
+
+    for relative in (
+        "scripts/hapax-post-merge-deploy",
+        "scripts/install-apcupsd-power-alerts",
+        "scripts/install-p0-oom-containment",
+    ):
+        source = (REPO_ROOT / relative).read_text(encoding="utf-8")
+        assert "published = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)" in source
+        assert "snapshot(expected) != snapshot(opened)" in source
+        assert "snapshot(opened) != snapshot(after)" in source
+        assert "snapshot(after) != snapshot(published)" in source
+
+
+def _load_deferred_module():
+    name = f"hapax_root_required_deferred_install_test_{time.monotonic_ns()}"
+    seal_defaults = {
+        "F_SEAL_SEAL": 0x0001,
+        "F_SEAL_SHRINK": 0x0002,
+        "F_SEAL_GROW": 0x0004,
+        "F_SEAL_WRITE": 0x0008,
+        "F_ADD_SEALS": 1033,
+        "F_GET_SEALS": 1034,
+    }
+    for attribute, value in seal_defaults.items():
+        if not hasattr(fcntl, attribute):
+            setattr(fcntl, attribute, value)
+    loader = importlib.machinery.SourceFileLoader(name, str(SCRIPT))
+    spec = importlib.util.spec_from_loader(name, loader)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    loader.exec_module(module)
+    return module
+
+
+def test_regular_reader_bounds_same_inode_growth_and_rejects_path_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_deferred_module()
+    path = tmp_path / "authority-input"
+    original = b"a" * (128 * 1024)
+    path.write_bytes(original)
+    peer = tmp_path / "replacement"
+    peer.write_bytes(original)
+    real_read = os.read
+    requested: list[int] = []
+    first = True
+
+    def replace_after_first_read(fd: int, count: int) -> bytes:
+        nonlocal first
+        requested.append(count)
+        chunk = real_read(fd, count)
+        if first:
+            first = False
+            os.replace(peer, path)
+        return chunk
+
+    monkeypatch.setattr(module.os, "read", replace_after_first_read)
+    with pytest.raises(module.DeferredInstallError, match="changed while it was read"):
+        module._read_regular_bytes(
+            path,
+            label="authority input",
+            executable=False,
+            max_bytes=len(original),
+        )
+    assert sum(requested) <= len(original) + 1
+
+    path.write_bytes(original)
+    requested.clear()
+    first = True
+
+    def grow_after_first_read(fd: int, count: int) -> bytes:
+        nonlocal first
+        requested.append(count)
+        chunk = real_read(fd, count)
+        if first:
+            first = False
+            with path.open("r+b") as handle:
+                handle.truncate(64 * 1024 * 1024)
+        return chunk
+
+    monkeypatch.setattr(module.os, "read", grow_after_first_read)
+    with pytest.raises(module.DeferredInstallError, match="changed while it was read"):
+        module._read_regular_bytes(
+            path,
+            label="authority input",
+            executable=False,
+            max_bytes=len(original),
+        )
+    assert sum(requested) <= len(original) + 1
+
+
+@pytest.mark.parametrize(
+    ("relative", "next_function"),
+    (
+        ("scripts/hapax-post-merge-deploy", "record_root_required_desired_sha"),
+        ("scripts/install-apcupsd-power-alerts", "migrate_legacy_root_required_state"),
+        ("scripts/install-p0-oom-containment", "migrate_legacy_root_required_state"),
+    ),
+)
+def test_receipt_normalization_preserves_canonical_inode_and_mtime(
+    tmp_path: Path, relative: str, next_function: str
+) -> None:
+    source = (REPO_ROOT / relative).read_text(encoding="utf-8")
+    start = source.index("write_root_required_sha_receipt() {")
+    end = source.index(f"\n{next_function}() {{", start)
+    writer = source[start:end]
+    sha = "a" * 40
+    receipt = tmp_path / relative.replace("/", "-") / "receipt.sha"
+    receipt.parent.mkdir(mode=0o700)
+    receipt.write_text(f"{sha}\n", encoding="utf-8")
+    receipt.chmod(0o600)
+    canonical = receipt.stat()
+    command = (
+        "set -euo pipefail\n"
+        f"{writer}\n"
+        'write_root_required_sha_receipt "$1" "$2" preserve-canonical\n'
+    )
+
+    preserved = subprocess.run(
+        ["/usr/bin/bash", "--noprofile", "--norc", "-c", command, "writer", str(receipt), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert preserved.returncode == 0, preserved.stderr
+    after = receipt.stat()
+    assert (after.st_ino, after.st_mtime_ns, after.st_ctime_ns) == (
+        canonical.st_ino,
+        canonical.st_mtime_ns,
+        canonical.st_ctime_ns,
+    )
+
+    receipt.chmod(0o644)
+    legacy = receipt.stat()
+    normalized = subprocess.run(
+        ["/usr/bin/bash", "--noprofile", "--norc", "-c", command, "writer", str(receipt), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert normalized.returncode == 0, normalized.stderr
+    assert receipt.stat().st_ino != legacy.st_ino
+    assert stat.S_IMODE(receipt.stat().st_mode) == 0o600
+    assert receipt.read_text(encoding="utf-8") == f"{sha}\n"
 
 
 def test_symlinked_receipt_refuses_before_sudo(tmp_path: Path) -> None:
