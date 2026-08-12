@@ -1748,7 +1748,7 @@ PY
 }
 
 validate_authenticated_test_contract() {
-    local path selector
+    local path selector_value
     local canonical_stage="$ROOT_REQUIRED_DEFER_ROOT/$ROOT_REQUIRED_PACKAGE_SHA/oom-containment"
     local -a destinations selector_paths
     validate_authenticated_test_root || return 1
@@ -1773,8 +1773,13 @@ validate_authenticated_test_contract() {
         "$ROOT_REQUIRED_LOCK_FILE" "$ROOT_REQUIRED_GIT_REPO" "$SOURCE"
         "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" "$RUNTIME_AUTHORITY_TASK" "$TARGET_HOME"
     )
-    for selector in ZRAM_DROPIN_DIRS ZRAM_HIGH_PRIORITY_CONFIGS HAPAX_OOM_GOVERNED_SYSTEM_UNIT_PATHS HAPAX_OOM_GOVERNED_USER_UNIT_PATHS HAPAX_OOM_USER_UNIT_PATHS; do
-        IFS=: read -r -a selector_paths <<< "${!selector:-}"
+    for selector_value in \
+        "$ZRAM_DROPIN_DIRS" \
+        "$ZRAM_HIGH_PRIORITY_CONFIGS" \
+        "${HAPAX_OOM_GOVERNED_SYSTEM_UNIT_PATHS:-}" \
+        "${HAPAX_OOM_GOVERNED_USER_UNIT_PATHS:-}" \
+        "${HAPAX_OOM_USER_UNIT_PATHS:-}"; do
+        IFS=: read -r -a selector_paths <<< "$selector_value"
         destinations+=("${selector_paths[@]}")
     done
     for path in "${destinations[@]}"; do
