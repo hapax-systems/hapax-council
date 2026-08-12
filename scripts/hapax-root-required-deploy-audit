@@ -1,6 +1,102 @@
 #!/usr/bin/bash -p
 # Fail when post-merge root-required deploy actions were deferred and not drained.
 set -euo pipefail
+case "${HAPAX_ROOT_AUDIT_TEST_MODE:-0}" in
+    0) ;;
+    1)
+        _status_uid_seen=0
+        _status_gid_seen=0
+        _status_cap_seen=0
+        while read -r _status_key _status_1 _status_2 _status_3 _status_4 _status_extra; do
+            case "$_status_key" in
+                Uid:)
+                    _status_uid_seen=1
+                    _status_uid_real="$_status_1"
+                    _status_uid_effective="$_status_2"
+                    _status_uid_saved="$_status_3"
+                    _status_uid_fs="$_status_4"
+                    ;;
+                Gid:)
+                    _status_gid_seen=1
+                    _status_gid_real="$_status_1"
+                    _status_gid_effective="$_status_2"
+                    _status_gid_saved="$_status_3"
+                    _status_gid_fs="$_status_4"
+                    ;;
+                CapEff:)
+                    _status_cap_seen=1
+                    _status_cap_eff="$_status_1"
+                    ;;
+            esac
+        done < /proc/self/status
+        _uid_map_count=0
+        _uid_map_valid=1
+        while read -r _map_inside _map_outside _map_length _map_extra; do
+            _uid_map_count=$((_uid_map_count + 1))
+            if [ "$_map_inside" != 0 ] || [ "$_map_outside" != 0 ] \
+                || [ "$_map_length" != 4294967295 ] || [ -n "${_map_extra:-}" ]; then
+                _uid_map_valid=0
+            fi
+        done < /proc/self/uid_map
+        _gid_map_count=0
+        _gid_map_valid=1
+        while read -r _map_inside _map_outside _map_length _map_extra; do
+            _gid_map_count=$((_gid_map_count + 1))
+            if [ "$_map_inside" != 0 ] || [ "$_map_outside" != 0 ] \
+                || [ "$_map_length" != 4294967295 ] || [ -n "${_map_extra:-}" ]; then
+                _gid_map_valid=0
+            fi
+        done < /proc/self/gid_map
+        _self_mountinfo=()
+        _init_mountinfo=()
+        if ! mapfile -t _self_mountinfo < /proc/self/mountinfo \
+            || ! mapfile -t _init_mountinfo < /proc/1/mountinfo; then
+            echo "root-required audit cannot read current and initial mount state for isolated test mode" >&2
+            exit 1
+        fi
+        _mountinfo_equal=1
+        if [ "${#_self_mountinfo[@]}" -ne "${#_init_mountinfo[@]}" ]; then
+            _mountinfo_equal=0
+        else
+            for ((_mount_index = 0; _mount_index < ${#_self_mountinfo[@]}; _mount_index++)); do
+                if [ "${_self_mountinfo[$_mount_index]}" != "${_init_mountinfo[$_mount_index]}" ]; then
+                    _mountinfo_equal=0
+                    break
+                fi
+            done
+        fi
+        if [ "$_status_uid_seen" -ne 1 ] || [ "$_status_gid_seen" -ne 1 ] \
+            || [ "$_status_cap_seen" -ne 1 ] \
+            || [ "$_status_uid_real" != "$UID" ] \
+            || [ "$_status_uid_effective" != "$EUID" ] \
+            || [ "$_status_uid_real" = 0 ] \
+            || [ "$_status_uid_real" != "$_status_uid_effective" ] \
+            || [ "$_status_uid_real" != "$_status_uid_saved" ] \
+            || [ "$_status_uid_real" != "$_status_uid_fs" ] \
+            || [ "$_status_gid_real" != "$_status_gid_effective" ] \
+            || [ "$_status_gid_real" != "$_status_gid_saved" ] \
+            || [ "$_status_gid_real" != "$_status_gid_fs" ] \
+            || ! [[ "$_status_cap_eff" =~ ^0+$ ]] \
+            || [ "$_uid_map_count" -ne 1 ] || [ "$_uid_map_valid" -ne 1 ] \
+            || [ "$_gid_map_count" -ne 1 ] || [ "$_gid_map_valid" -ne 1 ] \
+            || [ "$_mountinfo_equal" -ne 1 ]; then
+            echo "root-required audit refuses root, set-ID, capability-bearing, or non-initial user/mount namespace test execution before setup" >&2
+            exit 1
+        fi
+        unset _gid_map_count _gid_map_valid _init_mountinfo _map_extra _map_inside
+        unset _map_length _map_outside _mount_index _mountinfo_equal _self_mountinfo
+        unset _status_1 _status_2 _status_3
+        unset _status_4 _status_cap_eff _status_cap_seen _status_extra
+        unset _status_gid_effective _status_gid_fs _status_gid_real _status_gid_saved
+        unset _status_gid_seen _status_key _status_uid_effective _status_uid_fs
+        unset _status_uid_real _status_uid_saved _status_uid_seen _uid_map_count
+        unset _uid_map_valid
+        ;;
+    *)
+        echo "HAPAX_ROOT_AUDIT_TEST_MODE must be exactly 1 when present" >&2
+        exit 1
+        ;;
+esac
 ORIGINAL_ARGS=("$@")
 PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
 export PATH
@@ -10,7 +106,7 @@ authorize_isolated_test_mode() {
     [ "${HAPAX_ROOT_AUDIT_TEST_MODE:-0}" = "1" ] || return 0
     local invoked invoked_real argv0_real resolved source_root git_root owner mode trusted_path
     invoked="${BASH_SOURCE[0]}"
-    if [ "$(/usr/bin/id -u)" = 0 ] || [ -L "$invoked" ] || [ -L "$0" ] \
+    if [ -L "$invoked" ] || [ -L "$0" ] \
         || ! invoked_real="$(/usr/bin/realpath -e -- "$invoked")" \
         || ! argv0_real="$(/usr/bin/realpath -e -- "$0")" \
         || [ "$invoked_real" != "$argv0_real" ]; then
@@ -964,6 +1060,11 @@ refuse_production_test_overrides() {
 }
 
 refuse_production_test_overrides || exit 1
+if [ "$AUDIT_TEST_MODE" != "1" ]; then
+    echo "root-required production audit unavailable: caller-owned Git state, desired or installed receipts, snapshots, logs, and live-state matches cannot attest a host-root package generation" >&2
+    echo "  next action: keep runtime closure open and dispatch separately runtime-authorized broker/cryptographic-attestation work; require matching exact-request and current-generation attestations before restoring a success path" >&2
+    exit 1
+fi
 reexec_with_safe_root_required_lock
 mkdir -p "$ROOT_DEFER_DIR"
 
@@ -2260,7 +2361,7 @@ if [ "${#runbooks[@]}" -eq 0 ]; then
     if [ "$rc" -ne 0 ]; then
         exit "$rc"
     fi
-    echo "root-required post-merge deploy deferrals: none"
+    echo "isolated-test root-required fixture deferrals: none"
     exit 0
 fi
 
@@ -2268,6 +2369,6 @@ echo "root-required post-merge deploy deferrals pending (${#runbooks[@]}):" >&2
 for runbook in "${runbooks[@]}"; do
     dir="$(dirname "$runbook")"
     echo "  $dir" >&2
-    echo "    next action: rerun hapax-post-merge-deploy for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK and use only its live 'next action: run:' command; RUNBOOK.txt is metadata, not code" >&2
+    echo "    next action: preserve the pending exact-SHA package and dispatch separately runtime-authorized broker/cryptographic-attestation work; RUNBOOK.txt is metadata, not code" >&2
 done
 exit 1

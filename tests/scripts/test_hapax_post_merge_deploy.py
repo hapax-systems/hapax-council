@@ -250,6 +250,115 @@ def _runtime_authority_task_for_emitted_commands(
     monkeypatch.setenv("HAPAX_POST_MERGE_TEST_MODE", "1")
 
 
+@pytest.mark.parametrize(
+    ("entrypoint", "selector", "external_command", "argv"),
+    (
+        (SCRIPT, "HAPAX_POST_MERGE_TEST_MODE", "/usr/bin/git", ()),
+        (ROOT_REQUIRED_AUDIT, "HAPAX_ROOT_AUDIT_TEST_MODE", "/usr/bin/realpath", ()),
+    ),
+)
+@pytest.mark.parametrize(
+    ("fault", "guard"),
+    (
+        (
+            "setgid",
+            '            || [ "$_status_gid_real" != "$_status_gid_effective" ] \\\n',
+        ),
+        (
+            "capability",
+            '            || ! [[ "$_status_cap_eff" =~ ^0+$ ]] \\\n',
+        ),
+        ("mount-namespace", '            || [ "$_mountinfo_equal" -ne 1 ]; then\n'),
+    ),
+)
+def test_isolated_shell_entrypoint_rejects_identity_before_external_lookup(
+    tmp_path: Path,
+    entrypoint: Path,
+    selector: str,
+    external_command: str,
+    argv: tuple[str, ...],
+    fault: str,
+    guard: str,
+) -> None:
+    source = entrypoint.read_text(encoding="utf-8")
+    gate_end = source.index("\nesac\n")
+    gate = source[:gate_end]
+    for required in (
+        "done < /proc/self/status",
+        "done < /proc/self/uid_map",
+        "done < /proc/self/gid_map",
+        "mapfile -t _self_mountinfo < /proc/self/mountinfo",
+        "mapfile -t _init_mountinfo < /proc/1/mountinfo",
+        '"$_mountinfo_equal" -ne 1',
+    ):
+        assert required in gate
+    assert gate_end < source.index(external_command)
+
+    self_mountinfo = tmp_path / "self-mountinfo"
+    init_mountinfo = tmp_path / "init-mountinfo"
+    host_mountinfo = Path("/proc/self/mountinfo").read_text(encoding="ascii")
+    self_mountinfo_text = (
+        host_mountinfo + "1 0 0:1 / /ancestor-bind rw - tmpfs tmpfs rw\n"
+        if fault == "mount-namespace"
+        else host_mountinfo
+    )
+    self_mountinfo.write_text(self_mountinfo_text, encoding="ascii")
+    init_mountinfo.write_text(host_mountinfo, encoding="ascii")
+    status = tmp_path / "status"
+    status_text = Path("/proc/self/status").read_text(encoding="ascii")
+    if fault == "setgid":
+        status_text = re.sub(
+            r"(?m)^Gid:\s+\d+\s+\d+\s+\d+\s+\d+\s*$",
+            f"Gid:\t{os.getgid()}\t3\t{os.getgid()}\t{os.getgid()}",
+            status_text,
+        )
+    elif fault == "capability":
+        status_text = re.sub(
+            r"(?m)^CapEff:\s+[0-9a-fA-F]+\s*$",
+            "CapEff:\t0000000000000400",
+            status_text,
+        )
+    status.write_text(status_text, encoding="ascii")
+    marker = tmp_path / f"{entrypoint.name}-external-lookup"
+    external = tmp_path / f"{entrypoint.name}-external"
+    external.write_text(
+        f'#!/usr/bin/bash\n/usr/bin/touch {marker}\nexec {external_command} "$@"\n',
+        encoding="utf-8",
+    )
+    external.chmod(0o755)
+    guarded_source = source.replace("/proc/self/status", str(status), 1)
+    guarded_source = guarded_source.replace("/proc/self/mountinfo", str(self_mountinfo), 1)
+    guarded_source = guarded_source.replace("/proc/1/mountinfo", str(init_mountinfo), 1)
+    guarded_source = guarded_source.replace(external_command, str(external), 1)
+    assert guard in guarded_source
+    script = tmp_path / entrypoint.name
+    script.write_text(guarded_source, encoding="utf-8")
+    script.chmod(0o755)
+    env = {**os.environ, selector: "1"}
+    if entrypoint == SCRIPT:
+        argv = (_git(REPO_ROOT, "rev-parse", "HEAD"),)
+        env["REPO"] = str(REPO_ROOT)
+
+    guarded = subprocess.run(
+        [str(script), *argv], text=True, capture_output=True, check=False, env=env
+    )
+    assert guarded.returncode == 1
+    assert "non-initial user/mount namespace" in guarded.stderr
+    assert not marker.exists()
+
+    replacement = (
+        "            || false; then\n"
+        if fault == "mount-namespace"
+        else "            || false \\\n"
+    )
+    script.write_text(guarded_source.replace(guard, replacement, 1))
+    script.chmod(0o755)
+    exposed = subprocess.run(
+        [str(script), *argv], text=True, capture_output=True, check=False, env=env
+    )
+    assert marker.exists(), (exposed.returncode, exposed.stderr)
+
+
 OOM_HOST_PROFILE_FILES = {
     relative: (REPO_ROOT / relative).read_text(encoding="utf-8")
     for relative in (
@@ -3078,7 +3187,8 @@ def test_p0_oom_deploy_always_creates_authenticated_deferral_without_restart(
     assert not installer_calls.exists(), "post-merge must not execute mutable staged package code"
     deferred = defer_dir / sha / "oom-containment"
     assert (deferred / "RUNBOOK.txt").is_file()
-    assert "next action: run:" in result.stdout
+    assert "next action: run:" not in result.stdout
+    assert "production execution unavailable" in result.stdout
     assert stale_deferral.exists(), (
         "only the authenticated live command may drain a pending deferral"
     )
@@ -3657,13 +3767,15 @@ def test_concurrent_oom_deferral_ignores_replace_refs_and_owns_local_judge(
     tmp_path: Path,
 ) -> None:
     installer_body = "#!/usr/bin/env bash\nsleep 0.2\nexit 77\n"
+    historical_helper_marker = tmp_path / "historical-helper-executed"
     files = {
         "config/root-required/oom-containment.files": OOM_PACKAGE_MANIFEST,
         **OOM_HOST_PROFILE_FILES,
         "scripts/install-p0-oom-containment": installer_body,
         "scripts/hapax-root-required-deferred-install": (
             "#!/usr/bin/python3\n"
-            "import json, sys\n"
+            "import json, pathlib, sys\n"
+            f"pathlib.Path({str(historical_helper_marker)!r}).touch()\n"
             "print('deferred-helper-argv=' + json.dumps(sys.argv))\n"
             "package = sys.argv[sys.argv.index('--package') + 1]\n"
             "sha = sys.argv[sys.argv.index('--expected-sha') + 1]\n"
@@ -3814,79 +3926,17 @@ def test_concurrent_oom_deferral_ignores_replace_refs_and_owns_local_judge(
     assert "/usr/bin/python3" not in runbook
     assert f'"{deferred}/scripts/install-p0-oom-containment" --source' not in runbook
     output = first_stdout + second_stdout
-    command_lines = [
-        line.removeprefix("next action: run: ")
-        for line in output.splitlines()
-        if line.startswith("next action: run: ")
-    ]
-    assert command_lines
-    command = command_lines[-1]
-    assert "GIT_CONFIG_GLOBAL=/dev/null" in command
-    assert "GIT_CONFIG_NOSYSTEM=1" in command
-    assert "GIT_NO_REPLACE_OBJECTS=1" in command
-    assert "/usr/bin/python3" in command
-    assert "--package" in command
-    assert "--expected-sha" in command
-    assert "/usr/bin/python3 -I -c" not in command
-    assert ".cache/hapax/source-activation/worktree" in command
-    assert str(repo) not in command
-
+    assert "next action: run:" not in output
+    assert "production execution unavailable" in output
+    assert (
+        "no current or historical Git helper is executable authority"
+        in first_stderr + second_stderr
+    )
+    assert not historical_helper_marker.exists()
     deploy_source = SCRIPT.read_text(encoding="utf-8")
-    heredoc_start = "read -r -d '' authenticated_script <<'BASH' || true\n"
-    assert deploy_source.count(heredoc_start) == 1
-    authenticated_script = deploy_source.split(heredoc_start, 1)[1].split("\nBASH\n", 1)[0]
-    success_evidence = tmp_path / "successful-authentication.log"
-    request_id = "c" * 64
-    completion = (
-        "hapax-root-required-deferred-install: completed broker-attested "
-        f"package=oom-containment sha={sha} request_id={request_id}"
-    )
-    completion_pattern = (
-        "^hapax-root-required-deferred-install: completed broker-attested "
-        f"package=oom-containment sha={sha} request_id=[0-9a-f]{{64}}$"
-    )
-    successful = subprocess.run(
-        [
-            "/usr/bin/env",
-            "-i",
-            f"HOME={home}",
-            "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin",
-            "/usr/bin/bash",
-            "--noprofile",
-            "--norc",
-            "-c",
-            authenticated_script,
-            "hapax-root-required-auth",
-            str(repo),
-            sha,
-            "scripts/hapax-root-required-deferred-install",
-            "oom-containment",
-            str(success_evidence),
-            completion_pattern,
-            str(home),
-            os.environ["HAPAX_RUNTIME_AUTHORITY_TASK"],
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert successful.returncode == 0, successful.stderr
-    assert completion in successful.stdout
-    assert completion in success_evidence.read_text(encoding="utf-8").splitlines()
-
-    compromised = tmp_path / "compromised-runbook-ran"
-    runbook_path.write_text(f"#!/usr/bin/bash\ntouch {compromised}\n", encoding="utf-8")
-    runbook_path.chmod(0o700)
-    authenticated = subprocess.run(
-        ["/usr/bin/bash", "--noprofile", "--norc", "-c", command],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert authenticated.returncode != 0
-    assert not compromised.exists()
-    assert "deferred-helper-argv=" not in authenticated.stdout
-    assert "hapax-root-required authentication:" in authenticated.stderr
+    assert "authenticated_script" not in deploy_source
+    assert 'show "$sha:$helper_rel"' not in deploy_source
+    assert "completed broker-attested" not in deploy_source
     assert (home / ".config" / "systemd" / "user" / "hapax-demo.service").is_file()
     assert not (home / ".config" / "systemd" / "user" / "hapax-local-judge.service").exists()
     assert "hapax-local-judge.service" not in systemctl_calls.read_text(encoding="utf-8")
@@ -3922,13 +3972,11 @@ def test_concurrent_oom_deferral_ignores_replace_refs_and_owns_local_judge(
     assert "completed broker-attested" not in forged_receipt_retry.stdout
     assert "pending marker reconciled" not in forged_receipt_retry.stdout
     assert "root-required oom-containment install deferred" in forged_receipt_retry.stdout
-    assert not compromised.exists()
+    assert not historical_helper_marker.exists()
     assert runbook_path.exists()
     assert stat.S_IMODE(runbook_path.stat().st_mode) == 0o600
     assert not (deferred / "DRAINED.txt").exists()
     assert stat.S_IMODE(installed.stat().st_mode) == 0o600
-    runbook_path.write_text(runbook, encoding="utf-8")
-    runbook_path.chmod(0o600)
     repeated = subprocess.run(
         [str(SCRIPT), sha],
         text=True,
@@ -3941,6 +3989,7 @@ def test_concurrent_oom_deferral_ignores_replace_refs_and_owns_local_judge(
     assert "pending marker reconciled" not in repeated.stdout
     assert runbook_path.exists()
     assert not (deferred / "DRAINED.txt").exists()
+    assert not historical_helper_marker.exists()
     assert desired.read_text(encoding="utf-8").strip() == sha
 
 
@@ -4613,7 +4662,7 @@ def test_root_required_audit_passes_when_oom_enforcer_matches(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "root-required post-merge deploy deferrals: none" in result.stdout
+    assert "isolated-test root-required fixture deferrals: none" in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -5497,38 +5546,15 @@ def test_root_required_audit_refuses_production_git_repo_override(tmp_path: Path
     assert not (tmp_path / "defer-root").exists()
 
 
-def test_root_required_audit_production_reexec_accepts_its_validated_internal_selectors(
+def test_root_required_audit_production_refuses_before_git_lock_or_receipts(
     tmp_path: Path,
 ) -> None:
-    state_root = tmp_path / "state"
-    defer_root = tmp_path / "deferred"
+    marker = tmp_path / "git-ran"
+    fake_git = tmp_path / "git"
+    fake_git.write_text(f"#!/usr/bin/bash\n/usr/bin/touch {marker}\nexit 91\n", encoding="utf-8")
+    fake_git.chmod(0o755)
     source = ROOT_REQUIRED_AUDIT.read_text(encoding="utf-8")
-    source = (
-        source.replace(
-            'ROOT_DEFER_DIR="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$HOME/.cache/hapax/post-merge-root-required}"',
-            f'ROOT_DEFER_DIR="{defer_root}"',
-            1,
-        )
-        .replace(
-            'ROOT_REQUIRED_STATE_ROOT="${HAPAX_ROOT_REQUIRED_STATE_ROOT:-$HOME/.local/state/hapax/root-required}"',
-            f'ROOT_REQUIRED_STATE_ROOT="{state_root}"',
-            1,
-        )
-        .replace(
-            'local canonical_root="$HOME/.local/state/hapax/root-required"',
-            f'local canonical_root="{state_root}"',
-            1,
-        )
-    )
-    stop = 'reexec_with_safe_root_required_lock\nmkdir -p "$ROOT_DEFER_DIR"\n\nrc=0'
-    assert stop in source
-    source = source.replace(
-        stop,
-        "reexec_with_safe_root_required_lock\n"
-        "printf 'validated inherited production lock\\n'\n"
-        "exit 73\n\nrc=0",
-        1,
-    )
+    source = source.replace("/usr/bin/git", str(fake_git))
     audit = tmp_path / "hapax-root-required-deploy-audit"
     audit.write_text(source, encoding="utf-8")
     audit.chmod(0o755)
@@ -5546,12 +5572,13 @@ def test_root_required_audit_production_reexec_accepts_its_validated_internal_se
         env=env,
     )
 
-    assert result.returncode == 73, result.stderr
-    assert result.stdout == "validated inherited production lock\n"
-    assert "refuses test selectors outside isolated test mode" not in result.stderr
+    assert result.returncode == 1
+    assert "production audit unavailable" in result.stderr
+    assert "cryptographic-attestation work" in result.stderr
+    assert not marker.exists()
 
 
-def test_root_required_audit_rejects_valid_inherited_lock_for_redirected_production_root(
+def test_root_required_audit_refuses_production_before_processing_inherited_lock_state(
     tmp_path: Path,
 ) -> None:
     state_root = tmp_path / "redirected-state"
@@ -5593,7 +5620,7 @@ def test_root_required_audit_rejects_valid_inherited_lock_for_redirected_product
         os.close(state_fd)
 
     assert result.returncode == 1
-    assert "refused inherited lock state outside the canonical account root" in result.stderr
+    assert "production audit unavailable" in result.stderr
     assert "next action:" in result.stderr
 
 
@@ -5726,9 +5753,12 @@ def test_root_required_audit_rejects_every_production_selector_before_mutation(
     )
 
     assert result.returncode == 1
-    assert "refuses test selectors outside isolated test mode" in result.stderr
-    assert selector in result.stderr
-    assert "next action:" in result.stderr
+    if selector == "HAPAX_ROOT_AUDIT_TEST_MODE":
+        assert "HAPAX_ROOT_AUDIT_TEST_MODE must be exactly 1 when present" in result.stderr
+    else:
+        assert "refuses test selectors outside isolated test mode" in result.stderr
+        assert selector in result.stderr
+        assert "next action:" in result.stderr
     assert not selected_defer_root.exists()
 
 
@@ -5800,7 +5830,7 @@ def test_root_required_audit_ignores_ambient_git_selectors_and_replace_refs(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "root-required post-merge deploy deferrals: none" in result.stdout
+    assert "isolated-test root-required fixture deferrals: none" in result.stdout
 
 
 @pytest.mark.parametrize("marker_kind", ("symlink", "fifo"))
@@ -5835,7 +5865,7 @@ def test_root_required_audit_rejects_unsafe_pending_marker(
     assert result.returncode == 1
     assert "unsafe root-required pending marker" in result.stderr
     assert str(marker) in result.stderr
-    assert "root-required post-merge deploy deferrals: none" not in result.stdout
+    assert "isolated-test root-required fixture deferrals: none" not in result.stdout
 
 
 @pytest.mark.parametrize("link_level", ("sha", "package"))
@@ -5875,7 +5905,7 @@ def test_root_required_audit_rejects_symlinked_pending_directories(
     assert result.returncode == 1
     assert "unsafe root-required pending directory" in result.stderr
     assert str(unsafe_path) in result.stderr
-    assert "root-required post-merge deploy deferrals: none" not in result.stdout
+    assert "isolated-test root-required fixture deferrals: none" not in result.stdout
 
 
 def test_root_required_audit_rejects_effective_service_dropin(tmp_path: Path) -> None:
@@ -6757,7 +6787,8 @@ def test_apcupsd_power_alert_deploy_always_creates_authenticated_deferral(
     assert not installer_calls.exists(), "post-merge must not execute mutable staged package code"
     deferred = home / ".cache/hapax/post-merge-root-required" / sha / "apcupsd-power-alerts"
     assert (deferred / "RUNBOOK.txt").is_file()
-    assert "next action: run:" in result.stdout
+    assert "next action: run:" not in result.stdout
+    assert "production execution unavailable" in result.stdout
     record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
     assert set(record["deploy_groups"]["apcupsd_power_alerts"]) == set(files)
 

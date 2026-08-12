@@ -103,6 +103,102 @@
 # Exits non-zero if any deploy step failed (or, in --report-coverage
 # mode, if any systemd/** path is unclassified).
 set -euo pipefail
+case "${HAPAX_POST_MERGE_TEST_MODE:-0}" in
+    0) ;;
+    1)
+        _status_uid_seen=0
+        _status_gid_seen=0
+        _status_cap_seen=0
+        while read -r _status_key _status_1 _status_2 _status_3 _status_4 _status_extra; do
+            case "$_status_key" in
+                Uid:)
+                    _status_uid_seen=1
+                    _status_uid_real="$_status_1"
+                    _status_uid_effective="$_status_2"
+                    _status_uid_saved="$_status_3"
+                    _status_uid_fs="$_status_4"
+                    ;;
+                Gid:)
+                    _status_gid_seen=1
+                    _status_gid_real="$_status_1"
+                    _status_gid_effective="$_status_2"
+                    _status_gid_saved="$_status_3"
+                    _status_gid_fs="$_status_4"
+                    ;;
+                CapEff:)
+                    _status_cap_seen=1
+                    _status_cap_eff="$_status_1"
+                    ;;
+            esac
+        done < /proc/self/status
+        _uid_map_count=0
+        _uid_map_valid=1
+        while read -r _map_inside _map_outside _map_length _map_extra; do
+            _uid_map_count=$((_uid_map_count + 1))
+            if [ "$_map_inside" != 0 ] || [ "$_map_outside" != 0 ] \
+                || [ "$_map_length" != 4294967295 ] || [ -n "${_map_extra:-}" ]; then
+                _uid_map_valid=0
+            fi
+        done < /proc/self/uid_map
+        _gid_map_count=0
+        _gid_map_valid=1
+        while read -r _map_inside _map_outside _map_length _map_extra; do
+            _gid_map_count=$((_gid_map_count + 1))
+            if [ "$_map_inside" != 0 ] || [ "$_map_outside" != 0 ] \
+                || [ "$_map_length" != 4294967295 ] || [ -n "${_map_extra:-}" ]; then
+                _gid_map_valid=0
+            fi
+        done < /proc/self/gid_map
+        _self_mountinfo=()
+        _init_mountinfo=()
+        if ! mapfile -t _self_mountinfo < /proc/self/mountinfo \
+            || ! mapfile -t _init_mountinfo < /proc/1/mountinfo; then
+            echo "hapax-post-merge-deploy: isolated test mode cannot read current and initial mount state" >&2
+            exit 1
+        fi
+        _mountinfo_equal=1
+        if [ "${#_self_mountinfo[@]}" -ne "${#_init_mountinfo[@]}" ]; then
+            _mountinfo_equal=0
+        else
+            for ((_mount_index = 0; _mount_index < ${#_self_mountinfo[@]}; _mount_index++)); do
+                if [ "${_self_mountinfo[$_mount_index]}" != "${_init_mountinfo[$_mount_index]}" ]; then
+                    _mountinfo_equal=0
+                    break
+                fi
+            done
+        fi
+        if [ "$_status_uid_seen" -ne 1 ] || [ "$_status_gid_seen" -ne 1 ] \
+            || [ "$_status_cap_seen" -ne 1 ] \
+            || [ "$_status_uid_real" != "$UID" ] \
+            || [ "$_status_uid_effective" != "$EUID" ] \
+            || [ "$_status_uid_real" = 0 ] \
+            || [ "$_status_uid_real" != "$_status_uid_effective" ] \
+            || [ "$_status_uid_real" != "$_status_uid_saved" ] \
+            || [ "$_status_uid_real" != "$_status_uid_fs" ] \
+            || [ "$_status_gid_real" != "$_status_gid_effective" ] \
+            || [ "$_status_gid_real" != "$_status_gid_saved" ] \
+            || [ "$_status_gid_real" != "$_status_gid_fs" ] \
+            || ! [[ "$_status_cap_eff" =~ ^0+$ ]] \
+            || [ "$_uid_map_count" -ne 1 ] || [ "$_uid_map_valid" -ne 1 ] \
+            || [ "$_gid_map_count" -ne 1 ] || [ "$_gid_map_valid" -ne 1 ] \
+            || [ "$_mountinfo_equal" -ne 1 ]; then
+            echo "hapax-post-merge-deploy: isolated test mode refuses root, set-ID, capability-bearing, or non-initial user/mount namespace execution before setup" >&2
+            exit 1
+        fi
+        unset _gid_map_count _gid_map_valid _init_mountinfo _map_extra _map_inside
+        unset _map_length _map_outside _mount_index _mountinfo_equal _self_mountinfo
+        unset _status_1 _status_2 _status_3
+        unset _status_4 _status_cap_eff _status_cap_seen _status_extra
+        unset _status_gid_effective _status_gid_fs _status_gid_real _status_gid_saved
+        unset _status_gid_seen _status_key _status_uid_effective _status_uid_fs
+        unset _status_uid_real _status_uid_saved _status_uid_seen _uid_map_count
+        unset _uid_map_valid
+        ;;
+    *)
+        echo "hapax-post-merge-deploy: HAPAX_POST_MERGE_TEST_MODE must be exactly 1 when present" >&2
+        exit 1
+        ;;
+esac
 # Repository selectors are never a supported input to deployment. Keep normal
 # credential/config discovery for the initial fetch, but force repository
 # identity to come from each explicit -C/cd root.
@@ -379,8 +475,7 @@ except OSError as exc:
     raise SystemExit(1) from exc
 root = real.parent.parent
 if (
-    os.geteuid() == 0
-    or not invoked.is_absolute()
+    not invoked.is_absolute()
     or invoked != real
     or not stat.S_ISREG(inode.st_mode)
     or inode.st_nlink != 1
@@ -388,7 +483,7 @@ if (
 ):
     print(
         "hapax-post-merge-deploy: isolated test mode requires the real repository script "
-        "under a non-root caller",
+        "under the already-admitted isolated caller",
         file=sys.stderr,
     )
     raise SystemExit(1)
@@ -4072,9 +4167,7 @@ PY
 }
 
 defer_root_required_installer() {
-    local label="$1" stage="$2" dest temp receipt helper_rel evidence completion_pattern installed_sha
-    local account_home activation_alias authenticated_script command runtime_task
-    local -a command_cmd
+    local label="$1" stage="$2" dest temp receipt installed_sha
     mkdir -p "$ROOT_DEFER_DIR"
     dest="$ROOT_DEFER_DIR/$SHA/$label"
     mkdir -p "$(dirname "$dest")"
@@ -4088,93 +4181,24 @@ defer_root_required_installer() {
     temp="$ROOT_DEFER_DIR/$SHA/.${label}.tmp.$$"
     rm -rf "$temp" 2>/dev/null || true
     cp -a "$stage" "$temp"
-    helper_rel=scripts/hapax-root-required-deferred-install
-    evidence="$dest/AUTHENTICATED-INSTALL.log"
-    completion_pattern="^hapax-root-required-deferred-install: completed broker-attested package=$label sha=$SHA request_id=[0-9a-f]{64}$"
     cat > "$temp/RUNBOOK.txt" <<EOF
 Root-required post-merge deploy action deferred.
 Commit: $SHA
 Package: $label
 
-DO NOT EXECUTE THIS FILE OR COPY A COMMAND FROM IT. It is caller-owned pending-state
-metadata, not an authentication bootstrap. Re-run hapax-post-merge-deploy for this
-commit and use only the exact "next action: run:" command emitted to that live
-terminal. That command streams the receipt-bound advisory helper directly from Git
-under env -i. This source revision then refuses production because namespace-relative
-ownership cannot authenticate host root. A future enabled protocol requires a
-source-pinned cryptographic broker attestation. Caller-owned log output is diagnostic,
-not durable authority; the future exact output shape includes its request ID:
-
-hapax-root-required-deferred-install: completed broker-attested package=$label sha=$SHA request_id=<64-lowercase-hex>
+DO NOT EXECUTE THIS FILE OR COPY A COMMAND FROM IT. It is caller-owned
+pending-state metadata, not an authentication bootstrap. This source revision
+does not resolve or execute a deferred helper from this or any historical Git
+commit. Production installation remains unavailable until separately reviewed,
+runtime-authorized broker and cryptographic completion-attestation work lands.
+Preserve this package only as reconstructible desired-state evidence.
 EOF
     chmod 0600 "$temp/RUNBOOK.txt"
     rm -rf "$dest" 2>/dev/null || true
     mv "$temp" "$dest"
     echo "root-required $label install deferred to $dest"
-
-    runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:-}"
-    if [ -z "$runtime_task" ]; then
-        echo "root-required $label authenticated command withheld because HAPAX_RUNTIME_AUTHORITY_TASK is unset"
-        echo "next action: set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical active runtime-authorized cc-task note, then rerun hapax-post-merge-deploy for $SHA; the advisory helper will narrow against every exact-SHA effect scope and the root-owned broker must independently authorize and apply" >&2
-        return 0
-    fi
-    if [[ "$runtime_task" != /* ]] || [ ! -f "$runtime_task" ] || [ -L "$runtime_task" ]; then
-        echo "hapax-post-merge-deploy: runtime authority task is not an absolute non-symlink regular file: $runtime_task; next action: set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical active task note and rerun" >&2
-        return 2
-    fi
-
-    if ! account_home="$(/usr/bin/python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')" \
-        || [[ "$account_home" != /* ]]; then
-        echo "hapax-post-merge-deploy: cannot derive the account home for canonical root-package authentication; next action: repair the local passwd entry and rerun source activation" >&2
-        return 2
-    fi
-    activation_alias="$account_home/.cache/hapax/source-activation/worktree"
-    read -r -d '' authenticated_script <<'BASH' || true
-set -euo pipefail
-activation_alias="$1"
-sha="$2"
-helper_rel="$3"
-label="$4"
-evidence="$5"
-completion_pattern="$6"
-account_home="$7"
-runtime_task="$8"
-if ! activation_release="$(/usr/bin/realpath -e -- "$activation_alias")"; then
-    echo "hapax-root-required authentication: canonical activation worktree is unavailable: $activation_alias; next action: reconcile source activation, then rerun hapax-post-merge-deploy for $sha" >&2
-    exit 2
-fi
-safe_git=(
-    /usr/bin/env -i HOME=/nonexistent PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1
-    GIT_OPTIONAL_LOCKS=0 /usr/bin/git -C "$activation_release"
-)
-if ! git_root="$("${safe_git[@]}" rev-parse --show-toplevel)" \
-    || ! git_root="$(/usr/bin/realpath -e -- "$git_root")" \
-    || [ "$git_root" != "$activation_release" ]; then
-    echo "hapax-root-required authentication: canonical activation target is not a Git worktree root: $activation_release; next action: reconcile source activation, then rerun hapax-post-merge-deploy for $sha" >&2
-    exit 2
-fi
-if ! "${safe_git[@]}" cat-file -e "$sha:$helper_rel"; then
-    echo "hapax-root-required authentication: helper blob is unavailable at $sha:$helper_rel in $activation_release; next action: fetch/reconcile the canonical activation repository, then rerun hapax-post-merge-deploy for $sha" >&2
-    exit 2
-fi
-"${safe_git[@]}" show "$sha:$helper_rel" \
-    | /usr/bin/env -i HOME="$account_home" PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin \
-        LANG=C.UTF-8 LC_ALL=C.UTF-8 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
-        GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 PYTHONNOUSERSITE=1 PYTHONSAFEPATH=1 \
-        /usr/bin/python3 -I - --package "$label" --expected-sha "$sha" \
-        --activation-release "$activation_release" --runtime-authority-task "$runtime_task" \
-    | /usr/bin/tee "$evidence"
-/usr/bin/grep -Eq "$completion_pattern" "$evidence"
-BASH
-    command_cmd=(
-        /usr/bin/env -i HOME="$account_home" PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
-        /usr/bin/bash --noprofile --norc -c "$authenticated_script"
-        hapax-root-required-auth "$activation_alias" "$SHA" "$helper_rel" "$label"
-        "$evidence" "$completion_pattern" "$account_home" "$runtime_task"
-    )
-    printf -v command '%q ' "${command_cmd[@]}"
-    echo "next action: run: ${command% }"
+    echo "root-required $label production execution unavailable in this source revision"
+    echo "next action: preserve the pending exact-SHA package and dispatch separately runtime-authorized broker/attestation work; no current or historical Git helper is executable authority" >&2
 }
 
 root_required_stage_matches_commit() {
