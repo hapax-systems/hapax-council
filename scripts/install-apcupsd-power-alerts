@@ -2,15 +2,11 @@
 # Install Hapax apcupsd config/hooks and verify power-event provenance paths.
 if [[ "${BASH_SOURCE[0]}" != "$0" ]] || [[ "${BASH_LINENO[0]:-1}" != "0" ]]; then
     printf '%s\n' "apcupsd installer must be executed, not sourced; next action: execute scripts/install-apcupsd-power-alerts as a command through hapax-post-merge-deploy" >&2
-    return 1
-fi
-case "$-" in
-    *p*) ;;
-    *)
-        printf '%s\n' "apcupsd installer requires Bash privileged mode; next action: execute the installer directly or let hapax-post-merge-deploy invoke its sealed copy" >&2
-        exit 1
-        ;;
-esac
+    [[ -n "" ]]
+elif [[ "$-" != *p* ]]; then
+    printf '%s\n' "apcupsd installer requires Bash privileged mode; next action: execute the installer directly or let hapax-post-merge-deploy invoke its sealed copy" >&2
+    [[ -n "" ]]
+else
 set -euo pipefail
 ORIGINAL_ARGS=("$@")
 readonly -a AUTHENTICATED_PRODUCTION_REQUIRED_ENV_NAMES=(
@@ -2125,3 +2121,4 @@ if [ "$INSTALL" -ne 0 ]; then
     drain_root_required_deferral
 fi
 echo "apcupsd power alert install/check complete"
+fi

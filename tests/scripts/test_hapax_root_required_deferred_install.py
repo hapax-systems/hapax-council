@@ -1312,9 +1312,10 @@ def test_noncanonical_fixed_environment_refuses_before_path_lookup(
 
 @pytest.mark.parametrize("installer_rel", (INSTALLER, APCUPSD_INSTALLER))
 def test_installer_refuses_sourcing_without_mutating_the_caller_shell(
-    installer_rel: Path,
+    tmp_path: Path, installer_rel: Path
 ) -> None:
     installer = str(REPO_ROOT / installer_rel)
+    shadow_marker = tmp_path / "shadowed-return-ran"
     for shell_zero in ("installer-source-test", installer):
         result = subprocess.run(
             [
@@ -1322,9 +1323,11 @@ def test_installer_refuses_sourcing_without_mutating_the_caller_shell(
                 "--noprofile",
                 "--norc",
                 "-c",
+                'marker=$2; return() { /usr/bin/touch "$marker"; }; '
                 'source "$1"; rc=$?; printf "source-rc=%s\\n" "$rc"',
                 shell_zero,
                 installer,
+                str(shadow_marker),
             ],
             text=True,
             capture_output=True,
@@ -1335,6 +1338,7 @@ def test_installer_refuses_sourcing_without_mutating_the_caller_shell(
         assert result.stdout == "source-rc=1\n"
         assert "must be executed, not sourced" in result.stderr
         assert "next action:" in result.stderr
+        assert not shadow_marker.exists()
 
 
 @pytest.mark.parametrize("installer_rel", (INSTALLER, APCUPSD_INSTALLER))
