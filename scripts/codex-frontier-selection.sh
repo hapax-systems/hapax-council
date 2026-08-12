@@ -27,6 +27,49 @@ CODEX_MODEL="${HAPAX_CODEX_MODEL:-$HAPAX_CODEX_FRONTIER_MODEL}"
 CODEX_EFFORT="${HAPAX_CODEX_EFFORT:-$HAPAX_CODEX_FRONTIER_EFFORT}"
 CODEX_MODEL_REASON="${HAPAX_CODEX_MODEL_REASON:-}"
 
+# PASSTHROUGH IS PART OF THE SELECTION, so it must be part of what is checked.
+#
+# Both launchers append "${CODEX_EXTRA[@]}" AFTER their own `-c model=...`, and codex takes the
+# last `-c` for a key. So `hapax-codex -- -c 'model="gpt-5.5"'` used to override a selection this
+# file had already validated, with no reason required and nothing recorded. The registry's Spark
+# launcher already uses exactly that form, so the hole was live rather than theoretical.
+#
+# That is the same defect this file was written to fix, one layer out: a real check whose INPUT
+# SET excluded the deciding state. The fix is not a second guard next to the first -- two
+# mitigations for one hazard is the smell -- it is to give the existing predicate the effective
+# values. Passthrough overrides are folded in here, and the single check below then sees what
+# codex will actually run with.
+#
+# Callers must therefore populate CODEX_EXTRA BEFORE sourcing this file. Both launchers do, and
+# `test_codex_frontier_selection.py` pins that ordering so a future edit cannot quietly undo it.
+if [ "${#CODEX_EXTRA[@]}" -gt 0 ] 2>/dev/null; then
+  _cfs_expect_config=0
+  for _cfs_arg in "${CODEX_EXTRA[@]}"; do
+    _cfs_assign=""
+    if [ "$_cfs_expect_config" -eq 1 ]; then
+      _cfs_assign="$_cfs_arg"
+      _cfs_expect_config=0
+    else
+      case "$_cfs_arg" in
+        -c|--config) _cfs_expect_config=1; continue ;;
+        -c*=*)       _cfs_assign="${_cfs_arg#-c}" ;;
+        --config=*)  _cfs_assign="${_cfs_arg#--config=}" ;;
+      esac
+    fi
+    [ -n "$_cfs_assign" ] || continue
+    _cfs_key="${_cfs_assign%%=*}"
+    _cfs_val="${_cfs_assign#*=}"
+    # codex config values are commonly quoted; the quotes are syntax, not value.
+    _cfs_val="${_cfs_val%\"}"; _cfs_val="${_cfs_val#\"}"
+    _cfs_val="${_cfs_val%\'}"; _cfs_val="${_cfs_val#\'}"
+    case "$_cfs_key" in
+      model)                  CODEX_MODEL="$_cfs_val" ;;
+      model_reasoning_effort) CODEX_EFFORT="$_cfs_val" ;;
+    esac
+  done
+  unset _cfs_expect_config _cfs_arg _cfs_assign _cfs_key _cfs_val
+fi
+
 if [ "$CODEX_MODEL" != "$HAPAX_CODEX_FRONTIER_MODEL" ] ||
   [ "$CODEX_EFFORT" != "$HAPAX_CODEX_FRONTIER_EFFORT" ]; then
   if [ -z "$CODEX_MODEL_REASON" ]; then
