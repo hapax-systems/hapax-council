@@ -374,7 +374,7 @@ def test_ci_merge_group_docs_only_filter_has_stable_base_sha() -> None:
     assert 'if [ "$GITHUB_EVENT_NAME" = "merge_group" ]; then' in docs_filter_block
     assert "merge_group_base_sha" in docs_filter_block
     assert "sed -n 's/.*-\\([0-9a-f]\\{40\\}\\)$/\\1/p'" in docs_filter_block
-    assert 'git diff --name-only "$merge_group_base_sha"..HEAD' in docs_filter_block
+    assert 'git diff --no-renames --name-only "$merge_group_base_sha"..HEAD' in docs_filter_block
 
 
 def test_ci_post_merge_pushes_reuse_successful_merge_group_validation() -> None:
@@ -572,3 +572,77 @@ def test_audio_graph_validate_triggers_on_pull_request_and_merge_group() -> None
 
     assert "pull_request:" in workflow_text
     assert "merge_group:" in workflow_text
+
+
+def _ci_changed_file_diff_invocations() -> list[str]:
+    """Every `git diff ... --name-only` line in ci.yml that builds the changed-file set."""
+    return [
+        line.strip()
+        for line in _read(".github/workflows/ci.yml").splitlines()
+        if "git diff" in line and "--name-only" in line
+    ]
+
+
+def test_docs_only_gate_disables_rename_detection() -> None:
+    """The changed-file set must decompose a rename into its add AND its delete.
+
+    `git diff --name-only` collapses a rename to its destination; the source path never
+    appears. The docs-only gate then asks "is every changed path a docs path" over that
+    already-narrowed set, so it can see a non-docs path added or modified and
+    structurally cannot see one removed.
+
+    Concretely: `git mv <non-docs> docs/x.md` reads as docs-only, and the test, lint and
+    typecheck jobs then report sentinel success without executing.
+    """
+    invocations = _ci_changed_file_diff_invocations()
+
+    assert invocations, "no changed-file `git diff --name-only` found in ci.yml"
+    for line in invocations:
+        assert "--no-renames" in line, (
+            "changed-file diff must pass --no-renames so a rename's deleted source "
+            f"re-enters the docs-only decision: {line}"
+        )
+
+
+def test_a_rename_out_of_a_gated_path_is_visible_to_the_changed_file_set(tmp_path: Path) -> None:
+    """The property itself, against real git rather than a hand-written path list.
+
+    `test_ci_docs_only_filter_executes_python_prod_witness_decision` feeds the decision
+    block a `list[str]`, which reproduces the narrowing one layer up -- it can never
+    observe this class. This drives the actual invocation over a real two-commit repo.
+    """
+    repo = tmp_path / "repo"
+    (repo / ".github").mkdir(parents=True)
+    (repo / "docs").mkdir()
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.invalid")
+    git("config", "user.name", "t")
+    gated = repo / ".github" / "pr-admission-state.yaml"
+    gated.write_text("mode: frozen\n" + ("x" * 400) + "\n", encoding="utf-8")
+    (repo / "docs" / "existing.md").write_text("# existing\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    base = git("rev-parse", "HEAD").strip()
+
+    # The move that must not be able to hide: a gated path leaves, wearing a docs name.
+    git("mv", ".github/pr-admission-state.yaml", "docs/archived-admission-state.md")
+    git("commit", "-qm", "move gated file under docs/")
+
+    collapsed = git("diff", "--name-only", base, "HEAD").split()
+    decomposed = git("diff", "--no-renames", "--name-only", base, "HEAD").split()
+
+    # The defect, pinned: rename detection hides the departure entirely.
+    assert ".github/pr-admission-state.yaml" not in collapsed
+    assert collapsed == ["docs/archived-admission-state.md"]
+
+    # The fix: the delete re-enters the set, so the gate sees a non-docs path.
+    assert ".github/pr-admission-state.yaml" in decomposed
