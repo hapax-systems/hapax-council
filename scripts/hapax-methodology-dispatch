@@ -1892,6 +1892,22 @@ def launch_codex_headless(
     env = os.environ.copy()
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("codex", "headless")
+    if route.profile == "spark":
+        # THE EXECUTING PATH, not the displayed one.
+        #
+        # The previous repair set HAPAX_CODEX_MODEL_REASON in the PLATFORM_PATHS command string —
+        # the text an operator reads. THIS function is what `--launch` actually runs, and it
+        # appended the Spark model without the reason, so the frontier guard exited 6 on every
+        # governed Spark dispatch while the documented command looked correct. Fixing the display
+        # and leaving the executable path broken is the same defect the guard exists to catch,
+        # committed one layer up.
+        #
+        # `setdefault`, not assignment: an operator who supplied a more specific reason for this
+        # dispatch keeps it. The route's own justification is a floor, not an override.
+        env.setdefault(
+            "HAPAX_CODEX_MODEL_REASON",
+            "full Codex quota blocked; Spark quality-equivalent for this bounded task",
+        )
     if local_fallback_allowed:
         # Preserve a caller/operator-provided fallback value; the P0 drain rule
         # only supplies the default local fallback when the env is otherwise unset.

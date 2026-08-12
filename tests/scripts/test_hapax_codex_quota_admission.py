@@ -140,6 +140,36 @@ def test_the_notice_retires_itself_when_a_consumer_lands() -> None:
     )
 
 
+def test_the_executing_spark_launch_sets_the_reason_in_env() -> None:
+    """The displayed command is not the executed one, and only the executed one can fail.
+
+    The previous repair put HAPAX_CODEX_MODEL_REASON into the PLATFORM_PATHS string an operator
+    READS. `launch_codex_headless` is what `--launch` RUNS, and it appended the Spark model
+    without the reason — so every governed Spark dispatch exited 6 while the documentation looked
+    correct. Asserted against the executing function's own body, because the displayed-string test
+    below passes either way and would have gone on passing.
+    """
+    source = DISPATCH.read_text(encoding="utf-8")
+    start = source.index("def launch_codex_headless")
+    # Bounded at the next top-level def, so a reason set in some later function cannot answer for
+    # this one — the same mistake as searching a window around a match.
+    rest = source[start + 1 :]
+    end = start + 1 + (rest.index("\ndef ") if "\ndef " in rest else len(rest))
+    body = source[start:end]
+
+    # CODE ONLY. The comment explaining this fix names the variable, so a plain substring search
+    # over the whole body passes even with the assignment deleted — verified by mutation, and it
+    # is the fourth time today that a check has been satisfied by the prose beside the thing it
+    # was meant to check. Comments cannot set an environment variable.
+    code = "\n".join(line for line in body.splitlines() if not line.lstrip().startswith("#"))
+
+    assert 'route.profile == "spark"' in code, "the spark arm moved; re-derive this assertion"
+    assert "HAPAX_CODEX_MODEL_REASON" in code, (
+        "launch_codex_headless selects a below-frontier model without setting a reason, so the "
+        "frontier guard exits 6 on every governed Spark dispatch"
+    )
+
+
 def test_every_documented_dispatch_below_frontier_states_its_reason() -> None:
     """The Spark break, generalised.
 
