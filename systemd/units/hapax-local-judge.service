@@ -4,11 +4,11 @@
 # INSTALL TARGET: appendix (hapax-appendix), the SDLC rig. Reached cross-rig by the
 # podium LiteLLM gateway as the `local-judge` route -> http://192.168.68.50:5001/v1.
 # Deploy + validation: docs/runbooks/local-judge-stack.md.
-# After=docker.service is deliberately omitted: a user unit cannot order the system
-# manager's docker.service. A bounded first preflight probes the pinned local daemon;
-# Restart=always/RestartSec=5 retries persistent cross-manager unavailability while
-# static image and model failures remain explicit preflight errors in the journal.
 Description=Hapax Local Judge — CompassVerifier-7B answer-verification (cost-offload Tier-1)
+# After= only (no Requires=): docker runs as a system service, so a --user unit
+# orders behind it but must not hard-Requires a cross-scope system unit. Matches
+# the canonical docker user units (hapax-stack, hapax-container-cleanup).
+After=docker.service
 
 [Service]
 Type=simple
@@ -16,58 +16,16 @@ Type=simple
 # instance is never co-resided on (no-co-residency regression, AC1). Regenerate
 # the UUID on the target host with: nvidia-smi --query-gpu=index,name,uuid --format=csv
 Environment=JUDGE_GPU_UUID=GPU-347222d9-00af-5a94-a365-c57c09dfddcd
-# Container-internal path only: the read-only /models bind below maps the
-# protected JUDGE_MODEL_HOST_DIR; this value never names the mutable host source.
 Environment=JUDGE_MODEL=/models/CompassVerifier-7B.Q5_K_M.gguf
-# The canary stages and hashes this model under a root-owned, non-writable
-# content address. The durable service never mounts the mutable source copy.
-# Recheck the protected file after staging only once this release is the
-# canonical source-activation worktree:
-# account_home="$(/usr/bin/getent passwd "$(/usr/bin/id -u)" | /usr/bin/cut -d: -f6)" && \
-# "$account_home/.cache/hapax/source-activation/worktree/scripts/hapax-post-merge-deploy" --measure-protected-local-judge-model /store-fast/hapax-models/sha256/d6d6fba56c25d2d0f1b2cc8ee261b209b77729510b3d770d43ccb6e741dff0db/CompassVerifier-7B.Q5_K_M.gguf
-Environment=JUDGE_MODEL_SHA256=d6d6fba56c25d2d0f1b2cc8ee261b209b77729510b3d770d43ccb6e741dff0db
-Environment=JUDGE_MODEL_SIZE_BYTES=5444831808
-Environment=JUDGE_MODEL_HOST_DIR=/store-fast/hapax-models/sha256/d6d6fba56c25d2d0f1b2cc8ee261b209b77729510b3d770d43ccb6e741dff0db
-Environment=JUDGE_MODEL_HOST=/store-fast/hapax-models/sha256/d6d6fba56c25d2d0f1b2cc8ee261b209b77729510b3d770d43ccb6e741dff0db/CompassVerifier-7B.Q5_K_M.gguf
-# Canary and durable service use the same immutable image digest. Updating this
-# digest requires a fresh cap canary and candidate-SHA receipt.
-Environment=JUDGE_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:841b199aed2649a748875b043b32fed2e8c2d4d87e1d563556817fb7fa44b72b
-RuntimeDirectory=hapax-local-judge
-RuntimeDirectoryMode=0700
-RuntimeDirectoryPreserve=yes
-TimeoutStartSec=90
-ExecStartPre=/home/hapax/.local/bin/hapax-local-judge-container-id wait-daemon \
-    --cidfile %t/hapax-local-judge/container.cid
-ExecStartPre=/home/hapax/.local/bin/hapax-local-judge-container-id prepare \
-    --cidfile %t/hapax-local-judge/container.cid
-ExecStartPre=/home/hapax/.local/bin/hapax-local-judge-container-id preflight \
-    --cidfile %t/hapax-local-judge/container.cid \
-    --image ${JUDGE_IMAGE} \
-    --model-host ${JUDGE_MODEL_HOST} \
-    --model-sha256 ${JUDGE_MODEL_SHA256} \
-    --model-size-bytes ${JUDGE_MODEL_SIZE_BYTES}
-# Docker writes the immutable full ID before attach. A foreign same-name
-# container makes run fail without cleanup; stop/restart never targets the name.
-# Clear ambient manager selectors before launch, then pin the same local daemon
-# and private config root that preflight assumes.
-ExecStart=/usr/bin/env -i \
-    HOME=%h LANG=C.UTF-8 LC_ALL=C.UTF-8 LOGNAME=%u PATH=/usr/bin:/bin USER=%u \
-    /usr/bin/docker \
-    --host=unix:///var/run/docker.sock \
-    --config=%t/hapax-local-judge/docker-config \
-    run --pull=never --rm --cidfile %t/hapax-local-judge/container.cid \
-    --name hapax-local-judge \
-    --memory 4G --memory-swap 6G \
+ExecStartPre=-/usr/bin/docker rm -f hapax-local-judge
+ExecStart=/usr/bin/docker run --rm --name hapax-local-judge \
     --gpus device=${JUDGE_GPU_UUID} \
-    --mount type=bind,src=${JUDGE_MODEL_HOST_DIR},dst=/models,readonly \
+    -v %h/models/compassverifier-7b:/models:ro \
     -p 5001:5001 \
-    ${JUDGE_IMAGE} \
+    ghcr.io/ggml-org/llama.cpp:server-cuda \
     -m ${JUDGE_MODEL} -a compassverifier-7b \
     -c 65536 -np 8 -cb -ngl 99 --host 0.0.0.0 --port 5001
-ExecStop=/home/hapax/.local/bin/hapax-local-judge-container-id stop \
-    --cidfile %t/hapax-local-judge/container.cid
-ExecStopPost=/home/hapax/.local/bin/hapax-local-judge-container-id prepare \
-    --cidfile %t/hapax-local-judge/container.cid
+ExecStop=/usr/bin/docker stop hapax-local-judge
 Restart=always
 RestartSec=5
 

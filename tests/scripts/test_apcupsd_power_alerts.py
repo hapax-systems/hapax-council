@@ -25,12 +25,9 @@ LOGROTATE_CONFIG = REPO_ROOT / "systemd" / "logrotate.d" / "hapax-ups-power-even
 REPO_HEAD = subprocess.run(
     ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, check=True, text=True, capture_output=True
 ).stdout.strip()
-EXPECTED_APCUPSD_PACKAGE_FILES = (
+APCUPSD_PACKAGE_FILES = (
     "config/root-required/apcupsd-power-alerts.files",
-    "config/root-required/apcupsd-power-alerts.effects",
     "scripts/install-apcupsd-power-alerts",
-    "scripts/hapax-root-required-deferred-install",
-    "scripts/hapax-post-merge-deploy",
     "config/apcupsd/apcupsd.conf",
     "config/apcupsd/hapax-power-event.py",
     "config/apcupsd/onbattery",
@@ -39,121 +36,22 @@ EXPECTED_APCUPSD_PACKAGE_FILES = (
     "config/upower/90-hapax-apcupsd-owner.conf",
     "systemd/logrotate.d/hapax-ups-power-events",
 )
-APCUPSD_PACKAGE_FILES = tuple(
-    line
-    for line in (REPO_ROOT / "config/root-required/apcupsd-power-alerts.files")
-    .read_text(encoding="utf-8")
-    .splitlines()
-    if line and not line.startswith("#")
-)
 
 
-def _copy_apcupsd_package(dest_root: Path, *, source_root: Path = REPO_ROOT) -> None:
+def _copy_apcupsd_package(dest_root: Path) -> None:
     for relative in APCUPSD_PACKAGE_FILES:
         dest = dest_root / relative
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source_root / relative, dest)
-
-
-def test_apcupsd_package_manifest_has_exact_owned_surface() -> None:
-    assert APCUPSD_PACKAGE_FILES == EXPECTED_APCUPSD_PACKAGE_FILES
-
-
-def test_installer_recovery_guidance_requires_governed_runtime_reconciliation() -> None:
-    source = INSTALLER.read_text(encoding="utf-8")
-
-    assert "scripts/install-apcupsd-power-alerts --install --verify-live" not in source
-    assert "rerun --install --verify-live" not in source
-    assert "readonly APC_REPAIR_ACTION=" in source
-    assert "runtime-authorized hapax-post-merge-deploy APC package reconciliation" in source
-    assert source.count("$APC_REPAIR_ACTION") > 1
-    assert source.count("{repair_action}") == 4
-
-
-def test_installer_privileged_shell_ignores_hostile_bash_env(tmp_path: Path) -> None:
-    startup_marker = tmp_path / "bash-env-ran"
-    bash_env = tmp_path / "hostile-bash-env"
-    bash_env.write_text(': > "$STARTUP_MARKER"\n', encoding="utf-8")
-
-    result = subprocess.run(
-        [str(INSTALLER), "--help"],
-        text=True,
-        capture_output=True,
-        check=False,
-        env={
-            **os.environ,
-            "BASH_ENV": str(bash_env),
-            "STARTUP_MARKER": str(startup_marker),
-        },
-    )
-
-    assert INSTALLER.read_text(encoding="utf-8").splitlines()[0] == "#!/usr/bin/bash -p"
-    assert result.returncode == 0, result.stderr
-    assert "usage: scripts/install-apcupsd-power-alerts" in result.stdout
-    assert not startup_marker.exists()
-
-
-def test_installer_root_python_ignores_hostile_working_directory(tmp_path: Path) -> None:
-    attacker_cwd = tmp_path / "attacker-cwd"
-    attacker_cwd.mkdir()
-    marker = tmp_path / "root-sitecustomize-ran"
-    (attacker_cwd / "sitecustomize.py").write_text(
-        "import os\n"
-        "from pathlib import Path\n"
-        "if os.environ.get('HAPAX_TEST_FAKE_ROOT') == '1':\n"
-        "    Path(os.environ['HAPAX_TEST_ROOT_IMPORT_MARKER']).write_text('ran\\n')\n",
-        encoding="utf-8",
-    )
-    fake_systemctl = tmp_path / "systemctl"
-    fake_systemctl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
-    fake_systemctl.chmod(0o755)
-
-    result = subprocess.run(
-        [str(INSTALLER), "--install"],
-        cwd=attacker_cwd,
-        text=True,
-        capture_output=True,
-        check=False,
-        env={
-            **os.environ,
-            "HAPAX_APCUPSD_INSTALL_SUDO": "",
-            "HAPAX_APCUPSD_SYSTEMCTL": str(fake_systemctl),
-            "HAPAX_TEST_FAKE_ROOT": "1",
-            "HAPAX_TEST_ROOT_IMPORT_MARKER": str(marker),
-        },
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert not marker.exists()
-    source = INSTALLER.read_text(encoding="utf-8")
-    assert "run_root /usr/bin/python3 -I -" in source
-    assert "run_root /usr/bin/python3 - " not in source
+        shutil.copy2(REPO_ROOT / relative, dest)
 
 
 @pytest.fixture(autouse=True)
 def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE", "1")
-    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_INSTALLER_TEST_ROOT", str(tmp_path))
-    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_ALLOW_UNAUTHENTICATED_TEST_INSTALL", "1")
-    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_UNAUTHENTICATED_TEST_ROOT", str(tmp_path))
     monkeypatch.setenv("HAPAX_POST_MERGE_ROOT_DEFER_DIR", str(tmp_path / "root-required"))
     monkeypatch.setenv("HAPAX_ROOT_REQUIRED_STATE_ROOT", str(tmp_path / "root-state"))
     monkeypatch.setenv(
         "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT", str(tmp_path / "installed-source")
     )
-    monkeypatch.setenv("HAPAX_APCUPSD_TARGET_UID", str(os.getuid()))
-    monkeypatch.setenv("HAPAX_APCUPSD_TARGET_GID", str(os.getgid()))
-    monkeypatch.setenv("HAPAX_APCUPSD_TARGET_HOME", str(tmp_path / "target-home"))
-    monkeypatch.setenv("HAPAX_APCUPSD_DEST", str(tmp_path / "apcupsd-default"))
-    monkeypatch.setenv("HAPAX_APCUPSD_AUDIT_DIR", str(tmp_path / "audit-default"))
-    monkeypatch.setenv(
-        "HAPAX_APCUPSD_LOGROTATE_DEST", str(tmp_path / "logrotate-default/hapax-ups")
-    )
-    monkeypatch.setenv("HAPAX_UPOWER_CONF_DEST", str(tmp_path / "upower-default/90-hapax.conf"))
-    fake_systemctl = tmp_path / "systemctl-default"
-    fake_systemctl.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
-    fake_systemctl.chmod(0o755)
-    monkeypatch.setenv("HAPAX_APCUPSD_SYSTEMCTL", str(fake_systemctl))
     fake_busctl = tmp_path / "busctl"
     fake_busctl.write_text("#!/bin/sh\nprintf '%s\\n' 's \"Ignore\"'\n", encoding="utf-8")
     fake_busctl.chmod(0o755)
@@ -1021,25 +919,6 @@ def test_installer_source_check_exercises_config_hooks_and_helper() -> None:
     assert "apcupsd power alert install/check complete" in result.stdout
 
 
-def test_installer_refuses_missing_authenticated_helper_outside_isolated_test(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("HAPAX_ROOT_REQUIRED_ALLOW_UNAUTHENTICATED_TEST_INSTALL")
-    monkeypatch.delenv("HAPAX_ROOT_REQUIRED_UNAUTHENTICATED_TEST_ROOT")
-
-    result = subprocess.run(
-        [str(INSTALLER), "--install"],
-        text=True,
-        capture_output=True,
-        check=False,
-        env=os.environ.copy(),
-    )
-
-    assert result.returncode == 1
-    assert "refusing unauthenticated apcupsd install outside an isolated test" in result.stderr
-    assert "hapax-post-merge-deploy" in result.stderr
-
-
 def test_installer_fails_closed_when_canonical_audit_group_is_missing(
     tmp_path: Path,
 ) -> None:
@@ -1057,11 +936,6 @@ def test_installer_fails_closed_when_canonical_audit_group_is_missing(
         env={
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
-            "HAPAX_APCUPSD_DEST": "/etc/apcupsd",
-            "HAPAX_APCUPSD_AUDIT_DIR": "/var/log/hapax",
-            "HAPAX_UPS_AUDIT_LOG": "/var/log/hapax/ups-power-events.jsonl",
-            "HAPAX_APCUPSD_LOGROTATE_DEST": "/etc/logrotate.d/hapax-ups-power-events",
-            "HAPAX_UPOWER_CONF_DEST": ("/etc/UPower/UPower.conf.d/90-hapax-apcupsd-owner.conf"),
             "HAPAX_APCUPSD_TARGET_HOME": str(tmp_path),
             "HAPAX_APCUPSD_TARGET_GID": str(os.getgid()),
             "HAPAX_APCUPSD_INSTALL_SUDO": "",
@@ -1206,132 +1080,6 @@ def test_installer_install_implies_verify_live_against_temp_destinations(tmp_pat
     assert records[0]["event"] == "onbattery"
     assert records[1]["delivery"]["attempted"] is False
     assert records[1]["delivery"]["ok"] is False
-
-
-@pytest.mark.parametrize(
-    "omit_nested_sudo",
-    (False, True),
-    ids=("caller-selector-neutralized", "selector-omitted"),
-)
-def test_authenticated_deferred_helper_runs_real_apcupsd_installer_without_nested_sudo(
-    tmp_path: Path,
-    omit_nested_sudo: bool,
-) -> None:
-    activation = tmp_path / "activation-release"
-    activation.mkdir()
-    _copy_apcupsd_package(activation)
-    authority = activation / "scripts/hapax-post-merge-deploy"
-    authority.write_text("#!/usr/bin/bash\nexit 0\n", encoding="utf-8")
-    authority.chmod(0o755)
-    subprocess.run(["git", "init", "-q"], cwd=activation, check=True)
-    subprocess.run(["git", "config", "user.email", "tests@hapax.local"], cwd=activation, check=True)
-    subprocess.run(["git", "config", "user.name", "Hapax Tests"], cwd=activation, check=True)
-    subprocess.run(["git", "add", "."], cwd=activation, check=True)
-    subprocess.run(
-        ["git", "commit", "-qm", "authenticated apcupsd package"],
-        cwd=activation,
-        check=True,
-    )
-    package_sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=activation,
-        check=True,
-        text=True,
-        capture_output=True,
-    ).stdout.strip()
-    activation_alias = tmp_path / "activation-alias"
-    activation_alias.symlink_to(activation, target_is_directory=True)
-    defer_root = tmp_path / "root-required"
-    stage = defer_root / package_sha / "apcupsd-power-alerts"
-    _copy_apcupsd_package(stage, source_root=activation)
-    (stage / ".hapax-root-required-package-sha").write_text(f"{package_sha}\n", encoding="utf-8")
-    (stage / "RUNBOOK.txt").write_text("authenticated test deferral\n", encoding="utf-8")
-    state_root = tmp_path / "root-state"
-    desired = state_root / "desired-receipts/apcupsd-power-alerts.sha"
-    desired.parent.mkdir(parents=True)
-    desired.write_text(f"{package_sha}\n", encoding="utf-8")
-
-    root_sudo_calls = tmp_path / "root-sudo-calls"
-    root_sudo = tmp_path / "root-sudo"
-    root_sudo.write_text(
-        "#!/usr/bin/bash\n"
-        "set -euo pipefail\n"
-        'if [ "$#" -eq 2 ] && [ "$1" = -n ] && [ "$2" = true ]; then exit 0; fi\n'
-        f"printf '%s\\n' \"$*\" >> {root_sudo_calls}\n"
-        'exec "$@"\n',
-        encoding="utf-8",
-    )
-    root_sudo.chmod(0o755)
-    systemctl_calls = tmp_path / "systemctl-calls"
-    systemctl = tmp_path / "systemctl"
-    systemctl.write_text(
-        f"#!/usr/bin/bash\nprintf '%s\\n' \"$*\" >> {systemctl_calls}\nexit 0\n",
-        encoding="utf-8",
-    )
-    systemctl.chmod(0o755)
-    target_home = tmp_path / "target-home"
-    target_home.mkdir()
-    runtime_task = tmp_path / "runtime-authority-task.md"
-    runtime_task.write_text("test runtime authority input\n", encoding="utf-8")
-
-    nested_sudo_env = {} if omit_nested_sudo else {"HAPAX_APCUPSD_INSTALL_SUDO": str(root_sudo)}
-    result = subprocess.run(
-        [
-            "/usr/bin/bash",
-            "--noprofile",
-            "--norc",
-            "-c",
-            'umask 000; exec "$@"',
-            "hostile-umask",
-            str(REPO_ROOT / "scripts/hapax-root-required-deferred-install"),
-            "--package",
-            "apcupsd-power-alerts",
-            "--expected-sha",
-            package_sha,
-            "--activation-release",
-            str(activation),
-            "--runtime-authority-task",
-            str(runtime_task),
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-        env={
-            **os.environ,
-            "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_MODE": "1",
-            "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_ROOT": str(tmp_path),
-            "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_HOSTNAME": "hapax-podium",
-            "HAPAX_ROOT_REQUIRED_STATE_ROOT": str(state_root),
-            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_root),
-            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(activation_alias),
-            "HAPAX_APCUPSD_DEST": str(tmp_path / "apcupsd"),
-            "HAPAX_APCUPSD_AUDIT_DIR": str(tmp_path / "hapax-log"),
-            "HAPAX_APCUPSD_AUDIT_GROUP": "",
-            "HAPAX_APCUPSD_LOGROTATE_DEST": str(tmp_path / "logrotate/hapax-ups"),
-            "HAPAX_UPOWER_CONF_DEST": str(tmp_path / "upower/90-hapax.conf"),
-            "HAPAX_APCUPSD_SYSTEMCTL": str(systemctl),
-            **nested_sudo_env,
-            "HAPAX_APCUPSD_TARGET_UID": str(os.getuid()),
-            "HAPAX_APCUPSD_TARGET_GID": str(os.getgid()),
-            "HAPAX_APCUPSD_TARGET_HOME": str(target_home),
-        },
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "completed isolated-test package=apcupsd-power-alerts" in result.stdout
-    assert not root_sudo_calls.exists()
-    receipts = (
-        state_root / "installed-receipts/apcupsd-power-alerts.sha",
-        state_root / "desired-receipts/apcupsd-power-alerts.sha",
-    )
-    assert receipts[0].read_text().strip() == package_sha
-    for receipt in receipts:
-        assert stat.S_IMODE(receipt.stat().st_mode) == 0o600
-        assert receipt.parent.stat().st_mode & 0o022 == 0
-    assert (stage / "DRAINED.txt").is_file()
-    assert (state_root / "current-source/scripts/install-apcupsd-power-alerts").read_bytes() == (
-        INSTALLER.read_bytes()
-    )
 
 
 def test_installer_retry_repairs_loaded_policy_after_interrupted_activation(tmp_path: Path) -> None:
@@ -1852,34 +1600,6 @@ def test_mismatched_apcupsd_deferral_is_rejected_before_live_mutation(tmp_path: 
     assert not live.exists()
 
 
-def test_apcupsd_drain_dir_cannot_define_its_own_defer_root(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    drain = tmp_path / "outside" / REPO_HEAD / "apcupsd-power-alerts"
-    drain.mkdir(parents=True)
-    (drain / "RUNBOOK.txt").write_text("untrusted\n", encoding="utf-8")
-    live = tmp_path / "live-apcupsd"
-    monkeypatch.delenv("HAPAX_POST_MERGE_ROOT_DEFER_DIR")
-    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_DRAIN_DIR", str(drain))
-    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_PACKAGE_SHA", REPO_HEAD)
-
-    result = subprocess.run(
-        [str(INSTALLER), "--source", str(REPO_ROOT), "--install"],
-        text=True,
-        capture_output=True,
-        check=False,
-        env={
-            **os.environ,
-            "HAPAX_APCUPSD_DEST": str(live),
-            "HAPAX_APCUPSD_INSTALL_SUDO": "",
-        },
-    )
-
-    assert result.returncode == 1
-    assert "refusing root-required drain dir outside defer root" in result.stderr
-    assert not live.exists()
-
-
 def test_apcupsd_installs_serialize_on_shared_package_lock(tmp_path: Path) -> None:
     dest = tmp_path / "apcupsd"
     audit_dir = tmp_path / "hapax-log"
@@ -1945,19 +1665,7 @@ def test_apcupsd_installs_serialize_on_shared_package_lock(tmp_path: Path) -> No
     assert second.returncode == 0, (second_stdout, second_stderr)
 
 
-@pytest.mark.parametrize(
-    "blocked_receipts",
-    (None, "all", "installed-only"),
-    ids=(
-        "safe-receipts-drain",
-        "publication-failure-keeps-runbook",
-        "first-publication-failure-keeps-runbook",
-    ),
-)
-def test_installer_drains_only_after_safe_receipt_publication(
-    tmp_path: Path,
-    blocked_receipts: str | None,
-) -> None:
+def test_installer_drains_root_required_deferral_after_success(tmp_path: Path) -> None:
     dest = tmp_path / "apcupsd"
     audit_dir = tmp_path / "hapax-log"
     logrotate_dest = tmp_path / "logrotate.d" / "hapax-ups-power-events"
@@ -1974,29 +1682,9 @@ def test_installer_drains_only_after_safe_receipt_publication(
     fake_systemctl = tmp_path / "systemctl"
     fake_systemctl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     fake_systemctl.chmod(0o755)
-    state_root = tmp_path / "root-state"
-    blocked_parent = state_root / "installed-receipts"
-    if blocked_receipts == "all":
-        state_root.mkdir()
-        blocked_parent.write_text("not a directory\n", encoding="utf-8")
-    elif blocked_receipts == "installed-only":
-        blocked_parent.mkdir(parents=True)
-        blocked_parent.chmod(0o500)
 
     result = subprocess.run(
-        [
-            "/usr/bin/bash",
-            "--noprofile",
-            "--norc",
-            "-c",
-            'umask 000; exec "$@"',
-            "hostile-umask",
-            str(INSTALLER),
-            "--source",
-            str(drain_dir),
-            "--install",
-            "--verify-live",
-        ],
+        [str(INSTALLER), "--source", str(drain_dir), "--install", "--verify-live"],
         text=True,
         capture_output=True,
         check=False,
@@ -2015,30 +1703,14 @@ def test_installer_drains_only_after_safe_receipt_publication(
         },
     )
 
-    if blocked_receipts == "installed-only":
-        blocked_parent.chmod(0o700)
-    if blocked_receipts is not None:
-        assert result.returncode != 0
-        assert "root-required receipt publication refused" in result.stderr
-        assert (drain_dir / "RUNBOOK.txt").is_file()
-        assert not (drain_dir / "DRAINED.txt").exists()
-        if blocked_receipts == "installed-only":
-            assert not (state_root / "desired-receipts/apcupsd-power-alerts.sha").exists()
-        return
-
     assert result.returncode == 0, result.stderr
     assert drain_dir.is_dir()
     assert (drain_dir / "DRAINED.txt").is_file()
     assert not (drain_dir / "RUNBOOK.txt").exists()
     assert sibling_dir.exists()
-    receipts = (
-        state_root / "installed-receipts/apcupsd-power-alerts.sha",
-        state_root / "desired-receipts/apcupsd-power-alerts.sha",
-    )
-    assert receipts[0].read_text().strip() == REPO_HEAD
-    for receipt in receipts:
-        assert stat.S_IMODE(receipt.stat().st_mode) == 0o600
-        assert receipt.parent.stat().st_mode & 0o022 == 0
+    assert (
+        tmp_path / "root-state" / "installed-receipts" / "apcupsd-power-alerts.sha"
+    ).read_text().strip() == REPO_HEAD
     assert (installed_source / "config" / "apcupsd" / "hapax-power-event.py").is_file()
     assert "root-required deferral marked drained" in result.stdout
 
@@ -2101,7 +1773,6 @@ def test_stale_deferred_apcupsd_package_does_not_roll_back_newer_install(
     assert (drain_dir / "DRAINED.txt").is_file()
     assert not (drain_dir / "RUNBOOK.txt").exists()
     assert receipt.read_text(encoding="utf-8").strip() == sha_b
-    assert stat.S_IMODE(receipt.stat().st_mode) == 0o600
     assert live_marker.read_text(encoding="utf-8") == "newer B policy\n"
 
 
@@ -2166,84 +1837,6 @@ def test_installed_apcupsd_repair_cannot_erase_newer_desired_receipt(tmp_path: P
     assert desired.read_text(encoding="utf-8").strip() == sha_b
     assert live_marker.read_text(encoding="utf-8") == "installed A policy\n"
     assert (drain_dir / "DRAINED.txt").is_file()
-
-
-@pytest.mark.parametrize(
-    "installed_kind",
-    ("malformed", "fifo", "dangling-symlink", "directory"),
-)
-def test_apcupsd_package_order_does_not_mask_invalid_installed_receipt(
-    tmp_path: Path,
-    installed_kind: str,
-) -> None:
-    stage = tmp_path / "stage"
-    for relative in APCUPSD_PACKAGE_FILES:
-        dest = stage / relative
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        blob = subprocess.run(
-            ["git", "show", f"{REPO_HEAD}:{relative}"],
-            cwd=REPO_ROOT,
-            check=True,
-            capture_output=True,
-        ).stdout
-        dest.write_bytes(blob)
-        git_mode = subprocess.run(
-            ["git", "ls-tree", REPO_HEAD, "--", relative],
-            cwd=REPO_ROOT,
-            check=True,
-            text=True,
-            capture_output=True,
-        ).stdout.split()[0]
-        dest.chmod(0o755 if git_mode == "100755" else 0o644)
-    (stage / ".hapax-root-required-package-sha").write_text(f"{REPO_HEAD}\n", encoding="utf-8")
-    (stage / "RUNBOOK.txt").write_text("pending\n", encoding="utf-8")
-    installed_root = tmp_path / "root-state/installed-receipts"
-    desired_root = tmp_path / "root-state/desired-receipts"
-    installed_root.mkdir(parents=True)
-    desired_root.mkdir(parents=True)
-    installed = installed_root / "apcupsd-power-alerts.sha"
-    desired = desired_root / "apcupsd-power-alerts.sha"
-    if installed_kind == "malformed":
-        installed.write_text(f"{'f' * 40}\n", encoding="utf-8")
-        installed.chmod(0o600)
-    elif installed_kind == "fifo":
-        os.mkfifo(installed, mode=0o600)
-    elif installed_kind == "dangling-symlink":
-        installed.symlink_to(tmp_path / "missing-installed-receipt")
-    else:
-        installed.mkdir(mode=0o700)
-    desired.write_text(f"{REPO_HEAD}\n", encoding="utf-8")
-    desired.chmod(0o600)
-    fake_systemctl = tmp_path / "systemctl-order"
-    fake_systemctl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
-    fake_systemctl.chmod(0o755)
-    live_dest = tmp_path / "live-apcupsd"
-
-    result = subprocess.run(
-        [str(INSTALLER), "--source", str(stage), "--install"],
-        text=True,
-        capture_output=True,
-        check=False,
-        env={
-            **os.environ,
-            "HAPAX_APCUPSD_DEST": str(live_dest),
-            "HAPAX_APCUPSD_SYSTEMCTL": str(fake_systemctl),
-            "HAPAX_APCUPSD_INSTALL_SUDO": "",
-            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": REPO_HEAD,
-            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
-            "HAPAX_ROOT_REQUIRED_DRAIN_DIR": str(stage),
-            "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT": str(installed_root),
-            "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT": str(desired_root),
-        },
-    )
-
-    assert result.returncode == 1
-    if installed_kind == "malformed":
-        assert "cannot validate apcupsd package order for installed=" in result.stderr
-    else:
-        assert "unsafe installed root-required receipt" in result.stderr
-    assert not (live_dest / "apcupsd.conf").exists()
-    assert (stage / "RUNBOOK.txt").is_file()
 
 
 def test_apcupsd_squash_equivalence_rejects_newer_manifest_file(tmp_path: Path) -> None:

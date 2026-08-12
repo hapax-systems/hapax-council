@@ -5,11 +5,8 @@ from __future__ import annotations
 
 import argparse
 import fcntl
-import functools
 import json
 import os
-import re
-import socket
 import stat
 import subprocess
 import sys
@@ -25,66 +22,17 @@ BYTES_1G = 1024**3
 BYTES_2G = 2 * 1024**3
 BYTES_12G = 12 * 1024**3
 BYTES_24G = 24 * 1024**3
+BYTES_72G = 72 * 1024**3
+BYTES_80G = 80 * 1024**3
+BYTES_88G = 88 * 1024**3
+BYTES_96G = 96 * 1024**3
 BYTES_16G = 16 * 1024**3
 BYTES_8G = 8 * 1024**3
 BYTES_10G = 10 * 1024**3
 BYTES_20G = 20 * 1024**3
-BYTES_512M = 512 * 1024**2
-BYTES_768M = 768 * 1024**2
-BYTES_4G = 4 * 1024**3
-BYTES_6G = 6 * 1024**3
-NEXT_OOM_INSTALL = (
-    "next action: dispatch a runtime-authorized root-package repair and rerun "
-    "hapax-post-merge-deploy with HAPAX_RUNTIME_AUTHORITY_TASK set"
-)
-LOCAL_DOCKER_HOST = "unix:///var/run/docker.sock"
-LOCAL_DOCKER_CONFIG = "/nonexistent/hapax-local-docker-config"
-DOCKER_SELECTOR_ENV = frozenset(
-    {
-        "DOCKER_HOST",
-        "DOCKER_CONTEXT",
-        "DOCKER_CONFIG",
-        "DOCKER_CERT_PATH",
-        "DOCKER_TLS_VERIFY",
-        "DOCKER_TLS",
-        "DOCKER_API_VERSION",
-    }
-)
+NEXT_OOM_INSTALL = "next action: scripts/install-p0-oom-containment --install --verify-live"
 PROC_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_PROC_ROOT", "/proc"))
 CGROUP_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_CGROUP_ROOT", "/sys/fs/cgroup"))
-SYS_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_SYS_ROOT", "/sys"))
-SCRIPT_INVOKED_PATH = Path(os.path.abspath(__file__))
-SCRIPT_PATH = SCRIPT_INVOKED_PATH.resolve()
-INSTALLED_AUDIT_PATH = Path("/usr/local/sbin/hapax-oom-policy-audit")
-SOURCE_ROOT = SCRIPT_PATH.parents[1] if len(SCRIPT_PATH.parents) > 1 else None
-SOURCE_PROFILE_TABLE = (
-    SOURCE_ROOT / "config" / "root-required" / "oom-host-profiles.tsv"
-    if SOURCE_ROOT is not None
-    else Path("/nonexistent/hapax-oom-host-profiles.tsv")
-)
-INSTALLED_PROFILE_TABLE = Path("/usr/local/share/hapax/root-required/oom-host-profiles.tsv")
-SEALED_SOURCE_ENV = "HAPAX_OOM_AUDIT_SEALED_PACKAGE_SOURCE"
-TEST_ONLY_SELECTORS = frozenset(
-    {
-        "HAPAX_OOM_AUDIT_TEST_MODE",
-        "HAPAX_OOM_AUDIT_PROC_ROOT",
-        "HAPAX_OOM_AUDIT_CGROUP_ROOT",
-        "HAPAX_OOM_AUDIT_SYS_ROOT",
-        "HAPAX_OOM_AUDIT_MEMTOTAL_KIB",
-        "HAPAX_OOM_AUDIT_HOSTNAME",
-        "HAPAX_OOM_AUDIT_PROFILE_TABLE",
-        SEALED_SOURCE_ENV,
-        "HAPAX_OOM_AUDIT_SYSTEMD_SYSTEM_DIR",
-        "HAPAX_OOM_AUDIT_SYSTEMD_USER_DIR",
-        "HAPAX_OOM_AUDIT_USER_UNIT_PATHS",
-        "HAPAX_OOM_AUDIT_DOCKER",
-        "HAPAX_SYSTEMCTL",
-        "HAPAX_SYSTEMD_ANALYZE",
-        "HAPAX_ROOT_REQUIRED_STATE_ROOT",
-        "HAPAX_ROOT_REQUIRED_LOCK_FILE",
-    }
-)
-GENERATION_GUARD_ANCHOR = Path("/home")
 ROOT_REQUIRED_STATE_ROOT = Path(
     os.environ.get(
         "HAPAX_ROOT_REQUIRED_STATE_ROOT",
@@ -127,30 +75,6 @@ PROTECTED_USER_UNIT_MEMORY = {
     "studio-compositor.service": {"MemoryLow": 6 * 1024**3, "MemoryMin": 3 * 1024**3},
     "hapax-imagination.service": {"MemoryLow": 6 * 1024**3, "MemoryMin": 3 * 1024**3},
 }
-APPENDIX_OPTIONAL_USER_UNITS = frozenset(
-    {
-        "hapax-daimonion.service",
-        "studio-compositor.service",
-        "hapax-imagination.service",
-    }
-)
-HOST_PROFILE_BY_HOSTNAME = {
-    "hapax-appendix": "appendix",
-    "hapax-podium": "podium",
-}
-GOVERNED_MEMORY_ASSIGNMENT = re.compile(
-    r"^[ \t]*(?:MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)[ \t]*=",
-    re.MULTILINE,
-)
-SOURCE_CHECKOUT_WARNINGS: list[str] = []
-ACCEPTED_POLICY_AUTHORITIES = frozenset(
-    {
-        "internal-sealed-package-source",
-        "non-authoritative-source-tree",
-        "non-authoritative-test-override",
-        "installed-path-requires-root-receipt-audit",
-    }
-)
 
 
 @dataclass
@@ -162,492 +86,14 @@ class Check:
     detail: str = ""
 
 
-@dataclass(frozen=True)
-class HostMemoryPolicy:
-    hostname: str
-    profile: str
-    physical_bytes: int
-    app_memory_high: int
-    app_memory_max: int
-    uid_memory_high: int
-    uid_memory_max: int
-    zram_size: int
-    optional_user_units: frozenset[str]
-
-
 class AuditLockError(RuntimeError):
     pass
 
 
-class HostPolicyError(RuntimeError):
-    pass
-
-
-def _host_root_uid() -> int:
-    for line in Path("/proc/self/uid_map").read_text(encoding="ascii").splitlines():
-        inside, outside, length = (int(field) for field in line.split())
-        if outside <= 0 < outside + length:
-            return inside - outside
-    return 65534
-
-
-def _source_checkout_warning(detail: str) -> None:
-    action = (
-        "next action: restore the repository Git metadata and rerun the source audit, "
-        "or invoke the canonical installed audit with its receipt-owned profile table"
-    )
-    message = (
-        f"source checkout verification failed: {detail}; continuing installed-mode diagnostics "
-        f"with a fail-closed result; {action}"
-    )
-    if message not in SOURCE_CHECKOUT_WARNINGS:
-        SOURCE_CHECKOUT_WARNINGS.append(message)
-    print(f"WARNING hapax-oom-policy-audit {message}", file=sys.stderr)
-
-
-def _source_checkout_authority_checks() -> list[Check]:
-    return [
-        Check(
-            "source_checkout_authority",
-            "fail",
-            "verified source checkout or canonical installed snapshot",
-            "unverified source checkout; installed-mode diagnostics only",
-            detail,
-        )
-        for detail in SOURCE_CHECKOUT_WARNINGS
-    ]
-
-
-def _policy_authority_checks(policy_authority: str) -> list[Check]:
-    checks = _source_checkout_authority_checks()
-    if policy_authority not in ACCEPTED_POLICY_AUTHORITIES:
-        checks.append(
-            Check(
-                "policy_authority",
-                "fail",
-                "recognized source, sealed package, canonical installed audit, or governed test",
-                policy_authority,
-                "unrecognized executables cannot supply governed host policy; next action: "
-                "invoke the exact source checkout, sealed post-merge package, or canonical "
-                "installed audit",
-            )
-        )
-    return checks
-
-
-def _audit_exit_code(checks: list[Check]) -> int:
-    return 1 if any(check.status != "pass" for check in checks) else 0
-
-
-@functools.cache
-def _source_checkout_root() -> Path | None:
-    if SCRIPT_INVOKED_PATH != SCRIPT_PATH:
-        return None
-    if SOURCE_ROOT is None:
-        return None
-    root = SOURCE_ROOT
-    if root / "scripts" / "hapax-oom-policy-audit" != SCRIPT_PATH:
-        return None
-    marker = root / ".git"
-    try:
-        inode = marker.lstat()
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        _source_checkout_warning(f"cannot inspect {marker}: {exc}")
-        return None
-    if not (stat.S_ISDIR(inode.st_mode) or stat.S_ISREG(inode.st_mode)):
-        _source_checkout_warning(f"unsupported Git marker type at {marker}")
-        return None
-    try:
-        result = subprocess.run(
-            ["/usr/bin/git", "-C", str(root), "rev-parse", "--show-toplevel"],
-            text=True,
-            capture_output=True,
-            check=False,
-            env={
-                "GIT_CONFIG_GLOBAL": "/dev/null",
-                "GIT_CONFIG_NOSYSTEM": "1",
-                "GIT_NO_REPLACE_OBJECTS": "1",
-                "GIT_OPTIONAL_LOCKS": "0",
-                "HOME": "/nonexistent",
-                "LANG": "C.UTF-8",
-                "LC_ALL": "C.UTF-8",
-                "PATH": "/usr/bin:/bin",
-            },
-        )
-    except OSError as exc:
-        _source_checkout_warning(f"cannot execute isolated Git probe for {root}: {exc}")
-        return None
-    if result.returncode != 0:
-        first_line = next(iter(result.stderr.strip().splitlines()), "no Git diagnostic")
-        excerpt = "".join(character if character.isprintable() else "?" for character in first_line)
-        _source_checkout_warning(
-            f"isolated Git probe for {root} exited with status {result.returncode}: {excerpt[:240]}"
-        )
-        return None
-    try:
-        top = Path(result.stdout.strip()).resolve(strict=True)
-    except OSError as exc:
-        _source_checkout_warning(f"cannot resolve Git root reported for {root}: {exc}")
-        return None
-    if top != root:
-        _source_checkout_warning(f"Git reported {top}, expected {root}")
-        return None
-    return root
-
-
-def _sealed_memfd_holder(path: Path) -> str | None:
-    match = re.fullmatch(r"/proc/self/fd/([0-9]+)", str(path))
-    if match is None:
-        return None
-    source_fd = int(match.group(1))
-    if source_fd < 3:
-        return None
-    required = fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
-    try:
-        target = os.readlink(path)
-        inherited_inode = os.fstat(source_fd)
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
-        try:
-            inode = os.fstat(fd)
-            seals = fcntl.fcntl(fd, fcntl.F_GET_SEALS)
-        finally:
-            os.close(fd)
-    except OSError:
-        return None
-    if (
-        not target.startswith("/memfd:hapax-")
-        or not stat.S_ISREG(inode.st_mode)
-        or inode.st_uid != os.geteuid()
-        or (inode.st_dev, inode.st_ino) != (inherited_inode.st_dev, inherited_inode.st_ino)
-        or seals & required != required
-    ):
-        return None
-    return "self"
-
-
-def _sealed_package_profile_table() -> Path | None:
-    if os.environ.get(SEALED_SOURCE_ENV) != "1":
-        return None
-    raw_profile = os.environ.get("HAPAX_OOM_AUDIT_PROFILE_TABLE", "")
-    if not raw_profile:
-        return None
-    profile = Path(raw_profile)
-    script_holder = _sealed_memfd_holder(SCRIPT_INVOKED_PATH)
-    profile_holder = _sealed_memfd_holder(profile)
-    if script_holder is None or script_holder != profile_holder:
-        return None
-    return profile
-
-
-def _is_installed_audit() -> bool:
-    return _source_checkout_root() is None and _sealed_package_profile_table() is None
-
-
-def _reject_installed_test_selectors() -> None:
-    if not _is_installed_audit():
-        return
-    present = sorted(name for name in TEST_ONLY_SELECTORS if name in os.environ)
-    if present:
-        raise HostPolicyError(
-            f"{', '.join(present)} refused by an installed audit; next action: remove all "
-            "test selectors and rerun /usr/local/sbin/hapax-oom-policy-audit"
-        )
-
-
-def _require_test_override(name: str) -> None:
-    if os.environ.get("HAPAX_OOM_AUDIT_TEST_MODE") != "1":
-        raise HostPolicyError(
-            f"{name} is test-only; next action: remove the override and use canonical host state"
-        )
-    if _is_installed_audit():
-        raise HostPolicyError(
-            f"{name} is refused by an installed audit; next action: remove all test selectors "
-            "and rerun /usr/local/sbin/hapax-oom-policy-audit"
-        )
-
-
-def _memtotal_kib() -> int:
-    override = os.environ.get("HAPAX_OOM_AUDIT_MEMTOTAL_KIB", "").strip()
-    if override:
-        _require_test_override("HAPAX_OOM_AUDIT_MEMTOTAL_KIB")
-        try:
-            value = int(override)
-        except ValueError as exc:
-            raise HostPolicyError("test MemTotal override is not an integer") from exc
-        if value <= 0:
-            raise HostPolicyError("test MemTotal override must be positive")
-        return value
-
-    try:
-        lines = (PROC_ROOT / "meminfo").read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        raise HostPolicyError(
-            f"cannot read physical memory from {PROC_ROOT / 'meminfo'}: {exc}"
-        ) from exc
-    for line in lines:
-        fields = line.split()
-        if len(fields) >= 2 and fields[0] == "MemTotal:":
-            try:
-                value = int(fields[1])
-            except ValueError as exc:
-                raise HostPolicyError(f"invalid MemTotal line: {line}") from exc
-            if value > 0:
-                return value
-    raise HostPolicyError(f"MemTotal is absent or invalid in {PROC_ROOT / 'meminfo'}")
-
-
-def _hostname() -> str:
-    override = os.environ.get("HAPAX_OOM_AUDIT_HOSTNAME", "").strip()
-    if override:
-        _require_test_override("HAPAX_OOM_AUDIT_HOSTNAME")
-        return override
-    return socket.gethostname()
-
-
-def _profile_table_path() -> Path:
-    override = os.environ.get("HAPAX_OOM_AUDIT_PROFILE_TABLE", "").strip()
-    sealed = _sealed_package_profile_table()
-    if sealed is not None:
-        return sealed
-    if override:
-        _require_test_override("HAPAX_OOM_AUDIT_PROFILE_TABLE")
-        return Path(override)
-    if _source_checkout_root() is not None and SOURCE_PROFILE_TABLE.is_file():
-        return SOURCE_PROFILE_TABLE
-    return INSTALLED_PROFILE_TABLE
-
-
-def _profile_table_context(table_path: Path) -> str:
-    if _sealed_package_profile_table() == table_path:
-        mode = "sealed package-source"
-    elif os.environ.get("HAPAX_OOM_AUDIT_PROFILE_TABLE", "").strip():
-        mode = "test-override"
-    elif table_path == SOURCE_PROFILE_TABLE:
-        mode = "source-tree"
-    elif _is_canonical_installed_path():
-        mode = "installed snapshot"
-    else:
-        mode = "unrecognized-executable installed-table"
-    return f"{mode} host profile table {table_path}"
-
-
-def _is_canonical_installed_path() -> bool:
-    return SCRIPT_INVOKED_PATH == INSTALLED_AUDIT_PATH and SCRIPT_PATH == INSTALLED_AUDIT_PATH
-
-
-def _policy_authority_label(table_path: Path) -> str:
-    if _sealed_package_profile_table() == table_path:
-        return "internal-sealed-package-source"
-    if os.environ.get("HAPAX_OOM_AUDIT_PROFILE_TABLE", "").strip():
-        return "non-authoritative-test-override"
-    if table_path == SOURCE_PROFILE_TABLE:
-        return "non-authoritative-source-tree"
-    if _is_canonical_installed_path():
-        return "installed-path-requires-root-receipt-audit"
-    return "non-authoritative-unrecognized-executable"
-
-
-def _memory_bytes(value: str, *, field: str, table_context: str) -> int:
-    match = re.fullmatch(r"([1-9][0-9]*)([GM])", value)
-    if not match:
-        raise HostPolicyError(f"invalid {field} value in {table_context}: {value}")
-    number, suffix = match.groups()
-    scale = BYTES_1G if suffix == "G" else 1024**2
-    return int(number) * scale
-
-
-def derive_host_policy(
-    memtotal_kib: int | None = None, hostname: str | None = None
-) -> HostMemoryPolicy:
-    physical_bytes = (memtotal_kib if memtotal_kib is not None else _memtotal_kib()) * 1024
-    physical_gib = physical_bytes // BYTES_1G
-    canonical_hostname = hostname if hostname is not None else _hostname()
-    table_path = _profile_table_path()
-    table_context = _profile_table_context(table_path)
-    try:
-        rows = table_path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        raise HostPolicyError(f"cannot read selected {table_context}: {exc}") from exc
-
-    matched: tuple[str, int, int, int, int, int] | None = None
-    known_host = False
-    host_ranges: dict[str, list[tuple[int, int]]] = {}
-    for line_number, line in enumerate(rows, start=1):
-        if not line or line.startswith("#"):
-            continue
-        fields = line.split("\t")
-        if len(fields) != 9:
-            raise HostPolicyError(
-                f"invalid host profile table row {table_path}:{line_number}: expected 9 fields"
-            )
-        (
-            row_hostname,
-            min_gib_text,
-            max_gib_text,
-            profile,
-            app_high,
-            app_max,
-            uid_high,
-            uid_max,
-            zram_mib,
-        ) = fields
-        try:
-            min_gib = int(min_gib_text)
-            max_gib = int(max_gib_text)
-        except ValueError as exc:
-            raise HostPolicyError(
-                f"invalid MemTotal GiB interval in {table_context} at line {line_number}: "
-                f"{min_gib_text}..{max_gib_text}"
-            ) from exc
-        if min_gib <= 0 or max_gib < min_gib:
-            raise HostPolicyError(
-                f"invalid MemTotal GiB interval in {table_context} at line {line_number}: "
-                f"{min_gib}..{max_gib}"
-            )
-        if profile not in {"appendix", "podium"}:
-            raise HostPolicyError(
-                f"invalid profile name in {table_context} at line {line_number}: {profile}"
-            )
-        expected_profile = HOST_PROFILE_BY_HOSTNAME.get(row_hostname)
-        if expected_profile is None:
-            raise HostPolicyError(
-                f"invalid hostname in {table_context} at line {line_number}: "
-                f"{row_hostname or 'empty'}"
-            )
-        if profile != expected_profile:
-            raise HostPolicyError(
-                f"hostname/profile mismatch in {table_context} at line {line_number}: "
-                f"{row_hostname} requires profile {expected_profile}, got {profile or 'empty'}"
-            )
-        row_context = f"{table_context} line {line_number}"
-        app_high_bytes = _memory_bytes(app_high, field="app_memory_high", table_context=row_context)
-        app_max_bytes = _memory_bytes(app_max, field="app_memory_max", table_context=row_context)
-        uid_high_bytes = _memory_bytes(uid_high, field="uid_memory_high", table_context=row_context)
-        uid_max_bytes = _memory_bytes(uid_max, field="uid_memory_max", table_context=row_context)
-        try:
-            zram_size = int(zram_mib) * 1024**2
-        except ValueError as exc:
-            raise HostPolicyError(f"invalid zram_mib value in {row_context}: {zram_mib}") from exc
-        reviewed_floor_bytes = min_gib * BYTES_1G
-        if not (
-            0 < app_high_bytes < app_max_bytes < reviewed_floor_bytes
-            and 0 < uid_high_bytes < uid_max_bytes < reviewed_floor_bytes
-            and app_max_bytes < uid_max_bytes
-            and zram_size >= BYTES_8G
-            and zram_size * 2 <= reviewed_floor_bytes
-        ):
-            raise HostPolicyError(
-                f"derived {profile} memory ceilings from {row_context} are not safely ordered "
-                f"below the reviewed {min_gib} GiB interval floor, or zram does not cover "
-                "the 8 GiB slice swap ceiling while retaining at least half the physical "
-                "floor as recovery headroom"
-            )
-        ranges = host_ranges.setdefault(row_hostname, [])
-        if any(min_gib <= prior_max and prior_min <= max_gib for prior_min, prior_max in ranges):
-            raise HostPolicyError(
-                f"overlapping MemTotal GiB intervals in {table_context} for {row_hostname}: "
-                f"{min_gib}..{max_gib}"
-            )
-        ranges.append((min_gib, max_gib))
-        if row_hostname == canonical_hostname:
-            known_host = True
-        if row_hostname == canonical_hostname and min_gib <= physical_gib <= max_gib:
-            if matched is not None:
-                raise HostPolicyError(
-                    f"duplicate entry in {table_context} for {canonical_hostname}/{physical_gib} GiB"
-                )
-            matched = (
-                profile,
-                app_high_bytes,
-                app_max_bytes,
-                uid_high_bytes,
-                uid_max_bytes,
-                zram_size,
-            )
-    if matched is None and not known_host:
-        raise HostPolicyError(
-            f"unsupported host identity in selected {table_context}: "
-            f"{canonical_hostname or 'empty'}; next action: add a "
-            "governed hostname and memory-band entry before installing or auditing OOM policy"
-        )
-    if matched is None:
-        raise HostPolicyError(
-            f"host/profile memory mismatch: {canonical_hostname} has unlisted MemTotal floor "
-            f"{physical_gib} GiB in selected {table_context}; next action: repair the hardware "
-            "inventory or add a separately reviewed non-overlapping sizing interval"
-        )
-    profile, app_high, app_max, uid_high, uid_max, zram_size = matched
-
-    policy = HostMemoryPolicy(
-        hostname=canonical_hostname,
-        profile=profile,
-        physical_bytes=physical_bytes,
-        app_memory_high=app_high,
-        app_memory_max=app_max,
-        uid_memory_high=uid_high,
-        uid_memory_max=uid_max,
-        zram_size=zram_size,
-        optional_user_units=(
-            APPENDIX_OPTIONAL_USER_UNITS if profile == "appendix" else frozenset()
-        ),
-    )
-    return policy
-
-
-def _policy_lines(policy: HostMemoryPolicy, policy_authority: str) -> str:
-    def gib(value: int) -> str:
-        return f"{value // BYTES_1G}G"
-
-    values = {
-        "POLICY_AUTHORITY": policy_authority,
-        "HOSTNAME": policy.hostname,
-        "PROFILE": policy.profile,
-        "PHYSICAL_BYTES": str(policy.physical_bytes),
-        "APP_MEMORY_HIGH": gib(policy.app_memory_high),
-        "APP_MEMORY_MAX": gib(policy.app_memory_max),
-        "UID_MEMORY_HIGH": gib(policy.uid_memory_high),
-        "UID_MEMORY_MAX": gib(policy.uid_memory_max),
-        "ZRAM_SIZE_MIB": str(policy.zram_size // (1024**2)),
-    }
-    return "\n".join(f"{key}={value}" for key, value in values.items())
-
-
-def _open_lock_parent() -> tuple[int, str]:
-    if not ROOT_REQUIRED_LOCK_FILE.is_absolute() or not ROOT_REQUIRED_LOCK_FILE.name:
-        raise AuditLockError(
-            f"invalid package lock path {ROOT_REQUIRED_LOCK_FILE}; expected an absolute path "
-            "naming one file"
-        )
-    try:
-        parent_fd = os.open(
-            ROOT_REQUIRED_LOCK_FILE.parent,
-            os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
-        )
-    except OSError as exc:
-        raise AuditLockError(
-            f"cannot open physical package lock parent {ROOT_REQUIRED_LOCK_FILE.parent}: {exc}; "
-            "run the governed OOM installer to repair package state"
-        ) from exc
-    parent_inode = os.fstat(parent_fd)
-    if (
-        not stat.S_ISDIR(parent_inode.st_mode)
-        or parent_inode.st_uid != os.geteuid()
-        or parent_inode.st_mode & 0o022
-    ):
-        os.close(parent_fd)
-        raise AuditLockError(
-            f"unsafe package lock parent {ROOT_REQUIRED_LOCK_FILE.parent}; expected a "
-            "caller-owned, non-group-writable physical directory"
-        )
-    return parent_fd, ROOT_REQUIRED_LOCK_FILE.name
-
-
-def _validate_lock_fd(fd: int, parent_fd: int, lock_base: str) -> None:
+def _validate_lock_fd(fd: int) -> None:
     try:
         inode = os.fstat(fd)
-        path_inode = os.stat(lock_base, dir_fd=parent_fd, follow_symlinks=False)
+        path_inode = os.lstat(ROOT_REQUIRED_LOCK_FILE)
     except OSError as exc:
         raise AuditLockError(f"cannot inspect {ROOT_REQUIRED_LOCK_FILE}: {exc}") from exc
     if (
@@ -662,190 +108,54 @@ def _validate_lock_fd(fd: int, parent_fd: int, lock_base: str) -> None:
             f"unsafe package lock {ROOT_REQUIRED_LOCK_FILE}; expected the caller-owned, "
             "single-link, non-group-writable regular path inode"
         )
-
-
-def _validate_generation_guard_fd(guard_fd: int) -> None:
-    try:
-        guard_inode = os.fstat(guard_fd)
-        published = os.stat(GENERATION_GUARD_ANCHOR, follow_symlinks=False)
-    except OSError as exc:
-        raise AuditLockError(f"cannot inspect package generation guard: {exc}") from exc
-    if (
-        not stat.S_ISDIR(guard_inode.st_mode)
-        or guard_inode.st_uid != _host_root_uid()
-        or guard_inode.st_mode & 0o022
-        or (guard_inode.st_dev, guard_inode.st_ino) != (published.st_dev, published.st_ino)
-    ):
-        raise AuditLockError("package generation guard is not the immutable host anchor")
-    try:
-        fcntl.flock(guard_fd, fcntl.LOCK_EX)
-        locked = os.fstat(guard_fd)
-        published = os.stat(GENERATION_GUARD_ANCHOR, follow_symlinks=False)
-    except OSError as exc:
-        raise AuditLockError(f"cannot acquire package generation guard: {exc}") from exc
-    if (locked.st_dev, locked.st_ino) != (published.st_dev, published.st_ino):
-        raise AuditLockError("package generation-guard anchor changed during acquisition")
-
-
-def _open_generation_guard(inherited_lock: bool) -> tuple[int, Path]:
-    lexical_raw = os.environ.get(
-        "HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT",
-        str(ROOT_REQUIRED_LOCK_FILE.parent),
-    )
-    lexical_root = Path(os.path.abspath(os.path.normpath(lexical_raw)))
-    if lexical_root != Path(os.path.abspath(os.path.normpath(ROOT_REQUIRED_LOCK_FILE.parent))):
-        raise AuditLockError(
-            "package lock must be the .lock inside its lexical root-required state directory"
-        )
-    if inherited_lock:
-        raw = os.environ.get("HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD", "")
-        try:
-            guard_fd = int(raw)
-        except ValueError as exc:
-            raise AuditLockError("invalid inherited package generation-guard descriptor") from exc
-        if guard_fd < 3:
-            raise AuditLockError("invalid inherited package generation-guard descriptor")
-        _validate_generation_guard_fd(guard_fd)
-        return guard_fd, lexical_root
-
-    try:
-        guard_fd = os.open(
-            GENERATION_GUARD_ANCHOR,
-            os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
-        )
-    except OSError as exc:
-        raise AuditLockError(f"cannot open package generation guard: {exc}") from exc
-    try:
-        _validate_generation_guard_fd(guard_fd)
-    except AuditLockError:
-        os.close(guard_fd)
-        raise
-    return guard_fd, lexical_root
-
-
-def _validate_state_generation(parent_fd: int, lexical_root: Path, inherited: bool) -> None:
-    try:
-        parent_inode = os.fstat(parent_fd)
-        published = os.stat(lexical_root, follow_symlinks=False)
-        if inherited:
-            state_fd = int(os.environ.get("HAPAX_ROOT_REQUIRED_STATE_FD", ""))
-            inherited_inode = os.fstat(state_fd)
-        else:
-            inherited_inode = parent_inode
-    except (OSError, ValueError) as exc:
-        raise AuditLockError(f"cannot bind package state generation: {exc}") from exc
-    identity = (parent_inode.st_dev, parent_inode.st_ino)
-    if identity != (published.st_dev, published.st_ino) or identity != (
-        inherited_inode.st_dev,
-        inherited_inode.st_ino,
-    ):
-        raise AuditLockError("package state directory changed while acquiring its shared lock")
+    os.fchmod(fd, 0o600)
 
 
 @contextmanager
 def shared_root_required_lock() -> Iterator[None]:
     inherited = os.environ.get("HAPAX_ROOT_REQUIRED_LOCK_FD", "")
     owns_fd = not inherited
-    guard_fd, lexical_root = _open_generation_guard(bool(inherited))
-    try:
-        parent_fd, lock_base = _open_lock_parent()
+    if inherited:
         try:
-            _validate_state_generation(parent_fd, lexical_root, bool(inherited))
-            if inherited:
-                try:
-                    fd = int(inherited)
-                except ValueError as exc:
-                    raise AuditLockError("invalid inherited package lock descriptor") from exc
-                if fd < 3:
-                    raise AuditLockError("invalid inherited package lock descriptor")
-                lock_mode = os.environ.get("HAPAX_ROOT_REQUIRED_LOCK_MODE", "shared")
-                if lock_mode not in {"shared", "exclusive"}:
-                    raise AuditLockError(f"invalid inherited package lock mode: {lock_mode}")
-            else:
-                try:
-                    fd = os.open(
-                        lock_base,
-                        os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_RDONLY,
-                        dir_fd=parent_fd,
-                    )
-                except OSError as exc:
-                    raise AuditLockError(
-                        f"cannot open existing safe package lock {ROOT_REQUIRED_LOCK_FILE}: {exc}; "
-                        "run the governed OOM installer to create package state"
-                    ) from exc
-                lock_mode = "shared"
-            try:
-                _validate_lock_fd(fd, parent_fd, lock_base)
-                fcntl.flock(fd, fcntl.LOCK_EX if lock_mode == "exclusive" else fcntl.LOCK_SH)
-                _validate_lock_fd(fd, parent_fd, lock_base)
-                _validate_state_generation(parent_fd, lexical_root, bool(inherited))
-                yield
-            finally:
-                if owns_fd:
-                    os.close(fd)
-        finally:
-            os.close(parent_fd)
+            fd = int(inherited)
+        except ValueError as exc:
+            raise AuditLockError("invalid inherited package lock descriptor") from exc
+        if fd < 3:
+            raise AuditLockError("invalid inherited package lock descriptor")
+        lock_mode = os.environ.get("HAPAX_ROOT_REQUIRED_LOCK_MODE", "shared")
+        if lock_mode not in {"shared", "exclusive"}:
+            raise AuditLockError(f"invalid inherited package lock mode: {lock_mode}")
+    else:
+        ROOT_REQUIRED_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(
+                ROOT_REQUIRED_LOCK_FILE,
+                os.O_CLOEXEC | os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR,
+                0o600,
+            )
+        except OSError as exc:
+            raise AuditLockError(
+                f"cannot open safe package lock {ROOT_REQUIRED_LOCK_FILE}: {exc}"
+            ) from exc
+        lock_mode = "shared"
+    try:
+        _validate_lock_fd(fd)
+        fcntl.flock(fd, fcntl.LOCK_EX if lock_mode == "exclusive" else fcntl.LOCK_SH)
+        yield
     finally:
         if owns_fd:
-            os.close(guard_fd)
+            os.close(fd)
 
 
 def _systemctl() -> str:
     return os.environ.get("HAPAX_SYSTEMCTL", "/usr/bin/systemctl")
 
 
-def _systemd_analyze() -> str:
-    return os.environ.get("HAPAX_SYSTEMD_ANALYZE", "/usr/bin/systemd-analyze")
-
-
-def _docker() -> str:
-    return os.environ.get("HAPAX_OOM_AUDIT_DOCKER", "/usr/bin/docker")
-
-
-def _systemd_policy_dir(name: str, default: Path) -> Path:
-    override = os.environ.get(name, "").strip()
-    if not override:
-        return default
-    _require_test_override(name)
-    return Path(override)
-
-
-def _systemd_system_dir() -> Path:
-    return _systemd_policy_dir("HAPAX_OOM_AUDIT_SYSTEMD_SYSTEM_DIR", Path("/etc/systemd/system"))
-
-
-def _systemd_user_dir() -> Path:
-    return _systemd_policy_dir(
-        "HAPAX_OOM_AUDIT_SYSTEMD_USER_DIR", Path.home() / ".config/systemd/user"
-    )
-
-
-def _run(args: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(
-            args, capture_output=True, text=True, timeout=10, check=False, env=env
-        )
+        return subprocess.run(args, capture_output=True, text=True, timeout=10, check=False)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return subprocess.CompletedProcess(args=args, returncode=127, stdout="", stderr=str(exc))
-
-
-def _run_local_docker(args: list[str]) -> subprocess.CompletedProcess[str]:
-    env = os.environ.copy()
-    for selector in DOCKER_SELECTOR_ENV:
-        env.pop(selector, None)
-    env["DOCKER_HOST"] = LOCAL_DOCKER_HOST
-    env["DOCKER_CONFIG"] = LOCAL_DOCKER_CONFIG
-    return _run(
-        [
-            _docker(),
-            "--config",
-            LOCAL_DOCKER_CONFIG,
-            "--host",
-            LOCAL_DOCKER_HOST,
-            *args,
-        ],
-        env=env,
-    )
 
 
 def _show(unit: str, properties: list[str], *, user: bool = False) -> dict[str, str]:
@@ -874,133 +184,6 @@ def _int_value(value: str | None) -> int | None:
         return int(value)
     except ValueError:
         return None
-
-
-def _audit_loaded_governed_unit_dropins(unit: str, canonical: Path, *, user: bool = False) -> Check:
-    values = _show(unit, ["NeedDaemonReload", "FragmentPath", "DropInPaths"], user=user)
-    check_name = f"{unit.replace('-', '_').replace('@', '_at_')}_memory_dropin_ownership"
-    if "_error" in values:
-        return Check(
-            check_name,
-            "error",
-            str(canonical),
-            "N/A",
-            f"cannot query authoritative NeedDaemonReload/FragmentPath/DropInPaths: "
-            f"{values['_error']}; "
-            f"{NEXT_OOM_INSTALL}",
-        )
-    need_reload = values.get("NeedDaemonReload", "").strip()
-    if need_reload != "no":
-        return Check(
-            check_name,
-            "gap",
-            "NeedDaemonReload=no",
-            need_reload or "missing",
-            f"authoritative manager state is stale or unprovable; {NEXT_OOM_INSTALL}",
-        )
-    fragment_raw = values.get("FragmentPath", "").strip()
-    if fragment_raw:
-        fragment = Path(fragment_raw)
-        if not fragment.is_file() or fragment.is_symlink():
-            return Check(
-                check_name,
-                "gap",
-                "empty or readable regular governed-key-free FragmentPath",
-                fragment_raw,
-                f"authoritative FragmentPath is missing, non-regular, or symlinked; "
-                f"{NEXT_OOM_INSTALL}",
-            )
-        try:
-            fragment_body = fragment.read_text(encoding="utf-8")
-        except OSError as exc:
-            return Check(
-                check_name,
-                "error",
-                "empty or readable regular governed-key-free FragmentPath",
-                fragment_raw,
-                f"cannot inspect authoritative FragmentPath: {exc}; {NEXT_OOM_INSTALL}",
-            )
-        if GOVERNED_MEMORY_ASSIGNMENT.search(fragment_body):
-            return Check(
-                check_name,
-                "gap",
-                "no governed memory assignment in FragmentPath",
-                fragment_raw,
-                f"authoritative FragmentPath reports an unowned memory assignment; "
-                f"{NEXT_OOM_INSTALL}",
-            )
-    paths = [Path(item) for item in values.get("DropInPaths", "").split() if item]
-    canonical_count = paths.count(canonical)
-    if canonical_count != 1:
-        return Check(
-            check_name,
-            "gap",
-            str(canonical),
-            " ".join(map(str, paths)) or "none",
-            "authoritative DropInPaths does not contain exactly one receipt-owned memory source; "
-            f"{NEXT_OOM_INSTALL}",
-        )
-    if not canonical.is_file() or canonical.is_symlink():
-        return Check(
-            check_name,
-            "gap",
-            f"regular receipt-owned {canonical}",
-            str(canonical),
-            f"canonical memory source is missing, non-regular, or symlinked; {NEXT_OOM_INSTALL}",
-        )
-    for path in paths:
-        if path == canonical:
-            continue
-        try:
-            body = path.read_text(encoding="utf-8")
-        except OSError as exc:
-            return Check(
-                check_name,
-                "error",
-                "all non-receipt DropInPaths readable and free of governed memory assignments",
-                str(path),
-                f"cannot inspect authoritative DropInPath: {exc}; {NEXT_OOM_INSTALL}",
-            )
-        if GOVERNED_MEMORY_ASSIGNMENT.search(body):
-            return Check(
-                check_name,
-                "gap",
-                "no governed memory assignment outside the receipt-owned source",
-                str(path),
-                f"authoritative DropInPaths reports an unowned memory assignment; {NEXT_OOM_INSTALL}",
-            )
-    return Check(
-        check_name,
-        "pass",
-        str(canonical),
-        f"need_daemon_reload={need_reload} fragment={fragment_raw or 'none'} "
-        f"dropins={' '.join(map(str, paths))}",
-    )
-
-
-def audit_loaded_memory_dropin_ownership(uid: int) -> list[Check]:
-    system_dir = _systemd_system_dir()
-    user_dir = _systemd_user_dir()
-    return [
-        _audit_loaded_governed_unit_dropins(
-            "system.slice", system_dir / "system.slice.d/oom-containment.conf"
-        ),
-        _audit_loaded_governed_unit_dropins(
-            "user.slice", system_dir / "user.slice.d/oom-containment.conf"
-        ),
-        _audit_loaded_governed_unit_dropins(
-            f"user-{uid}.slice", system_dir / f"user-{uid}.slice.d/oom-containment.conf"
-        ),
-        _audit_loaded_governed_unit_dropins(
-            f"user@{uid}.service", system_dir / f"user@{uid}.service.d/oom.conf"
-        ),
-        _audit_loaded_governed_unit_dropins(
-            "app.slice", user_dir / "app.slice.d/oom-containment.conf", user=True
-        ),
-        _audit_loaded_governed_unit_dropins(
-            "session.slice", user_dir / "session.slice.d/oom-containment.conf", user=True
-        ),
-    ]
 
 
 def audit_user_manager(uid: int) -> Check:
@@ -1210,10 +393,10 @@ def audit_sshd_policy() -> list[Check]:
     ]
 
 
-def audit_app_slice(policy: HostMemoryPolicy) -> list[Check]:
+def audit_app_slice() -> list[Check]:
     expected = {
-        "MemoryHigh": policy.app_memory_high,
-        "MemoryMax": policy.app_memory_max,
+        "MemoryHigh": BYTES_72G,
+        "MemoryMax": BYTES_88G,
         "MemorySwapMax": BYTES_8G,
         "MemoryLow": BYTES_16G,
         "MemoryMin": BYTES_8G,
@@ -1359,10 +542,10 @@ def audit_user_child_floor_composition(uid: int) -> list[Check]:
     return checks
 
 
-def audit_system_memory_unit(unit: str, policy: HostMemoryPolicy) -> list[Check]:
+def audit_system_memory_unit(unit: str) -> list[Check]:
     expected = {
-        "MemoryHigh": policy.uid_memory_high,
-        "MemoryMax": policy.uid_memory_max,
+        "MemoryHigh": BYTES_80G,
+        "MemoryMax": BYTES_96G,
         "MemorySwapMax": BYTES_8G,
         "MemoryLow": BYTES_20G,
         "MemoryMin": BYTES_10G,
@@ -1389,287 +572,6 @@ def audit_system_memory_unit(unit: str, policy: HostMemoryPolicy) -> list[Check]
             else f"{unit} aggregate memory policy drifted; {NEXT_OOM_INSTALL}"
         )
         checks.append(Check(f"{unit}_{key}", status, str(target), actual, detail))
-    return checks
-
-
-def audit_zram(policy: HostMemoryPolicy) -> list[Check]:
-    size_path = SYS_ROOT / "block" / "zram0" / "disksize"
-    try:
-        actual = int(size_path.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError) as exc:
-        size_check = Check(
-            "zram0_disksize",
-            "error",
-            str(policy.zram_size),
-            "N/A",
-            f"cannot read {size_path}: {exc}; {NEXT_OOM_INSTALL}",
-        )
-    else:
-        status = "pass" if actual == policy.zram_size else "gap"
-        detail = "" if status == "pass" else f"host zram size drifted; {NEXT_OOM_INSTALL}"
-        size_check = Check("zram0_disksize", status, str(policy.zram_size), str(actual), detail)
-
-    swaps_path = PROC_ROOT / "swaps"
-    try:
-        swap_lines = swaps_path.read_text(encoding="utf-8").splitlines()[1:]
-    except OSError as exc:
-        active_check = Check(
-            "zram0_active_swap",
-            "error",
-            "/dev/zram0 priority 100",
-            "N/A",
-            f"cannot read {swaps_path}: {exc}; {NEXT_OOM_INSTALL}",
-        )
-    else:
-        zram_fields = next(
-            (line.split() for line in swap_lines if line.split()[:1] == ["/dev/zram0"]),
-            None,
-        )
-        actual_swap = "absent" if zram_fields is None else f"active priority {zram_fields[-1]}"
-        swap_ok = zram_fields is not None and zram_fields[-1] == "100"
-        active_check = Check(
-            "zram0_active_swap",
-            "pass" if swap_ok else "gap",
-            "/dev/zram0 priority 100",
-            actual_swap,
-            "" if swap_ok else f"zram swap activation drifted; {NEXT_OOM_INSTALL}",
-        )
-
-    compression_path = SYS_ROOT / "block" / "zram0" / "comp_algorithm"
-    try:
-        compression = compression_path.read_text(encoding="utf-8").strip()
-    except OSError as exc:
-        compression_check = Check(
-            "zram0_compression",
-            "error",
-            "zstd",
-            "N/A",
-            f"cannot read {compression_path}: {exc}; {NEXT_OOM_INSTALL}",
-        )
-    else:
-        compression_ok = "[zstd]" in compression.split()
-        compression_check = Check(
-            "zram0_compression",
-            "pass" if compression_ok else "gap",
-            "zstd",
-            compression,
-            "" if compression_ok else f"zram compression drifted; {NEXT_OOM_INSTALL}",
-        )
-    return [size_check, active_check, compression_check]
-
-
-def _docker_policy(name: str) -> tuple[int, int] | None:
-    if name == "hapax-local-judge":
-        return BYTES_4G, BYTES_6G
-    if name.startswith("hapax-github-mcp-") and name != "hapax-github-mcp-":
-        return BYTES_512M, BYTES_768M
-    return None
-
-
-def _docker_check_name(container: str, field: str) -> str:
-    safe = re.sub(r"[^A-Za-z0-9]+", "_", container).strip("_")
-    return f"docker_{safe}_{field}"
-
-
-def _docker_container_records() -> tuple[list[tuple[str, str]], str | None]:
-    listed = _run_local_docker(["ps", "-a", "--no-trunc", "--format", "{{.ID}}\t{{.Names}}"])
-    if listed.returncode != 0:
-        detail = (listed.stderr or listed.stdout).strip() or f"rc={listed.returncode}"
-        return [], f"cannot enumerate Docker containers: {detail}"
-    records: list[tuple[str, str]] = []
-    for line in listed.stdout.splitlines():
-        if not line.strip():
-            continue
-        fields = line.split("\t")
-        if len(fields) != 2 or re.fullmatch(r"[0-9a-f]{12,64}", fields[0]) is None or not fields[1]:
-            return [], f"unparseable Docker identity record: {line}"
-        records.append((fields[0], fields[1]))
-    return records, None
-
-
-def _docker_target_records() -> tuple[list[tuple[str, str, tuple[int, int]]], str | None]:
-    records, error = _docker_container_records()
-    if error is not None:
-        return [], error
-    targets: list[tuple[str, str, tuple[int, int]]] = []
-    for container_id, name in records:
-        if policy := _docker_policy(name):
-            targets.append((container_id, name, policy))
-    return targets, None
-
-
-def _docker_target_absent(container_id: str, name: str) -> tuple[bool, str | None]:
-    records, error = _docker_container_records()
-    if error is not None:
-        return False, error
-    return all(
-        current_id != container_id and current_name != name for current_id, current_name in records
-    ), None
-
-
-def audit_docker_limits() -> list[Check]:
-    targets, enumeration_error = _docker_target_records()
-    if enumeration_error is not None:
-        return [
-            Check(
-                "docker_container_limits",
-                "error",
-                "all present target containers capped",
-                "N/A",
-                f"{enumeration_error}; {NEXT_OOM_INSTALL}",
-            )
-        ]
-    if not targets:
-        return [
-            Check(
-                "docker_container_limits",
-                "pass",
-                "all present target containers capped",
-                "none present",
-            )
-        ]
-
-    checks: list[Check] = []
-    for container_id, name, (expected_memory, expected_swap) in targets:
-        inspected = _run_local_docker(
-            [
-                "inspect",
-                "--format",
-                "{{.Id}}\t{{.Name}}\t{{.HostConfig.Memory}}\t{{.HostConfig.MemorySwap}}\t{{json .HostConfig.OomKillDisable}}\t{{.State.Status}}",
-                container_id,
-            ]
-        )
-        if inspected.returncode != 0:
-            detail = (inspected.stderr or inspected.stdout).strip() or f"rc={inspected.returncode}"
-            disappeared, reenumeration_error = _docker_target_absent(container_id, name)
-            if disappeared:
-                checks.append(
-                    Check(
-                        _docker_check_name(name, "inspect"),
-                        "pass",
-                        "inspectable or absent by both identity and owned name",
-                        f"id={container_id} and name={name} absent",
-                    )
-                )
-                continue
-            if reenumeration_error is not None:
-                detail = f"{detail}; identity/name absence proof failed: {reenumeration_error}"
-            else:
-                detail = f"{detail}; original identity or same-name target remains"
-            checks.append(
-                Check(
-                    _docker_check_name(name, "inspect"),
-                    "error",
-                    "inspectable or absent by both identity and owned name",
-                    "N/A",
-                    f"Docker inspect failed: {detail}; {NEXT_OOM_INSTALL}",
-                )
-            )
-            continue
-        fields = inspected.stdout.strip().split("\t")
-        if len(fields) != 6:
-            checks.append(
-                Check(
-                    _docker_check_name(name, "inspect"),
-                    "error",
-                    "id, name, memory, memory-swap, OOM-kill-disabled, state",
-                    inspected.stdout.strip() or "empty",
-                    f"unparseable Docker inspect result; {NEXT_OOM_INSTALL}",
-                )
-            )
-            continue
-        inspected_id = fields[0]
-        inspected_name = fields[1].removeprefix("/")
-        oom_kill_disable_raw = fields[4]
-        container_state = fields[5]
-        try:
-            actual_memory, actual_swap = int(fields[2]), int(fields[3])
-        except ValueError:
-            checks.append(
-                Check(
-                    _docker_check_name(name, "inspect"),
-                    "error",
-                    "numeric memory limits",
-                    inspected.stdout.strip(),
-                    f"unparseable Docker memory limits; {NEXT_OOM_INSTALL}",
-                )
-            )
-            continue
-        if inspected_id != container_id or inspected_name != name:
-            checks.append(
-                Check(
-                    _docker_check_name(name, "inspect"),
-                    "error",
-                    f"{container_id} {name}",
-                    f"{inspected_id} {inspected_name}",
-                    f"Docker inspect identity mismatch; {NEXT_OOM_INSTALL}",
-                )
-            )
-            continue
-        if name == "hapax-local-judge":
-            state_status = "pass" if container_state == "running" else "gap"
-            state_detail = (
-                ""
-                if state_status == "pass"
-                else "local-judge name is held by a non-running container; stop the user unit, "
-                f"inspect immutable container id {container_id}, remove that exact ID without -f "
-                "only after confirming it is stale, restart hapax-local-judge.service, and rerun "
-                "the OOM audit"
-            )
-            checks.append(
-                Check(
-                    _docker_check_name(name, "State"),
-                    state_status,
-                    "running",
-                    container_state or "empty",
-                    state_detail,
-                )
-            )
-        if oom_kill_disable_raw not in {"null", "true", "false"}:
-            checks.append(
-                Check(
-                    _docker_check_name(name, "OomKillDisable"),
-                    "error",
-                    "false",
-                    fields[4] or "empty",
-                    f"unparseable Docker OOM-kill-disable state; {NEXT_OOM_INSTALL}",
-                )
-            )
-            continue
-        for field, expected, actual in (
-            ("Memory", expected_memory, actual_memory),
-            ("MemorySwap", expected_swap, actual_swap),
-        ):
-            status = "pass" if actual == expected else "gap"
-            detail = "" if status == "pass" else f"Docker limit drifted; {NEXT_OOM_INSTALL}"
-            checks.append(
-                Check(
-                    _docker_check_name(name, field),
-                    status,
-                    str(expected),
-                    str(actual),
-                    detail,
-                )
-            )
-        # Docker serializes an omitted *bool as null. Both null and explicit
-        # false leave the kernel OOM killer enabled; only true disables it.
-        oom_kill_disable = "true" if oom_kill_disable_raw == "true" else "false"
-        oom_status = "pass" if oom_kill_disable == "false" else "gap"
-        oom_detail = (
-            ""
-            if oom_status == "pass"
-            else "Docker OOM killer is disabled; recreate the container from its governed "
-            f"launch source without --oom-kill-disable, then {NEXT_OOM_INSTALL}"
-        )
-        checks.append(
-            Check(
-                _docker_check_name(name, "OomKillDisable"),
-                oom_status,
-                "false",
-                oom_kill_disable,
-                oom_detail,
-            )
-        )
     return checks
 
 
@@ -1783,52 +685,14 @@ def _cgroup_pids(cgroup: str) -> list[str]:
     return sorted(pids, key=int)
 
 
-def _user_unit_search_paths() -> tuple[list[Path], bool, str]:
-    override = os.environ.get("HAPAX_OOM_AUDIT_USER_UNIT_PATHS", "").strip()
-    if override:
-        if os.environ.get("HAPAX_OOM_AUDIT_TEST_MODE") != "1":
-            return [], False, "HAPAX_OOM_AUDIT_USER_UNIT_PATHS is test-only"
-        paths = [Path(item) for item in override.split(":") if item]
-        return paths, True, "test-authoritative override"
-    proc = _run([_systemd_analyze(), "--user", "unit-paths"])
-    if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout).strip() or f"rc={proc.returncode}"
-        return [], False, detail
-    paths = [Path(line.strip()) for line in proc.stdout.splitlines() if line.strip()]
-    if not paths:
-        return [], False, "systemd-analyze returned no user unit paths"
-    return paths, True, "systemd-analyze --user unit-paths"
-
-
-def _user_unit_file(paths: list[Path], unit: str) -> Path | None:
-    for directory in paths:
-        candidate = directory / unit
-        if candidate.exists() or candidate.is_symlink():
-            return candidate
-    return None
-
-
-def _protected_user_unit_memberships(policy: HostMemoryPolicy) -> dict[str, set[str]]:
+def _protected_user_unit_memberships() -> dict[str, set[str]]:
     protected: dict[str, set[str]] = {}
     for unit in PROTECTED_USER_UNITS:
         values = _show(
             unit,
-            [
-                "LoadState",
-                "OOMScoreAdjust",
-                "MainPID",
-                "ControlGroup",
-                "MemoryLow",
-                "MemoryMin",
-                "Slice",
-            ],
+            ["OOMScoreAdjust", "MainPID", "ControlGroup", "MemoryLow", "MemoryMin", "Slice"],
             user=True,
         )
-        load_state = values.get("LoadState", "")
-        if load_state == "not-found" and unit in policy.optional_user_units:
-            continue
-        if load_state != "loaded":
-            continue
         cgroup = values.get("ControlGroup", "")
         main_pid = values.get("MainPID", "0")
         candidates = set(_cgroup_pids(cgroup))
@@ -1840,16 +704,13 @@ def _protected_user_unit_memberships(policy: HostMemoryPolicy) -> dict[str, set[
     return protected
 
 
-def audit_protected_user_units(policy: HostMemoryPolicy) -> list[Check]:
+def audit_protected_user_units() -> list[Check]:
     checks: list[Check] = []
-    unit_paths: list[Path] | None = None
-    unit_paths_authoritative = False
-    unit_paths_detail = "not queried"
+    enforcer_attempted = False
     for unit, expected in PROTECTED_USER_UNITS.items():
         values = _show(
             unit,
             [
-                "LoadState",
                 "OOMScoreAdjust",
                 "MainPID",
                 "ControlGroup",
@@ -1871,57 +732,6 @@ def audit_protected_user_units(policy: HostMemoryPolicy) -> list[Check]:
                 )
             )
             continue
-        load_state = values.get("LoadState", "")
-        if load_state == "not-found" and unit in policy.optional_user_units:
-            if unit_paths is None:
-                unit_paths, unit_paths_authoritative, unit_paths_detail = _user_unit_search_paths()
-            unit_file = _user_unit_file(unit_paths, unit)
-            if unit_file is not None:
-                checks.append(
-                    Check(
-                        f"user_unit_{unit}_LoadState",
-                        "gap",
-                        "host-optional unit absent with no unit file",
-                        str(unit_file),
-                        "unit file exists but the manager reports not-found; this is a load "
-                        f"failure, not host absence; {NEXT_OOM_INSTALL}",
-                    )
-                )
-            elif not unit_paths_authoritative:
-                checks.append(
-                    Check(
-                        f"user_unit_{unit}_LoadState",
-                        "error",
-                        "authoritatively proven host absence",
-                        load_state,
-                        "cannot prove absence from the user manager's complete unit search "
-                        f"path: {unit_paths_detail}; {NEXT_OOM_INSTALL}",
-                    )
-                )
-            else:
-                checks.append(
-                    Check(
-                        f"user_unit_{unit}_LoadState",
-                        "pass",
-                        "host-optional-absent",
-                        load_state,
-                        f"{unit} has no file in the authoritative user unit search path; "
-                        "systemd defaults for the nonexistent unit were not audited",
-                    )
-                )
-            continue
-        if load_state != "loaded":
-            checks.append(
-                Check(
-                    f"user_unit_{unit}_LoadState",
-                    "gap",
-                    "loaded",
-                    load_state or "N/A",
-                    f"required protected user unit is unavailable; {NEXT_OOM_INSTALL}",
-                )
-            )
-            continue
-        checks.append(Check(f"user_unit_{unit}_LoadState", "pass", "loaded", load_state))
         actual = values.get("OOMScoreAdjust", "")
         parsed = _int_value(actual)
         status = "pass" if parsed == 100 else "gap"
@@ -2007,6 +817,10 @@ def audit_protected_user_units(policy: HostMemoryPolicy) -> list[Check]:
                 )
                 continue
             live = _proc_oom_score(pid)
+            if live != expected and not enforcer_attempted:
+                enforcer_attempted = True
+                _run([_systemctl(), "start", "hapax-oom-score-enforce.service"])
+                live = _proc_oom_score(pid)
             if not _pid_matches_cgroup(pid, control_group):
                 actual_cgroups = _proc_cgroups(pid)
                 checks.append(
@@ -2024,7 +838,7 @@ def audit_protected_user_units(policy: HostMemoryPolicy) -> list[Check]:
             live_detail = (
                 ""
                 if live_status == "pass"
-                else f"live broadcast-critical user unit OOM score drifted; {NEXT_OOM_INSTALL}"
+                else f"live broadcast-critical user unit OOM score drifted after enforcer retry; {NEXT_OOM_INSTALL}"
             )
             checks.append(
                 Check(
@@ -2112,7 +926,7 @@ def _status_field(status: Path, key: str) -> str:
     return ""
 
 
-def audit_residual_user_process_protection(uid: int, policy: HostMemoryPolicy) -> Check:
+def audit_residual_user_process_protection(uid: int) -> Check:
     proc_root = PROC_ROOT
     if not proc_root.is_dir():
         return Check(
@@ -2122,7 +936,7 @@ def audit_residual_user_process_protection(uid: int, policy: HostMemoryPolicy) -
             "N/A",
             f"proc root unavailable; {NEXT_OOM_INSTALL}",
         )
-    protected_memberships = _protected_user_unit_memberships(policy)
+    protected_memberships = _protected_user_unit_memberships()
     offenders: list[str] = []
     for adj in proc_root.glob("[0-9]*/oom_score_adj"):
         pid_dir = adj.parent
@@ -2176,30 +990,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     parser.add_argument("--uid", type=int, default=os.getuid(), help="user manager UID to audit")
-    parser.add_argument(
-        "--host-policy-lines",
-        action="store_true",
-        help="emit the derived host policy as KEY=VALUE lines and exit",
-    )
     args = parser.parse_args(argv)
-    policy_authority = "unresolved"
-    report_policy_authority = True
 
     try:
-        if _sealed_package_profile_table() is not None and not args.host_policy_lines:
-            raise HostPolicyError(
-                f"{SEALED_SOURCE_ENV} is limited to internal host-policy derivation; "
-                "next action: run the installed recurring audit without sealed package selectors"
-            )
-        _reject_installed_test_selectors()
-        if args.host_policy_lines:
-            policy_authority = _policy_authority_label(_profile_table_path())
-            policy = derive_host_policy()
-            print(_policy_lines(policy, policy_authority))
-            return _audit_exit_code(_policy_authority_checks(policy_authority))
         with shared_root_required_lock():
-            policy_authority = _policy_authority_label(_profile_table_path())
-            policy = derive_host_policy()
             checks = [
                 Check(
                     "root_required_package_lock",
@@ -2207,14 +1001,6 @@ def main(argv: list[str] | None = None) -> int:
                     "shared package lock held during readback",
                     str(ROOT_REQUIRED_LOCK_FILE),
                 ),
-                Check(
-                    "host_memory_policy",
-                    "pass",
-                    "derived ceilings below physical RAM",
-                    f"{policy.profile}:{policy.physical_bytes}",
-                ),
-                *audit_zram(policy),
-                *audit_docker_limits(),
                 audit_user_manager(args.uid),
                 audit_user_manager_policy(args.uid),
                 audit_user_manager_live_score(args.uid),
@@ -2222,28 +1008,16 @@ def main(argv: list[str] | None = None) -> int:
                 *audit_sshd_policy(),
                 *audit_system_slice_reservation(),
                 *audit_user_slice_reservation(),
-                *audit_loaded_memory_dropin_ownership(args.uid),
-                *audit_system_memory_unit(f"user-{args.uid}.slice", policy),
-                *audit_system_memory_unit(f"user@{args.uid}.service", policy),
-                *audit_app_slice(policy),
+                *audit_system_memory_unit(f"user-{args.uid}.slice"),
+                *audit_system_memory_unit(f"user@{args.uid}.service"),
+                *audit_app_slice(),
                 *audit_session_slice(),
                 *audit_user_child_floor_composition(args.uid),
-                *audit_protected_user_units(policy),
-                audit_residual_user_process_protection(args.uid, policy),
+                *audit_protected_user_units(),
+                audit_residual_user_process_protection(args.uid),
                 *audit_tmux_scopes(),
             ]
-    except HostPolicyError as exc:
-        checks = [
-            Check(
-                "host_memory_policy",
-                "error",
-                "supported physical-memory sizing table",
-                "N/A",
-                f"{exc}; {NEXT_OOM_INSTALL}",
-            )
-        ]
     except AuditLockError as exc:
-        report_policy_authority = False
         checks = [
             Check(
                 "root_required_package_lock",
@@ -2253,22 +1027,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"{exc}; {NEXT_OOM_INSTALL}",
             )
         ]
-    authority_checks = _policy_authority_checks(policy_authority) if report_policy_authority else []
-    checks = [*authority_checks, *checks]
     if args.json:
-        print(
-            json.dumps(
-                {
-                    "checks": [asdict(check) for check in checks],
-                    "policy_authority": policy_authority,
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
+        print(json.dumps({"checks": [asdict(check) for check in checks]}, indent=2, sort_keys=True))
     else:
-        print(f"POLICY_AUTHORITY {policy_authority}\n{format_human(checks)}")
-    return _audit_exit_code(checks)
+        print(format_human(checks))
+    return 1 if any(check.status in {"gap", "error"} for check in checks) else 0
 
 
 if __name__ == "__main__":

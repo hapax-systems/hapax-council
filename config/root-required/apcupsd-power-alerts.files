@@ -1,9 +1,6 @@
 # Versioned ownership manifest for the root-required apcupsd power-alert package.
 config/root-required/apcupsd-power-alerts.files
-config/root-required/apcupsd-power-alerts.effects
 scripts/install-apcupsd-power-alerts
-scripts/hapax-root-required-deferred-install
-scripts/hapax-post-merge-deploy
 config/apcupsd/apcupsd.conf
 config/apcupsd/hapax-power-event.py
 config/apcupsd/onbattery

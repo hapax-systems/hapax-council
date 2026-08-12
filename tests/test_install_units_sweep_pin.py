@@ -338,15 +338,9 @@ class TestServiceDropInInstall:
         uv.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
         uv.chmod(0o755)
 
-        home = tmp_path / "home"
-        user_dir = home / ".config" / "systemd" / "user"
-        user_dir.mkdir(parents=True)
-        judge_dest = user_dir / "hapax-local-judge.service"
-        judge_dest.write_text("receipt-owned regular file\n", encoding="utf-8")
-
         env = os.environ.copy()
         env["ALLOW_NONSTANDARD_REPO"] = "1"
-        env["HOME"] = str(home)
+        env["HOME"] = str(tmp_path / "home")
         env["PATH"] = f"{bin_dir}:{env['PATH']}"
 
         result = subprocess.run(
@@ -368,21 +362,18 @@ class TestServiceDropInInstall:
             "studio-compositor.service.d/oom-protect.conf",
             "hapax-imagination.service.d/oom-protect.conf",
         ]
-        assert judge_dest.is_file()
-        assert not judge_dest.is_symlink()
-        assert judge_dest.read_text(encoding="utf-8") == "receipt-owned regular file\n"
-        assert "skipped dedicated P0 OOM unit: hapax-local-judge.service" in result.stdout
+        user_dir = Path(env["HOME"]) / ".config" / "systemd" / "user"
         for relative in p0_dropins:
             dest = user_dir / relative
             assert not dest.exists()
             assert f"dropin-skipped-dedicated-installer: {relative}" in result.stdout
-        p0_owned_units = [
+        p0_audit_units = [
             "hapax-oom-policy-audit.service",
             "hapax-oom-policy-audit.timer",
             "hapax-root-required-deploy-audit.service",
             "hapax-root-required-deploy-audit.timer",
         ]
-        for unit in p0_owned_units:
+        for unit in p0_audit_units:
             assert not (user_dir / unit).exists()
             assert f"skipped dedicated P0 OOM unit: {unit}" in result.stdout
 

@@ -37,7 +37,7 @@ record = {
     "message": (
         f"System-scope failure intake could not exec {intake}; "
         "recorded emergency ledger fallback. Next action: reinstall the D2 recovery bundle "
-        "and rerun hapax-post-merge-deploy with the canonical runtime-authorized task."
+        "and rerun scripts/install-p0-oom-containment --install --verify-live."
     ),
 }
 try:
@@ -49,10 +49,10 @@ except OSError as exc:
         f"root failure intake fallback could not write emergency ledger {ledger}: {exc}; "
         f"unit={unit}; missing_intake={intake}; "
         "next action: repair the ledger parent ownership/capacity, reinstall the D2 recovery "
-        "bundle, and rerun hapax-post-merge-deploy with the canonical runtime-authorized task",
+        "bundle, and rerun scripts/install-p0-oom-containment --install --verify-live",
         file=sys.stderr,
     )
     raise SystemExit(1) from None
 PY
 
-echo "root failure intake fallback recorded for $unit; missing intake: $intake; next action: reinstall the D2 recovery bundle, set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical runtime-authorized task, and rerun hapax-post-merge-deploy" >&2
+echo "root failure intake fallback recorded for $unit; missing intake: $intake; next action: reinstall the D2 recovery bundle and rerun scripts/install-p0-oom-containment --install --verify-live" >&2

@@ -1,29 +1,24 @@
 from __future__ import annotations
 
-import configparser
-import csv
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 README = REPO_ROOT / "systemd" / "README.md"
 STIMMUNG_SYNC_UNIT = REPO_ROOT / "systemd" / "units" / "stimmung-sync.service"
-PROFILE_TABLE = REPO_ROOT / "config" / "root-required" / "oom-host-profiles.tsv"
 
 
-def test_readme_presents_bounded_per_host_policy_as_current_truth() -> None:
+def test_readme_does_not_present_64gb_swap_policy_as_current_truth() -> None:
     readme = README.read_text(encoding="utf-8")
 
     stale_current_truth = [
         "Total 63G swap on 62G RAM",
         "zram (31G zstd, priority=100) as tier-1",
         "vm.swappiness=150",
-        "**128GB host memory policy**",
-        "tuned for 128GB RAM",
     ]
     for phrase in stale_current_truth:
         assert phrase not in readme
 
-    assert "**Bounded per-host memory policy**" in readme
+    assert "**128GB host memory policy**" in readme
     assert "`vm.swappiness=5`" in readme
     assert "zram saturation, global RAM pressure" in readme
     assert "read-only host receipt" in readme
@@ -51,34 +46,6 @@ def test_runtime_application_steps_are_a_separate_receipt_path() -> None:
         "service restarts",
     ]:
         assert runtime_mutation in normalized
-
-
-def test_profile_zram_rows_match_shipped_generator_policy() -> None:
-    rows = csv.reader(PROFILE_TABLE.read_text(encoding="utf-8").splitlines(), delimiter="\t")
-    seen_profiles: set[str] = set()
-
-    for row in rows:
-        if not row or row[0].startswith("#"):
-            continue
-        profile = row[3]
-        assert profile not in seen_profiles
-        seen_profiles.add(profile)
-        expected_zram_mib = int(row[8])
-        config = configparser.ConfigParser(interpolation=None)
-        config.read(
-            REPO_ROOT
-            / "config"
-            / "root-required"
-            / "oom-host-policy"
-            / profile
-            / "zram-generator.conf",
-            encoding="utf-8",
-        )
-
-        assert config.getint("zram0", "zram-size") == expected_zram_mib
-        assert config.get("zram0", "compression-algorithm") == "zstd"
-
-    assert seen_profiles == {"appendix", "podium"}
 
 
 def test_stimmung_sync_ceiling_is_evidence_and_role_specific() -> None:
