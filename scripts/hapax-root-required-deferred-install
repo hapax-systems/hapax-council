@@ -23,6 +23,12 @@ SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/bin:/bin"
 GIT = "/usr/bin/git"
 BASH = "/usr/bin/bash"
 DEFAULT_SUDO = "/usr/bin/sudo"
+PRODUCTION_BROKER = Path("/usr/local/sbin/hapax-root-required-package-apply")
+BROKER_BOOTSTRAP_ACTION = (
+    "dispatch a separately runtime-authorized root-package broker bootstrap, install the "
+    "reviewed broker root:root and non-writable at "
+    f"{PRODUCTION_BROKER}, then rerun hapax-post-merge-deploy"
+)
 SHA_RE = re.compile(rb"[0-9a-f]{40}\n\Z")
 SHA_TEXT_RE = re.compile(r"[0-9a-f]{40}\Z")
 EFFECT_SCOPE_RE = re.compile(r"runtime:[A-Za-z0-9_./@*:+-]+\Z")
@@ -134,6 +140,12 @@ class LockedState:
     state_fd: int
     lock_fd: int
     guard_fd: int
+
+
+@dataclass(frozen=True)
+class BrokerRequest:
+    package: Package
+    sha: str
 
 
 OOM_PACKAGE = Package(
@@ -1128,6 +1140,8 @@ def _execute_installer(
     runtime_gates: RuntimeGateSnapshot,
     state_lock: LockedState,
 ) -> int:
+    if not paths.test_mode:
+        raise _error("production Bash package execution is retired; " + BROKER_BOOTSTRAP_ACTION)
     installer_rel = PurePosixPath(package.installer)
     if _git_mode(repo, sha, installer_rel) != "100755":
         raise _error("root-required installer Git mode is not executable")
@@ -1194,6 +1208,88 @@ def _execute_installer(
     return result.returncode
 
 
+def _validate_production_broker(path: Path = PRODUCTION_BROKER) -> None:
+    if path != PRODUCTION_BROKER:
+        raise _error(f"production root-package broker must be {PRODUCTION_BROKER}")
+    try:
+        current = Path("/")
+        for part in path.parts[1:-1]:
+            current /= part
+            inode = os.lstat(current)
+            if (
+                not stat.S_ISDIR(inode.st_mode)
+                or inode.st_uid != _host_root_uid()
+                or inode.st_mode & 0o022
+            ):
+                raise _error(
+                    f"root-package broker ancestor is not root-owned and non-writable: {current}; "
+                    + BROKER_BOOTSTRAP_ACTION
+                )
+        inode = os.lstat(path)
+    except FileNotFoundError as exc:
+        raise _error(
+            f"root-owned package broker is not installed at {path}; " + BROKER_BOOTSTRAP_ACTION
+        ) from exc
+    except OSError as exc:
+        raise _error(
+            f"cannot inspect root-owned package broker {path}: {exc}; " + BROKER_BOOTSTRAP_ACTION
+        ) from exc
+    if (
+        not stat.S_ISREG(inode.st_mode)
+        or inode.st_uid != _host_root_uid()
+        or inode.st_nlink != 1
+        or inode.st_mode & 0o6022
+        or not inode.st_mode & 0o100
+    ):
+        raise _error(
+            f"root-package broker is not a single-link root-owned non-writable executable: {path}; "
+            + BROKER_BOOTSTRAP_ACTION
+        )
+
+
+def _verify_broker_completion(paths: InstallPaths, package: Package, sha: str) -> None:
+    receipt = paths.state_root / "installed-receipts" / f"{package.label}.sha"
+    if _read_safe_receipt_sha(receipt, label="broker-installed package receipt") != sha:
+        raise _error(
+            "root-package broker returned success without publishing the exact installed receipt; "
+            "leave the desired receipt and deferral pending, inspect the broker journal, and rerun"
+        )
+
+
+def _execute_production_broker(
+    paths: InstallPaths,
+    request: BrokerRequest,
+) -> int:
+    _validate_production_broker()
+    # The helper's task and verifier checks are advisory narrowing only. The root-owned
+    # broker receives no child-produced permission token and must independently derive
+    # authority, package bytes, destinations, and the complete effect transaction.
+    command = [
+        str(paths.sudo),
+        "-n",
+        str(PRODUCTION_BROKER),
+        "--package",
+        request.package.label,
+        "--expected-sha",
+        request.sha,
+    ]
+    result = subprocess.run(command, check=False, env=_safe_subprocess_env(paths.home))
+    if result.returncode != 0:
+        raise _error(
+            f"root-owned package broker rejected {request.package.label} at {request.sha} "
+            f"with rc={result.returncode}; no installed receipt or deferral may advance; "
+            "inspect the broker diagnostic and rerun the governed post-merge action"
+        )
+    with _locked_state(paths) as (locked_paths, _state_lock):
+        _verify_broker_completion(locked_paths, request.package, request.sha)
+    print(
+        "hapax-root-required-deferred-install: completed authenticated "
+        f"package={request.package.label} sha={request.sha}",
+        flush=True,
+    )
+    return 0
+
+
 def _install_locked(
     package: Package,
     *,
@@ -1202,7 +1298,7 @@ def _install_locked(
     expected_sha: str,
     activation_release: Path,
     runtime_authority_task: Path,
-) -> int:
+) -> int | BrokerRequest:
     desired_receipts = paths.state_root / "desired-receipts"
     _validate_owned_directory(desired_receipts, label="desired-receipt directory")
     receipt = desired_receipts / f"{package.label}.sha"
@@ -1230,6 +1326,10 @@ def _install_locked(
         package,
         runtime_authority_task,
     )
+    if not paths.test_mode:
+        # Production effects live below the interpreted installer boundary. Nothing
+        # from the Bash child can authorize, parameterize, or time this transaction.
+        return BrokerRequest(package=package, sha=sha)
     sudo_result = subprocess.run(
         [str(paths.sudo), "-v"], check=False, env=_safe_subprocess_env(paths.home)
     )
@@ -1293,7 +1393,7 @@ def install(
     _validate_sudo(paths.sudo, test_mode=paths.test_mode)
     _validate_owned_directory(paths.state_root, label="root-required state root")
     with _locked_state(paths) as (locked_paths, state_lock):
-        return _install_locked(
+        outcome = _install_locked(
             package,
             paths=locked_paths,
             state_lock=state_lock,
@@ -1301,6 +1401,9 @@ def install(
             activation_release=activation_release,
             runtime_authority_task=runtime_authority_task,
         )
+    if isinstance(outcome, BrokerRequest):
+        return _execute_production_broker(paths, outcome)
+    return outcome
 
 
 def main(argv: list[str] | None = None) -> int:
