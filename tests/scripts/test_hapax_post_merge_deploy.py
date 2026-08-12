@@ -3260,15 +3260,27 @@ def test_stale_post_merge_deploy_preserves_newer_desired_receipt(tmp_path: Path)
     assert stat.S_IMODE(superseded.stat().st_mode) == 0o600
 
 
+@pytest.mark.parametrize(
+    "selector",
+    (
+        "HAPAX_POST_MERGE_ROOT_DEFER_DIR",
+        "HAPAX_ROOT_REQUIRED_STATE_ROOT",
+        "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT",
+        "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT",
+        "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT",
+        "HAPAX_ROOT_REQUIRED_LOCK_FILE",
+    ),
+)
 def test_post_merge_refuses_root_required_path_selectors_outside_test_mode(
     tmp_path: Path,
+    selector: str,
 ) -> None:
     repo, sha = _repo_with_linear_commit(tmp_path, ROOT_AUDIT_SOURCE_FILES)
     redirected = tmp_path / "redirected-state"
     env = {
         **os.environ,
         "REPO": str(repo),
-        "HAPAX_ROOT_REQUIRED_STATE_ROOT": str(redirected),
+        selector: str(redirected),
     }
     env.pop("HAPAX_POST_MERGE_TEST_MODE", None)
 
@@ -6233,10 +6245,22 @@ def test_state_generation_race_witness_fails_without_guard_bind(tmp_path: Path) 
     )
 
 
-def test_generation_guard_serializes_across_network_namespaces(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "script",
+    (
+        SCRIPT,
+        ROOT_REQUIRED_AUDIT,
+        REPO_ROOT / "scripts/install-apcupsd-power-alerts",
+        REPO_ROOT / "scripts/install-p0-oom-containment",
+    ),
+)
+def test_generation_guard_serializes_across_network_namespaces(
+    tmp_path: Path,
+    script: Path,
+) -> None:
     _exercise_state_generation_wrapper(
         tmp_path,
-        _root_required_lock_wrapper_source(SCRIPT),
+        _root_required_lock_wrapper_source(script),
         expect_second_blocked=True,
         second_network_namespace=True,
     )
@@ -6295,6 +6319,62 @@ def test_inherited_lock_descriptor_refuses_symlinked_parent(
 
     assert result.returncode == 1
     assert "invalid shared lock descriptor" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("script", "function_name", "extra_args"),
+    (
+        (SCRIPT, "acquire_inherited_root_required_lock", ()),
+        (ROOT_REQUIRED_AUDIT, "acquire_inherited_root_required_lock", ("shared",)),
+        (REPO_ROOT / "scripts/install-apcupsd-power-alerts", "acquire_root_required_lock", ()),
+        (REPO_ROOT / "scripts/install-p0-oom-containment", "acquire_root_required_lock", ()),
+    ),
+)
+def test_inherited_lock_descriptor_refuses_user_owned_generation_anchor(
+    tmp_path: Path,
+    script: Path,
+    function_name: str,
+    extra_args: tuple[str, ...],
+) -> None:
+    source = script.read_text(encoding="utf-8")
+    start = source.index(f"{function_name}() {{")
+    marker = source.index("\n", source.index("<<'PY'", start)) + 1
+    validator = source[marker : source.index("\nPY", marker)]
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    lock = state / ".lock"
+    lock.touch(mode=0o600)
+    fake_anchor = tmp_path / "fake-anchor"
+    fake_anchor.mkdir(mode=0o700)
+    lock_fd = os.open(lock, os.O_RDWR)
+    state_fd = os.open(state, os.O_RDONLY | os.O_DIRECTORY)
+    guard_fd = os.open(fake_anchor, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/python3",
+                "-",
+                str(lock_fd),
+                str(state_fd),
+                str(guard_fd),
+                str(lock),
+                f"/proc/{os.getpid()}/fd/{state_fd}",
+                str(state),
+                *extra_args,
+            ],
+            input=validator,
+            text=True,
+            capture_output=True,
+            check=False,
+            pass_fds=(lock_fd, state_fd, guard_fd),
+        )
+    finally:
+        os.close(lock_fd)
+        os.close(state_fd)
+        os.close(guard_fd)
+
+    assert result.returncode == 1
+    assert "generation guard is not the immutable host anchor" in result.stderr
 
 
 def test_inherited_lock_descriptor_rejects_path_replacement_during_acquisition(
