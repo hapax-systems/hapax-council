@@ -28,8 +28,11 @@ SHA_TEXT_RE = re.compile(r"[0-9a-f]{40}\Z")
 EFFECT_SCOPE_RE = re.compile(r"runtime:[A-Za-z0-9_./@*:+-]+\Z")
 TEST_MODE_ENV = "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_MODE"
 TEST_HOSTNAME_ENV = "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_HOSTNAME"
+TEST_ROOT_ENV = "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_ROOT"
 AFTER_SUDO_HOOK_ENV = "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_AFTER_SUDO_HOOK"
 SEALED_SOURCE_FDS_ENV = "HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS"
+INSTALLER_TEST_MODE_ENV = "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE"
+INSTALLER_TEST_ROOT_ENV = "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_ROOT"
 AUTHORITY_VERIFIER_REL = PurePosixPath("scripts/hapax-post-merge-deploy")
 REQUIRED_MEMFD_SEALS = (
     fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
@@ -70,6 +73,7 @@ class InstallPaths:
     repo_alias: Path
     sudo: Path
     test_mode: bool
+    test_root: Path | None
 
 
 @dataclass(frozen=True)
@@ -312,6 +316,7 @@ def _production_defaults() -> InstallPaths:
         repo_alias=home / ".cache/hapax/source-activation/worktree",
         sudo=Path(DEFAULT_SUDO),
         test_mode=False,
+        test_root=None,
     )
 
 
@@ -323,6 +328,40 @@ def _absolute_env_path(name: str) -> Path:
     return path
 
 
+def _validate_test_root(path: Path) -> Path:
+    if path == Path("/") or path.is_symlink():
+        raise _error(f"{TEST_ROOT_ENV} must be an absolute non-symlink directory below /")
+    try:
+        resolved = path.resolve(strict=True)
+        inode = path.lstat()
+    except OSError as exc:
+        raise _error(f"cannot resolve isolated deferred-install test root {path}: {exc}") from exc
+    account_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    if (
+        resolved != path
+        or not stat.S_ISDIR(inode.st_mode)
+        or inode.st_uid != os.getuid()
+        or inode.st_mode & 0o022
+        or account_home == resolved
+        or account_home.is_relative_to(resolved)
+    ):
+        raise _error(
+            "isolated deferred-install test root must be physical, caller-owned, and not "
+            f"group/other-writable: {path}"
+        )
+    return resolved
+
+
+def _validate_test_path(path: Path, root: Path, *, label: str) -> None:
+    lexical = Path(os.path.abspath(os.path.normpath(path)))
+    try:
+        resolved = path.resolve(strict=False)
+    except OSError as exc:
+        raise _error(f"cannot resolve isolated {label} under {root}: {exc}") from exc
+    if not lexical.is_relative_to(root) or not resolved.is_relative_to(root):
+        raise _error(f"isolated {label} escapes the deferred-install test root {root}: {path}")
+
+
 def _install_paths() -> InstallPaths:
     defaults = _production_defaults()
     test_mode = _authorize_isolated_test_mode()
@@ -331,6 +370,7 @@ def _install_paths() -> InstallPaths:
         "HAPAX_POST_MERGE_ROOT_DEFER_DIR",
         "HAPAX_ROOT_REQUIRED_GIT_REPO",
         "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_SUDO",
+        TEST_ROOT_ENV,
         TEST_HOSTNAME_ENV,
         AFTER_SUDO_HOOK_ENV,
     }
@@ -343,6 +383,7 @@ def _install_paths() -> InstallPaths:
             )
         return defaults
 
+    test_root = _validate_test_root(_absolute_env_path(TEST_ROOT_ENV))
     paths = InstallPaths(
         home=defaults.home,
         state_root=_absolute_env_path("HAPAX_ROOT_REQUIRED_STATE_ROOT"),
@@ -350,7 +391,15 @@ def _install_paths() -> InstallPaths:
         repo_alias=_absolute_env_path("HAPAX_ROOT_REQUIRED_GIT_REPO"),
         sudo=_absolute_env_path("HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_SUDO"),
         test_mode=True,
+        test_root=test_root,
     )
+    for test_path, label in (
+        (paths.state_root, "state root"),
+        (paths.defer_root, "defer root"),
+        (paths.repo_alias, "activation alias"),
+        (paths.sudo, "sudo command"),
+    ):
+        _validate_test_path(test_path, test_root, label=label)
     for test_path, production_path in (
         (paths.state_root, defaults.state_root),
         (paths.defer_root, defaults.defer_root),
@@ -620,7 +669,7 @@ def _run_exact_authority_verifier(
     env.update(_state_lock_env(paths, state_lock))
     try:
         result = subprocess.run(
-            [BASH, verifier, *arguments],
+            [BASH, "--noprofile", "--norc", "-p", verifier, *arguments],
             capture_output=True,
             check=False,
             env=env,
@@ -905,6 +954,9 @@ def _run_after_sudo_hook(paths: InstallPaths) -> None:
     hook = Path(raw)
     if not hook.is_absolute():
         raise _error(f"{AFTER_SUDO_HOOK_ENV} must be absolute")
+    if paths.test_root is None:
+        raise _error("isolated after-sudo hook has no authenticated test root")
+    _validate_test_path(hook, paths.test_root, label="after-sudo hook")
     _lstat_regular(hook, label="after-sudo test hook", executable=True)
     result = subprocess.run([str(hook)], check=False, env=_safe_subprocess_env(paths.home))
     if result.returncode != 0:
@@ -945,6 +997,10 @@ def _child_env(
     if runtime.is_dir():
         env["XDG_RUNTIME_DIR"] = str(runtime)
     if paths.test_mode:
+        if paths.test_root is None:
+            raise _error("isolated installer child has no authenticated test root")
+        env[INSTALLER_TEST_MODE_ENV] = "1"
+        env[INSTALLER_TEST_ROOT_ENV] = str(paths.test_root)
         test_prefixes = ("HAPAX_APCUPSD_", "HAPAX_OOM_", "HAPAX_UPS_", "HAPAX_UPOWER_")
         test_names = {"HAPAX_ROOT_FAILURE_INTAKE_DEST", "HAPAX_ROOT_REQUIRED_AUDIT_DEST"}
         for name in ("HAPAX_APCUPSD_INSTALL_SUDO", "HAPAX_OOM_INSTALL_SUDO"):
@@ -1049,6 +1105,9 @@ def _execute_installer(
             result = subprocess.run(
                 [
                     BASH,
+                    "--noprofile",
+                    "--norc",
+                    "-p",
                     installer,
                     "--source",
                     str(stage),
@@ -1161,6 +1220,19 @@ def install(
     runtime_authority_task: Path,
 ) -> int:
     paths = _install_paths()
+    if paths.test_mode:
+        if paths.test_root is None:
+            raise _error("isolated deferred-install mode has no authenticated test root")
+        _validate_test_path(
+            activation_release,
+            paths.test_root,
+            label="activation release",
+        )
+        _validate_test_path(
+            runtime_authority_task,
+            paths.test_root,
+            label="runtime authority task",
+        )
     _validate_sudo(paths.sudo, test_mode=paths.test_mode)
     _validate_owned_directory(paths.state_root, label="root-required state root")
     with _locked_state(paths) as (locked_paths, state_lock):

@@ -4082,9 +4082,13 @@ def _run_install_verify_live(
         fake_root_sudo.chmod(0o755)
         runtime_task = tmp_path / "runtime-authority-task.md"
         runtime_task.write_text("test runtime authority input\n", encoding="utf-8")
+        fake_systemd_analyze = tmp_path / "systemd-analyze"
+        fake_systemd_analyze.write_text("#!/usr/bin/bash\nexit 0\n", encoding="utf-8")
+        fake_systemd_analyze.chmod(0o755)
         env.update(
             {
                 "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_MODE": "1",
+                "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_ROOT": str(tmp_path),
                 "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_HOSTNAME": (
                     "hapax-appendix" if host_profile == "appendix" else "hapax-podium"
                 ),
@@ -4092,6 +4096,7 @@ def _run_install_verify_live(
                 "HAPAX_ROOT_REQUIRED_GIT_REPO": str(activation_alias),
                 "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_SUDO": str(fake_sudo),
                 "HAPAX_OOM_EFFECTIVE_UID": "1000",
+                "HAPAX_OOM_SYSTEMD_ANALYZE": str(fake_systemd_analyze),
                 **({} if omit_nested_sudo else {"HAPAX_OOM_INSTALL_SUDO": str(fake_root_sudo)}),
             }
         )

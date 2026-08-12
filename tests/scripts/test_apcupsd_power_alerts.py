@@ -1263,6 +1263,7 @@ def test_authenticated_deferred_helper_runs_real_apcupsd_installer_with_safe_nes
         env={
             **os.environ,
             "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_MODE": "1",
+            "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_ROOT": str(tmp_path),
             "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_HOSTNAME": "hapax-podium",
             "HAPAX_ROOT_REQUIRED_STATE_ROOT": str(state_root),
             "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_root),
