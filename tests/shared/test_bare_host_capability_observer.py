@@ -739,3 +739,54 @@ def test_an_ordinary_ssh_target_is_accepted(target: str) -> None:
 
     assert argv[0] == "ssh"
     assert target in argv
+
+
+def test_a_hostile_host_name_never_reaches_the_runner_through_observe() -> None:
+    """Through the PUBLIC entry point, with the roster as the attacker.
+
+    Testing `_probe_argv` alone proves the validator works; it does not prove the validator is on
+    the path a roster actually takes. All three reviewer families raised this shape independently,
+    and the distinction is the one that matters: roster data is not operator input, and a private
+    function that is never reached validates nothing.
+
+    The runner records every argv it is handed, so the assertion is that the hostile name never
+    became a process argument — not merely that some exception was raised somewhere.
+    """
+    from shared.bare_host_capability_observer import observe
+
+    seen: list[list[str]] = []
+
+    def recording_runner(argv, **kwargs):
+        seen.append(list(argv))
+        return FakeCompleted(stdout="", stderr="", returncode=0)
+
+    hostile = dict(linux("-oProxyCommand=touch /tmp/pwned"))
+    observation = observe(
+        hosts=[hostile], catalogue=SMALL_CATALOGUE, runner=recording_runner, now=NOW
+    )
+
+    for argv in seen:
+        assert not any(arg.startswith("-oProxyCommand") for arg in argv), (
+            f"a hostile roster name reached the runner as {argv!r}"
+        )
+    # And the host is REPORTED unobservable rather than dropped or fatal. One hostile row must
+    # not deny observation of every other host — that is a denial of service handed to whoever
+    # can name a machine — and it must not vanish either, or a machine hides by being named badly.
+    assert observation.host_count == 1
+    assert observation.unreachable == ["-oProxyCommand=touch /tmp/pwned"]
+    assert "refusing ssh target" in observation.probes[0].unreachable_reason
+
+
+def test_one_hostile_row_does_not_stop_the_other_hosts_being_observed() -> None:
+    """The denial-of-service shape, stated directly."""
+    from shared.bare_host_capability_observer import observe
+
+    observation = observe(
+        hosts=[dict(linux("-oProxyCommand=x")), dict(linux("podium"))],
+        catalogue=SMALL_CATALOGUE,
+        runner=runner_for(stdout="cli=ollama present=1 path=/usr/bin/ollama\n"),
+        now=NOW,
+    )
+
+    assert observation.host_count == 2
+    assert observation.reachable_count == 1, "the well-named host must still have been probed"

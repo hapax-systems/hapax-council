@@ -361,7 +361,22 @@ def probe_host_clis(
         return probe
 
     payload = _probe_payload(catalogue)
-    argv = _probe_argv(payload, "" if name == self_name else name)
+    try:
+        argv = _probe_argv(payload, "" if name == self_name else name)
+    except ValueError as exc:
+        # A REFUSED NAME IS A ROW, NOT AN ABORTED SWEEP.
+        #
+        # This function's contract above is "never raises: unreachable is a populated row", and
+        # the roster is data from a tailnet rather than operator input. Letting the target guard
+        # propagate would mean one hostile or malformed row denies observation of every other
+        # host — a denial of service handed to whoever can name a machine. It also contradicts
+        # the rule the rest of the module runs on: an unanswered entry renders as unanswered,
+        # never as an omission, because omissions read as "nothing there".
+        probe.unreachable_reason = (
+            f"not probed: {exc}. The host stays in the inventory as unobserved rather than being "
+            "dropped, so a machine cannot hide by carrying a name that cannot be probed"
+        )
+        return probe
     run = runner if callable(runner) else subprocess.run
     try:
         result = run(
