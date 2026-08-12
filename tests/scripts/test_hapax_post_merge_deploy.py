@@ -4844,9 +4844,28 @@ def _pi6_repo(tmp_path: Path) -> tuple[Path, Path]:
     return repo, unit
 
 
-def _pi6_env(tmp_path: Path, repo: Path) -> dict[str, str]:
+def _pi6_ssh_stub(tmp_path: Path, *, name: str, rc: int, listing: str = "") -> Path:
+    """A stand-in for ssh that answers the way a given host state would.
+
+    The observation is only reachable from a test through a seam like this. Leaving the real
+    `ssh` in place would also make every test in this section depend on whether a Pi answers,
+    which is the opposite of what these assertions are about.
+    """
+    stub = tmp_path / name
+    stub.write_text(
+        f"#!/usr/bin/env bash\ncat <<'LISTING'\n{listing}\nLISTING\nexit {rc}\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    return stub
+
+
+def _pi6_env(tmp_path: Path, repo: Path, *, ssh: Path | None = None) -> dict[str, str]:
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
+    # Default to an ssh that fails. Without this the suite would shell out to the real `ssh pi6`
+    # and its result would depend on whether a Pi is on the network right now.
+    transport = ssh or _pi6_ssh_stub(tmp_path, name="ssh-unreachable", rc=255)
     return {
         **os.environ,
         "HOME": str(home),
@@ -4854,6 +4873,8 @@ def _pi6_env(tmp_path: Path, repo: Path) -> dict[str, str]:
         "HAPAX_LOCAL_BIN": str(home / ".local" / "bin"),
         "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "traces" / "post-merge-traces.jsonl"),
         "HAPAX_POST_MERGE_PI6_DEFER_DIR": str(tmp_path / "pi6-defer"),
+        "HAPAX_POST_MERGE_PI6_SSH": str(transport),
+        "HAPAX_POST_MERGE_PI6_SSH_TIMEOUT": "2",
         "HAPAX_DRIFT_NTFY": "0",
     }
 
@@ -4925,13 +4946,130 @@ def test_the_pi6_arm_stays_above_the_bare_systemd_glob() -> None:
     )
 
 
-def test_a_drained_pi6_decommission_is_not_recreated(tmp_path: Path) -> None:
-    """Re-running the same merge must not stack duplicates over a completed retirement."""
+def _pi6_deleted(tmp_path: Path) -> tuple[Path, str]:
     repo, unit = _pi6_repo(tmp_path)
     unit.unlink()
     _git(repo, "add", "-A")
     _git(repo, "commit", "-m", "delete the pi6 transcript offload")
-    sha = _git(repo, "rev-parse", "HEAD")
+    return repo, _git(repo, "rev-parse", "HEAD")
+
+
+def test_an_observed_retirement_clears_the_deferral_and_leaves_a_receipt(tmp_path: Path) -> None:
+    """The host answered and did not name the unit. That is evidence, and it is the only thing
+    that may clear the deferral."""
+    repo, sha = _pi6_deleted(tmp_path)
+    ssh = _pi6_ssh_stub(
+        tmp_path,
+        name="ssh-retired",
+        rc=0,
+        listing="ssh.service enabled enabled\ncron.service enabled enabled",
+    )
+
+    subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo, ssh=ssh),
+    )
+
+    receipt = tmp_path / "pi6-defer" / sha / "RETIRED.receipt"
+    assert receipt.exists(), "an observed retirement left no durable receipt"
+    body = receipt.read_text(encoding="utf-8")
+    assert "claude-code-sync.timer" in body
+    assert "Observed at:" in body, "the receipt must carry when the observation was made"
+    assert not (tmp_path / "pi6-defer" / sha / "RUNBOOK.txt").exists(), (
+        "a verified retirement must not also leave a pending runbook"
+    )
+
+
+def test_a_surviving_unit_keeps_the_deferral_open(tmp_path: Path) -> None:
+    """The host answered and the unit is STILL THERE. Reaching the host is not the evidence —
+    what it said is."""
+    repo, sha = _pi6_deleted(tmp_path)
+    ssh = _pi6_ssh_stub(
+        tmp_path,
+        name="ssh-still-installed",
+        rc=0,
+        listing="claude-code-sync.timer enabled enabled\nssh.service enabled enabled",
+    )
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo, ssh=ssh),
+    )
+
+    assert not (tmp_path / "pi6-defer" / sha / "RETIRED.receipt").exists(), (
+        "a receipt was minted while the unit was still installed"
+    )
+    assert (tmp_path / "pi6-defer" / sha / "RUNBOOK.txt").exists()
+    assert "still has claude-code-sync.timer" in result.stderr
+
+
+def test_an_unreachable_host_mints_no_receipt(tmp_path: Path) -> None:
+    """An unreachable host is an unknown host. The default stub fails, which is this case."""
+    repo, sha = _pi6_deleted(tmp_path)
+
+    subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo),
+    )
+
+    assert not (tmp_path / "pi6-defer" / sha / "RETIRED.receipt").exists()
+    assert (tmp_path / "pi6-defer" / sha / "RUNBOOK.txt").exists()
+
+
+def test_a_substring_match_does_not_count_as_a_survivor(tmp_path: Path) -> None:
+    """`claude-code-sync.timer` must not be found inside `old-claude-code-sync.timer`."""
+    repo, sha = _pi6_deleted(tmp_path)
+    ssh = _pi6_ssh_stub(
+        tmp_path,
+        name="ssh-lookalike",
+        rc=0,
+        listing="old-claude-code-sync.timer enabled enabled",
+    )
+
+    subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo, ssh=ssh),
+    )
+
+    assert (tmp_path / "pi6-defer" / sha / "RETIRED.receipt").exists(), (
+        "a differently-named unit was mistaken for the one being retired"
+    )
+
+
+def test_an_existing_receipt_is_not_recreated(tmp_path: Path) -> None:
+    """Re-running the same merge must not stack duplicates over a completed retirement."""
+    repo, sha = _pi6_deleted(tmp_path)
+    env = _pi6_env(tmp_path, repo)
+
+    subprocess.run([str(SCRIPT), sha], text=True, capture_output=True, check=False, env=env)
+    (tmp_path / "pi6-defer" / sha / "RETIRED.receipt").write_text("observed\n", encoding="utf-8")
+    (tmp_path / "pi6-defer" / sha / "RUNBOOK.txt").unlink()
+
+    subprocess.run([str(SCRIPT), sha], text=True, capture_output=True, check=False, env=env)
+
+    assert not (tmp_path / "pi6-defer" / sha / "RUNBOOK.txt").exists()
+
+
+def test_no_touchable_file_clears_the_deferral(tmp_path: Path) -> None:
+    """The finding this closes, pinned so it cannot come back.
+
+    The first version cleared on `[ -f DRAINED.txt ]`. That tests only that somebody ran
+    `touch` — an assertion with no referent, which silenced the deferral forever whether or not
+    a single unit had been retired. Creating that file must now change nothing.
+    """
+    repo, sha = _pi6_deleted(tmp_path)
     env = _pi6_env(tmp_path, repo)
 
     subprocess.run([str(SCRIPT), sha], text=True, capture_output=True, check=False, env=env)
@@ -4940,4 +5078,33 @@ def test_a_drained_pi6_decommission_is_not_recreated(tmp_path: Path) -> None:
 
     subprocess.run([str(SCRIPT), sha], text=True, capture_output=True, check=False, env=env)
 
-    assert not (tmp_path / "pi6-defer" / sha / "RUNBOOK.txt").exists()
+    assert (tmp_path / "pi6-defer" / sha / "RUNBOOK.txt").exists(), (
+        "touching DRAINED.txt cleared a deferral that nothing had observed"
+    )
+    # Comments are allowed to name the sentinel -- the one above this test explains why it went.
+    # Only executable lines may not test for it.
+    code = [
+        ln
+        for ln in SCRIPT.read_text(encoding="utf-8").splitlines()
+        if not ln.lstrip().startswith("#")
+    ]
+    assert not [ln for ln in code if "DRAINED" in ln], (
+        "the touchable sentinel is back in the script"
+    )
+
+
+def test_the_runbook_carries_the_unit_bodies_the_merge_deleted(tmp_path: Path) -> None:
+    """After the merge the definitions exist nowhere else, so a runbook that only names them
+    asks the operator to retire something they can no longer read."""
+    repo, sha = _pi6_deleted(tmp_path)
+
+    subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo),
+    )
+
+    body = (tmp_path / "pi6-defer" / sha / "RUNBOOK.txt").read_text(encoding="utf-8")
+    assert "OnCalendar=hourly" in body, "the deleted unit's body is not recoverable from the record"

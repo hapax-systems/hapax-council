@@ -169,6 +169,11 @@ APCUPSD_INSTALLER_PATH="scripts/install-apcupsd-power-alerts"
 ROOT_REQUIRED_RC=77
 ROOT_DEFER_DIR="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$HOME/.cache/hapax/post-merge-root-required}"
 PI6_DEFER_DIR="${HAPAX_POST_MERGE_PI6_DEFER_DIR:-$HOME/.cache/hapax/post-merge-pi6-decommission}"
+PI6_SSH_HOST="${HAPAX_POST_MERGE_PI6_SSH_HOST:-pi6}"
+#: The ssh transport, overridable so a test can substitute a stub that answers as the host
+#: would. Without a seam the retirement observation is unreachable from any test.
+PI6_SSH_CMD="${HAPAX_POST_MERGE_PI6_SSH:-ssh}"
+PI6_SSH_TIMEOUT="${HAPAX_POST_MERGE_PI6_SSH_TIMEOUT:-8}"
 ROOT_REQUIRED_STATE_ROOT="${HAPAX_ROOT_REQUIRED_STATE_ROOT:-$HOME/.local/state/hapax/root-required}"
 ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$ROOT_REQUIRED_STATE_ROOT/current-source}"
 ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/installed-receipts}"
@@ -1503,30 +1508,97 @@ defer_pi6_decommission() {
     [ "${#deleted[@]}" -gt 0 ] || return 0
 
     dest="$PI6_DEFER_DIR/$SHA"
-    if [ -f "$dest/DRAINED.txt" ]; then
-        echo "pi6 decommission for $SHA already drained; deferral not recreated"
+    # A PRIOR RECEIPT CLEARS THIS; A FILE SOMEBODY TOUCHED DOES NOT.
+    #
+    # The first version cleared on `[ -f DRAINED.txt ]`, which tests only that someone ran
+    # `touch`. That is not a precondition — it is an attestation with no referent, and it
+    # silences the deferral forever whether or not a single unit was retired. The receipt below
+    # is written only by `observe_pi6_units_retired`, out of the host's own answer.
+    #
+    # Retirement is monotonic: a unit that is gone does not come back unless something
+    # reinstalls it, which would be a new merge carrying a new SHA and its own deferral. So an
+    # existing receipt is honoured without re-asking, and pi6 being unreachable later cannot
+    # un-retire what was already observed gone.
+    if [ -f "$dest/RETIRED.receipt" ]; then
+        echo "pi6 decommission for $SHA already evidenced; deferral not recreated"
         return 0
     fi
     mkdir -p "$dest"
+    if observe_pi6_units_retired "$dest/RETIRED.receipt" "${deleted[@]}"; then
+        rm -f "$dest/RUNBOOK.txt" 2>/dev/null || true
+        echo "pi6 unit retirement VERIFIED against $PI6_SSH_HOST; receipt: $dest/RETIRED.receipt"
+        return 0
+    fi
     {
         printf 'Pi-6 unit retirement deferred.\n\n'
         printf 'Commit: %s\n' "$SHA"
-        printf 'Host:   pi6 (edge fleet; see pi-edge/README.md)\n\n'
+        printf 'Host:   %s (edge fleet; see pi-edge/README.md)\n\n' "$PI6_SSH_HOST"
         printf 'These units were DELETED from source by this merge. Deleting the source does not\n'
         printf 'stop an installed unit: until someone retires them on the host, they remain\n'
         printf 'installed and will resume on the next boot or timer tick.\n\n'
         printf 'Deleted:\n'
         printf '  %s\n' "${deleted[@]}"
-        printf '\nRun from a host that can reach pi6:\n\n'
+        printf '\nRun from a host that can reach %s:\n\n' "$PI6_SSH_HOST"
         for f in "${deleted[@]}"; do
-            printf '  ssh pi6 sudo systemctl disable --now %s\n' "${f##*/}"
+            printf '  ssh %s sudo systemctl disable --now %s\n' "$PI6_SSH_HOST" "${f##*/}"
         done
-        printf '\nThen record completion so this deferral stops reappearing:\n\n'
-        printf '  touch %s/DRAINED.txt\n' "$dest"
-        printf '\nIf pi6 is unreachable, leave this pending. An unreachable host is an unknown\n'
+        printf '\nThen re-run this deploy for the same commit. It re-asks the host and writes\n'
+        printf '%s/RETIRED.receipt from the answer.\n' "$dest"
+        printf 'There is deliberately no file you can touch to clear this: the deferral is held\n'
+        printf 'open by the absence of an observation, not by the absence of an assertion.\n'
+        printf '\nIf %s is unreachable, leave this pending. An unreachable host is an unknown\n' \
+            "$PI6_SSH_HOST"
         printf 'host, not a retired one.\n'
+        # THE SOURCE IS GONE AFTER THIS MERGE, SO THE DEFERRAL HAS TO CARRY IT.
+        #
+        # A runbook naming units whose definitions no longer exist anywhere asks the operator to
+        # retire something they can no longer read. The bodies come from the parent commit,
+        # which is the last tree that still has them.
+        printf '\n--- unit bodies as of %s^ (this merge deleted them) ---\n' "$SHA"
+        for f in "${deleted[@]}"; do
+            printf '\n===== %s =====\n' "$f"
+            git -C "$REPO" show "$SHA^:$f" 2>/dev/null \
+                || printf '(unavailable at %s^; check an earlier commit)\n' "$SHA"
+        done
     } > "$dest/RUNBOOK.txt"
     echo "pi6 unit retirement DEFERRED (${#deleted[@]} unit(s)); runbook: $dest/RUNBOOK.txt" >&2
+}
+
+observe_pi6_units_retired() {
+    # Ask the host whether the named units are still installed. Writes a receipt and returns 0
+    # ONLY when the host answered and named none of them.
+    #
+    # Every other outcome returns non-zero and writes nothing: no ssh binary, no route, refused
+    # auth, a timeout, or a listing that still contains one of the units. The failure path does
+    # strictly less than the success path — it never records a retirement it did not see — which
+    # is the only shape that keeps "unreachable" from quietly becoming "retired".
+    local receipt="$1"; shift
+    local units=("$@") listing unit rc=0 survivors=()
+    command -v "${PI6_SSH_CMD%% *}" >/dev/null 2>&1 || return 1
+    listing="$($PI6_SSH_CMD -o BatchMode=yes -o ConnectTimeout="$PI6_SSH_TIMEOUT" \
+        "$PI6_SSH_HOST" 'systemctl list-unit-files --no-pager --no-legend' 2>/dev/null)" || rc=$?
+    [ "$rc" -eq 0 ] || return 1
+    for unit in "${units[@]}"; do
+        # Anchor on the unit NAME at line start so an unrelated unit that merely contains this
+        # name as a substring cannot count as a survivor, and a real survivor cannot hide inside
+        # another line's text.
+        if printf '%s\n' "$listing" | grep -qE "^${unit##*/}([[:space:]]|$)"; then
+            survivors+=("${unit##*/}")
+        fi
+    done
+    if [ "${#survivors[@]}" -gt 0 ]; then
+        echo "hapax-post-merge-deploy: $PI6_SSH_HOST still has ${survivors[*]}; next: ssh $PI6_SSH_HOST sudo systemctl disable --now ${survivors[*]}, then re-run this deploy for $SHA" >&2
+        return 1
+    fi
+    {
+        printf 'Pi-6 unit retirement OBSERVED.\n\n'
+        printf 'Commit:      %s\n' "$SHA"
+        printf 'Host:        %s\n' "$PI6_SSH_HOST"
+        printf 'Observed at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf 'Method:      systemctl list-unit-files over ssh; none of the units below appear\n\n'
+        printf 'Retired:\n'
+        printf '  %s\n' "${units[@]##*/}"
+    } > "$receipt"
 }
 
 stage_oom_containment_installer() {
