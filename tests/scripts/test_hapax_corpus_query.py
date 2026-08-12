@@ -143,6 +143,41 @@ def test_a_corpus_smaller_than_the_floor_is_reported_not_padded(mod: ModuleType,
     assert "corpus gap" in out
 
 
+def test_an_isolated_match_in_a_large_corpus_is_announced_not_padded(
+    mod: ModuleType, capsys
+) -> None:  # noqa: ANN001
+    """The counterexample three review rounds asked for, and the branch nothing exercised.
+
+    Every other floor test either builds a one-document corpus — taking the
+    `corpus_size < MIN_CLUSTER` branch — or supplies fixtures with shared vocabulary, so the
+    backfill succeeds. Neither reaches the third declared boundary: a match in a LARGE corpus
+    sharing no token longer than four characters with anything, so there is nothing to borrow.
+
+    What is asserted is the honest predicate, not the absolute one. One result is permitted here;
+    what is forbidden is returning it SILENTLY, or padding the floor with documents unrelated to
+    the query. Padding would defeat what the floor is for — a reader seeing the archipelago — and
+    three irrelevant documents are not one.
+    """
+    isolated = _doc(mod, "isolated.md", "xylophone zeppelin quokka " * 20)
+    unrelated = [
+        _doc(mod, f"other{i}.md", "ledger admission receipt quota " * 20) for i in range(6)
+    ]
+    docs = [isolated, *unrelated]
+
+    matched, neighbours = mod.cluster([(7.0, isolated)], docs, limit=12)
+    mod.render(
+        matched,
+        header="Corpus cluster for: xylophone",
+        neighbours=neighbours,
+        corpus_size=len(docs),
+    )
+
+    out = capsys.readouterr().out
+    assert len(matched) == 1
+    assert neighbours == [], "an isolated match has nothing to borrow; padding it would be a lie"
+    assert "distinctive vocabulary" in out, "the shortfall must be announced with its cause"
+
+
 def test_backfilled_neighbours_are_labelled_as_not_matching_the_query(
     mod: ModuleType, capsys
 ) -> None:  # noqa: ANN001
