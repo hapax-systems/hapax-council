@@ -646,7 +646,13 @@ require `/usr/local/sbin/hapax-root-required-package-apply` to be a single-link,
 root-owned executable beneath root-owned non-writable ancestors. If it is absent,
 stop and dispatch a separately runtime-authorized broker-bootstrap task. The
 desired receipt and `RUNBOOK.txt` must remain pending; do not restore the retired
-Bash production path for continuity.
+Bash production path for continuity. The broker treats package and expected SHA
+as requests to compare against its own derivation, holds a root-owned transaction
+lock across revalidation, effects, readback, receipt publication, and drain, and
+does not rely on the caller-owned lock released before invocation. Caller-owned
+`RUNBOOK.txt`/`DRAINED.txt` markers are bookkeeping for ordinary flow, never
+load-bearing evidence of broker completion; canonical Git-bound snapshots and
+root-owned artifacts provide the substantive readback evidence.
 
 ```bash
 # Re-emit the broker-gated command after runtime authority is granted. Never
