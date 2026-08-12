@@ -948,8 +948,12 @@ jobs:
         run: |
           uv run --no-project \
             --with pytest==9.0.2 \
+            --with annotated-types==0.7.0 \
             --with pydantic==2.13.4 \
+            --with pydantic-core==2.46.4 \
             --with pyyaml==6.0.3 \
+            --with typing-extensions==4.15.0 \
+            --with typing-inspection==0.4.2 \
             pytest --confcutdir=tests \
             tests/scripts/test_hapax_post_merge_deploy.py \
             -q --tb=line -k 'runtime_authority'

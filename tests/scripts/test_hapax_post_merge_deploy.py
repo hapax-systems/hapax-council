@@ -1301,7 +1301,8 @@ def test_runtime_authority_validator_has_no_release_tree_import_surface() -> Non
     assert "/usr/bin/env -i" in script
     assert "PYDANTIC_DISABLE_PLUGINS=__all__" in script
     assert "site.addsitedir" not in source
-    assert "if top_level in sys.stdlib_module_names:" in source
+    assert "top_level in sys.stdlib_module_names or (" in source
+    assert 'RUNTIME_AUTHORITY_OPTIONAL_STDLIB_MODULES = frozenset({"_wmi"})' in source
     assert "raise ModuleNotFoundError" in source
     assert "sys.path.append(str(root))" in source
     assert "RuntimeAuthorityImportGuard" in source
@@ -1450,6 +1451,12 @@ def test_ci_installs_and_exercises_sealed_runtime_authority_closure() -> None:
     assert "steps.test_mode.outputs.mode == 'pr-admission'" in admission_test["if"]
     assert "tests/scripts/test_hapax_post_merge_deploy.py" in admission_test["run"]
     assert "runtime_authority" in admission_test["run"]
+    manifest = json.loads(RUNTIME_DEPENDENCY_MANIFEST.read_text(encoding="utf-8"))
+    for dependency in manifest["dependencies"]:
+        if dependency["distribution"] == "python-toon":
+            continue
+        requirement = f"{dependency['distribution']}=={dependency['version']}"
+        assert f"--with {requirement}" in admission_test["run"]
     assert (
         "config/root-required/runtime-authority-python.requirements"
         in CI_WORKFLOW.read_text(encoding="utf-8").split("python_prod_dependency_witness=true", 1)[
@@ -1824,8 +1831,10 @@ def test_runtime_authority_validator_rejects_unlisted_dependency_import(
     assert f"unlisted runtime-authority dependency import attempted: {module_name}" in result.stderr
 
 
+@pytest.mark.parametrize("module_name", ("msvcrt", "_wmi"))
 def test_runtime_authority_validator_rejects_absent_stdlib_name_from_fallback_root(
     tmp_path: Path,
+    module_name: str,
 ) -> None:
     active_root = tmp_path / "hapax-cc-tasks" / "active"
     active_root.mkdir(parents=True)
@@ -1833,8 +1842,8 @@ def test_runtime_authority_validator_rejects_absent_stdlib_name_from_fallback_ro
     task.write_text(_runtime_authority_task_text(), encoding="utf-8")
     dependency_root = tmp_path / "runtime-dependencies"
     _copy_runtime_authority_dependency_closure(dependency_root)
-    marker = tmp_path / "msvcrt-imported"
-    (dependency_root / "msvcrt.py").write_text(
+    marker = tmp_path / f"{module_name}-imported"
+    (dependency_root / f"{module_name}.py").write_text(
         f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n",
         encoding="utf-8",
     )
@@ -1850,11 +1859,11 @@ def test_runtime_authority_validator_rejects_absent_stdlib_name_from_fallback_ro
         task,
         active_root,
         dependency_prelude=dependency_prelude,
-        post_dependency_prelude="import msvcrt",
+        post_dependency_prelude=f"import {module_name}",
     )
 
     assert result.returncode == 2
-    assert "unlisted runtime-authority dependency import attempted: msvcrt" in result.stderr
+    assert f"unlisted runtime-authority dependency import attempted: {module_name}" in result.stderr
     assert not marker.exists()
 
 
@@ -1868,6 +1877,7 @@ def test_runtime_authority_validator_allows_absent_stdlib_probe(tmp_path: Path) 
         task,
         active_root,
         post_dependency_prelude=(
+            "sys.stdlib_module_names = frozenset(sys.stdlib_module_names - {'_wmi'})\n"
             "try:\n"
             "    import _wmi\n"
             "except ModuleNotFoundError as exc:\n"

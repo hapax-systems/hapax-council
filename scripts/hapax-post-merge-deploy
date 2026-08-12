@@ -395,6 +395,8 @@ RUNTIME_AUTHORITY_DEDICATED_SITE = Path(
 RUNTIME_AUTHORITY_STDLIB_ROOTS = tuple(
     Path(value) for value in sys.path if value and Path(value).is_dir()
 )
+# `platform` probes `_wmi`; some supported CPython builds omit it from this name census.
+RUNTIME_AUTHORITY_OPTIONAL_STDLIB_MODULES = frozenset({"_wmi"})
 MAX_DEPENDENCY_TREE_ENTRIES = 20_000
 MAX_DEPENDENCY_FILE_BYTES = 64 * 1024 * 1024
 STDLIB_NOT_FOUND = object()
@@ -830,7 +832,9 @@ class RuntimeAuthorityImportGuard(importlib.abc.MetaPathFinder):
             )
             if untrusted_spec is not None:
                 refuse(f"unlisted runtime-authority dependency import attempted: {top_level}")
-        if top_level in sys.stdlib_module_names:
+        if top_level in sys.stdlib_module_names or (
+            top_level in RUNTIME_AUTHORITY_OPTIONAL_STDLIB_MODULES
+        ):
             raise ModuleNotFoundError(f"No module named {fullname!r}", name=fullname)
         refuse(f"unlisted runtime-authority dependency import attempted: {top_level}")
 
