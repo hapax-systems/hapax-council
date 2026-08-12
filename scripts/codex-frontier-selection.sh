@@ -21,11 +21,43 @@
 #
 # Callers may set CODEX_LAUNCHER before sourcing; it appears only in messages.
 
-HAPAX_CODEX_FRONTIER_MODEL="${HAPAX_CODEX_FRONTIER_MODEL:-gpt-5.6-sol}"
-HAPAX_CODEX_FRONTIER_EFFORT="${HAPAX_CODEX_FRONTIER_EFFORT:-ultra}"
+# THE BASELINE A GUARD COMPARES AGAINST MAY NOT BE CHOSEN BY THE PARTY BEING GUARDED.
+#
+# These were plain `${VAR:-default}` overrides, which made the frontier caller-settable — and a
+# caller who sets the frontier TO their downgrade is compared against themselves. Measured:
+#
+#   HAPAX_CODEX_FRONTIER_MODEL=gpt-5.3-codex-spark  -c model="gpt-5.3-codex-spark"  -> exit 0
+#
+# No obscure spelling and no edge case: the guard evaluates a tautology.
+#
+# The override is NOT removed, because it is deliberate — the pair is "a decision point, not a
+# constant", so adopting a better model moves every launcher at once. Two requirements pulling
+# opposite ways on one mechanism is the signal for a third state rather than a boolean.
+#
+# The third state: redefining the frontier is itself a decision and must SAY WHY — the rule
+# already applied to a downgrade, applied to the larger act. This guard cannot order models, so
+# it cannot tell raising from lowering; requiring a stated reason for any change is the predicate
+# it CAN check, and it is the honest one.
+HAPAX_CODEX_FRONTIER_MODEL_BUILTIN="gpt-5.6-sol"
+HAPAX_CODEX_FRONTIER_EFFORT_BUILTIN="ultra"
+HAPAX_CODEX_FRONTIER_MODEL="${HAPAX_CODEX_FRONTIER_MODEL:-$HAPAX_CODEX_FRONTIER_MODEL_BUILTIN}"
+HAPAX_CODEX_FRONTIER_EFFORT="${HAPAX_CODEX_FRONTIER_EFFORT:-$HAPAX_CODEX_FRONTIER_EFFORT_BUILTIN}"
 CODEX_MODEL="${HAPAX_CODEX_MODEL:-$HAPAX_CODEX_FRONTIER_MODEL}"
 CODEX_EFFORT="${HAPAX_CODEX_EFFORT:-$HAPAX_CODEX_FRONTIER_EFFORT}"
 CODEX_MODEL_REASON="${HAPAX_CODEX_MODEL_REASON:-}"
+
+if [ "$HAPAX_CODEX_FRONTIER_MODEL" != "$HAPAX_CODEX_FRONTIER_MODEL_BUILTIN" ] ||
+  [ "$HAPAX_CODEX_FRONTIER_EFFORT" != "$HAPAX_CODEX_FRONTIER_EFFORT_BUILTIN" ]; then
+  if [ -z "$CODEX_MODEL_REASON" ]; then
+    echo "${CODEX_LAUNCHER:-hapax-codex}: REFUSING a redefined frontier with no stated reason." >&2
+    echo "  requested frontier: model=$HAPAX_CODEX_FRONTIER_MODEL effort=$HAPAX_CODEX_FRONTIER_EFFORT" >&2
+    echo "  built-in frontier:  model=$HAPAX_CODEX_FRONTIER_MODEL_BUILTIN effort=$HAPAX_CODEX_FRONTIER_EFFORT_BUILTIN" >&2
+    echo "  Moving the frontier moves every launcher's default, and setting it TO a downgrade" >&2
+    echo "  makes the below-frontier check compare a value against itself." >&2
+    echo "  Next: re-run with HAPAX_CODEX_MODEL_REASON='<why this frontier>'." >&2
+    exit 6
+  fi
+fi
 
 # PASSTHROUGH IS PART OF THE SELECTION, so it must be part of what is checked.
 #

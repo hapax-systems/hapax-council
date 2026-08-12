@@ -83,13 +83,34 @@ def test_below_frontier_with_a_reason_proceeds_and_is_recorded(tmp_path: Path) -
 
 
 def test_raising_the_frontier_pair_moves_the_default(tmp_path: Path) -> None:
-    """The point of the fragment: the pair is a decision point, not a constant."""
+    """The point of the fragment: the pair is a decision point, not a constant.
+
+    It stays a decision point — it now has to be a STATED one, because the frontier is the
+    baseline the below-frontier check compares against, and the party being guarded must not
+    choose it freely.
+    """
     result = _run(
-        {"HAPAX_CODEX_FRONTIER_MODEL": "gpt-9", "HAPAX_CODEX_FRONTIER_EFFORT": "max"},
+        {
+            "HAPAX_CODEX_FRONTIER_MODEL": "gpt-9",
+            "HAPAX_CODEX_FRONTIER_EFFORT": "max",
+            "HAPAX_CODEX_MODEL_REASON": "estate adopted gpt-9 as frontier",
+        },
         tmp_path,
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "gpt-9|max"
+
+
+def test_an_unstated_frontier_change_is_refused(tmp_path: Path) -> None:
+    """Moving the frontier moves every launcher's default, so it is a decision on its own —
+    not only when it is being abused to cover a downgrade."""
+    result = _run(
+        {"HAPAX_CODEX_FRONTIER_MODEL": "gpt-9", "HAPAX_CODEX_FRONTIER_EFFORT": "max"},
+        tmp_path,
+    )
+
+    assert result.returncode == 6
+    assert "REFUSING a redefined frontier" in result.stderr
 
 
 def _run_with_extra(
@@ -459,3 +480,24 @@ def test_no_launcher_carries_its_own_model_or_effort_literal() -> None:
         assert "codex-frontier-selection.sh" in text, f"{launcher.name} must source the fragment"
         for literal in ('model=\\"gpt-', 'model_reasoning_effort=\\"xhigh', "'model=\"gpt-"):
             assert literal not in text, f"{launcher.name} reintroduced a hardcoded pair: {literal}"
+
+
+def test_a_caller_cannot_redefine_the_frontier_as_their_downgrade(tmp_path: Path) -> None:
+    """The bypass: set the frontier TO the downgrade and the check compares a value to itself.
+
+    Measured before the fix — `HAPAX_CODEX_FRONTIER_MODEL=gpt-5.3-codex-spark` together with
+    `-c model="gpt-5.3-codex-spark"` exited 0 with no refusal. No obscure spelling was needed;
+    the guard simply evaluated a tautology. A check against a caller-supplied baseline is not a
+    check, which is the same defect as the others on this branch wearing a different hat.
+    """
+    result = _run_with_extra(
+        ["-c", 'model="gpt-5.3-codex-spark"'],
+        tmp_path,
+        {
+            "HAPAX_CODEX_FRONTIER_MODEL": "gpt-5.3-codex-spark",
+            "HAPAX_CODEX_FRONTIER_EFFORT": "high",
+        },
+    )
+
+    assert result.returncode == 6, f"the frontier redefinition was accepted: {result.stdout}"
+    assert "REFUSING a redefined frontier" in result.stderr
