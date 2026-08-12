@@ -1119,7 +1119,7 @@ validate_package_source_matches_commit() {
             echo "OOM package Git mode violates the destination contract at $rel: actual=$git_mode expected=$expected_mode; next action: restore the tracked executable class and rerun from a clean Git worktree or a fresh post-merge live command" >&2
             return 1
         fi
-        if ! /usr/bin/python3 - "$source_path" "$git_mode" "$AUTHENTICATED_SEALED_SOURCE" <<'PY'
+        if ! /usr/bin/python3 -I - "$source_path" "$git_mode" "$AUTHENTICATED_SEALED_SOURCE" <<'PY'
 from __future__ import annotations
 
 import os
