@@ -1433,6 +1433,68 @@ def test_production_path_cannot_execute_the_interpreted_installer(tmp_path: Path
         )
 
 
+def test_production_locked_phase_returns_only_a_broker_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_deferred_module()
+    sha = "a" * 40
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    state_root = tmp_path / "state"
+    desired = state_root / "desired-receipts"
+    desired.mkdir(parents=True, mode=0o700)
+    receipt = desired / "oom-containment.sha"
+    receipt.write_text(f"{sha}\n", encoding="ascii")
+    receipt.chmod(0o600)
+    paths = module.InstallPaths(
+        home=tmp_path,
+        state_root=state_root,
+        defer_root=tmp_path / "defer",
+        repo_alias=repo,
+        sudo=Path("/usr/bin/sudo"),
+        test_mode=False,
+        test_root=None,
+    )
+    state_lock = module.LockedState(
+        lexical_root=state_root,
+        lexical_lock=state_root / ".lock",
+        state_fd=31,
+        lock_fd=32,
+        guard_fd=33,
+    )
+    child_or_sudo_called = False
+
+    def forbidden_call(*_args: object, **_kwargs: object) -> object:
+        nonlocal child_or_sudo_called
+        child_or_sudo_called = True
+        raise AssertionError("production locked phase reached child or sudo")
+
+    monkeypatch.setattr(module, "_physical_repo", lambda _alias: repo)
+    monkeypatch.setattr(module, "_validate_commit", lambda *_args: None)
+    monkeypatch.setattr(module, "_validate_stage", lambda *_args: tmp_path / "stage")
+    monkeypatch.setattr(
+        module,
+        "_validate_runtime_gates",
+        lambda *_args, **_kwargs: module.RuntimeGateSnapshot(
+            task_sha256="b" * 64, cap_receipt_sha256=None
+        ),
+    )
+    monkeypatch.setattr(module, "_execute_installer", forbidden_call)
+    monkeypatch.setattr(module.subprocess, "run", forbidden_call)
+
+    outcome = module._install_locked(
+        module.OOM_PACKAGE,
+        paths=paths,
+        state_lock=state_lock,
+        expected_sha=sha,
+        activation_release=repo,
+        runtime_authority_task=tmp_path / "runtime-task.md",
+    )
+
+    assert outcome == module.BrokerRequest(module.OOM_PACKAGE, sha)
+    assert not child_or_sudo_called
+
+
 def test_production_install_releases_user_state_lock_before_broker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1602,6 +1664,39 @@ def test_missing_production_broker_refuses_with_bootstrap_action(
         match="root-owned package broker is not installed.*separately runtime-authorized",
     ):
         module._validate_production_broker()
+
+
+def test_broker_completion_requires_exact_receipts_snapshots_and_drain(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    module = _load_deferred_module()
+    for kind in ("desired", "installed"):
+        receipt = fixture.state_root / f"{kind}-receipts" / f"{fixture.package}.sha"
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(f"{fixture.sha}\n", encoding="ascii")
+        receipt.chmod(0o600)
+    snapshot_root = fixture.state_root / "current-source"
+    for rel in (fixture.manifest, fixture.effects, fixture.installer, AUTHORITY_VERIFIER, PAYLOAD):
+        destination = snapshot_root / rel
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(fixture.repo / rel, destination)
+    drained = fixture.stage / "DRAINED.txt"
+    fixture.stage.joinpath("RUNBOOK.txt").replace(drained)
+    drained.chmod(0o600)
+    paths = module.InstallPaths(
+        home=tmp_path,
+        state_root=fixture.state_root,
+        defer_root=fixture.defer_root,
+        repo_alias=fixture.repo_alias,
+        sudo=Path("/usr/bin/sudo"),
+        test_mode=False,
+        test_root=None,
+    )
+
+    module._verify_broker_completion(paths, module.OOM_PACKAGE, fixture.sha)
+
+    (snapshot_root / PAYLOAD).write_text("substituted\n", encoding="utf-8")
+    with pytest.raises(module.DeferredInstallError, match="non-exact installed source"):
+        module._verify_broker_completion(paths, module.OOM_PACKAGE, fixture.sha)
 
 
 @pytest.mark.parametrize("installer_rel", (INSTALLER, APCUPSD_INSTALLER))

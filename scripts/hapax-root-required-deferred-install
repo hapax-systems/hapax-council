@@ -1248,11 +1248,54 @@ def _validate_production_broker(path: Path = PRODUCTION_BROKER) -> None:
 
 
 def _verify_broker_completion(paths: InstallPaths, package: Package, sha: str) -> None:
-    receipt = paths.state_root / "installed-receipts" / f"{package.label}.sha"
-    if _read_safe_receipt_sha(receipt, label="broker-installed package receipt") != sha:
+    for kind in ("desired", "installed"):
+        receipt = paths.state_root / f"{kind}-receipts" / f"{package.label}.sha"
+        if _read_safe_receipt_sha(receipt, label=f"broker-{kind} package receipt") != sha:
+            raise _error(
+                f"root-package broker returned success without the exact {kind} receipt; "
+                "leave the deferral pending, inspect the broker journal, and rerun"
+            )
+
+    repo = _physical_repo(paths.repo_alias)
+    _validate_commit(repo, sha)
+    snapshot_root = paths.state_root / "current-source"
+    _validate_owned_directory(snapshot_root, label="broker-installed source root")
+    for rel in _manifest_files(repo, sha, package):
+        _validate_parent_directories(snapshot_root, rel)
+        snapshot = snapshot_root.joinpath(*rel.parts)
+        mode = _git_mode(repo, sha, rel)
+        inode = _lstat_regular(
+            snapshot,
+            label=f"broker-installed source {rel}",
+            executable=mode == "100755",
+        )
+        if inode.st_uid != os.getuid() or inode.st_mode & 0o022:
+            raise _error(f"broker-installed source is not caller-owned and non-writable: {rel}")
+        if _read_regular_bytes(
+            snapshot,
+            label=f"broker-installed source {rel}",
+            executable=mode == "100755",
+        ) != _git(repo, "show", f"{sha}:{rel}"):
+            raise _error(f"root-package broker published a non-exact installed source: {rel}")
+
+    stage = paths.defer_root / sha / package.label
+    _validate_owned_directory(stage, label="broker-drained package stage")
+    pending = stage / "RUNBOOK.txt"
+    if pending.exists() or pending.is_symlink():
+        raise _error("root-package broker returned success while RUNBOOK.txt remains pending")
+    drained = stage / "DRAINED.txt"
+    drained_inode = _lstat_regular(
+        drained,
+        label="broker-drained package marker",
+        executable=False,
+    )
+    if (
+        drained_inode.st_uid != os.getuid()
+        or drained_inode.st_nlink != 1
+        or stat.S_IMODE(drained_inode.st_mode) != 0o600
+    ):
         raise _error(
-            "root-package broker returned success without publishing the exact installed receipt; "
-            "leave the desired receipt and deferral pending, inspect the broker journal, and rerun"
+            "root-package broker returned success without a caller-owned mode-0600 drain marker"
         )
 
 
