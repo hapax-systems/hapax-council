@@ -10,20 +10,13 @@ if [ "$TEST_MODE" = "1" ]; then
     fi
     TARGET_USER="${HAPAX_OOM_TARGET_USER:-hapax}"
     TARGET_UID="${HAPAX_OOM_TARGET_UID:-$(id -u "$TARGET_USER")}"
-    TARGET_GID="${HAPAX_OOM_TARGET_GID:-$(id -g "$TARGET_USER")}"
-    TARGET_HOME="${HAPAX_OOM_TARGET_HOME:-$(getent passwd "$TARGET_USER" | cut -d: -f6)}"
     SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
     USER_SYSTEMCTL="${HAPAX_OOM_USER_SYSTEMCTL:-}"
-    SETPRIV="${HAPAX_OOM_SETPRIV:-/usr/bin/setpriv}"
-    CURRENT_UID="${HAPAX_OOM_ENFORCE_EFFECTIVE_UID:-$(id -u)}"
-    RUNTIME_DIR="${HAPAX_OOM_RUNTIME_DIR:-/run/user/$TARGET_UID}"
     PROC_ROOT="${HAPAX_OOM_PROC_ROOT:-/proc}"
 else
     for override in \
-        HAPAX_OOM_TARGET_USER HAPAX_OOM_TARGET_UID HAPAX_OOM_TARGET_GID \
-        HAPAX_OOM_TARGET_HOME HAPAX_OOM_SYSTEMCTL HAPAX_OOM_USER_SYSTEMCTL \
-        HAPAX_OOM_SETPRIV HAPAX_OOM_ENFORCE_EFFECTIVE_UID HAPAX_OOM_PROC_ROOT \
-        HAPAX_OOM_RUNTIME_DIR HAPAX_OOM_CGROUP_ROOT; do
+        HAPAX_OOM_TARGET_USER HAPAX_OOM_TARGET_UID HAPAX_OOM_SYSTEMCTL \
+        HAPAX_OOM_USER_SYSTEMCTL HAPAX_OOM_PROC_ROOT HAPAX_OOM_CGROUP_ROOT; do
         if declare -p "$override" >/dev/null 2>&1; then
             echo "refusing production OOM enforcer override $override; next action: remove HAPAX_OOM_* overrides and rerun the package-owned command" >&2
             exit 2
@@ -33,17 +26,11 @@ else
     export PATH
     TARGET_USER=hapax
     TARGET_UID=1000
-    TARGET_GID=1000
-    TARGET_HOME=/home/hapax
     SYSTEMCTL=/usr/bin/systemctl
     USER_SYSTEMCTL=""
-    SETPRIV=/usr/bin/setpriv
-    CURRENT_UID="$(/usr/bin/id -u)"
-    RUNTIME_DIR=/run/user/1000
     PROC_ROOT=/proc
-    if [ "$(/usr/bin/id -u "$TARGET_USER" 2>/dev/null || true)" != "$TARGET_UID" ] \
-        || [ "$(/usr/bin/id -g "$TARGET_USER" 2>/dev/null || true)" != "$TARGET_GID" ]; then
-        echo "refusing OOM enforcer on a host where hapax is not UID/GID 1000; next action: dispatch a host-specific OOM package instead of overriding this podium policy" >&2
+    if [ "$(id -u "$TARGET_USER" 2>/dev/null || true)" != "$TARGET_UID" ]; then
+        echo "refusing OOM enforcer on a host where hapax is not UID 1000; next action: dispatch a host-specific OOM package instead of overriding this podium policy" >&2
         exit 2
     fi
 fi
@@ -60,14 +47,11 @@ usage() {
     cat <<'USAGE'
 usage: hapax-oom-score-enforce --apply
        hapax-oom-score-enforce --apply-unit UNIT
-       hapax-oom-score-enforce --write-scoped PID SCORE STARTTIME CONTROL_GROUP
 
 Writes live /proc oom_score_adj values that unprivileged user units cannot
 lower by themselves after user@1000.service is made killable. --apply-unit is
 restricted to the package's protected user-unit allowlist and is intended for
-each unit's fail-open ExecStartPost startup trigger. --write-scoped is the
-installer-only primitive; it binds a pre-escalation process identity to an
-allowlisted cgroup and score before writing through a pinned procfs dirfd.
+each unit's fail-open ExecStartPost startup trigger.
 USAGE
 }
 
@@ -86,189 +70,59 @@ case "$mode" in
             exit 2
         }
         ;;
-    --write-scoped)
-        [ "$#" -eq 5 ] || {
-            usage >&2
-            exit 2
-        }
-        ;;
     *)
         usage >&2
         exit 2
         ;;
 esac
 
-report_missing_user_runtime() {
-    echo "no user runtime directory at $RUNTIME_DIR; user manager for UID $TARGET_UID is unavailable and there is nothing to protect" >&2
-}
-
 run_user_systemctl() {
     if [ -n "$USER_SYSTEMCTL" ]; then
         "$USER_SYSTEMCTL" "$@"
-    elif [ "$CURRENT_UID" = "$TARGET_UID" ]; then
+    elif [ "$(id -u)" = "$TARGET_UID" ]; then
         "$SYSTEMCTL" --user "$@"
-    elif [ "$CURRENT_UID" = "0" ]; then
-        if [ ! -d "$RUNTIME_DIR" ]; then
-            report_missing_user_runtime
-            return 3
-        fi
-        "$SETPRIV" \
-            --reuid="$TARGET_UID" \
-            --regid="$TARGET_GID" \
-            --init-groups \
-            --inh-caps=-all \
-            --ambient-caps=-all \
-            --bounding-set=-all \
-            --no-new-privs \
-            /usr/bin/env -i \
-            HOME="$TARGET_HOME" \
-            LANG=C.UTF-8 \
-            LC_ALL=C.UTF-8 \
-            LOGNAME="$TARGET_USER" \
-            PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin \
-            USER="$TARGET_USER" \
-            XDG_RUNTIME_DIR="$RUNTIME_DIR" \
-            "$SYSTEMCTL" --user "$@"
+    elif [ "$(id -u)" = "0" ]; then
+        /usr/bin/runuser -u "$TARGET_USER" -- /usr/bin/env XDG_RUNTIME_DIR="/run/user/$TARGET_UID" "$SYSTEMCTL" --user "$@"
     else
         XDG_RUNTIME_DIR="/run/user/$TARGET_UID" "$SYSTEMCTL" --user "$@"
     fi
 }
 
+write_oom_score() {
+    local pid score path current
+    pid="$1"
+    score="$2"
+    path="$PROC_ROOT/$pid/oom_score_adj"
+    [ -e "$path" ] || return 0
+    current="$(cat "$path" 2>/dev/null || true)"
+    [ "$current" = "$score" ] && return 0
+    { printf '%s\n' "$score" > "$path"; } 2>/dev/null || {
+        [ ! -e "$path" ] && return 0
+        return 1
+    }
+    printf 'changed\n'
+}
+
+pid_matches_cgroup() {
+    local pid="$1" expected_cgroup="$2" proc_cgroup _hierarchy _controllers path
+    proc_cgroup="$PROC_ROOT/$pid/cgroup"
+    [ -n "$expected_cgroup" ] || return 1
+    [ -r "$proc_cgroup" ] || return 1
+    while IFS=: read -r _hierarchy _controllers path; do
+        if [ "$path" = "$expected_cgroup" ] || [[ "$path" == "$expected_cgroup/"* ]]; then
+            return 0
+        fi
+    done < "$proc_cgroup"
+    return 1
+}
+
 write_oom_score_for_cgroup() {
     local pid="$1" score="$2" label="$3" expected_cgroup="$4"
-    local expected_starttime="${5:-}"
-    /usr/bin/python3 -I - \
-        "$PROC_ROOT" "$pid" "$score" "$label" "$expected_cgroup" "$expected_starttime" <<'PY'
-from __future__ import annotations
-
-import os
-import stat
-import sys
-
-STALE_IDENTITY = 75
-READ_LIMIT = 65536
-
-
-def read_at(parent_fd: int, name: str) -> bytes:
-    fd = os.open(
-        name,
-        os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
-        dir_fd=parent_fd,
-    )
-    try:
-        chunks: list[bytes] = []
-        size = 0
-        while True:
-            chunk = os.read(fd, min(4096, READ_LIMIT + 1 - size))
-            if not chunk:
-                return b"".join(chunks)
-            chunks.append(chunk)
-            size += len(chunk)
-            if size > READ_LIMIT:
-                raise OSError(f"{name} exceeds {READ_LIMIT} bytes")
-    finally:
-        os.close(fd)
-
-
-def process_starttime(raw: bytes) -> str:
-    close = raw.rfind(b")")
-    fields = raw[close + 1 :].split() if close >= 0 else []
-    if len(fields) <= 19 or not fields[19].isdigit():
-        raise OSError("malformed process stat record")
-    return fields[19].decode("ascii")
-
-
-def cgroup_matches(raw: bytes, expected: str) -> bool:
-    for line in raw.decode("utf-8", errors="strict").splitlines():
-        fields = line.split(":", 2)
-        if len(fields) == 3 and (
-            fields[2] == expected or fields[2].startswith(f"{expected}/")
-        ):
-            return True
-    return False
-
-
-proc_root, pid, score_text, label, expected_cgroup, expected_starttime = sys.argv[1:]
-if (
-    not pid.isdigit()
-    or int(pid) <= 0
-    or not score_text.removeprefix("-").isdigit()
-    or not -1000 <= int(score_text) <= 1000
-    or not expected_cgroup.startswith("/")
-    or "//" in expected_cgroup
-    or ".." in expected_cgroup.split("/")
-    or (expected_starttime and not expected_starttime.isdigit())
-):
-    print(
-        f"warn: refusing invalid scoped oom_score_adj request for {label}; "
-        "next action: restore the package-owned PID, score, and cgroup contract",
-        file=sys.stderr,
-    )
-    raise SystemExit(2)
-if os.geteuid() == 0 and proc_root != "/proc":
-    print(
-        "warn: refusing root scoped oom_score_adj write outside canonical /proc; "
-        "next action: remove proc-root overrides and rerun the governed installer",
-        file=sys.stderr,
-    )
-    raise SystemExit(2)
-
-root_fd = -1
-pid_fd = -1
-try:
-    root_fd = os.open(
-        proc_root,
-        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
-    )
-    pid_fd = os.open(
-        pid,
-        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
-        dir_fd=root_fd,
-    )
-    actual_starttime = process_starttime(read_at(pid_fd, "stat"))
-    if expected_starttime and actual_starttime != expected_starttime:
-        print(
-            f"warn: refusing stale oom_score_adj identity for {label} pid={pid}",
-            file=sys.stderr,
-        )
-        raise SystemExit(STALE_IDENTITY)
-    if not cgroup_matches(read_at(pid_fd, "cgroup"), expected_cgroup):
-        print(
-            f"warn: refusing oom_score_adj write for {label} pid={pid} because the "
-            f"pinned process is outside expected subtree {expected_cgroup}",
-            file=sys.stderr,
-        )
-        raise SystemExit(STALE_IDENTITY)
-    current = read_at(pid_fd, "oom_score_adj").decode("ascii").strip()
-    if current == score_text:
-        raise SystemExit(0)
-    score_fd = os.open(
-        "oom_score_adj",
-        os.O_WRONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
-        dir_fd=pid_fd,
-    )
-    try:
-        inode = os.fstat(score_fd)
-        if not stat.S_ISREG(inode.st_mode):
-            raise OSError("oom_score_adj is not a regular procfs attribute")
-        payload = f"{score_text}\n".encode("ascii")
-        if os.write(score_fd, payload) != len(payload):
-            raise OSError("short oom_score_adj write")
-    finally:
-        os.close(score_fd)
-except (FileNotFoundError, ProcessLookupError):
-    print(f"warn: scoped oom_score_adj target vanished for {label} pid={pid}", file=sys.stderr)
-    raise SystemExit(STALE_IDENTITY)
-except OSError as exc:
-    print(f"warn: scoped oom_score_adj write failed for {label} pid={pid}: {exc}", file=sys.stderr)
-    raise SystemExit(1) from exc
-finally:
-    if pid_fd >= 0:
-        os.close(pid_fd)
-    if root_fd >= 0:
-        os.close(root_fd)
-print("changed")
-PY
+    if ! pid_matches_cgroup "$pid" "$expected_cgroup"; then
+        echo "warn: refusing oom_score_adj write for $label pid=$pid because /proc cgroup is outside expected subtree $expected_cgroup; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    write_oom_score "$pid" "$score"
 }
 
 system_main_pid() {
@@ -356,7 +210,7 @@ apply_unit_score() {
         if changed="$(write_oom_score_for_cgroup "$pid" "$score" "$unit" "$cgroup")"; then
             [ -z "$changed" ] || echo "user-unit $unit pid=$pid oom_score_adj=$score"
         else
-            echo "warn: failed to set oom_score_adj for $unit pid=$pid; next action: run scripts/hapax-oom-policy-audit --json, set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical runtime-authorized task, and rerun hapax-post-merge-deploy" >&2
+            echo "warn: failed to set oom_score_adj for $unit pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
             failed=1
         fi
     done
@@ -377,7 +231,7 @@ apply_unit_main_score() {
     if changed="$(write_oom_score_for_cgroup "$pid" "$score" "$unit" "$cgroup")"; then
         [ -z "$changed" ] || echo "user-unit $unit pid=$pid oom_score_adj=$score"
     else
-        echo "warn: failed to set startup oom_score_adj for $unit pid=$pid; next action: run scripts/hapax-oom-policy-audit --json, set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical runtime-authorized task, and rerun hapax-post-merge-deploy" >&2
+        echo "warn: failed to set startup oom_score_adj for $unit pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         failed=1
     fi
 }
@@ -399,50 +253,6 @@ protected_user_unit_score() {
     esac
 }
 
-validate_scoped_write_contract() {
-    local score="$1" expected_cgroup="$2"
-    case "$expected_cgroup|$score" in
-        "/system.slice/apcupsd.service|-900" | \
-        "/system.slice/systemd-logind.service|-800" | \
-        "/system.slice/systemd-resolved.service|-800" | \
-        "/system.slice/systemd-timesyncd.service|-800" | \
-        "/system.slice/NetworkManager.service|-800" | \
-        "/system.slice/dbus-broker.service|-900" | \
-        "/system.slice/sshd.service|0" | \
-        "/user.slice/user-$TARGET_UID.slice/user@$TARGET_UID.service|100" | \
-        "/user.slice/user-$TARGET_UID.slice/user@$TARGET_UID.service/session.slice/pipewire.service|-900" | \
-        "/user.slice/user-$TARGET_UID.slice/user@$TARGET_UID.service/session.slice/pipewire-pulse.service|-900" | \
-        "/user.slice/user-$TARGET_UID.slice/user@$TARGET_UID.service/session.slice/wireplumber.service|-900" | \
-        "/user.slice/user-$TARGET_UID.slice/user@$TARGET_UID.service/app.slice/hapax-daimonion.service|-500" | \
-        "/user.slice/user-$TARGET_UID.slice/user@$TARGET_UID.service/app.slice/studio-compositor.service|-800" | \
-        "/user.slice/user-$TARGET_UID.slice/user@$TARGET_UID.service/app.slice/hapax-imagination.service|-800")
-            return 0
-            ;;
-    esac
-    return 1
-}
-
-if [ "$mode" = "--write-scoped" ]; then
-    scoped_pid="$2"
-    scoped_score="$3"
-    scoped_starttime="$4"
-    scoped_cgroup="$5"
-    if [ "$TEST_MODE" != "1" ] && [ "$CURRENT_UID" != "0" ]; then
-        echo "refusing installer-scoped oom_score_adj write outside root execution; next action: invoke the root-owned enforcer through the governed installer" >&2
-        exit 2
-    fi
-    if ! [[ "$scoped_pid" =~ ^[1-9][0-9]*$ ]] \
-        || ! [[ "$scoped_starttime" =~ ^[0-9]+$ ]] \
-        || ! validate_scoped_write_contract "$scoped_score" "$scoped_cgroup"; then
-        echo "refusing non-allowlisted installer-scoped oom_score_adj request; next action: restore the package-owned PID, score, and cgroup contract" >&2
-        exit 2
-    fi
-    write_oom_score_for_cgroup \
-        "$scoped_pid" "$scoped_score" "${scoped_cgroup##*/}" \
-        "$scoped_cgroup" "$scoped_starttime"
-    exit $?
-fi
-
 requested_score=""
 if [ "$mode" = "--apply-unit" ]; then
     if ! requested_score="$(protected_user_unit_score "$requested_unit")"; then
@@ -462,20 +272,12 @@ if ! user_manager_state="$(
 fi
 case "$user_manager_state" in
     active|reloading|refreshing) ;;
-    inactive)
-        echo "no user manager for UID $TARGET_UID; nothing to protect"
-        exit 0
-        ;;
+    inactive) exit 0 ;;
     *)
         echo "warn: refusing to skip OOM score enforcement for $user_manager_unit with ActiveState=${user_manager_state:-empty}; next action: inspect systemctl status $user_manager_unit and run scripts/hapax-oom-policy-audit --json" >&2
         exit 1
         ;;
 esac
-
-if [ -z "$USER_SYSTEMCTL" ] && [ "$CURRENT_UID" = "0" ] && [ ! -d "$RUNTIME_DIR" ]; then
-    report_missing_user_runtime
-    exit 1
-fi
 
 if [ "$mode" = "--apply-unit" ]; then
     apply_unit_main_score "$requested_unit" "$requested_score"
@@ -492,7 +294,7 @@ elif [ -n "$user_pid" ]; then
     elif changed="$(write_oom_score_for_cgroup "$user_pid" 100 "$user_manager_unit" "$user_cgroup")"; then
         [ -z "$changed" ] || echo "system user@$TARGET_UID.service pid=$user_pid oom_score_adj=100"
     else
-        echo "warn: failed to set oom_score_adj for user@$TARGET_UID.service pid=$user_pid; next action: run scripts/hapax-oom-policy-audit --json, set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical runtime-authorized task, and rerun hapax-post-merge-deploy" >&2
+        echo "warn: failed to set oom_score_adj for user@$TARGET_UID.service pid=$user_pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         failed=1
     fi
 else
