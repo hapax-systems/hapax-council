@@ -211,6 +211,33 @@ class TestPassthroughIsPartOfTheSelection:
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == f"{FRONTIER_MODEL}|{FRONTIER_EFFORT}"
 
+    def test_the_flag_beats_config_in_either_order(self, tmp_path: Path) -> None:
+        """Precedence is codex's, not the argument order's. Measured with `codex doctor`:
+
+            codex --model A -c 'model="B"'   -> A
+            codex -c 'model="A"' --model B   -> B
+
+        The flag wins in BOTH orders. The first scanner assigned as it walked, so last-wins
+        disagreed with codex whenever the spellings were mixed, and
+
+            --model gpt-5.5 -c 'model="gpt-5.6-sol"'
+
+        resolved to the frontier here and exited 0 while codex would have run gpt-5.5. A guard
+        that models the wrong precedence is not weaker — it approves what it was asked to refuse.
+        """
+        refused = _run_with_extra(["--model", "gpt-5.5", "-c", 'model="gpt-5.6-sol"'], tmp_path)
+        assert refused.returncode == 6, (
+            "a config naming the frontier must not launder a below-frontier --model flag: "
+            f"{refused.stdout}"
+        )
+        assert "gpt-5.5" in refused.stderr
+
+    def test_the_frontier_flag_survives_a_below_frontier_config(self, tmp_path: Path) -> None:
+        """The other direction of the same rule, so the fix cannot become a blanket refusal."""
+        result = _run_with_extra(["-c", 'model="gpt-5.5"', "--model", FRONTIER_MODEL], tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == f"{FRONTIER_MODEL}|{FRONTIER_EFFORT}"
+
     def test_a_profile_is_refused_because_it_cannot_be_resolved_here(self, tmp_path: Path) -> None:
         """`-p/--profile` names a config.toml block that may set model or effort to anything.
 

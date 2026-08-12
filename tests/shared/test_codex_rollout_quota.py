@@ -302,3 +302,74 @@ def test_the_head_reader_still_returns_ordinary_leading_lines(tmp_path: Path) ->
     assert len(lines) == 5
     assert lines[0].strip() == '{"n": 0}'
     assert lines[4].strip() == '{"n": 4}'
+
+
+# ── mtime ranks the files; the record timestamp decides ────────────
+
+
+def _rollout_named(dir_: Path, name: str, *, at: datetime, used: float, mtime: float) -> Path:
+    """One rollout with an explicit filesystem mtime, so ranking and content can disagree."""
+    import os
+
+    path = dir_ / name
+    path.write_text(
+        json.dumps(
+            {
+                "timestamp": at.isoformat(),
+                "payload": {
+                    "rate_limits": {
+                        "limit_id": "codex",
+                        "primary": {"used_percent": used, "window_minutes": 300},
+                    }
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.utime(path, (mtime, mtime))
+    return path
+
+
+def test_a_newer_wall_is_not_masked_by_an_older_reading_in_a_newer_file(tmp_path: Path) -> None:
+    """The defect: `if best is not None: break` made the newest-record comparison unreachable.
+
+    Stopping at the first rollout that yielded anything meant the winner was whichever file the
+    filesystem touched last, not whichever observation Codex recorded last. Those disagree, and the
+    consequence is asymmetric: a newer quota WALL in the second-ranked file is masked by an older
+    healthy reading in the first, and the caller mints an admission against headroom that is gone.
+    """
+    healthy_at = NOW - timedelta(minutes=30)
+    wall_at = NOW - timedelta(minutes=2)
+    # The healthy reading is OLDER by record but its file is touched LAST, so it ranks first.
+    _rollout_named(
+        tmp_path, "rollout-2026-08-10T00-00-00-a.jsonl", at=healthy_at, used=5.0, mtime=2000.0
+    )
+    _rollout_named(
+        tmp_path,
+        "rollout-2026-08-10T00-00-00-b.jsonl",
+        at=wall_at,
+        used=EXHAUSTED_USED_PERCENT,
+        mtime=1000.0,
+    )
+
+    with pytest.raises(RolloutQuotaUnavailable, match="exhausted"):
+        latest_rollout_observation(tmp_path, now=NOW)
+
+
+def test_the_newest_record_wins_when_it_is_the_healthy_one(tmp_path: Path) -> None:
+    """The same rule in the other direction, so the fix is not a bias toward refusing."""
+    wall_at = NOW - timedelta(minutes=30)
+    healthy_at = NOW - timedelta(minutes=2)
+    _rollout_named(
+        tmp_path,
+        "rollout-2026-08-10T00-00-00-a.jsonl",
+        at=wall_at,
+        used=EXHAUSTED_USED_PERCENT,
+        mtime=2000.0,
+    )
+    _rollout_named(
+        tmp_path, "rollout-2026-08-10T00-00-00-b.jsonl", at=healthy_at, used=6.0, mtime=1000.0
+    )
+
+    assert latest_rollout_observation(tmp_path, now=NOW).used_percent == 6.0

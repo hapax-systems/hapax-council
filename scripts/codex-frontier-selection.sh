@@ -77,15 +77,32 @@ _cfs_strip_quotes() {
   _cfs_val="${_cfs_val%\"}"; _cfs_val="${_cfs_val#\"}"
   _cfs_val="${_cfs_val%\'}"; _cfs_val="${_cfs_val#\'}"
 }
+# PRECEDENCE IS CODEX'S, NOT THE ARGUMENT ORDER'S.
+#
+# The first version of this scanner assigned straight into CODEX_MODEL as it walked, so the LAST
+# spelling seen won. codex does not work that way — measured with `codex doctor`:
+#
+#   codex --model A -c 'model="B"' doctor   -> A      the FLAG wins
+#   codex -c 'model="A"' --model B doctor   -> B      the FLAG wins
+#
+# The flag beats config in BOTH orders. Last-wins therefore disagreed with codex whenever the two
+# spellings were mixed, and `--model gpt-5.5 -c 'model="gpt-5.6-sol"'` resolved to the frontier
+# here and exited 0 while codex would have run gpt-5.5. A guard that models the wrong precedence
+# is not a weaker guard — it is a guard that approves the thing it was asked to refuse.
+#
+# So the two channels are tracked separately and combined by codex's rule, not by iteration order.
 if [ "${#CODEX_EXTRA[@]}" -gt 0 ] 2>/dev/null; then
   _cfs_expect_config=0
   _cfs_expect_model=0
   _cfs_expect_profile=0
   _cfs_profile=""
+  _cfs_flag_model=""
+  _cfs_config_model=""
+  _cfs_config_effort=""
   for _cfs_arg in "${CODEX_EXTRA[@]}"; do
     _cfs_assign=""
     if [ "$_cfs_expect_model" -eq 1 ]; then
-      _cfs_val="$_cfs_arg"; _cfs_strip_quotes; CODEX_MODEL="$_cfs_val"
+      _cfs_val="$_cfs_arg"; _cfs_strip_quotes; _cfs_flag_model="$_cfs_val"
       _cfs_expect_model=0
       continue
     fi
@@ -103,9 +120,9 @@ if [ "${#CODEX_EXTRA[@]}" -gt 0 ] 2>/dev/null; then
         -m|--model)   _cfs_expect_model=1; continue ;;
         -p|--profile) _cfs_expect_profile=1; continue ;;
         --model=*)    _cfs_val="${_cfs_arg#--model=}"; _cfs_strip_quotes
-                      CODEX_MODEL="$_cfs_val"; continue ;;
+                      _cfs_flag_model="$_cfs_val"; continue ;;
         -m?*)         _cfs_val="${_cfs_arg#-m}"; _cfs_strip_quotes
-                      CODEX_MODEL="$_cfs_val"; continue ;;
+                      _cfs_flag_model="$_cfs_val"; continue ;;
         --profile=*)  _cfs_profile="${_cfs_arg#--profile=}"; continue ;;
         -c?*=*)       _cfs_assign="${_cfs_arg#-c}" ;;
         --config=*)   _cfs_assign="${_cfs_arg#--config=}" ;;
@@ -117,10 +134,19 @@ if [ "${#CODEX_EXTRA[@]}" -gt 0 ] 2>/dev/null; then
     # codex config values are commonly quoted; the quotes are syntax, not value.
     _cfs_strip_quotes
     case "$_cfs_key" in
-      model)                  CODEX_MODEL="$_cfs_val" ;;
-      model_reasoning_effort) CODEX_EFFORT="$_cfs_val" ;;
+      model)                  _cfs_config_model="$_cfs_val" ;;
+      model_reasoning_effort) _cfs_config_effort="$_cfs_val" ;;
     esac
   done
+
+  # codex's rule, applied once at the end: the flag beats config in either order. Effort has no
+  # CLI flag, so config is its only passthrough channel.
+  if [ -n "$_cfs_flag_model" ]; then
+    CODEX_MODEL="$_cfs_flag_model"
+  elif [ -n "$_cfs_config_model" ]; then
+    CODEX_MODEL="$_cfs_config_model"
+  fi
+  [ -n "$_cfs_config_effort" ] && CODEX_EFFORT="$_cfs_config_effort"
 
   # A PROFILE MAKES THE SELECTION UNVERIFIABLE FROM HERE. `-p/--profile` names a block in
   # ~/.codex/config.toml that may set `model` or `model_reasoning_effort` to anything. Resolving
@@ -138,6 +164,7 @@ if [ "${#CODEX_EXTRA[@]}" -gt 0 ] 2>/dev/null; then
   fi
   unset _cfs_expect_config _cfs_expect_model _cfs_expect_profile
   unset _cfs_arg _cfs_assign _cfs_key _cfs_val _cfs_profile
+  unset _cfs_flag_model _cfs_config_model _cfs_config_effort
 fi
 
 if [ "$CODEX_MODEL" != "$HAPAX_CODEX_FRONTIER_MODEL" ] ||

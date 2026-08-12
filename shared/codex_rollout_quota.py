@@ -362,6 +362,21 @@ def latest_rollout_observation(
     if not rollouts:
         raise RolloutQuotaUnavailable(f"no codex rollouts under {sessions_dir}")
 
+    # MTIME RANKS THE FILES; THE RECORD TIMESTAMP DECIDES WHICH OBSERVATION IS NEWEST.
+    #
+    # An earlier revision stopped at the first rollout that yielded anything — `if best is not
+    # None: break` — which made the `found[0] > best[0]` comparison unreachable. It could only ever
+    # run once, against nothing. The winner was therefore "whichever file the filesystem touched
+    # last", not "whichever observation Codex recorded last".
+    #
+    # Those disagree in ordinary use: a file can be touched without its limit record changing, and
+    # a session that ended later can land on disk earlier. The consequence is asymmetric and bad in
+    # exactly one direction — a newer quota WALL in the second-ranked file is masked by an older
+    # healthy reading in the first, and the caller mints an admission against headroom that no
+    # longer exists. Reading a wall as headroom is the failure this module exists to prevent.
+    #
+    # So every rollout in the bounded scan is read and the newest RECORD wins. That costs
+    # ROLLOUT_SCAN_LIMIT tail reads instead of one, which is what the limit exists to bound.
     best: tuple[datetime, dict] | None = None
     for path in rollouts:
         try:
@@ -374,8 +389,6 @@ def latest_rollout_observation(
                 if best is None or found[0] > best[0]:
                     best = found
                 break
-        if best is not None:
-            break
 
     if best is None:
         raise RolloutQuotaUnavailable(
