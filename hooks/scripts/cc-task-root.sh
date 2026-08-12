@@ -21,6 +21,13 @@ cc_task_root_resolve() {
   # Trim surrounding whitespace, so a stray space in a unit file is not a different path.
   override="${override#"${override%%[![:space:]]*}"}"
   override="${override%"${override##*[![:space:]]}"}"
+  # TILDE EXPANSION IS NOT AUTOMATIC INSIDE A VARIABLE. Python's `expanduser` turns `~/tasks`
+  # into an absolute path; the shell leaves it literal, so `-d` fails on a root that exists and
+  # the two resolvers disagree about the SSOT. Expanded here so both sides mean the same thing.
+  case "$override" in
+    "~") override="$HOME" ;;
+    "~/"*) override="$HOME/${override#\~/}" ;;
+  esac
 
   if [ -n "$override" ]; then
     # Precedence, not fallback. An override that names nothing usable REFUSES; resolving to the
@@ -36,7 +43,16 @@ cc_task_root_resolve() {
     return 0
   fi
 
+  # `:-` already treats set-but-empty as unset, which is the behaviour both sides now share --
+  # Python previously returned "" here and built a RELATIVE path while the shell used $HOME.
   personal="${PERSONAL_VAULT_PATH:-$HOME/Documents/Personal}"
+  personal="${personal#"${personal%%[![:space:]]*}"}"
+  personal="${personal%"${personal##*[![:space:]]}"}"
+  [ -n "$personal" ] || personal="$HOME/Documents/Personal"
+  case "$personal" in
+    "~") personal="$HOME" ;;
+    "~/"*) personal="$HOME/${personal#\~/}" ;;
+  esac
   CC_TASK_ROOT="$personal/20-projects/hapax-cc-tasks"
   CC_TASK_ROOT_SOURCE="personal_vault"
   # A missing default is genesis, not a fault: R4.1's third clause is that first-init CREATES the

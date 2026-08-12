@@ -77,7 +77,18 @@ def _personal_vault() -> Path:
     # into a module constant when it is first imported, which makes it unchangeable for the life
     # of the process — fine for an agent, wrong for a test that has to prove the knob is honoured
     # and wrong for a first-init flow that sets it before creating anything.
-    return Path(os.environ.get("PERSONAL_VAULT_PATH", str(Path.home() / "Documents" / "Personal")))
+    #
+    # SET-BUT-EMPTY MEANS UNSET, and it has to mean that on BOTH sides. `os.environ.get(k, d)`
+    # returns "" for an exported-but-empty variable while the shell's `${k:-d}` substitutes the
+    # default — so the two resolvers disagreed on exactly this input, Python landing on a relative
+    # `Path("")` and the shell on $HOME. `or` matches the shell's `:-`.
+    #
+    # `expanduser` for the same reason: the shell cannot expand a tilde that arrives inside a
+    # variable, so it is expanded here and stripped there, and the two must not disagree.
+    raw = os.environ.get("PERSONAL_VAULT_PATH", "").strip()
+    if not raw:
+        return Path.home() / "Documents" / "Personal"
+    return Path(raw).expanduser()
 
 
 def resolve_cc_task_root() -> CcTaskRoot:

@@ -158,6 +158,50 @@ def test_they_agree_that_a_file_is_not_a_root(tmp_path: Path, vault: Path) -> No
     assert py.returncode == 2
 
 
+def test_they_agree_when_the_vault_knob_is_set_but_empty(tmp_path: Path, vault: Path) -> None:
+    """The divergence the reviewers found — and my agreement test's input set had no case for it.
+
+    `os.environ.get(k, default)` returns "" for an exported-but-empty variable, while the shell's
+    `${k:-default}` substitutes the default. Python therefore built a RELATIVE `Path("")` root and
+    the shell built one under $HOME: a silent split SSOT, which is exactly the hazard these two
+    implementations were paired to prevent. The pairing was right; its inputs were incomplete.
+    """
+    result = _assert_agree(_env(tmp_path, PERSONAL_VAULT_PATH=""))
+
+    assert result.stdout.split()[0].startswith("/"), "an empty knob produced a relative root"
+
+
+def test_they_agree_on_a_tilde_override(tmp_path: Path) -> None:
+    """The shell cannot expand a tilde arriving inside a variable; Python's expanduser can.
+
+    Left alone, `-d` fails on a root that exists and the two resolvers answer differently.
+    """
+    home = tmp_path / "home"
+    (home / "tilde-tasks").mkdir(parents=True)
+
+    _assert_agree(_env(tmp_path, HAPAX_CC_TASKS_ROOT="~/tilde-tasks"))
+
+
+def test_they_agree_on_a_tilde_vault(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    (home / "v" / "20-projects" / "hapax-cc-tasks").mkdir(parents=True)
+
+    _assert_agree(_env(tmp_path, PERSONAL_VAULT_PATH="~/v"))
+
+
+def test_the_shell_require_succeeds_when_the_vault_is_present(tmp_path: Path, vault: Path) -> None:
+    """The success half of require was never driven — only its refusal was.
+
+    A require that refused unconditionally would have passed the refusal test and shipped.
+    """
+    result = _shell(_env(tmp_path, PERSONAL_VAULT_PATH=str(vault)), require=True)
+
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.split()
+    assert lines[0] == str(vault / "20-projects" / "hapax-cc-tasks")
+    assert lines[2] == "1"
+
+
 def test_the_shell_require_refuses_genesis(tmp_path: Path) -> None:
     result = _shell(_env(tmp_path, PERSONAL_VAULT_PATH=str(tmp_path / "not-yet")), require=True)
 
