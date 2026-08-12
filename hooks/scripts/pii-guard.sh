@@ -91,19 +91,55 @@ fi
 #
 # Both the names and the exemptions live in that file rather than here, so this script --
 # which is public -- carries no information about who it protects.
+#
+# EVERY value read from that file is treated as a LITERAL, never as a program. Names go into
+# PCRE inside \Q...\E; exemptions are removed by bash pattern substitution with the four glob
+# metacharacters escaped. An earlier revision interpolated both raw -- a name or phrase holding
+# `/`, `(`, `[` or a quantifier could then error the pattern, and `grep`'s non-zero exit reads
+# as "no match", so a malformed list entry SILENTLY disabled the guard. That is the same class
+# of failure as the missing pattern this whole check exists to fix, so it is closed the same
+# way: literally, and with grep's error exit (>=2) distinguished from its no-match exit (1).
+#
+# The boundary is `(?<![A-Za-z])name(?![A-Za-z])`, NOT `\b`. Underscore and digits are word
+# characters, so `\bname\b` does not match inside `name_surname` -- the exact blindness that let
+# an underscored form survive in two contract files and that the commit message documents. A
+# guard that reproduces the bug it reports is worse than no guard: it reports coverage it has
+# not got.
+glob_escape() {
+  local s=$1
+  s=${s//\\/\\\\}; s=${s//\*/\\*}; s=${s//\?/\\?}; s=${s//\[/\\[}
+  printf '%s' "$s"
+}
+
 pii_names_file="${HAPAX_PII_NAMES_FILE:-$HOME/.config/hapax/pii-names.txt}"
 if [ -r "$pii_names_file" ]; then
-  name_scan="$new_content"
+  # The path is scanned too. A registered name in a FILENAME is the same exposure as one in the
+  # body, and renaming files is precisely how the original scrub had to be carried out.
+  name_scan="$new_content
+$file_path"
+  name_scan_lc="${name_scan,,}"
   while IFS= read -r pii_line; do
     case "$pii_line" in
-      '!'*) exempt="${pii_line#!}"
-            name_scan="$(printf '%s' "$name_scan" | sed -E "s/${exempt}//Ig")" ;;
+      '!'*) exempt_lc="${pii_line#!}"
+            exempt_lc="${exempt_lc,,}"
+            [ -n "$exempt_lc" ] || continue
+            name_scan_lc="${name_scan_lc//$(glob_escape "$exempt_lc")/}" ;;
     esac
   done < "$pii_names_file"
   while IFS= read -r pii_name; do
     case "$pii_name" in ''|'#'*|'!'*) continue ;; esac
-    if printf '%s' "$name_scan" | grep -qiP "\\b${pii_name}\\b"; then
+    # `|| grep_status=$?` rather than a bare call: `set -e` is in force, and grep's exit 1
+    # (no match) would otherwise abort the hook before the status could be read. An aborting
+    # guard is a guard that stops checking, which is the failure this whole file is about.
+    grep_status=0
+    printf '%s' "$name_scan_lc" | grep -qP "(?<![A-Za-z])\\Q${pii_name,,}\\E(?![A-Za-z])" \
+      || grep_status=$?
+    if [ "$grep_status" -eq 0 ]; then
       blocked+=("Registered household name detected (see \$HAPAX_PII_NAMES_FILE)")
+      break
+    elif [ "$grep_status" -gt 1 ]; then
+      # grep errored. Treat an unreadable check as a failed check, never as a pass.
+      blocked+=("pii-guard: name check errored (grep exit $grep_status) -- treating as a match")
       break
     fi
   done < "$pii_names_file"
@@ -119,8 +155,29 @@ fi
 # to register the name first -- which matters, because the registered-name list is the
 # thing that was missing. (No example is given here on purpose: a guard in a public repo
 # must not quote the disclosure it exists to prevent.)
-if echo "$new_content" | grep -qP '\b[A-Z][a-z]{2,}\s+\((?:[1-9]|[1-9][0-9])\)'; then
+# The capitalised word before the number is usually a document-structure word, not a person:
+# "Appendix (2)", "Chapter (3)", "Table (11)". Those are the overwhelming majority of matches in
+# a corpus like this one, and a guard that cries wolf on them gets switched off -- which is
+# exactly how the original exposure survived five months. So candidates are extracted first and
+# the structure words filtered out, rather than writing one unreadable lookbehind.
+#
+# This list is a PRECISION measure, not a completeness claim. Its only failure mode is a false
+# NEGATIVE, and only for someone named exactly like a document-structure word. That is the right
+# direction to be wrong in for a check whose whole value is that it stays switched on.
+age_structure_words='^(?:Appendix|Chapter|Section|Figure|Fig|Table|Note|Item|Step|Part|Page|Line|Rule|Case|Tier|Level|Phase|Round|Wave|Slice|Gate|Volume|Version|Revision|Column|Row|Panel|Track|Slot|Tick|Axis|Band|Class|Group|Level|Stage)\b'
+if echo "$new_content" | grep -oP '\b[A-Z][a-z]{2,}\s+\((?:[1-9]|[1-9][0-9])\)' \
+     | grep -qvP "$age_structure_words"; then
   blocked+=("Possible age disclosure (Name (NN)) -- use an opaque principal id")
+fi
+
+# The SAME disclosure written in prose. The scrub that added the check above removed every
+# `Name (NN)` and still shipped a child's age one line from a renamed file, because the age was
+# spelled out instead of parenthesised. An age is identifying on its own once a role is known --
+# which is what the surrounding prose always supplies -- so the form does not matter and neither
+# does whether a name sits beside it. Bounded 1..19 deliberately: that is the range where the
+# subject is a minor, and the range where a false positive on ordinary prose is least likely.
+if echo "$new_content" | grep -qP '\b(?:[1-9]|1[0-9])[- ]year[- ]old\b'; then
+  blocked+=("Possible age disclosure (N-year-old) -- describe the audience, not the age")
 fi
 
 # Location data

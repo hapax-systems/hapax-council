@@ -1,7 +1,7 @@
 """Render narration audio for principal-c1 demo — principal-c1.
 
 Same substance as v4 research coverage. Adjusted for a single brilliant
-11-year-old who cares about both the ideas and the spectacle. No
+younger listener who cares about both the ideas and the spectacle. No
 condescension. Treat as an intellectual-moral athlete in serious training.
 
 Updated with all recent Logos UI changes: classification inspector,

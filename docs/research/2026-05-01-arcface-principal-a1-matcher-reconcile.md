@@ -48,8 +48,14 @@ saved, and used by downstream cross-camera ReID.
 The closed task's load-bearing scope — the **per-person face-matcher
 gate for principal-a1** — was not implemented:
 
-- No code references `principal-a1`, `principal-a1`, or
-  `per_person_face_matcher` in `agents/`, `shared/`, or `logos/`.
+- No code references the principal's fully-qualified identifier, its bare
+  given-name form, or `per_person_face_matcher` in `agents/`, `shared/`, or
+  `logos/`. Two distinct search terms were audited here, not one. The
+  2026-08-11 scrub mapped both onto `principal-a1`, so they are described
+  rather than quoted: quoting them would restore the disclosure this file's
+  own rename removed, and writing `principal-a1` twice would make the claim
+  vacuous. Recheck with the household name list
+  (`$HAPAX_PII_NAMES_FILE`, outside any repo) as the search terms.
 - No enrollment artifact at `~/hapax-state/face-enrollments/
   principal-a1.npz` (the path the consent contract names).
 - The consent contract `axioms/contracts/contract-principal-a1-enroll-2026-04-19.yaml`

@@ -275,7 +275,7 @@ class TestChildPolicy:
 
 class TestChildConsent:
     def test_registered_children(self):
-        """principal-c2 and principal_c1 are registered child principals."""
+        """principal-c2 and principal-c1 are registered child principals."""
         from shared.governance.consent import REGISTERED_CHILD_PRINCIPALS
 
         assert "principal-c2" in REGISTERED_CHILD_PRINCIPALS
