@@ -16,13 +16,14 @@ if [ "$TEST_MODE" = "1" ]; then
     USER_SYSTEMCTL="${HAPAX_OOM_USER_SYSTEMCTL:-}"
     SETPRIV="${HAPAX_OOM_SETPRIV:-/usr/bin/setpriv}"
     CURRENT_UID="${HAPAX_OOM_ENFORCE_EFFECTIVE_UID:-$(id -u)}"
+    RUNTIME_DIR="${HAPAX_OOM_RUNTIME_DIR:-/run/user/$TARGET_UID}"
     PROC_ROOT="${HAPAX_OOM_PROC_ROOT:-/proc}"
 else
     for override in \
         HAPAX_OOM_TARGET_USER HAPAX_OOM_TARGET_UID HAPAX_OOM_TARGET_GID \
         HAPAX_OOM_TARGET_HOME HAPAX_OOM_SYSTEMCTL HAPAX_OOM_USER_SYSTEMCTL \
         HAPAX_OOM_SETPRIV HAPAX_OOM_ENFORCE_EFFECTIVE_UID HAPAX_OOM_PROC_ROOT \
-        HAPAX_OOM_CGROUP_ROOT; do
+        HAPAX_OOM_RUNTIME_DIR HAPAX_OOM_CGROUP_ROOT; do
         if declare -p "$override" >/dev/null 2>&1; then
             echo "refusing production OOM enforcer override $override; next action: remove HAPAX_OOM_* overrides and rerun the package-owned command" >&2
             exit 2
@@ -38,6 +39,7 @@ else
     USER_SYSTEMCTL=""
     SETPRIV=/usr/bin/setpriv
     CURRENT_UID="$(/usr/bin/id -u)"
+    RUNTIME_DIR=/run/user/1000
     PROC_ROOT=/proc
     if [ "$(/usr/bin/id -u "$TARGET_USER" 2>/dev/null || true)" != "$TARGET_UID" ] \
         || [ "$(/usr/bin/id -g "$TARGET_USER" 2>/dev/null || true)" != "$TARGET_GID" ]; then
@@ -96,12 +98,20 @@ case "$mode" in
         ;;
 esac
 
+report_missing_user_runtime() {
+    echo "no user runtime directory at $RUNTIME_DIR; user manager for UID $TARGET_UID is unavailable and there is nothing to protect" >&2
+}
+
 run_user_systemctl() {
     if [ -n "$USER_SYSTEMCTL" ]; then
         "$USER_SYSTEMCTL" "$@"
     elif [ "$CURRENT_UID" = "$TARGET_UID" ]; then
         "$SYSTEMCTL" --user "$@"
     elif [ "$CURRENT_UID" = "0" ]; then
+        if [ ! -d "$RUNTIME_DIR" ]; then
+            report_missing_user_runtime
+            return 3
+        fi
         "$SETPRIV" \
             --reuid="$TARGET_UID" \
             --regid="$TARGET_GID" \
@@ -117,7 +127,7 @@ run_user_systemctl() {
             LOGNAME="$TARGET_USER" \
             PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin \
             USER="$TARGET_USER" \
-            XDG_RUNTIME_DIR="/run/user/$TARGET_UID" \
+            XDG_RUNTIME_DIR="$RUNTIME_DIR" \
             "$SYSTEMCTL" --user "$@"
     else
         XDG_RUNTIME_DIR="/run/user/$TARGET_UID" "$SYSTEMCTL" --user "$@"
@@ -390,26 +400,26 @@ protected_user_unit_score() {
 }
 
 validate_scoped_write_contract() {
-    local score="$1" expected_cgroup="$2" unit expected_score
+    local score="$1" expected_cgroup="$2"
     case "$expected_cgroup|$score" in
-        /system.slice/apcupsd.service\|-900|\
-        /system.slice/systemd-logind.service\|-800|\
-        /system.slice/systemd-resolved.service\|-800|\
-        /system.slice/systemd-timesyncd.service\|-800|\
-        /system.slice/NetworkManager.service\|-800|\
-        /system.slice/dbus-broker.service\|-900|\
-        /system.slice/sshd.service\|0|\
-        /user.slice/user-1000.slice/user@1000.service\|100)
+        "/system.slice/apcupsd.service|-900" | \
+        "/system.slice/systemd-logind.service|-800" | \
+        "/system.slice/systemd-resolved.service|-800" | \
+        "/system.slice/systemd-timesyncd.service|-800" | \
+        "/system.slice/NetworkManager.service|-800" | \
+        "/system.slice/dbus-broker.service|-900" | \
+        "/system.slice/sshd.service|0" | \
+        "/user.slice/user-$TARGET_UID.slice/user@$TARGET_UID.service|100" | \
+        "/user.slice/user-$TARGET_UID.slice/user@$TARGET_UID.service/session.slice/pipewire.service|-900" | \
+        "/user.slice/user-$TARGET_UID.slice/user@$TARGET_UID.service/session.slice/pipewire-pulse.service|-900" | \
+        "/user.slice/user-$TARGET_UID.slice/user@$TARGET_UID.service/session.slice/wireplumber.service|-900" | \
+        "/user.slice/user-$TARGET_UID.slice/user@$TARGET_UID.service/app.slice/hapax-daimonion.service|-500" | \
+        "/user.slice/user-$TARGET_UID.slice/user@$TARGET_UID.service/app.slice/studio-compositor.service|-800" | \
+        "/user.slice/user-$TARGET_UID.slice/user@$TARGET_UID.service/app.slice/hapax-imagination.service|-800")
             return 0
             ;;
     esac
-    case "$expected_cgroup" in
-        "/user.slice/user-$TARGET_UID.slice/user@$TARGET_UID.service/"*) ;;
-        *) return 1 ;;
-    esac
-    unit="${expected_cgroup##*/}"
-    expected_score="$(protected_user_unit_score "$unit")" || return 1
-    [ "$score" = "$expected_score" ]
+    return 1
 }
 
 if [ "$mode" = "--write-scoped" ]; then
@@ -452,12 +462,20 @@ if ! user_manager_state="$(
 fi
 case "$user_manager_state" in
     active|reloading|refreshing) ;;
-    inactive) exit 0 ;;
+    inactive)
+        echo "no user manager for UID $TARGET_UID; nothing to protect"
+        exit 0
+        ;;
     *)
         echo "warn: refusing to skip OOM score enforcement for $user_manager_unit with ActiveState=${user_manager_state:-empty}; next action: inspect systemctl status $user_manager_unit and run scripts/hapax-oom-policy-audit --json" >&2
         exit 1
         ;;
 esac
+
+if [ -z "$USER_SYSTEMCTL" ] && [ "$CURRENT_UID" = "0" ] && [ ! -d "$RUNTIME_DIR" ]; then
+    report_missing_user_runtime
+    exit 1
+fi
 
 if [ "$mode" = "--apply-unit" ]; then
     apply_unit_main_score "$requested_unit" "$requested_score"
