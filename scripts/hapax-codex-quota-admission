@@ -400,7 +400,7 @@ def main(argv: list[str] | None = None) -> int:
         summary["measured"] = {
             "source": "codex_cli_session_rollout",
             "primary_used_percent": rollout.used_percent,
-            "primary_remaining_percent": round(100.0 - rollout.used_percent, 4),
+            "primary_remaining_percent": rollout.remaining_percent,
             "primary_window_minutes": rollout.window_minutes,
             "provider_calls_made": 0,
         }
