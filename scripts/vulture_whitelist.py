@@ -5079,3 +5079,11 @@ _ = (
 from shared.claude_transcript_quota import latest_transcript_observation  # noqa: E402
 
 _ = (latest_transcript_observation,)
+
+# Claude auth-surface observer, reached the same way and justified the same way: a function-local
+# import inside the same hyphenated script, on the --from-transcript path. The call site is real
+# and static (scripts/hapax-claude-subscription-quota-admission), it is simply outside the set of
+# files vulture scans.
+from shared.claude_auth_surface import observe_subscription_marker  # noqa: E402
+
+_ = (observe_subscription_marker,)
