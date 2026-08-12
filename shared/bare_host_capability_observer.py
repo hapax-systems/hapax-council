@@ -94,6 +94,12 @@ STALE_AFTER = "1d"
 #: caller-supplied catalogue too, which an import-time check over ``CLI_CATALOGUE`` would not.
 _SAFE_CLI_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
+#: ``[user@]host``, and the FIRST character of each part may not be a dash. That leading-character
+#: rule is the whole point: ssh reads any argument beginning with ``-`` as an option, and
+#: ``-oProxyCommand=...`` runs a command on the LOCAL machine before a connection is opened.
+#: Matched with ``fullmatch`` so a trailing newline cannot smuggle a second word past the end.
+_SAFE_SSH_TARGET = re.compile(r"(?:[A-Za-z0-9_][A-Za-z0-9._-]*@)?[A-Za-z0-9_][A-Za-z0-9._-]*")
+
 #: ``shape_id`` must satisfy the registry's own pattern; host names from a tailnet do not.
 _ID_UNSAFE = re.compile(r"[^a-z0-9._-]+")
 
@@ -265,6 +271,24 @@ def _probe_argv(payload: str, target: str) -> list[str]:
     """
     if not target:
         return ["bash", "-c", payload]
+    # A HOST NAME IS AN ARGUMENT, AND ssh READS ARGUMENTS AS OPTIONS.
+    #
+    # argv passing removes the shell from this call, which is why the payload is safe. It does
+    # nothing about ssh's own parsing: a target of `-oProxyCommand=...` is not a host at all, it
+    # is an option that runs a command locally before any connection is attempted. `--` does not
+    # help either, because ssh takes the first non-option word as the destination and the rest as
+    # the remote command, so a leading-dash target still reaches option parsing.
+    #
+    # The validation is therefore on the target itself, and it is a whitelist: hosts on this
+    # estate are names, IPv4 literals, or user@ forms of the same. Anything else is refused
+    # rather than escaped, because there is no escaping that makes an option not an option.
+    if not _SAFE_SSH_TARGET.fullmatch(target):
+        raise ValueError(
+            f"refusing ssh target {target!r}: expected [user@]host with only letters, digits, "
+            "dot, dash or underscore, never a leading dash. A target that starts with '-' is "
+            "read by ssh as an option, and options such as -oProxyCommand run commands. Next: "
+            "pass the host's name or address"
+        )
     return [
         "ssh",
         "-o",

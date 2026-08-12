@@ -696,3 +696,46 @@ def test_render_refuses_a_reordered_catalogue_of_the_same_length():
 
     with pytest.raises(ValueError, match=r"is not 'bare-host\.podium\.ollama'"):
         render(observation, catalogue=tuple(reversed(SMALL_CATALOGUE)))
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "-oProxyCommand=touch /tmp/pwned",
+        "-obatchmode=no",
+        "--",
+        "-l",
+        "user@-oProxyCommand=x",
+        "host\n-oProxyCommand=x",
+        "host with space",
+        "host;rm -rf /",
+        "$(touch /tmp/pwned)",
+    ],
+)
+def test_a_hostile_ssh_target_is_refused(target: str) -> None:
+    """argv passing removes the shell; it does not remove ssh's own option parsing.
+
+    A target of `-oProxyCommand=...` is not a host at all — it is an option that runs a command on
+    the LOCAL machine before any connection is attempted. `--` does not save it either: ssh takes
+    the first non-option word as the destination, so a leading-dash target still reaches option
+    parsing. There is no escaping that makes an option not an option, so these are refused rather
+    than quoted.
+    """
+    from shared.bare_host_capability_observer import _probe_argv
+
+    with pytest.raises(ValueError, match="refusing ssh target"):
+        _probe_argv("echo hi", target)
+
+
+@pytest.mark.parametrize(
+    "target", ["podium", "hapax-podium.local", "hapax@pi6", "10.0.0.4", "host_1"]
+)
+def test_an_ordinary_ssh_target_is_accepted(target: str) -> None:
+    """The guard must not refuse the estate's real host forms — a refusal of everything would
+    pass every hostile case above and observe nothing."""
+    from shared.bare_host_capability_observer import _probe_argv
+
+    argv = _probe_argv("echo hi", target)
+
+    assert argv[0] == "ssh"
+    assert target in argv
