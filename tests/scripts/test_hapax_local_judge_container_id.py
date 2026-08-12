@@ -27,6 +27,7 @@ class DockerRig:
     image_missing: Path
     daemon_ready_after: Path
     daemon_attempts: Path
+    daemon_version: Path
     cidfile: Path
     env: dict[str, str]
 
@@ -62,6 +63,7 @@ def _rig(tmp_path: Path, *, running: bool = True) -> DockerRig:
     image_missing = tmp_path / "image-missing"
     daemon_ready_after = tmp_path / "daemon-ready-after"
     daemon_attempts = tmp_path / "daemon-attempts"
+    daemon_version = tmp_path / "daemon-version"
     if running:
         exists.touch()
     name.write_text("hapax-local-judge\n", encoding="utf-8")
@@ -77,6 +79,7 @@ def _rig(tmp_path: Path, *, running: bool = True) -> DockerRig:
         f"image_missing = pathlib.Path({str(image_missing)!r})\n"
         f"daemon_ready_after = pathlib.Path({str(daemon_ready_after)!r})\n"
         f"daemon_attempts = pathlib.Path({str(daemon_attempts)!r})\n"
+        f"daemon_version = pathlib.Path({str(daemon_version)!r})\n"
         f"container_id = {CONTAINER_ID!r}\n"
         f"replacement_id = {REPLACEMENT_ID!r}\n"
         f"image = {IMAGE!r}\n"
@@ -90,7 +93,7 @@ def _rig(tmp_path: Path, *, running: bool = True) -> DockerRig:
         "    if attempt < ready_after:\n"
         "        print('daemon unavailable', file=sys.stderr)\n"
         "        raise SystemExit(1)\n"
-        "    print('27.5.1')\n"
+        "    sys.stdout.write(daemon_version.read_text() if daemon_version.exists() else '27.5.1\\n')\n"
         "elif args[:3] == ['image', 'inspect', '--format']:\n"
         "    if image_missing.exists():\n"
         "        print('image absent', file=sys.stderr)\n"
@@ -132,6 +135,7 @@ def _rig(tmp_path: Path, *, running: bool = True) -> DockerRig:
         image_missing=image_missing,
         daemon_ready_after=daemon_ready_after,
         daemon_attempts=daemon_attempts,
+        daemon_version=daemon_version,
         cidfile=cidfile,
         env={
             **os.environ,
@@ -163,6 +167,19 @@ def test_wait_daemon_fails_with_bounded_actionable_timeout(tmp_path: Path) -> No
     assert result.returncode == 1
     assert "local Docker daemon was not ready within 0.05 seconds" in result.stderr
     assert "daemon unavailable" in result.stderr
+    assert "next action:" in result.stderr
+
+
+def test_wait_daemon_rejects_multiline_server_version(tmp_path: Path) -> None:
+    rig = _rig(tmp_path)
+    rig.daemon_ready_after.write_text("1", encoding="ascii")
+    rig.daemon_version.write_text("27.5.1\nforged-second-line\n", encoding="ascii")
+
+    result = rig.run("wait-daemon", "--wait-seconds", "0.05", "--poll-seconds", "0.01")
+
+    assert result.returncode == 1
+    assert "local Docker daemon ready" not in result.stdout
+    assert "forged-second-line" in result.stderr
     assert "next action:" in result.stderr
 
 

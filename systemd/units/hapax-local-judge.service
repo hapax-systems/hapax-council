@@ -16,6 +16,8 @@ Type=simple
 # instance is never co-resided on (no-co-residency regression, AC1). Regenerate
 # the UUID on the target host with: nvidia-smi --query-gpu=index,name,uuid --format=csv
 Environment=JUDGE_GPU_UUID=GPU-347222d9-00af-5a94-a365-c57c09dfddcd
+# Container-internal path only: the read-only /models bind below maps the
+# protected JUDGE_MODEL_HOST_DIR; this value never names the mutable host source.
 Environment=JUDGE_MODEL=/models/CompassVerifier-7B.Q5_K_M.gguf
 # The canary stages and hashes this model under a root-owned, non-writable
 # content address. The durable service never mounts the mutable source copy.
