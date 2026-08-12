@@ -245,11 +245,30 @@ class TestPassthroughIsPartOfTheSelection:
         precedence rules. A guard that GUESSES the effective model is worse than one that says it
         cannot see it, so a profile must state its reason — the fail-closed direction.
         """
-        for extra in (["--profile", "fast"], ["-p", "fast"], ["--profile=fast"]):
+        # `-pfast` is the case codex-2 found, and it exited 0 while the other three exited 6.
+        # The scanner had `-m?*` for the glued MODEL form and no profile twin, so this spelling
+        # fell through every arm. Every spelling codex accepts must be here, or the guard is a
+        # guard against the spellings its author happened to think of.
+        for extra in (["--profile", "fast"], ["-p", "fast"], ["--profile=fast"], ["-pfast"]):
             result = _run_with_extra(extra, tmp_path)
             assert result.returncode == 6, f"{extra} was not refused: {result.stdout}"
             assert "REFUSING --profile" in result.stderr
             assert "fast" in result.stderr
+
+    def test_the_scanner_handles_the_glued_short_form_of_both_flags(self, tmp_path: Path) -> None:
+        """The asymmetry, pinned directly.
+
+        One arm of a scanner having a spelling its twin lacks is the easiest hole to leave: each
+        reads as complete when checked beside its own flag rather than beside the other's.
+        """
+        fragment = (REPO_ROOT / "scripts" / "codex-frontier-selection.sh").read_text(
+            encoding="utf-8"
+        )
+        code = [ln for ln in fragment.splitlines() if not ln.lstrip().startswith("#")]
+        body = "\n".join(code)
+
+        assert "-m?*)" in body, "the glued model arm is gone"
+        assert "-p?*)" in body, "the glued profile arm is gone; -pprofile bypasses the guard"
 
     def test_a_profile_with_a_stated_reason_proceeds(self, tmp_path: Path) -> None:
         result = _run_with_extra(

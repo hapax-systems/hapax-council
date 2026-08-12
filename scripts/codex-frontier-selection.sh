@@ -124,6 +124,12 @@ if [ "${#CODEX_EXTRA[@]}" -gt 0 ] 2>/dev/null; then
         -m?*)         _cfs_val="${_cfs_arg#-m}"; _cfs_strip_quotes
                       _cfs_flag_model="$_cfs_val"; continue ;;
         --profile=*)  _cfs_profile="${_cfs_arg#--profile=}"; continue ;;
+        # GLUED SHORT FORM. `-m?*` two lines up handles the model; the profile twin was never
+        # written, so `-pmyprofile` fell through every arm and the guard passed a selection it
+        # cannot see. Measured: `-p prof` and `--profile=prof` exit 6; `-pprof` exited 0.
+        # An asymmetry between two arms of one scanner is the easiest hole to leave, because each
+        # spelling reads as handled when checked beside its own flag rather than beside its twin.
+        -p?*)         _cfs_profile="${_cfs_arg#-p}"; continue ;;
         -c?*=*)       _cfs_assign="${_cfs_arg#-c}" ;;
         --config=*)   _cfs_assign="${_cfs_arg#--config=}" ;;
       esac
