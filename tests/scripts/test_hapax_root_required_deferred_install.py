@@ -32,7 +32,9 @@ APCUPSD_EFFECTS = Path("config/root-required/apcupsd-power-alerts.effects")
 APCUPSD_INSTALLER = Path("scripts/install-apcupsd-power-alerts")
 AUTHORITY_VERIFIER = Path("scripts/hapax-post-merge-deploy")
 SHARED_INSTALLER_CONTROL_RATIONALES = {
-    "HAPAX_LOCAL_JUDGE_CAP_RECEIPT_SHA256": "helper-bound cap-artifact digest",
+    "HAPAX_LOCAL_JUDGE_CAP_RECEIPT_SHA256": (
+        "required helper field: empty off the cap host, exact digest rechecked on appendix"
+    ),
     "HAPAX_POST_MERGE_ROOT_DEFER_DIR": "helper-selected canonical deferral root",
     "HAPAX_ROOT_REQUIRED_ALLOW_UNAUTHENTICATED_TEST_INSTALL": "isolated-test admission",
     "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT": "stable state child",
@@ -243,10 +245,6 @@ def test_every_installer_environment_name_has_one_authenticated_boundary_classif
     indirect_expansions = set(re.findall(r"\$\{!([^}]+)\}", source))
     deferred_module = _load_deferred_module()
     required_names = _shell_array_names(source, "AUTHENTICATED_PRODUCTION_REQUIRED_ENV_NAMES")
-    optional_names = _shell_array_names(source, "AUTHENTICATED_PRODUCTION_OPTIONAL_ENV_NAMES")
-    expected_optional = (
-        deferred_module.PRODUCTION_OOM_OPTIONAL_ENV_NAMES if installer_rel == INSTALLER else set()
-    )
 
     assert invalid_class_counts == {}
     assert mentioned & LEGACY_OOM_EFFECT_SELECTORS == legacy_effect_selectors
@@ -256,10 +254,21 @@ def test_every_installer_environment_name_has_one_authenticated_boundary_classif
     assert re.search(r"\b(?:eval|(?:declare|local)\s+-n|printf\s+-v)\b", source) is None
     assert len(required_names) == len(set(required_names))
     assert set(required_names) == deferred_module.PRODUCTION_INSTALLER_REQUIRED_ENV_NAMES
-    assert len(optional_names) == len(set(optional_names))
-    assert set(optional_names) == expected_optional
-    assert "compgen -e" in source
-    assert "compgen -A variable" not in source[: source.index('ROOT="$(cd')]
+    assert "AUTHENTICATED_PRODUCTION_OPTIONAL_ENV_NAMES" not in source
+    assert "mapfile -d '' -t AUTHENTICATED_PRODUCTION_RAW_ENVIRONMENT" in source
+    assert '"/proc/$$/environ"' in source
+    assert "compgen -e" not in source
+    root_derivation = source.index('ROOT="$(cd')
+    assert source.index("noncanonical fixed environment values") < root_derivation
+    assert "compgen -A variable" not in source[:root_derivation]
+    assert 'unset "$_environment_name"' not in source
+    if installer_rel == INSTALLER:
+        production = source[source.rindex("validate_authenticated_production_environment_names") :]
+        assert (
+            production.index("load_host_policy")
+            < production.index("validate_authenticated_cap_environment_for_host")
+            < production.index("run_authenticated_authority_gate authority-only")
+        )
 
 
 def _sealed_memfd(name: str, data: bytes, *, executable: bool = False) -> int:
@@ -362,7 +371,7 @@ def test_direct_authenticated_protocol_rejects_same_uid_arbitrary_finalizer(
             os.close(fd)
 
     assert result.returncode != 0
-    assert "refuses an unexpected exported environment vocabulary" in result.stderr
+    assert "refuses an unexpected raw exported environment vocabulary" in result.stderr
     assert "HAPAX_ROOT_REQUIRED_FINALIZE_GATE" in result.stderr
     assert "next action:" in result.stderr
     assert not sudo_marker.exists()
@@ -483,6 +492,8 @@ def test_direct_authenticated_protocol_rejects_caller_selected_production_effect
         "DBUS_SESSION_BUS_ADDRESS": f"unix:path={tmp_path / 'hostile-bus'}",
         "DOCKER_HOST": "tcp://hostile.invalid:2376",
         "SYSTEMD_EXEC_PID": "424242",
+        "BAD-NAME": "invisible-to-compgen",
+        "BASH_FUNC_probe%%": "() { /usr/bin/true; }",
     }
     for selector in (*future_selectors, *legacy_selectors):
         env[selector] = str(tmp_path / selector.lower())
@@ -506,7 +517,7 @@ def test_direct_authenticated_protocol_rejects_caller_selected_production_effect
             os.close(fd)
 
     assert result.returncode != 0
-    assert "refuses an unexpected exported environment vocabulary" in result.stderr
+    assert "refuses an unexpected raw exported environment vocabulary" in result.stderr
     for selector in (
         *future_selectors,
         *legacy_selectors,
@@ -515,6 +526,7 @@ def test_direct_authenticated_protocol_rejects_caller_selected_production_effect
         "SYSTEMD_EXEC_PID",
     ):
         assert selector in result.stderr
+    assert "<invalid-environment-entry>" in result.stderr
     assert "next action:" in result.stderr
     assert not sudo_marker.exists()
     assert not redirected_effect.exists()
@@ -716,6 +728,7 @@ def test_authenticated_deferred_install_executes_git_materialized_installer(
         "GIT_NO_REPLACE_OBJECTS=1",
         "GIT_OPTIONAL_LOCKS=0",
         "HAPAX_APCUPSD_INSTALL_SUDO=",
+        "HAPAX_LOCAL_JUDGE_CAP_RECEIPT_SHA256=",
         "HAPAX_OOM_INSTALL_SUDO=",
         "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE=1",
         f"HAPAX_ROOT_REQUIRED_INSTALLER_TEST_ROOT={tmp_path}",
@@ -1192,9 +1205,7 @@ def _load_deferred_module():
     return module
 
 
-@pytest.mark.parametrize("cap_digest", (None, "b" * 64), ids=("no-cap", "oom-cap"))
-def test_production_child_environment_is_closed_and_canonical(cap_digest: str | None) -> None:
-    module = _load_deferred_module()
+def _production_helper_environment(module, *, cap_digest: str | None = None):
     account = pwd.getpwuid(os.getuid())
     home = Path(account.pw_dir)
     sha = "a" * 40
@@ -1231,21 +1242,74 @@ def test_production_child_environment_is_closed_and_canonical(cap_digest: str | 
     )
     env[module.SEALED_SOURCE_FDS_ENV] = "/proc/1/fd/40"
     env["HAPAX_RUNTIME_AUTHORITY_TASK"] = "/governed/runtime-authority-task.md"
+    return env, runtime_gates
+
+
+@pytest.mark.parametrize("cap_digest", (None, "b" * 64), ids=("no-cap", "oom-cap"))
+def test_production_child_environment_is_closed_and_canonical(cap_digest: str | None) -> None:
+    module = _load_deferred_module()
+    env, runtime_gates = _production_helper_environment(module, cap_digest=cap_digest)
 
     module._validate_production_child_environment(env, runtime_gates)
 
     expected = (
         module.PRODUCTION_INSTALLER_REQUIRED_ENV_NAMES - module.SHELL_GENERATED_INSTALLER_ENV_NAMES
     )
-    if cap_digest is not None:
-        expected |= module.PRODUCTION_OOM_OPTIONAL_ENV_NAMES
     assert set(env) == expected
+    assert env["HAPAX_LOCAL_JUDGE_CAP_RECEIPT_SHA256"] == (cap_digest or "")
     assert env["XDG_RUNTIME_DIR"] == f"/run/user/{os.getuid()}"
     assert not (module.SHELL_GENERATED_INSTALLER_ENV_NAMES & set(env))
 
     env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/caller-selected/bus"
     with pytest.raises(module.DeferredInstallError, match="environment contract drifted"):
         module._validate_production_child_environment(env, runtime_gates)
+
+
+@pytest.mark.parametrize("installer_rel", (INSTALLER, APCUPSD_INSTALLER))
+def test_noncanonical_fixed_environment_refuses_before_path_lookup(
+    tmp_path: Path, installer_rel: Path
+) -> None:
+    module = _load_deferred_module()
+    env, _ = _production_helper_environment(module)
+    marker = tmp_path / "hostile-dirname-ran"
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_dirname = fake_bin / "dirname"
+    fake_dirname.write_text(f"#!/usr/bin/bash\ntouch {marker}\n", encoding="utf-8")
+    fake_dirname.chmod(0o755)
+    env["PATH"] = str(fake_bin)
+
+    result = subprocess.run(
+        [str(REPO_ROOT / installer_rel), "--authenticated-sealed-source", "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "noncanonical fixed environment values before command execution" in result.stderr
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("installer_rel", (INSTALLER, APCUPSD_INSTALLER))
+def test_helper_shaped_raw_environment_reaches_sealed_descriptor_validation(
+    installer_rel: Path,
+) -> None:
+    module = _load_deferred_module()
+    env, _ = _production_helper_environment(module)
+
+    result = subprocess.run(
+        [str(REPO_ROOT / installer_rel), "--authenticated-sealed-source", "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "source descriptor count mismatch" in result.stderr
+    assert "raw exported environment" not in result.stderr
 
 
 def test_regular_reader_bounds_same_inode_growth_and_rejects_path_replacement(
