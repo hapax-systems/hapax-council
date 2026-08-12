@@ -1868,6 +1868,59 @@ def test_audit_refuses_unsafe_package_lock_without_system_reads(
     assert protected.read_text(encoding="utf-8") == "sentinel\n"
 
 
+def test_audit_refuses_inherited_lock_through_symlinked_parent_without_system_reads(
+    tmp_path: Path,
+) -> None:
+    physical = tmp_path / "physical-state"
+    physical.mkdir(mode=0o700)
+    physical_lock = physical / ".lock"
+    physical_lock.touch(mode=0o600)
+    lexical = tmp_path / "lexical-state"
+    lexical.symlink_to(physical, target_is_directory=True)
+    calls = tmp_path / "systemctl-calls"
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {calls!s}\nexit 1\n", encoding="utf-8"
+    )
+    fake_systemctl.chmod(0o755)
+    inherited_fd = os.open(physical_lock, os.O_RDONLY)
+    try:
+        result = subprocess.run(
+            [str(SCRIPT), "--json", "--uid", "1000"],
+            text=True,
+            capture_output=True,
+            check=False,
+            pass_fds=(inherited_fd,),
+            env={
+                **os.environ,
+                "HAPAX_SYSTEMCTL": str(fake_systemctl),
+                "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(lexical / ".lock"),
+                "HAPAX_ROOT_REQUIRED_LOCK_FD": str(inherited_fd),
+                "HAPAX_ROOT_REQUIRED_LOCK_MODE": "shared",
+            },
+        )
+    finally:
+        os.close(inherited_fd)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert len(payload["checks"]) == 1
+    check = payload["checks"][0]
+    assert check["name"] == "root_required_package_lock"
+    assert check["status"] == "error"
+    assert "physical package lock parent" in check["detail"]
+    assert not calls.exists()
+
+
+def test_audit_lock_opens_basename_relative_to_physical_parent() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    assert "os.O_DIRECTORY | os.O_NOFOLLOW" in source
+    assert "dir_fd=parent_fd" in source
+    assert "follow_symlinks=False" in source
+    assert "os.lstat(ROOT_REQUIRED_LOCK_FILE)" not in source
+
+
 def test_audit_fails_when_session_slice_audio_reservation_is_missing(tmp_path: Path) -> None:
     result = _run(tmp_path, session_slice_unprotected=True)
 

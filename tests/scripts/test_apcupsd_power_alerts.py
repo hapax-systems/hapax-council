@@ -1915,13 +1915,17 @@ def test_apcupsd_installs_serialize_on_shared_package_lock(tmp_path: Path) -> No
 
 
 @pytest.mark.parametrize(
-    "block_receipt_publication",
-    (False, True),
-    ids=("safe-receipts-drain", "publication-failure-keeps-runbook"),
+    "blocked_receipts",
+    (None, "all", "installed-only"),
+    ids=(
+        "safe-receipts-drain",
+        "publication-failure-keeps-runbook",
+        "first-publication-failure-keeps-runbook",
+    ),
 )
 def test_installer_drains_only_after_safe_receipt_publication(
     tmp_path: Path,
-    block_receipt_publication: bool,
+    blocked_receipts: str | None,
 ) -> None:
     dest = tmp_path / "apcupsd"
     audit_dir = tmp_path / "hapax-log"
@@ -1940,9 +1944,13 @@ def test_installer_drains_only_after_safe_receipt_publication(
     fake_systemctl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     fake_systemctl.chmod(0o755)
     state_root = tmp_path / "root-state"
-    if block_receipt_publication:
+    blocked_parent = state_root / "installed-receipts"
+    if blocked_receipts == "all":
         state_root.mkdir()
-        (state_root / "installed-receipts").write_text("not a directory\n", encoding="utf-8")
+        blocked_parent.write_text("not a directory\n", encoding="utf-8")
+    elif blocked_receipts == "installed-only":
+        blocked_parent.mkdir(parents=True)
+        blocked_parent.chmod(0o500)
 
     result = subprocess.run(
         [
@@ -1976,11 +1984,15 @@ def test_installer_drains_only_after_safe_receipt_publication(
         },
     )
 
-    if block_receipt_publication:
+    if blocked_receipts == "installed-only":
+        blocked_parent.chmod(0o700)
+    if blocked_receipts is not None:
         assert result.returncode != 0
         assert "root-required receipt publication refused" in result.stderr
         assert (drain_dir / "RUNBOOK.txt").is_file()
         assert not (drain_dir / "DRAINED.txt").exists()
+        if blocked_receipts == "installed-only":
+            assert not (state_root / "desired-receipts/apcupsd-power-alerts.sha").exists()
         return
 
     assert result.returncode == 0, result.stderr
@@ -2058,6 +2070,7 @@ def test_stale_deferred_apcupsd_package_does_not_roll_back_newer_install(
     assert (drain_dir / "DRAINED.txt").is_file()
     assert not (drain_dir / "RUNBOOK.txt").exists()
     assert receipt.read_text(encoding="utf-8").strip() == sha_b
+    assert stat.S_IMODE(receipt.stat().st_mode) == 0o600
     assert live_marker.read_text(encoding="utf-8") == "newer B policy\n"
 
 
@@ -2122,6 +2135,69 @@ def test_installed_apcupsd_repair_cannot_erase_newer_desired_receipt(tmp_path: P
     assert desired.read_text(encoding="utf-8").strip() == sha_b
     assert live_marker.read_text(encoding="utf-8") == "installed A policy\n"
     assert (drain_dir / "DRAINED.txt").is_file()
+
+
+def test_apcupsd_package_order_does_not_mask_invalid_installed_receipt(
+    tmp_path: Path,
+) -> None:
+    stage = tmp_path / "stage"
+    for relative in APCUPSD_PACKAGE_FILES:
+        dest = stage / relative
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        blob = subprocess.run(
+            ["git", "show", f"{REPO_HEAD}:{relative}"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+        ).stdout
+        dest.write_bytes(blob)
+        git_mode = subprocess.run(
+            ["git", "ls-tree", REPO_HEAD, "--", relative],
+            cwd=REPO_ROOT,
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout.split()[0]
+        dest.chmod(0o755 if git_mode == "100755" else 0o644)
+    (stage / ".hapax-root-required-package-sha").write_text(f"{REPO_HEAD}\n", encoding="utf-8")
+    (stage / "RUNBOOK.txt").write_text("pending\n", encoding="utf-8")
+    installed_root = tmp_path / "root-state/installed-receipts"
+    desired_root = tmp_path / "root-state/desired-receipts"
+    installed_root.mkdir(parents=True)
+    desired_root.mkdir(parents=True)
+    installed = installed_root / "apcupsd-power-alerts.sha"
+    desired = desired_root / "apcupsd-power-alerts.sha"
+    installed.write_text(f"{'f' * 40}\n", encoding="utf-8")
+    desired.write_text(f"{REPO_HEAD}\n", encoding="utf-8")
+    installed.chmod(0o600)
+    desired.chmod(0o600)
+    fake_systemctl = tmp_path / "systemctl-order"
+    fake_systemctl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    fake_systemctl.chmod(0o755)
+    live_dest = tmp_path / "live-apcupsd"
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(stage), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_DEST": str(live_dest),
+            "HAPAX_APCUPSD_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": REPO_HEAD,
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
+            "HAPAX_ROOT_REQUIRED_DRAIN_DIR": str(stage),
+            "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT": str(installed_root),
+            "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT": str(desired_root),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "cannot validate apcupsd package order for installed=" in result.stderr
+    assert not (live_dest / "apcupsd.conf").exists()
+    assert (stage / "RUNBOOK.txt").is_file()
 
 
 def test_apcupsd_squash_equivalence_rejects_newer_manifest_file(tmp_path: Path) -> None:

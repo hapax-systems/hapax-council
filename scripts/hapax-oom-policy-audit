@@ -598,10 +598,40 @@ def _policy_lines(policy: HostMemoryPolicy, policy_authority: str) -> str:
     return "\n".join(f"{key}={value}" for key, value in values.items())
 
 
-def _validate_lock_fd(fd: int) -> None:
+def _open_lock_parent() -> tuple[int, str]:
+    if not ROOT_REQUIRED_LOCK_FILE.is_absolute() or not ROOT_REQUIRED_LOCK_FILE.name:
+        raise AuditLockError(
+            f"invalid package lock path {ROOT_REQUIRED_LOCK_FILE}; expected an absolute path "
+            "naming one file"
+        )
+    try:
+        parent_fd = os.open(
+            ROOT_REQUIRED_LOCK_FILE.parent,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+    except OSError as exc:
+        raise AuditLockError(
+            f"cannot open physical package lock parent {ROOT_REQUIRED_LOCK_FILE.parent}: {exc}; "
+            "run the governed OOM installer to repair package state"
+        ) from exc
+    parent_inode = os.fstat(parent_fd)
+    if (
+        not stat.S_ISDIR(parent_inode.st_mode)
+        or parent_inode.st_uid != os.geteuid()
+        or parent_inode.st_mode & 0o022
+    ):
+        os.close(parent_fd)
+        raise AuditLockError(
+            f"unsafe package lock parent {ROOT_REQUIRED_LOCK_FILE.parent}; expected a "
+            "caller-owned, non-group-writable physical directory"
+        )
+    return parent_fd, ROOT_REQUIRED_LOCK_FILE.name
+
+
+def _validate_lock_fd(fd: int, parent_fd: int, lock_base: str) -> None:
     try:
         inode = os.fstat(fd)
-        path_inode = os.lstat(ROOT_REQUIRED_LOCK_FILE)
+        path_inode = os.stat(lock_base, dir_fd=parent_fd, follow_symlinks=False)
     except OSError as exc:
         raise AuditLockError(f"cannot inspect {ROOT_REQUIRED_LOCK_FILE}: {exc}") from exc
     if (
@@ -622,35 +652,41 @@ def _validate_lock_fd(fd: int) -> None:
 def shared_root_required_lock() -> Iterator[None]:
     inherited = os.environ.get("HAPAX_ROOT_REQUIRED_LOCK_FD", "")
     owns_fd = not inherited
-    if inherited:
-        try:
-            fd = int(inherited)
-        except ValueError as exc:
-            raise AuditLockError("invalid inherited package lock descriptor") from exc
-        if fd < 3:
-            raise AuditLockError("invalid inherited package lock descriptor")
-        lock_mode = os.environ.get("HAPAX_ROOT_REQUIRED_LOCK_MODE", "shared")
-        if lock_mode not in {"shared", "exclusive"}:
-            raise AuditLockError(f"invalid inherited package lock mode: {lock_mode}")
-    else:
-        try:
-            fd = os.open(
-                ROOT_REQUIRED_LOCK_FILE,
-                os.O_CLOEXEC | os.O_NOFOLLOW | os.O_RDONLY,
-            )
-        except OSError as exc:
-            raise AuditLockError(
-                f"cannot open existing safe package lock {ROOT_REQUIRED_LOCK_FILE}: {exc}; "
-                "run the governed OOM installer to create package state"
-            ) from exc
-        lock_mode = "shared"
+    parent_fd, lock_base = _open_lock_parent()
     try:
-        _validate_lock_fd(fd)
-        fcntl.flock(fd, fcntl.LOCK_EX if lock_mode == "exclusive" else fcntl.LOCK_SH)
-        yield
+        if inherited:
+            try:
+                fd = int(inherited)
+            except ValueError as exc:
+                raise AuditLockError("invalid inherited package lock descriptor") from exc
+            if fd < 3:
+                raise AuditLockError("invalid inherited package lock descriptor")
+            lock_mode = os.environ.get("HAPAX_ROOT_REQUIRED_LOCK_MODE", "shared")
+            if lock_mode not in {"shared", "exclusive"}:
+                raise AuditLockError(f"invalid inherited package lock mode: {lock_mode}")
+        else:
+            try:
+                fd = os.open(
+                    lock_base,
+                    os.O_CLOEXEC | os.O_NOFOLLOW | os.O_RDONLY,
+                    dir_fd=parent_fd,
+                )
+            except OSError as exc:
+                raise AuditLockError(
+                    f"cannot open existing safe package lock {ROOT_REQUIRED_LOCK_FILE}: {exc}; "
+                    "run the governed OOM installer to create package state"
+                ) from exc
+            lock_mode = "shared"
+        try:
+            _validate_lock_fd(fd, parent_fd, lock_base)
+            fcntl.flock(fd, fcntl.LOCK_EX if lock_mode == "exclusive" else fcntl.LOCK_SH)
+            _validate_lock_fd(fd, parent_fd, lock_base)
+            yield
+        finally:
+            if owns_fd:
+                os.close(fd)
     finally:
-        if owns_fd:
-            os.close(fd)
+        os.close(parent_fd)
 
 
 def _systemctl() -> str:

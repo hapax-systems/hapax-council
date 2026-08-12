@@ -2149,15 +2149,19 @@ def test_local_judge_cap_receipt_verifier_is_sha_host_and_evidence_bound() -> No
 
     assert "--verify-local-judge-cap-receipt <sha> <candidate|applied|installed>" in source
     assert '[[ "$phase" != candidate && "$phase" != applied && "$phase" != installed ]]' in source
-    assert 'if [ "$phase" = installed ]; then' in verifier
+    assert 'if [ "$phase" = installed ] && [ "$receipt_installed_sha" != "$sha" ]; then' in verifier
     assert 'if [ "$phase" != candidate ]; then' in verifier
     assert 'repo_alias="$account_home/.cache/hapax/source-activation/worktree"' in source
     assert 'desired="$state/desired-receipts/oom-containment.sha"' in source
     assert 'installed="$state/installed-receipts/oom-containment.sha"' in source
     assert 'cap_receipt="$cap_root/$sha.env"' in source
-    assert '"$(/usr/bin/wc -l < "$cap_receipt")" != 18' in source
-    assert "memory_peak_bytes=" in source
-    assert "swap_peak_bytes=" in source
+    assert "read_local_judge_authority_artifacts() {" in source
+    assert "max_bytes=2048" in source
+    assert "snapshot(after) != snapshot(published)" in source
+    assert '/usr/bin/grep -Fqx "$required" "$cap_receipt"' not in verifier
+    assert "/usr/bin/sed -n 's/^model_identity=//p'" not in verifier
+    assert '"memory_peak_bytes",' in source
+    assert '"swap_peak_bytes",' in source
     assert "<<'CAP_RECEIPT_NUMERIC_PY'" in source
     assert '"$memory_peak" -gt 3221225472' not in source
     assert '"$swap_peak" -gt 1073741824' not in source
@@ -2165,11 +2169,11 @@ def test_local_judge_cap_receipt_verifier_is_sha_host_and_evidence_bound() -> No
     assert 'installed_unit="$account_home/.config/systemd/user/hapax-local-judge.service"' in source
     assert "<<'INSTALLED_UNIT_OID_PY'" in source
     assert '"$actual_unit_oid" != "$expected_unit_oid"' in source
-    assert '"image_ref=$image"' in source
-    assert '"model_sha256=$model_sha256"' in source
-    assert '"model_size_bytes=$model_size_bytes"' in source
-    assert '"model_host_dir=$model_host_dir"' in source
-    assert '"workload_oid=$workload_oid"' in source
+    assert '"$receipt_image" != "$image"' in source
+    assert '"$receipt_model_sha256" != "$model_sha256"' in source
+    assert '"$receipt_model_size_bytes" != "$model_size_bytes"' in source
+    assert '"$receipt_model_host_dir" != "$model_host_dir"' in source
+    assert '"$receipt_workload_oid" != "$workload_oid"' in source
     assert '"$model_identity" != "$current_model_identity"' in source
     assert "/usr/bin/hostname" in source
     assert "/usr/bin/nvidia-smi --query-gpu=uuid" in source
@@ -2185,6 +2189,126 @@ def _cap_receipt_numeric_validator_source() -> str:
     source = SCRIPT.read_text(encoding="utf-8")
     marker = "<<'CAP_RECEIPT_NUMERIC_PY'\n"
     return source.split(marker, 1)[1].split("\nCAP_RECEIPT_NUMERIC_PY", 1)[0]
+
+
+def _local_judge_authority_artifact_reader_source() -> str:
+    source = SCRIPT.read_text(encoding="utf-8")
+    marker = "<<'LOCAL_JUDGE_AUTHORITY_ARTIFACTS_PY'\n"
+    return source.split(marker, 1)[1].split("\nLOCAL_JUDGE_AUTHORITY_ARTIFACTS_PY", 1)[0]
+
+
+def _local_judge_cap_fields(sha: str) -> list[str]:
+    return [
+        "schema=1",
+        f"candidate_sha={sha}",
+        "host=hapax-appendix",
+        "gpu_uuid=GPU-test",
+        "image_ref=ghcr.io/example@sha256:" + "b" * 64,
+        "image_id=sha256:" + "c" * 64,
+        "model_sha256=" + "d" * 64,
+        "model_size_bytes=123",
+        "model_host_dir=/store-fast/hapax-models/sha256/" + "d" * 64,
+        "model_identity=1:2:3",
+        "workload_oid=" + "e" * 40,
+        "memory_bytes=4294967296",
+        "memory_swap_bytes=6442450944",
+        "requests=24",
+        "workers=8",
+        "memory_peak_bytes=1",
+        "swap_peak_bytes=0",
+        "completed_at_epoch=1",
+    ]
+
+
+def test_local_judge_authority_artifacts_are_read_once_bounded_and_path_bound(
+    tmp_path: Path,
+) -> None:
+    sha = "a" * 40
+    desired = tmp_path / "desired" / "oom-containment.sha"
+    installed = tmp_path / "installed" / "oom-containment.sha"
+    desired.parent.mkdir(mode=0o700)
+    installed.parent.mkdir(mode=0o700)
+    desired.write_text(f"{sha}\n", encoding="utf-8")
+    desired.chmod(0o600)
+    cap_root = tmp_path / "cap"
+    cap_root.mkdir(mode=0o700)
+    cap = cap_root / f"{sha}.env"
+    cap_text = "\n".join(_local_judge_cap_fields(sha)) + "\n"
+    cap.write_text(cap_text, encoding="utf-8")
+    cap.chmod(0o600)
+    reader = _local_judge_authority_artifact_reader_source()
+    argv = [str(desired), str(installed), str(cap_root), str(cap), "candidate"]
+
+    accepted = subprocess.run(
+        ["/usr/bin/python3", "-I", "-", *argv],
+        input=reader,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert accepted.returncode == 0, accepted.stderr
+    output = accepted.stdout.splitlines()
+    assert output[:2] == [sha, ""]
+    assert output[2:] == [line.split("=", 1)[1] for line in _local_judge_cap_fields(sha)]
+
+    with cap.open("r+b") as handle:
+        handle.truncate(64 * 1024 * 1024)
+    oversized = subprocess.run(
+        ["/usr/bin/python3", "-I", "-", *argv],
+        input=reader,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert oversized.returncode == 2
+    assert "owner/link/mode/size" in oversized.stderr
+
+    cap.write_text(cap_text, encoding="utf-8")
+    cap.chmod(0o600)
+    replacement = tmp_path / "replacement.env"
+    replacement.write_text(cap_text, encoding="utf-8")
+    replacement.chmod(0o600)
+    needle = (
+        "        after = os.fstat(fd)\n"
+        "        published = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)\n"
+    )
+    instrumented = reader.replace(
+        needle,
+        "        after = os.fstat(fd)\n"
+        "        if label == 'local-judge cap receipt':\n"
+        "            os.replace(os.environ['HAPAX_TEST_REPLACEMENT'], base, dst_dir_fd=parent_fd)\n"
+        "        published = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)\n",
+        1,
+    )
+    assert instrumented != reader
+    replaced = subprocess.run(
+        ["/usr/bin/python3", "-I", "-", *argv],
+        input=instrumented,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "HAPAX_TEST_REPLACEMENT": str(replacement)},
+    )
+    assert replaced.returncode == 2
+    assert "changed while reading" in replaced.stderr
+
+    replacement.write_text(cap_text, encoding="utf-8")
+    replacement.chmod(0o600)
+    mutant = instrumented.replace(
+        "        or snapshot(after) != snapshot(published)\n",
+        "",
+        1,
+    )
+    mutation_witness = subprocess.run(
+        ["/usr/bin/python3", "-I", "-", *argv],
+        input=mutant,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "HAPAX_TEST_REPLACEMENT": str(replacement)},
+    )
+    assert mutation_witness.returncode == 0, mutation_witness.stderr
 
 
 def _installed_unit_oid_source() -> str:
@@ -2551,6 +2675,57 @@ def test_installed_unit_oid_reader_refuses_unsafe_files(
         assert result.returncode == 2
 
 
+def test_installed_unit_oid_reader_rejects_replacement_during_bounded_read(
+    tmp_path: Path,
+) -> None:
+    payload = (b"[Service]\nMemoryMax=4G\n" * 4096)[: 128 * 1024]
+    unit = tmp_path / "hapax-local-judge.service"
+    unit.write_bytes(payload)
+    replacement = tmp_path / "replacement.service"
+    replacement.write_bytes(payload)
+    reader = _installed_unit_oid_source()
+    needle = (
+        "    opened_after = os.fstat(fd)\n"
+        "    published = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)\n"
+    )
+    instrumented = reader.replace(
+        needle,
+        "    opened_after = os.fstat(fd)\n"
+        "    os.replace(os.environ['HAPAX_TEST_REPLACEMENT'], base, dst_dir_fd=parent_fd)\n"
+        "    published = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)\n",
+        1,
+    )
+    assert instrumented != reader
+
+    rejected = subprocess.run(
+        ["/usr/bin/python3", "-I", "-", str(unit)],
+        input=instrumented,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "HAPAX_TEST_REPLACEMENT": str(replacement)},
+    )
+
+    assert rejected.returncode == 2
+    assert "stable caller-owned regular file" in rejected.stderr
+
+    replacement.write_bytes(payload)
+    mutant = instrumented.replace(
+        "    or snapshot(opened_after) != snapshot(published)\n",
+        "",
+        1,
+    )
+    mutation_witness = subprocess.run(
+        ["/usr/bin/python3", "-I", "-", str(unit)],
+        input=mutant,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "HAPAX_TEST_REPLACEMENT": str(replacement)},
+    )
+    assert mutation_witness.returncode == 0, mutation_witness.stderr
+
+
 @pytest.mark.parametrize(
     ("memory_peak", "swap_peak", "completed_at", "now", "expected_rc"),
     [
@@ -2798,6 +2973,98 @@ def test_p0_oom_deploy_always_creates_authenticated_deferral_without_restart(
     assert record["deploy_groups"]["systemd_dropins"] == []
 
 
+def test_new_oom_deferral_normalizes_legacy_receipt_for_prior_sha(tmp_path: Path) -> None:
+    repo, sha = _repo_with_linear_commit(tmp_path, ROOT_AUDIT_SOURCE_FILES)
+    installed_sha = _git(repo, "rev-parse", f"{sha}^")
+    home = tmp_path / "home"
+    installed_root = home / ".local/state/hapax/root-required/installed-receipts"
+    installed_root.mkdir(parents=True)
+    installed = installed_root / "oom-containment.sha"
+    installed.write_text(f"{installed_sha}\n", encoding="utf-8")
+    installed.chmod(0o644)
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert installed.read_text(encoding="utf-8") == f"{installed_sha}\n"
+    assert stat.S_IMODE(installed.stat().st_mode) == 0o600
+    assert (
+        home / ".cache/hapax/post-merge-root-required" / sha / "oom-containment/RUNBOOK.txt"
+    ).is_file()
+
+
+@pytest.mark.parametrize("failure_point", ("manifest", "payload"))
+def test_root_required_staging_propagates_git_show_failure_before_marker(
+    tmp_path: Path, failure_point: str
+) -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    start = source.index("stage_root_required_package() {")
+    end = source.index("\nstage_oom_containment_installer() {", start)
+    stage_function = source[start:end]
+    stage = tmp_path / "stage"
+    shell = f"""
+set +e
+{stage_function}
+SHA={"a" * 40}
+FAILURE_POINT="$2"
+root_required_git() {{
+    case "$1" in
+        cat-file) return 0 ;;
+        ls-tree) printf '%s\n' '100644 blob deadbeef' ;;
+        show)
+            if [ "$2" = "$SHA:config/root-required/test.files" ]; then
+                [ "$FAILURE_POINT" != manifest ] || return 77
+                printf '%s\n' \
+                    config/root-required/test.files \
+                    config/root-required/payload
+                return 0
+            fi
+            [ "$FAILURE_POINT" != payload ] || return 78
+            printf '%s\n' payload
+            ;;
+        *) return 79 ;;
+    esac
+}}
+stage_root_required_package \
+    "$1" config/root-required/test.files test-package
+exit $?
+"""
+
+    result = subprocess.run(
+        [
+            "/usr/bin/bash",
+            "--noprofile",
+            "--norc",
+            "-c",
+            shell,
+            "stage-test",
+            str(stage),
+            failure_point,
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "next:" in result.stderr
+    assert not (stage / ".hapax-root-required-package-sha").exists()
+
+
 def test_root_packages_defer_apcupsd_before_oom_recovery_verification(tmp_path: Path) -> None:
     order = tmp_path / "install-order"
     apcupsd_ready = tmp_path / "apcupsd-ready"
@@ -2882,6 +3149,51 @@ def test_stale_post_merge_deploy_preserves_newer_desired_receipt(tmp_path: Path)
     assert "supersedes stale deploy" in result.stdout
     assert oom_desired.read_text(encoding="utf-8").strip() == sha_b
     assert stat.S_IMODE(oom_desired.stat().st_mode) == 0o600
+
+
+def test_stale_post_merge_deploy_refuses_when_receipt_normalization_fails(
+    tmp_path: Path,
+) -> None:
+    repo, _ = _repo_with_linear_commit(tmp_path, ROOT_AUDIT_SOURCE_FILES)
+    earlyoom = repo / "config" / "earlyoom" / "default"
+    earlyoom.write_text('EARLYOOM_ARGS="candidate policy"\n', encoding="utf-8")
+    _git(repo, "add", "config/earlyoom/default")
+    _git(repo, "commit", "-m", "candidate OOM package")
+    candidate_sha = _git(repo, "rev-parse", "HEAD")
+    earlyoom.write_text('EARLYOOM_ARGS="newer policy"\n', encoding="utf-8")
+    _git(repo, "commit", "-am", "newer OOM package")
+    newer_sha = _git(repo, "rev-parse", "HEAD")
+    home = tmp_path / "home"
+    desired = home / ".local/state/hapax/root-required/desired-receipts"
+    desired.mkdir(parents=True)
+    oom_desired = desired / "oom-containment.sha"
+    oom_desired.write_text(f"{newer_sha}\n", encoding="utf-8")
+    desired.chmod(0o500)
+    try:
+        result = subprocess.run(
+            [str(SCRIPT), candidate_sha],
+            text=True,
+            capture_output=True,
+            check=False,
+            env={
+                **os.environ,
+                "HOME": str(home),
+                "REPO": str(repo),
+                "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+            },
+        )
+    finally:
+        desired.chmod(0o700)
+
+    assert result.returncode == 1
+    assert "root-required receipt publication refused" in result.stderr
+    assert oom_desired.read_text(encoding="utf-8").strip() == newer_sha
+    assert not (
+        home
+        / ".cache/hapax/post-merge-root-required"
+        / candidate_sha
+        / "oom-containment/RUNBOOK.txt"
+    ).exists()
 
 
 def test_post_merge_squash_equivalence_rejects_newer_manifest_file(tmp_path: Path) -> None:
@@ -3260,6 +3572,7 @@ def test_concurrent_oom_deferral_ignores_replace_refs_and_owns_local_judge(
     assert refused_reconcile.returncode == 1
     assert "not the expected mode-0600 regular file" in refused_reconcile.stderr
     assert runbook_path.exists()
+    assert stat.S_IMODE(installed.stat().st_mode) == 0o600
     runbook_path.write_text(runbook, encoding="utf-8")
     runbook_path.chmod(0o600)
     reconciled = subprocess.run(
@@ -3654,14 +3967,16 @@ def test_root_required_audit_fails_when_installed_receipt_is_missing(tmp_path: P
         ("HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT", "desired"),
     ],
 )
-def test_root_required_audit_rejects_permissive_receipt_mode(
+@pytest.mark.parametrize("mode", (0o666, 0o644, 0o400))
+def test_root_required_audit_rejects_noncanonical_receipt_mode(
     tmp_path: Path,
     root_variable: str,
     kind: str,
+    mode: int,
 ) -> None:
     env = _root_audit_env(tmp_path)
     receipt = Path(env[root_variable]) / "oom-containment.sha"
-    receipt.chmod(0o666)
+    receipt.chmod(mode)
 
     result = subprocess.run(
         [str(ROOT_REQUIRED_AUDIT)],
@@ -3673,7 +3988,7 @@ def test_root_required_audit_rejects_permissive_receipt_mode(
 
     assert result.returncode == 1
     assert f"root-required {kind} receipt safety drift" in result.stderr
-    assert "mode=0666" in result.stderr
+    assert f"mode={mode:04o}" in result.stderr
     assert "authenticated live next-action command" in result.stderr
 
 
@@ -5328,6 +5643,183 @@ def test_root_required_audit_waits_for_shared_package_lock(tmp_path: Path) -> No
 
     stdout, stderr = audit.communicate(timeout=5)
     assert audit.returncode == 0, (stdout, stderr)
+
+
+def test_root_required_audit_creates_safe_lock_parent_under_hostile_umask(
+    tmp_path: Path,
+) -> None:
+    env = _root_audit_env(tmp_path)
+    lock_parent = tmp_path / "new-lock-parent"
+    env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = str(lock_parent / ".lock")
+
+    result = subprocess.run(
+        [
+            "/usr/bin/bash",
+            "--noprofile",
+            "--norc",
+            "-c",
+            'umask 000; exec "$@"',
+            "hostile-umask",
+            str(ROOT_REQUIRED_AUDIT),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert stat.S_IMODE(lock_parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE((lock_parent / ".lock").stat().st_mode) == 0o600
+
+
+def test_root_required_audit_refuses_symlinked_shared_lock_parent(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    state_root = Path(env["HAPAX_ROOT_REQUIRED_STATE_ROOT"])
+    physical_root = tmp_path / "physical-root-state"
+    state_root.rename(physical_root)
+    state_root.symlink_to(physical_root, target_is_directory=True)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "refused unsafe shared lock parent" in result.stderr
+    assert state_root.is_symlink()
+
+
+@pytest.mark.parametrize(
+    "script",
+    (
+        SCRIPT,
+        ROOT_REQUIRED_AUDIT,
+        REPO_ROOT / "scripts/install-apcupsd-power-alerts",
+        REPO_ROOT / "scripts/install-p0-oom-containment",
+    ),
+)
+def test_root_required_lock_wrappers_open_lock_relative_to_held_parent(script: Path) -> None:
+    source = script.read_text(encoding="utf-8")
+    wrapper = source.split("reexec_with_safe_root_required_lock() {", 1)[1].split("\n}\n", 1)[0]
+
+    assert "os.umask(0o077)" in wrapper
+    assert "os.O_DIRECTORY | os.O_NOFOLLOW" in wrapper
+    assert "parent_inode = os.fstat(parent_fd)" in wrapper
+    assert "dir_fd=parent_fd" in wrapper
+    assert "locked_path_inode = os.stat(" in wrapper
+
+
+@pytest.mark.parametrize(
+    ("script", "function_name", "extra_args"),
+    (
+        (SCRIPT, "acquire_inherited_root_required_lock", ()),
+        (ROOT_REQUIRED_AUDIT, "acquire_inherited_root_required_lock", ("shared",)),
+        (REPO_ROOT / "scripts/install-apcupsd-power-alerts", "acquire_root_required_lock", ()),
+        (REPO_ROOT / "scripts/install-p0-oom-containment", "acquire_root_required_lock", ()),
+    ),
+)
+def test_inherited_lock_descriptor_refuses_symlinked_parent(
+    tmp_path: Path, script: Path, function_name: str, extra_args: tuple[str, ...]
+) -> None:
+    source = script.read_text(encoding="utf-8")
+    start = source.index(f"{function_name}() {{")
+    marker = source.index("\n", source.index("<<'PY'", start)) + 1
+    end = source.index("\nPY", marker)
+    validator = source[marker:end]
+    physical = tmp_path / "physical-state"
+    physical.mkdir(mode=0o700)
+    physical_lock = physical / ".lock"
+    physical_lock.touch(mode=0o600)
+    lexical = tmp_path / "lexical-state"
+    lexical.symlink_to(physical, target_is_directory=True)
+    inherited_fd = os.open(physical_lock, os.O_RDWR)
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/python3",
+                "-",
+                str(inherited_fd),
+                str(lexical / ".lock"),
+                *extra_args,
+            ],
+            input=validator,
+            text=True,
+            capture_output=True,
+            check=False,
+            pass_fds=(inherited_fd,),
+        )
+    finally:
+        os.close(inherited_fd)
+
+    assert result.returncode == 1
+    assert "invalid shared lock descriptor" in result.stderr
+
+
+def test_inherited_lock_descriptor_rejects_path_replacement_during_acquisition(
+    tmp_path: Path,
+) -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    start = source.index("acquire_inherited_root_required_lock() {")
+    marker = source.index("\n", source.index("<<'PY'", start)) + 1
+    end = source.index("\nPY", marker)
+    validator = source[marker:end]
+    lock_parent = tmp_path / "state"
+    lock_parent.mkdir(mode=0o700)
+    lock = lock_parent / ".lock"
+    lock.touch(mode=0o600)
+    replacement = tmp_path / "replacement-lock"
+    replacement.touch(mode=0o600)
+    needle = "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+    instrumented = validator.replace(
+        needle,
+        needle
+        + "os.replace(os.environ['HAPAX_TEST_REPLACEMENT'], lock_base, dst_dir_fd=parent_fd)\n",
+        1,
+    )
+    assert instrumented != validator
+    inherited_fd = os.open(lock, os.O_RDWR)
+    try:
+        rejected = subprocess.run(
+            ["/usr/bin/python3", "-", str(inherited_fd), str(lock)],
+            input=instrumented,
+            text=True,
+            capture_output=True,
+            check=False,
+            pass_fds=(inherited_fd,),
+            env={**os.environ, "HAPAX_TEST_REPLACEMENT": str(replacement)},
+        )
+    finally:
+        os.close(inherited_fd)
+    assert rejected.returncode == 1
+    assert "lock path changed during acquisition" in rejected.stderr
+
+    lock.touch(mode=0o600)
+    replacement.touch(mode=0o600)
+    mutant = instrumented.replace(
+        "    (locked_inode.st_dev, locked_inode.st_ino)\n"
+        "    != (locked_path_inode.st_dev, locked_path_inode.st_ino)\n",
+        "    False\n",
+        1,
+    ).replace("    or locked_inode.st_nlink != 1\n", "", 1)
+    assert mutant != instrumented
+    inherited_fd = os.open(lock, os.O_RDWR)
+    try:
+        mutation_witness = subprocess.run(
+            ["/usr/bin/python3", "-", str(inherited_fd), str(lock)],
+            input=mutant,
+            text=True,
+            capture_output=True,
+            check=False,
+            pass_fds=(inherited_fd,),
+            env={**os.environ, "HAPAX_TEST_REPLACEMENT": str(replacement)},
+        )
+    finally:
+        os.close(inherited_fd)
+    assert mutation_witness.returncode == 0, mutation_witness.stderr
 
 
 @pytest.mark.parametrize("link_kind", ("symlink", "hardlink"))

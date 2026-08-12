@@ -1209,13 +1209,228 @@ print(
 RUNTIME_AUTHORITY_PY
 }
 
+read_local_judge_authority_artifacts() {
+    local desired="$1" installed="$2" cap_root="$3" cap_receipt="$4" phase="$5"
+    /usr/bin/python3 -I - "$desired" "$installed" "$cap_root" "$cap_receipt" "$phase" <<'LOCAL_JUDGE_AUTHORITY_ARTIFACTS_PY'
+from __future__ import annotations
+
+import os
+import re
+import stat
+import sys
+from pathlib import Path
+
+desired_path, installed_path, cap_root_path, cap_receipt_path = map(Path, sys.argv[1:5])
+phase = sys.argv[5]
+
+
+def refuse(message: str) -> None:
+    print(
+        f"hapax-post-merge-deploy: unsafe local-judge authority artifact: {message}; "
+        "next action: repair the caller-owned receipt state and rerun the governed canary",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
+
+def snapshot(inode: os.stat_result) -> tuple[int, ...]:
+    return (
+        inode.st_dev,
+        inode.st_ino,
+        inode.st_uid,
+        inode.st_gid,
+        inode.st_nlink,
+        stat.S_IMODE(inode.st_mode),
+        inode.st_size,
+        inode.st_mtime_ns,
+        inode.st_ctime_ns,
+    )
+
+
+def open_parent(path: Path, label: str) -> int:
+    if not path.is_absolute() or not path.name:
+        refuse(f"{label} path must be absolute and name one file: {path}")
+    try:
+        parent_fd = os.open(
+            path.parent,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+        parent = os.fstat(parent_fd)
+    except OSError as exc:
+        refuse(f"cannot open the physical {label} parent: {exc}")
+    if (
+        not stat.S_ISDIR(parent.st_mode)
+        or parent.st_uid != os.geteuid()
+        or parent.st_mode & 0o022
+    ):
+        os.close(parent_fd)
+        refuse(f"{label} parent is not caller-owned and non-group-writable")
+    return parent_fd
+
+
+def read_at(
+    parent_fd: int,
+    base: str,
+    *,
+    label: str,
+    max_bytes: int,
+    exact_mode: int | None,
+) -> bytes:
+    fd = -1
+    try:
+        expected = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(expected.st_mode)
+            or expected.st_uid != os.geteuid()
+            or expected.st_nlink != 1
+            or expected.st_mode & 0o022
+            or expected.st_size > max_bytes
+            or (exact_mode is not None and stat.S_IMODE(expected.st_mode) != exact_mode)
+        ):
+            refuse(
+                f"{label} has unsafe owner/link/mode/size metadata: "
+                f"owner={expected.st_uid} links={expected.st_nlink} "
+                f"mode={stat.S_IMODE(expected.st_mode):04o} size={expected.st_size}"
+            )
+        fd = os.open(
+            base,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+        opened = os.fstat(fd)
+        if snapshot(opened) != snapshot(expected):
+            refuse(f"{label} changed while opening")
+        chunks: list[bytes] = []
+        remaining = max_bytes + 1
+        while remaining:
+            chunk = os.read(fd, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        after = os.fstat(fd)
+        published = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError as exc:
+        refuse(f"cannot read {label} safely: {exc}")
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if (
+        snapshot(opened) != snapshot(after)
+        or snapshot(after) != snapshot(published)
+        or len(data) != opened.st_size
+        or len(data) > max_bytes
+    ):
+        refuse(f"{label} changed while reading")
+    return data
+
+
+def read_receipt(path: Path, label: str) -> str:
+    parent_fd = open_parent(path, label)
+    try:
+        data = read_at(
+            parent_fd,
+            path.name,
+            label=label,
+            max_bytes=41,
+            exact_mode=None,
+        )
+    finally:
+        os.close(parent_fd)
+    if re.fullmatch(rb"[0-9a-f]{40}\n", data) is None:
+        refuse(f"{label} is not exactly one lowercase SHA-1 line")
+    return data[:-1].decode("ascii")
+
+
+desired_sha = read_receipt(desired_path, "desired OOM receipt")
+installed_sha = ""
+if phase == "installed":
+    installed_sha = read_receipt(installed_path, "installed OOM receipt")
+
+cap_root = Path(cap_root_path)
+if not cap_root.is_absolute() or Path(cap_receipt_path).parent != cap_root:
+    refuse("cap receipt path is not a direct child of its canonical root")
+try:
+    cap_fd = os.open(
+        cap_root,
+        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+    cap_inode = os.fstat(cap_fd)
+except OSError as exc:
+    refuse(f"cannot open the physical cap receipt root: {exc}")
+if (
+    not stat.S_ISDIR(cap_inode.st_mode)
+    or cap_inode.st_uid != os.geteuid()
+    or stat.S_IMODE(cap_inode.st_mode) != 0o700
+):
+    os.close(cap_fd)
+    refuse("cap receipt root is not a caller-owned mode-0700 physical directory")
+try:
+    cap_data = read_at(
+        cap_fd,
+        Path(cap_receipt_path).name,
+        label="local-judge cap receipt",
+        max_bytes=2048,
+        exact_mode=0o600,
+    )
+finally:
+    os.close(cap_fd)
+
+try:
+    cap_text = cap_data.decode("utf-8")
+except UnicodeDecodeError:
+    refuse("local-judge cap receipt is not UTF-8")
+lines = cap_text.splitlines()
+keys = (
+    "schema",
+    "candidate_sha",
+    "host",
+    "gpu_uuid",
+    "image_ref",
+    "image_id",
+    "model_sha256",
+    "model_size_bytes",
+    "model_host_dir",
+    "model_identity",
+    "workload_oid",
+    "memory_bytes",
+    "memory_swap_bytes",
+    "requests",
+    "workers",
+    "memory_peak_bytes",
+    "swap_peak_bytes",
+    "completed_at_epoch",
+)
+if not cap_text.endswith("\n") or len(lines) != len(keys):
+    refuse("local-judge cap receipt must contain exactly 18 newline-terminated fields")
+fields: dict[str, str] = {}
+for line in lines:
+    key, separator, value = line.partition("=")
+    if separator != "=" or key not in keys or key in fields or not value:
+        refuse("local-judge cap receipt has an unknown, duplicate, or empty field")
+    fields[key] = value
+if tuple(fields) != keys:
+    refuse("local-judge cap receipt fields are absent or out of canonical order")
+
+print(desired_sha)
+print(installed_sha)
+for key in keys:
+    print(fields[key])
+LOCAL_JUDGE_AUTHORITY_ARTIFACTS_PY
+}
+
 verify_local_judge_cap_receipt() {
     local sha="$1" phase="$2" account_home repo_alias release_root repo state desired installed
-    local cap_root cap_receipt cap_size source_unit_text gpu_uuid image image_id host receipt_mode git_head
+    local cap_root cap_receipt source_unit_text gpu_uuid image image_id host git_head artifact_snapshot
     local installed_unit installed_unit_real expected_unit_oid actual_unit_oid
     local judge_model model_sha256 model_size_bytes model_host_dir model_host model_host_declared
-    local model_identity current_model_identity
+    local model_identity current_model_identity receipt_desired_sha receipt_installed_sha receipt_host
+    local receipt_gpu_uuid receipt_image receipt_image_id receipt_model_sha256 receipt_model_size_bytes
+    local receipt_model_host_dir receipt_model_identity receipt_workload_oid
+    local receipt_memory_bytes receipt_memory_swap_bytes receipt_requests receipt_workers
     local workload_oid memory_peak swap_peak completed_at now
+    local -a artifact_fields
     local DOCKER_HOST=unix:///var/run/docker.sock
     export DOCKER_HOST
     unset DOCKER_CONTEXT DOCKER_CONFIG DOCKER_TLS_VERIFY DOCKER_CERT_PATH
@@ -1255,33 +1470,48 @@ verify_local_judge_cap_receipt() {
     state="$account_home/.local/state/hapax/root-required"
     desired="$state/desired-receipts/oom-containment.sha"
     installed="$state/installed-receipts/oom-containment.sha"
-    if [ ! -f "$desired" ] || [ -L "$desired" ] \
-        || [ "$(/usr/bin/stat -c %u -- "$desired" 2>/dev/null || true)" != "$(/usr/bin/id -u)" ] \
-        || [ "$(/usr/bin/stat -c %h -- "$desired" 2>/dev/null || true)" != 1 ] \
-        || [ "$(/usr/bin/wc -c < "$desired")" != 41 ] \
-        || ! /usr/bin/grep -Fqx "$sha" "$desired"; then
+    cap_root="$state/local-judge-cap-canary"
+    cap_receipt="$cap_root/$sha.env"
+    if ! artifact_snapshot="$(
+        read_local_judge_authority_artifacts \
+            "$desired" "$installed" "$cap_root" "$cap_receipt" "$phase"
+    )"; then
+        return 2
+    fi
+    mapfile -t artifact_fields <<< "$artifact_snapshot"
+    if [ "${#artifact_fields[@]}" -ne 20 ]; then
+        echo "hapax-post-merge-deploy: local-judge authority snapshot has an invalid field count; next action: repair the receipt verifier and rerun the governed canary" >&2
+        return 2
+    fi
+    receipt_desired_sha="${artifact_fields[0]}"
+    receipt_installed_sha="${artifact_fields[1]}"
+    if [ "$receipt_desired_sha" != "$sha" ]; then
         echo "hapax-post-merge-deploy: desired OOM receipt is not safely bound to cap SHA $sha; next action: reconcile the desired package and rerun the canary" >&2
         return 2
     fi
-    receipt_mode="$(/usr/bin/stat -c %a -- "$desired")"
-    if (( (8#$receipt_mode & 022) != 0 )); then
-        echo "hapax-post-merge-deploy: desired OOM receipt is writable by another identity; next action: repair receipt permissions and rerun the canary" >&2
+    if [ "$phase" = installed ] && [ "$receipt_installed_sha" != "$sha" ]; then
+        echo "hapax-post-merge-deploy: installed OOM receipt is not safely bound to cap SHA $sha; next action: complete the authenticated install before activation" >&2
         return 2
     fi
-    if [ "$phase" = installed ]; then
-        if [ ! -f "$installed" ] || [ -L "$installed" ] \
-            || [ "$(/usr/bin/stat -c %u -- "$installed" 2>/dev/null || true)" != "$(/usr/bin/id -u)" ] \
-            || [ "$(/usr/bin/stat -c %h -- "$installed" 2>/dev/null || true)" != 1 ] \
-            || [ "$(/usr/bin/wc -c < "$installed")" != 41 ] \
-            || ! /usr/bin/grep -Fqx "$sha" "$installed"; then
-            echo "hapax-post-merge-deploy: installed OOM receipt is not safely bound to cap SHA $sha; next action: complete the authenticated install before activation" >&2
-            return 2
-        fi
-        receipt_mode="$(/usr/bin/stat -c %a -- "$installed")"
-        if (( (8#$receipt_mode & 022) != 0 )); then
-            echo "hapax-post-merge-deploy: installed OOM receipt is writable by another identity; next action: repair receipt permissions and repeat authenticated verification" >&2
-            return 2
-        fi
+    receipt_host="${artifact_fields[4]}"
+    receipt_gpu_uuid="${artifact_fields[5]}"
+    receipt_image="${artifact_fields[6]}"
+    receipt_image_id="${artifact_fields[7]}"
+    receipt_model_sha256="${artifact_fields[8]}"
+    receipt_model_size_bytes="${artifact_fields[9]}"
+    receipt_model_host_dir="${artifact_fields[10]}"
+    receipt_model_identity="${artifact_fields[11]}"
+    receipt_workload_oid="${artifact_fields[12]}"
+    receipt_memory_bytes="${artifact_fields[13]}"
+    receipt_memory_swap_bytes="${artifact_fields[14]}"
+    receipt_requests="${artifact_fields[15]}"
+    receipt_workers="${artifact_fields[16]}"
+    memory_peak="${artifact_fields[17]}"
+    swap_peak="${artifact_fields[18]}"
+    completed_at="${artifact_fields[19]}"
+    if [ "${artifact_fields[2]}" != 1 ] || [ "${artifact_fields[3]}" != "$sha" ]; then
+        echo "hapax-post-merge-deploy: local-judge cap receipt schema or SHA mismatch for $sha; next action: rerun the required pre-deploy cap canary" >&2
+        return 2
     fi
     if [ "$phase" != candidate ]; then
         installed_unit="$account_home/.config/systemd/user/hapax-local-judge.service"
@@ -1291,21 +1521,6 @@ verify_local_judge_cap_receipt() {
             echo "hapax-post-merge-deploy: installed local-judge unit is absent or redirects outside its canonical path; next action: repeat the authenticated install" >&2
             return 2
         fi
-    fi
-    cap_root="$state/local-judge-cap-canary"
-    cap_receipt="$cap_root/$sha.env"
-    cap_size="$(/usr/bin/stat -c %s -- "$cap_receipt" 2>/dev/null || true)"
-    if [ -L "$cap_root" ] || [ ! -d "$cap_root" ] \
-        || [ "$(/usr/bin/stat -c %u -- "$cap_root" 2>/dev/null || true)" != "$(/usr/bin/id -u)" ] \
-        || [ "$(/usr/bin/stat -c %a -- "$cap_root" 2>/dev/null || true)" != 700 ] \
-        || [ ! -f "$cap_receipt" ] || [ -L "$cap_receipt" ] \
-        || [ "$(/usr/bin/stat -c %u -- "$cap_receipt" 2>/dev/null || true)" != "$(/usr/bin/id -u)" ] \
-        || [ "$(/usr/bin/stat -c %h -- "$cap_receipt" 2>/dev/null || true)" != 1 ] \
-        || [ "$(/usr/bin/stat -c %a -- "$cap_receipt" 2>/dev/null || true)" != 600 ] \
-        || ! [[ "$cap_size" =~ ^[0-9]+$ ]] || [ "$cap_size" -gt 2048 ] \
-        || [ "$(/usr/bin/wc -l < "$cap_receipt")" != 18 ]; then
-        echo "hapax-post-merge-deploy: local-judge cap receipt is absent or unsafe for $sha; next action: rerun the required pre-deploy cap canary" >&2
-        return 2
     fi
     host="$(/usr/bin/hostname)"
     if [ "$host" != hapax-appendix ]; then
@@ -1358,39 +1573,82 @@ import stat
 import sys
 
 path = sys.argv[1]
+parent = os.path.dirname(path) or "."
+base = os.path.basename(path)
+
+
+def snapshot(inode: os.stat_result) -> tuple[int, ...]:
+    return (
+        inode.st_dev,
+        inode.st_ino,
+        inode.st_uid,
+        inode.st_gid,
+        inode.st_nlink,
+        stat.S_IMODE(inode.st_mode),
+        inode.st_size,
+        inode.st_mtime_ns,
+        inode.st_ctime_ns,
+    )
+
+
+parent_fd = -1
+fd = -1
 try:
-    before = os.lstat(path)
-    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
-    try:
-        opened = os.fstat(fd)
-        chunks: list[bytes] = []
-        size = 0
-        while True:
-            chunk = os.read(fd, 65536)
-            if not chunk:
-                break
-            size += len(chunk)
-            if size > 1024 * 1024:
-                raise OSError("installed unit exceeds 1 MiB")
-            chunks.append(chunk)
-    finally:
-        os.close(fd)
-    after = os.lstat(path)
+    if not os.path.isabs(path) or not base:
+        raise OSError("installed unit path must be absolute and name one file")
+    parent_fd = os.open(
+        parent,
+        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+    parent_inode = os.fstat(parent_fd)
+    if (
+        not stat.S_ISDIR(parent_inode.st_mode)
+        or parent_inode.st_uid != os.getuid()
+        or parent_inode.st_mode & 0o022
+    ):
+        raise OSError("installed unit parent is not a caller-owned physical directory")
+    expected = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)
+    if expected.st_size > 1024 * 1024:
+        raise OSError("installed unit exceeds 1 MiB")
+    fd = os.open(
+        base,
+        os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        dir_fd=parent_fd,
+    )
+    opened = os.fstat(fd)
+    if snapshot(opened) != snapshot(expected):
+        raise OSError("installed unit changed while opening")
+    chunks: list[bytes] = []
+    remaining = 1024 * 1024 + 1
+    while remaining:
+        chunk = os.read(fd, min(65536, remaining))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    opened_after = os.fstat(fd)
+    published = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)
 except OSError as exc:
     print(f"cannot read installed unit safely: {exc}", file=sys.stderr)
     raise SystemExit(2)
-identity = (opened.st_dev, opened.st_ino)
+finally:
+    if fd >= 0:
+        os.close(fd)
+    if parent_fd >= 0:
+        os.close(parent_fd)
+data = b"".join(chunks)
 if (
     not stat.S_ISREG(opened.st_mode)
     or opened.st_uid != os.getuid()
     or opened.st_nlink != 1
     or opened.st_mode & 0o022
-    or identity != (before.st_dev, before.st_ino)
-    or identity != (after.st_dev, after.st_ino)
+    or snapshot(opened) != snapshot(opened_after)
+    or snapshot(opened_after) != snapshot(published)
+    or len(data) != opened.st_size
+    or len(data) > 1024 * 1024
 ):
     print("installed unit is not a stable caller-owned regular file", file=sys.stderr)
     raise SystemExit(2)
-data = b"".join(chunks)
 digest = hashlib.sha1()
 digest.update(f"blob {len(data)}\0".encode())
 digest.update(data)
@@ -1511,35 +1769,27 @@ LOCAL_JUDGE_MODEL_IDENTITY_PY
         echo "hapax-post-merge-deploy: local-judge model identity is unavailable; next action: restore the canaried model and rerun the canary" >&2
         return 2
     fi
-    for required in \
-        schema=1 \
-        "candidate_sha=$sha" \
-        "host=$host" \
-        "gpu_uuid=$gpu_uuid" \
-        "image_ref=$image" \
-        "image_id=$image_id" \
-        "model_sha256=$model_sha256" \
-        "model_size_bytes=$model_size_bytes" \
-        "model_host_dir=$model_host_dir" \
-        "workload_oid=$workload_oid" \
-        memory_bytes=4294967296 \
-        memory_swap_bytes=6442450944 \
-        requests=24 \
-        workers=8; do
-        if ! /usr/bin/grep -Fqx "$required" "$cap_receipt"; then
-            echo "hapax-post-merge-deploy: cap receipt field mismatch for $sha: $required; next action: rerun the required pre-deploy cap canary" >&2
-            return 2
-        fi
-    done
-    model_identity="$(/usr/bin/sed -n 's/^model_identity=//p' "$cap_receipt")"
+    if [ "$receipt_host" != "$host" ] \
+        || [ "$receipt_gpu_uuid" != "$gpu_uuid" ] \
+        || [ "$receipt_image" != "$image" ] \
+        || [ "$receipt_image_id" != "$image_id" ] \
+        || [ "$receipt_model_sha256" != "$model_sha256" ] \
+        || [ "$receipt_model_size_bytes" != "$model_size_bytes" ] \
+        || [ "$receipt_model_host_dir" != "$model_host_dir" ] \
+        || [ "$receipt_workload_oid" != "$workload_oid" ] \
+        || [ "$receipt_memory_bytes" != 4294967296 ] \
+        || [ "$receipt_memory_swap_bytes" != 6442450944 ] \
+        || [ "$receipt_requests" != 24 ] \
+        || [ "$receipt_workers" != 8 ]; then
+        echo "hapax-post-merge-deploy: cap receipt field mismatch for $sha; next action: rerun the required pre-deploy cap canary" >&2
+        return 2
+    fi
+    model_identity="$receipt_model_identity"
     if ! [[ "$model_identity" =~ ^[0-9]+:[0-9]+:[0-9]+$ ]] \
         || [ "$model_identity" != "$current_model_identity" ]; then
         echo "hapax-post-merge-deploy: canaried model was replaced or modified; next action: restore the source-pinned model and rerun the cap canary" >&2
         return 2
     fi
-    memory_peak="$(/usr/bin/sed -n 's/^memory_peak_bytes=//p' "$cap_receipt")"
-    swap_peak="$(/usr/bin/sed -n 's/^swap_peak_bytes=//p' "$cap_receipt")"
-    completed_at="$(/usr/bin/sed -n 's/^completed_at_epoch=//p' "$cap_receipt")"
     now="$(/usr/bin/date +%s)"
     if ! /usr/bin/python3 -I - "$memory_peak" "$swap_peak" "$completed_at" "$now" <<'CAP_RECEIPT_NUMERIC_PY'
 from __future__ import annotations
@@ -1922,10 +2172,22 @@ import sys
 
 fd = int(sys.argv[1])
 lock_path = sys.argv[2]
+lock_parent = os.path.dirname(lock_path) or "."
+lock_base = os.path.basename(lock_path)
+parent_fd = -1
 try:
+    if not os.path.isabs(lock_path) or not lock_base:
+        raise OSError("lock path must be absolute and name one file")
+    parent_fd = os.open(
+        lock_parent,
+        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+    parent_inode = os.fstat(parent_fd)
     inode = os.fstat(fd)
-    path_inode = os.lstat(lock_path)
+    path_inode = os.stat(lock_base, dir_fd=parent_fd, follow_symlinks=False)
 except OSError as exc:
+    if parent_fd >= 0:
+        os.close(parent_fd)
     print(
         f"hapax-post-merge-deploy: refused invalid shared lock descriptor for {lock_path}: "
         f"{exc}; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun",
@@ -1933,13 +2195,17 @@ except OSError as exc:
     )
     raise SystemExit(1) from exc
 if (
-    not stat.S_ISREG(inode.st_mode)
+    not stat.S_ISDIR(parent_inode.st_mode)
+    or parent_inode.st_uid != os.geteuid()
+    or parent_inode.st_mode & 0o022
+    or not stat.S_ISREG(inode.st_mode)
     or not stat.S_ISREG(path_inode.st_mode)
     or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
     or inode.st_uid != os.geteuid()
     or inode.st_nlink != 1
     or inode.st_mode & 0o022
 ):
+    os.close(parent_fd)
     print(
         f"hapax-post-merge-deploy: refused invalid shared lock descriptor for {lock_path}; "
         "expected the caller-owned, single-link, non-group-writable regular path inode; "
@@ -1949,6 +2215,23 @@ if (
     raise SystemExit(1)
 os.fchmod(fd, 0o600)
 fcntl.flock(fd, fcntl.LOCK_EX)
+locked_inode = os.fstat(fd)
+locked_path_inode = os.stat(lock_base, dir_fd=parent_fd, follow_symlinks=False)
+if (
+    (locked_inode.st_dev, locked_inode.st_ino)
+    != (locked_path_inode.st_dev, locked_path_inode.st_ino)
+    or locked_inode.st_uid != os.geteuid()
+    or locked_inode.st_nlink != 1
+    or stat.S_IMODE(locked_inode.st_mode) != 0o600
+):
+    os.close(parent_fd)
+    print(
+        f"hapax-post-merge-deploy: shared lock path changed during acquisition for {lock_path}; "
+        "next action: stop the competing state mutation and rerun",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+os.close(parent_fd)
 PY
 }
 
@@ -1968,12 +2251,32 @@ import sys
 
 lock_path, script, *args = sys.argv[1:]
 lock_parent = os.path.dirname(lock_path) or "."
+lock_base = os.path.basename(lock_path)
+if not os.path.isabs(lock_path) or not lock_base:
+    print(
+        f"hapax-post-merge-deploy: refused invalid shared lock path {lock_path}; expected an "
+        "absolute path naming one file; next action: restore the canonical durable state path",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 old_umask = os.umask(0o077)
 try:
     os.makedirs(lock_parent, exist_ok=True)
 finally:
     os.umask(old_umask)
-parent_inode = os.lstat(lock_parent)
+try:
+    parent_fd = os.open(
+        lock_parent,
+        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+except OSError as exc:
+    print(
+        f"hapax-post-merge-deploy: refused unsafe shared lock parent {lock_parent}: {exc}; "
+        "next action: restore a caller-owned physical durable state directory and rerun",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+parent_inode = os.fstat(parent_fd)
 if (
     not stat.S_ISDIR(parent_inode.st_mode)
     or parent_inode.st_uid != os.geteuid()
@@ -1988,11 +2291,13 @@ if (
     raise SystemExit(1)
 try:
     fd = os.open(
-        lock_path,
+        lock_base,
         os.O_CLOEXEC | os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR,
         0o600,
+        dir_fd=parent_fd,
     )
 except OSError as exc:
+    os.close(parent_fd)
     print(
         f"hapax-post-merge-deploy: refused unsafe shared lock {lock_path}: {exc}; "
         "next action: remove only a confirmed symlink/non-regular lock and rerun",
@@ -2016,6 +2321,21 @@ try:
         raise SystemExit(1)
     os.fchmod(fd, 0o600)
     fcntl.flock(fd, fcntl.LOCK_EX)
+    locked_inode = os.fstat(fd)
+    locked_path_inode = os.stat(lock_base, dir_fd=parent_fd, follow_symlinks=False)
+    if (
+        (locked_inode.st_dev, locked_inode.st_ino)
+        != (locked_path_inode.st_dev, locked_path_inode.st_ino)
+        or locked_inode.st_uid != os.geteuid()
+        or locked_inode.st_nlink != 1
+        or stat.S_IMODE(locked_inode.st_mode) != 0o600
+    ):
+        print(
+            f"hapax-post-merge-deploy: shared lock path changed during acquisition for {lock_path}; "
+            "next action: stop the competing state mutation and rerun",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     env = os.environ.copy()
     env.pop("HAPAX_ROOT_REQUIRED_LOCK_HELD", None)
     env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
@@ -2029,6 +2349,7 @@ try:
     raise SystemExit(result.returncode)
 finally:
     os.close(fd)
+    os.close(parent_fd)
 PY
 }
 
@@ -3169,35 +3490,76 @@ fi
 # --- P0 OOM containment system/user policy ---
 stage_root_required_package() {
     local stage="$1" manifest="$2" label="$3"
-    local rel dest git_mode
+    local rel dest git_mode manifest_source manifest_paths
+    if ! mkdir -p "$stage"; then
+        echo "hapax-post-merge-deploy: cannot create the $label stage; next: repair scratch storage and rerun hapax-post-merge-deploy for this merge" >&2
+        return 2
+    fi
     if ! root_required_git cat-file -e "$SHA:$manifest" 2>/dev/null; then
         echo "hapax-post-merge-deploy: missing $label manifest at $SHA:$manifest; next: restore the versioned ownership manifest and rerun hapax-post-merge-deploy for this merge" >&2
+        return 2
+    fi
+    if ! manifest_source="$(mktemp "$stage/.manifest-source.XXXXXX")" \
+        || ! manifest_paths="$(mktemp "$stage/.manifest-paths.XXXXXX")"; then
+        rm -f "${manifest_source:-}" "${manifest_paths:-}" 2>/dev/null || true
+        echo "hapax-post-merge-deploy: cannot materialize the $label manifest safely; next: repair scratch storage and rerun hapax-post-merge-deploy for this merge" >&2
+        return 2
+    fi
+    if ! root_required_git show "$SHA:$manifest" > "$manifest_source" \
+        || ! awk 'NF && $1 !~ /^#/ {print $1}' "$manifest_source" > "$manifest_paths"; then
+        rm -f "$manifest_source" "$manifest_paths" 2>/dev/null || true
+        echo "hapax-post-merge-deploy: cannot read the complete $label manifest at $SHA:$manifest; next: repair the Git object and rerun hapax-post-merge-deploy for this merge" >&2
+        return 2
+    fi
+    if [ ! -s "$manifest_paths" ] || ! /usr/bin/grep -Fqx "$manifest" "$manifest_paths"; then
+        rm -f "$manifest_source" "$manifest_paths" 2>/dev/null || true
+        echo "hapax-post-merge-deploy: $label manifest is empty or does not own itself at $SHA:$manifest; next: restore the complete versioned ownership manifest and rerun hapax-post-merge-deploy for this merge" >&2
         return 2
     fi
     while IFS= read -r rel; do
         [ -n "$rel" ] || continue
         if ! root_required_git cat-file -e "$SHA:$rel" 2>/dev/null; then
+            rm -f "$manifest_source" "$manifest_paths" 2>/dev/null || true
             echo "hapax-post-merge-deploy: missing $label source at $SHA:$rel; next: restore every path declared by $manifest and rerun hapax-post-merge-deploy for this merge" >&2
             return 2
         fi
-        git_mode="$(root_required_git ls-tree "$SHA" -- "$rel" | awk 'NR == 1 {print $1}')"
+        if ! git_mode="$(root_required_git ls-tree "$SHA" -- "$rel" | awk 'NR == 1 {print $1}')"; then
+            rm -f "$manifest_source" "$manifest_paths" 2>/dev/null || true
+            echo "hapax-post-merge-deploy: cannot read the $label Git mode at $SHA:$rel; next: repair the Git object and rerun hapax-post-merge-deploy for this merge" >&2
+            return 2
+        fi
         case "$git_mode" in
             100644|100755) ;;
             *)
+                rm -f "$manifest_source" "$manifest_paths" 2>/dev/null || true
                 echo "hapax-post-merge-deploy: unsupported $label Git mode ${git_mode:-missing} at $SHA:$rel; next: replace symlink/submodule entries with regular package files" >&2
                 return 2
                 ;;
         esac
         dest="$stage/$rel"
-        mkdir -p "$(dirname "$dest")"
-        root_required_git show "$SHA:$rel" > "$dest"
-        if [ "$git_mode" = "100755" ]; then
-            chmod 0755 "$dest"
-        else
-            chmod 0644 "$dest"
+        if ! mkdir -p "$(dirname "$dest")" \
+            || ! root_required_git show "$SHA:$rel" > "$dest"; then
+            rm -f "$manifest_source" "$manifest_paths" 2>/dev/null || true
+            echo "hapax-post-merge-deploy: cannot stage the complete $label source at $SHA:$rel; next: repair Git or scratch storage and rerun hapax-post-merge-deploy for this merge" >&2
+            return 2
         fi
-    done < <(root_required_git show "$SHA:$manifest" | awk 'NF && $1 !~ /^#/ {print $1}')
-    printf '%s\n' "$SHA" > "$stage/.hapax-root-required-package-sha"
+        if [ "$git_mode" = "100755" ]; then
+            if ! chmod 0755 "$dest"; then
+                rm -f "$manifest_source" "$manifest_paths" 2>/dev/null || true
+                return 2
+            fi
+        else
+            if ! chmod 0644 "$dest"; then
+                rm -f "$manifest_source" "$manifest_paths" 2>/dev/null || true
+                return 2
+            fi
+        fi
+    done < "$manifest_paths"
+    if ! rm -f "$manifest_source" "$manifest_paths" \
+        || ! printf '%s\n' "$SHA" > "$stage/.hapax-root-required-package-sha"; then
+        echo "hapax-post-merge-deploy: cannot finalize the $label stage marker; next: repair scratch storage and rerun hapax-post-merge-deploy for this merge" >&2
+        return 2
+    fi
 }
 
 stage_oom_containment_installer() {
@@ -3230,8 +3592,31 @@ def refuse(message: str) -> None:
     raise SystemExit(1)
 
 
+def snapshot(inode: os.stat_result) -> tuple[int, ...]:
+    return (
+        inode.st_dev,
+        inode.st_ino,
+        inode.st_uid,
+        inode.st_gid,
+        inode.st_nlink,
+        stat.S_IMODE(inode.st_mode),
+        inode.st_size,
+        inode.st_mtime_ns,
+        inode.st_ctime_ns,
+    )
+
+
+parent_fd = -1
+receipt_fd = -1
 try:
-    receipt_inode = receipt.lstat()
+    parent_fd = os.open(
+        receipt.parent,
+        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+    parent_inode = os.fstat(parent_fd)
+    if parent_inode.st_uid != os.geteuid() or parent_inode.st_mode & 0o022:
+        refuse(f"installed {label} receipt parent is not caller-owned and non-group-writable")
+    receipt_inode = os.stat(receipt.name, dir_fd=parent_fd, follow_symlinks=False)
 except FileNotFoundError:
     raise SystemExit(3)
 except OSError as exc:
@@ -3240,13 +3625,39 @@ if (
     not stat.S_ISREG(receipt_inode.st_mode)
     or receipt_inode.st_uid != os.geteuid()
     or receipt_inode.st_nlink != 1
-    or receipt_inode.st_mode & 0o022
+    or stat.S_IMODE(receipt_inode.st_mode) != 0o600
+    or receipt_inode.st_size != 41
 ):
-    refuse(f"installed {label} receipt is not a safe caller-owned regular file: {receipt}")
+    refuse(f"installed {label} receipt is not an exact mode-0600 caller-owned SHA file: {receipt}")
 try:
-    receipt_value = receipt.read_bytes()
+    receipt_fd = os.open(
+        receipt.name,
+        os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        dir_fd=parent_fd,
+    )
+    opened = os.fstat(receipt_fd)
+    if snapshot(opened) != snapshot(receipt_inode):
+        refuse(f"installed {label} receipt changed while opening: {receipt}")
+    chunks: list[bytes] = []
+    remaining = 42
+    while remaining:
+        chunk = os.read(receipt_fd, remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    receipt_value = b"".join(chunks)
+    after = os.fstat(receipt_fd)
+    published = os.stat(receipt.name, dir_fd=parent_fd, follow_symlinks=False)
 except OSError as exc:
     refuse(f"cannot read installed {label} receipt {receipt}: {exc}")
+finally:
+    if receipt_fd >= 0:
+        os.close(receipt_fd)
+    if parent_fd >= 0:
+        os.close(parent_fd)
+if snapshot(after) != snapshot(opened) or snapshot(published) != snapshot(after):
+    refuse(f"installed {label} receipt changed while reading: {receipt}")
 if receipt_value != f"{sha}\n".encode():
     raise SystemExit(3)
 
@@ -3289,13 +3700,19 @@ PY
 }
 
 defer_root_required_installer() {
-    local label="$1" stage="$2" dest temp receipt helper_rel evidence completion
+    local label="$1" stage="$2" dest temp receipt helper_rel evidence completion installed_sha
     local account_home activation_alias authenticated_script command reconcile_rc runtime_task
     local -a command_cmd
     mkdir -p "$ROOT_DEFER_DIR"
     dest="$ROOT_DEFER_DIR/$SHA/$label"
     mkdir -p "$(dirname "$dest")"
     receipt="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/$label.sha"
+    if [ -f "$receipt" ]; then
+        installed_sha="$(read_safe_root_required_sha_receipt "$receipt" "installed-$label")" \
+            || return 1
+        write_root_required_sha_receipt \
+            "$receipt" "$installed_sha" preserve-canonical || return 1
+    fi
     if reconcile_completed_root_required_deferral "$receipt" "$dest" "$label"; then
         return 0
     else
@@ -3429,6 +3846,7 @@ import sys
 
 receipt, kind = sys.argv[1:]
 parent = os.path.dirname(receipt) or "."
+base = os.path.basename(receipt)
 
 
 def refuse(message: str) -> None:
@@ -3440,15 +3858,37 @@ def refuse(message: str) -> None:
     raise SystemExit(1)
 
 
+def snapshot(inode: os.stat_result) -> tuple[int, ...]:
+    return (
+        inode.st_dev,
+        inode.st_ino,
+        inode.st_uid,
+        inode.st_gid,
+        inode.st_nlink,
+        stat.S_IMODE(inode.st_mode),
+        inode.st_size,
+        inode.st_mtime_ns,
+        inode.st_ctime_ns,
+    )
+
+
+parent_fd = -1
+fd = -1
 try:
-    parent_inode = os.lstat(parent)
-    expected = os.lstat(receipt)
+    if not os.path.isabs(receipt) or not base:
+        refuse("the receipt path must be absolute and name one file")
+    parent_fd = os.open(
+        parent,
+        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+    parent_inode = os.fstat(parent_fd)
     if (
         not stat.S_ISDIR(parent_inode.st_mode)
         or parent_inode.st_uid != os.geteuid()
         or parent_inode.st_mode & 0o022
     ):
         refuse("the parent is not a caller-owned, non-group-writable physical directory")
+    expected = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)
     if (
         not stat.S_ISREG(expected.st_mode)
         or expected.st_uid != os.geteuid()
@@ -3460,16 +3900,34 @@ try:
             f"owner={expected.st_uid} links={expected.st_nlink} "
             f"mode={stat.S_IMODE(expected.st_mode):04o} size={expected.st_size}"
         )
-    fd = os.open(receipt, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
-    try:
-        opened = os.fstat(fd)
-        data = os.read(fd, 42)
-    finally:
-        os.close(fd)
+    fd = os.open(
+        base,
+        os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        dir_fd=parent_fd,
+    )
+    opened = os.fstat(fd)
+    if snapshot(opened) != snapshot(expected):
+        refuse("the receipt inode or metadata changed while opening")
+    chunks: list[bytes] = []
+    remaining = 42
+    while remaining:
+        chunk = os.read(fd, remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    data = b"".join(chunks)
+    after = os.fstat(fd)
+    published = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)
 except OSError as exc:
     refuse(f"cannot inspect or read the receipt: {exc}")
-if (opened.st_dev, opened.st_ino) != (expected.st_dev, expected.st_ino):
-    refuse("the inode changed while opening")
+finally:
+    if fd >= 0:
+        os.close(fd)
+    if parent_fd >= 0:
+        os.close(parent_fd)
+if snapshot(after) != snapshot(opened) or snapshot(published) != snapshot(after):
+    refuse("the receipt inode or metadata changed while reading")
 if re.fullmatch(rb"[0-9a-f]{40}\n", data) is None:
     refuse("content is not exactly 40 lowercase hex characters and one newline")
 print(data[:-1].decode("ascii"))
@@ -3477,8 +3935,8 @@ PY
 }
 
 write_root_required_sha_receipt() {
-    local receipt="$1" sha="$2"
-    /usr/bin/python3 -I - "$receipt" "$sha" <<'PY'
+    local receipt="$1" sha="$2" publication_mode="${3:-publish}"
+    /usr/bin/python3 -I - "$receipt" "$sha" "$publication_mode" <<'PY'
 from __future__ import annotations
 
 import os
@@ -3487,7 +3945,7 @@ import secrets
 import stat
 import sys
 
-receipt, sha = sys.argv[1:]
+receipt, sha, publication_mode = sys.argv[1:]
 payload = f"{sha}\n".encode()
 parent = os.path.dirname(receipt)
 base = os.path.basename(receipt)
@@ -3504,8 +3962,27 @@ def refuse(message: str) -> None:
     raise SystemExit(1)
 
 
+def snapshot(inode: os.stat_result) -> tuple[int, ...]:
+    return (
+        inode.st_dev,
+        inode.st_ino,
+        inode.st_uid,
+        inode.st_gid,
+        inode.st_nlink,
+        stat.S_IMODE(inode.st_mode),
+        inode.st_size,
+        inode.st_mtime_ns,
+        inode.st_ctime_ns,
+    )
+
+
 try:
-    if not os.path.isabs(receipt) or not base or re.fullmatch(r"[0-9a-f]{40}", sha) is None:
+    if (
+        not os.path.isabs(receipt)
+        or not base
+        or re.fullmatch(r"[0-9a-f]{40}", sha) is None
+        or publication_mode not in {"publish", "preserve-canonical"}
+    ):
         refuse("the path must be absolute and the value exactly 40 lowercase hex characters")
     old_umask = os.umask(0o077)
     try:
@@ -3519,6 +3996,41 @@ try:
     parent_inode = os.fstat(parent_fd)
     if parent_inode.st_uid != os.geteuid() or parent_inode.st_mode & 0o022:
         refuse("the receipt directory is not caller-owned and non-group-writable")
+    if publication_mode == "preserve-canonical":
+        expected = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(expected.st_mode)
+            or expected.st_uid != os.geteuid()
+            or expected.st_nlink != 1
+            or expected.st_mode & 0o022
+            or expected.st_size != len(payload)
+        ):
+            refuse("the existing receipt is unsafe to normalize")
+        fd = os.open(base, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent_fd)
+        try:
+            opened = os.fstat(fd)
+            chunks: list[bytes] = []
+            remaining = len(payload) + 1
+            while remaining:
+                chunk = os.read(fd, remaining)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            observed = b"".join(chunks)
+            after = os.fstat(fd)
+            published = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)
+        finally:
+            os.close(fd)
+        if (
+            snapshot(expected) != snapshot(opened)
+            or snapshot(opened) != snapshot(after)
+            or snapshot(after) != snapshot(published)
+            or observed != payload
+        ):
+            refuse("the existing receipt changed during normalization")
+        if stat.S_IMODE(after.st_mode) == 0o600:
+            raise SystemExit(0)
     temp = f".{base}.tmp.{os.getpid()}.{secrets.token_hex(8)}"
     fd = os.open(
         temp,
@@ -3548,21 +4060,35 @@ try:
         os.close(fd)
     os.replace(temp, base, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
     temp = None
+    expected = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)
     fd = os.open(base, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent_fd)
     try:
-        inode = os.fstat(fd)
-        observed = os.read(fd, len(payload) + 1)
+        opened = os.fstat(fd)
+        chunks: list[bytes] = []
+        remaining = len(payload) + 1
+        while remaining:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        observed = b"".join(chunks)
+        after = os.fstat(fd)
+        published = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)
     finally:
         os.close(fd)
     if (
-        not stat.S_ISREG(inode.st_mode)
-        or inode.st_uid != os.geteuid()
-        or inode.st_nlink != 1
-        or stat.S_IMODE(inode.st_mode) != 0o600
-        or inode.st_size != len(payload)
+        snapshot(expected) != snapshot(opened)
+        or snapshot(opened) != snapshot(after)
+        or snapshot(after) != snapshot(published)
+        or not stat.S_ISREG(after.st_mode)
+        or after.st_uid != os.geteuid()
+        or after.st_nlink != 1
+        or stat.S_IMODE(after.st_mode) != 0o600
+        or after.st_size != len(payload)
         or observed != payload
     ):
-        refuse("the published receipt failed its owner/link/mode/content readback")
+        refuse("the published receipt failed its stable path/inode/mode/content readback")
     os.fsync(parent_fd)
 except OSError as exc:
     refuse(f"atomic mode-0600 publication failed: {exc}")
@@ -3593,11 +4119,13 @@ record_root_required_desired_sha() {
             return 1
         fi
         if [ "$current" = "$SHA" ]; then
-            write_root_required_sha_receipt "$receipt" "$current"
+            write_root_required_sha_receipt \
+                "$receipt" "$current" preserve-canonical || return 1
             return 0
         fi
         if root_required_git merge-base --is-ancestor "$SHA" "$current"; then
-            write_root_required_sha_receipt "$receipt" "$current"
+            write_root_required_sha_receipt \
+                "$receipt" "$current" preserve-canonical || return 1
             echo "root-required $label desired state $current supersedes stale deploy $SHA; desired receipt preserved"
             return 0
         fi
@@ -3610,7 +4138,7 @@ record_root_required_desired_sha() {
             fi
         fi
     fi
-    write_root_required_sha_receipt "$receipt" "$SHA"
+    write_root_required_sha_receipt "$receipt" "$SHA" || return 1
 }
 
 # apcupsd must be active before the OOM package verifies the recovery plane.

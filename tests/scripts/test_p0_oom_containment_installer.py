@@ -2215,6 +2215,7 @@ def test_stale_deferred_oom_package_drains_without_rolling_back_newer_install(
     assert (drain_dir / "DRAINED.txt").is_file()
     assert not (drain_dir / "RUNBOOK.txt").exists()
     assert receipt.read_text(encoding="utf-8").strip() == sha_b
+    assert stat.S_IMODE(receipt.stat().st_mode) == 0o600
     assert live_marker.read_text(encoding="utf-8") == "newer B policy\n"
 
 
@@ -3814,6 +3815,7 @@ def _run_install_verify_live(
     through_deferred_helper: bool = False,
     omit_nested_sudo: bool = False,
     hostile_umask: bool = False,
+    block_installed_receipt_publication: bool = False,
     package_repo: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Drive the REAL installer through --install --verify-live against temp destinations.
@@ -4021,13 +4023,21 @@ def _run_install_verify_live(
             "hostile-umask",
             *command,
         ]
-    return subprocess.run(
-        command,
-        text=True,
-        capture_output=True,
-        check=False,
-        env=env,
-    )
+    blocked_parent = state_root / "installed-receipts"
+    if block_installed_receipt_publication:
+        blocked_parent.mkdir(parents=True)
+        blocked_parent.chmod(0o500)
+    try:
+        return subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
+        )
+    finally:
+        if block_installed_receipt_publication:
+            blocked_parent.chmod(0o700)
 
 
 def test_authenticated_deferred_helper_runs_real_installer_through_lock_reexec(
@@ -4092,6 +4102,24 @@ def test_authenticated_deferred_helper_publishes_safe_receipts_under_hostile_uma
     stage = tmp_path / "root-required" / package_sha / "oom-containment"
     assert (stage / "DRAINED.txt").is_file()
     assert not (stage / "RUNBOOK.txt").exists()
+
+
+def test_authenticated_deferred_helper_keeps_deferral_when_first_receipt_write_fails(
+    tmp_path: Path,
+) -> None:
+    result = _run_install_verify_live(
+        tmp_path,
+        through_deferred_helper=True,
+        block_installed_receipt_publication=True,
+    )
+
+    assert result.returncode != 0
+    assert "root-required receipt publication refused" in result.stderr
+    assert not (tmp_path / "root-state/installed-receipts/oom-containment.sha").exists()
+    stages = tuple((tmp_path / "root-required").glob("*/oom-containment"))
+    assert len(stages) == 1
+    assert (stages[0] / "RUNBOOK.txt").is_file()
+    assert not (stages[0] / "DRAINED.txt").exists()
 
 
 def test_install_pins_local_docker_daemon_against_hostile_selectors(
