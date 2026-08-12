@@ -307,15 +307,8 @@ def _read_exact_sha(path: Path, *, label: str) -> str:
 
 def _read_safe_receipt_sha(path: Path, *, label: str) -> str:
     inode = _lstat_regular(path, label=label, executable=False)
-    if (
-        inode.st_uid != os.getuid()
-        or inode.st_nlink != 1
-        or inode.st_mode & 0o022
-        or inode.st_size != 41
-    ):
-        raise _error(
-            f"{label} must be caller-owned, single-link, non-group-writable, and exactly 41 bytes"
-        )
+    if inode.st_uid != os.getuid() or inode.st_nlink != 1 or inode.st_mode & 0o022:
+        raise _error(f"{label} must be caller-owned, single-link, and non-group-writable")
     return _read_exact_sha(path, label=label)
 
 
