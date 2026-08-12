@@ -87,10 +87,10 @@ jobs:
 
           if [ -n "$PR_BASE_SHA" ]; then
             git fetch --quiet origin "$PR_BASE_SHA" || true
-            git diff --name-only "$PR_BASE_SHA"...HEAD > "$changed_files"
+            git diff --no-renames --name-only "$PR_BASE_SHA"...HEAD > "$changed_files"
           elif [ -n "$merge_group_base_sha" ]; then
             git fetch --quiet origin "$merge_group_base_sha" || true
-            git diff --name-only "$merge_group_base_sha"..HEAD > "$changed_files"
+            git diff --no-renames --name-only "$merge_group_base_sha"..HEAD > "$changed_files"
           else
             if [ -z "$PUSH_BEFORE_SHA" ] || [ "$PUSH_BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
               echo "docs_only=false" >> "$GITHUB_OUTPUT"
@@ -99,7 +99,7 @@ jobs:
               exit 0
             fi
             git fetch --quiet origin "$PUSH_BEFORE_SHA" || true
-            git diff --name-only "$PUSH_BEFORE_SHA" HEAD > "$changed_files"
+            git diff --no-renames --name-only "$PUSH_BEFORE_SHA" HEAD > "$changed_files"
           fi
 
           sed -i '/^$/d' "$changed_files"
