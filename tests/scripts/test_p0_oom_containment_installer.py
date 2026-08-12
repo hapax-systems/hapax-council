@@ -308,7 +308,12 @@ esac
 
 
 def _unit_cgroup(unit: str) -> str:
-    return f"/user.slice/user-1000.slice/user@1000.service/app.slice/{unit}"
+    slice_name = (
+        "session.slice"
+        if unit in {"pipewire.service", "pipewire-pulse.service", "wireplumber.service"}
+        else "app.slice"
+    )
+    return f"/user.slice/user-1000.slice/user@1000.service/{slice_name}/{unit}"
 
 
 def _enforcer_system_manager_cases(pid: int = 900) -> str:
@@ -2867,6 +2872,11 @@ def test_root_oom_score_enforcer_scoped_write_rejects_stale_starttime(
     (
         ("-800", _unit_cgroup("pipewire.service")),
         ("-900", "/user.slice/user-1000.slice/user@1000.service/app.slice/attacker.service"),
+        ("-900", "/user.slice/user-1000.slice/user@1000.service/app.slice/pipewire.service"),
+        (
+            "-900",
+            "/user.slice/user-1000.slice/user@1000.service/app.slice/attacker.scope/pipewire.service",
+        ),
         ("-900", "/user.slice/user-1000.slice/user@1000.service/../pipewire.service"),
     ),
 )
@@ -3069,6 +3079,8 @@ def test_root_oom_score_enforcer_uses_setpriv_without_pam_for_user_manager(
         encoding="utf-8",
     )
     fake_setpriv.chmod(0o755)
+    runtime_dir = tmp_path / "run-user-1000"
+    runtime_dir.mkdir()
 
     result = subprocess.run(
         [str(OOM_ENFORCER), "--apply-unit", "pipewire.service"],
@@ -3079,6 +3091,7 @@ def test_root_oom_score_enforcer_uses_setpriv_without_pam_for_user_manager(
             **os.environ,
             "HAPAX_OOM_ENFORCE_EFFECTIVE_UID": "0",
             "HAPAX_OOM_PROC_ROOT": str(proc_root),
+            "HAPAX_OOM_RUNTIME_DIR": str(runtime_dir),
             "HAPAX_OOM_SETPRIV": str(fake_setpriv),
             "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
             "HAPAX_OOM_TARGET_GID": "1000",
@@ -3095,8 +3108,53 @@ def test_root_oom_score_enforcer_uses_setpriv_without_pam_for_user_manager(
     assert all("--reuid=1000 --regid=1000 --init-groups" in call for call in calls)
     assert all("--inh-caps=-all --ambient-caps=-all --bounding-set=-all" in call for call in calls)
     assert all("--no-new-privs /usr/bin/env -i" in call for call in calls)
-    assert all("XDG_RUNTIME_DIR=/run/user/1000" in call for call in calls)
+    assert all(f"XDG_RUNTIME_DIR={runtime_dir}" in call for call in calls)
     assert "/usr/bin/runuser" not in OOM_ENFORCER.read_text(encoding="utf-8")
+
+
+def test_root_oom_score_enforcer_names_missing_user_runtime_directory(
+    tmp_path: Path,
+) -> None:
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        '[ "$*" = "show user@1000.service -p ActiveState --value" ] || exit 9\n'
+        'printf "active\\n"\n',
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+    setpriv_marker = tmp_path / "setpriv-ran"
+    fake_setpriv = tmp_path / "setpriv"
+    fake_setpriv.write_text(
+        f"#!/usr/bin/env bash\n: > {setpriv_marker!s}\nexit 9\n",
+        encoding="utf-8",
+    )
+    fake_setpriv.chmod(0o755)
+    missing_runtime_dir = tmp_path / "missing-run-user-1000"
+
+    result = subprocess.run(
+        [str(OOM_ENFORCER), "--apply-unit", "pipewire.service"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_ENFORCE_EFFECTIVE_UID": "0",
+            "HAPAX_OOM_RUNTIME_DIR": str(missing_runtime_dir),
+            "HAPAX_OOM_SETPRIV": str(fake_setpriv),
+            "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_OOM_TARGET_GID": "1000",
+            "HAPAX_OOM_TARGET_HOME": str(tmp_path / "target-home"),
+            "HAPAX_OOM_TARGET_UID": "1000",
+            "HAPAX_OOM_TARGET_USER": "hapax",
+        },
+    )
+
+    assert result.returncode == 1
+    assert f"no user runtime directory at {missing_runtime_dir}" in result.stderr
+    assert "user manager for UID 1000 is unavailable" in result.stderr
+    assert "nothing to protect" in result.stderr
+    assert not setpriv_marker.exists()
 
 
 def test_root_oom_score_enforcer_refuses_production_environment_overrides(
@@ -3246,7 +3304,7 @@ def test_root_oom_score_enforcer_does_not_start_an_inactive_user_manager(
     )
 
     assert result.returncode == 0
-    assert result.stdout == ""
+    assert result.stdout == "no user manager for UID 1000; nothing to protect\n"
     assert result.stderr == ""
 
 
@@ -3383,9 +3441,7 @@ def test_root_oom_score_enforcer_writes_all_user_unit_cgroup_pids(
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
     cgroup_root = tmp_path / "cgroup"
-    cgroup_dir = (
-        cgroup_root / "user.slice/user-1000.slice/user@1000.service/app.slice/pipewire.service"
-    )
+    cgroup_dir = cgroup_root / _unit_cgroup("pipewire.service").lstrip("/")
     cgroup_dir.mkdir(parents=True)
     (cgroup_dir / "cgroup.procs").write_text("910\n916\n", encoding="utf-8")
     _write_proc(
@@ -3427,7 +3483,7 @@ def test_root_oom_score_enforcer_writes_all_user_unit_cgroup_pids(
     fake_user_systemctl.write_text(
         "#!/usr/bin/env bash\n"
         'case "$*" in\n'
-        '  *"show pipewire.service -p ControlGroup --value"*) printf "/user.slice/user-1000.slice/user@1000.service/app.slice/pipewire.service\\n" ;;\n'
+        f'  *"show pipewire.service -p ControlGroup --value"*) printf "{_unit_cgroup("pipewire.service")}\\n" ;;\n'
         '  *"show pipewire.service -p MainPID --value"*) printf "910\\n" ;;\n'
         '  *"show "*" -p ControlGroup --value"*) printf "\\n" ;;\n'
         '  *"show "*" -p MainPID --value"*) printf "0\\n" ;;\n'
