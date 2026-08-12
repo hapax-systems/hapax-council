@@ -66,9 +66,10 @@ first mutation, so a skipped or incomplete staging canary is rejected before the
 durable unit can be started.
 
 The active task must authorize every semantic effect listed in the candidate
-`config/root-required/oom-containment.effects`, plus the canary, activation, and
-managed-recheck effects used below. The exact-SHA helper validates that task only
-as advisory narrowing. It cannot grant production effects and never executes the
+`config/root-required/oom-containment.effects` plus the canary. Activation and
+managed-recheck scopes are intentionally absent because this revision provides
+no runnable fence for either. The exact-SHA helper validates that task only as
+advisory narrowing. It cannot grant production effects and never executes the
 interpreted installer in production. A future independently installed root-owned
 package broker must derive authority, package bytes, destinations, and the fixed
 effect transaction again at the privileged boundary.
@@ -78,8 +79,8 @@ helper results are evidence, not bearer authority.
 The future broker interface also carries a helper-generated 256-bit correlation
 ID. It is not authority. Plain root ownership is namespace-relative and cannot
 authenticate host root to a same-UID caller that can create user and mount
-namespaces. This revision therefore hard-disables production broker execution
-before sudo, state locking, or broker validation. A successor may enable it only
+namespaces. This revision therefore contains no executable production broker path
+and refuses before state locking or package validation. A successor may add such a path only
 after a separately reviewed protocol signs or MACs request ID, package, SHA, and
 completion generation with a host-root-held key and verifies that attestation
 against a source-pinned trust anchor. File-level per-request and current mode-`0444`
@@ -831,179 +832,20 @@ exit 1
 HAPAX_LOCAL_JUDGE_INSTALLED_VERIFY
 ```
 
-### Separate activation and recheck
+### Activation and recheck unavailable
 
-The package deliberately does not enable or restart the judge. This separately
-authorized fence reloads the exact installed unit, then rechecks the effective
-limits and the recurring audit.
+The package does not enable or restart the judge. This source revision has no
+runnable activation fence: caller-owned desired, installed, canary, activation,
+or managed-recheck records cannot attest that host root applied the exact
+package. `--verify-local-judge-cap-receipt <sha> installed` therefore fails
+unconditionally before reading those records.
 
-```bash
-set -euo pipefail
-account_uid="$(/usr/bin/id -u)"
-account_name="$(/usr/bin/id -un)"
-account_home="$(/usr/bin/getent passwd "$account_uid" | /usr/bin/cut -d: -f6)"
-test -n "$account_home"
-test "$account_home" = "$(/usr/bin/realpath -e -- "$account_home")"
-runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
-/usr/bin/env -i \
-  HOME="$account_home" \
-  USER="$account_name" \
-  LOGNAME="$account_name" \
-  PATH=/usr/bin:/bin \
-  LANG=C.UTF-8 \
-  LC_ALL=C.UTF-8 \
-  XDG_RUNTIME_DIR="/run/user/$account_uid" \
-  DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$account_uid/bus" \
-  HAPAX_RUNTIME_AUTHORITY_TASK="$runtime_task" \
-  /usr/bin/bash --noprofile --norc -p -s -- \
-    /usr/bin/systemctl \
-    /usr/bin/curl \
-    /usr/bin/nvidia-smi \
-    /usr/local/sbin/hapax-oom-policy-audit <<'HAPAX_LOCAL_JUDGE_ACTIVATION'
-set -euo pipefail
-PATH=/usr/bin:/bin
-export PATH
-systemctl_bin="$1"
-curl_bin="$2"
-nvidia_smi_bin="$3"
-oom_audit_bin="$4"
-for executable in "$systemctl_bin" "$curl_bin" "$nvidia_smi_bin" "$oom_audit_bin"; do
-  test -x "$executable"
-  test ! -L "$executable"
-done
-runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
-repo_alias="$HOME/.cache/hapax/source-activation/worktree"
-repo="$(/usr/bin/realpath -e -- "$repo_alias")"
-release_root="$HOME/.cache/hapax/source-activation/releases"
-test "${repo%/*}" = "$release_root"
-[[ "${repo##*/}" =~ ^[0-9a-f]{40}$ ]]
-test "$(/usr/bin/stat -c %u -- "$repo")" = "$(/usr/bin/id -u)"
-sha="${repo##*/}"
-release_git() {
-  /usr/bin/env -i \
-    HOME=/nonexistent \
-    PATH=/usr/bin:/bin \
-    LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8 \
-    GIT_CONFIG_GLOBAL=/dev/null \
-    GIT_CONFIG_NOSYSTEM=1 \
-    GIT_NO_REPLACE_OBJECTS=1 \
-    GIT_OPTIONAL_LOCKS=0 \
-    /usr/bin/git -C "$repo" "$@"
-}
-test "$(release_git rev-parse --verify 'HEAD^{commit}')" = "$sha"
-verifier_oid="$(release_git rev-parse --verify "$sha:scripts/hapax-post-merge-deploy")"
-[[ "$verifier_oid" =~ ^[0-9a-f]{40}$ ]]
-release_verify() {
-  release_git cat-file blob "$verifier_oid" | \
-    /usr/bin/env -i \
-      HOME="$HOME" \
-      USER="$USER" \
-      LOGNAME="$LOGNAME" \
-      PATH=/usr/bin:/bin \
-      LANG=C.UTF-8 \
-      LC_ALL=C.UTF-8 \
-      XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
-      DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" \
-      REPO="$repo" \
-      /usr/bin/bash --noprofile --norc -p -s -- "$@"
-}
-activation_scopes=(
-  runtime:systemd-user:daemon-reload
-  runtime:systemd-user:enable:hapax-local-judge.service
-  runtime:systemd-user:restart:hapax-local-judge.service
-  runtime:state:write-local-judge-activation-result
-)
-release_verify --verify-runtime-authority-for-release \
-  "$sha" "$runtime_task" "${activation_scopes[@]}"
-release_verify --verify-local-judge-cap-receipt "$sha" installed
-
-result_dir="$HOME/.local/state/hapax/local-judge-activation"
-result="$result_dir/latest.env"
-/usr/bin/mkdir -p -- "$result_dir"
-test -d "$result_dir"
-test ! -L "$result_dir"
-test "$(/usr/bin/stat -c %u -- "$result_dir")" = "$(/usr/bin/id -u)"
-result_mode="$(/usr/bin/stat -c %a -- "$result_dir")"
-(( (8#$result_mode & 022) == 0 ))
-write_activation_result() {
-  local status="$1" phase="$2" service_mutation_started="$3" tmp
-  tmp="$(/usr/bin/mktemp -p "$result_dir" .latest.env.XXXXXX)"
-  /usr/bin/chmod 0600 "$tmp"
-  /usr/bin/printf '%s\n' \
-    'schema=1' \
-    "candidate_sha=$sha" \
-    "status=$status" \
-    "phase=$phase" \
-    "service_mutation_started=$service_mutation_started" \
-    "recorded_at_epoch=$(/usr/bin/date +%s)" \
-    'next_action=inspect-service-and-journal-then-rerun-authorized-fence' > "$tmp"
-  /usr/bin/mv -fT -- "$tmp" "$result"
-}
-activation_phase=authorized
-service_mutation_started=false
-on_activation_exit() {
-  local rc=$?
-  if [ "$rc" -eq 0 ]; then
-    return
-  fi
-  set +e
-  status=failed_pre_mutation
-  if [ "$service_mutation_started" = true ]; then
-    status=partial_success
-  fi
-  write_activation_result "$status" "$activation_phase" "$service_mutation_started"
-  /usr/bin/printf '%s\n' \
-    "local-judge activation $status: phase=$activation_phase candidate_sha=$sha service_mutation_started=$service_mutation_started receipt=$result; next action: inspect '$systemctl_bin --user status hapax-local-judge.service' and 'journalctl --user -u hapax-local-judge.service', repair the failed phase, then rerun this separately authorized fence" >&2
-  exit "$rc"
-}
-trap on_activation_exit EXIT
-write_activation_result in_progress "$activation_phase" "$service_mutation_started"
-
-activation_phase=daemon_reload
-write_activation_result in_progress "$activation_phase" "$service_mutation_started"
-service_mutation_started=true
-"$systemctl_bin" --user daemon-reload
-activation_phase=effective_unit
-write_activation_result in_progress "$activation_phase" "$service_mutation_started"
-exec_start="$("$systemctl_bin" --user show hapax-local-judge.service -p ExecStart --value)"
-[[ "$exec_start" == *"argv[]=/usr/bin/env -i "* ]]
-[[ "$exec_start" == *" /usr/bin/docker --host=unix:///var/run/docker.sock --config="* ]]
-[[ "$exec_start" == *"/hapax-local-judge/docker-config run "* ]]
-[[ "$exec_start" == *" --memory 4G "* ]]
-[[ "$exec_start" == *" --memory-swap 6G "* ]]
-activation_phase=enable
-write_activation_result in_progress "$activation_phase" "$service_mutation_started"
-"$systemctl_bin" --user enable hapax-local-judge.service
-activation_phase=restart
-write_activation_result in_progress "$activation_phase" "$service_mutation_started"
-"$systemctl_bin" --user restart hapax-local-judge.service
-activation_phase=model_api
-write_activation_result in_progress "$activation_phase" "$service_mutation_started"
-models="$("$curl_bin" --fail --silent --show-error --max-time 30 \
-  http://127.0.0.1:5001/v1/models)"
-/usr/bin/grep -Fq compassverifier <<<"$models"
-activation_phase=gpu_inventory
-write_activation_result in_progress "$activation_phase" "$service_mutation_started"
-"$nvidia_smi_bin" --query-gpu=index,name,memory.used --format=csv,noheader
-activation_phase=oom_audit
-write_activation_result in_progress "$activation_phase" "$service_mutation_started"
-"$oom_audit_bin"
-activation_phase=complete
-write_activation_result accepted "$activation_phase" "$service_mutation_started"
-trap - EXIT
-/usr/bin/printf 'local-judge activation accepted: candidate_sha=%s receipt=%s\n' "$sha" "$result"
-HAPAX_LOCAL_JUDGE_ACTIVATION
-```
-
-Every authorized attempt updates
-`~/.local/state/hapax/local-judge-activation/latest.env` atomically. A failure
-before `daemon-reload` records `failed_pre_mutation`; any later failure records
-`partial_success` with the exact failed phase. Treat `partial_success` as a live
-runtime change: inspect the service and journal named by the terminal diagnostic,
-repair that phase, and rerun this separately authorized fence rather than assuming
-the failed command rolled activation back.
-
+Activation and the managed post-activation workload recheck remain blocked until
+a separately authorized successor binds one exact request ID, package, release
+SHA, and effect set to cryptographically attested per-request and current
+host-root completion records. That successor must verify both attestations from
+a source-pinned trust anchor before any `systemctl --user daemon-reload`,
+enable, restart, result-state write, or managed workload command.
 The name `hapax-local-judge` is reserved for the systemd unit. Docker writes the
 unit-owned full ID to `%t/hapax-local-judge/container.cid`; stop and restart use
 only that ID and retain the cidfile whenever absence cannot be proven. The unit
@@ -1107,144 +949,12 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
   intentionally looser than the canary's 1 GiB accepted swap peak, preserving
   another 1 GiB inside the hard limit rather than treating the limit as a target.
   The cap is not runtime-accepted merely because the source tests pass. The required
-  pre-deploy canary above gates installation of the candidate. After activation,
-  repeat the same 8-worker, 24-request load against the managed container before
-  runtime closure and require unchanged health/restart/OOM state, unchanged `oom`
-  counters, and the same peak-memory headroom:
-
-  ```bash
-  set -euo pipefail
-  account_uid="$(/usr/bin/id -u)"
-  account_name="$(/usr/bin/id -un)"
-  account_home="$(/usr/bin/getent passwd "$account_uid" | /usr/bin/cut -d: -f6)"
-  test -n "$account_home"
-  test "$account_home" = "$(/usr/bin/realpath -e -- "$account_home")"
-  runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
-  /usr/bin/env -i \
-    HOME="$account_home" \
-    USER="$account_name" \
-    LOGNAME="$account_name" \
-    PATH=/usr/bin:/bin \
-    LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8 \
-    XDG_RUNTIME_DIR="/run/user/$account_uid" \
-    DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$account_uid/bus" \
-    DOCKER_HOST=unix:///var/run/docker.sock \
-    HAPAX_RUNTIME_AUTHORITY_TASK="$runtime_task" \
-    /usr/bin/bash --noprofile --norc -p -s <<'HAPAX_LOCAL_JUDGE_MANAGED_RECHECK'
-  set -euo pipefail
-  PATH=/usr/bin:/bin
-  export PATH
-  runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
-  test -S /var/run/docker.sock
-  repo_alias="$HOME/.cache/hapax/source-activation/worktree"
-  repo="$(/usr/bin/realpath -e -- "$repo_alias")"
-  release_root="$HOME/.cache/hapax/source-activation/releases"
-  test "${repo%/*}" = "$release_root"
-  [[ "${repo##*/}" =~ ^[0-9a-f]{40}$ ]]
-  test "$(/usr/bin/stat -c %u -- "$repo")" = "$(/usr/bin/id -u)"
-  sha="${repo##*/}"
-  release_git() {
-    /usr/bin/env -i \
-      HOME=/nonexistent \
-      PATH=/usr/bin:/bin \
-      LANG=C.UTF-8 \
-      LC_ALL=C.UTF-8 \
-      GIT_CONFIG_GLOBAL=/dev/null \
-      GIT_CONFIG_NOSYSTEM=1 \
-      GIT_NO_REPLACE_OBJECTS=1 \
-      GIT_OPTIONAL_LOCKS=0 \
-      /usr/bin/git -C "$repo" "$@"
-  }
-  test "$(release_git rev-parse --verify 'HEAD^{commit}')" = "$sha"
-  verifier_oid="$(release_git rev-parse --verify "$sha:scripts/hapax-post-merge-deploy")"
-  lifecycle_oid="$(release_git rev-parse --verify "$sha:scripts/hapax-local-judge-container-id")"
-  [[ "$verifier_oid" =~ ^[0-9a-f]{40}$ ]]
-  [[ "$lifecycle_oid" =~ ^[0-9a-f]{40}$ ]]
-  release_verify() {
-    release_git cat-file blob "$verifier_oid" | \
-      /usr/bin/env -i \
-        HOME="$HOME" \
-        USER="$USER" \
-        LOGNAME="$LOGNAME" \
-        PATH=/usr/bin:/bin \
-        LANG=C.UTF-8 \
-        LC_ALL=C.UTF-8 \
-        XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
-        DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" \
-        DOCKER_HOST=unix:///var/run/docker.sock \
-        REPO="$repo" \
-        /usr/bin/bash --noprofile --norc -p -s -- "$@"
-  }
-  release_lifecycle() {
-    release_git cat-file blob "$lifecycle_oid" | \
-      /usr/bin/env -i \
-        HOME="$HOME" \
-        USER="$USER" \
-        LOGNAME="$LOGNAME" \
-        PATH=/usr/bin:/bin \
-        LANG=C.UTF-8 \
-        LC_ALL=C.UTF-8 \
-        XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
-        /usr/bin/python3 -I - "$@"
-  }
-  managed_recheck_scopes=(
-    runtime:state:write-remove-managed-recheck:/store-fast/tmp
-    runtime:workload:run-local-judge-managed-recheck:requests-24:workers-8
-  )
-  release_verify --verify-runtime-authority-for-release \
-    "$sha" "$runtime_task" "${managed_recheck_scopes[@]}"
-  release_verify --verify-local-judge-cap-receipt "$sha" installed
-  unit=hapax-local-judge.service
-  test "$(/usr/bin/systemctl --user show "$unit" -p ActiveState --value)" = active
-  test "$(/usr/bin/systemctl --user show "$unit" -p NeedDaemonReload --value)" = no
-  test "$(/usr/bin/systemctl --user show "$unit" -p FragmentPath --value)" = \
-    "$HOME/.config/systemd/user/$unit"
-  test -z "$(/usr/bin/systemctl --user show "$unit" -p DropInPaths --value)"
-  exec_start="$(/usr/bin/systemctl --user show "$unit" -p ExecStart --value)"
-  [[ "$exec_start" == *"argv[]=/usr/bin/env -i "* ]]
-  [[ "$exec_start" == *" /usr/bin/docker --host=unix:///var/run/docker.sock --config="* ]]
-  [[ "$exec_start" == *"/hapax-local-judge/docker-config run "* ]]
-  [[ "$exec_start" == *" --name hapax-local-judge "* ]]
-  [[ "$exec_start" == *" --memory 4G "* ]]
-  [[ "$exec_start" == *" --memory-swap 6G "* ]]
-  cidfile="$XDG_RUNTIME_DIR/hapax-local-judge/container.cid"
-  container_id="$(release_lifecycle managed-id --cidfile "$cidfile")"
-  oom_kill_disable="$(/usr/bin/docker inspect --format '{{json .HostConfig.OomKillDisable}}' "$container_id")"
-  [[ "$oom_kill_disable" == null || "$oom_kill_disable" == false ]]
-  pid="$(/usr/bin/docker inspect --format '{{.State.Pid}}' "$container_id")"
-  test "$pid" -gt 1
-  cgroup="$(/usr/bin/awk -F: '$1 == "0" {print $3; exit}' "/proc/$pid/cgroup")"
-  events="/sys/fs/cgroup${cgroup}/memory.events"
-  memory_peak_path="/sys/fs/cgroup${cgroup}/memory.peak"
-  swap_peak_path="/sys/fs/cgroup${cgroup}/memory.swap.peak"
-  test -r "$events"
-  test -r "$memory_peak_path"
-  test -r "$swap_peak_path"
-  before_state="$(/usr/bin/docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}|{{.RestartCount}}|{{.State.OOMKilled}}' "$container_id")"
-  before_oom="$(/usr/bin/awk '$1 == "oom" || $1 == "oom_kill" {print}' "$events")"
-  results="/store-fast/tmp/local-judge-managed-recheck-$$.jsonl"
-  test -d /store-fast/tmp
-  test ! -e "$results"
-  trap '/usr/bin/rm -f "$results"' EXIT
-  release_verify --run-local-judge-cap-workload http://127.0.0.1:5001 "$results"
-  /usr/bin/jq -e -s 'length == 24 and all(.[]; type == "object" and has("error") and has("pred") and .error == null and (.pred == "A" or .pred == "B" or .pred == "C"))' \
-    "$results" >/dev/null
-  after_container_id="$(release_lifecycle managed-id --cidfile "$cidfile")"
-  test "$after_container_id" = "$container_id"
-  test "$(/usr/bin/systemctl --user show "$unit" -p ActiveState --value)" = active
-  after_state="$(/usr/bin/docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}|{{.RestartCount}}|{{.State.OOMKilled}}' "$container_id")"
-  after_oom="$(/usr/bin/awk '$1 == "oom" || $1 == "oom_kill" {print}' "$events")"
-  memory_peak="$(/usr/bin/cat "$memory_peak_path")"
-  swap_peak="$(/usr/bin/cat "$swap_peak_path")"
-  test "$before_state" = "$after_state"
-  test "$before_oom" = "$after_oom"
-  test "$memory_peak" -le 3221225472
-  test "$swap_peak" -le 1073741824
-  /usr/bin/rm -f "$results"
-  trap - EXIT
-HAPAX_LOCAL_JUDGE_MANAGED_RECHECK
-  ```
+  pre-deploy canary above gates source candidacy only. The managed 8-worker,
+  24-request post-activation recheck is intentionally unavailable in this
+  revision for the same reason as activation: no cryptographically attested
+  installed package generation exists. Its health, restart, OOM, and peak-memory
+  predicates remain required for runtime closure after the attested protocol is
+  implemented; caller-owned workload output is not closure evidence.
 - **Throughput:** 8 continuous-batch slots × 8192 ctx; ~137 tok/s decode, ~800 tok/s
   prompt. 127/2817 (4.5%) VerifierBench items exceed an 8192-token slot and are
   reported as context-skips by the harness — the longest/pathological inputs; raise
