@@ -903,7 +903,7 @@ jobs:
         # pyproject.toml or ci.yml never reached the witness case before, because the rename
         # collapsed to its destination. It fires correctly now, so a flaky mirror must not be
         # the slowest possible way to find out.
-        timeout-minutes: 6
+        timeout-minutes: 5
         run: |
           sudo apt-get update
           sudo apt-get install -y \
